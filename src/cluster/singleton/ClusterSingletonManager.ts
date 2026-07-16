@@ -339,7 +339,7 @@ export class ClusterSingletonManager<T> extends Actor<Inbox> {
   private scheduleAcquireRetry(): void {
     const interval = this.options.acquireRetryIntervalMs ?? 5_000;
     this.retryTimer?.cancel();
-    this.retryTimer = this.system.scheduler.scheduleOnceFn(interval, () => {
+    this.retryTimer = this.system.scheduler.scheduleOnceFunction(interval, () => {
       this.self.tell({ t: 'acquire-retry' } satisfies ManagerEvent);
     });
   }

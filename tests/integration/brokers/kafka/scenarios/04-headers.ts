@@ -3,7 +3,7 @@
  * adapter passes them through both directions; this scenario
  * round-trips a structured header set through Redpanda.
  */
-import { spawnInbox, spawnKafka, type KafkaCtx } from '../runner.js';
+import { spawnInbox, spawnKafka, type KafkaContext } from '../runner.js';
 import { waitFor, type BrokerScenario } from '../../lib/scenario.js';
 
 const decode = (v: Uint8Array | string | null | undefined): string => {
@@ -12,7 +12,7 @@ const decode = (v: Uint8Array | string | null | undefined): string => {
   return new TextDecoder().decode(v);
 };
 
-export const scenario: BrokerScenario<KafkaCtx> = {
+export const scenario: BrokerScenario<KafkaContext> = {
   name: 'headers round-trip',
   async run(ctx) {
     const tag = `b4-headers-${Date.now()}-${Math.random().toString(36).slice(2)}`;

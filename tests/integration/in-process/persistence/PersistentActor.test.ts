@@ -14,7 +14,7 @@ import { Props } from '../../../../src/Props.js';
 const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
 
 /** Shared domain types for the tests. */
-type Cmd = { kind: 'deposit'; amount: number } | { kind: 'withdraw'; amount: number } | { kind: 'balance' };
+type Command = { kind: 'deposit'; amount: number } | { kind: 'withdraw'; amount: number } | { kind: 'balance' };
 type Event = { kind: 'deposited'; amount: number } | { kind: 'withdrew'; amount: number };
 type State = { balance: number };
 
@@ -31,7 +31,7 @@ function makeSystem(): { system: ActorSystem; journal: InMemoryJournal; snapshot
   return { system, journal, snapshots };
 }
 
-class Account extends PersistentActor<Cmd, Event, State> {
+class Account extends PersistentActor<Command, Event, State> {
   readonly persistenceId: string;
   constructor(pid: string, private readonly replyTo?: (m: unknown) => void) {
     super();
@@ -44,7 +44,7 @@ class Account extends PersistentActor<Cmd, Event, State> {
     return s;
   }
   override onRecoveryComplete(s: State): void { this.replyTo?.({ ready: s.balance }); }
-  async onCommand(state: State, cmd: Cmd): Promise<void> {
+  async onCommand(state: State, cmd: Command): Promise<void> {
     if (cmd.kind === 'deposit') {
       await this.persist({ kind: 'deposited', amount: cmd.amount }, s => this.replyTo?.({ balance: s.balance }));
     } else if (cmd.kind === 'withdraw') {

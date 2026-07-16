@@ -61,8 +61,8 @@ export interface OutboundEnvelope<P = unknown> {
  * and `requiredOptions()` so the base class can resolve and validate
  * the effective options before `connectImplementation()` runs.
  */
-export abstract class BrokerActor<S extends BrokerCommonOptionsType, Cmd = unknown, P = unknown>
-  extends Actor<Cmd> {
+export abstract class BrokerActor<S extends BrokerCommonOptionsType, Command = unknown, P = unknown>
+  extends Actor<Command> {
   /** Constructor options — partial; merged with HOCON + defaults in preStart. */
   private readonly _ctorOptions: Partial<S>;
   /** Final, fully resolved options.  `null` until preStart() ran. */
@@ -390,7 +390,7 @@ export abstract class BrokerActor<S extends BrokerCommonOptionsType, Cmd = unkno
     // Use the system scheduler (not the actor TimerScheduler): reconnect
     // is detached from the message pipeline — it should not queue behind
     // user commands.  Cancel-handle is tracked for postStop teardown.
-    const handle = this.system.scheduler.scheduleOnceFn(delayMs, reconnect);
+    const handle = this.system.scheduler.scheduleOnceFunction(delayMs, reconnect);
     this._scheduledReconnectCancel = (): void => { handle.cancel(); };
   }
 

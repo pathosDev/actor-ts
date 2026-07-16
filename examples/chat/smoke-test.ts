@@ -274,14 +274,14 @@ async function main(): Promise<void> {
   // History request: bob "joins" `@alice` and expects to see the
   // two messages he just took part in.
   b3.send({ type: 'join', room: '@alice' });
-  const dmHist = (await b3.await(
+  const directMessageHistory = (await b3.await(
     (m) => m.type === 'history' && (m as ServerMessage).room === '@alice',
     5000,
   )) as ServerMessage & { messages: Array<{ from: string; text: string }> };
-  if (!Array.isArray(dmHist.messages) || dmHist.messages.length < 2) {
-    fail(`DM history too short: ${JSON.stringify(dmHist.messages)}`);
+  if (!Array.isArray(directMessageHistory.messages) || directMessageHistory.messages.length < 2) {
+    fail(`DM history too short: ${JSON.stringify(directMessageHistory.messages)}`);
   }
-  ok(`DM history has ${dmHist.messages.length} messages`);
+  ok(`DM history has ${directMessageHistory.messages.length} messages`);
 
   a3.close(); b3.close();
   await new Promise((r) => setTimeout(r, 200));

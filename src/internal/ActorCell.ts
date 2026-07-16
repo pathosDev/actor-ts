@@ -311,7 +311,7 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
     this.mailbox.prependUser([env]);
     if (this._throttleResumeTimer) return true; // already armed
     const waitMs = Math.max(1, this._throttleBucket.timeUntilNext(1));
-    this._throttleResumeTimer = this.system.scheduler.scheduleOnceFn(
+    this._throttleResumeTimer = this.system.scheduler.scheduleOnceFunction(
       waitMs, () => {
         this._throttleResumeTimer = null;
         if (this.state === 'running' && this.mailbox.hasMessages()) {

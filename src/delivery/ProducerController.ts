@@ -85,7 +85,7 @@ export class ProducerController<T> extends Actor<ProducerSend<T> | Acknowledgmen
       replyTo: this.self as unknown as ActorRef<Acknowledgment>,
     };
     this.options.consumer.tell(delivery);
-    inflight.timer = this.system.scheduler.scheduleOnceFn(
+    inflight.timer = this.system.scheduler.scheduleOnceFunction(
       this.resendTimeoutMs,
       () => {
         // Only resend if still un-acked.

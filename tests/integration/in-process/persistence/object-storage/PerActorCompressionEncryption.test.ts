@@ -41,11 +41,11 @@ afterEach(() => { try { rmSync(dir, { recursive: true, force: true }); } catch {
 
 /* ----------------------- PersistentActor hooks --------------------------- */
 
-type Cmd = { kind: 'inc' } | { kind: 'state' };
+type Command = { kind: 'inc' } | { kind: 'state' };
 type Event = { kind: 'incremented' };
 type State = { count: number };
 
-class CountingActor extends PersistentActor<Cmd, Event, State> {
+class CountingActor extends PersistentActor<Command, Event, State> {
   constructor(
     readonly persistenceId: string,
     private readonly _compression?: CompressionConfig,
@@ -56,7 +56,7 @@ class CountingActor extends PersistentActor<Cmd, Event, State> {
   override encryption(): EncryptionConfig | undefined { return this._encryption; }
   override snapshotPolicy() { return everyNEvents<State, Event>(1); }
   onEvent(s: State, _e: Event): State { return { count: s.count + 1 }; }
-  async onCommand(_s: State, cmd: Cmd): Promise<void> {
+  async onCommand(_s: State, cmd: Command): Promise<void> {
     if (cmd.kind === 'inc') {
       await this.persist({ kind: 'incremented' }, () => { /* no reply */ });
     }

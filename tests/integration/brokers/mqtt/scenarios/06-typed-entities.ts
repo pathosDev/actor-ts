@@ -11,7 +11,7 @@
 import { Props } from '../../../../../src/Props.js';
 import { MqttActor, type MqttMessage } from '../../../../../src/io/broker/MqttActor.js';
 import { MqttOptions } from '../../../../../src/io/broker/MqttOptions.js';
-import { spawnInbox, spawnMqtt, type MqttCtx } from '../runner.js';
+import { spawnInbox, spawnMqtt, type MqttContext } from '../runner.js';
 import { waitFor, type BrokerScenario } from '../../lib/scenario.js';
 
 interface Reading {
@@ -46,7 +46,7 @@ class ReadingActor extends MqttActor<Reading, ReadingSelf> {
   }
 }
 
-export const scenario: BrokerScenario<MqttCtx> = {
+export const scenario: BrokerScenario<MqttContext> = {
   name: 'typed entities — constructor subscribe, entity() decode, entity/raw publish',
   async run(ctx) {
     const tag = `b3/typed-${Date.now()}-${Math.random().toString(36).slice(2)}`;

@@ -4,8 +4,8 @@ import { useCallback, useEffect, useReducer, useRef } from 'react';
 import {
   type ChatMessage,
   type ClientMessage,
-  dmRoomFor,
-  isDmRoom,
+  directMessageRoomFor,
+  isDirectMessageRoom,
   isRoomName,
   type RoomName,
   type ServerMessage,
@@ -92,8 +92,8 @@ function reducer(state: State, action: Action): State {
     case 'rooms': {
       // Preserve open DMs across `rooms` broadcasts — they live only
       // in the client, not in the cluster-wide directory.
-      const dms = state.rooms.filter(isDmRoom);
-      const rooms = [...action.rooms, ...dms];
+      const directMessages = state.rooms.filter(isDirectMessageRoom);
+      const rooms = [...action.rooms, ...directMessages];
       const messagesByRoom = { ...state.messagesByRoom };
       const usersByRoom = { ...state.usersByRoom };
       const unreadByRoom = { ...state.unreadByRoom };
@@ -167,7 +167,7 @@ function reducer(state: State, action: Action): State {
         unreadByRoom: { ...state.unreadByRoom, [action.room]: 0 },
       };
     case 'open-dm': {
-      const room = dmRoomFor(action.otherUser);
+      const room = directMessageRoomFor(action.otherUser);
       if (state.rooms.includes(room)) return state;
       return {
         ...state,
@@ -210,7 +210,7 @@ export function useChat(): {
   markReadUpTo(room: RoomName, ts: number): void;
   selectRoom(room: RoomName): void;
   createRoom(name: string): boolean;
-  openDm(otherUser: string): void;
+  openDirectMessage(otherUser: string): void;
 } {
   const [state, dispatch] = useReducer(reducer, INITIAL);
   const wsRef = useRef<WebSocket | null>(null);
@@ -422,10 +422,10 @@ export function useChat(): {
    * state; subsequent `select-room` carries the protocol-level
    * `join` + `switch-active-room` for the resulting `@<other>` name.
    */
-  const openDm = useCallback((otherUser: string): void => {
+  const openDirectMessage = useCallback((otherUser: string): void => {
     dispatch({ type: 'open-dm', otherUser });
-    selectRoom(dmRoomFor(otherUser));
+    selectRoom(directMessageRoomFor(otherUser));
   }, [selectRoom]);
 
-  return { state, connect, logout, send, notifyTyping, markReadUpTo, selectRoom, createRoom, openDm };
+  return { state, connect, logout, send, notifyTyping, markReadUpTo, selectRoom, createRoom, openDirectMessage };
 }

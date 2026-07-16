@@ -128,13 +128,13 @@ export class ShardRegion<TMessage = unknown> extends Actor<TMessage | ShardingMe
     this.ensureRegistered();
 
     if (this.cfg.passivationIdleMs > 0) {
-      this.passivationTimer = this.system.scheduler.scheduleAtFixedRateFn(
+      this.passivationTimer = this.system.scheduler.scheduleAtFixedRateFunction(
         this.cfg.passivationIdleMs, this.cfg.passivationIdleMs,
         () => this.passivationSweep(),
       );
     }
 
-    this.asksSweepTimer = this.system.scheduler.scheduleAtFixedRateFn(
+    this.asksSweepTimer = this.system.scheduler.scheduleAtFixedRateFunction(
       this.asksTtlMs, this.asksTtlMs,
       () => this.sweepPendingAsks(),
     );
@@ -336,7 +336,7 @@ export class ShardRegion<TMessage = unknown> extends Actor<TMessage | ShardingMe
 
   private scheduleRegisterRetry(): void {
     this.registerTimer?.cancel();
-    this.registerTimer = this.system.scheduler.scheduleOnceFn(500, () => this.ensureRegistered());
+    this.registerTimer = this.system.scheduler.scheduleOnceFunction(500, () => this.ensureRegistered());
   }
 
   private register(): void {

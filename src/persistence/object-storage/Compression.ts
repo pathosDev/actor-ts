@@ -80,8 +80,8 @@ const gzipCompressor: Compressor = {
 
 /* ------------------------------- zstd ----------------------------------- */
 
-type ZstdCompressFn = (input: Uint8Array, level?: number) => Promise<Uint8Array>;
-type ZstdDecompressFn = (input: Uint8Array) => Promise<Uint8Array>;
+type ZstdCompressFunction = (input: Uint8Array, level?: number) => Promise<Uint8Array>;
+type ZstdDecompressFunction = (input: Uint8Array) => Promise<Uint8Array>;
 
 /**
  * zstd COMPRESS resolution — native only.  Bun (`Bun.zstdCompressSync`)
@@ -95,7 +95,7 @@ type ZstdDecompressFn = (input: Uint8Array) => Promise<Uint8Array>;
  * `{ params: { [ZSTD_c_compressionLevel]: N } }` — but the 1..22 scale
  * (default 3) is the same.
  */
-const zstdCompressLazy: Lazy<Promise<ZstdCompressFn>> = Lazy.of<Promise<ZstdCompressFn>>(async () => {
+const zstdCompressLazy: Lazy<Promise<ZstdCompressFunction>> = Lazy.of<Promise<ZstdCompressFunction>>(async () => {
   const bun = (globalThis as { Bun?: {
     zstdCompressSync?: (input: Uint8Array, opts?: { level?: number }) => Uint8Array;
   } }).Bun;
@@ -137,7 +137,7 @@ const zstdCompressLazy: Lazy<Promise<ZstdCompressFn>> = Lazy.of<Promise<ZstdComp
  * window at 2^25 (32 MB) and may fail on ultra-level (≥20) frames — see
  * `CompressionConfig.level`.
  */
-const zstdDecompressLazy: Lazy<Promise<ZstdDecompressFn>> = Lazy.of<Promise<ZstdDecompressFn>>(async () => {
+const zstdDecompressLazy: Lazy<Promise<ZstdDecompressFunction>> = Lazy.of<Promise<ZstdDecompressFunction>>(async () => {
   const bun = (globalThis as { Bun?: {
     zstdDecompressSync?: (input: Uint8Array) => Uint8Array;
   } }).Bun;

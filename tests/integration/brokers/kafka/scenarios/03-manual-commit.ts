@@ -11,7 +11,7 @@ import { Actor } from '../../../../../src/Actor.js';
 import { Props } from '../../../../../src/Props.js';
 import type { KafkaCommand, KafkaRecord } from '../../../../../src/io/broker/KafkaActor.js';
 import type { ActorRef } from '../../../../../src/ActorRef.js';
-import { spawnKafka, type KafkaCtx } from '../runner.js';
+import { spawnKafka, type KafkaContext } from '../runner.js';
 import { waitFor, type BrokerScenario } from '../../lib/scenario.js';
 
 class ManualCommitter extends Actor<KafkaRecord> {
@@ -29,7 +29,7 @@ class ManualCommitter extends Actor<KafkaRecord> {
   }
 }
 
-export const scenario: BrokerScenario<KafkaCtx> = {
+export const scenario: BrokerScenario<KafkaContext> = {
   name: 'manual-commit pump — pause-and-advance',
   async run(ctx) {
     const tag = `b4-manual-${Date.now()}-${Math.random().toString(36).slice(2)}`;

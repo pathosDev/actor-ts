@@ -26,13 +26,13 @@ import { ClusterClientReceptionistId } from '../../src/cluster/ClusterClientRece
 import { LogLevel, NoopLogger } from '../../src/Logger.js';
 import { Props } from '../../src/Props.js';
 
-interface CmdEcho { readonly kind: 'echo'; readonly payload: unknown }
-interface CmdRing { readonly kind: 'ring' }
-type Cmd = CmdEcho | CmdRing;
+interface CommandEcho { readonly kind: 'echo'; readonly payload: unknown }
+interface CommandRing { readonly kind: 'ring' }
+type Command = CommandEcho | CommandRing;
 
-class EchoActor extends Actor<Cmd> {
+class EchoActor extends Actor<Command> {
   public rings = 0;
-  override onReceive(msg: Cmd): void {
+  override onReceive(msg: Command): void {
     if (msg.kind === 'echo') {
       this.context.sender.fold(
         () => { /* no sender, drop */ },
@@ -50,7 +50,7 @@ interface NodeHandle {
   readonly host: string;
   readonly port: number;
   readonly contactPoint: string;
-  readonly echo: import('../../src/index.js').ActorRef<Cmd> & { actorImplementation: EchoActor };
+  readonly echo: import('../../src/index.js').ActorRef<Command> & { actorImplementation: EchoActor };
 }
 
 // Per-test-file jitter to avoid clashing with concurrent CI runs.

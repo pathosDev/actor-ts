@@ -14,7 +14,7 @@ export interface ConsumerControllerOptionsType<T> {
  * Fluent builder for {@link ConsumerControllerOptionsType}.  The `handler`
  * is required — pass it via {@link withHandler} before `build()`.
  *
- *     ConsumerControllerOptions.create<Cmd>()
+ *     ConsumerControllerOptions.create<Command>()
  *       .withHandler(async (body) => { … });
  */
 export class ConsumerControllerOptionsBuilder<T> extends OptionsBuilder<ConsumerControllerOptionsType<T>> {

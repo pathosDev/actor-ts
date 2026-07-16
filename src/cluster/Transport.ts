@@ -39,7 +39,7 @@ export interface Transport {
 
 /* ============================== TCP Transport ============================= */
 
-interface Conn {
+interface Connection {
   socket: TcpSocketLike | null;     // populated on `onOpen`
   peer: NodeAddress | null;         // populated on hello / hello-ack
   decoder: FrameDecoder;
@@ -55,14 +55,14 @@ interface Conn {
  * Deno — the differences in listen/connect/socket shape are absorbed by
  * the adapter.
  *
- * Per-connection state is tracked in a `WeakMap<TcpSocketLike, Conn>` —
+ * Per-connection state is tracked in a `WeakMap<TcpSocketLike, Connection>` —
  * `TcpSocketLike` is intentionally opaque and has no stash slot.
  */
 export class TcpTransport implements Transport {
   private backend: TcpBackend | null = null;
   private listener: TcpListener | null = null;
-  private byPeer = new Map<string, Conn>();
-  private bySocket = new WeakMap<TcpSocketLike, Conn>();
+  private byPeer = new Map<string, Connection>();
+  private bySocket = new WeakMap<TcpSocketLike, Connection>();
   private handler: WireHandler = () => {};
   private stopped = false;
 
@@ -138,7 +138,7 @@ export class TcpTransport implements Transport {
   /* --------------------------- internals -------------------------------- */
 
   private attachInbound(sock: TcpSocketLike): void {
-    const conn: Conn = {
+    const conn: Connection = {
       socket: sock,
       peer: null,
       decoder: new FrameDecoder(this.maxFrameBytes),
@@ -148,8 +148,8 @@ export class TcpTransport implements Transport {
     this.bySocket.set(sock, conn);
   }
 
-  private openOutbound(to: NodeAddress): Conn {
-    const conn: Conn = {
+  private openOutbound(to: NodeAddress): Connection {
+    const conn: Connection = {
       socket: null,
       peer: null,
       decoder: new FrameDecoder(this.maxFrameBytes),
@@ -159,8 +159,8 @@ export class TcpTransport implements Transport {
     this.byPeer.set(to.toString(), conn);
 
     // Kick off the connect — when it resolves, install the socket into the
-    // pre-registered Conn so subsequent `send(...)` calls can use it.  If
-    // the connect fails, drop the Conn from byPeer so the next send()
+    // pre-registered Connection so subsequent `send(...)` calls can use it.  If
+    // the connect fails, drop the Connection from byPeer so the next send()
     // retries.
     void (async (): Promise<void> => {
       try {
@@ -196,7 +196,7 @@ export class TcpTransport implements Transport {
     let conn = this.bySocket.get(sock);
     if (!conn) {
       // Bun delivers `data` before `open` completes its microtask in some
-      // edge cases — attach a fresh inbound Conn lazily.
+      // edge cases — attach a fresh inbound Connection lazily.
       conn = {
         socket: sock, peer: null, decoder: new FrameDecoder(this.maxFrameBytes),
         pending: [], outbound: false,
@@ -219,7 +219,7 @@ export class TcpTransport implements Transport {
     for (const msg of frames) this.onMessage(conn, msg);
   }
 
-  private onMessage(conn: Conn, msg: WireMessage): void {
+  private onMessage(conn: Connection, msg: WireMessage): void {
     if (msg.t === 'hello') {
       const peer = NodeAddress.fromJSON(msg.self);
       const peerKey = peer.toString();

@@ -168,7 +168,7 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
       // path serialises with subsequent cluster events.
       this.self.tell({ t: 'reconcile' } satisfies CoordinatorEvent);
     }
-    this.rebalanceTimer = this.system.scheduler.scheduleAtFixedRateFn(
+    this.rebalanceTimer = this.system.scheduler.scheduleAtFixedRateFunction(
       this.options.rebalanceIntervalMs ?? 2_000,
       this.options.rebalanceIntervalMs ?? 2_000,
       () => { if (this.isActive()) this.rebalanceTick(); },
@@ -374,7 +374,7 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
   private scheduleAcquireRetry(): void {
     const interval = this.options.acquireRetryIntervalMs ?? 5_000;
     this.acquireRetryTimer?.cancel();
-    this.acquireRetryTimer = this.system.scheduler.scheduleOnceFn(interval, () => {
+    this.acquireRetryTimer = this.system.scheduler.scheduleOnceFunction(interval, () => {
       this.self.tell({ t: 'acquire-retry' } satisfies CoordinatorEvent);
     });
   }
@@ -740,7 +740,7 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
     if (!owner) return;
 
     const timeout = this.options.handOffTimeoutMs ?? 10_000;
-    const timer = this.system.scheduler.scheduleOnceFn(timeout, () => {
+    const timer = this.system.scheduler.scheduleOnceFunction(timeout, () => {
       if (this.rebalanceInProgress.delete(shardId)) {
         this.system.log.warn(`[sharding] handoff timeout for shard ${shardId}; forcing reallocate`);
         this.shardHome.delete(shardId);

@@ -23,17 +23,17 @@ import {
 } from '../../src/index.js';
 import { runGroup } from '../lib/harness.js';
 
-type Cmd = { id: string; op: 'ping' };
+type Command = { id: string; op: 'ping' };
 
-class Entity extends Actor<Cmd> {
-  override onReceive(m: Cmd): void {
+class Entity extends Actor<Command> {
+  override onReceive(m: Command): void {
     if (m.op === 'ping') this.sender.forEach((s) => s.tell('pong'));
   }
 }
 
 let port = 43_000;
 
-async function startNode(systemName: string, p: number, seeds: string[] = []): Promise<{ sys: ActorSystem; cluster: Cluster; region: ActorRef<Cmd> }> {
+async function startNode(systemName: string, p: number, seeds: string[] = []): Promise<{ sys: ActorSystem; cluster: Cluster; region: ActorRef<Command> }> {
   const sysOptions = ActorSystemOptions.create()
     .withLogger(new NoopLogger())
     .withLogLevel(LogLevel.Off);
@@ -45,12 +45,12 @@ async function startNode(systemName: string, p: number, seeds: string[] = []): P
     .withTransport(new InMemoryTransport(new NodeAddress(systemName, 'h', p)))
     .withGossipIntervalMs(30);
   const cluster = await Cluster.join(sys, clusterOptions);
-  const shardingOptions = StartShardingOptions.create<Cmd>()
+  const shardingOptions = StartShardingOptions.create<Command>()
     .withTypeName('entity')
     .withEntityProps(Props.create(() => new Entity()))
     .withExtractEntityId((m) => m.id)
     .withNumShards(16);
-  const region = ClusterSharding.get(sys, cluster).start<Cmd>(shardingOptions);
+  const region = ClusterSharding.get(sys, cluster).start<Command>(shardingOptions);
   return { sys, cluster, region };
 }
 
@@ -64,7 +64,7 @@ async function main(): Promise<void> {
       name: 'ask entity via region',
       unit: 'ask',
       iterations: 2_000,
-      run: async () => { await ask<Cmd, string>(a.region, { id: 'same', op: 'ping' }, 1_000); },
+      run: async () => { await ask<Command, string>(a.region, { id: 'same', op: 'ping' }, 1_000); },
     },
   ]);
 
@@ -85,7 +85,7 @@ async function main(): Promise<void> {
       iterations: 1_000,
       run: async () => {
         const id = `e-${Math.floor(Math.random() * 64)}`;
-        await ask<Cmd, string>(a2.region, { id, op: 'ping' }, 1_000);
+        await ask<Command, string>(a2.region, { id, op: 'ping' }, 1_000);
       },
     },
   ]);

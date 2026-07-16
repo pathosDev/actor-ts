@@ -5,10 +5,10 @@
  * cracking open the mqtt-packet types, so the assertion is "every
  * published message arrives exactly once" — pin the count.
  */
-import { spawnInbox, spawnMqtt, type MqttCtx } from '../runner.js';
+import { spawnInbox, spawnMqtt, type MqttContext } from '../runner.js';
 import { waitFor, type BrokerScenario } from '../../lib/scenario.js';
 
-export const scenario: BrokerScenario<MqttCtx> = {
+export const scenario: BrokerScenario<MqttContext> = {
   name: 'QoS 2 — exactly-once delivery',
   async run(ctx) {
     const tag = `b3/qos2-${Date.now()}-${Math.random().toString(36).slice(2)}`;

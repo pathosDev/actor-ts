@@ -23,11 +23,11 @@ import {
   Props,
 } from '../../src/index.js';
 
-type Cmd =
+type Command =
   | { kind: 'fetch'; id: number }
   | { kind: 'crash' };
 
-class FlakyConnector extends Actor<Cmd> {
+class FlakyConnector extends Actor<Command> {
   static failuresLeft = 3;
 
   override preStart(): void {
@@ -40,7 +40,7 @@ class FlakyConnector extends Actor<Cmd> {
     console.log('  [connector] preStart succeeded — open for business');
   }
 
-  override onReceive(cmd: Cmd): void {
+  override onReceive(cmd: Command): void {
     if (cmd.kind === 'crash') {
       console.log('  [connector] crashing on purpose');
       throw new Error('runtime crash');

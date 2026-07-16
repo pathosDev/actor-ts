@@ -23,19 +23,19 @@ import {
 } from '../../src/index.js';
 import { FakeCassandraClient } from '../../tests/unit/persistence/FakeCassandraClient.js';
 
-type IncCommand = { kind: 'inc'; amount: number };
+type IncrementCommand = { kind: 'inc'; amount: number };
 type GetCommand = { kind: 'get' };
-type Cmd = IncCommand | GetCommand;
+type Command = IncrementCommand | GetCommand;
 type Event = { kind: 'incremented'; amount: number };
 
-class Counter extends PersistentActor<Cmd, Event, number> {
+class Counter extends PersistentActor<Command, Event, number> {
   override readonly persistenceId = 'counter-1';
   override initialState(): number { return 0; }
 
-  override async onCommand(state: number, cmd: Cmd): Promise<void> {
+  override async onCommand(state: number, cmd: Command): Promise<void> {
     await match(cmd)
       .with({ kind: 'get' }, () => this.onGet(state))
-      .with({ kind: 'inc' }, (c) => this.onInc(c))
+      .with({ kind: 'inc' }, (c) => this.onIncrement(c))
       .exhaustive();
   }
 
@@ -43,7 +43,7 @@ class Counter extends PersistentActor<Cmd, Event, number> {
     this.sender.forEach((s) => s.tell(state));
   }
 
-  private async onInc(c: IncCommand): Promise<void> {
+  private async onIncrement(c: IncrementCommand): Promise<void> {
     await this.persist({ kind: 'incremented', amount: c.amount }, (s) => {
       this.sender.forEach((sender) => sender.tell(s));
     });
@@ -89,7 +89,7 @@ async function main(): Promise<void> {
   await Bun.sleep(60);
   // Use ask to read the state so we see the replay worked.
   const { ask } = await import('../../src/index.js');
-  const value = await ask<Cmd, number>(counter, { kind: 'get' }, 500);
+  const value = await ask<Command, number>(counter, { kind: 'get' }, 500);
   console.log(`counter after replay: ${value}`); // expect 42
 
   await system.terminate();

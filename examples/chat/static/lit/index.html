@@ -32,8 +32,8 @@
       const MAX_RECONNECT_ATTEMPTS = 8;
       /** Mirrors `isRoomName` in shared/rooms.ts on the server. */
       const ROOM_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,31}$/;
-      const isDmRoom = (r) => typeof r === 'string' && r.startsWith('@');
-      const dmRoomFor = (u) => `@${u}`;
+      const isDirectMessageRoom = (r) => typeof r === 'string' && r.startsWith('@');
+      const directMessageRoomFor = (u) => `@${u}`;
 
       class ChatApp extends LitElement {
         static properties = {
@@ -219,8 +219,8 @@
             case 'rooms': {
               // Preserve open DMs across `rooms` broadcasts — they're
               // session-local, never published in the directory.
-              const dms = this.rooms.filter(isDmRoom);
-              this.rooms = [...m.rooms, ...dms];
+              const directMessages = this.rooms.filter(isDirectMessageRoom);
+              this.rooms = [...m.rooms, ...directMessages];
               const mb = { ...this.messagesByRoom };
               const ub = { ...this.usersByRoom };
               const ur = { ...this.unreadByRoom };
@@ -395,9 +395,9 @@
           this.ws.send(JSON.stringify({ type: 'typing', room: this.currentRoom }));
         }
 
-        openDm(otherUser) {
+        openDirectMessage(otherUser) {
           if (!otherUser || otherUser === this.username) return;
-          const room = dmRoomFor(otherUser);
+          const room = directMessageRoomFor(otherUser);
           if (!this.rooms.includes(room)) {
             this.rooms = [...this.rooms, room];
             this.messagesByRoom = { ...this.messagesByRoom, [room]: [] };
@@ -468,7 +468,7 @@
           // DM rooms don't get `users` frames — synthesize a two-person
           // list from the room name (`@<other>`) so the panel stays
           // useful in DM views.
-          if (this.currentRoom && isDmRoom(this.currentRoom) && users.length === 0) {
+          if (this.currentRoom && isDirectMessageRoom(this.currentRoom) && users.length === 0) {
             users = [this.currentRoom.slice(1), this.username];
           }
           const typingPeers = this.currentRoom
@@ -490,9 +490,9 @@
                   <h2>Rooms</h2>
                   <ul class="rooms">
                     ${this.rooms.map((r) => html`
-                      <li class=${(r === this.currentRoom ? 'active ' : '') + (isDmRoom(r) ? 'dm' : '')}
+                      <li class=${(r === this.currentRoom ? 'active ' : '') + (isDirectMessageRoom(r) ? 'dm' : '')}
                           @click=${() => this.selectRoom(r)}>
-                        <span>${isDmRoom(r) ? r : `# ${r}`}</span>
+                        <span>${isDirectMessageRoom(r) ? r : `# ${r}`}</span>
                         ${(this.unreadByRoom[r] ?? 0) > 0
                           ? html`<span class="badge">${this.unreadByRoom[r]}</span>`
                           : ''}
@@ -547,7 +547,7 @@
                       return html`
                         <li class=${isSelf ? 'self' : ''}
                             title=${isSelf ? '' : `Click to message @${u}`}
-                            @click=${isSelf ? null : () => this.openDm(u)}>
+                            @click=${isSelf ? null : () => this.openDirectMessage(u)}>
                           ${u}${isSelf ? ' (you)' : ''}
                         </li>
                       `;

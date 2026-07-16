@@ -41,7 +41,7 @@ import { DistributedPubSubId, DistributedPubSubOptions } from '../../../src/clus
 import { ReceptionistId } from '../../../src/discovery/Receptionist.js';
 import { ReceptionistOptions } from '../../../src/discovery/ReceptionistOptions.js';
 import {
-  parseArgs,
+  parseArguments,
   BASE_CLUSTER_PORT,
   MAX_NODE_SLOTS,
 } from './config.js';
@@ -54,7 +54,7 @@ import { VoicePresenceActor } from './actors/VoicePresenceActor.js';
 import { httpIngressProps } from './actors/HttpIngressActor.js';
 
 async function main(): Promise<void> {
-  const cfg = parseArgs(process.argv.slice(2));
+  const cfg = parseArguments(process.argv.slice(2));
   const SYSTEM_NAME = 'voice-cluster';
 
   // -------- 1. Cluster discovery (same shape as chat) --------

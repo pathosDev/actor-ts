@@ -31,7 +31,7 @@ import { scenario as pubsubFanout } from './scenarios/12-pubsub-fanout.js';
 import { scenario as coordinatedShutdown } from './scenarios/13-coordinated-shutdown.js';
 import { scenario as backpressure } from './scenarios/14-backpressure.js';
 import { scenario as dnsSeedDiscovery } from './scenarios/15-dns-seed-discovery.js';
-import type { ControllerCtx, Scenario } from './scenarios/types.js';
+import type { ControllerContext, Scenario } from './scenarios/types.js';
 
 const NODES = (process.env.NODES ?? '').split(',').map((s) => s.trim()).filter(Boolean);
 const MGMT_TOKEN = process.env.MGMT_TOKEN ?? 'integration-test-token';
@@ -43,7 +43,7 @@ if (NODES.length === 0) {
   process.exit(2);
 }
 
-const ctx: ControllerCtx = {
+const ctx: ControllerContext = {
   nodes: NODES,
   mgmtToken: MGMT_TOKEN,
   mgmtPort: MGMT_PORT,

@@ -152,12 +152,12 @@ describe('Behaviors.withStash', () => {
     const kit = TestKit.create('typed-stash', kitOptions);
     const probe = kit.createTestProbe<string>();
 
-    type Msg = { kind: 'ready' } | { kind: 'work'; id: number };
+    type Message = { kind: 'ready' } | { kind: 'work'; id: number };
 
     // Start "uninitialized" — stash everything until we receive a 'ready'
     // signal, then replay all buffered work in order.
-    const uninit = (stash: import('../../../src/typed/Behavior.js').StashBuffer<Msg>): Behavior<Msg> =>
-      Behaviors.receive<Msg>((_ctx, msg) => {
+    const uninit = (stash: import('../../../src/typed/Behavior.js').StashBuffer<Message>): Behavior<Message> =>
+      Behaviors.receive<Message>((_ctx, msg) => {
         if (msg.kind === 'ready') {
           stash.unstashAll();
           return ready;
@@ -166,12 +166,12 @@ describe('Behaviors.withStash', () => {
         return Behaviors.same;
       });
 
-    const ready: Behavior<Msg> = Behaviors.receive((_ctx, msg) => {
+    const ready: Behavior<Message> = Behaviors.receive((_ctx, msg) => {
       if (msg.kind === 'work') probe.tell(`work#${msg.id}`);
       return Behaviors.same;
     });
 
-    const behavior = Behaviors.withStash<Msg>(16, (stash) => uninit(stash));
+    const behavior = Behaviors.withStash<Message>(16, (stash) => uninit(stash));
     const ref = kit.system.spawnTypedAnonymous(behavior);
     ref.tell({ kind: 'work', id: 1 });
     ref.tell({ kind: 'work', id: 2 });

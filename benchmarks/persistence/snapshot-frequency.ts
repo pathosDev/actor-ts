@@ -27,24 +27,24 @@ import {
 } from '../../src/index.js';
 import { runGroup } from '../lib/harness.js';
 
-type Cmd = { kind: 'inc' } | { kind: 'get' };
+type Command = { kind: 'inc' } | { kind: 'get' };
 type Event = { delta: number };
 
-function makeCounterClass(policy: SnapshotPolicy<number, Event>): typeof PersistentActor<Cmd, Event, number> {
-  return class Counter extends PersistentActor<Cmd, Event, number> {
+function makeCounterClass(policy: SnapshotPolicy<number, Event>): typeof PersistentActor<Command, Event, number> {
+  return class Counter extends PersistentActor<Command, Event, number> {
     readonly persistenceId: string;
     constructor(pid: string) { super(); this.persistenceId = pid; }
     initialState(): number { return 0; }
     onEvent(s: number, e: Event): number { return s + e.delta; }
     override snapshotPolicy(): SnapshotPolicy<number, Event> { return policy; }
-    async onCommand(s: number, cmd: Cmd): Promise<void> {
+    async onCommand(s: number, cmd: Command): Promise<void> {
       if (cmd.kind === 'inc') {
         await this.persist({ delta: 1 }, () => {});
         return;
       }
       this.sender.forEach((r) => r.tell(s));
     }
-  } as unknown as typeof PersistentActor<Cmd, Event, number>;
+  } as unknown as typeof PersistentActor<Command, Event, number>;
 }
 
 interface Policy { label: string; unit: string; policy: SnapshotPolicy<number, Event>; }
@@ -91,7 +91,7 @@ async function main(): Promise<void> {
           for (let i = 0; i < EVENTS_PER_RUN; i++) ref.tell({ kind: 'inc' });
           // Drain by asking for the final state — returns once all persists
           // have been applied.
-          await ask<Cmd, number>(ref, { kind: 'get' }, 30_000);
+          await ask<Command, number>(ref, { kind: 'get' }, 30_000);
         },
       },
     ]);
@@ -108,7 +108,7 @@ async function main(): Promise<void> {
         run: async () => {
           const fresh = system.spawnAnonymous(Props.create(() => new Counter(pid)));
           // `get` returns the recovered state — blocks until replay finishes.
-          await ask<Cmd, number>(fresh, { kind: 'get' }, 30_000);
+          await ask<Command, number>(fresh, { kind: 'get' }, 30_000);
           fresh.stop();
         },
       },

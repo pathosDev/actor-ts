@@ -4,10 +4,10 @@
  * on subscribe.  Verifies the `retain` flag round-trips through the
  * adapter unchanged.
  */
-import { spawnInbox, spawnMqtt, type MqttCtx } from '../runner.js';
+import { spawnInbox, spawnMqtt, type MqttContext } from '../runner.js';
 import { waitFor, type BrokerScenario } from '../../lib/scenario.js';
 
-export const scenario: BrokerScenario<MqttCtx> = {
+export const scenario: BrokerScenario<MqttContext> = {
   name: 'retained messages survive subscription gap',
   async run(ctx) {
     const tag = `b3/retained-${Date.now()}-${Math.random().toString(36).slice(2)}`;

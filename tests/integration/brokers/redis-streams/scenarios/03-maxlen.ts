@@ -3,10 +3,10 @@
  * stream exceeds N.  The framework adapter sets this via the
  * `maxLenApprox` field; verifies the cap actually trims the stream.
  */
-import { spawnRedis, type RedisCtx } from '../runner.js';
+import { spawnRedis, type RedisContext } from '../runner.js';
 import { waitFor, type BrokerScenario } from '../../lib/scenario.js';
 
-export const scenario: BrokerScenario<RedisCtx> = {
+export const scenario: BrokerScenario<RedisContext> = {
   name: 'MAXLEN ~ N caps stream length',
   async run(ctx) {
     const tag = `b7:maxlen:${Date.now()}:${Math.random().toString(36).slice(2)}`;

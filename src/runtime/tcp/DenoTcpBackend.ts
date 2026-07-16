@@ -64,7 +64,7 @@ export class DenoTcpBackend implements TcpBackend {
     if (!deno) throw new Error('DenoTcpBackend: globalThis.Deno is not defined');
 
     const useTls = !!opts.tls;
-    const conn: DenoConn = useTls
+    const conn: DenoConnection = useTls
       ? await deno.connectTls({
           hostname: opts.host,
           port: opts.port,
@@ -78,7 +78,7 @@ export class DenoTcpBackend implements TcpBackend {
   }
 
   /** Wrap a Deno.Conn as a TcpSocketLike and drive its async-iterable reads. */
-  private attach(conn: DenoConn, handlers: TcpSocketHandlers): TcpSocketLike {
+  private attach(conn: DenoConnection, handlers: TcpSocketHandlers): TcpSocketLike {
     const writer = conn.writable.getWriter();
     let closed = false;
 
@@ -146,14 +146,14 @@ function isClosedListener(err: unknown): boolean {
   return /closed|Bad resource/i.test(msg);
 }
 
-interface DenoConn {
+interface DenoConnection {
   readonly readable: ReadableStream<Uint8Array>;
   readonly writable: WritableStream<Uint8Array>;
   readonly remoteAddr?: { hostname?: string; port?: number };
   close(): void;
 }
 
-interface DenoListener extends AsyncIterable<DenoConn> {
+interface DenoListener extends AsyncIterable<DenoConnection> {
   readonly addr: { port?: number };
   close(): void;
 }
@@ -161,8 +161,8 @@ interface DenoListener extends AsyncIterable<DenoConn> {
 interface DenoGlobal {
   listen(opts: { hostname: string; port: number; transport: 'tcp' }): DenoListener;
   listenTls(opts: { hostname: string; port: number; cert: string; key: string }): DenoListener;
-  connect(opts: { hostname: string; port: number; transport: 'tcp' }): Promise<DenoConn>;
+  connect(opts: { hostname: string; port: number; transport: 'tcp' }): Promise<DenoConnection>;
   connectTls(opts: {
     hostname: string; port: number; caCerts?: string[]; hostname_?: string;
-  }): Promise<DenoConn>;
+  }): Promise<DenoConnection>;
 }

@@ -42,7 +42,7 @@ import { WebsocketIngressActor } from './WebsocketIngressActor.js';
 import { buildRoutes } from '../routes.js';
 import type { ChatRoomCommand } from './ChatRoomActor.js';
 import type { ChatRoomDirectoryCommand } from './ChatRoomDirectoryActor.js';
-import type { DmChannelCommand } from './DmChannelActor.js';
+import type { DirectMessageChannelCommand } from './DirectMessageChannelActor.js';
 import type { OnlineUsersCommand } from './OnlineUsersActor.js';
 import type { ReadReceiptsCommand } from './ReadReceiptsActor.js';
 import type { SessionStore } from '../auth/sessionStore.js';
@@ -73,8 +73,8 @@ export interface HttpIngressDeps {
   readonly system: ActorSystem;
   /** Sharded ChatRoom region — local ref on any node. */
   readonly chatRoomRegion: ActorRef<ChatRoomCommand>;
-  /** Sharded DmChannel region (one per canonical participant pair). */
-  readonly dmChannelRegion: ActorRef<DmChannelCommand>;
+  /** Sharded DirectMessageChannel region (one per canonical participant pair). */
+  readonly directMessageChannelRegion: ActorRef<DirectMessageChannelCommand>;
   /** Local OnlineUsersActor on this node. */
   readonly onlineUsers: ActorRef<OnlineUsersCommand>;
   /** Local DistributedPubSub mediator on this node. */
@@ -124,7 +124,7 @@ export class HttpIngressActor extends Actor<never> {
     const ingress = system.spawn(
       Props.create(() => new WebsocketIngressActor({
         chatRoomRegion: this.deps.chatRoomRegion,
-        dmChannelRegion: this.deps.dmChannelRegion,
+        directMessageChannelRegion: this.deps.directMessageChannelRegion,
         onlineUsers: this.deps.onlineUsers,
         mediator: this.deps.mediator,
         sessions: this.deps.sessions,

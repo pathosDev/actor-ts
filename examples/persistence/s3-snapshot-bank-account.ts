@@ -49,11 +49,11 @@ import type {
 type DepositCommand = { kind: 'deposit'; amount: number };
 type WithdrawCommand = { kind: 'withdraw'; amount: number };
 type BalanceCommand = { kind: 'balance' };
-type Cmd = DepositCommand | WithdrawCommand | BalanceCommand;
+type Command = DepositCommand | WithdrawCommand | BalanceCommand;
 type Event = { kind: 'deposited' | 'withdrew'; amount: number };
 type State = { balance: number };
 
-class Account extends PersistentActor<Cmd, Event, State> {
+class Account extends PersistentActor<Command, Event, State> {
   constructor(readonly persistenceId: string) { super(); }
   initialState(): State { return { balance: 0 }; }
   onEvent(s: State, e: Event): State {
@@ -73,7 +73,7 @@ class Account extends PersistentActor<Cmd, Event, State> {
   //   }
   // Marker just to silence the unused-import lint for the type below.
   protected _enc(): EncryptionConfig | undefined { return undefined; }
-  async onCommand(s: State, cmd: Cmd): Promise<void> {
+  async onCommand(s: State, cmd: Command): Promise<void> {
     await match(cmd)
       .with({ kind: 'deposit', amount: P.number.gt(0) }, (c) => this.onDeposit(c))
       .with({ kind: 'withdraw' }, (c) => this.onWithdraw(s, c))

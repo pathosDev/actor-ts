@@ -12,14 +12,14 @@ interface Data {
   readonly retries: number;
   readonly lastConnectedAt: number | null;
 }
-type Cmd =
+type Command =
   | { kind: 'connect' }
   | { kind: 'connected' }
   | { kind: 'disconnect' }
   | { kind: 'failed'; reason: string }
   | { kind: 'retry' };
 
-class ConnectionFsm extends FSM<State, Data, Cmd> {
+class ConnectionFsm extends FSM<State, Data, Command> {
   constructor() {
     super('disconnected', { retries: 0, lastConnectedAt: null });
 

@@ -20,10 +20,10 @@ interface KV { readonly map: Record<string, string>; }
 type SetCommand = { kind: 'set'; key: string; value: string };
 type GetCommand = { kind: 'get'; key: string };
 type DumpCommand = { kind: 'dump' };
-type Cmd = SetCommand | GetCommand | DumpCommand;
+type Command = SetCommand | GetCommand | DumpCommand;
 
-class KVStore extends DurableStateActor<Cmd, KV> {
-  override async onCommand(cmd: Cmd): Promise<void> {
+class KVStore extends DurableStateActor<Command, KV> {
+  override async onCommand(cmd: Command): Promise<void> {
     await match(cmd)
       .with({ kind: 'set' }, (c) => this.onSet(c))
       .with({ kind: 'get' }, (c) => this.onGet(c))
@@ -55,7 +55,7 @@ async function main(): Promise<void> {
       .withPersistenceId('app-config')
       .withStore(store)
       .withEmptyState(() => ({ map: {} })),
-  ) as unknown as Actor<Cmd>));
+  ) as unknown as Actor<Command>));
 
   ref.tell({ kind: 'set', key: 'env', value: 'production' });
   ref.tell({ kind: 'set', key: 'version', value: '1.2.3' });
@@ -71,7 +71,7 @@ async function main(): Promise<void> {
       .withPersistenceId('app-config')
       .withStore(store)
       .withEmptyState(() => ({ map: {} })),
-  ) as unknown as Actor<Cmd>));
+  ) as unknown as Actor<Command>));
 
   ref.tell({ kind: 'dump' });
   await Bun.sleep(50);

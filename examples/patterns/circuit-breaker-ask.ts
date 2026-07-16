@@ -13,11 +13,11 @@ import {
   Props,
 } from '../../src/index.js';
 
-type Cmd = { kind: 'ping'; id: number } | { kind: 'hang' };
+type Command = { kind: 'ping'; id: number } | { kind: 'hang' };
 
 // A service that responds to ping but silently hangs on 'hang'.
-class FlakyService extends Actor<Cmd> {
-  override onReceive(cmd: Cmd): void {
+class FlakyService extends Actor<Command> {
+  override onReceive(cmd: Command): void {
     if (cmd.kind === 'ping') this.sender.forEach((__s) => __s.tell(`pong#${cmd.id}`));
     // 'hang' intentionally drops the message — ask times out.
   }

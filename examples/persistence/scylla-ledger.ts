@@ -30,7 +30,7 @@ import {
 type DepositCommand = { kind: 'deposit'; amount: number };
 type WithdrawCommand = { kind: 'withdraw'; amount: number };
 type BalanceCommand = { kind: 'balance' };
-type Cmd = DepositCommand | WithdrawCommand | BalanceCommand;
+type Command = DepositCommand | WithdrawCommand | BalanceCommand;
 
 type DepositedEvent = { kind: 'deposited'; amount: number };
 type WithdrawnEvent = { kind: 'withdrawn'; amount: number };
@@ -38,7 +38,7 @@ type Event = DepositedEvent | WithdrawnEvent;
 
 interface State { readonly balance: number; }
 
-class Account extends PersistentActor<Cmd, Event, State> {
+class Account extends PersistentActor<Command, Event, State> {
   override readonly persistenceId: string;
   override readonly snapshotPolicy = everyNEvents<State, Event>(50);
 
@@ -64,7 +64,7 @@ class Account extends PersistentActor<Cmd, Event, State> {
     return { balance: state.balance - d.amount };
   }
 
-  override async onCommand(state: State, cmd: Cmd): Promise<void> {
+  override async onCommand(state: State, cmd: Command): Promise<void> {
     await match(cmd)
       .with({ kind: 'balance' }, () => this.onBalance(state))
       .with({ kind: 'withdraw' }, (c) => this.onWithdraw(state, c))

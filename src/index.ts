@@ -567,7 +567,7 @@ export {
 } from './management/index.js';
 export type {
   ManagementRoutesOptionsType,
-  HealthCheckFn,
+  HealthCheckFunction,
   HealthCheckResult,
 } from './management/index.js';
 

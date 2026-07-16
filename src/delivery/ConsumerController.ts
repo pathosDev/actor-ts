@@ -3,7 +3,7 @@ import type { ActorRef } from '../ActorRef.js';
 import type { Acknowledgment, Delivery } from './Messages.js';
 import type { ConsumerControllerOptions, ConsumerControllerOptionsType } from './ConsumerControllerOptions.js';
 
-interface DedupState {
+interface DeduplicationState {
   /**
    * Highest seq that has been delivered AND every seq below it has also
    * been delivered — everything <= this number is implicitly a duplicate.
@@ -21,7 +21,7 @@ interface DedupState {
  */
 export class ConsumerController<T> extends Actor<Delivery<T>> {
   /** producerId → dedup state. */
-  private readonly dedup = new Map<string, DedupState>();
+  private readonly dedup = new Map<string, DeduplicationState>();
 
   public readonly options: ConsumerControllerOptionsType<T>;
 
@@ -54,13 +54,13 @@ export class ConsumerController<T> extends Actor<Delivery<T>> {
     this.sendAcknowledgment(msg);
   }
 
-  private dedupStateFor(producerId: string): DedupState {
+  private dedupStateFor(producerId: string): DeduplicationState {
     let dedupState = this.dedup.get(producerId);
     if (!dedupState) { dedupState = { contiguous: 0, above: new Set() }; this.dedup.set(producerId, dedupState); }
     return dedupState;
   }
 
-  private markDelivered(state: DedupState, seq: number): void {
+  private markDelivered(state: DeduplicationState, seq: number): void {
     if (seq === state.contiguous + 1) {
       state.contiguous++;
       // Slide the contiguous window as far up as the above-set lets us.

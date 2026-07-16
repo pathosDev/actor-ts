@@ -18,7 +18,7 @@ import {
   type JetStreamCommand,
   type JetStreamManagerLike,
   type JetStreamMessage,
-  type JetStreamMsgHandleLike,
+  type JetStreamMessageHandleLike,
   type JetStreamSubscriptionLike,
   type NatsConnectionLike,
 } from '../../../../../src/io/broker/JetStreamActor.js';
@@ -28,7 +28,7 @@ const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
 
 /* --------------------------- Mocks ----------------------------- */
 
-class MockHandle implements JetStreamMsgHandleLike {
+class MockHandle implements JetStreamMessageHandleLike {
   acked = false;
   naked = false;
   termed = false;
@@ -55,11 +55,11 @@ class MockHandle implements JetStreamMsgHandleLike {
  * handle's flags.
  */
 class MockSubscription implements JetStreamSubscriptionLike {
-  private resolveNext: ((m: IteratorResult<JetStreamMsgHandleLike>) => void) | null = null;
-  private buffer: JetStreamMsgHandleLike[] = [];
+  private resolveNext: ((m: IteratorResult<JetStreamMessageHandleLike>) => void) | null = null;
+  private buffer: JetStreamMessageHandleLike[] = [];
   destroyed = false;
 
-  push(handle: JetStreamMsgHandleLike): void {
+  push(handle: JetStreamMessageHandleLike): void {
     if (this.resolveNext) {
       const resolveNext = this.resolveNext;
       this.resolveNext = null;
@@ -78,14 +78,14 @@ class MockSubscription implements JetStreamSubscriptionLike {
     }
   }
 
-  [Symbol.asyncIterator](): AsyncIterator<JetStreamMsgHandleLike> {
+  [Symbol.asyncIterator](): AsyncIterator<JetStreamMessageHandleLike> {
     return {
-      next: (): Promise<IteratorResult<JetStreamMsgHandleLike>> => {
+      next: (): Promise<IteratorResult<JetStreamMessageHandleLike>> => {
         if (this.buffer.length > 0) {
           return Promise.resolve({ value: this.buffer.shift()!, done: false });
         }
         if (this.destroyed) return Promise.resolve({ value: undefined as never, done: true });
-        return new Promise<IteratorResult<JetStreamMsgHandleLike>>((resolveNext) => { this.resolveNext = resolveNext; });
+        return new Promise<IteratorResult<JetStreamMessageHandleLike>>((resolveNext) => { this.resolveNext = resolveNext; });
       },
     };
   }
@@ -93,14 +93,14 @@ class MockSubscription implements JetStreamSubscriptionLike {
 
 class MockPullConsumer {
   /** Queue of message batches to hand out on `fetch()`.  Test pushes via `enqueueBatch`. */
-  readonly batches: JetStreamMsgHandleLike[][] = [];
+  readonly batches: JetStreamMessageHandleLike[][] = [];
   readonly fetchCalls: Array<{ max_messages: number; expires: number }> = [];
 
-  enqueueBatch(handles: JetStreamMsgHandleLike[]): void {
+  enqueueBatch(handles: JetStreamMessageHandleLike[]): void {
     this.batches.push(handles);
   }
 
-  async fetch(opts: { max_messages: number; expires: number }): Promise<AsyncIterable<JetStreamMsgHandleLike>> {
+  async fetch(opts: { max_messages: number; expires: number }): Promise<AsyncIterable<JetStreamMessageHandleLike>> {
     this.fetchCalls.push({ max_messages: opts.max_messages, expires: opts.expires });
     const batch = this.batches.shift() ?? [];
     // Slice the batch to `max_messages` so the test can model "fewer
@@ -409,7 +409,7 @@ describe('JetStreamActor — ack/nak/term', () => {
         .withServers(['nats://fake:4222'])
         .withStream({ name: 'S', subjects: ['s.>'] })
         .withConsumer({ durable: 'd', ackWaitMs: 60 })
-        .withAckTimeout(60);
+        .withAcknowledgmentTimeout(60);
       const { mock, target } = await bootActor(sys, jetstreamOptions);
       const h1 = makeHandle(1);
       mock.mockConn.js.subscription.push(h1);

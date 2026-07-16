@@ -62,7 +62,7 @@ abstract class BaseProjectionActor<E> extends Actor<InternalTickMessage> {
   protected scheduleNextTick(): void {
     const delay = this.options.liveOptions?.pollIntervalMs ?? 1_000;
     this.pollTimer?.cancel();
-    this.pollTimer = this.system.scheduler.scheduleOnceFn(delay, () => {
+    this.pollTimer = this.system.scheduler.scheduleOnceFunction(delay, () => {
       this.self.tell(TICK);
     });
   }

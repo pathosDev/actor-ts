@@ -9,7 +9,7 @@ import { Actor } from '../../../../../src/Actor.js';
 import { Props } from '../../../../../src/Props.js';
 import type { AmqpCommand, AmqpDelivery } from '../../../../../src/io/broker/AmqpActor.js';
 import type { ActorRef } from '../../../../../src/ActorRef.js';
-import { spawnAmqp, type AmqpCtx } from '../runner.js';
+import { spawnAmqp, type AmqpContext } from '../runner.js';
 import { waitFor, type BrokerScenario } from '../../lib/scenario.js';
 
 async function declareQueue(url: string, queue: string): Promise<void> {
@@ -27,7 +27,7 @@ async function declareQueue(url: string, queue: string): Promise<void> {
   }
 }
 
-class AckOnSecondTry extends Actor<AmqpDelivery> {
+class AcknowledgmentOnSecondTry extends Actor<AmqpDelivery> {
   readonly seen: AmqpDelivery[] = [];
   ackCount = 0;
   nackCount = 0;
@@ -46,17 +46,17 @@ class AckOnSecondTry extends Actor<AmqpDelivery> {
   }
 }
 
-export const scenario: BrokerScenario<AmqpCtx> = {
+export const scenario: BrokerScenario<AmqpContext> = {
   name: 'manual ack + nack-requeue triggers re-delivery',
   async run(ctx) {
     const tag = `b5-ack-${Date.now()}-${Math.random().toString(36).slice(2)}`;
     const queue = `${tag}-queue`;
     await declareQueue(ctx.url, queue);
 
-    const handler = new AckOnSecondTry();
+    const handler = new AcknowledgmentOnSecondTry();
     const inboxRef = ctx.system.spawnAnonymous(Props.create(() => handler));
     const amqp = spawnAmqp(ctx, {
-      autoAck: false,
+      autoAcknowledge: false,
       bindings: [{
         queue,
         target: inboxRef as never,

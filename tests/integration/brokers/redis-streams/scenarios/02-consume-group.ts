@@ -4,10 +4,10 @@
  * scenario's inbox just records, doesn't ack, but the actor's
  * connect path auto-creates the group with `createIfMissing`).
  */
-import { spawnInbox, spawnRedis, type RedisCtx } from '../runner.js';
+import { spawnInbox, spawnRedis, type RedisContext } from '../runner.js';
 import { waitFor, type BrokerScenario } from '../../lib/scenario.js';
 
-export const scenario: BrokerScenario<RedisCtx> = {
+export const scenario: BrokerScenario<RedisContext> = {
   name: 'XREADGROUP — consumer group delivers entries to target',
   async run(ctx) {
     const tag = `b7:stream:${Date.now()}:${Math.random().toString(36).slice(2)}`;

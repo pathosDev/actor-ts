@@ -28,16 +28,16 @@ const HTTP_PORT = 8091;     // distinct from the default 8081 so this
                             // can be run while a real cluster is up
 const CLUSTER_PORT = 2691;
 
-interface Conn {
+interface Connection {
   ws: WebSocket;
   username: string;
   events: Array<{ kind: 'text'; data: unknown } | { kind: 'binary'; data: Uint8Array }>;
   ready: Promise<void>;
 }
 
-async function openConn(username: string, password: string): Promise<Conn> {
+async function openConnection(username: string, password: string): Promise<Connection> {
   const ws = new WebSocket(`ws://127.0.0.1:${HTTP_PORT}/ws`);
-  const events: Conn['events'] = [];
+  const events: Connection['events'] = [];
   const ready = new Promise<void>((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error(`login timeout for ${username}`)), 5000);
     ws.on('open', () => ws.send(JSON.stringify({ type: 'login', username, password })));
@@ -71,13 +71,13 @@ async function waitFor<T>(
   throw new Error(`waitFor: ${label} timed out after ${timeoutMs}ms`);
 }
 
-function clearEvents(c: Conn): void { c.events.length = 0; }
+function clearEvents(c: Connection): void { c.events.length = 0; }
 
-function findText(c: Conn, predicate: (m: any) => boolean): any | undefined {
+function findText(c: Connection, predicate: (m: any) => boolean): any | undefined {
   return c.events.find((e) => e.kind === 'text' && predicate((e as any).data))?.['data'];
 }
 
-function findBinary(c: Conn, predicate?: (b: Uint8Array) => boolean): Uint8Array | undefined {
+function findBinary(c: Connection, predicate?: (b: Uint8Array) => boolean): Uint8Array | undefined {
   const ev = c.events.find((e) => e.kind === 'binary' && (!predicate || predicate((e as any).data)));
   return ev?.['data'];
 }
@@ -110,8 +110,8 @@ async function main(): Promise<void> {
     await delay(500); // small grace for receptionist registration on the voice-session side
 
     // Two clients log in.
-    const alice = await openConn('alice', 'wonderland');
-    const bob = await openConn('bob', 'builder');
+    const alice = await openConnection('alice', 'wonderland');
+    const bob = await openConnection('bob', 'builder');
     await Promise.all([alice.ready, bob.ready]);
     console.log('login ok: alice + bob');
 

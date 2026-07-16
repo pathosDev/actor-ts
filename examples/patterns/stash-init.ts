@@ -6,11 +6,11 @@
  */
 import { Actor, ActorSystem, Props } from '../../src/index.js';
 
-type Cmd =
+type Command =
   | { kind: 'query'; q: string }
   | { kind: '__ready' };
 
-class LoadingRepo extends Actor<Cmd> {
+class LoadingRepository extends Actor<Command> {
   private ready = false;
   private data: Record<string, number> = {};
 
@@ -19,7 +19,7 @@ class LoadingRepo extends Actor<Cmd> {
     this.context.timers.startSingleTimer('load', { kind: '__ready' }, 80);
   }
 
-  override onReceive(msg: Cmd): void {
+  override onReceive(msg: Command): void {
     if (msg.kind === '__ready') {
       this.data = { alice: 1, bob: 2 };
       this.ready = true;
@@ -38,7 +38,7 @@ class LoadingRepo extends Actor<Cmd> {
 
 async function main(): Promise<void> {
   const system = ActorSystem.create('stash-demo');
-  const repo = system.spawn(Props.create(() => new LoadingRepo()), 'repo');
+  const repo = system.spawn(Props.create(() => new LoadingRepository()), 'repo');
 
   // Fire queries immediately; they pile up until the repo is warm.
   repo.tell({ kind: 'query', q: 'alice' });

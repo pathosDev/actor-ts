@@ -126,8 +126,8 @@ export type {
   NatsConnectionLike,
   JetStreamClientLike,
   JetStreamSubscriptionLike,
-  JetStreamMsgHandleLike,
-  JetStreamMsgInfoLike,
+  JetStreamMessageHandleLike,
+  JetStreamMessageInfoLike,
   JetStreamManagerLike,
 } from './JetStreamActor.js';
 export { JetStreamOptions, JetStreamOptionsBuilder, JetStreamOptionsValidator } from './JetStreamOptions.js';

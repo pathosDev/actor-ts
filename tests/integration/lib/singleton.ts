@@ -17,7 +17,7 @@ import { Actor } from '../../../src/Actor.js';
 import type { ActorRef } from '../../../src/ActorRef.js';
 
 /** Increment the singleton's counter by 1.  Fire-and-forget. */
-export interface SingletonInc {
+export interface SingletonIncrement {
   readonly kind: 'inc';
 }
 
@@ -37,7 +37,7 @@ export interface SingletonWhoReply {
   readonly value: number;
 }
 
-export type SingletonMessage = SingletonInc | SingletonWho;
+export type SingletonMessage = SingletonIncrement | SingletonWho;
 
 /**
  * `CounterSingleton` instance is spawned by the cluster's

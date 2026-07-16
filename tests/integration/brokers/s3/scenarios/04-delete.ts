@@ -4,10 +4,10 @@
  * adapter swallows the "object missing" case via S3's normal
  * idempotency.
  */
-import { backend, type S3Ctx } from '../runner.js';
+import { backend, type S3Context } from '../runner.js';
 import type { BrokerScenario } from '../../lib/scenario.js';
 
-export const scenario: BrokerScenario<S3Ctx> = {
+export const scenario: BrokerScenario<S3Context> = {
   name: 'delete is idempotent + GET-after-DELETE returns None',
   async run(ctx) {
     const store = backend(ctx);

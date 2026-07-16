@@ -11,10 +11,10 @@
  * connection.
  */
 import type { NatsMessage } from '../../../../../src/io/broker/NatsActor.js';
-import { spawnInbox, spawnNats, type NatsCtx } from '../runner.js';
+import { spawnInbox, spawnNats, type NatsContext } from '../runner.js';
 import { waitFor, type BrokerScenario } from '../../lib/scenario.js';
 
-export const scenario: BrokerScenario<NatsCtx> = {
+export const scenario: BrokerScenario<NatsContext> = {
   name: 'multiple subscribers on the same subject — fan-out',
   async run(ctx) {
     const subject = `b6.fanout.${Date.now()}.${Math.random().toString(36).slice(2)}`;

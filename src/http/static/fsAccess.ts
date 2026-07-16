@@ -12,7 +12,7 @@ export interface FileStat {
   readonly isDirectory: boolean;
 }
 
-export interface DirEntry {
+export interface DirectoryEntry {
   readonly name: string;
   readonly isDirectory: boolean;
 }
@@ -43,7 +43,7 @@ export async function realPath(path: string): Promise<string | null> {
 }
 
 /** Directory entries with a file/dir flag. */
-export async function readDirectory(path: string): Promise<DirEntry[]> {
+export async function readDirectory(path: string): Promise<DirectoryEntry[]> {
   const entries = await (await fsp()).readdir(path, { withFileTypes: true });
   return entries.map((e) => ({ name: e.name, isDirectory: e.isDirectory() }));
 }

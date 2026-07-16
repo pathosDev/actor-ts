@@ -31,10 +31,10 @@ import { MultiNodeSpec } from '../../src/testkit/MultiNodeSpec.js';
 import { MultiNodeTransport } from '../../src/testkit/internal/MultiNodeTransport.js';
 import type { ActorRef } from '../../src/ActorRef.js';
 
-type Cmd = { id: string; op: 'ping' | 'echo'; payload?: string };
+type Command = { id: string; op: 'ping' | 'echo'; payload?: string };
 
-class Entity extends Actor<Cmd> {
-  override onReceive(m: Cmd): void {
+class Entity extends Actor<Command> {
+  override onReceive(m: Command): void {
     if (m.op === 'ping') this.sender.forEach((s) => s.tell('pong'));
     else if (m.op === 'echo') this.sender.forEach((s) => s.tell(m.payload ?? ''));
   }
@@ -48,15 +48,15 @@ const TIGHT_FD = {
 
 function startRegion(
   spec: MultiNodeSpec, role: string,
-): ActorRef<Cmd> {
-  const shardingOptions = StartShardingOptions.create<Cmd>()
+): ActorRef<Command> {
+  const shardingOptions = StartShardingOptions.create<Command>()
     .withTypeName('entity')
     .withEntityProps(Props.create(() => new Entity()))
     .withExtractEntityId((m) => m.id)
     .withNumShards(16)
     .withRebalanceIntervalMs(200)
     .withHandOffTimeoutMs(1_000);
-  return spec.clusterFor(role).sharding.start<Cmd>(shardingOptions);
+  return spec.clusterFor(role).sharding.start<Command>(shardingOptions);
 }
 
 describe('multi-node sharding failover', () => {
@@ -74,7 +74,7 @@ describe('multi-node sharding failover', () => {
         spec.awaitMembers('c', 3),
       ]);
 
-      const regions: Record<'a' | 'b' | 'c', ActorRef<Cmd>> = {
+      const regions: Record<'a' | 'b' | 'c', ActorRef<Command>> = {
         a: startRegion(spec, 'a'),
         b: startRegion(spec, 'b'),
         c: startRegion(spec, 'c'),

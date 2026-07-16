@@ -25,10 +25,10 @@ type DepositedV2 = { kind: 'deposited'; amount: number; currency: 'USD' | 'EUR' 
 type DepositedV3 = { kind: 'deposited'; cents: number; currency: 'USD' | 'EUR' };            // cents + currency
 type Event = DepositedV3;
 
-type Cmd = { kind: 'deposit'; cents: number } | { kind: 'balance' };
+type Command = { kind: 'deposit'; cents: number } | { kind: 'balance' };
 type State = { balanceCents: number; currency: 'USD' | 'EUR' };
 
-class Account extends PersistentActor<Cmd, Event, State> {
+class Account extends PersistentActor<Command, Event, State> {
   constructor(readonly persistenceId: string) { super(); }
   initialState(): State { return { balanceCents: 0, currency: 'USD' }; }
   onEvent(s: State, e: Event): State {
@@ -48,7 +48,7 @@ class Account extends PersistentActor<Cmd, Event, State> {
       fromJournal: (s) => chain.upcast(s),
     };
   }
-  async onCommand(_s: State, cmd: Cmd): Promise<void> {
+  async onCommand(_s: State, cmd: Command): Promise<void> {
     if (cmd.kind === 'deposit') {
       await this.persist(
         { kind: 'deposited', cents: cmd.cents, currency: 'EUR' },

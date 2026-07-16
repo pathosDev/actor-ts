@@ -6,10 +6,10 @@
 import { Actor, ActorSystem, ActorSystemOptions, LogLevel, NoopLogger, Props, ask } from '../../src/index.js';
 import { runGroup } from '../lib/harness.js';
 
-type Msg = 'swap' | { kind: 'ping' };
+type Message = 'swap' | { kind: 'ping' };
 
-class Swapper extends Actor<Msg> {
-  override onReceive(m: Msg): void {
+class Swapper extends Actor<Message> {
+  override onReceive(m: Message): void {
     if (m === 'swap') {
       this.context.become((inner) => {
         if (inner === 'swap') this.context.unbecome();
@@ -40,9 +40,9 @@ async function main(): Promise<void> {
       opsPerIteration: 2,
       run: async () => {
         ref.tell('swap');
-        await ask<Msg, 'pong'>(ref, { kind: 'ping' }, 10_000);
+        await ask<Message, 'pong'>(ref, { kind: 'ping' }, 10_000);
         ref.tell('swap');
-        await ask<Msg, 'pong'>(ref, { kind: 'ping' }, 10_000);
+        await ask<Message, 'pong'>(ref, { kind: 'ping' }, 10_000);
       },
     },
   ]);

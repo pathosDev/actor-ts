@@ -3,7 +3,7 @@
  * the same exchange.  Verifies the framework's binding setup works
  * against a non-default exchange.
  */
-import { spawnAmqp, spawnInbox, type AmqpCtx } from '../runner.js';
+import { spawnAmqp, spawnInbox, type AmqpContext } from '../runner.js';
 import { waitFor, type BrokerScenario } from '../../lib/scenario.js';
 
 async function declareTopology(url: string, exchange: string, queues: string[]): Promise<void> {
@@ -25,7 +25,7 @@ async function declareTopology(url: string, exchange: string, queues: string[]):
   }
 }
 
-export const scenario: BrokerScenario<AmqpCtx> = {
+export const scenario: BrokerScenario<AmqpContext> = {
   name: 'fanout exchange — single publish → multiple queues',
   async run(ctx) {
     const tag = `b5-fanout-${Date.now()}-${Math.random().toString(36).slice(2)}`;

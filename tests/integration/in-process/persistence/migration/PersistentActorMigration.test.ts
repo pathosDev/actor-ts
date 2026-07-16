@@ -30,7 +30,7 @@ const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
 
 /* --------------------------- shared types -------------------------------- */
 
-type Cmd =
+type Command =
   | { kind: 'deposit'; amount: number }
   | { kind: 'balance' };
 
@@ -44,7 +44,7 @@ type StateV1 = { balance: number };
 type StateV2 = { balance: number; currency: 'USD' | 'EUR' };
 type State = StateV2;
 
-class Account extends PersistentActor<Cmd, Event, State> {
+class Account extends PersistentActor<Command, Event, State> {
   readonly persistenceId: string;
   constructor(pid: string, private readonly seen: unknown[]) {
     super();
@@ -71,7 +71,7 @@ class Account extends PersistentActor<Cmd, Event, State> {
     });
   }
   override snapshotPolicy() { return everyNEvents<State, Event>(2); }
-  async onCommand(state: State, cmd: Cmd): Promise<void> {
+  async onCommand(state: State, cmd: Command): Promise<void> {
     if (cmd.kind === 'deposit') {
       await this.persist({ kind: 'deposited', amount: cmd.amount, currency: 'EUR' },
         (s) => this.seen.push({ balance: s.balance, currency: s.currency }));
@@ -253,7 +253,7 @@ describe('PersistentActor — MigrationChain non-additive', () => {
   type DepositedV3 = { kind: 'deposited'; cents: number; currency: 'USD' | 'EUR' };
   type ChainState = { balanceCents: number; currency: 'USD' | 'EUR' };
 
-  class CentsAccount extends PersistentActor<Cmd, DepositedV3, ChainState> {
+  class CentsAccount extends PersistentActor<Command, DepositedV3, ChainState> {
     readonly persistenceId: string;
     constructor(pid: string, private readonly seen: unknown[]) { super(); this.persistenceId = pid; }
     initialState(): ChainState { return { balanceCents: 0, currency: 'USD' }; }
@@ -273,7 +273,7 @@ describe('PersistentActor — MigrationChain non-additive', () => {
         fromJournal: (s) => chain.upcast(s),
       };
     }
-    async onCommand(_state: ChainState, _cmd: Cmd): Promise<void> { /* not exercised */ }
+    async onCommand(_state: ChainState, _cmd: Command): Promise<void> { /* not exercised */ }
   }
 
   test('v1 → v2 → v3 chain converts amount to cents on recovery', async () => {
@@ -353,13 +353,13 @@ describe('PersistentActor — no-adapter regression', () => {
   test('actor without adapter behaves identically to pre-migration code', async () => {
     type RawEvent = { kind: 'deposited'; amount: number };
     type RawState = { balance: number };
-    class RawAccount extends PersistentActor<Cmd, RawEvent, RawState> {
+    class RawAccount extends PersistentActor<Command, RawEvent, RawState> {
       readonly persistenceId = 'acct-raw';
       constructor(private readonly seen: unknown[]) { super(); }
       initialState(): RawState { return { balance: 0 }; }
       onEvent(s: RawState, e: RawEvent): RawState { return { balance: s.balance + e.amount }; }
       override onRecoveryComplete(s: RawState): void { this.seen.push({ ready: s }); }
-      async onCommand(_s: RawState, cmd: Cmd): Promise<void> {
+      async onCommand(_s: RawState, cmd: Command): Promise<void> {
         if (cmd.kind === 'deposit') {
           await this.persist({ kind: 'deposited', amount: cmd.amount });
         }

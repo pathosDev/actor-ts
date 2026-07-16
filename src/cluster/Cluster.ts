@@ -396,7 +396,7 @@ export class Cluster {
       this.contactSeeds();
       // Keep retrying seed contact until self has transitioned to up,
       // covering the case where a seed hasn't started yet.
-      this.seedTimer = this.system.scheduler.scheduleAtFixedRateFn(
+      this.seedTimer = this.system.scheduler.scheduleAtFixedRateFunction(
         this.seedRetryIntervalMs, this.seedRetryIntervalMs, () => {
           const self = this.members.get(this.selfAddress.toString());
           if (!self || self.status !== 'joining') { this.seedTimer?.cancel(); this.seedTimer = null; return; }
@@ -407,7 +407,7 @@ export class Cluster {
 
     // Schedule automatic joining→weakly-up promotion if configured.
     if (this.weaklyUpAfterMs > 0) {
-      this.weaklyUpTimer = this.system.scheduler.scheduleOnceFn(
+      this.weaklyUpTimer = this.system.scheduler.scheduleOnceFunction(
         this.weaklyUpAfterMs, () => {
           const me = this.members.get(this.selfAddress.toString());
           if (me?.status === 'joining') {
@@ -418,16 +418,16 @@ export class Cluster {
       );
     }
 
-    this.gossipTimer = this.system.scheduler.scheduleAtFixedRateFn(
+    this.gossipTimer = this.system.scheduler.scheduleAtFixedRateFunction(
       this.gossipIntervalMs, this.gossipIntervalMs, () => this.gossipTick(),
     );
-    this.heartbeatTimer = this.system.scheduler.scheduleAtFixedRateFn(
+    this.heartbeatTimer = this.system.scheduler.scheduleAtFixedRateFunction(
       this.failureDetector.interval, this.failureDetector.interval, () => this.heartbeatTick(),
     );
-    this.fdTimer = this.system.scheduler.scheduleAtFixedRateFn(
+    this.fdTimer = this.system.scheduler.scheduleAtFixedRateFunction(
       this.failureDetector.interval, this.failureDetector.interval, () => this.failureDetectionTick(),
     );
-    this.tombstonePruneTimer = this.system.scheduler.scheduleAtFixedRateFn(
+    this.tombstonePruneTimer = this.system.scheduler.scheduleAtFixedRateFunction(
       this.tombstonePruneIntervalMs, this.tombstonePruneIntervalMs,
       () => this.tombstonePruneTick(),
     );
@@ -452,14 +452,14 @@ export class Cluster {
 
     match(msg)
       .with({ t: 'heartbeat' }, (m) => this.onHeartbeat(from, m))
-      .with({ t: 'heartbeat-ack' }, () => this.onHeartbeatAck())
+      .with({ t: 'heartbeat-ack' }, () => this.onHeartbeatAcknowledgment())
       .with({ t: 'gossip' }, (m) => this.onGossip(m))
       .with({ t: 'envelope' }, (m) => this.onEnvelope(from, m))
       .with({ t: 'leave' }, (m) => this.onLeave(m))
       .otherwise((m) => this.onUnhandledWire(m, from));
   }
 
-  private onHeartbeatAck(): void {
+  private onHeartbeatAcknowledgment(): void {
     /* already bumped fd */
   }
 

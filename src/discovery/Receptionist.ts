@@ -25,7 +25,7 @@ import {
 } from './ReceptionistMessages.js';
 import { ServiceKey } from './ServiceKey.js';
 
-type Msg =
+type Message =
   | Register
   | Deregister
   | Find
@@ -49,7 +49,7 @@ interface KeyEntry {
  * When a peer node leaves, every key entry it contributed is removed and
  * subscribers are notified with an updated Listing.
  */
-export class Receptionist extends Actor<Msg> {
+export class Receptionist extends Actor<Message> {
   private readonly keys = new Map<string, KeyEntry>();
   private readonly clusterRef: Cluster | null;
   private readonly gossipIntervalMs: number;
@@ -78,7 +78,7 @@ export class Receptionist extends Actor<Msg> {
           .with(P.instanceOf(MemberUp), () => this.onMemberUp())
           .otherwise(() => this.onOtherClusterEvent()),
       );
-      this.gossipTimer = this.system.scheduler.scheduleAtFixedRateFn(
+      this.gossipTimer = this.system.scheduler.scheduleAtFixedRateFunction(
         this.gossipIntervalMs, this.gossipIntervalMs, () => this.gossipTick(),
       );
     }
@@ -90,7 +90,7 @@ export class Receptionist extends Actor<Msg> {
     this.gossipTimer?.cancel();
   }
 
-  override onReceive(msg: Msg): void {
+  override onReceive(msg: Message): void {
     match(msg)
       .with(P.instanceOf(Register), (m) => this.onRegister(m))
       .with(P.instanceOf(Deregister), (m) => this.onDeregister(m))
@@ -252,13 +252,13 @@ export class Receptionist extends Actor<Msg> {
 /* -------------------------- Extension ---------------------------- */
 
 export class ReceptionistExtension {
-  private started: ActorRef<Msg> | null = null;
+  private started: ActorRef<Message> | null = null;
   constructor(private readonly system: ActorSystem) {}
 
   start(
     cluster?: Cluster | null,
     options: ReceptionistOptions = {},
-  ): ActorRef<Msg> {
+  ): ActorRef<Message> {
     if (this.started) return this.started;
     // `cluster` stays a positional arg (it's identity/wiring, not a tunable);
     // fold it onto the resolved options so the actor sees a single object.
@@ -267,14 +267,14 @@ export class ReceptionistExtension {
       cluster: cluster ?? null,
     };
     const ref = this.system.spawn(
-      Props.create<Msg>(() => new Receptionist(resolvedOptions)),
+      Props.create<Message>(() => new Receptionist(resolvedOptions)),
       'receptionist',
     );
     this.started = ref;
     return ref;
   }
 
-  get(): Option<ActorRef<Msg>> { return fromNullable(this.started); }
+  get(): Option<ActorRef<Message>> { return fromNullable(this.started); }
 }
 
 export const ReceptionistId: ExtensionId<ReceptionistExtension> = extensionId<ReceptionistExtension>(

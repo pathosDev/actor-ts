@@ -65,7 +65,7 @@ type CommitCommand = { readonly kind: 'commit'; readonly topic: string; readonly
  * restart the same offset will be re-delivered.  The optional
  * `reason` shows up in the actor's warn log.
  */
-type NackCommand = { readonly kind: 'nack'; readonly topic: string; readonly partition: number; readonly offset: string; readonly reason?: string };
+type NegativeAcknowledgmentCommand = { readonly kind: 'nack'; readonly topic: string; readonly partition: number; readonly offset: string; readonly reason?: string };
 
 /**
  * Bump the consumer's session-deadline mid-processing (#78).
@@ -88,7 +88,7 @@ export type KafkaCommand =
   | PublishCommand
   | SubscribeCommand
   | CommitCommand
-  | NackCommand
+  | NegativeAcknowledgmentCommand
   | HeartbeatCommand;
 
 /**
@@ -327,7 +327,7 @@ export class KafkaActor extends BrokerActor<KafkaOptionsType, KafkaCommand, Kafk
       .with({ kind: 'publish' },   (m) => this.onPublish(m))
       .with({ kind: 'subscribe' }, (m) => this.onSubscribe(m))
       .with({ kind: 'commit' },    (c) => void this.onCommit(c))
-      .with({ kind: 'nack' },      (c) => this.onNack(c))
+      .with({ kind: 'nack' },      (c) => this.onNegativeAcknowledgment(c))
       .with({ kind: 'heartbeat' }, (c) => void this.onHeartbeat(c))
       .exhaustive();
   }
@@ -405,7 +405,7 @@ export class KafkaActor extends BrokerActor<KafkaOptionsType, KafkaCommand, Kafk
     }
   }
 
-  private onNack(cmd: NackCommand): void {
+  private onNegativeAcknowledgment(cmd: NegativeAcknowledgmentCommand): void {
     const key = pendingKey(cmd.topic, cmd.partition, cmd.offset);
     const pending = this.pendingCommits.get(key);
     if (!pending) return;

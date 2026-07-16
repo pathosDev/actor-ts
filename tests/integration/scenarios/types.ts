@@ -2,7 +2,7 @@
  * Shared types + helpers for integration scenarios (#313).
  */
 
-export interface ControllerCtx {
+export interface ControllerContext {
   /** Hostnames of every cluster-node container, in compose-declaration order. */
   readonly nodes: ReadonlyArray<string>;
   /** Bearer token configured on every node's management HTTP. */
@@ -15,7 +15,7 @@ export interface ControllerCtx {
 
 export interface Scenario {
   readonly name: string;
-  run(ctx: ControllerCtx): Promise<void>;
+  run(ctx: ControllerContext): Promise<void>;
 }
 
 /** Sleep N ms — `Bun.sleep` is bun-only, this works on Node too. */

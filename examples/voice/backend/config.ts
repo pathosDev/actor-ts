@@ -28,7 +28,7 @@ export const BASE_CLUSTER_PORT = 2651;
 /** How many sequential ports the auto-scan considers. */
 export const MAX_NODE_SLOTS = 16;
 
-export function parseArgs(argv: ReadonlyArray<string>): VoiceNodeConfig {
+export function parseArguments(argv: ReadonlyArray<string>): VoiceNodeConfig {
   let host = '127.0.0.1';
   let port: number | null = null;
   let httpPort = 8081;

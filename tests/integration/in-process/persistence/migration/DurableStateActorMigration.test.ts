@@ -25,7 +25,7 @@ type StateV1 = { balance: number };
 type StateV2 = { balance: number; currency: 'USD' | 'EUR' };
 type State = StateV2;
 
-type Cmd =
+type Command =
   | { kind: 'deposit'; amount: number; replyTo: ActorRef }
   | { kind: 'state'; replyTo: ActorRef };
 
@@ -35,9 +35,9 @@ const stateAdapter = (): StateAdapter<State> => defaultsSnapshotAdapter<StateV2>
   defaults: { 1: { currency: 'USD' } },
 });
 
-class Account extends DurableStateActor<Cmd, State> {
+class Account extends DurableStateActor<Command, State> {
   protected override stateAdapter(): StateAdapter<State> { return stateAdapter(); }
-  override async onCommand(cmd: Cmd): Promise<void> {
+  override async onCommand(cmd: Command): Promise<void> {
     if (cmd.kind === 'deposit') {
       const next: State = { balance: this.state.balance + cmd.amount, currency: 'EUR' };
       await this.persist(next);
@@ -56,13 +56,13 @@ class StrictAccount extends Account {
   }
 }
 
-const props = (store: DurableStateStore, id: string, ctor: typeof Account = Account): Props<Cmd> =>
+const props = (store: DurableStateStore, id: string, ctor: typeof Account = Account): Props<Command> =>
   Props.create(() => {
     const durableStateOptions = DurableStateOptions.create<State>()
       .withPersistenceId(id)
       .withStore(store)
       .withEmptyState((): State => ({ balance: 0, currency: 'USD' }));
-    return new ctor(durableStateOptions) as unknown as Actor<Cmd>;
+    return new ctor(durableStateOptions) as unknown as Actor<Command>;
   });
 
 /* ----------------------------- Tests ------------------------------------ */
@@ -154,7 +154,7 @@ describe('DurableStateActor — strict mode', () => {
         .withEmptyState((): State => ({ balance: 0, currency: 'USD' }));
       const actorRef = new StrictAccount(durableStateOptions);
       captured = actorRef;
-      return actorRef as unknown as Actor<Cmd>;
+      return actorRef as unknown as Actor<Command>;
     }), 'strict');
     await sleep(30);
     const actorRef = captured! as unknown as StrictAccount;
@@ -167,8 +167,8 @@ describe('DurableStateActor — strict mode', () => {
 describe('DurableStateActor — no adapter regression', () => {
   test('actor without stateAdapter uses raw state on disk (pre-migration behaviour)', async () => {
     const store = new InMemoryDurableStateStore();
-    class RawAccount extends DurableStateActor<Cmd, StateV1> {
-      override async onCommand(cmd: Cmd): Promise<void> {
+    class RawAccount extends DurableStateActor<Command, StateV1> {
+      override async onCommand(cmd: Command): Promise<void> {
         if (cmd.kind === 'deposit') {
           await this.persist({ balance: this.state.balance + cmd.amount });
         } else {
@@ -186,7 +186,7 @@ describe('DurableStateActor — no adapter regression', () => {
         .withPersistenceId('r')
         .withStore(store)
         .withEmptyState((): StateV1 => ({ balance: 0 }));
-      return new RawAccount(durableStateOptions) as unknown as Actor<Cmd>;
+      return new RawAccount(durableStateOptions) as unknown as Actor<Command>;
     }), 'raw');
     ref.tell({ kind: 'deposit', amount: 7, replyTo: probe.ref });
     await sleep(30);

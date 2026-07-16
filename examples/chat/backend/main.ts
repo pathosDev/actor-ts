@@ -42,7 +42,7 @@ import {
 import { DistributedDataId, DistributedDataOptions } from '../../../src/crdt/index.js';
 import { DistributedPubSubId, DistributedPubSubOptions } from '../../../src/cluster/pubsub/index.js';
 import {
-  parseArgs,
+  parseArguments,
   BASE_CLUSTER_PORT,
   MAX_NODE_SLOTS,
 } from './config.js';
@@ -57,15 +57,15 @@ import {
 } from './actors/ChatRoomActor.js';
 import { ChatRoomDirectoryActor } from './actors/ChatRoomDirectoryActor.js';
 import {
-  DmChannelActor,
-  type DmChannelCommand,
-} from './actors/DmChannelActor.js';
+  DirectMessageChannelActor,
+  type DirectMessageChannelCommand,
+} from './actors/DirectMessageChannelActor.js';
 import { OnlineUsersActor } from './actors/OnlineUsersActor.js';
 import { ReadReceiptsActor } from './actors/ReadReceiptsActor.js';
 import { httpIngressProps } from './actors/HttpIngressActor.js';
 
 async function main(): Promise<void> {
-  const cfg = parseArgs(process.argv.slice(2));
+  const cfg = parseArguments(process.argv.slice(2));
   const SYSTEM_NAME = 'chat-cluster';
 
   // -------- 1. Cluster discovery --------
@@ -179,14 +179,14 @@ async function main(): Promise<void> {
       .withExtractEntityId((msg) => msg.room)
       .withNumShards(16));
 
-  // -------- 6b. ClusterSharding: one DmChannelActor per pair --------
+  // -------- 6b. ClusterSharding: one DirectMessageChannelActor per pair --------
   // Same sharding shape, separate typeName so the two entity sets
   // live in disjoint shard regions.  `entityId = pairId` — see
-  // `shared/dm.ts` for the canonicalization.  Sixteen shards matches
+  // `shared/directMessage.ts` for the canonicalization.  Sixteen shards matches
   // the chat-room region; the DM workload is similar (write-heavy,
   // small per-entity state) so a single tuning value covers both.
-  const dmChannelRegion = sharding.start('DmChannel', DmChannelActor,
-    StartShardingOptions.create<DmChannelCommand>()
+  const directMessageChannelRegion = sharding.start('DmChannel', DirectMessageChannelActor,
+    StartShardingOptions.create<DirectMessageChannelCommand>()
       .withExtractEntityId((msg) => msg.pairId)
       .withNumShards(16));
 
@@ -254,7 +254,7 @@ async function main(): Promise<void> {
       staticDir,
       system,
       chatRoomRegion,
-      dmChannelRegion,
+      directMessageChannelRegion,
       onlineUsers,
       mediator,
       sessions,

@@ -78,7 +78,7 @@ export class DistributedPubSubMediator extends Actor<
         .otherwise(() => this.onOtherClusterEvent()),
     );
     const interval = this.options.gossipIntervalMs ?? DEFAULT_GOSSIP_INTERVAL_MS;
-    this.gossipTimer = this.system.scheduler.scheduleAtFixedRateFn(
+    this.gossipTimer = this.system.scheduler.scheduleAtFixedRateFunction(
       interval, interval, () => this.gossipTick(),
     );
   }

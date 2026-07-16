@@ -24,11 +24,11 @@ import { type Lease } from '../../../../../src/coordination/Lease.js';
 
 const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
 
-type Cmd = { kind: 'add'; n: number } | { kind: 'getValue' };
+type Command = { kind: 'add'; n: number } | { kind: 'getValue' };
 type Event = { kind: 'added'; n: number };
 type State = { value: number };
 
-class LeasedCounter extends ReplicatedEventSourcedActor<Cmd, Event, State> {
+class LeasedCounter extends ReplicatedEventSourcedActor<Command, Event, State> {
   readonly persistenceId: string;
   readonly replicaId: string;
   /** Captured loss callbacks for assertions. */
@@ -53,7 +53,7 @@ class LeasedCounter extends ReplicatedEventSourcedActor<Cmd, Event, State> {
   override lease(): Lease | null { return this.leaseInstance; }
   override onLeaseLost(reason: string): void { this.leaseLossEvents.push(reason); }
 
-  async onCommand(s: State, c: Cmd): Promise<void> {
+  async onCommand(s: State, c: Command): Promise<void> {
     if (c.kind === 'getValue') {
       this.sender.toNullable()?.tell(s.value);
       return;
@@ -103,8 +103,8 @@ describe('ReplicatedEventSourcedActor — optional Lease (#89)', () => {
 
       // Drive a few persists straight through.
       const ref = actor!.self;
-      ref.tell({ kind: 'add', n: 5 } as Cmd);
-      ref.tell({ kind: 'add', n: 7 } as Cmd);
+      ref.tell({ kind: 'add', n: 5 } as Command);
+      ref.tell({ kind: 'add', n: 7 } as Command);
       await sleep(50);
       expect(actor!.state.value).toBe(12);
       expect(actor!.lastPersistError).toBeNull();
@@ -154,13 +154,13 @@ describe('ReplicatedEventSourcedActor — optional Lease (#89)', () => {
       expect(b!.isLeaseHolder).toBe(false);
 
       // Holder writes → state advances.
-      a!.self.tell({ kind: 'add', n: 10 } as Cmd);
+      a!.self.tell({ kind: 'add', n: 10 } as Command);
       await sleep(40);
       expect(a!.state.value).toBe(10);
       expect(a!.lastPersistError).toBeNull();
 
       // Observer writes → onCommand catches a throw, state stays put.
-      b!.self.tell({ kind: 'add', n: 99 } as Cmd);
+      b!.self.tell({ kind: 'add', n: 99 } as Command);
       await sleep(40);
       expect(b!.state.value).toBe(0);
       expect(b!.lastPersistError).not.toBeNull();
@@ -204,7 +204,7 @@ describe('ReplicatedEventSourcedActor — optional Lease (#89)', () => {
       expect(a!.leaseLossEvents).toEqual(['lease lost during renewal']);
 
       // Persist now throws.
-      a!.self.tell({ kind: 'add', n: 1 } as Cmd);
+      a!.self.tell({ kind: 'add', n: 1 } as Command);
       await sleep(40);
       expect(a!.lastPersistError).not.toBeNull();
       expect(a!.state.value).toBe(0);

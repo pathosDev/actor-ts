@@ -31,10 +31,10 @@ import { MultiNodeSpec } from '../../src/testkit/MultiNodeSpec.js';
 import { MultiNodeTransport } from '../../src/testkit/internal/MultiNodeTransport.js';
 import type { ActorRef } from '../../src/ActorRef.js';
 
-type Cmd = { id: string; op: 'ping' | 'echo'; payload?: string };
+type Command = { id: string; op: 'ping' | 'echo'; payload?: string };
 
-class Entity extends Actor<Cmd> {
-  override onReceive(m: Cmd): void {
+class Entity extends Actor<Command> {
+  override onReceive(m: Command): void {
     if (m.op === 'ping') this.sender.forEach((s) => s.tell('pong'));
     else if (m.op === 'echo') this.sender.forEach((s) => s.tell(m.payload ?? ''));
   }
@@ -61,15 +61,15 @@ describe('multi-node sharding rebalance', () => {
         spec.awaitMembers('c', 3),
       ]);
 
-      const shardingOptions = StartShardingOptions.create<Cmd>()
+      const shardingOptions = StartShardingOptions.create<Command>()
         .withTypeName('entity')
         .withEntityProps(Props.create(() => new Entity()))
         .withExtractEntityId((m) => m.id)
         .withNumShards(16);
-      const regions: Record<'a' | 'b' | 'c', ActorRef<Cmd>> = {
-        a: spec.clusterFor('a').sharding.start<Cmd>(shardingOptions),
-        b: spec.clusterFor('b').sharding.start<Cmd>(shardingOptions),
-        c: spec.clusterFor('c').sharding.start<Cmd>(shardingOptions),
+      const regions: Record<'a' | 'b' | 'c', ActorRef<Command>> = {
+        a: spec.clusterFor('a').sharding.start<Command>(shardingOptions),
+        b: spec.clusterFor('b').sharding.start<Command>(shardingOptions),
+        c: spec.clusterFor('c').sharding.start<Command>(shardingOptions),
       };
 
       // Let the coordinator finish initial allocation.  A short sleep

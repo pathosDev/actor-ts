@@ -24,10 +24,10 @@ export function isRoomName(s: unknown): s is RoomName {
   return typeof s === 'string' && ROOM_NAME_PATTERN.test(s);
 }
 /** Since #100, `@<username>` is a DM "room" — a virtual room name. */
-export function isDmRoom(r: unknown): r is RoomName {
+export function isDirectMessageRoom(r: unknown): r is RoomName {
   return typeof r === 'string' && r.startsWith('@') && r.length > 1;
 }
-export const dmRoomFor = (otherUser: string): RoomName => `@${otherUser}`;
+export const directMessageRoomFor = (otherUser: string): RoomName => `@${otherUser}`;
 
 export const WS_PATH = '/ws';
 

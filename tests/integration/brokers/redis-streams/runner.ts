@@ -9,12 +9,12 @@ import { Props } from '../../../../src/Props.js';
 import { RedisStreamsActor, type RedisStreamEntry } from '../../../../src/io/broker/RedisStreamsActor.js';
 import { RedisStreamsOptions, RedisStreamsOptionsBuilder } from '../../../../src/io/broker/RedisStreamsOptions.js';
 import { waitForPort } from '../lib/wait-for-port.js';
-import { runScenarios, type BrokerScenario, type BrokerScenarioCtx } from '../lib/scenario.js';
+import { runScenarios, type BrokerScenario, type BrokerScenarioContext } from '../lib/scenario.js';
 import { scenario as produceScenario } from './scenarios/01-produce.js';
 import { scenario as consumeScenario } from './scenarios/02-consume-group.js';
 import { scenario as maxlenScenario } from './scenarios/03-maxlen.js';
 
-export interface RedisCtx extends BrokerScenarioCtx {
+export interface RedisContext extends BrokerScenarioContext {
   readonly url: string;
   readonly system: ActorSystem;
 }
@@ -41,10 +41,10 @@ async function main(): Promise<void> {
     .withLogger(new JsonLogger()).withLogLevel(LogLevel.Info));
   process.on('SIGTERM', () => { void system.terminate(); });
 
-  const ctx: RedisCtx = { env: process.env, url, system };
+  const ctx: RedisContext = { env: process.env, url, system };
 
   try {
-    const scenarios: BrokerScenario<RedisCtx>[] = [
+    const scenarios: BrokerScenario<RedisContext>[] = [
       produceScenario,
       consumeScenario,
       maxlenScenario,
@@ -61,7 +61,7 @@ export interface RedisSpawnOpts {
   target?: ReturnType<ActorSystem['spawnAnonymous']>;
 }
 
-export function spawnRedis(ctx: RedisCtx, opts: RedisSpawnOpts = {}): ReturnType<ActorSystem['spawnAnonymous']> {
+export function spawnRedis(ctx: RedisContext, opts: RedisSpawnOpts = {}): ReturnType<ActorSystem['spawnAnonymous']> {
   const builder = RedisStreamsOptions.create()
     .withUrl(ctx.url)
     .withBlockMs(500);
@@ -72,7 +72,7 @@ export function spawnRedis(ctx: RedisCtx, opts: RedisSpawnOpts = {}): ReturnType
   return ctx.system.spawnAnonymous(Props.create(() => actor));
 }
 
-export function spawnInbox(ctx: RedisCtx): {
+export function spawnInbox(ctx: RedisContext): {
   ref: ReturnType<ActorSystem['spawnAnonymous']>; inbox: InboxActor;
 } {
   const inbox = new InboxActor();

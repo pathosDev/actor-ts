@@ -9,7 +9,7 @@ import type { GrpcServerOptions, GrpcServerOptionsType } from './GrpcServerOptio
 /**
  * gRPC handler descriptor — paired with a method name when the server
  * actor is constructed.  Each handler is a target actor that receives
- * `GrpcCall<Req, Res>` envelopes.
+ * `GrpcCall<Request, Response>` envelopes.
  */
 export type GrpcHandler =
   | { readonly kind: 'unary'; readonly target: ActorRef<GrpcUnaryCall> }
@@ -198,7 +198,7 @@ export class GrpcServerActor extends Actor<unknown> {
       };
     }
     if (handler.kind === 'serverStream') {
-      return (call: GrpcServerStreamReq): void => {
+      return (call: GrpcServerStreamRequest): void => {
         let ended = false;
         const userCall: GrpcServerStreamCall = {
           method: methodName,
@@ -253,7 +253,7 @@ interface GrpcUnaryCb {
   (err: { code: number; message: string } | null, response?: unknown): void;
 }
 
-interface GrpcServerStreamReq {
+interface GrpcServerStreamRequest {
   request: unknown;
   metadata?: { get?: (key: string) => string[] };
   write(chunk: unknown): void;

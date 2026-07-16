@@ -27,7 +27,7 @@
  *     .on('reset',       () => ({ count: 0 }))
  *     .build();
  *
- *   class CounterActor extends PersistentActor<Cmd, Event, State> {
+ *   class CounterActor extends PersistentActor<Command, Event, State> {
  *     override onEvent = onEvent;
  *     // ... rest of the actor ...
  *   }

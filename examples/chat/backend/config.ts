@@ -52,7 +52,7 @@ export const MAX_NODE_SLOTS = 16;
 
 const DEFAULT_DATA_DIR = path.join(process.cwd(), 'examples', 'chat', 'data');
 
-export function parseArgs(argv: ReadonlyArray<string>): ChatNodeConfig {
+export function parseArguments(argv: ReadonlyArray<string>): ChatNodeConfig {
   let host = '127.0.0.1';
   let port: number | null = null;
   let httpPort = 8080;

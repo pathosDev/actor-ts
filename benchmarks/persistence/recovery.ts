@@ -19,15 +19,15 @@ import {
 } from '../../src/index.js';
 import { runGroup } from '../lib/harness.js';
 
-type Cmd = 'get';
+type Command = 'get';
 type Event = { delta: number };
 
-class Counter extends PersistentActor<Cmd, Event, number> {
+class Counter extends PersistentActor<Command, Event, number> {
   constructor(readonly persistenceId: string) { super(); }
   initialState(): number { return 0; }
   onEvent(s: number, e: Event): number { return s + e.delta; }
   override snapshotPolicy = everyNEvents<number, Event>(100);
-  async onCommand(s: number, _cmd: Cmd): Promise<void> {
+  async onCommand(s: number, _cmd: Command): Promise<void> {
     this.sender.forEach((r) => r.tell(s));
   }
 }
@@ -50,7 +50,7 @@ async function main(): Promise<void> {
 
   const recovery = (pid: string) => async (): Promise<void> => {
     const ref = system.spawnAnonymous(Props.create(() => new Counter(pid)));
-    await ask<Cmd, number>(ref, 'get', 30_000);
+    await ask<Command, number>(ref, 'get', 30_000);
     ref.stop();
   };
 

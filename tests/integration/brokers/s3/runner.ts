@@ -9,14 +9,14 @@
 import { S3ObjectStorageBackend } from '../../../../src/persistence/object-storage/S3ObjectStorageBackend.js';
 import { S3ObjectStorageOptions } from '../../../../src/persistence/object-storage/S3ObjectStorageOptions.js';
 import { waitForPort } from '../lib/wait-for-port.js';
-import { runScenarios, type BrokerScenario, type BrokerScenarioCtx } from '../lib/scenario.js';
+import { runScenarios, type BrokerScenario, type BrokerScenarioContext } from '../lib/scenario.js';
 import { scenario as putGetScenario } from './scenarios/01-put-get.js';
 import { scenario as listScenario } from './scenarios/02-list.js';
 import { scenario as casScenario } from './scenarios/03-cas.js';
 import { scenario as deleteScenario } from './scenarios/04-delete.js';
 import { scenario as sseScenario } from './scenarios/05-sse.js';
 
-export interface S3Ctx extends BrokerScenarioCtx {
+export interface S3Context extends BrokerScenarioContext {
   readonly endpoint: string;
   readonly accessKeyId: string;
   readonly secretAccessKey: string;
@@ -31,7 +31,7 @@ function requireEnv(name: string): string {
   return value;
 }
 
-async function ensureBucket(ctx: S3Ctx): Promise<void> {
+async function ensureBucket(ctx: S3Context): Promise<void> {
   // Create the bucket via a direct PUT to MinIO — the SDK helper
   // exists too, but we want this runner self-contained.  MinIO
   // returns 200/409 (already exists), both acceptable.
@@ -67,7 +67,7 @@ async function ensureBucket(ctx: S3Ctx): Promise<void> {
 }
 
 async function main(): Promise<void> {
-  const ctx: S3Ctx = {
+  const ctx: S3Context = {
     env: process.env,
     endpoint: requireEnv('S3_ENDPOINT'),
     accessKeyId: requireEnv('S3_ACCESS_KEY'),
@@ -88,7 +88,7 @@ async function main(): Promise<void> {
 
   await ensureBucket(ctx);
 
-  const scenarios: BrokerScenario<S3Ctx>[] = [
+  const scenarios: BrokerScenario<S3Context>[] = [
     putGetScenario,
     listScenario,
     casScenario,
@@ -99,7 +99,7 @@ async function main(): Promise<void> {
 }
 
 /** Build a fresh backend per scenario — scenario isolation. */
-export function backend(ctx: S3Ctx): S3ObjectStorageBackend {
+export function backend(ctx: S3Context): S3ObjectStorageBackend {
   return new S3ObjectStorageBackend(
     S3ObjectStorageOptions.create()
       .withBucket(ctx.bucket)

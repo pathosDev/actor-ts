@@ -100,7 +100,7 @@ export class ShardedDaemonProcess {
     const livenessIntervalMs = resolvedOptions.livenessIntervalMs ?? 30_000;
     let livenessTimer: Cancellable | null = null;
     if (livenessIntervalMs > 0) {
-      livenessTimer = system.scheduler.scheduleAtFixedRateFn(
+      livenessTimer = system.scheduler.scheduleAtFixedRateFunction(
         livenessIntervalMs, livenessIntervalMs, wakeAll,
       );
     }

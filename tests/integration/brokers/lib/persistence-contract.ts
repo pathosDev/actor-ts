@@ -13,9 +13,9 @@
 import type { Journal } from '../../../../src/persistence/Journal.js';
 import type { SnapshotStore } from '../../../../src/persistence/SnapshotStore.js';
 import type { DurableStateStore } from '../../../../src/persistence/DurableStateStore.js';
-import type { BrokerScenario, BrokerScenarioCtx } from './scenario.js';
+import type { BrokerScenario, BrokerScenarioContext } from './scenario.js';
 
-export interface SqlPersistenceCtx extends BrokerScenarioCtx {
+export interface SqlPersistenceContext extends BrokerScenarioContext {
   /** Short label — used in messages and to namespace persistence-ids ("pg", "mariadb"). */
   readonly label: string;
   readonly journal: Journal;
@@ -40,7 +40,7 @@ async function expectThrows(fn: () => Promise<unknown>, name: string, what: stri
   throw new Error(`${what}: expected ${name} to be thrown, but nothing was`);
 }
 
-export function sqlPersistenceScenarios(): BrokerScenario<SqlPersistenceCtx>[] {
+export function sqlPersistenceScenarios(): BrokerScenario<SqlPersistenceContext>[] {
   return [
     {
       name: 'journal — append / read / range / concurrency / tags / delete / ids',

@@ -67,10 +67,10 @@ async function stop(n: Node): Promise<void> {
  */
 describe('ActorRef serialisation across cluster nodes', () => {
   test('a LocalActorRef embedded in the body is reconstructed as a usable RemoteActorRef on the other side', async () => {
-    type Cmd = { id: string; replyTo: ActorRef<string> };
+    type Command = { id: string; replyTo: ActorRef<string> };
 
-    class Echo extends Actor<Cmd> {
-      override onReceive(m: Cmd): void {
+    class Echo extends Actor<Command> {
+      override onReceive(m: Command): void {
         m.replyTo.tell(`pong:${m.id}`);
       }
     }
@@ -89,20 +89,20 @@ describe('ActorRef serialisation across cluster nodes', () => {
 
     // Both nodes register the sharded type with `role: 'hoster'` so shards
     // can ONLY be allocated to node A (which carries that role).
-    const aShardingOptions = StartShardingOptions.create<Cmd>()
+    const aShardingOptions = StartShardingOptions.create<Command>()
       .withTypeName('echo')
       .withRole('hoster')
       .withEntityProps(Props.create(() => new Echo()))
       .withExtractEntityId((m) => m.id)
       .withNumShards(16);
-    nodeA.cluster.sharding.start<Cmd>(aShardingOptions);
-    const bShardingOptions = StartShardingOptions.create<Cmd>()
+    nodeA.cluster.sharding.start<Command>(aShardingOptions);
+    const bShardingOptions = StartShardingOptions.create<Command>()
       .withTypeName('echo')
       .withRole('hoster')
       .withEntityProps(Props.create(() => new Echo()))
       .withExtractEntityId((m) => m.id)
       .withNumShards(16);
-    const bRegion = nodeB.cluster.sharding.start<Cmd>(bShardingOptions);
+    const bRegion = nodeB.cluster.sharding.start<Command>(bShardingOptions);
 
     // Probe lives on node B — its LocalActorRef is therefore OWNED by B.
     const probeOnB = nodeB.sys.spawn(Props.create(() => new Probe()), 'probe');
@@ -133,12 +133,12 @@ describe('ActorRef serialisation across cluster nodes', () => {
   });
 
   test('already-remote refs in the body keep their original target on the other side', async () => {
-    type Cmd = { stashRef: ActorRef<string> };
+    type Command = { stashRef: ActorRef<string> };
 
     // This actor doesn't care about the ref — it just captures what it saw.
     const seen: Array<ActorRef<string>> = [];
-    class Capturer extends Actor<Cmd> {
-      override onReceive(m: Cmd): void { seen.push(m.stashRef); }
+    class Capturer extends Actor<Command> {
+      override onReceive(m: Command): void { seen.push(m.stashRef); }
     }
 
     const sysName = 'ref-remote';
@@ -147,20 +147,20 @@ describe('ActorRef serialisation across cluster nodes', () => {
 
     await waitFor(() => nodeA.cluster.upMembers().length === 2);
 
-    const aShardingOptions = StartShardingOptions.create<Cmd>()
+    const aShardingOptions = StartShardingOptions.create<Command>()
       .withTypeName('cap')
       .withRole('hoster')
       .withEntityProps(Props.create(() => new Capturer()))
       .withExtractEntityId(() => 'only')
       .withNumShards(4);
-    nodeA.cluster.sharding.start<Cmd>(aShardingOptions);
-    const bShardingOptions = StartShardingOptions.create<Cmd>()
+    nodeA.cluster.sharding.start<Command>(aShardingOptions);
+    const bShardingOptions = StartShardingOptions.create<Command>()
       .withTypeName('cap')
       .withRole('hoster')
       .withEntityProps(Props.create(() => new Capturer()))
       .withExtractEntityId(() => 'only')
       .withNumShards(4);
-    const bRegion = nodeB.cluster.sharding.start<Cmd>(bShardingOptions);
+    const bRegion = nodeB.cluster.sharding.start<Command>(bShardingOptions);
 
     await sleep(300);
 
@@ -187,11 +187,11 @@ describe('ActorRef serialisation across cluster nodes', () => {
   });
 
   test('Nobody in the body round-trips back to Nobody', async () => {
-    type Cmd = { attempt: ActorRef<string> };
+    type Command = { attempt: ActorRef<string> };
     const observed: { nobody: boolean } = { nobody: false };
 
-    class Checker extends Actor<Cmd> {
-      override onReceive(m: Cmd): void {
+    class Checker extends Actor<Command> {
+      override onReceive(m: Command): void {
         observed.nobody = m.attempt.path.systemName === '<nobody>';
       }
     }
@@ -202,20 +202,20 @@ describe('ActorRef serialisation across cluster nodes', () => {
 
     await waitFor(() => nodeA.cluster.upMembers().length === 2);
 
-    const aShardingOptions = StartShardingOptions.create<Cmd>()
+    const aShardingOptions = StartShardingOptions.create<Command>()
       .withTypeName('checker')
       .withRole('hoster')
       .withEntityProps(Props.create(() => new Checker()))
       .withExtractEntityId(() => 'only')
       .withNumShards(4);
-    nodeA.cluster.sharding.start<Cmd>(aShardingOptions);
-    const bShardingOptions = StartShardingOptions.create<Cmd>()
+    nodeA.cluster.sharding.start<Command>(aShardingOptions);
+    const bShardingOptions = StartShardingOptions.create<Command>()
       .withTypeName('checker')
       .withRole('hoster')
       .withEntityProps(Props.create(() => new Checker()))
       .withExtractEntityId(() => 'only')
       .withNumShards(4);
-    const bRegion = nodeB.cluster.sharding.start<Cmd>(bShardingOptions);
+    const bRegion = nodeB.cluster.sharding.start<Command>(bShardingOptions);
 
     await sleep(300);
     bRegion.tell({ attempt: Nobody });

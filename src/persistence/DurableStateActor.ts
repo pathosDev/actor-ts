@@ -22,7 +22,7 @@ import type { DurableStateOptions, DurableStateOptionsType } from './DurableStat
  * `this.state` to read, `this.persist(next)` to write.  Writes are
  * optimistic — concurrent writers receive `DurableStateConcurrencyError`.
  */
-export abstract class DurableStateActor<Cmd, S> extends Actor<Cmd> {
+export abstract class DurableStateActor<Command, S> extends Actor<Command> {
   private _record: DurableStateRecord<S> | null = null;
   private _persisting: Promise<void> | null = null;
   public readonly options: DurableStateOptionsType<S>;
@@ -83,13 +83,13 @@ export abstract class DurableStateActor<Cmd, S> extends Actor<Cmd> {
     };
   }
 
-  override async onReceive(cmd: Cmd): Promise<void> {
+  override async onReceive(cmd: Command): Promise<void> {
     if (this._persisting) await this._persisting;
     await this.onCommand(cmd);
   }
 
   /** User handler — invoked once `preStart` has loaded the record. */
-  abstract onCommand(cmd: Cmd): void | Promise<void>;
+  abstract onCommand(cmd: Command): void | Promise<void>;
 
   /** Persist the new state atomically; rejects on concurrency conflict. */
   protected async persist(next: S): Promise<DurableStateRecord<S>> {

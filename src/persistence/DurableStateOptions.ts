@@ -13,7 +13,7 @@ export interface DurableStateOptionsType<S> {
  * `DurableStateActor` subclass takes a `DurableStateOptions<S>` and hands
  * it to `super(...)`:
  *
- *     class KVActor extends DurableStateActor<Cmd, KV> {
+ *     class KVActor extends DurableStateActor<Command, KV> {
  *       constructor(store: DurableStateStore) {
  *         super(DurableStateOptions.create<KV>()
  *           .withPersistenceId('kv-1')

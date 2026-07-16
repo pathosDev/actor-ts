@@ -18,9 +18,9 @@ import type {
 import { TestProbe } from '../../../src/testkit/TestProbe.js';
 import { TestProbeOptions } from '../../../src/testkit/TestProbeOptions.js';
 
-interface SubscribeArgs { readonly topic: string }
-interface PublishArgs { readonly topic: string; readonly message: unknown }
-interface DrainArgs { readonly topic: string }
+interface SubscribeArguments { readonly topic: string }
+interface PublishArguments { readonly topic: string; readonly message: unknown }
+interface DrainArguments { readonly topic: string }
 
 interface ScenarioState {
   readonly mediator: ActorRef<unknown>;
@@ -46,7 +46,7 @@ export const commands: ScenarioModule['commands'] = {
   /** Subscribe a fresh probe to `topic`.  Returns when the
    *  Subscribe message has been enqueued. */
   subscribe(args, ctx): void {
-    const { topic } = args as SubscribeArgs;
+    const { topic } = args as SubscribeArguments;
     const state = getState(ctx);
     const probeOptions = TestProbeOptions.create()
       .withName(`probe-${topic}`);
@@ -57,7 +57,7 @@ export const commands: ScenarioModule['commands'] = {
 
   /** Publish a message on `topic`. */
   publish(args, ctx): void {
-    const { topic, message } = args as PublishArgs;
+    const { topic, message } = args as PublishArguments;
     const state = getState(ctx);
     state.mediator.tell(new Publish(topic, message) as never);
   },
@@ -65,7 +65,7 @@ export const commands: ScenarioModule['commands'] = {
   /** Drain every received message from `topic`'s probe.  Returns the
    *  list of messages collected so far + clears the inbox. */
   async drain(args, ctx): Promise<unknown[]> {
-    const { topic } = args as DrainArgs;
+    const { topic } = args as DrainArguments;
     const state = getState(ctx);
     const probe = state.probesByTopic.get(topic);
     if (!probe) return [];

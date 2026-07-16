@@ -22,7 +22,7 @@
  * `test:integration` from #313.
  */
 
-export interface BrokerScenarioCtx {
+export interface BrokerScenarioContext {
   /**
    * Backend-specific connection info.  Each suite has its own shape
    * (S3 endpoint URL + credentials; MQTT broker URL + creds;
@@ -32,9 +32,9 @@ export interface BrokerScenarioCtx {
   readonly env: Readonly<Record<string, string | undefined>>;
 }
 
-export interface BrokerScenario<Ctx extends BrokerScenarioCtx = BrokerScenarioCtx> {
+export interface BrokerScenario<Context extends BrokerScenarioContext = BrokerScenarioContext> {
   readonly name: string;
-  run(ctx: Ctx): Promise<void>;
+  run(ctx: Context): Promise<void>;
 }
 
 /**
@@ -46,9 +46,9 @@ export interface BrokerScenario<Ctx extends BrokerScenarioCtx = BrokerScenarioCt
  * total scenario count per broker is small (~5), so the wall-clock
  * cost is bounded.
  */
-export async function runScenarios<Ctx extends BrokerScenarioCtx>(
-  scenarios: ReadonlyArray<BrokerScenario<Ctx>>,
-  ctx: Ctx,
+export async function runScenarios<Context extends BrokerScenarioContext>(
+  scenarios: ReadonlyArray<BrokerScenario<Context>>,
+  ctx: Context,
 ): Promise<void> {
   console.log(`[runner] ${scenarios.length} scenario(s) against env ${JSON.stringify(redact(ctx.env))}\n`);
 

@@ -1,8 +1,8 @@
 import {
   type ChatMessage,
   type ClientMessage,
-  dmRoomFor,
-  isDmRoom,
+  directMessageRoomFor,
+  isDirectMessageRoom,
   isRoomName,
   type RoomName,
   type ServerMessage,
@@ -179,9 +179,9 @@ class ChatStore {
    * state; subsequent `selectRoom` carries the `join` +
    * `switch-active-room` protocol frames for the `@<otherUser>` name.
    */
-  openDm(otherUser: string): void {
+  openDirectMessage(otherUser: string): void {
     if (!otherUser || otherUser === this.username) return;
-    const room = dmRoomFor(otherUser);
+    const room = directMessageRoomFor(otherUser);
     if (!this.rooms.includes(room)) {
       this.rooms = [...this.rooms, room];
       this.messagesByRoom[room] ??= [];
@@ -253,8 +253,8 @@ class ChatStore {
       case 'rooms': {
         // Preserve open DMs across `rooms` broadcasts — they live
         // only in the client, not in the cluster-wide directory.
-        const dms = this.rooms.filter(isDmRoom);
-        this.rooms = [...message.rooms, ...dms];
+        const directMessages = this.rooms.filter(isDirectMessageRoom);
+        this.rooms = [...message.rooms, ...directMessages];
         for (const r of this.rooms) {
           this.messagesByRoom[r] ??= [];
           this.usersByRoom[r] ??= [];

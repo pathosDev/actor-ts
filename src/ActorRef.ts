@@ -40,10 +40,10 @@ export abstract class ActorRef<TMessage = unknown> {
    *
    *     const value = await counter.ask<number>({ kind: 'get' });
    */
-  ask<TRes = unknown>(message: OmitReplyTo<TMessage>, timeoutMs: number = 5_000): Promise<TRes> {
+  ask<TResponse = unknown>(message: OmitReplyTo<TMessage>, timeoutMs: number = 5_000): Promise<TResponse> {
     const name = `askResp-${++askCounter}`;
     const systemName = this.path.systemName;
-    const ref = new AskResponseRef<TRes>(systemName, name, timeoutMs, this.path.toString());
+    const ref = new AskResponseRef<TResponse>(systemName, name, timeoutMs, this.path.toString());
     // Inject `replyTo: ref` into the message so recipients that read
     // `msg.replyTo` work without the caller supplying it.  Recipients
     // that read `this.sender` see the same ref (passed via `tell`'s
@@ -83,8 +83,8 @@ export abstract class ActorRef<TMessage = unknown> {
 class AskResponseRef<T> extends ActorRef<unknown> {
   readonly path: ActorPath;
   readonly promise: Promise<T>;
-  private resolveFn!: (value: T) => void;
-  private rejectFn!: (err: Error) => void;
+  private resolveFunction!: (value: T) => void;
+  private rejectFunction!: (err: Error) => void;
   private settled = false;
   private timer: ReturnType<typeof setTimeout> | null = null;
 
@@ -92,14 +92,14 @@ class AskResponseRef<T> extends ActorRef<unknown> {
     super();
     this.path = new ActorPath(name, null, systemName);
     this.promise = new Promise<T>((resolve, reject) => {
-      this.resolveFn = resolve;
-      this.rejectFn = reject;
+      this.resolveFunction = resolve;
+      this.rejectFunction = reject;
     });
     if (timeoutMs > 0) {
       this.timer = setTimeout(() => {
         if (!this.settled) {
           this.settled = true;
-          this.rejectFn(new AskTimeoutError(
+          this.rejectFunction(new AskTimeoutError(
             `Ask timed out after ${timeoutMs}ms waiting for reply from ${targetLabel}`,
           ));
         }
@@ -111,8 +111,8 @@ class AskResponseRef<T> extends ActorRef<unknown> {
     if (this.settled) return;
     this.settled = true;
     if (this.timer) { clearTimeout(this.timer); this.timer = null; }
-    if (message instanceof Error) this.rejectFn(message);
-    else this.resolveFn(message as T);
+    if (message instanceof Error) this.rejectFunction(message);
+    else this.resolveFunction(message as T);
   }
 }
 

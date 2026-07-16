@@ -585,7 +585,7 @@ class DistributedDataActor extends Actor<ActorMessage> {
         .with(P.instanceOf(MemberRemoved), () => this.onMemberRemoved())
         .otherwise(() => this.onOtherClusterEvent()),
     );
-    this.gossipTimer = this.system.scheduler.scheduleAtFixedRateFn(
+    this.gossipTimer = this.system.scheduler.scheduleAtFixedRateFunction(
       this.gossipIntervalMs, this.gossipIntervalMs, () => this.gossipTick(),
     );
 
@@ -665,7 +665,7 @@ class DistributedDataActor extends Actor<ActorMessage> {
       msg.quorum.resolve();
       return;
     }
-    const timer = this.system.scheduler.scheduleOnceFn(msg.quorum.timeoutMs, () => {
+    const timer = this.system.scheduler.scheduleOnceFunction(msg.quorum.timeoutMs, () => {
       const pending = this.pendingWrites.get(msg.quorum!.pendingId);
       if (!pending) return;
       this.pendingWrites.delete(msg.quorum!.pendingId);
@@ -701,7 +701,7 @@ class DistributedDataActor extends Actor<ActorMessage> {
       msg.resolve(localValue);
       return;
     }
-    const timer = this.system.scheduler.scheduleOnceFn(msg.timeoutMs, () => {
+    const timer = this.system.scheduler.scheduleOnceFunction(msg.timeoutMs, () => {
       const pending = this.pendingReads.get(msg.pendingId);
       if (!pending) return;
       this.pendingReads.delete(msg.pendingId);

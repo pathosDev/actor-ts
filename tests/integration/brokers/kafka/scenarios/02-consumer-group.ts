@@ -6,10 +6,10 @@
  * eventually receives the record, but not both" — i.e. the message
  * is delivered exactly once across the group.
  */
-import { spawnInbox, spawnKafka, type KafkaCtx } from '../runner.js';
+import { spawnInbox, spawnKafka, type KafkaContext } from '../runner.js';
 import { waitFor, type BrokerScenario } from '../../lib/scenario.js';
 
-export const scenario: BrokerScenario<KafkaCtx> = {
+export const scenario: BrokerScenario<KafkaContext> = {
   name: 'consumer-group exactly-once fan-out across two consumers',
   async run(ctx) {
     const tag = `b4-group-${Date.now()}-${Math.random().toString(36).slice(2)}`;

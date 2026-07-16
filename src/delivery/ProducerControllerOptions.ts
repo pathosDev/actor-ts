@@ -26,7 +26,7 @@ export interface ProducerControllerOptionsType<T> {
  * `build()`; the remaining fields default (resend 500 ms, window 16,
  * generated producer id) when left unset.
  *
- *     ProducerControllerOptions.create<Cmd>()
+ *     ProducerControllerOptions.create<Command>()
  *       .withConsumer(consumerRef)
  *       .withWindowSize(32);
  */

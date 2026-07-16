@@ -58,9 +58,9 @@ export type AmqpCommand =
  * `tell({ kind: 'subscribe', ... })` (currently out-of-scope — add when
  * needed).
  *
- * autoAck=true (default) means the consumer acks the message when it
+ * autoAcknowledge=true (default) means the consumer acks the message when it
  * was *delivered* to the actor, not when the actor finished
- * processing.  For at-least-once-with-processing, set autoAck=false
+ * processing.  For at-least-once-with-processing, set autoAcknowledge=false
  * and have your handler tell back `{ kind: 'ack' / 'nack', delivery }`.
  */
 export class AmqpActor extends BrokerActor<AmqpOptionsType, AmqpCommand, AmqpPublish> {
@@ -68,19 +68,19 @@ export class AmqpActor extends BrokerActor<AmqpOptionsType, AmqpCommand, AmqpPub
   private channel: AmqpChannelLike | null = null;
   /** Map ackToken → underlying amqplib message object (we never expose amqplib types upward). */
   private readonly pendingAcks = new Map<number, AmqpRawMessage>();
-  private nextAckToken = 1;
+  private nextAcknowledgmentToken = 1;
 
   constructor(options: AmqpOptions = {}) { super(options); }
 
   protected configKey(): string { return ConfigKeys.io.broker.amqp; }
   protected builtInDefaultOptions(): Partial<AmqpOptionsType> {
-    return { prefetch: 1, autoAck: true };
+    return { prefetch: 1, autoAcknowledge: true };
   }
   protected readOptionsFromConfig(config: Config): Partial<AmqpOptionsType> {
     const out: { -readonly [K in keyof AmqpOptionsType]?: AmqpOptionsType[K] } = {};
     if (config.hasPath('url')) out.url = config.getString('url');
     if (config.hasPath('prefetch')) out.prefetch = config.getInt('prefetch');
-    if (config.hasPath('autoAck')) out.autoAck = config.getBoolean('autoAck');
+    if (config.hasPath('autoAcknowledge')) out.autoAcknowledge = config.getBoolean('autoAcknowledge');
     return out;
   }
   protected requiredOptions(): ReadonlyArray<keyof AmqpOptionsType> { return ['url']; }
@@ -104,8 +104,8 @@ export class AmqpActor extends BrokerActor<AmqpOptionsType, AmqpCommand, AmqpPub
       const queueName = binding.queue;
       await this.channel.consume(queueName, (msg) => {
         if (!msg) return;
-        const ackToken = this.nextAckToken++;
-        if (this.options.autoAck) {
+        const ackToken = this.nextAcknowledgmentToken++;
+        if (this.options.autoAcknowledge) {
           try { this.channel?.ack(msg); } catch { /* ignore */ }
         } else {
           this.pendingAcks.set(ackToken, msg);

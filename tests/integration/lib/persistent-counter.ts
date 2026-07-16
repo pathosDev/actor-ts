@@ -19,12 +19,12 @@ import type { ActorRef } from '../../../src/ActorRef.js';
 import { PersistentActor, everyNEvents } from '../../../src/persistence/PersistentActor.js';
 import type { SnapshotPolicy } from '../../../src/persistence/PersistentActor.js';
 
-export interface CounterInc { readonly kind: 'inc' }
+export interface CounterIncrement { readonly kind: 'inc' }
 export interface CounterGetState {
   readonly kind: 'get-state';
   readonly replyTo: ActorRef<CounterStateReply>;
 }
-export type CounterCommand = CounterInc | CounterGetState;
+export type CounterCommand = CounterIncrement | CounterGetState;
 
 export interface CounterIncremented { readonly kind: 'incremented' }
 export type CounterEvent = CounterIncremented;

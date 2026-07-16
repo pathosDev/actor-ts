@@ -5,7 +5,7 @@
  *
  *   - PersistentActor with `persistenceId = "dm-channel-<pair-id>"`.
  *   - Sharded by `entityId = canonicalPairId(from, to)` — see
- *     `shared/dm.ts` for the ordering rationale.
+ *     `shared/directMessage.ts` for the ordering rationale.
  *   - Snapshot every `SNAPSHOT_EVERY_N_EVENTS` events to bound
  *     recovery time, same value as ChatRoom.
  *
@@ -38,18 +38,18 @@ import {
 import { DistributedPubSubId } from '../../../../src/cluster/pubsub/index.js';
 import { Publish } from '../../../../src/cluster/pubsub/Messages.js';
 import type { ChatMessage } from '../../shared/protocol.js';
-import { dmInboxTopic, splitPairId } from '../../shared/dm.js';
+import { directMessageInboxTopic, splitPairId } from '../../shared/directMessage.js';
 import { HISTORY_LIMIT, SNAPSHOT_EVERY_N_EVENTS } from './ChatRoomActor.js';
 
 /* --------------------------- public messages --------------------------- */
 
-export interface DmHistoryReply {
+export interface DirectMessageHistoryReply {
   readonly kind: 'DmHistoryReply';
   readonly pairId: string;
   readonly messages: ReadonlyArray<ChatMessage>;
 }
 
-export type DmChannelCommand =
+export type DirectMessageChannelCommand =
   | {
       readonly kind: 'SendDm';
       readonly pairId: string;
@@ -60,7 +60,7 @@ export type DmChannelCommand =
       readonly kind: 'GetDmHistory';
       readonly pairId: string;
       readonly limit: number;
-      readonly replyTo: ActorRef<DmHistoryReply>;
+      readonly replyTo: ActorRef<DirectMessageHistoryReply>;
     };
 
 /**
@@ -68,7 +68,7 @@ export type DmChannelCommand =
  * DM see the same payload — they distinguish "incoming" vs "outgoing"
  * client-side by comparing `from` to their own username.
  */
-export interface DmBroadcast {
+export interface DirectMessageBroadcast {
   readonly kind: 'DmBroadcast';
   readonly pairId: string;
   readonly from: string;
@@ -79,21 +79,25 @@ export interface DmBroadcast {
 
 /* ----------------------------- internals ------------------------------ */
 
-interface DmPostedEvent {
+interface DirectMessagePostedEvent {
   readonly kind: 'DmPosted';
   readonly from: string;
   readonly text: string;
   readonly ts: number;
 }
-type DmEvent = DmPostedEvent;
+type DirectMessageEvent = DirectMessagePostedEvent;
 
-interface DmState {
+interface DirectMessageState {
   readonly history: ReadonlyArray<ChatMessage>;
 }
 
 /* ------------------------------- actor -------------------------------- */
 
-export class DmChannelActor extends PersistentActor<DmChannelCommand, DmEvent, DmState> {
+export class DirectMessageChannelActor extends PersistentActor<
+  DirectMessageChannelCommand,
+  DirectMessageEvent,
+  DirectMessageState
+> {
   /**
    * `persistenceId` is bound to the actor path's name (the
    * sharded-entity slot, which sharding spawns as `entity-<id>`).
@@ -115,30 +119,33 @@ export class DmChannelActor extends PersistentActor<DmChannelCommand, DmEvent, D
     return `dm-channel-${stripped}`;
   }
 
-  initialState(): DmState {
+  initialState(): DirectMessageState {
     return { history: [] };
   }
 
-  override snapshotPolicy(): SnapshotPolicy<DmState, DmEvent> {
+  override snapshotPolicy(): SnapshotPolicy<DirectMessageState, DirectMessageEvent> {
     return everyNEvents(SNAPSHOT_EVERY_N_EVENTS);
   }
 
-  onEvent(state: DmState, e: DmEvent): DmState {
+  onEvent(state: DirectMessageState, e: DirectMessageEvent): DirectMessageState {
     return match(e)
-      .with({ kind: 'DmPosted' }, (m) => this.onDmPosted(state, m))
+      .with({ kind: 'DmPosted' }, (m) => this.onDirectMessagePosted(state, m))
       .exhaustive();
   }
 
-  private onDmPosted(state: DmState, m: DmPostedEvent): DmState {
+  private onDirectMessagePosted(
+    state: DirectMessageState,
+    m: DirectMessagePostedEvent,
+  ): DirectMessageState {
     const next = [...state.history, { from: m.from, text: m.text, ts: m.ts }];
     const trimmed =
       next.length > HISTORY_LIMIT ? next.slice(next.length - HISTORY_LIMIT) : next;
     return { history: trimmed };
   }
 
-  async onCommand(state: DmState, cmd: DmChannelCommand): Promise<void> {
+  async onCommand(state: DirectMessageState, cmd: DirectMessageChannelCommand): Promise<void> {
     if (cmd.kind === 'SendDm') {
-      const event: DmPostedEvent = {
+      const event: DirectMessagePostedEvent = {
         kind: 'DmPosted',
         from: cmd.from,
         text: cmd.text,
@@ -155,12 +162,12 @@ export class DmChannelActor extends PersistentActor<DmChannelCommand, DmEvent, D
         // notification is lost).
         const parts = splitPairId(cmd.pairId);
         if (!parts) {
-          this.log.warn(`DmChannel: malformed pair-id '${cmd.pairId}'`);
+          this.log.warn(`DirectMessageChannel: malformed pair-id '${cmd.pairId}'`);
           return;
         }
         const [a, b] = parts;
         const to = cmd.from === a ? b : a;
-        const broadcast: DmBroadcast = {
+        const broadcast: DirectMessageBroadcast = {
           kind: 'DmBroadcast',
           pairId: cmd.pairId,
           from: cmd.from,
@@ -169,8 +176,8 @@ export class DmChannelActor extends PersistentActor<DmChannelCommand, DmEvent, D
           ts: event.ts,
         };
         const mediator = this.system.extension(DistributedPubSubId).mediator;
-        mediator.tell(new Publish(dmInboxTopic(a), broadcast));
-        mediator.tell(new Publish(dmInboxTopic(b), broadcast));
+        mediator.tell(new Publish(directMessageInboxTopic(a), broadcast));
+        mediator.tell(new Publish(directMessageInboxTopic(b), broadcast));
       });
       return;
     }

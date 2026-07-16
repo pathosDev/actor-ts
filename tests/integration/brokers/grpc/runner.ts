@@ -20,12 +20,12 @@ import {
 } from '../../../../src/io/broker/GrpcServerActor.js';
 import { GrpcServerOptions } from '../../../../src/io/broker/GrpcServerOptions.js';
 import type { ActorRef } from '../../../../src/ActorRef.js';
-import { runScenarios, type BrokerScenario, type BrokerScenarioCtx } from '../lib/scenario.js';
+import { runScenarios, type BrokerScenario, type BrokerScenarioContext } from '../lib/scenario.js';
 import { scenario as unaryScenario } from './scenarios/01-unary.js';
 import { scenario as serverStreamScenario } from './scenarios/02-server-stream.js';
 import { scenario as bidiScenario } from './scenarios/03-bidi.js';
 
-export interface GrpcCtx extends BrokerScenarioCtx {
+export interface GrpcContext extends BrokerScenarioContext {
   readonly endpoint: string;
   readonly system: ActorSystem;
   readonly client: ActorRef<unknown>;
@@ -122,7 +122,7 @@ async function main(): Promise<void> {
   );
   await new Promise((r) => setTimeout(r, 500));
 
-  const ctx: GrpcCtx = {
+  const ctx: GrpcContext = {
     env: process.env,
     endpoint,
     system,
@@ -130,7 +130,7 @@ async function main(): Promise<void> {
   };
 
   try {
-    const scenarios: BrokerScenario<GrpcCtx>[] = [
+    const scenarios: BrokerScenario<GrpcContext>[] = [
       unaryScenario,
       serverStreamScenario,
       bidiScenario,
@@ -155,7 +155,7 @@ export class CollectorActor extends Actor<GrpcInbound> {
   override onReceive(m: GrpcInbound): void { this.inbound.push(m); }
 }
 
-export function spawnCollector(ctx: GrpcCtx): {
+export function spawnCollector(ctx: GrpcContext): {
   ref: ReturnType<ActorSystem['spawnAnonymous']>; collector: CollectorActor;
 } {
   const collector = new CollectorActor();

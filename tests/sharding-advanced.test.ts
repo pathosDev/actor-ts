@@ -33,7 +33,7 @@ async function waitFor(pred: () => boolean, timeoutMs: number, stepMs = 25): Pro
   if (!pred()) throw new Error(`waitFor timed out after ${timeoutMs}ms`);
 }
 
-interface NodeCtx<TMessage> {
+interface NodeContext<TMessage> {
   system: ActorSystem;
   cluster: Cluster;
   region: ActorRef<TMessage>;
@@ -47,7 +47,7 @@ async function startNode<TMessage>(opts: {
   seeds?: string[];
   roles?: string[];
   sharding: (sharding: ClusterSharding) => ActorRef<TMessage>;
-}): Promise<NodeCtx<TMessage>> {
+}): Promise<NodeContext<TMessage>> {
   const sysOptions = ActorSystemOptions.create()
     .withLogger(new NoopLogger())
     .withLogLevel(LogLevel.Off);
@@ -65,7 +65,7 @@ async function startNode<TMessage>(opts: {
   return { system, cluster, region };
 }
 
-async function stopNode(n: NodeCtx<unknown>): Promise<void> {
+async function stopNode(n: NodeContext<unknown>): Promise<void> {
   await n.cluster.leave();
   await n.system.terminate();
 }

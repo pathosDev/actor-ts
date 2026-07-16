@@ -4,10 +4,10 @@
  * real K8s API response.
  */
 import { KubernetesApiSeedProvider } from '../../../../../src/discovery/KubernetesApiSeedProvider.js';
-import type { K8sCtx } from '../runner.js';
+import type { K8sContext } from '../runner.js';
 import type { BrokerScenario } from '../../lib/scenario.js';
 
-export const scenario: BrokerScenario<K8sCtx> = {
+export const scenario: BrokerScenario<K8sContext> = {
   name: 'lookup() returns NodeAddresses for Endpoints subsets',
   async run(ctx) {
     const ns = `b9-basic-${Date.now()}`;

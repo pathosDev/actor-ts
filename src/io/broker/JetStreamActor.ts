@@ -108,7 +108,7 @@ export interface JetStreamStreamConfig {
   readonly subjects: ReadonlyArray<string>;
   readonly retention?: 'limits' | 'interest' | 'workqueue';
   readonly storage?: 'memory' | 'file';
-  readonly maxMsgs?: number;
+  readonly maxMessages?: number;
   readonly maxBytes?: number;
   readonly maxAge?: number;     // ns; pass through verbatim
   /** Auto-create or update at connect time.  Default true. */
@@ -141,7 +141,7 @@ export interface JetStreamConsumerConfig {
   /** Subject filter — defaults to all subjects in the stream. */
   readonly filterSubject?: string;
   /** Max in-flight unacked messages.  Default 1024 (server default). */
-  readonly maxAckPending?: number;
+  readonly maxAcknowledgmentPending?: number;
   /** Auto-create or update at connect time.  Default true. */
   readonly create?: boolean;
 }
@@ -150,13 +150,13 @@ export interface JetStreamConsumerConfig {
 type PublishCommand = { readonly kind: 'publish'; readonly publish: JetStreamPublish };
 
 /** Acknowledge a delivered message — server marks consumed. */
-type AckCommand = { readonly kind: 'ack'; readonly streamSeq: number };
+type AcknowledgmentCommand = { readonly kind: 'ack'; readonly streamSeq: number };
 
 /** Negative-ack — server redelivers (after optional `delayMs`). */
-type NakCommand = { readonly kind: 'nak'; readonly streamSeq: number; readonly delayMs?: number };
+type NegativeAcknowledgmentCommand = { readonly kind: 'nak'; readonly streamSeq: number; readonly delayMs?: number };
 
 /** Terminal failure — server drops the message permanently. */
-type TermCommand = { readonly kind: 'term'; readonly streamSeq: number; readonly reason?: string };
+type TerminateCommand = { readonly kind: 'term'; readonly streamSeq: number; readonly reason?: string };
 
 /** Heartbeat — extend the ack-wait window for a long-running handler. */
 type InProgressCommand = { readonly kind: 'inProgress'; readonly streamSeq: number };
@@ -172,9 +172,9 @@ type FetchCommand = { readonly kind: 'fetch'; readonly batch: number; readonly e
 
 export type JetStreamCommand =
   | PublishCommand
-  | AckCommand
-  | NakCommand
-  | TermCommand
+  | AcknowledgmentCommand
+  | NegativeAcknowledgmentCommand
+  | TerminateCommand
   | InProgressCommand
   | FetchCommand;
 
@@ -318,9 +318,9 @@ export class JetStreamActor extends BrokerActor<
     // forces this site to handle it explicitly (TS error otherwise).
     match(cmd)
       .with({ kind: 'publish' },    (m) => this.onPublish(m))
-      .with({ kind: 'ack' },        (m) => this.onAck(m))
-      .with({ kind: 'nak' },        (m) => this.onNak(m))
-      .with({ kind: 'term' },       (m) => this.onTerm(m))
+      .with({ kind: 'ack' },        (m) => this.onAcknowledgment(m))
+      .with({ kind: 'nak' },        (m) => this.onNegativeAcknowledgment(m))
+      .with({ kind: 'term' },       (m) => this.onTerminate(m))
       .with({ kind: 'inProgress' }, (m) => this.onInProgress(m))
       .with({ kind: 'fetch' },      (m) => void this.onFetch(m))
       .exhaustive();
@@ -357,7 +357,7 @@ export class JetStreamActor extends BrokerActor<
       this.log.warn(`JetStreamActor: fetch batch must be a positive integer, got ${batch} — ignored`);
       return;
     }
-    let messages: AsyncIterable<JetStreamMsgHandleLike>;
+    let messages: AsyncIterable<JetStreamMessageHandleLike>;
     try {
       messages = await this.pullConsumer.fetch({
         max_messages: batch,
@@ -370,7 +370,7 @@ export class JetStreamActor extends BrokerActor<
     // Drain the fetch result.  The iterator completes either when the
     // batch is full or when `expires` ms elapses — empty-batch is
     // therefore a normal end condition, NOT an error.
-    const handles: JetStreamMsgHandleLike[] = [];
+    const handles: JetStreamMessageHandleLike[] = [];
     for await (const message of messages) handles.push(message);
     // Deliver everything to target first (typical pull-consumer
     // semantics: the application sees the whole batch at once), then
@@ -385,12 +385,12 @@ export class JetStreamActor extends BrokerActor<
    * `onFetch`.  Tells the message to `target`, then awaits an
    * external ack / nak / term (unless `ackPolicy === 'none'`).
    */
-  private async deliverAndAwaitAcknowledgment(messageHandle: JetStreamMsgHandleLike): Promise<void> {
+  private async deliverAndAwaitAcknowledgment(messageHandle: JetStreamMessageHandleLike): Promise<void> {
     const target = this.options.target;
-    const ackTimeoutMs = this.options.ackTimeout
+    const ackTimeoutMs = this.options.acknowledgmentTimeout
       ?? this.options.consumer?.ackWaitMs
       ?? 30_000;
-    const handle: JetStreamMsgHandleLike = messageHandle;
+    const handle: JetStreamMessageHandleLike = messageHandle;
     const info = handle.info;
     if (target) {
       target.tell({
@@ -429,7 +429,7 @@ export class JetStreamActor extends BrokerActor<
     }
   }
 
-  private onAck(cmd: AckCommand): void {
+  private onAcknowledgment(cmd: AcknowledgmentCommand): void {
     const { streamSeq } = cmd;
     const pendingAck = this.pending.get(streamSeq);
     if (!pendingAck) {
@@ -446,7 +446,7 @@ export class JetStreamActor extends BrokerActor<
     this.pending.delete(streamSeq);
   }
 
-  private onNak(cmd: NakCommand): void {
+  private onNegativeAcknowledgment(cmd: NegativeAcknowledgmentCommand): void {
     const { streamSeq, delayMs } = cmd;
     const pendingAck = this.pending.get(streamSeq);
     if (!pendingAck) return;
@@ -461,7 +461,7 @@ export class JetStreamActor extends BrokerActor<
     this.pending.delete(streamSeq);
   }
 
-  private onTerm(cmd: TermCommand): void {
+  private onTerminate(cmd: TerminateCommand): void {
     const { streamSeq, reason } = cmd;
     const pendingAck = this.pending.get(streamSeq);
     if (!pendingAck) return;
@@ -486,7 +486,7 @@ export class JetStreamActor extends BrokerActor<
 
 interface PendingAcknowledgment {
   readonly streamSeq: number;
-  readonly handle: JetStreamMsgHandleLike;
+  readonly handle: JetStreamMessageHandleLike;
   readonly done: () => void;
   readonly fail: (err: Error) => void;
 }
@@ -500,7 +500,7 @@ async function upsertStream(
       subjects: [...cfg.subjects],
       retention: cfg.retention,
       storage: cfg.storage,
-      max_msgs: cfg.maxMsgs,
+      max_msgs: cfg.maxMessages,
       max_bytes: cfg.maxBytes,
       max_age: cfg.maxAge,
     });
@@ -513,7 +513,7 @@ async function upsertStream(
       subjects: [...cfg.subjects],
       retention: cfg.retention,
       storage: cfg.storage,
-      max_msgs: cfg.maxMsgs,
+      max_msgs: cfg.maxMessages,
       max_bytes: cfg.maxBytes,
       max_age: cfg.maxAge,
     });
@@ -529,7 +529,7 @@ async function upsertConsumer(
     ack_policy: cfg.ackPolicy ?? 'explicit',
     ack_wait: ackWaitNs,
     filter_subject: cfg.filterSubject,
-    max_ack_pending: cfg.maxAckPending,
+    max_ack_pending: cfg.maxAcknowledgmentPending,
     deliver_policy: 'all',
   };
   if (cfg.deliverPolicy === 'last') consumerCfg.deliver_policy = 'last';
@@ -595,7 +595,7 @@ export interface JetStreamClientLike {
   };
 }
 
-export interface JetStreamSubscriptionLike extends AsyncIterable<JetStreamMsgHandleLike> {
+export interface JetStreamSubscriptionLike extends AsyncIterable<JetStreamMessageHandleLike> {
   destroy(): Promise<void>;
 }
 
@@ -610,7 +610,7 @@ export interface PullConsumerLike {
   fetch(opts: {
     max_messages: number;
     expires: number;
-  }): Promise<AsyncIterable<JetStreamMsgHandleLike>>;
+  }): Promise<AsyncIterable<JetStreamMessageHandleLike>>;
 }
 
 interface HeadersLike {
@@ -618,19 +618,19 @@ interface HeadersLike {
   get(key: string): string | null;
 }
 
-export interface JetStreamMsgInfoLike {
+export interface JetStreamMessageInfoLike {
   readonly streamSequence: number;
   readonly deliverySequence: number;
   readonly deliveryCount: number;
   readonly timestampNanos?: number;
 }
 
-export interface JetStreamMsgHandleLike {
+export interface JetStreamMessageHandleLike {
   readonly subject: string;
   readonly data: Uint8Array;
   readonly reply?: string;
   readonly headers?: HeadersLike;
-  readonly info: JetStreamMsgInfoLike;
+  readonly info: JetStreamMessageInfoLike;
   ack(): void;
   nak(delayMs?: number): void;
   term(): void;

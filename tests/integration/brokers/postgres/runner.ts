@@ -15,7 +15,7 @@ import { PostgresDurableStateStore } from '../../../../src/persistence/durable-s
 import { PostgresDurableStateStoreOptions } from '../../../../src/persistence/durable-state-stores/PostgresDurableStateStoreOptions.js';
 import { waitForPort } from '../lib/wait-for-port.js';
 import { runScenarios } from '../lib/scenario.js';
-import { sqlPersistenceScenarios, type SqlPersistenceCtx } from '../lib/persistence-contract.js';
+import { sqlPersistenceScenarios, type SqlPersistenceContext } from '../lib/persistence-contract.js';
 
 function requireEnv(name: string): string {
   const value = process.env[name];
@@ -38,7 +38,7 @@ async function main(): Promise<void> {
     .withKeepN(2);
   const durableStateOptions = PostgresDurableStateStoreOptions.create()
     .withUrl(url);
-  const ctx: SqlPersistenceCtx = {
+  const ctx: SqlPersistenceContext = {
     env: process.env,
     label: 'pg',
     journal: new PostgresJournal(journalOptions),

@@ -31,12 +31,12 @@ import {
 import { MultiNodeSpec } from '../../src/testkit/MultiNodeSpec.js';
 
 type AddCommand = { kind: 'add'; amount: number };
-type Cmd = AddCommand;
+type Command = AddCommand;
 type AddedEvent = { kind: 'added'; amount: number };
 type Event = AddedEvent;
 interface State { value: number }
 
-class ReplicatedCounter extends ReplicatedEventSourcedActor<Cmd, Event, State> {
+class ReplicatedCounter extends ReplicatedEventSourcedActor<Command, Event, State> {
   readonly persistenceId = 'counter-1';
   readonly replicaId: string;
   readonly label: string;
@@ -59,7 +59,7 @@ class ReplicatedCounter extends ReplicatedEventSourcedActor<Cmd, Event, State> {
     return { value: s.value + a.amount };
   }
 
-  async onCommand(_s: State, c: Cmd): Promise<void> {
+  async onCommand(_s: State, c: Command): Promise<void> {
     await match(c)
       .with({ kind: 'add' }, (cmd) => this.onAdd(cmd))
       .exhaustive();
@@ -100,10 +100,10 @@ async function main(): Promise<void> {
   for (const role of ['a', 'b', 'c'] as const) {
     const cluster = spec.clusterFor(role);
     const ref = spec.systemFor(role).spawn(
-      Props.create<Cmd>(() => {
+      Props.create<Command>(() => {
         const inst = new ReplicatedCounter(cluster, role);
         instances.set(role, inst);
-        return inst as unknown as Actor<Cmd>;
+        return inst as unknown as Actor<Command>;
       }),
       `counter-${role}`,
     );

@@ -51,7 +51,7 @@ import { VectorClock, type VectorClockData } from './replicated/VectorClock.js';
  * shines.
  *
  *   class ReplicatedCounter extends ReplicatedEventSourcedActor<
- *     Cmd, Event, { value: number }
+ *     Command, Event, { value: number }
  *   > {
  *     readonly persistenceId = 'counter-1';
  *     readonly replicaId: string;
@@ -117,15 +117,15 @@ function getLivePidsForSystem(system: ActorSystem): Set<string> {
   return set;
 }
 
-export abstract class ReplicatedEventSourcedActor<Cmd, Event, State>
-  extends Actor<Cmd | ReplicatedEventEnvelope<Event>> {
+export abstract class ReplicatedEventSourcedActor<Command, Event, State>
+  extends Actor<Command | ReplicatedEventEnvelope<Event>> {
   abstract readonly persistenceId: string;
   /** Stable id for this replica.  Default: cluster.selfAddress.toString(). */
   abstract readonly replicaId: ReplicaId;
 
   abstract initialState(): State;
   abstract onEvent(state: State, event: Event): State;
-  abstract onCommand(state: State, cmd: Cmd): void | Promise<void>;
+  abstract onCommand(state: State, cmd: Command): void | Promise<void>;
 
   /** Resolver consulted only as the deterministic order comparator. */
   protected resolver(): ConflictResolver<Event> { return new LastWriterWinsResolver<Event>(); }
@@ -360,7 +360,7 @@ export abstract class ReplicatedEventSourcedActor<Cmd, Event, State>
     this._lease = null;
   }
 
-  override async onReceive(msg: Cmd | ReplicatedEventEnvelope<Event> | SubscribeAcknowledgment): Promise<void> {
+  override async onReceive(msg: Command | ReplicatedEventEnvelope<Event> | SubscribeAcknowledgment): Promise<void> {
     // Ignore PubSub ack frames — they're informational.
     if (msg && typeof msg === 'object' && (msg as { subscribe?: unknown }).subscribe instanceof Subscribe) {
       return;
@@ -369,7 +369,7 @@ export abstract class ReplicatedEventSourcedActor<Cmd, Event, State>
       this._handleRemote(msg as ReplicatedEventEnvelope<Event>);
       return;
     }
-    await this.onCommand(this._state, msg as Cmd);
+    await this.onCommand(this._state, msg as Command);
   }
 
   /**

@@ -3,10 +3,10 @@
  */
 import type { GrpcClientCommand } from '../../../../../src/io/broker/GrpcClientActor.js';
 import type { ActorRef } from '../../../../../src/ActorRef.js';
-import { spawnCollector, type GrpcCtx } from '../runner.js';
+import { spawnCollector, type GrpcContext } from '../runner.js';
 import { waitFor, type BrokerScenario } from '../../lib/scenario.js';
 
-export const scenario: BrokerScenario<GrpcCtx> = {
+export const scenario: BrokerScenario<GrpcContext> = {
   name: 'server-stream — N data chunks + end',
   async run(ctx) {
     const { ref: collectorRef, collector } = spawnCollector(ctx);

@@ -8,7 +8,7 @@
  * `min|max` join, which:
  *
  *   1. **Gives a stable shard key** for `ClusterSharding` — so both
- *      participants' messages always land on the same `DmChannelActor`
+ *      participants' messages always land on the same `DirectMessageChannelActor`
  *      instance regardless of which node they're connected to.
  *   2. **Avoids journal duplication**: `persistenceId =
  *      "dm-channel-<pair-id>"`, one journal stream per conversation
@@ -54,6 +54,6 @@ export function splitPairId(pairId: string): readonly [string, string] | null {
 }
 
 /** Topic each user subscribes to for incoming DMs. */
-export function dmInboxTopic(username: string): string {
+export function directMessageInboxTopic(username: string): string {
   return `chat.dm.user.${username}`;
 }

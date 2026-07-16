@@ -3,10 +3,10 @@
  * shouldn't crash on a service with no ready pods.
  */
 import { KubernetesApiSeedProvider } from '../../../../../src/discovery/KubernetesApiSeedProvider.js';
-import type { K8sCtx } from '../runner.js';
+import type { K8sContext } from '../runner.js';
 import type { BrokerScenario } from '../../lib/scenario.js';
 
-export const scenario: BrokerScenario<K8sCtx> = {
+export const scenario: BrokerScenario<K8sContext> = {
   name: 'lookup() handles empty Endpoints gracefully',
   async run(ctx) {
     const ns = `b9-empty-${Date.now()}`;

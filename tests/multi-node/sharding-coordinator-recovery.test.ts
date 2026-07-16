@@ -38,10 +38,10 @@ import { MultiNodeSpec } from '../../src/testkit/MultiNodeSpec.js';
 import { MultiNodeTransport } from '../../src/testkit/internal/MultiNodeTransport.js';
 import type { ActorRef } from '../../src/ActorRef.js';
 
-type Cmd = { id: string; op: 'ping' };
+type Command = { id: string; op: 'ping' };
 
-class Entity extends Actor<Cmd> {
-  override onReceive(m: Cmd): void {
+class Entity extends Actor<Command> {
+  override onReceive(m: Command): void {
     if (m.op === 'ping') this.sender.forEach((s) => s.tell('pong'));
   }
 }
@@ -91,10 +91,10 @@ describe('ShardCoordinator state persistence — leader failover', () => {
       // Stand up DD on every node (with tight gossip so the
       // coordinator-state snapshot reaches followers fast) + wire
       // the DD-backed store into ClusterSharding.
-      const regions: Record<'a' | 'b' | 'c', ActorRef<Cmd>> = {
-        a: undefined as unknown as ActorRef<Cmd>,
-        b: undefined as unknown as ActorRef<Cmd>,
-        c: undefined as unknown as ActorRef<Cmd>,
+      const regions: Record<'a' | 'b' | 'c', ActorRef<Command>> = {
+        a: undefined as unknown as ActorRef<Command>,
+        b: undefined as unknown as ActorRef<Command>,
+        c: undefined as unknown as ActorRef<Command>,
       };
       for (const role of ['a', 'b', 'c'] as const) {
         const sys = spec.systemFor(role);
@@ -105,14 +105,14 @@ describe('ShardCoordinator state persistence — leader failover', () => {
         const store = new DistributedDataCoordinatorStateStore(
           dd, cluster.selfAddress.toString(),
         );
-        const shardingOptions = StartShardingOptions.create<Cmd>()
+        const shardingOptions = StartShardingOptions.create<Command>()
           .withTypeName('entity')
           .withEntityProps(Props.create(() => new Entity()))
           .withExtractEntityId((m) => m.id)
           .withNumShards(8)
           .withRebalanceIntervalMs(200)
           .withCoordinatorStateStore(store);
-        regions[role] = cluster.sharding.start<Cmd>(shardingOptions);
+        regions[role] = cluster.sharding.start<Command>(shardingOptions);
       }
 
       // Allocate the shards by asking 8 distinct entity ids.  Each

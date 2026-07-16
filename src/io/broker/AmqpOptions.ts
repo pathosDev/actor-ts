@@ -18,7 +18,7 @@ export interface AmqpOptionsType extends BrokerCommonOptionsType {
   /** Queues + bindings + targets to set up after connect. */
   readonly bindings?: ReadonlyArray<AmqpQueueBinding>;
   /** Whether to auto-ack consumed deliveries.  Default: true. */
-  readonly autoAck?: boolean;
+  readonly autoAcknowledge?: boolean;
 }
 
 export class AmqpOptionsBuilder extends BrokerOptionsBuilder<AmqpOptionsType> {
@@ -43,8 +43,8 @@ export class AmqpOptionsBuilder extends BrokerOptionsBuilder<AmqpOptionsType> {
   }
 
   /** Auto-ack consumed deliveries.  Default `true`. */
-  withAutoAck(on = true): this {
-    return this.set('autoAck', on);
+  withAutoAcknowledge(on = true): this {
+    return this.set('autoAcknowledge', on);
   }
 }
 

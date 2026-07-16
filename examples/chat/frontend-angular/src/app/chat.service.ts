@@ -3,8 +3,8 @@ import {
   type ChatMessage,
   type ClientMessage,
   DEFAULT_ROOMS,
-  dmRoomFor,
-  isDmRoom,
+  directMessageRoomFor,
+  isDirectMessageRoom,
   isRoomName,
   type RoomName,
   type ServerMessage,
@@ -210,10 +210,10 @@ export class ChatService {
    * `switch-active-room` for the `@<other>` name, which it routes
    * through the DM shard region (#100).
    */
-  openDm(otherUser: string): void {
+  openDirectMessage(otherUser: string): void {
     const me = this.username();
     if (!otherUser || otherUser === me) return;
-    const room = dmRoomFor(otherUser);
+    const room = directMessageRoomFor(otherUser);
     if (!this.rooms().includes(room)) {
       this.rooms.update((rs) => [...rs, room]);
       this.messagesByRoom.update((cur) => ({ ...cur, [room]: [] }));
@@ -287,8 +287,8 @@ export class ChatService {
         // Preserve open DMs — they live only on the client, never in
         // the directory.  Without this, every `RoomsChanged` would
         // wipe open conversations.
-        const dms = this.rooms().filter(isDmRoom);
-        const merged = [...message.rooms, ...dms];
+        const directMessages = this.rooms().filter(isDirectMessageRoom);
+        const merged = [...message.rooms, ...directMessages];
         this.rooms.set(merged);
         this.messagesByRoom.update((cur) => {
           const next = { ...cur };

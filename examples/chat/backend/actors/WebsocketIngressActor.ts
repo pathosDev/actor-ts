@@ -28,14 +28,14 @@ import {
 } from './UserSessionActor.js';
 import type { ChatRoomCommand } from './ChatRoomActor.js';
 import type { ChatRoomDirectoryCommand } from './ChatRoomDirectoryActor.js';
-import type { DmChannelCommand } from './DmChannelActor.js';
+import type { DirectMessageChannelCommand } from './DirectMessageChannelActor.js';
 import type { OnlineUsersCommand } from './OnlineUsersActor.js';
 import type { ReadReceiptsCommand } from './ReadReceiptsActor.js';
 import type { SessionStore } from '../auth/sessionStore.js';
 
 export interface WebsocketIngressDeps {
   readonly chatRoomRegion: ActorRef<ChatRoomCommand>;
-  readonly dmChannelRegion: ActorRef<DmChannelCommand>;
+  readonly directMessageChannelRegion: ActorRef<DirectMessageChannelCommand>;
   readonly onlineUsers: ActorRef<OnlineUsersCommand>;
   readonly mediator: ActorRef<Subscribe | Unsubscribe>;
   readonly sessions: SessionStore;

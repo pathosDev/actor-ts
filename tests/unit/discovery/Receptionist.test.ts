@@ -126,9 +126,9 @@ describe('Receptionist — local', () => {
 });
 
 describe('Receptionist — cluster-wide', () => {
-  interface NodeCtx { system: ActorSystem; cluster: Cluster; kit: TestKit; receptionist: ActorRef<unknown>; }
+  interface NodeContext { system: ActorSystem; cluster: Cluster; kit: TestKit; receptionist: ActorRef<unknown>; }
 
-  async function startNode(sys: string, host: string, port: number, seeds: string[] = []): Promise<NodeCtx> {
+  async function startNode(sys: string, host: string, port: number, seeds: string[] = []): Promise<NodeContext> {
     const kitOptions = TestKitOptions.create()
       .withLogger(new NoopLogger())
       .withLogLevel(LogLevel.Off);
