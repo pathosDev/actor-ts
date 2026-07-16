@@ -142,19 +142,44 @@ export interface MqttPublish {
  * to the actor's own `onMessage`; pass a `target` to fan out to another
  * actor (the classic external-router shape).
  */
+/**
+ * Publish to a topic via the actor's client.
+ *
+ * Named variant of {@link MqttCommand}.  Exported so `MqttActor`'s
+ * handler in the sibling module can take it as a parameter type — the
+ * generic parameter mirrors {@link MqttCommand}'s (`T` is unused here
+ * but kept so `MqttCommand<T>` stays uniform over its members).
+ */
+export type MqttPublishCommand<T = unknown> = { readonly kind: 'publish'; readonly publish: MqttPublish };
+
+/**
+ * Subscribe to `topic`.  Omit `target` to deliver to the actor's own
+ * `onMessage`; pass a `target` to fan matching messages out to it.
+ *
+ * Named variant of {@link MqttCommand}.
+ */
+export type MqttSubscribeCommand<T = unknown> = {
+  readonly kind: 'subscribe';
+  readonly topic: string;
+  readonly target?: ActorRef<MqttMessage<T>>;
+  readonly qos?: MqttQos;
+};
+
+/**
+ * Remove a subscription (own delivery, or a specific `target`).
+ *
+ * Named variant of {@link MqttCommand}.
+ */
+export type MqttUnsubscribeCommand<T = unknown> = {
+  readonly kind: 'unsubscribe';
+  readonly topic: string;
+  readonly target?: ActorRef<MqttMessage<T>>;
+};
+
 export type MqttCommand<T = unknown> =
-  | { readonly kind: 'publish'; readonly publish: MqttPublish }
-  | {
-      readonly kind: 'subscribe';
-      readonly topic: string;
-      readonly target?: ActorRef<MqttMessage<T>>;
-      readonly qos?: MqttQos;
-    }
-  | {
-      readonly kind: 'unsubscribe';
-      readonly topic: string;
-      readonly target?: ActorRef<MqttMessage<T>>;
-    };
+  | MqttPublishCommand<T>
+  | MqttSubscribeCommand<T>
+  | MqttUnsubscribeCommand<T>;
 
 /* --------------------- internal mailbox signals --------------------- */
 /*

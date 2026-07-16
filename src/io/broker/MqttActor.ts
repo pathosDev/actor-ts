@@ -16,6 +16,9 @@ import {
   mqttInboundSignal,
   type MqttActorMessage,
   type MqttCommand,
+  type MqttPublishCommand,
+  type MqttSubscribeCommand,
+  type MqttUnsubscribeCommand,
   type MqttDisconnectedSignal,
   type MqttInboundSignal,
   type MqttMessage,
@@ -222,15 +225,15 @@ export abstract class MqttActor<T = unknown, TSelf = never>
       .exhaustive();
   }
 
-  private onPublish(cmd: Extract<MqttCommand<T>, { kind: 'publish' }>): void {
+  private onPublish(cmd: MqttPublishCommand<T>): void {
     this.enqueueOutbound(cmd.publish);
   }
 
-  private onSubscribe(cmd: Extract<MqttCommand<T>, { kind: 'subscribe' }>): void {
+  private onSubscribe(cmd: MqttSubscribeCommand<T>): void {
     this.registerSubscription(cmd.topic, { qos: cmd.qos, target: cmd.target });
   }
 
-  private onUnsubscribe(cmd: Extract<MqttCommand<T>, { kind: 'unsubscribe' }>): void {
+  private onUnsubscribe(cmd: MqttUnsubscribeCommand<T>): void {
     this.removeSubscription(cmd.topic, cmd.target, true);
   }
 

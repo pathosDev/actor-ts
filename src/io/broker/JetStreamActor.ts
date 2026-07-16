@@ -146,24 +146,37 @@ export interface JetStreamConsumerConfig {
   readonly create?: boolean;
 }
 
+/** Publish a message via the actor's JetStream client. */
+type PublishCommand = { readonly kind: 'publish'; readonly publish: JetStreamPublish };
+
+/** Acknowledge a delivered message — server marks consumed. */
+type AckCommand = { readonly kind: 'ack'; readonly streamSeq: number };
+
+/** Negative-ack — server redelivers (after optional `delayMs`). */
+type NakCommand = { readonly kind: 'nak'; readonly streamSeq: number; readonly delayMs?: number };
+
+/** Terminal failure — server drops the message permanently. */
+type TermCommand = { readonly kind: 'term'; readonly streamSeq: number; readonly reason?: string };
+
+/** Heartbeat — extend the ack-wait window for a long-running handler. */
+type InProgressCommand = { readonly kind: 'inProgress'; readonly streamSeq: number };
+
+/**
+ * Pull-mode (#62) — fetch up to `batch` messages, returning early
+ * after `expiresMs` (default 5 s) if fewer are available.  Each
+ * fetched message still goes through the same ack/nak/term
+ * handshake as push-mode.  Sending `fetch` to a push-mode
+ * consumer is a silent no-op with a warn log.
+ */
+type FetchCommand = { readonly kind: 'fetch'; readonly batch: number; readonly expiresMs?: number };
+
 export type JetStreamCommand =
-  | { readonly kind: 'publish'; readonly publish: JetStreamPublish }
-  /** Acknowledge a delivered message — server marks consumed. */
-  | { readonly kind: 'ack'; readonly streamSeq: number }
-  /** Negative-ack — server redelivers (after optional `delayMs`). */
-  | { readonly kind: 'nak'; readonly streamSeq: number; readonly delayMs?: number }
-  /** Terminal failure — server drops the message permanently. */
-  | { readonly kind: 'term'; readonly streamSeq: number; readonly reason?: string }
-  /** Heartbeat — extend the ack-wait window for a long-running handler. */
-  | { readonly kind: 'inProgress'; readonly streamSeq: number }
-  /**
-   * Pull-mode (#62) — fetch up to `batch` messages, returning early
-   * after `expiresMs` (default 5 s) if fewer are available.  Each
-   * fetched message still goes through the same ack/nak/term
-   * handshake as push-mode.  Sending `fetch` to a push-mode
-   * consumer is a silent no-op with a warn log.
-   */
-  | { readonly kind: 'fetch'; readonly batch: number; readonly expiresMs?: number };
+  | PublishCommand
+  | AckCommand
+  | NakCommand
+  | TermCommand
+  | InProgressCommand
+  | FetchCommand;
 
 export class JetStreamActor extends BrokerActor<
   JetStreamOptionsType, JetStreamCommand, JetStreamPublish
@@ -315,7 +328,7 @@ export class JetStreamActor extends BrokerActor<
 
   /* ----------------------------- internals ----------------------------- */
 
-  private onPublish(cmd: Extract<JetStreamCommand, { kind: 'publish' }>): void {
+  private onPublish(cmd: PublishCommand): void {
     this.enqueueOutbound(cmd.publish);
   }
 
@@ -334,7 +347,7 @@ export class JetStreamActor extends BrokerActor<
    * fired; subsequent `fetch` cmds are processed serially by the
    * mailbox.
    */
-  private async onFetch(cmd: Extract<JetStreamCommand, { kind: 'fetch' }>): Promise<void> {
+  private async onFetch(cmd: FetchCommand): Promise<void> {
     const { batch, expiresMs } = cmd;
     if (!this.pullConsumer) {
       this.log.warn('JetStreamActor: fetch on push-mode (or disconnected) consumer — ignored');
@@ -416,7 +429,7 @@ export class JetStreamActor extends BrokerActor<
     }
   }
 
-  private onAck(cmd: Extract<JetStreamCommand, { kind: 'ack' }>): void {
+  private onAck(cmd: AckCommand): void {
     const { streamSeq } = cmd;
     const pendingAck = this.pending.get(streamSeq);
     if (!pendingAck) {
@@ -433,7 +446,7 @@ export class JetStreamActor extends BrokerActor<
     this.pending.delete(streamSeq);
   }
 
-  private onNak(cmd: Extract<JetStreamCommand, { kind: 'nak' }>): void {
+  private onNak(cmd: NakCommand): void {
     const { streamSeq, delayMs } = cmd;
     const pendingAck = this.pending.get(streamSeq);
     if (!pendingAck) return;
@@ -448,7 +461,7 @@ export class JetStreamActor extends BrokerActor<
     this.pending.delete(streamSeq);
   }
 
-  private onTerm(cmd: Extract<JetStreamCommand, { kind: 'term' }>): void {
+  private onTerm(cmd: TermCommand): void {
     const { streamSeq, reason } = cmd;
     const pendingAck = this.pending.get(streamSeq);
     if (!pendingAck) return;
@@ -461,7 +474,7 @@ export class JetStreamActor extends BrokerActor<
     this.pending.delete(streamSeq);
   }
 
-  private onInProgress(cmd: Extract<JetStreamCommand, { kind: 'inProgress' }>): void {
+  private onInProgress(cmd: InProgressCommand): void {
     const { streamSeq } = cmd;
     const pendingAck = this.pending.get(streamSeq);
     if (!pendingAck) return;
