@@ -142,16 +142,27 @@ conservative SemVer.) See `docs/.../reference/version-policy.mdx`.
   relative imports (required by the build's module resolution).
 - Discriminated-union handling via **`ts-pattern`**
   (`match(x).with(…).exhaustive()`).
-- **Every `match` arm delegates to a private `onXxx` handler.** In an
-  actor's message handler (`onReceive`, `onCommand`, `onEvent`, or a
-  router it calls), every arm — each `.with(…)` **and** any `.otherwise(…)`
-  — is a thin call into a private method
-  (`.with({ kind: 'data' }, (m) => this.onData(m))`,
+- **Every `match` arm delegates to a private `onXxx` handler.** Wherever a
+  `match(…)` dispatches an **incoming message, event, or command** — an actor's
+  `onReceive`/`onCommand`/`onEvent` (or a router it calls), a cluster-event
+  subscription (`cluster.subscribe(evt => match(evt)…)`), or a wire/system-command
+  dispatcher — every arm (each `.with(…)` **and** any `.otherwise(…)`) is a thin
+  call into a private method (`.with({ kind: 'data' }, (m) => this.onData(m))`,
   `.otherwise((m) => this.onUnhandled(m))`), never an inline body, even a
-  one-liner — no exceptions. Name it `on` + the PascalCase `kind`
-  (`onData`, `onConnected`, `onCloseAccount`); type the parameter as the
-  narrowed variant (`Extract<TMsg, { kind: 'data' }>`) or omit it for
-  payload-free kinds. Keeps the matcher a scannable dispatch table.
+  one-liner — no exceptions. Name it `on` + the PascalCase discriminant
+  (`onData`, `onMemberUp`, `onCreate`); type the parameter as the **named variant
+  type** (see next bullet), or omit it for payload-free kinds. Keeps the matcher
+  a scannable dispatch table. **Exempt:** matches on *internal state* (a state
+  machine / behavior / directive reducer) or that *compute a value* in a helper
+  (config, codec, route, priority) stay inline.
+- **Discriminated unions are defined as named variant types.** Declare each
+  `kind`/`type`-tagged union as a union of **named** members
+  (`type Cmd = DepositCommand | WithdrawCommand | BalanceCommand`), never an
+  inline object-literal union. Name a variant `PascalCase(kind)` + a role suffix
+  matching the union (`Command`/`Event`/`Message`) — collision-safe (`Set`, `Get`,
+  `Publish` never bare); keep variant types module-local where the union is.
+  Handlers take the **named variant type** (`onDeposit(c: DepositCommand)`), not
+  `Extract<Union, { kind }>`.
 - HOCON config keys go through **`src/config/ConfigKeys.ts`** (typed,
   single source of truth). Options resolve with precedence:
   **explicit options > HOCON > built-in defaults**.
