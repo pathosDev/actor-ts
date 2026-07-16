@@ -1,7 +1,7 @@
 /**
  * One sharded entity per chat room.  PersistentActor — every
- * `SendMessage` is appended to the SQLite journal as a `MsgPosted`
- * event; recovery replays the room's history into in-memory state.
+ * `SendMessage` is appended to the SQLite journal as a `MsgPostedEvent`;
+ * recovery replays the room's history into in-memory state.
  *
  * Routing: ClusterSharding picks a node based on `entityId = roomName`
  * via the message extractor in `main.ts`.  At any moment a given
@@ -107,13 +107,13 @@ export function chatRoomTopic(room: RoomName): string {
 
 /* ----------------------------- internals ------------------------------ */
 
-interface MsgPosted {
+interface MsgPostedEvent {
   readonly kind: 'MsgPosted';
   readonly from: string;
   readonly text: string;
   readonly ts: number;
 }
-type ChatEvent = MsgPosted;
+type ChatEvent = MsgPostedEvent;
 
 interface ChatState {
   readonly history: ReadonlyArray<ChatMessage>;
@@ -170,7 +170,7 @@ export class ChatRoomActor extends PersistentActor<ChatRoomCommand, ChatEvent, C
       .exhaustive();
   }
 
-  private onMsgPosted(state: ChatState, m: MsgPosted): ChatState {
+  private onMsgPosted(state: ChatState, m: MsgPostedEvent): ChatState {
     const next = [...state.history, { from: m.from, text: m.text, ts: m.ts }];
     // Trim AFTER append so the most-recent N messages stay live —
     // older events live on in the journal but aren't kept resident.
@@ -181,7 +181,7 @@ export class ChatRoomActor extends PersistentActor<ChatRoomCommand, ChatEvent, C
 
   async onCommand(state: ChatState, cmd: ChatRoomCommand): Promise<void> {
     if (cmd.kind === 'SendMessage') {
-      const event: MsgPosted = {
+      const event: MsgPostedEvent = {
         kind: 'MsgPosted',
         from: cmd.from,
         text: cmd.text,

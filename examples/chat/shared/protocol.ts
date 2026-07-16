@@ -93,7 +93,7 @@ export interface RoomsMessage        { readonly type: 'rooms';         readonly 
 export interface RoomAddedMessage    { readonly type: 'room-added';    readonly name: RoomName }
 export interface RoomRemovedMessage  { readonly type: 'room-removed';  readonly name: RoomName }
 export interface HistoryMessage      { readonly type: 'history';       readonly room: RoomName; readonly messages: ReadonlyArray<ChatMessage> }
-export interface MessageMessage      { readonly type: 'message';       readonly room: RoomName; readonly from: string; readonly text: string; readonly ts: number }
+export interface RoomMessage         { readonly type: 'message';       readonly room: RoomName; readonly from: string; readonly text: string; readonly ts: number }
 export interface UsersMessage        { readonly type: 'users';         readonly room: RoomName; readonly users: ReadonlyArray<string> }
 export interface UserTypingMessage   { readonly type: 'user-typing';   readonly room: RoomName; readonly username: string }
 export interface ReadReceiptsMessage { readonly type: 'read-receipts'; readonly room: RoomName; readonly receipts: Readonly<Record<string, number>> }
@@ -106,7 +106,7 @@ export type ServerMessage =
   | RoomAddedMessage
   | RoomRemovedMessage
   | HistoryMessage
-  | MessageMessage
+  | RoomMessage
   | UsersMessage
   | UserTypingMessage
   | ReadReceiptsMessage

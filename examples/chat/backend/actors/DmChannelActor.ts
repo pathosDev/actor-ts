@@ -79,13 +79,13 @@ export interface DmBroadcast {
 
 /* ----------------------------- internals ------------------------------ */
 
-interface DmPosted {
+interface DmPostedEvent {
   readonly kind: 'DmPosted';
   readonly from: string;
   readonly text: string;
   readonly ts: number;
 }
-type DmEvent = DmPosted;
+type DmEvent = DmPostedEvent;
 
 interface DmState {
   readonly history: ReadonlyArray<ChatMessage>;
@@ -129,7 +129,7 @@ export class DmChannelActor extends PersistentActor<DmChannelCommand, DmEvent, D
       .exhaustive();
   }
 
-  private onDmPosted(state: DmState, m: DmPosted): DmState {
+  private onDmPosted(state: DmState, m: DmPostedEvent): DmState {
     const next = [...state.history, { from: m.from, text: m.text, ts: m.ts }];
     const trimmed =
       next.length > HISTORY_LIMIT ? next.slice(next.length - HISTORY_LIMIT) : next;
@@ -138,7 +138,7 @@ export class DmChannelActor extends PersistentActor<DmChannelCommand, DmEvent, D
 
   async onCommand(state: DmState, cmd: DmChannelCommand): Promise<void> {
     if (cmd.kind === 'SendDm') {
-      const event: DmPosted = {
+      const event: DmPostedEvent = {
         kind: 'DmPosted',
         from: cmd.from,
         text: cmd.text,
