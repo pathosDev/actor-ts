@@ -37,7 +37,13 @@ import { Envelope, Mailbox } from './Mailbox.js';
 import { BoundedMailbox } from '../mailbox/BoundedMailbox.js';
 import { DEFAULT_MAILBOX_CAPACITY, DEFAULT_MAILBOX_OVERFLOW } from '../util/Constants.js';
 import { LocalActorRef } from './LocalActorRef.js';
-import type { SystemCommand } from './SystemCommand.js';
+import type {
+  ChildTerminatedCommand,
+  FailureCommand,
+  RecreateCommand,
+  SystemCommand,
+  WatchNotifyCommand,
+} from './SystemCommand.js';
 import type { Cancellable } from '../Scheduler.js';
 import { match } from 'ts-pattern';
 import { fromNullable, type Option } from '../util/Option.js';
@@ -424,31 +430,39 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
 
   private async handleSystemCommand(cmd: SystemCommand): Promise<void> {
     await match(cmd)
-      .with({ kind: 'create' }, () => this.doCreate())
-      .with({ kind: 'terminate' }, () => this.doTerminate())
-      .with({ kind: 'recreate' }, (signal) => this.doRecreate(signal.cause))
-      .with({ kind: 'suspend' }, () => {
-        this.mailbox.suspend();
-        if (this.state === 'running') this.state = 'suspended';
-      })
-      .with({ kind: 'resume' }, () => {
-        this.mailbox.resume();
-        if (this.state === 'suspended') this.state = 'running';
-      })
-      .with({ kind: 'failure' }, (signal) => this.superviseChildFailure(signal.cause, signal.child, signal.message))
-      .with({ kind: 'childTerminated' }, (signal) => this.handleChildTerminated(signal.child))
-      .with({ kind: 'watchNotify' }, (signal) => {
-        this.mailbox.enqueue({ message: new Terminated(signal.target) as unknown as TMessage, sender: null });
-      })
-      .with({ kind: 'receiveTimeout' }, async () => {
-        if (this.state === 'running') {
-          await this.handleUserMessage({ message: ReceiveTimeout.instance as unknown as TMessage, sender: null });
-        }
-      })
+      .with({ kind: 'create' }, () => this.onCreate())
+      .with({ kind: 'terminate' }, () => this.onTerminate())
+      .with({ kind: 'recreate' }, (signal) => this.onRecreate(signal))
+      .with({ kind: 'suspend' }, () => this.onSuspend())
+      .with({ kind: 'resume' }, () => this.onResume())
+      .with({ kind: 'failure' }, (signal) => this.onFailure(signal))
+      .with({ kind: 'childTerminated' }, (signal) => this.onChildTerminated(signal))
+      .with({ kind: 'watchNotify' }, (signal) => this.onWatchNotify(signal))
+      .with({ kind: 'receiveTimeout' }, async () => this.onReceiveTimeout())
       .exhaustive();
   }
 
-  private async doCreate(): Promise<void> {
+  private onSuspend(): void {
+    this.mailbox.suspend();
+    if (this.state === 'running') this.state = 'suspended';
+  }
+
+  private onResume(): void {
+    this.mailbox.resume();
+    if (this.state === 'suspended') this.state = 'running';
+  }
+
+  private onWatchNotify(signal: WatchNotifyCommand): void {
+    this.mailbox.enqueue({ message: new Terminated(signal.target) as unknown as TMessage, sender: null });
+  }
+
+  private async onReceiveTimeout(): Promise<void> {
+    if (this.state === 'running') {
+      await this.handleUserMessage({ message: ReceiveTimeout.instance as unknown as TMessage, sender: null });
+    }
+  }
+
+  private async onCreate(): Promise<void> {
     try {
       const actor = this.props.config.factory();
       (actor as unknown as { _attach(ctx: ActorContext<TMessage>): void })._attach(this);
@@ -469,7 +483,7 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
     }
   }
 
-  private async doTerminate(): Promise<void> {
+  private async onTerminate(): Promise<void> {
     if (this.state === 'terminated' || this.state === 'terminating') return;
     this.state = 'terminating';
     this._clearReceiveTimer();
@@ -530,7 +544,8 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
     }
   }
 
-  private async doRecreate(cause: Error): Promise<void> {
+  private async onRecreate(signal: RecreateCommand): Promise<void> {
+    const cause = signal.cause;
     if (!this.actor) return;
 
     // Timers and stash belong to the outgoing instance.
@@ -584,7 +599,7 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
     const msg = env.message;
 
     if (msg === (PoisonPill.instance as unknown as TMessage)) {
-      await this.doTerminate();
+      await this.onTerminate();
       return;
     }
     if (msg === (Kill.instance as unknown as TMessage)) {
@@ -694,11 +709,10 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
     }
   }
 
-  private async superviseChildFailure(
-    cause: Error,
-    childRef: ActorRef,
-    message: unknown,
-  ): Promise<void> {
+  private async onFailure(signal: FailureCommand): Promise<void> {
+    const cause = signal.cause;
+    const childRef = signal.child;
+    const message = signal.message;
     const child = this.findChildByRef(childRef);
     if (!child) return;
 
@@ -750,7 +764,8 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
     return null;
   }
 
-  private async handleChildTerminated(childRef: ActorRef): Promise<void> {
+  private async onChildTerminated(signal: ChildTerminatedCommand): Promise<void> {
+    const childRef = signal.child;
     const key = childRef.path.name;
     if (this._children.has(key)) this._children.delete(key);
     // Any Terminated(childRef) owed to us was already delivered via the

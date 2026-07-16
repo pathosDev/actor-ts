@@ -285,7 +285,7 @@ export class Cluster {
    * payload is rewritten to a `WireActorRef` marker here — this is the
    * single chokepoint where every cross-node message leaves, so hooking
    * the encode step once covers all paths (sharding, pub-sub, singleton,
-   * direct remote-ref).  Receiving nodes decode in `handleEnvelope`.
+   * direct remote-ref).  Receiving nodes decode in `onEnvelope`.
    */
   _sendEnvelope(to: NodeAddress, env: EnvelopeMessage): void {
     const encoded: EnvelopeMessage = { ...env, body: encodeRefs(env.body, this.selfAddress) };
@@ -451,20 +451,26 @@ export class Cluster {
     this.failureDetector.heartbeat(from);
 
     match(msg)
-      .with({ t: 'heartbeat' }, (message) => this.handleHeartbeat(from, message))
-      .with({ t: 'heartbeat-ack' }, () => { /* already bumped fd */ })
-      .with({ t: 'gossip' }, (message) => this.handleGossip(message))
-      .with({ t: 'envelope' }, (message) => this.handleEnvelope(from, message))
-      .with({ t: 'leave' }, (message) => this.handleLeave(message))
-      .otherwise(() => {
-        // 'shard-map' and any custom extension wire-msgs handled by the
-        // registry; we intentionally fall through when no handler is set.
-        const custom = this.wireHandlers.get(msg.t);
-        if (custom) custom(msg, from);
-      });
+      .with({ t: 'heartbeat' }, (m) => this.onHeartbeat(from, m))
+      .with({ t: 'heartbeat-ack' }, () => this.onHeartbeatAck())
+      .with({ t: 'gossip' }, (m) => this.onGossip(m))
+      .with({ t: 'envelope' }, (m) => this.onEnvelope(from, m))
+      .with({ t: 'leave' }, (m) => this.onLeave(m))
+      .otherwise((m) => this.onUnhandledWire(m, from));
   }
 
-  private handleHeartbeat(_from: NodeAddress, msg: HeartbeatMessage): void {
+  private onHeartbeatAck(): void {
+    /* already bumped fd */
+  }
+
+  private onUnhandledWire(msg: WireMessage, from: NodeAddress): void {
+    // 'shard-map' and any custom extension wire-msgs handled by the
+    // registry; we intentionally fall through when no handler is set.
+    const custom = this.wireHandlers.get(msg.t);
+    if (custom) custom(msg, from);
+  }
+
+  private onHeartbeat(_from: NodeAddress, msg: HeartbeatMessage): void {
     const peer = NodeAddress.fromJSON(msg.from);
     this.failureDetector.heartbeat(peer);
     // Reply isn't strictly needed because send() also bumps the detector,
@@ -479,7 +485,7 @@ export class Cluster {
     }
   }
 
-  private handleGossip(msg: GossipMessage): void {
+  private onGossip(msg: GossipMessage): void {
     const sender = NodeAddress.fromJSON(msg.from);
     this.failureDetector.heartbeat(sender);
     this.log.debug(`gossip from ${sender}: ${msg.members.length} member(s)`);
@@ -506,7 +512,7 @@ export class Cluster {
     }
   }
 
-  private handleEnvelope(from: NodeAddress, msg: EnvelopeMessage): void {
+  private onEnvelope(from: NodeAddress, msg: EnvelopeMessage): void {
     // Re-install the originating MDC + active trace context for the
     // duration of dispatch (#53, #10).  Local refs that the
     // dispatcher subsequently `tell`s capture this same context onto
@@ -581,7 +587,7 @@ export class Cluster {
     }
   }
 
-  private handleLeave(msg: LeaveMessage): void {
+  private onLeave(msg: LeaveMessage): void {
     const peer = NodeAddress.fromJSON(msg.node);
     const existing = this.members.get(peer.toString());
     if (!existing) return;
@@ -651,7 +657,7 @@ export class Cluster {
         // `DowningProvider` is configured.  We delete here (rather
         // than tombstone) so a partition followed by a heal can
         // recover the peer — `partition+heal` semantics rely on
-        // this.  Definitive downing paths (`handleLeave`,
+        // this.  Definitive downing paths (`onLeave`,
         // `evaluateDowning` force-down) tombstone instead, which
         // prevents stale gossip from resurrecting the address.
         this.members.delete(member.address.toString());
