@@ -144,29 +144,33 @@ Transition-Deklarationen auf derselben Engine.
 import { Actor, ActorSystem, Props } from 'actor-ts';
 import { match } from 'ts-pattern';
 
-type Message =
-  | { readonly kind: 'configure'; readonly url: string }
-  | { readonly kind: 'request';   readonly payload: string };
+type ConfigureMessage = { readonly kind: 'configure'; readonly url: string };
+type RequestMessage = { readonly kind: 'request'; readonly payload: string };
+type Message = ConfigureMessage | RequestMessage;
 
 class Worker extends Actor<Message> {
   private url?: string;
 
   override onReceive(msg: Message): void {
     match(msg)
-      .with({ kind: 'configure' }, (m) => {
-        this.url = m.url;
-        // Jetzt drainen, was sich angesammelt hat, während wir unkonfiguriert waren.
-        this.context.unstashAll();
-      })
-      .with({ kind: 'request' }, (m) => {
-        if (!this.url) {
-          // Noch nicht bereit — diese Nachricht parken.
-          this.context.stash();
-          return;
-        }
-        this.log.info(`POST ${this.url}: ${m.payload}`);
-      })
+      .with({ kind: 'configure' }, (m) => this.onConfigure(m))
+      .with({ kind: 'request' }, (m) => this.onRequest(m))
       .exhaustive();
+  }
+
+  private onConfigure(m: ConfigureMessage): void {
+    this.url = m.url;
+    // Jetzt drainen, was sich angesammelt hat, während wir unkonfiguriert waren.
+    this.context.unstashAll();
+  }
+
+  private onRequest(m: RequestMessage): void {
+    if (!this.url) {
+      // Noch nicht bereit — diese Nachricht parken.
+      this.context.stash();
+      return;
+    }
+    this.log.info(`POST ${this.url}: ${m.payload}`);
   }
 }
 ```

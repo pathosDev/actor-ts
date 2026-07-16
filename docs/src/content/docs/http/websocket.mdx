@@ -16,7 +16,9 @@ import {
 } from 'actor-ts';
 import { match } from 'ts-pattern';
 
-type ClientMessage = { kind: 'setName'; name: string } | { kind: 'say'; text: string };
+type SetNameMessage = { kind: 'setName'; name: string };
+type SayMessage = { kind: 'say'; text: string };
+type ClientMessage = SetNameMessage | SayMessage;
 type ServerMessage = { kind: 'system'; text: string } | { kind: 'chat'; from: string; text: string };
 
 class ChatRoom extends WebsocketServerActor<ServerMessage, ClientMessage> {
@@ -24,14 +26,18 @@ class ChatRoom extends WebsocketServerActor<ServerMessage, ClientMessage> {
 
   onMessage(msg: ClientMessage): void {
     match(msg)
-      .with({ kind: 'setName' }, ({ name }) => {
-        this.names.set(this.connection.id, name);
-        this.reply({ kind: 'system', text: `hi ${name}` });
-      })
-      .with({ kind: 'say' }, ({ text }) => {
-        this.broadcast({ kind: 'chat', from: this.names.get(this.connection.id) ?? 'anon', text });
-      })
+      .with({ kind: 'setName' }, (m) => this.onSetName(m))
+      .with({ kind: 'say' }, (m) => this.onSay(m))
       .exhaustive();
+  }
+
+  private onSetName(m: SetNameMessage): void {
+    this.names.set(this.connection.id, m.name);
+    this.reply({ kind: 'system', text: `hi ${m.name}` });
+  }
+
+  private onSay(m: SayMessage): void {
+    this.broadcast({ kind: 'chat', from: this.names.get(this.connection.id) ?? 'anon', text: m.text });
   }
 
   override onClientDisconnected(c: WebsocketConnection<ServerMessage>): void {

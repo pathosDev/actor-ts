@@ -53,21 +53,25 @@ nicht das, was das Framework verwendet.
 import { Actor, ActorSystem, Props, type ActorRef } from 'actor-ts';
 import { match } from 'ts-pattern';
 
-type CounterCommand =
-  | { readonly kind: 'inc' }
-  | { readonly kind: 'dec' }
-  | { readonly kind: 'get'; readonly replyTo: ActorRef<number> };
+type IncCommand = { readonly kind: 'inc' };
+type DecCommand = { readonly kind: 'dec' };
+type GetCommand = { readonly kind: 'get'; readonly replyTo: ActorRef<number> };
+type CounterCommand = IncCommand | DecCommand | GetCommand;
 
 class Counter extends Actor<CounterCommand> {
   private count = 0;
 
   override onReceive(cmd: CounterCommand): void {
     match(cmd)
-      .with({ kind: 'inc' }, () => { this.count++; })
-      .with({ kind: 'dec' }, () => { this.count--; })
-      .with({ kind: 'get' }, (m) => m.replyTo.tell(this.count))
+      .with({ kind: 'inc' }, () => this.onInc())
+      .with({ kind: 'dec' }, () => this.onDec())
+      .with({ kind: 'get' }, (m) => this.onGet(m))
       .exhaustive();
   }
+
+  private onInc(): void { this.count++; }
+  private onDec(): void { this.count--; }
+  private onGet(m: GetCommand): void { m.replyTo.tell(this.count); }
 }
 
 const system = ActorSystem.create('counters');

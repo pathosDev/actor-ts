@@ -23,13 +23,13 @@ import { PersistentActor, ActorSystem, ActorSystemOptions, Props } from 'actor-t
 import { InMemoryJournal, InMemorySnapshotStore } from 'actor-ts';
 import { match } from 'ts-pattern';
 
-type Command =
-  | { kind: 'deposit'; amount: number }
-  | { kind: 'withdraw'; amount: number };
+type DepositCommand = { kind: 'deposit'; amount: number };
+type WithdrawCommand = { kind: 'withdraw'; amount: number };
+type Command = DepositCommand | WithdrawCommand;
 
-type Event =
-  | { kind: 'deposited'; amount: number; ts: number }
-  | { kind: 'withdrawn'; amount: number; ts: number };
+type DepositedEvent = { kind: 'deposited'; amount: number; ts: number };
+type WithdrawnEvent = { kind: 'withdrawn'; amount: number; ts: number };
+type Event = DepositedEvent | WithdrawnEvent;
 
 const actorSystemOptions = ActorSystemOptions.create().withPersistence({
     journal:       new InMemoryJournal(),
@@ -45,32 +45,44 @@ class Account extends PersistentActor<Command, Event, State> {
   // Pure: state + event → new state.  Runs both on persist + recovery.
   onEvent(state: State, e: Event): State {
     return match(e)
-      .with({ kind: 'deposited' }, (ev) => ({ balance: state.balance + ev.amount }))
-      .with({ kind: 'withdrawn' }, (ev) => ({ balance: state.balance - ev.amount }))
+      .with({ kind: 'deposited' }, (ev) => this.onDeposited(state, ev))
+      .with({ kind: 'withdrawn' }, (ev) => this.onWithdrawn(state, ev))
       .exhaustive();
+  }
+
+  private onDeposited(state: State, ev: DepositedEvent): State {
+    return { balance: state.balance + ev.amount };
+  }
+
+  private onWithdrawn(state: State, ev: WithdrawnEvent): State {
+    return { balance: state.balance - ev.amount };
   }
 
   // Handle a command — validate, persist if valid.
   onCommand(state: State, cmd: Command): void {
     match(cmd)
-      .with({ kind: 'deposit' }, (c) => {
-        this.persist(
-          { kind: 'deposited', amount: c.amount, ts: Date.now() },
-          (next) => { /* side effects with the new state */ },
-        );
-      })
-      .with({ kind: 'withdraw' }, (c) => {
-        if (state.balance < c.amount) {
-          // Reject — don't persist anything.
-          this.log.warn(`insufficient funds`);
-          return;
-        }
-        this.persist(
-          { kind: 'withdrawn', amount: c.amount, ts: Date.now() },
-          () => {},
-        );
-      })
+      .with({ kind: 'deposit' }, (c) => this.onDeposit(c))
+      .with({ kind: 'withdraw' }, (c) => this.onWithdraw(state, c))
       .exhaustive();
+  }
+
+  private onDeposit(c: DepositCommand): void {
+    this.persist(
+      { kind: 'deposited', amount: c.amount, ts: Date.now() },
+      (next) => { /* side effects with the new state */ },
+    );
+  }
+
+  private onWithdraw(state: State, c: WithdrawCommand): void {
+    if (state.balance < c.amount) {
+      // Reject — don't persist anything.
+      this.log.warn(`insufficient funds`);
+      return;
+    }
+    this.persist(
+      { kind: 'withdrawn', amount: c.amount, ts: Date.now() },
+      () => {},
+    );
   }
 }
 

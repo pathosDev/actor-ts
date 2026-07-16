@@ -50,10 +50,10 @@ import { DurableStateActor, DurableStateOptions, ActorSystem, Props } from 'acto
 import { InMemoryDurableStateStore } from 'actor-ts';
 import { match } from 'ts-pattern';
 
-type CartCommand =
-  | { kind: 'add';    sku: string }
-  | { kind: 'remove'; sku: string }
-  | { kind: 'view';   replyTo: ActorRef<State> };
+type AddCommand = { kind: 'add'; sku: string };
+type RemoveCommand = { kind: 'remove'; sku: string };
+type ViewCommand = { kind: 'view'; replyTo: ActorRef<State> };
+type CartCommand = AddCommand | RemoveCommand | ViewCommand;
 
 interface State { items: string[]; }
 
@@ -62,10 +62,22 @@ class Cart extends DurableStateActor<CartCommand, State> {
 
   override async onReceive(cmd: CartCommand): Promise<void> {
     await match(cmd)
-      .with({ kind: 'add' },    (c) => this.persist({ items: [...this.state.items, c.sku] }))
-      .with({ kind: 'remove' }, (c) => this.persist({ items: this.state.items.filter(s => s !== c.sku) }))
-      .with({ kind: 'view' },   (c) => { c.replyTo.tell(this.state); })
+      .with({ kind: 'add' },    (c) => this.onAdd(c))
+      .with({ kind: 'remove' }, (c) => this.onRemove(c))
+      .with({ kind: 'view' },   (c) => this.onView(c))
       .exhaustive();
+  }
+
+  private onAdd(c: AddCommand): Promise<void> {
+    return this.persist({ items: [...this.state.items, c.sku] });
+  }
+
+  private onRemove(c: RemoveCommand): Promise<void> {
+    return this.persist({ items: this.state.items.filter(s => s !== c.sku) });
+  }
+
+  private onView(c: ViewCommand): void {
+    c.replyTo.tell(this.state);
   }
 }
 
