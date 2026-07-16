@@ -26,8 +26,7 @@ export interface CounterGetState {
 }
 export type CounterCommand = CounterIncrement | CounterGetState;
 
-export interface CounterIncremented { readonly kind: 'incremented' }
-export type CounterEvent = CounterIncremented;
+export type CounterEvent = { readonly kind: 'incremented' };
 
 export interface CounterState { count: number }
 

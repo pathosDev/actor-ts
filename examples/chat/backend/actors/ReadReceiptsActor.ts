@@ -37,21 +37,21 @@ import { LWWMap } from '../../../../src/crdt/LWWMap.js';
 
 /* --------------------------- public messages --------------------------- */
 
-export interface UpdateCommand      { readonly kind: 'Update';      readonly room: string; readonly username: string; readonly ts: number }
-export interface SubscribeCommand   { readonly kind: 'Subscribe';   readonly room: string; readonly ref: ActorRef<ReceiptsChanged> }
-export interface UnsubscribeCommand { readonly kind: 'Unsubscribe'; readonly room: string; readonly ref: ActorRef<ReceiptsChanged> }
+export type UpdateCommand      = { readonly kind: 'Update';      readonly room: string; readonly username: string; readonly ts: number };
+export type SubscribeCommand   = { readonly kind: 'Subscribe';   readonly room: string; readonly ref: ActorRef<ReceiptsChanged> };
+export type UnsubscribeCommand = { readonly kind: 'Unsubscribe'; readonly room: string; readonly ref: ActorRef<ReceiptsChanged> };
 
 export type ReadReceiptsCommand =
   | UpdateCommand
   | SubscribeCommand
   | UnsubscribeCommand;
 
-export interface ReceiptsChanged {
+export type ReceiptsChanged = {
   readonly kind: 'ReceiptsChanged';
   readonly room: string;
   /** Username → read-up-to timestamp (ms since epoch). */
   readonly receipts: Readonly<Record<string, number>>;
-}
+};
 
 /** DD key for a room's read-receipts.  Same `room` value used for
  *  chat rooms (`general`) and DM "rooms" (`@bob`) — the leading `@`

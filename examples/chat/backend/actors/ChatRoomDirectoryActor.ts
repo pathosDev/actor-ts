@@ -36,10 +36,10 @@ import { DEFAULT_ROOMS, isRoomName, type RoomName } from '../../shared/rooms.js'
 
 /* --------------------------- public messages --------------------------- */
 
-export interface CreateCommand      { readonly kind: 'Create';      readonly name: string;                          readonly replyTo?: ActorRef<CreateResult> }
-export interface GetRoomsCommand    { readonly kind: 'GetRooms';    readonly replyTo: ActorRef<RoomsChanged> }
-export interface SubscribeCommand   { readonly kind: 'Subscribe';   readonly ref: ActorRef<RoomsChanged | RoomAdded | RoomRemoved> }
-export interface UnsubscribeCommand { readonly kind: 'Unsubscribe'; readonly ref: ActorRef<RoomsChanged | RoomAdded | RoomRemoved> }
+export type CreateCommand      = { readonly kind: 'Create';      readonly name: string;                          readonly replyTo?: ActorRef<CreateResult> };
+export type GetRoomsCommand    = { readonly kind: 'GetRooms';    readonly replyTo: ActorRef<RoomsChanged> };
+export type SubscribeCommand   = { readonly kind: 'Subscribe';   readonly ref: ActorRef<RoomsChanged | RoomAdded | RoomRemoved> };
+export type UnsubscribeCommand = { readonly kind: 'Unsubscribe'; readonly ref: ActorRef<RoomsChanged | RoomAdded | RoomRemoved> };
 
 export type ChatRoomDirectoryCommand =
   | CreateCommand
@@ -47,20 +47,20 @@ export type ChatRoomDirectoryCommand =
   | SubscribeCommand
   | UnsubscribeCommand;
 
-export interface RoomsChanged {
+export type RoomsChanged = {
   readonly kind: 'RoomsChanged';
   readonly rooms: ReadonlyArray<RoomName>;
-}
+};
 
-export interface RoomAdded {
+export type RoomAdded = {
   readonly kind: 'RoomAdded';
   readonly name: RoomName;
-}
+};
 
-export interface RoomRemoved {
+export type RoomRemoved = {
   readonly kind: 'RoomRemoved';
   readonly name: RoomName;
-}
+};
 
 export type CreateResult =
   | { readonly kind: 'CreateOk';      readonly name: RoomName }

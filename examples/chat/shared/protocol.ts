@@ -60,17 +60,17 @@ export interface ChatMessage {
 
 /* --------------------------- Client → Server --------------------------- */
 
-export interface LoginMessage           { readonly type: 'login';              readonly username: string; readonly password: string }
-export interface ResumeMessage          { readonly type: 'resume';             readonly token: string }
-export interface LogoutMessage          { readonly type: 'logout' }
-export interface SendMessage            { readonly type: 'send';               readonly room: RoomName;   readonly text: string }
-export interface JoinMessage            { readonly type: 'join';               readonly room: RoomName }
-export interface LeaveMessage           { readonly type: 'leave';              readonly room: RoomName }
-export interface SwitchActiveRoomMessage { readonly type: 'switch-active-room'; readonly room: RoomName }
-export interface CreateRoomMessage      { readonly type: 'create-room';        readonly name: string }
-export interface TypingMessage          { readonly type: 'typing';             readonly room: RoomName }
-export interface ReadUpToMessage        { readonly type: 'read-up-to';         readonly room: RoomName; readonly ts: number }
-export interface PingMessage            { readonly type: 'ping' }
+export type LoginMessage           = { readonly type: 'login';              readonly username: string; readonly password: string };
+export type ResumeMessage          = { readonly type: 'resume';             readonly token: string };
+export type LogoutMessage          = { readonly type: 'logout' };
+export type SendMessage            = { readonly type: 'send';               readonly room: RoomName;   readonly text: string };
+export type JoinMessage            = { readonly type: 'join';               readonly room: RoomName };
+export type LeaveMessage           = { readonly type: 'leave';              readonly room: RoomName };
+export type SwitchActiveRoomMessage = { readonly type: 'switch-active-room'; readonly room: RoomName };
+export type CreateRoomMessage      = { readonly type: 'create-room';        readonly name: string };
+export type TypingMessage          = { readonly type: 'typing';             readonly room: RoomName };
+export type ReadUpToMessage        = { readonly type: 'read-up-to';         readonly room: RoomName; readonly ts: number };
+export type PingMessage            = { readonly type: 'ping' };
 
 export type ClientMessage =
   | LoginMessage
@@ -87,17 +87,17 @@ export type ClientMessage =
 
 /* --------------------------- Server → Client --------------------------- */
 
-export interface LoggedInMessage     { readonly type: 'logged-in';     readonly username: string; readonly token: string }
-export interface LoginFailedMessage  { readonly type: 'login-failed';  readonly reason: string }
-export interface RoomsMessage        { readonly type: 'rooms';         readonly rooms: ReadonlyArray<RoomName> }
-export interface RoomAddedMessage    { readonly type: 'room-added';    readonly name: RoomName }
-export interface RoomRemovedMessage  { readonly type: 'room-removed';  readonly name: RoomName }
-export interface HistoryMessage      { readonly type: 'history';       readonly room: RoomName; readonly messages: ReadonlyArray<ChatMessage> }
-export interface RoomMessage         { readonly type: 'message';       readonly room: RoomName; readonly from: string; readonly text: string; readonly ts: number }
-export interface UsersMessage        { readonly type: 'users';         readonly room: RoomName; readonly users: ReadonlyArray<string> }
-export interface UserTypingMessage   { readonly type: 'user-typing';   readonly room: RoomName; readonly username: string }
-export interface ReadReceiptsMessage { readonly type: 'read-receipts'; readonly room: RoomName; readonly receipts: Readonly<Record<string, number>> }
-export interface SystemMessage       { readonly type: 'system';        readonly text: string }
+export type LoggedInMessage     = { readonly type: 'logged-in';     readonly username: string; readonly token: string };
+export type LoginFailedMessage  = { readonly type: 'login-failed';  readonly reason: string };
+export type RoomsMessage        = { readonly type: 'rooms';         readonly rooms: ReadonlyArray<RoomName> };
+export type RoomAddedMessage    = { readonly type: 'room-added';    readonly name: RoomName };
+export type RoomRemovedMessage  = { readonly type: 'room-removed';  readonly name: RoomName };
+export type HistoryMessage      = { readonly type: 'history';       readonly room: RoomName; readonly messages: ReadonlyArray<ChatMessage> };
+export type RoomMessage         = { readonly type: 'message';       readonly room: RoomName; readonly from: string; readonly text: string; readonly ts: number };
+export type UsersMessage        = { readonly type: 'users';         readonly room: RoomName; readonly users: ReadonlyArray<string> };
+export type UserTypingMessage   = { readonly type: 'user-typing';   readonly room: RoomName; readonly username: string };
+export type ReadReceiptsMessage = { readonly type: 'read-receipts'; readonly room: RoomName; readonly receipts: Readonly<Record<string, number>> };
+export type SystemMessage       = { readonly type: 'system';        readonly text: string };
 
 export type ServerMessage =
   | LoggedInMessage

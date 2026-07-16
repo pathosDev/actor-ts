@@ -43,11 +43,11 @@ import { HISTORY_LIMIT, SNAPSHOT_EVERY_N_EVENTS } from './ChatRoomActor.js';
 
 /* --------------------------- public messages --------------------------- */
 
-export interface DirectMessageHistoryReply {
+export type DirectMessageHistoryReply = {
   readonly kind: 'DmHistoryReply';
   readonly pairId: string;
   readonly messages: ReadonlyArray<ChatMessage>;
-}
+};
 
 export type DirectMessageChannelCommand =
   | {
@@ -68,24 +68,23 @@ export type DirectMessageChannelCommand =
  * DM see the same payload — they distinguish "incoming" vs "outgoing"
  * client-side by comparing `from` to their own username.
  */
-export interface DirectMessageBroadcast {
+export type DirectMessageBroadcast = {
   readonly kind: 'DmBroadcast';
   readonly pairId: string;
   readonly from: string;
   readonly to: string;
   readonly text: string;
   readonly ts: number;
-}
+};
 
 /* ----------------------------- internals ------------------------------ */
 
-interface DirectMessagePostedEvent {
+type DirectMessageEvent = {
   readonly kind: 'DmPosted';
   readonly from: string;
   readonly text: string;
   readonly ts: number;
-}
-type DirectMessageEvent = DirectMessagePostedEvent;
+};
 
 interface DirectMessageState {
   readonly history: ReadonlyArray<ChatMessage>;
@@ -135,7 +134,7 @@ export class DirectMessageChannelActor extends PersistentActor<
 
   private onDirectMessagePosted(
     state: DirectMessageState,
-    m: DirectMessagePostedEvent,
+    m: DirectMessageEvent,
   ): DirectMessageState {
     const next = [...state.history, { from: m.from, text: m.text, ts: m.ts }];
     const trimmed =
@@ -145,7 +144,7 @@ export class DirectMessageChannelActor extends PersistentActor<
 
   async onCommand(state: DirectMessageState, cmd: DirectMessageChannelCommand): Promise<void> {
     if (cmd.kind === 'SendDm') {
-      const event: DirectMessagePostedEvent = {
+      const event: DirectMessageEvent = {
         kind: 'DmPosted',
         from: cmd.from,
         text: cmd.text,

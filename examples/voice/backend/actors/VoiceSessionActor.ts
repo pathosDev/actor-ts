@@ -101,31 +101,31 @@ export function userServiceKey(username: string): ServiceKey<BinaryFrame | Binar
 /* ----------------------------- mailbox shape ----------------------------- */
 
 /** Audio chunk routed peer-to-peer or via PubSub topic. */
-export interface BinaryFrame {
+export type BinaryFrame = {
   readonly kind: 'BinaryFrame';
   readonly senderUsername: string;
   readonly opusChunk: Uint8Array;
-}
+};
 
 /** Synthetic "this sender's press is over" marker sent on voice-stop. */
-export interface BinaryStreamEnd {
+export type BinaryStreamEnd = {
   readonly kind: 'BinaryStreamEnd';
   readonly senderUsername: string;
-}
+};
 
-export interface TextInboundFrame {
+export type TextInboundFrame = {
   readonly kind: 'text';
   readonly data: string;
-}
+};
 
-export interface BinaryInboundFrame {
+export type BinaryInboundFrame = {
   readonly kind: 'binary';
   readonly data: Uint8Array;
-}
+};
 
 export type InboundFrame = TextInboundFrame | BinaryInboundFrame;
 
-export interface SocketClosed { readonly kind: 'socket-closed' }
+export type SocketClosed = { readonly kind: 'socket-closed' };
 
 /**
  * The outbound surface this actor needs — text (JSON control frames)
@@ -158,29 +158,29 @@ export interface VoiceSessionDeps {
 
 type Phase = 'Unauthenticated' | 'Authenticated';
 
-interface IdleTarget {
+type IdleTarget = {
   readonly kind: 'idle';
-}
+};
 
-interface PeerTarget {
+type PeerTarget = {
   readonly kind: 'peer';
   readonly targetUsername: string;
   cachedRefs: ReadonlyArray<ActorRef<BinaryFrame | BinaryStreamEnd>>;
   /** True while we're awaiting a Listing for the press. */
   pendingFind: boolean;
-}
+};
 
-interface GroupTarget {
+type GroupTarget = {
   readonly kind: 'group';
   readonly groupName: GroupName;
   readonly topic: string;
-}
+};
 
-interface RoomTarget {
+type RoomTarget = {
   readonly kind: 'room';
   readonly roomName: VoiceRoomName;
   readonly topic: string;
-}
+};
 
 type CurrentTarget = IdleTarget | PeerTarget | GroupTarget | RoomTarget;
 

@@ -1,6 +1,6 @@
 /**
  * One sharded entity per chat room.  PersistentActor — every
- * `SendMessage` is appended to the SQLite journal as a `MsgPostedEvent`;
+ * `SendMessage` is appended to the SQLite journal as a `MessagePostedEvent`;
  * recovery replays the room's history into in-memory state.
  *
  * Routing: ClusterSharding picks a node based on `entityId = roomName`
@@ -47,11 +47,11 @@ export const SNAPSHOT_EVERY_N_EVENTS = 100;
 
 /* --------------------------- public messages --------------------------- */
 
-export interface HistoryReply {
+export type HistoryReply = {
   readonly kind: 'HistoryReply';
   readonly room: RoomName;
   readonly messages: ReadonlyArray<ChatMessage>;
-}
+};
 
 export type ChatRoomCommand =
   | {
@@ -72,13 +72,13 @@ export type ChatRoomCommand =
  * message.  Subscribers (UserSessionActors) translate this into a
  * `ServerMessage` of `type: 'message'` and forward over their socket.
  */
-export interface RoomBroadcast {
+export type RoomBroadcast = {
   readonly kind: 'RoomBroadcast';
   readonly room: RoomName;
   readonly from: string;
   readonly text: string;
   readonly ts: number;
-}
+};
 
 /**
  * Ephemeral "user is typing" broadcast — published on the same
@@ -94,11 +94,11 @@ export interface RoomBroadcast {
  * design might split into a separate topic if typing fan-out
  * dominates message fan-out.  Added in #103.
  */
-export interface TypingBroadcast {
+export type TypingBroadcast = {
   readonly kind: 'TypingBroadcast';
   readonly room: RoomName;
   readonly from: string;
-}
+};
 
 /** Topic name a room broadcasts on. */
 export function chatRoomTopic(room: RoomName): string {
@@ -107,13 +107,12 @@ export function chatRoomTopic(room: RoomName): string {
 
 /* ----------------------------- internals ------------------------------ */
 
-interface MsgPostedEvent {
+type ChatEvent = {
   readonly kind: 'MsgPosted';
   readonly from: string;
   readonly text: string;
   readonly ts: number;
-}
-type ChatEvent = MsgPostedEvent;
+};
 
 interface ChatState {
   readonly history: ReadonlyArray<ChatMessage>;
@@ -166,11 +165,11 @@ export class ChatRoomActor extends PersistentActor<ChatRoomCommand, ChatEvent, C
 
   onEvent(state: ChatState, e: ChatEvent): ChatState {
     return match(e)
-      .with({ kind: 'MsgPosted' }, (m) => this.onMsgPosted(state, m))
+      .with({ kind: 'MsgPosted' }, (m) => this.onMessagePosted(state, m))
       .exhaustive();
   }
 
-  private onMsgPosted(state: ChatState, m: MsgPostedEvent): ChatState {
+  private onMessagePosted(state: ChatState, m: ChatEvent): ChatState {
     const next = [...state.history, { from: m.from, text: m.text, ts: m.ts }];
     // Trim AFTER append so the most-recent N messages stay live —
     // older events live on in the journal but aren't kept resident.
@@ -181,7 +180,7 @@ export class ChatRoomActor extends PersistentActor<ChatRoomCommand, ChatEvent, C
 
   async onCommand(state: ChatState, cmd: ChatRoomCommand): Promise<void> {
     if (cmd.kind === 'SendMessage') {
-      const event: MsgPostedEvent = {
+      const event: ChatEvent = {
         kind: 'MsgPosted',
         from: cmd.from,
         text: cmd.text,

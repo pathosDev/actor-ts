@@ -36,31 +36,31 @@ export function roomUsersKey(room: string): string {
 
 /* ----------------------------- public messages ------------------------- */
 
-interface AddCommand {
+type AddCommand = {
   readonly kind: 'Add';
   readonly key: string;
   readonly username: string;
-}
-interface RemoveCommand {
+};
+type RemoveCommand = {
   readonly kind: 'Remove';
   readonly key: string;
   readonly username: string;
-}
-interface SubscribeCommand {
+};
+type SubscribeCommand = {
   readonly kind: 'Subscribe';
   readonly key: string;
   readonly ref: ActorRef<PresenceChanged>;
-}
-interface UnsubscribeCommand {
+};
+type UnsubscribeCommand = {
   readonly kind: 'Unsubscribe';
   readonly key: string;
   readonly ref: ActorRef<PresenceChanged>;
-}
-interface GetUsersCommand {
+};
+type GetUsersCommand = {
   readonly kind: 'GetUsers';
   readonly key: string;
   readonly replyTo: ActorRef<PresenceChanged>;
-}
+};
 
 export type VoicePresenceCommand =
   | AddCommand
@@ -69,11 +69,11 @@ export type VoicePresenceCommand =
   | UnsubscribeCommand
   | GetUsersCommand;
 
-export interface PresenceChanged {
+export type PresenceChanged = {
   readonly kind: 'PresenceChanged';
   readonly key: string;
   readonly users: ReadonlyArray<string>;
-}
+};
 
 /* ------------------------------- internals ----------------------------- */
 

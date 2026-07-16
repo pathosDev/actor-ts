@@ -29,11 +29,11 @@ import type { RoomName } from '../../shared/rooms.js';
 
 /* --------------------------- public messages --------------------------- */
 
-export interface AddToRoomCommand      { readonly kind: 'AddToRoom';      readonly room: RoomName; readonly username: string }
-export interface RemoveFromRoomCommand { readonly kind: 'RemoveFromRoom'; readonly room: RoomName; readonly username: string }
-export interface SubscribeCommand      { readonly kind: 'Subscribe';      readonly room: RoomName; readonly ref: ActorRef<UsersChanged> }
-export interface UnsubscribeCommand    { readonly kind: 'Unsubscribe';    readonly room: RoomName; readonly ref: ActorRef<UsersChanged> }
-export interface GetUsersCommand       { readonly kind: 'GetUsers';       readonly room: RoomName; readonly replyTo: ActorRef<UsersChanged> }
+export type AddToRoomCommand      = { readonly kind: 'AddToRoom';      readonly room: RoomName; readonly username: string };
+export type RemoveFromRoomCommand = { readonly kind: 'RemoveFromRoom'; readonly room: RoomName; readonly username: string };
+export type SubscribeCommand      = { readonly kind: 'Subscribe';      readonly room: RoomName; readonly ref: ActorRef<UsersChanged> };
+export type UnsubscribeCommand    = { readonly kind: 'Unsubscribe';    readonly room: RoomName; readonly ref: ActorRef<UsersChanged> };
+export type GetUsersCommand       = { readonly kind: 'GetUsers';       readonly room: RoomName; readonly replyTo: ActorRef<UsersChanged> };
 
 export type OnlineUsersCommand =
   | AddToRoomCommand
@@ -42,11 +42,11 @@ export type OnlineUsersCommand =
   | UnsubscribeCommand
   | GetUsersCommand;
 
-export interface UsersChanged {
+export type UsersChanged = {
   readonly kind: 'UsersChanged';
   readonly room: RoomName;
   readonly users: ReadonlyArray<string>;
-}
+};
 
 /** DD key for a room's online-user set. */
 function ddKey(room: RoomName): string {

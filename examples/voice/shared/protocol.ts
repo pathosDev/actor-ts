@@ -40,53 +40,53 @@ export type Username = string;
 
 /* — auth (identical to chat) — */
 
-export interface LoginMessage {
+export type LoginMessage = {
   readonly type: 'login';
   readonly username: string;
   readonly password: string;
-}
-export interface ResumeMessage {
+};
+export type ResumeMessage = {
   readonly type: 'resume';
   readonly token: string;
-}
-export interface LogoutMessage {
+};
+export type LogoutMessage = {
   readonly type: 'logout';
-}
-export interface PingMessage {
+};
+export type PingMessage = {
   readonly type: 'ping';
-}
+};
 
 /* — voice control plane — */
 
-export interface VoiceTargetPeerMessage {
+export type VoiceTargetPeerMessage = {
   readonly type: 'voice-target';
   readonly mode: 'peer';
   readonly target: Username;
-}
-export interface VoiceTargetGroupMessage {
+};
+export type VoiceTargetGroupMessage = {
   readonly type: 'voice-target';
   readonly mode: 'group';
   readonly group: GroupName;
-}
-export interface VoiceTargetRoomMessage {
+};
+export type VoiceTargetRoomMessage = {
   readonly type: 'voice-target';
   readonly mode: 'room';
   readonly room: VoiceRoomName;
-}
-export interface VoiceStopMessage {
+};
+export type VoiceStopMessage = {
   readonly type: 'voice-stop';
-}
+};
 
 /* — room membership — */
 
-export interface RoomEnterMessage {
+export type RoomEnterMessage = {
   readonly type: 'room-enter';
   readonly room: VoiceRoomName;
-}
-export interface RoomLeaveMessage {
+};
+export type RoomLeaveMessage = {
   readonly type: 'room-leave';
   readonly room: VoiceRoomName;
-}
+};
 
 export type ClientMessage =
   // — auth (identical to chat) —

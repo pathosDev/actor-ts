@@ -89,15 +89,15 @@ import type {
 /* --------------------------- mailbox shape --------------------------- */
 
 /** Text frame from the route-attached listener. */
-export interface TextFrame   { readonly kind: 'text';   readonly data: string }
+export type TextFrame   = { readonly kind: 'text';   readonly data: string };
 /** Binary frame from the route-attached listener. */
-export interface BinaryFrame { readonly kind: 'binary'; readonly data: Uint8Array }
+export type BinaryFrame = { readonly kind: 'binary'; readonly data: Uint8Array };
 
 /** Inbound frame from the route-attached listener. */
 export type InboundFrame = TextFrame | BinaryFrame;
 
 /** Synthetic close signal sent by the WebSocket hub when the socket closes. */
-export interface SocketClosed { readonly kind: 'socket-closed' }
+export type SocketClosed = { readonly kind: 'socket-closed' };
 
 /**
  * The minimal outbound surface this actor needs — a text-frame sink and
