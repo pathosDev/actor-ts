@@ -37,14 +37,14 @@ function weakEtag(stat: FileStat): string {
 }
 
 /** If-None-Match (weak compare, `*`) takes precedence over If-Modified-Since. */
-function isNotModified(req: HttpRequest, etag: string | undefined, mtimeMs: number, lastModified: boolean): boolean {
-  const inm = req.headers['if-none-match'];
+function isNotModified(request: HttpRequest, etag: string | undefined, mtimeMs: number, lastModified: boolean): boolean {
+  const inm = request.headers['if-none-match'];
   if (etag && inm !== undefined) {
     if (inm.trim() === '*') return true;
     const strip = (t: string): string => t.trim().replace(/^W\//, '');
     return inm.split(',').some((t) => strip(t) === strip(etag));
   }
-  const ims = req.headers['if-modified-since'];
+  const ims = request.headers['if-modified-since'];
   if (lastModified && ims !== undefined) {
     const since = Date.parse(ims);
     // second-granularity comparison (Last-Modified has no sub-second part)
@@ -80,12 +80,12 @@ function parseRange(header: string, size: number): ParsedRange {
 async function serveResolvedFile(
   fsPath: string,
   stat: FileStat,
-  req: HttpRequest,
+  request: HttpRequest,
   settings: ResolvedStaticOptions,
   servedName: string,
 ): Promise<HttpResponse> {
   if (stat.size > settings.maxFileSize) return tooLarge();
-  const isHead = req.method === 'HEAD';
+  const isHead = request.method === 'HEAD';
   const etag = settings.etag ? weakEtag(stat) : undefined;
   const lastModified = settings.lastModified ? new Date(stat.mtimeMs).toUTCString() : undefined;
 
@@ -99,13 +99,13 @@ async function serveResolvedFile(
   if (lastModified) headers['last-modified'] = lastModified;
   if (settings.ranges) headers['accept-ranges'] = 'bytes';
 
-  if (isNotModified(req, etag, stat.mtimeMs, settings.lastModified)) {
+  if (isNotModified(request, etag, stat.mtimeMs, settings.lastModified)) {
     return { status: Status.NotModified, headers, contentType, body: null };
   }
 
-  const rangeHeader = settings.ranges ? req.headers['range'] : undefined;
+  const rangeHeader = settings.ranges ? request.headers['range'] : undefined;
   if (rangeHeader !== undefined) {
-    const ifRange = req.headers['if-range'];
+    const ifRange = request.headers['if-range'];
     // A weak ETag can never satisfy If-Range; only an exact Last-Modified match does.
     const honourRange = ifRange === undefined || ifRange === lastModified;
     if (honourRange) {
@@ -131,7 +131,7 @@ async function serveResolvedFile(
   return { status: Status.OK, headers, contentType, body: await readFileBytes(fsPath) };
 }
 
-async function renderListing(fsPath: string, req: HttpRequest, atMountRoot: boolean, settings: ResolvedStaticOptions): Promise<HttpResponse> {
+async function renderListing(fsPath: string, request: HttpRequest, atMountRoot: boolean, settings: ResolvedStaticOptions): Promise<HttpResponse> {
   const entries: ListingEntry[] = [];
   for (const entry of await readDirectory(fsPath)) {
     if (settings.dotfiles === 'deny' && entry.name.startsWith('.')) continue;
@@ -139,16 +139,16 @@ async function renderListing(fsPath: string, req: HttpRequest, atMountRoot: bool
     if (!stat || (!stat.isFile && !stat.isDirectory)) continue; // skip broken symlinks / specials
     entries.push({ name: entry.name, isDirectory: entry.isDirectory, size: stat.size, mtime: new Date(stat.mtimeMs) });
   }
-  const html = renderDirectoryListing({ urlPath: req.path, atMountRoot, entries });
+  const html = renderDirectoryListing({ urlPath: request.path, atMountRoot, entries });
   return {
     status: Status.OK,
     contentType: 'text/html; charset=utf-8',
     headers: { 'x-content-type-options': 'nosniff', 'cache-control': 'no-store' },
-    body: req.method === 'HEAD' ? null : html,
+    body: request.method === 'HEAD' ? null : html,
   };
 }
 
-async function serveFromDirectory(root: string, rawRest: string, req: HttpRequest, settings: ResolvedStaticOptions): Promise<HttpResponse> {
+async function serveFromDirectory(root: string, rawRest: string, request: HttpRequest, settings: ResolvedStaticOptions): Promise<HttpResponse> {
   const resolved = resolveStaticPath(root, rawRest, { dotfiles: settings.dotfiles });
   if (!resolved.ok) return notFound();
 
@@ -161,28 +161,28 @@ async function serveFromDirectory(root: string, rawRest: string, req: HttpReques
   }
 
   if (stat.isDirectory) {
-    if (!req.path.endsWith('/')) return redirect(`${req.path}/${queryString(req.query)}`, Status.MovedPermanently);
+    if (!request.path.endsWith('/')) return redirect(`${request.path}/${queryString(request.query)}`, Status.MovedPermanently);
     for (const index of settings.indexFiles) {
       const indexPath = join(resolved.fsPath, index);
       const indexStat = await statPath(indexPath);
-      if (indexStat && indexStat.isFile) return serveResolvedFile(indexPath, indexStat, req, settings, index);
+      if (indexStat && indexStat.isFile) return serveResolvedFile(indexPath, indexStat, request, settings, index);
     }
     const atMountRoot = rawRest.replace(/^\/+|\/+$/g, '') === '';
-    if (settings.browse) return renderListing(resolved.fsPath, req, atMountRoot, settings);
+    if (settings.browse) return renderListing(resolved.fsPath, request, atMountRoot, settings);
     return notFound();
   }
 
   if (!stat.isFile) return notFound(); // device files (NUL, CON, …) stat as non-files
-  return serveResolvedFile(resolved.fsPath, stat, req, settings, basename(resolved.fsPath));
+  return serveResolvedFile(resolved.fsPath, stat, request, settings, basename(resolved.fsPath));
 }
 
 /** Serve a single file at `filePath` with the correct content-type. */
 export function getFromFile(filePath: string, options?: StaticFilesOptions): Route {
   const settings = resolveStaticOptions(options);
-  return get(async (req) => {
+  return get(async (request) => {
     const stat = await statPath(filePath);
     if (!stat || !stat.isFile) return notFound();
-    return serveResolvedFile(filePath, stat, req, settings, basename(filePath));
+    return serveResolvedFile(filePath, stat, request, settings, basename(filePath));
   });
 }
 
@@ -195,8 +195,8 @@ export function getFromDirectory(a: string, b?: string | StaticFilesOptions, c?:
   const options = typeof b === 'string' ? c : b;
   const settings = resolveStaticOptions(options);
   const inner = concat(
-    get((req) => serveFromDirectory(fsRoot, '', req, settings)),
-    path('*', get((req) => serveFromDirectory(fsRoot, req.params['*'] ?? '', req, settings))),
+    get((request) => serveFromDirectory(fsRoot, '', request, settings)),
+    path('*', get((request) => serveFromDirectory(fsRoot, request.params['*'] ?? '', request, settings))),
   );
   return routePrefix !== undefined ? path(routePrefix, inner) : inner;
 }

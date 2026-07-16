@@ -55,22 +55,22 @@ export class ProducerController<T> extends Actor<ProducerSend<T> | Acknowledgmen
     this.inflight.clear();
   }
 
-  override onReceive(msg: ProducerSend<T> | Acknowledgment): void {
-    if ((msg as Acknowledgment).kind === 'reliable-delivery.ack') return this.handleAcknowledgment(msg as Acknowledgment);
-    if ((msg as ProducerSend<T>).kind === 'reliable-delivery.send') return this.handleSend(msg as ProducerSend<T>);
+  override onReceive(message: ProducerSend<T> | Acknowledgment): void {
+    if ((message as Acknowledgment).kind === 'reliable-delivery.ack') return this.handleAcknowledgment(message as Acknowledgment);
+    if ((message as ProducerSend<T>).kind === 'reliable-delivery.send') return this.handleSend(message as ProducerSend<T>);
   }
 
-  private handleSend(msg: ProducerSend<T>): void {
+  private handleSend(message: ProducerSend<T>): void {
     if (this.inflight.size >= this.windowSize) {
-      this.pending.push(msg);
+      this.pending.push(message);
       return;
     }
-    this.dispatch(msg);
+    this.dispatch(message);
   }
 
-  private dispatch(msg: ProducerSend<T>): void {
+  private dispatch(message: ProducerSend<T>): void {
     const seq = this.nextSeq++;
-    const inflight: InFlight<T> = { seq, body: msg.body, confirm: msg.confirm, attempts: 0, timer: null };
+    const inflight: InFlight<T> = { seq, body: message.body, confirm: message.confirm, attempts: 0, timer: null };
     this.inflight.set(seq, inflight);
     this.send(inflight);
   }
@@ -96,12 +96,12 @@ export class ProducerController<T> extends Actor<ProducerSend<T> | Acknowledgmen
     );
   }
 
-  private handleAcknowledgment(msg: Acknowledgment): void {
-    if (msg.producerId !== this.id) return;
-    const inflight = this.inflight.get(msg.seq);
+  private handleAcknowledgment(message: Acknowledgment): void {
+    if (message.producerId !== this.id) return;
+    const inflight = this.inflight.get(message.seq);
     if (!inflight) return;
     inflight.timer?.cancel();
-    this.inflight.delete(msg.seq);
+    this.inflight.delete(message.seq);
     inflight.confirm?.(null);
     // Drain queued sends while the window is open.
     while (this.inflight.size < this.windowSize && this.pending.length > 0) {

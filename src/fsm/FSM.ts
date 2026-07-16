@@ -21,7 +21,7 @@ export type FsmResult<SName extends string, SData> =
   | StayTransition<SData>;
 
 export type StateHandler<SName extends string, SData, Message> =
-  (data: SData, msg: Message) => FsmResult<SName, SData> | Promise<FsmResult<SName, SData>>;
+  (data: SData, message: Message) => FsmResult<SName, SData> | Promise<FsmResult<SName, SData>>;
 
 export type TransitionCallback<SName extends string, SData> =
   (from: SName, to: SName, data: SData) => void | Promise<void>;
@@ -90,13 +90,13 @@ export abstract class FSM<SName extends string, SData, Message> extends Actor<Me
   protected get state(): SName { return this.currentState; }
   protected get data(): SData { return this.currentData; }
 
-  override async onReceive(msg: Message): Promise<void> {
+  override async onReceive(message: Message): Promise<void> {
     const handler = this.handlers.get(this.currentState);
     if (!handler) {
       this.log.warn(`FSM: no handler for state '${String(this.currentState)}' — dropping message`);
       return;
     }
-    const result = await handler(this.currentData, msg);
+    const result = await handler(this.currentData, message);
     await match(result)
       .with({ kind: 'stay' }, (r) => { this.currentData = r.data; })
       .with({ kind: 'transition' }, (r) => this.transitionTo(r.next, r.data))

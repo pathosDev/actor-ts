@@ -70,8 +70,8 @@ export class ClusterSingletonManager<T> extends Actor<Inbox> {
    * `postStop` and released its resources.
    */
   private pendingStop: ActorRef<T> | null = null;
-  private unsubCluster: (() => void) | null = null;
-  private unsubLeaseLost: (() => void) | null = null;
+  private unsubscribeCluster: (() => void) | null = null;
+  private unsubscribeLeaseLost: (() => void) | null = null;
   private retryTimer: Cancellable | null = null;
 
   /** Lease lifecycle — only used when `options.lease` is set. */
@@ -97,7 +97,7 @@ export class ClusterSingletonManager<T> extends Actor<Inbox> {
     // With a lease, every state transition has to flow through the
     // manager's own mailbox so concurrent cluster events can't race
     // with an in-flight `acquire()` — see `handleReconcile`.
-    this.unsubCluster = cluster.subscribe((evt) =>
+    this.unsubscribeCluster = cluster.subscribe((evt) =>
       match(evt)
         .with(
           P.union(
@@ -111,7 +111,7 @@ export class ClusterSingletonManager<T> extends Actor<Inbox> {
     );
 
     if (this.options.lease) {
-      this.unsubLeaseLost = this.options.lease.onLost((reason) => {
+      this.unsubscribeLeaseLost = this.options.lease.onLost((reason) => {
         this.self.tell({ t: 'lease-lost', reason } satisfies ManagerEvent);
       });
       // Lease path: kick the initial reconcile via the mailbox.
@@ -134,8 +134,8 @@ export class ClusterSingletonManager<T> extends Actor<Inbox> {
   }
 
   override async postStop(): Promise<void> {
-    this.unsubCluster?.();
-    this.unsubLeaseLost?.();
+    this.unsubscribeCluster?.();
+    this.unsubscribeLeaseLost?.();
     this._envelopeUnsub?.();
     this.retryTimer?.cancel();
     if (this.child) { this.child.stop(); this.child = null; }
@@ -151,12 +151,12 @@ export class ClusterSingletonManager<T> extends Actor<Inbox> {
     }
   }
 
-  override onReceive(msg: Inbox): void | Promise<void> {
-    if (msg instanceof Terminated) {
-      this.handleTerminated(msg);
+  override onReceive(message: Inbox): void | Promise<void> {
+    if (message instanceof Terminated) {
+      this.handleTerminated(message);
       return;
     }
-    return match(msg)
+    return match(message)
       .with({ t: 'singleton-deliver' }, (m) => this.onSingletonDeliver(m))
       .with({ t: 'reconcile' }, () => this.onReconcile())
       .with({ t: 'lease-acquire-result' }, (m) => this.onLeaseAcquireResult(m))
@@ -198,15 +198,15 @@ export class ClusterSingletonManager<T> extends Actor<Inbox> {
 
   /* -------------------------- handlers -------------------------- */
 
-  private onSingletonDeliver(msg: SingletonDeliver): void {
-    if (msg.t !== 'singleton-deliver') return;
+  private onSingletonDeliver(message: SingletonDeliver): void {
+    if (message.t !== 'singleton-deliver') return;
     if (!this.child) {
       this.log.warn(
         `singleton '${this.options.typeName}' not currently hosted on this node — dropping message`,
       );
       return;
     }
-    this.child.tell(msg.body as never);
+    this.child.tell(message.body as never);
   }
 
   /** Sync reconcile — no lease.  Spawn / stop the child to match cluster state. */
@@ -263,18 +263,18 @@ export class ClusterSingletonManager<T> extends Actor<Inbox> {
     }
   }
 
-  private onLeaseAcquireResult(msg: { got: boolean; error?: Error }): void {
+  private onLeaseAcquireResult(message: { got: boolean; error?: Error }): void {
     if (this.leaseState !== 'acquiring') {
       // Spurious result — manager was reset or stopped while we were
       // awaiting.  If we somehow got the lease, release it best-effort
       // so we don't hold onto a slot we don't want.
-      if (msg.got) void this.options.lease!.release().catch(() => {});
+      if (message.got) void this.options.lease!.release().catch(() => {});
       return;
     }
-    if (!msg.got) {
+    if (!message.got) {
       // Acquire failed (another holder, or backend error).  Retry on
       // the configured interval.  We log the error if there was one.
-      if (msg.error) this.log.warn(`lease acquire failed`, msg.error);
+      if (message.error) this.log.warn(`lease acquire failed`, message.error);
       this.leaseState = 'none';
       this.scheduleAcquireRetry();
       return;
@@ -291,10 +291,10 @@ export class ClusterSingletonManager<T> extends Actor<Inbox> {
     this.spawn();
   }
 
-  private onLeaseLost(msg: { reason: string }): void {
+  private onLeaseLost(message: { reason: string }): void {
     if (this.leaseState !== 'held') return;     // stale callback
-    this.log.warn(`singleton '${this.options.typeName}': lease lost — ${msg.reason}; stopping child`);
-    this.stopChild(`lease lost: ${msg.reason}`);
+    this.log.warn(`singleton '${this.options.typeName}': lease lost — ${message.reason}; stopping child`);
+    this.stopChild(`lease lost: ${message.reason}`);
     this.leaseState = 'none';
     // If we're still the elected leader, kick a fresh reconcile so we
     // try to re-acquire.  Cluster events would eventually do this on

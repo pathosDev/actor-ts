@@ -160,7 +160,7 @@ function decrementOnClose(
 export function wireConnection<TOut, TIn, TSelf = never>(
   _system: ActorSystem,
   hub: WebsocketServerRef<TOut, TIn, TSelf>,
-  req: HttpRequest,
+  request: HttpRequest,
   socket: WebsocketSocketAdapter,
   codec: WebsocketCodec<TOut, TIn>,
   policy: ResolvedWebsocketPolicy,
@@ -184,11 +184,11 @@ export function wireConnection<TOut, TIn, TSelf = never>(
   }
   const id = `ws-${++connectionCounter}`;
   const upgrade: WebsocketUpgradeInfo = {
-    path: req.path,
-    params: req.params,
-    query: req.query,
-    headers: req.headers,
-    remoteAddress: req.remoteAddress ?? socket.remoteAddress,
+    path: request.path,
+    params: request.params,
+    query: request.query,
+    headers: request.headers,
+    remoteAddress: request.remoteAddress ?? socket.remoteAddress,
     subprotocol: socket.protocol,
   };
 

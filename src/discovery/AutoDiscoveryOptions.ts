@@ -41,7 +41,7 @@ export interface AutoDiscoveryOptionsType {
    */
   readonly env?: Record<string, string | undefined>;
   /** Logger for individual provider failures.  Default: no-op. */
-  readonly log?: (msg: string, err?: unknown) => void;
+  readonly log?: (message: string, err?: unknown) => void;
 }
 
 /**
@@ -74,7 +74,7 @@ export class AutoDiscoveryOptionsBuilder extends OptionsBuilder<AutoDiscoveryOpt
   }
 
   /** Logger for individual provider failures.  Default: no-op. */
-  withLog(log: (msg: string, err?: unknown) => void): this {
+  withLog(log: (message: string, err?: unknown) => void): this {
     return this.set('log', log);
   }
 }

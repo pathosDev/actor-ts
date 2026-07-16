@@ -47,7 +47,7 @@ export class ClusterSingleton {
     // The handler enqueues via the not-yet-existing ref — we close over the
     // same variable and assign below.
     let managerRef: ActorRef = null as unknown as ActorRef;
-    const envelopeUnsub = cluster._registerEnvelopeHandler(
+    const envelopeUnsubscribe = cluster._registerEnvelopeHandler(
       singletonManagerPath(this.system.name, resolvedOptions.typeName),
       (env) => {
         // Route inbound envelopes through the manager's own mailbox so the
@@ -67,7 +67,7 @@ export class ClusterSingleton {
         managerOptions.withAcquireRetryIntervalMs(resolvedOptions.acquireRetryIntervalMs);
       }
       const mgr = new ClusterSingletonManager<T>(managerOptions);
-      mgr._envelopeUnsub = envelopeUnsub;
+      mgr._envelopeUnsub = envelopeUnsubscribe;
       return mgr;
     });
     managerRef = this.system.spawn(managerProps, `singleton-manager-${resolvedOptions.typeName}`);

@@ -15,25 +15,25 @@ export interface SnapshotStore {
    * cannot honour them silently ignore the field.
    */
   save<S = unknown>(
-    pid: string,
+    persistenceId: string,
     seq: number,
     state: S,
     options?: PersistenceOptions,
   ): Promise<Snapshot<S>>;
 
   /**
-   * Load the newest snapshot for `pid`, or None if none exist.
+   * Load the newest snapshot for `persistenceId`, or None if none exist.
    * `options.encryption` is required when client-side encryption was
    * used at write time — the store has no other way to obtain the
    * master key.  Stores that don't encrypt ignore the field.
    */
-  loadLatest<S = unknown>(pid: string, options?: PersistenceOptions): Promise<Option<Snapshot<S>>>;
+  loadLatest<S = unknown>(persistenceId: string, options?: PersistenceOptions): Promise<Option<Snapshot<S>>>;
 
   /** Load the newest snapshot with `sequenceNr < seq`, or None. */
-  loadBefore<S = unknown>(pid: string, seq: number, options?: PersistenceOptions): Promise<Option<Snapshot<S>>>;
+  loadBefore<S = unknown>(persistenceId: string, seq: number, options?: PersistenceOptions): Promise<Option<Snapshot<S>>>;
 
   /** Delete snapshots up to and including `toSeq`.  Useful for pruning. */
-  delete(pid: string, toSeq: number): Promise<void>;
+  delete(persistenceId: string, toSeq: number): Promise<void>;
 
   /** Best-effort teardown. */
   close?(): Promise<void>;

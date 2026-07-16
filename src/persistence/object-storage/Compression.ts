@@ -100,9 +100,9 @@ const zstdCompressLazy: Lazy<Promise<ZstdCompressFunction>> = Lazy.of<Promise<Zs
     zstdCompressSync?: (input: Uint8Array, opts?: { level?: number }) => Uint8Array;
   } }).Bun;
   if (bun?.zstdCompressSync) {
-    const compressFn = bun.zstdCompressSync;
+    const compressFunction = bun.zstdCompressSync;
     return async (i: Uint8Array, level?: number): Promise<Uint8Array> =>
-      compressFn(i, level !== undefined ? { level: clampZstdLevel(level) } : undefined);
+      compressFunction(i, level !== undefined ? { level: clampZstdLevel(level) } : undefined);
   }
 
   try {
@@ -112,12 +112,12 @@ const zstdCompressLazy: Lazy<Promise<ZstdCompressFunction>> = Lazy.of<Promise<Zs
       constants?: { ZSTD_c_compressionLevel?: number };
     };
     if (zlib.zstdCompressSync) {
-      const compressFn = zlib.zstdCompressSync;
+      const compressFunction = zlib.zstdCompressSync;
       const levelParam = zlib.constants?.ZSTD_c_compressionLevel;
       return async (i: Uint8Array, level?: number): Promise<Uint8Array> =>
         level !== undefined && levelParam !== undefined
-          ? compressFn(i, { params: { [levelParam]: clampZstdLevel(level) } })
-          : compressFn(i);
+          ? compressFunction(i, { params: { [levelParam]: clampZstdLevel(level) } })
+          : compressFunction(i);
     }
   } catch { /* node:zlib unavailable — fall through to the error */ }
 
@@ -142,8 +142,8 @@ const zstdDecompressLazy: Lazy<Promise<ZstdDecompressFunction>> = Lazy.of<Promis
     zstdDecompressSync?: (input: Uint8Array) => Uint8Array;
   } }).Bun;
   if (bun?.zstdDecompressSync) {
-    const decompressFn = bun.zstdDecompressSync;
-    return async (i: Uint8Array): Promise<Uint8Array> => decompressFn(i);
+    const decompressFunction = bun.zstdDecompressSync;
+    return async (i: Uint8Array): Promise<Uint8Array> => decompressFunction(i);
   }
 
   try {
@@ -152,8 +152,8 @@ const zstdDecompressLazy: Lazy<Promise<ZstdDecompressFunction>> = Lazy.of<Promis
       zstdDecompressSync?: (input: Uint8Array) => Uint8Array;
     };
     if (zlib.zstdDecompressSync) {
-      const decompressFn = zlib.zstdDecompressSync;
-      return async (i: Uint8Array): Promise<Uint8Array> => decompressFn(i);
+      const decompressFunction = zlib.zstdDecompressSync;
+      return async (i: Uint8Array): Promise<Uint8Array> => decompressFunction(i);
     }
   } catch { /* node:zlib unavailable — fall through to fzstd */ }
 

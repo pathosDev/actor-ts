@@ -109,11 +109,11 @@ function topicFor(persistenceId: string): string {
  * so tests with disposable systems don't leak registrations.  The
  * inner `Set` is mutated as actors register / unregister.
  */
-const livePidsBySystem = new WeakMap<ActorSystem, Set<string>>();
+const livePersistenceIdsBySystem = new WeakMap<ActorSystem, Set<string>>();
 
-function getLivePidsForSystem(system: ActorSystem): Set<string> {
-  let set = livePidsBySystem.get(system);
-  if (!set) { set = new Set(); livePidsBySystem.set(system, set); }
+function getLivePersistenceIdsForSystem(system: ActorSystem): Set<string> {
+  let set = livePersistenceIdsBySystem.get(system);
+  if (!set) { set = new Set(); livePersistenceIdsBySystem.set(system, set); }
   return set;
 }
 
@@ -125,7 +125,7 @@ export abstract class ReplicatedEventSourcedActor<Command, Event, State>
 
   abstract initialState(): State;
   abstract onEvent(state: State, event: Event): State;
-  abstract onCommand(state: State, cmd: Command): void | Promise<void>;
+  abstract onCommand(state: State, command: Command): void | Promise<void>;
 
   /** Resolver consulted only as the deterministic order comparator. */
   protected resolver(): ConflictResolver<Event> { return new LastWriterWinsResolver<Event>(); }
@@ -218,7 +218,7 @@ export abstract class ReplicatedEventSourcedActor<Command, Event, State>
    * lease, this flips based on `acquire` outcome and `onLost` events.
    */
   private _isLeaseHolder = true;
-  private _leaseUnsubLost: (() => void) | null = null;
+  private _leaseUnsubscribeLost: (() => void) | null = null;
 
   constructor(public readonly cluster: Cluster) { super(); }
 
@@ -240,15 +240,15 @@ export abstract class ReplicatedEventSourcedActor<Command, Event, State>
     // `_appendOne` calls; the second silently drops via
     // JournalConcurrencyError and in-memory state diverges.  Catch
     // it loudly at preStart.
-    const livePids = getLivePidsForSystem(this.system);
-    if (livePids.has(this.persistenceId)) {
+    const livePersistenceIds = getLivePersistenceIdsForSystem(this.system);
+    if (livePersistenceIds.has(this.persistenceId)) {
       throw new Error(
         `ReplicatedEventSourcedActor: another live actor on this node already holds persistenceId '${this.persistenceId}'. ` +
         `Each replicated actor must own a unique persistenceId per node — cross-replica multi-writer is the entire ` +
         `point of replication, but on a single node the journal append path assumes single-writer.`,
       );
     }
-    livePids.add(this.persistenceId);
+    livePersistenceIds.add(this.persistenceId);
 
     // Optional lease acquisition (#89).  We try once at preStart; on
     // success we register an `onLost` handler so a TTL expiry / fence
@@ -261,7 +261,7 @@ export abstract class ReplicatedEventSourcedActor<Command, Event, State>
       const acquired = await this._lease.acquire();
       this._isLeaseHolder = acquired;
       if (acquired) {
-        this._leaseUnsubLost = this._lease.onLost((reason) => {
+        this._leaseUnsubscribeLost = this._lease.onLost((reason) => {
           this._isLeaseHolder = false;
           this.log.warn(
             `ReplicatedEventSourcedActor '${this.persistenceId}': lease lost — entering observer mode`,
@@ -345,31 +345,31 @@ export abstract class ReplicatedEventSourcedActor<Command, Event, State>
     // + re-spawn).  Must run on every termination path, including
     // restart-after-failure where preRestart calls postStop before
     // a new instance gets preStart.
-    const livePids = livePidsBySystem.get(this.system);
-    livePids?.delete(this.persistenceId);
+    const livePersistenceIds = livePersistenceIdsBySystem.get(this.system);
+    livePersistenceIds?.delete(this.persistenceId);
 
     // Release the lease if held (#89) — a clean exit lets a follower
     // acquire faster than waiting for the TTL to expire.  Fire-and-
     // forget; lease backends typically tolerate "owner gone" via TTL
     // anyway so a failure to release is not fatal.
-    this._leaseUnsubLost?.();
-    this._leaseUnsubLost = null;
+    this._leaseUnsubscribeLost?.();
+    this._leaseUnsubscribeLost = null;
     if (this._lease && this._isLeaseHolder) {
       void this._lease.release().catch(() => { /* best-effort */ });
     }
     this._lease = null;
   }
 
-  override async onReceive(msg: Command | ReplicatedEventEnvelope<Event> | SubscribeAcknowledgment): Promise<void> {
+  override async onReceive(message: Command | ReplicatedEventEnvelope<Event> | SubscribeAcknowledgment): Promise<void> {
     // Ignore PubSub ack frames — they're informational.
-    if (msg && typeof msg === 'object' && (msg as { subscribe?: unknown }).subscribe instanceof Subscribe) {
+    if (message && typeof message === 'object' && (message as { subscribe?: unknown }).subscribe instanceof Subscribe) {
       return;
     }
-    if (this._isEnvelope(msg)) {
-      this._handleRemote(msg as ReplicatedEventEnvelope<Event>);
+    if (this._isEnvelope(message)) {
+      this._handleRemote(message as ReplicatedEventEnvelope<Event>);
       return;
     }
-    await this.onCommand(this._state, msg as Command);
+    await this.onCommand(this._state, message as Command);
   }
 
   /**

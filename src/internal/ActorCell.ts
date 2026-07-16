@@ -260,13 +260,13 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
 
   /* ------------------------- Rate limiting (#83) ------------------------ */
 
-  throttle(opts: ThrottleOptions): void {
+  throttle(options: ThrottleOptions): void {
     this._throttleBucket = new TokenBucket({
-      qps: opts.qps,
-      burst: opts.burst,
-      now: opts.now,
+      qps: options.qps,
+      burst: options.burst,
+      now: options.now,
     });
-    this._throttleOnExcess = opts.onExcess ?? 'pause';
+    this._throttleOnExcess = options.onExcess ?? 'pause';
     // Switching configs invalidates any pending pause-resume timer
     // (the new bucket may already have tokens) — let the next run()
     // make a fresh decision.
@@ -361,8 +361,8 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
   }
 
   /** @internal */
-  enqueueSystem(cmd: SystemCommand, sender: ActorRef | null = null): void {
-    this.mailbox.enqueueSystem({ message: cmd, sender });
+  enqueueSystem(command: SystemCommand, sender: ActorRef | null = null): void {
+    this.mailbox.enqueueSystem({ message: command, sender });
     this.schedule();
   }
 
@@ -428,8 +428,8 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
     }
   }
 
-  private async handleSystemCommand(cmd: SystemCommand): Promise<void> {
-    await match(cmd)
+  private async handleSystemCommand(command: SystemCommand): Promise<void> {
+    await match(command)
       .with({ kind: 'create' }, () => this.onCreate())
       .with({ kind: 'terminate' }, () => this.onTerminate())
       .with({ kind: 'recreate' }, (signal) => this.onRecreate(signal))
@@ -465,7 +465,7 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
   private async onCreate(): Promise<void> {
     try {
       const actor = this.props.config.factory();
-      (actor as unknown as { _attach(ctx: ActorContext<TMessage>): void })._attach(this);
+      (actor as unknown as { _attach(context: ActorContext<TMessage>): void })._attach(this);
       this.actor = actor;
       this.behaviorStack = [(m: TMessage) => actor.onReceive(m)];
       this.state = 'running';
@@ -562,7 +562,7 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
     // Build a new instance.
     try {
       const next = this.props.config.factory();
-      (next as unknown as { _attach(ctx: ActorContext<TMessage>): void })._attach(this);
+      (next as unknown as { _attach(context: ActorContext<TMessage>): void })._attach(this);
       this.actor = next;
       this.behaviorStack = [(m: TMessage) => next.onReceive(m)];
       await next.postRestart(cause);
@@ -596,14 +596,14 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
   }
 
   private async handleUserMessage(env: Envelope<TMessage>): Promise<void> {
-    const msg = env.message;
+    const message = env.message;
 
-    if (msg === (PoisonPill.instance as unknown as TMessage)) {
+    if (message === (PoisonPill.instance as unknown as TMessage)) {
       await this.onTerminate();
       return;
     }
-    if (msg === (Kill.instance as unknown as TMessage)) {
-      this.failToParent(new ActorKilledError(), msg);
+    if (message === (Kill.instance as unknown as TMessage)) {
+      this.failToParent(new ActorKilledError(), message);
       return;
     }
 
@@ -616,11 +616,11 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
     const tracer = tracerOf(this.system);
     // Open a server-kind `actor.receive` span when tracing is enabled
     // and either we have a parent in the envelope or we're starting a
-    // root.  Span is the "active" one for the duration of `behavior(msg)`
+    // root.  Span is the "active" one for the duration of `behavior(message)`
     // so child tells from inside the handler get this span as parent.
     let span: Span | null = null;
 
-    // Establish the MDC scope for the duration of `behavior(msg)`.  Any
+    // Establish the MDC scope for the duration of `behavior(message)`.  Any
     // `tell`s issued from inside the handler snapshot this same context
     // (LocalActorRef + RemoteActorRef both read `LogContext.get()`),
     // so the trail propagates downstream without manual plumbing.
@@ -631,9 +631,9 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
       this._currentEnvelope = env;
       const startNs = performance.now();
       try {
-        if (msg instanceof Terminated) {
+        if (message instanceof Terminated) {
           // Only deliver when we are actually watching.
-          const key = msg.actor.path.toString();
+          const key = message.actor.path.toString();
           if (!this._watching.has(key)) {
             this._currentSender = null;
             this._currentEnvelope = null;
@@ -643,9 +643,9 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
         }
         const behavior = this.behaviorStack[this.behaviorStack.length - 1];
         if (span) {
-          await tracer.withActiveSpan(span, () => behavior(msg));
+          await tracer.withActiveSpan(span, () => behavior(message));
         } else {
-          await behavior(msg);
+          await behavior(message);
         }
         this._resetReceiveTimer();
         if (span) span.setStatus('ok');
@@ -655,7 +655,7 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
           span.recordException(err);
           span.setStatus('error', err.message);
         }
-        this.failToParent(err, msg);
+        this.failToParent(err, message);
       } finally {
         if (span) span.end();
         // Record handler duration in seconds — Prom convention.  Using
@@ -681,7 +681,7 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
         kind: 'consumer',
         attributes: {
           'actor.path': this.path.toString(),
-          'actor.message.type': (msg as { constructor?: { name?: string } })?.constructor?.name ?? typeof msg,
+          'actor.message.type': (message as { constructor?: { name?: string } })?.constructor?.name ?? typeof message,
         },
       });
     }

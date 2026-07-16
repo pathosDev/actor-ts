@@ -59,7 +59,7 @@ export class PostgresJournal implements Journal {
   }
 
   async append<E>(
-    pid: string,
+    persistenceId: string,
     events: ReadonlyArray<E>,
     expectedSeq: number,
     tags?: ReadonlyArray<string>,
@@ -72,12 +72,12 @@ export class PostgresJournal implements Journal {
       await client.query('BEGIN');
       const head = await client.query(
         `SELECT COALESCE(MAX(sequence_nr), 0) AS hi FROM ${this.table} WHERE persistence_id = $1`,
-        [pid],
+        [persistenceId],
       );
       const actualSeq = Number((head.rows[0] as { hi: string | number }).hi);
       if (actualSeq !== expectedSeq) {
         await client.query('ROLLBACK');
-        throw new JournalConcurrencyError(pid, expectedSeq, actualSeq);
+        throw new JournalConcurrencyError(persistenceId, expectedSeq, actualSeq);
       }
       const out: PersistentEvent<E>[] = [];
       const tagString = tags && tags.length ? tags.join(',') : null;
@@ -86,19 +86,19 @@ export class PostgresJournal implements Journal {
         seq++;
         await client.query(
           `INSERT INTO ${this.table}(persistence_id, sequence_nr, payload, tags, timestamp) VALUES ($1, $2, $3, $4, $5)`,
-          [pid, seq, JSON.stringify(ev), tagString, now],
+          [persistenceId, seq, JSON.stringify(ev), tagString, now],
         );
         if (tags) {
           for (const tag of tags) {
             if (tag.length === 0) continue;
             await client.query(
               `INSERT INTO ${this.tagsTable}(persistence_id, sequence_nr, tag, timestamp) VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING`,
-              [pid, seq, tag, now],
+              [persistenceId, seq, tag, now],
             );
           }
         }
         out.push({
-          persistenceId: pid,
+          persistenceId: persistenceId,
           sequenceNr: seq,
           event: ev,
           timestamp: now,
@@ -111,11 +111,11 @@ export class PostgresJournal implements Journal {
       try { await client.query('ROLLBACK'); } catch { /* already rolled back / aborted */ }
       if (e instanceof JournalConcurrencyError) throw e;
       // Unique-violation backstop: a concurrent writer claimed the same
-      // (pid, seq) between our MAX read and INSERT.  Report the now-current
+      // (persistenceId, seq) between our MAX read and INSERT.  Report the now-current
       // head as the actual seq so the caller can recover.
       if ((e as { code?: string }).code === '23505') {
-        const actual = await this.highestSeq(pid).catch(() => expectedSeq);
-        throw new JournalConcurrencyError(pid, expectedSeq, actual);
+        const actual = await this.highestSeq(persistenceId).catch(() => expectedSeq);
+        throw new JournalConcurrencyError(persistenceId, expectedSeq, actual);
       }
       throw new JournalError(`PostgresJournal.append failed: ${(e as Error).message}`, e);
     } finally {
@@ -123,19 +123,19 @@ export class PostgresJournal implements Journal {
     }
   }
 
-  async read<E>(pid: string, fromSeq: number, toSeq?: number): Promise<PersistentEvent<E>[]> {
+  async read<E>(persistenceId: string, fromSeq: number, toSeq?: number): Promise<PersistentEvent<E>[]> {
     const pool = await this.ensureOpen();
     try {
-      const res = toSeq === undefined
+      const response = toSeq === undefined
         ? await pool.query(
             `SELECT persistence_id, sequence_nr, payload, tags, timestamp FROM ${this.table} WHERE persistence_id = $1 AND sequence_nr >= $2 ORDER BY sequence_nr ASC`,
-            [pid, fromSeq],
+            [persistenceId, fromSeq],
           )
         : await pool.query(
             `SELECT persistence_id, sequence_nr, payload, tags, timestamp FROM ${this.table} WHERE persistence_id = $1 AND sequence_nr >= $2 AND sequence_nr <= $3 ORDER BY sequence_nr ASC`,
-            [pid, fromSeq, toSeq],
+            [persistenceId, fromSeq, toSeq],
           );
-      return (res.rows as unknown as EventRow[]).map((r) => ({
+      return (response.rows as unknown as EventRow[]).map((r) => ({
         persistenceId: r.persistence_id,
         sequenceNr: Number(r.sequence_nr),
         event: JSON.parse(r.payload) as E,
@@ -147,34 +147,34 @@ export class PostgresJournal implements Journal {
     }
   }
 
-  async highestSeq(pid: string): Promise<number> {
+  async highestSeq(persistenceId: string): Promise<number> {
     const pool = await this.ensureOpen();
-    const res = await pool.query(
+    const response = await pool.query(
       `SELECT COALESCE(MAX(sequence_nr), 0) AS hi FROM ${this.table} WHERE persistence_id = $1`,
-      [pid],
+      [persistenceId],
     );
-    return Number((res.rows[0] as { hi: string | number }).hi);
+    return Number((response.rows[0] as { hi: string | number }).hi);
   }
 
-  async delete(pid: string, toSeq: number): Promise<void> {
+  async delete(persistenceId: string, toSeq: number): Promise<void> {
     const pool = await this.ensureOpen();
     // Tags first (same order as SqliteJournal): a crash mid-delete then
     // leaves orphan tag-less events rather than tags pointing at deleted
     // events, which the JOIN-based query path would silently miss.
     await pool.query(
       `DELETE FROM ${this.tagsTable} WHERE persistence_id = $1 AND sequence_nr <= $2`,
-      [pid, toSeq],
+      [persistenceId, toSeq],
     );
     await pool.query(
       `DELETE FROM ${this.table} WHERE persistence_id = $1 AND sequence_nr <= $2`,
-      [pid, toSeq],
+      [persistenceId, toSeq],
     );
   }
 
   async persistenceIds(): Promise<string[]> {
     const pool = await this.ensureOpen();
-    const res = await pool.query(`SELECT DISTINCT persistence_id FROM ${this.table}`);
-    return (res.rows as Array<{ persistence_id: string }>).map((r) => r.persistence_id);
+    const response = await pool.query(`SELECT DISTINCT persistence_id FROM ${this.table}`);
+    return (response.rows as Array<{ persistence_id: string }>).map((r) => r.persistence_id);
   }
 
   async close(): Promise<void> {

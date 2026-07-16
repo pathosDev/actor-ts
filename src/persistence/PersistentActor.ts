@@ -46,9 +46,9 @@ export function everyNEvents<State, Event>(n: number): SnapshotPolicy<State, Eve
  *       if (e.kind === 'deposited') return { balance: state.balance + e.amount };
  *       return state;
  *     }
- *     onCommand(state: State, cmd: Command): void {
- *       if (cmd.kind === 'deposit') {
- *         this.persist({ kind: 'deposited', amount: cmd.amount }, (s) => {
+ *     onCommand(state: State, command: Command): void {
+ *       if (command.kind === 'deposit') {
+ *         this.persist({ kind: 'deposited', amount: command.amount }, (s) => {
  *           this.sender?.tell({ ok: s.balance });
  *         });
  *       }
@@ -65,7 +65,7 @@ export abstract class PersistentActor<Command, Event, State> extends Actor<Comma
   abstract onEvent(state: State, event: Event): State;
 
   /** Handle an incoming command — typically calls `persist(event, cb)`. */
-  abstract onCommand(state: State, cmd: Command): void | Promise<void>;
+  abstract onCommand(state: State, command: Command): void | Promise<void>;
 
   /** Called once recovery finishes, with the final replayed state. */
   onRecoveryComplete(_state: State): void | Promise<void> {}
@@ -151,9 +151,9 @@ export abstract class PersistentActor<Command, Event, State> extends Actor<Comma
     this._seq = 0;
     const snapAdapter = this.snapshotAdapter();
     const evAdapter = this.eventAdapter();
-    const persistOpts = this.persistenceOptions();
+    const persistOptions = this.persistenceOptions();
     this.log.debug(`[persistence] '${this.persistenceId}' recovery starting`);
-    const snapshot = await this._snapshotStore.loadLatest<unknown>(this.persistenceId, persistOpts);
+    const snapshot = await this._snapshotStore.loadLatest<unknown>(this.persistenceId, persistOptions);
     if (snapshot.isSome()) {
       const snapSeq = snapshot.value.sequenceNr;
       // Security: validate the snapshot's claimed seq number BEFORE

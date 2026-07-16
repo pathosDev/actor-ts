@@ -109,12 +109,12 @@ export class RedisStreamsActor
     await this.redisProducer.xadd(...args);
   }
 
-  override onReceive(cmd: RedisStreamsCommand): void {
-    if (cmd.kind === 'publish') {
-      this.enqueueOutbound(cmd.publish);
-    } else if (cmd.kind === 'acknowledgment') {
+  override onReceive(command: RedisStreamsCommand): void {
+    if (command.kind === 'publish') {
+      this.enqueueOutbound(command.publish);
+    } else if (command.kind === 'acknowledgment') {
       if (this.redis && this.options.consumerGroup) {
-        void this.redis.xack(cmd.stream, this.options.consumerGroup.group, cmd.id)
+        void this.redis.xack(command.stream, this.options.consumerGroup.group, command.id)
           .catch((e: Error) => this.log.warn(`xack failed: ${e.message}`));
       }
     }

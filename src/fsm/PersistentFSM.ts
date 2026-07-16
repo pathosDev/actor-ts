@@ -46,7 +46,7 @@ import { PersistentActor } from '../persistence/PersistentActor.js';
  *
  * **What the base class does for you.**
  *
- *   - On a command, looks up `transitions[currentFsmState][cmd.kind]`.
+ *   - On a command, looks up `transitions[currentFsmState][command.kind]`.
  *     If no entry: **invalid transition** — logged at warn, no event
  *     persisted, no state change.
  *   - If the entry has a `guard` and the guard returns false: same
@@ -108,14 +108,14 @@ export interface FsmTransition<
    *     empty array is treated as a no-op transition (no events
    *     persisted, no state change) — use a `guard` instead if
    *     "skip on this condition" is the actual intent.
-   *   - **Function** — `(cmd, data) => Event | Event[]`: lazily
+   *   - **Function** — `(command, data) => Event | Event[]`: lazily
    *     evaluated when the transition fires; otherwise behaves
    *     exactly like the literal / array forms above.
    */
   readonly event:
     | Event
     | Event[]
-    | ((cmd: Command, data: Data) => Event | Event[]);
+    | ((command: Command, data: Data) => Event | Event[]);
   /**
    * State name the FSM moves to after every event applies.  When
    * `event` is an array, only the **final** post-replay state is
@@ -130,7 +130,7 @@ export interface FsmTransition<
    * conditional dispatch like "pay only if amount > 0".  Logged
    * at debug.
    */
-  readonly guard?: (cmd: Command, data: Data) => boolean;
+  readonly guard?: (command: Command, data: Data) => boolean;
 }
 
 /**
@@ -164,7 +164,7 @@ export interface FsmStateTimeout<SName extends string, Event, Data> {
 export const FSM_TIMEOUT_KEY = '_timeout' as const;
 
 /**
- * Transition table — `state` × `cmd.kind` → transition entry.  The
+ * Transition table — `state` × `command.kind` → transition entry.  The
  * mapped type narrows `Command` to the matching variant inside each
  * entry so the entry's callbacks see the right command shape.  An
  * optional `_timeout` field declares the per-state timeout (#65).
@@ -222,7 +222,7 @@ export abstract class PersistentFSM<
   /**
    * Transition table.  Implementations typically declare it as a
    * class field so the type-narrowing in `FsmTransitionMap` works
-   * at the call site (`transitions[state][cmdKind]`).
+   * at the call site (`transitions[state][commandKind]`).
    */
   abstract transitions: FsmTransitionMap<SName, Command, Event, Data>;
 
@@ -231,9 +231,9 @@ export abstract class PersistentFSM<
    * current state.  Default: warn + drop (no event persisted).
    * Override to throw, send a reply, etc.
    */
-  protected onInvalidTransition(state: SName, cmd: Command): void | Promise<void> {
+  protected onInvalidTransition(state: SName, command: Command): void | Promise<void> {
     this.log.warn(
-      `PersistentFSM: no transition for cmd '${cmd.kind}' in state '${state}' — dropped`,
+      `PersistentFSM: no transition for command '${command.kind}' in state '${state}' — dropped`,
     );
   }
 
@@ -241,9 +241,9 @@ export abstract class PersistentFSM<
    * Hook invoked when a transition's `guard` returns false.  Default
    * is a debug log + drop.
    */
-  protected onGuardRejected(state: SName, cmd: Command): void | Promise<void> {
+  protected onGuardRejected(state: SName, command: Command): void | Promise<void> {
     this.log.debug(
-      `PersistentFSM: guard rejected cmd '${cmd.kind}' in state '${state}' — dropped`,
+      `PersistentFSM: guard rejected command '${command.kind}' in state '${state}' — dropped`,
     );
   }
 
@@ -297,27 +297,27 @@ export abstract class PersistentFSM<
     await super.onReceive(message);
   }
 
-  async onCommand(curr: FsmStateData<SName, Data>, cmd: Command): Promise<void> {
+  async onCommand(curr: FsmStateData<SName, Data>, command: Command): Promise<void> {
     const stateEntry = this.transitions[curr.state];
-    const transition = stateEntry?.[cmd.kind as Command['kind']] as
+    const transition = stateEntry?.[command.kind as Command['kind']] as
       FsmTransition<SName, Command, Event, Data> | undefined;
     if (!transition) {
-      await this.onInvalidTransition(curr.state, cmd);
+      await this.onInvalidTransition(curr.state, command);
       return;
     }
-    if (transition.guard && !transition.guard(cmd, curr.data)) {
-      await this.onGuardRejected(curr.state, cmd);
+    if (transition.guard && !transition.guard(command, curr.data)) {
+      await this.onGuardRejected(curr.state, command);
       return;
     }
     const evaluated = typeof transition.event === 'function'
-      ? (transition.event as (c: Command, d: Data) => Event | Event[])(cmd, curr.data)
+      ? (transition.event as (c: Command, d: Data) => Event | Event[])(command, curr.data)
       : transition.event;
     const events: Event[] = Array.isArray(evaluated) ? evaluated : [evaluated];
     if (events.length === 0) {
       // Empty array → no events to persist, no state change.  Treat
       // as a "guard returned false" outcome from the user's POV.
       this.log.debug(
-        `PersistentFSM: cmd '${cmd.kind}' in state '${curr.state}' produced an empty event array — dropped`,
+        `PersistentFSM: command '${command.kind}' in state '${curr.state}' produced an empty event array — dropped`,
       );
       return;
     }
@@ -331,7 +331,7 @@ export abstract class PersistentFSM<
       // not checked.
       if (next.state !== transition.next) {
         this.log.warn(
-          `PersistentFSM: applyEvent for cmd '${cmd.kind}' in state '${curr.state}' `
+          `PersistentFSM: applyEvent for command '${command.kind}' in state '${curr.state}' `
           + `produced state '${next.state}' but transition declared 'next: ${transition.next}'`,
         );
       }

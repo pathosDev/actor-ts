@@ -67,30 +67,30 @@ export interface OtelTracerLike {
       startTime?: number;
       root?: boolean;
     },
-    ctx?: OtelContextLike,
+    context?: OtelContextLike,
   ): OtelSpanLike;
 }
 
 export interface OtelTraceApi {
   getTracer(name: string, version?: string): OtelTracerLike;
-  setSpan(ctx: OtelContextLike, span: OtelSpanLike): OtelContextLike;
-  getSpan(ctx: OtelContextLike): OtelSpanLike | undefined;
+  setSpan(context: OtelContextLike, span: OtelSpanLike): OtelContextLike;
+  getSpan(context: OtelContextLike): OtelSpanLike | undefined;
   getActiveSpan(): OtelSpanLike | undefined;
-  getSpanContext(ctx: OtelContextLike): OtelSpanContextLike | undefined;
-  setSpanContext(ctx: OtelContextLike, sc: OtelSpanContextLike): OtelContextLike;
+  getSpanContext(context: OtelContextLike): OtelSpanContextLike | undefined;
+  setSpanContext(context: OtelContextLike, sc: OtelSpanContextLike): OtelContextLike;
   wrapSpanContext(sc: OtelSpanContextLike): OtelSpanLike;
 }
 
 export interface OtelContextApi {
   active(): OtelContextLike;
-  with<F extends (...args: never[]) => unknown>(ctx: OtelContextLike, fn: F): ReturnType<F>;
+  with<F extends (...args: never[]) => unknown>(context: OtelContextLike, fn: F): ReturnType<F>;
   /** OTel exports `ROOT_CONTEXT` as a top-level constant; some shims also rehang it here. */
   readonly ROOT_CONTEXT?: OtelContextLike;
 }
 
 export interface OtelPropagationApi {
-  inject(ctx: OtelContextLike, carrier: Record<string, string>): void;
-  extract(ctx: OtelContextLike, carrier: Record<string, string | undefined>): OtelContextLike;
+  inject(context: OtelContextLike, carrier: Record<string, string>): void;
+  extract(context: OtelContextLike, carrier: Record<string, string | undefined>): OtelContextLike;
 }
 
 export interface OtelApiLike {
@@ -109,9 +109,9 @@ export interface OtelApiLike {
 /* ------------------------------- adapter ------------------------------- */
 
 export function otelTracer(options: OtelAdapterOptions): Tracer {
-  const opts = options as OtelAdapterOptionsType;
-  const { api } = opts;
-  const otelTracerInstance = opts.tracer ?? api.trace.getTracer(opts.tracerName ?? 'actor-ts', opts.tracerVersion);
+  const resolvedOptions = options as OtelAdapterOptionsType;
+  const { api } = resolvedOptions;
+  const otelTracerInstance = resolvedOptions.tracer ?? api.trace.getTracer(resolvedOptions.tracerName ?? 'actor-ts', resolvedOptions.tracerVersion);
 
   const SPAN_KIND_MAP: Record<SpanKind, number> = {
     internal: api.SpanKind.INTERNAL,
@@ -180,32 +180,32 @@ export function otelTracer(options: OtelAdapterOptions): Tracer {
   const otelOf = new WeakMap<Span, OtelSpanLike>();
 
   return {
-    startSpan(name, opts2?: SpanOptions): Span {
-      let ctx = api.context.active();
-      if (opts2?.parent === null) {
+    startSpan(name, options2?: SpanOptions): Span {
+      let context = api.context.active();
+      if (options2?.parent === null) {
         // Explicit root.  Pass `root: true` to OTel so its sampling
         // decision treats this as a new trace; switch the context to
         // ROOT just to make sure no ambient parent leaks in.
-        ctx = rootContext();
-      } else if (opts2?.parent) {
+        context = rootContext();
+      } else if (options2?.parent) {
         // Explicit parent SpanContext: install it on a fresh context.
-        ctx = api.trace.setSpanContext(rootContext(), {
-          traceId: opts2.parent.traceId,
-          spanId: opts2.parent.spanId,
-          traceFlags: opts2.parent.traceFlags,
-          ...(opts2.parent.traceState ? { traceState: opts2.parent.traceState } : {}),
+        context = api.trace.setSpanContext(rootContext(), {
+          traceId: options2.parent.traceId,
+          spanId: options2.parent.spanId,
+          traceFlags: options2.parent.traceFlags,
+          ...(options2.parent.traceState ? { traceState: options2.parent.traceState } : {}),
           isRemote: true,
         });
       }
       const otelSpan = otelTracerInstance.startSpan(
         name,
         {
-          ...(opts2?.kind ? { kind: SPAN_KIND_MAP[opts2.kind] } : {}),
-          ...(opts2?.attributes ? { attributes: { ...opts2.attributes } } : {}),
-          ...(opts2?.startTimeMs !== undefined ? { startTime: opts2.startTimeMs } : {}),
-          ...(opts2?.parent === null ? { root: true } : {}),
+          ...(options2?.kind ? { kind: SPAN_KIND_MAP[options2.kind] } : {}),
+          ...(options2?.attributes ? { attributes: { ...options2.attributes } } : {}),
+          ...(options2?.startTimeMs !== undefined ? { startTime: options2.startTimeMs } : {}),
+          ...(options2?.parent === null ? { root: true } : {}),
         },
-        ctx,
+        context,
       );
       return wrapSpan(otelSpan);
     },
@@ -218,8 +218,8 @@ export function otelTracer(options: OtelAdapterOptions): Tracer {
         // (unusual) case where the caller mixed adapter outputs.
         return fn();
       }
-      const ctx = api.trace.setSpan(api.context.active(), otelSpan);
-      return api.context.with(ctx, fn) as T;
+      const context = api.trace.setSpan(api.context.active(), otelSpan);
+      return api.context.with(context, fn) as T;
     },
 
     activeSpan(): Span | null {
@@ -241,11 +241,11 @@ export function otelTracer(options: OtelAdapterOptions): Tracer {
 
     extractContext(carrier): SpanContext | null {
       if (!carrier) return null;
-      const newCtx = api.propagation.extract(rootContext(), {
+      const newContext = api.propagation.extract(rootContext(), {
         traceparent: carrier.traceparent,
         ...(carrier.tracestate ? { tracestate: carrier.tracestate } : {}),
       });
-      const sc = api.trace.getSpanContext(newCtx);
+      const sc = api.trace.getSpanContext(newContext);
       if (!sc) return null;
       return pickSpanContext(sc);
     },

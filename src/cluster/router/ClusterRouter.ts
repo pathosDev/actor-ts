@@ -23,7 +23,7 @@ import { pickRendezvous } from './ConsistentHashing.js';
  *         .withRole('compute')                          // optional role filter
  *         .withRouterType('consistent-hashing')
  *         .withRouteePath('/user/worker')
- *         .withExtractKey((msg) => msg.id),
+ *         .withExtractKey((message) => message.id),
  *     ),
  *     'compute-router',
  *   );
@@ -74,10 +74,10 @@ export const ClusterRouter = {
   props<TMessage>(
     options: ClusterRouterOptions<TMessage>,
   ): Props<TMessage | Broadcast<TMessage>> {
-    const opts = options as ClusterRouterOptionsType<TMessage>;
-    new ClusterRouterOptionsValidator<TMessage>().validate(opts);
+    const resolvedOptions = options as ClusterRouterOptionsType<TMessage>;
+    new ClusterRouterOptionsValidator<TMessage>().validate(resolvedOptions);
     return Props.create(
-      () => new ClusterRouterActor<TMessage>(opts) as unknown as Actor<TMessage | Broadcast<TMessage>>,
+      () => new ClusterRouterActor<TMessage>(resolvedOptions) as unknown as Actor<TMessage | Broadcast<TMessage>>,
     );
   },
 };
@@ -101,13 +101,13 @@ class ClusterRouterActor<TMessage> extends Actor<TMessage | Broadcast<TMessage>>
   private counter = 0;
   private unsubscribe: (() => void) | null = null;
 
-  constructor(private readonly opts: ClusterRouterOptionsType<TMessage>) {
+  constructor(private readonly options: ClusterRouterOptionsType<TMessage>) {
     super();
   }
 
   override preStart(): void {
     this.rebuildRoutees();
-    this.unsubscribe = this.opts.cluster.subscribe((evt) => {
+    this.unsubscribe = this.options.cluster.subscribe((evt) => {
       // Only `up` and `removed` change the routee set.  `joined`,
       // `weakly-up`, `unreachable` are intermediate states we don't
       // route to.  Replay-on-subscribe (Cluster fires every current
@@ -134,12 +134,12 @@ class ClusterRouterActor<TMessage> extends Actor<TMessage | Broadcast<TMessage>>
     }
     if (this.routees.length === 0) {
       this.log.warn('ClusterRouter: no routees match — dropping message', {
-        role: this.opts.role,
-        routeePath: this.opts.routeePath,
+        role: this.options.role,
+        routeePath: this.options.routeePath,
       });
       return;
     }
-    if (this.opts.routerType === 'broadcast') {
+    if (this.options.routerType === 'broadcast') {
       for (const routee of this.routees) routee.tell(message as TMessage, sender);
       return;
     }
@@ -155,30 +155,30 @@ class ClusterRouterActor<TMessage> extends Actor<TMessage | Broadcast<TMessage>>
   /* ----------------------------- internals ------------------------------ */
 
   private rebuildRoutees(): void {
-    const members = this.opts.role
-      ? this.opts.cluster.upMembersWithRole(this.opts.role)
-      : this.opts.cluster.upMembers();
+    const members = this.options.role
+      ? this.options.cluster.upMembersWithRole(this.options.role)
+      : this.options.cluster.upMembers();
     // upMembers() already sorts by address, but spell it out for clarity
     // — round-robin across rebuilds depends on a stable order.
     const sorted = [...members].sort((a, b) => a.address.compareTo(b.address));
     this.routees = sorted.map(
       (m) => new RemoteActorRef<TMessage>(
-        m.address, fullPath(m.address.systemName, this.opts.routeePath), this.opts.cluster,
+        m.address, fullPath(m.address.systemName, this.options.routeePath), this.options.cluster,
       ),
     );
   }
 
   private pickRoutee(message: TMessage): RemoteActorRef<TMessage> {
-    switch (this.opts.routerType) {
+    switch (this.options.routerType) {
       case 'round-robin': {
-        const idx = this.counter++ % this.routees.length;
-        return this.routees[idx]!;
+        const index = this.counter++ % this.routees.length;
+        return this.routees[index]!;
       }
       case 'random': {
         return this.routees[Math.floor(Math.random() * this.routees.length)]!;
       }
       case 'consistent-hashing': {
-        const key = this.opts.extractKey!(message);
+        const key = this.options.extractKey!(message);
         return pickRendezvous(key, this.routees, (r) => r.targetNode.toString());
       }
       case 'broadcast': {

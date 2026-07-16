@@ -56,8 +56,8 @@ export class Receptionist extends Actor<Message> {
 
   private version = 0;
   private gossipTimer: Cancellable | null = null;
-  private unsubWire: (() => void) | null = null;
-  private unsubCluster: (() => void) | null = null;
+  private unsubscribeWire: (() => void) | null = null;
+  private unsubscribeCluster: (() => void) | null = null;
 
   constructor(options: ReceptionistOptions = {}) {
     super();
@@ -69,10 +69,10 @@ export class Receptionist extends Actor<Message> {
 
   override preStart(): void {
     if (this.clusterRef) {
-      this.unsubWire = this.clusterRef._onWire('receptionist-gossip', (msg) =>
-        this.handleGossip(msg as unknown as ReceptionistGossipMessage),
+      this.unsubscribeWire = this.clusterRef._onWire('receptionist-gossip', (message) =>
+        this.handleGossip(message as unknown as ReceptionistGossipMessage),
       );
-      this.unsubCluster = this.clusterRef.subscribe((evt) =>
+      this.unsubscribeCluster = this.clusterRef.subscribe((evt) =>
         match(evt)
           .with(P.instanceOf(MemberRemoved), (e) => this.onMemberRemoved(e))
           .with(P.instanceOf(MemberUp), () => this.onMemberUp())
@@ -85,13 +85,13 @@ export class Receptionist extends Actor<Message> {
   }
 
   override postStop(): void {
-    this.unsubWire?.();
-    this.unsubCluster?.();
+    this.unsubscribeWire?.();
+    this.unsubscribeCluster?.();
     this.gossipTimer?.cancel();
   }
 
-  override onReceive(msg: Message): void {
-    match(msg)
+  override onReceive(message: Message): void {
+    match(message)
       .with(P.instanceOf(Register), (m) => this.onRegister(m))
       .with(P.instanceOf(Deregister), (m) => this.onDeregister(m))
       .with(P.instanceOf(Find), (m) => this.onFind(m))
@@ -102,45 +102,45 @@ export class Receptionist extends Actor<Message> {
 
   /* ---------------- handlers ---------------- */
 
-  private onRegister(msg: Register): void {
-    const entry = this.getOrCreate(msg.key);
-    const pathStr = msg.ref.path.toString();
+  private onRegister(message: Register): void {
+    const entry = this.getOrCreate(message.key);
+    const pathStr = message.ref.path.toString();
     if (!entry.local.has(pathStr)) {
-      entry.local.set(pathStr, msg.ref);
+      entry.local.set(pathStr, message.ref);
       this.version++;
-      this.notifySubscribers(msg.key, entry);
+      this.notifySubscribers(message.key, entry);
     }
-    msg.replyTo?.tell(new Registered(msg.key, msg.ref) as never);
+    message.replyTo?.tell(new Registered(message.key, message.ref) as never);
   }
 
-  private onDeregister(msg: Deregister): void {
-    const entry = this.keys.get(msg.key.id);
+  private onDeregister(message: Deregister): void {
+    const entry = this.keys.get(message.key.id);
     if (!entry) return;
-    const pathStr = msg.ref.path.toString();
+    const pathStr = message.ref.path.toString();
     if (entry.local.delete(pathStr)) {
       this.version++;
-      this.notifySubscribers(msg.key, entry);
-      this.maybeDrop(msg.key.id, entry);
+      this.notifySubscribers(message.key, entry);
+      this.maybeDrop(message.key.id, entry);
     }
   }
 
-  private onFind(msg: Find): void {
-    const entry = this.keys.get(msg.key.id);
-    msg.replyTo.tell(new Listing(msg.key, entry ? this.collectRefs(entry) : []));
+  private onFind(message: Find): void {
+    const entry = this.keys.get(message.key.id);
+    message.replyTo.tell(new Listing(message.key, entry ? this.collectRefs(entry) : []));
   }
 
-  private onSubscribe(msg: Subscribe): void {
-    const entry = this.getOrCreate(msg.key);
-    entry.subscribers.add(msg.replyTo);
+  private onSubscribe(message: Subscribe): void {
+    const entry = this.getOrCreate(message.key);
+    entry.subscribers.add(message.replyTo);
     // Replay current listing to the new subscriber.
-    msg.replyTo.tell(new Listing(msg.key, this.collectRefs(entry)));
+    message.replyTo.tell(new Listing(message.key, this.collectRefs(entry)));
   }
 
-  private onUnsubscribe(msg: Unsubscribe): void {
-    const entry = this.keys.get(msg.key.id);
+  private onUnsubscribe(message: Unsubscribe): void {
+    const entry = this.keys.get(message.key.id);
     if (!entry) return;
-    entry.subscribers.delete(msg.replyTo);
-    this.maybeDrop(msg.key.id, entry);
+    entry.subscribers.delete(message.replyTo);
+    this.maybeDrop(message.key.id, entry);
   }
 
   /* ---------------- cluster plumbing ---------------- */
@@ -177,9 +177,9 @@ export class Receptionist extends Actor<Message> {
     this.clusterRef.transport.send(target.address, gossip as unknown as never);
   }
 
-  private handleGossip(msg: ReceptionistGossipMessage): void {
+  private handleGossip(message: ReceptionistGossipMessage): void {
     if (!this.clusterRef) return;
-    const senderAddr = NodeAddress.fromJSON(msg.from).toString();
+    const senderAddr = NodeAddress.fromJSON(message.from).toString();
     // Replace this sender's remote contribution wholesale so diff-to-notify
     // works per-key.
     const affected = new Set<string>();
@@ -189,7 +189,7 @@ export class Receptionist extends Actor<Message> {
         affected.add(id);
       }
     }
-    for (const [id, paths] of Object.entries(msg.entries)) {
+    for (const [id, paths] of Object.entries(message.entries)) {
       const entry = this.getOrCreate(new ServiceKey(id));
       entry.remote.set(senderAddr, paths.slice());
       affected.add(id);

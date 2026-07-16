@@ -16,7 +16,7 @@
  * IPv4 CIDR matches a request coming over a dual-stack socket.
  *
  * **Source of truth for the client IP** is the underlying socket
- * (`req.remoteAddress`).  Operators behind a trusted reverse proxy
+ * (`request.remoteAddress`).  Operators behind a trusted reverse proxy
  * (Cloudflare, AWS ALB, NGINX) that strip + set
  * `x-forwarded-for` must pass a custom `getClientIp` that reads the
  * header — the default DOES NOT trust `x-forwarded-for` because that
@@ -34,15 +34,15 @@ export interface IpAllowlistOptions {
    */
   readonly allow: ReadonlyArray<string>;
   /**
-   * Override the IP-extraction step.  Default: `req.remoteAddress`.
+   * Override the IP-extraction step.  Default: `request.remoteAddress`.
    * Common override for deployments behind a trusted proxy:
    *
-   *     getClientIp: (req) => req.headers['x-forwarded-for']?.split(',')[0]?.trim()
+   *     getClientIp: (request) => request.headers['x-forwarded-for']?.split(',')[0]?.trim()
    *
    * Returning `null` / `undefined` makes the request fail closed
    * (403) — no IP means no decision means deny.
    */
-  readonly getClientIp?: (req: HttpRequest) => string | null | undefined;
+  readonly getClientIp?: (request: HttpRequest) => string | null | undefined;
 }
 
 /** A single parsed CIDR — stored as a normalised bigint + prefix length. */
@@ -53,15 +53,15 @@ interface ParsedCidr {
   readonly totalBits: number;      // 32 for v4, 128 for v6
 }
 
-export function IpAllowlist(opts: IpAllowlistOptions): Middleware {
-  if (opts.allow.length === 0) {
+export function IpAllowlist(options: IpAllowlistOptions): Middleware {
+  if (options.allow.length === 0) {
     throw new Error('IpAllowlist: `allow` must be a non-empty list of CIDRs');
   }
-  const parsed = opts.allow.map(parseCidr);
-  const getClientIp = opts.getClientIp ?? ((req) => req.remoteAddress);
+  const parsed = options.allow.map(parseCidr);
+  const getClientIp = options.getClientIp ?? ((request) => request.remoteAddress);
 
-  return async (req, next) => {
-    const rawIp = getClientIp(req);
+  return async (request, next) => {
+    const rawIp = getClientIp(request);
     if (!rawIp) {
       throw new HttpError(Status.Forbidden, 'IP not allowed (no client address)');
     }

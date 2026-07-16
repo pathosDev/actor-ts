@@ -136,8 +136,8 @@ export interface LeaveMessage {
 const HEADER_SIZE = 4;
 
 /** Encode a WireMessage as a length-prefixed JSON frame. */
-export function encodeFrame(msg: WireMessage): Uint8Array {
-  const json = JSON.stringify(msg);
+export function encodeFrame(message: WireMessage): Uint8Array {
+  const json = JSON.stringify(message);
   const payload = new TextEncoder().encode(json);
   const frame = new Uint8Array(HEADER_SIZE + payload.byteLength);
   const view = new DataView(frame.buffer);

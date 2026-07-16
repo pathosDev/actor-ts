@@ -68,16 +68,16 @@ function sanitiseRequestHeaders(value: string): string {
 }
 
 /** Decorate an actual (non-preflight) response with the CORS headers. */
-function decorateResponse(settings: CorsRouteOptions, res: HttpResponse, req: HttpRequest): HttpResponse {
-  const origin = req.headers['origin'];
-  if (!origin || !isAllowed(settings.origins, origin)) return res;
+function decorateResponse(settings: CorsRouteOptions, response: HttpResponse, request: HttpRequest): HttpResponse {
+  const origin = request.headers['origin'];
+  if (!origin || !isAllowed(settings.origins, origin)) return response;
   const acao = allowOriginValue(settings, origin);
   const add: Record<string, string> = { 'access-control-allow-origin': acao };
   if (settings.credentials) add['access-control-allow-credentials'] = 'true';
   if (settings.exposedHeaders && settings.exposedHeaders.length > 0) {
     add['access-control-expose-headers'] = settings.exposedHeaders.join(', ');
   }
-  let out = applyHeaders(res, add);
+  let out = applyHeaders(response, add);
   // A cache must not serve the wrong origin's response back.
   if (acao !== '*') {
     out = applyHeaders(out, { vary: appendVary(out.headers?.['vary'], 'Origin') }, { overwrite: true });
@@ -88,8 +88,8 @@ function decorateResponse(settings: CorsRouteOptions, res: HttpResponse, req: Ht
 const PREFLIGHT_VARY = 'Origin, Access-Control-Request-Method, Access-Control-Request-Headers';
 
 /** Build the 204 preflight response for an allowed (or disallowed) origin. */
-function preflightResponse(settings: CorsRouteOptions, methods: ReadonlyArray<string>, req: HttpRequest): HttpResponse {
-  const origin = req.headers['origin'];
+function preflightResponse(settings: CorsRouteOptions, methods: ReadonlyArray<string>, request: HttpRequest): HttpResponse {
+  const origin = request.headers['origin'];
   if (!origin || !isAllowed(settings.origins, origin)) {
     // No ACA-* headers → the browser fails the preflight; no info leak.
     return { status: 204, headers: { vary: PREFLIGHT_VARY }, body: null };
@@ -102,7 +102,7 @@ function preflightResponse(settings: CorsRouteOptions, methods: ReadonlyArray<st
   if (settings.allowedHeaders && settings.allowedHeaders.length > 0) {
     headers['access-control-allow-headers'] = settings.allowedHeaders.join(', ');
   } else {
-    const requested = req.headers['access-control-request-headers'];
+    const requested = request.headers['access-control-request-headers'];
     if (requested) headers['access-control-allow-headers'] = sanitiseRequestHeaders(requested);
   }
   if (settings.credentials) headers['access-control-allow-credentials'] = 'true';
@@ -110,8 +110,8 @@ function preflightResponse(settings: CorsRouteOptions, methods: ReadonlyArray<st
   return { status: 204, headers, body: null };
 }
 
-function isPreflight(req: HttpRequest): boolean {
-  return req.headers['origin'] !== undefined && req.headers['access-control-request-method'] !== undefined;
+function isPreflight(request: HttpRequest): boolean {
+  return request.headers['origin'] !== undefined && request.headers['access-control-request-method'] !== undefined;
 }
 
 /**
@@ -140,19 +140,19 @@ export function expandCors(children: CompiledEndpoint[], settings: CorsRouteOpti
       const inner = c.authorize;
       out.push({
         ...c,
-        authorize: async (req: HttpRequest): Promise<HttpResponse | null> => {
-          const origin = req.headers['origin'];
+        authorize: async (request: HttpRequest): Promise<HttpResponse | null> => {
+          const origin = request.headers['origin'];
           if (origin !== undefined && !isAllowed(settings.origins, origin)) {
             return { status: 403, body: { error: 'cross-origin WebSocket upgrade rejected' } };
           }
-          return inner(req);
+          return inner(request);
         },
       });
       continue;
     }
     if (c.kind === 'fallback') {
       const handler = c.handler;
-      out.push({ ...c, handler: async (req) => decorateResponse(settings, await handler(req), req) });
+      out.push({ ...c, handler: async (request) => decorateResponse(settings, await handler(request), request) });
       continue;
     }
     // http
@@ -162,11 +162,11 @@ export function expandCors(children: CompiledEndpoint[], settings: CorsRouteOpti
       const userHandler = c.handler;
       out.push({
         ...c,
-        handler: async (req) => isPreflight(req) ? preflightResponse(settings, methods, req) : decorateResponse(settings, await userHandler(req), req),
+        handler: async (request) => isPreflight(request) ? preflightResponse(settings, methods, request) : decorateResponse(settings, await userHandler(request), request),
       });
     } else {
       const handler = c.handler;
-      out.push({ ...c, handler: async (req) => decorateResponse(settings, await handler(req), req) });
+      out.push({ ...c, handler: async (request) => decorateResponse(settings, await handler(request), request) });
     }
   }
 
@@ -177,7 +177,7 @@ export function expandCors(children: CompiledEndpoint[], settings: CorsRouteOpti
       kind: 'http',
       method: 'OPTIONS',
       pattern,
-      handler: (req: HttpRequest) => preflightResponse(settings, methodList, req),
+      handler: (request: HttpRequest) => preflightResponse(settings, methodList, request),
     });
   }
 

@@ -143,16 +143,16 @@ export class WorkerCluster {
   private brokerFacade(worker: WorkerLike): PortLike {
     let handler: ((e: { data: unknown }) => void) | null = null;
     worker.addEventListener('message', (e) => {
-      const msg = (e.data ?? undefined) as { kind?: string } | undefined;
-      if (msg && msg.kind === 'worker-transport' && handler) {
-        handler({ data: (msg as WorkerTransportMessage).envelope });
+      const message = (e.data ?? undefined) as { kind?: string } | undefined;
+      if (message && message.kind === 'worker-transport' && handler) {
+        handler({ data: (message as WorkerTransportMessage).envelope });
       }
     });
     return {
       postMessage(v: unknown) {
         const envelope: BrokeredMessage = v as BrokeredMessage;
-        const msg: WorkerTransportMessage = { kind: 'worker-transport', envelope };
-        worker.postMessage(msg);
+        const message: WorkerTransportMessage = { kind: 'worker-transport', envelope };
+        worker.postMessage(message);
       },
       get onmessage() { return handler; },
       set onmessage(h: ((e: { data: unknown }) => void) | null) { handler = h; },
@@ -167,11 +167,11 @@ export class WorkerCluster {
         reject(new Error(`Worker ${addr} did not become ready within ${this.options.readyTimeoutMs}ms`));
       }, this.options.readyTimeoutMs);
       const onMessage = (e: { data?: unknown }): void => {
-        const msg = (e.data ?? undefined) as { kind?: string } | undefined;
-        if (!msg) return;
-        if (msg.kind === 'worker-hello') {
+        const message = (e.data ?? undefined) as { kind?: string } | undefined;
+        if (!message) return;
+        if (message.kind === 'worker-hello') {
           worker.postMessage(init);
-        } else if (msg.kind === 'worker-ready') {
+        } else if (message.kind === 'worker-ready') {
           clearTimeout(timeout);
           worker.removeEventListener('message', onMessage);
           resolve();

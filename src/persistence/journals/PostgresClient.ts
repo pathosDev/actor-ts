@@ -60,11 +60,11 @@ export interface PostgresConnection {
 }
 
 /** Build (or pass through) the connection pool for a store. */
-export async function buildPgPool(conn: PostgresConnection): Promise<PgPoolLike> {
-  if (conn.pool) return conn.pool;
+export async function buildPgPool(connection: PostgresConnection): Promise<PgPoolLike> {
+  if (connection.pool) return connection.pool;
   const pg = await pgLazy.get();
-  const config: Record<string, unknown> = { ...conn.poolConfig };
-  if (conn.url !== undefined) config.connectionString = conn.url;
+  const config: Record<string, unknown> = { ...connection.poolConfig };
+  if (connection.url !== undefined) config.connectionString = connection.url;
   return new pg.Pool(config);
 }
 

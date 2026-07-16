@@ -5,7 +5,7 @@
  *     import { ActorSystem, Actor, Props } from 'actor-ts';
  *
  *     class Hello extends Actor<string> {
- *       onReceive(msg: string) { console.log('hello', msg); }
+ *       onReceive(message: string) { console.log('hello', message); }
  *     }
  *
  *     const system = ActorSystem.create('demo');

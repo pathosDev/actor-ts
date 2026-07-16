@@ -43,11 +43,11 @@ export class FastifyBackend implements HttpServerBackend {
   private readonly registered: RouteRegistration[] = [];
   private readonly wsRegistered: WebsocketRouteRegistration[] = [];
   private userErrorHandler:
-    | ((err: unknown, req: HttpRequest) => Promise<HttpResponse> | HttpResponse)
+    | ((err: unknown, request: HttpRequest) => Promise<HttpResponse> | HttpResponse)
     | null = null;
 
-  constructor(opts: object = { logger: false }) {
-    this.app = (Fastify as (o?: object) => FastifyLike)(opts);
+  constructor(options: object = { logger: false }) {
+    this.app = (Fastify as (o?: object) => FastifyLike)(options);
     // Route EVERY content-type through a raw-buffer parser — we want the
     // bytes to reach the DSL unparsed so user code picks the decoder via
     // pickRequestSerializer.  Fastify's built-in JSON parser would steal
@@ -88,15 +88,15 @@ export class FastifyBackend implements HttpServerBackend {
     this.wsRegistered.push(reg);
   }
 
-  setNotFound(handler: (req: HttpRequest) => Promise<HttpResponse> | HttpResponse): void {
+  setNotFound(handler: (request: HttpRequest) => Promise<HttpResponse> | HttpResponse): void {
     this.app.setNotFoundHandler(async (req: FastifyRequest, reply: FastifyReply) => {
       const adapted = this.adaptRequest(req);
-      const res = await handler(adapted);
-      this.writeResponse(reply, res);
+      const response = await handler(adapted);
+      this.writeResponse(reply, response);
     });
   }
 
-  setErrorHandler(handler: (err: unknown, req: HttpRequest) => Promise<HttpResponse> | HttpResponse): void {
+  setErrorHandler(handler: (err: unknown, request: HttpRequest) => Promise<HttpResponse> | HttpResponse): void {
     // Record the handler so errors thrown by our route handlers — caught
     // in registerRoute's try/catch, which never reaches Fastify core —
     // route through it too.  The app-level hook still covers
@@ -204,8 +204,8 @@ export class FastifyBackend implements HttpServerBackend {
       {
         websocket: true,
         preValidation: async (req: FastifyRequest, reply: FastifyReply) => {
-          const res = await reg.authorize(this.adaptRequest(req));
-          if (res) this.writeResponse(reply, res);
+          const response = await reg.authorize(this.adaptRequest(req));
+          if (response) this.writeResponse(reply, response);
         },
       },
       (socket: WebsocketPackageSocket, req: FastifyRequest) => {
@@ -253,32 +253,32 @@ export class FastifyBackend implements HttpServerBackend {
     return null;
   }
 
-  private writeResponse(reply: FastifyReply, res: HttpResponse): void {
-    reply.status(res.status);
-    if (res.headers) for (const [key, value] of Object.entries(res.headers)) reply.header(key, value);
-    if (res.contentType) reply.header('content-type', res.contentType);
-    if (res.body === undefined || res.body === null) {
+  private writeResponse(reply: FastifyReply, response: HttpResponse): void {
+    reply.status(response.status);
+    if (response.headers) for (const [key, value] of Object.entries(response.headers)) reply.header(key, value);
+    if (response.contentType) reply.header('content-type', response.contentType);
+    if (response.body === undefined || response.body === null) {
       reply.send();
       return;
     }
-    if (typeof res.body === 'string') {
-      if (!res.contentType && !res.headers?.['content-type']) reply.header('content-type', 'text/plain; charset=utf-8');
-      reply.send(res.body);
+    if (typeof response.body === 'string') {
+      if (!response.contentType && !response.headers?.['content-type']) reply.header('content-type', 'text/plain; charset=utf-8');
+      reply.send(response.body);
       return;
     }
-    if (res.body instanceof Uint8Array) {
-      if (!res.contentType) reply.header('content-type', 'application/octet-stream');
-      reply.send(Buffer.from(res.body));
+    if (response.body instanceof Uint8Array) {
+      if (!response.contentType) reply.header('content-type', 'application/octet-stream');
+      reply.send(Buffer.from(response.body));
       return;
     }
-    if (typeof ReadableStream !== 'undefined' && res.body instanceof ReadableStream) {
-      if (!res.contentType && !res.headers?.['content-type']) reply.header('content-type', 'application/octet-stream');
-      reply.send(res.body);
+    if (typeof ReadableStream !== 'undefined' && response.body instanceof ReadableStream) {
+      if (!response.contentType && !response.headers?.['content-type']) reply.header('content-type', 'application/octet-stream');
+      reply.send(response.body);
       return;
     }
     // Plain object → JSON.
-    if (!res.contentType) reply.header('content-type', 'application/json; charset=utf-8');
-    reply.send(JSON.stringify(res.body));
+    if (!response.contentType) reply.header('content-type', 'application/json; charset=utf-8');
+    reply.send(JSON.stringify(response.body));
   }
 
   /**
@@ -288,10 +288,10 @@ export class FastifyBackend implements HttpServerBackend {
    * Fastify's framework-level hook so both honour `withErrorHandler` —
    * matching how the Express and Hono backends already behave.
    */
-  private async emitError(reply: FastifyReply, req: HttpRequest, err: unknown): Promise<void> {
+  private async emitError(reply: FastifyReply, request: HttpRequest, err: unknown): Promise<void> {
     if (this.userErrorHandler) {
       try {
-        this.writeResponse(reply, await this.userErrorHandler(err, req));
+        this.writeResponse(reply, await this.userErrorHandler(err, request));
         return;
       } catch (inner) {
         this.writeError(reply, inner);

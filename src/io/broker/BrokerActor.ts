@@ -186,10 +186,10 @@ export abstract class BrokerActor<S extends BrokerCommonOptionsType, Command = u
   }
 
   /** Fan-out a received message to every subscriber of `topic`. */
-  protected fanOutToTopic(topic: string, msg: unknown): void {
+  protected fanOutToTopic(topic: string, message: unknown): void {
     const set = this._subscribers.get(topic);
     if (!set) return;
-    for (const ref of set) ref.tell(msg as never);
+    for (const ref of set) ref.tell(message as never);
   }
 
   /** Number of distinct topic subscriptions — useful for tests / metrics. */
@@ -286,11 +286,11 @@ export abstract class BrokerActor<S extends BrokerCommonOptionsType, Command = u
 
   private _resolveOptions(): S {
     const defaults = this.builtInDefaultOptions();
-    const cfg = this.system.config.hasPath(this.configKey())
+    const config = this.system.config.hasPath(this.configKey())
       ? this.system.config.getConfig(this.configKey())
       : null;
-    const fromConfig = cfg
-      ? { ...readCommonOptions(cfg), ...this.readOptionsFromConfig(cfg) } as Partial<S>
+    const fromConfig = config
+      ? { ...readCommonOptions(config), ...this.readOptionsFromConfig(config) } as Partial<S>
       : ({} as Partial<S>);
     return mergeOptions<S>(defaults, fromConfig, this._ctorOptions);
   }

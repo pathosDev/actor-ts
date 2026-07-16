@@ -1,7 +1,7 @@
 /**
  * A live WebSocket connection, presented to the hub actor as an
  * `ActorRef<TOut>` (so `this.sender` / `this.reply` / `broadcast` all
- * work through the normal actor machinery).  `tell(msg)` encodes `msg`
+ * work through the normal actor machinery).  `tell(message)` encodes `message`
  * via the route codec and writes it to the socket — routed through the
  * connection's internal session actor so writes stay ordered.
  *
@@ -46,7 +46,7 @@ export class WebsocketConnectionImplementation<TOut> extends ActorRef<TOut> impl
     readonly id: string,
     readonly upgrade: WebsocketUpgradeInfo,
     private readonly socket: WebsocketSocketAdapter,
-    private readonly connRef: ActorRef<WebsocketOutboundCommand<TOut>>,
+    private readonly connectionRef: ActorRef<WebsocketOutboundCommand<TOut>>,
     systemName: string,
   ) {
     super();
@@ -61,15 +61,15 @@ export class WebsocketConnectionImplementation<TOut> extends ActorRef<TOut> impl
     return this.socket.readyState === WebsocketReadyState.OPEN;
   }
 
-  override tell(msg: TOut): void {
-    this.connRef.tell({ _cmd: 'out', msg });
+  override tell(message: TOut): void {
+    this.connectionRef.tell({ _cmd: 'out', msg: message });
   }
 
   sendRaw(frame: WebsocketFrame): void {
-    this.connRef.tell({ _cmd: 'out-raw', frame });
+    this.connectionRef.tell({ _cmd: 'out-raw', frame });
   }
 
   close(code = 1000, reason = ''): void {
-    this.connRef.tell({ _cmd: 'close', code, reason });
+    this.connectionRef.tell({ _cmd: 'close', code, reason });
   }
 }

@@ -17,7 +17,7 @@ interface Stmts {
   highestSeq: SqliteStatement;
   deleteUpTo: SqliteStatement;
   deleteTagsUpTo: SqliteStatement;
-  pids: SqliteStatement;
+  persistenceIds: SqliteStatement;
   /** Used by the tags-table backfill at startup. */
   countTags: SqliteStatement;
   /** Iterates events that still have CSV tags but no row in the tag table. */
@@ -65,7 +65,7 @@ export class SqliteJournal implements Journal {
   }
 
   async append<E>(
-    pid: string,
+    persistenceId: string,
     events: ReadonlyArray<E>,
     expectedSeq: number,
     tags?: ReadonlyArray<string>,
@@ -76,10 +76,10 @@ export class SqliteJournal implements Journal {
     const stmts = this.stmts!;
     const now = Date.now();
     const txn = db.transaction((items: unknown[]) => {
-      const row = stmts.highestSeq.get(pid) as { hi: number | null } | undefined;
+      const row = stmts.highestSeq.get(persistenceId) as { hi: number | null } | undefined;
       const actualSeq = row?.hi ?? 0;
       if (actualSeq !== expectedSeq) {
-        throw new JournalConcurrencyError(pid, expectedSeq, actualSeq);
+        throw new JournalConcurrencyError(persistenceId, expectedSeq, actualSeq);
       }
       const out: PersistentEvent<E>[] = [];
       let seq = actualSeq;
@@ -87,7 +87,7 @@ export class SqliteJournal implements Journal {
         seq++;
         const payload = JSON.stringify(ev);
         const tagString = tags && tags.length ? tags.join(',') : null;
-        stmts.insert.run(pid, seq, payload, tagString, now);
+        stmts.insert.run(persistenceId, seq, payload, tagString, now);
         // Also populate the tags join table so SqliteQuery's
         // tag-search can do an indexed lookup instead of a CSV scan.
         // Both inserts run inside the same transaction — partial
@@ -95,11 +95,11 @@ export class SqliteJournal implements Journal {
         if (tags) {
           for (const tag of tags) {
             if (tag.length === 0) continue;
-            stmts.insertTag.run(pid, seq, tag, now);
+            stmts.insertTag.run(persistenceId, seq, tag, now);
           }
         }
         out.push({
-          persistenceId: pid,
+          persistenceId: persistenceId,
           sequenceNr: seq,
           event: ev,
           timestamp: now,
@@ -121,19 +121,19 @@ export class SqliteJournal implements Journal {
     return written;
   }
 
-  async read<E>(pid: string, fromSeq: number, toSeq?: number): Promise<PersistentEvent<E>[]> {
+  async read<E>(persistenceId: string, fromSeq: number, toSeq?: number): Promise<PersistentEvent<E>[]> {
     await this.ensureOpen();
     const stmts = this.stmts!;
     try {
       const rows = toSeq === undefined
-        ? (stmts.readAll.all(pid, fromSeq) as Array<{
+        ? (stmts.readAll.all(persistenceId, fromSeq) as Array<{
             persistence_id: string;
             sequence_nr: number;
             payload: string;
             tags: string | null;
             timestamp: number;
           }>)
-        : (stmts.readRange.all(pid, fromSeq, toSeq) as Array<{
+        : (stmts.readRange.all(persistenceId, fromSeq, toSeq) as Array<{
             persistence_id: string;
             sequence_nr: number;
             payload: string;
@@ -152,13 +152,13 @@ export class SqliteJournal implements Journal {
     }
   }
 
-  async highestSeq(pid: string): Promise<number> {
+  async highestSeq(persistenceId: string): Promise<number> {
     await this.ensureOpen();
-    const row = this.stmts!.highestSeq.get(pid) as { hi: number | null } | undefined;
+    const row = this.stmts!.highestSeq.get(persistenceId) as { hi: number | null } | undefined;
     return row?.hi ?? 0;
   }
 
-  async delete(pid: string, toSeq: number): Promise<void> {
+  async delete(persistenceId: string, toSeq: number): Promise<void> {
     await this.ensureOpen();
     // Order matters: delete from the tags-table FIRST so that a
     // crash mid-delete leaves an inconsistent state where tags exist
@@ -166,13 +166,13 @@ export class SqliteJournal implements Journal {
     // future backfill.  Doing it the other way around would produce
     // events with missing tags, which the JOIN-based query path
     // would silently miss.
-    this.stmts!.deleteTagsUpTo.run(pid, toSeq);
-    this.stmts!.deleteUpTo.run(pid, toSeq);
+    this.stmts!.deleteTagsUpTo.run(persistenceId, toSeq);
+    this.stmts!.deleteUpTo.run(persistenceId, toSeq);
   }
 
   async persistenceIds(): Promise<string[]> {
     await this.ensureOpen();
-    const rows = this.stmts!.pids.all() as Array<{ persistence_id: string }>;
+    const rows = this.stmts!.persistenceIds.all() as Array<{ persistence_id: string }>;
     return rows.map(r => r.persistence_id);
   }
 
@@ -238,7 +238,7 @@ export class SqliteJournal implements Journal {
       deleteTagsUpTo: db.prepare(
         `DELETE FROM ${tagsTable} WHERE persistence_id = ? AND sequence_nr <= ?`,
       ),
-      pids: db.prepare(
+      persistenceIds: db.prepare(
         `SELECT DISTINCT persistence_id FROM ${this.table}`,
       ),
       countTags: db.prepare(

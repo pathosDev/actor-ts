@@ -69,9 +69,9 @@ export class UdpSocketActor
         this.socket = sock;
         const addr = sock.address();
         this.actualPort = addr.port;
-        sock.on('message', (msg, rinfo) => {
+        sock.on('message', (message, rinfo) => {
           this.options.target?.tell({
-            payload: msg, remoteHost: rinfo.address, remotePort: rinfo.port,
+            payload: message, remoteHost: rinfo.address, remotePort: rinfo.port,
           });
         });
         sock.on('error', (e) => this.handleConnectionLost(e));
@@ -110,21 +110,21 @@ export class UdpSocketActor
     });
   }
 
-  override onReceive(cmd: UdpSocketCommand): void {
-    if (cmd.kind === 'send') this.enqueueOutbound(cmd.datagram);
+  override onReceive(command: UdpSocketCommand): void {
+    if (command.kind === 'send') this.enqueueOutbound(command.datagram);
   }
 }
 
 /* ---------------------------- internals --------------------------------- */
 
 interface DgramSocket {
-  on(event: 'message', cb: (msg: Uint8Array, rinfo: { address: string; port: number }) => void): void;
+  on(event: 'message', cb: (message: Uint8Array, rinfo: { address: string; port: number }) => void): void;
   on(event: 'error', cb: (err: Error) => void): void;
   once(event: 'listening', cb: () => void): void;
   once(event: 'error', cb: (err: Error) => void): void;
   removeAllListeners(event?: string): void;
   bind(port: number, host?: string): void;
-  send(msg: Uint8Array, port: number, host: string, cb: (err?: Error) => void): void;
+  send(message: Uint8Array, port: number, host: string, cb: (err?: Error) => void): void;
   close(cb?: () => void): void;
   address(): { port: number; address: string };
 }

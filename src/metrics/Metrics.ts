@@ -208,9 +208,9 @@ export interface MetricsRegistry {
    * same family across calls; `labels` selects (or creates) a child
    * series within it.
    */
-  counter(name: string, labels?: Labels, opts?: CounterOptions): Counter;
-  gauge(name: string, labels?: Labels, opts?: GaugeOptions): Gauge;
-  histogram(name: string, labels?: Labels, opts?: HistogramOptions): Histogram;
+  counter(name: string, labels?: Labels, options?: CounterOptions): Counter;
+  gauge(name: string, labels?: Labels, options?: GaugeOptions): Gauge;
+  histogram(name: string, labels?: Labels, options?: HistogramOptions): Histogram;
 
   /** Snapshot every series as a flat list of {@link MetricSample}s. */
   collect(): ReadonlyArray<MetricSample>;
@@ -227,18 +227,18 @@ export interface MetricsRegistry {
 export class DefaultMetricsRegistry implements MetricsRegistry {
   private readonly families = new Map<string, Family>();
 
-  counter(name: string, labels: Labels = {}, opts: CounterOptions = {}): Counter {
-    const family = this.familyOf(name, 'counter', opts.help);
+  counter(name: string, labels: Labels = {}, options: CounterOptions = {}): Counter {
+    const family = this.familyOf(name, 'counter', options.help);
     return this.childOf<CounterImplementation>(family, labels, () => new CounterImplementation());
   }
 
-  gauge(name: string, labels: Labels = {}, opts: GaugeOptions = {}): Gauge {
-    const family = this.familyOf(name, 'gauge', opts.help);
+  gauge(name: string, labels: Labels = {}, options: GaugeOptions = {}): Gauge {
+    const family = this.familyOf(name, 'gauge', options.help);
     return this.childOf<GaugeImplementation>(family, labels, () => new GaugeImplementation());
   }
 
-  histogram(name: string, labels: Labels = {}, opts: HistogramOptions = {}): Histogram {
-    const family = this.familyOf(name, 'histogram', opts.help, opts.buckets);
+  histogram(name: string, labels: Labels = {}, options: HistogramOptions = {}): Histogram {
+    const family = this.familyOf(name, 'histogram', options.help, options.buckets);
     return this.childOf<HistogramImplementation>(family, labels,
       () => new HistogramImplementation((family as HistogramFamily).buckets));
   }

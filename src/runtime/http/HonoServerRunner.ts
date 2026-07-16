@@ -57,7 +57,7 @@ export interface HonoWebsocketBridge {
 }
 
 export interface HonoServerRunner {
-  serve(opts: { host: string; port: number; fetch: FetchHandler; serveOptions?: object }): Promise<HonoServerHandle>;
+  serve(options: { host: string; port: number; fetch: FetchHandler; serveOptions?: object }): Promise<HonoServerHandle>;
   /** Optional capability — all three built-in runners implement it. */
   webSocket?(app: unknown): Promise<HonoWebsocketBridge>;
 }

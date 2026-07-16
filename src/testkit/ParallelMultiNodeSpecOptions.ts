@@ -10,7 +10,7 @@ export interface ParallelMultiNodeSpecOptionsType {
   readonly seedRoles?: ReadonlyArray<string>;
   /** URL of the scenario module loaded in each worker.  Optional. */
   readonly scenarioModule?: URL;
-  /** Per-role data passed to the scenario module's `setup(ctx)`. */
+  /** Per-role data passed to the scenario module's `setup(context)`. */
   readonly scenarioInitDataFor?: (role: string) => unknown;
   readonly addresses?: AddressMap;
   readonly failureDetector?: Partial<FailureDetectorOptionsType>;
@@ -43,7 +43,7 @@ export class ParallelMultiNodeSpecOptionsBuilder extends OptionsBuilder<Parallel
     return this.set('scenarioModule', scenarioModule);
   }
 
-  /** Per-role data passed to the scenario module's `setup(ctx)`. */
+  /** Per-role data passed to the scenario module's `setup(context)`. */
   withScenarioInitDataFor(scenarioInitDataFor: (role: string) => unknown): this {
     return this.set('scenarioInitDataFor', scenarioInitDataFor);
   }

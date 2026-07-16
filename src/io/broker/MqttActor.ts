@@ -96,7 +96,7 @@ export abstract class MqttActor<T = unknown, TSelf = never>
   /* ----------------------- user overrides ------------------------ */
 
   /** Handle one inbound message on this actor's own subscriptions. */
-  abstract onMessage(msg: MqttMessage<T>): void | Promise<void>;
+  abstract onMessage(message: MqttMessage<T>): void | Promise<void>;
 
   /** The connection (re)opened; the registry has been re-applied on the broker. */
   protected onConnected(): void | Promise<void> {}
@@ -110,15 +110,15 @@ export abstract class MqttActor<T = unknown, TSelf = never>
    * wire data shouldn't restart the actor).  Rethrow to escalate to the
    * supervisor.
    */
-  protected onInvalidMessage(error: MqttDecodeError, _msg: MqttMessage<T>): void | Promise<void> {
+  protected onInvalidMessage(error: MqttDecodeError, _message: MqttMessage<T>): void | Promise<void> {
     this.log.warn(
       `MqttActor: dropping undecodable payload on '${error.topic ?? '<unknown>'}': ${error.message}`,
     );
   }
 
   /** App-level message told to this actor's ref (reachable only when TSelf ≠ never). */
-  protected onSelfMessage(msg: TSelf): void | Promise<void> {
-    this.log.warn(`MqttActor: unhandled self message: ${String(msg)}`);
+  protected onSelfMessage(message: TSelf): void | Promise<void> {
+    this.log.warn(`MqttActor: unhandled self message: ${String(message)}`);
   }
 
   /* ----------------------- protected API ------------------------- */
@@ -130,12 +130,12 @@ export abstract class MqttActor<T = unknown, TSelf = never>
    * otherwise the registry entry is applied on the next connect.  Omit
    * `target` to deliver to this actor's own `onMessage`.
    */
-  protected subscribe(topic: string, opts: { qos?: MqttQos; target?: ActorRef<MqttMessage<T>> } = {}): void {
+  protected subscribe(topic: string, options: { qos?: MqttQos; target?: ActorRef<MqttMessage<T>> } = {}): void {
     if (!this._started) {
-      this.pendingSubs.push({ topic, qos: opts.qos, target: opts.target });
+      this.pendingSubs.push({ topic, qos: options.qos, target: options.target });
       return;
     }
-    this.registerSubscription(topic, opts);
+    this.registerSubscription(topic, options);
   }
 
   /**
@@ -143,8 +143,8 @@ export abstract class MqttActor<T = unknown, TSelf = never>
    * without, removes this actor's own `onMessage` delivery for `topic`.
    * A broker UNSUBSCRIBE fires once the pattern has no consumers left.
    */
-  protected unsubscribe(topic: string, opts: { target?: ActorRef<MqttMessage<T>> } = {}): void {
-    this.removeSubscription(topic, opts.target, false);
+  protected unsubscribe(topic: string, options: { target?: ActorRef<MqttMessage<T>> } = {}): void {
+    this.removeSubscription(topic, options.target, false);
   }
 
   /**
@@ -157,9 +157,9 @@ export abstract class MqttActor<T = unknown, TSelf = never>
    * than the raw bytes `pong`), encode it explicitly:
    * `this.publish(topic, this.codec().encode('pong'))`.
    */
-  protected publish(topic: string, payload: string | Uint8Array, opts?: MqttPublishOptions): boolean;
-  protected publish<E>(topic: string, entity: E, opts?: MqttPublishOptions): boolean;
-  protected publish(topic: string, payload: unknown, opts: MqttPublishOptions = {}): boolean {
+  protected publish(topic: string, payload: string | Uint8Array, options?: MqttPublishOptions): boolean;
+  protected publish<E>(topic: string, entity: E, options?: MqttPublishOptions): boolean;
+  protected publish(topic: string, payload: unknown, options: MqttPublishOptions = {}): boolean {
     let bytes: string | Uint8Array;
     if (typeof payload === 'string' || payload instanceof Uint8Array) {
       bytes = payload;
@@ -176,9 +176,9 @@ export abstract class MqttActor<T = unknown, TSelf = never>
     return this.enqueueOutbound({
       topic,
       payload: bytes,
-      qos: opts.qos,
-      retain: opts.retain,
-      userProperties: opts.userProperties,
+      qos: options.qos,
+      retain: options.retain,
+      userProperties: options.userProperties,
     });
   }
 
@@ -194,66 +194,66 @@ export abstract class MqttActor<T = unknown, TSelf = never>
   /* ----------------------- sealed dispatch ----------------------- */
 
   /** @internal Sealed — override onMessage + hooks instead. */
-  override onReceive(cmd: MqttActorMessage<T, TSelf>): void | Promise<void> {
+  override onReceive(command: MqttActorMessage<T, TSelf>): void | Promise<void> {
     // Terminated is delivered through onReceive (ActorCell) but isn't part
     // of the typed mailbox union — narrow via a guard.
-    if (isTerminated(cmd)) {
-      this.removeTerminatedTarget(cmd.actor);
+    if (isTerminated(command)) {
+      this.removeTerminatedTarget(command.actor);
       return;
     }
     // Uniform `kind` dispatch over internal signals + external commands.
-    const kind = (cmd as { readonly kind?: unknown }).kind;
+    const kind = (command as { readonly kind?: unknown }).kind;
     switch (kind) {
-      case 'mqtt-inbound': return this.routeInbound((cmd as MqttInboundSignal<T>).message);
+      case 'mqtt-inbound': return this.routeInbound((command as MqttInboundSignal<T>).message);
       case 'mqtt-connected': return this.onConnected();
-      case 'mqtt-disconnected': return this.onDisconnected((cmd as MqttDisconnectedSignal).cause);
+      case 'mqtt-disconnected': return this.onDisconnected((command as MqttDisconnectedSignal).cause);
       case 'publish':
       case 'subscribe':
       case 'unsubscribe':
-        return this.handleCommand(cmd as MqttCommand<T>);
+        return this.handleCommand(command as MqttCommand<T>);
       default:
-        return this.onSelfMessage(cmd as TSelf);
+        return this.onSelfMessage(command as TSelf);
     }
   }
 
-  private handleCommand(cmd: MqttCommand<T>): void {
+  private handleCommand(command: MqttCommand<T>): void {
     // Exhaustive over MqttCommand — a new command variant forces a handler here.
-    match(cmd)
+    match(command)
       .with({ kind: 'publish' },     (m) => this.onPublish(m))
       .with({ kind: 'subscribe' },   (m) => this.onSubscribe(m))
       .with({ kind: 'unsubscribe' }, (m) => this.onUnsubscribe(m))
       .exhaustive();
   }
 
-  private onPublish(cmd: MqttPublishCommand<T>): void {
-    this.enqueueOutbound(cmd.publish);
+  private onPublish(command: MqttPublishCommand<T>): void {
+    this.enqueueOutbound(command.publish);
   }
 
-  private onSubscribe(cmd: MqttSubscribeCommand<T>): void {
-    this.registerSubscription(cmd.topic, { qos: cmd.qos, target: cmd.target });
+  private onSubscribe(command: MqttSubscribeCommand<T>): void {
+    this.registerSubscription(command.topic, { qos: command.qos, target: command.target });
   }
 
-  private onUnsubscribe(cmd: MqttUnsubscribeCommand<T>): void {
-    this.removeSubscription(cmd.topic, cmd.target, true);
+  private onUnsubscribe(command: MqttUnsubscribeCommand<T>): void {
+    this.removeSubscription(command.topic, command.target, true);
   }
 
   /* ----------------------- inbound routing ----------------------- */
 
-  private async routeInbound(msg: MqttMessage<T>): Promise<void> {
+  private async routeInbound(message: MqttMessage<T>): Promise<void> {
     let toSelf = false;
     const seen = new Set<ActorRef<MqttMessage<T>>>();
     for (const [pattern, entry] of this.registry) {
-      if (!matchesMqttPattern(pattern, msg.topic)) continue;
+      if (!matchesMqttPattern(pattern, message.topic)) continue;
       if (entry.deliverToSelf) toSelf = true;
       for (const ref of entry.targets) {
-        if (!seen.has(ref)) { seen.add(ref); ref.tell(msg); }
+        if (!seen.has(ref)) { seen.add(ref); ref.tell(message); }
       }
     }
     if (!toSelf) return;
     try {
-      await this.onMessage(msg);
+      await this.onMessage(message);
     } catch (err) {
-      if (err instanceof MqttDecodeError) return this.onInvalidMessage(err, msg);
+      if (err instanceof MqttDecodeError) return this.onInvalidMessage(err, message);
       throw err;  // ordinary supervision
     }
   }
@@ -262,18 +262,18 @@ export abstract class MqttActor<T = unknown, TSelf = never>
 
   private registerSubscription(
     topic: string,
-    opts: { qos?: MqttQos; target?: ActorRef<MqttMessage<T>> },
+    options: { qos?: MqttQos; target?: ActorRef<MqttMessage<T>> },
   ): void {
     let entry = this.registry.get(topic);
     if (!entry) {
-      entry = { qos: opts.qos, deliverToSelf: false, targets: new Set() };
+      entry = { qos: options.qos, deliverToSelf: false, targets: new Set() };
       this.registry.set(topic, entry);
-    } else if (opts.qos !== undefined) {
-      entry.qos = opts.qos;  // last-writer-wins when a QoS is given
+    } else if (options.qos !== undefined) {
+      entry.qos = options.qos;  // last-writer-wins when a QoS is given
     }
-    if (opts.target) {
-      entry.targets.add(opts.target);
-      this.watchTarget(opts.target, topic);
+    if (options.target) {
+      entry.targets.add(options.target);
+      this.watchTarget(options.target, topic);
     } else {
       entry.deliverToSelf = true;
     }
@@ -414,7 +414,7 @@ export abstract class MqttActor<T = unknown, TSelf = never>
 
   protected async connectImplementation(): Promise<void> {
     const mqtt = await this.mqttModule();
-    const opts: MqttConnectOptions = {
+    const connectOptions: MqttConnectOptions = {
       clientId: this.options.clientId,
       username: this.options.credentials?.username,
       password: this.options.credentials?.password,
@@ -423,7 +423,7 @@ export abstract class MqttActor<T = unknown, TSelf = never>
       protocolVersion: this.options.protocolVersion ?? 4,
     };
     if (this.options.will) {
-      opts.will = {
+      connectOptions.will = {
         topic: this.options.will.topic,
         payload: this.options.will.payload,
         qos: this.options.will.qos ?? 0,
@@ -431,7 +431,7 @@ export abstract class MqttActor<T = unknown, TSelf = never>
       };
     }
     return new Promise<void>((resolve, reject) => {
-      const client = mqtt.connect(this.options.brokerUrl!, opts);
+      const client = mqtt.connect(this.options.brokerUrl!, connectOptions);
       let done = false;
       let down = false;
       // mqtt.js can fire 'error' then 'close' for one drop — collapse them.
@@ -495,11 +495,11 @@ export abstract class MqttActor<T = unknown, TSelf = never>
     const qos = payload.qos ?? this.options.qos ?? 0;
     const retain = payload.retain ?? false;
     const protocolVersion = this.options.protocolVersion ?? 4;
-    const opts: MqttPubOpts = { qos, retain };
+    const publishOptions: MqttPubOpts = { qos, retain };
     const properties = buildPublishProperties(payload, protocolVersion);
-    if (properties) opts.properties = properties;
+    if (properties) publishOptions.properties = properties;
     return new Promise<void>((resolve, reject) => {
-      this.client!.publish(payload.topic, payload.payload as string | Uint8Array, opts, (err) => {
+      this.client!.publish(payload.topic, payload.payload as string | Uint8Array, publishOptions, (err) => {
         err ? reject(err) : resolve();
       });
     });
@@ -597,15 +597,15 @@ export interface MqttClientLike {
   once(event: 'connect', cb: () => void): void;
   once(event: 'error', cb: (err: Error) => void): void;
   removeAllListeners(event?: string): void;
-  publish(topic: string, payload: string | Uint8Array, opts: MqttPubOpts, cb?: (err?: Error) => void): void;
-  subscribe(topic: string, opts: { qos: MqttQos }, cb?: (err?: Error) => void): void;
-  unsubscribe(topic: string, opts: undefined, cb?: (err?: Error) => void): void;
-  end(force?: boolean, opts?: object, cb?: () => void): void;
+  publish(topic: string, payload: string | Uint8Array, options: MqttPubOpts, cb?: (err?: Error) => void): void;
+  subscribe(topic: string, options: { qos: MqttQos }, cb?: (err?: Error) => void): void;
+  unsubscribe(topic: string, options: undefined, cb?: (err?: Error) => void): void;
+  end(force?: boolean, options?: object, cb?: () => void): void;
 }
 
 /** The `mqtt` module surface we use.  Exported as a test seam. */
 export interface MqttModuleLike {
-  connect(url: string, opts?: MqttConnectOptions): MqttClientLike;
+  connect(url: string, options?: MqttConnectOptions): MqttClientLike;
 }
 
 const mqttLazy: Lazy<Promise<MqttModuleLike>> = Lazy.of(

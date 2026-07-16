@@ -18,14 +18,14 @@ export function requestTimeout(options: number | TimeoutOptions): Middleware {
   const onTimeout = resolvedOptions.onTimeout
     ?? ((): HttpResponse => ({ status: Status.ServiceUnavailable, body: { error: 'request timed out' } }));
 
-  return async (req: HttpRequest, next) => {
+  return async (request: HttpRequest, next) => {
     let timer: ReturnType<typeof setTimeout> | undefined;
     const work = Promise.resolve(next());
     // If the timeout wins, the handler may still reject later — swallow it
     // here so it doesn't surface as an unhandled rejection.
     work.catch(() => { /* discarded — timeout already answered */ });
     const timeout = new Promise<HttpResponse>((resolve) => {
-      timer = setTimeout(() => resolve(onTimeout(req)), ms);
+      timer = setTimeout(() => resolve(onTimeout(request)), ms);
       (timer as { unref?: () => void }).unref?.();
     });
     try {

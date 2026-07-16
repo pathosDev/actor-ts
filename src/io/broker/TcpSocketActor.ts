@@ -119,8 +119,8 @@ export class TcpSocketActor extends BrokerActor<TcpSocketOptionsType, TcpSocketC
     });
   }
 
-  override onReceive(cmd: TcpSocketCommand): void {
-    if (cmd.kind === 'send') this.enqueueOutbound(cmd.payload);
+  override onReceive(command: TcpSocketCommand): void {
+    if (command.kind === 'send') this.enqueueOutbound(command.payload);
   }
 
   /* ---------------------------- framing ----------------------------- */
@@ -150,15 +150,15 @@ export class TcpSocketActor extends BrokerActor<TcpSocketOptionsType, TcpSocketC
     const text = new TextDecoder('utf-8', { fatal: false }).decode(this.inboundBuffer);
     let cursor = 0;
     while (true) {
-      const idx = text.indexOf(delimiter, cursor);
-      if (idx < 0) break;
-      const line = text.slice(cursor, idx);
+      const index = text.indexOf(delimiter, cursor);
+      if (index < 0) break;
+      const line = text.slice(cursor, index);
       if (line.length > maxLineLen) {
         this.handleConnectionLost(new Error(`line exceeds maxLineLen=${maxLineLen}`));
         return;
       }
       this.deliver(line);
-      cursor = idx + delimiter.length;
+      cursor = index + delimiter.length;
     }
     // Pending (un-terminated) remainder: bytes after the last delimiter, or
     // the whole buffer when no delimiter has arrived.  If it already exceeds
@@ -176,20 +176,20 @@ export class TcpSocketActor extends BrokerActor<TcpSocketOptionsType, TcpSocketC
 
   private extractLengthPrefixed(maxFrameLen: number): void {
     let cursor = 0;
-    const buf = this.inboundBuffer;
-    while (buf.length - cursor >= 4) {
-      const len = (buf[cursor]! << 24 | buf[cursor + 1]! << 16
-                 | buf[cursor + 2]! << 8 | buf[cursor + 3]!) >>> 0;
+    const buffer = this.inboundBuffer;
+    while (buffer.length - cursor >= 4) {
+      const len = (buffer[cursor]! << 24 | buffer[cursor + 1]! << 16
+                 | buffer[cursor + 2]! << 8 | buffer[cursor + 3]!) >>> 0;
       if (len > maxFrameLen) {
         this.handleConnectionLost(new Error(`frame exceeds maxFrameLen=${maxFrameLen}`));
         return;
       }
-      if (buf.length - cursor - 4 < len) break;
-      const frame = buf.slice(cursor + 4, cursor + 4 + len);
+      if (buffer.length - cursor - 4 < len) break;
+      const frame = buffer.slice(cursor + 4, cursor + 4 + len);
       this.deliver(frame);
       cursor += 4 + len;
     }
-    this.inboundBuffer = cursor === 0 ? buf : buf.slice(cursor);
+    this.inboundBuffer = cursor === 0 ? buffer : buffer.slice(cursor);
   }
 
   private deliver(frame: Uint8Array | string): void {
@@ -213,7 +213,7 @@ interface NetSocket {
 }
 
 interface NetModule {
-  createConnection(opts: { host: string; port: number }): NetSocket;
+  createConnection(options: { host: string; port: number }): NetSocket;
 }
 
 const netLazy: Lazy<Promise<NetModule>> = Lazy.of(async () => {

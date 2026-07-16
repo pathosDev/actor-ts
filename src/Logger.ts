@@ -44,11 +44,11 @@ export class ConsoleLogger implements Logger {
    * intuition.  The fields appear as a `{k=v, k2=v2}` suffix when
    * non-empty so they don't clutter records that don't use MDC.
    */
-  private render(tag: string, msg: string): string {
+  private render(tag: string, message: string): string {
     const ts = new Date().toISOString();
     const head = this.source
-      ? `[${ts}] ${tag} ${this.source} - ${msg}`
-      : `[${ts}] ${tag} ${msg}`;
+      ? `[${ts}] ${tag} ${this.source} - ${message}`
+      : `[${ts}] ${tag} ${message}`;
     const merged = { ...this.staticFields, ...LogContext.get() };
     const keys = Object.keys(merged);
     if (keys.length === 0) return head;
@@ -56,17 +56,17 @@ export class ConsoleLogger implements Logger {
     return `${head} {${tail}}`;
   }
 
-  debug(msg: string, ...args: unknown[]): void {
-    if (this.enabled(LogLevel.Debug)) console.debug(this.render('DEBUG', msg), ...args);
+  debug(message: string, ...args: unknown[]): void {
+    if (this.enabled(LogLevel.Debug)) console.debug(this.render('DEBUG', message), ...args);
   }
-  info(msg: string, ...args: unknown[]): void {
-    if (this.enabled(LogLevel.Info)) console.log(this.render('INFO ', msg), ...args);
+  info(message: string, ...args: unknown[]): void {
+    if (this.enabled(LogLevel.Info)) console.log(this.render('INFO ', message), ...args);
   }
-  warn(msg: string, ...args: unknown[]): void {
-    if (this.enabled(LogLevel.Warn)) console.warn(this.render('WARN ', msg), ...args);
+  warn(message: string, ...args: unknown[]): void {
+    if (this.enabled(LogLevel.Warn)) console.warn(this.render('WARN ', message), ...args);
   }
-  error(msg: string, ...args: unknown[]): void {
-    if (this.enabled(LogLevel.Error)) console.error(this.render('ERROR', msg), ...args);
+  error(message: string, ...args: unknown[]): void {
+    if (this.enabled(LogLevel.Error)) console.error(this.render('ERROR', message), ...args);
   }
 
   withSource(source: string): Logger {
@@ -172,13 +172,13 @@ export class JsonLogger implements Logger {
     return target >= this.level;
   }
 
-  private emit(level: LogLevel, msg: string, args: unknown[]): void {
+  private emit(level: LogLevel, message: string, args: unknown[]): void {
     if (!this.enabled(level)) return;
     const record: Record<string, unknown> = {
       ts: new Date().toISOString(),
       level: LEVEL_TAG[level],
       ...(this.source ? { source: this.source } : {}),
-      msg,
+      msg: message,
       ...this.staticFields,
       ...LogContext.get(),
     };
@@ -198,10 +198,10 @@ export class JsonLogger implements Logger {
     this.sink.write(line + '\n');
   }
 
-  debug(msg: string, ...args: unknown[]): void { this.emit(LogLevel.Debug, msg, args); }
-  info(msg: string, ...args: unknown[]): void { this.emit(LogLevel.Info, msg, args); }
-  warn(msg: string, ...args: unknown[]): void { this.emit(LogLevel.Warn, msg, args); }
-  error(msg: string, ...args: unknown[]): void { this.emit(LogLevel.Error, msg, args); }
+  debug(message: string, ...args: unknown[]): void { this.emit(LogLevel.Debug, message, args); }
+  info(message: string, ...args: unknown[]): void { this.emit(LogLevel.Info, message, args); }
+  warn(message: string, ...args: unknown[]): void { this.emit(LogLevel.Warn, message, args); }
+  error(message: string, ...args: unknown[]): void { this.emit(LogLevel.Error, message, args); }
 
   withSource(source: string): Logger {
     return new JsonLogger(this.level, source, this.staticFields, this.sink);

@@ -99,12 +99,12 @@ export class CassandraRememberEntitiesStore implements RememberEntitiesStore {
 
   async load(typeName: string): Promise<RememberEvent[]> {
     await this.ensureStarted();
-    const res = await this.client.execute(
+    const response = await this.client.execute(
       `SELECT type_name, shard_id, entity_id, started_at FROM ${this.qualified()} WHERE type_name = ?`,
       [typeName],
       { prepare: true },
     );
-    const rows = res.rows as unknown as RememberRow[];
+    const rows = response.rows as unknown as RememberRow[];
     return rows.map((r): RememberEvent => ({
       kind: 'started',
       shardId: Number(r.shard_id),

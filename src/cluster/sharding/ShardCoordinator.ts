@@ -38,9 +38,9 @@ type CoordinatorEvent =
 
 type CoordinatorInbox = ShardingMessage | CoordinatorEvent;
 
-function isCoordinatorEvent(msg: CoordinatorInbox): msg is CoordinatorEvent {
-  if (!msg || typeof msg !== 'object') return false;
-  const discriminator = (msg as { t?: unknown; $t?: unknown }).t;
+function isCoordinatorEvent(message: CoordinatorInbox): message is CoordinatorEvent {
+  if (!message || typeof message !== 'object') return false;
+  const discriminator = (message as { t?: unknown; $t?: unknown }).t;
   return discriminator === 'reconcile' || discriminator === 'lease-acquire-result'
     || discriminator === 'lease-lost' || discriminator === 'acquire-retry';
 }
@@ -206,12 +206,12 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
     }
   }
 
-  override onReceive(msg: CoordinatorInbox): void {
+  override onReceive(message: CoordinatorInbox): void {
     // Internal coordinator events drive the lease state machine — they
     // run regardless of `isActive()` because they're how we transition
     // INTO `isActive()` in the first place.
-    if (isCoordinatorEvent(msg)) {
-      this.handleCoordinatorEvent(msg);
+    if (isCoordinatorEvent(message)) {
+      this.handleCoordinatorEvent(message);
       return;
     }
     if (!this.isLeader()) return;
@@ -219,15 +219,15 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
       // Leader, but lease not yet held — buffer instead of drop so
       // regions don't need to retry on the next cluster event.
       if (this.acquireBuffer.length < ShardCoordinator.ACQUIRE_BUFFER_CAP) {
-        this.acquireBuffer.push(msg);
+        this.acquireBuffer.push(message);
       }
       return;
     }
-    this.dispatchShardingMessage(msg);
+    this.dispatchShardingMessage(message);
   }
 
-  private dispatchShardingMessage(msg: ShardingMessage): void {
-    match(msg)
+  private dispatchShardingMessage(message: ShardingMessage): void {
+    match(message)
       .with({ $t: 'sharding.Register' }, (m) => this.onRegister(m))
       .with({ $t: 'sharding.GetShardHome' }, (m) => this.onGetShardHome(m))
       .with({ $t: 'sharding.HandOffComplete' }, (m) => this.onHandOffComplete(m))
@@ -311,14 +311,14 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
     }
   }
 
-  private onLeaseAcquireResult(msg: { got: boolean; error?: Error }): void {
+  private onLeaseAcquireResult(result: { got: boolean; error?: Error }): void {
     if (this.leaseState !== 'acquiring') {
       // Spurious result — release if we somehow got it.
-      if (msg.got) void this.options.lease!.release().catch(() => { /* ignore */ });
+      if (result.got) void this.options.lease!.release().catch(() => { /* ignore */ });
       return;
     }
-    if (!msg.got) {
-      if (msg.error) this.system.log.warn(`[sharding] lease acquire failed`, msg.error);
+    if (!result.got) {
+      if (result.error) this.system.log.warn(`[sharding] lease acquire failed`, result.error);
       this.leaseState = 'none';
       this.scheduleAcquireRetry();
       return;
@@ -345,10 +345,10 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
     }
   }
 
-  private onLeaseLost(msg: { reason: string }): void {
+  private onLeaseLost(message: { reason: string }): void {
     if (this.leaseState !== 'held') return;
     this.system.log.warn(
-      `[sharding] coordinator '${this.options.typeName}' lost lease — ${msg.reason}; stepping down`,
+      `[sharding] coordinator '${this.options.typeName}' lost lease — ${message.reason}; stepping down`,
     );
     this.leaseState = 'none';
     // Cancel any in-flight rebalance handoff timers — those would
@@ -414,50 +414,50 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
     /* other ShardingMessage variants are region-side */
   }
 
-  private onRegister(msg: RegisterRegion): void {
-    const node = NodeAddress.fromJSON(msg.node);
-    const key = regionKey(node, msg.region);
+  private onRegister(message: RegisterRegion): void {
+    const node = NodeAddress.fromJSON(message.node);
+    const key = regionKey(node, message.region);
     this.regions.set(key, {
       node,
-      path: msg.region,
-      proxy: msg.proxy,
-      shards: new Set(msg.hostedShards),
+      path: message.region,
+      proxy: message.proxy,
+      shards: new Set(message.hostedShards),
     });
-    for (const shardId of msg.hostedShards) {
+    for (const shardId of message.hostedShards) {
       this.shardHome.set(shardId, key);
     }
     const ack: RegisterAcknowledgment = {
       $t: 'sharding.RegisterAcknowledgment',
       coordinator: this.self.path.toString(),
     };
-    this.replyTo(msg.region, msg.node, ack);
+    this.replyTo(message.region, message.node, ack);
 
-    for (const shardId of msg.hostedShards) this.flushPending(shardId);
+    for (const shardId of message.hostedShards) this.flushPending(shardId);
 
     if (this.options.rememberEntities) {
-      for (const shardId of msg.hostedShards) this.shipRememberedEntities(shardId);
+      for (const shardId of message.hostedShards) this.shipRememberedEntities(shardId);
     }
     this.scheduleCoordinatorStateSave();
   }
 
-  private onGetShardHome(msg: GetShardHome): void {
-    const home = this.shardHome.get(msg.shardId);
+  private onGetShardHome(message: GetShardHome): void {
+    const home = this.shardHome.get(message.shardId);
     if (home && this.regions.has(home)) {
       const info = this.regions.get(home)!;
-      this.replyTo(msg.requester, msg.requesterNode, {
+      this.replyTo(message.requester, message.requesterNode, {
         $t: 'sharding.ShardHome',
-        shardId: msg.shardId,
+        shardId: message.shardId,
         region: info.path,
         node: info.node.toJSON(),
       });
       return;
     }
 
-    const list = this.pending.get(msg.shardId) ?? [];
-    list.push(msg);
-    this.pending.set(msg.shardId, list);
+    const list = this.pending.get(message.shardId) ?? [];
+    list.push(message);
+    this.pending.set(message.shardId, list);
 
-    if (!this.rebalanceInProgress.has(msg.shardId)) this.tryAllocate(msg.shardId);
+    if (!this.rebalanceInProgress.has(message.shardId)) this.tryAllocate(message.shardId);
   }
 
   private tryAllocate(shardId: number): void {
@@ -485,8 +485,8 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
     this.scheduleCoordinatorStateSave();
   }
 
-  private onHandOffComplete(msg: HandOffComplete): void {
-    const shardId = msg.shardId;
+  private onHandOffComplete(message: HandOffComplete): void {
+    const shardId = message.shardId;
     const inProgress = this.rebalanceInProgress.get(shardId);
     if (!inProgress) return;
     inProgress.timer.cancel();
@@ -504,23 +504,23 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
     this.tryAllocate(shardId);
   }
 
-  private onEntityStarted(msg: EntityStarted): void {
+  private onEntityStarted(message: EntityStarted): void {
     if (!this.options.rememberEntities) return;
-    this.applyRememberEvent({ kind: 'started', shardId: msg.shardId, entityId: msg.entityId });
-    this.persistRememberEvent({ kind: 'started', shardId: msg.shardId, entityId: msg.entityId });
+    this.applyRememberEvent({ kind: 'started', shardId: message.shardId, entityId: message.entityId });
+    this.persistRememberEvent({ kind: 'started', shardId: message.shardId, entityId: message.entityId });
   }
 
-  private onEntityStopped(msg: EntityStopped): void {
+  private onEntityStopped(message: EntityStopped): void {
     if (!this.options.rememberEntities) {
       // Existing behaviour: tidy the in-memory map even when we're
       // not remembering entities, so an unwise external trigger
       // doesn't leave stale data in the map.
-      const set = this.entitiesPerShard.get(msg.shardId);
-      if (set) { set.delete(msg.entityId); if (set.size === 0) this.entitiesPerShard.delete(msg.shardId); }
+      const set = this.entitiesPerShard.get(message.shardId);
+      if (set) { set.delete(message.entityId); if (set.size === 0) this.entitiesPerShard.delete(message.shardId); }
       return;
     }
-    this.applyRememberEvent({ kind: 'stopped', shardId: msg.shardId, entityId: msg.entityId });
-    this.persistRememberEvent({ kind: 'stopped', shardId: msg.shardId, entityId: msg.entityId });
+    this.applyRememberEvent({ kind: 'stopped', shardId: message.shardId, entityId: message.entityId });
+    this.persistRememberEvent({ kind: 'stopped', shardId: message.shardId, entityId: message.entityId });
   }
 
   /**
@@ -547,9 +547,9 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
       });
   }
 
-  private onRegionTerminated(msg: RegionTerminated): void {
-    const addr = NodeAddress.fromJSON(msg.node);
-    const key = regionKey(addr, msg.region);
+  private onRegionTerminated(message: RegionTerminated): void {
+    const addr = NodeAddress.fromJSON(message.node);
+    const key = regionKey(addr, message.region);
     const info = this.regions.get(key);
     if (!info) return;
     this.regions.delete(key);
@@ -790,20 +790,20 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
     });
   }
 
-  private sendToRegion(key: string, msg: ShardingMessage): void {
+  private sendToRegion(key: string, message: ShardingMessage): void {
     const info = this.regions.get(key);
     if (!info) return;
-    this.replyTo(info.path, info.node.toJSON(), msg);
+    this.replyTo(info.path, info.node.toJSON(), message);
   }
 
-  private replyTo(path: string, nodeData: NodeAddressData, msg: ShardingMessage): void {
+  private replyTo(path: string, nodeData: NodeAddressData, message: ShardingMessage): void {
     const node = NodeAddress.fromJSON(nodeData);
     if (node.equals(this.options.cluster.selfAddress)) {
       const ref = this.options.localResolver(path) as ActorRef<ShardingMessage> | null;
-      if (ref) ref.tell(msg);
+      if (ref) ref.tell(message);
       return;
     }
     const remote = new RemoteActorRef<ShardingMessage>(node, path, this.options.cluster);
-    remote.tell(msg);
+    remote.tell(message);
   }
 }

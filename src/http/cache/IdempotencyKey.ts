@@ -25,8 +25,8 @@ import {
  *
  * Usage:
  *
- *   const dedup = idempotent({ cache: ext.cache(), ttlMs: 24 * 60 * 60_000 });
- *   route(post('/payments', dedup(handler)));
+ *   const deduplication = idempotent({ cache: ext.cache(), ttlMs: 24 * 60 * 60_000 });
+ *   route(post('/payments', deduplication(handler)));
  */
 
 interface CachedResponse {
@@ -51,19 +51,19 @@ interface CachedResponse {
 const IN_FLIGHT_MARKER: { readonly inFlight: true } = { inFlight: true } as const;
 
 export function idempotent(options: IdempotencyOptions) {
-  const opts = options as IdempotencyOptionsType;
-  new IdempotencyOptionsValidator().validate(opts);
-  const ttlMs = opts.ttlMs ?? 24 * 60 * 60_000;
-  const header = (opts.headerName ?? 'idempotency-key').toLowerCase();
-  const prefix = opts.keyPrefix ?? 'idem:';
-  const missing = opts.missingHeader ?? 'reject';
-  const identity = opts.identity;
+  const resolvedOptions = options as IdempotencyOptionsType;
+  new IdempotencyOptionsValidator().validate(resolvedOptions);
+  const ttlMs = resolvedOptions.ttlMs ?? 24 * 60 * 60_000;
+  const header = (resolvedOptions.headerName ?? 'idempotency-key').toLowerCase();
+  const prefix = resolvedOptions.keyPrefix ?? 'idem:';
+  const missing = resolvedOptions.missingHeader ?? 'reject';
+  const identity = resolvedOptions.identity;
 
-  return function wrap(handler: (req: HttpRequest) => Promise<HttpResponse> | HttpResponse) {
-    return async function deduped(req: HttpRequest): Promise<HttpResponse> {
-      const userKey = req.headers[header];
+  return function wrap(handler: (request: HttpRequest) => Promise<HttpResponse> | HttpResponse) {
+    return async function deduplicated(request: HttpRequest): Promise<HttpResponse> {
+      const userKey = request.headers[header];
       if (!userKey) {
-        if (missing === 'pass-through') return handler(req);
+        if (missing === 'pass-through') return handler(request);
         return complete(Status.BadRequest, {
           error: `missing required '${header}' header`,
         });
@@ -71,12 +71,12 @@ export function idempotent(options: IdempotencyOptions) {
       // Fold the caller scope into the key so a cached response can't be
       // replayed to a different caller (HTTP-4).  Empty when no `identity`
       // is configured — identical key space to before.
-      const scope = identity ? await identity(req) : '';
+      const scope = identity ? await identity(request) : '';
       const cacheKey = `${prefix}${scope}${scope ? ':' : ''}${userKey}`;
-      const fingerprint = await computeRequestFingerprint(req);
+      const fingerprint = await computeRequestFingerprint(request);
 
       // Probe — if the key already holds a completed response, replay.
-      const existing = await opts.cache.get<CachedResponse | typeof IN_FLIGHT_MARKER>(cacheKey);
+      const existing = await resolvedOptions.cache.get<CachedResponse | typeof IN_FLIGHT_MARKER>(cacheKey);
       if (existing.isSome()) {
         const value = existing.value;
         if (isInFlight(value)) {
@@ -101,7 +101,7 @@ export function idempotent(options: IdempotencyOptions) {
       // Try to claim the key.  `setIfAbsent` is the kernel — if it
       // returns false, somebody else got there a microsecond ago, fall
       // back to the same in-flight response.
-      const claimed = await opts.cache.setIfAbsent(cacheKey, IN_FLIGHT_MARKER, ttlMs);
+      const claimed = await resolvedOptions.cache.setIfAbsent(cacheKey, IN_FLIGHT_MARKER, ttlMs);
       if (!claimed) {
         return complete(Status.Conflict, {
           error: 'idempotency-key in-flight; retry shortly',
@@ -110,16 +110,16 @@ export function idempotent(options: IdempotencyOptions) {
 
       let response: HttpResponse;
       try {
-        response = await handler(req);
+        response = await handler(request);
       } catch (e) {
         // On error, drop our in-flight claim so the client can retry.
-        await opts.cache.delete(cacheKey);
+        await resolvedOptions.cache.delete(cacheKey);
         throw e;
       }
       // Replace the in-flight marker with the actual response,
       // remembering the request fingerprint so subsequent replays
       // can verify the request body matches.
-      await opts.cache.set<CachedResponse>(cacheKey, encodeResponse(response, fingerprint), ttlMs);
+      await resolvedOptions.cache.set<CachedResponse>(cacheKey, encodeResponse(response, fingerprint), ttlMs);
       return response;
     };
   };
@@ -154,10 +154,10 @@ function encodeResponse(response: HttpResponse, requestFingerprint: string): Cac
  * We include `method + path` so even a body-less GET can be
  * fingerprinted, and a same-body POST/PUT mix doesn't collide.
  */
-async function computeRequestFingerprint(req: HttpRequest): Promise<string> {
+async function computeRequestFingerprint(request: HttpRequest): Promise<string> {
   const subtle = (globalThis.crypto as Crypto | undefined)?.subtle;
-  const prelude = new TextEncoder().encode(`${req.method} ${req.path}\n`);
-  const body = req.body ?? new Uint8Array(0);
+  const prelude = new TextEncoder().encode(`${request.method} ${request.path}\n`);
+  const body = request.body ?? new Uint8Array(0);
   const combined = new Uint8Array(prelude.byteLength + body.byteLength);
   combined.set(prelude, 0);
   combined.set(body, prelude.byteLength);

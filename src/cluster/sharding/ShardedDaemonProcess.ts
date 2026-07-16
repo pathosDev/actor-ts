@@ -22,7 +22,7 @@ const WAKEUP: Wakeup = { t: 'sharded-daemon.wakeup' };
 export interface ShardedDaemonProcessHandle<T> {
   /**
    * Sharded region ref.  Messages sent here must carry a `{index, body}`
-   * envelope — use `tell(i, msg)` on the handle instead.
+   * envelope — use `tell(i, message)` on the handle instead.
    */
   readonly region: ActorRef<DaemonEnvelope<T>>;
 
@@ -137,11 +137,11 @@ class DaemonHost<T> extends Actor<DaemonEnvelope<T>> {
     this.inner = this.context.spawn(props, 'daemon');
   }
 
-  override onReceive(msg: DaemonEnvelope<T> | T | Wakeup): void {
+  override onReceive(message: DaemonEnvelope<T> | T | Wakeup): void {
     // ShardRegion uses `extractEntityMessage` to unwrap the envelope before
-    // delivery, so `msg` here is actually the `body` field of the envelope.
-    if (isWakeup(msg)) return; // already awake — preStart ran
-    this.inner?.tell(msg as T);
+    // delivery, so `message` here is actually the `body` field of the envelope.
+    if (isWakeup(message)) return; // already awake — preStart ran
+    this.inner?.tell(message as T);
   }
 }
 

@@ -124,7 +124,7 @@ export class FilesystemObjectStorageBackend implements ObjectStorageBackend {
     this.staleLockMs   = resolvedOptions.staleLockMs   ?? DEFAULT_STALE_LOCK_MS;
   }
 
-  async put(key: string, body: Uint8Array, opts: PutOptions = {}): Promise<{ etag: string }> {
+  async put(key: string, body: Uint8Array, options: PutOptions = {}): Promise<{ etag: string }> {
     assertSafeKey(key);
     const { fs, path } = await fsLazy.get();
     const fullPath = path.join(this.dir, key);
@@ -154,15 +154,15 @@ export class FilesystemObjectStorageBackend implements ObjectStorageBackend {
       }
 
       // Validate CAS preconditions.
-      if (opts.ifNoneMatch === '*' && currentEtag !== undefined) {
+      if (options.ifNoneMatch === '*' && currentEtag !== undefined) {
         throw new ObjectStorageConcurrencyError(
           key, `key ${key} already exists; ifNoneMatch=* rejected`,
         );
       }
-      if (opts.ifMatch !== undefined && currentEtag !== opts.ifMatch) {
+      if (options.ifMatch !== undefined && currentEtag !== options.ifMatch) {
         throw new ObjectStorageConcurrencyError(
           key,
-          `etag mismatch on ${key}: expected ${opts.ifMatch}, actual ${currentEtag ?? '<absent>'}`,
+          `etag mismatch on ${key}: expected ${options.ifMatch}, actual ${currentEtag ?? '<absent>'}`,
         );
       }
 
@@ -180,10 +180,10 @@ export class FilesystemObjectStorageBackend implements ObjectStorageBackend {
       // Metadata sidecar.  Best-effort — a crash between rename(body) and
       // writeFile(meta) leaves the body without metadata, which `get`
       // tolerates by treating the sidecar as optional.
-      if (opts.contentEncoding || opts.contentType) {
+      if (options.contentEncoding || options.contentType) {
         const meta = JSON.stringify({
-          contentEncoding: opts.contentEncoding,
-          contentType: opts.contentType,
+          contentEncoding: options.contentEncoding,
+          contentType: options.contentType,
         });
         try { await fs.writeFile(fullPath + '.meta.json', meta); }
         catch (e) {
@@ -252,12 +252,12 @@ export class FilesystemObjectStorageBackend implements ObjectStorageBackend {
     }
   }
 
-  async list(opts: { prefix: string; limit?: number }): Promise<ObjectInfo[]> {
+  async list(options: { prefix: string; limit?: number }): Promise<ObjectInfo[]> {
     // Empty prefix means "everything" — that's the standard list-all
     // semantic and is safe.  Non-empty prefix has to obey the same
     // key-shape rules as put/get/delete (no `..`, no absolute paths,
     // no NUL bytes) — list otherwise could enumerate outside the root.
-    if (opts.prefix !== '') assertSafeKey(opts.prefix);
+    if (options.prefix !== '') assertSafeKey(options.prefix);
     const { fs, path } = await fsLazy.get();
     const root = this.dir;
     // Prefix may include a directory portion.  We walk from root and filter.
@@ -274,7 +274,7 @@ export class FilesystemObjectStorageBackend implements ObjectStorageBackend {
         const childRel = rel ? `${rel}/${ent.name}` : ent.name;
         if (ent.isDirectory()) {
           await walk(childRel);
-        } else if (ent.isFile() && childRel.startsWith(opts.prefix)) {
+        } else if (ent.isFile() && childRel.startsWith(options.prefix)) {
           if (childRel.endsWith('.meta.json')) continue;        // metadata sidecar
           if (childRel.endsWith('.lock')) continue;             // per-key write lock
           if (TMP_FILE_RE.test(childRel)) continue;             // crash-leftover temp file
@@ -285,7 +285,7 @@ export class FilesystemObjectStorageBackend implements ObjectStorageBackend {
     };
     await walk('');
     out.sort((a, b) => a.key.localeCompare(b.key));
-    return opts.limit ? out.slice(0, opts.limit) : out;
+    return options.limit ? out.slice(0, options.limit) : out;
   }
 
   async close(): Promise<void> {

@@ -50,6 +50,6 @@ export async function readDirectory(path: string): Promise<DirectoryEntry[]> {
 
 /** Read the whole file into a Uint8Array (bounded by the caller's maxFileSize). */
 export async function readFileBytes(path: string): Promise<Uint8Array> {
-  const buf = await (await fsp()).readFile(path);
-  return new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
+  const buffer = await (await fsp()).readFile(path);
+  return new Uint8Array(buffer.buffer, buffer.byteOffset, buffer.byteLength);
 }

@@ -48,7 +48,7 @@ abstract class BaseProjectionActor<E> extends Actor<InternalTickMessage> {
     await this.currentHandle;
   }
 
-  override async onReceive(_msg: InternalTickMessage): Promise<void> {
+  override async onReceive(_message: InternalTickMessage): Promise<void> {
     if (this.stopped) return;
     try {
       await this.runOnce();
@@ -77,21 +77,21 @@ abstract class BaseProjectionActor<E> extends Actor<InternalTickMessage> {
 
 class ByPersistenceIdProjectionActor<E> extends BaseProjectionActor<E> {
   private cursor = 0;
-  constructor(private readonly cfg: ByPersistenceIdProjectionOptionsType<E>) { super(cfg); }
+  constructor(private readonly config: ByPersistenceIdProjectionOptionsType<E>) { super(config); }
 
   protected async loadCursor(): Promise<void> {
-    this.cursor = await this.offsetStore.loadSequence(this.cfg.name, this.cfg.persistenceId);
+    this.cursor = await this.offsetStore.loadSequence(this.config.name, this.config.persistenceId);
   }
 
   protected async runOnce(): Promise<void> {
-    const events = await this.cfg.query.currentEventsByPersistenceId<E>(
-      this.cfg.persistenceId, this.cursor + 1,
+    const events = await this.config.query.currentEventsByPersistenceId<E>(
+      this.config.persistenceId, this.cursor + 1,
     );
     for (const ev of events) {
-      this.currentHandle = Promise.resolve(this.cfg.handle(ev));
+      this.currentHandle = Promise.resolve(this.config.handle(ev));
       await this.currentHandle;
       this.cursor = ev.sequenceNr;
-      await this.offsetStore.saveSequence(this.cfg.name, this.cfg.persistenceId, this.cursor);
+      await this.offsetStore.saveSequence(this.config.name, this.config.persistenceId, this.cursor);
       if (this.stopped) return;
     }
   }
@@ -101,15 +101,15 @@ class ByPersistenceIdProjectionActor<E> extends BaseProjectionActor<E> {
 
 class ByTagProjectionActor<E> extends BaseProjectionActor<E> {
   private cursor: Offset = offsetStart;
-  constructor(private readonly cfg: ByTagProjectionOptionsType<E>) { super(cfg); }
+  constructor(private readonly config: ByTagProjectionOptionsType<E>) { super(config); }
 
   protected async loadCursor(): Promise<void> {
-    this.cursor = await this.offsetStore.loadOffset(this.cfg.name, this.cfg.tag);
+    this.cursor = await this.offsetStore.loadOffset(this.config.name, this.config.tag);
   }
 
   protected async runOnce(): Promise<void> {
-    const events: TaggedEvent<E>[] = await this.cfg.query.currentEventsByTag<E>(
-      this.cfg.tag, this.cursor,
+    const events: TaggedEvent<E>[] = await this.config.query.currentEventsByTag<E>(
+      this.config.tag, this.cursor,
     );
     for (const te of events) {
       // Skip the event we already committed last round (the cursor
@@ -118,10 +118,10 @@ class ByTagProjectionActor<E> extends BaseProjectionActor<E> {
       if (te.offset.timestamp === this.cursor.timestamp
         && te.offset.persistenceId === this.cursor.persistenceId
         && te.offset.sequenceNr === this.cursor.sequenceNr) continue;
-      this.currentHandle = Promise.resolve(this.cfg.handle(te.event));
+      this.currentHandle = Promise.resolve(this.config.handle(te.event));
       await this.currentHandle;
       this.cursor = te.offset;
-      await this.offsetStore.saveOffset(this.cfg.name, this.cfg.tag, this.cursor);
+      await this.offsetStore.saveOffset(this.config.name, this.config.tag, this.cursor);
       if (this.stopped) return;
     }
   }

@@ -12,25 +12,25 @@ import { none, some, type Option } from '../../util/Option.js';
 export class InMemorySnapshotStore implements SnapshotStore {
   private readonly store = new Map<string, Snapshot<unknown>[]>();
 
-  async save<S>(pid: string, seq: number, state: S, _options?: PersistenceOptions): Promise<Snapshot<S>> {
+  async save<S>(persistenceId: string, seq: number, state: S, _options?: PersistenceOptions): Promise<Snapshot<S>> {
     // In-memory store ignores compression / encryption options.
-    const list = this.store.get(pid) ?? [];
-    const snap: Snapshot<S> = { persistenceId: pid, sequenceNr: seq, state, timestamp: Date.now() };
+    const list = this.store.get(persistenceId) ?? [];
+    const snap: Snapshot<S> = { persistenceId, sequenceNr: seq, state, timestamp: Date.now() };
     list.push(snap as Snapshot<unknown>);
     // Keep sorted ascending by seq for easy queries.
     list.sort((a, b) => a.sequenceNr - b.sequenceNr);
-    this.store.set(pid, list);
+    this.store.set(persistenceId, list);
     return snap;
   }
 
-  async loadLatest<S>(pid: string, _options?: PersistenceOptions): Promise<Option<Snapshot<S>>> {
-    const list = this.store.get(pid);
+  async loadLatest<S>(persistenceId: string, _options?: PersistenceOptions): Promise<Option<Snapshot<S>>> {
+    const list = this.store.get(persistenceId);
     if (!list || list.length === 0) return none;
     return some(list[list.length - 1] as Snapshot<S>);
   }
 
-  async loadBefore<S>(pid: string, seq: number, _options?: PersistenceOptions): Promise<Option<Snapshot<S>>> {
-    const list = this.store.get(pid);
+  async loadBefore<S>(persistenceId: string, seq: number, _options?: PersistenceOptions): Promise<Option<Snapshot<S>>> {
+    const list = this.store.get(persistenceId);
     if (!list || list.length === 0) return none;
     for (let i = list.length - 1; i >= 0; i--) {
       if (list[i]!.sequenceNr < seq) return some(list[i] as Snapshot<S>);
@@ -38,10 +38,10 @@ export class InMemorySnapshotStore implements SnapshotStore {
     return none;
   }
 
-  async delete(pid: string, toSeq: number): Promise<void> {
-    const list = this.store.get(pid);
+  async delete(persistenceId: string, toSeq: number): Promise<void> {
+    const list = this.store.get(persistenceId);
     if (!list) return;
-    this.store.set(pid, list.filter(s => s.sequenceNr > toSeq));
+    this.store.set(persistenceId, list.filter(s => s.sequenceNr > toSeq));
   }
 
   async close(): Promise<void> { this.store.clear(); }

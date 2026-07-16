@@ -48,13 +48,13 @@ export class TypedActor<T> extends Actor<T> {
   private current!: ConcreteBehavior<T>;
   private activeSupervise: SuperviseBehavior<T> | null = null;
   private readonly stashBuffers: StashBufferImplementation<T>[] = [];
-  private typedCtx!: TypedActorContext<T>;
-  private signalHandler: ((ctx: TypedActorContext<T>, signal: Signal) => Behavior<T>) | null = null;
+  private typedContext!: TypedActorContext<T>;
+  private signalHandler: ((context: TypedActorContext<T>, signal: Signal) => Behavior<T>) | null = null;
 
   constructor(private readonly initial: Behavior<T>) { super(); }
 
   override preStart(): void {
-    this.typedCtx = new TypedActorContextImplementation<T>(this.context);
+    this.typedContext = new TypedActorContextImplementation<T>(this.context);
     const resolved = this.resolve(this.initial);
     // `same` on the initial behavior makes no sense — treat as empty so the
     // actor exists but drops messages (surfaces the user error as silence).
@@ -80,7 +80,7 @@ export class TypedActor<T> extends Actor<T> {
 
     let next: Behavior<T>;
     try {
-      next = receiveBehavior.handler(this.typedCtx, message);
+      next = receiveBehavior.handler(this.typedContext, message);
     } catch (err) {
       if (this.handleSupervise(err as Error)) return;
       throw err;
@@ -98,15 +98,15 @@ export class TypedActor<T> extends Actor<T> {
   override postStop(): void {
     if (this.signalHandler) {
       try {
-        const next = this.signalHandler(this.typedCtx, { kind: 'post-stop' });
+        const next = this.signalHandler(this.typedContext, { kind: 'post-stop' });
         void next; // we are stopping anyway — nothing to transition into.
       } catch { /* swallow */ }
     }
   }
 
-  override preRestart(reason: Error, _msg?: T): void {
+  override preRestart(reason: Error, _message?: T): void {
     if (this.signalHandler) {
-      try { this.signalHandler(this.typedCtx, { kind: 'pre-restart', reason }); }
+      try { this.signalHandler(this.typedContext, { kind: 'pre-restart', reason }); }
       catch { /* swallow */ }
     }
   }
@@ -146,15 +146,15 @@ export class TypedActor<T> extends Actor<T> {
     for (let hops = 0; hops < 64; hops++) {
       const step: ResolveStep = match(cur)
         .with({ kind: 'setup' }, (n): ResolveStep => ({
-          step: 'continue', next: n.factory(this.typedCtx),
+          step: 'continue', next: n.factory(this.typedContext),
         }))
         .with({ kind: 'with-timers' }, (n): ResolveStep => ({
           step: 'continue', next: n.factory(this.context.timers as TimerScheduler<T>),
         }))
         .with({ kind: 'with-stash' }, (n): ResolveStep => {
-          const buf = new StashBufferImplementation<T>(n.capacity, this.self);
-          this.stashBuffers.push(buf);
-          return { step: 'continue', next: n.factory(buf) };
+          const buffer = new StashBufferImplementation<T>(n.capacity, this.self);
+          this.stashBuffers.push(buffer);
+          return { step: 'continue', next: n.factory(buffer) };
         })
         .with({ kind: 'supervise' }, (n): ResolveStep => {
           this.activeSupervise = n;

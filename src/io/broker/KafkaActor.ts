@@ -320,10 +320,10 @@ export class KafkaActor extends BrokerActor<KafkaOptionsType, KafkaCommand, Kafk
     });
   }
 
-  override onReceive(cmd: KafkaCommand): void {
+  override onReceive(command: KafkaCommand): void {
     // Compile-time exhaustiveness: adding a new KafkaCommand variant
     // forces this site to handle it explicitly.
-    match(cmd)
+    match(command)
       .with({ kind: 'publish' },   (m) => this.onPublish(m))
       .with({ kind: 'subscribe' }, (m) => this.onSubscribe(m))
       .with({ kind: 'commit' },    (c) => void this.onCommit(c))
@@ -334,19 +334,19 @@ export class KafkaActor extends BrokerActor<KafkaOptionsType, KafkaCommand, Kafk
 
   /* ----------------------------- internals ------------------------------ */
 
-  private onPublish(cmd: PublishCommand): void {
-    this.enqueueOutbound(cmd.publish);
+  private onPublish(command: PublishCommand): void {
+    this.enqueueOutbound(command.publish);
   }
 
-  private onSubscribe(cmd: SubscribeCommand): void {
+  private onSubscribe(command: SubscribeCommand): void {
     // Runtime topic-add — kafkajs requires the consumer already be running.
     if (this.consumer && this.connectionState === 'connected') {
-      void this.consumer.subscribe({ topic: cmd.topic, fromBeginning: false });
+      void this.consumer.subscribe({ topic: command.topic, fromBeginning: false });
     }
   }
 
-  private async onCommit(cmd: CommitCommand): Promise<void> {
-    const key = pendingKey(cmd.topic, cmd.partition, cmd.offset);
+  private async onCommit(command: CommitCommand): Promise<void> {
+    const key = pendingKey(command.topic, command.partition, command.offset);
     const pending = this.pendingCommits.get(key);
     if (!pending) {
       // Already committed, expired, or — most commonly — auto-mode
@@ -366,9 +366,9 @@ export class KafkaActor extends BrokerActor<KafkaOptionsType, KafkaCommand, Kafk
       // i.e., one past the message we just processed.  Offsets are
       // decimal strings; we use BigInt so very large values stay
       // exact (Kafka offsets are 64-bit).
-      const next = String(BigInt(cmd.offset) + 1n);
+      const next = String(BigInt(command.offset) + 1n);
       await this.consumer.commitOffsets([
-        { topic: cmd.topic, partition: cmd.partition, offset: next },
+        { topic: command.topic, partition: command.partition, offset: next },
       ]);
       pending.done();
     } catch (err) {
@@ -386,8 +386,8 @@ export class KafkaActor extends BrokerActor<KafkaOptionsType, KafkaCommand, Kafk
    * without checking `commitMode` or whether the record's commit has
    * already landed elsewhere.
    */
-  private async onHeartbeat(cmd: HeartbeatCommand): Promise<void> {
-    const key = pendingKey(cmd.topic, cmd.partition, cmd.offset);
+  private async onHeartbeat(command: HeartbeatCommand): Promise<void> {
+    const key = pendingKey(command.topic, command.partition, command.offset);
     const pending = this.pendingCommits.get(key);
     if (!pending || !pending.heartbeat) {
       this.log.debug(`KafkaActor: heartbeat for unknown ${key} — ignored`);
@@ -405,15 +405,15 @@ export class KafkaActor extends BrokerActor<KafkaOptionsType, KafkaCommand, Kafk
     }
   }
 
-  private onNegativeAcknowledgment(cmd: NegativeAcknowledgmentCommand): void {
-    const key = pendingKey(cmd.topic, cmd.partition, cmd.offset);
+  private onNegativeAcknowledgment(command: NegativeAcknowledgmentCommand): void {
+    const key = pendingKey(command.topic, command.partition, command.offset);
     const pending = this.pendingCommits.get(key);
     if (!pending) return;
     this.log.warn(
-      `KafkaActor: nack for ${key}${cmd.reason ? ` (${cmd.reason})` : ''} — `
+      `KafkaActor: nack for ${key}${command.reason ? ` (${command.reason})` : ''} — `
       + `re-delivery will happen on next rebalance`,
     );
-    pending.fail(new Error(cmd.reason ?? 'KafkaActor: nack from handler'));
+    pending.fail(new Error(command.reason ?? 'KafkaActor: nack from handler'));
     this.pendingCommits.delete(key);
   }
 }

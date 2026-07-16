@@ -50,7 +50,7 @@ export interface RecordingTracerOptions {
   /** Hook invoked when a span ends — wire to your exporter here. */
   readonly onSpanEnd?: (span: RecordedSpan) => void;
   /** Sampling decision per span.  Default `() => true` (sample all). */
-  readonly sampler?: (name: string, opts: SpanOptions | undefined) => boolean;
+  readonly sampler?: (name: string, options: SpanOptions | undefined) => boolean;
 }
 
 class RecordingSpan implements Span {
@@ -123,39 +123,39 @@ export class RecordingTracer implements Tracer {
   private readonly storage = new AsyncLocalStorage<Span>();
   private readonly _recorded: RecordedSpan[] = [];
   private readonly onSpanEnd?: (span: RecordedSpan) => void;
-  private readonly sampler: (name: string, opts: SpanOptions | undefined) => boolean;
+  private readonly sampler: (name: string, options: SpanOptions | undefined) => boolean;
 
-  constructor(opts: RecordingTracerOptions = {}) {
-    this.onSpanEnd = opts.onSpanEnd;
-    this.sampler = opts.sampler ?? (() => true);
+  constructor(options: RecordingTracerOptions = {}) {
+    this.onSpanEnd = options.onSpanEnd;
+    this.sampler = options.sampler ?? (() => true);
   }
 
-  startSpan(name: string, opts?: SpanOptions): Span {
-    const sampled = this.sampler(name, opts);
+  startSpan(name: string, options?: SpanOptions): Span {
+    const sampled = this.sampler(name, options);
     // Resolve parent: explicit `null` = root, undefined = active span,
     // a SpanContext = explicit parent.
-    let parentCtx: SpanContext | null;
-    if (opts?.parent === null) {
-      parentCtx = null;
-    } else if (opts?.parent !== undefined) {
-      parentCtx = opts.parent;
+    let parentContext: SpanContext | null;
+    if (options?.parent === null) {
+      parentContext = null;
+    } else if (options?.parent !== undefined) {
+      parentContext = options.parent;
     } else {
-      parentCtx = this.activeSpan()?.context() ?? null;
+      parentContext = this.activeSpan()?.context() ?? null;
     }
-    const traceId = parentCtx?.traceId ?? newTraceId();
+    const traceId = parentContext?.traceId ?? newTraceId();
     const spanId = newSpanId();
-    const ctx: SpanContext = {
+    const context: SpanContext = {
       traceId, spanId,
       traceFlags: sampled ? 1 : 0,
-      ...(parentCtx?.traceState ? { traceState: parentCtx.traceState } : {}),
+      ...(parentContext?.traceState ? { traceState: parentContext.traceState } : {}),
     };
     return new RecordingSpan(
       name,
-      opts?.kind ?? 'internal',
-      ctx,
-      parentCtx,
-      opts?.startTimeMs ?? Date.now(),
-      opts?.attributes ?? {},
+      options?.kind ?? 'internal',
+      context,
+      parentContext,
+      options?.startTimeMs ?? Date.now(),
+      options?.attributes ?? {},
       this,
     );
   }
@@ -176,9 +176,9 @@ export class RecordingTracer implements Tracer {
 
   extractContext(carrier: TraceCarrier | null | undefined): SpanContext | null {
     if (!carrier) return null;
-    const ctx = decodeTraceparent(carrier.traceparent);
-    if (!ctx) return null;
-    return carrier.tracestate ? { ...ctx, traceState: carrier.tracestate } : ctx;
+    const context = decodeTraceparent(carrier.traceparent);
+    if (!context) return null;
+    return carrier.tracestate ? { ...context, traceState: carrier.tracestate } : context;
   }
 
   /** Snapshot of every ended span — primarily for tests. */

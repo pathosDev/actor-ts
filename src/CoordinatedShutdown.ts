@@ -264,8 +264,8 @@ export class CoordinatedShutdown implements Extension {
       }
       for (const [, deps] of remaining) {
         for (const done of ready) {
-          const idx = deps.indexOf(done);
-          if (idx >= 0) deps.splice(idx, 1);
+          const index = deps.indexOf(done);
+          if (index >= 0) deps.splice(index, 1);
         }
       }
     }

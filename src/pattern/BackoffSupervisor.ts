@@ -177,7 +177,7 @@ const DEFAULT_CHILD_NAME = 'child';
 const DEFAULT_STASH_LIMIT = 1000;
 
 interface StashedMessage {
-  readonly msg: unknown;
+  readonly message: unknown;
   readonly sender: ActorRef | null;
 }
 
@@ -188,11 +188,11 @@ export class BackoffSupervisor<T> extends Actor<unknown> {
    * change how the supervisor itself is supervised (the **child** is
    * always run under `stoppingStrategy` regardless of this).
    */
-  static props<T>(opts: BackoffOptions<T>): Props<unknown> {
-    return Props.create<unknown>(() => new BackoffSupervisor(opts) as unknown as Actor<unknown>);
+  static props<T>(options: BackoffOptions<T>): Props<unknown> {
+    return Props.create<unknown>(() => new BackoffSupervisor(options) as unknown as Actor<unknown>);
   }
 
-  private readonly opts: BackoffOptions<T>;
+  private readonly options: BackoffOptions<T>;
   private readonly policy: BackoffPolicy;
   private readonly childName: string;
   private readonly forward: ForwardStrategy;
@@ -231,40 +231,40 @@ export class BackoffSupervisor<T> extends Actor<unknown> {
   /** Buffered messages waiting for the next child. */
   private readonly stash: StashedMessage[] = [];
 
-  constructor(opts: BackoffOptions<T>) {
+  constructor(options: BackoffOptions<T>) {
     super();
-    if (!Number.isFinite(opts.minBackoff) || opts.minBackoff <= 0) {
-      throw new Error(`BackoffSupervisor: minBackoff must be > 0, got ${opts.minBackoff}`);
+    if (!Number.isFinite(options.minBackoff) || options.minBackoff <= 0) {
+      throw new Error(`BackoffSupervisor: minBackoff must be > 0, got ${options.minBackoff}`);
     }
-    if (!Number.isFinite(opts.maxBackoff) || opts.maxBackoff < opts.minBackoff) {
+    if (!Number.isFinite(options.maxBackoff) || options.maxBackoff < options.minBackoff) {
       throw new Error(
-        `BackoffSupervisor: maxBackoff (${opts.maxBackoff}) must be >= minBackoff (${opts.minBackoff})`,
+        `BackoffSupervisor: maxBackoff (${options.maxBackoff}) must be >= minBackoff (${options.minBackoff})`,
       );
     }
-    this.opts = opts;
-    this.policy = opts.policy ?? exponentialBackoff({
-      minMs: opts.minBackoff,
-      maxMs: opts.maxBackoff,
-      randomFactor: opts.randomFactor ?? 0.2,
+    this.options = options;
+    this.policy = options.policy ?? exponentialBackoff({
+      minMs: options.minBackoff,
+      maxMs: options.maxBackoff,
+      randomFactor: options.randomFactor ?? 0.2,
     });
-    this.childName = opts.childName ?? DEFAULT_CHILD_NAME;
-    this.forward = opts.forward ?? 'stash';
-    this.stashLimit = opts.maxStashSize ?? DEFAULT_STASH_LIMIT;
-    this.resetThresholdMs = resolveResetThreshold(opts.resetCounter, opts.minBackoff);
-    if (opts.drainGraceMs !== undefined) {
-      if (!Number.isFinite(opts.drainGraceMs) || opts.drainGraceMs < 0) {
-        throw new Error(`BackoffSupervisor: drainGraceMs must be >= 0, got ${opts.drainGraceMs}`);
+    this.childName = options.childName ?? DEFAULT_CHILD_NAME;
+    this.forward = options.forward ?? 'stash';
+    this.stashLimit = options.maxStashSize ?? DEFAULT_STASH_LIMIT;
+    this.resetThresholdMs = resolveResetThreshold(options.resetCounter, options.minBackoff);
+    if (options.drainGraceMs !== undefined) {
+      if (!Number.isFinite(options.drainGraceMs) || options.drainGraceMs < 0) {
+        throw new Error(`BackoffSupervisor: drainGraceMs must be >= 0, got ${options.drainGraceMs}`);
       }
-      this.drainGraceMs = opts.drainGraceMs;
+      this.drainGraceMs = options.drainGraceMs;
     } else {
-      this.drainGraceMs = Math.min(50, opts.minBackoff);
+      this.drainGraceMs = Math.min(50, options.minBackoff);
     }
-    this.clock = opts.clock ?? Date.now;
-    this.triggerOn = opts.triggerOn ?? 'any';
+    this.clock = options.clock ?? Date.now;
+    this.triggerOn = options.triggerOn ?? 'any';
     // Default `true` keeps the v1 fast-forward path; the dead-letter
     // protection is opt-in (#67) because every respawn would
     // otherwise pay `drainGraceMs` of latency on the happy path.
-    this.forwardDuringGrace = opts.forwardDuringGrace ?? true;
+    this.forwardDuringGrace = options.forwardDuringGrace ?? true;
   }
 
   /**
@@ -331,7 +331,7 @@ export class BackoffSupervisor<T> extends Actor<unknown> {
       });
       this.stash.shift();
     }
-    this.stash.push({ msg: message, sender: this.sender.toNullable() });
+    this.stash.push({ message, sender: this.sender.toNullable() });
   }
 
   override postStop(): void {
@@ -348,7 +348,7 @@ export class BackoffSupervisor<T> extends Actor<unknown> {
   private spawnChild(): void {
     this.incarnation += 1;
     const name = `${this.childName}-${this.incarnation}`;
-    const child = this.context.spawn(this.opts.childProps, name);
+    const child = this.context.spawn(this.options.childProps, name);
     this.context.watch(child);
     this.currentChild = child;
     this.spawnTs = this.clock();
@@ -459,8 +459,8 @@ export class BackoffSupervisor<T> extends Actor<unknown> {
   private drainStash(child: ActorRef<T>): void {
     if (this.stash.length === 0) return;
     const drained = this.stash.splice(0, this.stash.length);
-    for (const { msg, sender } of drained) {
-      child.tell(msg as T, sender);
+    for (const { message, sender } of drained) {
+      child.tell(message as T, sender);
     }
   }
 }

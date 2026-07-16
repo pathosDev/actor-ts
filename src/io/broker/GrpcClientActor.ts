@@ -139,8 +139,8 @@ export class GrpcClientActor
     }
   }
 
-  override onReceive(cmd: GrpcClientCommand): void {
-    this.enqueueOutbound({ op: cmd });
+  override onReceive(command: GrpcClientCommand): void {
+    this.enqueueOutbound({ op: command });
   }
 
   /* ----------------------------- internals ----------------------------- */

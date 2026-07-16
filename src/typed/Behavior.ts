@@ -30,13 +30,13 @@ export type Behavior<T> =
 
 export interface ReceiveBehavior<T> {
   readonly kind: 'receive';
-  readonly handler: (ctx: TypedActorContext<T>, msg: T) => Behavior<T>;
-  readonly onSignal?: (ctx: TypedActorContext<T>, signal: Signal) => Behavior<T>;
+  readonly handler: (context: TypedActorContext<T>, message: T) => Behavior<T>;
+  readonly onSignal?: (context: TypedActorContext<T>, signal: Signal) => Behavior<T>;
 }
 
 export interface SetupBehavior<T> {
   readonly kind: 'setup';
-  readonly factory: (ctx: TypedActorContext<T>) => Behavior<T>;
+  readonly factory: (context: TypedActorContext<T>) => Behavior<T>;
 }
 
 export interface WithTimersBehavior<T> {

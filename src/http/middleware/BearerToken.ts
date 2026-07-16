@@ -45,18 +45,18 @@ export interface BearerTokenAuthOptions {
  *       )),
  *     );
  */
-export function BearerTokenAuth(opts: BearerTokenAuthOptions): Middleware {
-  if (opts.tokens.length === 0) {
+export function BearerTokenAuth(options: BearerTokenAuthOptions): Middleware {
+  if (options.tokens.length === 0) {
     throw new Error('BearerTokenAuth: tokens must be a non-empty list');
   }
-  const headerName = (opts.headerName ?? 'authorization').toLowerCase();
-  const realm = opts.realm ?? 'actor-ts';
+  const headerName = (options.headerName ?? 'authorization').toLowerCase();
+  const realm = options.realm ?? 'actor-ts';
 
   // Pre-encode tokens once for constant-time comparison.
-  const expected: Uint8Array[] = opts.tokens.map((t) => new TextEncoder().encode(t));
+  const expected: Uint8Array[] = options.tokens.map((t) => new TextEncoder().encode(t));
 
-  return async (req, next) => {
-    const header = req.headers[headerName];
+  return async (request, next) => {
+    const header = request.headers[headerName];
     if (!header) {
       throw new HttpError(Status.Unauthorized, 'missing Authorization header', undefined, {
         'www-authenticate': `Bearer realm="${realm}"`,

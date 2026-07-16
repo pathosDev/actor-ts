@@ -83,15 +83,15 @@ export function tagIndexDdl(args: {
 /**
  * Build the default keyspace-bootstrap statement — used by autoCreateKeyspace.
  */
-export function keyspaceDdl(conn: CassandraConnection): string {
-  const cls = conn.replication?.class ?? 'SimpleStrategy';
+export function keyspaceDdl(connection: CassandraConnection): string {
+  const cls = connection.replication?.class ?? 'SimpleStrategy';
   if (cls === 'NetworkTopologyStrategy') {
-    const dcs = conn.replication?.dataCenters ?? {};
+    const dcs = connection.replication?.dataCenters ?? {};
     const pairs = Object.entries(dcs).map(([dc, rf]) => `'${dc}': ${rf}`).join(', ');
-    return `CREATE KEYSPACE IF NOT EXISTS ${conn.keyspace} WITH replication = { 'class': 'NetworkTopologyStrategy', ${pairs} }`;
+    return `CREATE KEYSPACE IF NOT EXISTS ${connection.keyspace} WITH replication = { 'class': 'NetworkTopologyStrategy', ${pairs} }`;
   }
-  const rf = conn.replication?.replicationFactor ?? 1;
-  return `CREATE KEYSPACE IF NOT EXISTS ${conn.keyspace} WITH replication = { 'class': 'SimpleStrategy', 'replication_factor': ${rf} }`;
+  const rf = connection.replication?.replicationFactor ?? 1;
+  return `CREATE KEYSPACE IF NOT EXISTS ${connection.keyspace} WITH replication = { 'class': 'SimpleStrategy', 'replication_factor': ${rf} }`;
 }
 
 /**
@@ -100,7 +100,7 @@ export function keyspaceDdl(conn: CassandraConnection): string {
  * creates a Cassandra journal.  If the user constructs their own client
  * elsewhere they can bypass this entirely.
  */
-export async function createCassandraClient(conn: CassandraConnection): Promise<CassandraClientLike> {
+export async function createCassandraClient(connection: CassandraConnection): Promise<CassandraClientLike> {
   type CassandraDriver = {
     Client: new (options: unknown) => CassandraClientLike & {
       connect(): Promise<void>;
@@ -120,11 +120,11 @@ export async function createCassandraClient(conn: CassandraConnection): Promise<
     );
   }
   const options: Record<string, unknown> = {
-    contactPoints: conn.contactPoints,
-    localDataCenter: conn.localDataCenter ?? 'datacenter1',
-    protocolOptions: { port: conn.port ?? 9042 },
+    contactPoints: connection.contactPoints,
+    localDataCenter: connection.localDataCenter ?? 'datacenter1',
+    protocolOptions: { port: connection.port ?? 9042 },
   };
-  if (conn.credentials) options.credentials = conn.credentials;
+  if (connection.credentials) options.credentials = connection.credentials;
   // We deliberately don't set `keyspace` here — we may need to CREATE it first.
   const client = new driver.Client(options);
   return client;

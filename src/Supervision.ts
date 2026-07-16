@@ -32,9 +32,9 @@ export class OneForOneStrategy implements SupervisorStrategy {
   readonly scope = 'one-for-one' as const;
   readonly maxRetries: number;
   readonly withinTimeRangeMs: number;
-  constructor(public readonly decider: Decider, opts: StrategyOptions = {}) {
-    this.maxRetries = opts.maxRetries ?? -1;
-    this.withinTimeRangeMs = opts.withinTimeRangeMs ?? 0;
+  constructor(public readonly decider: Decider, options: StrategyOptions = {}) {
+    this.maxRetries = options.maxRetries ?? -1;
+    this.withinTimeRangeMs = options.withinTimeRangeMs ?? 0;
   }
 }
 
@@ -43,9 +43,9 @@ export class AllForOneStrategy implements SupervisorStrategy {
   readonly scope = 'all-for-one' as const;
   readonly maxRetries: number;
   readonly withinTimeRangeMs: number;
-  constructor(public readonly decider: Decider, opts: StrategyOptions = {}) {
-    this.maxRetries = opts.maxRetries ?? -1;
-    this.withinTimeRangeMs = opts.withinTimeRangeMs ?? 0;
+  constructor(public readonly decider: Decider, options: StrategyOptions = {}) {
+    this.maxRetries = options.maxRetries ?? -1;
+    this.withinTimeRangeMs = options.withinTimeRangeMs ?? 0;
   }
 }
 

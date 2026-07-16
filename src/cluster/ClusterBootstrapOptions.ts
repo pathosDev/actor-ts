@@ -34,7 +34,7 @@ export interface ClusterBootstrapOptionsType {
 
   /**
    * Bind host.  Default resolution order:
-   *   1. `opts.host`
+   *   1. `options.host`
    *   2. `process.env.POD_IP` (Kubernetes)
    *   3. `process.env.HOSTNAME`
    *   4. `'0.0.0.0'`

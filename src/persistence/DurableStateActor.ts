@@ -72,24 +72,24 @@ export abstract class DurableStateActor<Command, S> extends Actor<Command> {
     const loaded = await this.options.store.load<unknown>(
       this.options.persistenceId, this.persistenceOptions(),
     );
-    const opt = loaded.toNullable();
-    if (!opt) { this._record = null; return; }
-    const decoded = decodeState<S>(opt.state, adapter);
+    const option = loaded.toNullable();
+    if (!option) { this._record = null; return; }
+    const decoded = decodeState<S>(option.state, adapter);
     this._record = {
-      persistenceId: opt.persistenceId,
-      revision: opt.revision,
+      persistenceId: option.persistenceId,
+      revision: option.revision,
       state: decoded,
-      timestamp: opt.timestamp,
+      timestamp: option.timestamp,
     };
   }
 
-  override async onReceive(cmd: Command): Promise<void> {
+  override async onReceive(command: Command): Promise<void> {
     if (this._persisting) await this._persisting;
-    await this.onCommand(cmd);
+    await this.onCommand(command);
   }
 
   /** User handler — invoked once `preStart` has loaded the record. */
-  abstract onCommand(cmd: Command): void | Promise<void>;
+  abstract onCommand(command: Command): void | Promise<void>;
 
   /** Persist the new state atomically; rejects on concurrency conflict. */
   protected async persist(next: S): Promise<DurableStateRecord<S>> {

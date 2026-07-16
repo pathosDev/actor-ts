@@ -21,7 +21,7 @@ interface DeduplicationState {
  */
 export class ConsumerController<T> extends Actor<Delivery<T>> {
   /** producerId → dedup state. */
-  private readonly dedup = new Map<string, DeduplicationState>();
+  private readonly deduplication = new Map<string, DeduplicationState>();
 
   public readonly options: ConsumerControllerOptionsType<T>;
 
@@ -30,34 +30,34 @@ export class ConsumerController<T> extends Actor<Delivery<T>> {
     this.options = options as ConsumerControllerOptionsType<T>;
   }
 
-  override onReceive(msg: Delivery<T>): void {
-    if (msg.kind !== 'reliable-delivery.delivery') return;
-    void this.handleDelivery(msg);
+  override onReceive(message: Delivery<T>): void {
+    if (message.kind !== 'reliable-delivery.delivery') return;
+    void this.handleDelivery(message);
   }
 
-  private async handleDelivery(msg: Delivery<T>): Promise<void> {
-    const state = this.dedupStateFor(msg.producerId);
-    if (msg.seq <= state.contiguous || state.above.has(msg.seq)) {
+  private async handleDelivery(message: Delivery<T>): Promise<void> {
+    const state = this.dedupStateFor(message.producerId);
+    if (message.seq <= state.contiguous || state.above.has(message.seq)) {
       // Duplicate — re-ack so the producer can release its slot, but don't
       // re-run the user handler.
-      this.sendAcknowledgment(msg);
+      this.sendAcknowledgment(message);
       return;
     }
     try {
-      await this.options.handler(msg.body);
+      await this.options.handler(message.body);
     } catch (err) {
-      this.log.warn(`consumer handler threw on seq=${msg.seq}`, err);
+      this.log.warn(`consumer handler threw on seq=${message.seq}`, err);
       // Do NOT ack — let the producer retry.
       return;
     }
-    this.markDelivered(state, msg.seq);
-    this.sendAcknowledgment(msg);
+    this.markDelivered(state, message.seq);
+    this.sendAcknowledgment(message);
   }
 
   private dedupStateFor(producerId: string): DeduplicationState {
-    let dedupState = this.dedup.get(producerId);
-    if (!dedupState) { dedupState = { contiguous: 0, above: new Set() }; this.dedup.set(producerId, dedupState); }
-    return dedupState;
+    let deduplicationState = this.deduplication.get(producerId);
+    if (!deduplicationState) { deduplicationState = { contiguous: 0, above: new Set() }; this.deduplication.set(producerId, deduplicationState); }
+    return deduplicationState;
   }
 
   private markDelivered(state: DeduplicationState, seq: number): void {
@@ -70,8 +70,8 @@ export class ConsumerController<T> extends Actor<Delivery<T>> {
     }
   }
 
-  private sendAcknowledgment(msg: Delivery<T>): void {
-    const ack: Acknowledgment = { kind: 'reliable-delivery.ack', producerId: msg.producerId, seq: msg.seq };
-    (msg.replyTo as ActorRef<Acknowledgment>).tell(ack);
+  private sendAcknowledgment(message: Delivery<T>): void {
+    const ack: Acknowledgment = { kind: 'reliable-delivery.ack', producerId: message.producerId, seq: message.seq };
+    (message.replyTo as ActorRef<Acknowledgment>).tell(ack);
   }
 }

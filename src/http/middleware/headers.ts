@@ -5,24 +5,24 @@
 import type { HttpResponse } from '../types.js';
 
 /**
- * Return a copy of `res` with `add` merged into its headers.  By default a
+ * Return a copy of `response` with `add` merged into its headers.  By default a
  * key the response already carries (compared case-insensitively) is left
  * untouched — so a handler's explicit header wins over a middleware
  * default.  Pass `{ overwrite: true }` to force the middleware value.
  */
 export function applyHeaders(
-  res: HttpResponse,
+  response: HttpResponse,
   add: Readonly<Record<string, string>>,
-  opts: { readonly overwrite?: boolean } = {},
+  options: { readonly overwrite?: boolean } = {},
 ): HttpResponse {
-  const existing = res.headers ?? {};
+  const existing = response.headers ?? {};
   const present = new Set(Object.keys(existing).map((k) => k.toLowerCase()));
   const merged: Record<string, string> = { ...existing };
   for (const [k, v] of Object.entries(add)) {
-    if (!opts.overwrite && present.has(k.toLowerCase())) continue;
+    if (!options.overwrite && present.has(k.toLowerCase())) continue;
     merged[k] = v;
   }
-  return { ...res, headers: merged };
+  return { ...response, headers: merged };
 }
 
 /**

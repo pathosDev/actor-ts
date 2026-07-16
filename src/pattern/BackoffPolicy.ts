@@ -61,19 +61,19 @@ export interface LinearBackoffOptions {
  *   //  n=2 → ~800
  *   //  n=10 → 10_000 (clamped)
  */
-export function exponentialBackoff(opts: ExponentialBackoffOptions): BackoffPolicy {
-  validateBaseOpts(opts);
-  const randomFactor = opts.randomFactor ?? 0.2;
+export function exponentialBackoff(options: ExponentialBackoffOptions): BackoffPolicy {
+  validateBaseOpts(options);
+  const randomFactor = options.randomFactor ?? 0.2;
   if (randomFactor < 0 || randomFactor > 1) {
     throw new Error(`exponentialBackoff: randomFactor must be in [0, 1], got ${randomFactor}`);
   }
-  const random = opts.random ?? Math.random;
+  const random = options.random ?? Math.random;
   return {
     delayFor(restartCount: number): number {
       const attempt = Math.max(0, restartCount);
       // Use a guarded power so we don't overflow to Infinity for huge attempt counts.
-      const raw = attempt >= 30 ? opts.maxMs : opts.minMs * Math.pow(2, attempt);
-      const clamped = Math.min(raw, opts.maxMs);
+      const raw = attempt >= 30 ? options.maxMs : options.minMs * Math.pow(2, attempt);
+      const clamped = Math.min(raw, options.maxMs);
       return applyJitter(clamped, randomFactor, random);
     },
   };
@@ -84,19 +84,19 @@ export function exponentialBackoff(opts: ExponentialBackoffOptions): BackoffPoli
  * {@link exponentialBackoff}.  Use when you want a bounded, predictable
  * cadence rather than exponential growth.
  */
-export function linearBackoff(opts: LinearBackoffOptions): BackoffPolicy {
-  validateBaseOpts(opts);
-  if (opts.stepMs < 0) throw new Error(`linearBackoff: stepMs must be >= 0, got ${opts.stepMs}`);
-  const randomFactor = opts.randomFactor ?? 0.2;
+export function linearBackoff(options: LinearBackoffOptions): BackoffPolicy {
+  validateBaseOpts(options);
+  if (options.stepMs < 0) throw new Error(`linearBackoff: stepMs must be >= 0, got ${options.stepMs}`);
+  const randomFactor = options.randomFactor ?? 0.2;
   if (randomFactor < 0 || randomFactor > 1) {
     throw new Error(`linearBackoff: randomFactor must be in [0, 1], got ${randomFactor}`);
   }
-  const random = opts.random ?? Math.random;
+  const random = options.random ?? Math.random;
   return {
     delayFor(restartCount: number): number {
       const attempt = Math.max(0, restartCount);
-      const raw = opts.minMs + opts.stepMs * attempt;
-      const clamped = Math.min(raw, opts.maxMs);
+      const raw = options.minMs + options.stepMs * attempt;
+      const clamped = Math.min(raw, options.maxMs);
       return applyJitter(clamped, randomFactor, random);
     },
   };
@@ -104,12 +104,12 @@ export function linearBackoff(opts: LinearBackoffOptions): BackoffPolicy {
 
 /* ------------------------------ helpers --------------------------------- */
 
-function validateBaseOpts(opts: { minMs: number; maxMs: number }): void {
-  if (!Number.isFinite(opts.minMs) || opts.minMs < 0) {
-    throw new Error(`backoff: minMs must be a non-negative finite number, got ${opts.minMs}`);
+function validateBaseOpts(options: { minMs: number; maxMs: number }): void {
+  if (!Number.isFinite(options.minMs) || options.minMs < 0) {
+    throw new Error(`backoff: minMs must be a non-negative finite number, got ${options.minMs}`);
   }
-  if (!Number.isFinite(opts.maxMs) || opts.maxMs < opts.minMs) {
-    throw new Error(`backoff: maxMs must be a finite number >= minMs (${opts.minMs}), got ${opts.maxMs}`);
+  if (!Number.isFinite(options.maxMs) || options.maxMs < options.minMs) {
+    throw new Error(`backoff: maxMs must be a finite number >= minMs (${options.minMs}), got ${options.maxMs}`);
   }
 }
 

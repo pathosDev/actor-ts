@@ -41,53 +41,53 @@ export class PostgresSnapshotStore implements SnapshotStore {
     this.autoCreate = resolvedOptions.autoCreateTables ?? true;
   }
 
-  async save<S>(pid: string, seq: number, state: S, _options?: PersistenceOptions): Promise<Snapshot<S>> {
+  async save<S>(persistenceId: string, seq: number, state: S, _options?: PersistenceOptions): Promise<Snapshot<S>> {
     const pool = await this.ensureOpen();
     const now = Date.now();
     try {
       await pool.query(
         `INSERT INTO ${this.table}(persistence_id, sequence_nr, payload, timestamp) VALUES ($1, $2, $3, $4)
          ON CONFLICT (persistence_id, sequence_nr) DO UPDATE SET payload = EXCLUDED.payload, timestamp = EXCLUDED.timestamp`,
-        [pid, seq, JSON.stringify(state), now],
+        [persistenceId, seq, JSON.stringify(state), now],
       );
       if (this.keepN > 0) {
         await pool.query(
           `DELETE FROM ${this.table} WHERE persistence_id = $1 AND sequence_nr NOT IN (
              SELECT sequence_nr FROM ${this.table} WHERE persistence_id = $1 ORDER BY sequence_nr DESC LIMIT $2)`,
-          [pid, this.keepN],
+          [persistenceId, this.keepN],
         );
       }
-      return { persistenceId: pid, sequenceNr: seq, state, timestamp: now };
+      return { persistenceId: persistenceId, sequenceNr: seq, state, timestamp: now };
     } catch (e) {
       throw new JournalError(`PostgresSnapshotStore.save failed: ${(e as Error).message}`, e);
     }
   }
 
-  async loadLatest<S>(pid: string, _options?: PersistenceOptions): Promise<Option<Snapshot<S>>> {
+  async loadLatest<S>(persistenceId: string, _options?: PersistenceOptions): Promise<Option<Snapshot<S>>> {
     const pool = await this.ensureOpen();
-    const res = await pool.query(
+    const response = await pool.query(
       `SELECT persistence_id, sequence_nr, payload, timestamp FROM ${this.table} WHERE persistence_id = $1 ORDER BY sequence_nr DESC LIMIT 1`,
-      [pid],
+      [persistenceId],
     );
-    const row = res.rows[0] as unknown as SnapRow | undefined;
+    const row = response.rows[0] as unknown as SnapRow | undefined;
     return row ? some(this.toSnapshot<S>(row)) : none;
   }
 
-  async loadBefore<S>(pid: string, seq: number, _options?: PersistenceOptions): Promise<Option<Snapshot<S>>> {
+  async loadBefore<S>(persistenceId: string, seq: number, _options?: PersistenceOptions): Promise<Option<Snapshot<S>>> {
     const pool = await this.ensureOpen();
-    const res = await pool.query(
+    const response = await pool.query(
       `SELECT persistence_id, sequence_nr, payload, timestamp FROM ${this.table} WHERE persistence_id = $1 AND sequence_nr < $2 ORDER BY sequence_nr DESC LIMIT 1`,
-      [pid, seq],
+      [persistenceId, seq],
     );
-    const row = res.rows[0] as unknown as SnapRow | undefined;
+    const row = response.rows[0] as unknown as SnapRow | undefined;
     return row ? some(this.toSnapshot<S>(row)) : none;
   }
 
-  async delete(pid: string, toSeq: number): Promise<void> {
+  async delete(persistenceId: string, toSeq: number): Promise<void> {
     const pool = await this.ensureOpen();
     await pool.query(
       `DELETE FROM ${this.table} WHERE persistence_id = $1 AND sequence_nr <= $2`,
-      [pid, toSeq],
+      [persistenceId, toSeq],
     );
   }
 

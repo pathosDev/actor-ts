@@ -11,14 +11,14 @@
  *           .withUrl('ws://localhost:8080/ws'));
  *       }
  *       override onConnected(): void { this.send({ kind: 'ping', n: 1 }); }
- *       onMessage(msg: ServerMessage): void { this.log.info(`pong ${msg.n}`); }
+ *       onMessage(message: ServerMessage): void { this.log.info(`pong ${message.n}`); }
  *     }
  *
  * `TOut` (what the client sends) comes first, then `TIn` (decoded server
  * messages).  Lifecycle events (connected / disconnected / inbound) are
  * delivered through the mailbox, so `onMessage` and the hooks always run
  * on the actor thread.  Other actors can push a typed send with
- * `ref.tell(websocketSend(msg))`.
+ * `ref.tell(websocketSend(message))`.
  */
 import type { Config } from '../../config/Config.js';
 import { ConfigKeys } from '../../config/ConfigKeys.js';
@@ -59,7 +59,7 @@ export abstract class WebsocketClientActor<TOut, TIn, TSelf = never>
   /* ----------------------- user overrides ------------------------ */
 
   /** Handle one decoded server message. */
-  abstract onMessage(msg: TIn): void | Promise<void>;
+  abstract onMessage(message: TIn): void | Promise<void>;
 
   /** The connection (re)opened.  A good place to send an initial handshake. */
   protected onConnected(): void | Promise<void> {}
@@ -68,8 +68,8 @@ export abstract class WebsocketClientActor<TOut, TIn, TSelf = never>
   /** An inbound frame failed to decode.  Only called when onInvalidMessage is 'hook'. */
   protected onInvalidMessage(_error: WebsocketDecodeError): void | Promise<void> {}
   /** App-level message told to this actor's ref (reachable only when TSelf ≠ never). */
-  protected onSelfMessage(msg: TSelf): void | Promise<void> {
-    this.log.warn(`WebsocketClientActor: unhandled self message: ${String(msg)}`);
+  protected onSelfMessage(message: TSelf): void | Promise<void> {
+    this.log.warn(`WebsocketClientActor: unhandled self message: ${String(message)}`);
   }
 
   /* ----------------------- helpers ------------------------------- */
@@ -79,10 +79,10 @@ export abstract class WebsocketClientActor<TOut, TIn, TSelf = never>
    * resent after reconnect (BrokerActor machinery).  Returns false if the
    * message was dropped (encode failure or buffer overflow).
    */
-  protected send(msg: TOut): boolean {
+  protected send(message: TOut): boolean {
     let frame: WebsocketFrame;
     try {
-      frame = this.codec().encode(msg);
+      frame = this.codec().encode(message);
     } catch (err) {
       this.log.error(`WebsocketClientActor: encode failed, dropping message: ${(err as Error).message}`);
       return false;
@@ -102,14 +102,14 @@ export abstract class WebsocketClientActor<TOut, TIn, TSelf = never>
   /* ----------------------- sealed dispatch ----------------------- */
 
   /** @internal Sealed — override onMessage + hooks instead. */
-  override onReceive(cmd: WebsocketClientMessage<TOut, TIn, TSelf>): void | Promise<void> {
-    switch ((cmd as { readonly kind?: unknown }).kind) {
-      case 'websocket-client-send': return void this.send((cmd as WebsocketClientSend<TOut>).message);
-      case 'websocket-client-inbound': return this.onMessage((cmd as WebsocketClientInbound<TIn>).message);
-      case 'websocket-client-invalid': return this.onInvalidMessage((cmd as WebsocketClientInvalid).error);
+  override onReceive(command: WebsocketClientMessage<TOut, TIn, TSelf>): void | Promise<void> {
+    switch ((command as { readonly kind?: unknown }).kind) {
+      case 'websocket-client-send': return void this.send((command as WebsocketClientSend<TOut>).message);
+      case 'websocket-client-inbound': return this.onMessage((command as WebsocketClientInbound<TIn>).message);
+      case 'websocket-client-invalid': return this.onInvalidMessage((command as WebsocketClientInvalid).error);
       case 'websocket-client-connected': return this.onConnected();
-      case 'websocket-client-disconnected': return this.onDisconnected((cmd as WebsocketClientDisconnected).cause);
-      default: return this.onSelfMessage(cmd as TSelf);
+      case 'websocket-client-disconnected': return this.onDisconnected((command as WebsocketClientDisconnected).cause);
+      default: return this.onSelfMessage(command as TSelf);
     }
   }
 

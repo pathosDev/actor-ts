@@ -54,14 +54,14 @@ export interface TcpListener {
 }
 
 export interface TcpBackend {
-  listen(opts: {
+  listen(options: {
     host: string;
     port: number;
     tls?: TlsTransportOptionsType;
     handlers: TcpSocketHandlers;
   }): Promise<TcpListener>;
 
-  connect(opts: {
+  connect(options: {
     host: string;
     port: number;
     tls?: TlsTransportOptionsType;

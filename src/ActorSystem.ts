@@ -131,10 +131,10 @@ export class ActorSystem {
    */
   http(
     port: number,
-    opts: { readonly host?: string; readonly backend?: HttpServerBackend } = {},
+    options: { readonly host?: string; readonly backend?: HttpServerBackend } = {},
   ): ServerBuilder {
-    const builder = this.extensions.get(HttpExtensionId).newServerAt(opts.host ?? '0.0.0.0', port);
-    return opts.backend ? builder.useBackend(opts.backend) : builder;
+    const builder = this.extensions.get(HttpExtensionId).newServerAt(options.host ?? '0.0.0.0', port);
+    return options.backend ? builder.useBackend(options.backend) : builder;
   }
 
   /**

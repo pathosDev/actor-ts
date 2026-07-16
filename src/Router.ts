@@ -48,11 +48,11 @@ class RouterActor<TMessage> extends Actor<TMessage | Broadcast<TMessage>> {
   private routees: ActorRef<TMessage>[] = [];
   private counter = 0;
 
-  constructor(private readonly cfg: RouterConfig<TMessage>) { super(); }
+  constructor(private readonly config: RouterConfig<TMessage>) { super(); }
 
   override async preStart(): Promise<void> {
-    for (let i = 0; i < this.cfg.size; i++) {
-      const routee = this.context.spawn(this.cfg.routeeProps, `routee-${i + 1}`);
+    for (let i = 0; i < this.config.size; i++) {
+      const routee = this.context.spawn(this.config.routeeProps, `routee-${i + 1}`);
       this.routees.push(routee as ActorRef<TMessage>);
       this.context.watch(routee);
     }
@@ -64,7 +64,7 @@ class RouterActor<TMessage> extends Actor<TMessage | Broadcast<TMessage>> {
       for (const routee of this.routees) routee.tell(message.message, senderRef);
       return;
     }
-    const targets = this.cfg.strategy(this.routees, { messageIndex: this.counter++ });
+    const targets = this.config.strategy(this.routees, { messageIndex: this.counter++ });
     for (const target of targets) target.tell(message as TMessage, senderRef);
   }
 }

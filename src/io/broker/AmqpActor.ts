@@ -102,18 +102,18 @@ export class AmqpActor extends BrokerActor<AmqpOptionsType, AmqpCommand, AmqpPub
       }
       const target = binding.target;
       const queueName = binding.queue;
-      await this.channel.consume(queueName, (msg) => {
-        if (!msg) return;
+      await this.channel.consume(queueName, (message) => {
+        if (!message) return;
         const ackToken = this.nextAcknowledgmentToken++;
         if (this.options.autoAcknowledge) {
-          try { this.channel?.ack(msg); } catch { /* ignore */ }
+          try { this.channel?.ack(message); } catch { /* ignore */ }
         } else {
-          this.pendingAcks.set(ackToken, msg);
+          this.pendingAcks.set(ackToken, message);
         }
         target.tell({
           queue: queueName,
-          content: msg.content,
-          properties: msg.properties ?? {},
+          content: message.content,
+          properties: message.properties ?? {},
           ackToken,
         });
       }, { noAck: false });
@@ -156,24 +156,24 @@ export class AmqpActor extends BrokerActor<AmqpOptionsType, AmqpCommand, AmqpPub
     }
   }
 
-  override onReceive(cmd: AmqpCommand): void {
-    if (cmd.kind === 'publish') {
-      this.enqueueOutbound(cmd.publish);
+  override onReceive(command: AmqpCommand): void {
+    if (command.kind === 'publish') {
+      this.enqueueOutbound(command.publish);
       return;
     }
-    if (cmd.kind === 'acknowledgment') {
-      const raw = this.pendingAcks.get(cmd.delivery.ackToken);
+    if (command.kind === 'acknowledgment') {
+      const raw = this.pendingAcks.get(command.delivery.ackToken);
       if (raw && this.channel) {
         try { this.channel.ack(raw); } catch { /* ignore */ }
-        this.pendingAcks.delete(cmd.delivery.ackToken);
+        this.pendingAcks.delete(command.delivery.ackToken);
       }
       return;
     }
     // negativeAcknowledgment
-    const raw = this.pendingAcks.get(cmd.delivery.ackToken);
+    const raw = this.pendingAcks.get(command.delivery.ackToken);
     if (raw && this.channel) {
-      try { this.channel.nack(raw, false, cmd.requeue ?? true); } catch { /* ignore */ }
-      this.pendingAcks.delete(cmd.delivery.ackToken);
+      try { this.channel.nack(raw, false, command.requeue ?? true); } catch { /* ignore */ }
+      this.pendingAcks.delete(command.delivery.ackToken);
     }
   }
 }
@@ -187,18 +187,18 @@ interface AmqpRawMessage {
 
 interface AmqpChannelLike {
   prefetch(count: number): Promise<void>;
-  assertQueue(queue: string, opts: { durable?: boolean; autoDelete?: boolean; exclusive?: boolean }): Promise<unknown>;
+  assertQueue(queue: string, options: { durable?: boolean; autoDelete?: boolean; exclusive?: boolean }): Promise<unknown>;
   bindQueue(queue: string, exchange: string, routingKey: string): Promise<unknown>;
   consume(
-    queue: string, cb: (msg: AmqpRawMessage | null) => void,
-    opts: { noAck?: boolean },
+    queue: string, cb: (message: AmqpRawMessage | null) => void,
+    options: { noAck?: boolean },
   ): Promise<unknown>;
   publish(
     exchange: string, routingKey: string, content: Uint8Array,
-    opts: { persistent?: boolean; headers?: Readonly<Record<string, unknown>>; contentType?: string },
+    options: { persistent?: boolean; headers?: Readonly<Record<string, unknown>>; contentType?: string },
   ): boolean;
-  ack(msg: AmqpRawMessage): void;
-  nack(msg: AmqpRawMessage, allUpTo: boolean, requeue: boolean): void;
+  ack(message: AmqpRawMessage): void;
+  nack(message: AmqpRawMessage, allUpTo: boolean, requeue: boolean): void;
   once(event: 'drain', cb: () => void): void;
   close(): Promise<void>;
 }

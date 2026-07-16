@@ -119,9 +119,9 @@ export type ShardingMessage =
   | ShardEnvelope
   | ShardReply;
 
-export function isShardingMessage(msg: unknown): msg is ShardingMessage {
-  return typeof msg === 'object'
-    && msg !== null
-    && typeof (msg as { $t?: unknown }).$t === 'string'
-    && (msg as { $t: string }).$t.startsWith('sharding.');
+export function isShardingMessage(message: unknown): message is ShardingMessage {
+  return typeof message === 'object'
+    && message !== null
+    && typeof (message as { $t?: unknown }).$t === 'string'
+    && (message as { $t: string }).$t.startsWith('sharding.');
 }

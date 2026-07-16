@@ -122,12 +122,12 @@ export interface MigrateJournalsResult {
 export async function migrateBetweenJournals<E = unknown>(
   source: Journal,
   target: Journal,
-  opts: MigrateJournalsOptions<E> = {},
+  options: MigrateJournalsOptions<E> = {},
 ): Promise<MigrateJournalsResult> {
-  const allPids = opts.pids ?? await source.persistenceIds();
-  const progress = opts.progress;
+  const allPersistenceIds = options.pids ?? await source.persistenceIds();
+  const progress = options.progress;
   const completed = new Set(progress ? (await progress.load()).completed : []);
-  const transform = opts.eventTransform ?? ((e: PersistentEvent<E>) => e);
+  const transform = options.eventTransform ?? ((e: PersistentEvent<E>) => e);
   const result = {
     pidsInspected: 0,
     pidsWritten: 0,
@@ -136,41 +136,41 @@ export async function migrateBetweenJournals<E = unknown>(
     eventsWritten: 0,
   };
 
-  for (let idx = 0; idx < allPids.length; idx++) {
-    const pid = allPids[idx]!;
+  for (let index = 0; index < allPersistenceIds.length; index++) {
+    const persistenceId = allPersistenceIds[index]!;
     result.pidsInspected += 1;
 
-    if (completed.has(pid)) {
+    if (completed.has(persistenceId)) {
       result.pidsSkippedAlreadyDone += 1;
       continue;
     }
 
-    const targetHigh = await target.highestSeq(pid);
-    if (opts.skipExistingPids && targetHigh > 0) {
+    const targetHigh = await target.highestSeq(persistenceId);
+    if (options.skipExistingPids && targetHigh > 0) {
       result.pidsSkippedExistingTarget += 1;
       // Treat as completed for future resume runs.
-      completed.add(pid);
+      completed.add(persistenceId);
       if (progress) await progress.save({ completed: [...completed] });
       continue;
     }
 
     // Source events strictly above what's already in the target.
-    const sourceEvents = await source.read<E>(pid, targetHigh + 1);
+    const sourceEvents = await source.read<E>(persistenceId, targetHigh + 1);
     if (sourceEvents.length > 0) {
       let expected = targetHigh;
       for (const se of sourceEvents) {
         const transformed = transform(se);
-        await target.append(pid, [transformed.event], expected, transformed.tags);
+        await target.append(persistenceId, [transformed.event], expected, transformed.tags);
         expected += 1;
         result.eventsWritten += 1;
       }
       result.pidsWritten += 1;
     }
 
-    completed.add(pid);
+    completed.add(persistenceId);
     if (progress) await progress.save({ completed: [...completed] });
-    opts.onProgress?.({
-      pid, events: sourceEvents.length, idx, total: allPids.length,
+    options.onProgress?.({
+      pid: persistenceId, events: sourceEvents.length, idx: index, total: allPersistenceIds.length,
     });
   }
 
@@ -215,11 +215,11 @@ export interface MigrateSnapshotStoresResult {
 export async function migrateBetweenSnapshotStores<S = unknown>(
   source: SnapshotStore,
   target: SnapshotStore,
-  opts: MigrateSnapshotStoresOptions<S>,
+  options: MigrateSnapshotStoresOptions<S>,
 ): Promise<MigrateSnapshotStoresResult> {
-  const progress = opts.progress;
+  const progress = options.progress;
   const completed = new Set(progress ? (await progress.load()).completed : []);
-  const transform = opts.stateTransform ?? ((s: S) => s);
+  const transform = options.stateTransform ?? ((s: S) => s);
   const result = {
     pidsInspected: 0,
     pidsCopied: 0,
@@ -228,36 +228,36 @@ export async function migrateBetweenSnapshotStores<S = unknown>(
     pidsSkippedExistingTarget: 0,
   };
 
-  for (let idx = 0; idx < opts.pids.length; idx++) {
-    const pid = opts.pids[idx]!;
+  for (let index = 0; index < options.pids.length; index++) {
+    const persistenceId = options.pids[index]!;
     result.pidsInspected += 1;
-    if (completed.has(pid)) {
+    if (completed.has(persistenceId)) {
       result.pidsSkippedAlreadyDone += 1;
       continue;
     }
-    if (opts.skipExistingPids) {
-      const existing = await target.loadLatest<S>(pid);
+    if (options.skipExistingPids) {
+      const existing = await target.loadLatest<S>(persistenceId);
       if (!existing.isNone()) {
         result.pidsSkippedExistingTarget += 1;
-        completed.add(pid);
+        completed.add(persistenceId);
         if (progress) await progress.save({ completed: [...completed] });
         continue;
       }
     }
 
-    const latest = await source.loadLatest<S>(pid);
+    const latest = await source.loadLatest<S>(persistenceId);
     if (latest.isNone()) {
       result.pidsEmpty += 1;
     } else {
       const snap = latest.value;
-      await target.save<S>(pid, snap.sequenceNr, transform(snap.state));
+      await target.save<S>(persistenceId, snap.sequenceNr, transform(snap.state));
       result.pidsCopied += 1;
     }
 
-    completed.add(pid);
+    completed.add(persistenceId);
     if (progress) await progress.save({ completed: [...completed] });
-    opts.onProgress?.({
-      pid, idx, total: opts.pids.length, copied: !latest.isNone(),
+    options.onProgress?.({
+      pid: persistenceId, idx: index, total: options.pids.length, copied: !latest.isNone(),
     });
   }
 

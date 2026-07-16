@@ -66,31 +66,31 @@ export class CachedSnapshotStore implements SnapshotStore {
     this.keyPrefix = resolvedOptions.keyPrefix ?? 'snap:';
   }
 
-  async save<S>(pid: string, seq: number, state: S, options?: PersistenceOptions): Promise<Snapshot<S>> {
-    const written = await this.underlying.save<S>(pid, seq, state, options);
+  async save<S>(persistenceId: string, seq: number, state: S, options?: PersistenceOptions): Promise<Snapshot<S>> {
+    const written = await this.underlying.save<S>(persistenceId, seq, state, options);
     // Invalidate, do NOT write — see class doc for the cluster-race rationale.
-    await this.cache.delete(this.keyFor(pid));
+    await this.cache.delete(this.keyFor(persistenceId));
     return written;
   }
 
-  async loadLatest<S>(pid: string, options?: PersistenceOptions): Promise<Option<Snapshot<S>>> {
-    const key = this.keyFor(pid);
+  async loadLatest<S>(persistenceId: string, options?: PersistenceOptions): Promise<Option<Snapshot<S>>> {
+    const key = this.keyFor(persistenceId);
     const hit = await this.cache.get<CachedSnapshot<S>>(key);
     if (hit.isSome()) return some(hit.value as Snapshot<S>);
-    const fetched = await this.underlying.loadLatest<S>(pid, options);
+    const fetched = await this.underlying.loadLatest<S>(persistenceId, options);
     if (fetched.isNone()) return none;
     await this.cache.set<CachedSnapshot<S>>(key, fetched.value, this.ttlMs);
     return fetched;
   }
 
-  async loadBefore<S>(pid: string, seq: number, options?: PersistenceOptions): Promise<Option<Snapshot<S>>> {
+  async loadBefore<S>(persistenceId: string, seq: number, options?: PersistenceOptions): Promise<Option<Snapshot<S>>> {
     // Not cached — see class doc.
-    return this.underlying.loadBefore<S>(pid, seq, options);
+    return this.underlying.loadBefore<S>(persistenceId, seq, options);
   }
 
-  async delete(pid: string, toSeq: number): Promise<void> {
-    await this.underlying.delete(pid, toSeq);
-    await this.cache.delete(this.keyFor(pid));
+  async delete(persistenceId: string, toSeq: number): Promise<void> {
+    await this.underlying.delete(persistenceId, toSeq);
+    await this.cache.delete(this.keyFor(persistenceId));
   }
 
   async close(): Promise<void> {
@@ -99,7 +99,7 @@ export class CachedSnapshotStore implements SnapshotStore {
     // cache typically backs HTTP middleware, etc.).
   }
 
-  private keyFor(pid: string): string {
-    return `${this.keyPrefix}${pid}`;
+  private keyFor(persistenceId: string): string {
+    return `${this.keyPrefix}${persistenceId}`;
   }
 }

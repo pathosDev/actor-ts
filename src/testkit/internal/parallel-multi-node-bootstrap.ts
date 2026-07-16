@@ -7,7 +7,7 @@
  *
  * Test-local actor logic is loaded via a **scenario module** —
  * `initData.scenarioModule` is a URL passed by the harness; the
- * bootstrap dynamically imports it and calls its `setup(ctx)` hook
+ * bootstrap dynamically imports it and calls its `setup(context)` hook
  * after the cluster joins, then dispatches `run-command` requests
  * through the module's `commands` map.  The scenario module owns
  * everything actor-shaped (entity classes, sharding setup, …) —
@@ -35,7 +35,7 @@ import { WorkerNode } from '../../worker/WorkerNode.js';
  * Optional shape a scenario module exports.  All hooks are optional —
  * a scenario can be just `{ setup }` for static fixture setup, or
  * just `{ commands }` for a request/reply tester, or both.  The
- * `ctx` parameter holds the worker's `ActorSystem` + `Cluster` plus
+ * `context` parameter holds the worker's `ActorSystem` + `Cluster` plus
  * the role name + any role-specific init data.
  */
 export interface ScenarioContext {
@@ -48,10 +48,10 @@ export interface ScenarioContext {
 }
 
 export interface ScenarioModule {
-  setup?: (ctx: ScenarioContext) => void | Promise<void>;
+  setup?: (context: ScenarioContext) => void | Promise<void>;
   commands?: Record<
     string,
-    (args: unknown, ctx: ScenarioContext) => unknown | Promise<unknown>
+    (args: unknown, context: ScenarioContext) => unknown | Promise<unknown>
   >;
 }
 
@@ -64,7 +64,7 @@ interface InitData {
   readonly gossipIntervalMs?: number;
   readonly logLevel?: LogLevel;
   readonly scenarioModule?: string;       // serialised URL string
-  readonly scenarioInitData?: unknown;    // forwarded to setup()'s ctx
+  readonly scenarioInitData?: unknown;    // forwarded to setup()'s context
 }
 
 type ControlRequest =
@@ -97,24 +97,24 @@ interface WorkerScope {
 /* ------------------------------- main loop --------------------------- */
 
 async function main(): Promise<void> {
-  const ctx = await WorkerNode.join<InitData>();
-  const init = ctx.initData;
+  const context = await WorkerNode.join<InitData>();
+  const init = context.initData;
 
-  const system = ActorSystem.create(ctx.systemName, ActorSystemOptions.create()
+  const system = ActorSystem.create(context.systemName, ActorSystemOptions.create()
     .withLogger(new NoopLogger())
     .withLogLevel(init.logLevel ?? LogLevel.Off));
   const clusterOptions = ClusterOptions.create()
-    .withHost(ctx.self.host)
-    .withPort(ctx.self.port)
+    .withHost(context.self.host)
+    .withPort(context.self.port)
     .withSeeds([...init.seeds])
-    .withTransport(ctx.transport);
+    .withTransport(context.transport);
   if (init.failureDetector) clusterOptions.withFailureDetector(init.failureDetector);
   if (init.gossipIntervalMs !== undefined) {
     clusterOptions.withGossipIntervalMs(init.gossipIntervalMs);
   }
   const cluster = await Cluster.join(system, clusterOptions);
 
-  const scenarioCtx: ScenarioContext = {
+  const scenarioContext: ScenarioContext = {
     role: init.role,
     system,
     cluster,
@@ -138,7 +138,7 @@ async function main(): Promise<void> {
     }
   }
   if (scenario.setup) {
-    try { await scenario.setup(scenarioCtx); }
+    try { await scenario.setup(scenarioContext); }
     catch (err) {
       // eslint-disable-next-line no-console
       console.error('parallel-multi-node-bootstrap: scenario.setup() threw', err);
@@ -151,17 +151,17 @@ async function main(): Promise<void> {
   const selfScope: WorkerScope = globalScope.self ?? globalScope;
   const post = selfScope.postMessage ?? globalScope.postMessage;
 
-  const reply = (msg: ControlResponse): void => {
-    post?.call(selfScope, msg);
+  const reply = (message: ControlResponse): void => {
+    post?.call(selfScope, message);
   };
 
   const onControl = async (data: unknown): Promise<void> => {
-    const msg = data as Partial<ControlRequest> | undefined;
-    if (!msg || typeof msg.kind !== 'string' || !msg.kind.startsWith('mns-test.')) return;
+    const message = data as Partial<ControlRequest> | undefined;
+    if (!message || typeof message.kind !== 'string' || !message.kind.startsWith('mns-test.')) return;
 
-    switch (msg.kind) {
+    switch (message.kind) {
       case 'mns-test.query-members': {
-        const reqId = (msg as ControlRequest & { kind: 'mns-test.query-members' }).reqId;
+        const reqId = (message as ControlRequest & { kind: 'mns-test.query-members' }).reqId;
         const snap: MemberSnapshot[] = cluster.getMembers().map((mem) => ({
           address: mem.address.toString(),
           status: mem.status,
@@ -171,7 +171,7 @@ async function main(): Promise<void> {
         return;
       }
       case 'mns-test.query-leader': {
-        const reqId = (msg as { reqId: number }).reqId;
+        const reqId = (message as { reqId: number }).reqId;
         const ldr = cluster.leader().toNullable();
         reply({
           kind: 'mns-test.query-leader-response',
@@ -181,7 +181,7 @@ async function main(): Promise<void> {
         return;
       }
       case 'mns-test.leave': {
-        const reqId = (msg as { reqId: number }).reqId;
+        const reqId = (message as { reqId: number }).reqId;
         try {
           await cluster.leave();
           reply({ kind: 'mns-test.leave-response', reqId });
@@ -194,9 +194,9 @@ async function main(): Promise<void> {
         return;
       }
       case 'mns-test.run-command': {
-        const reqId = (msg as { reqId: number }).reqId;
-        const command = (msg as { command: string }).command;
-        const args = (msg as { args: unknown }).args;
+        const reqId = (message as { reqId: number }).reqId;
+        const command = (message as { command: string }).command;
+        const args = (message as { args: unknown }).args;
         const handler = scenario.commands?.[command];
         if (!handler) {
           reply({
@@ -206,7 +206,7 @@ async function main(): Promise<void> {
           return;
         }
         try {
-          const result = await handler(args, scenarioCtx);
+          const result = await handler(args, scenarioContext);
           reply({ kind: 'mns-test.run-command-response', reqId, result });
         } catch (err) {
           reply({
@@ -223,7 +223,7 @@ async function main(): Promise<void> {
     selfScope.addEventListener('message', (e) => { void onControl(e.data); });
   }
 
-  ctx.ready();
+  context.ready();
 }
 
 void main().catch((err) => {

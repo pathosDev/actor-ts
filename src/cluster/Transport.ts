@@ -16,7 +16,7 @@ import {
   type WireMessage,
 } from './Protocol.js';
 
-export type WireHandler = (from: NodeAddress, msg: WireMessage) => void;
+export type WireHandler = (from: NodeAddress, message: WireMessage) => void;
 export type { TlsTransportOptionsType };
 
 /**
@@ -30,7 +30,7 @@ export interface Transport {
   shutdown(): Promise<void>;
   setHandler(handler: WireHandler): void;
   /** Best-effort fire-and-forget send. Opens a connection on first use. */
-  send(to: NodeAddress, msg: WireMessage): void;
+  send(to: NodeAddress, message: WireMessage): void;
   /** Close the connection to a peer. */
   disconnect(peer: NodeAddress): void;
   /** Peers currently connected (either inbound or outbound). */
@@ -102,8 +102,8 @@ export class TcpTransport implements Transport {
 
   async shutdown(): Promise<void> {
     this.stopped = true;
-    for (const conn of this.byPeer.values()) {
-      try { conn.socket?.end(); } catch { /* ignore */ }
+    for (const connection of this.byPeer.values()) {
+      try { connection.socket?.end(); } catch { /* ignore */ }
     }
     this.byPeer.clear();
     if (this.listener) {
@@ -112,51 +112,51 @@ export class TcpTransport implements Transport {
     this.listener = null;
   }
 
-  send(to: NodeAddress, msg: WireMessage): void {
+  send(to: NodeAddress, message: WireMessage): void {
     if (this.stopped) return;
-    const conn = this.byPeer.get(to.toString()) ?? this.openOutbound(to);
-    if (conn.peer && conn.socket) {
-      conn.socket.write(encodeFrame(msg));
+    const connection = this.byPeer.get(to.toString()) ?? this.openOutbound(to);
+    if (connection.peer && connection.socket) {
+      connection.socket.write(encodeFrame(message));
     } else {
-      conn.pending.push(msg); // wait for hello / hello-ack
+      connection.pending.push(message); // wait for hello / hello-ack
     }
   }
 
   disconnect(peer: NodeAddress): void {
-    const conn = this.byPeer.get(peer.toString());
-    if (!conn) return;
-    try { conn.socket?.end(); } catch { /* ignore */ }
+    const connection = this.byPeer.get(peer.toString());
+    if (!connection) return;
+    try { connection.socket?.end(); } catch { /* ignore */ }
     this.byPeer.delete(peer.toString());
   }
 
   peers(): NodeAddress[] {
     const out: NodeAddress[] = [];
-    for (const conn of this.byPeer.values()) if (conn.peer) out.push(conn.peer);
+    for (const connection of this.byPeer.values()) if (connection.peer) out.push(connection.peer);
     return out;
   }
 
   /* --------------------------- internals -------------------------------- */
 
   private attachInbound(sock: TcpSocketLike): void {
-    const conn: Connection = {
+    const connection: Connection = {
       socket: sock,
       peer: null,
       decoder: new FrameDecoder(this.maxFrameBytes),
       pending: [],
       outbound: false,
     };
-    this.bySocket.set(sock, conn);
+    this.bySocket.set(sock, connection);
   }
 
   private openOutbound(to: NodeAddress): Connection {
-    const conn: Connection = {
+    const connection: Connection = {
       socket: null,
       peer: null,
       decoder: new FrameDecoder(this.maxFrameBytes),
       pending: [],
       outbound: true,
     };
-    this.byPeer.set(to.toString(), conn);
+    this.byPeer.set(to.toString(), connection);
 
     // Kick off the connect — when it resolves, install the socket into the
     // pre-registered Connection so subsequent `send(...)` calls can use it.  If
@@ -181,107 +181,107 @@ export class TcpTransport implements Transport {
             onError: (_s, err) => this.log.warn(`outbound error -> ${to}`, err),
           },
         });
-        conn.socket = sock;
-        this.bySocket.set(sock, conn);
+        connection.socket = sock;
+        this.bySocket.set(sock, connection);
       } catch (err) {
         this.log.warn(`failed to connect to ${to}`, err as Error);
         this.byPeer.delete(to.toString());
       }
     })();
 
-    return conn;
+    return connection;
   }
 
   private onData(sock: TcpSocketLike, chunk: Uint8Array): void {
-    let conn = this.bySocket.get(sock);
-    if (!conn) {
+    let connection = this.bySocket.get(sock);
+    if (!connection) {
       // Bun delivers `data` before `open` completes its microtask in some
       // edge cases — attach a fresh inbound Connection lazily.
-      conn = {
+      connection = {
         socket: sock, peer: null, decoder: new FrameDecoder(this.maxFrameBytes),
         pending: [], outbound: false,
       };
-      this.bySocket.set(sock, conn);
+      this.bySocket.set(sock, connection);
     }
     let frames: WireMessage[];
     try {
-      frames = conn.decoder.push(chunk);
+      frames = connection.decoder.push(chunk);
     } catch (err) {
       // Frame-decoder rejected the input (oversized length-prefix,
       // malformed JSON).  Drop the connection rather than letting the
       // error propagate up the runtime's socket-data callback.
-      this.log.warn(`frame-decoder error from ${conn.peer ?? '<unknown peer>'}; closing`, err as Error);
+      this.log.warn(`frame-decoder error from ${connection.peer ?? '<unknown peer>'}; closing`, err as Error);
       try { sock.end(); } catch { /* ignore */ }
       this.bySocket.delete(sock);
-      if (conn.peer) this.byPeer.delete(conn.peer.toString());
+      if (connection.peer) this.byPeer.delete(connection.peer.toString());
       return;
     }
-    for (const msg of frames) this.onMessage(conn, msg);
+    for (const message of frames) this.onMessage(connection, message);
   }
 
-  private onMessage(conn: Connection, msg: WireMessage): void {
-    if (msg.t === 'hello') {
-      const peer = NodeAddress.fromJSON(msg.self);
+  private onMessage(connection: Connection, message: WireMessage): void {
+    if (message.t === 'hello') {
+      const peer = NodeAddress.fromJSON(message.self);
       const peerKey = peer.toString();
       // Security: reject a duplicate-identity hello on a different
       // socket.  Without this, a second connection claiming the
       // same address as an existing peer would *overwrite* the
       // byPeer map — every outbound message intended for the
       // legitimate peer would then be routed to the attacker's
-      // socket.  First-conn-wins is also the right semantic for
-      // legitimate reconnects: the dropped conn's `onClose` runs
+      // socket.  First-connection-wins is also the right semantic for
+      // legitimate reconnects: the dropped connection's `onClose` runs
       // before any new hello arrives in the common case; only a
       // tight race causes one retry.  See {@link Transport.test}
       // for the exploit walkthrough.
       const existing = this.byPeer.get(peerKey);
-      if (existing && existing !== conn) {
+      if (existing && existing !== connection) {
         this.log.warn(
           `hello hijack rejected: peer ${peerKey} already has an active connection; ` +
           `closing the new socket`,
         );
-        try { conn.socket?.end(); } catch { /* ignore */ }
-        this.bySocket.delete(conn.socket as TcpSocketLike);
+        try { connection.socket?.end(); } catch { /* ignore */ }
+        this.bySocket.delete(connection.socket as TcpSocketLike);
         return;
       }
-      conn.peer = peer;
-      this.byPeer.set(peerKey, conn);
+      connection.peer = peer;
+      this.byPeer.set(peerKey, connection);
       const ack: HelloAcknowledgmentMessage = { t: 'hello-ack', self: this.self.toJSON() };
-      conn.socket?.write(encodeFrame(ack));
+      connection.socket?.write(encodeFrame(ack));
       return;
     }
-    if (msg.t === 'hello-ack') {
-      const peer = NodeAddress.fromJSON(msg.self);
+    if (message.t === 'hello-ack') {
+      const peer = NodeAddress.fromJSON(message.self);
       const peerKey = peer.toString();
       const existing = this.byPeer.get(peerKey);
-      if (existing && existing !== conn) {
+      if (existing && existing !== connection) {
         // Same defense on the outbound-handshake side: someone
         // already owns this peer-key, we don't take it over from
         // them.
         this.log.warn(
-          `hello-ack hijack rejected: peer ${peerKey} already mapped to a different conn`,
+          `hello-ack hijack rejected: peer ${peerKey} already mapped to a different connection`,
         );
-        try { conn.socket?.end(); } catch { /* ignore */ }
-        this.bySocket.delete(conn.socket as TcpSocketLike);
+        try { connection.socket?.end(); } catch { /* ignore */ }
+        this.bySocket.delete(connection.socket as TcpSocketLike);
         return;
       }
-      conn.peer = peer;
-      this.byPeer.set(peerKey, conn);
-      const buffered = conn.pending.splice(0, conn.pending.length);
-      for (const message of buffered) conn.socket?.write(encodeFrame(message));
+      connection.peer = peer;
+      this.byPeer.set(peerKey, connection);
+      const buffered = connection.pending.splice(0, connection.pending.length);
+      for (const bufferedMessage of buffered) connection.socket?.write(encodeFrame(bufferedMessage));
       return;
     }
-    if (!conn.peer) {
-      this.log.warn('received message before hello handshake', msg);
+    if (!connection.peer) {
+      this.log.warn('received message before hello handshake', message);
       return;
     }
-    this.handler(conn.peer, msg);
+    this.handler(connection.peer, message);
   }
 
   private onClose(sock: TcpSocketLike): void {
-    const conn = this.bySocket.get(sock);
-    if (!conn) return;
+    const connection = this.bySocket.get(sock);
+    if (!connection) return;
     this.bySocket.delete(sock);
-    if (conn.peer) this.byPeer.delete(conn.peer.toString());
+    if (connection.peer) this.byPeer.delete(connection.peer.toString());
   }
 }
 
@@ -311,14 +311,14 @@ export class InMemoryTransport implements Transport {
     InMemoryTransport.registry.delete(this.self.toString());
   }
 
-  send(to: NodeAddress, msg: WireMessage): void {
+  send(to: NodeAddress, message: WireMessage): void {
     if (this.stopped) return;
     const peer = InMemoryTransport.registry.get(to.toString());
     if (!peer || peer.stopped) return;
     const from = this.self;
     // Decouple sender and receiver via microtask so ordering mirrors TCP.
     queueMicrotask(() => {
-      if (!peer.stopped) peer.handler(from, msg);
+      if (!peer.stopped) peer.handler(from, message);
     });
   }
 

@@ -58,9 +58,9 @@ export function websocket<TOut, TIn, TSelf = never>(
   // time; resolve once (route options > HOCON > defaults) and memoise.
   let policy: ResolvedWebsocketPolicy | null = null;
 
-  const connect: WebsocketConnectHandler = (system, req, socket) => {
+  const connect: WebsocketConnectHandler = (system, request, socket) => {
     if (policy === null) policy = resolveWebsocketPolicy(system, options);
-    wireConnection<TOut, TIn, TSelf>(system, target, req, socket, codec, policy);
+    wireConnection<TOut, TIn, TSelf>(system, target, request, socket, codec, policy);
   };
 
   // CSWSH defence — an Origin allowlist folds into the route's innermost
@@ -80,11 +80,11 @@ export function websocket<TOut, TIn, TSelf = never>(
  */
 function makeOriginGuard(
   allowedOrigins: ReadonlyArray<string> | undefined,
-): ((req: HttpRequest) => HttpResponse | null) | undefined {
+): ((request: HttpRequest) => HttpResponse | null) | undefined {
   if (!allowedOrigins || allowedOrigins.length === 0) return undefined;
   const allow = new Set(allowedOrigins.map((o) => o.toLowerCase()));
-  return (req: HttpRequest): HttpResponse | null => {
-    const origin = req.headers['origin'];
+  return (request: HttpRequest): HttpResponse | null => {
+    const origin = request.headers['origin'];
     // Missing Origin → non-browser client (native WS / server-to-server);
     // CSWSH can't apply, so allow.  Present-but-unlisted → reject.
     if (origin === undefined) return null;

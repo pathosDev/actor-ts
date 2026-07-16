@@ -71,7 +71,7 @@ export class CassandraJournal implements Journal {
   }
 
   async append<E>(
-    pid: string,
+    persistenceId: string,
     events: ReadonlyArray<E>,
     expectedSeq: number,
     tags?: ReadonlyArray<string>,
@@ -80,9 +80,9 @@ export class CassandraJournal implements Journal {
     await this.ensureStarted();
 
     // 1) Read current max-seq from metadata; throw on mismatch.
-    const actualSeq = await this.readHighestSeq(pid);
+    const actualSeq = await this.readHighestSeq(persistenceId);
     if (actualSeq !== expectedSeq) {
-      throw new JournalConcurrencyError(pid, expectedSeq, actualSeq);
+      throw new JournalConcurrencyError(persistenceId, expectedSeq, actualSeq);
     }
 
     const now = Date.now();
@@ -116,7 +116,7 @@ export class CassandraJournal implements Journal {
       batchOps.push({
         query:
           `INSERT INTO ${this.qualified(this.eventsTable)} (persistence_id, partition_nr, sequence_nr, timestamp, payload, tags) VALUES (?, ?, ?, ?, ?, ?)`,
-        params: [pid, partition, seq, now, payload, tagList],
+        params: [persistenceId, partition, seq, now, payload, tagList],
       });
       // Tag-index side-table dual-write (#44).  One row per (event, tag)
       // pair so a tag-query walks a single (tag) partition.  Each row
@@ -127,12 +127,12 @@ export class CassandraJournal implements Journal {
           batchOps.push({
             query:
               `INSERT INTO ${this.qualified(this.tagIndexTable)} (tag, timestamp, persistence_id, sequence_nr, payload, tags) VALUES (?, ?, ?, ?, ?, ?)`,
-            params: [tag, now, pid, seq, payload, tagList],
+            params: [tag, now, persistenceId, seq, payload, tagList],
           });
         }
       }
       written.push({
-        persistenceId: pid,
+        persistenceId: persistenceId,
         sequenceNr: seq,
         event: ev,
         timestamp: now,
@@ -145,7 +145,7 @@ export class CassandraJournal implements Journal {
     try {
       await this.client.execute(
         `INSERT INTO ${this.qualified(this.metadataTable)} (persistence_id, max_sequence_nr, updated_at) VALUES (?, ?, ?)`,
-        [pid, seq, now],
+        [persistenceId, seq, now],
         { prepare: true },
       );
     } catch (e) {
@@ -158,7 +158,7 @@ export class CassandraJournal implements Journal {
       try {
         await this.client.execute(
           `INSERT INTO ${this.qualified(this.allIdsTable)} (tag, persistence_id) VALUES (?, ?)`,
-          ['_all', pid],
+          ['_all', persistenceId],
           { prepare: true },
         );
       } catch { /* non-fatal — listing is best-effort */ }
@@ -167,10 +167,10 @@ export class CassandraJournal implements Journal {
     return written;
   }
 
-  async read<E>(pid: string, fromSeq: number, toSeq?: number): Promise<PersistentEvent<E>[]> {
+  async read<E>(persistenceId: string, fromSeq: number, toSeq?: number): Promise<PersistentEvent<E>[]> {
     await this.ensureStarted();
     const partitionSize = this.options.partitionSize ?? 500_000;
-    const highest = await this.readHighestSeq(pid);
+    const highest = await this.readHighestSeq(persistenceId);
     const hi = toSeq !== undefined ? Math.min(toSeq, highest) : highest;
     if (hi < fromSeq) return [];
 
@@ -179,12 +179,12 @@ export class CassandraJournal implements Journal {
 
     const out: PersistentEvent<E>[] = [];
     for (let partition = firstPartition; partition <= lastPartition; partition++) {
-      const res = await this.client.execute(
+      const response = await this.client.execute(
         `SELECT persistence_id, partition_nr, sequence_nr, timestamp, payload, tags FROM ${this.qualified(this.eventsTable)} WHERE persistence_id = ? AND partition_nr = ? AND sequence_nr >= ? AND sequence_nr <= ?`,
-        [pid, partition, fromSeq, hi],
+        [persistenceId, partition, fromSeq, hi],
         { prepare: true },
       );
-      for (const row of res.rows as unknown as EventRow[]) {
+      for (const row of response.rows as unknown as EventRow[]) {
         out.push({
           persistenceId: row.persistence_id,
           sequenceNr: Number(row.sequence_nr),
@@ -199,12 +199,12 @@ export class CassandraJournal implements Journal {
     return out;
   }
 
-  async highestSeq(pid: string): Promise<number> {
+  async highestSeq(persistenceId: string): Promise<number> {
     await this.ensureStarted();
-    return this.readHighestSeq(pid);
+    return this.readHighestSeq(persistenceId);
   }
 
-  async delete(pid: string, toSeq: number): Promise<void> {
+  async delete(persistenceId: string, toSeq: number): Promise<void> {
     await this.ensureStarted();
     const partitionSize = this.options.partitionSize ?? 500_000;
     const lastPartition = Math.floor(Math.max(toSeq - 1, 0) / partitionSize);
@@ -212,7 +212,7 @@ export class CassandraJournal implements Journal {
       try {
         await this.client.execute(
           `DELETE FROM ${this.qualified(this.eventsTable)} WHERE persistence_id = ? AND partition_nr = ? AND sequence_nr <= ?`,
-          [pid, partition, toSeq],
+          [persistenceId, partition, toSeq],
           { prepare: true },
         );
       } catch (e) {
@@ -223,12 +223,12 @@ export class CassandraJournal implements Journal {
 
   async persistenceIds(): Promise<string[]> {
     await this.ensureStarted();
-    const res = await this.client.execute(
+    const response = await this.client.execute(
       `SELECT persistence_id FROM ${this.qualified(this.allIdsTable)} WHERE tag = ?`,
       ['_all'],
       { prepare: true },
     );
-    return (res.rows as unknown as Array<{ persistence_id: string }>).map(r => r.persistence_id);
+    return (response.rows as unknown as Array<{ persistence_id: string }>).map(r => r.persistence_id);
   }
 
   async close(): Promise<void> {
@@ -259,13 +259,13 @@ export class CassandraJournal implements Journal {
     return `${ks}.${assertSafeIdentifier(table, 'table')}`;
   }
 
-  private async readHighestSeq(pid: string): Promise<number> {
-    const res = await this.client.execute(
+  private async readHighestSeq(persistenceId: string): Promise<number> {
+    const response = await this.client.execute(
       `SELECT max_sequence_nr FROM ${this.qualified(this.metadataTable)} WHERE persistence_id = ?`,
-      [pid],
+      [persistenceId],
       { prepare: true },
     );
-    const row = res.rows[0] as { max_sequence_nr?: string | number } | undefined;
+    const row = response.rows[0] as { max_sequence_nr?: string | number } | undefined;
     return row?.max_sequence_nr !== undefined ? Number(row.max_sequence_nr) : 0;
   }
 

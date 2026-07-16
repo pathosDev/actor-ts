@@ -90,30 +90,30 @@ export class LeaseOptionsValidator<T extends LeaseOptionsType = LeaseOptionsType
     this.commonRules(s);
   }
   protected commonRules(s: Partial<T>): void {
-    const opts = s as Partial<LeaseOptionsType>;
-    if (opts.name !== undefined && (typeof opts.name !== 'string' || opts.name.length === 0)) {
-      this.fail('name', 'must be a non-empty string', opts.name);
+    const options = s as Partial<LeaseOptionsType>;
+    if (options.name !== undefined && (typeof options.name !== 'string' || options.name.length === 0)) {
+      this.fail('name', 'must be a non-empty string', options.name);
     }
-    if (opts.owner !== undefined && (typeof opts.owner !== 'string' || opts.owner.length === 0)) {
-      this.fail('owner', 'must be a non-empty string', opts.owner);
+    if (options.owner !== undefined && (typeof options.owner !== 'string' || options.owner.length === 0)) {
+      this.fail('owner', 'must be a non-empty string', options.owner);
     }
-    if (opts.ttlMs !== undefined && (typeof opts.ttlMs !== 'number' || !Number.isFinite(opts.ttlMs) || opts.ttlMs <= 0)) {
-      this.fail('ttlMs', 'must be a positive finite number', opts.ttlMs);
-    }
-    if (
-      opts.renewalIntervalMs !== undefined &&
-      (typeof opts.renewalIntervalMs !== 'number' || !Number.isFinite(opts.renewalIntervalMs) || opts.renewalIntervalMs <= 0)
-    ) {
-      this.fail('renewalIntervalMs', 'must be a positive finite number', opts.renewalIntervalMs);
-    }
-    if (opts.acquireRetries !== undefined && (!Number.isInteger(opts.acquireRetries) || opts.acquireRetries < 0)) {
-      this.fail('acquireRetries', 'must be an integer >= 0', opts.acquireRetries);
+    if (options.ttlMs !== undefined && (typeof options.ttlMs !== 'number' || !Number.isFinite(options.ttlMs) || options.ttlMs <= 0)) {
+      this.fail('ttlMs', 'must be a positive finite number', options.ttlMs);
     }
     if (
-      opts.acquireRetryDelayMs !== undefined &&
-      (typeof opts.acquireRetryDelayMs !== 'number' || !Number.isFinite(opts.acquireRetryDelayMs) || opts.acquireRetryDelayMs < 0)
+      options.renewalIntervalMs !== undefined &&
+      (typeof options.renewalIntervalMs !== 'number' || !Number.isFinite(options.renewalIntervalMs) || options.renewalIntervalMs <= 0)
     ) {
-      this.fail('acquireRetryDelayMs', 'must be a non-negative finite number', opts.acquireRetryDelayMs);
+      this.fail('renewalIntervalMs', 'must be a positive finite number', options.renewalIntervalMs);
+    }
+    if (options.acquireRetries !== undefined && (!Number.isInteger(options.acquireRetries) || options.acquireRetries < 0)) {
+      this.fail('acquireRetries', 'must be an integer >= 0', options.acquireRetries);
+    }
+    if (
+      options.acquireRetryDelayMs !== undefined &&
+      (typeof options.acquireRetryDelayMs !== 'number' || !Number.isFinite(options.acquireRetryDelayMs) || options.acquireRetryDelayMs < 0)
+    ) {
+      this.fail('acquireRetryDelayMs', 'must be a non-negative finite number', options.acquireRetryDelayMs);
     }
   }
 }

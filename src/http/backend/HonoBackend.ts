@@ -135,8 +135,8 @@ export class HonoBackend implements HttpServerBackend {
   private readonly maxBodyBytes: number;
   private readonly registered: RouteRegistration[] = [];
   private readonly wsRegistered: WebsocketRouteRegistration[] = [];
-  private notFoundHandler: ((req: HttpRequest) => Promise<HttpResponse> | HttpResponse) | null = null;
-  private errorHandler: ((err: unknown, req: HttpRequest) => Promise<HttpResponse> | HttpResponse) | null = null;
+  private notFoundHandler: ((request: HttpRequest) => Promise<HttpResponse> | HttpResponse) | null = null;
+  private errorHandler: ((err: unknown, request: HttpRequest) => Promise<HttpResponse> | HttpResponse) | null = null;
 
   // Runtime-neutral server handle; the per-runtime adapter supplies a
   // concrete implementation (Bun.serve / @hono/node-server / Deno.serve).
@@ -167,11 +167,11 @@ export class HonoBackend implements HttpServerBackend {
     this.wsRegistered.push(reg);
   }
 
-  setNotFound(handler: (req: HttpRequest) => Promise<HttpResponse> | HttpResponse): void {
+  setNotFound(handler: (request: HttpRequest) => Promise<HttpResponse> | HttpResponse): void {
     this.notFoundHandler = handler;
   }
 
-  setErrorHandler(handler: (err: unknown, req: HttpRequest) => Promise<HttpResponse> | HttpResponse): void {
+  setErrorHandler(handler: (err: unknown, request: HttpRequest) => Promise<HttpResponse> | HttpResponse): void {
     this.errorHandler = handler;
   }
 
@@ -188,18 +188,18 @@ export class HonoBackend implements HttpServerBackend {
       const handler = this.notFoundHandler;
       app.notFound(async (context) => {
         if (contentLengthExceeds(contentLengthHeader(context), this.maxBodyBytes)) return payloadTooLarge();
-        const req = await this.adaptRequest(context);
-        const res = await handler(req);
-        return this.writeResponse(res);
+        const request = await this.adaptRequest(context);
+        const response = await handler(request);
+        return this.writeResponse(response);
       });
     }
 
     app.onError(async (err, context) => {
-      const req = await this.adaptRequest(context);
+      const request = await this.adaptRequest(context);
       if (this.errorHandler) {
         try {
-          const res = await this.errorHandler(err, req);
-          return this.writeResponse(res);
+          const response = await this.errorHandler(err, request);
+          return this.writeResponse(response);
         } catch (inner) { err = inner; }
       }
       if (err instanceof HttpError) {
@@ -281,13 +281,13 @@ export class HonoBackend implements HttpServerBackend {
       // making the 10 MiB cap cosmetic against the runtime's much larger
       // native default.
       if (contentLengthExceeds(contentLengthHeader(c), this.maxBodyBytes)) return payloadTooLarge();
-      const req = await this.adaptRequest(c);
-      if (req.body && req.body.byteLength > this.maxBodyBytes) return payloadTooLarge();
+      const request = await this.adaptRequest(c);
+      if (request.body && request.body.byteLength > this.maxBodyBytes) return payloadTooLarge();
       // Wildcard contract: expose the matched remainder as params['*'].
-      const finalReq = wildcard
-        ? { ...req, params: { ...req.params, '*': honoWildcardRest(c.req.path ?? new URL(c.req.url).pathname, prefix) } }
-        : req;
-      const out = await route.handler(finalReq);
+      const finalRequest = wildcard
+        ? { ...request, params: { ...request.params, '*': honoWildcardRest(c.req.path ?? new URL(c.req.url).pathname, prefix) } }
+        : request;
+      const out = await route.handler(finalRequest);
       return this.writeResponse(out);
     };
     const method = route.method.toLowerCase() as Lowercase<HttpMethod>;
@@ -317,8 +317,8 @@ export class HonoBackend implements HttpServerBackend {
     // Guard middleware runs the authorize check against the upgrade
     // request; returning a Response short-circuits (no upgrade).
     const guard = async (context: HonoContextLike, next: () => Promise<void>): Promise<Response | void> => {
-      const res = await reg.authorize(this.adaptUpgradeContext(context));
-      if (res) return this.writeResponse(res);
+      const response = await reg.authorize(this.adaptUpgradeContext(context));
+      if (response) return this.writeResponse(response);
       await next();
     };
 
@@ -351,12 +351,12 @@ export class HonoBackend implements HttpServerBackend {
         },
       };
       return {
-        onOpen: (_evt, wsCtx) => {
-          ws = wsCtx;
+        onOpen: (_evt, wsContext) => {
+          ws = wsContext;
           reg.onConnection(adapted, adapter);
         },
-        onMessage: (evt, wsCtx) => {
-          ws = wsCtx;
+        onMessage: (evt, wsContext) => {
+          ws = wsContext;
           const data = coerceWebsocketData(evt.data);
           if (listeners) listeners.onMessage(data);
           else pending.push(data);
@@ -415,8 +415,8 @@ export class HonoBackend implements HttpServerBackend {
 
     let body: Uint8Array | null = null;
     if (method !== 'GET' && method !== 'HEAD' && method !== 'OPTIONS') {
-      const buf = await context.req.arrayBuffer();
-      if (buf.byteLength > 0) body = new Uint8Array(buf);
+      const buffer = await context.req.arrayBuffer();
+      if (buffer.byteLength > 0) body = new Uint8Array(buffer);
     }
 
     const remoteAddress = extractHonoRemoteAddress(context);
@@ -432,31 +432,31 @@ export class HonoBackend implements HttpServerBackend {
     };
   }
 
-  private writeResponse(res: HttpResponse): Response {
+  private writeResponse(response: HttpResponse): Response {
     const headers = new Headers();
-    if (res.headers) for (const [key, value] of Object.entries(res.headers)) headers.set(key, value);
-    if (res.contentType) headers.set('content-type', res.contentType);
+    if (response.headers) for (const [key, value] of Object.entries(response.headers)) headers.set(key, value);
+    if (response.contentType) headers.set('content-type', response.contentType);
 
-    const body = res.body;
-    if (body === undefined || body === null) return new Response(null, { status: res.status, headers });
+    const body = response.body;
+    if (body === undefined || body === null) return new Response(null, { status: response.status, headers });
 
     if (typeof body === 'string') {
       if (!headers.has('content-type')) headers.set('content-type', 'text/plain; charset=utf-8');
-      return new Response(body, { status: res.status, headers });
+      return new Response(body, { status: response.status, headers });
     }
     if (body instanceof Uint8Array) {
       if (!headers.has('content-type')) headers.set('content-type', 'application/octet-stream');
       // Cast through BodyInit — the standard `Uint8Array<ArrayBufferLike>`
       // IS a valid Fetch body, but TypeScript 5.7+'s DOM types are not
       // (yet) parameterised that way, so the direct assignment errors.
-      return new Response(body as unknown as BodyInit, { status: res.status, headers });
+      return new Response(body as unknown as BodyInit, { status: response.status, headers });
     }
     if (typeof ReadableStream !== 'undefined' && body instanceof ReadableStream) {
       if (!headers.has('content-type')) headers.set('content-type', 'application/octet-stream');
-      return new Response(body as unknown as BodyInit, { status: res.status, headers });
+      return new Response(body as unknown as BodyInit, { status: response.status, headers });
     }
     if (!headers.has('content-type')) headers.set('content-type', 'application/json; charset=utf-8');
-    return new Response(JSON.stringify(body), { status: res.status, headers });
+    return new Response(JSON.stringify(body), { status: response.status, headers });
   }
 
   private async createHonoApp(): Promise<HonoAppLike> {
