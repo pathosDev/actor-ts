@@ -18,7 +18,7 @@ import type { ActorRef } from '../../../src/ActorRef.js';
 
 /** Increment the singleton's counter by 1.  Fire-and-forget. */
 export interface SingletonIncrement {
-  readonly kind: 'inc';
+  readonly kind: 'increment';
 }
 
 /**
@@ -51,7 +51,7 @@ export class CounterSingleton extends Actor<SingletonMessage> {
   private value = 0;
   constructor(private readonly nodeName: string) { super(); }
   override onReceive(msg: SingletonMessage): void {
-    if (msg.kind === 'inc') {
+    if (msg.kind === 'increment') {
       this.value++;
     } else if (msg.kind === 'who') {
       msg.replyTo.tell({

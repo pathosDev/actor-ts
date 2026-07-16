@@ -27,7 +27,7 @@ import {
 } from '../../src/index.js';
 import { runGroup } from '../lib/harness.js';
 
-type Command = { kind: 'inc' } | { kind: 'get' };
+type Command = { kind: 'increment' } | { kind: 'get' };
 type Event = { delta: number };
 
 function makeCounterClass(policy: SnapshotPolicy<number, Event>): typeof PersistentActor<Command, Event, number> {
@@ -38,7 +38,7 @@ function makeCounterClass(policy: SnapshotPolicy<number, Event>): typeof Persist
     onEvent(s: number, e: Event): number { return s + e.delta; }
     override snapshotPolicy(): SnapshotPolicy<number, Event> { return policy; }
     async onCommand(s: number, cmd: Command): Promise<void> {
-      if (cmd.kind === 'inc') {
+      if (cmd.kind === 'increment') {
         await this.persist({ delta: 1 }, () => {});
         return;
       }
@@ -88,7 +88,7 @@ async function main(): Promise<void> {
         iterations: 1,
         opsPerIteration: EVENTS_PER_RUN,
         run: async () => {
-          for (let i = 0; i < EVENTS_PER_RUN; i++) ref.tell({ kind: 'inc' });
+          for (let i = 0; i < EVENTS_PER_RUN; i++) ref.tell({ kind: 'increment' });
           // Drain by asking for the final state — returns once all persists
           // have been applied.
           await ask<Command, number>(ref, { kind: 'get' }, 30_000);

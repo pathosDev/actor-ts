@@ -58,9 +58,9 @@ import type { JetStreamOptions, JetStreamOptionsType } from './JetStreamOptions.
  *     async onReceive(message: JetStreamMessage) {
  *       try {
  *         await db.insertOrder(JSON.parse(new TextDecoder().decode(message.payload)));
- *         this.js.tell({ kind: 'ack', streamSeq: message.streamSeq });
+ *         this.js.tell({ kind: 'acknowledgment', streamSeq: message.streamSeq });
  *       } catch (e) {
- *         this.js.tell({ kind: 'nak', streamSeq: message.streamSeq, delayMs: 5_000 });
+ *         this.js.tell({ kind: 'negativeAcknowledgment', streamSeq: message.streamSeq, delayMs: 5_000 });
  *       }
  *     }
  *   }
@@ -150,13 +150,13 @@ export interface JetStreamConsumerConfig {
 type PublishCommand = { readonly kind: 'publish'; readonly publish: JetStreamPublish };
 
 /** Acknowledge a delivered message — server marks consumed. */
-type AcknowledgmentCommand = { readonly kind: 'ack'; readonly streamSeq: number };
+type AcknowledgmentCommand = { readonly kind: 'acknowledgment'; readonly streamSeq: number };
 
 /** Negative-ack — server redelivers (after optional `delayMs`). */
-type NegativeAcknowledgmentCommand = { readonly kind: 'nak'; readonly streamSeq: number; readonly delayMs?: number };
+type NegativeAcknowledgmentCommand = { readonly kind: 'negativeAcknowledgment'; readonly streamSeq: number; readonly delayMs?: number };
 
 /** Terminal failure — server drops the message permanently. */
-type TerminateCommand = { readonly kind: 'term'; readonly streamSeq: number; readonly reason?: string };
+type TerminateCommand = { readonly kind: 'terminate'; readonly streamSeq: number; readonly reason?: string };
 
 /** Heartbeat — extend the ack-wait window for a long-running handler. */
 type InProgressCommand = { readonly kind: 'inProgress'; readonly streamSeq: number };
@@ -318,9 +318,9 @@ export class JetStreamActor extends BrokerActor<
     // forces this site to handle it explicitly (TS error otherwise).
     match(cmd)
       .with({ kind: 'publish' },    (m) => this.onPublish(m))
-      .with({ kind: 'ack' },        (m) => this.onAcknowledgment(m))
-      .with({ kind: 'nak' },        (m) => this.onNegativeAcknowledgment(m))
-      .with({ kind: 'term' },       (m) => this.onTerminate(m))
+      .with({ kind: 'acknowledgment' },         (m) => this.onAcknowledgment(m))
+      .with({ kind: 'negativeAcknowledgment' }, (m) => this.onNegativeAcknowledgment(m))
+      .with({ kind: 'terminate' },              (m) => this.onTerminate(m))
       .with({ kind: 'inProgress' }, (m) => this.onInProgress(m))
       .with({ kind: 'fetch' },      (m) => void this.onFetch(m))
       .exhaustive();

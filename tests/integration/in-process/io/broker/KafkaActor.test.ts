@@ -232,7 +232,7 @@ describe('KafkaActor — manual commit (#2)', () => {
       const { actor, mock } = await bootActor(sys, kafkaOptions);
       const tracker = mock.consumer_.push('orders', 1, '7');
       await sleep(20);
-      actor.tell({ kind: 'nack', topic: 'orders', partition: 1, offset: '7', reason: 'bad data' });
+      actor.tell({ kind: 'negativeAcknowledgment', topic: 'orders', partition: 1, offset: '7', reason: 'bad data' });
       await tracker.promise;
       expect(tracker.rejected).toBe(true);
       expect(tracker.rejectError?.message).toBe('bad data');
@@ -501,7 +501,7 @@ describe('KafkaActor — heartbeat (#78)', () => {
       await sleep(60);
       expect(tracker.heartbeats).toBe(countAfterDrain);
 
-      actor.tell({ kind: 'nack', topic: 'orders', partition: 0, offset: '13' });
+      actor.tell({ kind: 'negativeAcknowledgment', topic: 'orders', partition: 0, offset: '13' });
       await tracker.promise;
       expect(tracker.rejected).toBe(true);
     } finally {

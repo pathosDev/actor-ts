@@ -22,7 +22,7 @@ function main(): void {
   // Default fallback is JSON — everything goes through it unless bound.
   console.log('Registered serializer IDs:', ext.registeredIds());
 
-  const msg = { op: 'inc', amount: 42, payload: new Uint8Array([1, 2, 3, 4]) };
+  const msg = { op: 'increment', amount: 42, payload: new Uint8Array([1, 2, 3, 4]) };
 
   const asJson = ext.encode(msg);   // uses JsonSerializer (default)
   console.log('JSON bytes  :', asJson.bytes.byteLength, 'bytes');

@@ -44,20 +44,20 @@ import { HISTORY_LIMIT, SNAPSHOT_EVERY_N_EVENTS } from './ChatRoomActor.js';
 /* --------------------------- public messages --------------------------- */
 
 export type DirectMessageHistoryReply = {
-  readonly kind: 'DmHistoryReply';
+  readonly kind: 'DirectMessageHistoryReply';
   readonly pairId: string;
   readonly messages: ReadonlyArray<ChatMessage>;
 };
 
 export type DirectMessageChannelCommand =
   | {
-      readonly kind: 'SendDm';
+      readonly kind: 'SendDirectMessage';
       readonly pairId: string;
       readonly from: string;
       readonly text: string;
     }
   | {
-      readonly kind: 'GetDmHistory';
+      readonly kind: 'GetDirectMessageHistory';
       readonly pairId: string;
       readonly limit: number;
       readonly replyTo: ActorRef<DirectMessageHistoryReply>;
@@ -69,7 +69,7 @@ export type DirectMessageChannelCommand =
  * client-side by comparing `from` to their own username.
  */
 export type DirectMessageBroadcast = {
-  readonly kind: 'DmBroadcast';
+  readonly kind: 'DirectMessageBroadcast';
   readonly pairId: string;
   readonly from: string;
   readonly to: string;
@@ -80,7 +80,7 @@ export type DirectMessageBroadcast = {
 /* ----------------------------- internals ------------------------------ */
 
 type DirectMessageEvent = {
-  readonly kind: 'DmPosted';
+  readonly kind: 'DirectMessagePosted';
   readonly from: string;
   readonly text: string;
   readonly ts: number;
@@ -128,7 +128,7 @@ export class DirectMessageChannelActor extends PersistentActor<
 
   onEvent(state: DirectMessageState, e: DirectMessageEvent): DirectMessageState {
     return match(e)
-      .with({ kind: 'DmPosted' }, (m) => this.onDirectMessagePosted(state, m))
+      .with({ kind: 'DirectMessagePosted' }, (m) => this.onDirectMessagePosted(state, m))
       .exhaustive();
   }
 
@@ -143,9 +143,9 @@ export class DirectMessageChannelActor extends PersistentActor<
   }
 
   async onCommand(state: DirectMessageState, cmd: DirectMessageChannelCommand): Promise<void> {
-    if (cmd.kind === 'SendDm') {
+    if (cmd.kind === 'SendDirectMessage') {
       const event: DirectMessageEvent = {
-        kind: 'DmPosted',
+        kind: 'DirectMessagePosted',
         from: cmd.from,
         text: cmd.text,
         ts: Date.now(),
@@ -167,7 +167,7 @@ export class DirectMessageChannelActor extends PersistentActor<
         const [a, b] = parts;
         const to = cmd.from === a ? b : a;
         const broadcast: DirectMessageBroadcast = {
-          kind: 'DmBroadcast',
+          kind: 'DirectMessageBroadcast',
           pairId: cmd.pairId,
           from: cmd.from,
           to,
@@ -181,9 +181,9 @@ export class DirectMessageChannelActor extends PersistentActor<
       return;
     }
 
-    if (cmd.kind === 'GetDmHistory') {
+    if (cmd.kind === 'GetDirectMessageHistory') {
       const messages = state.history.slice(-Math.max(1, cmd.limit));
-      cmd.replyTo.tell({ kind: 'DmHistoryReply', pairId: cmd.pairId, messages });
+      cmd.replyTo.tell({ kind: 'DirectMessageHistoryReply', pairId: cmd.pairId, messages });
       return;
     }
   }

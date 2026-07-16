@@ -108,7 +108,7 @@ export function chatRoomTopic(room: RoomName): string {
 /* ----------------------------- internals ------------------------------ */
 
 type ChatEvent = {
-  readonly kind: 'MsgPosted';
+  readonly kind: 'MessagePosted';
   readonly from: string;
   readonly text: string;
   readonly ts: number;
@@ -165,7 +165,7 @@ export class ChatRoomActor extends PersistentActor<ChatRoomCommand, ChatEvent, C
 
   onEvent(state: ChatState, e: ChatEvent): ChatState {
     return match(e)
-      .with({ kind: 'MsgPosted' }, (m) => this.onMessagePosted(state, m))
+      .with({ kind: 'MessagePosted' }, (m) => this.onMessagePosted(state, m))
       .exhaustive();
   }
 
@@ -181,7 +181,7 @@ export class ChatRoomActor extends PersistentActor<ChatRoomCommand, ChatEvent, C
   async onCommand(state: ChatState, cmd: ChatRoomCommand): Promise<void> {
     if (cmd.kind === 'SendMessage') {
       const event: ChatEvent = {
-        kind: 'MsgPosted',
+        kind: 'MessagePosted',
         from: cmd.from,
         text: cmd.text,
         ts: Date.now(),

@@ -23,7 +23,7 @@ import {
 } from '../../src/index.js';
 import { FakeCassandraClient } from '../../tests/unit/persistence/FakeCassandraClient.js';
 
-type IncrementCommand = { kind: 'inc'; amount: number };
+type IncrementCommand = { kind: 'increment'; amount: number };
 type GetCommand = { kind: 'get' };
 type Command = IncrementCommand | GetCommand;
 type Event = { kind: 'incremented'; amount: number };
@@ -35,7 +35,7 @@ class Counter extends PersistentActor<Command, Event, number> {
   override async onCommand(state: number, cmd: Command): Promise<void> {
     await match(cmd)
       .with({ kind: 'get' }, () => this.onGet(state))
-      .with({ kind: 'inc' }, (c) => this.onIncrement(c))
+      .with({ kind: 'increment' }, (c) => this.onIncrement(c))
       .exhaustive();
   }
 
@@ -77,8 +77,8 @@ async function main(): Promise<void> {
   registerCassandraPlugins(ext, cassandraPluginsOptions);
 
   let counter = system.spawnAnonymous(Props.create(() => new Counter()));
-  counter.tell({ kind: 'inc', amount: 10 });
-  counter.tell({ kind: 'inc', amount: 32 });
+  counter.tell({ kind: 'increment', amount: 10 });
+  counter.tell({ kind: 'increment', amount: 32 });
   await Bun.sleep(60);
 
   // "Crash and restart" — the new actor replays events from the journal.

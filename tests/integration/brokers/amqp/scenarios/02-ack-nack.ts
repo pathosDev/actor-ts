@@ -1,6 +1,6 @@
 /**
  * Manual-ack mode — autoAck=false.  The consumer holds the delivery
- * until an explicit `{ kind: 'ack', delivery }` arrives.  A `nack`
+ * until an explicit `{ kind: 'acknowledgment', delivery }` arrives.  A `negativeAcknowledgment`
  * with `requeue: true` puts the message back on the queue for
  * re-delivery; with `requeue: false` it goes to dead-letter (or
  * is dropped if no DLX is configured).
@@ -36,11 +36,11 @@ class AcknowledgmentOnSecondTry extends Actor<AmqpDelivery> {
     this.seen.push(d);
     if (this.seen.length === 1) {
       // First delivery — nack with requeue so it comes back.
-      this.kafka?.tell({ kind: 'nack', delivery: d, requeue: true });
+      this.kafka?.tell({ kind: 'negativeAcknowledgment', delivery: d, requeue: true });
       this.nackCount++;
     } else {
       // Subsequent deliveries — ack.
-      this.kafka?.tell({ kind: 'ack', delivery: d });
+      this.kafka?.tell({ kind: 'acknowledgment', delivery: d });
       this.ackCount++;
     }
   }

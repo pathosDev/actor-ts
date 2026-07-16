@@ -185,7 +185,7 @@ async function main(): Promise<void> {
   // `shared/directMessage.ts` for the canonicalization.  Sixteen shards matches
   // the chat-room region; the DM workload is similar (write-heavy,
   // small per-entity state) so a single tuning value covers both.
-  const directMessageChannelRegion = sharding.start('DmChannel', DirectMessageChannelActor,
+  const directMessageChannelRegion = sharding.start('DirectMessageChannel', DirectMessageChannelActor,
     StartShardingOptions.create<DirectMessageChannelCommand>()
       .withExtractEntityId((msg) => msg.pairId)
       .withNumShards(16));

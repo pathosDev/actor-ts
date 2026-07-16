@@ -23,7 +23,7 @@ import {
 } from '../../src/index.js';
 
 type Command =
-  | { id: string; op: 'inc' }
+  | { id: string; op: 'increment' }
   | { id: string; op: 'get' };
 
 class CounterEntity extends Actor<Command> {
@@ -39,7 +39,7 @@ class CounterEntity extends Actor<Command> {
 
   override onReceive(cmd: Command): void {
     switch (cmd.op) {
-      case 'inc':
+      case 'increment':
         this.count++;
         this.log.info(`${this.self.path.name} = ${this.count}`);
         break;
@@ -103,7 +103,7 @@ async function main(): Promise<void> {
   const entities = ['alpha', 'beta', 'gamma', 'delta', 'epsilon', 'zeta', 'eta', 'theta'];
   const interval = setInterval(() => {
     const id = entities[tick % entities.length]!;
-    region.tell({ id, op: 'inc' });
+    region.tell({ id, op: 'increment' });
     tick++;
   }, 400);
 

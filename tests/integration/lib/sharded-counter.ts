@@ -20,7 +20,7 @@ export interface ShardedMessage {
 }
 
 /** Increment the counter for `entityId`. */
-export interface ShardedIncrement extends ShardedMessage { readonly op: 'inc' }
+export interface ShardedIncrement extends ShardedMessage { readonly op: 'increment' }
 
 /** Query "who hosts you?" — reply via `replyTo`. */
 export interface ShardedWho extends ShardedMessage {
@@ -46,7 +46,7 @@ export class ShardedCounter extends Actor<ShardedCommand> {
   private value = 0;
   constructor(private readonly nodeName: string) { super(); }
   override onReceive(msg: ShardedCommand): void {
-    if (msg.op === 'inc') {
+    if (msg.op === 'increment') {
       this.value++;
     } else {
       // 'who'

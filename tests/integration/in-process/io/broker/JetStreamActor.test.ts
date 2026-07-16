@@ -317,7 +317,7 @@ describe('JetStreamActor — ack/nak/term', () => {
       expect(target.received).toHaveLength(1);
       expect(target.received[0]!.streamSeq).toBe(42);
 
-      actor.tell({ kind: 'ack', streamSeq: 42 });
+      actor.tell({ kind: 'acknowledgment', streamSeq: 42 });
       await sleep(40);
       expect(handle.acked).toBe(true);
     } finally {
@@ -339,7 +339,7 @@ describe('JetStreamActor — ack/nak/term', () => {
       const handle = makeHandle(7);
       mock.mockConn.js.subscription.push(handle);
       await sleep(40);
-      actor.tell({ kind: 'nak', streamSeq: 7, delayMs: 1500 });
+      actor.tell({ kind: 'negativeAcknowledgment', streamSeq: 7, delayMs: 1500 });
       await sleep(40);
       expect(handle.naked).toBe(true);
       expect(handle.nakDelay).toBe(1500);
@@ -363,7 +363,7 @@ describe('JetStreamActor — ack/nak/term', () => {
       const handle = makeHandle(99);
       mock.mockConn.js.subscription.push(handle);
       await sleep(40);
-      actor.tell({ kind: 'term', streamSeq: 99, reason: 'unparseable' });
+      actor.tell({ kind: 'terminate', streamSeq: 99, reason: 'unparseable' });
       await sleep(40);
       expect(handle.termed).toBe(true);
     } finally {
@@ -392,7 +392,7 @@ describe('JetStreamActor — ack/nak/term', () => {
       expect(handle.acked).toBe(false);
       expect(handle.naked).toBe(false);
       // Clean up.
-      actor.tell({ kind: 'ack', streamSeq: 5 });
+      actor.tell({ kind: 'acknowledgment', streamSeq: 5 });
       await sleep(40);
     } finally {
       await sys.terminate();
@@ -462,7 +462,7 @@ describe('JetStreamActor — ack/nak/term', () => {
         .withConsumer({ durable: 'd' });
       const { actor } = await bootActor(sys, jetstreamOptions);
       // No handle pushed, so no pending entry.  Sending ack should not throw.
-      actor.tell({ kind: 'ack', streamSeq: 999 });
+      actor.tell({ kind: 'acknowledgment', streamSeq: 999 });
       await sleep(20);
       // Test passes if we get here without unhandled rejection.
       expect(true).toBe(true);
@@ -576,9 +576,9 @@ describe('JetStreamActor — pull-consumer mode (#62)', () => {
       expect(pc.fetchCalls).toEqual([{ max_messages: 3, expires: 1_000 }]);
 
       // Acknowledgment them all so the pending-map drains.
-      actor.tell({ kind: 'ack', streamSeq: 1 });
-      actor.tell({ kind: 'ack', streamSeq: 2 });
-      actor.tell({ kind: 'ack', streamSeq: 3 });
+      actor.tell({ kind: 'acknowledgment', streamSeq: 1 });
+      actor.tell({ kind: 'acknowledgment', streamSeq: 2 });
+      actor.tell({ kind: 'acknowledgment', streamSeq: 3 });
       await sleep(30);
     } finally {
       await sys.terminate();
@@ -626,8 +626,8 @@ describe('JetStreamActor — pull-consumer mode (#62)', () => {
 
       actor.tell({ kind: 'fetch', batch: 2, expiresMs: 100 });
       await sleep(30);
-      actor.tell({ kind: 'ack', streamSeq: 10 });
-      actor.tell({ kind: 'ack', streamSeq: 11 });
+      actor.tell({ kind: 'acknowledgment', streamSeq: 10 });
+      actor.tell({ kind: 'acknowledgment', streamSeq: 11 });
       await sleep(20);
 
       actor.tell({ kind: 'fetch', batch: 3, expiresMs: 100 });
@@ -635,9 +635,9 @@ describe('JetStreamActor — pull-consumer mode (#62)', () => {
       expect(target.received.map((m) => m.streamSeq)).toEqual([10, 11, 12, 13, 14]);
       expect(pc.fetchCalls).toHaveLength(2);
 
-      actor.tell({ kind: 'ack', streamSeq: 12 });
-      actor.tell({ kind: 'ack', streamSeq: 13 });
-      actor.tell({ kind: 'ack', streamSeq: 14 });
+      actor.tell({ kind: 'acknowledgment', streamSeq: 12 });
+      actor.tell({ kind: 'acknowledgment', streamSeq: 13 });
+      actor.tell({ kind: 'acknowledgment', streamSeq: 14 });
       await sleep(20);
     } finally {
       await sys.terminate();

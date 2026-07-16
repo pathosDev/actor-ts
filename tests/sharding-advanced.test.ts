@@ -135,7 +135,7 @@ test('LeaderChanged fires when the oldest member leaves', async () => {
   await c2.leave(); await sys2.terminate();
 });
 
-type CounterCommand = { id: string; op: 'inc' };
+type CounterCommand = { id: string; op: 'increment' };
 
 test('Role filter: entities only land on members with the matching role', async () => {
   const seen = new Map<string, Map<string, number>>();
@@ -169,7 +169,7 @@ test('Role filter: entities only land on members with the matching role', async 
   await sleep(150);
 
   for (const id of ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h']) {
-    n1.region.tell({ id, op: 'inc' });
+    n1.region.tell({ id, op: 'increment' });
   }
   await sleep(400);
 
@@ -219,8 +219,8 @@ test('Proxy region routes but never hosts entities', async () => {
   await sleep(150);
 
   // Send from proxy; must route to host.
-  proxy.region.tell({ id: 'x', op: 'inc' });
-  proxy.region.tell({ id: 'y', op: 'inc' });
+  proxy.region.tell({ id: 'x', op: 'increment' });
+  proxy.region.tell({ id: 'y', op: 'increment' });
   await sleep(300);
 
   expect(hosted.size).toBe(2); // both entities materialised on host
@@ -306,7 +306,7 @@ test('LeastShardAllocationStrategy balances shards across nodes', async () => {
 
   // Materialize an entity per shard from n1.
   const ids = Array.from({ length: 12 }, (_, i) => `e${i}`);
-  for (const id of ids) n1.region.tell({ id, op: 'inc' });
+  for (const id of ids) n1.region.tell({ id, op: 'increment' });
 
   // Allow initial allocation + a rebalance pass.
   await sleep(1_200);
@@ -353,7 +353,7 @@ test('rememberEntities re-creates entities on the new owner after node death', a
 
   // Create a handful of entities from n1 so the coordinator registers them.
   const ids = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'];
-  for (const id of ids) n1.region.tell({ id, op: 'inc' });
+  for (const id of ids) n1.region.tell({ id, op: 'increment' });
   await sleep(500);
 
   // Identify one entity living on n2, then kill n2.

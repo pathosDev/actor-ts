@@ -12,7 +12,7 @@ export interface AmqpDelivery {
   readonly queue: string;
   readonly content: Uint8Array;
   readonly properties: Readonly<Record<string, unknown>>;
-  /** Acknowledgement token — forward to the actor as `{ kind: 'ack', delivery }` to ack. */
+  /** Acknowledgement token — forward to the actor as `{ kind: 'acknowledgment', delivery }` to ack. */
   readonly ackToken: number;
 }
 
@@ -48,8 +48,8 @@ export interface AmqpQueueBinding {
 
 export type AmqpCommand =
   | { readonly kind: 'publish'; readonly publish: AmqpPublish }
-  | { readonly kind: 'ack'; readonly delivery: AmqpDelivery }
-  | { readonly kind: 'nack'; readonly delivery: AmqpDelivery; readonly requeue?: boolean };
+  | { readonly kind: 'acknowledgment'; readonly delivery: AmqpDelivery }
+  | { readonly kind: 'negativeAcknowledgment'; readonly delivery: AmqpDelivery; readonly requeue?: boolean };
 
 /**
  * AMQP 0.9.1 actor backed by `amqplib`.  One connection, one channel
@@ -61,7 +61,7 @@ export type AmqpCommand =
  * autoAcknowledge=true (default) means the consumer acks the message when it
  * was *delivered* to the actor, not when the actor finished
  * processing.  For at-least-once-with-processing, set autoAcknowledge=false
- * and have your handler tell back `{ kind: 'ack' / 'nack', delivery }`.
+ * and have your handler tell back `{ kind: 'acknowledgment' / 'negativeAcknowledgment', delivery }`.
  */
 export class AmqpActor extends BrokerActor<AmqpOptionsType, AmqpCommand, AmqpPublish> {
   private connection: AmqpConnectionLike | null = null;
@@ -161,7 +161,7 @@ export class AmqpActor extends BrokerActor<AmqpOptionsType, AmqpCommand, AmqpPub
       this.enqueueOutbound(cmd.publish);
       return;
     }
-    if (cmd.kind === 'ack') {
+    if (cmd.kind === 'acknowledgment') {
       const raw = this.pendingAcks.get(cmd.delivery.ackToken);
       if (raw && this.channel) {
         try { this.channel.ack(raw); } catch { /* ignore */ }
@@ -169,7 +169,7 @@ export class AmqpActor extends BrokerActor<AmqpOptionsType, AmqpCommand, AmqpPub
       }
       return;
     }
-    // nack
+    // negativeAcknowledgment
     const raw = this.pendingAcks.get(cmd.delivery.ackToken);
     if (raw && this.channel) {
       try { this.channel.nack(raw, false, cmd.requeue ?? true); } catch { /* ignore */ }

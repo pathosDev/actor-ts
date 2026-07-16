@@ -41,7 +41,7 @@ afterEach(() => { try { rmSync(dir, { recursive: true, force: true }); } catch {
 
 /* ----------------------- PersistentActor hooks --------------------------- */
 
-type Command = { kind: 'inc' } | { kind: 'state' };
+type Command = { kind: 'increment' } | { kind: 'state' };
 type Event = { kind: 'incremented' };
 type State = { count: number };
 
@@ -57,7 +57,7 @@ class CountingActor extends PersistentActor<Command, Event, State> {
   override snapshotPolicy() { return everyNEvents<State, Event>(1); }
   onEvent(s: State, _e: Event): State { return { count: s.count + 1 }; }
   async onCommand(_s: State, cmd: Command): Promise<void> {
-    if (cmd.kind === 'inc') {
+    if (cmd.kind === 'increment') {
       await this.persist({ kind: 'incremented' }, () => { /* no reply */ });
     }
   }
@@ -82,7 +82,7 @@ describe('PersistentActor — actor-level compression hook', () => {
     sys.extension(PersistenceExtensionId).setSnapshotStore(snapshots);
 
     const ref = sys.spawn(Props.create(() => new CountingActor('a', { algorithm: 'zstd' })), 'a');
-    ref.tell({ kind: 'inc' });
+    ref.tell({ kind: 'increment' });
     await sleep(40);
 
     expect(seen.length).toBeGreaterThan(0);
@@ -106,7 +106,7 @@ describe('PersistentActor — actor-level compression hook', () => {
 
     // Actor without hooks → plugin default applies.
     const ref = sys.spawn(Props.create(() => new CountingActor('a')), 'a');
-    ref.tell({ kind: 'inc' });
+    ref.tell({ kind: 'increment' });
     await sleep(40);
 
     expect(seen.length).toBeGreaterThan(0);
@@ -132,8 +132,8 @@ describe('PersistentActor — actor-level encryption hook', () => {
     sys.extension(PersistenceExtensionId).setSnapshotStore(snapshots);
 
     const ref = sys.spawn(Props.create(() => new CountingActor('a', { algorithm: 'none' }, enc)), 'a');
-    ref.tell({ kind: 'inc' });
-    ref.tell({ kind: 'inc' });
+    ref.tell({ kind: 'increment' });
+    ref.tell({ kind: 'increment' });
     await sleep(40);
     await sys.terminate();
 

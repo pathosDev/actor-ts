@@ -207,8 +207,8 @@ export class UserSessionActor extends Actor<SessionMessage> {
       .with({ kind: 'RoomsChanged' }, (m) => this.onRoomsChanged(m))
       .with({ kind: 'RoomAdded' },    (m) => this.onRoomAdded(m))
       .with({ kind: 'RoomRemoved' },  (m) => this.onRoomRemoved(m))
-      .with({ kind: 'DmBroadcast' },     (m) => this.onDirectMessageBroadcast(m))
-      .with({ kind: 'DmHistoryReply' },  (m) => this.onDirectMessageHistoryReply(m))
+      .with({ kind: 'DirectMessageBroadcast' },     (m) => this.onDirectMessageBroadcast(m))
+      .with({ kind: 'DirectMessageHistoryReply' },  (m) => this.onDirectMessageHistoryReply(m))
       .with({ kind: 'TypingBroadcast' }, (m) => this.onTypingBroadcast(m))
       .with({ kind: 'ReceiptsChanged' }, (m) => this.onReceiptsChanged(m))
       .exhaustive();
@@ -618,7 +618,7 @@ export class UserSessionActor extends Actor<SessionMessage> {
     try {
       const pairId = canonicalPairId(this.username!, other);
       this.deps.directMessageChannelRegion.tell({
-        kind: 'SendDm',
+        kind: 'SendDirectMessage',
         pairId,
         from: this.username!,
         text,
@@ -638,7 +638,7 @@ export class UserSessionActor extends Actor<SessionMessage> {
     try {
       const pairId = canonicalPairId(this.username!, other);
       this.deps.directMessageChannelRegion.tell({
-        kind: 'GetDmHistory',
+        kind: 'GetDirectMessageHistory',
         pairId,
         limit: 50,
         replyTo: this.self as ActorRef<DirectMessageHistoryReply>,

@@ -33,16 +33,16 @@ import * as fc from 'fast-check';
 /* --------------------------- counter model --------------------------- */
 
 type CounterCommand =
-  | { kind: 'inc'; by: number }
-  | { kind: 'dec'; by: number }
+  | { kind: 'increment'; by: number }
+  | { kind: 'decrement'; by: number }
   | { kind: 'reset' };
 
 interface CounterState { readonly value: number; readonly resets: number }
 
 const counterReducer = (third: CounterState, e: CounterCommand): CounterState => {
   switch (e.kind) {
-    case 'inc':   return { value: third.value + e.by, resets: third.resets };
-    case 'dec':   return { value: third.value - e.by, resets: third.resets };
+    case 'increment':   return { value: third.value + e.by, resets: third.resets };
+    case 'decrement':   return { value: third.value - e.by, resets: third.resets };
     case 'reset': return { value: 0, resets: third.resets + 1 };
   }
 };
@@ -50,8 +50,8 @@ const counterReducer = (third: CounterState, e: CounterCommand): CounterState =>
 const counterInitial: CounterState = { value: 0, resets: 0 };
 
 const counterEvent: fc.Arbitrary<CounterCommand> = fc.oneof(
-  fc.record({ kind: fc.constant('inc' as const), by: fc.integer({ min: 1, max: 100 }) }),
-  fc.record({ kind: fc.constant('dec' as const), by: fc.integer({ min: 1, max: 100 }) }),
+  fc.record({ kind: fc.constant('increment' as const), by: fc.integer({ min: 1, max: 100 }) }),
+  fc.record({ kind: fc.constant('decrement' as const), by: fc.integer({ min: 1, max: 100 }) }),
   fc.record({ kind: fc.constant('reset' as const) }),
 );
 

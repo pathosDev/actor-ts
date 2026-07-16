@@ -19,7 +19,7 @@ import type { ActorRef } from '../../../src/ActorRef.js';
 import { PersistentActor, everyNEvents } from '../../../src/persistence/PersistentActor.js';
 import type { SnapshotPolicy } from '../../../src/persistence/PersistentActor.js';
 
-export interface CounterIncrement { readonly kind: 'inc' }
+export interface CounterIncrement { readonly kind: 'increment' }
 export interface CounterGetState {
   readonly kind: 'get-state';
   readonly replyTo: ActorRef<CounterStateReply>;
@@ -55,7 +55,7 @@ export class PersistentCounter extends PersistentActor<CounterCommand, CounterEv
   }
 
   override onCommand(state: CounterState, cmd: CounterCommand): void {
-    if (cmd.kind === 'inc') {
+    if (cmd.kind === 'increment') {
       this.persist({ kind: 'incremented' }, () => {
         // No reply on inc — fire-and-forget.
       });

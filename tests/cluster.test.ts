@@ -38,7 +38,7 @@ interface NodeHandle {
   region: import('../src/index.js').ActorRef<Command>;
 }
 
-type Command = { id: string; op: 'inc' };
+type Command = { id: string; op: 'increment' };
 
 /** Spins up a cluster node backed by the shared InMemoryTransport registry. */
 async function startNode(
@@ -126,9 +126,9 @@ test('sharded entities route to exactly one node', async () => {
   // Send every entity id from every node; the entities should all land on
   // the SAME node each time (their deterministic owner).
   for (const id of entityIds) {
-    n1.region.tell({ id, op: 'inc' });
-    n2.region.tell({ id, op: 'inc' });
-    n3.region.tell({ id, op: 'inc' });
+    n1.region.tell({ id, op: 'increment' });
+    n2.region.tell({ id, op: 'increment' });
+    n3.region.tell({ id, op: 'increment' });
   }
   await sleep(500);
 
@@ -160,7 +160,7 @@ test('shards rebalance when a node leaves', async () => {
   expect(victim).toBeDefined();
 
   // Before: the entity lives on node 2.
-  n1.region.tell({ id: victim!, op: 'inc' });
+  n1.region.tell({ id: victim!, op: 'increment' });
   await sleep(150);
   expect(n2.counts.get(victim!) ?? 0).toBe(1);
   expect((n1.counts.get(victim!) ?? 0) + (n3.counts.get(victim!) ?? 0)).toBe(0);
@@ -174,8 +174,8 @@ test('shards rebalance when a node leaves', async () => {
   expect(n3.cluster.upMembers().length).toBe(2);
 
   // Send to the same entity from node 1; it should now live somewhere still alive.
-  n1.region.tell({ id: victim!, op: 'inc' });
-  n1.region.tell({ id: victim!, op: 'inc' });
+  n1.region.tell({ id: victim!, op: 'increment' });
+  n1.region.tell({ id: victim!, op: 'increment' });
   await sleep(300);
 
   const afterHits = (n1.counts.get(victim!) ?? 0) + (n3.counts.get(victim!) ?? 0);

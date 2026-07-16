@@ -45,17 +45,17 @@ class OrderProcessor extends Actor<JetStreamMessage> {
       order = JSON.parse(text);
     } catch {
       console.error(`bad payload at streamSeq=${m.streamSeq}, terming`);
-      this.js.tell({ kind: 'term', streamSeq: m.streamSeq, reason: 'malformed JSON' });
+      this.js.tell({ kind: 'terminate', streamSeq: m.streamSeq, reason: 'malformed JSON' });
       return;
     }
 
     try {
       await db_insertOrder(order);
       console.log(`processed ${order.orderId} (streamSeq=${m.streamSeq}, deliveries=${m.deliveries})`);
-      this.js.tell({ kind: 'ack', streamSeq: m.streamSeq });
+      this.js.tell({ kind: 'acknowledgment', streamSeq: m.streamSeq });
     } catch (e) {
       console.error(`db error at streamSeq=${m.streamSeq}, naking with backoff`);
-      this.js.tell({ kind: 'nak', streamSeq: m.streamSeq, delayMs: 5_000 });
+      this.js.tell({ kind: 'negativeAcknowledgment', streamSeq: m.streamSeq, delayMs: 5_000 });
     }
   }
 }
