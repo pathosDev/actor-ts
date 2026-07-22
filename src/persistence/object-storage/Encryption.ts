@@ -148,13 +148,13 @@ import type { SubKeyResolver } from './BodyCodec.js';
  * can pass-through to the no-encryption path.
  */
 export async function activeEncryptKey(
-  encryption: EncryptionConfig, pid: string,
+  encryption: EncryptionConfig, persistenceId: string,
 ): Promise<{ subKey: Uint8Array; keyVersion: number } | undefined> {
   if (encryption.mode !== 'client-aes256-gcm') return undefined;
   if ('masterKeys' in encryption) {
     const active = encryption.masterKeys.active;
     return {
-      subKey: await deriveSubkey(active.key, pid, encryption.info),
+      subKey: await deriveSubkey(active.key, persistenceId, encryption.info),
       keyVersion: active.version,
     };
   }
@@ -162,7 +162,7 @@ export async function activeEncryptKey(
   // NOT set FLAG_KEY_VERSIONED at the codec layer for this path so old
   // readers (pre-#8) keep working unchanged.
   return {
-    subKey: await deriveSubkey(encryption.masterKey, pid, encryption.info),
+    subKey: await deriveSubkey(encryption.masterKey, persistenceId, encryption.info),
     keyVersion: 0,
   };
 }
@@ -177,17 +177,17 @@ export async function activeEncryptKey(
  * retired` looking for a matching version.
  */
 export function resolveDecryptSubkey(
-  encryption: EncryptionConfig, pid: string,
+  encryption: EncryptionConfig, persistenceId: string,
 ): SubKeyResolver | undefined {
   if (encryption.mode !== 'client-aes256-gcm') return undefined;
   if ('masterKeys' in encryption) {
     const ring = encryption.masterKeys;
     return async (version: number): Promise<Uint8Array | null> => {
       if (ring.active.version === version) {
-        return deriveSubkey(ring.active.key, pid, encryption.info);
+        return deriveSubkey(ring.active.key, persistenceId, encryption.info);
       }
       const retired = ring.retired?.find((r) => r.version === version);
-      if (retired) return deriveSubkey(retired.key, pid, encryption.info);
+      if (retired) return deriveSubkey(retired.key, persistenceId, encryption.info);
       return null;
     };
   }
@@ -195,7 +195,7 @@ export function resolveDecryptSubkey(
   // Derive once and return the same subkey for any version request.
   const masterKey = encryption.masterKey;
   return async (_version: number): Promise<Uint8Array> =>
-    deriveSubkey(masterKey, pid, encryption.info);
+    deriveSubkey(masterKey, persistenceId, encryption.info);
 }
 
 /**

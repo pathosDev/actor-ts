@@ -38,10 +38,10 @@ export class GCounterMap<K> implements Crdt<GCounterMap<K>> {
     private readonly identity: (k: K) => string,
   ) {}
 
-  static empty<K>(opts: GCounterMapOptions<K> = {}): GCounterMap<K> {
+  static empty<K>(options: GCounterMapOptions<K> = {}): GCounterMap<K> {
     return new GCounterMap<K>(
       new Map(),
-      opts.identity ?? (defaultIdentity as (k: K) => string),
+      options.identity ?? (defaultIdentity as (k: K) => string),
     );
   }
 
@@ -107,12 +107,12 @@ export class GCounterMap<K> implements Crdt<GCounterMap<K>> {
   }
 
   static fromJSON<K>(
-    json: GCounterMapJson, opts: GCounterMapOptions<K> = {},
+    json: GCounterMapJson, options: GCounterMapOptions<K> = {},
   ): GCounterMap<K> {
     if (json.kind !== 'GCounterMap') {
       throw new Error(`GCounterMap.fromJSON: unexpected kind ${json.kind}`);
     }
-    const identity = opts.identity ?? (defaultIdentity as (k: K) => string);
+    const identity = options.identity ?? (defaultIdentity as (k: K) => string);
     const entries = new Map<string, { key: K; counter: GCounter }>();
     for (const [id, counterJson] of Object.entries(json.counters)) {
       const raw = json.keyValues?.[id];

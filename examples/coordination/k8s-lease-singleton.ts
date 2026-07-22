@@ -55,8 +55,8 @@ class CronActor extends Actor<{ kind: 'tick' }> {
     if (this.timer) clearInterval(this.timer);
     console.log(`[${POD_NAME}] CronActor STOPPED — singleton released or lost`);
   }
-  override onReceive(msg: { kind: 'tick' }): void {
-    if (msg.kind === 'tick') {
+  override onReceive(message: { kind: 'tick' }): void {
+    if (message.kind === 'tick') {
       this.ticks++;
       console.log(`[${POD_NAME}] tick #${this.ticks}`);
     }

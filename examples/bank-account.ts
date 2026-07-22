@@ -9,33 +9,43 @@
 import { match } from 'ts-pattern';
 import { Actor, ActorSystem, Props } from '../src/index.js';
 
-type Command =
-  | { kind: 'deposit'; amount: number }
-  | { kind: 'withdraw'; amount: number }
-  | { kind: 'balance' };
+type DepositCommand = { kind: 'deposit'; amount: number };
+type WithdrawCommand = { kind: 'withdraw'; amount: number };
+type BalanceCommand = { kind: 'balance' };
+type Command = DepositCommand | WithdrawCommand | BalanceCommand;
 
 class AccountActor extends Actor<Command> {
   private balance = 0;
 
-  override onReceive(cmd: Command): void {
-    const reply = (msg: unknown): void => this.sender.forEach((s) => s.tell(msg));
-
-    match(cmd)
-      .with({ kind: 'deposit' }, (c) => {
-        if (c.amount <= 0) { reply(new Error(`deposit must be > 0, got ${c.amount}`)); return; }
-        this.balance += c.amount;
-        reply({ balance: this.balance });
-      })
-      .with({ kind: 'withdraw' }, (c) => {
-        if (c.amount > this.balance) {
-          reply(new Error(`insufficient funds: have ${this.balance}, need ${c.amount}`));
-          return;
-        }
-        this.balance -= c.amount;
-        reply({ balance: this.balance });
-      })
-      .with({ kind: 'balance' }, () => reply({ balance: this.balance }))
+  override onReceive(command: Command): void {
+    match(command)
+      .with({ kind: 'deposit' }, (c) => this.onDeposit(c))
+      .with({ kind: 'withdraw' }, (c) => this.onWithdraw(c))
+      .with({ kind: 'balance' }, () => this.onBalance())
       .exhaustive();
+  }
+
+  private reply(message: unknown): void {
+    this.sender.forEach((s) => s.tell(message));
+  }
+
+  private onDeposit(c: DepositCommand): void {
+    if (c.amount <= 0) { this.reply(new Error(`deposit must be > 0, got ${c.amount}`)); return; }
+    this.balance += c.amount;
+    this.reply({ balance: this.balance });
+  }
+
+  private onWithdraw(c: WithdrawCommand): void {
+    if (c.amount > this.balance) {
+      this.reply(new Error(`insufficient funds: have ${this.balance}, need ${c.amount}`));
+      return;
+    }
+    this.balance -= c.amount;
+    this.reply({ balance: this.balance });
+  }
+
+  private onBalance(): void {
+    this.reply({ balance: this.balance });
   }
 }
 

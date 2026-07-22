@@ -122,13 +122,13 @@ describe('ObjectStorageDurableStateStore — prefix and resolvers', () => {
   test('per-pid compression resolver is honoured', async () => {
     const seen = new Map<string, string | undefined>();
     const wrapping: typeof backend = Object.assign(Object.create(Object.getPrototypeOf(backend)), backend);
-    wrapping.put = async (key, body, opts) => {
-      seen.set(key, opts?.contentEncoding);
-      return backend.put(key, body, opts);
+    wrapping.put = async (key, body, options) => {
+      seen.set(key, options?.contentEncoding);
+      return backend.put(key, body, options);
     };
     const storeOptions = ObjectStorageDurableStateStoreOptions.create()
       .withBackend(wrapping)
-      .withCompression((pid) => pid.startsWith('big-') ? { algorithm: 'zstd' } : { algorithm: 'gzip' });
+      .withCompression((persistenceId) => persistenceId.startsWith('big-') ? { algorithm: 'zstd' } : { algorithm: 'gzip' });
     const store = new ObjectStorageDurableStateStore(storeOptions);
     await store.upsert('big-payload', 0, { x: 'x'.repeat(200) });
     await store.upsert('small',       0, { x: 'tiny' });

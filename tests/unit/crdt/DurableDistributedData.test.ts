@@ -50,7 +50,7 @@ interface NodeSetup {
 }
 
 async function startNode(
-  systemName: string, port: number, opts: {
+  systemName: string, port: number, options: {
     seeds?: string[];
   } = {},
 ): Promise<NodeSetup> {
@@ -64,7 +64,7 @@ async function startNode(
     .withTransport(new InMemoryTransport(new NodeAddress(systemName, 'h', port)))
     .withFailureDetector({ heartbeatIntervalMs: 50, unreachableAfterMs: 200, downAfterMs: 400 })
     .withGossipIntervalMs(80);
-  if (opts.seeds !== undefined) clusterOptions.withSeeds(opts.seeds);
+  if (options.seeds !== undefined) clusterOptions.withSeeds(options.seeds);
   const cluster = await Cluster.join(sys, clusterOptions);
   return { sys, cluster };
 }

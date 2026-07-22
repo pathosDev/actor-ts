@@ -101,18 +101,18 @@ export class NatsActor extends BrokerActor<NatsOptionsType, NatsCommand, NatsPub
     this.nc.publish(publish.subject, bytes, publish.replyTo ? { reply: publish.replyTo } : undefined);
   }
 
-  override onReceive(cmd: NatsCommand): void {
-    if (cmd.kind === 'publish') {
-      this.enqueueOutbound(cmd.publish);
-    } else if (cmd.kind === 'subscribe') {
+  override onReceive(command: NatsCommand): void {
+    if (command.kind === 'publish') {
+      this.enqueueOutbound(command.publish);
+    } else if (command.kind === 'subscribe') {
       if (this.connectionState === 'connected' && this.nc) {
-        this.subscribeOnConnection(cmd.subject, cmd.target);
+        this.subscribeOnConnection(command.subject, command.target);
       }
     } else {
-      const existing = this.subs.get(cmd.subject);
+      const existing = this.subs.get(command.subject);
       if (existing) {
         try { existing.unsubscribe(); } catch { /* ignore */ }
-        this.subs.delete(cmd.subject);
+        this.subs.delete(command.subject);
       }
     }
   }
@@ -123,15 +123,15 @@ export class NatsActor extends BrokerActor<NatsOptionsType, NatsCommand, NatsPub
     if (!this.nc) return;
     if (this.subs.has(subject)) return;
     const sub = this.nc.subscribe(subject, {
-      callback: (err, msg) => {
+      callback: (err, message) => {
         if (err) {
           this.log.warn(`NatsActor: subscription error on '${subject}': ${err.message}`);
           return;
         }
         target.tell({
-          subject: msg.subject,
-          payload: msg.data,
-          replyTo: msg.reply ?? '',
+          subject: message.subject,
+          payload: message.data,
+          replyTo: message.reply ?? '',
         });
       },
     });
@@ -152,14 +152,14 @@ interface NatsRawMessage {
 }
 
 interface NatsConnectionLike {
-  publish(subject: string, payload: Uint8Array, opts?: { reply?: string }): void;
-  subscribe(subject: string, opts: { callback: (err: Error | null, msg: NatsRawMessage) => void }): NatsSubscriptionLike;
+  publish(subject: string, payload: Uint8Array, options?: { reply?: string }): void;
+  subscribe(subject: string, options: { callback: (err: Error | null, message: NatsRawMessage) => void }): NatsSubscriptionLike;
   drain(): Promise<void>;
   closed(): Promise<Error | undefined>;
 }
 
 interface NatsModule {
-  connect(opts: {
+  connect(options: {
     servers: string[];
     token?: string;
     user?: string;

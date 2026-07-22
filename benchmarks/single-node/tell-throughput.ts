@@ -9,20 +9,20 @@
 import { Actor, ActorSystem, ActorSystemOptions, LogLevel, NoopLogger, Props, ask } from '../../src/index.js';
 import { runGroup } from '../lib/harness.js';
 
-type Msg = { kind: 'inc' } | { kind: 'get' };
+type Message = { kind: 'increment' } | { kind: 'get' };
 
-class Counter extends Actor<Msg> {
+class Counter extends Actor<Message> {
   private n = 0;
-  override onReceive(m: Msg): void {
-    if (m.kind === 'inc') this.n++;
+  override onReceive(m: Message): void {
+    if (m.kind === 'increment') this.n++;
     else this.sender.forEach((s) => s.tell(this.n));
   }
 }
 
 async function drain(system: ActorSystem, batch: number): Promise<void> {
   const ref = system.spawnAnonymous(Props.create(() => new Counter()));
-  for (let i = 0; i < batch; i++) ref.tell({ kind: 'inc' });
-  await ask<Msg, number>(ref, { kind: 'get' }, 30_000);
+  for (let i = 0; i < batch; i++) ref.tell({ kind: 'increment' });
+  await ask<Message, number>(ref, { kind: 'get' }, 30_000);
   ref.stop();
 }
 

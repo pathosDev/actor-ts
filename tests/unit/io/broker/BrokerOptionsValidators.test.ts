@@ -116,12 +116,12 @@ describe('JetStreamOptionsValidator', () => {
     expect(() => check({ servers: [] })).toThrow(OptionsError);
   });
 
-  test('rejects a non-positive ackTimeout', () => {
-    expect(() => check({ servers: 'nats://h:4222', ackTimeout: 0 })).toThrow(/ackTimeout/);
+  test('rejects a non-positive acknowledgmentTimeout', () => {
+    expect(() => check({ servers: 'nats://h:4222', acknowledgmentTimeout: 0 })).toThrow(/acknowledgmentTimeout/);
   });
 
   test('accepts a valid configuration', () => {
-    expect(() => check({ servers: 'nats://h:4222', ackTimeout: 30_000 })).not.toThrow();
+    expect(() => check({ servers: 'nats://h:4222', acknowledgmentTimeout: 30_000 })).not.toThrow();
   });
 });
 

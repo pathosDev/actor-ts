@@ -39,13 +39,13 @@ export class InMemoryOffsetStore implements OffsetStore {
   private readonly seq = new Map<string, Map<string, number>>();
   private readonly off = new Map<string, Map<string, Offset>>();
 
-  async loadSequence(projection: string, pid: string): Promise<number> {
-    return this.seq.get(projection)?.get(pid) ?? 0;
+  async loadSequence(projection: string, persistenceId: string): Promise<number> {
+    return this.seq.get(projection)?.get(persistenceId) ?? 0;
   }
-  async saveSequence(projection: string, pid: string, seqNr: number): Promise<void> {
+  async saveSequence(projection: string, persistenceId: string, seqNr: number): Promise<void> {
     let inner = this.seq.get(projection);
     if (!inner) { inner = new Map(); this.seq.set(projection, inner); }
-    inner.set(pid, seqNr);
+    inner.set(persistenceId, seqNr);
   }
 
   async loadOffset(projection: string, tag: string): Promise<Offset> {
@@ -85,12 +85,12 @@ export class DurableStateOffsetStore implements OffsetStore {
 
   constructor(private readonly store: DurableStateStore) {}
 
-  async loadSequence(projection: string, pid: string): Promise<number> {
-    const rec = await this.load<{ value: number }>(this.seqKey(projection, pid));
+  async loadSequence(projection: string, persistenceId: string): Promise<number> {
+    const rec = await this.load<{ value: number }>(this.seqKey(projection, persistenceId));
     return rec?.value ?? 0;
   }
-  async saveSequence(projection: string, pid: string, seqNr: number): Promise<void> {
-    await this.save(this.seqKey(projection, pid), { value: seqNr });
+  async saveSequence(projection: string, persistenceId: string, seqNr: number): Promise<void> {
+    await this.save(this.seqKey(projection, persistenceId), { value: seqNr });
   }
 
   async loadOffset(projection: string, tag: string): Promise<Offset> {
@@ -112,18 +112,18 @@ export class DurableStateOffsetStore implements OffsetStore {
 
   /* ------------------------------ internals ----------------------------- */
 
-  private seqKey(projection: string, pid: string): string {
-    return `${projection}|seq|${pid}`;
+  private seqKey(projection: string, persistenceId: string): string {
+    return `${projection}|seq|${persistenceId}`;
   }
   private offKey(projection: string, tag: string): string {
     return `${projection}|tag|${tag}`;
   }
 
   private async load<T>(key: string): Promise<T | null> {
-    const opt: Option<{ revision: number; state: T }> = await this.store.load<T>(key);
-    if (opt.isNone()) return null;
-    this.cache.set(key, { revision: opt.value.revision });
-    return opt.value.state;
+    const option: Option<{ revision: number; state: T }> = await this.store.load<T>(key);
+    if (option.isNone()) return null;
+    this.cache.set(key, { revision: option.value.revision });
+    return option.value.state;
   }
 
   private async save<T>(key: string, state: T): Promise<void> {

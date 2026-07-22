@@ -22,7 +22,7 @@ const WAKEUP: Wakeup = { t: 'sharded-daemon.wakeup' };
 export interface ShardedDaemonProcessHandle<T> {
   /**
    * Sharded region ref.  Messages sent here must carry a `{index, body}`
-   * envelope — use `tell(i, msg)` on the handle instead.
+   * envelope — use `tell(i, message)` on the handle instead.
    */
   readonly region: ActorRef<DaemonEnvelope<T>>;
 
@@ -84,6 +84,7 @@ export class ShardedDaemonProcess {
     // respawn of entities that lived on a departed node is a function of
     // ShardCoordinator's rebalance + rememberEntities path; this hook just
     // makes sure the SDP-owned messages keep flowing.
+    // static init has no instance to delegate to (closes over local wakeAll) — arms stay inline
     const unsubscribe = cluster.subscribe((evt) =>
       match(evt)
         .with(
@@ -99,7 +100,7 @@ export class ShardedDaemonProcess {
     const livenessIntervalMs = resolvedOptions.livenessIntervalMs ?? 30_000;
     let livenessTimer: Cancellable | null = null;
     if (livenessIntervalMs > 0) {
-      livenessTimer = system.scheduler.scheduleAtFixedRateFn(
+      livenessTimer = system.scheduler.scheduleAtFixedRateFunction(
         livenessIntervalMs, livenessIntervalMs, wakeAll,
       );
     }
@@ -136,11 +137,11 @@ class DaemonHost<T> extends Actor<DaemonEnvelope<T>> {
     this.inner = this.context.spawn(props, 'daemon');
   }
 
-  override onReceive(msg: DaemonEnvelope<T> | T | Wakeup): void {
+  override onReceive(message: DaemonEnvelope<T> | T | Wakeup): void {
     // ShardRegion uses `extractEntityMessage` to unwrap the envelope before
-    // delivery, so `msg` here is actually the `body` field of the envelope.
-    if (isWakeup(msg)) return; // already awake — preStart ran
-    this.inner?.tell(msg as T);
+    // delivery, so `message` here is actually the `body` field of the envelope.
+    if (isWakeup(message)) return; // already awake — preStart ran
+    this.inner?.tell(message as T);
   }
 }
 

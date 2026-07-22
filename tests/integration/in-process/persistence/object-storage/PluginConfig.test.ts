@@ -14,7 +14,7 @@ describe('resolveCompression / resolveEncryption', () => {
 
   test('resolver result is preferred over the fallback', () => {
     const result = resolveCompression(
-      (pid) => (pid.startsWith('big-') ? { algorithm: 'zstd' } : undefined),
+      (persistenceId) => (persistenceId.startsWith('big-') ? { algorithm: 'zstd' } : undefined),
       'big-1',
       { algorithm: 'gzip' },
     );
@@ -33,7 +33,7 @@ describe('resolveCompression / resolveEncryption', () => {
   test('encryption resolver returning a config is honoured', () => {
     const masterKey = new Uint8Array(32);
     const result = resolveEncryption(
-      (pid) => (pid === 'pii' ? { mode: 'client-aes256-gcm', masterKey } : undefined),
+      (persistenceId) => (persistenceId === 'pii' ? { mode: 'client-aes256-gcm', masterKey } : undefined),
       'pii',
       { mode: 'none' },
     );

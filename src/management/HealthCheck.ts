@@ -5,7 +5,7 @@ export interface HealthCheckResult {
   readonly detail?: string;
 }
 
-export type HealthCheckFn = () => Promise<HealthCheckResult> | HealthCheckResult;
+export type HealthCheckFunction = () => Promise<HealthCheckResult> | HealthCheckResult;
 
 /**
  * Thin registry for liveness / readiness style checks.  Components
@@ -13,10 +13,10 @@ export type HealthCheckFn = () => Promise<HealthCheckResult> | HealthCheckResult
  * the management endpoints aggregate them and surface the overall status.
  */
 export class HealthCheckRegistry {
-  private readonly liveness: HealthCheckFn[] = [];
-  private readonly readiness: HealthCheckFn[] = [];
+  private readonly liveness: HealthCheckFunction[] = [];
+  private readonly readiness: HealthCheckFunction[] = [];
 
-  addLiveness(fn: HealthCheckFn): () => void {
+  addLiveness(fn: HealthCheckFunction): () => void {
     this.liveness.push(fn);
     return () => {
       const i = this.liveness.indexOf(fn);
@@ -24,7 +24,7 @@ export class HealthCheckRegistry {
     };
   }
 
-  addReadiness(fn: HealthCheckFn): () => void {
+  addReadiness(fn: HealthCheckFunction): () => void {
     this.readiness.push(fn);
     return () => {
       const i = this.readiness.indexOf(fn);

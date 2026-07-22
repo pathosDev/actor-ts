@@ -44,11 +44,11 @@ export interface WaitForPortOptions {
 export function waitForPort(
   host: string,
   port: number,
-  opts: WaitForPortOptions = {},
+  options: WaitForPortOptions = {},
 ): Promise<void> {
-  const deadlineMs = opts.deadlineMs ?? 30_000;
-  const intervalMs = opts.intervalMs ?? 250;
-  const description = opts.description ?? `${host}:${port}`;
+  const deadlineMs = options.deadlineMs ?? 30_000;
+  const intervalMs = options.intervalMs ?? 250;
+  const description = options.description ?? `${host}:${port}`;
   const start = Date.now();
   const deadline = start + deadlineMs;
 
@@ -94,18 +94,18 @@ export function waitForPort(
  */
 export async function waitForHttp(
   url: string,
-  opts: WaitForPortOptions = {},
+  options: WaitForPortOptions = {},
 ): Promise<void> {
-  const deadlineMs = opts.deadlineMs ?? 30_000;
-  const intervalMs = opts.intervalMs ?? 250;
-  const description = opts.description ?? url;
+  const deadlineMs = options.deadlineMs ?? 30_000;
+  const intervalMs = options.intervalMs ?? 250;
+  const description = options.description ?? url;
   const start = Date.now();
   const deadline = start + deadlineMs;
 
   while (Date.now() < deadline) {
     try {
-      const res = await fetch(url, { signal: AbortSignal.timeout(2_000) });
-      if (res.status < 400) return;
+      const response = await fetch(url, { signal: AbortSignal.timeout(2_000) });
+      if (response.status < 400) return;
     } catch {
       // Swallow — broker not ready yet.  Retry below.
     }

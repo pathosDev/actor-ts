@@ -9,7 +9,7 @@ mailbox, same dispatcher, same supervisor tree — but its
 `onReceive` delegates into whichever Behavior is currently active.
 
 You don't construct `TypedActor` directly.  The spawn methods
-([`system.spawnTyped` / `ctx.spawnTyped`](/typed/spawn-typed/) and
+([`system.spawnTyped` / `context.spawnTyped`](/typed/spawn-typed/) and
 [`typedProps`](/typed/spawn-typed/)) wrap it for you.  But knowing
 how it works clarifies the typed-DSL semantics — especially what
 "the runtime interprets the Behavior" actually means.
@@ -19,8 +19,8 @@ how it works clarifies the typed-DSL semantics — especially what
 ```ts
 import { ActorSystem, Behaviors } from 'actor-ts';
 
-const myBehavior = Behaviors.receive<Message>((ctx, msg) => {
-  // ... handle msg
+const myBehavior = Behaviors.receive<Message>((context, message) => {
+  // ... handle message
   return Behaviors.same;
 });
 
@@ -49,8 +49,8 @@ Composed behaviors unwrap one layer at a time.  Given:
 ```ts
 const b = Behaviors.supervise(
   Behaviors.withTimers((timers) =>
-    Behaviors.setup((ctx) =>
-      Behaviors.receive((ctx, msg) => Behaviors.same))))
+    Behaviors.setup((context) =>
+      Behaviors.receive((context, message) => Behaviors.same))))
   .onFailure(strategy);
 ```
 
@@ -59,7 +59,7 @@ The resolver walks:
 ```
 supervise(...)        ← capture supervise strategy, recurse into child
   withTimers(...)     ← capture timer scheduler, recurse into factory's return
-    setup(...)        ← run factory(ctx), recurse into return
+    setup(...)        ← run factory(context), recurse into return
       receive(...)    ← leaf — store as `current`
 ```
 
@@ -78,9 +78,9 @@ forever.
 ## Transitions
 
 ```ts
-Behaviors.receive<Message>((ctx, msg) => {
-  if (msg.kind === 'start') return runningBehavior;
-  if (msg.kind === 'stop')  return Behaviors.stopped;
+Behaviors.receive<Message>((context, message) => {
+  if (message.kind === 'start') return runningBehavior;
+  if (message.kind === 'stop')  return Behaviors.stopped;
   return Behaviors.same;
 });
 ```
@@ -102,11 +102,11 @@ Three outcomes:
 
 ```ts
 Behaviors.receiveWithSignal<Message>(
-  (ctx, msg) => Behaviors.same,
-  (ctx, signal) => {
-    if (signal.kind === 'post-stop') ctx.log.info('cleaning up');
-    if (signal.kind === 'pre-restart') ctx.log.warn(`restarting: ${signal.reason}`);
-    if (signal.kind === 'terminated') ctx.log.info(`${signal.ref.path} stopped`);
+  (context, message) => Behaviors.same,
+  (context, signal) => {
+    if (signal.kind === 'post-stop') context.log.info('cleaning up');
+    if (signal.kind === 'pre-restart') context.log.warn(`restarting: ${signal.reason}`);
+    if (signal.kind === 'terminated') context.log.info(`${signal.ref.path} stopped`);
     return Behaviors.same;
   },
 );
@@ -119,7 +119,7 @@ The signal handler is invoked from the framework's `postStop` /
 | --- | --- |
 | `post-stop` | The actor is stopping (any reason: PoisonPill, `Behaviors.stopped`, supervisor Stop). |
 | `pre-restart` | A failure is about to be restarted.  `signal.reason` is the error. |
-| `terminated` | A watched actor (`ctx.watch(ref)`) stopped.  `signal.ref` is its ref. |
+| `terminated` | A watched actor (`context.watch(ref)`) stopped.  `signal.ref` is its ref. |
 
 The return value works the same as the receive handler — `same` to
 keep the current behavior, a new behavior to swap.
@@ -134,10 +134,10 @@ untyped, a few details surface:
   `Behaviors.supervise(...).onFailure(strategy)`, that strategy
   handles the error.  If not, it propagates to the *parent's*
   supervisor — same as untyped.
-- **`ctx.spawn(behavior)` returns a fully-typed `ActorRef<U>`.**
+- **`context.spawn(behavior)` returns a fully-typed `ActorRef<U>`.**
   The runtime wraps the child in another `TypedActor<U>`.  This
   is the cast-free child spawning the typed form provides.
-- **Watching is one-way.**  A typed actor can `ctx.watch(ref)` an
+- **Watching is one-way.**  A typed actor can `context.watch(ref)` an
   untyped ref or vice versa.  The terminated signal arrives at
   the typed side via the `terminated` signal; at the untyped side
   via a `Terminated` message.
@@ -165,7 +165,7 @@ import { Aside } from '@astrojs/starlight/components';
   ```
   Like any `Actor`, the typed runtime needs a fresh instance on
   every restart.  The spawn methods (`system.spawnTyped`,
-  `ctx.spawnTyped`) and the `typedProps` helper close over the
+  `context.spawnTyped`) and the `typedProps` helper close over the
   Behavior value and produce a new `TypedActor` each time the
   Props factory runs.  Don't shortcut.
 </Aside>

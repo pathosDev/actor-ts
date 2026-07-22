@@ -31,7 +31,7 @@ export interface ClusterRouterOptionsType<TMessage> {
  * Fluent builder for {@link ClusterRouterOptionsType}:
  *
  *     ClusterRouter.props(
- *       ClusterRouterOptions.create<Cmd>()
+ *       ClusterRouterOptions.create<Command>()
  *         .withCluster(cluster)
  *         .withRouterType('consistent-hashing')
  *         .withRouteePath('/user/worker')

@@ -8,8 +8,8 @@ import { Actor, ActorSystem, Props } from '../src/index.js';
 class TickActor extends Actor<'tick' | 'once'> {
   private count = 0;
 
-  override onReceive(msg: 'tick' | 'once'): void {
-    if (msg === 'once') {
+  override onReceive(message: 'tick' | 'once'): void {
+    if (message === 'once') {
       console.log('[once] fired');
       return;
     }

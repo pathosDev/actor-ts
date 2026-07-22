@@ -58,17 +58,17 @@ export class SseActor extends BrokerActor<SseOptionsType, SseCommand, never> {
 
   protected async connectImplementation(): Promise<void> {
     this.aborter = new AbortController();
-    const fetchFn = await fetchLazy.get();
-    const res = await fetchFn(this.options.url!, {
+    const fetchFunction = await fetchLazy.get();
+    const response = await fetchFunction(this.options.url!, {
       method: 'GET',
       headers: { Accept: 'text/event-stream', ...(this.options.headers ?? {}) },
       signal: this.aborter.signal,
     });
-    if (!res.ok) throw new Error(`SSE connect failed: HTTP ${res.status}`);
-    if (!res.body) throw new Error('SSE connect: no response body');
+    if (!response.ok) throw new Error(`SSE connect failed: HTTP ${response.status}`);
+    if (!response.body) throw new Error('SSE connect: no response body');
 
     this.streamRunning = true;
-    void this.consume(res.body);
+    void this.consume(response.body);
   }
 
   protected async disconnectImplementation(): Promise<void> {
@@ -81,7 +81,7 @@ export class SseActor extends BrokerActor<SseOptionsType, SseCommand, never> {
     throw new Error('SseActor is read-only');
   }
 
-  override onReceive(_cmd: SseCommand): void { /* no commands */ }
+  override onReceive(_command: SseCommand): void { /* no commands */ }
 
   /* ----------------------------- internals ----------------------------- */
 
@@ -105,13 +105,13 @@ export class SseActor extends BrokerActor<SseOptionsType, SseCommand, never> {
           );
           return;
         }
-        let idx = buffer.indexOf('\n\n');
-        while (idx >= 0) {
-          const block = buffer.slice(0, idx);
-          buffer = buffer.slice(idx + 2);
+        let index = buffer.indexOf('\n\n');
+        while (index >= 0) {
+          const block = buffer.slice(0, index);
+          buffer = buffer.slice(index + 2);
           const ev = parseEventBlock(block);
           if (ev && this.options.target) this.options.target.tell(ev);
-          idx = buffer.indexOf('\n\n');
+          index = buffer.indexOf('\n\n');
         }
       }
     } catch (e) {
@@ -148,7 +148,7 @@ function parseEventBlock(block: string): SseEvent | null {
 }
 
 interface FetchModule {
-  (url: string, opts: { method: string; headers: Record<string, string>; signal?: AbortSignal }): Promise<{
+  (url: string, options: { method: string; headers: Record<string, string>; signal?: AbortSignal }): Promise<{
     ok: boolean;
     status: number;
     body: ReadableStream<Uint8Array> | null;

@@ -93,8 +93,8 @@ Persistence-ID (aus dem Journal bezogen) und nutzt intern
 ```ts
 import { migrateSnapshotStore } from 'actor-ts';
 
-const pids   = await journal.persistenceIds();
-const result = await migrateSnapshotStore(store, pids, (s) => 'BankAccount.State');
+const persistenceIds   = await journal.persistenceIds();
+const result = await migrateSnapshotStore(store, persistenceIds, (s) => 'BankAccount.State');
 ```
 
 ## Nach der Migration
@@ -104,7 +104,7 @@ v1-Envelopes.  Der Actor nutzt einen **normalen Adapter** — es gibt
 keinen speziellen „Legacy-Wrapping"-Adapter zur Read-Time:
 
 ```ts
-class Account extends PersistentActor<Cmd, EventV2, State> {
+class Account extends PersistentActor<Command, EventV2, State> {
   override eventAdapter(): EventAdapter<EventV2> {
     return defaultsAdapter<EventV2>({
       manifest:       'BankAccount.deposited',
@@ -130,12 +130,12 @@ function wrapStateAsEnvelope<S>(
 ): JournalEnvelope<S>;
 
 function migrateInMemoryJournal<E>(
-  journal: Journal, manifestFor: (e: E) => string, opts?: { version?: number },
+  journal: Journal, manifestFor: (e: E) => string, options?: { version?: number },
 ): Promise<MigrationResult>;
 
 function migrateSnapshotStore<S>(
-  store: SnapshotStore, pids: ReadonlyArray<string>,
-  manifestFor: (s: S) => string, opts?: { version?: number },
+  store: SnapshotStore, persistenceIds: ReadonlyArray<string>,
+  manifestFor: (s: S) => string, options?: { version?: number },
 ): Promise<MigrationResult>;
 
 interface MigrationResult {

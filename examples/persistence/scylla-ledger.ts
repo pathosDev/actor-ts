@@ -27,18 +27,18 @@ import {
   registerCassandraPlugins,
 } from '../../src/index.js';
 
-type Cmd =
-  | { kind: 'deposit'; amount: number }
-  | { kind: 'withdraw'; amount: number }
-  | { kind: 'balance' };
+type DepositCommand = { kind: 'deposit'; amount: number };
+type WithdrawCommand = { kind: 'withdraw'; amount: number };
+type BalanceCommand = { kind: 'balance' };
+type Command = DepositCommand | WithdrawCommand | BalanceCommand;
 
-type Event =
-  | { kind: 'deposited'; amount: number }
-  | { kind: 'withdrawn'; amount: number };
+type DepositedEvent = { kind: 'deposited'; amount: number };
+type WithdrawnEvent = { kind: 'withdrawn'; amount: number };
+type Event = DepositedEvent | WithdrawnEvent;
 
 interface State { readonly balance: number; }
 
-class Account extends PersistentActor<Cmd, Event, State> {
+class Account extends PersistentActor<Command, Event, State> {
   override readonly persistenceId: string;
   override readonly snapshotPolicy = everyNEvents<State, Event>(50);
 
@@ -51,23 +51,42 @@ class Account extends PersistentActor<Cmd, Event, State> {
 
   override onEvent(state: State, e: Event): State {
     return match(e)
-      .with({ kind: 'deposited' }, (d) => ({ balance: state.balance + d.amount }))
-      .with({ kind: 'withdrawn' }, (d) => ({ balance: state.balance - d.amount }))
+      .with({ kind: 'deposited' }, (d) => this.onDeposited(state, d))
+      .with({ kind: 'withdrawn' }, (d) => this.onWithdrawn(state, d))
       .exhaustive();
   }
 
-  override async onCommand(state: State, cmd: Cmd): Promise<void> {
-    const reply = (msg: unknown): void => this.sender.forEach((s) => s.tell(msg));
-    await match(cmd)
-      .with({ kind: 'balance' }, async () => reply(state.balance))
-      .with({ kind: 'withdraw' }, async (c) => {
-        if (state.balance < c.amount) { reply({ error: 'insufficient funds' }); return; }
-        await this.persist({ kind: 'withdrawn', amount: c.amount }, (s) => reply(s.balance));
-      })
-      .with({ kind: 'deposit' }, async (c) => {
-        await this.persist({ kind: 'deposited', amount: c.amount }, (s) => reply(s.balance));
-      })
+  private onDeposited(state: State, d: DepositedEvent): State {
+    return { balance: state.balance + d.amount };
+  }
+
+  private onWithdrawn(state: State, d: WithdrawnEvent): State {
+    return { balance: state.balance - d.amount };
+  }
+
+  override async onCommand(state: State, command: Command): Promise<void> {
+    await match(command)
+      .with({ kind: 'balance' }, () => this.onBalance(state))
+      .with({ kind: 'withdraw' }, (c) => this.onWithdraw(state, c))
+      .with({ kind: 'deposit' }, (c) => this.onDeposit(c))
       .exhaustive();
+  }
+
+  private reply(message: unknown): void {
+    this.sender.forEach((s) => s.tell(message));
+  }
+
+  private async onBalance(state: State): Promise<void> {
+    this.reply(state.balance);
+  }
+
+  private async onWithdraw(state: State, c: WithdrawCommand): Promise<void> {
+    if (state.balance < c.amount) { this.reply({ error: 'insufficient funds' }); return; }
+    await this.persist({ kind: 'withdrawn', amount: c.amount }, (s) => this.reply(s.balance));
+  }
+
+  private async onDeposit(c: DepositCommand): Promise<void> {
+    await this.persist({ kind: 'deposited', amount: c.amount }, (s) => this.reply(s.balance));
   }
 }
 

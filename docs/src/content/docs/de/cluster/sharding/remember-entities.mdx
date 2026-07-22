@@ -28,7 +28,7 @@ dass Entities **eager neu erstellt** werden:
 const startShardingOptions = StartShardingOptions.create()
   .withTypeName('session')
   .withEntityProps(Props.create(() => new SessionActor()))
-  .withExtractEntityId((msg) => msg.userId)
+  .withExtractEntityId((message) => message.userId)
   .withRememberEntities(true);
 sharding.start(
   startShardingOptions,
@@ -60,7 +60,7 @@ Zwei-Speicher-Aufteilung:
 
 ```
 Journal (deine Events)            RememberEntitiesStore (nur IDs)
-  pid=cart-user-42                  entityIds = ['cart-user-42', 'cart-user-43', ...]
+  persistenceId=cart-user-42        entityIds = ['cart-user-42', 'cart-user-43', ...]
   Event 1                            
   Event 2
   Event 3

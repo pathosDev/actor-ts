@@ -50,10 +50,10 @@ them into one trace.
 
 ```ts
 // Within an actor:
-override async onReceive(msg) {
+override async onReceive(message) {
   // tracer.activeSpan() returns the actor.receive span
   // tell creates an envelope with traceparent set
-  this.downstream.tell({ kind: 'derived', from: msg.id });
+  this.downstream.tell({ kind: 'derived', from: message.id });
   // The downstream actor's actor.receive span has THIS span as parent
 }
 ```
@@ -114,12 +114,12 @@ route through the same tracer.
 ## Adding application-level spans
 
 ```ts
-override async onReceive(msg) {
+override async onReceive(message) {
   const tracer = this.context.system.extension(TracingExtensionId).get();
   const span = tracer.startSpan('process-order', {
     attributes: {
-      'order.id':     msg.orderId,
-      'order.amount': msg.amount,
+      'order.id':     message.orderId,
+      'order.amount': message.amount,
     },
   });
   try {
@@ -198,7 +198,7 @@ import { Aside } from '@astrojs/starlight/components';
   ```
   Manual workaround:
   ```ts
-  const ctx = tracer.injectContext();
+  const context = tracer.injectContext();
   pipeTo(externalCall(), target, { sender: this.self });
   // Then target reads its own carrier from message metadata if needed
   ```

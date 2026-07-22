@@ -9,12 +9,12 @@ import { Props } from '../../../../src/Props.js';
 import { RedisStreamsActor, type RedisStreamEntry } from '../../../../src/io/broker/RedisStreamsActor.js';
 import { RedisStreamsOptions, RedisStreamsOptionsBuilder } from '../../../../src/io/broker/RedisStreamsOptions.js';
 import { waitForPort } from '../lib/wait-for-port.js';
-import { runScenarios, type BrokerScenario, type BrokerScenarioCtx } from '../lib/scenario.js';
+import { runScenarios, type BrokerScenario, type BrokerScenarioContext } from '../lib/scenario.js';
 import { scenario as produceScenario } from './scenarios/01-produce.js';
 import { scenario as consumeScenario } from './scenarios/02-consume-group.js';
 import { scenario as maxlenScenario } from './scenarios/03-maxlen.js';
 
-export interface RedisCtx extends BrokerScenarioCtx {
+export interface RedisContext extends BrokerScenarioContext {
   readonly url: string;
   readonly system: ActorSystem;
 }
@@ -41,15 +41,15 @@ async function main(): Promise<void> {
     .withLogger(new JsonLogger()).withLogLevel(LogLevel.Info));
   process.on('SIGTERM', () => { void system.terminate(); });
 
-  const ctx: RedisCtx = { env: process.env, url, system };
+  const context: RedisContext = { env: process.env, url, system };
 
   try {
-    const scenarios: BrokerScenario<RedisCtx>[] = [
+    const scenarios: BrokerScenario<RedisContext>[] = [
       produceScenario,
       consumeScenario,
       maxlenScenario,
     ];
-    await runScenarios(scenarios, ctx);
+    await runScenarios(scenarios, context);
   } finally {
     await system.terminate();
   }
@@ -61,22 +61,22 @@ export interface RedisSpawnOpts {
   target?: ReturnType<ActorSystem['spawnAnonymous']>;
 }
 
-export function spawnRedis(ctx: RedisCtx, opts: RedisSpawnOpts = {}): ReturnType<ActorSystem['spawnAnonymous']> {
+export function spawnRedis(context: RedisContext, options: RedisSpawnOpts = {}): ReturnType<ActorSystem['spawnAnonymous']> {
   const builder = RedisStreamsOptions.create()
-    .withUrl(ctx.url)
+    .withUrl(context.url)
     .withBlockMs(500);
-  if (opts.streams) builder.withStreams(opts.streams);
-  if (opts.consumerGroup) builder.withConsumerGroup({ ...opts.consumerGroup, createIfMissing: true });
-  if (opts.target) builder.withTarget(opts.target as unknown as Parameters<RedisStreamsOptionsBuilder['withTarget']>[0]);
+  if (options.streams) builder.withStreams(options.streams);
+  if (options.consumerGroup) builder.withConsumerGroup({ ...options.consumerGroup, createIfMissing: true });
+  if (options.target) builder.withTarget(options.target as unknown as Parameters<RedisStreamsOptionsBuilder['withTarget']>[0]);
   const actor = new RedisStreamsActor(builder);
-  return ctx.system.spawnAnonymous(Props.create(() => actor));
+  return context.system.spawnAnonymous(Props.create(() => actor));
 }
 
-export function spawnInbox(ctx: RedisCtx): {
+export function spawnInbox(context: RedisContext): {
   ref: ReturnType<ActorSystem['spawnAnonymous']>; inbox: InboxActor;
 } {
   const inbox = new InboxActor();
-  const ref = ctx.system.spawnAnonymous(Props.create(() => inbox));
+  const ref = context.system.spawnAnonymous(Props.create(() => inbox));
   return { ref, inbox };
 }
 

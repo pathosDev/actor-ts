@@ -30,9 +30,9 @@ import type { MigrationChain } from './MigrationChain.js';
  */
 export function migratingAdapter<E>(
   chain: MigrationChain<E>,
-  opts: { readonly writeVersion?: number } = {},
+  options: { readonly writeVersion?: number } = {},
 ): EventAdapter<E, unknown> {
-  const writeVersion = opts.writeVersion ?? chain.currentVersion;
+  const writeVersion = options.writeVersion ?? chain.currentVersion;
   if (!Number.isInteger(writeVersion) || writeVersion < 1) {
     throw new Error(`migratingAdapter writeVersion must be a positive integer, got ${writeVersion}`);
   }
@@ -58,9 +58,9 @@ export function migratingAdapter<E>(
  */
 export function migratingSnapshotAdapter<S>(
   chain: MigrationChain<S>,
-  opts: { readonly writeVersion?: number } = {},
+  options: { readonly writeVersion?: number } = {},
 ): SnapshotAdapter<S, unknown> {
-  const writeVersion = opts.writeVersion ?? chain.currentVersion;
+  const writeVersion = options.writeVersion ?? chain.currentVersion;
   if (!Number.isInteger(writeVersion) || writeVersion < 1) {
     throw new Error(`migratingSnapshotAdapter writeVersion must be a positive integer, got ${writeVersion}`);
   }

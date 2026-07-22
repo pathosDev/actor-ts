@@ -35,8 +35,8 @@ class Cron extends Actor<CronCommand> {
     console.log(`[${this.host}] cron spawned — scheduling ticks`);
     this.context.timers.startTimerWithFixedDelay('tick', { kind: 'tick' }, 250, 100);
   }
-  override onReceive(cmd: CronCommand): void {
-    if (cmd.kind === 'subscribe') { this.subs.add(cmd.sub); return; }
+  override onReceive(command: CronCommand): void {
+    if (command.kind === 'subscribe') { this.subs.add(command.sub); return; }
     this.tickCount++;
     const evt: CronEvent = { tickNumber: this.tickCount, hostedOn: this.host };
     console.log(`[${this.host}] tick #${this.tickCount}`);

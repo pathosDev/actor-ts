@@ -164,7 +164,7 @@ clocks already compared** — you just decide how to merge the
 For diagnostics:
 
 ```ts
-override async onCommand(state, cmd) {
+override async onCommand(state, command) {
   this.log.debug(`current vc: ${JSON.stringify(this.vectorClock.toData())}`);
   await this.persist(event, () => {});
 }

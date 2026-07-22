@@ -17,26 +17,32 @@ import {
 } from '../../src/index.js';
 
 interface KV { readonly map: Record<string, string>; }
-type Cmd =
-  | { kind: 'set'; key: string; value: string }
-  | { kind: 'get'; key: string }
-  | { kind: 'dump' };
+type SetCommand = { kind: 'set'; key: string; value: string };
+type GetCommand = { kind: 'get'; key: string };
+type DumpCommand = { kind: 'dump' };
+type Command = SetCommand | GetCommand | DumpCommand;
 
-class KVStore extends DurableStateActor<Cmd, KV> {
-  override async onCommand(cmd: Cmd): Promise<void> {
-    await match(cmd)
-      .with({ kind: 'set' }, async (c) => {
-        const next: KV = { map: { ...this.state.map, [c.key]: c.value } };
-        await this.persist(next);
-        console.log(`set ${c.key}=${c.value} (rev=${this.revision})`);
-      })
-      .with({ kind: 'get' }, async (c) => {
-        console.log(`get ${c.key}: ${this.state.map[c.key] ?? '<missing>'}`);
-      })
-      .with({ kind: 'dump' }, async () => {
-        console.log('dump:', this.state.map);
-      })
+class KVStore extends DurableStateActor<Command, KV> {
+  override async onCommand(command: Command): Promise<void> {
+    await match(command)
+      .with({ kind: 'set' }, (c) => this.onSet(c))
+      .with({ kind: 'get' }, (c) => this.onGet(c))
+      .with({ kind: 'dump' }, () => this.onDump())
       .exhaustive();
+  }
+
+  private async onSet(c: SetCommand): Promise<void> {
+    const next: KV = { map: { ...this.state.map, [c.key]: c.value } };
+    await this.persist(next);
+    console.log(`set ${c.key}=${c.value} (rev=${this.revision})`);
+  }
+
+  private async onGet(c: GetCommand): Promise<void> {
+    console.log(`get ${c.key}: ${this.state.map[c.key] ?? '<missing>'}`);
+  }
+
+  private async onDump(): Promise<void> {
+    console.log('dump:', this.state.map);
   }
 }
 
@@ -49,7 +55,7 @@ async function main(): Promise<void> {
       .withPersistenceId('app-config')
       .withStore(store)
       .withEmptyState(() => ({ map: {} })),
-  ) as unknown as Actor<Cmd>));
+  ) as unknown as Actor<Command>));
 
   ref.tell({ kind: 'set', key: 'env', value: 'production' });
   ref.tell({ kind: 'set', key: 'version', value: '1.2.3' });
@@ -65,7 +71,7 @@ async function main(): Promise<void> {
       .withPersistenceId('app-config')
       .withStore(store)
       .withEmptyState(() => ({ map: {} })),
-  ) as unknown as Actor<Cmd>));
+  ) as unknown as Actor<Command>));
 
   ref.tell({ kind: 'dump' });
   await Bun.sleep(50);

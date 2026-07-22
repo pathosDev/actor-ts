@@ -17,13 +17,13 @@ import { VectorClock } from '../../../../../src/persistence/replicated/VectorClo
 /** Build a candidate with sensible defaults — saves repetition in each test. */
 function candidate<E>(
   event: E,
-  opts: { timestamp?: number; replica?: string; vc?: VectorClock } = {},
+  options: { timestamp?: number; replica?: string; vc?: VectorClock } = {},
 ): ConflictCandidate<E> {
   return {
     event,
-    timestamp: opts.timestamp ?? 0,
-    replica: opts.replica ?? 'node-a',
-    vc: opts.vc ?? VectorClock.empty(),
+    timestamp: options.timestamp ?? 0,
+    replica: options.replica ?? 'node-a',
+    vc: options.vc ?? VectorClock.empty(),
   };
 }
 

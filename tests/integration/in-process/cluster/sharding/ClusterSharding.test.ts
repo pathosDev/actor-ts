@@ -12,10 +12,10 @@ import { LogLevel, NoopLogger } from '../../../../../src/Logger.js';
 import { Props } from '../../../../../src/Props.js';
 import type { ActorRef } from '../../../../../src/ActorRef.js';
 
-type Cmd = { id: string; op: 'ping' | 'echo'; payload?: string };
+type Command = { id: string; op: 'ping' | 'echo'; payload?: string };
 
-class Entity extends Actor<Cmd> {
-  override onReceive(m: Cmd): void {
+class Entity extends Actor<Command> {
+  override onReceive(m: Command): void {
     if (m.op === 'ping') this.sender.forEach((s) => s.tell('pong'));
     else if (m.op === 'echo') this.sender.forEach((s) => s.tell(m.payload ?? ''));
   }
@@ -35,7 +35,7 @@ async function waitFor(pred: () => boolean, timeoutMs = 5_000, stepMs = 20): Pro
 interface Node {
   sys: ActorSystem;
   cluster: Cluster;
-  region: ActorRef<Cmd>;
+  region: ActorRef<Command>;
 }
 
 async function startNode(sysName: string, p: number, seeds: string[] = []): Promise<Node> {
@@ -48,12 +48,12 @@ async function startNode(sysName: string, p: number, seeds: string[] = []): Prom
     .withTransport(new InMemoryTransport(new NodeAddress(sysName, 'h', p)))
     .withGossipIntervalMs(30);
   const cluster = await Cluster.join(sys, clusterOptions);
-  const shardingOptions = StartShardingOptions.create<Cmd>()
+  const shardingOptions = StartShardingOptions.create<Command>()
     .withTypeName('entity')
     .withEntityProps(Props.create(() => new Entity()))
     .withExtractEntityId((m) => m.id)
     .withNumShards(16);
-  const region = cluster.sharding.start<Cmd>(shardingOptions);
+  const region = cluster.sharding.start<Command>(shardingOptions);
   return { sys, cluster, region };
 }
 
@@ -186,8 +186,8 @@ describe('cluster.sharding', () => {
       .withGossipIntervalMs(30);
     const cluster = await Cluster.join(sys, clusterOptions);
     try {
-      const shardingOptions = StartShardingOptions.create<Cmd>()
-        .withExtractEntityId((m: Cmd) => m.id)
+      const shardingOptions = StartShardingOptions.create<Command>()
+        .withExtractEntityId((m: Command) => m.id)
         .withNumShards(4);
       const region = cluster.sharding.start('entity', Entity, shardingOptions);
       await waitFor(() => cluster.upMembers().length === 1);

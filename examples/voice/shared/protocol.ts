@@ -38,22 +38,72 @@ export type Username = string;
 /* Client → Server                                                  */
 /* ============================================================== */
 
+/* — auth (identical to chat) — */
+
+export type LoginMessage = {
+  readonly kind: 'login';
+  readonly username: string;
+  readonly password: string;
+};
+export type ResumeMessage = {
+  readonly kind: 'resume';
+  readonly token: string;
+};
+export type LogoutMessage = {
+  readonly kind: 'logout';
+};
+export type PingMessage = {
+  readonly kind: 'ping';
+};
+
+/* — voice control plane — */
+
+export type VoiceTargetPeerMessage = {
+  readonly kind: 'voice-target';
+  readonly mode: 'peer';
+  readonly target: Username;
+};
+export type VoiceTargetGroupMessage = {
+  readonly kind: 'voice-target';
+  readonly mode: 'group';
+  readonly group: GroupName;
+};
+export type VoiceTargetRoomMessage = {
+  readonly kind: 'voice-target';
+  readonly mode: 'room';
+  readonly room: VoiceRoomName;
+};
+export type VoiceStopMessage = {
+  readonly kind: 'voice-stop';
+};
+
+/* — room membership — */
+
+export type RoomEnterMessage = {
+  readonly kind: 'room-enter';
+  readonly room: VoiceRoomName;
+};
+export type RoomLeaveMessage = {
+  readonly kind: 'room-leave';
+  readonly room: VoiceRoomName;
+};
+
 export type ClientMessage =
   // — auth (identical to chat) —
-  | { readonly type: 'login';   readonly username: string; readonly password: string }
-  | { readonly type: 'resume';  readonly token: string }
-  | { readonly type: 'logout' }
-  | { readonly type: 'ping' }
+  | LoginMessage
+  | ResumeMessage
+  | LogoutMessage
+  | PingMessage
 
   // — voice control plane —
-  | { readonly type: 'voice-target'; readonly mode: 'peer';  readonly target: Username  }
-  | { readonly type: 'voice-target'; readonly mode: 'group'; readonly group:  GroupName }
-  | { readonly type: 'voice-target'; readonly mode: 'room';  readonly room:   VoiceRoomName }
-  | { readonly type: 'voice-stop' }
+  | VoiceTargetPeerMessage
+  | VoiceTargetGroupMessage
+  | VoiceTargetRoomMessage
+  | VoiceStopMessage
 
   // — room membership —
-  | { readonly type: 'room-enter'; readonly room: VoiceRoomName }
-  | { readonly type: 'room-leave'; readonly room: VoiceRoomName };
+  | RoomEnterMessage
+  | RoomLeaveMessage;
 
 /* ============================================================== */
 /* Server → Client                                                  */
@@ -71,49 +121,49 @@ export type IncomingSource =
 
 export type ServerMessage =
   // — auth (identical to chat) —
-  | { readonly type: 'logged-in';    readonly username: Username; readonly token: string }
-  | { readonly type: 'login-failed'; readonly reason: string }
-  | { readonly type: 'system';       readonly text: string }
+  | { readonly kind: 'logged-in';    readonly username: Username; readonly token: string }
+  | { readonly kind: 'login-failed'; readonly reason: string }
+  | { readonly kind: 'system';       readonly text: string }
 
   // — initial directory snapshot, sent once after login —
   | {
-      readonly type: 'directory';
+      readonly kind: 'directory';
       readonly users:  ReadonlyArray<Username>;
       readonly groups: ReadonlyArray<GroupSummary>;
       readonly rooms:  ReadonlyArray<VoiceRoomName>;
     }
 
   // — live updates —
-  | { readonly type: 'online-users';      readonly users: ReadonlyArray<Username> }
-  | { readonly type: 'room-participants'; readonly room: VoiceRoomName;
+  | { readonly kind: 'online-users';      readonly users: ReadonlyArray<Username> }
+  | { readonly kind: 'room-participants'; readonly room: VoiceRoomName;
                                           readonly users: ReadonlyArray<Username> }
 
   // — voice control echoes —
-  | { readonly type: 'voice-target-ok';     readonly mode: 'peer'|'group'|'room';
+  | { readonly kind: 'voice-target-ok';     readonly mode: 'peer'|'group'|'room';
                                             readonly key: string }
-  | { readonly type: 'voice-target-failed'; readonly mode: 'peer'|'group'|'room';
+  | { readonly kind: 'voice-target-failed'; readonly mode: 'peer'|'group'|'room';
                                             readonly key: string;
                                             readonly reason: string }
 
   // — incoming-stream framing for the playback module —
-  | { readonly type: 'voice-incoming-start';
+  | { readonly kind: 'voice-incoming-start';
       readonly from: Username;
       readonly source: IncomingSource }
-  | { readonly type: 'voice-incoming-end';
+  | { readonly kind: 'voice-incoming-end';
       readonly from: Username };
 
 /* ============================================================== */
 /* Encoding helpers                                                 */
 /* ============================================================== */
 
-export function encodeServer(msg: ServerMessage): string {
-  return JSON.stringify(msg);
+export function encodeServer(message: ServerMessage): string {
+  return JSON.stringify(message);
 }
 
 export function decodeClient(raw: string): ClientMessage | null {
   try {
-    const parsed = JSON.parse(raw) as { type?: unknown };
-    if (typeof parsed?.type !== 'string') return null;
+    const parsed = JSON.parse(raw) as { kind?: unknown };
+    if (typeof parsed?.kind !== 'string') return null;
     return parsed as ClientMessage;
   } catch {
     return null;

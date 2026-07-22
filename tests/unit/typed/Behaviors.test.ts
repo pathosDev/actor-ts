@@ -23,8 +23,8 @@ describe('Behaviors.receive — basic handler', () => {
   test('receives messages and keeps the same behavior via Behaviors.same', async () => {
     const sys = newSys();
     const seen: string[] = [];
-    const behavior: Behavior<string> = Behaviors.receive((_ctx, msg) => {
-      seen.push(msg);
+    const behavior: Behavior<string> = Behaviors.receive((_context, message) => {
+      seen.push(message);
       return Behaviors.same;
     });
     const ref = sys.spawnTyped(behavior, 'r');
@@ -54,9 +54,9 @@ describe('Behaviors.receive — basic handler', () => {
     const probe = kit.createTestProbe<number>();
 
     const counter = (n: number): Behavior<'inc' | 'get'> =>
-      Behaviors.receive((_ctx, msg) => {
-        if (msg === 'inc') return counter(n + 1);
-        if (msg === 'get') { probe.tell(n); return Behaviors.same; }
+      Behaviors.receive((_context, message) => {
+        if (message === 'inc') return counter(n + 1);
+        if (message === 'get') { probe.tell(n); return Behaviors.same; }
         return Behaviors.unhandled;
       });
 
@@ -101,9 +101,9 @@ describe('Behaviors.setup', () => {
     const probe = kit.createTestProbe<string>();
     let setupCalls = 0;
 
-    const behavior = Behaviors.setup<string>((ctx) => {
+    const behavior = Behaviors.setup<string>((context) => {
       setupCalls++;
-      probe.tell(`path=${ctx.path.toString()}`);
+      probe.tell(`path=${context.path.toString()}`);
       return Behaviors.receiveMessage(() => Behaviors.same);
     });
 
@@ -152,26 +152,26 @@ describe('Behaviors.withStash', () => {
     const kit = TestKit.create('typed-stash', kitOptions);
     const probe = kit.createTestProbe<string>();
 
-    type Msg = { kind: 'ready' } | { kind: 'work'; id: number };
+    type Message = { kind: 'ready' } | { kind: 'work'; id: number };
 
     // Start "uninitialized" — stash everything until we receive a 'ready'
     // signal, then replay all buffered work in order.
-    const uninit = (stash: import('../../../src/typed/Behavior.js').StashBuffer<Msg>): Behavior<Msg> =>
-      Behaviors.receive<Msg>((_ctx, msg) => {
-        if (msg.kind === 'ready') {
+    const uninit = (stash: import('../../../src/typed/Behavior.js').StashBuffer<Message>): Behavior<Message> =>
+      Behaviors.receive<Message>((_context, message) => {
+        if (message.kind === 'ready') {
           stash.unstashAll();
           return ready;
         }
-        stash.stash(msg);
+        stash.stash(message);
         return Behaviors.same;
       });
 
-    const ready: Behavior<Msg> = Behaviors.receive((_ctx, msg) => {
-      if (msg.kind === 'work') probe.tell(`work#${msg.id}`);
+    const ready: Behavior<Message> = Behaviors.receive((_context, message) => {
+      if (message.kind === 'work') probe.tell(`work#${message.id}`);
       return Behaviors.same;
     });
 
-    const behavior = Behaviors.withStash<Msg>(16, (stash) => uninit(stash));
+    const behavior = Behaviors.withStash<Message>(16, (stash) => uninit(stash));
     const ref = kit.system.spawnTypedAnonymous(behavior);
     ref.tell({ kind: 'work', id: 1 });
     ref.tell({ kind: 'work', id: 2 });
@@ -192,8 +192,8 @@ describe('Behaviors.withStash', () => {
     const sys = newSys();
     const errors: unknown[] = [];
     const behavior = Behaviors.withStash<string>(2, (stash) =>
-      Behaviors.receiveMessage((msg) => {
-        try { stash.stash(msg); } catch (e) { errors.push(e); }
+      Behaviors.receiveMessage((message) => {
+        try { stash.stash(message); } catch (e) { errors.push(e); }
         return Behaviors.same;
       }),
     );
@@ -216,12 +216,12 @@ describe('Behaviors.supervise', () => {
     const probe = kit.createTestProbe<string>();
     let initCount = 0;
 
-    const inner = Behaviors.setup<string>((_ctx) => {
+    const inner = Behaviors.setup<string>((_context) => {
       initCount++;
       probe.tell(`init#${initCount}`);
-      return Behaviors.receiveMessage((msg) => {
-        if (msg === 'boom') throw new Error('kaboom');
-        probe.tell(`saw:${msg}`);
+      return Behaviors.receiveMessage((message) => {
+        if (message === 'boom') throw new Error('kaboom');
+        probe.tell(`saw:${message}`);
         return Behaviors.same;
       });
     });
@@ -254,9 +254,9 @@ describe('Behaviors.supervise', () => {
 
     const inner = Behaviors.setup<string>(() => {
       initCount++;
-      return Behaviors.receiveMessage((msg) => {
-        if (msg === 'boom') throw new Error('oops');
-        probe.tell(msg);
+      return Behaviors.receiveMessage((message) => {
+        if (message === 'boom') throw new Error('oops');
+        probe.tell(message);
         return Behaviors.same;
       });
     });

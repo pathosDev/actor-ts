@@ -67,18 +67,18 @@ export class DistributedPubSubMediator extends Actor<
 
   override preStart(): void {
     const cluster = this.options.cluster;
-    this.unsubscribeWire = cluster._onWire('pubsub-gossip', (msg) =>
-      this.handleGossip(msg as unknown as PubSubGossipMessage),
+    this.unsubscribeWire = cluster._onWire('pubsub-gossip', (message) =>
+      this.handleGossip(message as unknown as PubSubGossipMessage),
     );
     // Remote publishes arrive via the envelope handler, not the wire hook.
     this.unsubscribeCluster = cluster.subscribe((evt) =>
       match(evt)
-        .with(P.instanceOf(MemberRemoved), (e) => this.forgetNode(e.member.address))
-        .with(P.instanceOf(MemberUp), () => { this.version++; })
-        .otherwise(() => { /* other events ignored */ }),
+        .with(P.instanceOf(MemberRemoved), (e) => this.onMemberRemoved(e))
+        .with(P.instanceOf(MemberUp), () => this.onMemberUp())
+        .otherwise(() => this.onOtherClusterEvent()),
     );
     const interval = this.options.gossipIntervalMs ?? DEFAULT_GOSSIP_INTERVAL_MS;
-    this.gossipTimer = this.system.scheduler.scheduleAtFixedRateFn(
+    this.gossipTimer = this.system.scheduler.scheduleAtFixedRateFunction(
       interval, interval, () => this.gossipTick(),
     );
   }
@@ -89,33 +89,33 @@ export class DistributedPubSubMediator extends Actor<
     this.gossipTimer?.cancel();
   }
 
-  override onReceive(msg: Subscribe | Unsubscribe | UnsubscribeAll | Publish | GetTopics | PubSubPublishMessage): void {
-    match(msg)
-      .with(P.instanceOf(Subscribe), (m) => this.handleSubscribe(m))
-      .with(P.instanceOf(Unsubscribe), (m) => this.handleUnsubscribe(m))
-      .with(P.instanceOf(UnsubscribeAll), (m) => this.handleUnsubscribeAll(m))
-      .with(P.instanceOf(Publish), (m) => this.handlePublish(m))
-      .with(P.instanceOf(GetTopics), (m) => this.handleGetTopics(m))
+  override onReceive(message: Subscribe | Unsubscribe | UnsubscribeAll | Publish | GetTopics | PubSubPublishMessage): void {
+    match(message)
+      .with(P.instanceOf(Subscribe), (m) => this.onSubscribe(m))
+      .with(P.instanceOf(Unsubscribe), (m) => this.onUnsubscribe(m))
+      .with(P.instanceOf(UnsubscribeAll), (m) => this.onUnsubscribeAll(m))
+      .with(P.instanceOf(Publish), (m) => this.onPublish(m))
+      .with(P.instanceOf(GetTopics), (m) => this.onGetTopics(m))
       // Remote Publish forwarded from another mediator (plain envelope, not a class instance).
-      .with({ t: 'pubsub-publish' }, (m) => this.deliverLocal(m.topic, m.body))
-      .otherwise(() => { /* unknown message */ });
+      .with({ t: 'pubsub-publish' }, (m) => this.onPubSubPublish(m))
+      .otherwise(() => this.onUnhandled());
   }
 
   /* ----------------------------- Command handlers ----------------------------- */
 
-  private handleSubscribe(msg: Subscribe): void {
-    const set = this.getOrCreateSet(msg.topic);
-    const key = msg.ref.path.toString();
+  private onSubscribe(message: Subscribe): void {
+    const set = this.getOrCreateSet(message.topic);
+    const key = message.ref.path.toString();
     let changed = false;
     if (!set.local.has(key)) {
-      set.local.set(key, msg.ref);
+      set.local.set(key, message.ref);
       this.version++;
       changed = true;
     }
     this.log.debug(
-      `[pubsub] subscribe '${msg.topic}' by ${key} (local subs now: ${set.local.size}; ${changed ? 'new' : 'duplicate'})`,
+      `[pubsub] subscribe '${message.topic}' by ${key} (local subs now: ${set.local.size}; ${changed ? 'new' : 'duplicate'})`,
     );
-    this.sender.forEach((s) => s.tell(new SubscribeAcknowledgment(msg)));
+    this.sender.forEach((s) => s.tell(new SubscribeAcknowledgment(message)));
     // Eager broadcast: peers learn about the new subscription within
     // one hop, deterministically.  Without this the random-peer-per-
     // tick gossip leaves a probabilistic gap (~1/2^N for N ticks)
@@ -124,24 +124,24 @@ export class DistributedPubSubMediator extends Actor<
     if (changed) this.eagerGossip();
   }
 
-  private handleUnsubscribe(msg: Unsubscribe): void {
-    const set = this.topics.get(msg.topic);
-    const key = msg.ref.path.toString();
+  private onUnsubscribe(message: Unsubscribe): void {
+    const set = this.topics.get(message.topic);
+    const key = message.ref.path.toString();
     let changed = false;
     if (set?.local.delete(key)) {
       this.version++;
       changed = true;
-      if (set.local.size === 0 && set.remoteNodes.size === 0) this.topics.delete(msg.topic);
+      if (set.local.size === 0 && set.remoteNodes.size === 0) this.topics.delete(message.topic);
     }
     this.log.debug(
-      `[pubsub] unsubscribe '${msg.topic}' by ${key} (${changed ? 'removed' : 'not subscribed'})`,
+      `[pubsub] unsubscribe '${message.topic}' by ${key} (${changed ? 'removed' : 'not subscribed'})`,
     );
-    this.sender.forEach((s) => s.tell(new UnsubscribeAcknowledgment(msg)));
+    this.sender.forEach((s) => s.tell(new UnsubscribeAcknowledgment(message)));
     if (changed) this.eagerGossip();
   }
 
-  private handleUnsubscribeAll(msg: UnsubscribeAll): void {
-    const key = msg.ref.path.toString();
+  private onUnsubscribeAll(message: UnsubscribeAll): void {
+    const key = message.ref.path.toString();
     let changed = false;
     for (const [topic, set] of this.topics) {
       if (set.local.delete(key)) { this.version++; changed = true; }
@@ -150,25 +150,33 @@ export class DistributedPubSubMediator extends Actor<
     if (changed) this.eagerGossip();
   }
 
-  private handleGetTopics(msg: GetTopics): void {
-    msg.replyTo.tell(new CurrentTopics(Array.from(this.topics.keys()).sort()));
+  private onGetTopics(message: GetTopics): void {
+    message.replyTo.tell(new CurrentTopics(Array.from(this.topics.keys()).sort()));
   }
 
-  private handlePublish<T>(msg: Publish<T>): void {
-    const set = this.topics.get(msg.topic);
+  private onPublish<T>(message: Publish<T>): void {
+    const set = this.topics.get(message.topic);
     const localCount = set?.local.size ?? 0;
     const remoteCount = set?.remoteNodes.size ?? 0;
     this.log.debug(
-      `[pubsub] publish '${msg.topic}' → ${localCount} local + ${remoteCount} remote node(s)`,
+      `[pubsub] publish '${message.topic}' → ${localCount} local + ${remoteCount} remote node(s)`,
     );
-    this.deliverLocal(msg.topic, msg.message);
+    this.deliverLocal(message.topic, message.message);
     if (!set) return;
-    const payload: PubSubPublishMessage = { t: 'pubsub-publish', topic: msg.topic, body: msg.message };
+    const payload: PubSubPublishMessage = { t: 'pubsub-publish', topic: message.topic, body: message.message };
     for (const nodeStr of set.remoteNodes) {
       const node = NodeAddress.parse(nodeStr);
       if (node.equals(this.options.cluster.selfAddress)) continue;
       this.sendWire(node, payload);
     }
+  }
+
+  private onPubSubPublish(message: PubSubPublishMessage): void {
+    this.deliverLocal(message.topic, message.body);
+  }
+
+  private onUnhandled(): void {
+    /* unknown message */
   }
 
   private deliverLocal<T>(topic: string, body: T): void {
@@ -230,18 +238,30 @@ export class DistributedPubSubMediator extends Actor<
     };
   }
 
-  private handleGossip(msg: PubSubGossipMessage): void {
-    const senderAddr = NodeAddress.fromJSON(msg.from).toString();
+  private handleGossip(message: PubSubGossipMessage): void {
+    const senderAddr = NodeAddress.fromJSON(message.from).toString();
     // First, clear any remote-node claims this sender used to have — we
     // always replace its contribution wholesale to stay in sync.
     for (const [topic, set] of this.topics) {
       set.remoteNodes.delete(senderAddr);
       if (set.local.size === 0 && set.remoteNodes.size === 0) this.topics.delete(topic);
     }
-    for (const topic of msg.entries) {
+    for (const topic of message.entries) {
       const set = this.getOrCreateSet(topic);
       set.remoteNodes.add(senderAddr);
     }
+  }
+
+  private onMemberRemoved(e: MemberRemoved): void {
+    this.forgetNode(e.member.address);
+  }
+
+  private onMemberUp(): void {
+    this.version++;
+  }
+
+  private onOtherClusterEvent(): void {
+    /* other events ignored */
   }
 
   private forgetNode(addr: NodeAddress): void {
@@ -263,20 +283,20 @@ export class DistributedPubSubMediator extends Actor<
     return subscriberSet;
   }
 
-  private sendWire(to: NodeAddress, msg: PubSubWireMessage): void {
-    if (msg.t === 'pubsub-publish') {
+  private sendWire(to: NodeAddress, message: PubSubWireMessage): void {
+    if (message.t === 'pubsub-publish') {
       // Wrap in envelope so the receiver's Cluster routes it into the
       // mediator actor.  Publishes are "user" messages from the wire POV.
       this.options.cluster._sendEnvelope(to, {
         t: 'envelope',
         to: mediatorPath(this.options.cluster.system.name),
         from: null,
-        body: msg,
+        body: message,
         tag: 'PubSubPublish',
       });
     } else {
       // Gossip frames ride on the raw transport — they're system traffic.
-      this.options.cluster.transport.send(to, msg as unknown as WireMessage);
+      this.options.cluster.transport.send(to, message as unknown as WireMessage);
     }
   }
 }

@@ -10,11 +10,11 @@ via `JSON.stringify` + `JSON.parse`; bytes are UTF-8.
 import { JsonSerializer } from 'actor-ts';
 
 const serializer = new JsonSerializer();
-const bytes = serializer.toBinary({ kind: 'inc', n: 1 });
-//  → Uint8Array of '{"kind":"inc","n":1}' as UTF-8
+const bytes = serializer.toBinary({ kind: 'increment', n: 1 });
+//  → Uint8Array of '{"kind":"increment","n":1}' as UTF-8
 
 const decoded = serializer.fromBinary(bytes, '');
-//  → { kind: 'inc', n: 1 }
+//  → { kind: 'increment', n: 1 }
 ```
 
 ## Why JSON is the default
@@ -98,8 +98,8 @@ import { Aside } from '@astrojs/starlight/components';
   Receiver gets a **string**, not a `Date`.  Convert
   explicitly:
   ```ts
-  override onReceive(msg) {
-    const at = new Date(msg.at);   // string → Date
+  override onReceive(message) {
+    const at = new Date(message.at);   // string → Date
   }
   ```
   Or use `Date.now()` (number) instead of `new Date()` in

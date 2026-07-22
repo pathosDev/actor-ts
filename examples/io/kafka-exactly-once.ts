@@ -13,7 +13,7 @@
  *
  *   2. Handler does its work (here: a fake DB call).  On success it
  *      tells the KafkaActor `{ kind: 'commit', topic, partition,
- *      offset }`; on failure it tells `{ kind: 'nack', ... }`.
+ *      offset }`; on failure it tells `{ kind: 'negativeAcknowledgment', ... }`.
  *
  *   3. Crash semantics: if the handler dies mid-processing without
  *      sending either, the pump's commitTimeoutMs fires, kafkajs
@@ -46,7 +46,7 @@ class OrderProcessor extends Actor<KafkaRecord> {
     } catch (e) {
       console.error(`bad payload at offset ${rec.offset}, nacking:`, e);
       this.kafka.tell({
-        kind: 'nack', topic: rec.topic, partition: rec.partition, offset: rec.offset,
+        kind: 'negativeAcknowledgment', topic: rec.topic, partition: rec.partition, offset: rec.offset,
         reason: 'malformed JSON',
       });
       return;
@@ -65,7 +65,7 @@ class OrderProcessor extends Actor<KafkaRecord> {
     } catch (e) {
       console.error(`db error at offset ${rec.offset}, nacking:`, e);
       this.kafka.tell({
-        kind: 'nack', topic: rec.topic, partition: rec.partition, offset: rec.offset,
+        kind: 'negativeAcknowledgment', topic: rec.topic, partition: rec.partition, offset: rec.offset,
         reason: (e as Error).message,
       });
     }

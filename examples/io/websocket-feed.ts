@@ -23,8 +23,8 @@ type Up = { kind: 'tick'; n: number };   // client → server
 type Down = { kind: 'ack'; n: number };  // server → client
 
 class EchoServer extends WebsocketServerActor<Down, Up> {
-  override onMessage(msg: Up): void {
-    this.reply({ kind: 'ack', n: msg.n });
+  override onMessage(message: Up): void {
+    this.reply({ kind: 'ack', n: message.n });
   }
 }
 
@@ -34,7 +34,7 @@ class Feed extends WebsocketClientActor<Up, Down> {
     super(clientOptions);
   }
   override onConnected(): void { console.log('[client] connected'); }
-  override onMessage(msg: Down): void { console.log('[client] ← ack', msg.n); }
+  override onMessage(message: Down): void { console.log('[client] ← ack', message.n); }
 }
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));

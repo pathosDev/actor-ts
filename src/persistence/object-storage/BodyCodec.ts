@@ -54,7 +54,7 @@ export const FLAG_INTEGRITY_HMAC = 0b10000;
  * Default cap on the decompressed size of a stored body (512 MiB).  Bounds a
  * decompression bomb on read (security audit #3) — a real snapshot /
  * durable-state blob is far smaller.  Override per-decode via
- * {@link DecodeOptions.maxOutputBytes} (`Infinity` opts out).
+ * {@link DecodeOptions.maxOutputBytes} (`Infinity` options out).
  */
 export const DEFAULT_MAX_DECOMPRESSED_BYTES = 512 * 1024 * 1024;
 
@@ -144,17 +144,17 @@ export interface DecodedBody {
  * Encode a JSON-stringified payload with the framing above.  Returns a
  * fresh `Uint8Array` ready to ship to the backend.
  */
-export async function encodeBody(jsonBytes: Uint8Array, opts: EncodeOptions = {}): Promise<Uint8Array> {
-  const algo = opts.compression ?? 'none';
-  const subKey = opts.encryption?.subKey;
-  const keyVersion = opts.encryption?.keyVersion;
-  const integrityKey = opts.integrity?.integrityKey;
+export async function encodeBody(jsonBytes: Uint8Array, options: EncodeOptions = {}): Promise<Uint8Array> {
+  const algo = options.compression ?? 'none';
+  const subKey = options.encryption?.subKey;
+  const keyVersion = options.encryption?.keyVersion;
+  const integrityKey = options.integrity?.integrityKey;
 
   // Step 1: compress (if requested).  Encryption-after-compression
   // because compression-after-encryption would defeat compression
   // (ciphertext is high-entropy) AND it's the order that protects
   // against CRIME-style side channels.
-  const compressed = await compressorFor(algo).compress(jsonBytes, opts.compressionLevel);
+  const compressed = await compressorFor(algo).compress(jsonBytes, options.compressionLevel);
 
   // Step 2: encrypt (if requested).  IV goes into the manifest.
   let bodyBeforeIntegrity: Uint8Array;
@@ -203,7 +203,7 @@ export async function encodeBody(jsonBytes: Uint8Array, opts: EncodeOptions = {}
 }
 
 /** Decode a body produced by `encodeBody` back into the plaintext payload. */
-export async function decodeBody(framed: Uint8Array, opts: DecodeOptions = {}): Promise<DecodedBody> {
+export async function decodeBody(framed: Uint8Array, options: DecodeOptions = {}): Promise<DecodedBody> {
   if (framed.length < 5 || !magicMatches(framed)) {
     throw new Error('BodyCodec: unrecognised body — expected ATS1 magic bytes.');
   }
@@ -223,7 +223,7 @@ export async function decodeBody(framed: Uint8Array, opts: DecodeOptions = {}): 
     if (framed.length < 5 + HMAC_TAG_LENGTH) {
       throw new Error('BodyCodec: integrity-tagged body is shorter than the HMAC tag requires.');
     }
-    if (!opts.integrity?.integrityKey) {
+    if (!options.integrity?.integrityKey) {
       throw new Error(
         'BodyCodec: body carries FLAG_INTEGRITY_HMAC but no integrityKey was supplied for decoding.',
       );
@@ -231,12 +231,12 @@ export async function decodeBody(framed: Uint8Array, opts: DecodeOptions = {}): 
     const sigOffset = framed.length - HMAC_TAG_LENGTH;
     const expected = framed.subarray(sigOffset);
     const signed = framed.subarray(0, sigOffset);
-    const actual = await hmacSha256(opts.integrity.integrityKey, signed);
+    const actual = await hmacSha256(options.integrity.integrityKey, signed);
     if (!constantTimeEqual(actual, expected)) {
       throw new Error('BodyCodec: integrity check failed — body tampered or wrong integrity key.');
     }
     bodyForRest = signed;
-  } else if (opts.integrity?.requireIntegrity) {
+  } else if (options.integrity?.requireIntegrity) {
     throw new Error(
       'BodyCodec: body has no integrity tag but requireIntegrity=true was set.  '
       + 'Body was either written before integrity was enabled, or is being injected '
@@ -244,11 +244,11 @@ export async function decodeBody(framed: Uint8Array, opts: DecodeOptions = {}): 
     );
   }
 
-  const maxOut = opts.maxOutputBytes ?? DEFAULT_MAX_DECOMPRESSED_BYTES;
+  const maxOut = options.maxOutputBytes ?? DEFAULT_MAX_DECOMPRESSED_BYTES;
   let payload: Uint8Array;
   let keyVersion: number | undefined;
   if (encrypted) {
-    if (!opts.encryption) {
+    if (!options.encryption) {
       throw new Error('BodyCodec: body is encrypted but no subKey/resolver was supplied for decoding.');
     }
     let offset = 5;
@@ -269,7 +269,7 @@ export async function decodeBody(framed: Uint8Array, opts: DecodeOptions = {}): 
     // back to the legacy single-subkey field.  An unversioned body
     // dispatched against a resolver is treated as version 0 — that's
     // the implicit version the legacy single-key shape always carried.
-    const enc = opts.encryption as
+    const enc = options.encryption as
       | { readonly subKey: Uint8Array }
       | { readonly subKeyFor: SubKeyResolver };
     let subKey: Uint8Array | null;
@@ -302,11 +302,11 @@ export async function decodeBody(framed: Uint8Array, opts: DecodeOptions = {}): 
 
 /* ----------------------------- internals -------------------------------- */
 
-function magicMatches(buf: Uint8Array): boolean {
-  return buf[0] === ATS1_MAGIC[0]
-    && buf[1] === ATS1_MAGIC[1]
-    && buf[2] === ATS1_MAGIC[2]
-    && buf[3] === ATS1_MAGIC[3];
+function magicMatches(buffer: Uint8Array): boolean {
+  return buffer[0] === ATS1_MAGIC[0]
+    && buffer[1] === ATS1_MAGIC[1]
+    && buffer[2] === ATS1_MAGIC[2]
+    && buffer[3] === ATS1_MAGIC[3];
 }
 
 function encodeCompression(algo: CompressionAlgo): number {

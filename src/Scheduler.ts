@@ -44,7 +44,7 @@ export class Scheduler {
   }
 
   /** Run a user-supplied function once after a delay. */
-  scheduleOnceFn(delayMs: number, fn: () => void): Cancellable {
+  scheduleOnceFunction(delayMs: number, fn: () => void): Cancellable {
     let handle: ReturnType<typeof setTimeout> | null = setTimeout(() => {
       handle = null;
       if (!this._cancelled) {
@@ -85,7 +85,7 @@ export class Scheduler {
     });
   }
 
-  scheduleAtFixedRateFn(
+  scheduleAtFixedRateFunction(
     initialDelayMs: number,
     intervalMs: number,
     fn: () => void,

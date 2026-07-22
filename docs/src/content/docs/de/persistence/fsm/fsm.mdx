@@ -23,13 +23,13 @@ class Door extends FSM<DoorState, DoorData, DoorMessage> {
   constructor() {
     super('closed', {});
 
-    this.when('closed', (data, msg) => {
-      if (msg === 'open') return this.goto('open', { openedAt: Date.now() });
+    this.when('closed', (data, message) => {
+      if (message === 'open') return this.goto('open', { openedAt: Date.now() });
       return this.stay(data);
     });
 
-    this.when('open', (data, msg) => {
-      if (msg === 'close') return this.goto('closed', {});
+    this.when('open', (data, message) => {
+      if (message === 'close') return this.goto('closed', {});
       return this.stay(data);
     });
 
@@ -66,8 +66,8 @@ den aktuellen Zustand.
 ## `when` — Zustands-Handler
 
 ```ts
-this.when('closed', (data, msg) => {
-  if (msg === 'open') return this.goto('open', { openedAt: Date.now() });
+this.when('closed', (data, message) => {
+  if (message === 'open') return this.goto('open', { openedAt: Date.now() });
   return this.stay(data);
 });
 ```
@@ -155,9 +155,9 @@ Nützlich für **Entscheidungen** innerhalb eines Handlers, die
 von mehr als der Message abhängen:
 
 ```ts
-this.when('connecting', (data, msg) => {
-  if (msg === 'connected') return this.goto('connected', { sessionId: msg.id });
-  if (msg === 'timeout' && data.retries < 3) {
+this.when('connecting', (data, message) => {
+  if (message === 'connected') return this.goto('connected', { sessionId: message.id });
+  if (message === 'timeout' && data.retries < 3) {
     return this.stay({ ...data, retries: data.retries + 1 });
   }
   return this.goto('disconnected', {});
@@ -169,7 +169,7 @@ this.when('connecting', (data, msg) => {
 ```ts
 type DoorData = { openedAt?: number };
 
-this.when('closed', (data, msg) => {
+this.when('closed', (data, message) => {
   return this.goto('open', { ...data, openedAt: Date.now() });
 });
 ```
@@ -201,8 +201,8 @@ import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="Vergessen, die Message eines Zustands zu behandeln">
   ```ts
-  this.when('closed', (data, msg) => {
-    if (msg === 'open') return this.goto('open', { ... });
+  this.when('closed', (data, message) => {
+    if (message === 'open') return this.goto('open', { ... });
     // ✗ vergessen, für andere Messages zu returnen — TypeScript fängt das
   });
   ```
@@ -212,7 +212,7 @@ import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="Async-Handler + Timer-Races">
   ```ts
-  this.when('connecting', async (data, msg) => {
+  this.when('connecting', async (data, message) => {
     await someSlowCheck();
     return this.goto('connected', { ... });
   });

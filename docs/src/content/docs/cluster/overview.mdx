@@ -179,7 +179,7 @@ strategy) requires manual intervention during a partition.
 
 ## Cross-node messaging
 
-Once two nodes share a cluster, `ref.tell(msg)` to a foreign-node
+Once two nodes share a cluster, `ref.tell(message)` to a foreign-node
 ref **just works**:
 
 ```ts
@@ -253,7 +253,7 @@ import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="Cluster joining isn't instant">
   ```ts
-  const cluster = await Cluster.join(system, opts);
+  const cluster = await Cluster.join(system, options);
   someActor.tell({ kind: 'broadcast' });
   // ↑ broadcast might race ahead of MemberUp for some peers
   ```

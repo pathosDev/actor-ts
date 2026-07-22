@@ -304,7 +304,7 @@ describe('BackoffSupervisor — lifecycle', () => {
 /* triggerOn modes (#68)                                          */
 /* ============================================================== */
 
-/** Child that stops itself cleanly the first time it gets a `stop` cmd. */
+/** Child that stops itself cleanly the first time it gets a `stop` command. */
 type SelfStopMessage = { kind: 'stop' } | { kind: 'crash' } | { kind: 'echo'; value: number };
 
 let lifecycleStops = 0;

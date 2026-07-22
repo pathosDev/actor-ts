@@ -93,9 +93,9 @@ class VoiceSessionActor extends PersistentActor<SessionCommand, SessionEvent, Se
     return state;
   }
 
-  async onCommand(state, cmd: SessionCommand) {
-    if (cmd.kind === 'audio-chunk') {
-      const text = await transcribe(cmd.audioBytes);
+  async onCommand(state, command: SessionCommand) {
+    if (command.kind === 'audio-chunk') {
+      const text = await transcribe(command.audioBytes);
       this.persist({ kind: 'chunk-transcribed', text, ts: Date.now() }, () => {
         // Push an den WS-Client
         this.context.system.eventStream.publish(new TranscriptUpdate(this.sessionId, text));

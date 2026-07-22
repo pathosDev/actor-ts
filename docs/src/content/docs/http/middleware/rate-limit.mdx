@@ -16,14 +16,14 @@ const limited = rateLimit({
   cache:    new InMemoryCache(),
   windowMs: 60_000,                       // 1 minute window
   max:      100,                          // 100 reqs per key per minute
-  key:      (req) => req.remoteAddress ?? 'unknown',   // socket peer — not a spoofable header
+  key:      (request) => request.remoteAddress ?? 'unknown',   // socket peer — not a spoofable header
 });
 
 const routes = path('api', post(limited(apiHandler)));
 ```
 
 Each distinct key (here: per client IP taken from the socket peer,
-`req.remoteAddress`) gets a 100/minute budget.  Excess requests get 429
+`request.remoteAddress`) gets a 100/minute budget.  Excess requests get 429
 with a `Retry-After` header.  **Key on a value the client can't forge** —
 don't use `x-forwarded-for` unless a trusted proxy sets it (see the
 security note below), or an attacker rotates it per request to bypass the
@@ -36,9 +36,9 @@ interface RateLimitOptions {
   cache:       Cache;
   windowMs:    number;
   max:         number;
-  key:         (req: HttpRequest) => string | Promise<string>;
+  key:         (request: HttpRequest) => string | Promise<string>;
   keyPrefix?:  string;                    // default 'rl:'
-  onLimit?:    (ctx: RateLimitContext) => HttpResponse;
+  onLimit?:    (context: RateLimitContext) => HttpResponse;
 }
 
 interface RateLimitContext {
@@ -55,9 +55,9 @@ interface RateLimitContext {
 | `cache` | Backing store (in-memory or Redis). |
 | `windowMs` | Fixed-window size. |
 | `max` | Max requests per key per window. |
-| `key(req)` | Derive the rate-limit key — typically client IP, user ID, or API key. **Required.** |
+| `key(request)` | Derive the rate-limit key — typically client IP, user ID, or API key. **Required.** |
 | `keyPrefix` | Cache-key namespace.  Default `'rl:'` so multiple limiters in the same Redis don't collide. |
-| `onLimit(ctx)` | Override the 429 response — full control over status / body / headers. |
+| `onLimit(context)` | Override the 429 response — full control over status / body / headers. |
 
 ## Custom keying
 
@@ -66,9 +66,9 @@ const limited = rateLimit({
   cache,
   windowMs: 60_000,
   max:      100,
-  key:      (req) => {
-    const userId = extractUserId(req);
-    return userId ? `user:${userId}` : `ip:${req.remoteAddress ?? 'unknown'}`;
+  key:      (request) => {
+    const userId = extractUserId(request);
+    return userId ? `user:${userId}` : `ip:${request.remoteAddress ?? 'unknown'}`;
   },
 });
 ```
@@ -118,7 +118,7 @@ rateLimit({
   cache:    new RedisCache(redisCacheOptions),
   windowMs: 60_000,
   max:      100,
-  key:      (req) => req.remoteAddress ?? 'unknown',   // socket peer — not a spoofable header
+  key:      (request) => request.remoteAddress ?? 'unknown',   // socket peer — not a spoofable header
 });
 ```
 
@@ -145,12 +145,12 @@ Three good fits:
 // Different limits per handler:
 const apiLimited = rateLimit({
   cache, windowMs: 60_000, max: 1000,
-  key: (req) => req.headers['x-user-id'] ?? req.remoteAddress ?? 'anon',
+  key: (request) => request.headers['x-user-id'] ?? request.remoteAddress ?? 'anon',
 });
 
 const loginLimited = rateLimit({
   cache, windowMs: 60_000, max: 10,
-  key: (req) => `login:${req.remoteAddress ?? 'unknown'}`,
+  key: (request) => `login:${request.remoteAddress ?? 'unknown'}`,
 });
 
 const routes = concat(
@@ -167,7 +167,7 @@ import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="Trusting X-Forwarded-For">
   ```ts
-  key: (req) => req.headers['x-forwarded-for'];   // ✗ spoofable
+  key: (request) => request.headers['x-forwarded-for'];   // ✗ spoofable
   ```
   Behind a load balancer / proxy, the real IP is in
   `X-Forwarded-For` (or similar).  But clients can set this

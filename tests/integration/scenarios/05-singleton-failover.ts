@@ -34,29 +34,29 @@ interface WhoResponse {
 }
 
 async function who(host: string, controlPort: number): Promise<WhoResponse> {
-  const res = await fetch(`http://${host}:${controlPort}/test/singleton/who`);
-  if (!res.ok) throw new Error(`/test/singleton/who on ${host} → ${res.status}: ${await res.text()}`);
-  return await res.json() as WhoResponse;
+  const response = await fetch(`http://${host}:${controlPort}/test/singleton/who`);
+  if (!response.ok) throw new Error(`/test/singleton/who on ${host} → ${response.status}: ${await response.text()}`);
+  return await response.json() as WhoResponse;
 }
 
 async function inc(host: string, controlPort: number): Promise<void> {
-  const res = await fetch(`http://${host}:${controlPort}/test/singleton/inc`, { method: 'POST' });
-  if (!res.ok) throw new Error(`/test/singleton/inc on ${host} → ${res.status}: ${await res.text()}`);
+  const response = await fetch(`http://${host}:${controlPort}/test/singleton/inc`, { method: 'POST' });
+  if (!response.ok) throw new Error(`/test/singleton/inc on ${host} → ${response.status}: ${await response.text()}`);
 }
 
 async function leave(host: string, controlPort: number): Promise<void> {
-  const res = await fetch(`http://${host}:${controlPort}/test/leave`, { method: 'POST' });
-  if (!res.ok) throw new Error(`/test/leave on ${host} → ${res.status}: ${await res.text()}`);
+  const response = await fetch(`http://${host}:${controlPort}/test/leave`, { method: 'POST' });
+  if (!response.ok) throw new Error(`/test/leave on ${host} → ${response.status}: ${await response.text()}`);
 }
 
 
 export const scenario: Scenario = {
   name: '05-singleton-failover',
-  async run(ctx) {
+  async run(context) {
     // Earlier scenarios may have left a node — work only with the
     // members that still answer.  Need >=3 for a meaningful
     // failover test (1 host + 2 to elect a new leader).
-    const live = await clusterLiveNodes(ctx.nodes, ctx.controlPort);
+    const live = await clusterLiveNodes(context.nodes, context.controlPort);
     if (live.length < 3) {
       console.log(`[05] skipping — need >=3 live nodes for failover, have ${live.length}`);
       return;
@@ -72,7 +72,7 @@ export const scenario: Scenario = {
       'every node\'s proxy reports the same singleton host',
       async () => {
         const responses = await Promise.all(live.map((h) =>
-          who(h, ctx.controlPort).catch(() => null)));
+          who(h, context.controlPort).catch(() => null)));
         if (responses.some((r) => r === null)) return false;
         const hosts = new Set(responses.map((r) => r!.host));
         if (hosts.size !== 1) return false;
@@ -90,12 +90,12 @@ export const scenario: Scenario = {
     console.log('[05] incrementing 7 times via mixed proxies...');
     // Pick `inc` senders from `live` round-robin to spread sources.
     const senders = Array.from({ length: 7 }, (_, i) => live[i % live.length]!);
-    for (const sender of senders) await inc(sender, ctx.controlPort);
+    for (const sender of senders) await inc(sender, context.controlPort);
     // Allow async fan-in.
     await sleep(500);
 
     // Read value back from any live node; must equal 7.
-    const afterIncs = await who(live[0]!, ctx.controlPort);
+    const afterIncs = await who(live[0]!, context.controlPort);
     if (afterIncs.value !== 7) {
       throw new Error(`[05] expected singleton.value === 7 after 7 increments, got ${afterIncs.value}`);
     }
@@ -104,7 +104,7 @@ export const scenario: Scenario = {
     // 3. Force the host node to leave gracefully.
     if (!initialHost) throw new Error('[05] no initial host recorded');
     console.log(`[05] graceful-leave on ${initialHost}...`);
-    await leave(initialHost, ctx.controlPort);
+    await leave(initialHost, context.controlPort);
 
     // 4. Wait for failover: some OTHER node now hosts.  Filter the
     //    pollee list to exclude the leaving node — its endpoints
@@ -116,7 +116,7 @@ export const scenario: Scenario = {
       'a different node hosts the singleton after failover',
       async () => {
         const responses = await Promise.all(remainingNodes.map((h) =>
-          who(h, ctx.controlPort).catch(() => null)));
+          who(h, context.controlPort).catch(() => null)));
         const liveResponses = responses.filter((r) => r !== null);
         if (liveResponses.length === 0) return false;
         const hosts = new Set(liveResponses.map((r) => r!.host));
@@ -136,7 +136,7 @@ export const scenario: Scenario = {
     // and the proxy switching could land on the new instance —
     // but the value must be SMALL (much less than the 7 we counted
     // before failover).
-    const afterFailover = await who(remainingNodes[0]!, ctx.controlPort);
+    const afterFailover = await who(remainingNodes[0]!, context.controlPort);
     if (afterFailover.value >= 7) {
       throw new Error(`[05] expected new singleton's counter to reset, got ${afterFailover.value}`);
     }

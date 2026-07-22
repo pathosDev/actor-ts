@@ -26,16 +26,16 @@ import { spawn } from 'node:child_process';
  * deleting a rule that may not exist yet (e.g. `iptables -D` of
  * a never-installed rule returns exit code 2).
  */
-async function sh(cmd: string, args: string[], allowFailure = false): Promise<string> {
+async function sh(command: string, args: string[], allowFailure = false): Promise<string> {
   return new Promise((resolve, reject) => {
-    const child = spawn(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawn(command, args, { stdio: ['ignore', 'pipe', 'pipe'] });
     let stdout = '';
     let stderr = '';
     child.stdout.on('data', (d) => { stdout += d.toString(); });
     child.stderr.on('data', (d) => { stderr += d.toString(); });
     child.on('close', (code) => {
       if (code !== 0 && !allowFailure) {
-        reject(new Error(`${cmd} ${args.join(' ')} exited with ${code}\n${stderr}`));
+        reject(new Error(`${command} ${args.join(' ')} exited with ${code}\n${stderr}`));
       } else {
         resolve(stdout);
       }

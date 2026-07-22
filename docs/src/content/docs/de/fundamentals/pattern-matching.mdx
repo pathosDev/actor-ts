@@ -1,6 +1,6 @@
 ---
 title: Pattern Matching
-description: Das `match(msg).with(...).exhaustive()`-Idiom, das actor-ts überall verwendet — gebaut auf ts-pattern. Compile-time-Exhaustiveness, Typ-Narrowing und die Konventionen zum Matchen auf `kind`-Diskriminatoren.
+description: Das `match(message).with(...).exhaustive()`-Idiom, das actor-ts überall verwendet — gebaut auf ts-pattern. Compile-time-Exhaustiveness, Typ-Narrowing und die Konventionen zum Matchen auf `kind`-Diskriminatoren.
 ---
 
 Innerhalb des `onReceive` eines Actors empfängst du einen Wert vom
@@ -13,7 +13,7 @@ gegenüber handgeschriebenen `if/else`-Leitern:
 1. **Compile-time-Exhaustiveness.**  Vergiss ein `kind`, der
    Compiler scheitert — kein stiller Durchfall.
 2. **Typ-Narrowing innerhalb jedes Arms.**  Keine `as`-Casts, keine
-   manuellen `if (msg.kind === ...)`-Guards innerhalb von Handlern.
+   manuellen `if (message.kind === ...)`-Guards innerhalb von Handlern.
 3. **Lesbar für nicht-triviale Unions.**  Bei 5+ Varianten bleibt
    die `match`-Form scannbar; eine `if/else if`-Leiter tut das
    nicht.
@@ -25,28 +25,35 @@ import { Actor } from 'actor-ts';
 import { match } from 'ts-pattern';
 
 type Command =
-  | { readonly kind: 'inc' }
-  | { readonly kind: 'dec' }
+  | { readonly kind: 'increment' }
+  | { readonly kind: 'decrement' }
   | { readonly kind: 'set'; readonly to: number }
   | { readonly kind: 'reset' };
 
 class Counter extends Actor<Command> {
   private count = 0;
 
-  override onReceive(cmd: Command): void {
-    match(cmd)
-      .with({ kind: 'inc' },   ()  => { this.count++; })
-      .with({ kind: 'dec' },   ()  => { this.count--; })
-      .with({ kind: 'set' },   (m) => { this.count = m.to; })
-      .with({ kind: 'reset' }, ()  => { this.count = 0; })
+  override onReceive(command: Command): void {
+    match(command)
+      .with({ kind: 'increment' },   ()  => this.onIncrement())
+      .with({ kind: 'decrement' },   ()  => this.onDecrement())
+      .with({ kind: 'set' },   (m) => this.onSet(m))
+      .with({ kind: 'reset' }, ()  => this.onReset())
       .exhaustive();
   }
+
+  private onIncrement():   void { this.count++; }
+  private onDecrement():   void { this.count--; }
+  private onSet(command: Extract<Command, { kind: 'set' }>): void { this.count = command.to; }
+  private onReset(): void { this.count = 0; }
 }
 ```
 
-Innerhalb des `set`-Arms ist `m` automatisch als
-`{ kind: 'set'; to: number }` typisiert — der Diskriminator
-verengt den Typ ohne Cast.
+Jeder Arm ist ein dünner Aufruf einer privaten `onXxx`-Handler-Methode
+— die Hausregel (siehe unten), nie ein Inline-Rumpf.  Das Narrowing
+überlebt die Übergabe: Der Parameter von `onSet` ist als
+`Extract<Command, { kind: 'set' }>` typisiert, sodass `command.to` ohne
+Cast eine `number` ist.
 
 `.exhaustive()` am Ende ist der **Compile-time-Check**: wenn du
 später `{ kind: 'double' }` zu `Command` hinzufügst und den passenden
@@ -54,6 +61,22 @@ später `{ kind: 'double' }` zu `Command` hinzufügst und den passenden
 TypeScript zu kompilieren und zeigt auf den
 `.exhaustive()`-Aufruf.  Der Build fängt das Versäumnis ab; du
 shippst nie eine still verworfene Nachricht.
+
+## Jeden Arm in einen privaten Handler auslagern
+
+Beachte das minimale Beispiel oben: Jeder Arm ist ein dünner Aufruf
+einer privaten `onXxx`-Methode, kein Inline-Rumpf.  Das ist die
+Hausregel — jeder `.with(…)` **und** jedes `.otherwise(…)` delegiert,
+auch ein Einzeiler, ohne Ausnahme.  Der Matcher bleibt eine scannbare
+Dispatch-Tabelle; die Logik lebt in benannten Handlern.
+
+- Benenne den Handler `on` + PascalCase des `kind` — `onIncrement`, `onData`,
+  `onCloseAccount`; der `.otherwise(…)`-Fallback heißt `onUnhandled`.
+- Typisiere den Parameter als die verengte Variante
+  (`Extract<Command, { kind: 'set' }>`), damit der Handler das
+  Narrowing von ts-pattern behält; lass ihn bei nutzlastfreien Kinds weg.
+
+Das ist eine harte Regel in der `AGENTS.md` des Repos (Code style).
 
 ## Die `kind`-Konvention
 
@@ -87,7 +110,7 @@ Editoren können auf der Literal-Union autovervollständigen.
 ### Object-Pattern-Narrowing
 
 ```ts
-match(cmd)
+match(command)
   .with({ kind: 'deposit', amount: P.number },  (m) => { /* m.amount: number */ })
   .with({ kind: 'deposit', amount: 0 },          ()  => { /* Zero-Amount-Deposit */ })
   .otherwise(() => { /* Fallthrough */ });
@@ -117,9 +140,9 @@ für den vollen Set.
 `match` ist ein Ausdruck — du kannst Werte zurückgeben:
 
 ```ts
-const reply = match(cmd)
-  .with({ kind: 'get' }, () => this.count)
-  .with({ kind: 'inc' }, () => this.count + 1)
+const reply = match(command)
+  .with({ kind: 'get' },  () => this.onGet())    // onGet(): number
+  .with({ kind: 'next' }, () => this.onNext())   // onNext(): number
   .exhaustive();
 ```
 
@@ -131,10 +154,10 @@ bequem.
 ### `.otherwise` vs `.exhaustive`
 
 ```ts
-match(cmd)
-  .with({ kind: 'inc' }, () => { ... })
-  .with({ kind: 'dec' }, () => { ... })
-  .otherwise(() => this.log.warn('unknown cmd'));   // Runtime-Fallback
+match(command)
+  .with({ kind: 'increment' }, ()  => this.onIncrement())
+  .with({ kind: 'decrement' }, ()  => this.onDecrement())
+  .otherwise((m) => this.onUnhandled(m));   // Runtime-Fallback
 ```
 
 `.otherwise(fn)` fängt alles, was nicht gematcht wurde.  Verwende
@@ -152,10 +175,10 @@ Für Unions mit zwei oder drei Varianten liest sich eine einfache
 `if`-Kette sauberer:
 
 ```ts
-override onReceive(cmd: Command): void {
-  if (cmd.kind === 'inc') this.count++;
-  else if (cmd.kind === 'dec') this.count--;
-  else cmd.replyTo.tell(this.count);
+override onReceive(command: Command): void {
+  if (command.kind === 'increment') this.count++;
+  else if (command.kind === 'decrement') this.count--;
+  else command.replyTo.tell(this.count);
 }
 ```
 
@@ -180,7 +203,7 @@ import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="Pattern-Matche nicht auf `instanceof` für Cross-Process-Nachrichten">
   ```ts
-  match(msg)
+  match(message)
     .with(P.instanceOf(UserLoggedIn), () => ...)   // ← bricht über das Wire
   ```
   Klassenidentität überlebt die Serialisierung nicht — der

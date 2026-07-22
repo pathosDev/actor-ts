@@ -15,11 +15,11 @@ import {
 } from '../../src/index.js';
 import { runGroup } from '../lib/harness.js';
 
-type Msg = { pri: number; id: number } | { kind: 'count' };
+type Message = { pri: number; id: number } | { kind: 'count' };
 
-class Worker extends Actor<Msg> {
+class Worker extends Actor<Message> {
   private seen = 0;
-  override onReceive(m: Msg): void {
+  override onReceive(m: Message): void {
     if ('kind' in m) this.sender.forEach((s) => s.tell(this.seen));
     else this.seen++;
   }
@@ -34,14 +34,14 @@ async function main(): Promise<void> {
 
   const defaultProps = Props.create(() => new Worker());
   const priorityProps = Props.create(() => new Worker())
-    .withMailbox(() => new PriorityMailbox<Msg>({
+    .withMailbox(() => new PriorityMailbox<Message>({
       priorityFor: (m) => ('pri' in m ? m.pri : 0),
     }) as never);
 
   const drain = async (props: typeof defaultProps): Promise<void> => {
     const ref = system.spawnAnonymous(props);
     for (let i = 0; i < batch; i++) ref.tell({ pri: (i * 7) % 5, id: i });
-    await ask<Msg, number>(ref, { kind: 'count' }, 30_000);
+    await ask<Message, number>(ref, { kind: 'count' }, 30_000);
     ref.stop();
   };
 

@@ -25,10 +25,10 @@ import { LogLevel, NoopLogger } from '../../../../../src/Logger.js';
 import { Props } from '../../../../../src/Props.js';
 import type { ActorRef } from '../../../../../src/ActorRef.js';
 
-type Cmd = { id: string; op: 'ping' };
+type Command = { id: string; op: 'ping' };
 
-class Entity extends Actor<Cmd> {
-  override onReceive(m: Cmd): void {
+class Entity extends Actor<Command> {
+  override onReceive(m: Command): void {
     if (m.op === 'ping') this.sender.forEach((s) => s.tell('pong'));
   }
 }
@@ -47,7 +47,7 @@ async function waitFor(pred: () => boolean, timeoutMs = 3_000, stepMs = 25): Pro
 interface Node {
   sys: ActorSystem;
   cluster: Cluster;
-  region: ActorRef<Cmd>;
+  region: ActorRef<Command>;
 }
 
 async function startNodeWithLease(
@@ -61,7 +61,7 @@ async function startNodeWithLease(
     .withTransport(new InMemoryTransport(new NodeAddress(systemName, 'h', port)))
     .withGossipIntervalMs(30);
   const cluster = await Cluster.join(sys, clusterOptions);
-  const shardingOptions = StartShardingOptions.create<Cmd>()
+  const shardingOptions = StartShardingOptions.create<Command>()
     .withTypeName('entity')
     .withEntityProps(Props.create(() => new Entity()))
     .withExtractEntityId((m) => m.id)
@@ -69,7 +69,7 @@ async function startNodeWithLease(
     .withRebalanceIntervalMs(200)
     .withLease(lease)
     .withAcquireRetryIntervalMs(100);
-  const region = cluster.sharding.start<Cmd>(shardingOptions);
+  const region = cluster.sharding.start<Command>(shardingOptions);
   return { sys, cluster, region };
 }
 

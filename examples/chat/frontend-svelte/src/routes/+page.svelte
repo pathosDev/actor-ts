@@ -5,7 +5,7 @@
 -->
 <script lang="ts">
   import { chat } from '$lib/chat.svelte';
-  import { isDmRoom, type RoomName } from '$lib/protocol';
+  import { isDirectMessageRoom, type RoomName } from '$lib/protocol';
 
   let username = $state('');
   let password = $state('');
@@ -64,7 +64,7 @@
     chat.currentRoom ? chat.usersByRoom[chat.currentRoom] ?? [] : [],
   );
   const displayedUsers = $derived(
-    (chat.currentRoom && isDmRoom(chat.currentRoom) && baseUsers.length === 0
+    (chat.currentRoom && isDirectMessageRoom(chat.currentRoom) && baseUsers.length === 0
       ? [chat.currentRoom.slice(1), chat.username ?? '']
       : baseUsers).filter((u) => !!u),
   );
@@ -107,16 +107,16 @@
         <ul class="rooms">
           {#each chat.rooms as room (room)}
             {@const unread = chat.unreadByRoom[room] ?? 0}
-            {@const dm = isDmRoom(room)}
+            {@const directMessage = isDirectMessageRoom(room)}
             <li
               class:active={room === chat.currentRoom}
-              class:dm
+              class:dm={directMessage}
               onclick={() => chat.selectRoom(room)}
               role="button"
               tabindex="0"
               onkeydown={(e) => e.key === 'Enter' && chat.selectRoom(room)}
             >
-              <span>{dm ? room : `# ${room}`}</span>
+              <span>{directMessage ? room : `# ${room}`}</span>
               {#if unread > 0}
                 <span class="badge">{unread}</span>
               {/if}
@@ -181,10 +181,10 @@
             <li
               class:self={isSelf}
               title={isSelf ? '' : `Click to message @${u}`}
-              onclick={() => !isSelf && chat.openDm(u)}
+              onclick={() => !isSelf && chat.openDirectMessage(u)}
               role="button"
               tabindex="0"
-              onkeydown={(e) => !isSelf && e.key === 'Enter' && chat.openDm(u)}
+              onkeydown={(e) => !isSelf && e.key === 'Enter' && chat.openDirectMessage(u)}
             >
               {u}{isSelf ? ' (you)' : ''}
             </li>

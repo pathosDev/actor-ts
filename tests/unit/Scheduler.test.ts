@@ -12,11 +12,11 @@ class RecordingRef<T = unknown> extends ActorRef<T> {
   tell(message: T): void { this.received.push(message); }
 }
 
-describe('Scheduler.scheduleOnceFn', () => {
+describe('Scheduler.scheduleOnceFunction', () => {
   test('fires the callback after the delay', async () => {
     const scheduler = new Scheduler();
     let fired = false;
-    scheduler.scheduleOnceFn(20, () => { fired = true; });
+    scheduler.scheduleOnceFunction(20, () => { fired = true; });
     expect(fired).toBe(false);
     await sleep(60);
     expect(fired).toBe(true);
@@ -25,7 +25,7 @@ describe('Scheduler.scheduleOnceFn', () => {
   test('cancel prevents the callback', async () => {
     const scheduler = new Scheduler();
     let fired = false;
-    const cancellable = scheduler.scheduleOnceFn(20, () => { fired = true; });
+    const cancellable = scheduler.scheduleOnceFunction(20, () => { fired = true; });
     expect(cancellable.cancel()).toBe(true);
     expect(cancellable.isCancelled).toBe(true);
     await sleep(50);
@@ -34,7 +34,7 @@ describe('Scheduler.scheduleOnceFn', () => {
 
   test('cancel called twice returns false the second time', () => {
     const scheduler = new Scheduler();
-    const cancellable = scheduler.scheduleOnceFn(100, () => {});
+    const cancellable = scheduler.scheduleOnceFunction(100, () => {});
     expect(cancellable.cancel()).toBe(true);
     expect(cancellable.cancel()).toBe(false);
   });
@@ -42,7 +42,7 @@ describe('Scheduler.scheduleOnceFn', () => {
   test('shutdown prevents delivery for unfired timers', async () => {
     const scheduler = new Scheduler();
     let fired = false;
-    scheduler.scheduleOnceFn(30, () => { fired = true; });
+    scheduler.scheduleOnceFunction(30, () => { fired = true; });
     scheduler.shutdown();
     await sleep(60);
     expect(fired).toBe(false);
@@ -53,7 +53,7 @@ describe('Scheduler.scheduleOnceFn', () => {
     console.error = () => {};
     try {
       const scheduler = new Scheduler();
-      scheduler.scheduleOnceFn(10, () => { throw new Error('boom'); });
+      scheduler.scheduleOnceFunction(10, () => { throw new Error('boom'); });
       await sleep(30);
       expect(true).toBe(true);
     } finally {
@@ -81,11 +81,11 @@ describe('Scheduler.scheduleOnce (message to actor)', () => {
   });
 });
 
-describe('Scheduler.scheduleAtFixedRateFn', () => {
+describe('Scheduler.scheduleAtFixedRateFunction', () => {
   test('fires periodically until cancelled', async () => {
     const scheduler = new Scheduler();
     let count = 0;
-    const cancellable = scheduler.scheduleAtFixedRateFn(0, 20, () => { count++; });
+    const cancellable = scheduler.scheduleAtFixedRateFunction(0, 20, () => { count++; });
     await sleep(110);
     cancellable.cancel();
     const snapshot = count;
@@ -98,7 +98,7 @@ describe('Scheduler.scheduleAtFixedRateFn', () => {
   test('respects the initial delay', async () => {
     const scheduler = new Scheduler();
     let count = 0;
-    const cancellable = scheduler.scheduleAtFixedRateFn(40, 20, () => { count++; });
+    const cancellable = scheduler.scheduleAtFixedRateFunction(40, 20, () => { count++; });
     await sleep(10); // inside initial delay
     expect(count).toBe(0);
     await sleep(80);
@@ -109,7 +109,7 @@ describe('Scheduler.scheduleAtFixedRateFn', () => {
   test('shutdown suppresses further firings', async () => {
     const scheduler = new Scheduler();
     let count = 0;
-    scheduler.scheduleAtFixedRateFn(0, 20, () => { count++; });
+    scheduler.scheduleAtFixedRateFunction(0, 20, () => { count++; });
     await sleep(50);
     scheduler.shutdown();
     const snapshot = count;
@@ -123,7 +123,7 @@ describe('Scheduler.scheduleAtFixedRateFn', () => {
     try {
       const scheduler = new Scheduler();
       let count = 0;
-      const cancellable = scheduler.scheduleAtFixedRateFn(0, 20, () => {
+      const cancellable = scheduler.scheduleAtFixedRateFunction(0, 20, () => {
         count++;
         if (count === 2) throw new Error('transient');
       });

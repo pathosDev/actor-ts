@@ -11,11 +11,11 @@ schneller für binärlastige Daten, ähnliche API-Oberfläche.
 import { CborSerializer } from 'actor-ts';
 
 const serializer = new CborSerializer();
-const bytes = serializer.toBinary({ kind: 'inc', n: 1 });
+const bytes = serializer.toBinary({ kind: 'increment', n: 1 });
 //  → Uint8Array (binäres CBOR, kleiner als JSON)
 
 const decoded = serializer.fromBinary(bytes, '');
-//  → { kind: 'inc', n: 1 }
+//  → { kind: 'increment', n: 1 }
 ```
 
 ## Wann CBOR sinnvoll ist
@@ -35,7 +35,7 @@ nicht.
 
 | Payload | JSON | CBOR | Ersparnis |
 | --- | --- | --- | --- |
-| `{ kind: 'inc' }` | 14 Bytes | 9 Bytes | 36 % |
+| `{ kind: 'increment' }` | 14 Bytes | 9 Bytes | 36 % |
 | Order mit 5 Items | 250 Bytes | 180 Bytes | 28 % |
 | Bild-Bytes (10 KB) | 13,3 KB (base64) | 10 KB (nativ) | 25 % |
 | Tief verschachteltes Objekt | variiert | variiert | typisch 20–40 % |

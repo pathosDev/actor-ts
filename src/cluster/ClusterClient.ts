@@ -91,7 +91,7 @@ export class ClusterClient {
   private socket: TcpSocketLike | null = null;
   private decoder = new FrameDecoder();
   private connectingPromise: Promise<void> | null = null;
-  private nextContactIdx = 0;
+  private nextContactIndex = 0;
   private readonly pending = new Map<string, PendingAsk>();
   private stopped = false;
   /** Filled by `hello-ack`; the contact-point's real address (post-handshake). */
@@ -208,7 +208,7 @@ export class ClusterClient {
     // so a future reconnect prefers the next one.
     for (let attempt = 0; attempt < this.contactPoints.length; attempt++) {
       const target = this.contactPoints[
-        (this.nextContactIdx + attempt) % this.contactPoints.length
+        (this.nextContactIndex + attempt) % this.contactPoints.length
       ]!;
       try {
         const sock = await new Promise<TcpSocketLike>((resolve, reject) => {
@@ -254,7 +254,7 @@ export class ClusterClient {
         void sock;
         // Move the round-robin index past the successful contact-point
         // so the next reconnect prefers a different one.
-        this.nextContactIdx = (this.nextContactIdx + attempt + 1) % this.contactPoints.length;
+        this.nextContactIndex = (this.nextContactIndex + attempt + 1) % this.contactPoints.length;
         return;
       } catch (e) {
         errors.push(e as Error);
@@ -315,11 +315,11 @@ export class ClusterClient {
     this.pending.clear();
   }
 
-  private writeFrame(msg: WireMessage): void {
+  private writeFrame(message: WireMessage): void {
     if (!this.socket) {
       throw new Error('ClusterClient: not connected — call send()/ask() which awaits ensureConnected()');
     }
-    this.socket.write(encodeFrame(msg));
+    this.socket.write(encodeFrame(message));
   }
 }
 

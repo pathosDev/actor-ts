@@ -14,33 +14,45 @@ import {
   Props,
 } from '../../src/index.js';
 
-type Msg =
-  | { kind: 'heartbeat'; ts: number }
-  | { kind: 'command'; id: string }
-  | { kind: 'log'; line: string };
+type HeartbeatMessage = { kind: 'heartbeat'; ts: number };
+type CommandMessage = { kind: 'command'; id: string };
+type LogMessage = { kind: 'log'; line: string };
+type Message = HeartbeatMessage | CommandMessage | LogMessage;
 
-const priorityFor = (m: Msg): number =>
+const priorityFor = (m: Message): number =>
   match(m)
     .with({ kind: 'heartbeat' }, () => 0)
     .with({ kind: 'command' }, () => 1)
     .with({ kind: 'log' }, () => 10)
     .exhaustive();
 
-class Dispatcher extends Actor<Msg> {
-  override async onReceive(m: Msg): Promise<void> {
+class Dispatcher extends Actor<Message> {
+  override async onReceive(m: Message): Promise<void> {
     await Bun.sleep(15); // simulate non-trivial work
     match(m)
-      .with({ kind: 'heartbeat' }, (hb) => console.log(`HB @ ${hb.ts}`))
-      .with({ kind: 'command' }, (c) => console.log(`command ${c.id}`))
-      .with({ kind: 'log' }, (l) => console.log(`log: ${l.line}`))
+      .with({ kind: 'heartbeat' }, (hb) => this.onHeartbeat(hb))
+      .with({ kind: 'command' }, (c) => this.onCommand(c))
+      .with({ kind: 'log' }, (l) => this.onLog(l))
       .exhaustive();
+  }
+
+  private onHeartbeat(hb: HeartbeatMessage): void {
+    console.log(`HB @ ${hb.ts}`);
+  }
+
+  private onCommand(c: CommandMessage): void {
+    console.log(`command ${c.id}`);
+  }
+
+  private onLog(l: LogMessage): void {
+    console.log(`log: ${l.line}`);
   }
 }
 
 async function main(): Promise<void> {
   const system = ActorSystem.create('pri-dispatch');
   const props = Props.create(() => new Dispatcher())
-    .withMailbox(() => new PriorityMailbox<Msg>({ priorityFor }) as never);
+    .withMailbox(() => new PriorityMailbox<Message>({ priorityFor }) as never);
   const ref = system.spawnAnonymous(props);
 
   // Fire a burst: a bunch of logs, a heartbeat, a command, a few more logs.

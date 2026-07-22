@@ -30,10 +30,10 @@ import type { MemcachedCacheOptions, MemcachedCacheOptionsType } from './Memcach
 /** Subset of `memjs.Client` we use.  memjs uses Buffer; we always pass strings. */
 export interface MemcachedClientLike {
   get(key: string): Promise<{ value: Buffer | null; flags?: Buffer | null }>;
-  set(key: string, value: string | Buffer, opts?: { expires?: number }): Promise<boolean>;
-  add(key: string, value: string | Buffer, opts?: { expires?: number }): Promise<boolean>;
+  set(key: string, value: string | Buffer, settings?: { expires?: number }): Promise<boolean>;
+  add(key: string, value: string | Buffer, settings?: { expires?: number }): Promise<boolean>;
   delete(key: string): Promise<boolean>;
-  increment(key: string, amount: number, opts?: { initial?: number; expires?: number }): Promise<{ value: number | null }>;
+  increment(key: string, amount: number, settings?: { initial?: number; expires?: number }): Promise<{ value: number | null }>;
   quit(): Promise<void>;
 }
 
@@ -43,17 +43,17 @@ export class MemcachedCache implements Cache {
   private closed = false;
 
   constructor(options: MemcachedCacheOptions = {}) {
-    const opts = options as MemcachedCacheOptionsType;
-    new MemcachedCacheOptionsValidator().validate(opts);
-    this.keyPrefix = opts.keyPrefix ?? '';
+    const settings = options as MemcachedCacheOptionsType;
+    new MemcachedCacheOptionsValidator().validate(settings);
+    this.keyPrefix = settings.keyPrefix ?? '';
     this.clientLazy = Lazy.of(async () => {
-      if (opts.client) return opts.client;
+      if (settings.client) return settings.client;
       const memjs = await memjsLazy.get();
       const Client = (memjs as { Client?: MemjsClientStatic }).Client
         ?? (memjs as unknown as MemjsClientStatic);
-      return Client.create(opts.servers ?? 'localhost:11211', {
-        username: opts.username,
-        password: opts.password,
+      return Client.create(settings.servers ?? 'localhost:11211', {
+        username: settings.username,
+        password: settings.password,
       }) as unknown as MemcachedClientLike;
     });
   }
@@ -260,7 +260,7 @@ function msToSeconds(ttlMs: number | undefined): number | undefined {
 }
 
 interface MemjsClientStatic {
-  create(servers: string, opts?: { username?: string; password?: string }): MemcachedClientLike;
+  create(servers: string, settings?: { username?: string; password?: string }): MemcachedClientLike;
 }
 
 const memjsLazy: Lazy<Promise<unknown>> = Lazy.of(async () => {

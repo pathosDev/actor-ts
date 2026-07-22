@@ -62,11 +62,11 @@ export class WebsocketConnectionActor<TOut, TIn, TSelf = never>
   }
 
   override preStart(): void {
-    const conn = new WebsocketConnectionImplementation<TOut>(this.d.id, this.d.upgrade, this.d.socket, this.self, this.system.name);
-    this.connection = conn;
+    const connection = new WebsocketConnectionImplementation<TOut>(this.d.id, this.d.upgrade, this.d.socket, this.self, this.system.name);
+    this.connection = connection;
     // Tell the hub 'connected' BEFORE attaching listeners, so it is
     // mailbox-ordered before any inbound data flushed by setListeners.
-    this.d.hub.tell(websocketConnectedSignal<TOut>(conn), conn);
+    this.d.hub.tell(websocketConnectedSignal<TOut>(connection), connection);
     this.d.socket.setListeners({
       onMessage: (data) => this.handleInbound(data),
       onClose: (code, reason) => this.handleClose(code, reason),
@@ -74,16 +74,16 @@ export class WebsocketConnectionActor<TOut, TIn, TSelf = never>
     });
   }
 
-  override onReceive(cmd: WebsocketOutboundCommand<TOut>): void {
+  override onReceive(command: WebsocketOutboundCommand<TOut>): void {
     if (this.closed) {
       this.log.debug(`WebsocketConnectionActor ${this.d.id}: command after close — ignored`);
       return;
     }
-    switch (cmd._cmd) {
+    switch (command.kind) {
       case 'out': {
         let frame: WebsocketFrame;
         try {
-          frame = this.d.codec.encode(cmd.msg);
+          frame = this.d.codec.encode(command.message);
         } catch (err) {
           this.log.error(`WebsocketConnectionActor ${this.d.id}: encode failed, dropping message: ${(err as Error).message}`);
           return;
@@ -92,10 +92,10 @@ export class WebsocketConnectionActor<TOut, TIn, TSelf = never>
         break;
       }
       case 'out-raw':
-        this.write(cmd.frame);
+        this.write(command.frame);
         break;
       case 'close':
-        this.closeSocket(cmd.code, cmd.reason);
+        this.closeSocket(command.code, command.reason);
         break;
     }
   }

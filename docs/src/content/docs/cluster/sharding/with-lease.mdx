@@ -26,7 +26,7 @@ const kubernetesLeaseOptions = KubernetesLeaseOptions.create()
 const startShardingOptions = StartShardingOptions.create<Command>()
   .withTypeName('order')
   .withEntityProps(Props.create(() => new OrderEntity()))
-  .withExtractEntityId((msg) => msg.id)
+  .withExtractEntityId((message) => message.id)
   .withLease(new KubernetesLease(
     kubernetesLeaseOptions,
   ));

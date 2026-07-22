@@ -306,8 +306,8 @@
       const MAX_RECONNECT_ATTEMPTS = 8;
       /** Mirrors `isRoomName` in shared/rooms.ts on the server. */
       const ROOM_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,31}$/;
-      const isDmRoom = (r) => typeof r === 'string' && r.startsWith('@');
-      const dmRoomFor = (u) => `@${u}`;
+      const isDirectMessageRoom = (r) => typeof r === 'string' && r.startsWith('@');
+      const directMessageRoomFor = (u) => `@${u}`;
       const state = {
         username: null,
         ws: null,
@@ -346,7 +346,7 @@
       const $rcInput  = document.getElementById('room-create-input');
       const $users    = document.getElementById('users');
       const $usersCnt = document.getElementById('users-count');
-      const $msgs     = document.getElementById('messages');
+      const $messages     = document.getElementById('messages');
       const $typing   = document.getElementById('typing');
       const $compose  = document.getElementById('compose');
       const $cText    = document.getElementById('compose-text');
@@ -366,7 +366,7 @@
         // doing it here makes the intent explicit.
         cancelReconnect();
         if (state.ws && state.ws.readyState === WebSocket.OPEN) {
-          try { state.ws.send(JSON.stringify({ type: 'logout' })); } catch {}
+          try { state.ws.send(JSON.stringify({ kind: 'logout' })); } catch {}
         }
         sessionStorage.removeItem(TOKEN_KEY);
         if (state.ws) { try { state.ws.close(1000, 'logout'); } catch {} }
@@ -385,11 +385,11 @@
       // send differs.
 
       function connectWithLogin(username, password) {
-        connect((ws) => ws.send(JSON.stringify({ type: 'login', username, password })));
+        connect((ws) => ws.send(JSON.stringify({ kind: 'login', username, password })));
       }
 
       function connectWithResume(token) {
-        connect((ws) => ws.send(JSON.stringify({ type: 'resume', token })));
+        connect((ws) => ws.send(JSON.stringify({ kind: 'resume', token })));
       }
 
       function connect(onOpen) {
@@ -397,9 +397,9 @@
         state.ws = ws;
         ws.addEventListener('open', () => onOpen(ws));
         ws.addEventListener('message', (ev) => {
-          let msg;
-          try { msg = JSON.parse(ev.data); } catch { return; }
-          handleServer(msg);
+          let message;
+          try { message = JSON.parse(ev.data); } catch { return; }
+          handleServer(message);
         });
         ws.addEventListener('close', () => {
           state.ws = null;
@@ -447,20 +447,20 @@
       }
 
       /* ============== inbound dispatch ============== */
-      function handleServer(msg) {
-        switch (msg.type) {
-          case 'logged-in':    return onLoggedIn(msg.username, msg.token);
-          case 'login-failed': return onLoginFailed(msg.reason);
-          case 'rooms':        return onRooms(msg.rooms);
-          case 'room-added':   return onRoomAdded(msg.name);
-          case 'room-removed': return onRoomRemoved(msg.name);
-          case 'history':      return onHistory(msg.room, msg.messages);
-          case 'message':      return onMessage(msg.room, { from: msg.from, text: msg.text, ts: msg.ts });
-          case 'users':        return onUsers(msg.room, msg.users);
-          case 'user-typing':  return onUserTyping(msg.room, msg.username);
-          case 'read-receipts': return onReadReceipts(msg.room, msg.receipts);
-          case 'system':       return onSystem(msg.text);
-          default: console.warn('unknown server msg', msg);
+      function handleServer(message) {
+        switch (message.kind) {
+          case 'logged-in':    return onLoggedIn(message.username, message.token);
+          case 'login-failed': return onLoginFailed(message.reason);
+          case 'rooms':        return onRooms(message.rooms);
+          case 'room-added':   return onRoomAdded(message.name);
+          case 'room-removed': return onRoomRemoved(message.name);
+          case 'history':      return onHistory(message.room, message.messages);
+          case 'message':      return onMessage(message.room, { from: message.from, text: message.text, ts: message.ts });
+          case 'users':        return onUsers(message.room, message.users);
+          case 'user-typing':  return onUserTyping(message.room, message.username);
+          case 'read-receipts': return onReadReceipts(message.room, message.receipts);
+          case 'system':       return onSystem(message.text);
+          default: console.warn('unknown server msg', message);
         }
       }
 
@@ -493,8 +493,8 @@
         // Preserve DM "rooms" — they're per-session client state, not
         // part of the cluster-wide directory.  Without this, every
         // `RoomsChanged` broadcast would wipe open DMs.
-        const dms = state.rooms.filter(isDmRoom);
-        state.rooms = [...rooms, ...dms];
+        const directMessages = state.rooms.filter(isDirectMessageRoom);
+        state.rooms = [...rooms, ...directMessages];
         for (const r of state.rooms) {
           if (!state.messagesByRoom.has(r)) state.messagesByRoom.set(r, []);
           if (!state.usersByRoom.has(r))    state.usersByRoom.set(r, []);
@@ -509,9 +509,9 @@
       /** Open a DM with another user — client-side only.  No protocol
        *  frame yet; `join` fires when the user actually selects it,
        *  which mirrors the lazy-history flow for default rooms. */
-      function openDm(otherUser) {
+      function openDirectMessage(otherUser) {
         if (!otherUser || otherUser === state.username) return;
-        const room = dmRoomFor(otherUser);
+        const room = directMessageRoomFor(otherUser);
         if (!state.rooms.includes(room)) {
           state.rooms = [...state.rooms, room];
           state.messagesByRoom.set(room, []);
@@ -578,7 +578,7 @@
         const last = state.lastReadSentByRoom.get(room) ?? 0;
         if (ts <= last) return;
         state.lastReadSentByRoom.set(room, ts);
-        state.ws.send(JSON.stringify({ type: 'read-up-to', room, ts }));
+        state.ws.send(JSON.stringify({ kind: 'read-up-to', room, ts }));
       }
 
       /** Return the highest message ts in a room — used to compute
@@ -634,7 +634,7 @@
         e.preventDefault();
         const text = $cText.value.trim();
         if (!text || !state.currentRoom || !state.ws) return;
-        state.ws.send(JSON.stringify({ type: 'send', room: state.currentRoom, text }));
+        state.ws.send(JSON.stringify({ kind: 'send', room: state.currentRoom, text }));
         $cText.value = '';
       });
       // Send a `typing` frame at most once per 2 s while the user is
@@ -646,7 +646,7 @@
         const now = Date.now();
         if (now - state.lastTypingSentAt < 2000) return;
         state.lastTypingSentAt = now;
-        state.ws.send(JSON.stringify({ type: 'typing', room: state.currentRoom }));
+        state.ws.send(JSON.stringify({ kind: 'typing', room: state.currentRoom }));
       });
 
       $rcForm.addEventListener('submit', (e) => {
@@ -658,7 +658,7 @@
         }
         $rcInput.classList.remove('invalid');
         if (state.ws && state.ws.readyState === WebSocket.OPEN) {
-          state.ws.send(JSON.stringify({ type: 'create-room', name }));
+          state.ws.send(JSON.stringify({ kind: 'create-room', name }));
         }
         $rcInput.value = '';
       });
@@ -672,12 +672,12 @@
         // `join` first so we get presence + history.  Idempotent
         // server-side, so doing it for default rooms too is harmless.
         if (state.ws && state.ws.readyState === WebSocket.OPEN) {
-          state.ws.send(JSON.stringify({ type: 'join', room }));
+          state.ws.send(JSON.stringify({ kind: 'join', room }));
         }
         state.currentRoom = room;
         state.unreadByRoom.set(room, 0);
         if (state.ws && state.ws.readyState === WebSocket.OPEN) {
-          state.ws.send(JSON.stringify({ type: 'switch-active-room', room }));
+          state.ws.send(JSON.stringify({ kind: 'switch-active-room', room }));
         }
         renderRoomList();
         renderMessages();
@@ -694,12 +694,12 @@
         $rooms.innerHTML = '';
         for (const room of state.rooms) {
           const li = document.createElement('li');
-          const isDm = isDmRoom(room);
+          const isDirectMessage = isDirectMessageRoom(room);
           li.className =
-            (room === state.currentRoom ? 'active ' : '') + (isDm ? 'dm' : '');
+            (room === state.currentRoom ? 'active ' : '') + (isDirectMessage ? 'dm' : '');
           const unread = state.unreadByRoom.get(room) ?? 0;
           // DM rooms render as `@user`; channels as `#name`.
-          const label = isDm ? room : `# ${room}`;
+          const label = isDirectMessage ? room : `# ${room}`;
           li.innerHTML = `<span>${escapeHtml(label)}</span>`;
           if (unread > 0) {
             const span = document.createElement('span');
@@ -713,7 +713,7 @@
       }
 
       function renderMessages() {
-        $msgs.innerHTML = '';
+        $messages.innerHTML = '';
         const list = state.currentRoom
           ? (state.messagesByRoom.get(state.currentRoom) ?? [])
           : [];
@@ -754,9 +754,9 @@
               div.appendChild(span);
             }
           }
-          $msgs.appendChild(div);
+          $messages.appendChild(div);
         }
-        $msgs.scrollTop = $msgs.scrollHeight;
+        $messages.scrollTop = $messages.scrollHeight;
       }
 
       function renderTyping() {
@@ -783,7 +783,7 @@
         let users = state.currentRoom
           ? (state.usersByRoom.get(state.currentRoom) ?? [])
           : [];
-        if (state.currentRoom && isDmRoom(state.currentRoom) && users.length === 0) {
+        if (state.currentRoom && isDirectMessageRoom(state.currentRoom) && users.length === 0) {
           users = [state.currentRoom.slice(1), state.username];
         }
         $usersCnt.textContent = String(users.length);
@@ -793,7 +793,7 @@
           li.className = isSelf ? 'self' : '';
           li.title = isSelf ? '' : `Click to message @${u}`;
           li.textContent = u + (isSelf ? ' (you)' : '');
-          if (!isSelf) li.addEventListener('click', () => openDm(u));
+          if (!isSelf) li.addEventListener('click', () => openDirectMessage(u));
           $users.appendChild(li);
         }
       }

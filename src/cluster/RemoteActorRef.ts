@@ -36,7 +36,7 @@ export class RemoteActorRef<TMessage = unknown> extends ActorRef<TMessage> {
     // receiving node can re-install both before delivering to the
     // local actor (#53, #10).  Empty values are omitted so the wire
     // envelope stays unchanged on the no-instrumentation hot path.
-    const ctx = LogContext.get();
+    const context = LogContext.get();
     const trace = tracerOf(this.cluster.system).injectContext();
     const envelope: EnvelopeMessage = {
       t: 'envelope',
@@ -44,7 +44,7 @@ export class RemoteActorRef<TMessage = unknown> extends ActorRef<TMessage> {
       from: sender ? sender.path.toString() : null,
       body: message as unknown,
       tag: (message as { constructor?: { name?: string } })?.constructor?.name,
-      ...(Object.keys(ctx).length > 0 ? { context: ctx } : {}),
+      ...(Object.keys(context).length > 0 ? { context: context } : {}),
       ...(trace ? { trace } : {}),
     };
     this.cluster._sendEnvelope(this.targetNode, envelope);

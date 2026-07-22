@@ -21,41 +21,66 @@ import {
   everyNEvents,
 } from '../../src/index.js';
 
-type Cmd =
-  | { kind: 'deposit'; amount: number }
-  | { kind: 'withdraw'; amount: number }
-  | { kind: 'balance' };
+type DepositCommand = { kind: 'deposit'; amount: number };
+type WithdrawCommand = { kind: 'withdraw'; amount: number };
+type BalanceCommand = { kind: 'balance' };
+type Command = DepositCommand | WithdrawCommand | BalanceCommand;
 
-type Event =
-  | { kind: 'deposited'; amount: number }
-  | { kind: 'withdrew'; amount: number };
+type DepositedEvent = { kind: 'deposited'; amount: number };
+type WithdrewEvent = { kind: 'withdrew'; amount: number };
+type Event = DepositedEvent | WithdrewEvent;
 
 type State = { balance: number };
 
-class Account extends PersistentActor<Cmd, Event, State> {
+class Account extends PersistentActor<Command, Event, State> {
   constructor(readonly persistenceId: string) { super(); }
   initialState(): State { return { balance: 0 }; }
   onEvent(s: State, e: Event): State {
     return match(e)
-      .with({ kind: 'deposited' }, (d) => ({ balance: s.balance + d.amount }))
-      .with({ kind: 'withdrew' }, (d) => ({ balance: s.balance - d.amount }))
+      .with({ kind: 'deposited' }, (d) => this.onDeposited(s, d))
+      .with({ kind: 'withdrew' }, (d) => this.onWithdrew(s, d))
       .exhaustive();
   }
+
+  private onDeposited(s: State, d: DepositedEvent): State {
+    return { balance: s.balance + d.amount };
+  }
+
+  private onWithdrew(s: State, d: WithdrewEvent): State {
+    return { balance: s.balance - d.amount };
+  }
+
   snapshotPolicy() { return everyNEvents<State, Event>(5); }
-  async onCommand(s: State, cmd: Cmd): Promise<void> {
-    const reply = (msg: unknown): void => this.sender.forEach((sender) => sender.tell(msg));
-    await match(cmd)
-      .with({ kind: 'deposit', amount: P.number.gt(0) }, async (c) => {
-        await this.persist({ kind: 'deposited', amount: c.amount },
-          (st) => reply({ balance: st.balance }));
-      })
-      .with({ kind: 'withdraw' }, async (c) => {
-        if (c.amount > s.balance) { reply(new Error('rejected')); return; }
-        await this.persist({ kind: 'withdrew', amount: c.amount },
-          (st) => reply({ balance: st.balance }));
-      })
-      .with({ kind: 'balance' }, async () => reply({ balance: s.balance }))
-      .otherwise(async () => reply(new Error('rejected'))); // e.g. deposit with amount<=0
+  async onCommand(s: State, command: Command): Promise<void> {
+    await match(command)
+      .with({ kind: 'deposit', amount: P.number.gt(0) }, (c) => this.onDeposit(c))
+      .with({ kind: 'withdraw' }, (c) => this.onWithdraw(s, c))
+      .with({ kind: 'balance' }, () => this.onBalance(s))
+      .otherwise(() => this.onUnhandled());
+  }
+
+  private reply(message: unknown): void {
+    this.sender.forEach((sender) => sender.tell(message));
+  }
+
+  private async onDeposit(c: DepositCommand): Promise<void> {
+    await this.persist({ kind: 'deposited', amount: c.amount },
+      (st) => this.reply({ balance: st.balance }));
+  }
+
+  private async onWithdraw(s: State, c: WithdrawCommand): Promise<void> {
+    if (c.amount > s.balance) { this.reply(new Error('rejected')); return; }
+    await this.persist({ kind: 'withdrew', amount: c.amount },
+      (st) => this.reply({ balance: st.balance }));
+  }
+
+  private async onBalance(s: State): Promise<void> {
+    this.reply({ balance: s.balance });
+  }
+
+  // e.g. deposit with amount<=0
+  private async onUnhandled(): Promise<void> {
+    this.reply(new Error('rejected'));
   }
 }
 

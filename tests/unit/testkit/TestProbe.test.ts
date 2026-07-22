@@ -34,8 +34,8 @@ describe('TestProbe basics', () => {
     const tk = TestKit.create();
     const probe = tk.createTestProbe();
     probe.tell(new OrderPlaced('o-1'));
-    const msg = await probe.expectMessageType(OrderPlaced, 100);
-    expect(msg.id).toBe('o-1');
+    const message = await probe.expectMessageType(OrderPlaced, 100);
+    expect(message.id).toBe('o-1');
 
     probe.tell('not-an-OrderPlaced');
     await expect(probe.expectMessageType(OrderPlaced, 100))

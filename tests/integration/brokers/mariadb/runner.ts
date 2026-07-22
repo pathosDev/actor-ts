@@ -16,7 +16,7 @@ import { MariaDbDurableStateStore } from '../../../../src/persistence/durable-st
 import { MariaDbDurableStateStoreOptions } from '../../../../src/persistence/durable-state-stores/MariaDbDurableStateStoreOptions.js';
 import { waitForPort } from '../lib/wait-for-port.js';
 import { runScenarios } from '../lib/scenario.js';
-import { sqlPersistenceScenarios, type SqlPersistenceCtx } from '../lib/persistence-contract.js';
+import { sqlPersistenceScenarios, type SqlPersistenceContext } from '../lib/persistence-contract.js';
 
 function requireEnv(name: string): string {
   const value = process.env[name];
@@ -45,7 +45,7 @@ async function main(): Promise<void> {
     .withKeepN(2);
   const durableStateOptions = MariaDbDurableStateStoreOptions.create()
     .withPoolConfig(poolConfig);
-  const ctx: SqlPersistenceCtx = {
+  const context: SqlPersistenceContext = {
     env: process.env,
     label: 'mariadb',
     journal: new MariaDbJournal(journalOptions),
@@ -53,7 +53,7 @@ async function main(): Promise<void> {
     durableState: new MariaDbDurableStateStore(durableStateOptions),
   };
 
-  await runScenarios(sqlPersistenceScenarios(), ctx);
+  await runScenarios(sqlPersistenceScenarios(), context);
 }
 
 main().catch((e) => {

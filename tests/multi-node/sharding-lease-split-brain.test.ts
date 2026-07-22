@@ -40,10 +40,10 @@ import { MultiNodeSpec } from '../../src/testkit/MultiNodeSpec.js';
 import { MultiNodeTransport } from '../../src/testkit/internal/MultiNodeTransport.js';
 import type { ActorRef } from '../../src/ActorRef.js';
 
-type Cmd = { id: string; op: 'ping' };
+type Command = { id: string; op: 'ping' };
 
-class Entity extends Actor<Cmd> {
-  override onReceive(m: Cmd): void {
+class Entity extends Actor<Command> {
+  override onReceive(m: Command): void {
     if (m.op === 'ping') this.sender.forEach((s) => s.tell('pong'));
   }
 }
@@ -70,10 +70,10 @@ function findCoordinator(
   const sys = spec.systemFor(role);
   // Coordinator lives at /user/sharding-coordinator-{typeName}
   const seg = `sharding-coordinator-${typeName}`;
-  const refOpt = sys._resolvePath(['user', seg]);
-  if (refOpt.isNone()) return null;
+  const refOption = sys._resolvePath(['user', seg]);
+  if (refOption.isNone()) return null;
   // Internal hop: the LocalActorRef's cell holds the actor instance.
-  const ref = refOpt.value as unknown as { getCell?: () => { actor?: ShardCoordinator } };
+  const ref = refOption.value as unknown as { getCell?: () => { actor?: ShardCoordinator } };
   const actor = ref.getCell?.().actor;
   return actor ?? null;
 }
@@ -103,7 +103,7 @@ describe('multi-node sharding lease — split-brain protection', () => {
         .withOwner('a')
         .withTtlMs(10_000)
         .withRenewalIntervalMs(80);
-      const shardingOptionsA = StartShardingOptions.create<Cmd>()
+      const shardingOptionsA = StartShardingOptions.create<Command>()
         .withTypeName('entity')
         .withEntityProps(Props.create(() => new Entity()))
         .withExtractEntityId((m) => m.id)
@@ -116,7 +116,7 @@ describe('multi-node sharding lease — split-brain protection', () => {
         .withOwner('b')
         .withTtlMs(10_000)
         .withRenewalIntervalMs(80);
-      const shardingOptionsB = StartShardingOptions.create<Cmd>()
+      const shardingOptionsB = StartShardingOptions.create<Command>()
         .withTypeName('entity')
         .withEntityProps(Props.create(() => new Entity()))
         .withExtractEntityId((m) => m.id)
@@ -129,7 +129,7 @@ describe('multi-node sharding lease — split-brain protection', () => {
         .withOwner('c')
         .withTtlMs(10_000)
         .withRenewalIntervalMs(80);
-      const shardingOptionsC = StartShardingOptions.create<Cmd>()
+      const shardingOptionsC = StartShardingOptions.create<Command>()
         .withTypeName('entity')
         .withEntityProps(Props.create(() => new Entity()))
         .withExtractEntityId((m) => m.id)
@@ -137,10 +137,10 @@ describe('multi-node sharding lease — split-brain protection', () => {
         .withRebalanceIntervalMs(200)
         .withLease(new InMemoryLease(leaseOptionsC))
         .withAcquireRetryIntervalMs(100);
-      const regions: Record<'a' | 'b' | 'c', ActorRef<Cmd>> = {
-        a: spec.clusterFor('a').sharding.start<Cmd>(shardingOptionsA),
-        b: spec.clusterFor('b').sharding.start<Cmd>(shardingOptionsB),
-        coordinator: spec.clusterFor('c').sharding.start<Cmd>(shardingOptionsC),
+      const regions: Record<'a' | 'b' | 'c', ActorRef<Command>> = {
+        a: spec.clusterFor('a').sharding.start<Command>(shardingOptionsA),
+        b: spec.clusterFor('b').sharding.start<Command>(shardingOptionsB),
+        coordinator: spec.clusterFor('c').sharding.start<Command>(shardingOptionsC),
       };
       void regions;
 

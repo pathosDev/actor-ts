@@ -26,18 +26,18 @@ export interface HttpClientResponse {
  */
 export class HttpClient {
   /** Single request — no connection pool.  fetch handles keep-alive under the hood. */
-  async singleRequest(req: HttpClientRequest): Promise<HttpClientResponse> {
+  async singleRequest(request: HttpClientRequest): Promise<HttpClientResponse> {
     const controller = new AbortController();
     let timer: ReturnType<typeof setTimeout> | null = null;
-    if (req.timeoutMs && req.timeoutMs > 0) {
-      timer = setTimeout(() => controller.abort(), req.timeoutMs);
+    if (request.timeoutMs && request.timeoutMs > 0) {
+      timer = setTimeout(() => controller.abort(), request.timeoutMs);
       (timer as { unref?: () => void }).unref?.();
     }
     try {
-      const body = this.serialiseBody(req.body);
-      const headers = this.normaliseHeaders(req.headers, req.body);
-      const res = await fetch(req.url, {
-        method: req.method,
+      const body = this.serialiseBody(request.body);
+      const headers = this.normaliseHeaders(request.headers, request.body);
+      const res = await fetch(request.url, {
+        method: request.method,
         headers,
         body: body as unknown as BodyInit | null | undefined,
         signal: controller.signal,

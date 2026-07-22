@@ -247,12 +247,12 @@
       const MIME_OPUS = 'audio/webm; codecs=opus';
 
       // ---------- shared frame codec (keep in sync with shared/frameCodec.ts) ----------
-      function decodeIncoming(buf) {
-        if (buf.byteLength < 1) return null;
-        const nameLen = buf[0];
-        if (buf.byteLength < 1 + nameLen) return null;
-        const sender = new TextDecoder().decode(buf.subarray(1, 1 + nameLen));
-        const opus = buf.subarray(1 + nameLen);
+      function decodeIncoming(buffer) {
+        if (buffer.byteLength < 1) return null;
+        const nameLen = buffer[0];
+        if (buffer.byteLength < 1 + nameLen) return null;
+        const sender = new TextDecoder().decode(buffer.subarray(1, 1 + nameLen));
+        const opus = buffer.subarray(1 + nameLen);
         return { sender, opus };
       }
 
@@ -277,7 +277,7 @@
         // audio
         micStream: null,
         micRecorder: null,
-        micCtx: null,
+        micContext: null,
         micAnalyser: null,
         // ws
         ws: null,
@@ -322,7 +322,7 @@
           // AudioContext for the level meter (and to unlock playback).
           const ctx = new (window.AudioContext || window.webkitAudioContext)();
           if (ctx.state === 'suspended') await ctx.resume();
-          state.micCtx = ctx;
+          state.micContext = ctx;
           const src = ctx.createMediaStreamSource(stream);
           const analyser = ctx.createAnalyser();
           analyser.fftSize = 512;
@@ -336,7 +336,7 @@
           if (stored) {
             $gateTitle.textContent = 'Resuming session…';
             $gateHint.textContent = '';
-            connectAndSend({ type: 'resume', token: stored });
+            connectAndSend({ kind: 'resume', token: stored });
           } else {
             renderGateLogin();
           }
@@ -363,11 +363,11 @@
         const password = $password.value;
         if (!username || !password) return;
         $loginErr.textContent = '';
-        connectAndSend({ type: 'login', username, password });
+        connectAndSend({ kind: 'login', username, password });
       });
 
       $logoutBtn.addEventListener('click', () => {
-        try { state.ws?.send(JSON.stringify({ type: 'logout' })); } catch {}
+        try { state.ws?.send(JSON.stringify({ kind: 'logout' })); } catch {}
         sessionStorage.removeItem(TOKEN_KEY);
         location.reload();    // simplest hard reset for the demo
       });
@@ -426,7 +426,7 @@
         state.reconnectAttempts++;
         state.reconnectTimer = setTimeout(() => {
           state.reconnectTimer = null;
-          connectAndSend({ type: 'resume', token });
+          connectAndSend({ kind: 'resume', token });
         }, delay);
         return true;
       }
@@ -446,7 +446,7 @@
       function handleServerText(raw) {
         let m;
         try { m = JSON.parse(raw); } catch { return; }
-        switch (m.type) {
+        switch (m.kind) {
           case 'logged-in':
             cancelReconnect();
             state.username = m.username;
@@ -502,8 +502,8 @@
         }
       }
 
-      function handleServerBinary(buf) {
-        const decoded = decodeIncoming(buf);
+      function handleServerBinary(buffer) {
+        const decoded = decodeIncoming(buffer);
         if (!decoded) return;
         feedIncoming(decoded.sender, decoded.opus);
       }
@@ -604,7 +604,7 @@
             leaveBtn.addEventListener('click', () => {
               if (state.roomTalking.has(r)) toggleRoomTalk(r); // stop first
               state.joinedRooms.delete(r);
-              state.ws?.send(JSON.stringify({ type: 'room-leave', room: r }));
+              state.ws?.send(JSON.stringify({ kind: 'room-leave', room: r }));
               renderRooms();
             });
             head.appendChild(leaveBtn);
@@ -614,7 +614,7 @@
             enterBtn.textContent = 'Enter';
             enterBtn.addEventListener('click', () => {
               state.joinedRooms.add(r);
-              state.ws?.send(JSON.stringify({ type: 'room-enter', room: r }));
+              state.ws?.send(JSON.stringify({ kind: 'room-enter', room: r }));
               renderRooms();
             });
             head.appendChild(enterBtn);
@@ -673,14 +673,14 @@
         activeBtn = btn;
         btn.classList.add('active');
         // Send target selection before the first audio chunk.
-        state.ws.send(JSON.stringify({ type: 'voice-target', ...target }));
+        state.ws.send(JSON.stringify({ kind: 'voice-target', ...target }));
         startMicRecording();
       }
 
       function endPress(btn) {
         stopMicRecording();
         if (state.ws && state.ws.readyState === WebSocket.OPEN) {
-          state.ws.send(JSON.stringify({ type: 'voice-stop' }));
+          state.ws.send(JSON.stringify({ kind: 'voice-stop' }));
         }
         state.currentTarget = null;
         if (btn) btn.classList.remove('active');
@@ -695,13 +695,13 @@
         if (state.roomTalking.has(room)) {
           state.roomTalking.delete(room);
           stopMicRecording();
-          state.ws?.send(JSON.stringify({ type: 'voice-stop' }));
+          state.ws?.send(JSON.stringify({ kind: 'voice-stop' }));
           state.currentTarget = null;
         } else {
           // Open a new mic stream targeted at the room.
           state.roomTalking.add(room);
           state.currentTarget = { mode: 'room', room };
-          state.ws?.send(JSON.stringify({ type: 'voice-target', mode: 'room', room }));
+          state.ws?.send(JSON.stringify({ kind: 'voice-target', mode: 'room', room }));
           startMicRecording();
         }
         renderRooms();
@@ -726,8 +726,8 @@
           if (!e.data || e.data.size === 0) return;
           if (!state.ws || state.ws.readyState !== WebSocket.OPEN) return;
           try {
-            const buf = await e.data.arrayBuffer();
-            state.ws.send(buf);
+            const buffer = await e.data.arrayBuffer();
+            state.ws.send(buffer);
           } catch (err) {
             console.warn('mic send failed', err);
           }

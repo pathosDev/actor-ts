@@ -23,9 +23,9 @@ import type { HttpRequest, HttpResponse } from '../types.js';
  *   const userCache = cached({
  *     cache: ext.cache(),
  *     ttlMs: 30_000,
- *     key: (req) => `users:${req.params.id}`,
+ *     key: (request) => `users:${request.params.id}`,
  *   });
- *   route(get('/users/:id', userCache(req => askUserActor(req.params.id))));
+ *   route(get('/users/:id', userCache(request => askUserActor(request.params.id))));
  */
 
 export interface ResponseCacheOptions {
@@ -34,7 +34,7 @@ export interface ResponseCacheOptions {
   /** TTL on stored responses (milliseconds).  Required — no TTL invites unbounded growth. */
   readonly ttlMs: number;
   /** Identity function — derives the cache key from the request. */
-  readonly key: (req: HttpRequest) => string | Promise<string>;
+  readonly key: (request: HttpRequest) => string | Promise<string>;
   /**
    * Cache-key namespace prepended to the user key.  Default `'rsp:'` so
    * multiple response-caches in one Redis don't collide.
@@ -56,23 +56,23 @@ interface CachedResponse {
   readonly contentType?: string;
 }
 
-export function cached(opts: ResponseCacheOptions) {
-  if (!Number.isFinite(opts.ttlMs) || opts.ttlMs <= 0) {
-    throw new Error(`cached: ttlMs must be a positive finite number, got ${opts.ttlMs}`);
+export function cached(options: ResponseCacheOptions) {
+  if (!Number.isFinite(options.ttlMs) || options.ttlMs <= 0) {
+    throw new Error(`cached: ttlMs must be a positive finite number, got ${options.ttlMs}`);
   }
-  const prefix = opts.keyPrefix ?? 'rsp:';
-  const cacheStatuses = new Set(opts.cacheStatuses ?? [200]);
+  const prefix = options.keyPrefix ?? 'rsp:';
+  const cacheStatuses = new Set(options.cacheStatuses ?? [200]);
   // Per-process single-flight map.  Lifetime: the time it takes the
   // wrapped handler to run for one key.  Cleaned up in finally.
   const inflight = new Map<string, Promise<HttpResponse>>();
 
-  return function wrap(handler: (req: HttpRequest) => Promise<HttpResponse> | HttpResponse) {
-    return async function cachedHandler(req: HttpRequest): Promise<HttpResponse> {
-      const userKey = await opts.key(req);
+  return function wrap(handler: (request: HttpRequest) => Promise<HttpResponse> | HttpResponse) {
+    return async function cachedHandler(request: HttpRequest): Promise<HttpResponse> {
+      const userKey = await options.key(request);
       const cacheKey = `${prefix}${userKey}`;
 
       // 1. Cache hit?
-      const hit = await opts.cache.get<CachedResponse>(cacheKey);
+      const hit = await options.cache.get<CachedResponse>(cacheKey);
       if (hit.isSome()) {
         return decodeResponse(hit.value);
       }
@@ -84,9 +84,9 @@ export function cached(opts: ResponseCacheOptions) {
       // 3. We're the leader for this key.  Run the handler, then cache
       // the result if its status is cacheable.
       const work = (async (): Promise<HttpResponse> => {
-        const response = await handler(req);
+        const response = await handler(request);
         if (cacheStatuses.has(response.status)) {
-          await opts.cache.set<CachedResponse>(cacheKey, encodeResponse(response), opts.ttlMs);
+          await options.cache.set<CachedResponse>(cacheKey, encodeResponse(response), options.ttlMs);
         }
         return response;
       })();

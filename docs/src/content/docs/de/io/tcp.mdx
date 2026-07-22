@@ -50,12 +50,24 @@ interface TcpSocketOptionsType extends BrokerCommonOptionsType {
 import { match } from 'ts-pattern';
 
 class ProtocolHandler extends Actor<TcpInbound> {
-  override onReceive(msg: TcpInbound): void {
-    match(msg)
-      .with({ kind: 'data' },         (m) => this.handleBytes(m.payload))   // Uint8Array
-      .with({ kind: 'connected' },    () => { this.log.info('TCP verbunden'); })
-      .with({ kind: 'disconnected' }, () => { this.log.info('TCP getrennt'); })
+  override onReceive(message: TcpInbound): void {
+    match(message)
+      .with({ kind: 'data' },         (m) => this.onData(m))
+      .with({ kind: 'connected' },    ()  => this.onConnected())
+      .with({ kind: 'disconnected' }, ()  => this.onDisconnected())
       .exhaustive();
+  }
+
+  private onData(message: Extract<TcpInbound, { kind: 'data' }>): void {
+    this.handleBytes(message.payload);   // Uint8Array
+  }
+
+  private onConnected(): void {
+    this.log.info('TCP verbunden');
+  }
+
+  private onDisconnected(): void {
+    this.log.info('TCP getrennt');
   }
 }
 ```

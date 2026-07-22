@@ -17,18 +17,18 @@ const MIME_TO_SERIALIZER: Array<{ pattern: RegExp; ctor: () => Serializer }> = [
 ];
 
 /** Pick a marshaller for the incoming request body, based on Content-Type. */
-export function pickRequestSerializer(req: HttpRequest): Serializer {
-  const ct = req.headers['content-type'] ?? '';
+export function pickRequestSerializer(request: HttpRequest): Serializer {
+  const ct = request.headers['content-type'] ?? '';
   const match = MIME_TO_SERIALIZER.find(m => m.pattern.test(ct));
   return match ? match.ctor() : new JsonSerializer();
 }
 
 /** Pick a serializer for the response body, using the client's `Accept`. */
-export function pickResponseSerializer(req: HttpRequest): {
+export function pickResponseSerializer(request: HttpRequest): {
   serializer: Serializer;
   contentType: string;
 } {
-  const accept = req.headers['accept'] ?? 'application/json';
+  const accept = request.headers['accept'] ?? 'application/json';
   for (const tok of accept.split(',')) {
     const mediaType = tok.trim().split(';')[0]!.toLowerCase();
     if (mediaType === 'application/cbor' || mediaType === 'application/x-cbor') {
@@ -45,13 +45,13 @@ export function pickResponseSerializer(req: HttpRequest): {
  * Decode the request body into a typed value.  Throws an HTTP 400 if the
  * body is malformed.  Returns undefined for empty bodies.
  */
-export function entity<T = unknown>(req: HttpRequest): T {
-  if (!req.body || req.body.byteLength === 0) {
+export function entity<T = unknown>(request: HttpRequest): T {
+  if (!request.body || request.body.byteLength === 0) {
     throw new HttpError(Status.BadRequest, 'Missing request body');
   }
-  const serializer = pickRequestSerializer(req);
+  const serializer = pickRequestSerializer(request);
   try {
-    return serializer.fromBinary(req.body, '') as T;
+    return serializer.fromBinary(request.body, '') as T;
   } catch (e) {
     throw new HttpError(Status.BadRequest, `Cannot decode body: ${(e as Error).message}`);
   }
@@ -59,9 +59,9 @@ export function entity<T = unknown>(req: HttpRequest): T {
 
 /** Encode a value into `{body, contentType}` suitable for an HttpResponse. */
 export function marshal(
-  req: HttpRequest,
+  request: HttpRequest,
   value: unknown,
 ): { body: Uint8Array; contentType: string } {
-  const { serializer, contentType } = pickResponseSerializer(req);
+  const { serializer, contentType } = pickResponseSerializer(request);
   return { body: serializer.toBinary(value), contentType };
 }

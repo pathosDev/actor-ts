@@ -56,10 +56,10 @@ export class LWWMap<K, V> implements Crdt<LWWMap<K, V>> {
     private readonly identity: (k: K) => string,
   ) {}
 
-  static empty<K, V>(opts: LWWMapOptions<K> = {}): LWWMap<K, V> {
+  static empty<K, V>(options: LWWMapOptions<K> = {}): LWWMap<K, V> {
     return new LWWMap<K, V>(
       new Map(),
-      opts.identity ?? (defaultIdentity as (k: K) => string),
+      options.identity ?? (defaultIdentity as (k: K) => string),
     );
   }
 
@@ -154,12 +154,12 @@ export class LWWMap<K, V> implements Crdt<LWWMap<K, V>> {
   }
 
   static fromJSON<K, V>(
-    json: LWWMapJson<V>, opts: LWWMapOptions<K> = {},
+    json: LWWMapJson<V>, options: LWWMapOptions<K> = {},
   ): LWWMap<K, V> {
     if (json.kind !== 'LWWMap') {
       throw new Error(`LWWMap.fromJSON: unexpected kind ${json.kind}`);
     }
-    const identity = opts.identity ?? (defaultIdentity as (k: K) => string);
+    const identity = options.identity ?? (defaultIdentity as (k: K) => string);
     const entries = new Map<string, Entry<K, V>>();
     for (const [id, regJson] of Object.entries(json.registers)) {
       const raw = json.keyValues?.[id];

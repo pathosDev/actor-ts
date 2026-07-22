@@ -38,8 +38,8 @@ Restart nicht die richtige Semantik für deine Domäne ist.
 import { Actor, ActorSystem, Props, OneForOneStrategy, Directive } from 'actor-ts';
 
 class Worker extends Actor<{ kind: 'do-it' } | { kind: 'fail' }> {
-  override onReceive(msg: { kind: 'do-it' } | { kind: 'fail' }): void {
-    if (msg.kind === 'fail') throw new Error('boom');
+  override onReceive(message: { kind: 'do-it' } | { kind: 'fail' }): void {
+    if (message.kind === 'fail') throw new Error('boom');
     this.log.info('did the work');
   }
 }
@@ -53,7 +53,7 @@ class Boss extends Actor<{ kind: 'spawn-worker' }> {
     { maxRetries: 5, withinTimeRangeMs: 60_000 },
   );
 
-  override onReceive(msg: { kind: 'spawn-worker' }): void {
+  override onReceive(message: { kind: 'spawn-worker' }): void {
     const worker = this.context.spawnAnonymous(Props.create(() => new Worker()));
     worker.tell({ kind: 'do-it' });
     worker.tell({ kind: 'fail' });   // <- throwt
@@ -271,8 +271,8 @@ auf der Klasse gesetzt).
   ```ts
   class CountServer extends Actor<...> {
     private count = 0;  // ← bei Restart verloren!
-    onReceive(msg: ...) {
-      if (msg.causesACrash) throw new Error('oops');
+    onReceive(message: ...) {
+      if (message.causesACrash) throw new Error('oops');
       this.count++;
     }
   }
@@ -309,7 +309,7 @@ auf der Klasse gesetzt).
 
 <Aside type="caution" title="Async-Errors werden gefangen — uncaught Promise-Rejections nicht">
   ```ts
-  override async onReceive(msg) {
+  override async onReceive(message) {
     await operationThatRejects();   // ✓ vom Supervisor gefangen
     
     setTimeout(() => {

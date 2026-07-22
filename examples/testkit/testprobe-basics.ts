@@ -7,8 +7,8 @@ import { Actor, Props, TestKit } from '../../src/index.js';
 
 class Counter extends Actor<'inc' | 'report'> {
   private n = 0;
-  override onReceive(msg: 'inc' | 'report'): void {
-    if (msg === 'inc') this.n++;
+  override onReceive(message: 'inc' | 'report'): void {
+    if (message === 'inc') this.n++;
     else this.sender.forEach((__s) => __s.tell({ kind: 'count', value: this.n }));
   }
 }

@@ -19,15 +19,14 @@ import type { ActorRef } from '../../../src/ActorRef.js';
 import { PersistentActor, everyNEvents } from '../../../src/persistence/PersistentActor.js';
 import type { SnapshotPolicy } from '../../../src/persistence/PersistentActor.js';
 
-export interface CounterInc { readonly kind: 'inc' }
+export interface CounterIncrement { readonly kind: 'increment' }
 export interface CounterGetState {
   readonly kind: 'get-state';
   readonly replyTo: ActorRef<CounterStateReply>;
 }
-export type CounterCommand = CounterInc | CounterGetState;
+export type CounterCommand = CounterIncrement | CounterGetState;
 
-export interface CounterIncremented { readonly kind: 'incremented' }
-export type CounterEvent = CounterIncremented;
+export type CounterEvent = { readonly kind: 'incremented' };
 
 export interface CounterState { count: number }
 
@@ -55,13 +54,13 @@ export class PersistentCounter extends PersistentActor<CounterCommand, CounterEv
     return state;
   }
 
-  override onCommand(state: CounterState, cmd: CounterCommand): void {
-    if (cmd.kind === 'inc') {
+  override onCommand(state: CounterState, command: CounterCommand): void {
+    if (command.kind === 'increment') {
       this.persist({ kind: 'incremented' }, () => {
         // No reply on inc — fire-and-forget.
       });
-    } else if (cmd.kind === 'get-state') {
-      cmd.replyTo.tell({ kind: 'state', count: state.count });
+    } else if (command.kind === 'get-state') {
+      command.replyTo.tell({ kind: 'state', count: state.count });
     }
   }
 

@@ -80,11 +80,11 @@ export class MariaDbDurableStateStore implements DurableStateStore {
           throw e;
         }
       } else {
-        const res = await pool.query(
+        const response = await pool.query(
           `UPDATE ${this.table} SET revision = ?, payload = ?, timestamp = ? WHERE persistence_id = ? AND revision = ?`,
           [newRevision, payload, now, persistenceId, expectedRevision],
         );
-        if (affectedRowsOf(res) === 0) {
+        if (affectedRowsOf(response) === 0) {
           throw new DurableStateConcurrencyError(
             persistenceId, expectedRevision, await this.currentRevision(pool, persistenceId),
           );
@@ -127,10 +127,10 @@ export class MariaDbDurableStateStore implements DurableStateStore {
 
   /* --------------------------- internals -------------------------------- */
 
-  private async currentRevision(pool: MariaDbPoolLike, pid: string): Promise<number> {
+  private async currentRevision(pool: MariaDbPoolLike, persistenceId: string): Promise<number> {
     const rows = rowsOf(await pool.query(
       `SELECT revision FROM ${this.table} WHERE persistence_id = ?`,
-      [pid],
+      [persistenceId],
     ));
     const row = rows[0] as { revision: string | number | bigint } | undefined;
     return row ? Number(row.revision) : 0;

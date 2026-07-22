@@ -37,7 +37,7 @@ export interface StartSingletonOptionsType<T> {
  *
  *     system.extension(ClusterSingletonId).start(
  *       cluster,
- *       StartSingletonOptions.create<Cmd>()
+ *       StartSingletonOptions.create<Command>()
  *         .withTypeName('counter')
  *         .withProps(Props.create(() => new CounterActor())),
  *     );

@@ -94,9 +94,9 @@ export class CassandraQuery extends InMemoryQuery {
 
   private async fetchTagPartition(tag: string, fromTimestamp: number): Promise<TagIndexRow[]> {
     const qualified = `${this.access.options.keyspace}.${this.cassandra.tagIndexTable}`;
-    let res;
+    let response;
     try {
-      res = await this.access.client.execute(
+      response = await this.access.client.execute(
         `SELECT persistence_id, sequence_nr, timestamp, payload, tags FROM ${qualified} `
         + `WHERE tag = ? AND timestamp >= ?`,
         [tag, fromTimestamp],
@@ -105,7 +105,7 @@ export class CassandraQuery extends InMemoryQuery {
     } catch (e) {
       throw new JournalError(`CassandraQuery.currentEventsByTag failed: ${(e as Error).message}`, e);
     }
-    return res.rows as unknown as TagIndexRow[];
+    return response.rows as unknown as TagIndexRow[];
   }
 }
 

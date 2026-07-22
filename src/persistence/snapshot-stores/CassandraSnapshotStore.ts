@@ -52,7 +52,7 @@ export class CassandraSnapshotStore implements SnapshotStore {
     this.started = true;
   }
 
-  async save<S>(pid: string, seq: number, state: S, _options?: PersistenceOptions): Promise<Snapshot<S>> {
+  async save<S>(persistenceId: string, seq: number, state: S, _options?: PersistenceOptions): Promise<Snapshot<S>> {
     // Cassandra store has no compression / encryption — options ignored.
     await this.ensureStarted();
     const now = Date.now();
@@ -60,42 +60,42 @@ export class CassandraSnapshotStore implements SnapshotStore {
     try {
       await this.client.execute(
         `INSERT INTO ${this.qualified()} (persistence_id, sequence_nr, timestamp, payload) VALUES (?, ?, ?, ?)`,
-        [pid, seq, now, payload],
+        [persistenceId, seq, now, payload],
         { prepare: true },
       );
-      if (this.keepN > 0) await this.pruneKeepN(pid);
-      return { persistenceId: pid, sequenceNr: seq, state, timestamp: now };
+      if (this.keepN > 0) await this.pruneKeepN(persistenceId);
+      return { persistenceId: persistenceId, sequenceNr: seq, state, timestamp: now };
     } catch (e) {
       throw new JournalError(`CassandraSnapshotStore.save failed: ${(e as Error).message}`, e);
     }
   }
 
-  async loadLatest<S>(pid: string, _options?: PersistenceOptions): Promise<Option<Snapshot<S>>> {
+  async loadLatest<S>(persistenceId: string, _options?: PersistenceOptions): Promise<Option<Snapshot<S>>> {
     await this.ensureStarted();
-    const res = await this.client.execute(
+    const response = await this.client.execute(
       `SELECT persistence_id, sequence_nr, timestamp, payload FROM ${this.qualified()} WHERE persistence_id = ? LIMIT 1`,
-      [pid],
+      [persistenceId],
       { prepare: true },
     );
-    return this.rowToSnapshot<S>(res.rows[0] as unknown as SnapshotRow | undefined);
+    return this.rowToSnapshot<S>(response.rows[0] as unknown as SnapshotRow | undefined);
   }
 
-  async loadBefore<S>(pid: string, seq: number, _options?: PersistenceOptions): Promise<Option<Snapshot<S>>> {
+  async loadBefore<S>(persistenceId: string, seq: number, _options?: PersistenceOptions): Promise<Option<Snapshot<S>>> {
     await this.ensureStarted();
-    const res = await this.client.execute(
+    const response = await this.client.execute(
       `SELECT persistence_id, sequence_nr, timestamp, payload FROM ${this.qualified()} WHERE persistence_id = ? AND sequence_nr < ? LIMIT 1`,
-      [pid, seq],
+      [persistenceId, seq],
       { prepare: true },
     );
-    return this.rowToSnapshot<S>(res.rows[0] as unknown as SnapshotRow | undefined);
+    return this.rowToSnapshot<S>(response.rows[0] as unknown as SnapshotRow | undefined);
   }
 
-  async delete(pid: string, toSeq: number): Promise<void> {
+  async delete(persistenceId: string, toSeq: number): Promise<void> {
     await this.ensureStarted();
     try {
       await this.client.execute(
         `DELETE FROM ${this.qualified()} WHERE persistence_id = ? AND sequence_nr <= ?`,
-        [pid, toSeq],
+        [persistenceId, toSeq],
         { prepare: true },
       );
     } catch (e) {
@@ -126,20 +126,20 @@ export class CassandraSnapshotStore implements SnapshotStore {
     });
   }
 
-  private async pruneKeepN(pid: string): Promise<void> {
+  private async pruneKeepN(persistenceId: string): Promise<void> {
     // Read the newest `keepN` sequence numbers and delete everything older.
-    const res = await this.client.execute(
+    const response = await this.client.execute(
       `SELECT sequence_nr FROM ${this.qualified()} WHERE persistence_id = ? LIMIT ?`,
-      [pid, this.keepN],
+      [persistenceId, this.keepN],
       { prepare: true },
     );
-    const rows = res.rows as unknown as Array<{ sequence_nr: string | number }>;
+    const rows = response.rows as unknown as Array<{ sequence_nr: string | number }>;
     if (rows.length < this.keepN) return; // not yet at the cap
     const cutoff = Number(rows[rows.length - 1]!.sequence_nr);
     if (cutoff <= 0) return;
     await this.client.execute(
       `DELETE FROM ${this.qualified()} WHERE persistence_id = ? AND sequence_nr < ?`,
-      [pid, cutoff],
+      [persistenceId, cutoff],
       { prepare: true },
     );
   }

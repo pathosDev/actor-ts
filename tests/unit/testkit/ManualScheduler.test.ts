@@ -9,11 +9,11 @@ class RecordingRef<T = unknown> extends ActorRef<T> {
   tell(m: T): void { this.received.push(m); }
 }
 
-describe('ManualScheduler.scheduleOnceFn', () => {
+describe('ManualScheduler.scheduleOnceFunction', () => {
   test('fires when virtual time reaches the deadline', () => {
     const scheduler = new ManualScheduler();
     let fired = 0;
-    scheduler.scheduleOnceFn(100, () => { fired++; });
+    scheduler.scheduleOnceFunction(100, () => { fired++; });
     expect(fired).toBe(0);
     scheduler.advance(50);
     expect(fired).toBe(0);
@@ -26,7 +26,7 @@ describe('ManualScheduler.scheduleOnceFn', () => {
   test('cancel prevents firing', () => {
     const scheduler = new ManualScheduler();
     let fired = 0;
-    const cancel = scheduler.scheduleOnceFn(10, () => { fired++; });
+    const cancel = scheduler.scheduleOnceFunction(10, () => { fired++; });
     expect(cancel.cancel()).toBe(true);
     expect(cancel.isCancelled).toBe(true);
     scheduler.advance(1_000);
@@ -37,26 +37,26 @@ describe('ManualScheduler.scheduleOnceFn', () => {
   test('tasks fire in deterministic order (earliest first, ties break by id)', () => {
     const scheduler = new ManualScheduler();
     const order: string[] = [];
-    scheduler.scheduleOnceFn(10, () => order.push('a'));
-    scheduler.scheduleOnceFn(10, () => order.push('b')); // same time, later id
-    scheduler.scheduleOnceFn(5,  () => order.push('c')); // earlier
+    scheduler.scheduleOnceFunction(10, () => order.push('a'));
+    scheduler.scheduleOnceFunction(10, () => order.push('b')); // same time, later id
+    scheduler.scheduleOnceFunction(5,  () => order.push('c')); // earlier
     scheduler.advance(20);
     expect(order).toEqual(['c', 'a', 'b']);
   });
 
   test('now() reflects the fire time of the most recent task', () => {
     const scheduler = new ManualScheduler();
-    scheduler.scheduleOnceFn(30, () => {});
+    scheduler.scheduleOnceFunction(30, () => {});
     scheduler.advance(100);
     expect(scheduler.now()).toBe(100);
   });
 });
 
-describe('ManualScheduler.scheduleAtFixedRateFn', () => {
+describe('ManualScheduler.scheduleAtFixedRateFunction', () => {
   test('fires repeatedly at the given interval', () => {
     const scheduler = new ManualScheduler();
     let count = 0;
-    const cancel = scheduler.scheduleAtFixedRateFn(0, 50, () => { count++; });
+    const cancel = scheduler.scheduleAtFixedRateFunction(0, 50, () => { count++; });
     scheduler.advance(25);
     expect(count).toBe(1);      // fires at t=0
     scheduler.advance(50);
@@ -71,7 +71,7 @@ describe('ManualScheduler.scheduleAtFixedRateFn', () => {
   test('respects the initial delay', () => {
     const scheduler = new ManualScheduler();
     let count = 0;
-    scheduler.scheduleAtFixedRateFn(30, 10, () => { count++; });
+    scheduler.scheduleAtFixedRateFunction(30, 10, () => { count++; });
     scheduler.advance(20);
     expect(count).toBe(0);
     scheduler.advance(20);
@@ -101,7 +101,7 @@ describe('ManualScheduler lifecycle', () => {
   test('shutdown clears pending tasks', () => {
     const scheduler = new ManualScheduler();
     let fired = 0;
-    scheduler.scheduleOnceFn(10, () => { fired++; });
+    scheduler.scheduleOnceFunction(10, () => { fired++; });
     scheduler.shutdown();
     scheduler.advance(100);
     expect(fired).toBe(0);
@@ -110,15 +110,15 @@ describe('ManualScheduler lifecycle', () => {
   test('scheduling after shutdown yields a pre-cancelled handle', () => {
     const scheduler = new ManualScheduler();
     scheduler.shutdown();
-    const cancel = scheduler.scheduleOnceFn(10, () => {});
+    const cancel = scheduler.scheduleOnceFunction(10, () => {});
     expect(cancel.isCancelled).toBe(true);
   });
 
   test('pendingCount reflects active tasks', () => {
     const scheduler = new ManualScheduler();
     expect(scheduler.pendingCount).toBe(0);
-    scheduler.scheduleOnceFn(10, () => {});
-    scheduler.scheduleOnceFn(20, () => {});
+    scheduler.scheduleOnceFunction(10, () => {});
+    scheduler.scheduleOnceFunction(20, () => {});
     expect(scheduler.pendingCount).toBe(2);
     scheduler.advance(15);
     expect(scheduler.pendingCount).toBe(1);
@@ -127,7 +127,7 @@ describe('ManualScheduler lifecycle', () => {
   test('advanceToNext jumps to the next pending fireAt', () => {
     const scheduler = new ManualScheduler();
     let fired = false;
-    scheduler.scheduleOnceFn(500, () => { fired = true; });
+    scheduler.scheduleOnceFunction(500, () => { fired = true; });
     scheduler.advanceToNext();
     expect(scheduler.now()).toBe(500);
     expect(fired).toBe(true);
@@ -139,8 +139,8 @@ describe('ManualScheduler lifecycle', () => {
     try {
       const scheduler = new ManualScheduler();
       let subsequent = 0;
-      scheduler.scheduleOnceFn(5, () => { throw new Error('oops'); });
-      scheduler.scheduleOnceFn(10, () => { subsequent++; });
+      scheduler.scheduleOnceFunction(5, () => { throw new Error('oops'); });
+      scheduler.scheduleOnceFunction(10, () => { subsequent++; });
       scheduler.advance(50);
       expect(subsequent).toBe(1);
     } finally {
@@ -156,7 +156,7 @@ describe('ManualScheduler — virtual time edges', () => {
     // zero-advance reaches nothing strictly later.  Pin the contract.
     const scheduler = new ManualScheduler();
     let fired = 0;
-    scheduler.scheduleOnceFn(0, () => { fired++; });
+    scheduler.scheduleOnceFunction(0, () => { fired++; });
     // The 0-delay task is scheduled at fireAt=now; advance(0) reaches
     // it.  This documents observed behaviour: fireAt <= target fires.
     scheduler.advance(0);
@@ -178,7 +178,7 @@ describe('ManualScheduler — virtual time edges', () => {
 
   test('advanceToNext after shutdown does not advance time', () => {
     const scheduler = new ManualScheduler();
-    scheduler.scheduleOnceFn(100, () => {});
+    scheduler.scheduleOnceFunction(100, () => {});
     scheduler.shutdown();
     scheduler.advanceToNext();
     // shutdown() cleared tasks; advanceToNext finds nothing → no change.
@@ -194,7 +194,7 @@ describe('ManualScheduler — virtual time edges', () => {
   test('cancelling a fired single-shot task returns false', () => {
     const scheduler = new ManualScheduler();
     let fired = 0;
-    const cancel = scheduler.scheduleOnceFn(10, () => { fired++; });
+    const cancel = scheduler.scheduleOnceFunction(10, () => { fired++; });
     scheduler.advance(20);
     expect(fired).toBe(1);
     // After the task fired, its handle is already cancelled internally.
@@ -205,7 +205,7 @@ describe('ManualScheduler — virtual time edges', () => {
   test('cancelling a repeating task mid-stream stops further firings', () => {
     const scheduler = new ManualScheduler();
     let count = 0;
-    const cancel = scheduler.scheduleAtFixedRateFn(0, 10, () => { count++; });
+    const cancel = scheduler.scheduleAtFixedRateFunction(0, 10, () => { count++; });
     scheduler.advance(25); // fires at 0, 10, 20
     expect(count).toBe(3);
     cancel.cancel();
@@ -218,15 +218,15 @@ describe('ManualScheduler — virtual time edges', () => {
     // that the order is stable even when many tasks share fireAt.
     const scheduler = new ManualScheduler();
     const order: number[] = [];
-    for (let i = 0; i < 10; i++) scheduler.scheduleOnceFn(5, () => order.push(i));
+    for (let i = 0; i < 10; i++) scheduler.scheduleOnceFunction(5, () => order.push(i));
     scheduler.advance(10);
     expect(order).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
   });
 
   test('pendingCount excludes cancelled tasks', () => {
     const scheduler = new ManualScheduler();
-    const cancel = scheduler.scheduleOnceFn(10, () => {});
-    scheduler.scheduleOnceFn(20, () => {});
+    const cancel = scheduler.scheduleOnceFunction(10, () => {});
+    scheduler.scheduleOnceFunction(20, () => {});
     expect(scheduler.pendingCount).toBe(2);
     cancel.cancel();
     expect(scheduler.pendingCount).toBe(1);
@@ -249,7 +249,7 @@ describe('ManualScheduler — virtual time edges', () => {
   test('a repeating task with a very long initial delay does not fire prematurely', () => {
     const scheduler = new ManualScheduler();
     let fired = 0;
-    scheduler.scheduleAtFixedRateFn(1_000_000, 1, () => { fired++; });
+    scheduler.scheduleAtFixedRateFunction(1_000_000, 1, () => { fired++; });
     scheduler.advance(999_999);
     expect(fired).toBe(0);
     scheduler.advance(1);

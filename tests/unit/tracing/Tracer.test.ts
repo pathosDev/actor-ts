@@ -103,15 +103,15 @@ describe('RecordingTracer — recording', () => {
 
 describe('W3C traceparent codec', () => {
   test('encode → decode round-trip', () => {
-    const ctx = {
+    const context = {
       traceId: '0123456789abcdef0123456789abcdef',
       spanId: '0123456789abcdef',
       traceFlags: 1,
     };
-    const tp = encodeTraceparent(ctx);
+    const tp = encodeTraceparent(context);
     expect(tp).toBe('00-0123456789abcdef0123456789abcdef-0123456789abcdef-01');
     const back = decodeTraceparent(tp);
-    expect(back).toEqual(ctx);
+    expect(back).toEqual(context);
   });
 
   test('decode rejects malformed inputs', () => {

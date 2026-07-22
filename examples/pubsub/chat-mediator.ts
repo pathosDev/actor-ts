@@ -13,8 +13,8 @@ interface ChatMessage { readonly from: string; readonly text: string; }
 
 class Subscriber extends Actor<ChatMessage> {
   constructor(private readonly name: string) { super(); }
-  override onReceive(msg: ChatMessage): void {
-    console.log(`[${this.name}] <${msg.from}> ${msg.text}`);
+  override onReceive(message: ChatMessage): void {
+    console.log(`[${this.name}] <${message.from}> ${message.text}`);
   }
 }
 

@@ -8,7 +8,7 @@
  * instances do NOT survive the JSON-based wire-serialisation
  * the cluster transport uses for cross-node envelope bodies —
  * the prototype is lost on deserialisation, which makes
- * `msg instanceof X` checks on the receiver fail.  Plain objects
+ * `message instanceof X` checks on the receiver fail.  Plain objects
  * with a `kind` field round-trip cleanly.  Same hazard EchoActor
  * (scenario 09) hit and uses the same pattern.
  */
@@ -17,8 +17,8 @@ import { Actor } from '../../../src/Actor.js';
 import type { ActorRef } from '../../../src/ActorRef.js';
 
 /** Increment the singleton's counter by 1.  Fire-and-forget. */
-export interface SingletonInc {
-  readonly kind: 'inc';
+export interface SingletonIncrement {
+  readonly kind: 'increment';
 }
 
 /**
@@ -37,7 +37,7 @@ export interface SingletonWhoReply {
   readonly value: number;
 }
 
-export type SingletonMessage = SingletonInc | SingletonWho;
+export type SingletonMessage = SingletonIncrement | SingletonWho;
 
 /**
  * `CounterSingleton` instance is spawned by the cluster's
@@ -50,11 +50,11 @@ export type SingletonMessage = SingletonInc | SingletonWho;
 export class CounterSingleton extends Actor<SingletonMessage> {
   private value = 0;
   constructor(private readonly nodeName: string) { super(); }
-  override onReceive(msg: SingletonMessage): void {
-    if (msg.kind === 'inc') {
+  override onReceive(message: SingletonMessage): void {
+    if (message.kind === 'increment') {
       this.value++;
-    } else if (msg.kind === 'who') {
-      msg.replyTo.tell({
+    } else if (message.kind === 'who') {
+      message.replyTo.tell({
         kind: 'who-reply',
         nodeName: this.nodeName,
         value: this.value,

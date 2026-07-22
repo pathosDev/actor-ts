@@ -38,14 +38,14 @@ async function main(): Promise<void> {
     path('hello', get(() => complete(Status.OK, 'hello from express'))),
     path('users', concat(
       get(() => completeJson(Status.OK, [...users.values()])),
-      post(async (req) => {
-        const body = entity<{ name: string }>(req);
+      post(async (request) => {
+        const body = entity<{ name: string }>(request);
         const id = body.name.toLowerCase();
         users.set(id, { id, name: body.name });
         return completeJson(Status.Created, users.get(id));
       }),
-      path(':id', get((req) => {
-        const user = users.get(req.params.id);
+      path(':id', get((request) => {
+        const user = users.get(request.params.id);
         return user ? completeJson(Status.OK, user) : complete(Status.NotFound, 'unknown user');
       })),
     )),

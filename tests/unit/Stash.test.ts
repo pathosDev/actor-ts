@@ -23,8 +23,8 @@ describe('Stash', () => {
 
     class S extends Actor<string> {
       private ready = false;
-      override onReceive(msg: string): void {
-        if (msg === 'ready') {
+      override onReceive(message: string): void {
+        if (message === 'ready') {
           this.ready = true;
           this.context.unstashAll();
           return;
@@ -33,7 +33,7 @@ describe('Stash', () => {
           this.context.stash();
           return;
         }
-        seen.push(msg);
+        seen.push(message);
       }
     }
 
@@ -51,14 +51,14 @@ describe('Stash', () => {
 
     class S extends Actor<string> {
       private ready = false;
-      override onReceive(msg: string): void {
-        if (msg === 'ready') {
+      override onReceive(message: string): void {
+        if (message === 'ready') {
           this.ready = true;
           this.context.unstashAll();
           return;
         }
         if (!this.ready) { this.context.stash(); return; }
-        seen.push(msg);
+        seen.push(message);
       }
     }
 
@@ -77,8 +77,8 @@ describe('Stash', () => {
     const sizes: number[] = [];
 
     class S extends Actor<string> {
-      override onReceive(msg: string): void {
-        if (msg === 'count') { sizes.push(this.context.stashSize); return; }
+      override onReceive(message: string): void {
+        if (message === 'count') { sizes.push(this.context.stashSize); return; }
         this.context.stash();
         sizes.push(this.context.stashSize);
       }
@@ -114,9 +114,9 @@ describe('Stash', () => {
     const seen: string[] = [];
 
     class S extends Actor<string> {
-      override onReceive(msg: string): void {
-        if (msg === 'flush') { this.context.unstashAll(); return; }
-        seen.push(msg);
+      override onReceive(message: string): void {
+        if (message === 'flush') { this.context.unstashAll(); return; }
+        seen.push(message);
       }
     }
 

@@ -3,7 +3,7 @@ import type { Journal } from '../../persistence/Journal.js';
 /**
  * Append-only event recording an entity's lifecycle on the
  * coordinator side.  The coordinator emits one of these every time
- * `handleEntityStarted` or `handleEntityStopped` runs (when
+ * `onEntityStarted` or `onEntityStopped` runs (when
  * `rememberEntities: true`); replaying the full event log on
  * coordinator restart rebuilds the in-memory `entitiesPerShard` map.
  */
@@ -51,25 +51,25 @@ export interface RememberEntitiesStore {
 export class JournalRememberEntitiesStore implements RememberEntitiesStore {
   constructor(private readonly journal: Journal) {}
 
-  private pidFor(typeName: string): string {
+  private persistenceIdFor(typeName: string): string {
     return `sharding-coordinator-${typeName}`;
   }
 
   async append(typeName: string, event: RememberEvent): Promise<void> {
-    const pid = this.pidFor(typeName);
-    const head = await this.journal.highestSeq(pid);
-    await this.journal.append(pid, [event], head, ['sharding-remember']);
+    const persistenceId = this.persistenceIdFor(typeName);
+    const head = await this.journal.highestSeq(persistenceId);
+    await this.journal.append(persistenceId, [event], head, ['sharding-remember']);
   }
 
   async load(typeName: string): Promise<RememberEvent[]> {
-    const pid = this.pidFor(typeName);
-    const events = await this.journal.read<RememberEvent>(pid, 1);
+    const persistenceId = this.persistenceIdFor(typeName);
+    const events = await this.journal.read<RememberEvent>(persistenceId, 1);
     return events.map((pe) => pe.event);
   }
 
   async clear(typeName: string): Promise<void> {
-    const pid = this.pidFor(typeName);
-    const head = await this.journal.highestSeq(pid);
-    if (head > 0) await this.journal.delete(pid, head);
+    const persistenceId = this.persistenceIdFor(typeName);
+    const head = await this.journal.highestSeq(persistenceId);
+    if (head > 0) await this.journal.delete(persistenceId, head);
   }
 }

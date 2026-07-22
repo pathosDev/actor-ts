@@ -43,9 +43,9 @@ describe('exponentialBackoff', () => {
   });
 
   test('jitter low/high bounds match expectations exactly', () => {
-    const opts = { minMs: 1000, maxMs: 1000, randomFactor: 0.5 };
-    const lo = exponentialBackoff({ ...opts, random: MIN_RANDOM });
-    const hi = exponentialBackoff({ ...opts, random: MAX_RANDOM });
+    const options = { minMs: 1000, maxMs: 1000, randomFactor: 0.5 };
+    const lo = exponentialBackoff({ ...options, random: MIN_RANDOM });
+    const hi = exponentialBackoff({ ...options, random: MAX_RANDOM });
     expect(lo.delayFor(0)).toBe(500);          // 1000 × (1 - 0.5)
     expect(hi.delayFor(0)).toBeCloseTo(1500, 0); // 1000 × (1 + 0.5)
   });

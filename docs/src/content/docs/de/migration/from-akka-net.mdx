@@ -19,9 +19,9 @@ konzeptionelle Mapping ab.  Diese Seite fokussiert sich auf
 public class Counter : ReceiveActor {
   private int _count;
   public Counter() {
-    Receive<string>(cmd => {
-      if (cmd == "inc")  _count++;
-      else if (cmd == "get") Sender.Tell(_count);
+    Receive<string>(command => {
+      if (command == "inc")  _count++;
+      else if (command == "get") Sender.Tell(_count);
     });
   }
 }
@@ -35,25 +35,25 @@ counter.Tell("inc");
 // actor-ts:
 import { Actor, ActorSystem, Props, type ActorRef } from 'actor-ts';
 
-type Command = { kind: 'inc' } | { kind: 'get'; replyTo: ActorRef<number> };
+type Command = { kind: 'increment' } | { kind: 'get'; replyTo: ActorRef<number> };
 
 class Counter extends Actor<Command> {
   private count = 0;
-  override onReceive(cmd: Command): void {
-    if (cmd.kind === 'inc')  this.count++;
-    else if (cmd.kind === 'get') cmd.replyTo.tell(this.count);
+  override onReceive(command: Command): void {
+    if (command.kind === 'increment')  this.count++;
+    else if (command.kind === 'get') command.replyTo.tell(this.count);
   }
 }
 
 const system = ActorSystem.create('MySystem');
 const counter = system.spawn(Props.create(() => new Counter()), 'counter');
-counter.tell({ kind: 'inc' });
+counter.tell({ kind: 'increment' });
 ```
 
 Unterschiede zu Akka.NET:
 
 - **Keine `ReceiveActor`-Basis + `Receive<T>`-Registrierungen** -
-  nutze `onReceive(msg)` mit einem Switch / Pattern-Match.
+  nutze `onReceive(message)` mit einem Switch / Pattern-Match.
 - **Nachrichten-Typen sind explizit** - `Command`-Union vs. Akka.NETs
   oft-untypisiertes `Receive<object>`.
 - **Lambda-Stil-Verhaltensdefinition** ist nicht
@@ -71,15 +71,15 @@ Receive<GetState>(_ => Sender.Tell(_state));
 type Command = { kind: 'get-state'; replyTo: ActorRef<State> };
 
 class MyActor extends Actor<Command> {
-  onReceive(cmd: Command): void {
-    if (cmd.kind === 'get-state') cmd.replyTo.tell(this.state);
+  onReceive(command: Command): void {
+    if (command.kind === 'get-state') command.replyTo.tell(this.state);
   }
 }
 
 // actor-ts - Option 2: this.sender (Option-Typ)
 class MyActor extends Actor<Command> {
-  onReceive(cmd: Command): void {
-    if (cmd.kind === 'get-state') {
+  onReceive(command: Command): void {
+    if (command.kind === 'get-state') {
       this.sender.forEach(s => s.tell(this.state));
     }
   }
@@ -151,7 +151,7 @@ var region = ClusterSharding.Get(system).Start(
 const region = cluster.sharding.start<Command>({
   typeName: 'Counter',
   entityProps: Props.create(() => new CounterActor()),
-  extractEntityId: (cmd) => cmd.entityId,
+  extractEntityId: (command) => command.entityId,
   numShards: 100,
 });
 ```
@@ -188,9 +188,9 @@ class Account extends PersistentActor<Command, Event, State> {
     return state;
   }
 
-  onCommand(state: State, cmd: Command): void {
-    if (cmd.kind === 'deposit') {
-      this.persist({ kind: 'deposited', amount: cmd.amount }, () => {});
+  onCommand(state: State, command: Command): void {
+    if (command.kind === 'deposit') {
+      this.persist({ kind: 'deposited', amount: command.amount }, () => {});
     }
   }
 }

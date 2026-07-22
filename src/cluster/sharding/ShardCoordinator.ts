@@ -38,9 +38,9 @@ type CoordinatorEvent =
 
 type CoordinatorInbox = ShardingMessage | CoordinatorEvent;
 
-function isCoordinatorEvent(msg: CoordinatorInbox): msg is CoordinatorEvent {
-  if (!msg || typeof msg !== 'object') return false;
-  const discriminator = (msg as { t?: unknown; $t?: unknown }).t;
+function isCoordinatorEvent(message: CoordinatorInbox): message is CoordinatorEvent {
+  if (!message || typeof message !== 'object') return false;
+  const discriminator = (message as { t?: unknown; $t?: unknown }).t;
   return discriminator === 'reconcile' || discriminator === 'lease-acquire-result'
     || discriminator === 'lease-lost' || discriminator === 'acquire-retry';
 }
@@ -158,7 +158,7 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
       match(evt)
         .with(P.instanceOf(MemberRemoved), (e) => this.onMemberRemoved(e.member.address))
         .with(P.instanceOf(LeaderChanged), () => this.onLeaderChanged())
-        .otherwise(() => { /* other events are not observed here */ }),
+        .otherwise(() => this.onOtherClusterEvent()),
     );
     if (this.options.lease) {
       this.unsubscribeLeaseLost = this.options.lease.onLost((reason) => {
@@ -168,7 +168,7 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
       // path serialises with subsequent cluster events.
       this.self.tell({ t: 'reconcile' } satisfies CoordinatorEvent);
     }
-    this.rebalanceTimer = this.system.scheduler.scheduleAtFixedRateFn(
+    this.rebalanceTimer = this.system.scheduler.scheduleAtFixedRateFunction(
       this.options.rebalanceIntervalMs ?? 2_000,
       this.options.rebalanceIntervalMs ?? 2_000,
       () => { if (this.isActive()) this.rebalanceTick(); },
@@ -177,7 +177,7 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
 
   /** Apply a single `RememberEvent` to the in-memory `entitiesPerShard`
    *  map.  Used by both the preStart replay AND
-   *  `handleEntityStarted` / `handleEntityStopped` so the in-memory
+   *  `onEntityStarted` / `onEntityStopped` so the in-memory
    *  derivation rule lives in exactly one place. */
   private applyRememberEvent(
     ev: { kind: 'started' | 'stopped'; shardId: number; entityId: string },
@@ -206,12 +206,12 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
     }
   }
 
-  override onReceive(msg: CoordinatorInbox): void {
+  override onReceive(message: CoordinatorInbox): void {
     // Internal coordinator events drive the lease state machine — they
     // run regardless of `isActive()` because they're how we transition
     // INTO `isActive()` in the first place.
-    if (isCoordinatorEvent(msg)) {
-      this.handleCoordinatorEvent(msg);
+    if (isCoordinatorEvent(message)) {
+      this.handleCoordinatorEvent(message);
       return;
     }
     if (!this.isLeader()) return;
@@ -219,23 +219,23 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
       // Leader, but lease not yet held — buffer instead of drop so
       // regions don't need to retry on the next cluster event.
       if (this.acquireBuffer.length < ShardCoordinator.ACQUIRE_BUFFER_CAP) {
-        this.acquireBuffer.push(msg);
+        this.acquireBuffer.push(message);
       }
       return;
     }
-    this.dispatchShardingMessage(msg);
+    this.dispatchShardingMessage(message);
   }
 
-  private dispatchShardingMessage(msg: ShardingMessage): void {
-    match(msg)
-      .with({ $t: 'sharding.Register' }, (m) => this.handleRegister(m))
-      .with({ $t: 'sharding.GetShardHome' }, (m) => this.handleGetShardHome(m))
-      .with({ $t: 'sharding.HandOffComplete' }, (m) => this.handleHandOffComplete(m))
-      .with({ $t: 'sharding.BeginHandOffAcknowledgment' }, () => { /* informational only */ })
+  private dispatchShardingMessage(message: ShardingMessage): void {
+    match(message)
+      .with({ $t: 'sharding.Register' }, (m) => this.onRegister(m))
+      .with({ $t: 'sharding.GetShardHome' }, (m) => this.onGetShardHome(m))
+      .with({ $t: 'sharding.HandOffComplete' }, (m) => this.onHandOffComplete(m))
+      .with({ $t: 'sharding.BeginHandOffAcknowledgment' }, () => this.onBeginHandOffAcknowledgment())
       .with({ $t: 'sharding.RegionTerminated' }, (m) => this.onRegionTerminated(m))
-      .with({ $t: 'sharding.EntityStarted' }, (m) => this.handleEntityStarted(m))
-      .with({ $t: 'sharding.EntityStopped' }, (m) => this.handleEntityStopped(m))
-      .otherwise(() => { /* other ShardingMessage variants are region-side */ });
+      .with({ $t: 'sharding.EntityStarted' }, (m) => this.onEntityStarted(m))
+      .with({ $t: 'sharding.EntityStopped' }, (m) => this.onEntityStopped(m))
+      .otherwise(() => this.onUnhandled());
   }
 
   private isLeader(): boolean { return this.options.cluster.isLeader(); }
@@ -255,11 +255,19 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
 
   private handleCoordinatorEvent(evt: CoordinatorEvent): void {
     match(evt)
-      .with({ t: 'reconcile' }, () => this.reconcileLease())
-      .with({ t: 'lease-acquire-result' }, (m) => this.handleAcquireResult(m))
-      .with({ t: 'lease-lost' }, (m) => this.handleLeaseLost(m))
-      .with({ t: 'acquire-retry' }, () => this.reconcileLease())
+      .with({ t: 'reconcile' }, () => this.onReconcile())
+      .with({ t: 'lease-acquire-result' }, (m) => this.onLeaseAcquireResult(m))
+      .with({ t: 'lease-lost' }, (m) => this.onLeaseLost(m))
+      .with({ t: 'acquire-retry' }, () => this.onAcquireRetry())
       .exhaustive();
+  }
+
+  private onReconcile(): void {
+    this.reconcileLease();
+  }
+
+  private onAcquireRetry(): void {
+    this.reconcileLease();
   }
 
   private reconcileLease(): void {
@@ -283,7 +291,7 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
         // "not-leader" cleanup via onLeaderChanged below — no extra
         // state reset needed here.
       } else if (this.leaseState === 'acquiring') {
-        // Let the in-flight acquire finish; handleAcquireResult will
+        // Let the in-flight acquire finish; onLeaseAcquireResult will
         // notice we no longer want it and release immediately.
       } else {
         this.acquireRetryTimer?.cancel();
@@ -303,14 +311,14 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
     }
   }
 
-  private handleAcquireResult(msg: { got: boolean; error?: Error }): void {
+  private onLeaseAcquireResult(result: { got: boolean; error?: Error }): void {
     if (this.leaseState !== 'acquiring') {
       // Spurious result — release if we somehow got it.
-      if (msg.got) void this.options.lease!.release().catch(() => { /* ignore */ });
+      if (result.got) void this.options.lease!.release().catch(() => { /* ignore */ });
       return;
     }
-    if (!msg.got) {
-      if (msg.error) this.system.log.warn(`[sharding] lease acquire failed`, msg.error);
+    if (!result.got) {
+      if (result.error) this.system.log.warn(`[sharding] lease acquire failed`, result.error);
       this.leaseState = 'none';
       this.scheduleAcquireRetry();
       return;
@@ -337,10 +345,10 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
     }
   }
 
-  private handleLeaseLost(msg: { reason: string }): void {
+  private onLeaseLost(message: { reason: string }): void {
     if (this.leaseState !== 'held') return;
     this.system.log.warn(
-      `[sharding] coordinator '${this.options.typeName}' lost lease — ${msg.reason}; stepping down`,
+      `[sharding] coordinator '${this.options.typeName}' lost lease — ${message.reason}; stepping down`,
     );
     this.leaseState = 'none';
     // Cancel any in-flight rebalance handoff timers — those would
@@ -366,7 +374,7 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
   private scheduleAcquireRetry(): void {
     const interval = this.options.acquireRetryIntervalMs ?? 5_000;
     this.acquireRetryTimer?.cancel();
-    this.acquireRetryTimer = this.system.scheduler.scheduleOnceFn(interval, () => {
+    this.acquireRetryTimer = this.system.scheduler.scheduleOnceFunction(interval, () => {
       this.self.tell({ t: 'acquire-retry' } satisfies CoordinatorEvent);
     });
   }
@@ -398,50 +406,58 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
 
   /* ------------------------------- Handlers -------------------------------- */
 
-  private handleRegister(msg: RegisterRegion): void {
-    const node = NodeAddress.fromJSON(msg.node);
-    const key = regionKey(node, msg.region);
+  private onBeginHandOffAcknowledgment(): void {
+    /* informational only */
+  }
+
+  private onUnhandled(): void {
+    /* other ShardingMessage variants are region-side */
+  }
+
+  private onRegister(message: RegisterRegion): void {
+    const node = NodeAddress.fromJSON(message.node);
+    const key = regionKey(node, message.region);
     this.regions.set(key, {
       node,
-      path: msg.region,
-      proxy: msg.proxy,
-      shards: new Set(msg.hostedShards),
+      path: message.region,
+      proxy: message.proxy,
+      shards: new Set(message.hostedShards),
     });
-    for (const shardId of msg.hostedShards) {
+    for (const shardId of message.hostedShards) {
       this.shardHome.set(shardId, key);
     }
     const ack: RegisterAcknowledgment = {
       $t: 'sharding.RegisterAcknowledgment',
       coordinator: this.self.path.toString(),
     };
-    this.replyTo(msg.region, msg.node, ack);
+    this.replyTo(message.region, message.node, ack);
 
-    for (const shardId of msg.hostedShards) this.flushPending(shardId);
+    for (const shardId of message.hostedShards) this.flushPending(shardId);
 
     if (this.options.rememberEntities) {
-      for (const shardId of msg.hostedShards) this.shipRememberedEntities(shardId);
+      for (const shardId of message.hostedShards) this.shipRememberedEntities(shardId);
     }
     this.scheduleCoordinatorStateSave();
   }
 
-  private handleGetShardHome(msg: GetShardHome): void {
-    const home = this.shardHome.get(msg.shardId);
+  private onGetShardHome(message: GetShardHome): void {
+    const home = this.shardHome.get(message.shardId);
     if (home && this.regions.has(home)) {
       const info = this.regions.get(home)!;
-      this.replyTo(msg.requester, msg.requesterNode, {
+      this.replyTo(message.requester, message.requesterNode, {
         $t: 'sharding.ShardHome',
-        shardId: msg.shardId,
+        shardId: message.shardId,
         region: info.path,
         node: info.node.toJSON(),
       });
       return;
     }
 
-    const list = this.pending.get(msg.shardId) ?? [];
-    list.push(msg);
-    this.pending.set(msg.shardId, list);
+    const list = this.pending.get(message.shardId) ?? [];
+    list.push(message);
+    this.pending.set(message.shardId, list);
 
-    if (!this.rebalanceInProgress.has(msg.shardId)) this.tryAllocate(msg.shardId);
+    if (!this.rebalanceInProgress.has(message.shardId)) this.tryAllocate(message.shardId);
   }
 
   private tryAllocate(shardId: number): void {
@@ -469,8 +485,8 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
     this.scheduleCoordinatorStateSave();
   }
 
-  private handleHandOffComplete(msg: HandOffComplete): void {
-    const shardId = msg.shardId;
+  private onHandOffComplete(message: HandOffComplete): void {
+    const shardId = message.shardId;
     const inProgress = this.rebalanceInProgress.get(shardId);
     if (!inProgress) return;
     inProgress.timer.cancel();
@@ -488,23 +504,23 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
     this.tryAllocate(shardId);
   }
 
-  private handleEntityStarted(msg: EntityStarted): void {
+  private onEntityStarted(message: EntityStarted): void {
     if (!this.options.rememberEntities) return;
-    this.applyRememberEvent({ kind: 'started', shardId: msg.shardId, entityId: msg.entityId });
-    this.persistRememberEvent({ kind: 'started', shardId: msg.shardId, entityId: msg.entityId });
+    this.applyRememberEvent({ kind: 'started', shardId: message.shardId, entityId: message.entityId });
+    this.persistRememberEvent({ kind: 'started', shardId: message.shardId, entityId: message.entityId });
   }
 
-  private handleEntityStopped(msg: EntityStopped): void {
+  private onEntityStopped(message: EntityStopped): void {
     if (!this.options.rememberEntities) {
       // Existing behaviour: tidy the in-memory map even when we're
       // not remembering entities, so an unwise external trigger
       // doesn't leave stale data in the map.
-      const set = this.entitiesPerShard.get(msg.shardId);
-      if (set) { set.delete(msg.entityId); if (set.size === 0) this.entitiesPerShard.delete(msg.shardId); }
+      const set = this.entitiesPerShard.get(message.shardId);
+      if (set) { set.delete(message.entityId); if (set.size === 0) this.entitiesPerShard.delete(message.shardId); }
       return;
     }
-    this.applyRememberEvent({ kind: 'stopped', shardId: msg.shardId, entityId: msg.entityId });
-    this.persistRememberEvent({ kind: 'stopped', shardId: msg.shardId, entityId: msg.entityId });
+    this.applyRememberEvent({ kind: 'stopped', shardId: message.shardId, entityId: message.entityId });
+    this.persistRememberEvent({ kind: 'stopped', shardId: message.shardId, entityId: message.entityId });
   }
 
   /**
@@ -531,9 +547,9 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
       });
   }
 
-  private onRegionTerminated(msg: RegionTerminated): void {
-    const addr = NodeAddress.fromJSON(msg.node);
-    const key = regionKey(addr, msg.region);
+  private onRegionTerminated(message: RegionTerminated): void {
+    const addr = NodeAddress.fromJSON(message.node);
+    const key = regionKey(addr, message.region);
     const info = this.regions.get(key);
     if (!info) return;
     this.regions.delete(key);
@@ -593,6 +609,10 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
     }
   }
 
+  private onOtherClusterEvent(): void {
+    /* other events are not observed here */
+  }
+
   /* ------------------- Coordinator-state persistence ------------------ */
 
   /**
@@ -648,8 +668,8 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
 
   /**
    * Mark coordinator state dirty + schedule a save.  Called after
-   * every meaningful mutation — handleRegister, tryAllocate,
-   * handleHandOffComplete, onRegionTerminated.  Coalesces
+   * every meaningful mutation — onRegister, tryAllocate,
+   * onHandOffComplete, onRegionTerminated.  Coalesces
    * overlapping bursts into 1-2 store writes via the
    * `inFlight + dirty` flag pair.
    */
@@ -720,7 +740,7 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
     if (!owner) return;
 
     const timeout = this.options.handOffTimeoutMs ?? 10_000;
-    const timer = this.system.scheduler.scheduleOnceFn(timeout, () => {
+    const timer = this.system.scheduler.scheduleOnceFunction(timeout, () => {
       if (this.rebalanceInProgress.delete(shardId)) {
         this.system.log.warn(`[sharding] handoff timeout for shard ${shardId}; forcing reallocate`);
         this.shardHome.delete(shardId);
@@ -770,20 +790,20 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
     });
   }
 
-  private sendToRegion(key: string, msg: ShardingMessage): void {
+  private sendToRegion(key: string, message: ShardingMessage): void {
     const info = this.regions.get(key);
     if (!info) return;
-    this.replyTo(info.path, info.node.toJSON(), msg);
+    this.replyTo(info.path, info.node.toJSON(), message);
   }
 
-  private replyTo(path: string, nodeData: NodeAddressData, msg: ShardingMessage): void {
+  private replyTo(path: string, nodeData: NodeAddressData, message: ShardingMessage): void {
     const node = NodeAddress.fromJSON(nodeData);
     if (node.equals(this.options.cluster.selfAddress)) {
       const ref = this.options.localResolver(path) as ActorRef<ShardingMessage> | null;
-      if (ref) ref.tell(msg);
+      if (ref) ref.tell(message);
       return;
     }
     const remote = new RemoteActorRef<ShardingMessage>(node, path, this.options.cluster);
-    remote.tell(msg);
+    remote.tell(message);
   }
 }

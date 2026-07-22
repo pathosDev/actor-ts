@@ -31,12 +31,12 @@ class Heartbeat extends Actor<Message> {
     this.context.timers.startTimerWithFixedDelay('hb', { kind: 'tick' }, 5_000);
   }
 
-  override onReceive(msg: Message): void {
-    if (msg.kind === 'tick') {
+  override onReceive(message: Message): void {
+    if (message.kind === 'tick') {
       this.log.info('heartbeat');
-    } else if (msg.kind === 'set') {
+    } else if (message.kind === 'set') {
       // Ersetze den Timer mit einem neuen Intervall.  Gleicher Key → alter wird gecancelt.
-      this.context.timers.startTimerWithFixedDelay('hb', { kind: 'tick' }, msg.intervalMs);
+      this.context.timers.startTimerWithFixedDelay('hb', { kind: 'tick' }, message.intervalMs);
     }
   }
 }
@@ -87,7 +87,7 @@ const system = ActorSystem.create('demo');
 system.scheduler.scheduleOnce(10_000, someActor, { kind: 'wake-up' });
 
 // Führe einen Callback alle 30 s aus, beginnend in 5 s.
-const cancellable = system.scheduler.scheduleAtFixedRateFn(
+const cancellable = system.scheduler.scheduleAtFixedRateFunction(
   5_000, 30_000,
   () => console.log('still alive'),
 );
@@ -102,9 +102,9 @@ Funktion aus":
 | Methode | Was sie tut |
 | --- | --- |
 | `scheduleOnce(delayMs, target, message, sender?)` | Sende `message` einmal an `target`, nach `delayMs`. |
-| `scheduleOnceFn(delayMs, fn)` | Führe `fn` einmal aus, nach `delayMs`. |
+| `scheduleOnceFunction(delayMs, fn)` | Führe `fn` einmal aus, nach `delayMs`. |
 | `scheduleAtFixedRate(initialDelayMs, intervalMs, target, message, sender?)` | Sende `message` wiederholt. |
-| `scheduleAtFixedRateFn(initialDelayMs, intervalMs, fn)` | Führe `fn` wiederholt aus. |
+| `scheduleAtFixedRateFunction(initialDelayMs, intervalMs, fn)` | Führe `fn` wiederholt aus. |
 
 Jede Methode gibt ein `Cancellable` zurück:
 
@@ -147,7 +147,7 @@ Beide Timer-Spielarten propagieren Fehler etwas anders:
   resultierende `onReceive`-Aufruf läuft durch den normalen
   Supervisions-Pfad.  Ein Throw im Handler wird vom Supervisor
   gefangen, genau wie bei einer regulären Nachricht.
-- **`system.scheduler.scheduleAtFixedRateFn(...)` / `scheduleOnceFn(...)`**
+- **`system.scheduler.scheduleAtFixedRateFunction(...)` / `scheduleOnceFunction(...)`**
   fängt und loggt Throws (`console.error('[actor-ts] scheduler error:', e)`),
   eskaliert aber nicht.  Ein fehlschlagender Scheduler-Callback
   crasht das System nicht; er wird auch nicht bemerkt, außer du
@@ -160,7 +160,7 @@ import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="`setTimeout` und `setInterval` direkt in `onReceive`">
   ```ts
-  override onReceive(msg) {
+  override onReceive(message) {
     setTimeout(() => {
       this.context.spawnAnonymous(...);   // ← Async-Escape
     }, 1_000);

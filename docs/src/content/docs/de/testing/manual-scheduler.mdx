@@ -26,7 +26,7 @@ await kit.shutdown();
 ```
 
 `Heartbeat` plant einen Tick via
-`context.timers.startSingleTimer('tick', tickMsg, 5_000)`. Echte
+`context.timers.startSingleTimer('tick', tickMessage, 5_000)`. Echte
 Zeit verstreicht nie; der `advance(5_000)` feuert den Timer.
 
 ## Warum das wichtig ist
@@ -63,9 +63,9 @@ Vom `Scheduler` geerbt:
 
 ```ts
 scheduleOnce(delayMs, target, message, sender?): Cancellable
-scheduleOnceFn(delayMs, fn): Cancellable
+scheduleOnceFunction(delayMs, fn): Cancellable
 scheduleAtFixedRate(initialDelay, interval, target, message, sender?): Cancellable
-scheduleAtFixedRateFn(initialDelay, interval, fn): Cancellable
+scheduleAtFixedRateFunction(initialDelay, interval, fn): Cancellable
 ```
 
 Echtes `setTimeout` wird **nicht** genutzt. Jeder Schedule ist
@@ -209,7 +209,7 @@ import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="`new Date()` und `Date.now()` werden nicht virtualisiert">
   ```ts
-  override onReceive(msg) {
+  override onReceive(message) {
     const at = Date.now();   // ← echte Wall-Clock, NICHT virtuelle Zeit
     this.persist({ kind: 'observed', at });
   }

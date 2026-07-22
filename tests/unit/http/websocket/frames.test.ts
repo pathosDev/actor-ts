@@ -55,8 +55,8 @@ describe('normalizeInbound', () => {
   });
 
   test('ArrayBuffer → binary frame', () => {
-    const buf = new Uint8Array([1, 2, 3]).buffer;
-    const frame = normalizeInbound(buf) as Extract<WebsocketFrame, { kind: 'binary' }>;
+    const buffer = new Uint8Array([1, 2, 3]).buffer;
+    const frame = normalizeInbound(buffer) as Extract<WebsocketFrame, { kind: 'binary' }>;
     expect(frame.kind).toBe('binary');
     expect([...frame.data]).toEqual([1, 2, 3]);
   });

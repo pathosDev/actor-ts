@@ -39,13 +39,13 @@ class Door extends FSM<State, Data, Message> {
   constructor() {
     super('closed', {});
 
-    this.when('closed', (data, msg) => {
-      if (msg === 'open') return this.goto('open', { openedAt: Date.now() });
+    this.when('closed', (data, message) => {
+      if (message === 'open') return this.goto('open', { openedAt: Date.now() });
       return this.stay(data);
     });
 
-    this.when('open', (data, msg) => {
-      if (msg === 'close') return this.goto('closed', {});
+    this.when('open', (data, message) => {
+      if (message === 'close') return this.goto('closed', {});
       return this.stay(data);
     });
 

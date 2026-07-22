@@ -3,8 +3,8 @@ import {
   type ChatMessage,
   type ClientMessage,
   DEFAULT_ROOMS,
-  dmRoomFor,
-  isDmRoom,
+  directMessageRoomFor,
+  isDirectMessageRoom,
   isRoomName,
   type RoomName,
   type ServerMessage,
@@ -96,14 +96,14 @@ export class ChatService {
   /** Open a WS and authenticate with credentials. */
   connect(username: string, password: string): void {
     this.connectImplementation((ws) =>
-      ws.send(JSON.stringify({ type: 'login', username, password } satisfies ClientMessage)),
+      ws.send(JSON.stringify({ kind: 'login', username, password } satisfies ClientMessage)),
     );
   }
 
   /** Open a WS and authenticate with a stored session token. */
   private connectWithResume(token: string): void {
     this.connectImplementation((ws) =>
-      ws.send(JSON.stringify({ type: 'resume', token } satisfies ClientMessage)),
+      ws.send(JSON.stringify({ kind: 'resume', token } satisfies ClientMessage)),
     );
   }
 
@@ -162,7 +162,7 @@ export class ChatService {
 
   send(room: RoomName, text: string): void {
     if (!text.trim() || !this.ws) return;
-    this.ws.send(JSON.stringify({ type: 'send', room, text } satisfies ClientMessage));
+    this.ws.send(JSON.stringify({ kind: 'send', room, text } satisfies ClientMessage));
   }
 
   /** Send a `typing` frame at most once per 2 s.  Called from the
@@ -172,7 +172,7 @@ export class ChatService {
     const now = Date.now();
     if (now - this.lastTypingSentAt < 2000) return;
     this.lastTypingSentAt = now;
-    this.ws.send(JSON.stringify({ type: 'typing', room } satisfies ClientMessage));
+    this.ws.send(JSON.stringify({ kind: 'typing', room } satisfies ClientMessage));
   }
 
   selectRoom(room: RoomName): void {
@@ -182,15 +182,15 @@ export class ChatService {
     // server only registers presence + history-replay once per room
     // per session anyway.
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-      this.ws.send(JSON.stringify({ type: 'join', room } satisfies ClientMessage));
-      this.ws.send(JSON.stringify({ type: 'switch-active-room', room } satisfies ClientMessage));
+      this.ws.send(JSON.stringify({ kind: 'join', room } satisfies ClientMessage));
+      this.ws.send(JSON.stringify({ kind: 'switch-active-room', room } satisfies ClientMessage));
     }
     this.currentRoom.set(room);
     this.unreadByRoom.update((u) => ({ ...u, [room]: 0 }));
     // Switching INTO a room means the user is reading it — mark
     // the highest known ts as read for the sender's ✓✓.
-    const msgs = this.messagesByRoom()[room] ?? [];
-    const maxTs = msgs.reduce((a, message) => Math.max(a, message.ts), 0);
+    const messages = this.messagesByRoom()[room] ?? [];
+    const maxTs = messages.reduce((a, message) => Math.max(a, message.ts), 0);
     if (maxTs > 0) this.markReadUpTo(room, maxTs);
   }
 
@@ -200,7 +200,7 @@ export class ChatService {
     const last = this.lastReadSentByRoom.get(room) ?? 0;
     if (ts <= last) return;
     this.lastReadSentByRoom.set(room, ts);
-    this.ws.send(JSON.stringify({ type: 'read-up-to', room, ts } satisfies ClientMessage));
+    this.ws.send(JSON.stringify({ kind: 'read-up-to', room, ts } satisfies ClientMessage));
   }
 
   /**
@@ -210,10 +210,10 @@ export class ChatService {
    * `switch-active-room` for the `@<other>` name, which it routes
    * through the DM shard region (#100).
    */
-  openDm(otherUser: string): void {
+  openDirectMessage(otherUser: string): void {
     const me = this.username();
     if (!otherUser || otherUser === me) return;
-    const room = dmRoomFor(otherUser);
+    const room = directMessageRoomFor(otherUser);
     if (!this.rooms().includes(room)) {
       this.rooms.update((rs) => [...rs, room]);
       this.messagesByRoom.update((cur) => ({ ...cur, [room]: [] }));
@@ -232,7 +232,7 @@ export class ChatService {
   createRoom(name: string): boolean {
     if (!isRoomName(name)) return false;
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-      this.ws.send(JSON.stringify({ type: 'create-room', name } satisfies ClientMessage));
+      this.ws.send(JSON.stringify({ kind: 'create-room', name } satisfies ClientMessage));
     }
     return true;
   }
@@ -240,7 +240,7 @@ export class ChatService {
   logout(): void {
     this.cancelReconnect();
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-      try { this.ws.send(JSON.stringify({ type: 'logout' } satisfies ClientMessage)); } catch { /* ignore */ }
+      try { this.ws.send(JSON.stringify({ kind: 'logout' } satisfies ClientMessage)); } catch { /* ignore */ }
     }
     if (typeof sessionStorage !== 'undefined') sessionStorage.removeItem(TOKEN_KEY);
     if (this.ws) {
@@ -262,7 +262,7 @@ export class ChatService {
   }
 
   private handleServer(message: ServerMessage): void {
-    switch (message.type) {
+    switch (message.kind) {
       case 'logged-in':
         this.cancelReconnect();
         this.username.set(message.username);
@@ -287,8 +287,8 @@ export class ChatService {
         // Preserve open DMs — they live only on the client, never in
         // the directory.  Without this, every `RoomsChanged` would
         // wipe open conversations.
-        const dms = this.rooms().filter(isDmRoom);
-        const merged = [...message.rooms, ...dms];
+        const directMessages = this.rooms().filter(isDirectMessageRoom);
+        const merged = [...message.rooms, ...directMessages];
         this.rooms.set(merged);
         this.messagesByRoom.update((cur) => {
           const next = { ...cur };

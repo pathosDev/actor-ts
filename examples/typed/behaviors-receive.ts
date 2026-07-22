@@ -9,22 +9,22 @@
  */
 import { ActorSystem, Behaviors, type Behavior } from '../../src/index.js';
 
-type CounterCommand = { kind: 'inc' } | { kind: 'get' };
+type CounterCommand = { kind: 'increment' } | { kind: 'get' };
 
 /** Behavior holds its state by currying — `n` is captured in the closure. */
 const counter = (n: number, limit: number): Behavior<CounterCommand> =>
-  Behaviors.receive((ctx, cmd) => {
-    if (cmd.kind === 'inc') {
+  Behaviors.receive((context, command) => {
+    if (command.kind === 'increment') {
       const next = n + 1;
-      ctx.log.info(`counter @ ${next}`);
+      context.log.info(`counter @ ${next}`);
       if (next >= limit) {
-        ctx.log.info(`counter reached limit ${limit}, stopping`);
+        context.log.info(`counter reached limit ${limit}, stopping`);
         return Behaviors.stopped;
       }
       return counter(next, limit);
     }
-    if (cmd.kind === 'get') {
-      ctx.log.info(`counter value = ${n}`);
+    if (command.kind === 'get') {
+      context.log.info(`counter value = ${n}`);
       return Behaviors.same;
     }
     return Behaviors.unhandled;
@@ -34,10 +34,10 @@ async function main(): Promise<void> {
   const system = ActorSystem.create('typed-counter');
   const ref = system.spawnTyped(counter(0, 3), 'counter');
 
-  ref.tell({ kind: 'inc' });
+  ref.tell({ kind: 'increment' });
   ref.tell({ kind: 'get' });
-  ref.tell({ kind: 'inc' });
-  ref.tell({ kind: 'inc' }); // reaches limit, actor stops
+  ref.tell({ kind: 'increment' });
+  ref.tell({ kind: 'increment' }); // reaches limit, actor stops
 
   await Bun.sleep(60);
   await system.terminate();

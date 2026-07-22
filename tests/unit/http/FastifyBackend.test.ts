@@ -43,77 +43,77 @@ function newHttp(): ReturnType<ActorSystem['extension']> extends object ? any : 
 describe('FastifyBackend — plain routes', () => {
   test('GET returns the body and status', async () => {
     const { url } = await startServer(get(() => complete(Status.OK, 'hello')));
-    const res = await fetch(`${url}/`);
-    expect(res.status).toBe(200);
-    expect(await res.text()).toBe('hello');
+    const response = await fetch(`${url}/`);
+    expect(response.status).toBe(200);
+    expect(await response.text()).toBe('hello');
   });
 
   test('404 on unknown path', async () => {
     const { url } = await startServer(path('known', get(() => complete(Status.OK, ''))));
-    const res = await fetch(`${url}/missing`);
-    expect(res.status).toBe(404);
+    const response = await fetch(`${url}/missing`);
+    expect(response.status).toBe(404);
   });
 
   test('JSON body encodes correctly', async () => {
     const { url } = await startServer(get(() => completeJson(Status.OK, { a: 1, b: 'two' })));
-    const res = await fetch(`${url}/`);
-    expect(res.headers.get('content-type')).toContain('application/json');
-    expect(await res.json()).toEqual({ a: 1, b: 'two' });
+    const response = await fetch(`${url}/`);
+    expect(response.headers.get('content-type')).toContain('application/json');
+    expect(await response.json()).toEqual({ a: 1, b: 'two' });
   });
 
   test('entity() decodes a JSON POST body', async () => {
-    const { url } = await startServer(path('echo', post(async (req) => {
-      const body = entity<{ who: string }>(req);
+    const { url } = await startServer(path('echo', post(async (request) => {
+      const body = entity<{ who: string }>(request);
       return completeJson(Status.OK, { hi: body.who });
     })));
-    const res = await fetch(`${url}/echo`, {
+    const response = await fetch(`${url}/echo`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ who: 'world' }),
     });
-    expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ hi: 'world' });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ hi: 'world' });
   });
 
-  test('path parameters are exposed on req.params', async () => {
-    const { url } = await startServer(path('users/:id', get(req => completeJson(Status.OK, { id: req.params.id }))));
-    const res = await fetch(`${url}/users/42`);
-    expect(await res.json()).toEqual({ id: '42' });
+  test('path parameters are exposed on request.params', async () => {
+    const { url } = await startServer(path('users/:id', get(request => completeJson(Status.OK, { id: request.params.id }))));
+    const response = await fetch(`${url}/users/42`);
+    expect(await response.json()).toEqual({ id: '42' });
   });
 
   test('HttpError is turned into the right status', async () => {
     const { url } = await startServer(path('fail', get(() => {
       throw new HttpError(Status.BadRequest, 'bad-request', { detail: 'x' });
     })));
-    const res = await fetch(`${url}/fail`);
-    expect(res.status).toBe(400);
-    const body = await res.json() as { error: string; detail?: string };
+    const response = await fetch(`${url}/fail`);
+    expect(response.status).toBe(400);
+    const body = await response.json() as { error: string; detail?: string };
     expect(body.error).toBe('bad-request');
     expect(body.detail).toBe('x');
   });
 
   test('generic thrown errors become 500', async () => {
     const { url } = await startServer(path('boom', get(() => { throw new Error('kaboom'); })));
-    const res = await fetch(`${url}/boom`);
-    expect(res.status).toBe(500);
+    const response = await fetch(`${url}/boom`);
+    expect(response.status).toBe(500);
   });
 
   test('combined CRUD shape serves four routes under one prefix', async () => {
     const state: Record<string, string> = {};
     const routes = path('users', concat(
       get(() => completeJson(Status.OK, state)),
-      post(async (req) => {
-        const body = entity<{ id: string; name: string }>(req);
+      post(async (request) => {
+        const body = entity<{ id: string; name: string }>(request);
         state[body.id] = body.name;
         return completeJson(Status.Created, state);
       }),
       path(':id', concat(
-        get(req => {
-          const count = state[req.params.id];
-          return count ? completeJson(Status.OK, { id: req.params.id, name: count })
+        get(request => {
+          const count = state[request.params.id];
+          return count ? completeJson(Status.OK, { id: request.params.id, name: count })
                    : complete(Status.NotFound, 'not-found');
         }),
-        del(req => { delete state[req.params.id]; return complete(Status.NoContent); }),
+        del(request => { delete state[request.params.id]; return complete(Status.NoContent); }),
       )),
     ));
     const { url } = await startServer(routes);
@@ -140,10 +140,10 @@ describe('FastifyBackend — plain routes', () => {
 });
 
 describe('FastifyBackend — remoteAddress wiring (#312)', () => {
-  test('populates req.remoteAddress from the socket peer', async () => {
+  test('populates request.remoteAddress from the socket peer', async () => {
     let captured: string | undefined;
-    const { url } = await startServer(get((req) => {
-      captured = req.remoteAddress;
+    const { url } = await startServer(get((request) => {
+      captured = request.remoteAddress;
       return complete(Status.OK, 'ok');
     }));
     await fetch(`${url}/`);
@@ -177,7 +177,7 @@ describe('FastifyBackend — shutdown semantics', () => {
     };
     const wsPlugin = wsMod.default ?? wsMod.fastifyWebsocket ?? wsMod;
     await backend.withPlugin(wsPlugin);
-    await backend.withPlugin(async (fastify: { get: (path: string, opts: object, handler: (socket: unknown) => void) => void }) => {
+    await backend.withPlugin(async (fastify: { get: (path: string, options: object, handler: (socket: unknown) => void) => void }) => {
       fastify.get('/ws', { websocket: true }, () => { /* keep open */ });
     });
     const ext = system.extension(HttpExtensionId);
@@ -216,18 +216,18 @@ describe('HttpExtension — client round-trip', () => {
   test('HttpClient.get fetches a server-rendered body', async () => {
     const { url, system } = await startServer(get(() => completeJson(Status.OK, { pong: true })));
     const client = system.extension(HttpExtensionId).client;
-    const res = await client.get(`${url}/`);
-    expect(res.status).toBe(200);
-    expect(res.json()).toEqual({ pong: true });
+    const response = await client.get(`${url}/`);
+    expect(response.status).toBe(200);
+    expect(response.json()).toEqual({ pong: true });
   });
 
   test('HttpClient.post round-trips a JSON body', async () => {
-    const { url, system } = await startServer(path('echo', post(async (req) => {
-      return completeJson(Status.OK, entity(req) as object);
+    const { url, system } = await startServer(path('echo', post(async (request) => {
+      return completeJson(Status.OK, entity(request) as object);
     })));
     const client = system.extension(HttpExtensionId).client;
-    const res = await client.post(`${url}/echo`, { body: { hello: 'world' } });
-    expect(res.status).toBe(200);
-    expect(res.json()).toEqual({ hello: 'world' });
+    const response = await client.post(`${url}/echo`, { body: { hello: 'world' } });
+    expect(response.status).toBe(200);
+    expect(response.json()).toEqual({ hello: 'world' });
   });
 });

@@ -12,7 +12,7 @@ Replay — nur ein Snapshot des States, bei jedem
 flowchart LR
   subgraph DSA["DurableStateActor"]
     direction TB
-    CMD["onReceive(cmd)"]
+    CMD["onReceive(command)"]
     READ["this.state lesen"]
     NEXT["next = transform(...)"]
     PERSIST["await this.persist(next)"]
@@ -51,22 +51,34 @@ import { DurableStateActor, DurableStateOptions, ActorSystem, Props } from 'acto
 import { InMemoryDurableStateStore } from 'actor-ts';
 import { match } from 'ts-pattern';
 
-type CartCommand =
-  | { kind: 'add';    sku: string }
-  | { kind: 'remove'; sku: string }
-  | { kind: 'view';   replyTo: ActorRef<State> };
+type AddCommand = { kind: 'add'; sku: string };
+type RemoveCommand = { kind: 'remove'; sku: string };
+type ViewCommand = { kind: 'view'; replyTo: ActorRef<State> };
+type CartCommand = AddCommand | RemoveCommand | ViewCommand;
 
 interface State { items: string[]; }
 
 class Cart extends DurableStateActor<CartCommand, State> {
   constructor(options: DurableStateOptions<State>) { super(options); }
 
-  override async onReceive(cmd: CartCommand): Promise<void> {
-    await match(cmd)
-      .with({ kind: 'add' },    (c) => this.persist({ items: [...this.state.items, c.sku] }))
-      .with({ kind: 'remove' }, (c) => this.persist({ items: this.state.items.filter(s => s !== c.sku) }))
-      .with({ kind: 'view' },   (c) => { c.replyTo.tell(this.state); })
+  override async onReceive(command: CartCommand): Promise<void> {
+    await match(command)
+      .with({ kind: 'add' },    (c) => this.onAdd(c))
+      .with({ kind: 'remove' }, (c) => this.onRemove(c))
+      .with({ kind: 'view' },   (c) => this.onView(c))
       .exhaustive();
+  }
+
+  private onAdd(c: AddCommand): Promise<void> {
+    return this.persist({ items: [...this.state.items, c.sku] });
+  }
+
+  private onRemove(c: RemoveCommand): Promise<void> {
+    return this.persist({ items: this.state.items.filter(s => s !== c.sku) });
+  }
+
+  private onView(c: ViewCommand): void {
+    c.replyTo.tell(this.state);
   }
 }
 
@@ -236,9 +248,9 @@ import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="`persist` nicht zu awaiten">
   ```ts
-  override onReceive(cmd) {
+  override onReceive(command) {
     this.persist(next);            // ✗ kein await
-    cmd.replyTo.tell('done');      // antwortet "done" bevor der Write fertig ist
+    command.replyTo.tell('done');      // antwortet "done" bevor der Write fertig ist
   }
   ```
   Ohne `await` passiert die Antwort, bevor der State durable ist.
@@ -250,7 +262,7 @@ import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="`this.state` direkt mutieren">
   ```ts
-  this.state.items.push(cmd.sku);    // ✗ mutiert die gespeicherte Referenz
+  this.state.items.push(command.sku);    // ✗ mutiert die gespeicherte Referenz
   await this.persist(this.state);    // persistiert den mutierten Wert
   ```
   Das funktioniert *zufällig* in manchen Store-Implementierungen,

@@ -115,7 +115,7 @@ describe('eager peer-dep validation (#18, #59)', () => {
   });
 
   test('opaque user resolver has no introspection metadata — validator skips it', async () => {
-    const opaque = (pid: string) => pid.startsWith('big-')
+    const opaque = (persistenceId: string) => persistenceId.startsWith('big-')
       ? { algorithm: 'gzip' as const }
       : undefined;
     expect(knownConfigsOf(opaque)).toBeUndefined();

@@ -47,7 +47,7 @@ interface Node {
 }
 
 async function startNode(
-  systemName: string, port: number, opts: {
+  systemName: string, port: number, options: {
     seeds?: string[];
     downing?: DowningProvider;
   } = {},
@@ -60,8 +60,8 @@ async function startNode(
     .withTransport(new InMemoryTransport(new NodeAddress(systemName, 'h', port)))
     .withFailureDetector({ heartbeatIntervalMs: 50, unreachableAfterMs: 200, downAfterMs: 4_000 })
     .withGossipIntervalMs(80);
-  if (opts.seeds !== undefined) clusterOptions = clusterOptions.withSeeds(opts.seeds);
-  if (opts.downing !== undefined) clusterOptions = clusterOptions.withDowning(opts.downing);
+  if (options.seeds !== undefined) clusterOptions = clusterOptions.withSeeds(options.seeds);
+  if (options.downing !== undefined) clusterOptions = clusterOptions.withDowning(options.downing);
   const cluster = await Cluster.join(sys, clusterOptions);
   return { sys, cluster };
 }

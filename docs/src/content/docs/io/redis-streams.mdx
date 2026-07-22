@@ -108,7 +108,7 @@ class OrderProcessor extends Actor<RedisStreamEntry> {
   override async onReceive(entry: RedisStreamEntry): Promise<void> {
     const order = JSON.parse(entry.fields.body);
     await processOrder(order);
-    this.redis.tell({ kind: 'ack', stream: entry.stream, id: entry.id });
+    this.redis.tell({ kind: 'acknowledgment', stream: entry.stream, id: entry.id });
   }
 }
 ```

@@ -22,8 +22,8 @@ async function main(): Promise<void> {
     .withPath(tmpFile);
   const sqliteFile = new SqliteJournal(sqliteFileOptions);
 
-  const appendOne = (j: Journal, pid: string, seq: { n: number }) => async (): Promise<void> => {
-    await j.append(pid, [{ body: 'x'.repeat(32) }], seq.n);
+  const appendOne = (j: Journal, persistenceId: string, seq: { n: number }) => async (): Promise<void> => {
+    await j.append(persistenceId, [{ body: 'x'.repeat(32) }], seq.n);
     seq.n++;
   };
 

@@ -19,8 +19,8 @@ class Session extends Actor<Message> {
     this.context.setReceiveTimeout(30_000);
   }
 
-  override onReceive(msg: Message): void {
-    if (msg === ReceiveTimeout.instance) {
+  override onReceive(message: Message): void {
+    if (message === ReceiveTimeout.instance) {
       this.log.info('session idle — stopping');
       this.context.stopSelf();
       return;
@@ -68,8 +68,8 @@ class Session extends Actor<SessionMessage | ReceiveTimeout> {
     this.context.setReceiveTimeout(15 * 60_000);   // 15 Minuten
   }
 
-  override onReceive(msg: SessionMessage | ReceiveTimeout): void {
-    if (msg === ReceiveTimeout.instance) {
+  override onReceive(message: SessionMessage | ReceiveTimeout): void {
+    if (message === ReceiveTimeout.instance) {
       this.log.info(`session ${this.userId} expired`);
       this.context.stopSelf();
       return;
@@ -92,8 +92,8 @@ class Entity extends Actor<EntityMessage | ReceiveTimeout> {
     this.context.setReceiveTimeout(2 * 60_000);   // 2 Minuten idle
   }
 
-  override onReceive(msg: EntityMessage | ReceiveTimeout): void {
-    if (msg === ReceiveTimeout.instance) {
+  override onReceive(message: EntityMessage | ReceiveTimeout): void {
+    if (message === ReceiveTimeout.instance) {
       // Sag der Shard-Region, dass wir fertig sind — sie stoppt uns sauber.
       this.context.parent.forEach((p) =>
         p.tell({ kind: 'passivate', entityId: this.id }));
@@ -123,8 +123,8 @@ class Heartbeat extends Actor<...> {
     this.upstream.tell({ kind: 'subscribe', subscriber: this.self });
   }
 
-  override onReceive(msg): void {
-    if (msg === ReceiveTimeout.instance) {
+  override onReceive(message): void {
+    if (message === ReceiveTimeout.instance) {
       this.log.warn('upstream silent — re-subscribing');
       this.upstream.tell({ kind: 'subscribe', subscriber: this.self });
       // Nicht stoppen — weiter versuchen.
@@ -164,15 +164,15 @@ Actors teilen sich einen Timeout — armiere explizit in `become` neu,
 wenn du phasen-spezifische Dauern willst:
 
 ```ts
-private idle = (msg) => {
-  if (msg.kind === 'start') {
+private idle = (message) => {
+  if (message.kind === 'start') {
     this.context.become(this.working);
     this.context.setReceiveTimeout(60_000);   // 1 min idle im Working-Mode
   }
 };
 
-private working = (msg) => {
-  if (msg === ReceiveTimeout.instance) {
+private working = (message) => {
+  if (message === ReceiveTimeout.instance) {
     this.context.become(this.idle);
     this.context.setReceiveTimeout(0);   // kein Timeout im Idle-Mode
   }
@@ -193,7 +193,7 @@ User-Nachricht ausgeliefert — sie wird enqueued, dispatched, an
   Actor ist per Definition nicht untätig), aber das Timing ist
   nicht garantiert.
 - **`ReceiveTimeout.instance` ist ein Singleton**, Identitäts-Vergleich
-  (`msg === ReceiveTimeout.instance`) ist also zuverlässig.
+  (`message === ReceiveTimeout.instance`) ist also zuverlässig.
 - **Restart setzt den Timer zurück**.  Bei Restart startet die neue
   Instanz ohne konfigurierten Receive-Timeout; rufe
   `setReceiveTimeout` in `preStart` (oder `postRestart`) auf, um

@@ -92,13 +92,13 @@ describe('WorkerNode.join', () => {
         data: { token: 'secret' },
       });
 
-      const ctx = await joinPromise;
-      expect(ctx.self.toString()).toBe('sys@host:9');
-      expect(ctx.systemName).toBe('sys');
-      expect(ctx.initData).toEqual({ token: 'secret' });
+      const context = await joinPromise;
+      expect(context.self.toString()).toBe('sys@host:9');
+      expect(context.systemName).toBe('sys');
+      expect(context.initData).toEqual({ token: 'secret' });
 
-      // Calling ctx.ready() posts worker-ready back to the parent.
-      ctx.ready();
+      // Calling context.ready() posts worker-ready back to the parent.
+      context.ready();
       const ready = scope.posted.find((m) =>
         (m as { kind?: string })?.kind === 'worker-ready');
       expect(ready).toBeDefined();
@@ -128,8 +128,8 @@ describe('WorkerNode.join', () => {
         data: 'init-payload',
       });
 
-      const ctx = await joinPromise;
-      expect(ctx.initData).toBe('init-payload');
+      const context = await joinPromise;
+      expect(context.initData).toBe('init-payload');
     } finally {
       restore();
     }
@@ -148,15 +148,15 @@ describe('WorkerNode.join', () => {
         data: null,
       });
 
-      const ctx = await joinPromise;
+      const context = await joinPromise;
       // The transport multiplexes over the worker channel — every
       // inbound `worker-transport` frame is unwrapped and delivered
       // as a plain BrokeredMessage.  We can't easily reach into the
       // transport's internal handler from outside, but we CAN
       // verify the transport object was constructed.
-      expect(ctx.transport).toBeDefined();
-      expect(typeof ctx.transport.start).toBe('function');
-      expect(typeof ctx.transport.shutdown).toBe('function');
+      expect(context.transport).toBeDefined();
+      expect(typeof context.transport.start).toBe('function');
+      expect(typeof context.transport.shutdown).toBe('function');
     } finally {
       restore();
     }
@@ -203,9 +203,9 @@ describe('WorkerNode.join', () => {
         systemName: 'cluster-x',
         data: null,
       });
-      const ctx = await joinPromise;
-      expect(ctx.self).toBeInstanceOf(NodeAddress);
-      expect(ctx.self.equals(actorRef)).toBe(true);
+      const context = await joinPromise;
+      expect(context.self).toBeInstanceOf(NodeAddress);
+      expect(context.self.equals(actorRef)).toBe(true);
     } finally {
       restore();
     }

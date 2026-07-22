@@ -258,19 +258,19 @@ describe('ProjectionActor — concurrent writers', () => {
     const sys = newSystem('proj-concurrent');
 
     // We project by tag so a single projection sees both pids.
-    const projectionOptions = ByTagProjectionOptions.create<{ pid: string; n: number }>()
+    const projectionOptions = ByTagProjectionOptions.create<{ persistenceId: string; n: number }>()
       .withName('concurrent-proj')
       .withQuery(new InMemoryQuery(journal))
       .withTag('shared')
       .withHandle((ev) => { seen.push(`${ev.persistenceId}:${ev.event.n}`); })
       .withLiveOptions({ pollIntervalMs: 20 });
-    const ref = ProjectionActor.byTag<{ pid: string; n: number }>(sys, projectionOptions);
+    const ref = ProjectionActor.byTag<{ persistenceId: string; n: number }>(sys, projectionOptions);
 
     // Two concurrent writer loops.
     const target = 5;
-    const writers = ['w1', 'w2'].map(async (pid) => {
+    const writers = ['w1', 'w2'].map(async (persistenceId) => {
       for (let i = 1; i <= target; i++) {
-        await journal.append(pid, [{ pid, n: i }], i - 1, ['shared']);
+        await journal.append(persistenceId, [{ persistenceId, n: i }], i - 1, ['shared']);
         await sleep(5);
       }
     });
@@ -283,9 +283,9 @@ describe('ProjectionActor — concurrent writers', () => {
     // only assert membership.
     const set = new Set(seen);
     expect(set.size).toBe(target * 2);
-    for (const pid of ['w1', 'w2']) {
+    for (const persistenceId of ['w1', 'w2']) {
       for (let i = 1; i <= target; i++) {
-        expect(set.has(`${pid}:${i}`)).toBe(true);
+        expect(set.has(`${persistenceId}:${i}`)).toBe(true);
       }
     }
 

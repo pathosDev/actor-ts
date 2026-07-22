@@ -29,18 +29,24 @@ import type { RoomName } from '../../shared/rooms.js';
 
 /* --------------------------- public messages --------------------------- */
 
-export type OnlineUsersCommand =
-  | { readonly kind: 'AddToRoom';      readonly room: RoomName; readonly username: string }
-  | { readonly kind: 'RemoveFromRoom'; readonly room: RoomName; readonly username: string }
-  | { readonly kind: 'Subscribe';      readonly room: RoomName; readonly ref: ActorRef<UsersChanged> }
-  | { readonly kind: 'Unsubscribe';    readonly room: RoomName; readonly ref: ActorRef<UsersChanged> }
-  | { readonly kind: 'GetUsers';       readonly room: RoomName; readonly replyTo: ActorRef<UsersChanged> };
+export type AddToRoomCommand      = { readonly kind: 'AddToRoom';      readonly room: RoomName; readonly username: string };
+export type RemoveFromRoomCommand = { readonly kind: 'RemoveFromRoom'; readonly room: RoomName; readonly username: string };
+export type SubscribeCommand      = { readonly kind: 'Subscribe';      readonly room: RoomName; readonly ref: ActorRef<UsersChanged> };
+export type UnsubscribeCommand    = { readonly kind: 'Unsubscribe';    readonly room: RoomName; readonly ref: ActorRef<UsersChanged> };
+export type GetUsersCommand       = { readonly kind: 'GetUsers';       readonly room: RoomName; readonly replyTo: ActorRef<UsersChanged> };
 
-export interface UsersChanged {
+export type OnlineUsersCommand =
+  | AddToRoomCommand
+  | RemoveFromRoomCommand
+  | SubscribeCommand
+  | UnsubscribeCommand
+  | GetUsersCommand;
+
+export type UsersChanged = {
   readonly kind: 'UsersChanged';
   readonly room: RoomName;
   readonly users: ReadonlyArray<string>;
-}
+};
 
 /** DD key for a room's online-user set. */
 function ddKey(room: RoomName): string {
@@ -78,19 +84,20 @@ export class OnlineUsersActor extends Actor<OnlineUsersCommand> {
     this.rooms.clear();
   }
 
-  override onReceive(cmd: OnlineUsersCommand): void {
-    match(cmd)
-      .with({ kind: 'AddToRoom' }, (m) => this.add(m.room, m.username))
-      .with({ kind: 'RemoveFromRoom' }, (m) => this.remove(m.room, m.username))
-      .with({ kind: 'Subscribe' }, (m) => this.subscribe(m.room, m.ref))
-      .with({ kind: 'Unsubscribe' }, (m) => this.unsubscribe(m.room, m.ref))
-      .with({ kind: 'GetUsers' }, (m) => this.getUsers(m.room, m.replyTo))
+  override onReceive(command: OnlineUsersCommand): void {
+    match(command)
+      .with({ kind: 'AddToRoom' }, (m) => this.onAddToRoom(m))
+      .with({ kind: 'RemoveFromRoom' }, (m) => this.onRemoveFromRoom(m))
+      .with({ kind: 'Subscribe' }, (m) => this.onSubscribe(m))
+      .with({ kind: 'Unsubscribe' }, (m) => this.onUnsubscribe(m))
+      .with({ kind: 'GetUsers' }, (m) => this.onGetUsers(m))
       .exhaustive();
   }
 
   /* ----------------------------- mutations ----------------------------- */
 
-  private add(room: RoomName, username: string): void {
+  private onAddToRoom(m: AddToRoomCommand): void {
+    const { room, username } = m;
     this.dd.update<ORSet<string>>(
       ddKey(room),
       () => ORSet.empty<string>(),
@@ -98,7 +105,8 @@ export class OnlineUsersActor extends Actor<OnlineUsersCommand> {
     );
   }
 
-  private remove(room: RoomName, username: string): void {
+  private onRemoveFromRoom(m: RemoveFromRoomCommand): void {
+    const { room, username } = m;
     this.dd.update<ORSet<string>>(
       ddKey(room),
       () => ORSet.empty<string>(),
@@ -108,7 +116,8 @@ export class OnlineUsersActor extends Actor<OnlineUsersCommand> {
 
   /* ----------------------------- subscription -------------------------- */
 
-  private subscribe(room: RoomName, ref: ActorRef<UsersChanged>): void {
+  private onSubscribe(m: SubscribeCommand): void {
+    const { room, ref } = m;
     const state = this.ensureRoomState(room);
     state.subscribers.add(ref);
     // Replay the last-known value to the new subscriber so they don't
@@ -118,7 +127,8 @@ export class OnlineUsersActor extends Actor<OnlineUsersCommand> {
     }
   }
 
-  private unsubscribe(room: RoomName, ref: ActorRef<UsersChanged>): void {
+  private onUnsubscribe(m: UnsubscribeCommand): void {
+    const { room, ref } = m;
     const state = this.rooms.get(room);
     if (!state) return;
     state.subscribers.delete(ref);
@@ -129,7 +139,8 @@ export class OnlineUsersActor extends Actor<OnlineUsersCommand> {
     }
   }
 
-  private getUsers(room: RoomName, replyTo: ActorRef<UsersChanged>): void {
+  private onGetUsers(m: GetUsersCommand): void {
+    const { room, replyTo } = m;
     const current = this.dd.get<ORSet<string>>(ddKey(room));
     const users = current ? [...current.value()] : [];
     replyTo.tell({ kind: 'UsersChanged', room, users });

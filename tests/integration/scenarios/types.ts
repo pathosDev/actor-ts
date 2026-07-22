@@ -2,7 +2,7 @@
  * Shared types + helpers for integration scenarios (#313).
  */
 
-export interface ControllerCtx {
+export interface ControllerContext {
   /** Hostnames of every cluster-node container, in compose-declaration order. */
   readonly nodes: ReadonlyArray<string>;
   /** Bearer token configured on every node's management HTTP. */
@@ -15,7 +15,7 @@ export interface ControllerCtx {
 
 export interface Scenario {
   readonly name: string;
-  run(ctx: ControllerCtx): Promise<void>;
+  run(context: ControllerContext): Promise<void>;
 }
 
 /** Sleep N ms — `Bun.sleep` is bun-only, this works on Node too. */
@@ -58,9 +58,9 @@ export async function membersFrom(
   host: string,
   controlPort: number,
 ): Promise<Array<{ address: string; status: string }>> {
-  const res = await fetch(`http://${host}:${controlPort}/test/members`);
-  if (!res.ok) throw new Error(`/test/members on ${host} returned ${res.status}`);
-  const body = await res.json() as {
+  const response = await fetch(`http://${host}:${controlPort}/test/members`);
+  if (!response.ok) throw new Error(`/test/members on ${host} returned ${response.status}`);
+  const body = await response.json() as {
     members: Array<{ address: string; status: string }>;
   };
   return body.members;
@@ -78,11 +78,11 @@ export async function controlPost(
   controlPort: number,
   path: string,
 ): Promise<unknown> {
-  const res = await fetch(`http://${host}:${controlPort}${path}`, { method: 'POST' });
-  if (!res.ok) {
-    throw new Error(`POST http://${host}:${controlPort}${path} returned ${res.status}`);
+  const response = await fetch(`http://${host}:${controlPort}${path}`, { method: 'POST' });
+  if (!response.ok) {
+    throw new Error(`POST http://${host}:${controlPort}${path} returned ${response.status}`);
   }
-  return res.json().catch(() => null);
+  return response.json().catch(() => null);
 }
 
 /**
@@ -106,11 +106,11 @@ export async function clusterLiveNodes(
 ): Promise<string[]> {
   const checks = await Promise.all(allNodes.map(async (h) => {
     try {
-      const res = await fetch(`http://${h}:${controlPort}/test/members`, {
+      const response = await fetch(`http://${h}:${controlPort}/test/members`, {
         signal: AbortSignal.timeout(1_500),
       });
-      if (!res.ok) return null;
-      const body = await res.json() as {
+      if (!response.ok) return null;
+      const body = await response.json() as {
         self: string;
         members: ReadonlyArray<{ address: string; status: string }>;
       };

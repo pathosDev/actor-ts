@@ -46,7 +46,7 @@ class MockConsumer implements KafkaConsumerLike {
   readonly committed: Array<{ topic: string; partition: number; offset: string }> = [];
   /** Each `eachMessage` invocation's resolution — `null` while still pending. */
   readonly inflight: Array<{
-    msg: MockMessage; promise: Promise<void>;
+    message: MockMessage; promise: Promise<void>;
     resolved: boolean; rejected: boolean; rejectError?: Error;
     /** Number of times the captured heartbeat() callback has fired. */
     heartbeats: number;
@@ -82,7 +82,7 @@ class MockConsumer implements KafkaConsumerLike {
   push(topic: string, partition: number, offset: string): typeof this.inflight[number] {
     if (!this.eachMessage) throw new Error('mock consumer: run() not called yet');
     const tracker = {
-      msg: { topic, partition, offset },
+      message: { topic, partition, offset },
       promise: Promise.resolve() as Promise<void>,
       resolved: false,
       rejected: false,
@@ -232,7 +232,7 @@ describe('KafkaActor — manual commit (#2)', () => {
       const { actor, mock } = await bootActor(sys, kafkaOptions);
       const tracker = mock.consumer_.push('orders', 1, '7');
       await sleep(20);
-      actor.tell({ kind: 'nack', topic: 'orders', partition: 1, offset: '7', reason: 'bad data' });
+      actor.tell({ kind: 'negativeAcknowledgment', topic: 'orders', partition: 1, offset: '7', reason: 'bad data' });
       await tracker.promise;
       expect(tracker.rejected).toBe(true);
       expect(tracker.rejectError?.message).toBe('bad data');
@@ -501,7 +501,7 @@ describe('KafkaActor — heartbeat (#78)', () => {
       await sleep(60);
       expect(tracker.heartbeats).toBe(countAfterDrain);
 
-      actor.tell({ kind: 'nack', topic: 'orders', partition: 0, offset: '13' });
+      actor.tell({ kind: 'negativeAcknowledgment', topic: 'orders', partition: 0, offset: '13' });
       await tracker.promise;
       expect(tracker.rejected).toBe(true);
     } finally {

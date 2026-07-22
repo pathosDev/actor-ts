@@ -75,9 +75,9 @@ export interface PromClientRegistryLike {
 }
 
 export interface PromClientLike {
-  Counter:   new (opts: PromConstructorOpts) => PromClientCounter;
-  Gauge:     new (opts: PromConstructorOpts) => PromClientGauge;
-  Histogram: new (opts: PromConstructorOpts & { buckets?: number[] }) => PromClientHistogram;
+  Counter:   new (options: PromConstructorOpts) => PromClientCounter;
+  Gauge:     new (options: PromConstructorOpts) => PromClientGauge;
+  Histogram: new (options: PromConstructorOpts & { buckets?: number[] }) => PromClientHistogram;
 }
 
 interface PromConstructorOpts {
@@ -158,7 +158,7 @@ export function promClientRegistry(
     return out;
   }
 
-  function getOrCreateCounter(name: string, labels: Labels | undefined, opts2: CounterOptions | undefined): CounterEntry {
+  function getOrCreateCounter(name: string, labels: Labels | undefined, options2: CounterOptions | undefined): CounterEntry {
     const fullN = fullName(name);
     const existing = families.get(fullN);
     if (existing) {
@@ -170,16 +170,16 @@ export function promClientRegistry(
     const labelNames = labels ? Object.keys(labels).sort() : [];
     const impl = new client.Counter({
       name: fullN,
-      help: opts2?.help ?? fullN,
+      help: options2?.help ?? fullN,
       labelNames: labelNames.length > 0 ? labelNames : undefined,
       registers: [registry],
     });
-    const entry: CounterEntry = { kind: 'counter', help: opts2?.help ?? fullN, labelNames, impl };
+    const entry: CounterEntry = { kind: 'counter', help: options2?.help ?? fullN, labelNames, impl };
     families.set(fullN, entry);
     return entry;
   }
 
-  function getOrCreateGauge(name: string, labels: Labels | undefined, opts2: GaugeOptions | undefined): GaugeEntry {
+  function getOrCreateGauge(name: string, labels: Labels | undefined, options2: GaugeOptions | undefined): GaugeEntry {
     const fullN = fullName(name);
     const existing = families.get(fullN);
     if (existing) {
@@ -191,16 +191,16 @@ export function promClientRegistry(
     const labelNames = labels ? Object.keys(labels).sort() : [];
     const impl = new client.Gauge({
       name: fullN,
-      help: opts2?.help ?? fullN,
+      help: options2?.help ?? fullN,
       labelNames: labelNames.length > 0 ? labelNames : undefined,
       registers: [registry],
     });
-    const entry: GaugeEntry = { kind: 'gauge', help: opts2?.help ?? fullN, labelNames, impl };
+    const entry: GaugeEntry = { kind: 'gauge', help: options2?.help ?? fullN, labelNames, impl };
     families.set(fullN, entry);
     return entry;
   }
 
-  function getOrCreateHistogram(name: string, labels: Labels | undefined, opts2: HistogramOptions | undefined): HistogramEntry {
+  function getOrCreateHistogram(name: string, labels: Labels | undefined, options2: HistogramOptions | undefined): HistogramEntry {
     const fullN = fullName(name);
     const existing = families.get(fullN);
     if (existing) {
@@ -210,16 +210,16 @@ export function promClientRegistry(
       return existing;
     }
     const labelNames = labels ? Object.keys(labels).sort() : [];
-    const buckets = opts2?.buckets ?? DEFAULT_HISTOGRAM_BUCKETS;
+    const buckets = options2?.buckets ?? DEFAULT_HISTOGRAM_BUCKETS;
     const impl = new client.Histogram({
       name: fullN,
-      help: opts2?.help ?? fullN,
+      help: options2?.help ?? fullN,
       labelNames: labelNames.length > 0 ? labelNames : undefined,
       buckets: [...buckets],
       registers: [registry],
     });
     const entry: HistogramEntry = {
-      kind: 'histogram', help: opts2?.help ?? fullN, labelNames,
+      kind: 'histogram', help: options2?.help ?? fullN, labelNames,
       buckets: [...buckets], impl,
     };
     families.set(fullN, entry);
@@ -227,8 +227,8 @@ export function promClientRegistry(
   }
 
   return {
-    counter(name, labels, opts2): Counter {
-      const entry = getOrCreateCounter(name, labels, opts2);
+    counter(name, labels, options2): Counter {
+      const entry = getOrCreateCounter(name, labels, options2);
       const promLabels = asPromLabels(labels);
       // Local mirror of the value so the framework's `Counter.value`
       // contract (read for testing) keeps working without poking the
@@ -248,8 +248,8 @@ export function promClientRegistry(
       };
     },
 
-    gauge(name, labels, opts2): Gauge {
-      const entry = getOrCreateGauge(name, labels, opts2);
+    gauge(name, labels, options2): Gauge {
+      const entry = getOrCreateGauge(name, labels, options2);
       const promLabels = asPromLabels(labels);
       let mirror = 0;
       const child = entry.impl.labels(promLabels);
@@ -273,8 +273,8 @@ export function promClientRegistry(
       };
     },
 
-    histogram(name, labels, opts2): Histogram {
-      const entry = getOrCreateHistogram(name, labels, opts2);
+    histogram(name, labels, options2): Histogram {
+      const entry = getOrCreateHistogram(name, labels, options2);
       const promLabels = asPromLabels(labels);
       const child = entry.impl.labels(promLabels);
       // Mirror the bucket counts + sum + count locally so the

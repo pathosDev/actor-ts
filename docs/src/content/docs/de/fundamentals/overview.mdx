@@ -23,7 +23,7 @@ flowchart TB
       subgraph A["Actor &quot;worker-1&quot;"]
         direction TB
         MB["mailbox"]
-        OR["onReceive(msg)"]
+        OR["onReceive(message)"]
         CTX["state · log · children · context.*"]
         MB --> OR --> CTX
       end

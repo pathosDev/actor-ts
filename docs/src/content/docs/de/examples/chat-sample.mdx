@@ -95,7 +95,7 @@ Das Docker-Compose-Setup startet:
 const startShardingOptions = StartShardingOptions.create<SessionMessage>()
   .withTypeName('session')
   .withEntityProps(Props.create(() => new UserSessionActor()))
-  .withExtractEntityId((msg) => msg.userId)
+  .withExtractEntityId((message) => message.userId)
   .withRememberEntities(true);
 const sessionRegion = cluster.sharding.start(startShardingOptions);
 ```
@@ -134,9 +134,9 @@ unabhängig davon, auf welchem Node der ChatRoom publisht.
 class UserSessionActor extends Actor<SessionMessage> {
   private ws: WebSocket | null = null;
 
-  override onReceive(msg: SessionMessage): void {
-    if (msg.kind === 'connect-ws') this.ws = msg.socket;
-    if (msg.kind === 'inbound')    this.ws?.send(JSON.stringify(msg.payload));
+  override onReceive(message: SessionMessage): void {
+    if (message.kind === 'connect-ws') this.ws = message.socket;
+    if (message.kind === 'inbound')    this.ws?.send(JSON.stringify(message.payload));
   }
 }
 ```

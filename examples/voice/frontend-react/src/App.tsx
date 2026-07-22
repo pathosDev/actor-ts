@@ -65,7 +65,7 @@ function GateLoginView({ voice }: { voice: VoiceHandle }): React.JSX.Element {
 function AppView({ voice }: { voice: VoiceHandle }): React.JSX.Element {
   const { state } = voice;
 
-  function ptt(target: ClientMessage & { type: 'voice-target' }, key: string, label: string, big = false, disabled = false): React.JSX.Element {
+  function ptt(target: ClientMessage & { kind: 'voice-target' }, key: string, label: string, big = false, disabled = false): React.JSX.Element {
     const onDown = (e: RPointerEvent<HTMLButtonElement>): void => {
       e.preventDefault();
       if (disabled) return;
@@ -111,7 +111,7 @@ function AppView({ voice }: { voice: VoiceHandle }): React.JSX.Element {
                 <li key={u}>
                   <span className={'dot' + (online ? ' online' : '')} />
                   <span className={'username' + (isSelf ? ' self' : '')}>{u}</span>
-                  {!isSelf && ptt({ type: 'voice-target', mode: 'peer', target: u }, `peer:${u}`, 'PTT', false, !online)}
+                  {!isSelf && ptt({ kind: 'voice-target', mode: 'peer', target: u }, `peer:${u}`, 'PTT', false, !online)}
                 </li>
               );
             })}
@@ -126,7 +126,7 @@ function AppView({ voice }: { voice: VoiceHandle }): React.JSX.Element {
                 <div key={g.name} className="group-card">
                   <div className="head"><span className="name">{g.name}</span></div>
                   <div className="members">{g.members.join(', ')}</div>
-                  {ptt({ type: 'voice-target', mode: 'group', group: g.name }, `group:${g.name}`, 'Hold to talk', true, !isMember)}
+                  {ptt({ kind: 'voice-target', mode: 'group', group: g.name }, `group:${g.name}`, 'Hold to talk', true, !isMember)}
                 </div>
               );
             })}

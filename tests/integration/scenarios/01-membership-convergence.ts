@@ -12,16 +12,16 @@ import { upCountFrom, waitFor, type Scenario } from './types.js';
 
 export const scenario: Scenario = {
   name: '01-membership-convergence',
-  async run(ctx) {
-    const expected = ctx.nodes.length;
+  async run(context) {
+    const expected = context.nodes.length;
     console.log(`[01] waiting for every node to see ${expected} 'up' members...`);
 
     // Each node has its own convergence deadline — we don't want to
     // wait sequentially.  Parallel polling with one shared deadline.
-    await Promise.all(ctx.nodes.map(async (host) => {
+    await Promise.all(context.nodes.map(async (host) => {
       await waitFor(
         `${host} sees ${expected} up`,
-        async () => (await upCountFrom(host, ctx.controlPort)) === expected,
+        async () => (await upCountFrom(host, context.controlPort)) === expected,
         20_000,
         200,
       );
@@ -32,20 +32,20 @@ export const scenario: Scenario = {
     // `expected` up members while missing a peer that joined late
     // and replaced an earlier-down member — that would be a real
     // bug we'd want to surface.
-    const addrSets: Array<Set<string>> = await Promise.all(ctx.nodes.map(async (host) => {
-      const res = await fetch(`http://${host}:${ctx.controlPort}/test/members`);
-      const body = await res.json() as { members: Array<{ address: string }> };
+    const addrSets: Array<Set<string>> = await Promise.all(context.nodes.map(async (host) => {
+      const response = await fetch(`http://${host}:${context.controlPort}/test/members`);
+      const body = await response.json() as { members: Array<{ address: string }> };
       return new Set(body.members.map((m) => m.address));
     }));
     const reference = addrSets[0]!;
     for (let i = 1; i < addrSets.length; i++) {
       const other = addrSets[i]!;
       if (other.size !== reference.size) {
-        throw new Error(`[01] address-set size mismatch: ${ctx.nodes[0]}=${reference.size}, ${ctx.nodes[i]}=${other.size}`);
+        throw new Error(`[01] address-set size mismatch: ${context.nodes[0]}=${reference.size}, ${context.nodes[i]}=${other.size}`);
       }
       for (const a of reference) {
         if (!other.has(a)) {
-          throw new Error(`[01] ${ctx.nodes[i]} is missing peer ${a} that ${ctx.nodes[0]} sees`);
+          throw new Error(`[01] ${context.nodes[i]} is missing peer ${a} that ${context.nodes[0]} sees`);
         }
       }
     }

@@ -18,7 +18,7 @@ export interface ServerBuilder {
    * it throws, the default mapping still applies.  Requires a backend
    * that supports `setErrorHandler` (all shipped backends do).
    */
-  withErrorHandler(handler: (err: unknown, req: HttpRequest) => Promise<HttpResponse> | HttpResponse): ServerBuilder;
+  withErrorHandler(handler: (err: unknown, request: HttpRequest) => Promise<HttpResponse> | HttpResponse): ServerBuilder;
   /** Register the full route tree and bind.  Returns the ServerBinding. */
   bind(routes: Route): Promise<ServerBinding>;
 }
@@ -38,14 +38,14 @@ export class HttpExtension implements Extension {
   /** Start building a new server scope.  Call `bind(routes)` to start it. */
   newServerAt(host: string, port: number): ServerBuilder {
     let backend: HttpServerBackend | null = null;
-    let errorHandler: ((err: unknown, req: HttpRequest) => Promise<HttpResponse> | HttpResponse) | null = null;
+    let errorHandler: ((err: unknown, request: HttpRequest) => Promise<HttpResponse> | HttpResponse) | null = null;
     const system = this.system;
     return {
       useBackend(b: HttpServerBackend): ServerBuilder {
         backend = b;
         return this;
       },
-      withErrorHandler(handler: (err: unknown, req: HttpRequest) => Promise<HttpResponse> | HttpResponse): ServerBuilder {
+      withErrorHandler(handler: (err: unknown, request: HttpRequest) => Promise<HttpResponse> | HttpResponse): ServerBuilder {
         errorHandler = handler;
         return this;
       },
@@ -88,18 +88,18 @@ export class HttpExtension implements Extension {
           active.registerRoute({
             method: route.method,
             pattern: route.pattern,
-            handler: async (req: HttpRequest): Promise<HttpResponse> => {
+            handler: async (request: HttpRequest): Promise<HttpResponse> => {
               const start = Date.now();
-              system.log.debug(`[http] ${req.method} ${req.path}`);
+              system.log.debug(`[http] ${request.method} ${request.path}`);
               try {
-                const out = await route.handler(req);
+                const out = await route.handler(request);
                 system.log.debug(
-                  `[http] ${req.method} ${req.path} → ${out.status} (${Date.now() - start} ms)`,
+                  `[http] ${request.method} ${request.path} → ${out.status} (${Date.now() - start} ms)`,
                 );
                 return out;
               } catch (err) {
                 system.log.debug(
-                  `[http] ${req.method} ${req.path} → error after ${Date.now() - start} ms: ${(err as Error).message}`,
+                  `[http] ${request.method} ${request.path} → error after ${Date.now() - start} ms: ${(err as Error).message}`,
                 );
                 throw err;
               }
@@ -115,9 +115,9 @@ export class HttpExtension implements Extension {
           active.registerWebSocket!({
             pattern: route.pattern,
             authorize: route.authorize,
-            onConnection: (req, socket) => {
-              system.log.debug(`[ws] upgrade ${req.path}`);
-              route.connect(system, req, trackSocket(tracker, socket));
+            onConnection: (request, socket) => {
+              system.log.debug(`[ws] upgrade ${request.path}`);
+              route.connect(system, request, trackSocket(tracker, socket));
             },
           });
         }
@@ -137,10 +137,10 @@ export class HttpExtension implements Extension {
             );
           }
           const fb = fallbacks[0]!;
-          active.setNotFound(async (req: HttpRequest): Promise<HttpResponse> => {
-            system.log.debug(`[http] (fallback) ${req.method} ${req.path}`);
+          active.setNotFound(async (request: HttpRequest): Promise<HttpResponse> => {
+            system.log.debug(`[http] (fallback) ${request.method} ${request.path}`);
             try {
-              return await fb.handler(req);
+              return await fb.handler(request);
             } catch (err) {
               return defaultErrorResponse(err);
             }

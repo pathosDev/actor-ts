@@ -13,7 +13,7 @@ export interface CompiledRoute {
   readonly kind: 'http';
   readonly method: HttpMethod;
   readonly pattern: string;
-  readonly handler: (req: HttpRequest) => Promise<HttpResponse> | HttpResponse;
+  readonly handler: (request: HttpRequest) => Promise<HttpResponse> | HttpResponse;
 }
 
 /**
@@ -24,7 +24,7 @@ export interface CompiledRoute {
  */
 export type WebsocketConnectHandler = (
   system: ActorSystem,
-  req: HttpRequest,
+  request: HttpRequest,
   socket: WebsocketSocketAdapter,
 ) => void;
 
@@ -40,7 +40,7 @@ export interface CompiledWebsocketRoute {
   readonly method: 'GET';
   readonly pattern: string;
   readonly connect: WebsocketConnectHandler;
-  readonly authorize: (req: HttpRequest) => Promise<HttpResponse | null>;
+  readonly authorize: (request: HttpRequest) => Promise<HttpResponse | null>;
 }
 
 /**
@@ -50,7 +50,7 @@ export interface CompiledWebsocketRoute {
  */
 export interface CompiledFallback {
   readonly kind: 'fallback';
-  readonly handler: (req: HttpRequest) => Promise<HttpResponse> | HttpResponse;
+  readonly handler: (request: HttpRequest) => Promise<HttpResponse> | HttpResponse;
 }
 
 /** A compiled endpoint: a plain HTTP route, a WebSocket route, or the fallback. */
@@ -75,12 +75,12 @@ export type CompiledEndpoint = CompiledRoute | CompiledWebsocketRoute | Compiled
  *     configured extractor) against a CIDR list, short-circuits
  *     with 403 if not allowed.
  *
- * Throwing `HttpError(status, msg)` is the idiomatic short-circuit:
+ * Throwing `HttpError(status, message)` is the idiomatic short-circuit:
  * the global error handler catches it and emits the right response.
  */
 export type Middleware = (
-  req: HttpRequest,
-  next: (req?: HttpRequest) => Promise<HttpResponse>,
+  request: HttpRequest,
+  next: (request?: HttpRequest) => Promise<HttpResponse>,
 ) => Promise<HttpResponse> | HttpResponse;
 
 /**
@@ -88,12 +88,12 @@ export type Middleware = (
  * representation is a tree that knows how to flatten into CompiledRoutes.
  */
 export type Route =
-  | { readonly kind: 'terminal'; readonly method: HttpMethod; readonly handler: (req: HttpRequest) => Promise<HttpResponse> | HttpResponse }
+  | { readonly kind: 'terminal'; readonly method: HttpMethod; readonly handler: (request: HttpRequest) => Promise<HttpResponse> | HttpResponse }
   | { readonly kind: 'path'; readonly segment: string; readonly child: Route }
   | { readonly kind: 'concat'; readonly routes: ReadonlyArray<Route> }
   | { readonly kind: 'middleware'; readonly middleware: Middleware; readonly child: Route }
-  | { readonly kind: 'websocket'; readonly connect: WebsocketConnectHandler; readonly authorize?: (req: HttpRequest) => HttpResponse | null }
-  | { readonly kind: 'fallback'; readonly handler: (req: HttpRequest) => Promise<HttpResponse> | HttpResponse }
+  | { readonly kind: 'websocket'; readonly connect: WebsocketConnectHandler; readonly authorize?: (request: HttpRequest) => HttpResponse | null }
+  | { readonly kind: 'fallback'; readonly handler: (request: HttpRequest) => Promise<HttpResponse> | HttpResponse }
   | { readonly kind: 'cors'; readonly settings: CorsRouteOptions; readonly child: Route };
 
 /** Compose several sibling routes (OR semantics — first matching wins). */
@@ -144,7 +144,7 @@ export function withMiddleware(middleware: Middleware, child: Route): Route {
  */
 export type ExceptionHandler = (
   err: unknown,
-  req: HttpRequest,
+  request: HttpRequest,
 ) => Promise<HttpResponse | null | undefined> | HttpResponse | null | undefined;
 
 /**
@@ -167,11 +167,11 @@ export type ExceptionHandler = (
  *     )
  */
 export function handleErrors(handler: ExceptionHandler, child: Route): Route {
-  const middleware: Middleware = async (req, next) => {
+  const middleware: Middleware = async (request, next) => {
     try {
       return await next();
     } catch (err) {
-      const recovered = await handler(err, req);
+      const recovered = await handler(err, request);
       if (recovered !== null && recovered !== undefined) return recovered;
       throw err; // declined → escalate to the next enclosing handler / default
     }
@@ -192,10 +192,10 @@ export function handleErrors(handler: ExceptionHandler, child: Route): Route {
  *
  *     concat(
  *       path('api', apiRoutes),
- *       fallback((req) => completeJson(Status.NotFound, { error: 'no route', path: req.path })),
+ *       fallback((request) => completeJson(Status.NotFound, { error: 'no route', path: request.path })),
  *     )
  */
-export function fallback(handler: (req: HttpRequest) => Promise<HttpResponse> | HttpResponse): Route {
+export function fallback(handler: (request: HttpRequest) => Promise<HttpResponse> | HttpResponse): Route {
   return { kind: 'fallback', handler };
 }
 
@@ -206,17 +206,17 @@ function normalizeSegment(s: string): string {
 
 /* -------------------------- Method combinators ---------------------------- */
 
-function methodRoute(method: HttpMethod, handler: Route['kind'] extends 'terminal' ? never : (req: HttpRequest) => Promise<HttpResponse> | HttpResponse): Route {
+function methodRoute(method: HttpMethod, handler: Route['kind'] extends 'terminal' ? never : (request: HttpRequest) => Promise<HttpResponse> | HttpResponse): Route {
   return { kind: 'terminal', method, handler };
 }
 
-export const get     = (h: (req: HttpRequest) => Promise<HttpResponse> | HttpResponse): Route => methodRoute('GET', h);
-export const post    = (h: (req: HttpRequest) => Promise<HttpResponse> | HttpResponse): Route => methodRoute('POST', h);
-export const put     = (h: (req: HttpRequest) => Promise<HttpResponse> | HttpResponse): Route => methodRoute('PUT', h);
-export const del     = (h: (req: HttpRequest) => Promise<HttpResponse> | HttpResponse): Route => methodRoute('DELETE', h);
-export const patch   = (h: (req: HttpRequest) => Promise<HttpResponse> | HttpResponse): Route => methodRoute('PATCH', h);
-export const head    = (h: (req: HttpRequest) => Promise<HttpResponse> | HttpResponse): Route => methodRoute('HEAD', h);
-export const options = (h: (req: HttpRequest) => Promise<HttpResponse> | HttpResponse): Route => methodRoute('OPTIONS', h);
+export const get     = (h: (request: HttpRequest) => Promise<HttpResponse> | HttpResponse): Route => methodRoute('GET', h);
+export const post    = (h: (request: HttpRequest) => Promise<HttpResponse> | HttpResponse): Route => methodRoute('POST', h);
+export const put     = (h: (request: HttpRequest) => Promise<HttpResponse> | HttpResponse): Route => methodRoute('PUT', h);
+export const del     = (h: (request: HttpRequest) => Promise<HttpResponse> | HttpResponse): Route => methodRoute('DELETE', h);
+export const patch   = (h: (request: HttpRequest) => Promise<HttpResponse> | HttpResponse): Route => methodRoute('PATCH', h);
+export const head    = (h: (request: HttpRequest) => Promise<HttpResponse> | HttpResponse): Route => methodRoute('HEAD', h);
+export const options = (h: (request: HttpRequest) => Promise<HttpResponse> | HttpResponse): Route => methodRoute('OPTIONS', h);
 
 /* ------------------------- Convenience responses -------------------------- */
 
@@ -290,7 +290,7 @@ export function compile(route: Route, prefix: string[] = []): CompiledEndpoint[]
         pattern: buildPattern(prefix),
         connect: r.connect,
         authorize: gate
-          ? async (req): Promise<HttpResponse | null> => gate(req)
+          ? async (request): Promise<HttpResponse | null> => gate(request)
           : async (): Promise<HttpResponse | null> => null,
       }];
     })
@@ -322,12 +322,12 @@ export function compile(route: Route, prefix: string[] = []): CompiledEndpoint[]
           return { ...c, handler: wrapHandler(r.middleware, c.handler) };
         }
         const inner = c.authorize;
-        const authorize = async (req: HttpRequest): Promise<HttpResponse | null> => {
+        const authorize = async (request: HttpRequest): Promise<HttpResponse | null> => {
           try {
-            const res = await r.middleware(req, async (override?: HttpRequest) => (await inner(override ?? req)) ?? WS_ACCEPT);
+            const response = await r.middleware(request, async (override?: HttpRequest) => (await inner(override ?? request)) ?? WS_ACCEPT);
             // Identity: middleware passed the sentinel through → accept.
             // Any other response (short-circuit or transform) → reject.
-            return res === WS_ACCEPT ? null : res;
+            return response === WS_ACCEPT ? null : response;
           } catch (err) {
             return defaultErrorResponse(err);
           }
@@ -341,15 +341,15 @@ export function compile(route: Route, prefix: string[] = []): CompiledEndpoint[]
 
 function wrapHandler(
   middleware: Middleware,
-  handler: (req: HttpRequest) => Promise<HttpResponse> | HttpResponse,
-): (req: HttpRequest) => Promise<HttpResponse> {
-  return async (req: HttpRequest): Promise<HttpResponse> => {
+  handler: (request: HttpRequest) => Promise<HttpResponse> | HttpResponse,
+): (request: HttpRequest) => Promise<HttpResponse> {
+  return async (request: HttpRequest): Promise<HttpResponse> => {
     // `next(override?)` lets a middleware replace the request the handler
     // (and any inner middleware) sees — the override threads through the
     // stacked wraps because each wrap's `handler` is the next-inner one.
     const next = async (override?: HttpRequest): Promise<HttpResponse> =>
-      Promise.resolve(handler(override ?? req));
-    return Promise.resolve(middleware(req, next));
+      Promise.resolve(handler(override ?? request));
+    return Promise.resolve(middleware(request, next));
   };
 }
 
@@ -368,16 +368,16 @@ function buildPattern(segments: string[]): string {
  * Extract a query parameter as a trimmed string, or undefined.  Array-valued
  * params (e.g. `?x=1&x=2`) return the first value.
  */
-export function queryParam(req: HttpRequest, name: string): string | undefined {
-  const value = req.query[name];
+export function queryParam(request: HttpRequest, name: string): string | undefined {
+  const value = request.query[name];
   if (value === undefined) return undefined;
   if (Array.isArray(value)) return value[0];
   return value;
 }
 
 /** Extract a path parameter (guaranteed present by the pattern). */
-export function pathParam(req: HttpRequest, name: string): string {
-  const value = req.params[name];
+export function pathParam(request: HttpRequest, name: string): string {
+  const value = request.params[name];
   if (value === undefined) throw new HttpError(500, `Missing path parameter "${name}"`);
   return value;
 }

@@ -32,13 +32,13 @@ Szenarien**.
 import { describe, it, expect } from 'bun:test';
 import { Actor, Props, TestKit } from 'actor-ts/testkit';
 
-type Command = { kind: 'inc' } | { kind: 'get'; replyTo: ActorRef<number> };
+type Command = { kind: 'increment' } | { kind: 'get'; replyTo: ActorRef<number> };
 
 class Counter extends Actor<Command> {
   private count = 0;
-  override onReceive(cmd: Command): void {
-    if (cmd.kind === 'inc') this.count++;
-    else cmd.replyTo.tell(this.count);
+  override onReceive(command: Command): void {
+    if (command.kind === 'increment') this.count++;
+    else command.replyTo.tell(this.count);
   }
 }
 
@@ -48,8 +48,8 @@ describe('Counter', () => {
     const probe = tk.createTestProbe();
 
     const counter = tk.system.spawnAnonymous(Props.create(() => new Counter()));
-    counter.tell({ kind: 'inc' });
-    counter.tell({ kind: 'inc' });
+    counter.tell({ kind: 'increment' });
+    counter.tell({ kind: 'increment' });
     counter.tell({ kind: 'get', replyTo: probe as ActorRef<number> });
 
     await probe.expectMessage(2);

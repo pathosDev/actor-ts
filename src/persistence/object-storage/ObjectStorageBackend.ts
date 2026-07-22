@@ -53,7 +53,7 @@ export interface ObjectFetched {
 
 export interface ObjectStorageBackend {
   /** PUT — returns the new ETag.  Throws on CAS failure. */
-  put(key: string, body: Uint8Array, opts?: PutOptions): Promise<{ etag: string }>;
+  put(key: string, body: Uint8Array, options?: PutOptions): Promise<{ etag: string }>;
   /** GET — None if the object doesn't exist. */
   get(key: string): Promise<Option<ObjectFetched>>;
   /** DELETE — idempotent; deleting a non-existent key is a no-op. */
@@ -62,7 +62,7 @@ export interface ObjectStorageBackend {
    * LIST — returns object keys under `prefix`, sorted ascending by key.
    * `limit` is a soft cap, the backend may return fewer entries.
    */
-  list(opts: { readonly prefix: string; readonly limit?: number }): Promise<ObjectInfo[]>;
+  list(options: { readonly prefix: string; readonly limit?: number }): Promise<ObjectInfo[]>;
   /** Optional: shut down any underlying client / file handle. */
   close?(): Promise<void>;
 }

@@ -127,8 +127,8 @@ export async function validateObjectStoragePeerDeps(
   const resolvedOptions = (options as ObjectStoragePluginOptionsType);
   // Compression: probe each algorithm at most once.
   const algos = new Set<CompressionConfig['algorithm']>();
-  for (const cfg of collectCompressionConfigs(resolvedOptions.compression)) {
-    algos.add(cfg.algorithm);
+  for (const config of collectCompressionConfigs(resolvedOptions.compression)) {
+    algos.add(config.algorithm);
   }
   for (const algo of algos) {
     await probeCompressionAvailability(algo);

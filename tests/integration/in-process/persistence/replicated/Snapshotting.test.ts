@@ -37,11 +37,11 @@ import { Props } from '../../../../../src/Props.js';
 import type { ReplicatedSnapshot } from '../../../../../src/persistence/replicated/ReplicatedSnapshot.js';
 import type { ReplicatedEventEnvelope } from '../../../../../src/persistence/ReplicatedEventSourcedActor.js';
 
-type Cmd = { kind: 'add'; n: number };
+type Command = { kind: 'add'; n: number };
 type Event = { kind: 'added'; n: number };
 type State = { value: number };
 
-class CountingCounter extends ReplicatedEventSourcedActor<Cmd, Event, State> {
+class CountingCounter extends ReplicatedEventSourcedActor<Command, Event, State> {
   readonly persistenceId = 'snap-counter';
   readonly replicaId: string;
   /** Spy: how many times `onEvent` was called.  Reset between restarts. */
@@ -58,7 +58,7 @@ class CountingCounter extends ReplicatedEventSourcedActor<Cmd, Event, State> {
     CountingCounter.onEventCallCount += 1;
     return { value: s.value + e.n };
   }
-  async onCommand(_s: State, c: Cmd): Promise<void> {
+  async onCommand(_s: State, c: Command): Promise<void> {
     if (c.kind === 'add') await this.persist({ kind: 'added', n: c.n });
   }
   protected override snapshotPolicy(): SnapshotPolicy<State, Event> {
@@ -82,7 +82,7 @@ async function waitFor(pred: () => boolean, timeoutMs = 3_000): Promise<void> {
 interface Setup {
   sys: ActorSystem;
   cluster: Cluster;
-  ref: import('../../../../../src/ActorRef.js').ActorRef<Cmd>;
+  ref: import('../../../../../src/ActorRef.js').ActorRef<Command>;
   instance: CountingCounter;
 }
 
@@ -104,10 +104,10 @@ async function startActor(
   const cluster = await Cluster.join(sys, clusterOptions);
   let instance!: CountingCounter;
   const ref = sys.spawn(
-    Props.create<Cmd>(() => {
+    Props.create<Command>(() => {
       const actorRef = new CountingCounter(cluster);
       instance = actorRef;
-      return actorRef as unknown as Actor<Cmd>;
+      return actorRef as unknown as Actor<Command>;
     }),
     'counter',
   );

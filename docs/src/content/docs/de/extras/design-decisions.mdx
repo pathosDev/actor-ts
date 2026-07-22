@@ -26,9 +26,9 @@ einfach das primäre Ziel für Tests + Benchmarks.
 ## Warum ts-pattern (nicht switch / if-else)
 
 ```ts
-match(msg)
-  .with({ kind: 'inc' }, () => state.count++)
-  .with({ kind: 'dec' }, () => state.count--)
+match(message)
+  .with({ kind: 'increment' }, () => state.count++)
+  .with({ kind: 'decrement' }, () => state.count--)
   .exhaustive();
 ```
 

@@ -66,10 +66,10 @@ lease, conflicts simply don't arise.
 ## How read-only replicas behave
 
 ```ts
-override async onCommand(state: State, cmd: Command): Promise<void> {
+override async onCommand(state: State, command: Command): Promise<void> {
   if (!this.lease.checkAlive()) {
     // I'm not the writer — reject or forward
-    cmd.replyTo.tell({ kind: 'not-writer', currentWriter: ... });
+    command.replyTo.tell({ kind: 'not-writer', currentWriter: ... });
     return;
   }
   // I am the writer — proceed normally

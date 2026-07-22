@@ -28,10 +28,10 @@ import {
 } from '../../src/index.js';
 import { runGroup } from '../lib/harness.js';
 
-type Cmd = { id: string; op: 'ping' };
+type Command = { id: string; op: 'ping' };
 
-class Entity extends Actor<Cmd> {
-  override onReceive(m: Cmd): void {
+class Entity extends Actor<Command> {
+  override onReceive(m: Command): void {
     if (m.op === 'ping') this.sender.forEach((s) => s.tell('pong'));
   }
 }
@@ -39,7 +39,7 @@ class Entity extends Actor<Cmd> {
 interface Node {
   readonly sys: ActorSystem;
   readonly cluster: Cluster;
-  readonly region: ActorRef<Cmd>;
+  readonly region: ActorRef<Command>;
 }
 
 async function startNode(sysName: string, p: number, seeds: string[] = []): Promise<Node> {
@@ -54,12 +54,12 @@ async function startNode(sysName: string, p: number, seeds: string[] = []): Prom
     .withTransport(new InMemoryTransport(new NodeAddress(sysName, 'h', p)))
     .withGossipIntervalMs(30);
   const cluster = await Cluster.join(sys, clusterOptions);
-  const shardingOptions = StartShardingOptions.create<Cmd>()
+  const shardingOptions = StartShardingOptions.create<Command>()
     .withTypeName('entity')
     .withEntityProps(Props.create(() => new Entity()))
     .withExtractEntityId((m) => m.id)
     .withNumShards(16);
-  const region = ClusterSharding.get(sys, cluster).start<Cmd>(shardingOptions);
+  const region = ClusterSharding.get(sys, cluster).start<Command>(shardingOptions);
   return { sys, cluster, region };
 }
 
@@ -86,7 +86,7 @@ async function runSize(size: number): Promise<void> {
   // Warm every shard so the first measured ask does not race the shard
   // coordinator's initial allocation.
   for (let id = 0; id < 16; id++) {
-    await ask<Cmd, string>(entry.region, { id: `warm-${id}`, op: 'ping' }, 3_000);
+    await ask<Command, string>(entry.region, { id: `warm-${id}`, op: 'ping' }, 3_000);
   }
 
   await runGroup(`cluster · ${size}-node sharded ask`, [
@@ -96,7 +96,7 @@ async function runSize(size: number): Promise<void> {
       iterations: 1_500,
       run: async () => {
         const id = `e-${Math.floor(Math.random() * 256)}`;
-        await ask<Cmd, string>(entry.region, { id, op: 'ping' }, 3_000);
+        await ask<Command, string>(entry.region, { id, op: 'ping' }, 3_000);
       },
     },
   ]);
@@ -119,10 +119,10 @@ async function main(): Promise<void> {
 
   const self = new URL(import.meta.url).pathname.replace(/^\/([A-Za-z]):/, '$1:');
   for (const size of [1, 2, 3, 5] as const) {
-    const res = spawnSync('bun', ['run', self, `--size=${size}`], { stdio: 'inherit' });
-    if (res.status !== 0) {
-      console.error(`  [exit=${res.status}] size=${size}`);
-      process.exit(res.status ?? 1);
+    const result = spawnSync('bun', ['run', self, `--size=${size}`], { stdio: 'inherit' });
+    if (result.status !== 0) {
+      console.error(`  [exit=${result.status}] size=${size}`);
+      process.exit(result.status ?? 1);
     }
   }
 }

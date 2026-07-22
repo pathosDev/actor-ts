@@ -215,7 +215,7 @@ const customRoutes = concat(
 await system.http(port, { host }).bind(customRoutes);
 ```
 
-`managementRoutes(system, cluster, opts)` returns the base
+`managementRoutes(system, cluster, options)` returns the base
 routes; combine with your own using `concat`.  Useful for
 adding app-specific admin endpoints alongside the standard set.
 

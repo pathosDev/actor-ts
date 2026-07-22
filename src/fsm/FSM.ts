@@ -20,8 +20,8 @@ export type FsmResult<SName extends string, SData> =
   | Transition<SName, SData>
   | StayTransition<SData>;
 
-export type StateHandler<SName extends string, SData, Msg> =
-  (data: SData, msg: Msg) => FsmResult<SName, SData> | Promise<FsmResult<SName, SData>>;
+export type StateHandler<SName extends string, SData, Message> =
+  (data: SData, message: Message) => FsmResult<SName, SData> | Promise<FsmResult<SName, SData>>;
 
 export type TransitionCallback<SName extends string, SData> =
   (from: SName, to: SName, data: SData) => void | Promise<void>;
@@ -44,10 +44,10 @@ export type TransitionCallback<SName extends string, SData> =
  *     }
  *   }
  */
-export abstract class FSM<SName extends string, SData, Msg> extends Actor<Msg> {
+export abstract class FSM<SName extends string, SData, Message> extends Actor<Message> {
   private currentState: SName;
   private currentData: SData;
-  private readonly handlers = new Map<SName, StateHandler<SName, SData, Msg>>();
+  private readonly handlers = new Map<SName, StateHandler<SName, SData, Message>>();
   private readonly onEntry = new Map<SName, (data: SData) => void | Promise<void>>();
   private readonly onExit = new Map<SName, (data: SData) => void | Promise<void>>();
   private readonly transitionListeners: TransitionCallback<SName, SData>[] = [];
@@ -59,7 +59,7 @@ export abstract class FSM<SName extends string, SData, Msg> extends Actor<Msg> {
   }
 
   /** Register the handler for a state. */
-  protected when(state: SName, handler: StateHandler<SName, SData, Msg>): void {
+  protected when(state: SName, handler: StateHandler<SName, SData, Message>): void {
     this.handlers.set(state, handler);
   }
 
@@ -90,13 +90,13 @@ export abstract class FSM<SName extends string, SData, Msg> extends Actor<Msg> {
   protected get state(): SName { return this.currentState; }
   protected get data(): SData { return this.currentData; }
 
-  override async onReceive(msg: Msg): Promise<void> {
+  override async onReceive(message: Message): Promise<void> {
     const handler = this.handlers.get(this.currentState);
     if (!handler) {
       this.log.warn(`FSM: no handler for state '${String(this.currentState)}' — dropping message`);
       return;
     }
-    const result = await handler(this.currentData, msg);
+    const result = await handler(this.currentData, message);
     await match(result)
       .with({ kind: 'stay' }, (r) => { this.currentData = r.data; })
       .with({ kind: 'transition' }, (r) => this.transitionTo(r.next, r.data))

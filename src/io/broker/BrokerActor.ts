@@ -61,8 +61,8 @@ export interface OutboundEnvelope<P = unknown> {
  * and `requiredOptions()` so the base class can resolve and validate
  * the effective options before `connectImplementation()` runs.
  */
-export abstract class BrokerActor<S extends BrokerCommonOptionsType, Cmd = unknown, P = unknown>
-  extends Actor<Cmd> {
+export abstract class BrokerActor<S extends BrokerCommonOptionsType, Command = unknown, P = unknown>
+  extends Actor<Command> {
   /** Constructor options — partial; merged with HOCON + defaults in preStart. */
   private readonly _ctorOptions: Partial<S>;
   /** Final, fully resolved options.  `null` until preStart() ran. */
@@ -186,10 +186,10 @@ export abstract class BrokerActor<S extends BrokerCommonOptionsType, Cmd = unkno
   }
 
   /** Fan-out a received message to every subscriber of `topic`. */
-  protected fanOutToTopic(topic: string, msg: unknown): void {
+  protected fanOutToTopic(topic: string, message: unknown): void {
     const set = this._subscribers.get(topic);
     if (!set) return;
-    for (const ref of set) ref.tell(msg as never);
+    for (const ref of set) ref.tell(message as never);
   }
 
   /** Number of distinct topic subscriptions — useful for tests / metrics. */
@@ -208,35 +208,48 @@ export abstract class BrokerActor<S extends BrokerCommonOptionsType, Cmd = unkno
    */
   protected enqueueOutbound(payload: P): boolean {
     const env: OutboundEnvelope<P> = { payload, enqueuedAt: Date.now() };
-    const limit = this.options.outboundBuffer ?? DEFAULT_OUTBOUND_BUFFER;
 
     // Dispatch on connection state with compile-time exhaustiveness:
     // adding a new state to `ConnectionState` forces every site that
     // matches on it (including this one) to handle the new variant.
     return match(this._state)
-      .with('connected', () => {
-        // Dispatch directly.  If an earlier flush is still draining the
-        // buffer, append at the tail to preserve order.
-        if (this._outboundBuffer.length > 0) {
-          this._outboundBuffer.push(env);
-          return true;
-        }
-        void this._dispatchOne(env);
-        return true;
-      })
-      .with('connecting', 'disconnected', 'disconnecting', () => {
-        if (limit === 0) {
-          this.system.eventStream.publish(new BrokerNotConnected(this.self.path.toString()));
-          return false;
-        }
-        if (this._outboundBuffer.length >= limit) {
-          this._outboundBuffer.shift();  // drop oldest (FIFO eviction)
-          this.system.eventStream.publish(new BrokerBufferOverflow(this.self.path.toString(), limit));
-        }
-        this._outboundBuffer.push(env);
-        return true;
-      })
+      .with('connected', () => this.dispatchWhenConnected(env))
+      .with('connecting', 'disconnected', 'disconnecting', () => this.bufferWhileOffline(env))
       .exhaustive();
+  }
+
+  /**
+   * Connected path: dispatch the envelope now, or — if an earlier flush is
+   * still draining the buffer — append at the tail to preserve order.
+   */
+  private dispatchWhenConnected(env: OutboundEnvelope<P>): boolean {
+    // Dispatch directly.  If an earlier flush is still draining the
+    // buffer, append at the tail to preserve order.
+    if (this._outboundBuffer.length > 0) {
+      this._outboundBuffer.push(env);
+      return true;
+    }
+    void this._dispatchOne(env);
+    return true;
+  }
+
+  /**
+   * Not-connected path (connecting / disconnected / disconnecting): buffer
+   * the envelope, evicting the oldest on overflow (FIFO), or drop it when
+   * buffering is disabled (`outboundBuffer: 0`).
+   */
+  private bufferWhileOffline(env: OutboundEnvelope<P>): boolean {
+    const limit = this.options.outboundBuffer ?? DEFAULT_OUTBOUND_BUFFER;
+    if (limit === 0) {
+      this.system.eventStream.publish(new BrokerNotConnected(this.self.path.toString()));
+      return false;
+    }
+    if (this._outboundBuffer.length >= limit) {
+      this._outboundBuffer.shift();  // drop oldest (FIFO eviction)
+      this.system.eventStream.publish(new BrokerBufferOverflow(this.self.path.toString(), limit));
+    }
+    this._outboundBuffer.push(env);
+    return true;
   }
 
   /** Current connection state — exposed for tests / health probes. */
@@ -273,11 +286,11 @@ export abstract class BrokerActor<S extends BrokerCommonOptionsType, Cmd = unkno
 
   private _resolveOptions(): S {
     const defaults = this.builtInDefaultOptions();
-    const cfg = this.system.config.hasPath(this.configKey())
+    const config = this.system.config.hasPath(this.configKey())
       ? this.system.config.getConfig(this.configKey())
       : null;
-    const fromConfig = cfg
-      ? { ...readCommonOptions(cfg), ...this.readOptionsFromConfig(cfg) } as Partial<S>
+    const fromConfig = config
+      ? { ...readCommonOptions(config), ...this.readOptionsFromConfig(config) } as Partial<S>
       : ({} as Partial<S>);
     return mergeOptions<S>(defaults, fromConfig, this._ctorOptions);
   }
@@ -377,7 +390,7 @@ export abstract class BrokerActor<S extends BrokerCommonOptionsType, Cmd = unkno
     // Use the system scheduler (not the actor TimerScheduler): reconnect
     // is detached from the message pipeline — it should not queue behind
     // user commands.  Cancel-handle is tracked for postStop teardown.
-    const handle = this.system.scheduler.scheduleOnceFn(delayMs, reconnect);
+    const handle = this.system.scheduler.scheduleOnceFunction(delayMs, reconnect);
     this._scheduledReconnectCancel = (): void => { handle.cancel(); };
   }
 

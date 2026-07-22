@@ -9,13 +9,13 @@
  * where it should show up.
  */
 import { ObjectStorageConcurrencyError } from '../../../../../src/persistence/object-storage/ObjectStorageBackend.js';
-import { backend, type S3Ctx } from '../runner.js';
+import { backend, type S3Context } from '../runner.js';
 import type { BrokerScenario } from '../../lib/scenario.js';
 
-export const scenario: BrokerScenario<S3Ctx> = {
+export const scenario: BrokerScenario<S3Context> = {
   name: 'CAS — ifMatch + ifNoneMatch live precondition',
-  async run(ctx) {
-    const store = backend(ctx);
+  async run(context) {
+    const store = backend(context);
     try {
       const tag = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
       const exists = `b2/cas-exists-${tag}.bin`;

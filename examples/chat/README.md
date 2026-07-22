@@ -317,7 +317,7 @@ Implemented since v1:
 - **Private direct messages** (#100).  DMs are modelled as virtual
   `@<username>` "rooms" — no new protocol frames, the existing
   `send`/`join`/`message`/`history` carry them.  Server distinguishes
-  by the leading `@` and routes through a sharded `DmChannelActor`
+  by the leading `@` and routes through a sharded `DirectMessageChannelActor`
   keyed on the canonical pair-id (`canonicalPairId('alice', 'bob') ===
   canonicalPairId('bob', 'alice') === 'alice|bob'`).  Each user
   subscribes once at login to `chat.dm.user.<self>` — every DM lands
@@ -409,7 +409,7 @@ examples/chat/
 │   └── actors/
 │       ├── ChatRoomActor.ts            ← sharded PersistentActor (per room)
 │       ├── ChatRoomDirectoryActor.ts   ← #98: DD-ORSet wrapper for runtime rooms
-│       ├── DmChannelActor.ts           ← #100: sharded PersistentActor (per DM pair)
+│       ├── DirectMessageChannelActor.ts ← #100: sharded PersistentActor (per DM pair)
 │       ├── UserSessionActor.ts         ← per-WS-connection session
 │       ├── OnlineUsersActor.ts         ← DistributedData ORSet wrapper
 │       ├── ReadReceiptsActor.ts        ← #103: DD-LWWMap wrapper for read pointers

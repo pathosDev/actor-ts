@@ -25,10 +25,10 @@ Implementiert das `SnapshotStore`-Interface — `save`,
 `loadLatest`, `deleteUpTo`.  Jede `persistenceId` mappt auf ein
 Array von Snapshots, geordnet nach Sequenznummer.
 
-- **`save(pid, snapshot)`** — an das Array der pid anhängen.
-- **`loadLatest(pid)`** — den Snapshot mit der höchsten seq
+- **`save(persistenceId, snapshot)`** — an das Array der pid anhängen.
+- **`loadLatest(persistenceId)`** — den Snapshot mit der höchsten seq
   zurückgeben oder `None`.
-- **`deleteUpTo(pid, seqNr)`** — Snapshots mit seq ≤ seqNr
+- **`deleteUpTo(persistenceId, seqNr)`** — Snapshots mit seq ≤ seqNr
   abschneiden.
 
 Die Implementierung ist **Referenz-Semantik** — jeder andere

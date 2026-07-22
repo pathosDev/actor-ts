@@ -166,9 +166,9 @@ class ExtraWorker extends Actor<unknown> {
  */
 type SlowSinkMessage = { kind: 'process'; sleepMs: number };
 class SlowSink extends Actor<SlowSinkMessage> {
-  override async onReceive(msg: SlowSinkMessage): Promise<void> {
-    if (msg.sleepMs > 0) {
-      await new Promise<void>((r) => setTimeout(r, msg.sleepMs));
+  override async onReceive(message: SlowSinkMessage): Promise<void> {
+    if (message.sleepMs > 0) {
+      await new Promise<void>((r) => setTimeout(r, message.sleepMs));
     }
   }
 }
@@ -652,7 +652,7 @@ export function makeControlRoutes(
     // lives on the cluster leader.  The proxy buffers until the
     // leader is known, then forwards.
     path('singleton', path('inc', post(async () => {
-      deps.singletonProxy.tell({ kind: 'inc' });
+      deps.singletonProxy.tell({ kind: 'increment' });
       return completeJson(Status.OK, { sent: true });
     }))),
 
@@ -689,8 +689,8 @@ export function makeControlRoutes(
     path('sharding', path('inc', post(async (req) => {
       const id = queryParam(req, 'id');
       if (!id) return complete(Status.BadRequest, 'missing ?id=');
-      deps.shardingRegion.tell({ entityId: id, op: 'inc' });
-      return completeJson(Status.OK, { sent: { id, op: 'inc' } });
+      deps.shardingRegion.tell({ entityId: id, op: 'increment' });
+      return completeJson(Status.OK, { sent: { id, op: 'increment' } });
     }))),
 
     // GET /test/sharding/who?id=X — query which node currently
@@ -734,8 +734,8 @@ export function makeControlRoutes(
     path('persistence', path('inc', post(async (req) => {
       const id = queryParam(req, 'id');
       if (!id) return complete(Status.BadRequest, 'missing ?id=');
-      ensurePersistentCounter(id).tell({ kind: 'inc' });
-      return completeJson(Status.OK, { sent: { id, op: 'inc' } });
+      ensurePersistentCounter(id).tell({ kind: 'increment' });
+      return completeJson(Status.OK, { sent: { id, op: 'increment' } });
     }))),
 
     // GET /test/persistence/state?id=X — sends `get-state` to the

@@ -17,7 +17,7 @@ import type {
  * runtime (the factory dispatches elsewhere).
  */
 export class NodeHonoRunner implements HonoServerRunner {
-  async serve(opts: { host: string; port: number; fetch: FetchHandler; serveOptions?: object }): Promise<HonoServerHandle> {
+  async serve(options: { host: string; port: number; fetch: FetchHandler; serveOptions?: object }): Promise<HonoServerHandle> {
     const mod = await loadHonoNodeServer();
 
     // `serve()` returns a node:http Server; we wait for its 'listening'
@@ -25,9 +25,9 @@ export class NodeHonoRunner implements HonoServerRunner {
     const server = await new Promise<NodeHttpServer>((resolve, reject) => {
       try {
         const serveResult = mod.serve({
-          hostname: opts.host,
-          port: opts.port,
-          fetch: opts.fetch,
+          hostname: options.host,
+          port: options.port,
+          fetch: options.fetch,
         }, (info) => {
           resolve(Object.assign(serveResult, { _info: info }) as unknown as NodeHttpServer);
         });
@@ -38,10 +38,10 @@ export class NodeHonoRunner implements HonoServerRunner {
 
     const addr = server.address?.();
     const actualPort =
-      typeof addr === 'object' && addr !== null ? addr.port : opts.port;
+      typeof addr === 'object' && addr !== null ? addr.port : options.port;
 
     return {
-      host: opts.host,
+      host: options.host,
       port: actualPort,
       raw: server,
       stop(graceful: boolean): Promise<void> {
@@ -63,7 +63,7 @@ export class NodeHonoRunner implements HonoServerRunner {
 
   async webSocket(app: unknown): Promise<HonoWebsocketBridge> {
     let mod: {
-      createNodeWebSocket: (opts: { app: unknown }) => {
+      createNodeWebSocket: (options: { app: unknown }) => {
         upgradeWebSocket: unknown;
         injectWebSocket: (server: unknown) => void;
       };
@@ -99,7 +99,7 @@ interface NodeHttpServer {
 
 interface HonoNodeServerModule {
   serve(
-    opts: { hostname: string; port: number; fetch: FetchHandler },
+    options: { hostname: string; port: number; fetch: FetchHandler },
     onReady?: (info: { address: string; port: number }) => void,
   ): NodeHttpServer;
 }

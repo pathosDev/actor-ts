@@ -15,7 +15,7 @@ type DepositedV1 = { kind: 'deposited'; amount: number };
 type DepositedV2 = { kind: 'deposited'; cents: number; currency: string };
 type DepositedV3 = { kind: 'deposited'; cents: number; currency: string; tenantId: string };
 
-class Account extends PersistentActor<Cmd, DepositedV3, State> {
+class Account extends PersistentActor<Command, DepositedV3, State> {
   constructor(public readonly tenantId: string) { super(); }
 
   override eventAdapter(): EventAdapter<DepositedV3> {
@@ -54,7 +54,7 @@ options control only the **write** version:
 ```ts
 function migratingAdapter<E>(
   chain: MigrationChain<E>,
-  opts?: { writeVersion?: number },   // default: chain.currentVersion
+  options?: { writeVersion?: number },   // default: chain.currentVersion
 ): EventAdapter<E, unknown>;
 
 // Steps added to the chain:
@@ -87,7 +87,7 @@ simpler.  For arbitrarily-shaped migrations, write a custom
 ## Closure context
 
 ```ts
-class Account extends PersistentActor<Cmd, EventV3, State> {
+class Account extends PersistentActor<Command, EventV3, State> {
   constructor(public readonly tenantId: string) { super(); }
 
   override eventAdapter(): EventAdapter<EventV3> {

@@ -139,8 +139,8 @@ export class GrpcClientActor
     }
   }
 
-  override onReceive(cmd: GrpcClientCommand): void {
-    this.enqueueOutbound({ op: cmd });
+  override onReceive(command: GrpcClientCommand): void {
+    this.enqueueOutbound({ op: command });
   }
 
   /* ----------------------------- internals ----------------------------- */
@@ -148,7 +148,7 @@ export class GrpcClientActor
   private invokeUnary(op: { method: string; request: unknown; target: ActorRef<unknown> }): void {
     const client = this.serviceClient;
     if (!client) return;
-    const fn = (client as unknown as Record<string, GrpcUnaryFn>)[op.method];
+    const fn = (client as unknown as Record<string, GrpcUnaryFunction>)[op.method];
     if (!fn) {
       op.target.tell({ kind: 'rpc-error', target: op.target, error: new Error(`unknown method: ${op.method}`) } as never);
       return;
@@ -162,7 +162,7 @@ export class GrpcClientActor
   private invokeServerStream(op: { method: string; request: unknown; target: ActorRef<unknown> }): void {
     const client = this.serviceClient;
     if (!client) return;
-    const fn = (client as unknown as Record<string, GrpcServerStreamFn>)[op.method];
+    const fn = (client as unknown as Record<string, GrpcServerStreamFunction>)[op.method];
     if (!fn) {
       op.target.tell({ kind: 'rpc-error', target: op.target, error: new Error(`unknown method: ${op.method}`) } as never);
       return;
@@ -183,7 +183,7 @@ export class GrpcClientActor
   private invokeBidiStart(op: { method: string; target: ActorRef<unknown> }): void {
     const client = this.serviceClient;
     if (!client) return;
-    const fn = (client as unknown as Record<string, GrpcBidiFn>)[op.method];
+    const fn = (client as unknown as Record<string, GrpcBidiFunction>)[op.method];
     if (!fn) {
       op.target.tell({ kind: 'rpc-error', target: op.target, error: new Error(`unknown method: ${op.method}`) } as never);
       return;
@@ -228,7 +228,7 @@ interface GrpcServiceClient {
   [method: string]: unknown;
 }
 
-interface GrpcUnaryFn {
+interface GrpcUnaryFunction {
   call(client: GrpcServiceClient, request: unknown,
        cb: (err: Error | null, response: unknown) => void): void;
 }
@@ -239,7 +239,7 @@ interface GrpcServerStreamCall {
   on(event: 'error', cb: (err: Error) => void): void;
 }
 
-interface GrpcServerStreamFn {
+interface GrpcServerStreamFunction {
   call(client: GrpcServiceClient, request: unknown): GrpcServerStreamCall;
 }
 
@@ -251,7 +251,7 @@ interface GrpcDuplexCall {
   end(): void;
 }
 
-interface GrpcBidiFn {
+interface GrpcBidiFunction {
   call(client: GrpcServiceClient): GrpcDuplexCall;
 }
 

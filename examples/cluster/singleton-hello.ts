@@ -23,7 +23,7 @@ import {
 class Echo extends Actor<string> {
   constructor(private readonly where: string) { super(); }
   override preStart(): void { console.log(`[${this.where}] HostedOn=${this.where} — singleton started here`); }
-  override onReceive(msg: string): void { console.log(`[${this.where}] received '${msg}'`); }
+  override onReceive(message: string): void { console.log(`[${this.where}] received '${message}'`); }
   override postStop(): void { console.log(`[${this.where}] singleton stopped here`); }
 }
 

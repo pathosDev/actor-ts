@@ -45,40 +45,40 @@ const DEFAULT_PORT = 2552;
 export async function bootstrapCluster(
   options: ClusterBootstrapOptions,
 ): Promise<BootstrappedCluster> {
-  const opts = options as ClusterBootstrapOptionsType;
-  new ClusterBootstrapOptionsValidator().validate(opts);
-  const host = resolveHost(opts);
-  const port = resolvePort(opts);
+  const resolvedOptions = options as ClusterBootstrapOptionsType;
+  new ClusterBootstrapOptionsValidator().validate(resolvedOptions);
+  const host = resolveHost(resolvedOptions);
+  const port = resolvePort(resolvedOptions);
 
-  const system = ActorSystem.create(opts.name, extractSystemOptions(opts));
+  const system = ActorSystem.create(resolvedOptions.name, extractSystemOptions(resolvedOptions));
 
   const seeds = await resolveSeeds({
-    explicit: opts.seeds,
-    discovery: opts.discovery,
-    systemName: opts.name,
+    explicit: resolvedOptions.seeds,
+    discovery: resolvedOptions.discovery,
+    systemName: resolvedOptions.name,
     port,
     selfHost: host,
-    log: (msg, err) => system.log.warn(`bootstrap discovery: ${msg}${err ? ` (${(err as Error).message ?? err})` : ''}`),
+    log: (message, err) => system.log.warn(`bootstrap discovery: ${message}${err ? ` (${(err as Error).message ?? err})` : ''}`),
   });
 
   const clusterOptions = ClusterOptions.create()
     .withHost(host)
     .withPort(port)
     .withSeeds([...seeds]);
-  if (opts.roles) clusterOptions.withRoles([...opts.roles]);
-  if (opts.transport) clusterOptions.withTransport(opts.transport);
-  if (opts.failureDetector) clusterOptions.withFailureDetector(opts.failureDetector);
-  if (opts.gossipIntervalMs !== undefined) clusterOptions.withGossipIntervalMs(opts.gossipIntervalMs);
-  if (opts.downing) clusterOptions.withDowning(opts.downing);
+  if (resolvedOptions.roles) clusterOptions.withRoles([...resolvedOptions.roles]);
+  if (resolvedOptions.transport) clusterOptions.withTransport(resolvedOptions.transport);
+  if (resolvedOptions.failureDetector) clusterOptions.withFailureDetector(resolvedOptions.failureDetector);
+  if (resolvedOptions.gossipIntervalMs !== undefined) clusterOptions.withGossipIntervalMs(resolvedOptions.gossipIntervalMs);
+  if (resolvedOptions.downing) clusterOptions.withDowning(resolvedOptions.downing);
 
   const cluster = await Cluster.join(system, clusterOptions);
 
-  const startReceptionist = opts.receptionist ?? true;
+  const startReceptionist = resolvedOptions.receptionist ?? true;
   const receptionist = startReceptionist
     ? (system.extension(ReceptionistId).start(cluster) as ActorRef<unknown>)
     : null;
 
-  await awaitSelfUp(cluster, opts.awaitReady ?? true);
+  await awaitSelfUp(cluster, resolvedOptions.awaitReady ?? true);
 
   // Wire shutdown.
   let shuttingDown: Promise<void> | null = null;
@@ -91,7 +91,7 @@ export async function bootstrapCluster(
     return shuttingDown;
   };
 
-  installSignalHandlers(opts.shutdownOnSignals ?? true, shutdown);
+  installSignalHandlers(resolvedOptions.shutdownOnSignals ?? true, shutdown);
 
   return { system, cluster, receptionist, shutdown };
 }
@@ -100,8 +100,8 @@ export async function bootstrapCluster(
 /* Internal helpers                                                            */
 /* -------------------------------------------------------------------------- */
 
-function resolveHost(opts: ClusterBootstrapOptionsType): string {
-  if (opts.host) return opts.host;
+function resolveHost(resolvedOptions: ClusterBootstrapOptionsType): string {
+  if (resolvedOptions.host) return resolvedOptions.host;
   const podIp = (process.env.POD_IP ?? '').trim();
   if (podIp) return podIp;
   const hostname = (process.env.HOSTNAME ?? '').trim();
@@ -109,8 +109,8 @@ function resolveHost(opts: ClusterBootstrapOptionsType): string {
   return '0.0.0.0';
 }
 
-function resolvePort(opts: ClusterBootstrapOptionsType): number {
-  if (typeof opts.port === 'number' && Number.isFinite(opts.port)) return opts.port;
+function resolvePort(resolvedOptions: ClusterBootstrapOptionsType): number {
+  if (typeof resolvedOptions.port === 'number' && Number.isFinite(resolvedOptions.port)) return resolvedOptions.port;
   const raw = (process.env.CLUSTER_PORT ?? '').trim();
   if (raw.length > 0) {
     const parsed = Number.parseInt(raw, 10);
@@ -119,13 +119,13 @@ function resolvePort(opts: ClusterBootstrapOptionsType): number {
   return DEFAULT_PORT;
 }
 
-function extractSystemOptions(opts: ClusterBootstrapOptionsType): ActorSystemOptions {
+function extractSystemOptions(resolvedOptions: ClusterBootstrapOptionsType): ActorSystemOptions {
   const out = ActorSystemOptions.create();
-  if (opts.logger) out.withLogger(opts.logger);
-  if (opts.logLevel !== undefined) out.withLogLevel(opts.logLevel);
-  if (opts.config !== undefined) out.withConfig(opts.config);
-  if (opts.configFile !== undefined) out.withConfigFile(opts.configFile);
-  if (opts.persistence) out.withPersistence(opts.persistence);
+  if (resolvedOptions.logger) out.withLogger(resolvedOptions.logger);
+  if (resolvedOptions.logLevel !== undefined) out.withLogLevel(resolvedOptions.logLevel);
+  if (resolvedOptions.config !== undefined) out.withConfig(resolvedOptions.config);
+  if (resolvedOptions.configFile !== undefined) out.withConfigFile(resolvedOptions.configFile);
+  if (resolvedOptions.persistence) out.withPersistence(resolvedOptions.persistence);
   return out;
 }
 
@@ -135,7 +135,7 @@ async function resolveSeeds(args: {
   systemName: string;
   port: number;
   selfHost: string;
-  log: (msg: string, err?: unknown) => void;
+  log: (message: string, err?: unknown) => void;
 }): Promise<string[]> {
   if (args.explicit !== undefined) {
     return [...args.explicit];
@@ -158,7 +158,7 @@ async function resolveSeeds(args: {
 
 function buildSeedProvider(
   spec: NonNullable<ClusterBootstrapOptionsType['discovery']>,
-  base: { systemName: string; port: number; log: (msg: string, err?: unknown) => void },
+  base: { systemName: string; port: number; log: (message: string, err?: unknown) => void },
 ): SeedProvider {
   const discoveryOptions = AutoDiscoveryOptions.create()
     .withSystemName(base.systemName)
@@ -181,29 +181,29 @@ async function awaitSelfUp(cluster: Cluster, mode: boolean | number): Promise<vo
 
   await new Promise<void>((resolve) => {
     let done = false;
-    // `unsub` is assigned AFTER cluster.subscribe() returns, but the
+    // `unsubscribe` is assigned AFTER cluster.subscribe() returns, but the
     // subscribe callback may fire synchronously during replay (when
-    // self is already up).  Hold `unsub` in a mutable slot so the
+    // self is already up).  Hold `unsubscribe` in a mutable slot so the
     // callback can both read it without a TDZ error and clear it
     // safely once.
-    let unsub: (() => void) | null = null;
+    let unsubscribe: (() => void) | null = null;
     const finish = (): void => {
       if (done) return;
       done = true;
       clearTimeout(timer);
-      if (unsub) { unsub(); unsub = null; }
+      if (unsubscribe) { unsubscribe(); unsubscribe = null; }
       resolve();
     };
     const timer = setTimeout(finish, timeoutMs);
     if (typeof (timer as { unref?: () => void }).unref === 'function') {
       (timer as { unref: () => void }).unref();
     }
-    unsub = cluster.subscribe((evt: ClusterEvent) => {
+    unsubscribe = cluster.subscribe((evt: ClusterEvent) => {
       if (evt instanceof SelfUp) finish();
     });
     // If replay already fired SelfUp synchronously, finish() ran with
-    // `unsub === null` and resolved — clean up the listener now.
-    if (done && unsub) { (unsub as () => void)(); unsub = null; }
+    // `unsubscribe === null` and resolved — clean up the listener now.
+    if (done && unsubscribe) { (unsubscribe as () => void)(); unsubscribe = null; }
   });
 }
 

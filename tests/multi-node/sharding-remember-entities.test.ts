@@ -45,7 +45,7 @@ import { MultiNodeSpec } from '../../src/testkit/MultiNodeSpec.js';
 import { MultiNodeTransport } from '../../src/testkit/internal/MultiNodeTransport.js';
 import type { ActorRef } from '../../src/ActorRef.js';
 
-type Cmd = { id: string; op: 'ping' };
+type Command = { id: string; op: 'ping' };
 
 const TIGHT_FD = {
   heartbeatIntervalMs: 50,
@@ -58,13 +58,13 @@ const preStartedRound1 = new Set<string>();
 const preStartedRound2 = new Set<string>();
 let currentRound: 1 | 2 = 1;
 
-class Entity extends Actor<Cmd> {
+class Entity extends Actor<Command> {
   override preStart(): void {
     const id = this.context.path.name.replace(/^entity-/, '');
     if (currentRound === 1) preStartedRound1.add(id);
     else preStartedRound2.add(id);
   }
-  override onReceive(m: Cmd): void {
+  override onReceive(m: Command): void {
     if (m.op === 'ping') this.sender.forEach((s) => s.tell('pong'));
   }
 }
@@ -78,7 +78,7 @@ async function withSharedJournal<T>(
 
 async function startSpec(
   journal: InMemoryJournal,
-): Promise<{ spec: MultiNodeSpec; regions: Record<'a' | 'b' | 'c', ActorRef<Cmd>> }> {
+): Promise<{ spec: MultiNodeSpec; regions: Record<'a' | 'b' | 'c', ActorRef<Command>> }> {
   const spec = new MultiNodeSpec({
     roles: ['a', 'b', 'c'],
     failureDetector: TIGHT_FD,
@@ -96,7 +96,7 @@ async function startSpec(
     spec.systemFor(role).extension(PersistenceExtensionId).setJournal(journal);
   }
 
-  const shardingOptions = StartShardingOptions.create<Cmd>()
+  const shardingOptions = StartShardingOptions.create<Command>()
     .withTypeName('entity')
     .withEntityProps(Props.create(() => new Entity()))
     .withExtractEntityId((m) => m.id)
@@ -107,8 +107,8 @@ async function startSpec(
     // resolveRememberEntitiesStore.
     .withRememberEntitiesStore(new JournalRememberEntitiesStore(journal))
     .withRebalanceIntervalMs(200);
-  const start = (role: 'a' | 'b' | 'c'): ActorRef<Cmd> =>
-    spec.clusterFor(role).sharding.start<Cmd>(shardingOptions);
+  const start = (role: 'a' | 'b' | 'c'): ActorRef<Command> =>
+    spec.clusterFor(role).sharding.start<Command>(shardingOptions);
 
   const regions = { a: start('a'), b: start('b'), c: start('c') };
   return { spec, regions };

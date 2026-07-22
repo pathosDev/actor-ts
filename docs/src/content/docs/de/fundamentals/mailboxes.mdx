@@ -4,8 +4,8 @@ description: Die Per-Actor-Queue — Default FIFO, BoundedMailbox mit Overflow-P
 ---
 
 Jeder Actor hat genau **eine Mailbox** — eine FIFO-Queue von
-Envelopes, die auf Verarbeitung warten.  Wenn du `ref.tell(msg)`
-aufrufst, wickelt das Framework `msg` in ein Envelope (mit Sender,
+Envelopes, die auf Verarbeitung warten.  Wenn du `ref.tell(message)`
+aufrufst, wickelt das Framework `message` in ein Envelope (mit Sender,
 Log-Kontext und optionalem Trace-Kontext) und reiht es in die Mailbox
 des Empfängers ein.  Der Dispatcher zieht das nächste Envelope,
 übergibt es dem `onReceive` des Actors und wartet, bis das fertig
@@ -107,9 +107,9 @@ Code.  Aber sie zu verstehen, erklärt, warum "Stop schnell ist" und
 import { Actor, ActorSystem, Props, BoundedMailbox } from 'actor-ts';
 
 class SlowConsumer extends Actor<{ kind: 'work'; n: number }> {
-  override async onReceive(msg: { kind: 'work'; n: number }): Promise<void> {
+  override async onReceive(message: { kind: 'work'; n: number }): Promise<void> {
     await new Promise(r => setTimeout(r, 100));   // langsame Arbeit simulieren
-    this.log.info(`processed ${msg.n}`);
+    this.log.info(`processed ${message.n}`);
   }
 }
 
@@ -178,16 +178,16 @@ type Message =
   | { readonly kind: 'bulk';   readonly text: string };
 
 class Worker extends Actor<Message> {
-  override onReceive(msg: Message): void {
-    this.log.info(`[${msg.kind}] ${msg.text}`);
+  override onReceive(message: Message): void {
+    this.log.info(`[${message.kind}] ${message.text}`);
   }
 }
 
 const worker = system.spawn(
   Props.create(() => new Worker())
     .withMailbox(() => new PriorityMailbox<Message>({
-      priorityFor: (msg) => msg.kind === 'urgent' ? 0
-                          : msg.kind === 'normal' ? 5
+      priorityFor: (message) => message.kind === 'urgent' ? 0
+                          : message.kind === 'normal' ? 5
                           : 10,
     })),
 );

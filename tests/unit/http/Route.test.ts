@@ -34,7 +34,7 @@ function httpOnly(endpoints: CompiledEndpoint[]): CompiledRoute[] {
   });
 }
 
-const emptyReq: HttpRequest = {
+const emptyRequest: HttpRequest = {
   method: 'GET',
   path: '/',
   headers: {},
@@ -131,26 +131,26 @@ describe('complete helpers', () => {
 
 describe('param extraction', () => {
   test('queryParam returns undefined for missing keys', () => {
-    expect(queryParam(emptyReq, 'x')).toBeUndefined();
+    expect(queryParam(emptyRequest, 'x')).toBeUndefined();
   });
 
   test('queryParam returns first array element', () => {
-    const req = { ...emptyReq, query: { x: ['a', 'b'] as string[] } };
-    expect(queryParam(req as HttpRequest, 'x')).toBe('a');
+    const request = { ...emptyRequest, query: { x: ['a', 'b'] as string[] } };
+    expect(queryParam(request as HttpRequest, 'x')).toBe('a');
   });
 
   test('queryParam returns string value directly', () => {
-    const req = { ...emptyReq, query: { x: 'y' } };
-    expect(queryParam(req as HttpRequest, 'x')).toBe('y');
+    const request = { ...emptyRequest, query: { x: 'y' } };
+    expect(queryParam(request as HttpRequest, 'x')).toBe('y');
   });
 
   test('pathParam returns present value', () => {
-    const req = { ...emptyReq, params: { id: '42' } };
-    expect(pathParam(req as HttpRequest, 'id')).toBe('42');
+    const request = { ...emptyRequest, params: { id: '42' } };
+    expect(pathParam(request as HttpRequest, 'id')).toBe('42');
   });
 
   test('pathParam throws on missing key', () => {
-    expect(() => pathParam(emptyReq, 'id')).toThrow(HttpError);
+    expect(() => pathParam(emptyRequest, 'id')).toThrow(HttpError);
   });
 });
 
@@ -230,12 +230,12 @@ describe('param extraction — edge cases', () => {
   test('queryParam returns undefined for an empty array value', () => {
     // Most servers don't produce `[]` for a query key, but the typing
     // allows it.  `[0]` on an empty array is undefined — pin that.
-    const req = { ...emptyReq, query: { x: [] as string[] } };
-    expect(queryParam(req as HttpRequest, 'x')).toBeUndefined();
+    const request = { ...emptyRequest, query: { x: [] as string[] } };
+    expect(queryParam(request as HttpRequest, 'x')).toBeUndefined();
   });
 
   test('pathParam HttpError carries status 500 for missing key', () => {
-    try { pathParam(emptyReq, 'id'); }
+    try { pathParam(emptyRequest, 'id'); }
     catch (e) {
       const err = e as HttpError;
       expect(err.status).toBe(500);
@@ -245,7 +245,7 @@ describe('param extraction — edge cases', () => {
 });
 
 describe('compile — withMiddleware (#312)', () => {
-  const passthrough: Middleware = (_req, next) => next();
+  const passthrough: Middleware = (_request, next) => next();
   const block: Middleware = () => complete(Status.Unauthorized, 'denied');
 
   test('middleware wraps the single child handler', async () => {
@@ -253,9 +253,9 @@ describe('compile — withMiddleware (#312)', () => {
       withMiddleware(passthrough, get(() => complete(Status.OK, 'ok'))),
     ));
     expect(response).toHaveLength(1);
-    const resp = await response[0]!.handler(emptyReq);
-    expect(resp.status).toBe(Status.OK);
-    expect(resp.body).toBe('ok');
+    const handlerResponse = await response[0]!.handler(emptyRequest);
+    expect(handlerResponse.status).toBe(Status.OK);
+    expect(handlerResponse.body).toBe('ok');
   });
 
   test('middleware can short-circuit before the handler runs', async () => {
@@ -266,20 +266,20 @@ describe('compile — withMiddleware (#312)', () => {
         return complete(Status.OK, 'should not reach');
       })),
     ));
-    const resp = await response[0]!.handler(emptyReq);
-    expect(resp.status).toBe(Status.Unauthorized);
+    const handlerResponse = await response[0]!.handler(emptyRequest);
+    expect(handlerResponse.status).toBe(Status.Unauthorized);
     expect(handlerCalled).toBe(false);
   });
 
   test('nested middlewares run outside-in', async () => {
     const order: string[] = [];
-    const routeA: Middleware = async (_req, next) => {
+    const routeA: Middleware = async (_request, next) => {
       order.push('a-in');
       const response = await next();
       order.push('a-out');
       return response;
     };
-    const routeB: Middleware = async (_req, next) => {
+    const routeB: Middleware = async (_request, next) => {
       order.push('b-in');
       const response = await next();
       order.push('b-out');
@@ -290,13 +290,13 @@ describe('compile — withMiddleware (#312)', () => {
       return complete(Status.OK, '');
     })));
     const response = httpOnly(compile(route));
-    await response[0]!.handler(emptyReq);
+    await response[0]!.handler(emptyRequest);
     expect(order).toEqual(['a-in', 'b-in', 'h', 'b-out', 'a-out']);
   });
 
   test('middleware applies to every terminal in the subtree, not siblings', async () => {
     let aCalls = 0;
-    const counter: Middleware = (_req, next) => { aCalls++; return next(); };
+    const counter: Middleware = (_request, next) => { aCalls++; return next(); };
     const route = concat(
       withMiddleware(counter, path('protected', get(() => complete(Status.OK, 'p')))),
       path('open', get(() => complete(Status.OK, 'o'))),
@@ -305,15 +305,15 @@ describe('compile — withMiddleware (#312)', () => {
     expect(compiled).toHaveLength(2);
     const protectedR = compiled.find((c) => c.pattern === '/protected')!;
     const openR = compiled.find((c) => c.pattern === '/open')!;
-    await protectedR.handler(emptyReq);
+    await protectedR.handler(emptyRequest);
     expect(aCalls).toBe(1);
-    await openR.handler(emptyReq);
+    await openR.handler(emptyRequest);
     expect(aCalls).toBe(1);  // sibling not wrapped
   });
 
   test('middleware errors propagate as HttpError to the caller', async () => {
     const bad: Middleware = () => { throw new HttpError(Status.Forbidden, 'no'); };
     const response = httpOnly(compile(withMiddleware(bad, get(() => complete(Status.OK, '')))));
-    await expect(response[0]!.handler(emptyReq)).rejects.toThrow(HttpError);
+    await expect(response[0]!.handler(emptyRequest)).rejects.toThrow(HttpError);
   });
 });

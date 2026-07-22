@@ -6,7 +6,7 @@ export interface RouteRegistration {
   readonly method: HttpMethod;
   /** Path pattern in the Fastify/Express style: `/users/:id` */
   readonly pattern: string;
-  readonly handler: (req: HttpRequest) => Promise<HttpResponse> | HttpResponse;
+  readonly handler: (request: HttpRequest) => Promise<HttpResponse> | HttpResponse;
 }
 
 /**
@@ -22,9 +22,9 @@ export interface WebsocketRouteRegistration {
   /** ':param'-style pattern, same dialect as {@link RouteRegistration.pattern}. */
   readonly pattern: string;
   /** Pre-upgrade guard.  `null` → proceed; `HttpResponse` → reject with it. */
-  readonly authorize: (req: HttpRequest) => Promise<HttpResponse | null>;
+  readonly authorize: (request: HttpRequest) => Promise<HttpResponse | null>;
   /** Called once per accepted connection, synchronously in the upgrade callback. */
-  readonly onConnection: (req: HttpRequest, socket: WebsocketSocketAdapter) => void;
+  readonly onConnection: (request: HttpRequest, socket: WebsocketSocketAdapter) => void;
 }
 
 export interface ServerBinding {
@@ -54,7 +54,7 @@ export interface HttpServerBackend {
    * `HttpExtension` wires `fallback()` here.  If the handler throws, the
    * backend applies its default error mapping.
    */
-  setNotFound?(handler: (req: HttpRequest) => Promise<HttpResponse> | HttpResponse): void;
+  setNotFound?(handler: (request: HttpRequest) => Promise<HttpResponse> | HttpResponse): void;
 
   /**
    * Optional: register a last-resort error handler.  It MUST see both
@@ -62,7 +62,7 @@ export interface HttpServerBackend {
    * parsing, etc.); if it throws, the backend falls back to its default
    * error mapping.  `HttpExtension` wires `withErrorHandler` here.
    */
-  setErrorHandler?(handler: (err: unknown, req: HttpRequest) => Promise<HttpResponse> | HttpResponse): void;
+  setErrorHandler?(handler: (err: unknown, request: HttpRequest) => Promise<HttpResponse> | HttpResponse): void;
 
   /**
    * Optional capability: register a WebSocket endpoint.  Backends that

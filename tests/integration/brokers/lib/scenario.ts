@@ -13,7 +13,7 @@
  *
  * Every broker suite ships a `<broker>/runner.ts` that:
  *   1. imports its scenarios from `<broker>/scenarios/*.ts`
- *   2. calls `runScenarios(scenarios, ctx)` from this module
+ *   2. calls `runScenarios(scenarios, context)` from this module
  *   3. exits 0 on all-pass, 1 on any-fail
  *
  * `docker compose -f <broker>/docker-compose.<broker>.yml up
@@ -22,7 +22,7 @@
  * `test:integration` from #313.
  */
 
-export interface BrokerScenarioCtx {
+export interface BrokerScenarioContext {
   /**
    * Backend-specific connection info.  Each suite has its own shape
    * (S3 endpoint URL + credentials; MQTT broker URL + creds;
@@ -32,9 +32,9 @@ export interface BrokerScenarioCtx {
   readonly env: Readonly<Record<string, string | undefined>>;
 }
 
-export interface BrokerScenario<Ctx extends BrokerScenarioCtx = BrokerScenarioCtx> {
+export interface BrokerScenario<Context extends BrokerScenarioContext = BrokerScenarioContext> {
   readonly name: string;
-  run(ctx: Ctx): Promise<void>;
+  run(context: Context): Promise<void>;
 }
 
 /**
@@ -46,18 +46,18 @@ export interface BrokerScenario<Ctx extends BrokerScenarioCtx = BrokerScenarioCt
  * total scenario count per broker is small (~5), so the wall-clock
  * cost is bounded.
  */
-export async function runScenarios<Ctx extends BrokerScenarioCtx>(
-  scenarios: ReadonlyArray<BrokerScenario<Ctx>>,
-  ctx: Ctx,
+export async function runScenarios<Context extends BrokerScenarioContext>(
+  scenarios: ReadonlyArray<BrokerScenario<Context>>,
+  context: Context,
 ): Promise<void> {
-  console.log(`[runner] ${scenarios.length} scenario(s) against env ${JSON.stringify(redact(ctx.env))}\n`);
+  console.log(`[runner] ${scenarios.length} scenario(s) against env ${JSON.stringify(redact(context.env))}\n`);
 
   let failed = 0;
   for (const s of scenarios) {
     const startedAt = Date.now();
     console.log(`[runner] === ${s.name} ===`);
     try {
-      await s.run(ctx);
+      await s.run(context);
       console.log(`[runner] PASS ${s.name} (${Date.now() - startedAt}ms)\n`);
     } catch (e) {
       failed += 1;

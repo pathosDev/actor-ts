@@ -23,7 +23,7 @@ export interface WebsocketClientConstructorOptions {
 }
 
 export interface WebsocketClientConstructor {
-  create(url: string, opts?: WebsocketClientConstructorOptions): WebsocketLike;
+  create(url: string, options?: WebsocketClientConstructorOptions): WebsocketLike;
 }
 
 /** Lazy ctor — resolves once, caches the resolved factory. */
@@ -39,7 +39,7 @@ export const websocketClientConstructor: Lazy<Promise<WebsocketClientConstructor
     protocols?: string | ReadonlyArray<string>,
   ) => WebsocketLike;
   return {
-    create: (url: string, opts?: WebsocketClientConstructorOptions): WebsocketLike =>
-      new NativeWS(url, opts?.protocols),
+    create: (url: string, options?: WebsocketClientConstructorOptions): WebsocketLike =>
+      new NativeWS(url, options?.protocols),
   };
 });

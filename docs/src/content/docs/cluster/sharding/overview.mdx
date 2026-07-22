@@ -60,16 +60,16 @@ type CartCommand =
 class CartActor extends Actor<CartCommand> {
   private items: string[] = [];
 
-  override onReceive(cmd: CartCommand): void {
-    if (cmd.kind === 'add')  this.items.push(cmd.sku);
-    if (cmd.kind === 'view') cmd.replyTo.tell({ items: this.items });
+  override onReceive(command: CartCommand): void {
+    if (command.kind === 'add')  this.items.push(command.sku);
+    if (command.kind === 'view') command.replyTo.tell({ items: this.items });
   }
 }
 
 // Setup — one-line cluster + sharding entry point:
 const { system, cluster } = await Cluster.bootstrap(ClusterBootstrapOptions.create('my-app'));
 
-const startShardingOptions = StartShardingOptions.create<CartCommand>().withExtractEntityId((msg) => msg.entityId);
+const startShardingOptions = StartShardingOptions.create<CartCommand>().withExtractEntityId((message) => message.entityId);
 const cartRegion = cluster.sharding.start('cart', CartActor,
   startShardingOptions);
 
@@ -158,8 +158,8 @@ interface ShardingOptionsType<TMessage> {
 | Field | What it controls |
 | --- | --- |
 | `typeName` | A string identifying this sharded type.  Different types can coexist in the same cluster (`cart`, `session`, `order`). |
-| `extractEntityId(msg)` | Pull the entity ID from a message.  This is the key that gets hashed to a shard. |
-| `extractEntityMessage(msg)` | *(Optional)* If the message envelope contains routing info plus a payload, this strips the envelope before the entity sees it.  Defaults to the message as-is. |
+| `extractEntityId(message)` | Pull the entity ID from a message.  This is the key that gets hashed to a shard. |
+| `extractEntityMessage(message)` | *(Optional)* If the message envelope contains routing info plus a payload, this strips the envelope before the entity sees it.  Defaults to the message as-is. |
 | `numShards` | How many shards the entity space is divided into.  100 is fine for most clusters; bump to 1000 for very large clusters (>50 nodes). |
 | `role` | Only members with this role host shards of this type.  Useful for placing compute-heavy entities on dedicated nodes. |
 | `proxy` | This node *forwards* messages to the region but never hosts entities locally.  Used for client nodes in an asymmetric cluster. |
@@ -177,8 +177,8 @@ matched to your traffic pattern.
 import { Passivate, Actor } from 'actor-ts';
 
 class CartActor extends Actor<CartCommand | Passivate> {
-  override onReceive(msg): void {
-    if (msg instanceof Passivate) {
+  override onReceive(message): void {
+    if (message instanceof Passivate) {
       // Optionally do shutdown work, then send the passivate ack.
       this.context.parent.forEach(p => p.tell({ kind: 'passivate-ack' }));
       return;

@@ -11,22 +11,22 @@
  * connection.
  */
 import type { NatsMessage } from '../../../../../src/io/broker/NatsActor.js';
-import { spawnInbox, spawnNats, type NatsCtx } from '../runner.js';
+import { spawnInbox, spawnNats, type NatsContext } from '../runner.js';
 import { waitFor, type BrokerScenario } from '../../lib/scenario.js';
 
-export const scenario: BrokerScenario<NatsCtx> = {
+export const scenario: BrokerScenario<NatsContext> = {
   name: 'multiple subscribers on the same subject — fan-out',
-  async run(ctx) {
+  async run(context) {
     const subject = `b6.fanout.${Date.now()}.${Math.random().toString(36).slice(2)}`;
 
     // Three independent NATS clients, each subscribing once.
-    const { ref: refA, inbox: aInbox } = spawnInbox(ctx);
-    const { ref: refB, inbox: bInbox } = spawnInbox(ctx);
-    const { ref: refC, inbox: cInbox } = spawnInbox(ctx);
-    const natsA = spawnNats(ctx);
-    const natsB = spawnNats(ctx);
-    const natsC = spawnNats(ctx);
-    const publisher = spawnNats(ctx);
+    const { ref: refA, inbox: aInbox } = spawnInbox(context);
+    const { ref: refB, inbox: bInbox } = spawnInbox(context);
+    const { ref: refC, inbox: cInbox } = spawnInbox(context);
+    const natsA = spawnNats(context);
+    const natsB = spawnNats(context);
+    const natsC = spawnNats(context);
+    const publisher = spawnNats(context);
     try {
       for (const [actor, target] of [[natsA, refA], [natsB, refB], [natsC, refC]] as const) {
         actor.tell({

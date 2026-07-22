@@ -129,21 +129,21 @@ export class ShardingOptionsValidator<
     this.commonRules(s);
   }
   protected commonRules(s: Partial<S>): void {
-    const opts = s as Partial<ShardingOptionsType<TMessage>>;
-    if (opts.typeName !== undefined && (typeof opts.typeName !== 'string' || opts.typeName.length === 0)) {
-      this.fail('typeName', 'must be a non-empty string', opts.typeName);
+    const options = s as Partial<ShardingOptionsType<TMessage>>;
+    if (options.typeName !== undefined && (typeof options.typeName !== 'string' || options.typeName.length === 0)) {
+      this.fail('typeName', 'must be a non-empty string', options.typeName);
     }
-    if (opts.numShards !== undefined && (!Number.isInteger(opts.numShards) || opts.numShards < 1)) {
-      this.fail('numShards', 'must be an integer >= 1', opts.numShards);
+    if (options.numShards !== undefined && (!Number.isInteger(options.numShards) || options.numShards < 1)) {
+      this.fail('numShards', 'must be an integer >= 1', options.numShards);
     }
     if (
-      opts.passivationIdleMs !== undefined &&
-      (typeof opts.passivationIdleMs !== 'number' || !Number.isFinite(opts.passivationIdleMs) || opts.passivationIdleMs < 0)
+      options.passivationIdleMs !== undefined &&
+      (typeof options.passivationIdleMs !== 'number' || !Number.isFinite(options.passivationIdleMs) || options.passivationIdleMs < 0)
     ) {
-      this.fail('passivationIdleMs', 'must be a non-negative finite number', opts.passivationIdleMs);
+      this.fail('passivationIdleMs', 'must be a non-negative finite number', options.passivationIdleMs);
     }
-    if (opts.maxEntities !== undefined && (!Number.isInteger(opts.maxEntities) || opts.maxEntities < 0)) {
-      this.fail('maxEntities', 'must be an integer >= 0', opts.maxEntities);
+    if (options.maxEntities !== undefined && (!Number.isInteger(options.maxEntities) || options.maxEntities < 0)) {
+      this.fail('maxEntities', 'must be an integer >= 0', options.maxEntities);
     }
   }
 }

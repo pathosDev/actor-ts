@@ -38,7 +38,7 @@ interface NodeHandle {
   region: import('../src/index.js').ActorRef<Command>;
 }
 
-type Command = { id: string; op: 'inc' };
+type Command = { id: string; op: 'increment' };
 
 /** Spins up a cluster node backed by the shared InMemoryTransport registry. */
 async function startNode(
@@ -66,8 +66,8 @@ async function startNode(
   const counts = new Map<string, number>();
 
   class CountEntity extends Actor<Command> {
-    override onReceive(cmd: Command): void {
-      counts.set(cmd.id, (counts.get(cmd.id) ?? 0) + 1);
+    override onReceive(command: Command): void {
+      counts.set(command.id, (counts.get(command.id) ?? 0) + 1);
     }
   }
 
@@ -75,7 +75,7 @@ async function startNode(
   const startShardingOptions = StartShardingOptions.create<Command>()
     .withTypeName('counter')
     .withEntityProps(Props.create(() => new CountEntity()))
-    .withExtractEntityId(msg => msg.id)
+    .withExtractEntityId(message => message.id)
     .withNumShards(8);
   const region = sharding.start<Command>(
     startShardingOptions,
@@ -126,9 +126,9 @@ test('sharded entities route to exactly one node', async () => {
   // Send every entity id from every node; the entities should all land on
   // the SAME node each time (their deterministic owner).
   for (const id of entityIds) {
-    n1.region.tell({ id, op: 'inc' });
-    n2.region.tell({ id, op: 'inc' });
-    n3.region.tell({ id, op: 'inc' });
+    n1.region.tell({ id, op: 'increment' });
+    n2.region.tell({ id, op: 'increment' });
+    n3.region.tell({ id, op: 'increment' });
   }
   await sleep(500);
 
@@ -160,7 +160,7 @@ test('shards rebalance when a node leaves', async () => {
   expect(victim).toBeDefined();
 
   // Before: the entity lives on node 2.
-  n1.region.tell({ id: victim!, op: 'inc' });
+  n1.region.tell({ id: victim!, op: 'increment' });
   await sleep(150);
   expect(n2.counts.get(victim!) ?? 0).toBe(1);
   expect((n1.counts.get(victim!) ?? 0) + (n3.counts.get(victim!) ?? 0)).toBe(0);
@@ -174,8 +174,8 @@ test('shards rebalance when a node leaves', async () => {
   expect(n3.cluster.upMembers().length).toBe(2);
 
   // Send to the same entity from node 1; it should now live somewhere still alive.
-  n1.region.tell({ id: victim!, op: 'inc' });
-  n1.region.tell({ id: victim!, op: 'inc' });
+  n1.region.tell({ id: victim!, op: 'increment' });
+  n1.region.tell({ id: victim!, op: 'increment' });
   await sleep(300);
 
   const afterHits = (n1.counts.get(victim!) ?? 0) + (n3.counts.get(victim!) ?? 0);
@@ -309,9 +309,9 @@ const peek = (cluster: Cluster): ClusterInternals =>
  * Variant of `startNode` that exposes the tombstone knobs.  All other
  * timing parameters mirror the default test setup.
  */
-async function startNodeWithTombstoneCfg(
+async function startNodeWithTombstoneConfig(
   systemName: string, host: string, port: number, seeds: string[],
-  cfg: { tombstoneTtlMs: number; tombstonePruneIntervalMs: number; tombstoneMinRetentionMs: number },
+  config: { tombstoneTtlMs: number; tombstonePruneIntervalMs: number; tombstoneMinRetentionMs: number },
 ): Promise<{ system: ActorSystem; cluster: Cluster }> {
   const sysOptions = ActorSystemOptions.create()
     .withLogger(new NoopLogger())
@@ -324,9 +324,9 @@ async function startNodeWithTombstoneCfg(
     .withTransport(new InMemoryTransport(new NodeAddress(systemName, host, port)))
     .withFailureDetector({ heartbeatIntervalMs: 50, unreachableAfterMs: 200, downAfterMs: 400 })
     .withGossipIntervalMs(80)
-    .withTombstoneTtlMs(cfg.tombstoneTtlMs)
-    .withTombstonePruneIntervalMs(cfg.tombstonePruneIntervalMs)
-    .withTombstoneMinRetentionMs(cfg.tombstoneMinRetentionMs);
+    .withTombstoneTtlMs(config.tombstoneTtlMs)
+    .withTombstonePruneIntervalMs(config.tombstonePruneIntervalMs)
+    .withTombstoneMinRetentionMs(config.tombstoneMinRetentionMs);
   const cluster = await Cluster.join(
     system,
     clusterOptions,
@@ -340,11 +340,11 @@ describe('Cluster tombstone pruning (#75)', () => {
     // fast while staying well above the 80ms gossip cadence so peers
     // converge before pruning kicks in.
     const SYS = 'cluster-tombstone-prune';
-    const nodeA = await startNodeWithTombstoneCfg(
+    const nodeA = await startNodeWithTombstoneConfig(
       SYS, '10.0.6.1', 6001, [],
       { tombstoneTtlMs: 200, tombstonePruneIntervalMs: 60, tombstoneMinRetentionMs: 80 },
     );
-    const nodeB = await startNodeWithTombstoneCfg(
+    const nodeB = await startNodeWithTombstoneConfig(
       SYS, '10.0.6.2', 6002, ['10.0.6.1:6001'],
       { tombstoneTtlMs: 200, tombstonePruneIntervalMs: 60, tombstoneMinRetentionMs: 80 },
     );
@@ -374,7 +374,7 @@ describe('Cluster tombstone pruning (#75)', () => {
     // (because addresses we *only* learned about as already-expired
     // shouldn't be added in the first place).
     const SYS = 'cluster-tombstone-stale-merge';
-    const nodeA = await startNodeWithTombstoneCfg(
+    const nodeA = await startNodeWithTombstoneConfig(
       SYS, '10.0.6.10', 6010, [],
       { tombstoneTtlMs: 200, tombstonePruneIntervalMs: 60, tombstoneMinRetentionMs: 80 },
     );
@@ -406,7 +406,7 @@ describe('Cluster tombstone pruning (#75)', () => {
     // them on the strength of "no removedAt = ancient" (which would
     // re-introduce the resurrection bug for mixed-version clusters).
     const SYS = 'cluster-tombstone-mixed-version';
-    const nodeA = await startNodeWithTombstoneCfg(
+    const nodeA = await startNodeWithTombstoneConfig(
       SYS, '10.0.6.20', 6020, [],
       { tombstoneTtlMs: 100, tombstonePruneIntervalMs: 50, tombstoneMinRetentionMs: 50 },
     );

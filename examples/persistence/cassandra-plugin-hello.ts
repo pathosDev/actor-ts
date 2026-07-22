@@ -23,24 +23,30 @@ import {
 } from '../../src/index.js';
 import { FakeCassandraClient } from '../../tests/unit/persistence/FakeCassandraClient.js';
 
-type Cmd = { kind: 'inc'; amount: number } | { kind: 'get' };
+type IncrementCommand = { kind: 'increment'; amount: number };
+type GetCommand = { kind: 'get' };
+type Command = IncrementCommand | GetCommand;
 type Event = { kind: 'incremented'; amount: number };
 
-class Counter extends PersistentActor<Cmd, Event, number> {
+class Counter extends PersistentActor<Command, Event, number> {
   override readonly persistenceId = 'counter-1';
   override initialState(): number { return 0; }
 
-  override async onCommand(state: number, cmd: Cmd): Promise<void> {
-    await match(cmd)
-      .with({ kind: 'get' }, async () => {
-        this.sender.forEach((s) => s.tell(state));
-      })
-      .with({ kind: 'inc' }, async (c) => {
-        await this.persist({ kind: 'incremented', amount: c.amount }, (s) => {
-          this.sender.forEach((sender) => sender.tell(s));
-        });
-      })
+  override async onCommand(state: number, command: Command): Promise<void> {
+    await match(command)
+      .with({ kind: 'get' }, () => this.onGet(state))
+      .with({ kind: 'increment' }, (c) => this.onIncrement(c))
       .exhaustive();
+  }
+
+  private async onGet(state: number): Promise<void> {
+    this.sender.forEach((s) => s.tell(state));
+  }
+
+  private async onIncrement(c: IncrementCommand): Promise<void> {
+    await this.persist({ kind: 'incremented', amount: c.amount }, (s) => {
+      this.sender.forEach((sender) => sender.tell(s));
+    });
   }
 
   override onEvent(state: number, event: Event): number {
@@ -71,8 +77,8 @@ async function main(): Promise<void> {
   registerCassandraPlugins(ext, cassandraPluginsOptions);
 
   let counter = system.spawnAnonymous(Props.create(() => new Counter()));
-  counter.tell({ kind: 'inc', amount: 10 });
-  counter.tell({ kind: 'inc', amount: 32 });
+  counter.tell({ kind: 'increment', amount: 10 });
+  counter.tell({ kind: 'increment', amount: 32 });
   await Bun.sleep(60);
 
   // "Crash and restart" — the new actor replays events from the journal.
@@ -83,7 +89,7 @@ async function main(): Promise<void> {
   await Bun.sleep(60);
   // Use ask to read the state so we see the replay worked.
   const { ask } = await import('../../src/index.js');
-  const value = await ask<Cmd, number>(counter, { kind: 'get' }, 500);
+  const value = await ask<Command, number>(counter, { kind: 'get' }, 500);
   console.log(`counter after replay: ${value}`); // expect 42
 
   await system.terminate();

@@ -54,20 +54,20 @@ export class RedisCache implements Cache {
   private closed = false;
 
   constructor(options: RedisCacheOptions = {}) {
-    const opts = options as RedisCacheOptionsType;
-    new RedisCacheOptionsValidator().validate(opts);
-    this.keyPrefix = opts.keyPrefix ?? '';
+    const settings = options as RedisCacheOptionsType;
+    new RedisCacheOptionsValidator().validate(settings);
+    this.keyPrefix = settings.keyPrefix ?? '';
     this.clientLazy = Lazy.of(async () => {
-      if (opts.client) return opts.client;
+      if (settings.client) return settings.client;
       const ioredis = await ioredisLazy.get();
       // ioredis.default is the constructor when imported from ESM consumers.
       const Constructor = (ioredis as { default?: RedisConstructor }).default ?? (ioredis as unknown as RedisConstructor);
-      if (opts.url) return new Constructor(opts.url) as RedisClientLike;
+      if (settings.url) return new Constructor(settings.url) as RedisClientLike;
       return new Constructor({
-        host: opts.host,
-        port: opts.port,
-        password: opts.password,
-        db: opts.db,
+        host: settings.host,
+        port: settings.port,
+        password: settings.password,
+        db: settings.db,
       }) as RedisClientLike;
     });
   }
@@ -218,7 +218,7 @@ export class RedisCache implements Cache {
 
 interface RedisConstructor {
   new (url: string): RedisClientLike;
-  new (opts: { host?: string; port?: number; password?: string; db?: number }): RedisClientLike;
+  new (settings: { host?: string; port?: number; password?: string; db?: number }): RedisClientLike;
 }
 
 const ioredisLazy: Lazy<Promise<unknown>> = Lazy.of(async () => {

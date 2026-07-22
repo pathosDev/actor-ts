@@ -149,7 +149,7 @@ Save this as `verify.ts`:
 import { Actor, ActorSystem, Props } from 'actor-ts';
 
 class Ping extends Actor<'ping'> {
-  override onReceive(msg: 'ping'): void {
+  override onReceive(message: 'ping'): void {
     console.log('pong');
   }
 }

@@ -11,14 +11,14 @@
 import { Actor, ActorSystem, ActorSystemOptions, LogLevel, NoopLogger, Props } from '../../src/index.js';
 import { memoryGroup } from '../lib/harness.js';
 
-type Msg = { payload: string };
+type Message = { payload: string };
 
 async function main(): Promise<void> {
   const systemOptions = ActorSystemOptions.create()
     .withLogger(new NoopLogger())
     .withLogLevel(LogLevel.Off);
   const system = ActorSystem.create('bench-queued', systemOptions);
-  const payload: Msg = { payload: 'x'.repeat(64) };
+  const payload: Message = { payload: 'x'.repeat(64) };
 
   const group = memoryGroup('memory · queued messages (64-byte payload)');
 
@@ -26,9 +26,9 @@ async function main(): Promise<void> {
     let release: () => void = () => {};
     const latch = new Promise<void>((r) => { release = r; });
 
-    class Sleeper extends Actor<Msg> {
+    class Sleeper extends Actor<Message> {
       private first = true;
-      override async onReceive(_m: Msg): Promise<void> {
+      override async onReceive(_m: Message): Promise<void> {
         if (this.first) {
           this.first = false;
           await latch; // blocks so the next N tells queue up behind this one

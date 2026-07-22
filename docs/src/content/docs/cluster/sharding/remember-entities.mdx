@@ -27,7 +27,7 @@ entities to be **eagerly recreated**:
 const startShardingOptions = StartShardingOptions.create()
   .withTypeName('session')
   .withEntityProps(Props.create(() => new SessionActor()))
-  .withExtractEntityId((msg) => msg.userId)
+  .withExtractEntityId((message) => message.userId)
   .withRememberEntities(true);
 sharding.start(
   startShardingOptions,
@@ -58,7 +58,7 @@ Two-store split:
 
 ```
 Journal (your events)            RememberEntitiesStore (just IDs)
-  pid=cart-user-42                  entityIds = ['cart-user-42', 'cart-user-43', ...]
+  persistenceId=cart-user-42        entityIds = ['cart-user-42', 'cart-user-43', ...]
   event 1                            
   event 2
   event 3

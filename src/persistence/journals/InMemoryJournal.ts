@@ -19,15 +19,15 @@ export class InMemoryJournal implements Journal {
   readonly events: JournalEventBus = new InProcessJournalEventBus();
 
   async append<E>(
-    pid: string,
+    persistenceId: string,
     events: ReadonlyArray<E>,
     expectedSeq: number,
     tags?: ReadonlyArray<string>,
   ): Promise<PersistentEvent<E>[]> {
-    const stream = this.streams.get(pid) ?? [];
+    const stream = this.streams.get(persistenceId) ?? [];
     const actualSeq = stream.length === 0 ? 0 : stream[stream.length - 1]!.sequenceNr;
     if (actualSeq !== expectedSeq) {
-      throw new JournalConcurrencyError(pid, expectedSeq, actualSeq);
+      throw new JournalConcurrencyError(persistenceId, expectedSeq, actualSeq);
     }
     const now = Date.now();
     const appended: PersistentEvent<E>[] = [];
@@ -35,7 +35,7 @@ export class InMemoryJournal implements Journal {
     for (const ev of events) {
       seq++;
       const pe: PersistentEvent<E> = {
-        persistenceId: pid,
+        persistenceId: persistenceId,
         sequenceNr: seq,
         event: ev,
         timestamp: now,
@@ -44,7 +44,7 @@ export class InMemoryJournal implements Journal {
       appended.push(pe);
       stream.push(pe as PersistentEvent<unknown>);
     }
-    this.streams.set(pid, stream);
+    this.streams.set(persistenceId, stream);
     // Publish AFTER the in-memory state is updated so subscribers
     // that immediately re-read see the events they were notified
     // about.
@@ -52,8 +52,8 @@ export class InMemoryJournal implements Journal {
     return appended;
   }
 
-  async read<E>(pid: string, fromSeq: number, toSeq?: number): Promise<PersistentEvent<E>[]> {
-    const stream = this.streams.get(pid);
+  async read<E>(persistenceId: string, fromSeq: number, toSeq?: number): Promise<PersistentEvent<E>[]> {
+    const stream = this.streams.get(persistenceId);
     if (!stream) return [];
     const to = toSeq ?? (stream.length === 0 ? 0 : stream[stream.length - 1]!.sequenceNr);
     return stream
@@ -61,17 +61,17 @@ export class InMemoryJournal implements Journal {
       .map(e => e as PersistentEvent<E>);
   }
 
-  async highestSeq(pid: string): Promise<number> {
-    const stream = this.streams.get(pid);
+  async highestSeq(persistenceId: string): Promise<number> {
+    const stream = this.streams.get(persistenceId);
     if (!stream || stream.length === 0) return 0;
     return stream[stream.length - 1]!.sequenceNr;
   }
 
-  async delete(pid: string, toSeq: number): Promise<void> {
-    const stream = this.streams.get(pid);
+  async delete(persistenceId: string, toSeq: number): Promise<void> {
+    const stream = this.streams.get(persistenceId);
     if (!stream) return;
     const next = stream.filter(e => e.sequenceNr > toSeq);
-    this.streams.set(pid, next);
+    this.streams.set(persistenceId, next);
   }
 
   async persistenceIds(): Promise<string[]> {
@@ -82,7 +82,7 @@ export class InMemoryJournal implements Journal {
 
   /**
    * Migration hook (#9).  Applies `transform` to every persisted
-   * event's payload under `pid`, rewriting in place — sequence numbers,
+   * event's payload under `persistenceId`, rewriting in place — sequence numbers,
    * timestamps, tags are preserved.  Used by `migrateInMemoryJournal`
    * to wrap legacy raw events into the `_v/_t/_e` envelope when an
    * actor is retro-fitted with an `EventAdapter`.
@@ -91,8 +91,8 @@ export class InMemoryJournal implements Journal {
    * `migrateInMemoryJournal` helper instead of calling this directly;
    * the underscored prefix marks it as a migration-only escape hatch.
    */
-  async _remapForMigration<E, F>(pid: string, transform: (e: E) => F): Promise<void> {
-    const stream = this.streams.get(pid);
+  async _remapForMigration<E, F>(persistenceId: string, transform: (e: E) => F): Promise<void> {
+    const stream = this.streams.get(persistenceId);
     if (!stream) return;
     for (let i = 0; i < stream.length; i++) {
       const pe = stream[i]!;

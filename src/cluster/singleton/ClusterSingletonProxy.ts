@@ -33,8 +33,8 @@ export class ClusterSingletonProxy<T> extends ActorRef<T> {
       .child('user').child(`singleton-proxy-${typeName}`);
     this.unsubscribe = cluster.subscribe((evt) =>
       match(evt)
-        .with(P.instanceOf(LeaderChanged), () => this.drainBuffer())
-        .otherwise(() => { /* leader-change is the only event we react to */ }),
+        .with(P.instanceOf(LeaderChanged), () => this.onLeaderChanged())
+        .otherwise(() => this.onOtherClusterEvent()),
     );
     // Drain in case a leader is already known by the time we start.
     queueMicrotask(() => this.drainBuffer());
@@ -73,6 +73,14 @@ export class ClusterSingletonProxy<T> extends ActorRef<T> {
         tag: 'Singleton',
       });
     }
+  }
+
+  private onLeaderChanged(): void {
+    this.drainBuffer();
+  }
+
+  private onOtherClusterEvent(): void {
+    /* leader-change is the only event we react to */
   }
 
   private drainBuffer(): void {

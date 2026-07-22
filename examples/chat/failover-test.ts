@@ -39,11 +39,11 @@ const NODES = [
 const repoRoot = process.cwd();
 const dataDir = join(repoRoot, 'examples', 'chat', 'data');
 
-function fail(msg: string): never {
-  console.error(`✗ ${msg}`);
+function fail(message: string): never {
+  console.error(`✗ ${message}`);
   process.exit(1);
 }
-function ok(msg: string): void { console.log(`✔ ${msg}`); }
+function ok(message: string): void { console.log(`✔ ${message}`); }
 
 /** PID currently bound to the chat HTTP port — null if no listener. */
 function pidOnPort(port: number): number | null {
@@ -91,8 +91,8 @@ async function pollFor<T>(
 
 async function httpGet(url: string): Promise<number> {
   try {
-    const res = await fetch(url);
-    return res.status;
+    const response = await fetch(url);
+    return response.status;
   } catch {
     return 0;
   }

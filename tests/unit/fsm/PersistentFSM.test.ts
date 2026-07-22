@@ -7,7 +7,7 @@
  *   - Invalid transition (`ship` from `'pending'`) is dropped — no
  *     event persists, no state mutates.
  *   - Guard rejection drops the command silently.
- *   - Function-style `event: (cmd, data) => Event` is evaluated.
+ *   - Function-style `event: (command, data) => Event` is evaluated.
  *   - Snapshot policy + recovery via snapshot still produces the
  *     right state + data.
  */
@@ -51,9 +51,9 @@ const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
 class OrderFsm extends PersistentFSM<OrderCommand, OrderEvent, OrderState, OrderData> {
   readonly persistenceId: string;
 
-  constructor(pid: string) {
+  constructor(persistenceId: string) {
     super();
-    this.persistenceId = pid;
+    this.persistenceId = persistenceId;
   }
 
   initialFsmState(): OrderState { return 'pending'; }
@@ -63,23 +63,23 @@ class OrderFsm extends PersistentFSM<OrderCommand, OrderEvent, OrderState, Order
     pending: {
       pay: {
         // Function-style event — depends on the command.
-        event: (cmd, _data): OrderEvent => ({ kind: 'paid', amount: cmd.amount }),
+        event: (command, _data): OrderEvent => ({ kind: 'paid', amount: command.amount }),
         next: 'paid',
         // Reject zero / negative amounts via the guard.
-        guard: (cmd) => cmd.amount > 0,
+        guard: (command) => command.amount > 0,
       },
       cancel: {
-        event: (cmd): OrderEvent => ({ kind: 'cancelled', reason: cmd.reason }),
+        event: (command): OrderEvent => ({ kind: 'cancelled', reason: command.reason }),
         next: 'cancelled',
       },
     },
     paid: {
       ship: {
-        event: (cmd): OrderEvent => ({ kind: 'shipped', carrier: cmd.carrier }),
+        event: (command): OrderEvent => ({ kind: 'shipped', carrier: command.carrier }),
         next: 'shipped',
       },
       cancel: {
-        event: (cmd): OrderEvent => ({ kind: 'cancelled', reason: cmd.reason }),
+        event: (command): OrderEvent => ({ kind: 'cancelled', reason: command.reason }),
         next: 'cancelled',
       },
     },
@@ -102,12 +102,12 @@ class OrderFsm extends PersistentFSM<OrderCommand, OrderEvent, OrderState, Order
   // Override onCommand to handle the read-only `getState` query.
   // Calls super for everything else — keeps the framework's
   // transition-table dispatch.
-  override async onCommand(curr: FsmStateData<OrderState, OrderData>, cmd: OrderCommand): Promise<void> {
-    if (cmd.kind === 'getState') {
+  override async onCommand(curr: FsmStateData<OrderState, OrderData>, command: OrderCommand): Promise<void> {
+    if (command.kind === 'getState') {
       this.sender.toNullable()?.tell(curr);
       return;
     }
-    return super.onCommand(curr, cmd);
+    return super.onCommand(curr, command);
   }
 }
 
@@ -313,11 +313,11 @@ class PaymentFsm extends PersistentFSM<PayCommand, PayEvent, PayState, PayData> 
   /** When set, only fires the timeout if data.amount > 0. */
   private readonly guarded: boolean;
 
-  constructor(pid: string, afterMs: number, opts: { guarded?: boolean } = {}) {
+  constructor(persistenceId: string, afterMs: number, options: { guarded?: boolean } = {}) {
     super();
-    this.persistenceId = pid;
+    this.persistenceId = persistenceId;
     this.afterMs = afterMs;
-    this.guarded = opts.guarded ?? false;
+    this.guarded = options.guarded ?? false;
   }
 
   initialFsmState(): PayState { return 'pending'; }
@@ -330,7 +330,7 @@ class PaymentFsm extends PersistentFSM<PayCommand, PayEvent, PayState, PayData> 
     return {
       pending: {
         authorize: {
-          event: (cmd): PayEvent => ({ kind: 'authorized', amount: cmd.amount }),
+          event: (command): PayEvent => ({ kind: 'authorized', amount: command.amount }),
           next: 'authorized',
         },
       },
@@ -356,12 +356,12 @@ class PaymentFsm extends PersistentFSM<PayCommand, PayEvent, PayState, PayData> 
     return { state: 'expired', data };
   }
 
-  override async onCommand(curr: FsmStateData<PayState, PayData>, cmd: PayCommand): Promise<void> {
-    if (cmd.kind === 'getState') {
+  override async onCommand(curr: FsmStateData<PayState, PayData>, command: PayCommand): Promise<void> {
+    if (command.kind === 'getState') {
       this.sender.toNullable()?.tell(curr);
       return;
     }
-    return super.onCommand(curr, cmd);
+    return super.onCommand(curr, command);
   }
 }
 
@@ -518,9 +518,9 @@ class AuditingFsm extends PersistentFSM<AuditCommand, AuditEvent, AuditState, Au
   /** Toggle so a single test class covers literal-array, function-array, and empty-array. */
   private readonly mode: 'array' | 'fnArray' | 'emptyArray';
 
-  constructor(pid: string, mode: 'array' | 'fnArray' | 'emptyArray' = 'array') {
+  constructor(persistenceId: string, mode: 'array' | 'fnArray' | 'emptyArray' = 'array') {
     super();
-    this.persistenceId = pid;
+    this.persistenceId = persistenceId;
     this.mode = mode;
   }
 
@@ -539,8 +539,8 @@ class AuditingFsm extends PersistentFSM<AuditCommand, AuditEvent, AuditState, Au
           ],
           next: 'paid',
         } : this.mode === 'fnArray' ? {
-          event: (cmd, _data): AuditEvent[] => [
-            { kind: 'paid', amount: cmd.amount },
+          event: (command, _data): AuditEvent[] => [
+            { kind: 'paid', amount: command.amount },
             { kind: 'audit-logged' },
           ],
           next: 'paid',
@@ -551,7 +551,7 @@ class AuditingFsm extends PersistentFSM<AuditCommand, AuditEvent, AuditState, Au
           next: 'paid',
         },
         cancel: {
-          event: (cmd): AuditEvent => ({ kind: 'cancelled', reason: cmd.reason }),
+          event: (command): AuditEvent => ({ kind: 'cancelled', reason: command.reason }),
           next: 'cancelled',
         },
       },
@@ -565,12 +565,12 @@ class AuditingFsm extends PersistentFSM<AuditCommand, AuditEvent, AuditState, Au
     return { state: 'cancelled', data: { ...data, cancelReason: ev.reason ?? null } };
   }
 
-  override async onCommand(curr: FsmStateData<AuditState, AuditData>, cmd: AuditCommand): Promise<void> {
-    if (cmd.kind === 'getState') {
+  override async onCommand(curr: FsmStateData<AuditState, AuditData>, command: AuditCommand): Promise<void> {
+    if (command.kind === 'getState') {
       this.sender.toNullable()?.tell(curr);
       return;
     }
-    return super.onCommand(curr, cmd);
+    return super.onCommand(curr, command);
   }
 }
 

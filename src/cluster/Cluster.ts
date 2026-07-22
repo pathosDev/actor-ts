@@ -102,7 +102,7 @@ export class Cluster {
 
   private envelopeHandler: EnvelopeHandler | null = null;
   private readonly _envelopeHandlersByPath = new Map<string, EnvelopeHandler>();
-  private readonly wireHandlers = new Map<string, (msg: WireMessage, from: NodeAddress) => void>();
+  private readonly wireHandlers = new Map<string, (message: WireMessage, from: NodeAddress) => void>();
   private started = false;
 
   private readonly downing: DowningProvider | null;
@@ -217,8 +217,8 @@ export class Cluster {
       try { listener(new LeaderChanged(this.currentLeader)); } catch { /* ignore */ }
     }
     return () => {
-      const idx = this._listeners.indexOf(listener);
-      if (idx >= 0) this._listeners.splice(idx, 1);
+      const index = this._listeners.indexOf(listener);
+      if (index >= 0) this._listeners.splice(index, 1);
     };
   }
 
@@ -285,7 +285,7 @@ export class Cluster {
    * payload is rewritten to a `WireActorRef` marker here — this is the
    * single chokepoint where every cross-node message leaves, so hooking
    * the encode step once covers all paths (sharding, pub-sub, singleton,
-   * direct remote-ref).  Receiving nodes decode in `handleEnvelope`.
+   * direct remote-ref).  Receiving nodes decode in `onEnvelope`.
    */
   _sendEnvelope(to: NodeAddress, env: EnvelopeMessage): void {
     const encoded: EnvelopeMessage = { ...env, body: encodeRefs(env.body, this.selfAddress) };
@@ -293,7 +293,7 @@ export class Cluster {
   }
 
   /** Register a handler for a specific wire-message discriminator. */
-  _onWire(kind: string, handler: (msg: WireMessage, from: NodeAddress) => void): () => void {
+  _onWire(kind: string, handler: (message: WireMessage, from: NodeAddress) => void): () => void {
     this.wireHandlers.set(kind, handler);
     return () => this.wireHandlers.delete(kind);
   }
@@ -341,10 +341,10 @@ export class Cluster {
     if (me) {
       this.updateMember(me.withStatus('leaving'));
     }
-    const leaveMsg: LeaveMessage = { t: 'leave', node: this.selfAddress.toJSON() };
+    const leaveMessage: LeaveMessage = { t: 'leave', node: this.selfAddress.toJSON() };
     const peers = this.reachableMembers().filter((member) => !member.address.equals(this.selfAddress));
     this.log.debug(`leaving — sending leave to ${peers.length} reachable peer(s)`);
-    for (const member of peers) this.transport.send(member.address, leaveMsg);
+    for (const member of peers) this.transport.send(member.address, leaveMessage);
     this.gossipTimer?.cancel();
     this.heartbeatTimer?.cancel();
     this.fdTimer?.cancel();
@@ -357,7 +357,7 @@ export class Cluster {
   /* ================================ Internal ================================ */
 
   private async _start(seeds: string[]): Promise<void> {
-    this.transport.setHandler((from, msg) => this.handleWire(from, msg));
+    this.transport.setHandler((from, message) => this.handleWire(from, message));
     await this.transport.start();
     this.started = true;
 
@@ -396,7 +396,7 @@ export class Cluster {
       this.contactSeeds();
       // Keep retrying seed contact until self has transitioned to up,
       // covering the case where a seed hasn't started yet.
-      this.seedTimer = this.system.scheduler.scheduleAtFixedRateFn(
+      this.seedTimer = this.system.scheduler.scheduleAtFixedRateFunction(
         this.seedRetryIntervalMs, this.seedRetryIntervalMs, () => {
           const self = this.members.get(this.selfAddress.toString());
           if (!self || self.status !== 'joining') { this.seedTimer?.cancel(); this.seedTimer = null; return; }
@@ -407,7 +407,7 @@ export class Cluster {
 
     // Schedule automatic joining→weakly-up promotion if configured.
     if (this.weaklyUpAfterMs > 0) {
-      this.weaklyUpTimer = this.system.scheduler.scheduleOnceFn(
+      this.weaklyUpTimer = this.system.scheduler.scheduleOnceFunction(
         this.weaklyUpAfterMs, () => {
           const me = this.members.get(this.selfAddress.toString());
           if (me?.status === 'joining') {
@@ -418,16 +418,16 @@ export class Cluster {
       );
     }
 
-    this.gossipTimer = this.system.scheduler.scheduleAtFixedRateFn(
+    this.gossipTimer = this.system.scheduler.scheduleAtFixedRateFunction(
       this.gossipIntervalMs, this.gossipIntervalMs, () => this.gossipTick(),
     );
-    this.heartbeatTimer = this.system.scheduler.scheduleAtFixedRateFn(
+    this.heartbeatTimer = this.system.scheduler.scheduleAtFixedRateFunction(
       this.failureDetector.interval, this.failureDetector.interval, () => this.heartbeatTick(),
     );
-    this.fdTimer = this.system.scheduler.scheduleAtFixedRateFn(
+    this.fdTimer = this.system.scheduler.scheduleAtFixedRateFunction(
       this.failureDetector.interval, this.failureDetector.interval, () => this.failureDetectionTick(),
     );
-    this.tombstonePruneTimer = this.system.scheduler.scheduleAtFixedRateFn(
+    this.tombstonePruneTimer = this.system.scheduler.scheduleAtFixedRateFunction(
       this.tombstonePruneIntervalMs, this.tombstonePruneIntervalMs,
       () => this.tombstonePruneTick(),
     );
@@ -447,29 +447,35 @@ export class Cluster {
     }
   }
 
-  private handleWire(from: NodeAddress, msg: WireMessage): void {
+  private handleWire(from: NodeAddress, message: WireMessage): void {
     this.failureDetector.heartbeat(from);
 
-    match(msg)
-      .with({ t: 'heartbeat' }, (message) => this.handleHeartbeat(from, message))
-      .with({ t: 'heartbeat-ack' }, () => { /* already bumped fd */ })
-      .with({ t: 'gossip' }, (message) => this.handleGossip(message))
-      .with({ t: 'envelope' }, (message) => this.handleEnvelope(from, message))
-      .with({ t: 'leave' }, (message) => this.handleLeave(message))
-      .otherwise(() => {
-        // 'shard-map' and any custom extension wire-msgs handled by the
-        // registry; we intentionally fall through when no handler is set.
-        const custom = this.wireHandlers.get(msg.t);
-        if (custom) custom(msg, from);
-      });
+    match(message)
+      .with({ t: 'heartbeat' }, (m) => this.onHeartbeat(from, m))
+      .with({ t: 'heartbeat-ack' }, () => this.onHeartbeatAcknowledgment())
+      .with({ t: 'gossip' }, (m) => this.onGossip(m))
+      .with({ t: 'envelope' }, (m) => this.onEnvelope(from, m))
+      .with({ t: 'leave' }, (m) => this.onLeave(m))
+      .otherwise((m) => this.onUnhandledWire(m, from));
   }
 
-  private handleHeartbeat(_from: NodeAddress, msg: HeartbeatMessage): void {
-    const peer = NodeAddress.fromJSON(msg.from);
+  private onHeartbeatAcknowledgment(): void {
+    /* already bumped fd */
+  }
+
+  private onUnhandledWire(message: WireMessage, from: NodeAddress): void {
+    // 'shard-map' and any custom extension wire-msgs handled by the
+    // registry; we intentionally fall through when no handler is set.
+    const custom = this.wireHandlers.get(message.t);
+    if (custom) custom(message, from);
+  }
+
+  private onHeartbeat(_from: NodeAddress, message: HeartbeatMessage): void {
+    const peer = NodeAddress.fromJSON(message.from);
     this.failureDetector.heartbeat(peer);
     // Reply isn't strictly needed because send() also bumps the detector,
     // but it keeps symmetric latency information.
-    this.transport.send(peer, { t: 'heartbeat-ack', from: this.selfAddress.toJSON(), seq: msg.seq });
+    this.transport.send(peer, { t: 'heartbeat-ack', from: this.selfAddress.toJSON(), seq: message.seq });
 
     // If the peer was unreachable and we see traffic again, flip it back.
     const existing = this.members.get(peer.toString());
@@ -479,12 +485,12 @@ export class Cluster {
     }
   }
 
-  private handleGossip(msg: GossipMessage): void {
-    const sender = NodeAddress.fromJSON(msg.from);
+  private onGossip(message: GossipMessage): void {
+    const sender = NodeAddress.fromJSON(message.from);
     this.failureDetector.heartbeat(sender);
-    this.log.debug(`gossip from ${sender}: ${msg.members.length} member(s)`);
+    this.log.debug(`gossip from ${sender}: ${message.members.length} member(s)`);
 
-    for (const data of msg.members) {
+    for (const data of message.members) {
       this.mergeMember(data);
     }
 
@@ -506,30 +512,30 @@ export class Cluster {
     }
   }
 
-  private handleEnvelope(from: NodeAddress, msg: EnvelopeMessage): void {
+  private onEnvelope(from: NodeAddress, message: EnvelopeMessage): void {
     // Re-install the originating MDC + active trace context for the
     // duration of dispatch (#53, #10).  Local refs that the
     // dispatcher subsequently `tell`s capture this same context onto
     // the next envelope, so both trails keep flowing across hops.
     // Empty / missing contexts skip the corresponding wrapper.
-    let dispatch: () => void = (): void => this.dispatchEnvelope(from, msg);
+    let dispatch: () => void = (): void => this.dispatchEnvelope(from, message);
 
     // Tracing: if the envelope carries a parent context, open a
     // `cluster.envelope.received` span so the trace explicitly
     // shows the network hop and downstream local-tells see this
     // span as their active parent.
-    if (msg.trace) {
+    if (message.trace) {
       const tracer = tracerOf(this.system);
-      const parentCtx = tracer.extractContext(msg.trace);
-      if (parentCtx) {
+      const parentContext = tracer.extractContext(message.trace);
+      if (parentContext) {
         const inner = dispatch;
         dispatch = (): void => {
           const span = tracer.startSpan('cluster.envelope.received', {
-            parent: parentCtx,
+            parent: parentContext,
             kind: 'consumer',
             attributes: {
               'cluster.from': from.toString(),
-              'cluster.to.path': msg.to,
+              'cluster.to.path': message.to,
             },
           });
           try {
@@ -541,22 +547,22 @@ export class Cluster {
       }
     }
 
-    if (msg.context && Object.keys(msg.context).length > 0) {
-      LogContext.run(msg.context, dispatch);
+    if (message.context && Object.keys(message.context).length > 0) {
+      LogContext.run(message.context, dispatch);
     } else {
       dispatch();
     }
   }
 
-  private dispatchEnvelope(from: NodeAddress, msg: EnvelopeMessage): void {
+  private dispatchEnvelope(from: NodeAddress, message: EnvelopeMessage): void {
     // Rehydrate any ActorRef markers embedded in the user payload before
     // handing it off — downstream handlers (sharding, pubsub, …) just
     // forward `env.body` and shouldn't each duplicate the decode step.
-    const decoded: EnvelopeMessage = { ...msg, body: decodeRefs(msg.body, this) };
+    const decoded: EnvelopeMessage = { ...message, body: decodeRefs(message.body, this) };
 
     // 1. Explicit per-path handler (pub-sub mediator, singleton manager,
     //    sharding coordinator, …).
-    const perPath = this._envelopeHandlersByPath.get(msg.to);
+    const perPath = this._envelopeHandlersByPath.get(message.to);
     if (perPath) { perPath(decoded, from); return; }
 
     // 2. Resolve the target path locally and deliver directly — covers the
@@ -577,12 +583,12 @@ export class Cluster {
     if (this.envelopeHandler) {
       this.envelopeHandler(decoded, from);
     } else {
-      this.log.warn(`no envelope handler registered, dropping message to ${msg.to}`);
+      this.log.warn(`no envelope handler registered, dropping message to ${message.to}`);
     }
   }
 
-  private handleLeave(msg: LeaveMessage): void {
-    const peer = NodeAddress.fromJSON(msg.node);
+  private onLeave(message: LeaveMessage): void {
+    const peer = NodeAddress.fromJSON(message.node);
     const existing = this.members.get(peer.toString());
     if (!existing) return;
     this.log.debug(`peer ${peer} sent leave — tombstoning (was ${existing.status} v${existing.version})`);
@@ -651,7 +657,7 @@ export class Cluster {
         // `DowningProvider` is configured.  We delete here (rather
         // than tombstone) so a partition followed by a heal can
         // recover the peer — `partition+heal` semantics rely on
-        // this.  Definitive downing paths (`handleLeave`,
+        // this.  Definitive downing paths (`onLeave`,
         // `evaluateDowning` force-down) tombstone instead, which
         // prevents stale gossip from resurrecting the address.
         this.members.delete(member.address.toString());

@@ -41,7 +41,7 @@ async function start(mk: () => HttpServerBackend, routes: Route): Promise<string
 describe.each(backends)('wildcard params[*] — %s backend', (_name, mk) => {
   // Only the wildcard route, so no sibling route competes for the match.
   const routes = (): Route =>
-    path('assets', path('*', get((req) => complete(Status.OK, req.params['*'] ?? '<none>'))));
+    path('assets', path('*', get((request) => complete(Status.OK, request.params['*'] ?? '<none>'))));
 
   test('captures a multi-segment remainder', async () => {
     const url = await start(mk, routes());
@@ -55,8 +55,8 @@ describe.each(backends)('wildcard params[*] — %s backend', (_name, mk) => {
 
   test('HEAD on a GET route answers 200 with an empty body', async () => {
     const url = await start(mk, routes());
-    const res = await fetch(`${url}/assets/x`, { method: 'HEAD' });
-    expect(res.status).toBe(200);
-    expect(await res.text()).toBe('');
+    const response = await fetch(`${url}/assets/x`, { method: 'HEAD' });
+    expect(response.status).toBe(200);
+    expect(await response.text()).toBe('');
   });
 });

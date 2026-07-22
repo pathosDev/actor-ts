@@ -23,7 +23,7 @@ import {
 } from '../../src/index.js';
 
 type Command =
-  | { id: string; op: 'inc' }
+  | { id: string; op: 'increment' }
   | { id: string; op: 'get' };
 
 class CounterEntity extends Actor<Command> {
@@ -37,9 +37,9 @@ class CounterEntity extends Actor<Command> {
     this.log.info(`entity ${this.self.path.name} stopped (count was ${this.count})`);
   }
 
-  override onReceive(cmd: Command): void {
-    switch (cmd.op) {
-      case 'inc':
+  override onReceive(command: Command): void {
+    switch (command.op) {
+      case 'increment':
         this.count++;
         this.log.info(`${this.self.path.name} = ${this.count}`);
         break;
@@ -93,7 +93,7 @@ async function main(): Promise<void> {
 
   const region = cluster.sharding.start('counter', CounterEntity,
     StartShardingOptions.create<Command>()
-      .withExtractEntityId((msg) => msg.id)
+      .withExtractEntityId((message) => message.id)
       .withNumShards(16));
 
   // Self-driven traffic so the demo shows movement without a second client.
@@ -103,7 +103,7 @@ async function main(): Promise<void> {
   const entities = ['alpha', 'beta', 'gamma', 'delta', 'epsilon', 'zeta', 'eta', 'theta'];
   const interval = setInterval(() => {
     const id = entities[tick % entities.length]!;
-    region.tell({ id, op: 'inc' });
+    region.tell({ id, op: 'increment' });
     tick++;
   }, 400);
 

@@ -46,9 +46,9 @@ describe('RefCodec — encodeRefs', () => {
   });
 
   test('non-ref objects recurse without interference', () => {
-    const msg = { kind: 'hello', n: 1, nested: { refA: [1, 2, 3] } };
-    const encoded = encodeRefs(msg, from);
-    expect(encoded).toEqual(msg);
+    const message = { kind: 'hello', n: 1, nested: { refA: [1, 2, 3] } };
+    const encoded = encodeRefs(message, from);
+    expect(encoded).toEqual(message);
   });
 
   test('top-level Nobody encodes to the nobody sentinel', () => {
@@ -99,13 +99,13 @@ describe('RefCodec — encodeRefs', () => {
     try {
       const refA = sys.spawn(Props.create(() => new Noop()), 'a');
       const refB = sys.spawn(Props.create(() => new Noop()), 'b');
-      const msg = {
+      const message = {
         kind: 'introduce',
         peers: [refA, refB],
         meta: { primary: refA },
         ignore: Nobody,
       };
-      const encoded = encodeRefs(msg, from) as Record<string, unknown>;
+      const encoded = encodeRefs(message, from) as Record<string, unknown>;
       expect(Array.isArray(encoded.peers)).toBe(true);
       const peers = encoded.peers as WireActorRef[];
       expect(peers).toHaveLength(2);
@@ -203,12 +203,12 @@ describe('RefCodec — decodeRefs', () => {
     const mkWire = (path: string): WireActorRef => ({
       $ref: 'actor', path, host: self.host, port: self.port, system: self.systemName,
     });
-    const wireMsg = {
+    const wireMessage = {
       kind: 'introduce',
       peers: [mkWire(local.path.toString()), { $ref: 'actor', path: 'nobody' }],
       meta: { primary: mkWire(local.path.toString()) },
     };
-    const decoded = decodeRefs(wireMsg, cluster) as Record<string, unknown>;
+    const decoded = decodeRefs(wireMessage, cluster) as Record<string, unknown>;
     const peers = decoded.peers as unknown[];
     expect(peers[0]).toBe(local);
     expect(peers[1]).toBe(Nobody);
@@ -221,10 +221,10 @@ describe('RefCodec — round-trip through JSON.stringify', () => {
     const { system, cluster } = await buildCluster('rt-test', 51_300);
     try {
       const local = system.spawn(Props.create(() => new Noop()), 'rt-actor');
-      const msg = { kind: 'ping', replyTo: local, bag: [local, Nobody] };
+      const message = { kind: 'ping', replyTo: local, bag: [local, Nobody] };
 
       // Simulate the wire path: encode, JSON round-trip, decode.
-      const encoded = encodeRefs(msg, cluster.selfAddress);
+      const encoded = encodeRefs(message, cluster.selfAddress);
       const json = JSON.stringify(encoded);
       const parsed = JSON.parse(json);
       const decoded = decodeRefs(parsed, cluster) as Record<string, unknown>;

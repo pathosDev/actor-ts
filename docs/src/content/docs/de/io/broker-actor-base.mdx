@@ -112,12 +112,12 @@ Basisklasse:
 ### Subscriber-Tracking
 
 ```ts
-this.onReceive(msg) {
-  if (msg.kind === 'subscribe') {
-    this.subscribe(msg.topic, msg.subscriber);
+this.onReceive(message) {
+  if (message.kind === 'subscribe') {
+    this.subscribe(message.topic, message.subscriber);
   }
-  if (msg.kind === 'unsubscribe') {
-    this.unsubscribe(msg.topic, msg.subscriber);
+  if (message.kind === 'unsubscribe') {
+    this.unsubscribe(message.topic, message.subscriber);
   }
 }
 ```
@@ -206,7 +206,7 @@ interface MyProtocolOptionsType extends BrokerCommonOptionsType {
 }
 
 class MyProtocolActor extends BrokerActor<MyProtocolOptionsType, Command, MyPayload> {
-  private conn: MyClient | null = null;
+  private connection: MyClient | null = null;
 
   protected configKey() { return 'actor-ts.io.broker.my-protocol'; }
   protected builtInDefaultOptions() { return { /* ... */ }; }
@@ -215,17 +215,17 @@ class MyProtocolActor extends BrokerActor<MyProtocolOptionsType, Command, MyPayl
   protected endpointLabel() { return this.settings.url; }
 
   protected async connectImplementation(): Promise<void> {
-    this.conn = await MyClient.connect(this.settings.url);
-    this.conn.onMessage((m) => this.fanOut(m.topic, m));
+    this.connection = await MyClient.connect(this.settings.url);
+    this.connection.onMessage((m) => this.fanOut(m.topic, m));
   }
 
   protected async disconnectImplementation(): Promise<void> {
-    await this.conn?.close();
-    this.conn = null;
+    await this.connection?.close();
+    this.connection = null;
   }
 
   protected async dispatchOutgoing(env: OutboundEnvelope<MyPayload>): Promise<void> {
-    await this.conn!.send(env.payload);
+    await this.connection!.send(env.payload);
   }
 }
 ```

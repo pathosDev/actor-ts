@@ -146,7 +146,7 @@ export interface ActorContext<TMessage = unknown> {
    * Cluster-aware variants (split a budget across cluster-router
    * routees, etc.) are out of scope here — this is per-actor only.
    */
-  throttle(opts: ThrottleOptions): void;
+  throttle(options: ThrottleOptions): void;
 
   /** Remove any active throttle, restoring unlimited dequeue rate. */
   cancelThrottle(): void;

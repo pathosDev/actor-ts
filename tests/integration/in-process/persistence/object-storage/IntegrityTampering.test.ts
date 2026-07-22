@@ -44,12 +44,12 @@ afterEach(() => { try { rmSync(dir, { recursive: true, force: true }); } catch {
 
 /**
  * The FS backend stores each key at `dir/<key>` 1:1, so for DurableState
- * with `pid='a'` the body lives at `dir/a/state.json`.  Lock files
+ * with `persistenceId='a'` the body lives at `dir/a/state.json`.  Lock files
  * (`<key>.lock`), etag files (`<key>.etag`), and stale tmpfiles
  * (`<key>.tmp.*`) sit alongside.
  */
-function bodyFileFor(pid: string): string {
-  return join(dir, pid, 'state.json');
+function bodyFileFor(persistenceId: string): string {
+  return join(dir, persistenceId, 'state.json');
 }
 
 describe('#116 — DurableState revision-tampering exploit (pre-fix demonstration)', () => {

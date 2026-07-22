@@ -6,7 +6,7 @@
  * already solved the first-frame race, so no manual listener dance).
  *
  * State machine: starts in `Unauthenticated` and stays there until
- * the client sends a `{ type: 'login', ... }` frame.  Anything else
+ * the client sends a `{ kind: 'login', ... }` frame.  Anything else
  * before login is a protocol violation and triggers `stopSelf` →
  * `postStop` closes the socket.  A successful login transitions to
  * `Authenticated(username)` and triggers auto-join of every default
@@ -21,11 +21,11 @@
  *   - `RoomsChanged` / `RoomAdded` / `RoomRemoved` from the cluster-
  *     wide `ChatRoomDirectoryActor` — added in #98 so the client can
  *     react to runtime room creation by any user on any node.
- *   - `DmBroadcast` from the user's DM inbox topic
+ *   - `DirectMessageBroadcast` from the user's DM inbox topic
  *     (`chat.dm.user.<self>`) — added in #100.  Translated to
  *     `message` frames with `room = '@<other>'` so the client renders
  *     them as a virtual room without needing a new protocol frame.
- *   - `DmHistoryReply` from a sharded `DmChannelActor`, returned in
+ *   - `DirectMessageHistoryReply` from a sharded `DirectMessageChannelActor`, returned in
  *     response to the user opening a DM "room" for the first time.
  */
 import { match } from 'ts-pattern';
@@ -39,17 +39,24 @@ import {
   decodeClient,
   encodeServer,
   type ClientMessage,
+  type CreateRoomMessage,
+  type JoinMessage,
+  type LeaveMessage,
+  type ReadUpToMessage,
+  type SendMessage,
   type ServerMessage,
+  type SwitchActiveRoomMessage,
+  type TypingMessage,
 } from '../../shared/protocol.js';
 import {
   DEFAULT_ROOMS,
-  dmCounterparty,
-  dmRoomFor,
-  isDmRoomName,
+  directMessageCounterparty,
+  directMessageRoomFor,
+  isDirectMessageRoomName,
   isRoomName,
   type RoomName,
 } from '../../shared/rooms.js';
-import { canonicalPairId, dmInboxTopic } from '../../shared/dm.js';
+import { canonicalPairId, directMessageInboxTopic } from '../../shared/directMessage.js';
 import { validateCredentials } from '../auth/credentials.js';
 import type { SessionStore } from '../auth/sessionStore.js';
 import {
@@ -66,10 +73,10 @@ import type {
   RoomsChanged,
 } from './ChatRoomDirectoryActor.js';
 import type {
-  DmBroadcast,
-  DmChannelCommand,
-  DmHistoryReply,
-} from './DmChannelActor.js';
+  DirectMessageBroadcast,
+  DirectMessageChannelCommand,
+  DirectMessageHistoryReply,
+} from './DirectMessageChannelActor.js';
 import type {
   OnlineUsersCommand,
   UsersChanged,
@@ -81,13 +88,16 @@ import type {
 
 /* --------------------------- mailbox shape --------------------------- */
 
+/** Text frame from the route-attached listener. */
+export type TextFrame   = { readonly kind: 'text';   readonly data: string };
+/** Binary frame from the route-attached listener. */
+export type BinaryFrame = { readonly kind: 'binary'; readonly data: Uint8Array };
+
 /** Inbound frame from the route-attached listener. */
-export type InboundFrame =
-  | { readonly kind: 'text';   readonly data: string }
-  | { readonly kind: 'binary'; readonly data: Uint8Array };
+export type InboundFrame = TextFrame | BinaryFrame;
 
 /** Synthetic close signal sent by the WebSocket hub when the socket closes. */
-export interface SocketClosed { readonly kind: 'socket-closed' }
+export type SocketClosed = { readonly kind: 'socket-closed' };
 
 /**
  * The minimal outbound surface this actor needs — a text-frame sink and
@@ -108,8 +118,8 @@ type SessionMessage =
   | RoomsChanged
   | RoomAdded
   | RoomRemoved
-  | DmBroadcast
-  | DmHistoryReply
+  | DirectMessageBroadcast
+  | DirectMessageHistoryReply
   | TypingBroadcast
   | ReceiptsChanged;
 
@@ -118,7 +128,7 @@ type SessionMessage =
 export interface UserSessionDeps {
   readonly connection: SessionConnection;
   readonly chatRoomRegion: ActorRef<ChatRoomCommand>;
-  readonly dmChannelRegion: ActorRef<DmChannelCommand>;
+  readonly directMessageChannelRegion: ActorRef<DirectMessageChannelCommand>;
   readonly onlineUsers: ActorRef<OnlineUsersCommand>;
   readonly mediator: ActorRef<Subscribe | Unsubscribe>;
   readonly sessions: SessionStore;
@@ -141,7 +151,7 @@ export class UserSessionActor extends Actor<SessionMessage> {
    *  once during this session.  Tracked separately because DMs share
    *  a single inbox subscription rather than per-channel pubsub —
    *  the set serves only to deduplicate history requests. */
-  private readonly dmHistoryAskedRooms = new Set<RoomName>();
+  private readonly directMessageHistoryAskedRooms = new Set<RoomName>();
   private currentRoom: RoomName | null = null;
   /** Cache of the current cluster-wide room list; populated on activation. */
   private knownRooms: ReadonlyArray<RoomName> = [];
@@ -177,53 +187,62 @@ export class UserSessionActor extends Actor<SessionMessage> {
       // the subscription when the actor dies, but doing it explicitly
       // shortens the window where DMs are queued for a dead inbox.
       this.deps.mediator.tell(
-        new Unsubscribe(dmInboxTopic(this.username), this.self as ActorRef),
+        new Unsubscribe(directMessageInboxTopic(this.username), this.self as ActorRef),
       );
     }
     this.joinedRooms.clear();
-    this.dmHistoryAskedRooms.clear();
+    this.directMessageHistoryAskedRooms.clear();
     // Idempotent close — the hub / framework may have already done it.
     try { this.deps.connection.close(); } catch { /* already closed */ }
   }
 
-  override onReceive(msg: SessionMessage): void {
-    match(msg)
-      .with({ kind: 'text' }, (m) => this.onClientText(m.data))
-      .with({ kind: 'binary' }, () => { /* binary frames are ignored */ })
-      .with({ kind: 'socket-closed' }, () => this.context.stopSelf())
-      .with({ kind: 'RoomBroadcast' }, (m) => this.onBroadcast(m))
-      .with({ kind: 'HistoryReply' }, (m) => this.onHistory(m))
+  override onReceive(message: SessionMessage): void {
+    match(message)
+      .with({ kind: 'text' }, (m) => this.onText(m))
+      .with({ kind: 'binary' }, () => this.onBinary())
+      .with({ kind: 'socket-closed' }, () => this.onSocketClosed())
+      .with({ kind: 'RoomBroadcast' }, (m) => this.onRoomBroadcast(m))
+      .with({ kind: 'HistoryReply' }, (m) => this.onHistoryReply(m))
       .with({ kind: 'UsersChanged' }, (m) => this.onUsersChanged(m))
       .with({ kind: 'RoomsChanged' }, (m) => this.onRoomsChanged(m))
       .with({ kind: 'RoomAdded' },    (m) => this.onRoomAdded(m))
       .with({ kind: 'RoomRemoved' },  (m) => this.onRoomRemoved(m))
-      .with({ kind: 'DmBroadcast' },     (m) => this.onDmBroadcast(m))
-      .with({ kind: 'DmHistoryReply' },  (m) => this.onDmHistoryReply(m))
+      .with({ kind: 'DirectMessageBroadcast' },     (m) => this.onDirectMessageBroadcast(m))
+      .with({ kind: 'DirectMessageHistoryReply' },  (m) => this.onDirectMessageHistoryReply(m))
       .with({ kind: 'TypingBroadcast' }, (m) => this.onTypingBroadcast(m))
       .with({ kind: 'ReceiptsChanged' }, (m) => this.onReceiptsChanged(m))
       .exhaustive();
   }
 
+  private onBinary(): void {
+    /* binary frames are ignored */
+  }
+
+  private onSocketClosed(): void {
+    this.context.stopSelf();
+  }
+
   /* ----------------------------- inbound ----------------------------- */
 
-  private onClientText(raw: string): void {
-    const cmd = decodeClient(raw);
-    if (!cmd) {
-      this.sendServer({ type: 'system', text: 'Invalid frame — JSON expected.' });
+  private onText(m: TextFrame): void {
+    const raw = m.data;
+    const command = decodeClient(raw);
+    if (!command) {
+      this.sendServer({ kind: 'system', text: 'Invalid frame — JSON expected.' });
       return;
     }
     if (this.phase === 'Unauthenticated') {
-      this.handleUnauthenticated(cmd);
+      this.handleUnauthenticated(command);
       return;
     }
-    this.handleAuthenticated(cmd);
+    this.handleAuthenticated(command);
   }
 
-  private handleUnauthenticated(cmd: ClientMessage): void {
-    if (cmd.type === 'login') {
-      const user = validateCredentials(cmd.username, cmd.password);
+  private handleUnauthenticated(command: ClientMessage): void {
+    if (command.kind === 'login') {
+      const user = validateCredentials(command.username, command.password);
       if (!user) {
-        this.sendServer({ type: 'login-failed', reason: 'Invalid username or password' });
+        this.sendServer({ kind: 'login-failed', reason: 'Invalid username or password' });
         this.context.stopSelf();
         return;
       }
@@ -232,23 +251,23 @@ export class UserSessionActor extends Actor<SessionMessage> {
       return;
     }
 
-    if (cmd.type === 'resume') {
-      const username = this.deps.sessions.lookupToken(cmd.token);
+    if (command.kind === 'resume') {
+      const username = this.deps.sessions.lookupToken(command.token);
       if (!username) {
         // Unknown / expired / revoked token — tell the client so it
         // can clear its stored token and fall back to the credentials
         // form.  Don't stop the connection: the client may re-attempt
         // with `login` on the same socket.
-        this.sendServer({ type: 'login-failed', reason: 'Session expired' });
+        this.sendServer({ kind: 'login-failed', reason: 'Session expired' });
         return;
       }
       // Reuse the same token — keep the client's storage stable.
-      this.activate(username, cmd.token);
+      this.activate(username, command.token);
       return;
     }
 
     this.sendServer({
-      type: 'login-failed',
+      kind: 'login-failed',
       reason: 'Login required as first frame',
     });
     this.context.stopSelf();
@@ -264,7 +283,7 @@ export class UserSessionActor extends Actor<SessionMessage> {
     this.phase = 'Authenticated';
     this.username = username;
     this.token = token;
-    this.sendServer({ type: 'logged-in', username, token });
+    this.sendServer({ kind: 'logged-in', username, token });
     // Subscribe to the cluster-wide room directory.  The directory
     // immediately replays its current set as a `RoomsChanged`
     // message — `onRoomsChanged` forwards that to the client as a
@@ -282,9 +301,9 @@ export class UserSessionActor extends Actor<SessionMessage> {
     // single subscription covers every DM conversation we ever take
     // part in.  No per-channel subscription bookkeeping needed.
     this.deps.mediator.tell(
-      new Subscribe(dmInboxTopic(username), this.self as ActorRef),
+      new Subscribe(directMessageInboxTopic(username), this.self as ActorRef),
     );
-    this.sendServer({ type: 'rooms', rooms: [...DEFAULT_ROOMS] });
+    this.sendServer({ kind: 'rooms', rooms: [...DEFAULT_ROOMS] });
     // Auto-join every default room for presence + live messages, but
     // only fetch history for the room we're switching into first
     // (`general`).  Avoids a rapid burst of cross-shard ask-style
@@ -298,149 +317,173 @@ export class UserSessionActor extends Actor<SessionMessage> {
     this.currentRoom = DEFAULT_ROOMS[0]!;
   }
 
-  private handleAuthenticated(cmd: ClientMessage): void {
-    match(cmd)
-      .with({ type: 'login' }, () => {
-        // Re-login on an already-authenticated socket — silently ignore.
-      })
-      .with({ type: 'resume' }, () => {
-        // Resume on an already-authenticated socket — silently ignore.
-      })
-      .with({ type: 'logout' }, () => {
-        // Explicit log-out: revoke the session token so the cluster
-        // forgets it (gossip propagates), then drop the connection.
-        // The client's storage cleanup happens locally on its side.
-        if (this.token) this.deps.sessions.revokeToken(this.token);
-        this.token = null;
-        this.context.stopSelf();
-      })
-      .with({ type: 'send' }, (m) => {
-        if (!isRoomName(m.room)) return;
-        const text = m.text.slice(0, 4096);
-        if (text.length === 0) return;
-        // DMs ride on the same `send` frame but get routed to the
-        // DM region instead of the chat-room region.  No `join`
-        // gate — DMs have no presence concept, the inbox topic is
-        // always subscribed.
-        if (isDmRoomName(m.room)) {
-          this.sendDm(m.room, text);
-          return;
-        }
-        if (!this.joinedRooms.has(m.room)) return;
-        this.deps.chatRoomRegion.tell({
-          kind: 'SendMessage',
-          room: m.room,
-          from: this.username!,
-          text,
-        });
-      })
-      .with({ type: 'join' }, (m) => {
-        if (!isRoomName(m.room)) return;
-        if (isDmRoomName(m.room)) {
-          // "Joining" a DM means: fetch its history so the client
-          // can render past messages.  No subscription, no presence.
-          this.fetchDmHistory(m.room);
-          return;
-        }
-        this.joinRoom(m.room, true);
-      })
-      .with({ type: 'leave' }, (m) => {
-        // No-op for DM rooms — there's nothing to leave, the inbox
-        // stays subscribed cluster-wide for this session.
-        if (isRoomName(m.room) && !isDmRoomName(m.room)) this.leaveRoom(m.room);
-      })
-      .with({ type: 'switch-active-room' }, (m) => {
-        if (!isRoomName(m.room)) return;
-        if (isDmRoomName(m.room)) {
-          this.currentRoom = m.room;
-          // Lazy history fetch the first time the user switches into
-          // this DM.  Idempotent — subsequent switches don't re-ask.
-          if (!this.dmHistoryAskedRooms.has(m.room)) {
-            this.dmHistoryAskedRooms.add(m.room);
-            this.fetchDmHistory(m.room);
-          }
-          return;
-        }
-        if (this.joinedRooms.has(m.room)) {
-          this.currentRoom = m.room;
-          // Lazy history fetch: if we never asked for this room's
-          // history at login (because it wasn't the default room),
-          // ask now.  Tracking this with `historyAskedRooms` keeps
-          // the request idempotent — a follow-up switch back to the
-          // same room doesn't re-ask.
-          if (!this.historyAskedRooms.has(m.room)) {
-            this.historyAskedRooms.add(m.room);
-            this.deps.chatRoomRegion.tell({
-              kind: 'GetHistory',
-              room: m.room,
-              limit: 50,
-              replyTo: this.self as ActorRef<HistoryReply>,
-            });
-          }
-        }
-      })
-      .with({ type: 'create-room' }, (m) => {
-        // Fire-and-forget: the directory broadcasts `RoomAdded` (or
-        // a refreshed `RoomsChanged`) to every subscriber once the
-        // ORSet update is gossiped, so this client sees the new
-        // room via the same channel that notifies everyone else.
-        // We don't surface accept/reject in this minimal demo —
-        // invalid names are a typo (no progress visible client-side
-        // = clear feedback) and the duplicate case still results in
-        // the name appearing in the list.
-        this.deps.roomDirectory.tell({ kind: 'Create', name: m.name });
-      })
-      .with({ type: 'typing' }, (m) => {
-        if (!isRoomName(m.room)) return;
-        this.broadcastTyping(m.room);
-      })
-      .with({ type: 'read-up-to' }, (m) => {
-        if (!isRoomName(m.room)) return;
-        if (typeof m.ts !== 'number' || !Number.isFinite(m.ts) || m.ts <= 0) return;
-        // For DMs we register the read pointer under the canonical
-        // pair-id key, not the per-user virtual `@<other>` room.
-        // Both participants then see the same DD entry and can
-        // render receipts symmetrically.
-        const key = isDmRoomName(m.room)
-          ? this.dmReceiptsKey(m.room)
-          : m.room;
-        if (key === null) return;
-        this.deps.readReceipts.tell({
-          kind: 'Update',
-          room: key,
-          username: this.username!,
-          ts: m.ts,
-        });
-      })
-      .with({ type: 'ping' }, () => { /* keepalive — no-op server-side */ })
+  private handleAuthenticated(command: ClientMessage): void {
+    match(command)
+      .with({ kind: 'login' }, () => this.onLogin())
+      .with({ kind: 'resume' }, () => this.onResume())
+      .with({ kind: 'logout' }, () => this.onLogout())
+      .with({ kind: 'send' }, (m) => this.onSend(m))
+      .with({ kind: 'join' }, (m) => this.onJoin(m))
+      .with({ kind: 'leave' }, (m) => this.onLeave(m))
+      .with({ kind: 'switch-active-room' }, (m) => this.onSwitchActiveRoom(m))
+      .with({ kind: 'create-room' }, (m) => this.onCreateRoom(m))
+      .with({ kind: 'typing' }, (m) => this.onTyping(m))
+      .with({ kind: 'read-up-to' }, (m) => this.onReadUpTo(m))
+      .with({ kind: 'ping' }, () => this.onPing())
       .exhaustive();
   }
 
-  private onBroadcast(msg: RoomBroadcast): void {
+  private onLogin(): void {
+    // Re-login on an already-authenticated socket — silently ignore.
+  }
+
+  private onResume(): void {
+    // Resume on an already-authenticated socket — silently ignore.
+  }
+
+  private onLogout(): void {
+    // Explicit log-out: revoke the session token so the cluster
+    // forgets it (gossip propagates), then drop the connection.
+    // The client's storage cleanup happens locally on its side.
+    if (this.token) this.deps.sessions.revokeToken(this.token);
+    this.token = null;
+    this.context.stopSelf();
+  }
+
+  private onSend(m: SendMessage): void {
+    if (!isRoomName(m.room)) return;
+    const text = m.text.slice(0, 4096);
+    if (text.length === 0) return;
+    // DMs ride on the same `send` frame but get routed to the
+    // DM region instead of the chat-room region.  No `join`
+    // gate — DMs have no presence concept, the inbox topic is
+    // always subscribed.
+    if (isDirectMessageRoomName(m.room)) {
+      this.sendDirectMessage(m.room, text);
+      return;
+    }
+    if (!this.joinedRooms.has(m.room)) return;
+    this.deps.chatRoomRegion.tell({
+      kind: 'SendMessage',
+      room: m.room,
+      from: this.username!,
+      text,
+    });
+  }
+
+  private onJoin(m: JoinMessage): void {
+    if (!isRoomName(m.room)) return;
+    if (isDirectMessageRoomName(m.room)) {
+      // "Joining" a DM means: fetch its history so the client
+      // can render past messages.  No subscription, no presence.
+      this.fetchDirectMessageHistory(m.room);
+      return;
+    }
+    this.joinRoom(m.room, true);
+  }
+
+  private onLeave(m: LeaveMessage): void {
+    // No-op for DM rooms — there's nothing to leave, the inbox
+    // stays subscribed cluster-wide for this session.
+    if (isRoomName(m.room) && !isDirectMessageRoomName(m.room)) this.leaveRoom(m.room);
+  }
+
+  private onSwitchActiveRoom(m: SwitchActiveRoomMessage): void {
+    if (!isRoomName(m.room)) return;
+    if (isDirectMessageRoomName(m.room)) {
+      this.currentRoom = m.room;
+      // Lazy history fetch the first time the user switches into
+      // this DM.  Idempotent — subsequent switches don't re-ask.
+      if (!this.directMessageHistoryAskedRooms.has(m.room)) {
+        this.directMessageHistoryAskedRooms.add(m.room);
+        this.fetchDirectMessageHistory(m.room);
+      }
+      return;
+    }
+    if (this.joinedRooms.has(m.room)) {
+      this.currentRoom = m.room;
+      // Lazy history fetch: if we never asked for this room's
+      // history at login (because it wasn't the default room),
+      // ask now.  Tracking this with `historyAskedRooms` keeps
+      // the request idempotent — a follow-up switch back to the
+      // same room doesn't re-ask.
+      if (!this.historyAskedRooms.has(m.room)) {
+        this.historyAskedRooms.add(m.room);
+        this.deps.chatRoomRegion.tell({
+          kind: 'GetHistory',
+          room: m.room,
+          limit: 50,
+          replyTo: this.self as ActorRef<HistoryReply>,
+        });
+      }
+    }
+  }
+
+  private onCreateRoom(m: CreateRoomMessage): void {
+    // Fire-and-forget: the directory broadcasts `RoomAdded` (or
+    // a refreshed `RoomsChanged`) to every subscriber once the
+    // ORSet update is gossiped, so this client sees the new
+    // room via the same channel that notifies everyone else.
+    // We don't surface accept/reject in this minimal demo —
+    // invalid names are a typo (no progress visible client-side
+    // = clear feedback) and the duplicate case still results in
+    // the name appearing in the list.
+    this.deps.roomDirectory.tell({ kind: 'Create', name: m.name });
+  }
+
+  private onTyping(m: TypingMessage): void {
+    if (!isRoomName(m.room)) return;
+    this.broadcastTyping(m.room);
+  }
+
+  private onReadUpTo(m: ReadUpToMessage): void {
+    if (!isRoomName(m.room)) return;
+    if (typeof m.ts !== 'number' || !Number.isFinite(m.ts) || m.ts <= 0) return;
+    // For DMs we register the read pointer under the canonical
+    // pair-id key, not the per-user virtual `@<other>` room.
+    // Both participants then see the same DD entry and can
+    // render receipts symmetrically.
+    const key = isDirectMessageRoomName(m.room)
+      ? this.directMessageReceiptsKey(m.room)
+      : m.room;
+    if (key === null) return;
+    this.deps.readReceipts.tell({
+      kind: 'Update',
+      room: key,
+      username: this.username!,
+      ts: m.ts,
+    });
+  }
+
+  private onPing(): void {
+    /* keepalive — no-op server-side */
+  }
+
+  private onRoomBroadcast(message: RoomBroadcast): void {
     // Forward as ServerMessage to the client.  Subscribers of
     // multiple rooms need the room field to demux on their side.
     this.sendServer({
-      type: 'message',
-      room: msg.room,
-      from: msg.from,
-      text: msg.text,
-      ts: msg.ts,
+      kind: 'message',
+      room: message.room,
+      from: message.from,
+      text: message.text,
+      ts: message.ts,
     });
   }
 
-  private onHistory(msg: HistoryReply): void {
+  private onHistoryReply(message: HistoryReply): void {
     this.sendServer({
-      type: 'history',
-      room: msg.room,
-      messages: msg.messages,
+      kind: 'history',
+      room: message.room,
+      messages: message.messages,
     });
   }
 
-  private onUsersChanged(msg: UsersChanged): void {
+  private onUsersChanged(message: UsersChanged): void {
     this.sendServer({
-      type: 'users',
-      room: msg.room,
-      users: msg.users,
+      kind: 'users',
+      room: message.room,
+      users: message.users,
     });
   }
 
@@ -464,8 +507,8 @@ export class UserSessionActor extends Actor<SessionMessage> {
     const me = this.username;
     if (!me) return;
     const mediator = this.system.extension(DistributedPubSubId).mediator;
-    if (isDmRoomName(room)) {
-      const other = dmCounterparty(room);
+    if (isDirectMessageRoomName(room)) {
+      const other = directMessageCounterparty(room);
       if (!other || other === me) return;
       const broadcast: TypingBroadcast = {
         kind: 'TypingBroadcast',
@@ -473,10 +516,10 @@ export class UserSessionActor extends Actor<SessionMessage> {
         // server pre-resolves this so the recipient renders the
         // indicator under the right virtual room without further
         // mapping.
-        room: dmRoomFor(me),
+        room: directMessageRoomFor(me),
         from: me,
       };
-      mediator.tell(new Publish(dmInboxTopic(other), broadcast));
+      mediator.tell(new Publish(directMessageInboxTopic(other), broadcast));
       return;
     }
     if (!this.joinedRooms.has(room)) return;
@@ -488,16 +531,16 @@ export class UserSessionActor extends Actor<SessionMessage> {
     mediator.tell(new Publish(chatRoomTopic(room), broadcast));
   }
 
-  private onTypingBroadcast(msg: TypingBroadcast): void {
+  private onTypingBroadcast(message: TypingBroadcast): void {
     // Filter self-echoes — for real rooms, this actor subscribes to
     // the same topic it publishes on, so it sees its own typing
     // broadcasts.  Drop them so the client doesn't render "you are
     // typing".
-    if (msg.from === this.username) return;
+    if (message.from === this.username) return;
     this.sendServer({
-      type: 'user-typing',
-      room: msg.room,
-      username: msg.from,
+      kind: 'user-typing',
+      room: message.room,
+      username: message.from,
     });
   }
 
@@ -510,8 +553,8 @@ export class UserSessionActor extends Actor<SessionMessage> {
    * so both participants see the same entry from each side's view.
    * Returns `null` for malformed DM names.
    */
-  private dmReceiptsKey(dmRoom: RoomName): string | null {
-    const other = dmCounterparty(dmRoom);
+  private directMessageReceiptsKey(directMessageRoom: RoomName): string | null {
+    const other = directMessageCounterparty(directMessageRoom);
     if (!other || other === this.username) return null;
     try {
       return canonicalPairId(this.username!, other);
@@ -522,7 +565,7 @@ export class UserSessionActor extends Actor<SessionMessage> {
 
   /** Subscribe to the read-receipts feed for a (chat or DM) room. */
   private subscribeReceipts(room: RoomName): void {
-    const key = isDmRoomName(room) ? this.dmReceiptsKey(room) : room;
+    const key = isDirectMessageRoomName(room) ? this.directMessageReceiptsKey(room) : room;
     if (key === null) return;
     this.deps.readReceipts.tell({
       kind: 'Subscribe',
@@ -532,7 +575,7 @@ export class UserSessionActor extends Actor<SessionMessage> {
   }
 
   private unsubscribeReceipts(room: RoomName): void {
-    const key = isDmRoomName(room) ? this.dmReceiptsKey(room) : room;
+    const key = isDirectMessageRoomName(room) ? this.directMessageReceiptsKey(room) : room;
     if (key === null) return;
     this.deps.readReceipts.tell({
       kind: 'Unsubscribe',
@@ -545,37 +588,37 @@ export class UserSessionActor extends Actor<SessionMessage> {
    *  rooms we translate the pair-id-keyed DD entry back into the
    *  client's view (`@<other>`) so the frontend doesn't need to
    *  know about pair-ids. */
-  private onReceiptsChanged(msg: ReceiptsChanged): void {
+  private onReceiptsChanged(message: ReceiptsChanged): void {
     const me = this.username;
     if (!me) return;
-    let displayRoom: RoomName | null = msg.room;
-    if (msg.room.includes('|')) {
+    let displayRoom: RoomName | null = message.room;
+    if (message.room.includes('|')) {
       // Pair-id form — map to the recipient's `@<other>` virtual room.
-      const idx = msg.room.indexOf('|');
-      const first = msg.room.slice(0, idx);
-      const second = msg.room.slice(idx + 1);
+      const index = message.room.indexOf('|');
+      const first = message.room.slice(0, index);
+      const second = message.room.slice(index + 1);
       const other = me === first ? second : me === second ? first : null;
       if (!other) return;
-      displayRoom = dmRoomFor(other);
+      displayRoom = directMessageRoomFor(other);
     }
     this.sendServer({
-      type: 'read-receipts',
+      kind: 'read-receipts',
       room: displayRoom,
-      receipts: msg.receipts,
+      receipts: message.receipts,
     });
   }
 
   /* ------------------------------- DM -------------------------------- */
 
-  /** Route an outbound DM to the right `DmChannelActor` shard.  The
+  /** Route an outbound DM to the right `DirectMessageChannelActor` shard.  The
    *  pair-id is canonical so both sides hit the same entity. */
-  private sendDm(dmRoom: RoomName, text: string): void {
-    const other = dmCounterparty(dmRoom);
+  private sendDirectMessage(directMessageRoom: RoomName, text: string): void {
+    const other = directMessageCounterparty(directMessageRoom);
     if (!other || other === this.username) return;
     try {
       const pairId = canonicalPairId(this.username!, other);
-      this.deps.dmChannelRegion.tell({
-        kind: 'SendDm',
+      this.deps.directMessageChannelRegion.tell({
+        kind: 'SendDirectMessage',
         pairId,
         from: this.username!,
         text,
@@ -586,96 +629,96 @@ export class UserSessionActor extends Actor<SessionMessage> {
   }
 
   /** Ask the DM channel for its recent history.  The reply arrives
-   *  as `DmHistoryReply` which we forward to the client.  Also
+   *  as `DirectMessageHistoryReply` which we forward to the client.  Also
    *  subscribes us to the DM pair's read-receipts feed so the client
    *  can render ✓✓ for this conversation (#103 slice 2). */
-  private fetchDmHistory(dmRoom: RoomName): void {
-    const other = dmCounterparty(dmRoom);
+  private fetchDirectMessageHistory(directMessageRoom: RoomName): void {
+    const other = directMessageCounterparty(directMessageRoom);
     if (!other || other === this.username) return;
     try {
       const pairId = canonicalPairId(this.username!, other);
-      this.deps.dmChannelRegion.tell({
-        kind: 'GetDmHistory',
+      this.deps.directMessageChannelRegion.tell({
+        kind: 'GetDirectMessageHistory',
         pairId,
         limit: 50,
-        replyTo: this.self as ActorRef<DmHistoryReply>,
+        replyTo: this.self as ActorRef<DirectMessageHistoryReply>,
       });
-      this.subscribeReceipts(dmRoom);
+      this.subscribeReceipts(directMessageRoom);
     } catch (e) {
       this.log.warn(`DM: history rejected for ${other}: ${(e as Error).message}`);
     }
   }
 
-  private onDmBroadcast(msg: DmBroadcast): void {
+  private onDirectMessageBroadcast(message: DirectMessageBroadcast): void {
     // The "room" from this client's perspective is the OTHER party.
     // Both sides receive the same broadcast — each maps to its own
     // virtual `@<other>` room.
     const me = this.username;
     if (!me) return;
-    const other = msg.from === me ? msg.to : msg.from;
+    const other = message.from === me ? message.to : message.from;
     this.sendServer({
-      type: 'message',
-      room: dmRoomFor(other),
-      from: msg.from,
-      text: msg.text,
-      ts: msg.ts,
+      kind: 'message',
+      room: directMessageRoomFor(other),
+      from: message.from,
+      text: message.text,
+      ts: message.ts,
     });
   }
 
-  private onDmHistoryReply(msg: DmHistoryReply): void {
+  private onDirectMessageHistoryReply(message: DirectMessageHistoryReply): void {
     // Map the pair-id back to "the other party" so the client can
     // file the history under the right `@<other>` room.
     const me = this.username;
     if (!me) return;
     // Pair-id is `min|max` of two usernames; remove ours to find the
     // other.  No regex parse needed — string split on `|`.
-    const idx = msg.pairId.indexOf('|');
-    if (idx <= 0) return;
-    const first = msg.pairId.slice(0, idx);
-    const second = msg.pairId.slice(idx + 1);
+    const index = message.pairId.indexOf('|');
+    if (index <= 0) return;
+    const first = message.pairId.slice(0, index);
+    const second = message.pairId.slice(index + 1);
     const other = me === first ? second : me === second ? first : null;
     if (!other) return;
     this.sendServer({
-      type: 'history',
-      room: dmRoomFor(other),
-      messages: msg.messages,
+      kind: 'history',
+      room: directMessageRoomFor(other),
+      messages: message.messages,
     });
   }
 
   /* ---------------------------- directory ---------------------------- */
 
-  private onRoomsChanged(msg: RoomsChanged): void {
-    this.knownRooms = msg.rooms;
+  private onRoomsChanged(message: RoomsChanged): void {
+    this.knownRooms = message.rooms;
     // Always forward the full set so the client can deterministically
     // replace its local list — handles both the initial replay on
     // subscribe and concurrent updates from other clients.
-    this.sendServer({ type: 'rooms', rooms: msg.rooms });
+    this.sendServer({ kind: 'rooms', rooms: message.rooms });
   }
 
-  private onRoomAdded(msg: RoomAdded): void {
+  private onRoomAdded(message: RoomAdded): void {
     // RoomsChanged carries the full set; RoomAdded is the per-name
     // notification frontends use to render toast-style "new room"
     // notices without diffing two lists themselves.
-    this.sendServer({ type: 'room-added', name: msg.name });
+    this.sendServer({ kind: 'room-added', name: message.name });
   }
 
-  private onRoomRemoved(msg: RoomRemoved): void {
-    this.sendServer({ type: 'room-removed', name: msg.name });
+  private onRoomRemoved(message: RoomRemoved): void {
+    this.sendServer({ kind: 'room-removed', name: message.name });
     // If we were subscribed to this room, leave it — otherwise we'd
     // keep broadcasting `send` frames into a room the client can no
     // longer see in its UI.  Best-effort: the directory's `Create`
     // is the only mutator today, so this path only fires once we
     // ship deletion (currently out of scope, but wired).
-    if (this.joinedRooms.has(msg.name)) {
-      this.leaveRoom(msg.name);
+    if (this.joinedRooms.has(message.name)) {
+      this.leaveRoom(message.name);
     }
   }
 
   /* ---------------------------- outgoing ----------------------------- */
 
-  private sendServer(msg: ServerMessage): void {
+  private sendServer(message: ServerMessage): void {
     try {
-      this.deps.connection.sendText(encodeServer(msg));
+      this.deps.connection.sendText(encodeServer(message));
     } catch (e) {
       this.log.warn(`UserSession: send failed: ${(e as Error).message}`);
     }

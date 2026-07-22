@@ -21,14 +21,14 @@ class OrderApproval extends PersistentFSM<State, Data, Message> {
   constructor(private readonly orderId: string) {
     super('created', { id: orderId });
 
-    this.when('created', (data, msg) => {
-      if (msg.kind === 'submit') return this.goto('submitted', data);
+    this.when('created', (data, message) => {
+      if (message.kind === 'submit') return this.goto('submitted', data);
       return this.stay(data);
     });
 
-    this.when('submitted', (data, msg) => {
-      if (msg.kind === 'approve') return this.goto('approved', { ...data, reviewer: msg.reviewer });
-      if (msg.kind === 'reject')  return this.goto('rejected', { ...data, reason: msg.reason });
+    this.when('submitted', (data, message) => {
+      if (message.kind === 'approve') return this.goto('approved', { ...data, reviewer: message.reviewer });
+      if (message.kind === 'reject')  return this.goto('rejected', { ...data, reason: message.reason });
       return this.stay(data);
     });
 
@@ -178,9 +178,9 @@ class OrderSaga extends PersistentFSM<SagaState, Data, Message> {
   // Each transition is persisted.  A crash mid-saga resumes from
   // the last persisted state — no work is lost.
 
-  this.when('reserved-inventory', (data, msg) => {
-    if (msg.kind === 'payment-success') return this.goto('charged-payment', { ... });
-    if (msg.kind === 'payment-failure') return this.goto('compensating-inventory', { ... });
+  this.when('reserved-inventory', (data, message) => {
+    if (message.kind === 'payment-success') return this.goto('charged-payment', { ... });
+    if (message.kind === 'payment-failure') return this.goto('compensating-inventory', { ... });
     return this.stay(data);
   });
 
@@ -206,7 +206,7 @@ import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="`stay` updates aren't persisted">
   ```ts
-  this.when('current', (data, msg) => this.stay({ ...data, counter: data.counter + 1 }));
+  this.when('current', (data, message) => this.stay({ ...data, counter: data.counter + 1 }));
   ```
   `stay(newData)` updates the in-memory data but **isn't
   persisted**.  On restart, the counter resets to whatever the
@@ -216,7 +216,7 @@ import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="Side effects in handlers, not onEnter">
   ```ts
-  this.when('idle', async (data, msg) => {
+  this.when('idle', async (data, message) => {
     await externalCall();   // ✗ runs on every replay before recovery completes
     return this.goto('working', data);
   });

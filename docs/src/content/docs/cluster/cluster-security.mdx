@@ -97,7 +97,7 @@ Beyond mTLS, the framework supports an additional
 **shared-secret check** in the cluster handshake:
 
 ```ts
-new TcpTransport(self, log, tlsOpts, /* maxFrame */ undefined, {
+new TcpTransport(self, log, tlsOptions, /* maxFrame */ undefined, {
   sharedSecret: process.env.CLUSTER_SECRET,
 });
 ```

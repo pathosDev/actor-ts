@@ -20,7 +20,7 @@ export interface ShardedMessage {
 }
 
 /** Increment the counter for `entityId`. */
-export interface ShardedInc extends ShardedMessage { readonly op: 'inc' }
+export interface ShardedIncrement extends ShardedMessage { readonly op: 'increment' }
 
 /** Query "who hosts you?" — reply via `replyTo`. */
 export interface ShardedWho extends ShardedMessage {
@@ -28,7 +28,7 @@ export interface ShardedWho extends ShardedMessage {
   readonly replyTo: ActorRef<ShardedWhoReply>;
 }
 
-export type ShardedCommand = ShardedInc | ShardedWho;
+export type ShardedCommand = ShardedIncrement | ShardedWho;
 
 export class ShardedWhoReply {
   constructor(
@@ -45,12 +45,12 @@ export class ShardedWhoReply {
 export class ShardedCounter extends Actor<ShardedCommand> {
   private value = 0;
   constructor(private readonly nodeName: string) { super(); }
-  override onReceive(msg: ShardedCommand): void {
-    if (msg.op === 'inc') {
+  override onReceive(message: ShardedCommand): void {
+    if (message.op === 'increment') {
       this.value++;
     } else {
       // 'who'
-      msg.replyTo.tell(new ShardedWhoReply(msg.entityId, this.nodeName, this.value));
+      message.replyTo.tell(new ShardedWhoReply(message.entityId, this.nodeName, this.value));
     }
   }
 }

@@ -64,10 +64,10 @@ export class ORSet<E> implements Crdt<ORSet<E>> {
     private readonly identity: (e: E) => string,
   ) {}
 
-  static empty<E>(opts: ORSetOptions<E> = {}): ORSet<E> {
+  static empty<E>(options: ORSetOptions<E> = {}): ORSet<E> {
     return new ORSet<E>(
       new Map(), new Map(), new Map(),
-      opts.identity ?? (defaultIdentity as (e: E) => string),
+      options.identity ?? (defaultIdentity as (e: E) => string),
     );
   }
 
@@ -182,9 +182,9 @@ export class ORSet<E> implements Crdt<ORSet<E>> {
     };
   }
 
-  static fromJSON<E>(json: ORSetJson, opts: ORSetOptions<E> = {}): ORSet<E> {
+  static fromJSON<E>(json: ORSetJson, options: ORSetOptions<E> = {}): ORSet<E> {
     if (json.kind !== 'ORSet') throw new Error(`ORSet.fromJSON: unexpected kind ${json.kind}`);
-    const identity = opts.identity ?? (defaultIdentity as (e: E) => string);
+    const identity = options.identity ?? (defaultIdentity as (e: E) => string);
     const elements = new Map<string, ElementEntry<E>>();
     for (const [key, tags] of Object.entries(json.elements)) {
       // Backwards-compat: old wire shape didn't carry

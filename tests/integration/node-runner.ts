@@ -156,7 +156,7 @@ async function main(): Promise<void> {
     StartShardingOptions.create<ShardedCommand>()
       .withTypeName(SHARDING_TYPE_NAME)
       .withEntityProps(Props.create(() => new ShardedCounter(NODE_NAME)))
-      .withExtractEntityId((msg) => msg.entityId)
+      .withExtractEntityId((message) => message.entityId)
       .withNumShards(32),
   );
   logger.info('ClusterSharding region started', { typeName: SHARDING_TYPE_NAME, numShards: 32 });

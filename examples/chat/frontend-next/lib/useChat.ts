@@ -4,8 +4,8 @@ import { useCallback, useEffect, useReducer, useRef } from 'react';
 import {
   type ChatMessage,
   type ClientMessage,
-  dmRoomFor,
-  isDmRoom,
+  directMessageRoomFor,
+  isDirectMessageRoom,
   isRoomName,
   type RoomName,
   type ServerMessage,
@@ -92,8 +92,8 @@ function reducer(state: State, action: Action): State {
     case 'rooms': {
       // Preserve open DMs across `rooms` broadcasts — they live only
       // in the client, not in the cluster-wide directory.
-      const dms = state.rooms.filter(isDmRoom);
-      const rooms = [...action.rooms, ...dms];
+      const directMessages = state.rooms.filter(isDirectMessageRoom);
+      const rooms = [...action.rooms, ...directMessages];
       const messagesByRoom = { ...state.messagesByRoom };
       const usersByRoom = { ...state.usersByRoom };
       const unreadByRoom = { ...state.unreadByRoom };
@@ -167,7 +167,7 @@ function reducer(state: State, action: Action): State {
         unreadByRoom: { ...state.unreadByRoom, [action.room]: 0 },
       };
     case 'open-dm': {
-      const room = dmRoomFor(action.otherUser);
+      const room = directMessageRoomFor(action.otherUser);
       if (state.rooms.includes(room)) return state;
       return {
         ...state,
@@ -210,7 +210,7 @@ export function useChat(): {
   markReadUpTo(room: RoomName, ts: number): void;
   selectRoom(room: RoomName): void;
   createRoom(name: string): boolean;
-  openDm(otherUser: string): void;
+  openDirectMessage(otherUser: string): void;
 } {
   const [state, dispatch] = useReducer(reducer, INITIAL);
   const wsRef = useRef<WebSocket | null>(null);
@@ -230,7 +230,7 @@ export function useChat(): {
   }, []);
 
   const handleServer = useCallback((m: ServerMessage) => {
-    switch (m.type) {
+    switch (m.kind) {
       case 'logged-in':
         cancelReconnect();
         if (m.token) sessionStorage.setItem(TOKEN_KEY, m.token);
@@ -314,7 +314,7 @@ export function useChat(): {
           reconnectAttemptsRef.current++;
           reconnectTimerRef.current = setTimeout(() => {
             reconnectTimerRef.current = null;
-            connectImplementation({ type: 'resume', token });
+            connectImplementation({ kind: 'resume', token });
           }, delay);
         } else {
           dispatch({ type: 'reset' });
@@ -331,7 +331,7 @@ export function useChat(): {
 
   const connect = useCallback(
     (username: string, password: string) => {
-      connectImplementation({ type: 'login', username, password });
+      connectImplementation({ kind: 'login', username, password });
     },
     [connectImplementation],
   );
@@ -339,7 +339,7 @@ export function useChat(): {
   const logout = useCallback(() => {
     cancelReconnect();
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-      try { wsRef.current.send(JSON.stringify({ type: 'logout' } satisfies ClientMessage)); } catch { /* ignore */ }
+      try { wsRef.current.send(JSON.stringify({ kind: 'logout' } satisfies ClientMessage)); } catch { /* ignore */ }
     }
     sessionStorage.removeItem(TOKEN_KEY);
     if (wsRef.current) {
@@ -351,8 +351,8 @@ export function useChat(): {
 
   const send = useCallback((room: RoomName, text: string) => {
     if (!text.trim() || !wsRef.current) return;
-    const cmd: ClientMessage = { type: 'send', room, text };
-    wsRef.current.send(JSON.stringify(cmd));
+    const command: ClientMessage = { kind: 'send', room, text };
+    wsRef.current.send(JSON.stringify(command));
   }, []);
 
   const notifyTyping = useCallback((room: RoomName): void => {
@@ -360,7 +360,7 @@ export function useChat(): {
     const now = Date.now();
     if (now - lastTypingSentAtRef.current < 2000) return;
     lastTypingSentAtRef.current = now;
-    wsRef.current.send(JSON.stringify({ type: 'typing', room } satisfies ClientMessage));
+    wsRef.current.send(JSON.stringify({ kind: 'typing', room } satisfies ClientMessage));
   }, []);
 
   const markReadUpTo = useCallback((room: RoomName, ts: number): void => {
@@ -368,7 +368,7 @@ export function useChat(): {
     const last = lastReadSentByRoomRef.current.get(room) ?? 0;
     if (ts <= last) return;
     lastReadSentByRoomRef.current.set(room, ts);
-    wsRef.current.send(JSON.stringify({ type: 'read-up-to', room, ts } satisfies ClientMessage));
+    wsRef.current.send(JSON.stringify({ kind: 'read-up-to', room, ts } satisfies ClientMessage));
   }, []);
 
   const selectRoom = useCallback((room: RoomName) => {
@@ -376,8 +376,8 @@ export function useChat(): {
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
       // User-created rooms aren't auto-joined.  `join` is idempotent
       // server-side, so sending it for every selection is safe.
-      wsRef.current.send(JSON.stringify({ type: 'join', room } satisfies ClientMessage));
-      wsRef.current.send(JSON.stringify({ type: 'switch-active-room', room } satisfies ClientMessage));
+      wsRef.current.send(JSON.stringify({ kind: 'join', room } satisfies ClientMessage));
+      wsRef.current.send(JSON.stringify({ kind: 'switch-active-room', room } satisfies ClientMessage));
     }
   }, []);
 
@@ -389,7 +389,7 @@ export function useChat(): {
   const createRoom = useCallback((name: string): boolean => {
     if (!isRoomName(name)) return false;
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify({ type: 'create-room', name } satisfies ClientMessage));
+      wsRef.current.send(JSON.stringify({ kind: 'create-room', name } satisfies ClientMessage));
     }
     return true;
   }, []);
@@ -408,7 +408,7 @@ export function useChat(): {
       : null;
     if (stored) {
       dispatch({ type: 'start-resuming' });
-      connectImplementation({ type: 'resume', token: stored });
+      connectImplementation({ kind: 'resume', token: stored });
     }
     return () => {
       try { wsRef.current?.close(); } catch { /* ignore */ }
@@ -422,10 +422,10 @@ export function useChat(): {
    * state; subsequent `select-room` carries the protocol-level
    * `join` + `switch-active-room` for the resulting `@<other>` name.
    */
-  const openDm = useCallback((otherUser: string): void => {
+  const openDirectMessage = useCallback((otherUser: string): void => {
     dispatch({ type: 'open-dm', otherUser });
-    selectRoom(dmRoomFor(otherUser));
+    selectRoom(directMessageRoomFor(otherUser));
   }, [selectRoom]);
 
-  return { state, connect, logout, send, notifyTyping, markReadUpTo, selectRoom, createRoom, openDm };
+  return { state, connect, logout, send, notifyTyping, markReadUpTo, selectRoom, createRoom, openDirectMessage };
 }

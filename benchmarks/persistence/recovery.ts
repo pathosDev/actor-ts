@@ -19,22 +19,22 @@ import {
 } from '../../src/index.js';
 import { runGroup } from '../lib/harness.js';
 
-type Cmd = 'get';
+type Command = 'get';
 type Event = { delta: number };
 
-class Counter extends PersistentActor<Cmd, Event, number> {
+class Counter extends PersistentActor<Command, Event, number> {
   constructor(readonly persistenceId: string) { super(); }
   initialState(): number { return 0; }
   onEvent(s: number, e: Event): number { return s + e.delta; }
   override snapshotPolicy = everyNEvents<number, Event>(100);
-  async onCommand(s: number, _cmd: Cmd): Promise<void> {
+  async onCommand(s: number, _command: Command): Promise<void> {
     this.sender.forEach((r) => r.tell(s));
   }
 }
 
-async function prefill(journal: InMemoryJournal, pid: string, n: number): Promise<void> {
+async function prefill(journal: InMemoryJournal, persistenceId: string, n: number): Promise<void> {
   const events = Array.from({ length: n }, () => ({ delta: 1 }));
-  await journal.append(pid, events, 0);
+  await journal.append(persistenceId, events, 0);
 }
 
 async function main(): Promise<void> {
@@ -48,9 +48,9 @@ async function main(): Promise<void> {
   ext.setJournal(journal);
   ext.setSnapshotStore(snapshots);
 
-  const recovery = (pid: string) => async (): Promise<void> => {
-    const ref = system.spawnAnonymous(Props.create(() => new Counter(pid)));
-    await ask<Cmd, number>(ref, 'get', 30_000);
+  const recovery = (persistenceId: string) => async (): Promise<void> => {
+    const ref = system.spawnAnonymous(Props.create(() => new Counter(persistenceId)));
+    await ask<Command, number>(ref, 'get', 30_000);
     ref.stop();
   };
 

@@ -21,15 +21,15 @@ Discriminated Unions, getaggt mit einem `kind`-Feld**.
 
 ```ts
 type CounterCommand =
-  | { readonly kind: 'inc' }
-  | { readonly kind: 'dec' }
+  | { readonly kind: 'increment' }
+  | { readonly kind: 'decrement' }
   | { readonly kind: 'set'; readonly to: number }
   | { readonly kind: 'get'; readonly replyTo: ActorRef<number> };
 ```
 
 Diese Form bringt drei Dinge:
 
-1. **Compile-time-Exhaustiveness.**  `match(cmd).with(...).exhaustive()`
+1. **Compile-time-Exhaustiveness.**  `match(command).with(...).exhaustive()`
    (über [ts-pattern](https://github.com/gvergnaud/ts-pattern)) weigert
    sich zu kompilieren, wenn du einen neuen `kind` hinzufügst und
    vergisst, ihn zu behandeln.  Die actor-ts-Codebasis verwendet dieses
@@ -53,29 +53,33 @@ nicht das, was das Framework verwendet.
 import { Actor, ActorSystem, Props, type ActorRef } from 'actor-ts';
 import { match } from 'ts-pattern';
 
-type CounterCommand =
-  | { readonly kind: 'inc' }
-  | { readonly kind: 'dec' }
-  | { readonly kind: 'get'; readonly replyTo: ActorRef<number> };
+type IncrementCommand = { readonly kind: 'increment' };
+type DecrementCommand = { readonly kind: 'decrement' };
+type GetCommand = { readonly kind: 'get'; readonly replyTo: ActorRef<number> };
+type CounterCommand = IncrementCommand | DecrementCommand | GetCommand;
 
 class Counter extends Actor<CounterCommand> {
   private count = 0;
 
-  override onReceive(cmd: CounterCommand): void {
-    match(cmd)
-      .with({ kind: 'inc' }, () => { this.count++; })
-      .with({ kind: 'dec' }, () => { this.count--; })
-      .with({ kind: 'get' }, (m) => m.replyTo.tell(this.count))
+  override onReceive(command: CounterCommand): void {
+    match(command)
+      .with({ kind: 'increment' }, () => this.onIncrement())
+      .with({ kind: 'decrement' }, () => this.onDecrement())
+      .with({ kind: 'get' }, (m) => this.onGet(m))
       .exhaustive();
   }
+
+  private onIncrement(): void { this.count++; }
+  private onDecrement(): void { this.count--; }
+  private onGet(m: GetCommand): void { m.replyTo.tell(this.count); }
 }
 
 const system = ActorSystem.create('counters');
 const counter = system.spawnAnonymous(Props.create(() => new Counter()));
 
-counter.tell({ kind: 'inc' });
-counter.tell({ kind: 'inc' });
-counter.tell({ kind: 'inc' });
+counter.tell({ kind: 'increment' });
+counter.tell({ kind: 'increment' });
+counter.tell({ kind: 'increment' });
 // Später nach dem Count über eine Reply-to-Ref fragen — siehe Ask-Pattern.
 ```
 
@@ -134,8 +138,8 @@ type ReplyOK = { readonly kind: 'reply-ok'; readonly value: number };
 
 class Counter extends Actor<Get> {
   private count = 42;
-  override onReceive(cmd: Get): void {
-    cmd.replyTo.tell(this.count);
+  override onReceive(command: Get): void {
+    command.replyTo.tell(this.count);
   }
 }
 ```
@@ -192,9 +196,9 @@ type Deposited = { readonly kind: 'deposited'; readonly amount: number; readonly
 
 class Account extends PersistentActor<DepositCommand, Deposited, { balance: number }> {
   // Command-Handler: validieren + Event persistieren
-  async onCommand(state, cmd: DepositCommand): Promise<void> {
-    if (cmd.kind === 'deposit') {
-      const event: Deposited = { kind: 'deposited', amount: cmd.amount, ts: Date.now() };
+  async onCommand(state, command: DepositCommand): Promise<void> {
+    if (command.kind === 'deposit') {
+      const event: Deposited = { kind: 'deposited', amount: command.amount, ts: Date.now() };
       await this.persist(event, () => { /* Seiteneffekte nach dem Persistieren */ });
     }
   }
@@ -221,11 +225,11 @@ vollständige Event-Sourcing-Geschichte.
 
 <Aside type="caution" title="`readonly` vergessen">
   ```ts
-  type Command = { kind: 'inc'; amount: number };
+  type Command = { kind: 'increment'; amount: number };
   //                       ^ kein `readonly`
 
-  function evil(cmd: Command) {
-    cmd.amount++;     // valides TS — kein Compile-Fehler
+  function evil(command: Command) {
+    command.amount++;     // valides TS — kein Compile-Fehler
   }
   ```
   Ohne `readonly` erlaubt der Typ Mutation, und irgendwer irgendwo
@@ -241,7 +245,7 @@ vollständige Event-Sourcing-Geschichte.
 </Aside>
 
 <Aside type="caution" title="Eine Nachricht zu senden bedeutet, dass du sie nicht mehr besitzt">
-  Nach `ref.tell(msg)` behandle `msg` als Eigentum des Empfängers.
+  Nach `ref.tell(message)` behandle `message` als Eigentum des Empfängers.
   Lies oder schreibe nicht von Sender-Seite aus auf ihren Feldern.
   Klingt offensichtlich — aber wenn du die Referenz für einen
   Folgeaufruf hältst, kopiere oder rebuilde lieber, als zu mutieren.
@@ -264,7 +268,7 @@ vollständige Event-Sourcing-Geschichte.
   das `match().exhaustive()`-Idiom, das in jedem Beispiel auf dieser
   Seite verwendet wird.
 - **[Ask-Pattern](/de/fundamentals/ask-pattern/)** —
-  `ref.ask(msg, timeout)` gibt ein Promise für die Antwort zurück
+  `ref.ask(message, timeout)` gibt ein Promise für die Antwort zurück
   und vermeidet den manuellen Reply-to-Ref-Tanz.
 - **[Actor](/de/fundamentals/actor/)** — die Basisklasse, die
   `onReceive`-Signatur, die Context-Referenzen, die Reply-Refs

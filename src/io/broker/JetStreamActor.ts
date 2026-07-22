@@ -58,9 +58,9 @@ import type { JetStreamOptions, JetStreamOptionsType } from './JetStreamOptions.
  *     async onReceive(message: JetStreamMessage) {
  *       try {
  *         await db.insertOrder(JSON.parse(new TextDecoder().decode(message.payload)));
- *         this.js.tell({ kind: 'ack', streamSeq: message.streamSeq });
+ *         this.js.tell({ kind: 'acknowledgment', streamSeq: message.streamSeq });
  *       } catch (e) {
- *         this.js.tell({ kind: 'nak', streamSeq: message.streamSeq, delayMs: 5_000 });
+ *         this.js.tell({ kind: 'negativeAcknowledgment', streamSeq: message.streamSeq, delayMs: 5_000 });
  *       }
  *     }
  *   }
@@ -108,7 +108,7 @@ export interface JetStreamStreamConfig {
   readonly subjects: ReadonlyArray<string>;
   readonly retention?: 'limits' | 'interest' | 'workqueue';
   readonly storage?: 'memory' | 'file';
-  readonly maxMsgs?: number;
+  readonly maxMessages?: number;
   readonly maxBytes?: number;
   readonly maxAge?: number;     // ns; pass through verbatim
   /** Auto-create or update at connect time.  Default true. */
@@ -141,29 +141,42 @@ export interface JetStreamConsumerConfig {
   /** Subject filter — defaults to all subjects in the stream. */
   readonly filterSubject?: string;
   /** Max in-flight unacked messages.  Default 1024 (server default). */
-  readonly maxAckPending?: number;
+  readonly maxAcknowledgmentPending?: number;
   /** Auto-create or update at connect time.  Default true. */
   readonly create?: boolean;
 }
 
+/** Publish a message via the actor's JetStream client. */
+type PublishCommand = { readonly kind: 'publish'; readonly publish: JetStreamPublish };
+
+/** Acknowledge a delivered message — server marks consumed. */
+type AcknowledgmentCommand = { readonly kind: 'acknowledgment'; readonly streamSeq: number };
+
+/** Negative-ack — server redelivers (after optional `delayMs`). */
+type NegativeAcknowledgmentCommand = { readonly kind: 'negativeAcknowledgment'; readonly streamSeq: number; readonly delayMs?: number };
+
+/** Terminal failure — server drops the message permanently. */
+type TerminateCommand = { readonly kind: 'terminate'; readonly streamSeq: number; readonly reason?: string };
+
+/** Heartbeat — extend the ack-wait window for a long-running handler. */
+type InProgressCommand = { readonly kind: 'inProgress'; readonly streamSeq: number };
+
+/**
+ * Pull-mode (#62) — fetch up to `batch` messages, returning early
+ * after `expiresMs` (default 5 s) if fewer are available.  Each
+ * fetched message still goes through the same ack/nak/term
+ * handshake as push-mode.  Sending `fetch` to a push-mode
+ * consumer is a silent no-op with a warn log.
+ */
+type FetchCommand = { readonly kind: 'fetch'; readonly batch: number; readonly expiresMs?: number };
+
 export type JetStreamCommand =
-  | { readonly kind: 'publish'; readonly publish: JetStreamPublish }
-  /** Acknowledge a delivered message — server marks consumed. */
-  | { readonly kind: 'ack'; readonly streamSeq: number }
-  /** Negative-ack — server redelivers (after optional `delayMs`). */
-  | { readonly kind: 'nak'; readonly streamSeq: number; readonly delayMs?: number }
-  /** Terminal failure — server drops the message permanently. */
-  | { readonly kind: 'term'; readonly streamSeq: number; readonly reason?: string }
-  /** Heartbeat — extend the ack-wait window for a long-running handler. */
-  | { readonly kind: 'inProgress'; readonly streamSeq: number }
-  /**
-   * Pull-mode (#62) — fetch up to `batch` messages, returning early
-   * after `expiresMs` (default 5 s) if fewer are available.  Each
-   * fetched message still goes through the same ack/nak/term
-   * handshake as push-mode.  Sending `fetch` to a push-mode
-   * consumer is a silent no-op with a warn log.
-   */
-  | { readonly kind: 'fetch'; readonly batch: number; readonly expiresMs?: number };
+  | PublishCommand
+  | AcknowledgmentCommand
+  | NegativeAcknowledgmentCommand
+  | TerminateCommand
+  | InProgressCommand
+  | FetchCommand;
 
 export class JetStreamActor extends BrokerActor<
   JetStreamOptionsType, JetStreamCommand, JetStreamPublish
@@ -300,20 +313,24 @@ export class JetStreamActor extends BrokerActor<
     });
   }
 
-  override onReceive(cmd: JetStreamCommand): void {
+  override onReceive(command: JetStreamCommand): void {
     // Compile-time exhaustiveness: adding a new JetStreamCommand variant
     // forces this site to handle it explicitly (TS error otherwise).
-    match(cmd)
-      .with({ kind: 'publish' },    (command) => { this.enqueueOutbound(command.publish); })
-      .with({ kind: 'ack' },        (command) => this.handleAcknowledgment(command.streamSeq))
-      .with({ kind: 'nak' },        (command) => this.handleNak(command.streamSeq, command.delayMs))
-      .with({ kind: 'term' },       (command) => this.handleTerm(command.streamSeq, command.reason))
-      .with({ kind: 'inProgress' }, (command) => this.handleInProgress(command.streamSeq))
-      .with({ kind: 'fetch' },      (command) => { void this.handleFetch(command.batch, command.expiresMs); })
+    match(command)
+      .with({ kind: 'publish' },    (m) => this.onPublish(m))
+      .with({ kind: 'acknowledgment' },         (m) => this.onAcknowledgment(m))
+      .with({ kind: 'negativeAcknowledgment' }, (m) => this.onNegativeAcknowledgment(m))
+      .with({ kind: 'terminate' },              (m) => this.onTerminate(m))
+      .with({ kind: 'inProgress' }, (m) => this.onInProgress(m))
+      .with({ kind: 'fetch' },      (m) => void this.onFetch(m))
       .exhaustive();
   }
 
   /* ----------------------------- internals ----------------------------- */
+
+  private onPublish(command: PublishCommand): void {
+    this.enqueueOutbound(command.publish);
+  }
 
   private async runPump(): Promise<void> {
     if (!this.subscription) return;
@@ -330,7 +347,8 @@ export class JetStreamActor extends BrokerActor<
    * fired; subsequent `fetch` cmds are processed serially by the
    * mailbox.
    */
-  private async handleFetch(batch: number, expiresMs?: number): Promise<void> {
+  private async onFetch(command: FetchCommand): Promise<void> {
+    const { batch, expiresMs } = command;
     if (!this.pullConsumer) {
       this.log.warn('JetStreamActor: fetch on push-mode (or disconnected) consumer — ignored');
       return;
@@ -339,7 +357,7 @@ export class JetStreamActor extends BrokerActor<
       this.log.warn(`JetStreamActor: fetch batch must be a positive integer, got ${batch} — ignored`);
       return;
     }
-    let messages: AsyncIterable<JetStreamMsgHandleLike>;
+    let messages: AsyncIterable<JetStreamMessageHandleLike>;
     try {
       messages = await this.pullConsumer.fetch({
         max_messages: batch,
@@ -352,7 +370,7 @@ export class JetStreamActor extends BrokerActor<
     // Drain the fetch result.  The iterator completes either when the
     // batch is full or when `expires` ms elapses — empty-batch is
     // therefore a normal end condition, NOT an error.
-    const handles: JetStreamMsgHandleLike[] = [];
+    const handles: JetStreamMessageHandleLike[] = [];
     for await (const message of messages) handles.push(message);
     // Deliver everything to target first (typical pull-consumer
     // semantics: the application sees the whole batch at once), then
@@ -364,15 +382,15 @@ export class JetStreamActor extends BrokerActor<
 
   /**
    * Shared per-message delivery path used by both the push pump and
-   * `handleFetch`.  Tells the message to `target`, then awaits an
+   * `onFetch`.  Tells the message to `target`, then awaits an
    * external ack / nak / term (unless `ackPolicy === 'none'`).
    */
-  private async deliverAndAwaitAcknowledgment(messageHandle: JetStreamMsgHandleLike): Promise<void> {
+  private async deliverAndAwaitAcknowledgment(messageHandle: JetStreamMessageHandleLike): Promise<void> {
     const target = this.options.target;
-    const ackTimeoutMs = this.options.ackTimeout
+    const ackTimeoutMs = this.options.acknowledgmentTimeout
       ?? this.options.consumer?.ackWaitMs
       ?? 30_000;
-    const handle: JetStreamMsgHandleLike = messageHandle;
+    const handle: JetStreamMessageHandleLike = messageHandle;
     const info = handle.info;
     if (target) {
       target.tell({
@@ -411,7 +429,8 @@ export class JetStreamActor extends BrokerActor<
     }
   }
 
-  private handleAcknowledgment(streamSeq: number): void {
+  private onAcknowledgment(command: AcknowledgmentCommand): void {
+    const { streamSeq } = command;
     const pendingAck = this.pending.get(streamSeq);
     if (!pendingAck) {
       this.log.debug(`JetStreamActor: ack for unknown streamSeq=${streamSeq} — ignored`);
@@ -427,7 +446,8 @@ export class JetStreamActor extends BrokerActor<
     this.pending.delete(streamSeq);
   }
 
-  private handleNak(streamSeq: number, delayMs?: number): void {
+  private onNegativeAcknowledgment(command: NegativeAcknowledgmentCommand): void {
+    const { streamSeq, delayMs } = command;
     const pendingAck = this.pending.get(streamSeq);
     if (!pendingAck) return;
     try {
@@ -441,7 +461,8 @@ export class JetStreamActor extends BrokerActor<
     this.pending.delete(streamSeq);
   }
 
-  private handleTerm(streamSeq: number, reason?: string): void {
+  private onTerminate(command: TerminateCommand): void {
+    const { streamSeq, reason } = command;
     const pendingAck = this.pending.get(streamSeq);
     if (!pendingAck) return;
     this.log.warn(
@@ -453,7 +474,8 @@ export class JetStreamActor extends BrokerActor<
     this.pending.delete(streamSeq);
   }
 
-  private handleInProgress(streamSeq: number): void {
+  private onInProgress(command: InProgressCommand): void {
+    const { streamSeq } = command;
     const pendingAck = this.pending.get(streamSeq);
     if (!pendingAck) return;
     try { pendingAck.handle.working(); } catch { /* */ }
@@ -464,70 +486,70 @@ export class JetStreamActor extends BrokerActor<
 
 interface PendingAcknowledgment {
   readonly streamSeq: number;
-  readonly handle: JetStreamMsgHandleLike;
+  readonly handle: JetStreamMessageHandleLike;
   readonly done: () => void;
   readonly fail: (err: Error) => void;
 }
 
 async function upsertStream(
-  jsm: JetStreamManagerLike, cfg: JetStreamStreamConfig,
+  jsm: JetStreamManagerLike, config: JetStreamStreamConfig,
 ): Promise<void> {
   try {
     await jsm.streams.add({
-      name: cfg.name,
-      subjects: [...cfg.subjects],
-      retention: cfg.retention,
-      storage: cfg.storage,
-      max_msgs: cfg.maxMsgs,
-      max_bytes: cfg.maxBytes,
-      max_age: cfg.maxAge,
+      name: config.name,
+      subjects: [...config.subjects],
+      retention: config.retention,
+      storage: config.storage,
+      max_msgs: config.maxMessages,
+      max_bytes: config.maxBytes,
+      max_age: config.maxAge,
     });
   } catch (e) {
     // If the stream exists, update it; the nats client raises a
     // 10058 ("stream name in use") error code we treat as benign.
-    const msg = e instanceof Error ? e.message : String(e);
-    if (!/in use|already exists|10058/i.test(msg)) throw e;
-    await jsm.streams.update(cfg.name, {
-      subjects: [...cfg.subjects],
-      retention: cfg.retention,
-      storage: cfg.storage,
-      max_msgs: cfg.maxMsgs,
-      max_bytes: cfg.maxBytes,
-      max_age: cfg.maxAge,
+    const message = e instanceof Error ? e.message : String(e);
+    if (!/in use|already exists|10058/i.test(message)) throw e;
+    await jsm.streams.update(config.name, {
+      subjects: [...config.subjects],
+      retention: config.retention,
+      storage: config.storage,
+      max_msgs: config.maxMessages,
+      max_bytes: config.maxBytes,
+      max_age: config.maxAge,
     });
   }
 }
 
 async function upsertConsumer(
-  jsm: JetStreamManagerLike, streamName: string, cfg: JetStreamConsumerConfig,
+  jsm: JetStreamManagerLike, streamName: string, config: JetStreamConsumerConfig,
 ): Promise<void> {
-  const ackWaitNs = (cfg.ackWaitMs ?? 30_000) * 1_000_000;
-  const consumerCfg: ConsumerAddConfig = {
-    durable_name: cfg.durable,
-    ack_policy: cfg.ackPolicy ?? 'explicit',
+  const ackWaitNs = (config.ackWaitMs ?? 30_000) * 1_000_000;
+  const consumerConfig: ConsumerAddConfig = {
+    durable_name: config.durable,
+    ack_policy: config.ackPolicy ?? 'explicit',
     ack_wait: ackWaitNs,
-    filter_subject: cfg.filterSubject,
-    max_ack_pending: cfg.maxAckPending,
+    filter_subject: config.filterSubject,
+    max_ack_pending: config.maxAcknowledgmentPending,
     deliver_policy: 'all',
   };
-  if (cfg.deliverPolicy === 'last') consumerCfg.deliver_policy = 'last';
-  else if (cfg.deliverPolicy === 'new') consumerCfg.deliver_policy = 'new';
-  else if (typeof cfg.deliverPolicy === 'object' && 'kind' in cfg.deliverPolicy) {
-    if (cfg.deliverPolicy.kind === 'byStartSeq') {
-      consumerCfg.deliver_policy = 'by_start_sequence';
-      consumerCfg.opt_start_seq = cfg.deliverPolicy.startSeq;
-    } else if (cfg.deliverPolicy.kind === 'byStartTime') {
-      consumerCfg.deliver_policy = 'by_start_time';
-      consumerCfg.opt_start_time = new Date(cfg.deliverPolicy.startTimeMs).toISOString();
+  if (config.deliverPolicy === 'last') consumerConfig.deliver_policy = 'last';
+  else if (config.deliverPolicy === 'new') consumerConfig.deliver_policy = 'new';
+  else if (typeof config.deliverPolicy === 'object' && 'kind' in config.deliverPolicy) {
+    if (config.deliverPolicy.kind === 'byStartSeq') {
+      consumerConfig.deliver_policy = 'by_start_sequence';
+      consumerConfig.opt_start_seq = config.deliverPolicy.startSeq;
+    } else if (config.deliverPolicy.kind === 'byStartTime') {
+      consumerConfig.deliver_policy = 'by_start_time';
+      consumerConfig.opt_start_time = new Date(config.deliverPolicy.startTimeMs).toISOString();
     }
   }
 
   try {
-    await jsm.consumers.add(streamName, consumerCfg);
+    await jsm.consumers.add(streamName, consumerConfig);
   } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
-    if (!/already exists|in use|10148/i.test(msg)) throw e;
-    await jsm.consumers.update(streamName, cfg.durable, consumerCfg);
+    const message = e instanceof Error ? e.message : String(e);
+    if (!/already exists|in use|10148/i.test(message)) throw e;
+    await jsm.consumers.update(streamName, config.durable, consumerConfig);
   }
 }
 
@@ -554,12 +576,12 @@ export interface NatsConnectionLike {
 }
 
 export interface JetStreamClientLike {
-  publish(subject: string, payload: Uint8Array, opts?: {
+  publish(subject: string, payload: Uint8Array, options?: {
     msgID?: string;
     expect?: { lastSequence?: number };
     headers?: Readonly<Record<string, string>>;
   }): Promise<unknown>;
-  subscribe(subject: string, opts: {
+  subscribe(subject: string, options: {
     stream: string;
     consumer: string;
   }): Promise<JetStreamSubscriptionLike>;
@@ -573,7 +595,7 @@ export interface JetStreamClientLike {
   };
 }
 
-export interface JetStreamSubscriptionLike extends AsyncIterable<JetStreamMsgHandleLike> {
+export interface JetStreamSubscriptionLike extends AsyncIterable<JetStreamMessageHandleLike> {
   destroy(): Promise<void>;
 }
 
@@ -585,10 +607,10 @@ export interface JetStreamSubscriptionLike extends AsyncIterable<JetStreamMsgHan
  * identical to push-mode.
  */
 export interface PullConsumerLike {
-  fetch(opts: {
+  fetch(options: {
     max_messages: number;
     expires: number;
-  }): Promise<AsyncIterable<JetStreamMsgHandleLike>>;
+  }): Promise<AsyncIterable<JetStreamMessageHandleLike>>;
 }
 
 interface HeadersLike {
@@ -596,19 +618,19 @@ interface HeadersLike {
   get(key: string): string | null;
 }
 
-export interface JetStreamMsgInfoLike {
+export interface JetStreamMessageInfoLike {
   readonly streamSequence: number;
   readonly deliverySequence: number;
   readonly deliveryCount: number;
   readonly timestampNanos?: number;
 }
 
-export interface JetStreamMsgHandleLike {
+export interface JetStreamMessageHandleLike {
   readonly subject: string;
   readonly data: Uint8Array;
   readonly reply?: string;
   readonly headers?: HeadersLike;
-  readonly info: JetStreamMsgInfoLike;
+  readonly info: JetStreamMessageInfoLike;
   ack(): void;
   nak(delayMs?: number): void;
   term(): void;
@@ -628,23 +650,23 @@ interface ConsumerAddConfig {
 
 export interface JetStreamManagerLike {
   readonly streams: {
-    add(cfg: {
+    add(config: {
       name: string; subjects: string[]; retention?: string;
       storage?: string; max_msgs?: number; max_bytes?: number; max_age?: number;
     }): Promise<unknown>;
-    update(name: string, cfg: {
+    update(name: string, config: {
       subjects: string[]; retention?: string; storage?: string;
       max_msgs?: number; max_bytes?: number; max_age?: number;
     }): Promise<unknown>;
   };
   readonly consumers: {
-    add(stream: string, cfg: ConsumerAddConfig): Promise<unknown>;
-    update(stream: string, durable: string, cfg: ConsumerAddConfig): Promise<unknown>;
+    add(stream: string, config: ConsumerAddConfig): Promise<unknown>;
+    update(stream: string, durable: string, config: ConsumerAddConfig): Promise<unknown>;
   };
 }
 
 interface NatsModuleLike {
-  connect(opts: {
+  connect(options: {
     servers: string[]; token?: string; user?: string; pass?: string; name?: string;
   }): Promise<NatsConnectionLike>;
 }

@@ -3,14 +3,14 @@
  * via a direct XLEN.  Tests the producer half of RedisStreamsActor
  * without involving the consumer pump (which has its own scenario).
  */
-import { spawnRedis, type RedisCtx } from '../runner.js';
+import { spawnRedis, type RedisContext } from '../runner.js';
 import { waitFor, type BrokerScenario } from '../../lib/scenario.js';
 
-export const scenario: BrokerScenario<RedisCtx> = {
+export const scenario: BrokerScenario<RedisContext> = {
   name: 'XADD — publish entries land on the stream',
-  async run(ctx) {
+  async run(context) {
     const tag = `b7:stream:${Date.now()}:${Math.random().toString(36).slice(2)}`;
-    const producer = spawnRedis(ctx);
+    const producer = spawnRedis(context);
     try {
       // Give the actor a tick to connect.
       await new Promise((r) => setTimeout(r, 200));
@@ -28,7 +28,7 @@ export const scenario: BrokerScenario<RedisCtx> = {
       const Redis = (ioredis as { default?: typeof ioredis.default }).default ?? ioredis;
       const client = new (Redis as unknown as new (url: string) => {
         xlen(s: string): Promise<number>; quit(): Promise<unknown>;
-      })(ctx.url);
+      })(context.url);
       try {
         await waitFor(`XLEN ${tag} == ${N}`,
           async () => (await client.xlen(tag)) === N,

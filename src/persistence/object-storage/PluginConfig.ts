@@ -54,7 +54,7 @@ export interface ResolverWithKnownConfigs<T> {
 
 export const RESOLVER_KNOWN_CONFIGS_SYMBOL = KNOWN_CONFIGS;
 
-function attachKnownConfigs<T, F extends (pid: string) => T | undefined>(
+function attachKnownConfigs<T, F extends (persistenceId: string) => T | undefined>(
   fn: F, configs: ReadonlyArray<T>,
 ): F {
   Object.defineProperty(fn, KNOWN_CONFIGS, {
@@ -71,7 +71,7 @@ function attachKnownConfigs<T, F extends (pid: string) => T | undefined>(
  * `undefined` for opaque user-written resolvers.
  */
 export function knownConfigsOf<T>(
-  resolver: ((pid: string) => T | undefined),
+  resolver: ((persistenceId: string) => T | undefined),
 ): ReadonlyArray<T> | undefined {
   return (resolver as ResolverWithKnownConfigs<T>)[KNOWN_CONFIGS];
 }
@@ -84,33 +84,33 @@ export function knownConfigsOf<T>(
  */
 export function resolveCompression(
   config: CompressionConfig | CompressionResolver | undefined,
-  pid: string,
+  persistenceId: string,
   fallback: CompressionConfig,
 ): CompressionConfig {
   if (config === undefined) return fallback;
-  if (typeof config === 'function') return config(pid) ?? fallback;
+  if (typeof config === 'function') return config(persistenceId) ?? fallback;
   return config;
 }
 
 /** Same shape as `resolveCompression` but for encryption configs. */
 export function resolveEncryption(
   config: EncryptionConfig | EncryptionResolver | undefined,
-  pid: string,
+  persistenceId: string,
   fallback: EncryptionConfig,
 ): EncryptionConfig {
   if (config === undefined) return fallback;
-  if (typeof config === 'function') return config(pid) ?? fallback;
+  if (typeof config === 'function') return config(persistenceId) ?? fallback;
   return config;
 }
 
 /** Same shape as `resolveCompression` but for integrity configs (#116). */
 export function resolveIntegrity(
   config: IntegrityConfig | IntegrityResolver | undefined,
-  pid: string,
+  persistenceId: string,
   fallback: IntegrityConfig,
 ): IntegrityConfig {
   if (config === undefined) return fallback;
-  if (typeof config === 'function') return config(pid) ?? fallback;
+  if (typeof config === 'function') return config(persistenceId) ?? fallback;
   return config;
 }
 
@@ -133,8 +133,8 @@ export function compressionByPrefix(
     .filter(([k]) => k !== 'default')
     .sort(([a], [b]) => b.length - a.length);
   const fallback = spec.default;
-  const resolver: CompressionResolver = (pid) => {
-    for (const [prefix, cfg] of sorted) if (pid.startsWith(prefix)) return cfg;
+  const resolver: CompressionResolver = (persistenceId) => {
+    for (const [prefix, config] of sorted) if (persistenceId.startsWith(prefix)) return config;
     return fallback;
   };
   // Tag with every config the resolver could return, so eager peer-dep
@@ -152,8 +152,8 @@ export function encryptionByPrefix(
     .filter(([k]) => k !== 'default')
     .sort(([a], [b]) => b.length - a.length);
   const fallback = spec.default;
-  const resolver: EncryptionResolver = (pid) => {
-    for (const [prefix, cfg] of sorted) if (pid.startsWith(prefix)) return cfg;
+  const resolver: EncryptionResolver = (persistenceId) => {
+    for (const [prefix, config] of sorted) if (persistenceId.startsWith(prefix)) return config;
     return fallback;
   };
   const all: EncryptionConfig[] = sorted.map(([, c]) => c);

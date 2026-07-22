@@ -31,7 +31,7 @@ export class DurableDistributedDataStore {
   ) {}
 
   /** Persistence id used inside the underlying `DurableStateStore`. */
-  private get pid(): string { return `ddata|${this.replicaId}`; }
+  private get persistenceId(): string { return `ddata|${this.replicaId}`; }
 
   /**
    * Load the persisted state, decode each entry into a `Crdt<any>`,
@@ -39,11 +39,11 @@ export class DurableDistributedDataStore {
    * Map if nothing is stored yet.
    */
   async load(): Promise<Map<string, Crdt<any>>> {
-    const opt = await this.store.load<DurableDDataPayload>(this.pid);
-    if (opt.isNone()) return new Map();
-    this.revision = opt.value.revision;
+    const option = await this.store.load<DurableDDataPayload>(this.persistenceId);
+    if (option.isNone()) return new Map();
+    this.revision = option.value.revision;
     const out = new Map<string, Crdt<any>>();
-    for (const [key, json] of Object.entries(opt.value.state.entries)) {
+    for (const [key, json] of Object.entries(option.value.state.entries)) {
       out.set(key, decodeCrdt(json));
     }
     return out;
@@ -65,14 +65,14 @@ export class DurableDistributedDataStore {
       entries[key] = crdt.toJSON() as CrdtJson;
     }
     const written = await this.store.upsert<DurableDDataPayload>(
-      this.pid, this.revision, { entries },
+      this.persistenceId, this.revision, { entries },
     );
     this.revision = written.revision;
   }
 
   /** Forget the persisted state for this replica.  Idempotent. */
   async clear(): Promise<void> {
-    await this.store.delete(this.pid);
+    await this.store.delete(this.persistenceId);
     this.revision = 0;
   }
 }

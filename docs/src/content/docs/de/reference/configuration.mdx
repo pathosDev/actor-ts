@@ -246,8 +246,8 @@ const system = ActorSystem.create(
 );
 
 // Innerhalb eines Actors / einer Extension:
-const cfg = system.config;
-const interval = cfg.getDuration('actor-ts.cluster.gossip-interval');
+const config = system.config;
+const interval = config.getDuration('actor-ts.cluster.gossip-interval');
 //      → 500 (in ms)
 ```
 

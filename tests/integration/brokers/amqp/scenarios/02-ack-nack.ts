@@ -1,6 +1,6 @@
 /**
  * Manual-ack mode — autoAck=false.  The consumer holds the delivery
- * until an explicit `{ kind: 'ack', delivery }` arrives.  A `nack`
+ * until an explicit `{ kind: 'acknowledgment', delivery }` arrives.  A `negativeAcknowledgment`
  * with `requeue: true` puts the message back on the queue for
  * re-delivery; with `requeue: false` it goes to dead-letter (or
  * is dropped if no DLX is configured).
@@ -9,25 +9,25 @@ import { Actor } from '../../../../../src/Actor.js';
 import { Props } from '../../../../../src/Props.js';
 import type { AmqpCommand, AmqpDelivery } from '../../../../../src/io/broker/AmqpActor.js';
 import type { ActorRef } from '../../../../../src/ActorRef.js';
-import { spawnAmqp, type AmqpCtx } from '../runner.js';
+import { spawnAmqp, type AmqpContext } from '../runner.js';
 import { waitFor, type BrokerScenario } from '../../lib/scenario.js';
 
 async function declareQueue(url: string, queue: string): Promise<void> {
   const amqp = await import('amqplib');
-  const conn = await amqp.connect(url);
+  const connection = await amqp.connect(url);
   try {
-    const ch = await conn.createChannel();
+    const ch = await connection.createChannel();
     try {
       await ch.assertQueue(queue, { durable: false, autoDelete: true });
     } finally {
       await ch.close();
     }
   } finally {
-    await conn.close();
+    await connection.close();
   }
 }
 
-class AckOnSecondTry extends Actor<AmqpDelivery> {
+class AcknowledgmentOnSecondTry extends Actor<AmqpDelivery> {
   readonly seen: AmqpDelivery[] = [];
   ackCount = 0;
   nackCount = 0;
@@ -36,27 +36,27 @@ class AckOnSecondTry extends Actor<AmqpDelivery> {
     this.seen.push(d);
     if (this.seen.length === 1) {
       // First delivery — nack with requeue so it comes back.
-      this.kafka?.tell({ kind: 'nack', delivery: d, requeue: true });
+      this.kafka?.tell({ kind: 'negativeAcknowledgment', delivery: d, requeue: true });
       this.nackCount++;
     } else {
       // Subsequent deliveries — ack.
-      this.kafka?.tell({ kind: 'ack', delivery: d });
+      this.kafka?.tell({ kind: 'acknowledgment', delivery: d });
       this.ackCount++;
     }
   }
 }
 
-export const scenario: BrokerScenario<AmqpCtx> = {
+export const scenario: BrokerScenario<AmqpContext> = {
   name: 'manual ack + nack-requeue triggers re-delivery',
-  async run(ctx) {
+  async run(context) {
     const tag = `b5-ack-${Date.now()}-${Math.random().toString(36).slice(2)}`;
     const queue = `${tag}-queue`;
-    await declareQueue(ctx.url, queue);
+    await declareQueue(context.url, queue);
 
-    const handler = new AckOnSecondTry();
-    const inboxRef = ctx.system.spawnAnonymous(Props.create(() => handler));
-    const amqp = spawnAmqp(ctx, {
-      autoAck: false,
+    const handler = new AcknowledgmentOnSecondTry();
+    const inboxRef = context.system.spawnAnonymous(Props.create(() => handler));
+    const amqp = spawnAmqp(context, {
+      autoAcknowledge: false,
       bindings: [{
         queue,
         target: inboxRef as never,

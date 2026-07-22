@@ -18,10 +18,10 @@ import { PersistentActor } from '../persistence/PersistentActor.js';
  *
  *   type State = 'pending' | 'paid' | 'shipped' | 'cancelled';
  *   type Event = { kind: 'paid' } | { kind: 'shipped' } | { kind: 'cancelled' };
- *   type Cmd   = { kind: 'pay' } | { kind: 'ship' } | { kind: 'cancel' };
+ *   type Command   = { kind: 'pay' } | { kind: 'ship' } | { kind: 'cancel' };
  *   interface Data { items: string[]; total: number }
  *
- *   class OrderFsm extends PersistentFSM<Cmd, Event, State, Data> {
+ *   class OrderFsm extends PersistentFSM<Command, Event, State, Data> {
  *     readonly persistenceId = 'order-1';
  *     initialFsmState() { return 'pending' as const; }
  *     initialData(): Data { return { items: [], total: 0 }; }
@@ -46,7 +46,7 @@ import { PersistentActor } from '../persistence/PersistentActor.js';
  *
  * **What the base class does for you.**
  *
- *   - On a command, looks up `transitions[currentFsmState][cmd.kind]`.
+ *   - On a command, looks up `transitions[currentFsmState][command.kind]`.
  *     If no entry: **invalid transition** — logged at warn, no event
  *     persisted, no state change.
  *   - If the entry has a `guard` and the guard returns false: same
@@ -92,7 +92,7 @@ export interface FsmStateData<S extends string, D> {
 /** One entry in the transition table. */
 export interface FsmTransition<
   SName extends string,
-  Cmd,
+  Command,
   Event,
   Data,
 > {
@@ -108,14 +108,14 @@ export interface FsmTransition<
    *     empty array is treated as a no-op transition (no events
    *     persisted, no state change) — use a `guard` instead if
    *     "skip on this condition" is the actual intent.
-   *   - **Function** — `(cmd, data) => Event | Event[]`: lazily
+   *   - **Function** — `(command, data) => Event | Event[]`: lazily
    *     evaluated when the transition fires; otherwise behaves
    *     exactly like the literal / array forms above.
    */
   readonly event:
     | Event
     | Event[]
-    | ((cmd: Cmd, data: Data) => Event | Event[]);
+    | ((command: Command, data: Data) => Event | Event[]);
   /**
    * State name the FSM moves to after every event applies.  When
    * `event` is an array, only the **final** post-replay state is
@@ -130,7 +130,7 @@ export interface FsmTransition<
    * conditional dispatch like "pay only if amount > 0".  Logged
    * at debug.
    */
-  readonly guard?: (cmd: Cmd, data: Data) => boolean;
+  readonly guard?: (command: Command, data: Data) => boolean;
 }
 
 /**
@@ -164,19 +164,19 @@ export interface FsmStateTimeout<SName extends string, Event, Data> {
 export const FSM_TIMEOUT_KEY = '_timeout' as const;
 
 /**
- * Transition table — `state` × `cmd.kind` → transition entry.  The
- * mapped type narrows `Cmd` to the matching variant inside each
+ * Transition table — `state` × `command.kind` → transition entry.  The
+ * mapped type narrows `Command` to the matching variant inside each
  * entry so the entry's callbacks see the right command shape.  An
  * optional `_timeout` field declares the per-state timeout (#65).
  */
 export type FsmTransitionMap<
   SName extends string,
-  Cmd extends { readonly kind: string },
+  Command extends { readonly kind: string },
   Event,
   Data,
 > = {
   readonly [state in SName]?: {
-    readonly [K in Cmd['kind']]?: FsmTransition<SName, Extract<Cmd, { kind: K }>, Event, Data>;
+    readonly [K in Command['kind']]?: FsmTransition<SName, Extract<Command, { kind: K }>, Event, Data>;
   } & {
     readonly _timeout?: FsmStateTimeout<SName, Event, Data>;
   };
@@ -199,11 +199,11 @@ interface FsmTimeoutFire<SName extends string> {
 /* ============================== base class ============================== */
 
 export abstract class PersistentFSM<
-  Cmd extends { readonly kind: string },
+  Command extends { readonly kind: string },
   Event,
   SName extends string,
   Data,
-> extends PersistentActor<Cmd, Event, FsmStateData<SName, Data>> {
+> extends PersistentActor<Command, Event, FsmStateData<SName, Data>> {
   /** Starting state name when no events have been replayed. */
   abstract initialFsmState(): SName;
 
@@ -222,18 +222,18 @@ export abstract class PersistentFSM<
   /**
    * Transition table.  Implementations typically declare it as a
    * class field so the type-narrowing in `FsmTransitionMap` works
-   * at the call site (`transitions[state][cmdKind]`).
+   * at the call site (`transitions[state][commandKind]`).
    */
-  abstract transitions: FsmTransitionMap<SName, Cmd, Event, Data>;
+  abstract transitions: FsmTransitionMap<SName, Command, Event, Data>;
 
   /**
    * Hook invoked when a command has no matching transition for the
    * current state.  Default: warn + drop (no event persisted).
    * Override to throw, send a reply, etc.
    */
-  protected onInvalidTransition(state: SName, cmd: Cmd): void | Promise<void> {
+  protected onInvalidTransition(state: SName, command: Command): void | Promise<void> {
     this.log.warn(
-      `PersistentFSM: no transition for cmd '${cmd.kind}' in state '${state}' — dropped`,
+      `PersistentFSM: no transition for command '${command.kind}' in state '${state}' — dropped`,
     );
   }
 
@@ -241,9 +241,9 @@ export abstract class PersistentFSM<
    * Hook invoked when a transition's `guard` returns false.  Default
    * is a debug log + drop.
    */
-  protected onGuardRejected(state: SName, cmd: Cmd): void | Promise<void> {
+  protected onGuardRejected(state: SName, command: Command): void | Promise<void> {
     this.log.debug(
-      `PersistentFSM: guard rejected cmd '${cmd.kind}' in state '${state}' — dropped`,
+      `PersistentFSM: guard rejected command '${command.kind}' in state '${state}' — dropped`,
     );
   }
 
@@ -288,7 +288,7 @@ export abstract class PersistentFSM<
    * delegate straight to `super.onReceive` (which handles recovery
    * stash + persist gating + dispatch to {@link onCommand}).
    */
-  override async onReceive(message: Cmd): Promise<void> {
+  override async onReceive(message: Command): Promise<void> {
     const tagged = message as unknown as FsmTimeoutFire<SName>;
     if (tagged.kind === '__fsm_state_timeout__') {
       await this.fireTimeoutTransition(tagged.stateAtArm);
@@ -297,27 +297,27 @@ export abstract class PersistentFSM<
     await super.onReceive(message);
   }
 
-  async onCommand(curr: FsmStateData<SName, Data>, cmd: Cmd): Promise<void> {
+  async onCommand(curr: FsmStateData<SName, Data>, command: Command): Promise<void> {
     const stateEntry = this.transitions[curr.state];
-    const transition = stateEntry?.[cmd.kind as Cmd['kind']] as
-      FsmTransition<SName, Cmd, Event, Data> | undefined;
+    const transition = stateEntry?.[command.kind as Command['kind']] as
+      FsmTransition<SName, Command, Event, Data> | undefined;
     if (!transition) {
-      await this.onInvalidTransition(curr.state, cmd);
+      await this.onInvalidTransition(curr.state, command);
       return;
     }
-    if (transition.guard && !transition.guard(cmd, curr.data)) {
-      await this.onGuardRejected(curr.state, cmd);
+    if (transition.guard && !transition.guard(command, curr.data)) {
+      await this.onGuardRejected(curr.state, command);
       return;
     }
     const evaluated = typeof transition.event === 'function'
-      ? (transition.event as (c: Cmd, d: Data) => Event | Event[])(cmd, curr.data)
+      ? (transition.event as (c: Command, d: Data) => Event | Event[])(command, curr.data)
       : transition.event;
     const events: Event[] = Array.isArray(evaluated) ? evaluated : [evaluated];
     if (events.length === 0) {
       // Empty array → no events to persist, no state change.  Treat
       // as a "guard returned false" outcome from the user's POV.
       this.log.debug(
-        `PersistentFSM: cmd '${cmd.kind}' in state '${curr.state}' produced an empty event array — dropped`,
+        `PersistentFSM: command '${command.kind}' in state '${curr.state}' produced an empty event array — dropped`,
       );
       return;
     }
@@ -331,7 +331,7 @@ export abstract class PersistentFSM<
       // not checked.
       if (next.state !== transition.next) {
         this.log.warn(
-          `PersistentFSM: applyEvent for cmd '${cmd.kind}' in state '${curr.state}' `
+          `PersistentFSM: applyEvent for command '${command.kind}' in state '${curr.state}' `
           + `produced state '${next.state}' but transition declared 'next: ${transition.next}'`,
         );
       }
@@ -355,7 +355,7 @@ export abstract class PersistentFSM<
     const timeout = this.transitions[state]?.[FSM_TIMEOUT_KEY];
     if (!timeout) return;
     const stateAtArm = state;
-    this._timeoutTimer = this.system.scheduler.scheduleOnceFn(
+    this._timeoutTimer = this.system.scheduler.scheduleOnceFunction(
       timeout.afterMs,
       () => {
         this._timeoutTimer = null;

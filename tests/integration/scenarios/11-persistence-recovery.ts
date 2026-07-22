@@ -30,30 +30,30 @@ const ID = 'integration-persistent-counter';
 interface StateResponse { readonly id: string; readonly count: number }
 
 async function inc(host: string, controlPort: number, id: string): Promise<void> {
-  const res = await fetch(`http://${host}:${controlPort}/test/persistence/inc?id=${encodeURIComponent(id)}`, {
+  const response = await fetch(`http://${host}:${controlPort}/test/persistence/inc?id=${encodeURIComponent(id)}`, {
     method: 'POST',
   });
-  if (!res.ok) throw new Error(`/test/persistence/inc on ${host} → ${res.status}: ${await res.text()}`);
+  if (!response.ok) throw new Error(`/test/persistence/inc on ${host} → ${response.status}: ${await response.text()}`);
 }
 
 async function getState(host: string, controlPort: number, id: string): Promise<number> {
-  const res = await fetch(`http://${host}:${controlPort}/test/persistence/state?id=${encodeURIComponent(id)}`);
-  if (!res.ok) throw new Error(`/test/persistence/state on ${host} → ${res.status}: ${await res.text()}`);
-  const body = await res.json() as StateResponse;
+  const response = await fetch(`http://${host}:${controlPort}/test/persistence/state?id=${encodeURIComponent(id)}`);
+  if (!response.ok) throw new Error(`/test/persistence/state on ${host} → ${response.status}: ${await response.text()}`);
+  const body = await response.json() as StateResponse;
   return body.count;
 }
 
 async function killCounter(host: string, controlPort: number, id: string): Promise<void> {
-  const res = await fetch(`http://${host}:${controlPort}/test/persistence/kill?id=${encodeURIComponent(id)}`, {
+  const response = await fetch(`http://${host}:${controlPort}/test/persistence/kill?id=${encodeURIComponent(id)}`, {
     method: 'POST',
   });
-  if (!res.ok) throw new Error(`/test/persistence/kill on ${host} → ${res.status}: ${await res.text()}`);
+  if (!response.ok) throw new Error(`/test/persistence/kill on ${host} → ${response.status}: ${await response.text()}`);
 }
 
 export const scenario: Scenario = {
   name: '11-persistence-recovery',
-  async run(ctx) {
-    const live = await clusterLiveNodes(ctx.nodes, ctx.controlPort);
+  async run(context) {
+    const live = await clusterLiveNodes(context.nodes, context.controlPort);
     if (live.length === 0) {
       console.log('[11] skipping — no live cluster nodes');
       return;
@@ -68,10 +68,10 @@ export const scenario: Scenario = {
 
     // 1. 5 increments → state = 5 (with snapshot at seq=3).
     console.log('[11] firing 5 increments...');
-    for (let i = 0; i < 5; i++) await inc(target, ctx.controlPort, ID);
+    for (let i = 0; i < 5; i++) await inc(target, context.controlPort, ID);
     // Brief settle so the persist() callbacks finish before we read.
     await sleep(200);
-    let count = await getState(target, ctx.controlPort, ID);
+    let count = await getState(target, context.controlPort, ID);
     if (count !== 5) {
       throw new Error(`[11] after 5 incs, expected count=5, got ${count}`);
     }
@@ -79,7 +79,7 @@ export const scenario: Scenario = {
 
     // 2. PoisonPill.  Instance stops; journal stays.
     console.log('[11] killing actor (PoisonPill)...');
-    await killCounter(target, ctx.controlPort, ID);
+    await killCounter(target, context.controlPort, ID);
     // Give the dispatcher a moment to fully terminate the cell.
     await sleep(200);
 
@@ -87,10 +87,10 @@ export const scenario: Scenario = {
     //    Expected: snapshot at seq=3 (state=3), replay events 4, 5
     //    (state=5), then process the new inc (state=6).
     console.log('[11] sending /inc — implicitly respawns the actor, expecting count to climb to 6...');
-    await inc(target, ctx.controlPort, ID);
+    await inc(target, context.controlPort, ID);
     await sleep(300);  // give recovery time
 
-    count = await getState(target, ctx.controlPort, ID);
+    count = await getState(target, context.controlPort, ID);
     if (count !== 6) {
       throw new Error(`[11] after respawn + 1 inc, expected count=6 (5 replayed + 1 new), got ${count}`);
     }
@@ -98,9 +98,9 @@ export const scenario: Scenario = {
 
     // 4. PoisonPill again — pure recovery (no new inc this time).
     console.log('[11] killing actor again, then /state (pure recovery, no new inc)...');
-    await killCounter(target, ctx.controlPort, ID);
+    await killCounter(target, context.controlPort, ID);
     await sleep(200);
-    count = await getState(target, ctx.controlPort, ID);
+    count = await getState(target, context.controlPort, ID);
     if (count !== 6) {
       throw new Error(`[11] after second respawn (no new inc), expected count=6, got ${count}`);
     }

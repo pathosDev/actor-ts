@@ -1,7 +1,7 @@
 /**
  * A live WebSocket connection, presented to the hub actor as an
  * `ActorRef<TOut>` (so `this.sender` / `this.reply` / `broadcast` all
- * work through the normal actor machinery).  `tell(msg)` encodes `msg`
+ * work through the normal actor machinery).  `tell(message)` encodes `message`
  * via the route codec and writes it to the socket — routed through the
  * connection's internal session actor so writes stay ordered.
  *
@@ -20,9 +20,9 @@ import type { WebsocketFrame, WebsocketUpgradeInfo } from './types.js';
  * from the connection module, not the other way round.
  */
 export type WebsocketOutboundCommand<TOut> =
-  | { readonly _cmd: 'out'; readonly msg: TOut }
-  | { readonly _cmd: 'out-raw'; readonly frame: WebsocketFrame }
-  | { readonly _cmd: 'close'; readonly code: number; readonly reason: string };
+  | { readonly kind: 'out'; readonly message: TOut }
+  | { readonly kind: 'out-raw'; readonly frame: WebsocketFrame }
+  | { readonly kind: 'close'; readonly code: number; readonly reason: string };
 
 export interface WebsocketConnection<TOut> extends ActorRef<TOut> {
   /** Stable id, unique within the process (e.g. `ws-7`). */
@@ -46,7 +46,7 @@ export class WebsocketConnectionImplementation<TOut> extends ActorRef<TOut> impl
     readonly id: string,
     readonly upgrade: WebsocketUpgradeInfo,
     private readonly socket: WebsocketSocketAdapter,
-    private readonly connRef: ActorRef<WebsocketOutboundCommand<TOut>>,
+    private readonly connectionRef: ActorRef<WebsocketOutboundCommand<TOut>>,
     systemName: string,
   ) {
     super();
@@ -61,15 +61,15 @@ export class WebsocketConnectionImplementation<TOut> extends ActorRef<TOut> impl
     return this.socket.readyState === WebsocketReadyState.OPEN;
   }
 
-  override tell(msg: TOut): void {
-    this.connRef.tell({ _cmd: 'out', msg });
+  override tell(message: TOut): void {
+    this.connectionRef.tell({ kind: 'out', message });
   }
 
   sendRaw(frame: WebsocketFrame): void {
-    this.connRef.tell({ _cmd: 'out-raw', frame });
+    this.connectionRef.tell({ kind: 'out-raw', frame });
   }
 
   close(code = 1000, reason = ''): void {
-    this.connRef.tell({ _cmd: 'close', code, reason });
+    this.connectionRef.tell({ kind: 'close', code, reason });
   }
 }

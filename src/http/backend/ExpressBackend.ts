@@ -129,8 +129,8 @@ export class ExpressBackend implements HttpServerBackend {
   private readonly registered: RouteRegistration[] = [];
   private readonly wsRegistered: WebsocketRouteRegistration[] = [];
   private wss: WebsocketServerLike | null = null;
-  private notFoundHandler: ((req: HttpRequest) => Promise<HttpResponse> | HttpResponse) | null = null;
-  private errorHandler: ((err: unknown, req: HttpRequest) => Promise<HttpResponse> | HttpResponse) | null = null;
+  private notFoundHandler: ((request: HttpRequest) => Promise<HttpResponse> | HttpResponse) | null = null;
+  private errorHandler: ((err: unknown, request: HttpRequest) => Promise<HttpResponse> | HttpResponse) | null = null;
 
   constructor(options: ExpressBackendOptions = {}) {
     const resolvedOptions = (options as ExpressBackendOptionsType);
@@ -157,11 +157,11 @@ export class ExpressBackend implements HttpServerBackend {
     this.wsRegistered.push(reg);
   }
 
-  setNotFound(handler: (req: HttpRequest) => Promise<HttpResponse> | HttpResponse): void {
+  setNotFound(handler: (request: HttpRequest) => Promise<HttpResponse> | HttpResponse): void {
     this.notFoundHandler = handler;
   }
 
-  setErrorHandler(handler: (err: unknown, req: HttpRequest) => Promise<HttpResponse> | HttpResponse): void {
+  setErrorHandler(handler: (err: unknown, request: HttpRequest) => Promise<HttpResponse> | HttpResponse): void {
     this.errorHandler = handler;
   }
 
@@ -316,10 +316,10 @@ export class ExpressBackend implements HttpServerBackend {
     const handler: ExpressHandler = async (req, res, next) => {
       try {
         const adapted = this.adaptRequest(req);
-        const finalReq = wildcard
+        const finalRequest = wildcard
           ? { ...adapted, params: { ...adapted.params, '*': (req.params as Record<string, string>)['0'] ?? '' } }
           : adapted;
-        const out = await route.handler(finalReq);
+        const out = await route.handler(finalRequest);
         this.writeResponse(res, out);
       } catch (err) { next(err); }
     };
@@ -352,14 +352,14 @@ export class ExpressBackend implements HttpServerBackend {
         let total = 0;
         const readable = req as unknown as NodeJS.ReadableStream;
         for await (const chunk of readable) {
-          const buf = chunk as Buffer;
-          total += buf.length;
+          const buffer = chunk as Buffer;
+          total += buffer.length;
           if (total > cap) {
             res.status(413).setHeader('content-type', 'text/plain; charset=utf-8');
             res.end('Payload Too Large');
             return;
           }
-          chunks.push(buf);
+          chunks.push(buffer);
         }
         const merged = Buffer.concat(chunks, total);
         req.rawBody = new Uint8Array(merged.buffer, merged.byteOffset, merged.byteLength);

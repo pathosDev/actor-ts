@@ -7,9 +7,9 @@
  */
 import { Actor, ActorSystem, Props } from '../../src/index.js';
 
-type Msg = 'heartbeat' | 'shutdown';
+type Message = 'heartbeat' | 'shutdown';
 
-class Monitor extends Actor<Msg> {
+class Monitor extends Actor<Message> {
   private count = 0;
 
   override preStart(): void {
@@ -17,7 +17,7 @@ class Monitor extends Actor<Msg> {
     this.context.timers.startSingleTimer('exit', 'shutdown', 300);
   }
 
-  override onReceive(m: Msg): void {
+  override onReceive(m: Message): void {
     if (m === 'heartbeat') {
       this.count++;
       this.log.info(`heartbeat #${this.count} (active timers: ${this.context.timers.activeKeys().join(', ')})`);

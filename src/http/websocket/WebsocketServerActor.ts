@@ -8,8 +8,8 @@
  *     type Out = { kind: 'pong'; n: number };
  *
  *     class PingServer extends WebsocketServerActor<Out, In> {
- *       onMessage(msg: In): void {
- *         this.reply({ kind: 'pong', n: msg.n });   // → the sending connection
+ *       onMessage(message: In): void {
+ *         this.reply({ kind: 'pong', n: message.n });   // → the sending connection
  *       }
  *     }
  *
@@ -46,7 +46,7 @@ export abstract class WebsocketServerActor<TOut, TIn, TSelf = never>
   /* ----------------------- user overrides ------------------------ */
 
   /** Handle one decoded client message.  `this.connection` / `this.sender` = the sender. */
-  abstract onMessage(msg: TIn): void | Promise<void>;
+  abstract onMessage(message: TIn): void | Promise<void>;
 
   /** A client completed the upgrade.  Ordered before its first `onMessage`. */
   protected onClientConnected(_client: WebsocketConnection<TOut>): void | Promise<void> {}
@@ -58,8 +58,8 @@ export abstract class WebsocketServerActor<TOut, TIn, TSelf = never>
   protected onInvalidMessage(_client: WebsocketConnection<TOut>, _error: WebsocketDecodeError): void | Promise<void> {}
 
   /** App-level message told to this hub's ref (reachable only when `TSelf` ≠ `never`). */
-  protected onSelfMessage(msg: TSelf): void | Promise<void> {
-    this.log.warn(`WebsocketServerActor: unhandled self message: ${String(msg)}`);
+  protected onSelfMessage(message: TSelf): void | Promise<void> {
+    this.log.warn(`WebsocketServerActor: unhandled self message: ${String(message)}`);
   }
 
   /* ----------------------- helpers ------------------------------- */
@@ -72,15 +72,15 @@ export abstract class WebsocketServerActor<TOut, TIn, TSelf = never>
     return this._current;
   }
 
-  /** Reply to the current connection.  Sugar for `this.connection.tell(msg)`. */
-  protected reply(msg: TOut): void {
-    this.connection.tell(msg);
+  /** Reply to the current connection.  Sugar for `this.connection.tell(message)`. */
+  protected reply(message: TOut): void {
+    this.connection.tell(message);
   }
 
   /** Send to every open connection (optionally filtered). */
-  protected broadcast(msg: TOut, filter?: (c: WebsocketConnection<TOut>) => boolean): void {
+  protected broadcast(message: TOut, filter?: (c: WebsocketConnection<TOut>) => boolean): void {
     for (const client of this._clients.values()) {
-      if (client.isOpen && (!filter || filter(client))) client.tell(msg);
+      if (client.isOpen && (!filter || filter(client))) client.tell(message);
     }
   }
 
@@ -107,18 +107,18 @@ export abstract class WebsocketServerActor<TOut, TIn, TSelf = never>
   }
 
   /** @internal Sealed — do not override; override `onMessage` + hooks instead. */
-  override async onReceive(msg: WebsocketServerMessage<TOut, TIn, TSelf>): Promise<void> {
+  override async onReceive(message: WebsocketServerMessage<TOut, TIn, TSelf>): Promise<void> {
     // Uniform `kind` dispatch over the accept command + lifecycle signals.
-    switch ((msg as { readonly kind?: unknown }).kind) {
+    switch ((message as { readonly kind?: unknown }).kind) {
       case 'websocket-accept': {
         // Spawn the per-connection actor as THIS actor's child, so the
         // tree is server → conn-N and supervision/teardown are automatic.
-        const command = msg as WebsocketAcceptCommand;
+        const command = message as WebsocketAcceptCommand;
         this.context.spawn(command.props, command.name);
         return;
       }
       case 'websocket-connected': {
-        const signal = msg as WebsocketConnectedSignal<TOut>;
+        const signal = message as WebsocketConnectedSignal<TOut>;
         this._clients.set(signal.connection.id, signal.connection);
         this._current = signal.connection;
         try {
@@ -129,7 +129,7 @@ export abstract class WebsocketServerActor<TOut, TIn, TSelf = never>
         return;
       }
       case 'websocket-data': {
-        const signal = msg as WebsocketDataSignal<TOut, TIn>;
+        const signal = message as WebsocketDataSignal<TOut, TIn>;
         this._current = signal.connection;
         try {
           await this.onMessage(signal.message);
@@ -139,7 +139,7 @@ export abstract class WebsocketServerActor<TOut, TIn, TSelf = never>
         return;
       }
       case 'websocket-disconnected': {
-        const signal = msg as WebsocketDisconnectedSignal<TOut>;
+        const signal = message as WebsocketDisconnectedSignal<TOut>;
         this._current = signal.connection;
         try {
           await this.onClientDisconnected(signal.connection, signal.info);
@@ -150,7 +150,7 @@ export abstract class WebsocketServerActor<TOut, TIn, TSelf = never>
         return;
       }
       case 'websocket-invalid': {
-        const signal = msg as WebsocketInvalidSignal<TOut>;
+        const signal = message as WebsocketInvalidSignal<TOut>;
         this._current = signal.connection;
         try {
           await this.onInvalidMessage(signal.connection, signal.error);
@@ -160,7 +160,7 @@ export abstract class WebsocketServerActor<TOut, TIn, TSelf = never>
         return;
       }
       default:
-        await this.onSelfMessage(msg as TSelf);
+        await this.onSelfMessage(message as TSelf);
     }
   }
 }

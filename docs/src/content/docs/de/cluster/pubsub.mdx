@@ -43,8 +43,8 @@ class ChatMessage {
 }
 
 class ChatRoom extends Actor<ChatMessage> {
-  override onReceive(msg: ChatMessage): void {
-    this.log.info(`[chat] ${msg.user}: ${msg.text}`);
+  override onReceive(message: ChatMessage): void {
+    this.log.info(`[chat] ${message.user}: ${message.text}`);
   }
 }
 
@@ -98,7 +98,7 @@ interpretiert die Segmente nicht — es ist nur String-Matching.
 
 ## Wie der Fan-out funktioniert
 
-Bei `Publish(topic, msg)`:
+Bei `Publish(topic, message)`:
 
 1. Der lokale Mediator schlägt das Topic in seiner `Map<topic,
    { local, remoteNodes }>` nach.
@@ -176,7 +176,7 @@ import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="Single-Empfänger-Routing">
   ```ts
-  ps.mediator.tell(new Publish('one-receiver', msg));
+  ps.mediator.tell(new Publish('one-receiver', message));
   ```
   Wenn du weißt, dass es genau einen Subscriber gibt, halte
   einfach dessen Ref und mache `tell` direkt. PubSub fügt einen
@@ -210,7 +210,7 @@ import { Aside } from '@astrojs/starlight/components';
 <Aside type="caution" title="Gossip-Verzögerung lässt Subscriber frühe Nachrichten verpassen">
   ```ts
   ps.mediator.tell(new Subscribe('topic', sub));
-  ps.mediator.tell(new Publish('topic', msg));   // ↑ selber Node — sub bekommt es
+  ps.mediator.tell(new Publish('topic', message));   // ↑ selber Node — sub bekommt es
   // Aber: ein Publish auf einem ANDEREN Node direkt nach Subscribe verpasst `sub`
   ```
   Die Subscription muss erst zum Mediator des Publishers

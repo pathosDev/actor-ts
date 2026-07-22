@@ -112,12 +112,12 @@ export interface OtelLoggerAdapterOptions {
  * actor's path on `source`, the merged MDC on `attributes`, and the
  * active span's traceId/spanId automatically linked.
  */
-export function otelLogger(opts: OtelLoggerAdapterOptions): FrameworkLogger {
-  const provider = opts.api.logs.getLoggerProvider();
-  const otelLog = opts.logger
-    ?? provider.getLogger(opts.loggerName ?? 'actor-ts', opts.loggerVersion);
-  const level = opts.level ?? LogLevel.Info;
-  return new OtelLoggerImplementation(otelLog, opts.api.SeverityNumber, level, '', {});
+export function otelLogger(options: OtelLoggerAdapterOptions): FrameworkLogger {
+  const provider = options.api.logs.getLoggerProvider();
+  const otelLog = options.logger
+    ?? provider.getLogger(options.loggerName ?? 'actor-ts', options.loggerVersion);
+  const level = options.level ?? LogLevel.Info;
+  return new OtelLoggerImplementation(otelLog, options.api.SeverityNumber, level, '', {});
 }
 
 /* ------------------------------- internals ------------------------------ */
@@ -173,7 +173,7 @@ class OtelLoggerImplementation implements FrameworkLogger {
     return attrs;
   }
 
-  private emit(level: LogLevel, msg: string, args: unknown[]): void {
+  private emit(level: LogLevel, message: string, args: unknown[]): void {
     if (!this.enabled(level)) return;
     const severity = this.severityFor(level);
     // OTel SDKs accept either ms or nanos for `timestamp`; we pass ms
@@ -182,15 +182,15 @@ class OtelLoggerImplementation implements FrameworkLogger {
       timestamp: Date.now(),
       severityNumber: severity.number,
       severityText: severity.text,
-      body: msg,
+      body: message,
       attributes: this.buildAttributes(args),
     });
   }
 
-  debug(msg: string, ...args: unknown[]): void { this.emit(LogLevel.Debug, msg, args); }
-  info(msg: string, ...args: unknown[]): void { this.emit(LogLevel.Info, msg, args); }
-  warn(msg: string, ...args: unknown[]): void { this.emit(LogLevel.Warn, msg, args); }
-  error(msg: string, ...args: unknown[]): void { this.emit(LogLevel.Error, msg, args); }
+  debug(message: string, ...args: unknown[]): void { this.emit(LogLevel.Debug, message, args); }
+  info(message: string, ...args: unknown[]): void { this.emit(LogLevel.Info, message, args); }
+  warn(message: string, ...args: unknown[]): void { this.emit(LogLevel.Warn, message, args); }
+  error(message: string, ...args: unknown[]): void { this.emit(LogLevel.Error, message, args); }
 
   withSource(source: string): FrameworkLogger {
     return new OtelLoggerImplementation(this.otel, this.severityNumber, this.level, source, this.staticFields);

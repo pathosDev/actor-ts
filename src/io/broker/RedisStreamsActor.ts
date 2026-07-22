@@ -23,7 +23,7 @@ export interface RedisStreamPublish {
 
 export type RedisStreamsCommand =
   | { readonly kind: 'publish'; readonly publish: RedisStreamPublish }
-  | { readonly kind: 'ack'; readonly stream: string; readonly id: string };
+  | { readonly kind: 'acknowledgment'; readonly stream: string; readonly id: string };
 
 /**
  * Redis-Streams actor.  Wraps `ioredis` (already a peer-dep used by
@@ -31,7 +31,7 @@ export type RedisStreamsCommand =
  *
  * Consumer mode uses `XREADGROUP` with a stable consumer name; entries
  * are delivered to `target` and are NOT auto-acked — the caller must
- * `tell({ kind: 'ack', stream, id })` after processing for at-least-
+ * `tell({ kind: 'acknowledgment', stream, id })` after processing for at-least-
  * once semantics with crash-recovery.  For at-most-once, ack
  * immediately on delivery.
  */
@@ -109,12 +109,12 @@ export class RedisStreamsActor
     await this.redisProducer.xadd(...args);
   }
 
-  override onReceive(cmd: RedisStreamsCommand): void {
-    if (cmd.kind === 'publish') {
-      this.enqueueOutbound(cmd.publish);
-    } else if (cmd.kind === 'ack') {
+  override onReceive(command: RedisStreamsCommand): void {
+    if (command.kind === 'publish') {
+      this.enqueueOutbound(command.publish);
+    } else if (command.kind === 'acknowledgment') {
       if (this.redis && this.options.consumerGroup) {
-        void this.redis.xack(cmd.stream, this.options.consumerGroup.group, cmd.id)
+        void this.redis.xack(command.stream, this.options.consumerGroup.group, command.id)
           .catch((e: Error) => this.log.warn(`xack failed: ${e.message}`));
       }
     }

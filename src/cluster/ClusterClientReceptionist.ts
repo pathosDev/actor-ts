@@ -97,8 +97,8 @@ export class ClusterClientReceptionist implements Extension {
     const askTimeoutMs = resolvedOptions.askTimeoutMs ?? DEFAULT_ASK_TIMEOUT_MS;
     const log = this.system.log.withSource(`cluster-client-receptionist@${cluster.selfAddress}`);
 
-    this._unsubscribe = cluster._onWire('cluster-client-envelope', (msg) => {
-      const env = msg as unknown as ClusterClientEnvelopeMessage;
+    this._unsubscribe = cluster._onWire('cluster-client-envelope', (message) => {
+      const env = message as unknown as ClusterClientEnvelopeMessage;
       const from = NodeAddress.fromJSON(env.from);
 
       // Resolve the target locally.  We use the synchronous `_resolvePath`

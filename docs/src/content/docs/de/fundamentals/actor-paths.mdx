@@ -121,11 +121,11 @@ nützlich, wenn der Aufrufer mit dem Spawn des Actors race-t.
 
 Zwei Wege, einer Selection etwas zu senden:
 
-- **`selection.tell(msg)`** — einmal auflösen, sofort liefern, wenn
+- **`selection.tell(message)`** — einmal auflösen, sofort liefern, wenn
   gefunden, in Dead Letters legen, wenn nicht.  Kein Retry.  Nützlich,
   wenn du eine klare Erwartung hast, dass der Actor existiert; ihn zu
   verfehlen ist ein Fehler.
-- **`(await selection.resolveOne(timeout)).tell(msg)`** — warte, bis
+- **`(await selection.resolveOne(timeout)).tell(message)`** — warte, bis
   der Actor existiert (oder bis zum Timeout).  Nützlich für
   Spawn-Race-Szenarien.
 
@@ -186,7 +186,7 @@ weiterzureichen**:
 ```ts
 // ✗ umständlich
 class Worker extends Actor<...> {
-  override onReceive(msg) {
+  override onReceive(message) {
     const cache = await this.context.actorSelection('/user/cache').resolveOne();
     cache.tell({ kind: 'put', ... });
   }
@@ -195,7 +195,7 @@ class Worker extends Actor<...> {
 // ✓ direkt
 class Worker extends Actor<...> {
   constructor(private readonly cache: ActorRef<CacheMessage>) { super(); }
-  override onReceive(msg) {
+  override onReceive(message) {
     this.cache.tell({ kind: 'put', ... });
   }
 }

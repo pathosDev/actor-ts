@@ -108,10 +108,10 @@ export class MultiNodeSpec {
 
     // Step 1: build the address book up front so seeds can name peers.
     const addressByRole = new Map<string, NodeAddress>();
-    this.options.roles.forEach((role, idx) => {
+    this.options.roles.forEach((role, index) => {
       const explicit = this.options.addresses?.[role];
       const host = explicit?.host ?? '127.0.0.1';
-      const port = explicit?.port ?? (portBase + idx);
+      const port = explicit?.port ?? (portBase + index);
       addressByRole.set(role, new NodeAddress(role, host, port));
     });
 
@@ -337,16 +337,16 @@ export class MultiNodeSpec {
   async enterBarrier(
     name: string,
     role: string,
-    opts: { readonly participants?: ReadonlyArray<string>; readonly timeoutMs?: number } = {},
+    options: { readonly participants?: ReadonlyArray<string>; readonly timeoutMs?: number } = {},
   ): Promise<void> {
-    const participants = opts.participants ?? this.options.roles;
+    const participants = options.participants ?? this.options.roles;
     if (!participants.includes(role)) {
       throw new Error(
         `MultiNodeSpec.enterBarrier: role '${role}' is not in the participants list ` +
         `[${participants.join(', ')}]`,
       );
     }
-    const timeoutMs = opts.timeoutMs ?? this.options.awaitTimeoutMs;
+    const timeoutMs = options.timeoutMs ?? this.options.awaitTimeoutMs;
     const expectedRoles = participants.length;
     const key = `${name}::${participants.slice().sort().join(',')}`;
     const existing = this.barriers.get(key);

@@ -30,7 +30,7 @@
  *
  * Self-filter: `voice.group.<g>` and `voice.room.<r>` topics fan out
  * to **every** subscriber including the publisher; receivers drop
- * their own frames in `onBinaryInbound`.
+ * their own frames in `onBinaryFrame`.
  *
  * On disconnect: deregister from Receptionist, unsubscribe every
  * pubsub topic, remove from every DD-ORSet (online + every joined
@@ -67,7 +67,12 @@ import {
   encodeServer,
   type ClientMessage,
   type IncomingSource,
+  type RoomEnterMessage,
+  type RoomLeaveMessage,
   type ServerMessage,
+  type VoiceTargetGroupMessage,
+  type VoiceTargetPeerMessage,
+  type VoiceTargetRoomMessage,
 } from '../../shared/protocol.js';
 import { encodeIncoming } from '../../shared/frameCodec.js';
 import { validateCredentials } from '../auth/credentials.js';
@@ -96,23 +101,31 @@ export function userServiceKey(username: string): ServiceKey<BinaryFrame | Binar
 /* ----------------------------- mailbox shape ----------------------------- */
 
 /** Audio chunk routed peer-to-peer or via PubSub topic. */
-export interface BinaryFrame {
+export type BinaryFrame = {
   readonly kind: 'BinaryFrame';
   readonly senderUsername: string;
   readonly opusChunk: Uint8Array;
-}
+};
 
 /** Synthetic "this sender's press is over" marker sent on voice-stop. */
-export interface BinaryStreamEnd {
+export type BinaryStreamEnd = {
   readonly kind: 'BinaryStreamEnd';
   readonly senderUsername: string;
-}
+};
 
-export type InboundFrame =
-  | { readonly kind: 'text';   readonly data: string }
-  | { readonly kind: 'binary'; readonly data: Uint8Array };
+export type TextInboundFrame = {
+  readonly kind: 'text';
+  readonly data: string;
+};
 
-export interface SocketClosed { readonly kind: 'socket-closed' }
+export type BinaryInboundFrame = {
+  readonly kind: 'binary';
+  readonly data: Uint8Array;
+};
+
+export type InboundFrame = TextInboundFrame | BinaryInboundFrame;
+
+export type SocketClosed = { readonly kind: 'socket-closed' };
 
 /**
  * The outbound surface this actor needs — text (JSON control frames)
@@ -145,25 +158,31 @@ export interface VoiceSessionDeps {
 
 type Phase = 'Unauthenticated' | 'Authenticated';
 
-type CurrentTarget =
-  | { readonly kind: 'idle' }
-  | {
-      readonly kind: 'peer';
-      readonly targetUsername: string;
-      cachedRefs: ReadonlyArray<ActorRef<BinaryFrame | BinaryStreamEnd>>;
-      /** True while we're awaiting a Listing for the press. */
-      pendingFind: boolean;
-    }
-  | {
-      readonly kind: 'group';
-      readonly groupName: GroupName;
-      readonly topic: string;
-    }
-  | {
-      readonly kind: 'room';
-      readonly roomName: VoiceRoomName;
-      readonly topic: string;
-    };
+type IdleTarget = {
+  readonly kind: 'idle';
+};
+
+type PeerTarget = {
+  readonly kind: 'peer';
+  readonly targetUsername: string;
+  cachedRefs: ReadonlyArray<ActorRef<BinaryFrame | BinaryStreamEnd>>;
+  /** True while we're awaiting a Listing for the press. */
+  pendingFind: boolean;
+};
+
+type GroupTarget = {
+  readonly kind: 'group';
+  readonly groupName: GroupName;
+  readonly topic: string;
+};
+
+type RoomTarget = {
+  readonly kind: 'room';
+  readonly roomName: VoiceRoomName;
+  readonly topic: string;
+};
+
+type CurrentTarget = IdleTarget | PeerTarget | GroupTarget | RoomTarget;
 
 /* ------------------------------- actor ---------------------------------- */
 
@@ -227,42 +246,51 @@ export class VoiceSessionActor extends Actor<SessionMessage> {
 
   /* ------------------------------- mailbox -------------------------------- */
 
-  override onReceive(msg: SessionMessage): void {
-    if (msg instanceof Listing) {
-      this.onReceptionistListing(msg);
+  override onReceive(message: SessionMessage): void {
+    if (message instanceof Listing) {
+      this.onReceptionistListing(message);
       return;
     }
-    match(msg)
-      .with({ kind: 'text' },             (m) => this.onClientText(m.data))
-      .with({ kind: 'binary' },           (m) => this.onClientBinary(m.data))
-      .with({ kind: 'socket-closed' },    () => this.context.stopSelf())
-      .with({ kind: 'BinaryFrame' },      (m) => this.onBinaryInbound(m))
-      .with({ kind: 'BinaryStreamEnd' },  (m) => this.onStreamEndInbound(m))
+    match(message)
+      .with({ kind: 'text' },             (m) => this.onText(m))
+      .with({ kind: 'binary' },           (m) => this.onBinary(m))
+      .with({ kind: 'socket-closed' },    () => this.onSocketClosed())
+      .with({ kind: 'BinaryFrame' },      (m) => this.onBinaryFrame(m))
+      .with({ kind: 'BinaryStreamEnd' },  (m) => this.onBinaryStreamEnd(m))
       .with({ kind: 'PresenceChanged' },  (m) => this.onPresenceChanged(m))
-      .with(P.instanceOf(Listing),        () => { /* handled above */ })
+      .with(P.instanceOf(Listing),        () => this.onListing())
       .exhaustive();
+  }
+
+  private onSocketClosed(): void {
+    this.context.stopSelf();
+  }
+
+  private onListing(): void {
+    /* handled above — dispatched via the `instanceof Listing` early return */
   }
 
   /* ----------------------------- text inbound ----------------------------- */
 
-  private onClientText(raw: string): void {
-    const cmd = decodeClient(raw);
-    if (!cmd) {
-      this.sendServer({ type: 'system', text: 'Invalid frame — JSON expected.' });
+  private onText(m: TextInboundFrame): void {
+    const raw = m.data;
+    const command = decodeClient(raw);
+    if (!command) {
+      this.sendServer({ kind: 'system', text: 'Invalid frame — JSON expected.' });
       return;
     }
     if (this.phase === 'Unauthenticated') {
-      this.handleUnauthenticated(cmd);
+      this.handleUnauthenticated(command);
       return;
     }
-    this.handleAuthenticated(cmd);
+    this.handleAuthenticated(command);
   }
 
-  private handleUnauthenticated(cmd: ClientMessage): void {
-    if (cmd.type === 'login') {
-      const user = validateCredentials(cmd.username, cmd.password);
+  private handleUnauthenticated(command: ClientMessage): void {
+    if (command.kind === 'login') {
+      const user = validateCredentials(command.username, command.password);
       if (!user) {
-        this.sendServer({ type: 'login-failed', reason: 'Invalid username or password' });
+        this.sendServer({ kind: 'login-failed', reason: 'Invalid username or password' });
         this.context.stopSelf();
         return;
       }
@@ -270,16 +298,16 @@ export class VoiceSessionActor extends Actor<SessionMessage> {
       this.activate(user.username, token);
       return;
     }
-    if (cmd.type === 'resume') {
-      const username = this.deps.sessions.lookupToken(cmd.token);
+    if (command.kind === 'resume') {
+      const username = this.deps.sessions.lookupToken(command.token);
       if (!username) {
-        this.sendServer({ type: 'login-failed', reason: 'Session expired' });
+        this.sendServer({ kind: 'login-failed', reason: 'Session expired' });
         return;
       }
-      this.activate(username, cmd.token);
+      this.activate(username, command.token);
       return;
     }
-    this.sendServer({ type: 'login-failed', reason: 'Login required as first frame' });
+    this.sendServer({ kind: 'login-failed', reason: 'Login required as first frame' });
     this.context.stopSelf();
   }
 
@@ -295,14 +323,14 @@ export class VoiceSessionActor extends Actor<SessionMessage> {
     this.username = username;
     this.token = token;
 
-    this.sendServer({ type: 'logged-in', username, token });
+    this.sendServer({ kind: 'logged-in', username, token });
 
     // Directory snapshot.
     const groups = GROUP_NAMES.map((name) => ({
       name, members: [...GROUPS[name]],
     }));
     this.sendServer({
-      type: 'directory',
+      kind: 'directory',
       users: TEST_USERS.map((u) => u.username),
       groups,
       rooms: [...VOICE_ROOMS],
@@ -334,33 +362,48 @@ export class VoiceSessionActor extends Actor<SessionMessage> {
     });
   }
 
-  private handleAuthenticated(cmd: ClientMessage): void {
-    match(cmd)
-      .with({ type: 'login' },  () => { /* already authed */ })
-      .with({ type: 'resume' }, () => { /* already authed */ })
-      .with({ type: 'logout' }, () => {
-        if (this.token) this.deps.sessions.revokeToken(this.token);
-        this.token = null;
-        this.context.stopSelf();
-      })
-      .with({ type: 'ping' }, () => { /* keepalive */ })
-      .with({ type: 'voice-target', mode: 'peer'  }, (m) => this.targetPeer(m.target))
-      .with({ type: 'voice-target', mode: 'group' }, (m) => this.targetGroup(m.group))
-      .with({ type: 'voice-target', mode: 'room'  }, (m) => this.targetRoom(m.room))
-      .with({ type: 'voice-stop' },                  ()  => this.stopCurrentTarget())
-      .with({ type: 'room-enter' }, (m) => this.enterRoom(m.room))
-      .with({ type: 'room-leave' }, (m) => this.leaveRoom(m.room))
+  private handleAuthenticated(command: ClientMessage): void {
+    match(command)
+      .with({ kind: 'login' },  () => this.onLogin())
+      .with({ kind: 'resume' }, () => this.onResume())
+      .with({ kind: 'logout' }, () => this.onLogout())
+      .with({ kind: 'ping' }, () => this.onPing())
+      .with({ kind: 'voice-target', mode: 'peer'  }, (m) => this.onVoiceTargetPeer(m))
+      .with({ kind: 'voice-target', mode: 'group' }, (m) => this.onVoiceTargetGroup(m))
+      .with({ kind: 'voice-target', mode: 'room'  }, (m) => this.onVoiceTargetRoom(m))
+      .with({ kind: 'voice-stop' },                  ()  => this.onVoiceStop())
+      .with({ kind: 'room-enter' }, (m) => this.onRoomEnter(m))
+      .with({ kind: 'room-leave' }, (m) => this.onRoomLeave(m))
       .exhaustive();
+  }
+
+  private onLogin(): void {
+    /* already authed */
+  }
+
+  private onResume(): void {
+    /* already authed */
+  }
+
+  private onLogout(): void {
+    if (this.token) this.deps.sessions.revokeToken(this.token);
+    this.token = null;
+    this.context.stopSelf();
+  }
+
+  private onPing(): void {
+    /* keepalive */
   }
 
   /* --------------------------- voice-target paths ------------------------ */
 
-  private targetPeer(target: string): void {
+  private onVoiceTargetPeer(m: VoiceTargetPeerMessage): void {
+    const target = m.target;
     // Reset any previous press.
     if (this.currentTarget.kind !== 'idle') this.stopCurrentTarget();
     if (target === this.username) {
       this.sendServer({
-        type: 'voice-target-failed', mode: 'peer', key: target,
+        kind: 'voice-target-failed', mode: 'peer', key: target,
         reason: 'cannot voice-target self',
       });
       return;
@@ -374,30 +417,36 @@ export class VoiceSessionActor extends Actor<SessionMessage> {
     );
   }
 
-  private targetGroup(group: GroupName): void {
+  private onVoiceTargetGroup(m: VoiceTargetGroupMessage): void {
+    const group = m.group;
     if (this.currentTarget.kind !== 'idle') this.stopCurrentTarget();
     if (!isGroupName(group)) {
       this.sendServer({
-        type: 'voice-target-failed', mode: 'group', key: group,
+        kind: 'voice-target-failed', mode: 'group', key: group,
         reason: 'unknown group',
       });
       return;
     }
     this.currentTarget = { kind: 'group', groupName: group, topic: groupTopic(group) };
-    this.sendServer({ type: 'voice-target-ok', mode: 'group', key: group });
+    this.sendServer({ kind: 'voice-target-ok', mode: 'group', key: group });
   }
 
-  private targetRoom(room: VoiceRoomName): void {
+  private onVoiceTargetRoom(m: VoiceTargetRoomMessage): void {
+    const room = m.room;
     if (this.currentTarget.kind !== 'idle') this.stopCurrentTarget();
     if (!isVoiceRoomName(room) || !this.joinedRooms.has(room)) {
       this.sendServer({
-        type: 'voice-target-failed', mode: 'room', key: room,
+        kind: 'voice-target-failed', mode: 'room', key: room,
         reason: 'enter the room first',
       });
       return;
     }
     this.currentTarget = { kind: 'room', roomName: room, topic: roomTopic(room) };
-    this.sendServer({ type: 'voice-target-ok', mode: 'room', key: room });
+    this.sendServer({ kind: 'voice-target-ok', mode: 'room', key: room });
+  }
+
+  private onVoiceStop(): void {
+    this.stopCurrentTarget();
   }
 
   /**
@@ -411,47 +460,66 @@ export class VoiceSessionActor extends Actor<SessionMessage> {
     if (this.currentTarget.kind === 'idle') return;
     const marker: BinaryStreamEnd = { kind: 'BinaryStreamEnd', senderUsername: this.username! };
     match(this.currentTarget)
-      .with({ kind: 'peer' }, (t) => {
-        for (const ref of t.cachedRefs) ref.tell(marker);
-      })
-      .with({ kind: 'group' }, (t) => {
-        this.deps.mediator.tell(new Publish(t.topic, marker));
-      })
-      .with({ kind: 'room' }, (t) => {
-        this.deps.mediator.tell(new Publish(t.topic, marker));
-      })
-      .with({ kind: 'idle' }, () => { /* unreachable */ })
+      .with({ kind: 'peer' },  (t) => this.sendEndMarkerToPeer(t, marker))
+      .with({ kind: 'group' }, (t) => this.sendEndMarkerToGroup(t, marker))
+      .with({ kind: 'room' },  (t) => this.sendEndMarkerToRoom(t, marker))
+      .with({ kind: 'idle' },  () => { /* unreachable */ })
       .exhaustive();
     this.currentTarget = { kind: 'idle' };
   }
 
+  /** Direct-tell the end marker to every cached ref of the peer press. */
+  private sendEndMarkerToPeer(t: PeerTarget, marker: BinaryStreamEnd): void {
+    for (const ref of t.cachedRefs) ref.tell(marker);
+  }
+
+  /** Publish the end marker onto the targeted group's topic. */
+  private sendEndMarkerToGroup(t: GroupTarget, marker: BinaryStreamEnd): void {
+    this.deps.mediator.tell(new Publish(t.topic, marker));
+  }
+
+  /** Publish the end marker onto the targeted room's topic. */
+  private sendEndMarkerToRoom(t: RoomTarget, marker: BinaryStreamEnd): void {
+    this.deps.mediator.tell(new Publish(t.topic, marker));
+  }
+
   /* ------------------------- binary inbound (own audio) ------------------ */
 
-  private onClientBinary(opusChunk: Uint8Array): void {
+  private onBinary(m: BinaryInboundFrame): void {
+    const opusChunk = m.data;
     if (this.currentTarget.kind === 'idle' || !this.username) return;
     const frame: BinaryFrame = {
       kind: 'BinaryFrame', senderUsername: this.username, opusChunk,
     };
     match(this.currentTarget)
-      .with({ kind: 'peer' }, (t) => {
-        // Drop frames during the brief Find round-trip; press is short
-        // anyway and the next chunk arrives in ~100 ms.
-        if (t.pendingFind) return;
-        for (const ref of t.cachedRefs) ref.tell(frame);
-      })
-      .with({ kind: 'group' }, (t) => {
-        this.deps.mediator.tell(new Publish(t.topic, frame));
-      })
-      .with({ kind: 'room' }, (t) => {
-        this.deps.mediator.tell(new Publish(t.topic, frame));
-      })
-      .with({ kind: 'idle' }, () => { /* unreachable */ })
+      .with({ kind: 'peer' },  (t) => this.streamFrameToPeer(t, frame))
+      .with({ kind: 'group' }, (t) => this.streamFrameToGroup(t, frame))
+      .with({ kind: 'room' },  (t) => this.streamFrameToRoom(t, frame))
+      .with({ kind: 'idle' },  () => { /* unreachable */ })
       .exhaustive();
+  }
+
+  /** Direct-tell one audio frame to every cached ref of the peer press. */
+  private streamFrameToPeer(t: PeerTarget, frame: BinaryFrame): void {
+    // Drop frames during the brief Find round-trip; press is short
+    // anyway and the next chunk arrives in ~100 ms.
+    if (t.pendingFind) return;
+    for (const ref of t.cachedRefs) ref.tell(frame);
+  }
+
+  /** Publish one audio frame onto the targeted group's topic. */
+  private streamFrameToGroup(t: GroupTarget, frame: BinaryFrame): void {
+    this.deps.mediator.tell(new Publish(t.topic, frame));
+  }
+
+  /** Publish one audio frame onto the targeted room's topic. */
+  private streamFrameToRoom(t: RoomTarget, frame: BinaryFrame): void {
+    this.deps.mediator.tell(new Publish(t.topic, frame));
   }
 
   /* ------------------- binary inbound (someone speaking to us) ----------- */
 
-  private onBinaryInbound(frame: BinaryFrame): void {
+  private onBinaryFrame(frame: BinaryFrame): void {
     // Self-filter for group + room topics (we're a subscriber too).
     if (frame.senderUsername === this.username) return;
 
@@ -468,7 +536,7 @@ export class VoiceSessionActor extends Actor<SessionMessage> {
     if (!this.activeIncoming.has(frame.senderUsername)) {
       this.activeIncoming.set(frame.senderUsername, source);
       this.sendServer({
-        type: 'voice-incoming-start',
+        kind: 'voice-incoming-start',
         from: frame.senderUsername,
         source,
       });
@@ -479,14 +547,14 @@ export class VoiceSessionActor extends Actor<SessionMessage> {
     }
   }
 
-  private onStreamEndInbound(end: BinaryStreamEnd): void {
+  private onBinaryStreamEnd(end: BinaryStreamEnd): void {
     if (end.senderUsername === this.username) return;
     if (!this.activeIncoming.has(end.senderUsername)) return;
     this.activeIncoming.delete(end.senderUsername);
-    this.sendServer({ type: 'voice-incoming-end', from: end.senderUsername });
+    this.sendServer({ kind: 'voice-incoming-end', from: end.senderUsername });
   }
 
-  /** Best-effort heuristic — see comment in onBinaryInbound. */
+  /** Best-effort heuristic — see comment in onBinaryFrame. */
   private classifyIncomingSource(senderUsername: string): IncomingSource {
     // Room match wins when the speaker is in a room we've also joined
     // — they're transmitting via the room's topic.
@@ -513,7 +581,8 @@ export class VoiceSessionActor extends Actor<SessionMessage> {
 
   /* --------------------------- room subscription ------------------------- */
 
-  private enterRoom(room: VoiceRoomName): void {
+  private onRoomEnter(m: RoomEnterMessage): void {
+    const room = m.room;
     if (!isVoiceRoomName(room)) return;
     if (this.joinedRooms.has(room)) return;
     this.joinedRooms.add(room);
@@ -532,7 +601,8 @@ export class VoiceSessionActor extends Actor<SessionMessage> {
     });
   }
 
-  private leaveRoom(room: VoiceRoomName): void {
+  private onRoomLeave(m: RoomLeaveMessage): void {
+    const room = m.room;
     if (!this.joinedRooms.delete(room)) return;
     // If we were targeting this room, drop the press.
     if (this.currentTarget.kind === 'room' && this.currentTarget.roomName === room) {
@@ -563,7 +633,7 @@ export class VoiceSessionActor extends Actor<SessionMessage> {
     if (listing.key.id !== expected) return;
     if (listing.refs.length === 0) {
       this.sendServer({
-        type: 'voice-target-failed', mode: 'peer',
+        kind: 'voice-target-failed', mode: 'peer',
         key: this.currentTarget.targetUsername,
         reason: 'target not online',
       });
@@ -577,7 +647,7 @@ export class VoiceSessionActor extends Actor<SessionMessage> {
       pendingFind: false,
     };
     this.sendServer({
-      type: 'voice-target-ok', mode: 'peer',
+      kind: 'voice-target-ok', mode: 'peer',
       key: this.currentTarget.targetUsername,
     });
   }
@@ -586,7 +656,7 @@ export class VoiceSessionActor extends Actor<SessionMessage> {
 
   private onPresenceChanged(evt: PresenceChanged): void {
     if (evt.key === ONLINE_USERS_KEY) {
-      this.sendServer({ type: 'online-users', users: evt.users });
+      this.sendServer({ kind: 'online-users', users: evt.users });
       return;
     }
     // Otherwise it's a per-room set.  Reverse lookup the room name.
@@ -594,16 +664,16 @@ export class VoiceSessionActor extends Actor<SessionMessage> {
     if (evt.key.startsWith(prefix)) {
       const room = evt.key.slice(prefix.length);
       if (isVoiceRoomName(room)) {
-        this.sendServer({ type: 'room-participants', room, users: evt.users });
+        this.sendServer({ kind: 'room-participants', room, users: evt.users });
       }
     }
   }
 
   /* ------------------------------ outgoing ----------------------------- */
 
-  private sendServer(msg: ServerMessage): void {
+  private sendServer(message: ServerMessage): void {
     try {
-      this.deps.connection.sendText(encodeServer(msg));
+      this.deps.connection.sendText(encodeServer(message));
     } catch (e) {
       this.log.warn(`VoiceSession: send failed: ${(e as Error).message}`);
     }

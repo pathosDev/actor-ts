@@ -144,7 +144,7 @@ Messages between worker systems go through **structured clone**
 const startShardingOptions = StartShardingOptions.create()
   .withTypeName('order')
   .withEntityProps(...)
-  .withExtractEntityId((msg) => msg.id)
+  .withExtractEntityId((message) => message.id)
   .withNumShards(16);
 sharding.start(
   startShardingOptions,

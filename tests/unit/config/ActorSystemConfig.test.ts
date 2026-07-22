@@ -69,8 +69,8 @@ describe('ActorSystem — config integration', () => {
     const sys = ActorSystem.create('cfg', sysOptions);
     void captured;
     // Build derived directly via a fresh ConsoleLogger path to prove derivation works.
-    const cfg = sys.config;
-    expect(cfg.getString('actor-ts.logger.level')).toBe('warn');
+    const config = sys.config;
+    expect(config.getString('actor-ts.logger.level')).toBe('warn');
     await sys.terminate();
   });
 

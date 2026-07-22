@@ -10,7 +10,7 @@ Pfad des Actors gebunden:
 import { Actor } from 'actor-ts';
 
 class Worker extends Actor<...> {
-  override onReceive(msg): void {
+  override onReceive(message): void {
     this.log.info('handling message');
     // → [2025-05-13T11:42:01.123Z] INFO  actor-ts://my-app/user/worker - handling message
   }
@@ -77,7 +77,7 @@ Jeder Record trägt `ts` (ISO-8601), `level`, `msg` und die
 gemergten statischen + dynamischen MDC-Felder (statisch aus
 `withFields`, dynamisch aus `LogContext.run`, dynamisch gewinnt
 bei Key-Kollision).  Zusätzliche positionale `...args` aus
-`log.info(msg, extra1, extra2)` landen unter einem `args`-Array
+`log.info(message, extra1, extra2)` landen unter einem `args`-Array
 — Log-Aggregators indexieren verschachtelte Keys automatisch.
 
 `Error`-Instanzen werden als `{ name, message, stack }`
@@ -134,10 +134,10 @@ import { type Logger, LogLevel, type LogContextData } from 'actor-ts';
 
 class MyLogger implements Logger {
   level = LogLevel.Info;
-  debug(msg: string, ...args: unknown[]): void { /* ... */ }
-  info(msg: string, ...args: unknown[]): void  { /* ... */ }
-  warn(msg: string, ...args: unknown[]): void  { /* ... */ }
-  error(msg: string, ...args: unknown[]): void { /* ... */ }
+  debug(message: string, ...args: unknown[]): void { /* ... */ }
+  info(message: string, ...args: unknown[]): void  { /* ... */ }
+  warn(message: string, ...args: unknown[]): void  { /* ... */ }
+  error(message: string, ...args: unknown[]): void { /* ... */ }
   withSource(source: string): Logger { /* gib eine gebundene Kopie zurück */ return this; }
   withFields(fields: LogContextData): Logger { /* gib eine gebundene Kopie zurück */ return this; }
 }
@@ -158,7 +158,7 @@ class ShardCoordinator extends Actor<...> {
     shardId:   this.shardId,
   });
 
-  override onReceive(msg): void {
+  override onReceive(message): void {
     this.log.info('rebalance start');
     // → ... shard-coordinator - rebalance start {component=shard-coordinator, shardId=12}
   }
@@ -191,7 +191,7 @@ app.post('/orders', async (req, res) => {
 
 // Innerhalb jedes Actors, der via `tell` / `ask` von dort erreicht wird:
 class OrderActor extends Actor<...> {
-  override onReceive(msg): void {
+  override onReceive(message): void {
     this.log.info('placing order');
     // → ... order-actor - placing order {correlationId=abc-123, userId=user-42}
     paymentActor.tell({ kind: 'charge', ... });
@@ -205,7 +205,7 @@ Operationen:
 
 | Methode | Was sie tut |
 | --- | --- |
-| `LogContext.run(ctx, fn)` | Führt `fn` mit `ctx` als aktuellem Kontext aus. |
+| `LogContext.run(context, fn)` | Führt `fn` mit `context` als aktuellem Kontext aus. |
 | `LogContext.with(extra, fn)` | Führt `fn` mit `{ ...current, ...extra }` als Kontext aus. |
 | `LogContext.get()` | Liest den aktuellen Kontext (leeres Objekt, wenn keiner aktiv). |
 
@@ -215,7 +215,7 @@ Emit-Zeit**; dynamisch gewinnt bei Schlüssel-Kollision
 
 ## Wie MDC über `tell` propagiert
 
-Wenn du `ref.tell(msg)` innerhalb eines `LogContext.run`-Scopes
+Wenn du `ref.tell(message)` innerhalb eines `LogContext.run`-Scopes
 aufrufst, snapshotet die Runtime den aktuellen Kontext auf das
 Envelope.  Das `onReceive` des empfangenden Actors läuft unter
 einem frischen `LogContext.run` dieses Snapshots.  Das bedeutet:
@@ -245,7 +245,7 @@ import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="Logging in `onReceive` ≠ Logging in einem setTimeout">
   ```ts
-  override onReceive(msg) {
+  override onReceive(message) {
     this.log.info('handling');               // ✓ MDC vorhanden
     setTimeout(() => {
       this.log.info('later');                 // ✗ MDC kann verloren gehen
@@ -279,8 +279,8 @@ import { Aside } from '@astrojs/starlight/components';
 class PerSessionWorker extends Actor<...> {
   private readonly log = this.context.log.withFields({ sessionId: this.id });
 
-  override async onReceive(msg): Promise<void> {
-    await LogContext.run({ requestId: msg.requestId }, async () => {
+  override async onReceive(message): Promise<void> {
+    await LogContext.run({ requestId: message.requestId }, async () => {
       this.log.info('handling');
       // → ... per-session-worker - handling {sessionId=abc, requestId=xyz}
     });

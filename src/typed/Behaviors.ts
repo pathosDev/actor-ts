@@ -40,31 +40,31 @@ export interface SuperviseBuilder<T> {
 export const Behaviors = {
   /**
    * Run `factory` once with the actor's context; the returned Behavior is
-   * the first one the actor adopts.  Use this to capture `ctx.self` or spawn
+   * the first one the actor adopts.  Use this to capture `context.self` or spawn
    * children in the "constructor".
    */
-  setup<T>(factory: (ctx: TypedActorContext<T>) => Behavior<T>): Behavior<T> {
+  setup<T>(factory: (context: TypedActorContext<T>) => Behavior<T>): Behavior<T> {
     return { kind: 'setup', factory };
   },
 
   /** Standard receive — gets both context and message. */
   receive<T>(
-    handler: (ctx: TypedActorContext<T>, msg: T) => Behavior<T>,
+    handler: (context: TypedActorContext<T>, message: T) => Behavior<T>,
   ): ReceiveBehavior<T> {
     return { kind: 'receive', handler };
   },
 
   /** Receive with an additional signal handler. */
   receiveWithSignal<T>(
-    handler: (ctx: TypedActorContext<T>, msg: T) => Behavior<T>,
-    onSignal: (ctx: TypedActorContext<T>, signal: Signal) => Behavior<T>,
+    handler: (context: TypedActorContext<T>, message: T) => Behavior<T>,
+    onSignal: (context: TypedActorContext<T>, signal: Signal) => Behavior<T>,
   ): ReceiveBehavior<T> {
     return { kind: 'receive', handler, onSignal };
   },
 
   /** Receive when you don't need the context — message-only shortcut. */
-  receiveMessage<T>(handler: (msg: T) => Behavior<T>): ReceiveBehavior<T> {
-    return { kind: 'receive', handler: (_ctx, msg) => handler(msg) };
+  receiveMessage<T>(handler: (message: T) => Behavior<T>): ReceiveBehavior<T> {
+    return { kind: 'receive', handler: (_context, message) => handler(message) };
   },
 
   /** Expose the per-actor TimerScheduler to the behavior. */

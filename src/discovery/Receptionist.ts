@@ -25,7 +25,7 @@ import {
 } from './ReceptionistMessages.js';
 import { ServiceKey } from './ServiceKey.js';
 
-type Msg =
+type Message =
   | Register
   | Deregister
   | Find
@@ -49,15 +49,15 @@ interface KeyEntry {
  * When a peer node leaves, every key entry it contributed is removed and
  * subscribers are notified with an updated Listing.
  */
-export class Receptionist extends Actor<Msg> {
+export class Receptionist extends Actor<Message> {
   private readonly keys = new Map<string, KeyEntry>();
   private readonly clusterRef: Cluster | null;
   private readonly gossipIntervalMs: number;
 
   private version = 0;
   private gossipTimer: Cancellable | null = null;
-  private unsubWire: (() => void) | null = null;
-  private unsubCluster: (() => void) | null = null;
+  private unsubscribeWire: (() => void) | null = null;
+  private unsubscribeCluster: (() => void) | null = null;
 
   constructor(options: ReceptionistOptions = {}) {
     super();
@@ -69,81 +69,93 @@ export class Receptionist extends Actor<Msg> {
 
   override preStart(): void {
     if (this.clusterRef) {
-      this.unsubWire = this.clusterRef._onWire('receptionist-gossip', (msg) =>
-        this.handleGossip(msg as unknown as ReceptionistGossipMessage),
+      this.unsubscribeWire = this.clusterRef._onWire('receptionist-gossip', (message) =>
+        this.handleGossip(message as unknown as ReceptionistGossipMessage),
       );
-      this.unsubCluster = this.clusterRef.subscribe((evt) =>
+      this.unsubscribeCluster = this.clusterRef.subscribe((evt) =>
         match(evt)
-          .with(P.instanceOf(MemberRemoved), (e) => this.forgetNode(e.member.address))
-          .with(P.instanceOf(MemberUp), () => { this.version++; })
-          .otherwise(() => { /* other events ignored */ }),
+          .with(P.instanceOf(MemberRemoved), (e) => this.onMemberRemoved(e))
+          .with(P.instanceOf(MemberUp), () => this.onMemberUp())
+          .otherwise(() => this.onOtherClusterEvent()),
       );
-      this.gossipTimer = this.system.scheduler.scheduleAtFixedRateFn(
+      this.gossipTimer = this.system.scheduler.scheduleAtFixedRateFunction(
         this.gossipIntervalMs, this.gossipIntervalMs, () => this.gossipTick(),
       );
     }
   }
 
   override postStop(): void {
-    this.unsubWire?.();
-    this.unsubCluster?.();
+    this.unsubscribeWire?.();
+    this.unsubscribeCluster?.();
     this.gossipTimer?.cancel();
   }
 
-  override onReceive(msg: Msg): void {
-    match(msg)
-      .with(P.instanceOf(Register), (m) => this.handleRegister(m))
-      .with(P.instanceOf(Deregister), (m) => this.handleDeregister(m))
-      .with(P.instanceOf(Find), (m) => this.handleFind(m))
-      .with(P.instanceOf(Subscribe), (m) => this.handleSubscribe(m))
-      .with(P.instanceOf(Unsubscribe), (m) => this.handleUnsubscribe(m))
+  override onReceive(message: Message): void {
+    match(message)
+      .with(P.instanceOf(Register), (m) => this.onRegister(m))
+      .with(P.instanceOf(Deregister), (m) => this.onDeregister(m))
+      .with(P.instanceOf(Find), (m) => this.onFind(m))
+      .with(P.instanceOf(Subscribe), (m) => this.onSubscribe(m))
+      .with(P.instanceOf(Unsubscribe), (m) => this.onUnsubscribe(m))
       .exhaustive();
   }
 
   /* ---------------- handlers ---------------- */
 
-  private handleRegister(msg: Register): void {
-    const entry = this.getOrCreate(msg.key);
-    const pathStr = msg.ref.path.toString();
+  private onRegister(message: Register): void {
+    const entry = this.getOrCreate(message.key);
+    const pathStr = message.ref.path.toString();
     if (!entry.local.has(pathStr)) {
-      entry.local.set(pathStr, msg.ref);
+      entry.local.set(pathStr, message.ref);
       this.version++;
-      this.notifySubscribers(msg.key, entry);
+      this.notifySubscribers(message.key, entry);
     }
-    msg.replyTo?.tell(new Registered(msg.key, msg.ref) as never);
+    message.replyTo?.tell(new Registered(message.key, message.ref) as never);
   }
 
-  private handleDeregister(msg: Deregister): void {
-    const entry = this.keys.get(msg.key.id);
+  private onDeregister(message: Deregister): void {
+    const entry = this.keys.get(message.key.id);
     if (!entry) return;
-    const pathStr = msg.ref.path.toString();
+    const pathStr = message.ref.path.toString();
     if (entry.local.delete(pathStr)) {
       this.version++;
-      this.notifySubscribers(msg.key, entry);
-      this.maybeDrop(msg.key.id, entry);
+      this.notifySubscribers(message.key, entry);
+      this.maybeDrop(message.key.id, entry);
     }
   }
 
-  private handleFind(msg: Find): void {
-    const entry = this.keys.get(msg.key.id);
-    msg.replyTo.tell(new Listing(msg.key, entry ? this.collectRefs(entry) : []));
+  private onFind(message: Find): void {
+    const entry = this.keys.get(message.key.id);
+    message.replyTo.tell(new Listing(message.key, entry ? this.collectRefs(entry) : []));
   }
 
-  private handleSubscribe(msg: Subscribe): void {
-    const entry = this.getOrCreate(msg.key);
-    entry.subscribers.add(msg.replyTo);
+  private onSubscribe(message: Subscribe): void {
+    const entry = this.getOrCreate(message.key);
+    entry.subscribers.add(message.replyTo);
     // Replay current listing to the new subscriber.
-    msg.replyTo.tell(new Listing(msg.key, this.collectRefs(entry)));
+    message.replyTo.tell(new Listing(message.key, this.collectRefs(entry)));
   }
 
-  private handleUnsubscribe(msg: Unsubscribe): void {
-    const entry = this.keys.get(msg.key.id);
+  private onUnsubscribe(message: Unsubscribe): void {
+    const entry = this.keys.get(message.key.id);
     if (!entry) return;
-    entry.subscribers.delete(msg.replyTo);
-    this.maybeDrop(msg.key.id, entry);
+    entry.subscribers.delete(message.replyTo);
+    this.maybeDrop(message.key.id, entry);
   }
 
   /* ---------------- cluster plumbing ---------------- */
+
+  private onMemberRemoved(e: MemberRemoved): void {
+    this.forgetNode(e.member.address);
+  }
+
+  private onMemberUp(): void {
+    this.version++;
+  }
+
+  private onOtherClusterEvent(): void {
+    /* other events ignored */
+  }
 
   private gossipTick(): void {
     if (!this.clusterRef) return;
@@ -165,9 +177,9 @@ export class Receptionist extends Actor<Msg> {
     this.clusterRef.transport.send(target.address, gossip as unknown as never);
   }
 
-  private handleGossip(msg: ReceptionistGossipMessage): void {
+  private handleGossip(message: ReceptionistGossipMessage): void {
     if (!this.clusterRef) return;
-    const senderAddr = NodeAddress.fromJSON(msg.from).toString();
+    const senderAddr = NodeAddress.fromJSON(message.from).toString();
     // Replace this sender's remote contribution wholesale so diff-to-notify
     // works per-key.
     const affected = new Set<string>();
@@ -177,7 +189,7 @@ export class Receptionist extends Actor<Msg> {
         affected.add(id);
       }
     }
-    for (const [id, paths] of Object.entries(msg.entries)) {
+    for (const [id, paths] of Object.entries(message.entries)) {
       const entry = this.getOrCreate(new ServiceKey(id));
       entry.remote.set(senderAddr, paths.slice());
       affected.add(id);
@@ -240,13 +252,13 @@ export class Receptionist extends Actor<Msg> {
 /* -------------------------- Extension ---------------------------- */
 
 export class ReceptionistExtension {
-  private started: ActorRef<Msg> | null = null;
+  private started: ActorRef<Message> | null = null;
   constructor(private readonly system: ActorSystem) {}
 
   start(
     cluster?: Cluster | null,
     options: ReceptionistOptions = {},
-  ): ActorRef<Msg> {
+  ): ActorRef<Message> {
     if (this.started) return this.started;
     // `cluster` stays a positional arg (it's identity/wiring, not a tunable);
     // fold it onto the resolved options so the actor sees a single object.
@@ -255,14 +267,14 @@ export class ReceptionistExtension {
       cluster: cluster ?? null,
     };
     const ref = this.system.spawn(
-      Props.create<Msg>(() => new Receptionist(resolvedOptions)),
+      Props.create<Message>(() => new Receptionist(resolvedOptions)),
       'receptionist',
     );
     this.started = ref;
     return ref;
   }
 
-  get(): Option<ActorRef<Msg>> { return fromNullable(this.started); }
+  get(): Option<ActorRef<Message>> { return fromNullable(this.started); }
 }
 
 export const ReceptionistId: ExtensionId<ReceptionistExtension> = extensionId<ReceptionistExtension>(

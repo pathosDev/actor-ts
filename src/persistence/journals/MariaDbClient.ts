@@ -58,21 +58,21 @@ export interface MariaDbConnection {
 }
 
 /** Build (or pass through) the connection pool for a store. */
-export async function buildMariaDbPool(conn: MariaDbConnection): Promise<MariaDbPoolLike> {
-  if (conn.pool) return conn.pool;
+export async function buildMariaDbPool(connection: MariaDbConnection): Promise<MariaDbPoolLike> {
+  if (connection.pool) return connection.pool;
   const mod = await mariadbLazy.get();
-  const arg: Record<string, unknown> | string = conn.poolConfig ?? conn.url ?? {};
+  const arg: Record<string, unknown> | string = connection.poolConfig ?? connection.url ?? {};
   return mod.createPool(arg);
 }
 
 /** Rows from a SELECT result (OK-packets yield `[]`). */
-export function rowsOf(res: MariaDbResult): MariaDbRow[] {
-  return Array.isArray(res) ? res : [];
+export function rowsOf(response: MariaDbResult): MariaDbRow[] {
+  return Array.isArray(response) ? response : [];
 }
 
 /** `affectedRows` from a DML OK-packet (arrays yield 0). */
-export function affectedRowsOf(res: MariaDbResult): number {
-  return Array.isArray(res) ? 0 : Number(res.affectedRows ?? 0);
+export function affectedRowsOf(response: MariaDbResult): number {
+  return Array.isArray(response) ? 0 : Number(response.affectedRows ?? 0);
 }
 
 /** MariaDB/MySQL duplicate-key error (errno 1062 / `ER_DUP_ENTRY`). */

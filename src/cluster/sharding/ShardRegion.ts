@@ -74,7 +74,7 @@ export class ShardRegion<TMessage = unknown> extends Actor<TMessage | ShardingMe
   private readonly entityShard = new Map<string, number>(); // entityId → shardId
   private readonly shardEntities = new Map<number, Set<string>>(); // shardId → entityIds
   /** Messages buffered while their shard home is unknown or in transition. */
-  private readonly buffer = new Map<number, Array<{ msg: TMessage; sender: ActorRef | null }>>();
+  private readonly buffer = new Map<number, Array<{ message: TMessage; sender: ActorRef | null }>>();
 
   private coordinatorRef: ActorRef<ShardingMessage> | null = null;
   private unsubscribe: (() => void) | null = null;
@@ -93,7 +93,7 @@ export class ShardRegion<TMessage = unknown> extends Actor<TMessage | ShardingMe
   /** How long an unsettled ask entry is kept before being GC'd. */
   private readonly asksTtlMs = 60_000;
 
-  constructor(public readonly cfg: ShardRegionConfig<TMessage>) { super(); }
+  constructor(public readonly config: ShardRegionConfig<TMessage>) { super(); }
 
   static settingsToConfig<TMessage>(
     s: ShardingOptionsType<TMessage>,
@@ -117,27 +117,24 @@ export class ShardRegion<TMessage = unknown> extends Actor<TMessage | ShardingMe
   }
 
   override preStart(): void {
-    this.unsubscribe = this.cfg.cluster.subscribe(evt =>
+    this.unsubscribe = this.config.cluster.subscribe(evt =>
       match(evt)
         .with(P.instanceOf(LeaderChanged), () => this.onLeaderChanged())
-        .with(P.instanceOf(MemberRemoved), (event) => {
-          this.invalidateHomesOnNode(event.member.address);
-          this.ensureRegistered();
-        })
-        .with(P.instanceOf(MemberUp), () => this.ensureRegistered())
-        .otherwise(() => { /* other events irrelevant here */ }),
+        .with(P.instanceOf(MemberRemoved), (event) => this.onMemberRemoved(event))
+        .with(P.instanceOf(MemberUp), () => this.onMemberUp())
+        .otherwise(() => this.onOtherClusterEvent()),
     );
 
     this.ensureRegistered();
 
-    if (this.cfg.passivationIdleMs > 0) {
-      this.passivationTimer = this.system.scheduler.scheduleAtFixedRateFn(
-        this.cfg.passivationIdleMs, this.cfg.passivationIdleMs,
+    if (this.config.passivationIdleMs > 0) {
+      this.passivationTimer = this.system.scheduler.scheduleAtFixedRateFunction(
+        this.config.passivationIdleMs, this.config.passivationIdleMs,
         () => this.passivationSweep(),
       );
     }
 
-    this.asksSweepTimer = this.system.scheduler.scheduleAtFixedRateFn(
+    this.asksSweepTimer = this.system.scheduler.scheduleAtFixedRateFunction(
       this.asksTtlMs, this.asksTtlMs,
       () => this.sweepPendingAsks(),
     );
@@ -169,9 +166,9 @@ export class ShardRegion<TMessage = unknown> extends Actor<TMessage | ShardingMe
   /* ----------------------------- Routing -------------------------------- */
 
   private routeUserMessage(message: TMessage, sender: ActorRef | null): void {
-    const entityId = this.cfg.extractEntityId(message);
-    const shardId = hashShardId(entityId, this.cfg.numShards);
-    const entityMsg = this.cfg.extractEntityMessage(message) as TMessage;
+    const entityId = this.config.extractEntityId(message);
+    const shardId = hashShardId(entityId, this.config.numShards);
+    const entityMessage = this.config.extractEntityMessage(message) as TMessage;
 
     const state = this.shardState.get(shardId);
     if (state === 'handing-off') {
@@ -187,7 +184,7 @@ export class ShardRegion<TMessage = unknown> extends Actor<TMessage | ShardingMe
     }
 
     if (this.localShards.has(shardId)) {
-      this.deliverLocal(shardId, entityId, entityMsg, sender);
+      this.deliverLocal(shardId, entityId, entityMessage, sender);
     } else {
       const node = this.shardHomeNodes.get(shardId);
       if (!node) { this.bufferShard(shardId, message, sender); this.askCoordinator(shardId); return; }
@@ -196,7 +193,7 @@ export class ShardRegion<TMessage = unknown> extends Actor<TMessage | ShardingMe
   }
 
   private deliverLocal(shardId: number, entityId: string, message: TMessage, sender: ActorRef | null): void {
-    if (this.cfg.proxy) {
+    if (this.config.proxy) {
       // Proxy regions should not own shards; this is a routing bug.
       this.log.warn(`proxy region got shard ${shardId} unexpectedly`);
       return;
@@ -231,7 +228,7 @@ export class ShardRegion<TMessage = unknown> extends Actor<TMessage | ShardingMe
    * incoming message until passivation actually completes.
    */
   private evictLruIfAtCapacity(): void {
-    if (this.cfg.maxEntities <= 0) return;
+    if (this.config.maxEntities <= 0) return;
     let liveCount = 0;
     let oldestId: string | null = null;
     let oldestActivity = Number.POSITIVE_INFINITY;
@@ -243,12 +240,12 @@ export class ShardRegion<TMessage = unknown> extends Actor<TMessage | ShardingMe
         oldestId = id;
       }
     }
-    if (liveCount < this.cfg.maxEntities) return;
+    if (liveCount < this.config.maxEntities) return;
     if (oldestId === null) return;
     const victim = this.entities.get(oldestId)!;
     this.log.debug(
       `[sharding] LRU passivation: evicting '${oldestId}' (idle for ${Date.now() - oldestActivity}ms, `
-      + `cap ${this.cfg.maxEntities} reached)`,
+      + `cap ${this.config.maxEntities} reached)`,
     );
     victim.passivating = [];
     victim.ref.stop();
@@ -257,7 +254,7 @@ export class ShardRegion<TMessage = unknown> extends Actor<TMessage | ShardingMe
   private deliverRemote(node: NodeAddress, path: string, message: TMessage, sender: ActorRef | null): void {
     if (sender === null) {
       // Nothing to reply to — skip the envelope wrapping.
-      new RemoteActorRef<TMessage>(node, path, this.cfg.cluster).tell(message);
+      new RemoteActorRef<TMessage>(node, path, this.config.cluster).tell(message);
       return;
     }
 
@@ -273,7 +270,7 @@ export class ShardRegion<TMessage = unknown> extends Actor<TMessage | ShardingMe
       originRegion = sender.originRegion;
       correlationId = sender.correlationId;
     } else {
-      originNode = this.cfg.cluster.selfAddress;
+      originNode = this.config.cluster.selfAddress;
       originRegion = this.self.path.toString();
       correlationId = this.registerPendingAsk(sender);
     }
@@ -285,7 +282,7 @@ export class ShardRegion<TMessage = unknown> extends Actor<TMessage | ShardingMe
       originRegion,
       correlationId,
     };
-    new RemoteActorRef<ShardingMessage>(node, path, this.cfg.cluster).tell(envelope);
+    new RemoteActorRef<ShardingMessage>(node, path, this.config.cluster).tell(envelope);
   }
 
   private registerPendingAsk(sender: ActorRef): number {
@@ -302,8 +299,8 @@ export class ShardRegion<TMessage = unknown> extends Actor<TMessage | ShardingMe
   }
 
   private createEntity(shardId: number, entityId: string): EntityState {
-    this.log.debug(`[sharding] spawning entity '${entityId}' in shard ${shardId} of '${this.cfg.typeName}'`);
-    const ref = this.context.spawn(this.cfg.entityProps, `entity-${sanitizeName(entityId)}`);
+    this.log.debug(`[sharding] spawning entity '${entityId}' in shard ${shardId} of '${this.config.typeName}'`);
+    const ref = this.context.spawn(this.config.entityProps, `entity-${sanitizeName(entityId)}`);
     this.context.watch(ref);
     const state: EntityState = { ref: ref as ActorRef<unknown>, lastActivity: Date.now(), passivating: null };
     this.entities.set(entityId, state);
@@ -311,7 +308,7 @@ export class ShardRegion<TMessage = unknown> extends Actor<TMessage | ShardingMe
     let set = this.shardEntities.get(shardId);
     if (!set) { set = new Set(); this.shardEntities.set(shardId, set); }
     set.add(entityId);
-    if (this.cfg.rememberEntities) {
+    if (this.config.rememberEntities) {
       this.tellCoordinator({ $t: 'sharding.EntityStarted', shardId, entityId });
     }
     return state;
@@ -320,18 +317,18 @@ export class ShardRegion<TMessage = unknown> extends Actor<TMessage | ShardingMe
   /* ----------------------------- Coordinator ---------------------------- */
 
   private ensureRegistered(): void {
-    const leaderOpt = this.cfg.cluster.leader();
-    if (leaderOpt.isNone()) { this.scheduleRegisterRetry(); return; }
-    const leader = leaderOpt.value;
+    const leaderOption = this.config.cluster.leader();
+    if (leaderOption.isNone()) { this.scheduleRegisterRetry(); return; }
+    const leader = leaderOption.value;
     // Always re-target the coordinator on each leader change.
-    const coordPath = coordinatorPath(this.cfg.cluster.system.name, this.cfg.typeName);
-    if (leader.address.equals(this.cfg.cluster.selfAddress)) {
-      const local = this.cfg.localResolver(coordPath) as ActorRef<ShardingMessage> | null;
+    const coordPath = coordinatorPath(this.config.cluster.system.name, this.config.typeName);
+    if (leader.address.equals(this.config.cluster.selfAddress)) {
+      const local = this.config.localResolver(coordPath) as ActorRef<ShardingMessage> | null;
       if (!local) { this.scheduleRegisterRetry(); return; }
       this.coordinatorRef = local;
     } else {
       this.coordinatorRef = new RemoteActorRef<ShardingMessage>(
-        leader.address, coordPath, this.cfg.cluster,
+        leader.address, coordPath, this.config.cluster,
       );
     }
     this.register();
@@ -339,25 +336,25 @@ export class ShardRegion<TMessage = unknown> extends Actor<TMessage | ShardingMe
 
   private scheduleRegisterRetry(): void {
     this.registerTimer?.cancel();
-    this.registerTimer = this.system.scheduler.scheduleOnceFn(500, () => this.ensureRegistered());
+    this.registerTimer = this.system.scheduler.scheduleOnceFunction(500, () => this.ensureRegistered());
   }
 
   private register(): void {
-    const msg: RegisterRegion = {
+    const message: RegisterRegion = {
       $t: 'sharding.Register',
       region: this.self.path.toString(),
-      node: this.cfg.cluster.selfAddress.toJSON(),
-      proxy: this.cfg.proxy,
+      node: this.config.cluster.selfAddress.toJSON(),
+      proxy: this.config.proxy,
       hostedShards: Array.from(this.localShards),
     };
-    this.tellCoordinator(msg);
+    this.tellCoordinator(message);
     // Re-ask for every pending shard home.
     for (const shardId of this.buffer.keys()) this.askCoordinator(shardId);
   }
 
-  private tellCoordinator(msg: ShardingMessage): void {
+  private tellCoordinator(message: ShardingMessage): void {
     if (!this.coordinatorRef) { this.ensureRegistered(); return; }
-    this.coordinatorRef.tell(msg);
+    this.coordinatorRef.tell(message);
   }
 
   private askCoordinator(shardId: number): void {
@@ -365,15 +362,15 @@ export class ShardRegion<TMessage = unknown> extends Actor<TMessage | ShardingMe
       $t: 'sharding.GetShardHome',
       shardId,
       requester: this.self.path.toString(),
-      requesterNode: this.cfg.cluster.selfAddress.toJSON(),
+      requesterNode: this.config.cluster.selfAddress.toJSON(),
     };
     this.tellCoordinator(getShardHome);
   }
 
   /* ---------------------------- Sharding msgs -------------------------- */
 
-  private handleShardingMessage(msg: ShardingMessage): void {
-    match(msg)
+  private handleShardingMessage(message: ShardingMessage): void {
+    match(message)
       .with({ $t: 'sharding.RegisterAcknowledgment' }, (m) => this.onRegisterAcknowledgment(m))
       .with({ $t: 'sharding.ShardHome' }, (m) => this.onShardHome(m))
       .with({ $t: 'sharding.HandOff' }, (m) => this.onHandOff(m))
@@ -381,102 +378,106 @@ export class ShardRegion<TMessage = unknown> extends Actor<TMessage | ShardingMe
       .with({ $t: 'sharding.Envelope' }, (m) => this.onShardEnvelope(m))
       .with({ $t: 'sharding.Reply' }, (m) => this.onShardReply(m))
       // Coordinator-only messages; regions ignore them.
-      .otherwise(() => { /* no-op */ });
+      .otherwise(() => this.onUnhandled());
   }
 
-  private onShardEnvelope(msg: ShardEnvelope): void {
+  private onUnhandled(): void {
+    /* no-op */
+  }
+
+  private onShardEnvelope(message: ShardEnvelope): void {
     const senderRef =
-      msg.correlationId !== null && msg.originRegion !== null && msg.originNode !== null
+      message.correlationId !== null && message.originRegion !== null && message.originNode !== null
         ? new ShardSenderRef(
-            NodeAddress.fromJSON(msg.originNode),
-            msg.originRegion,
-            msg.correlationId,
-            this.cfg.cluster,
-            (path) => this.cfg.localResolver(path),
+            NodeAddress.fromJSON(message.originNode),
+            message.originRegion,
+            message.correlationId,
+            this.config.cluster,
+            (path) => this.config.localResolver(path),
           )
         : null;
-    this.routeUserMessage(msg.message as TMessage, senderRef);
+    this.routeUserMessage(message.message as TMessage, senderRef);
   }
 
-  private onShardReply(msg: ShardReply): void {
-    const entry = this.pendingAsks.get(msg.correlationId);
+  private onShardReply(message: ShardReply): void {
+    const entry = this.pendingAsks.get(message.correlationId);
     if (!entry) return;
-    this.pendingAsks.delete(msg.correlationId);
-    entry.sender.tell(msg.message as never);
+    this.pendingAsks.delete(message.correlationId);
+    entry.sender.tell(message.message as never);
   }
 
-  private onRegisterAcknowledgment(_msg: RegisterAcknowledgment): void {
-    this.log.debug(`[sharding] region '${this.cfg.typeName}' registered with coordinator`);
+  private onRegisterAcknowledgment(_message: RegisterAcknowledgment): void {
+    this.log.debug(`[sharding] region '${this.config.typeName}' registered with coordinator`);
     this.registered = true;
     this.registerTimer?.cancel();
     this.registerTimer = null;
   }
 
-  private onShardHome(msg: ShardHome): void {
-    const node = NodeAddress.fromJSON(msg.node);
-    const local = node.equals(this.cfg.cluster.selfAddress) && msg.region === this.self.path.toString();
+  private onShardHome(message: ShardHome): void {
+    const node = NodeAddress.fromJSON(message.node);
+    const local = node.equals(this.config.cluster.selfAddress) && message.region === this.self.path.toString();
     this.log.debug(
-      `[sharding] shard ${msg.shardId} of '${this.cfg.typeName}' home=${node} (${local ? 'LOCAL' : 'remote'})`,
+      `[sharding] shard ${message.shardId} of '${this.config.typeName}' home=${node} (${local ? 'LOCAL' : 'remote'})`,
     );
-    this.shardHomes.set(msg.shardId, msg.region);
-    this.shardHomeNodes.set(msg.shardId, node);
+    this.shardHomes.set(message.shardId, message.region);
+    this.shardHomeNodes.set(message.shardId, node);
     if (local) {
-      this.localShards.add(msg.shardId);
-      this.shardState.set(msg.shardId, 'owned');
+      this.localShards.add(message.shardId);
+      this.shardState.set(message.shardId, 'owned');
     } else {
-      this.localShards.delete(msg.shardId);
-      this.shardState.delete(msg.shardId);
+      this.localShards.delete(message.shardId);
+      this.shardState.delete(message.shardId);
     }
-    this.flushBuffer(msg.shardId);
+    this.flushBuffer(message.shardId);
   }
 
-  private onHandOff(msg: HandOff): void {
+  private onHandOff(message: HandOff): void {
     this.log.debug(
-      `[sharding] handing off shard ${msg.shardId} of '${this.cfg.typeName}' (stopping ${this.shardEntities.get(msg.shardId)?.size ?? 0} entit(ies))`,
+      `[sharding] handing off shard ${message.shardId} of '${this.config.typeName}' (stopping ${this.shardEntities.get(message.shardId)?.size ?? 0} entit(ies))`,
     );
-    this.shardState.set(msg.shardId, 'handing-off');
-    const ack: BeginHandOffAcknowledgment = { $t: 'sharding.BeginHandOffAcknowledgment', shardId: msg.shardId };
+    this.shardState.set(message.shardId, 'handing-off');
+    const ack: BeginHandOffAcknowledgment = { $t: 'sharding.BeginHandOffAcknowledgment', shardId: message.shardId };
     this.tellCoordinator(ack);
 
-    const entityIds = Array.from(this.shardEntities.get(msg.shardId) ?? []);
+    const entityIds = Array.from(this.shardEntities.get(message.shardId) ?? []);
     for (const entityId of entityIds) {
       const entity = this.entities.get(entityId);
       if (!entity) continue;
       entity.ref.stop();
       this.entities.delete(entityId);
       this.entityShard.delete(entityId);
-      if (this.cfg.rememberEntities) {
-        this.tellCoordinator({ $t: 'sharding.EntityStopped', shardId: msg.shardId, entityId });
+      if (this.config.rememberEntities) {
+        this.tellCoordinator({ $t: 'sharding.EntityStopped', shardId: message.shardId, entityId });
       }
     }
-    this.shardEntities.delete(msg.shardId);
-    this.localShards.delete(msg.shardId);
-    this.shardHomes.delete(msg.shardId);
-    this.shardHomeNodes.delete(msg.shardId);
-    this.shardState.delete(msg.shardId);
+    this.shardEntities.delete(message.shardId);
+    this.localShards.delete(message.shardId);
+    this.shardHomes.delete(message.shardId);
+    this.shardHomeNodes.delete(message.shardId);
+    this.shardState.delete(message.shardId);
 
     const complete: HandOffComplete = {
       $t: 'sharding.HandOffComplete',
-      shardId: msg.shardId,
+      shardId: message.shardId,
       region: this.self.path.toString(),
-      node: this.cfg.cluster.selfAddress.toJSON(),
+      node: this.config.cluster.selfAddress.toJSON(),
     };
     this.tellCoordinator(complete);
   }
 
-  private onRememberedEntities(msg: RememberedEntities): void {
+  private onRememberedEntities(message: RememberedEntities): void {
     // Pre-create entities we've been told about but haven't materialised yet.
-    if (!this.localShards.has(msg.shardId)) return;
-    for (const entityId of msg.entityIds) {
+    if (!this.localShards.has(message.shardId)) return;
+    for (const entityId of message.entityIds) {
       if (this.entities.has(entityId)) continue;
-      this.createEntity(msg.shardId, entityId);
+      this.createEntity(message.shardId, entityId);
     }
   }
 
   /* ----------------------------- Passivation --------------------------- */
 
-  private handlePassivate(msg: Passivate): void {
-    const candidate = msg.entity ?? this.sender.toNullable();
+  private handlePassivate(message: Passivate): void {
+    const candidate = message.entity ?? this.sender.toNullable();
     if (!candidate) return;
     let foundId: string | null = null;
     for (const [id, s] of this.entities) {
@@ -485,7 +486,7 @@ export class ShardRegion<TMessage = unknown> extends Actor<TMessage | ShardingMe
     if (!foundId) return;
     const state = this.entities.get(foundId)!;
     state.passivating = [];
-    candidate.tell(msg.stopMessage as never);
+    candidate.tell(message.stopMessage as never);
     // The entity will terminate; we clean up in handleEntityTerminated.
   }
 
@@ -497,7 +498,7 @@ export class ShardRegion<TMessage = unknown> extends Actor<TMessage | ShardingMe
         this.entities.delete(id);
         this.entityShard.delete(id);
         this.shardEntities.get(shardId)?.delete(id);
-        if (this.cfg.rememberEntities) {
+        if (this.config.rememberEntities) {
           this.tellCoordinator({ $t: 'sharding.EntityStopped', shardId, entityId: id });
         }
         // Flush buffered messages by replaying through the normal route.
@@ -508,11 +509,11 @@ export class ShardRegion<TMessage = unknown> extends Actor<TMessage | ShardingMe
   }
 
   private passivationSweep(): void {
-    if (this.cfg.passivationIdleMs <= 0) return;
+    if (this.config.passivationIdleMs <= 0) return;
     const now = Date.now();
     for (const [id, s] of this.entities) {
       if (s.passivating) continue;
-      if (now - s.lastActivity < this.cfg.passivationIdleMs) continue;
+      if (now - s.lastActivity < this.config.passivationIdleMs) continue;
       s.passivating = [];
       s.ref.stop();
     }
@@ -520,17 +521,17 @@ export class ShardRegion<TMessage = unknown> extends Actor<TMessage | ShardingMe
 
   /* -------------------------------- Buffer ----------------------------- */
 
-  private bufferShard(shardId: number, msg: TMessage, sender: ActorRef | null): void {
+  private bufferShard(shardId: number, message: TMessage, sender: ActorRef | null): void {
     let queue = this.buffer.get(shardId);
     if (!queue) { queue = []; this.buffer.set(shardId, queue); }
-    queue.push({ msg, sender });
+    queue.push({ message, sender });
   }
 
   private flushBuffer(shardId: number): void {
     const queue = this.buffer.get(shardId);
     if (!queue || queue.length === 0) return;
     this.buffer.delete(shardId);
-    for (const { msg, sender } of queue) this.routeUserMessage(msg, sender);
+    for (const { message, sender } of queue) this.routeUserMessage(message, sender);
   }
 
   /* -------------------------------- Misc ------------------------------ */
@@ -539,6 +540,19 @@ export class ShardRegion<TMessage = unknown> extends Actor<TMessage | ShardingMe
     this.registered = false;
     this.coordinatorRef = null;
     this.ensureRegistered();
+  }
+
+  private onMemberRemoved(event: MemberRemoved): void {
+    this.invalidateHomesOnNode(event.member.address);
+    this.ensureRegistered();
+  }
+
+  private onMemberUp(): void {
+    this.ensureRegistered();
+  }
+
+  private onOtherClusterEvent(): void {
+    /* other events irrelevant here */
   }
 
   /**

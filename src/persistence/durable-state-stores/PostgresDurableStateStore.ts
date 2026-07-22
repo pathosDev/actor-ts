@@ -68,22 +68,22 @@ export class PostgresDurableStateStore implements DurableStateStore {
     const payload = JSON.stringify(state);
     try {
       if (expectedRevision === 0) {
-        const res = await pool.query(
+        const response = await pool.query(
           `INSERT INTO ${this.table}(persistence_id, revision, payload, timestamp) VALUES ($1, $2, $3, $4)
            ON CONFLICT (persistence_id) DO NOTHING`,
           [persistenceId, newRevision, payload, now],
         );
-        if ((res.rowCount ?? 0) === 0) {
+        if ((response.rowCount ?? 0) === 0) {
           throw new DurableStateConcurrencyError(
             persistenceId, expectedRevision, await this.currentRevision(pool, persistenceId),
           );
         }
       } else {
-        const res = await pool.query(
+        const response = await pool.query(
           `UPDATE ${this.table} SET revision = $1, payload = $2, timestamp = $3 WHERE persistence_id = $4 AND revision = $5`,
           [newRevision, payload, now, persistenceId, expectedRevision],
         );
-        if ((res.rowCount ?? 0) === 0) {
+        if ((response.rowCount ?? 0) === 0) {
           throw new DurableStateConcurrencyError(
             persistenceId, expectedRevision, await this.currentRevision(pool, persistenceId),
           );
@@ -98,11 +98,11 @@ export class PostgresDurableStateStore implements DurableStateStore {
 
   async load<S>(persistenceId: string, _options?: PersistenceOptions): Promise<Option<DurableStateRecord<S>>> {
     const pool = await this.ensureOpen();
-    const res = await pool.query(
+    const response = await pool.query(
       `SELECT revision, payload, timestamp FROM ${this.table} WHERE persistence_id = $1`,
       [persistenceId],
     );
-    const row = res.rows[0] as unknown as StateRow | undefined;
+    const row = response.rows[0] as unknown as StateRow | undefined;
     if (!row) return none;
     return some({
       persistenceId,
@@ -127,12 +127,12 @@ export class PostgresDurableStateStore implements DurableStateStore {
   /* --------------------------- internals -------------------------------- */
 
   /** Read the current revision for conflict reporting; 0 if the row is gone. */
-  private async currentRevision(pool: PgPoolLike, pid: string): Promise<number> {
-    const res = await pool.query(
+  private async currentRevision(pool: PgPoolLike, persistenceId: string): Promise<number> {
+    const response = await pool.query(
       `SELECT revision FROM ${this.table} WHERE persistence_id = $1`,
-      [pid],
+      [persistenceId],
     );
-    const row = res.rows[0] as { revision: string | number } | undefined;
+    const row = response.rows[0] as { revision: string | number } | undefined;
     return row ? Number(row.revision) : 0;
   }
 

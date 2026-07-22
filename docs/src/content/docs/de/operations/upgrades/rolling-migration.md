@@ -229,7 +229,7 @@ Liefer den neuen Schlüssel als `active` aus, behalte den alten als
 ```ts
 import { ObjectStoragePluginOptions, registerObjectStoragePlugins } from 'actor-ts';
 
-const opts = ObjectStoragePluginOptions.create()
+const options = ObjectStoragePluginOptions.create()
   // ... .withBackend(...), .withCompression(...) etc.
   .withEncryption({
     keys: {
@@ -266,7 +266,7 @@ const result = await reEncryptObjectStorage(backend, {
     retired: [{ version: 1, key: OLD }],
   },
   onProgress: (e) => process.stderr.write(
-    `${e.idx}/${e.total} ${e.action} ${e.key}\n`),
+    `${e.index}/${e.total} ${e.action} ${e.key}\n`),
 });
 console.log(`rewrote ${result.rewrote} of ${result.scanned} objects`);
 ```
@@ -342,7 +342,7 @@ const result = await reEncryptObjectStorage(backend, {
   saveProgressEveryN: 500,
 
   onProgress: (e) => process.stderr.write(
-    `${e.idx}/${e.total} ${e.action} ${e.key}\n`),
+    `${e.index}/${e.total} ${e.action} ${e.key}\n`),
 });
 
 // Nach erfolgreichem End-to-End-Lauf wird progress.clear()
@@ -405,7 +405,7 @@ wiederherstellbar.
 | `migrateInMemoryJournal(journal, fn)`     | Bulk-Rewrite jedes Events unter einem Journal |
 | `migrateSnapshotStore(store, pids, fn)`   | Dito für Snapshots                          |
 | `MasterKeyRing` `{ active, retired? }`    | Multi-Version-Encryption-Key-Ring           |
-| `reEncryptObjectStorage(backend, opts)`   | Sweep: jeden Body unter einem Prefix mit dem Active-Key neu verschlüsseln |
+| `reEncryptObjectStorage(backend, options)`   | Sweep: jeden Body unter einem Prefix mit dem Active-Key neu verschlüsseln |
 | `ReEncryptProgressStore` / `InMemoryReEncryptProgressStore` | Durable Resume-Tokens für den Sweep (#109) — plug eine Datei-/Redis-/Object-Storage-backed Implementation für Millionen-Objekt-Buckets |
 
 Alle werden aus dem Top-Level-`actor-ts`-Barrel exportiert.

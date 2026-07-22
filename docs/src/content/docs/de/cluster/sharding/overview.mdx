@@ -61,16 +61,16 @@ type CartCommand =
 class CartActor extends Actor<CartCommand> {
   private items: string[] = [];
 
-  override onReceive(cmd: CartCommand): void {
-    if (cmd.kind === 'add')  this.items.push(cmd.sku);
-    if (cmd.kind === 'view') cmd.replyTo.tell({ items: this.items });
+  override onReceive(command: CartCommand): void {
+    if (command.kind === 'add')  this.items.push(command.sku);
+    if (command.kind === 'view') command.replyTo.tell({ items: this.items });
   }
 }
 
 // Setup — einzeiliger Cluster- + Sharding-Einstieg:
 const { system, cluster } = await Cluster.bootstrap(ClusterBootstrapOptions.create('my-app'));
 
-const startShardingOptions = StartShardingOptions.create<CartCommand>().withExtractEntityId((msg) => msg.entityId);
+const startShardingOptions = StartShardingOptions.create<CartCommand>().withExtractEntityId((message) => message.entityId);
 const cartRegion = cluster.sharding.start('cart', CartActor,
   startShardingOptions);
 
@@ -159,8 +159,8 @@ interface ShardingOptionsType<TMessage> {
 | Feld | Was es steuert |
 | --- | --- |
 | `typeName` | Ein String, der diesen sharded Typ identifiziert. Verschiedene Typen können im selben Cluster koexistieren (`cart`, `session`, `order`). |
-| `extractEntityId(msg)` | Zieh die Entity-ID aus einer Nachricht. Das ist der Key, der zu einem Shard gehasht wird. |
-| `extractEntityMessage(msg)` | *(Optional)* Wenn der Nachrichten-Envelope Routing-Info plus eine Payload enthält, entfernt das den Envelope, bevor die Entity ihn sieht. Default ist die Nachricht unverändert. |
+| `extractEntityId(message)` | Zieh die Entity-ID aus einer Nachricht. Das ist der Key, der zu einem Shard gehasht wird. |
+| `extractEntityMessage(message)` | *(Optional)* Wenn der Nachrichten-Envelope Routing-Info plus eine Payload enthält, entfernt das den Envelope, bevor die Entity ihn sieht. Default ist die Nachricht unverändert. |
 | `numShards` | In wie viele Shards der Entity-Raum aufgeteilt wird. 100 reichen für die meisten Cluster; setze auf 1000 für sehr große Cluster (>50 Nodes). |
 | `role` | Nur Mitglieder mit dieser Rolle hosten Shards dieses Typs. Nützlich, um compute-schwere Entities auf dedizierten Nodes zu platzieren. |
 | `proxy` | Dieser Node *leitet* Nachrichten an die Region weiter, hostet aber nie lokale Entities. Wird für Client-Nodes in einem asymmetrischen Cluster verwendet. |
@@ -178,8 +178,8 @@ willst du meistens `rememberEntities: true` und ein
 import { Passivate, Actor } from 'actor-ts';
 
 class CartActor extends Actor<CartCommand | Passivate> {
-  override onReceive(msg): void {
-    if (msg instanceof Passivate) {
+  override onReceive(message): void {
+    if (message instanceof Passivate) {
       // Optional Shutdown-Arbeit erledigen, dann das Passivate-Ack senden.
       this.context.parent.forEach(p => p.tell({ kind: 'passivate-ack' }));
       return;

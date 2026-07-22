@@ -23,7 +23,7 @@ import { MultiNodeSpec } from '../../src/testkit/MultiNodeSpec.js';
 import { MultiNodeTransport } from '../../src/testkit/internal/MultiNodeTransport.js';
 import type { ActorRef } from '../../src/ActorRef.js';
 
-type Cmd = { kind: 'add'; n: number };
+type Command = { kind: 'add'; n: number };
 type Event = { kind: 'added'; n: number };
 
 const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
@@ -34,7 +34,7 @@ const TIGHT_FD = {
   downAfterMs: 400,
 } as const;
 
-class ReplicatedCounter extends ReplicatedEventSourcedActor<Cmd, Event, { value: number }> {
+class ReplicatedCounter extends ReplicatedEventSourcedActor<Command, Event, { value: number }> {
   readonly persistenceId = 'counter-1';
   readonly replicaId: string;
   constructor(cluster: Cluster) { super(cluster); this.replicaId = cluster.selfAddress.toString(); }
@@ -42,7 +42,7 @@ class ReplicatedCounter extends ReplicatedEventSourcedActor<Cmd, Event, { value:
   onEvent(s: { value: number }, e: Event): { value: number } {
     return { value: s.value + e.n };
   }
-  async onCommand(_s: { value: number }, c: Cmd): Promise<void> {
+  async onCommand(_s: { value: number }, c: Command): Promise<void> {
     if (c.kind === 'add') await this.persist({ kind: 'added', n: c.n });
   }
   /** Test hook — read the state without going through ask(). */
@@ -70,14 +70,14 @@ describe('Replicated ES — three-node convergence', () => {
       // ask them for their state directly (Props.create returns
       // ActorRef without exposing the underlying instance).
       const instances = new Map<string, ReplicatedCounter>();
-      const refs = new Map<string, ActorRef<Cmd>>();
+      const refs = new Map<string, ActorRef<Command>>();
       for (const role of ['a', 'b', 'c'] as const) {
         const cluster = spec.clusterFor(role);
         const ref = spec.systemFor(role).spawn(
-          Props.create<Cmd>(() => {
+          Props.create<Command>(() => {
             const inst = new ReplicatedCounter(cluster);
             instances.set(role, inst);
-            return inst as unknown as _Actor<Cmd>;
+            return inst as unknown as _Actor<Command>;
           }),
           `counter-${role}`,
         );
@@ -130,14 +130,14 @@ describe('Replicated ES — three-node convergence', () => {
       ]);
 
       const instances = new Map<string, ReplicatedCounter>();
-      const refs = new Map<string, ActorRef<Cmd>>();
+      const refs = new Map<string, ActorRef<Command>>();
       for (const role of ['a', 'b', 'c'] as const) {
         const cluster = spec.clusterFor(role);
         const ref = spec.systemFor(role).spawn(
-          Props.create<Cmd>(() => {
+          Props.create<Command>(() => {
             const inst = new ReplicatedCounter(cluster);
             instances.set(role, inst);
-            return inst as unknown as _Actor<Cmd>;
+            return inst as unknown as _Actor<Command>;
           }),
           `counter-${role}`,
         );

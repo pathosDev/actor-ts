@@ -65,11 +65,11 @@ export class ORMap<K, V extends Crdt<V>> implements Crdt<ORMap<K, V>> {
     private readonly identity: (k: K) => string,
   ) {}
 
-  static empty<K, V extends Crdt<V>>(opts: ORMapOptions<K> = {}): ORMap<K, V> {
+  static empty<K, V extends Crdt<V>>(options: ORMapOptions<K> = {}): ORMap<K, V> {
     return new ORMap<K, V>(
       ORSet.empty<string>(),
       new Map(),
-      opts.identity ?? (defaultIdentity as (k: K) => string),
+      options.identity ?? (defaultIdentity as (k: K) => string),
     );
   }
 
@@ -198,12 +198,12 @@ export class ORMap<K, V extends Crdt<V>> implements Crdt<ORMap<K, V>> {
   static fromJSON<K, V extends Crdt<V>>(
     json: ORMapJson,
     decodeValue: (json: unknown) => V,
-    opts: ORMapOptions<K> = {},
+    options: ORMapOptions<K> = {},
   ): ORMap<K, V> {
     if (json.kind !== 'ORMap') {
       throw new Error(`ORMap.fromJSON: unexpected kind ${json.kind}`);
     }
-    const identity = opts.identity ?? (defaultIdentity as (k: K) => string);
+    const identity = options.identity ?? (defaultIdentity as (k: K) => string);
     const keyset = ORSet.fromJSON<string>(json.keyset);
     const entries = new Map<string, Entry<K, V>>();
     for (const [id, valueJson] of Object.entries(json.values)) {

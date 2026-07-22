@@ -27,7 +27,7 @@ const utf8Decoder = new TextDecoder();
 
 /**
  * SnapshotStore backed by any `ObjectStorageBackend`.  Each snapshot
- * lands at `<prefix><pid>/<seq.padStart(20,'0')>.json` — the padding
+ * lands at `<prefix><persistenceId>/<seq.padStart(20,'0')>.json` — the padding
  * scheme is what makes `loadLatest` cheap (single LIST with `limit:1`
  * and reverse iteration over the sorted result).
  *
@@ -56,7 +56,7 @@ export class ObjectStorageSnapshotStore implements SnapshotStore {
   }
 
   async save<S>(
-    pid: string,
+    persistenceId: string,
     seq: number,
     state: S,
     options?: PersistenceOptions,
@@ -69,15 +69,15 @@ export class ObjectStorageSnapshotStore implements SnapshotStore {
     // through to the plugin config; an actor that sets compression but
     // not encryption only overrides compression.
     const compression = options?.compression
-      ?? resolveCompression(this.compression, pid, { algorithm: 'gzip' });
+      ?? resolveCompression(this.compression, persistenceId, { algorithm: 'gzip' });
     const encryption = options?.encryption
-      ?? resolveEncryption(this.encryption, pid, { mode: 'none' });
+      ?? resolveEncryption(this.encryption, persistenceId, { mode: 'none' });
 
     const now = Date.now();
-    const json = JSON.stringify({ persistenceId: pid, sequenceNr: seq, state, timestamp: now });
+    const json = JSON.stringify({ persistenceId: persistenceId, sequenceNr: seq, state, timestamp: now });
     let body: Uint8Array;
     try {
-      const active = await activeEncryptKey(encryption, pid);
+      const active = await activeEncryptKey(encryption, persistenceId);
       // Only stamp a key version on the wire when the user opted into
       // the keyring shape; the legacy single-key path stays backwards-
       // compatible with bodies written before #8 landed.
@@ -93,10 +93,10 @@ export class ObjectStorageSnapshotStore implements SnapshotStore {
           : undefined,
       });
     } catch (e) {
-      throw new JournalError(`ObjectStorageSnapshotStore.save: encode failed for ${pid}@${seq}: ${(e as Error).message}`, e);
+      throw new JournalError(`ObjectStorageSnapshotStore.save: encode failed for ${persistenceId}@${seq}: ${(e as Error).message}`, e);
     }
 
-    const key = this.snapshotKey(pid, seq);
+    const key = this.snapshotKey(persistenceId, seq);
     try {
       await this.backend.put(key, body, {
         contentType: 'application/json',
@@ -106,27 +106,27 @@ export class ObjectStorageSnapshotStore implements SnapshotStore {
            : undefined,
       });
     } catch (e) {
-      throw new JournalError(`ObjectStorageSnapshotStore.save: backend put failed for ${pid}@${seq}: ${(e as Error).message}`, e);
+      throw new JournalError(`ObjectStorageSnapshotStore.save: backend put failed for ${persistenceId}@${seq}: ${(e as Error).message}`, e);
     }
 
     // Best-effort prune.  Failures here MUST NOT fail the save.
     if (this.keepN > 0) {
-      try { await this.pruneToKeepN(pid); } catch { /* swallow */ }
+      try { await this.pruneToKeepN(persistenceId); } catch { /* swallow */ }
     }
 
-    return { persistenceId: pid, sequenceNr: seq, state, timestamp: now };
+    return { persistenceId: persistenceId, sequenceNr: seq, state, timestamp: now };
   }
 
-  async loadLatest<S>(pid: string, options?: PersistenceOptions): Promise<Option<Snapshot<S>>> {
-    const items = await this.backend.list({ prefix: this.pidPrefix(pid) });
+  async loadLatest<S>(persistenceId: string, options?: PersistenceOptions): Promise<Option<Snapshot<S>>> {
+    const items = await this.backend.list({ prefix: this.persistenceIdPrefix(persistenceId) });
     if (items.length === 0) return none;
     // Keys are sorted ascending; we want the highest seq.
     const latest = items[items.length - 1]!;
-    return this.fetchSnapshot<S>(pid, latest.key, options);
+    return this.fetchSnapshot<S>(persistenceId, latest.key, options);
   }
 
-  async loadBefore<S>(pid: string, seq: number, options?: PersistenceOptions): Promise<Option<Snapshot<S>>> {
-    const items = await this.backend.list({ prefix: this.pidPrefix(pid) });
+  async loadBefore<S>(persistenceId: string, seq: number, options?: PersistenceOptions): Promise<Option<Snapshot<S>>> {
+    const items = await this.backend.list({ prefix: this.persistenceIdPrefix(persistenceId) });
     // Find the highest seq strictly less than the requested one.
     let chosen: string | null = null;
     for (const it of items) {
@@ -135,11 +135,11 @@ export class ObjectStorageSnapshotStore implements SnapshotStore {
       else if (entrySeq !== null && entrySeq >= seq) break;
     }
     if (!chosen) return none;
-    return this.fetchSnapshot<S>(pid, chosen, options);
+    return this.fetchSnapshot<S>(persistenceId, chosen, options);
   }
 
-  async delete(pid: string, toSeq: number): Promise<void> {
-    const items = await this.backend.list({ prefix: this.pidPrefix(pid) });
+  async delete(persistenceId: string, toSeq: number): Promise<void> {
+    const items = await this.backend.list({ prefix: this.persistenceIdPrefix(persistenceId) });
     for (const it of items) {
       const entrySeq = parseSeqFromKey(it.key);
       if (entrySeq !== null && entrySeq <= toSeq) await this.backend.delete(it.key);
@@ -152,16 +152,16 @@ export class ObjectStorageSnapshotStore implements SnapshotStore {
 
   /* ----------------------------- internals ------------------------------ */
 
-  private snapshotKey(pid: string, seq: number): string {
-    return `${this.pidPrefix(pid)}${String(seq).padStart(SEQ_PADDING, '0')}.json`;
+  private snapshotKey(persistenceId: string, seq: number): string {
+    return `${this.persistenceIdPrefix(persistenceId)}${String(seq).padStart(SEQ_PADDING, '0')}.json`;
   }
 
-  private pidPrefix(pid: string): string {
-    return `${this.prefix}${pid}/`;
+  private persistenceIdPrefix(persistenceId: string): string {
+    return `${this.prefix}${persistenceId}/`;
   }
 
   private async fetchSnapshot<S>(
-    pid: string,
+    persistenceId: string,
     key: string,
     options?: PersistenceOptions,
   ): Promise<Option<Snapshot<S>>> {
@@ -170,8 +170,8 @@ export class ObjectStorageSnapshotStore implements SnapshotStore {
     // Per-call encryption (from the actor) wins over plugin defaults — same
     // precedence order as the write path.
     const encryption = options?.encryption
-      ?? resolveEncryption(this.encryption, pid, { mode: 'none' });
-    const subKeyFor = resolveDecryptSubkey(encryption, pid);
+      ?? resolveEncryption(this.encryption, persistenceId, { mode: 'none' });
+    const subKeyFor = resolveDecryptSubkey(encryption, persistenceId);
     const decoded = await decodeBody(fetched.value.body, {
       ...(subKeyFor ? { encryption: { subKeyFor } } : {}),
       maxOutputBytes: this.maxDecompressedBytes,
@@ -190,8 +190,8 @@ export class ObjectStorageSnapshotStore implements SnapshotStore {
     });
   }
 
-  private async pruneToKeepN(pid: string): Promise<void> {
-    const items = await this.backend.list({ prefix: this.pidPrefix(pid) });
+  private async pruneToKeepN(persistenceId: string): Promise<void> {
+    const items = await this.backend.list({ prefix: this.persistenceIdPrefix(persistenceId) });
     if (items.length <= this.keepN) return;
     const toDelete = items.slice(0, items.length - this.keepN);
     for (const it of toDelete) await this.backend.delete(it.key);

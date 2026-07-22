@@ -45,17 +45,17 @@ export interface ValidatedAdapterOptions {
 export function validatedEventAdapter<E, J>(
   inner: EventAdapter<E, J>,
   codec: Codec<J>,
-  opts: ValidatedAdapterOptions = {},
+  options: ValidatedAdapterOptions = {},
 ): EventAdapter<E, J> {
   return {
     manifest: (event: E) => inner.manifest(event),
     toJournal: (event: E): OutboundFrame<J> => {
       const out = inner.toJournal(event);
-      const validated = runEncode(codec, out.payload, out.manifest, out.version, opts);
+      const validated = runEncode(codec, out.payload, out.manifest, out.version, options);
       return { manifest: out.manifest, version: out.version, payload: validated };
     },
     fromJournal: (stored: StoredFrame): E => {
-      const validated = runDecode(codec, stored, opts);
+      const validated = runDecode(codec, stored, options);
       return inner.fromJournal({
         manifest: stored.manifest,
         version: stored.version,
@@ -73,17 +73,17 @@ export function validatedEventAdapter<E, J>(
 export function validatedSnapshotAdapter<S, J>(
   inner: SnapshotAdapter<S, J>,
   codec: Codec<J>,
-  opts: ValidatedAdapterOptions = {},
+  options: ValidatedAdapterOptions = {},
 ): SnapshotAdapter<S, J> {
   return {
     manifest: (state: S) => inner.manifest(state),
     toJournal: (state: S): OutboundFrame<J> => {
       const out = inner.toJournal(state);
-      const validated = runEncode(codec, out.payload, out.manifest, out.version, opts);
+      const validated = runEncode(codec, out.payload, out.manifest, out.version, options);
       return { manifest: out.manifest, version: out.version, payload: validated };
     },
     fromJournal: (stored: StoredFrame): S => {
-      const validated = runDecode(codec, stored, opts);
+      const validated = runDecode(codec, stored, options);
       return inner.fromJournal({
         manifest: stored.manifest,
         version: stored.version,
@@ -97,7 +97,7 @@ export function validatedSnapshotAdapter<S, J>(
 
 function runEncode<J>(
   codec: Codec<J>, payload: J, manifest: string, version: number,
-  opts: ValidatedAdapterOptions,
+  options: ValidatedAdapterOptions,
 ): J {
   try {
     return codec.encode(payload) as J;
@@ -105,14 +105,14 @@ function runEncode<J>(
     throw new MigrationError(
       `validatedAdapter: codec '${codec.name ?? 'anonymous'}' rejected encode for `
       + `${manifest}@v${version}: ${(err as Error).message ?? String(err)} `
-      + `[input=${preview(payload, opts)}]`,
+      + `[input=${preview(payload, options)}]`,
       manifest, version,
     );
   }
 }
 
 function runDecode<J>(
-  codec: Codec<J>, stored: StoredFrame, opts: ValidatedAdapterOptions,
+  codec: Codec<J>, stored: StoredFrame, options: ValidatedAdapterOptions,
 ): J {
   try {
     return codec.decode(stored.payload) as J;
@@ -120,15 +120,15 @@ function runDecode<J>(
     throw new MigrationError(
       `validatedAdapter: codec '${codec.name ?? 'anonymous'}' rejected decode for `
       + `${stored.manifest}@v${stored.version}: ${(err as Error).message ?? String(err)} `
-      + `[wire=${preview(stored.payload, opts)}]`,
+      + `[wire=${preview(stored.payload, options)}]`,
       stored.manifest, stored.version,
     );
   }
 }
 
-function preview(wire: unknown, opts: ValidatedAdapterOptions): string {
-  if (opts.previewWire) {
-    try { return opts.previewWire(wire); } catch { /* fall through */ }
+function preview(wire: unknown, options: ValidatedAdapterOptions): string {
+  if (options.previewWire) {
+    try { return options.previewWire(wire); } catch { /* fall through */ }
   }
   let serialized: string;
   try { serialized = JSON.stringify(wire); }

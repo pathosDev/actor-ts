@@ -14,8 +14,8 @@ import { ActorSystem, Behaviors } from 'actor-ts';
 
 type Message = { kind: 'tick' };
 
-const ticker = Behaviors.receive<Message>((ctx, msg) => {
-  ctx.log.info(`tick at ${Date.now()}`);
+const ticker = Behaviors.receive<Message>((context, message) => {
+  context.log.info(`tick at ${Date.now()}`);
   return Behaviors.same;   // keep being a ticker
 });
 
@@ -33,11 +33,11 @@ message.
 ### `receive` — handler with context + message
 
 ```ts
-const counter = (n: number): Behavior<Message> => Behaviors.receive<Message>((ctx, msg) => {
-  switch (msg.kind) {
-    case 'inc': return counter(n + 1);
-    case 'dec': return counter(n - 1);
-    case 'get': msg.replyTo.tell(n); return Behaviors.same;
+const counter = (n: number): Behavior<Message> => Behaviors.receive<Message>((context, message) => {
+  switch (message.kind) {
+    case 'increment': return counter(n + 1);
+    case 'decrement': return counter(n - 1);
+    case 'get': message.replyTo.tell(n); return Behaviors.same;
   }
 });
 ```
@@ -50,26 +50,26 @@ behavior — `Behaviors.same` keeps the closure; a fresh
 ### `receiveMessage` — handler without context
 
 ```ts
-const counter = (n: number): Behavior<Message> => Behaviors.receiveMessage<Message>((msg) => {
-  if (msg.kind === 'inc') return counter(n + 1);
+const counter = (n: number): Behavior<Message> => Behaviors.receiveMessage<Message>((message) => {
+  if (message.kind === 'increment') return counter(n + 1);
   return Behaviors.same;
 });
 ```
 
 Shortcut for the common case where you don't need the context.
-Equivalent to `Behaviors.receive((_ctx, msg) => ...)`.
+Equivalent to `Behaviors.receive((_context, message) => ...)`.
 
 ### `receiveWithSignal` — handler + lifecycle signals
 
 ```ts
 const watcher = Behaviors.receiveWithSignal<Message>(
-  (ctx, msg) => {
+  (context, message) => {
     // handle user message...
     return Behaviors.same;
   },
-  (ctx, signal) => {
+  (context, signal) => {
     if (signal.kind === 'terminated') {
-      ctx.log.info(`watched actor ${signal.ref.path} stopped`);
+      context.log.info(`watched actor ${signal.ref.path} stopped`);
     }
     return Behaviors.same;
   },
@@ -91,11 +91,11 @@ form.
 ### `setup` — capture the context once
 
 ```ts
-const myActor = Behaviors.setup<Message>((ctx) => {
-  ctx.log.info(`I'm starting at ${ctx.path}`);
-  const helper = ctx.spawn(helperBehavior, 'helper');
-  return Behaviors.receive((_ctx, msg) => {
-    helper.tell(msg);   // helper captured in closure
+const myActor = Behaviors.setup<Message>((context) => {
+  context.log.info(`I'm starting at ${context.path}`);
+  const helper = context.spawn(helperBehavior, 'helper');
+  return Behaviors.receive((_context, message) => {
+    helper.tell(message);   // helper captured in closure
     return Behaviors.same;
   });
 });
@@ -103,7 +103,7 @@ const myActor = Behaviors.setup<Message>((ctx) => {
 
 `setup` runs once when the actor starts.  Use it for one-time
 initialization that the receive-handler should close over:
-spawning children, capturing `ctx.self` for the children to know,
+spawning children, capturing `context.self` for the children to know,
 opening external connections.
 
 ## The decorators
@@ -118,8 +118,8 @@ import { Behaviors, type TimerScheduler } from 'actor-ts';
 const heartbeat = Behaviors.withTimers<Message>((timers) => {
   timers.startTimerWithFixedDelay('hb', { kind: 'tick' }, 5_000);
 
-  return Behaviors.receiveMessage((msg) => {
-    if (msg.kind === 'tick') console.log('heartbeat');
+  return Behaviors.receiveMessage((message) => {
+    if (message.kind === 'tick') console.log('heartbeat');
     return Behaviors.same;
   });
 });
@@ -127,24 +127,24 @@ const heartbeat = Behaviors.withTimers<Message>((timers) => {
 
 The `TimerScheduler` API is the same one `context.timers` gives
 in the untyped form.  `withTimers` captures it in a closure so
-the receive handler has access without going through `ctx.timers`
+the receive handler has access without going through `context.timers`
 on every message.
 
 ### `withStash`
 
 ```ts
 const init = Behaviors.withStash<Message>(100, (stash) => {
-  return Behaviors.receive((ctx, msg) => {
-    if (msg.kind === 'ready') {
+  return Behaviors.receive((context, message) => {
+    if (message.kind === 'ready') {
       stash.unstashAll();   // replay all buffered messages
       return ready;
     }
-    stash.stash(msg);       // park everything else for later
+    stash.stash(message);       // park everything else for later
     return Behaviors.same;
   });
 });
 
-const ready = Behaviors.receive<Message>((ctx, msg) => {
+const ready = Behaviors.receive<Message>((context, message) => {
   // handle messages normally
   return Behaviors.same;
 });
@@ -202,21 +202,21 @@ type Message =
   | { kind: 'request';   payload: string };
 
 const initializing = Behaviors.withStash<Message>(100, (stash) =>
-  Behaviors.receive<Message>((ctx, msg) => {
-    if (msg.kind === 'configure') {
-      const url = msg.url;
+  Behaviors.receive<Message>((context, message) => {
+    if (message.kind === 'configure') {
+      const url = message.url;
       stash.unstashAll();
       return ready(url);
     }
-    stash.stash(msg);
+    stash.stash(message);
     return Behaviors.same;
   }),
 );
 
 const ready = (url: string): Behavior<Message> =>
-  Behaviors.receive<Message>((ctx, msg) => {
-    if (msg.kind === 'request') {
-      ctx.log.info(`POST ${url}: ${msg.payload}`);
+  Behaviors.receive<Message>((context, message) => {
+    if (message.kind === 'request') {
+      context.log.info(`POST ${url}: ${message.payload}`);
     }
     return Behaviors.same;
   });
@@ -243,7 +243,7 @@ means "give the supervised inner the timers."  In practice:
 ```ts
 const supervised = Behaviors
   .supervise(Behaviors.withTimers((timers) =>
-    Behaviors.receive((ctx, msg) => Behaviors.same)
+    Behaviors.receive((context, message) => Behaviors.same)
   ))
   .onFailure(strategy);
 ```
@@ -256,7 +256,7 @@ import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="Returning a fresh behavior each message">
   ```ts
-  Behaviors.receive((ctx, msg) => Behaviors.receive((ctx2, msg2) => ...));
+  Behaviors.receive((context, message) => Behaviors.receive((context2, message2) => ...));
   ```
   Returning a freshly-constructed receive value is fine, but
   `Behaviors.same` is cheaper — it's a singleton value the runtime
@@ -267,8 +267,8 @@ import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="Forgetting to return `Behaviors.same`">
   ```ts
-  Behaviors.receive((ctx, msg) => {
-    ctx.log.info('handled');
+  Behaviors.receive((context, message) => {
+    context.log.info('handled');
     // ← TypeScript will flag this — no return.
   });
   ```
@@ -282,7 +282,7 @@ import { Aside } from '@astrojs/starlight/components';
   ```ts
   const counter = (n: number): Behavior<Message> => {
     let count = n;
-    return Behaviors.receive((ctx, msg) => {
+    return Behaviors.receive((context, message) => {
       count++;        // ← mutating the closure
       return Behaviors.same;
     });
@@ -299,7 +299,7 @@ import { Aside } from '@astrojs/starlight/components';
 - **[Typed actor](/typed/typed-actor/)** — the runtime
   that interprets a Behavior.
 - **[Spawn typed](/typed/spawn-typed/)** — `system.spawnTyped`,
-  `ctx.spawnTyped`, `typedProps`.
+  `context.spawnTyped`, `typedProps`.
 - **[Supervision](/fundamentals/supervision/)** — what
   `Behaviors.supervise(...).onFailure(...)` uses internally.
 - **[Become and stash (untyped)](/fundamentals/become-and-stash/)** —

@@ -12,7 +12,7 @@ export interface FileStat {
   readonly isDirectory: boolean;
 }
 
-export interface DirEntry {
+export interface DirectoryEntry {
   readonly name: string;
   readonly isDirectory: boolean;
 }
@@ -43,13 +43,13 @@ export async function realPath(path: string): Promise<string | null> {
 }
 
 /** Directory entries with a file/dir flag. */
-export async function readDirectory(path: string): Promise<DirEntry[]> {
+export async function readDirectory(path: string): Promise<DirectoryEntry[]> {
   const entries = await (await fsp()).readdir(path, { withFileTypes: true });
   return entries.map((e) => ({ name: e.name, isDirectory: e.isDirectory() }));
 }
 
 /** Read the whole file into a Uint8Array (bounded by the caller's maxFileSize). */
 export async function readFileBytes(path: string): Promise<Uint8Array> {
-  const buf = await (await fsp()).readFile(path);
-  return new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
+  const buffer = await (await fsp()).readFile(path);
+  return new Uint8Array(buffer.buffer, buffer.byteOffset, buffer.byteLength);
 }

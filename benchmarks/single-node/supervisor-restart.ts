@@ -25,24 +25,24 @@ import {
 } from '../../src/index.js';
 import { runGroup } from '../lib/harness.js';
 
-type Cmd = 'boom' | 'ping';
+type Command = 'boom' | 'ping';
 
-class Shaky extends Actor<Cmd> {
-  override onReceive(m: Cmd): void {
+class Shaky extends Actor<Command> {
+  override onReceive(m: Command): void {
     if (m === 'boom') throw new Error('restart-me');
     this.sender.forEach((s) => s.tell('pong'));
   }
 }
 
-class Supervisor extends Actor<Cmd> {
-  private child!: ActorRef<Cmd>;
+class Supervisor extends Actor<Command> {
+  private child!: ActorRef<Command>;
   override preStart(): void {
     this.child = this.context.spawn(Props.create(() => new Shaky()), 'shaky');
   }
   override supervisorStrategy(): SupervisorStrategy {
     return new OneForOneStrategy(() => Directive.Restart, { maxRetries: -1 });
   }
-  override onReceive(m: Cmd): void {
+  override onReceive(m: Command): void {
     // Forward to child, preserving sender for `ask`.
     this.child.tell(m, this.sender.toNullable());
   }
@@ -62,7 +62,7 @@ async function main(): Promise<void> {
       iterations: 1_000,
       run: async () => {
         ref.tell('boom');
-        await ask<Cmd, string>(ref, 'ping', 5_000);
+        await ask<Command, string>(ref, 'ping', 5_000);
       },
     },
   ]);

@@ -70,7 +70,7 @@ import { Actor, ActorSystem, Cluster, ClusterOptions, Props } from 'actor-ts';
 import { ClusterSingletonManager, ClusterSingletonManagerOptions, ClusterSingletonProxy } from 'actor-ts';
 
 class JobScheduler extends Actor<JobCommand> {
-  override onReceive(msg: JobCommand): void { /* ... */ }
+  override onReceive(message: JobCommand): void { /* ... */ }
 }
 
 const system  = ActorSystem.create('my-app');

@@ -17,13 +17,13 @@ const limited = rateLimit({
   cache:    new InMemoryCache(),
   windowMs: 60_000,                       // 1-Minuten-Fenster
   max:      100,                          // 100 Requests pro Key pro Minute
-  key:      (req) => req.remoteAddress ?? 'unknown',   // Socket-Peer — kein spoofbarer Header
+  key:      (request) => request.remoteAddress ?? 'unknown',   // Socket-Peer — kein spoofbarer Header
 });
 
 const routes = path('api', post(limited(apiHandler)));
 ```
 
-Jede eindeutige IP (hier: der Socket-Peer `req.remoteAddress`) bekommt ein
+Jede eindeutige IP (hier: der Socket-Peer `request.remoteAddress`) bekommt ein
 Budget von 100/Minute.  Überschüssige Requests bekommen 429 mit einem
 `Retry-After`-Header.  **Nutze als Key einen Wert, den der Client nicht
 fälschen kann** — nicht `x-forwarded-for`, außer ein vertrauenswürdiger
@@ -37,9 +37,9 @@ interface RateLimitOptions {
   cache:       Cache;
   windowMs:    number;
   max:         number;
-  key:         (req: HttpRequest) => string | Promise<string>;
+  key:         (request: HttpRequest) => string | Promise<string>;
   keyPrefix?:  string;                    // Default 'rl:'
-  onLimit?:    (ctx: RateLimitContext) => HttpResponse;
+  onLimit?:    (context: RateLimitContext) => HttpResponse;
 }
 
 interface RateLimitContext {
@@ -56,9 +56,9 @@ interface RateLimitContext {
 | `cache` | Backing-Store (In-Memory oder Redis). |
 | `windowMs` | Größe des Fixed-Windows. |
 | `max` | Maximale Requests pro Key pro Fenster. |
-| `key(req)` | Leitet den Rate-Limit-Key her — typischerweise Client-IP, User-ID oder API-Key. **Erforderlich.** |
+| `key(request)` | Leitet den Rate-Limit-Key her — typischerweise Client-IP, User-ID oder API-Key. **Erforderlich.** |
 | `keyPrefix` | Cache-Key-Namespace.  Default `'rl:'`, damit mehrere Limiter im selben Redis nicht kollidieren. |
-| `onLimit(ctx)` | Überschreibt die 429-Response — volle Kontrolle über Status / Body / Header. |
+| `onLimit(context)` | Überschreibt die 429-Response — volle Kontrolle über Status / Body / Header. |
 
 ## Eigenes Keying
 
@@ -67,9 +67,9 @@ rateLimit({
   cache,
   windowMs:    60_000,
   max: 100,
-  key:    (req) => {
-    const userId = extractUserId(req);
-    return userId ? `user:${userId}` : `ip:${req.remoteAddress ?? 'unknown'}`;
+  key:    (request) => {
+    const userId = extractUserId(request);
+    return userId ? `user:${userId}` : `ip:${request.remoteAddress ?? 'unknown'}`;
   },
 });
 ```
@@ -148,12 +148,12 @@ Drei gute Einsatzfälle:
 // Unterschiedliche Limits pro Handler:
 const apiLimited = rateLimit({
   cache, windowMs: 60_000, max: 1000,
-  key: (req) => req.headers['x-user-id'] ?? req.remoteAddress ?? 'anon',
+  key: (request) => request.headers['x-user-id'] ?? request.remoteAddress ?? 'anon',
 });
 
 const loginLimited = rateLimit({
   cache, windowMs: 60_000, max: 10,
-  key: (req) => `login:${req.remoteAddress ?? 'unknown'}`,
+  key: (request) => `login:${request.remoteAddress ?? 'unknown'}`,
 });
 
 const routes = concat(
@@ -170,7 +170,7 @@ import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="X-Forwarded-For vertrauen">
   ```ts
-  key: (req) => req.headers['x-forwarded-for'];   // ✗ spoofbar
+  key: (request) => request.headers['x-forwarded-for'];   // ✗ spoofbar
   ```
   Hinter einem Load-Balancer / Proxy steht die echte IP in
   `X-Forwarded-For` (oder ähnlich).  Aber Clients können diesen

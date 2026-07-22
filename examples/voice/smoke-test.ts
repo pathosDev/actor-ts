@@ -28,31 +28,31 @@ const HTTP_PORT = 8091;     // distinct from the default 8081 so this
                             // can be run while a real cluster is up
 const CLUSTER_PORT = 2691;
 
-interface Conn {
+interface Connection {
   ws: WebSocket;
   username: string;
   events: Array<{ kind: 'text'; data: unknown } | { kind: 'binary'; data: Uint8Array }>;
   ready: Promise<void>;
 }
 
-async function openConn(username: string, password: string): Promise<Conn> {
+async function openConnection(username: string, password: string): Promise<Connection> {
   const ws = new WebSocket(`ws://127.0.0.1:${HTTP_PORT}/ws`);
-  const events: Conn['events'] = [];
+  const events: Connection['events'] = [];
   const ready = new Promise<void>((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error(`login timeout for ${username}`)), 5000);
-    ws.on('open', () => ws.send(JSON.stringify({ type: 'login', username, password })));
+    ws.on('open', () => ws.send(JSON.stringify({ kind: 'login', username, password })));
     ws.on('message', (raw, isBinary) => {
       if (isBinary) {
-        const buf = raw instanceof Buffer ? new Uint8Array(raw.buffer, raw.byteOffset, raw.byteLength) : new Uint8Array();
-        events.push({ kind: 'binary', data: buf });
+        const buffer = raw instanceof Buffer ? new Uint8Array(raw.buffer, raw.byteOffset, raw.byteLength) : new Uint8Array();
+        events.push({ kind: 'binary', data: buffer });
         return;
       }
       const text = typeof raw === 'string' ? raw : raw.toString('utf-8');
       let m: any;
       try { m = JSON.parse(text); } catch { return; }
       events.push({ kind: 'text', data: m });
-      if (m.type === 'logged-in') { clearTimeout(timer); resolve(); }
-      if (m.type === 'login-failed') { clearTimeout(timer); reject(new Error(m.reason)); }
+      if (m.kind === 'logged-in') { clearTimeout(timer); resolve(); }
+      if (m.kind === 'login-failed') { clearTimeout(timer); reject(new Error(m.reason)); }
     });
     ws.on('error', (e) => { clearTimeout(timer); reject(e); });
   });
@@ -71,21 +71,21 @@ async function waitFor<T>(
   throw new Error(`waitFor: ${label} timed out after ${timeoutMs}ms`);
 }
 
-function clearEvents(c: Conn): void { c.events.length = 0; }
+function clearEvents(c: Connection): void { c.events.length = 0; }
 
-function findText(c: Conn, predicate: (m: any) => boolean): any | undefined {
+function findText(c: Connection, predicate: (m: any) => boolean): any | undefined {
   return c.events.find((e) => e.kind === 'text' && predicate((e as any).data))?.['data'];
 }
 
-function findBinary(c: Conn, predicate?: (b: Uint8Array) => boolean): Uint8Array | undefined {
+function findBinary(c: Connection, predicate?: (b: Uint8Array) => boolean): Uint8Array | undefined {
   const ev = c.events.find((e) => e.kind === 'binary' && (!predicate || predicate((e as any).data)));
   return ev?.['data'];
 }
 
-function decodeIncoming(buf: Uint8Array): { sender: string; opus: Uint8Array } {
-  const nameLen = buf[0]!;
-  const sender = new TextDecoder().decode(buf.subarray(1, 1 + nameLen));
-  const opus = buf.subarray(1 + nameLen);
+function decodeIncoming(buffer: Uint8Array): { sender: string; opus: Uint8Array } {
+  const nameLen = buffer[0]!;
+  const sender = new TextDecoder().decode(buffer.subarray(1, 1 + nameLen));
+  const opus = buffer.subarray(1 + nameLen);
   return { sender, opus };
 }
 
@@ -110,8 +110,8 @@ async function main(): Promise<void> {
     await delay(500); // small grace for receptionist registration on the voice-session side
 
     // Two clients log in.
-    const alice = await openConn('alice', 'wonderland');
-    const bob = await openConn('bob', 'builder');
+    const alice = await openConnection('alice', 'wonderland');
+    const bob = await openConnection('bob', 'builder');
     await Promise.all([alice.ready, bob.ready]);
     console.log('login ok: alice + bob');
 
@@ -122,9 +122,9 @@ async function main(): Promise<void> {
 
     /* ---------------- Mode 1: 1:1 PTT ---------------- */
     clearEvents(alice); clearEvents(bob);
-    alice.ws.send(JSON.stringify({ type: 'voice-target', mode: 'peer', target: 'bob' }));
+    alice.ws.send(JSON.stringify({ kind: 'voice-target', mode: 'peer', target: 'bob' }));
     await waitFor(
-      () => findText(alice, (m) => m.type === 'voice-target-ok' && m.key === 'bob'),
+      () => findText(alice, (m) => m.kind === 'voice-target-ok' && m.key === 'bob'),
       3_000, 'voice-target-ok peer→bob',
     );
 
@@ -138,17 +138,17 @@ async function main(): Promise<void> {
     if (decoded.sender !== 'alice') throw new Error(`expected sender alice, got ${decoded.sender}`);
     console.log(`1:1 ok: bob received ${decoded.opus.byteLength} bytes from ${decoded.sender}`);
 
-    alice.ws.send(JSON.stringify({ type: 'voice-stop' }));
+    alice.ws.send(JSON.stringify({ kind: 'voice-stop' }));
     await waitFor(
-      () => findText(bob, (m) => m.type === 'voice-incoming-end' && m.from === 'alice'),
+      () => findText(bob, (m) => m.kind === 'voice-incoming-end' && m.from === 'alice'),
       2_000, 'bob receives voice-incoming-end',
     );
 
     /* ---------------- Mode 2: 1:N group ---------------- */
     clearEvents(alice); clearEvents(bob);
-    alice.ws.send(JSON.stringify({ type: 'voice-target', mode: 'group', group: 'engineering' }));
+    alice.ws.send(JSON.stringify({ kind: 'voice-target', mode: 'group', group: 'engineering' }));
     await waitFor(
-      () => findText(alice, (m) => m.type === 'voice-target-ok' && m.key === 'engineering'),
+      () => findText(alice, (m) => m.kind === 'voice-target-ok' && m.key === 'engineering'),
       2_000, 'voice-target-ok group→engineering',
     );
     alice.ws.send(fakeOpus);
@@ -159,20 +159,20 @@ async function main(): Promise<void> {
     const decGroup = decodeIncoming(inGroup);
     if (decGroup.sender !== 'alice') throw new Error(`group: expected alice, got ${decGroup.sender}`);
     console.log(`group ok: bob (engineering) heard ${decGroup.opus.byteLength} bytes`);
-    alice.ws.send(JSON.stringify({ type: 'voice-stop' }));
+    alice.ws.send(JSON.stringify({ kind: 'voice-stop' }));
     await waitFor(
-      () => findText(bob, (m) => m.type === 'voice-incoming-end' && m.from === 'alice'),
+      () => findText(bob, (m) => m.kind === 'voice-incoming-end' && m.from === 'alice'),
       2_000, 'bob group end',
     );
 
     /* ---------------- Mode 3: N:N room ---------------- */
     clearEvents(alice); clearEvents(bob);
-    alice.ws.send(JSON.stringify({ type: 'room-enter', room: 'standup' }));
-    bob.ws.send(JSON.stringify({ type: 'room-enter', room: 'standup' }));
+    alice.ws.send(JSON.stringify({ kind: 'room-enter', room: 'standup' }));
+    bob.ws.send(JSON.stringify({ kind: 'room-enter', room: 'standup' }));
     await delay(500); // let DD ORSet converge
-    alice.ws.send(JSON.stringify({ type: 'voice-target', mode: 'room', room: 'standup' }));
+    alice.ws.send(JSON.stringify({ kind: 'voice-target', mode: 'room', room: 'standup' }));
     await waitFor(
-      () => findText(alice, (m) => m.type === 'voice-target-ok' && m.key === 'standup'),
+      () => findText(alice, (m) => m.kind === 'voice-target-ok' && m.key === 'standup'),
       2_000, 'voice-target-ok room→standup',
     );
     alice.ws.send(fakeOpus);
@@ -189,9 +189,9 @@ async function main(): Promise<void> {
     if (findBinary(alice)) throw new Error('self-filter violated: alice heard her own room frame');
     console.log('self-filter ok: alice did not hear own room audio');
 
-    alice.ws.send(JSON.stringify({ type: 'voice-stop' }));
+    alice.ws.send(JSON.stringify({ kind: 'voice-stop' }));
     await waitFor(
-      () => findText(bob, (m) => m.type === 'voice-incoming-end' && m.from === 'alice'),
+      () => findText(bob, (m) => m.kind === 'voice-incoming-end' && m.from === 'alice'),
       2_000, 'bob room end',
     );
 

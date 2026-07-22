@@ -43,41 +43,53 @@ export interface KafkaPublish {
  */
 export type KafkaCommitMode = 'auto' | 'manual';
 
+/** Publish a record via the actor's producer. */
+type PublishCommand = { readonly kind: 'publish'; readonly publish: KafkaPublish };
+
+/** Add a topic to the running consumer at runtime. */
+type SubscribeCommand = { readonly kind: 'subscribe'; readonly topic: string };
+
+/**
+ * Commit the offset for a message that was delivered in
+ * `commitMode: 'manual'` mode.  The pump's `eachMessage` promise
+ * resolves; kafkajs commits `offset + 1` and reads the next message
+ * on this partition.  Sending `commit` outside manual-commit mode
+ * is silently ignored.
+ */
+type CommitCommand = { readonly kind: 'commit'; readonly topic: string; readonly partition: number; readonly offset: string };
+
+/**
+ * Negative-acknowledge a manual-commit message — the offset is
+ * **not** committed and the eachMessage promise rejects, so
+ * kafkajs treats the partition as having failed: on rebalance /
+ * restart the same offset will be re-delivered.  The optional
+ * `reason` shows up in the actor's warn log.
+ */
+type NegativeAcknowledgmentCommand = { readonly kind: 'negativeAcknowledgment'; readonly topic: string; readonly partition: number; readonly offset: string; readonly reason?: string };
+
+/**
+ * Bump the consumer's session-deadline mid-processing (#78).
+ * `commitMode: 'manual'` pauses the eachMessage pump until the
+ * handler ack's; if the handler runs longer than the consumer's
+ * `sessionTimeoutMs` (kafkajs default 30 s) the broker evicts the
+ * member, the partition rebalances, and the message is
+ * re-delivered after the rebalance settles.
+ *
+ * `heartbeat` invokes the captured kafkajs `heartbeat()` callback
+ * for the still-pending record, which restarts the session clock
+ * without touching the offset.  Send it periodically from any
+ * handler that's likely to exceed `sessionTimeoutMs / 3`; the
+ * `withAutoHeartbeat()` helper schedules it for you.  Heartbeats
+ * for an unknown / already-committed record are a silent no-op.
+ */
+type HeartbeatCommand = { readonly kind: 'heartbeat'; readonly topic: string; readonly partition: number; readonly offset: string };
+
 export type KafkaCommand =
-  | { readonly kind: 'publish'; readonly publish: KafkaPublish }
-  | { readonly kind: 'subscribe'; readonly topic: string }
-  /**
-   * Commit the offset for a message that was delivered in
-   * `commitMode: 'manual'` mode.  The pump's `eachMessage` promise
-   * resolves; kafkajs commits `offset + 1` and reads the next message
-   * on this partition.  Sending `commit` outside manual-commit mode
-   * is silently ignored.
-   */
-  | { readonly kind: 'commit'; readonly topic: string; readonly partition: number; readonly offset: string }
-  /**
-   * Negative-acknowledge a manual-commit message — the offset is
-   * **not** committed and the eachMessage promise rejects, so
-   * kafkajs treats the partition as having failed: on rebalance /
-   * restart the same offset will be re-delivered.  The optional
-   * `reason` shows up in the actor's warn log.
-   */
-  | { readonly kind: 'nack'; readonly topic: string; readonly partition: number; readonly offset: string; readonly reason?: string }
-  /**
-   * Bump the consumer's session-deadline mid-processing (#78).
-   * `commitMode: 'manual'` pauses the eachMessage pump until the
-   * handler ack's; if the handler runs longer than the consumer's
-   * `sessionTimeoutMs` (kafkajs default 30 s) the broker evicts the
-   * member, the partition rebalances, and the message is
-   * re-delivered after the rebalance settles.
-   *
-   * `heartbeat` invokes the captured kafkajs `heartbeat()` callback
-   * for the still-pending record, which restarts the session clock
-   * without touching the offset.  Send it periodically from any
-   * handler that's likely to exceed `sessionTimeoutMs / 3`; the
-   * `withAutoHeartbeat()` helper schedules it for you.  Heartbeats
-   * for an unknown / already-committed record are a silent no-op.
-   */
-  | { readonly kind: 'heartbeat'; readonly topic: string; readonly partition: number; readonly offset: string };
+  | PublishCommand
+  | SubscribeCommand
+  | CommitCommand
+  | NegativeAcknowledgmentCommand
+  | HeartbeatCommand;
 
 /**
  * Kafka producer + consumer in one actor, backed by `kafkajs`.  When
@@ -116,7 +128,7 @@ export type KafkaCommand =
  *         this.kafka.tell({ kind: 'commit', topic: rec.topic,
  *                            partition: rec.partition, offset: rec.offset });
  *       } catch (e) {
- *         this.kafka.tell({ kind: 'nack',   topic: rec.topic,
+ *         this.kafka.tell({ kind: 'negativeAcknowledgment', topic: rec.topic,
  *                            partition: rec.partition, offset: rec.offset });
  *       }
  *     }
@@ -308,31 +320,33 @@ export class KafkaActor extends BrokerActor<KafkaOptionsType, KafkaCommand, Kafk
     });
   }
 
-  override onReceive(cmd: KafkaCommand): void {
+  override onReceive(command: KafkaCommand): void {
     // Compile-time exhaustiveness: adding a new KafkaCommand variant
     // forces this site to handle it explicitly.
-    match(cmd)
-      .with({ kind: 'publish' }, (command) => {
-        this.enqueueOutbound(command.publish);
-      })
-      .with({ kind: 'subscribe' }, (command) => {
-        // Runtime topic-add — kafkajs requires the consumer already be running.
-        if (this.consumer && this.connectionState === 'connected') {
-          void this.consumer.subscribe({ topic: command.topic, fromBeginning: false });
-        }
-      })
-      .with({ kind: 'commit' },    (command) => { void this.handleCommit(command); })
-      .with({ kind: 'nack' },      (command) => this.handleNack(command))
-      .with({ kind: 'heartbeat' }, (command) => { void this.handleHeartbeat(command); })
+    match(command)
+      .with({ kind: 'publish' },   (m) => this.onPublish(m))
+      .with({ kind: 'subscribe' }, (m) => this.onSubscribe(m))
+      .with({ kind: 'commit' },    (c) => void this.onCommit(c))
+      .with({ kind: 'negativeAcknowledgment' }, (c) => this.onNegativeAcknowledgment(c))
+      .with({ kind: 'heartbeat' }, (c) => void this.onHeartbeat(c))
       .exhaustive();
   }
 
   /* ----------------------------- internals ------------------------------ */
 
-  private async handleCommit(cmd: {
-    readonly topic: string; readonly partition: number; readonly offset: string;
-  }): Promise<void> {
-    const key = pendingKey(cmd.topic, cmd.partition, cmd.offset);
+  private onPublish(command: PublishCommand): void {
+    this.enqueueOutbound(command.publish);
+  }
+
+  private onSubscribe(command: SubscribeCommand): void {
+    // Runtime topic-add — kafkajs requires the consumer already be running.
+    if (this.consumer && this.connectionState === 'connected') {
+      void this.consumer.subscribe({ topic: command.topic, fromBeginning: false });
+    }
+  }
+
+  private async onCommit(command: CommitCommand): Promise<void> {
+    const key = pendingKey(command.topic, command.partition, command.offset);
     const pending = this.pendingCommits.get(key);
     if (!pending) {
       // Already committed, expired, or — most commonly — auto-mode
@@ -352,9 +366,9 @@ export class KafkaActor extends BrokerActor<KafkaOptionsType, KafkaCommand, Kafk
       // i.e., one past the message we just processed.  Offsets are
       // decimal strings; we use BigInt so very large values stay
       // exact (Kafka offsets are 64-bit).
-      const next = String(BigInt(cmd.offset) + 1n);
+      const next = String(BigInt(command.offset) + 1n);
       await this.consumer.commitOffsets([
-        { topic: cmd.topic, partition: cmd.partition, offset: next },
+        { topic: command.topic, partition: command.partition, offset: next },
       ]);
       pending.done();
     } catch (err) {
@@ -372,10 +386,8 @@ export class KafkaActor extends BrokerActor<KafkaOptionsType, KafkaCommand, Kafk
    * without checking `commitMode` or whether the record's commit has
    * already landed elsewhere.
    */
-  private async handleHeartbeat(cmd: {
-    readonly topic: string; readonly partition: number; readonly offset: string;
-  }): Promise<void> {
-    const key = pendingKey(cmd.topic, cmd.partition, cmd.offset);
+  private async onHeartbeat(command: HeartbeatCommand): Promise<void> {
+    const key = pendingKey(command.topic, command.partition, command.offset);
     const pending = this.pendingCommits.get(key);
     if (!pending || !pending.heartbeat) {
       this.log.debug(`KafkaActor: heartbeat for unknown ${key} — ignored`);
@@ -393,18 +405,15 @@ export class KafkaActor extends BrokerActor<KafkaOptionsType, KafkaCommand, Kafk
     }
   }
 
-  private handleNack(cmd: {
-    readonly topic: string; readonly partition: number; readonly offset: string;
-    readonly reason?: string;
-  }): void {
-    const key = pendingKey(cmd.topic, cmd.partition, cmd.offset);
+  private onNegativeAcknowledgment(command: NegativeAcknowledgmentCommand): void {
+    const key = pendingKey(command.topic, command.partition, command.offset);
     const pending = this.pendingCommits.get(key);
     if (!pending) return;
     this.log.warn(
-      `KafkaActor: nack for ${key}${cmd.reason ? ` (${cmd.reason})` : ''} — `
+      `KafkaActor: nack for ${key}${command.reason ? ` (${command.reason})` : ''} — `
       + `re-delivery will happen on next rebalance`,
     );
-    pending.fail(new Error(cmd.reason ?? 'KafkaActor: nack from handler'));
+    pending.fail(new Error(command.reason ?? 'KafkaActor: nack from handler'));
     this.pendingCommits.delete(key);
   }
 }

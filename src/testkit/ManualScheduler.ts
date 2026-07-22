@@ -24,7 +24,7 @@ export class ManualScheduler extends Scheduler {
 
   /* -------------------------- Scheduler API overrides -------------------------- */
 
-  override scheduleOnceFn(delayMs: number, fn: () => void): Cancellable {
+  override scheduleOnceFunction(delayMs: number, fn: () => void): Cancellable {
     return this.add({ fireAt: this._now + delayMs, fn });
   }
 
@@ -40,7 +40,7 @@ export class ManualScheduler extends Scheduler {
     });
   }
 
-  override scheduleAtFixedRateFn(
+  override scheduleAtFixedRateFunction(
     initialDelayMs: number,
     intervalMs: number,
     fn: () => void,

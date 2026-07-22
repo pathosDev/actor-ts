@@ -8,9 +8,9 @@ import { ActorSystem, FSM, Props } from '../../src/index.js';
 
 type Color = 'red' | 'green' | 'yellow';
 interface Data { readonly enteredAt: number; }
-type Cmd = 'tick';
+type Command = 'tick';
 
-class TrafficLight extends FSM<Color, Data, Cmd> {
+class TrafficLight extends FSM<Color, Data, Command> {
   constructor() {
     super('red', { enteredAt: Date.now() });
 

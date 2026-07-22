@@ -61,12 +61,12 @@ export class MessageChannelTransport implements Transport {
     try { this.port.close?.(); } catch { /* ignore */ }
   }
 
-  send(to: NodeAddress, msg: WireMessage): void {
+  send(to: NodeAddress, message: WireMessage): void {
     if (!this.running) return;
     const envelope: BrokeredMessage = {
       from: this.self.toJSON(),
       to: to.toJSON(),
-      payload: msg,
+      payload: message,
     };
     this.port.postMessage(envelope);
   }

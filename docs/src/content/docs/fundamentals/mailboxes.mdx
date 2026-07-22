@@ -4,8 +4,8 @@ description: The per-actor queue — default FIFO, BoundedMailbox with overflow 
 ---
 
 Each actor has exactly **one mailbox** — a FIFO queue of envelopes
-waiting to be processed.  When you call `ref.tell(msg)`, the
-framework wraps `msg` in an envelope (with sender, log-context, and
+waiting to be processed.  When you call `ref.tell(message)`, the
+framework wraps `message` in an envelope (with sender, log-context, and
 optional trace context) and enqueues it on the recipient's mailbox.
 The dispatcher pulls the next envelope, hands it to the actor's
 `onReceive`, and waits for that to finish before pulling the next
@@ -102,9 +102,9 @@ explains why "stop is fast" and "supervision reacts instantly."
 import { Actor, ActorSystem, Props, BoundedMailbox } from 'actor-ts';
 
 class SlowConsumer extends Actor<{ kind: 'work'; n: number }> {
-  override async onReceive(msg: { kind: 'work'; n: number }): Promise<void> {
+  override async onReceive(message: { kind: 'work'; n: number }): Promise<void> {
     await new Promise(r => setTimeout(r, 100));   // simulate slow work
-    this.log.info(`processed ${msg.n}`);
+    this.log.info(`processed ${message.n}`);
   }
 }
 
@@ -169,16 +169,16 @@ type Message =
   | { readonly kind: 'bulk';   readonly text: string };
 
 class Worker extends Actor<Message> {
-  override onReceive(msg: Message): void {
-    this.log.info(`[${msg.kind}] ${msg.text}`);
+  override onReceive(message: Message): void {
+    this.log.info(`[${message.kind}] ${message.text}`);
   }
 }
 
 const worker = system.spawn(
   Props.create(() => new Worker())
     .withMailbox(() => new PriorityMailbox<Message>({
-      priorityFor: (msg) => msg.kind === 'urgent' ? 0
-                          : msg.kind === 'normal' ? 5
+      priorityFor: (message) => message.kind === 'urgent' ? 0
+                          : message.kind === 'normal' ? 5
                           : 10,
     })),
 );

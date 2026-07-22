@@ -220,7 +220,7 @@ Ship the new key as `active`, keep the old as `retired`.
 ```ts
 import { ObjectStoragePluginOptions, registerObjectStoragePlugins } from 'actor-ts';
 
-const opts = ObjectStoragePluginOptions.create()
+const options = ObjectStoragePluginOptions.create()
   // ... .withBackend(...), .withCompression(...), etc.
   .withEncryption({
     keys: {
@@ -255,7 +255,7 @@ const result = await reEncryptObjectStorage(backend, {
     retired: [{ version: 1, key: OLD }],
   },
   onProgress: (e) => process.stderr.write(
-    `${e.idx}/${e.total} ${e.action} ${e.key}\n`),
+    `${e.index}/${e.total} ${e.action} ${e.key}\n`),
 });
 console.log(`rewrote ${result.rewrote} of ${result.scanned} objects`);
 ```
@@ -322,14 +322,14 @@ const result = await reEncryptObjectStorage(backend, {
 
   // — durable resume —
   // Save state every 500 rewrites.  After a crash, the next
-  // call to reEncryptObjectStorage(backend, opts) picks up
+  // call to reEncryptObjectStorage(backend, options) picks up
   // exactly past the last saved key — no re-checking of
   // already-rewritten objects.
   progress,
   saveProgressEveryN: 500,
 
   onProgress: (e) => process.stderr.write(
-    `${e.idx}/${e.total} ${e.action} ${e.key}\n`),
+    `${e.index}/${e.total} ${e.action} ${e.key}\n`),
 });
 
 // On successful end-to-end completion, progress.clear() is
@@ -389,7 +389,7 @@ unrecoverable.
 | `migrateInMemoryJournal(journal, fn)`     | Bulk-rewrite every event under a journal  |
 | `migrateSnapshotStore(store, pids, fn)`   | Same for snapshots                        |
 | `MasterKeyRing` `{ active, retired? }`    | Multi-version encryption key ring         |
-| `reEncryptObjectStorage(backend, opts)`   | Sweep: re-encrypt every body under a prefix to the active key |
+| `reEncryptObjectStorage(backend, options)`   | Sweep: re-encrypt every body under a prefix to the active key |
 | `ReEncryptProgressStore` / `InMemoryReEncryptProgressStore` | Durable resume tokens for the sweep (#109) — plug a file/Redis/object-storage backed implementation for million-object buckets |
 
 All of them are exported from the top-level `actor-ts` barrel.

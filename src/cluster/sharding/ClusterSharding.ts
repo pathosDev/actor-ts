@@ -52,19 +52,19 @@ export class ClusterSharding {
    * ```ts
    * // Shorthand: pass the entity class.  Framework wraps it with Props.create.
    * sharding.start('counter', CounterEntity, {
-   *   extractEntityId: (msg) => msg.id,
+   *   extractEntityId: (message) => message.id,
    * });
    *
    * // Shorthand: pass a factory.  Useful for closures / DI / no-arg new.
    * sharding.start('cart', () => new CartEntity(deps),
-   *   StartShardingOptions.create<CartMessage>().withExtractEntityId((msg) => msg.entityId));
+   *   StartShardingOptions.create<CartMessage>().withExtractEntityId((message) => message.entityId));
    *
    * // Full-form: explicit Props + all options via the builder.
    * sharding.start(
    *   StartShardingOptions.create<CounterMessage>()
    *     .withTypeName('counter')
    *     .withEntityProps(Props.create(() => new CounterEntity()))
-   *     .withExtractEntityId((msg) => msg.id),
+   *     .withExtractEntityId((message) => message.id),
    * );
    * ```
    */
@@ -88,7 +88,7 @@ export class ClusterSharding {
     const existing = this.findRegionByType(options.typeName);
     if (existing) return existing as ActorRef<TMessage>;
 
-    const cfg = ShardRegion.settingsToConfig(
+    const config = ShardRegion.settingsToConfig(
       options,
       this.cluster,
       (path: string) => this.regionsByPath.get(path) ?? null,
@@ -96,7 +96,7 @@ export class ClusterSharding {
     const ref = this.system.spawn(
       // ShardRegion internally handles extra envelope types; cast to Actor<TMessage>
       // so the returned ref presents the user-facing signature.
-      Props.create<TMessage>(() => new ShardRegion<TMessage>(cfg) as unknown as import('../../Actor.js').Actor<TMessage>),
+      Props.create<TMessage>(() => new ShardRegion<TMessage>(config) as unknown as import('../../Actor.js').Actor<TMessage>),
       `sharding-${options.typeName}`,
     );
     this.regionsByPath.set(ref.path.toString(), ref as ActorRef<unknown>);
@@ -109,7 +109,7 @@ export class ClusterSharding {
     entity: (new () => import('../../Actor.js').Actor<TMessage>) | (() => import('../../Actor.js').Actor<TMessage>),
     options: StartShardingOptions<TMessage>,
   ): StartShardingOptionsType<TMessage> {
-    const opts = (options as Partial<StartShardingOptionsType<TMessage>>);
+    const partialOptions = (options as Partial<StartShardingOptionsType<TMessage>>);
     // Classes have a `.prototype` whose `constructor` === the class itself.
     // Arrow functions don't have `prototype`; regular non-class functions do
     // (with `.prototype.constructor === fn`), so we treat anything that's
@@ -123,7 +123,7 @@ export class ClusterSharding {
       ? () => new (entity as new () => import('../../Actor.js').Actor<TMessage>)()
       : (entity as () => import('../../Actor.js').Actor<TMessage>);
     return {
-      ...opts,
+      ...partialOptions,
       typeName,
       entityProps: Props.create<TMessage>(factory),
     } as StartShardingOptionsType<TMessage>;

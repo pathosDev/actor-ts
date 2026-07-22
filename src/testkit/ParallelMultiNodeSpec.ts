@@ -144,10 +144,10 @@ export class ParallelMultiNodeSpec {
     nextPortBase += this.options.roles.length + 1;
 
     const addressByRole = new Map<string, NodeAddress>();
-    this.options.roles.forEach((role, idx) => {
+    this.options.roles.forEach((role, index) => {
       const explicit = this.options.addresses?.[role];
       const host = explicit?.host ?? '127.0.0.1';
-      const port = explicit?.port ?? (portBase + idx);
+      const port = explicit?.port ?? (portBase + index);
       addressByRole.set(role, new NodeAddress(role, host, port));
     });
 
@@ -236,24 +236,24 @@ export class ParallelMultiNodeSpec {
   /** Async snapshot of the worker's view of cluster members. */
   async getMembers(role: string): Promise<MemberSnapshot[]> {
     const node = this.requireNode(role);
-    const resp = await this.controlRpc<QueryMembersResponse>(node, { kind: 'mns-test.query-members' });
-    return resp.members;
+    const response = await this.controlRpc<QueryMembersResponse>(node, { kind: 'mns-test.query-members' });
+    return response.members;
   }
 
   async getLeader(role: string): Promise<string | null> {
     const node = this.requireNode(role);
-    const resp = await this.controlRpc<QueryLeaderResponse>(node, { kind: 'mns-test.query-leader' });
-    return resp.leader;
+    const response = await this.controlRpc<QueryLeaderResponse>(node, { kind: 'mns-test.query-leader' });
+    return response.leader;
   }
 
   /** Invoke a scenario-defined command on the worker. */
   async runIn<R = unknown>(role: string, command: string, args: unknown = undefined): Promise<R> {
     const node = this.requireNode(role);
-    const resp = await this.controlRpc<RunCommandResponse>(node, {
+    const response = await this.controlRpc<RunCommandResponse>(node, {
       kind: 'mns-test.run-command', command, args,
     });
-    if (resp.error) throw new Error(`runIn(${role}, ${command}): ${resp.error}`);
-    return resp.result as R;
+    if (response.error) throw new Error(`runIn(${role}, ${command}): ${response.error}`);
+    return response.result as R;
   }
 
   /* ---------------------------- await helpers --------------------------- */
@@ -395,16 +395,16 @@ export class ParallelMultiNodeSpec {
   private brokerFacade(worker: WorkerLike): PortLike {
     let handler: ((e: { data: unknown }) => void) | null = null;
     worker.addEventListener('message', (e) => {
-      const msg = (e.data ?? undefined) as { kind?: string } | undefined;
-      if (msg && msg.kind === 'worker-transport' && handler) {
-        handler({ data: (msg as WorkerTransportMessage).envelope });
+      const message = (e.data ?? undefined) as { kind?: string } | undefined;
+      if (message && message.kind === 'worker-transport' && handler) {
+        handler({ data: (message as WorkerTransportMessage).envelope });
       }
     });
     return {
       postMessage(v: unknown): void {
         const envelope: BrokeredMessage = v as BrokeredMessage;
-        const msg: WorkerTransportMessage = { kind: 'worker-transport', envelope };
-        worker.postMessage(msg);
+        const message: WorkerTransportMessage = { kind: 'worker-transport', envelope };
+        worker.postMessage(message);
       },
       get onmessage(): ((e: { data: unknown }) => void) | null { return handler; },
       set onmessage(h: ((e: { data: unknown }) => void) | null) { handler = h; },
@@ -421,14 +421,14 @@ export class ParallelMultiNodeSpec {
         reject(new Error(`Worker ${addr} did not become ready within 10s`));
       }, 10_000);
       const onMessage = (e: { data?: unknown }): void => {
-        const msg = (e.data ?? undefined) as { kind?: string } | undefined;
-        if (!msg) return;
-        if (msg.kind === 'worker-hello') {
-          const hello: WorkerHelloMessage = msg as WorkerHelloMessage;
+        const message = (e.data ?? undefined) as { kind?: string } | undefined;
+        if (!message) return;
+        if (message.kind === 'worker-hello') {
+          const hello: WorkerHelloMessage = message as WorkerHelloMessage;
           void hello;
           worker.postMessage(init);
-        } else if (msg.kind === 'worker-ready') {
-          const ready: WorkerReadyMessage = msg as WorkerReadyMessage;
+        } else if (message.kind === 'worker-ready') {
+          const ready: WorkerReadyMessage = message as WorkerReadyMessage;
           void ready;
           clearTimeout(timeout);
           worker.removeEventListener('message', onMessage);

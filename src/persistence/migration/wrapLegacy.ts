@@ -24,8 +24,8 @@ import { isEnvelope } from './Envelope.js';
  *     bulk-rewriter for the in-process journal.  Preserves sequence
  *     numbers + timestamps + tags; the only thing that changes is the
  *     `event` payload.
- *   - `migrateSnapshotStore(store, pids, manifestFor)` — same idea
- *     for snapshots.  Iterates `pids` (callers source them — usually
+ *   - `migrateSnapshotStore(store, persistenceIds, manifestFor)` — same idea
+ *     for snapshots.  Iterates `persistenceIds` (callers source them — usually
  *     `await journal.persistenceIds()`).
  *
  * Cassandra / SQLite / S3 journals all need a journal-specific
@@ -84,13 +84,13 @@ export interface MigrationResult {
  */
 interface InternalMigratableJournal extends Journal {
   /**
-   * Apply `transform(event)` to every persisted event under `pid`,
+   * Apply `transform(event)` to every persisted event under `persistenceId`,
    * writing the new payload back in place.  Sequence numbers,
    * timestamps and tags are preserved.  Implemented on
    * `InMemoryJournal`; user code adds it to custom journals (or
    * skips this helper and writes a journal-specific migrator).
    */
-  _remapForMigration<E, F>(pid: string, transform: (e: E) => F): Promise<void>;
+  _remapForMigration<E, F>(persistenceId: string, transform: (e: E) => F): Promise<void>;
 }
 
 /**
@@ -103,7 +103,7 @@ interface InternalMigratableJournal extends Journal {
 export async function migrateInMemoryJournal<E>(
   journal: Journal,
   manifestFor: (e: E) => string,
-  opts: { readonly version?: number } = {},
+  options: { readonly version?: number } = {},
 ): Promise<MigrationResult> {
   if (typeof (journal as InternalMigratableJournal)._remapForMigration !== 'function') {
     throw new Error(
@@ -113,22 +113,22 @@ export async function migrateInMemoryJournal<E>(
     );
   }
   const migratable = journal as InternalMigratableJournal;
-  const version = opts.version ?? 1;
-  const pids = await journal.persistenceIds();
+  const version = options.version ?? 1;
+  const persistenceIds = await journal.persistenceIds();
   let inspected = 0;
   let wrapped = 0;
   let skipped = 0;
-  for (const pid of pids) {
+  for (const persistenceId of persistenceIds) {
     // Read first to count + decide; the `_remapForMigration` call
     // does the actual rewrite in place.
-    const events = await journal.read<E | JournalEnvelope<E>>(pid, 0);
+    const events = await journal.read<E | JournalEnvelope<E>>(persistenceId, 0);
     inspected += events.length;
     for (const persistedEvent of events) {
       if (isEnvelope(persistedEvent.event)) skipped += 1;
       else wrapped += 1;
     }
     await migratable._remapForMigration<E, JournalEnvelope<E>>(
-      pid, (e) => wrapEventAsEnvelope<E>(e, manifestFor, version),
+      persistenceId, (e) => wrapEventAsEnvelope<E>(e, manifestFor, version),
     );
   }
   return { inspected, wrapped, skipped };
@@ -137,7 +137,7 @@ export async function migrateInMemoryJournal<E>(
 /* ------------------------ snapshot-store helpers ----------------------- */
 
 /**
- * Walk a {@link SnapshotStore} for every `pid` in `pids`, load the
+ * Walk a {@link SnapshotStore} for every `persistenceId` in `persistenceIds`, load the
  * latest snapshot, and re-save it as an enveloped value if it isn't
  * one already.  Older snapshots in `keepN` history get the same
  * treatment via repeated `loadBefore` calls until exhausted.
@@ -148,16 +148,16 @@ export async function migrateInMemoryJournal<E>(
  */
 export async function migrateSnapshotStore<S>(
   store: SnapshotStore,
-  pids: ReadonlyArray<string>,
+  persistenceIds: ReadonlyArray<string>,
   manifestFor: (s: S) => string,
-  opts: { readonly version?: number } = {},
+  options: { readonly version?: number } = {},
 ): Promise<MigrationResult> {
-  const version = opts.version ?? 1;
+  const version = options.version ?? 1;
   let inspected = 0;
   let wrapped = 0;
   let skipped = 0;
-  for (const pid of pids) {
-    const latest = await store.loadLatest<S>(pid);
+  for (const persistenceId of persistenceIds) {
+    const latest = await store.loadLatest<S>(persistenceId);
     if (latest.isNone()) continue;
     inspected += 1;
     const snapshot = latest.value;
@@ -166,7 +166,7 @@ export async function migrateSnapshotStore<S>(
       continue;
     }
     const wrappedState = wrapStateAsEnvelope<S>(snapshot.state, manifestFor, version);
-    await store.save<JournalEnvelope<S>>(pid, snapshot.sequenceNr, wrappedState);
+    await store.save<JournalEnvelope<S>>(persistenceId, snapshot.sequenceNr, wrappedState);
     wrapped += 1;
   }
   return { inspected, wrapped, skipped };

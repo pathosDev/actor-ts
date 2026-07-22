@@ -34,7 +34,7 @@ describe('ChatRoomActor snapshot policy (#102)', () => {
     const actor = new ChatRoomActor();
     const policy = actor.snapshotPolicy();
     const fakeState = { history: [] };
-    const fakeEvent = { kind: 'MsgPosted' as const, from: 'a', text: 'x', ts: 0 };
+    const fakeEvent = { kind: 'MessagePosted' as const, from: 'a', text: 'x', ts: 0 };
 
     // Sample seq numbers 1..250 — boundaries (100, 200) should fire.
     const fires: number[] = [];
@@ -56,7 +56,7 @@ describe('ChatRoomActor snapshot policy (#102)', () => {
     // become coupled across instances.
     expect(policyA).not.toBe(policyB);
     const fakeState = { history: [] };
-    const fakeEvent = { kind: 'MsgPosted' as const, from: 'a', text: 'x', ts: 0 };
+    const fakeEvent = { kind: 'MessagePosted' as const, from: 'a', text: 'x', ts: 0 };
     expect(policyA(100, fakeState, fakeEvent)).toBe(true);
     expect(policyB(100, fakeState, fakeEvent)).toBe(true);
   });

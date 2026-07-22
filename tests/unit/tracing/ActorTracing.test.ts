@@ -73,9 +73,9 @@ describe('Actor tracing — auto-instrumentation', () => {
     class B extends Actor<string> {
       override onReceive(_m: string): void { /* */ }
     }
-    class A extends Actor<{ msg: string; next: ActorRef<string> }> {
-      override onReceive(m: { msg: string; next: ActorRef<string> }): void {
-        m.next.tell(m.msg);
+    class A extends Actor<{ message: string; next: ActorRef<string> }> {
+      override onReceive(m: { message: string; next: ActorRef<string> }): void {
+        m.next.tell(m.message);
       }
     }
 
@@ -83,7 +83,7 @@ describe('Actor tracing — auto-instrumentation', () => {
       const actorB = sys.spawn(Props.create(() => new B()), 'b');
       const actorA = sys.spawn(Props.create(() => new A()), 'a');
       const client = tracer.startSpan('client');
-      tracer.withActiveSpan(client, () => actorA.tell({ msg: 'forward', next: actorB }));
+      tracer.withActiveSpan(client, () => actorA.tell({ message: 'forward', next: actorB }));
       await sleep(60);
       client.end();
 

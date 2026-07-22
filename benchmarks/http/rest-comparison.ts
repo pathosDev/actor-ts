@@ -37,13 +37,13 @@ function makeRoutes(users: UsersDb): Parameters<Awaited<ReturnType<typeof startS
     path('ok',   get(() => complete(Status.OK, 'ok'))),
     path('json', get(() => completeJson(Status.OK, { ok: true }))),
     path('users', concat(
-      post(async (req) => {
-        const body = entity<{ id: string; name: string }>(req);
+      post(async (request) => {
+        const body = entity<{ id: string; name: string }>(request);
         users.set(body.id, { id: body.id, name: body.name });
         return completeJson(Status.Created, users.get(body.id));
       }),
-      path(':id', get((req) => {
-        const u = users.get(req.params.id);
+      path(':id', get((request) => {
+        const u = users.get(request.params.id);
         return u ? completeJson(Status.OK, u) : complete(Status.NotFound, 'missing');
       })),
     )),

@@ -7,20 +7,20 @@
 import { Actor, ActorSystem, ActorSystemOptions, LogLevel, NoopLogger, Props, ask } from '../../src/index.js';
 import { runGroup } from '../lib/harness.js';
 
-type Msg = { kind: 'work' } | { kind: 'go' } | { kind: 'count' };
+type Message = { kind: 'work' } | { kind: 'go' } | { kind: 'count' };
 
-class Staller extends Actor<Msg> {
+class Staller extends Actor<Message> {
   private seen = 0;
-  override onReceive(m: Msg): void {
+  override onReceive(m: Message): void {
     if (m.kind === 'work') {
       this.context.stash();
       return;
     }
     if (m.kind === 'go') {
       this.context.unstashAll();
-      this.context.become((msg) => {
-        if ((msg as Msg).kind === 'work') this.seen++;
-        if ((msg as Msg).kind === 'count') this.sender.forEach((s) => s.tell(this.seen));
+      this.context.become((message) => {
+        if ((message as Message).kind === 'work') this.seen++;
+        if ((message as Message).kind === 'count') this.sender.forEach((s) => s.tell(this.seen));
       });
       return;
     }
@@ -38,7 +38,7 @@ async function main(): Promise<void> {
     const ref = system.spawnAnonymous(Props.create(() => new Staller()));
     for (let i = 0; i < batch; i++) ref.tell({ kind: 'work' });
     ref.tell({ kind: 'go' });
-    await ask<Msg, number>(ref, { kind: 'count' }, 30_000);
+    await ask<Message, number>(ref, { kind: 'count' }, 30_000);
     ref.stop();
   };
 

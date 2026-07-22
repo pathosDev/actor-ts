@@ -38,25 +38,25 @@ export class SqliteSnapshotStore implements SnapshotStore {
     this.keepN = resolvedOptions.keepN ?? 3;
   }
 
-  async save<S>(pid: string, seq: number, state: S, _options?: PersistenceOptions): Promise<Snapshot<S>> {
+  async save<S>(persistenceId: string, seq: number, state: S, _options?: PersistenceOptions): Promise<Snapshot<S>> {
     // SQLite store has no compression / encryption — options ignored.
     await this.ensureOpen();
     const stmts = this.stmts!;
     const now = Date.now();
     try {
-      stmts.insert.run(pid, seq, JSON.stringify(state), now);
+      stmts.insert.run(persistenceId, seq, JSON.stringify(state), now);
       if (this.keepN > 0) {
-        stmts.deleteOlderThan.run(pid, pid, this.keepN);
+        stmts.deleteOlderThan.run(persistenceId, persistenceId, this.keepN);
       }
-      return { persistenceId: pid, sequenceNr: seq, state, timestamp: now };
+      return { persistenceId: persistenceId, sequenceNr: seq, state, timestamp: now };
     } catch (e) {
       throw new JournalError(`SqliteSnapshotStore.save failed: ${(e as Error).message}`, e);
     }
   }
 
-  async loadLatest<S>(pid: string, _options?: PersistenceOptions): Promise<Option<Snapshot<S>>> {
+  async loadLatest<S>(persistenceId: string, _options?: PersistenceOptions): Promise<Option<Snapshot<S>>> {
     await this.ensureOpen();
-    const row = this.stmts!.latest.get(pid) as {
+    const row = this.stmts!.latest.get(persistenceId) as {
       persistence_id: string;
       sequence_nr: number;
       payload: string;
@@ -71,9 +71,9 @@ export class SqliteSnapshotStore implements SnapshotStore {
     });
   }
 
-  async loadBefore<S>(pid: string, seq: number, _options?: PersistenceOptions): Promise<Option<Snapshot<S>>> {
+  async loadBefore<S>(persistenceId: string, seq: number, _options?: PersistenceOptions): Promise<Option<Snapshot<S>>> {
     await this.ensureOpen();
-    const row = this.stmts!.before.get(pid, seq) as {
+    const row = this.stmts!.before.get(persistenceId, seq) as {
       persistence_id: string;
       sequence_nr: number;
       payload: string;
@@ -88,9 +88,9 @@ export class SqliteSnapshotStore implements SnapshotStore {
     });
   }
 
-  async delete(pid: string, toSeq: number): Promise<void> {
+  async delete(persistenceId: string, toSeq: number): Promise<void> {
     await this.ensureOpen();
-    this.stmts!.deleteUpTo.run(pid, toSeq);
+    this.stmts!.deleteUpTo.run(persistenceId, toSeq);
   }
 
   async close(): Promise<void> {

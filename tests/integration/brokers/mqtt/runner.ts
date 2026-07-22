@@ -15,7 +15,7 @@ import { MqttOptions } from '../../../../src/io/broker/MqttOptions.js';
 import type { ActorRef } from '../../../../src/ActorRef.js';
 import type { MqttRef } from '../../../../src/io/broker/MqttMessages.js';
 import { waitForPort } from '../lib/wait-for-port.js';
-import { runScenarios, type BrokerScenario, type BrokerScenarioCtx } from '../lib/scenario.js';
+import { runScenarios, type BrokerScenario, type BrokerScenarioContext } from '../lib/scenario.js';
 import { scenario as pubsubScenario } from './scenarios/01-publish-subscribe.js';
 import { scenario as qos1Scenario } from './scenarios/02-qos1.js';
 import { scenario as qos2Scenario } from './scenarios/03-qos2.js';
@@ -23,7 +23,7 @@ import { scenario as retainedScenario } from './scenarios/04-retained.js';
 import { scenario as wildcardScenario } from './scenarios/05-wildcard.js';
 import { scenario as typedScenario } from './scenarios/06-typed-entities.js';
 
-export interface MqttCtx extends BrokerScenarioCtx {
+export interface MqttContext extends BrokerScenarioContext {
   readonly brokerUrl: string;
   readonly system: ActorSystem;
 }
@@ -40,8 +40,8 @@ function requireEnv(name: string): string {
  * supplied on `subscribe` commands.  `onMessage` is never reached.
  */
 class RouterMqttActor extends MqttActor {
-  constructor(opts: MqttOptions) { super(opts); }
-  override onMessage(_msg: MqttMessage): void { /* external-target routing only */ }
+  constructor(options: MqttOptions) { super(options); }
+  override onMessage(_message: MqttMessage): void { /* external-target routing only */ }
 }
 
 /**
@@ -65,10 +65,10 @@ async function main(): Promise<void> {
     .withLogLevel(LogLevel.Info));
   process.on('SIGTERM', () => { void system.terminate(); });
 
-  const ctx: MqttCtx = { env: process.env, brokerUrl, system };
+  const context: MqttContext = { env: process.env, brokerUrl, system };
 
   try {
-    const scenarios: BrokerScenario<MqttCtx>[] = [
+    const scenarios: BrokerScenario<MqttContext>[] = [
       pubsubScenario,
       qos1Scenario,
       qos2Scenario,
@@ -76,32 +76,32 @@ async function main(): Promise<void> {
       wildcardScenario,
       typedScenario,
     ];
-    await runScenarios(scenarios, ctx);
+    await runScenarios(scenarios, context);
   } finally {
     await system.terminate();
   }
 }
 
 /** Fresh router MqttActor instance per scenario — keeps state isolated. */
-export function spawnMqtt(ctx: MqttCtx, opts: {
+export function spawnMqtt(context: MqttContext, options: {
   protocolVersion?: 4 | 5;
   clientId?: string;
 } = {}): { ref: MqttRef } {
   const actor = new RouterMqttActor(
     MqttOptions.create()
-      .withBrokerUrl(ctx.brokerUrl)
-      .withClientId(opts.clientId ?? `actor-ts-${Date.now()}-${Math.random().toString(36).slice(2)}`)
-      .withProtocolVersion(opts.protocolVersion ?? 4)
+      .withBrokerUrl(context.brokerUrl)
+      .withClientId(options.clientId ?? `actor-ts-${Date.now()}-${Math.random().toString(36).slice(2)}`)
+      .withProtocolVersion(options.protocolVersion ?? 4)
       .withCleanSession(true),
   );
-  const ref = ctx.system.spawnAnonymous(Props.create(() => actor));
+  const ref = context.system.spawnAnonymous(Props.create(() => actor));
   return { ref };
 }
 
 /** Spawn a fresh inbox actor whose received messages are observable. */
-export function spawnInbox(ctx: MqttCtx): { ref: ActorRef<MqttMessage>; inbox: InboxActor } {
+export function spawnInbox(context: MqttContext): { ref: ActorRef<MqttMessage>; inbox: InboxActor } {
   const inbox = new InboxActor();
-  const ref = ctx.system.spawnAnonymous(Props.create(() => inbox));
+  const ref = context.system.spawnAnonymous(Props.create(() => inbox));
   return { ref, inbox };
 }
 
