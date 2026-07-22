@@ -81,6 +81,17 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Fixed
 
+- **Persistence (Cassandra): single-flight `start()`, a live `consistency`
+  option, and an accurate batch comment** (#380).  `CassandraJournal.start()`
+  and `CassandraSnapshotStore.start()` set `started` only at the very end, so
+  two concurrent first calls both ran `connect()` + DDL; they now share a
+  single in-flight start (a failed start clears the guard so a later call
+  retries).  The `consistency` option (exposed as `withConsistency`) was
+  declared but never sent — every read, write, and batch now passes the
+  configured CQL consistency level.  The `append` comment that claimed a logged
+  batch "only if same partition" (while the code always passed `logged: false`)
+  is corrected to describe the actual unlogged-batch-per-partition behaviour and
+  why it is safe under the single-writer contract.
 - **Persistence: `highestSeq` no longer rewinds to 0 after a full delete**
   (#379).  When `delete(pid, toSeq)` removed every event for a persistenceId,
   the in-memory, SQLite, Postgres and MariaDB journals recomputed the highest

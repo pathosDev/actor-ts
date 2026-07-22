@@ -42,6 +42,8 @@ export class CassandraJournal implements Journal {
   private client: CassandraClientLike;
   /** True once `ensureStarted()` has run keyspace + table DDL. */
   private started = false;
+  /** Single-flight guard so two concurrent first calls don't both connect + run DDL. */
+  private startPromise: Promise<void> | null = null;
   /** Toggle so shutdown only happens once. */
   private stopped = false;
   /** Only shut down the client if WE created it — don't close someone else's. */
@@ -54,9 +56,23 @@ export class CassandraJournal implements Journal {
     this.ownsClient = !this.options.client;
   }
 
-  /** Explicitly connect + ensure schema.  Called lazily on first use. */
+  /**
+   * Explicitly connect + ensure schema.  Called lazily on first use.
+   * Single-flight: concurrent callers share one in-flight start; a failed
+   * start clears the guard so a later call can retry.
+   */
   async start(): Promise<void> {
     if (this.started) return;
+    if (!this.startPromise) {
+      this.startPromise = this.doStart().catch((e) => {
+        this.startPromise = null;
+        throw e;
+      });
+    }
+    await this.startPromise;
+  }
+
+  private async doStart(): Promise<void> {
     if (this.ownsClient && !this.client) {
       this.client = await createCassandraClient(this.options as CassandraConnection);
     }
@@ -68,6 +84,20 @@ export class CassandraJournal implements Journal {
       await this.ensureTables();
     }
     this.started = true;
+  }
+
+  /** CQL query options for data-path reads/writes, honouring the configured consistency level. */
+  private readOptions(): { prepare: boolean; consistency?: number } {
+    return this.options.consistency === undefined
+      ? { prepare: true }
+      : { prepare: true, consistency: this.options.consistency };
+  }
+
+  /** CQL batch options — unlogged (see `append`), honouring the configured consistency level. */
+  private batchOptions(): { prepare: boolean; logged: boolean; consistency?: number } {
+    return this.options.consistency === undefined
+      ? { prepare: true, logged: false }
+      : { prepare: true, logged: false, consistency: this.options.consistency };
   }
 
   async append<E>(
@@ -90,15 +120,19 @@ export class CassandraJournal implements Journal {
     const tagList = tags ? Array.from(tags) : null;
     const written: PersistentEvent<E>[] = [];
 
-    // 2) Batch INSERT events.  We use a logged batch only if every insert
-    //    lands in the same partition — otherwise Cassandra logs a warning.
-    //    To keep it simple we build one batch per partition.
+    // 2) Batch INSERT events, one unlogged batch per partition.  Unlogged
+    //    (not atomic across rows) is fine here: the single-writer-per-pid
+    //    contract means no concurrent writer races these inserts, and the
+    //    metadata max-seq is written only after the batch succeeds, so a
+    //    partial batch is recovered by re-running from the last committed
+    //    max-seq.  Splitting per partition avoids Cassandra's multi-partition
+    //    logged-batch warning.
     let batchPartition: number | null = null;
     let batchOps: Array<{ query: string; params: ReadonlyArray<unknown> }> = [];
     const flush = async (): Promise<void> => {
       if (batchOps.length === 0) return;
       try {
-        await this.client.batch(batchOps, { prepare: true, logged: false });
+        await this.client.batch(batchOps, this.batchOptions());
       } catch (e) {
         throw new JournalError(`CassandraJournal.append: batch failed: ${(e as Error).message}`, e);
       }
@@ -146,7 +180,7 @@ export class CassandraJournal implements Journal {
       await this.client.execute(
         `INSERT INTO ${this.qualified(this.metadataTable)} (persistence_id, max_sequence_nr, updated_at) VALUES (?, ?, ?)`,
         [persistenceId, seq, now],
-        { prepare: true },
+        this.readOptions(),
       );
     } catch (e) {
       throw new JournalError(`CassandraJournal.append: metadata update failed: ${(e as Error).message}`, e);
@@ -159,7 +193,7 @@ export class CassandraJournal implements Journal {
         await this.client.execute(
           `INSERT INTO ${this.qualified(this.allIdsTable)} (tag, persistence_id) VALUES (?, ?)`,
           ['_all', persistenceId],
-          { prepare: true },
+          this.readOptions(),
         );
       } catch { /* non-fatal — listing is best-effort */ }
     }
@@ -182,7 +216,7 @@ export class CassandraJournal implements Journal {
       const response = await this.client.execute(
         `SELECT persistence_id, partition_nr, sequence_nr, timestamp, payload, tags FROM ${this.qualified(this.eventsTable)} WHERE persistence_id = ? AND partition_nr = ? AND sequence_nr >= ? AND sequence_nr <= ?`,
         [persistenceId, partition, fromSeq, hi],
-        { prepare: true },
+        this.readOptions(),
       );
       for (const row of response.rows as unknown as EventRow[]) {
         out.push({
@@ -213,7 +247,7 @@ export class CassandraJournal implements Journal {
         await this.client.execute(
           `DELETE FROM ${this.qualified(this.eventsTable)} WHERE persistence_id = ? AND partition_nr = ? AND sequence_nr <= ?`,
           [persistenceId, partition, toSeq],
-          { prepare: true },
+          this.readOptions(),
         );
       } catch (e) {
         throw new JournalError(`CassandraJournal.delete failed: ${(e as Error).message}`, e);
@@ -226,7 +260,7 @@ export class CassandraJournal implements Journal {
     const response = await this.client.execute(
       `SELECT persistence_id FROM ${this.qualified(this.allIdsTable)} WHERE tag = ?`,
       ['_all'],
-      { prepare: true },
+      this.readOptions(),
     );
     return (response.rows as unknown as Array<{ persistence_id: string }>).map(r => r.persistence_id);
   }
@@ -263,7 +297,7 @@ export class CassandraJournal implements Journal {
     const response = await this.client.execute(
       `SELECT max_sequence_nr FROM ${this.qualified(this.metadataTable)} WHERE persistence_id = ?`,
       [persistenceId],
-      { prepare: true },
+      this.readOptions(),
     );
     const row = response.rows[0] as { max_sequence_nr?: string | number } | undefined;
     return row?.max_sequence_nr !== undefined ? Number(row.max_sequence_nr) : 0;

@@ -26,6 +26,8 @@ export class CassandraSnapshotStore implements SnapshotStore {
   private readonly options: Partial<CassandraSnapshotStoreOptionsType>;
   private client: CassandraClientLike;
   private started = false;
+  /** Single-flight guard so two concurrent first calls don't both connect + run DDL. */
+  private startPromise: Promise<void> | null = null;
   private stopped = false;
   private readonly ownsClient: boolean;
   private readonly keepN: number;
@@ -39,6 +41,16 @@ export class CassandraSnapshotStore implements SnapshotStore {
 
   async start(): Promise<void> {
     if (this.started) return;
+    if (!this.startPromise) {
+      this.startPromise = this.doStart().catch((e) => {
+        this.startPromise = null;
+        throw e;
+      });
+    }
+    await this.startPromise;
+  }
+
+  private async doStart(): Promise<void> {
     if (this.ownsClient && !(this.client as unknown)) {
       this.client = await createCassandraClient(this.options as CassandraConnection);
     }
@@ -52,6 +64,13 @@ export class CassandraSnapshotStore implements SnapshotStore {
     this.started = true;
   }
 
+  /** CQL query options for data-path reads/writes, honouring the configured consistency level. */
+  private readOptions(): { prepare: boolean; consistency?: number } {
+    return this.options.consistency === undefined
+      ? { prepare: true }
+      : { prepare: true, consistency: this.options.consistency };
+  }
+
   async save<S>(persistenceId: string, seq: number, state: S, _options?: PersistenceOptions): Promise<Snapshot<S>> {
     // Cassandra store has no compression / encryption — options ignored.
     await this.ensureStarted();
@@ -61,7 +80,7 @@ export class CassandraSnapshotStore implements SnapshotStore {
       await this.client.execute(
         `INSERT INTO ${this.qualified()} (persistence_id, sequence_nr, timestamp, payload) VALUES (?, ?, ?, ?)`,
         [persistenceId, seq, now, payload],
-        { prepare: true },
+        this.readOptions(),
       );
       if (this.keepN > 0) await this.pruneKeepN(persistenceId);
       return { persistenceId: persistenceId, sequenceNr: seq, state, timestamp: now };
@@ -75,7 +94,7 @@ export class CassandraSnapshotStore implements SnapshotStore {
     const response = await this.client.execute(
       `SELECT persistence_id, sequence_nr, timestamp, payload FROM ${this.qualified()} WHERE persistence_id = ? LIMIT 1`,
       [persistenceId],
-      { prepare: true },
+      this.readOptions(),
     );
     return this.rowToSnapshot<S>(response.rows[0] as unknown as SnapshotRow | undefined);
   }
@@ -85,7 +104,7 @@ export class CassandraSnapshotStore implements SnapshotStore {
     const response = await this.client.execute(
       `SELECT persistence_id, sequence_nr, timestamp, payload FROM ${this.qualified()} WHERE persistence_id = ? AND sequence_nr < ? LIMIT 1`,
       [persistenceId, seq],
-      { prepare: true },
+      this.readOptions(),
     );
     return this.rowToSnapshot<S>(response.rows[0] as unknown as SnapshotRow | undefined);
   }
@@ -96,7 +115,7 @@ export class CassandraSnapshotStore implements SnapshotStore {
       await this.client.execute(
         `DELETE FROM ${this.qualified()} WHERE persistence_id = ? AND sequence_nr <= ?`,
         [persistenceId, toSeq],
-        { prepare: true },
+        this.readOptions(),
       );
     } catch (e) {
       throw new JournalError(`CassandraSnapshotStore.delete failed: ${(e as Error).message}`, e);
@@ -131,7 +150,7 @@ export class CassandraSnapshotStore implements SnapshotStore {
     const response = await this.client.execute(
       `SELECT sequence_nr FROM ${this.qualified()} WHERE persistence_id = ? LIMIT ?`,
       [persistenceId, this.keepN],
-      { prepare: true },
+      this.readOptions(),
     );
     const rows = response.rows as unknown as Array<{ sequence_nr: string | number }>;
     if (rows.length < this.keepN) return; // not yet at the cap
@@ -140,7 +159,7 @@ export class CassandraSnapshotStore implements SnapshotStore {
     await this.client.execute(
       `DELETE FROM ${this.qualified()} WHERE persistence_id = ? AND sequence_nr < ?`,
       [persistenceId, cutoff],
-      { prepare: true },
+      this.readOptions(),
     );
   }
 
