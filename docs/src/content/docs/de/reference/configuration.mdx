@@ -134,7 +134,6 @@ ihre Defaults aus `actor-ts.http.websocket`:
 | --- | --- | --- |
 | `persistence.journal.plugin` | `"...in-memory"` | Voll qualifizierter Key zur Konfig des Journals. |
 | `persistence.snapshot-store.plugin` | `"...in-memory"` | Voll qualifizierter Key zur Konfig des Snapshot Stores. |
-| `persistence.recovery.mode` | `"eager"` | `eager` (Default) — alle Events bei preStart wieder abspielen.  `parallel` — in Chunks wieder abspielen. |
 
 Die Plugin-Keys zeigen auf *einen anderen* Config-Abschnitt, der
 die Settings dieses Plugins enthält.  Z. B. enthält

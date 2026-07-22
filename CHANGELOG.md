@@ -79,6 +79,19 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   (`open`/`exec`/`prepare`/`run`/`get`/`all`/`transaction`/`close`) is
   unchanged, so no consumer migration is required.
 
+### Removed
+
+- **BREAKING — dead persistence options removed** (#381).  Three
+  declared-but-never-implemented knobs are gone (pre-1.0 hard cut):
+  `LiveQueryOptions.batchSize` and `LiveQueryOptions.clock` (no query
+  implementation ever batched or read an injected clock); the object-storage
+  plugin's `durableStatePluginId` option + `withDurableStatePluginId` builder
+  method (the plugin only ever registered the snapshot store by id, never the
+  durable-state store); and the HOCON key `actor-ts.persistence.recovery.mode`
+  (defined in the reference config + documented, but read by no code).
+  *Migration:* remove any use of these — they were no-ops.  (The Cassandra
+  `consistency` option is **not** removed — it is now honoured; see Fixed.)
+
 ### Fixed
 
 - **Persistence (Cassandra): single-flight `start()`, a live `consistency`
