@@ -4,6 +4,7 @@ import {
   JournalConcurrencyError,
   type PersistentEvent,
 } from '../JournalTypes.js';
+import { assertValidTags } from '../storage/TagValidator.js';
 
 /**
  * In-process journal backed by plain arrays.  The default plug-in used by
@@ -32,6 +33,7 @@ export class InMemoryJournal implements Journal {
     expectedSeq: number,
     tags?: ReadonlyArray<string>,
   ): Promise<PersistentEvent<E>[]> {
+    assertValidTags(tags);
     const stream = this.streams.get(persistenceId) ?? [];
     const actualSeq = this.highWater.get(persistenceId) ?? 0;
     if (actualSeq !== expectedSeq) {

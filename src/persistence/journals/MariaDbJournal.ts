@@ -12,6 +12,7 @@ import {
   type MariaDbConnectionLike,
   type MariaDbPoolLike,
 } from './MariaDbClient.js';
+import { assertValidTags } from '../storage/TagValidator.js';
 import type { MariaDbJournalOptions, MariaDbJournalOptionsType } from './MariaDbJournalOptions.js';
 
 interface EventRow {
@@ -61,6 +62,7 @@ export class MariaDbJournal implements Journal {
     tags?: ReadonlyArray<string>,
   ): Promise<PersistentEvent<E>[]> {
     if (events.length === 0) return [];
+    assertValidTags(tags);
     const pool = await this.ensureOpen();
     const connection = await pool.getConnection();
     const now = Date.now();

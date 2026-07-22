@@ -7,6 +7,7 @@ import {
   type PersistentEvent,
 } from '../JournalTypes.js';
 import { assertSafeIdentifier } from '../storage/SqlIdentifier.js';
+import { assertValidTags } from '../storage/TagValidator.js';
 import type { SqliteJournalOptions, SqliteJournalOptionsType } from './SqliteJournalOptions.js';
 
 interface Stmts {
@@ -74,6 +75,7 @@ export class SqliteJournal implements Journal {
     expectedSeq: number,
     tags?: ReadonlyArray<string>,
   ): Promise<PersistentEvent<E>[]> {
+    assertValidTags(tags);
     await this.ensureOpen();
     if (events.length === 0) return [];
     const db = this.db!;

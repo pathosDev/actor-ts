@@ -129,6 +129,22 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   zero-config default is unchanged: with no plugin key set, the in-memory
   reference implementation is still used.
 
+### Security
+
+- **Persistence: event tags are validated at the journal boundary** (#136).
+  Tags (from `PersistentActor.tagsFor`, often derived from user input) are
+  always bound as query parameters, so SQL/CQL injection was never reachable —
+  but they were otherwise unchecked.  A shared `assertValidTags` now runs in
+  every journal's `append` and rejects a comma (which would split into extra
+  tags out of SQLite's CSV `tags` column and corrupt a peer event's tag list),
+  control characters / newlines (log-injection family), and enforces per-tag
+  length (255) and per-event count (64) caps against index/row-size blow-ups.
+  Also, `CassandraSnapshotStore` now validates its keyspace + table
+  identifiers through `assertSafeIdentifier` (the journal already did), closing
+  the last raw-interpolation gap in the Cassandra backend.
+
+## [0.11.0] — 2026-07-15
+
 ### Changed — Naming conventions: no abbreviations, unified vocabulary
 
 Repo-wide naming sweep for consistency.  Pre-1.0, so these are hard

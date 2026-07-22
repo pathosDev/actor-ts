@@ -10,6 +10,7 @@ import {
   type PgClientLike,
   type PgPoolLike,
 } from './PostgresClient.js';
+import { assertValidTags } from '../storage/TagValidator.js';
 import type { PostgresJournalOptions, PostgresJournalOptionsType } from './PostgresJournalOptions.js';
 
 interface EventRow {
@@ -71,6 +72,7 @@ export class PostgresJournal implements Journal {
     tags?: ReadonlyArray<string>,
   ): Promise<PersistentEvent<E>[]> {
     if (events.length === 0) return [];
+    assertValidTags(tags);
     const pool = await this.ensureOpen();
     const client = await pool.connect();
     const now = Date.now();

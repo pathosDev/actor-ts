@@ -12,6 +12,7 @@ import {
 } from './CassandraClient.js';
 import { CassandraJournalOptionsValidator } from './CassandraJournalOptions.js';
 import { assertSafeIdentifier } from '../storage/SqlIdentifier.js';
+import { assertValidTags } from '../storage/TagValidator.js';
 import type { CassandraJournalOptions, CassandraJournalOptionsType } from './CassandraJournalOptions.js';
 
 interface EventRow {
@@ -107,6 +108,7 @@ export class CassandraJournal implements Journal {
     tags?: ReadonlyArray<string>,
   ): Promise<PersistentEvent<E>[]> {
     if (events.length === 0) return [];
+    assertValidTags(tags);
     await this.ensureStarted();
 
     // 1) Read current max-seq from metadata; throw on mismatch.

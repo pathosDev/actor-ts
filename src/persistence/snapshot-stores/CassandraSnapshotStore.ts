@@ -8,6 +8,7 @@ import {
   type CassandraClientLike,
   type CassandraConnection,
 } from '../journals/CassandraClient.js';
+import { assertSafeIdentifier } from '../storage/SqlIdentifier.js';
 import type { CassandraSnapshotStoreOptions, CassandraSnapshotStoreOptionsType } from './CassandraSnapshotStoreOptions.js';
 
 interface SnapshotRow {
@@ -133,7 +134,13 @@ export class CassandraSnapshotStore implements SnapshotStore {
   /* ========================== internal ========================== */
 
   private get table(): string { return this.options.snapshotsTable ?? 'snapshots'; }
-  private qualified(): string { return `${this.options.keyspace}.${this.table}`; }
+  private qualified(): string {
+    // keyspace + table are interpolated into CQL (identifiers can't be bound),
+    // so validate them against a safe charset (security audit #6 / #136).
+    const keyspace = this.options.keyspace;
+    if (keyspace !== undefined) assertSafeIdentifier(keyspace, 'keyspace');
+    return `${keyspace}.${assertSafeIdentifier(this.table, 'snapshots table')}`;
+  }
 
   private rowToSnapshot<S>(row: SnapshotRow | undefined): Option<Snapshot<S>> {
     if (!row) return none;
