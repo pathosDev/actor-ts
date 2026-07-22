@@ -155,7 +155,7 @@ export interface ReEncryptOptions {
 
 export interface ReEncryptProgress {
   readonly key: string;
-  readonly idx: number;
+  readonly index: number;
   readonly total: number;
   readonly action: 'rewrote' | 'skipped-current' | 'skipped-unencrypted' | 'skipped-non-ats1';
 }
@@ -193,7 +193,7 @@ export interface ReEncryptResult {
  *     keyPrefix: 'snapshots/',
  *     keyring: { active: { version: 2, key: newKey },
  *                retired: [{ version: 1, key: oldKey }] },
- *     onProgress: (e) => process.stderr.write(`${e.idx}/${e.total} ${e.key}\n`),
+ *     onProgress: (e) => process.stderr.write(`${e.index}/${e.total} ${e.key}\n`),
  *   });
  *   console.log(`re-encrypted ${result.rewrote} of ${result.scanned}`);
  */
@@ -288,14 +288,14 @@ export async function reEncryptObjectStorage(
 
     if (!startsWithAts1(framed)) {
       result.skippedNonAts1 += 1;
-      options.onProgress?.({ key: item.key, idx: index, total, action: 'skipped-non-ats1' });
+      options.onProgress?.({ key: item.key, index, total, action: 'skipped-non-ats1' });
       continue;
     }
     const flags = framed[4]!;
     const encrypted = (flags & FLAG_ENCRYPTED) !== 0;
     if (!encrypted) {
       result.skippedUnencrypted += 1;
-      options.onProgress?.({ key: item.key, idx: index, total, action: 'skipped-unencrypted' });
+      options.onProgress?.({ key: item.key, index, total, action: 'skipped-unencrypted' });
       continue;
     }
     const versioned = (flags & FLAG_KEY_VERSIONED) !== 0;
@@ -306,7 +306,7 @@ export async function reEncryptObjectStorage(
       // considered "at version 0" for skip purposes — we still rewrite
       // them so the corpus ends up uniformly versioned.
       result.skippedCurrent += 1;
-      options.onProgress?.({ key: item.key, idx: index, total, action: 'skipped-current' });
+      options.onProgress?.({ key: item.key, index, total, action: 'skipped-current' });
       continue;
     }
 
@@ -344,7 +344,7 @@ export async function reEncryptObjectStorage(
       ifMatch: fetched.value.etag,
     });
     result.rewrote += 1;
-    options.onProgress?.({ key: item.key, idx: index, total, action: 'rewrote' });
+    options.onProgress?.({ key: item.key, index, total, action: 'rewrote' });
 
     // Persist progress every Nth REWRITE (skips don't count — they're
     // cheap to redo).

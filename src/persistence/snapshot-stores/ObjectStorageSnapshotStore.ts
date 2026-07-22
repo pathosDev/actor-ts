@@ -118,7 +118,7 @@ export class ObjectStorageSnapshotStore implements SnapshotStore {
   }
 
   async loadLatest<S>(persistenceId: string, options?: PersistenceOptions): Promise<Option<Snapshot<S>>> {
-    const items = await this.backend.list({ prefix: this.pidPrefix(persistenceId) });
+    const items = await this.backend.list({ prefix: this.persistenceIdPrefix(persistenceId) });
     if (items.length === 0) return none;
     // Keys are sorted ascending; we want the highest seq.
     const latest = items[items.length - 1]!;
@@ -126,7 +126,7 @@ export class ObjectStorageSnapshotStore implements SnapshotStore {
   }
 
   async loadBefore<S>(persistenceId: string, seq: number, options?: PersistenceOptions): Promise<Option<Snapshot<S>>> {
-    const items = await this.backend.list({ prefix: this.pidPrefix(persistenceId) });
+    const items = await this.backend.list({ prefix: this.persistenceIdPrefix(persistenceId) });
     // Find the highest seq strictly less than the requested one.
     let chosen: string | null = null;
     for (const it of items) {
@@ -139,7 +139,7 @@ export class ObjectStorageSnapshotStore implements SnapshotStore {
   }
 
   async delete(persistenceId: string, toSeq: number): Promise<void> {
-    const items = await this.backend.list({ prefix: this.pidPrefix(persistenceId) });
+    const items = await this.backend.list({ prefix: this.persistenceIdPrefix(persistenceId) });
     for (const it of items) {
       const entrySeq = parseSeqFromKey(it.key);
       if (entrySeq !== null && entrySeq <= toSeq) await this.backend.delete(it.key);
@@ -153,10 +153,10 @@ export class ObjectStorageSnapshotStore implements SnapshotStore {
   /* ----------------------------- internals ------------------------------ */
 
   private snapshotKey(persistenceId: string, seq: number): string {
-    return `${this.pidPrefix(persistenceId)}${String(seq).padStart(SEQ_PADDING, '0')}.json`;
+    return `${this.persistenceIdPrefix(persistenceId)}${String(seq).padStart(SEQ_PADDING, '0')}.json`;
   }
 
-  private pidPrefix(persistenceId: string): string {
+  private persistenceIdPrefix(persistenceId: string): string {
     return `${this.prefix}${persistenceId}/`;
   }
 
@@ -191,7 +191,7 @@ export class ObjectStorageSnapshotStore implements SnapshotStore {
   }
 
   private async pruneToKeepN(persistenceId: string): Promise<void> {
-    const items = await this.backend.list({ prefix: this.pidPrefix(persistenceId) });
+    const items = await this.backend.list({ prefix: this.persistenceIdPrefix(persistenceId) });
     if (items.length <= this.keepN) return;
     const toDelete = items.slice(0, items.length - this.keepN);
     for (const it of toDelete) await this.backend.delete(it.key);

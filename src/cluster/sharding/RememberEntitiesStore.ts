@@ -51,24 +51,24 @@ export interface RememberEntitiesStore {
 export class JournalRememberEntitiesStore implements RememberEntitiesStore {
   constructor(private readonly journal: Journal) {}
 
-  private pidFor(typeName: string): string {
+  private persistenceIdFor(typeName: string): string {
     return `sharding-coordinator-${typeName}`;
   }
 
   async append(typeName: string, event: RememberEvent): Promise<void> {
-    const persistenceId = this.pidFor(typeName);
+    const persistenceId = this.persistenceIdFor(typeName);
     const head = await this.journal.highestSeq(persistenceId);
     await this.journal.append(persistenceId, [event], head, ['sharding-remember']);
   }
 
   async load(typeName: string): Promise<RememberEvent[]> {
-    const persistenceId = this.pidFor(typeName);
+    const persistenceId = this.persistenceIdFor(typeName);
     const events = await this.journal.read<RememberEvent>(persistenceId, 1);
     return events.map((pe) => pe.event);
   }
 
   async clear(typeName: string): Promise<void> {
-    const persistenceId = this.pidFor(typeName);
+    const persistenceId = this.persistenceIdFor(typeName);
     const head = await this.journal.highestSeq(persistenceId);
     if (head > 0) await this.journal.delete(persistenceId, head);
   }

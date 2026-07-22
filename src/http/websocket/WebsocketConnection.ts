@@ -20,9 +20,9 @@ import type { WebsocketFrame, WebsocketUpgradeInfo } from './types.js';
  * from the connection module, not the other way round.
  */
 export type WebsocketOutboundCommand<TOut> =
-  | { readonly _cmd: 'out'; readonly msg: TOut }
-  | { readonly _cmd: 'out-raw'; readonly frame: WebsocketFrame }
-  | { readonly _cmd: 'close'; readonly code: number; readonly reason: string };
+  | { readonly kind: 'out'; readonly message: TOut }
+  | { readonly kind: 'out-raw'; readonly frame: WebsocketFrame }
+  | { readonly kind: 'close'; readonly code: number; readonly reason: string };
 
 export interface WebsocketConnection<TOut> extends ActorRef<TOut> {
   /** Stable id, unique within the process (e.g. `ws-7`). */
@@ -62,14 +62,14 @@ export class WebsocketConnectionImplementation<TOut> extends ActorRef<TOut> impl
   }
 
   override tell(message: TOut): void {
-    this.connectionRef.tell({ _cmd: 'out', msg: message });
+    this.connectionRef.tell({ kind: 'out', message });
   }
 
   sendRaw(frame: WebsocketFrame): void {
-    this.connectionRef.tell({ _cmd: 'out-raw', frame });
+    this.connectionRef.tell({ kind: 'out-raw', frame });
   }
 
   close(code = 1000, reason = ''): void {
-    this.connectionRef.tell({ _cmd: 'close', code, reason });
+    this.connectionRef.tell({ kind: 'close', code, reason });
   }
 }

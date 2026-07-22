@@ -79,11 +79,11 @@ export class WebsocketConnectionActor<TOut, TIn, TSelf = never>
       this.log.debug(`WebsocketConnectionActor ${this.d.id}: command after close — ignored`);
       return;
     }
-    switch (command._cmd) {
+    switch (command.kind) {
       case 'out': {
         let frame: WebsocketFrame;
         try {
-          frame = this.d.codec.encode(command.msg);
+          frame = this.d.codec.encode(command.message);
         } catch (err) {
           this.log.error(`WebsocketConnectionActor ${this.d.id}: encode failed, dropping message: ${(err as Error).message}`);
           return;

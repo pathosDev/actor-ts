@@ -9,7 +9,7 @@
  *     up at `target.highestSeq + 1`.
  *   - Snapshot store copy: latest snapshot lands at the same seq in
  *     target; empty pids are no-ops.
- *   - skipExistingPids: bypasses pids that already have data in target.
+ *   - skipExistingPersistenceIds: bypasses pids that already have data in target.
  */
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { InMemoryJournal } from '../../../../../src/persistence/journals/InMemoryJournal.js';
@@ -43,8 +43,8 @@ describe('migrateBetweenJournals', () => {
 
     const result = await migrateBetweenJournals(source, target);
 
-    expect(result.pidsInspected).toBe(2);
-    expect(result.pidsWritten).toBe(2);
+    expect(result.persistenceIdsInspected).toBe(2);
+    expect(result.persistenceIdsWritten).toBe(2);
     expect(result.eventsWritten).toBe(4);
 
     // Order-1: three events, same payload + same tags
@@ -82,13 +82,13 @@ describe('migrateBetweenJournals', () => {
 
     const first = await migrateBetweenJournals(source, target);
     expect(first.eventsWritten).toBe(2);
-    expect(first.pidsWritten).toBe(1);
+    expect(first.persistenceIdsWritten).toBe(1);
 
     const second = await migrateBetweenJournals(source, target);
     expect(second.eventsWritten).toBe(0);
-    // pidsWritten counts pids with > 0 writes — second pass has none
-    expect(second.pidsWritten).toBe(0);
-    expect(second.pidsInspected).toBe(1);
+    // persistenceIdsWritten counts pids with > 0 writes — second pass has none
+    expect(second.persistenceIdsWritten).toBe(0);
+    expect(second.persistenceIdsInspected).toBe(1);
   });
 
   test('resumes from a partial copy: target ahead-of-zero, source has more', async () => {
@@ -113,7 +113,7 @@ describe('migrateBetweenJournals', () => {
     await progress.save({ completed: ['pid-a'] });
 
     const result = await migrateBetweenJournals(source, target, { progress });
-    expect(result.pidsSkippedAlreadyDone).toBe(1);
+    expect(result.persistenceIdsSkippedAlreadyDone).toBe(1);
     expect(result.eventsWritten).toBe(2);
 
     // pid-a never got copied; b + c did.
@@ -126,15 +126,15 @@ describe('migrateBetweenJournals', () => {
     expect(new Set(final.completed)).toEqual(new Set(['pid-a', 'pid-b', 'pid-c']));
   });
 
-  test('skipExistingPids leaves target pids with data alone', async () => {
+  test('skipExistingPersistenceIds leaves target pids with data alone', async () => {
     await source.append('keep-target', [{ src: true }], 0);
     await source.append('copy-me', [{ src: true }], 0);
     await target.append('keep-target', [{ target: true }], 0);
 
     const result = await migrateBetweenJournals(source, target, {
-      skipExistingPids: true,
+      skipExistingPersistenceIds: true,
     });
-    expect(result.pidsSkippedExistingTarget).toBe(1);
+    expect(result.persistenceIdsSkippedExistingTarget).toBe(1);
     expect(result.eventsWritten).toBe(1);
 
     const keep = await target.read<{ target?: boolean; src?: boolean }>('keep-target', 1);
@@ -147,7 +147,7 @@ describe('migrateBetweenJournals', () => {
 
     const events: string[] = [];
     await migrateBetweenJournals(source, target, {
-      onProgress: (p) => events.push(`${p.pid}=${p.events}`),
+      onProgress: (p) => events.push(`${p.persistenceId}=${p.events}`),
     });
     expect(events).toEqual(['a=1', 'b=2']);
   });
@@ -158,9 +158,9 @@ describe('migrateBetweenJournals', () => {
     await source.append('c', [{ n: 3 }], 0);
 
     const result = await migrateBetweenJournals(source, target, {
-      pids: ['a', 'c'],
+      persistenceIds: ['a', 'c'],
     });
-    expect(result.pidsInspected).toBe(2);
+    expect(result.persistenceIdsInspected).toBe(2);
     expect(result.eventsWritten).toBe(2);
     expect((await target.read('b', 1)).length).toBe(0);
   });
@@ -174,10 +174,10 @@ describe('migrateBetweenSnapshotStores', () => {
     await src.save('user-2', 3, { name: 'bob', balance: 50 });
 
     const result = await migrateBetweenSnapshotStores(src, tgt, {
-      pids: ['user-1', 'user-2'],
+      persistenceIds: ['user-1', 'user-2'],
     });
-    expect(result.pidsCopied).toBe(2);
-    expect(result.pidsEmpty).toBe(0);
+    expect(result.persistenceIdsCopied).toBe(2);
+    expect(result.persistenceIdsEmpty).toBe(0);
 
     const u1 = await tgt.loadLatest<{ name: string; balance: number }>('user-1');
     expect(u1.toNullable()?.sequenceNr).toBe(5);
@@ -190,7 +190,7 @@ describe('migrateBetweenSnapshotStores', () => {
     await src.save('p', 2, { v: 1 });
 
     await migrateBetweenSnapshotStores<{ v: number }>(src, tgt, {
-      pids: ['p'],
+      persistenceIds: ['p'],
       stateTransform: (s) => ({ v: s.v * 10 }),
     });
     const loaded = await tgt.loadLatest<{ v: number }>('p');
@@ -203,24 +203,24 @@ describe('migrateBetweenSnapshotStores', () => {
     await src.save('has-data', 1, { x: 1 });
 
     const result = await migrateBetweenSnapshotStores(src, tgt, {
-      pids: ['has-data', 'empty-pid'],
+      persistenceIds: ['has-data', 'empty-pid'],
     });
-    expect(result.pidsCopied).toBe(1);
-    expect(result.pidsEmpty).toBe(1);
+    expect(result.persistenceIdsCopied).toBe(1);
+    expect(result.persistenceIdsEmpty).toBe(1);
 
     const empty = await tgt.loadLatest('empty-pid');
     expect(empty.isNone()).toBe(true);
   });
 
-  test('skipExistingPids leaves target snapshots intact', async () => {
+  test('skipExistingPersistenceIds leaves target snapshots intact', async () => {
     const src = new InMemorySnapshotStore();
     const tgt = new InMemorySnapshotStore();
     await src.save('p', 5, { from: 'src' });
     await tgt.save('p', 3, { from: 'tgt' });
 
     await migrateBetweenSnapshotStores(src, tgt, {
-      pids: ['p'],
-      skipExistingPids: true,
+      persistenceIds: ['p'],
+      skipExistingPersistenceIds: true,
     });
     const loaded = await tgt.loadLatest<{ from: string }>('p');
     expect(loaded.toNullable()?.state).toEqual({ from: 'tgt' });

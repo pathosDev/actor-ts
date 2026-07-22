@@ -64,30 +64,30 @@ export interface MigrateJournalsOptions<E = unknown> {
   /** Resume-state.  See {@link MigrationProgressStore}. */
   readonly progress?: MigrationProgressStore;
   /** Optional progress hook called once per pid after a successful copy. */
-  readonly onProgress?: (e: { pid: string; events: number; idx: number; total: number }) => void;
+  readonly onProgress?: (e: { persistenceId: string; events: number; index: number; total: number }) => void;
   /**
    * Pids to copy.  Default: every pid `source.persistenceIds()`
    * returns.  Subset useful for sharded migrations (e.g. one worker
    * per shard).
    */
-  readonly pids?: ReadonlyArray<string>;
+  readonly persistenceIds?: ReadonlyArray<string>;
   /**
    * When true, skip pids that already exist in `target` (any non-zero
    * highestSeq).  Default: false — append from `target.highestSeq + 1`
    * onward, useful for resuming an interrupted copy mid-pid.
    */
-  readonly skipExistingPids?: boolean;
+  readonly skipExistingPersistenceIds?: boolean;
 }
 
 export interface MigrateJournalsResult {
   /** Pids inspected (incl. skipped). */
-  readonly pidsInspected: number;
+  readonly persistenceIdsInspected: number;
   /** Pids the helper actually wrote events for. */
-  readonly pidsWritten: number;
+  readonly persistenceIdsWritten: number;
   /** Pids fully skipped because they were already in `completed`. */
-  readonly pidsSkippedAlreadyDone: number;
-  /** Pids skipped because of `skipExistingPids: true` and target had data. */
-  readonly pidsSkippedExistingTarget: number;
+  readonly persistenceIdsSkippedAlreadyDone: number;
+  /** Pids skipped because of `skipExistingPersistenceIds: true` and target had data. */
+  readonly persistenceIdsSkippedExistingTarget: number;
   /** Total events written to the target. */
   readonly eventsWritten: number;
 }
@@ -116,7 +116,7 @@ export interface MigrateJournalsResult {
  *       event: oldShapeToNew(e.event),
  *     }),
  *     onProgress: (p) => console.log(
- *       `[${p.idx}/${p.total}] ${p.pid}: ${p.events} events`),
+ *       `[${p.index}/${p.total}] ${p.persistenceId}: ${p.events} events`),
  *   });
  */
 export async function migrateBetweenJournals<E = unknown>(
@@ -124,30 +124,30 @@ export async function migrateBetweenJournals<E = unknown>(
   target: Journal,
   options: MigrateJournalsOptions<E> = {},
 ): Promise<MigrateJournalsResult> {
-  const allPersistenceIds = options.pids ?? await source.persistenceIds();
+  const allPersistenceIds = options.persistenceIds ?? await source.persistenceIds();
   const progress = options.progress;
   const completed = new Set(progress ? (await progress.load()).completed : []);
   const transform = options.eventTransform ?? ((e: PersistentEvent<E>) => e);
   const result = {
-    pidsInspected: 0,
-    pidsWritten: 0,
-    pidsSkippedAlreadyDone: 0,
-    pidsSkippedExistingTarget: 0,
+    persistenceIdsInspected: 0,
+    persistenceIdsWritten: 0,
+    persistenceIdsSkippedAlreadyDone: 0,
+    persistenceIdsSkippedExistingTarget: 0,
     eventsWritten: 0,
   };
 
   for (let index = 0; index < allPersistenceIds.length; index++) {
     const persistenceId = allPersistenceIds[index]!;
-    result.pidsInspected += 1;
+    result.persistenceIdsInspected += 1;
 
     if (completed.has(persistenceId)) {
-      result.pidsSkippedAlreadyDone += 1;
+      result.persistenceIdsSkippedAlreadyDone += 1;
       continue;
     }
 
     const targetHigh = await target.highestSeq(persistenceId);
-    if (options.skipExistingPids && targetHigh > 0) {
-      result.pidsSkippedExistingTarget += 1;
+    if (options.skipExistingPersistenceIds && targetHigh > 0) {
+      result.persistenceIdsSkippedExistingTarget += 1;
       // Treat as completed for future resume runs.
       completed.add(persistenceId);
       if (progress) await progress.save({ completed: [...completed] });
@@ -164,13 +164,13 @@ export async function migrateBetweenJournals<E = unknown>(
         expected += 1;
         result.eventsWritten += 1;
       }
-      result.pidsWritten += 1;
+      result.persistenceIdsWritten += 1;
     }
 
     completed.add(persistenceId);
     if (progress) await progress.save({ completed: [...completed] });
     options.onProgress?.({
-      pid: persistenceId, events: sourceEvents.length, idx: index, total: allPersistenceIds.length,
+      persistenceId, events: sourceEvents.length, index, total: allPersistenceIds.length,
     });
   }
 
@@ -183,19 +183,19 @@ export interface MigrateSnapshotStoresOptions<S = unknown> {
   /** Per-snapshot transform; default: pass through. */
   readonly stateTransform?: (s: S) => S;
   /** Set of pids to copy; default: caller must supply (no enumeration on snapshot stores). */
-  readonly pids: ReadonlyArray<string>;
+  readonly persistenceIds: ReadonlyArray<string>;
   readonly progress?: MigrationProgressStore;
-  readonly onProgress?: (e: { pid: string; idx: number; total: number; copied: boolean }) => void;
+  readonly onProgress?: (e: { persistenceId: string; index: number; total: number; copied: boolean }) => void;
   /** Skip pids whose target already has a latest snapshot. */
-  readonly skipExistingPids?: boolean;
+  readonly skipExistingPersistenceIds?: boolean;
 }
 
 export interface MigrateSnapshotStoresResult {
-  readonly pidsInspected: number;
-  readonly pidsCopied: number;
-  readonly pidsEmpty: number;
-  readonly pidsSkippedAlreadyDone: number;
-  readonly pidsSkippedExistingTarget: number;
+  readonly persistenceIdsInspected: number;
+  readonly persistenceIdsCopied: number;
+  readonly persistenceIdsEmpty: number;
+  readonly persistenceIdsSkippedAlreadyDone: number;
+  readonly persistenceIdsSkippedExistingTarget: number;
 }
 
 /**
@@ -221,24 +221,24 @@ export async function migrateBetweenSnapshotStores<S = unknown>(
   const completed = new Set(progress ? (await progress.load()).completed : []);
   const transform = options.stateTransform ?? ((s: S) => s);
   const result = {
-    pidsInspected: 0,
-    pidsCopied: 0,
-    pidsEmpty: 0,
-    pidsSkippedAlreadyDone: 0,
-    pidsSkippedExistingTarget: 0,
+    persistenceIdsInspected: 0,
+    persistenceIdsCopied: 0,
+    persistenceIdsEmpty: 0,
+    persistenceIdsSkippedAlreadyDone: 0,
+    persistenceIdsSkippedExistingTarget: 0,
   };
 
-  for (let index = 0; index < options.pids.length; index++) {
-    const persistenceId = options.pids[index]!;
-    result.pidsInspected += 1;
+  for (let index = 0; index < options.persistenceIds.length; index++) {
+    const persistenceId = options.persistenceIds[index]!;
+    result.persistenceIdsInspected += 1;
     if (completed.has(persistenceId)) {
-      result.pidsSkippedAlreadyDone += 1;
+      result.persistenceIdsSkippedAlreadyDone += 1;
       continue;
     }
-    if (options.skipExistingPids) {
+    if (options.skipExistingPersistenceIds) {
       const existing = await target.loadLatest<S>(persistenceId);
       if (!existing.isNone()) {
-        result.pidsSkippedExistingTarget += 1;
+        result.persistenceIdsSkippedExistingTarget += 1;
         completed.add(persistenceId);
         if (progress) await progress.save({ completed: [...completed] });
         continue;
@@ -247,17 +247,17 @@ export async function migrateBetweenSnapshotStores<S = unknown>(
 
     const latest = await source.loadLatest<S>(persistenceId);
     if (latest.isNone()) {
-      result.pidsEmpty += 1;
+      result.persistenceIdsEmpty += 1;
     } else {
       const snap = latest.value;
       await target.save<S>(persistenceId, snap.sequenceNr, transform(snap.state));
-      result.pidsCopied += 1;
+      result.persistenceIdsCopied += 1;
     }
 
     completed.add(persistenceId);
     if (progress) await progress.save({ completed: [...completed] });
     options.onProgress?.({
-      pid: persistenceId, idx: index, total: options.pids.length, copied: !latest.isNone(),
+      persistenceId, index, total: options.persistenceIds.length, copied: !latest.isNone(),
     });
   }
 
