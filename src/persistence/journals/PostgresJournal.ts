@@ -7,6 +7,7 @@ import {
 import {
   assertSafeIdentifier,
   buildPgPool,
+  type PgClientLike,
   type PgPoolLike,
 } from './PostgresClient.js';
 import type { PostgresJournalOptions, PostgresJournalOptionsType } from './PostgresJournalOptions.js';
@@ -42,6 +43,7 @@ export class PostgresJournal implements Journal {
   private readonly options: PostgresJournalOptionsType;
   private readonly table: string;
   private readonly tagsTable: string;
+  private readonly metaTable: string;
   private readonly autoCreate: boolean;
 
   private pool: PgPoolLike | null = null;
@@ -58,6 +60,7 @@ export class PostgresJournal implements Journal {
     this.tagsTable = assertSafeIdentifier(
       resolvedOptions.tagsTable ?? `${this.table}_tags`, 'tags table',
     );
+    this.metaTable = assertSafeIdentifier(`${this.table}_meta`, 'meta table');
     this.autoCreate = resolvedOptions.autoCreateTables ?? true;
   }
 
@@ -77,7 +80,10 @@ export class PostgresJournal implements Journal {
         `SELECT COALESCE(MAX(sequence_nr), 0) AS hi FROM ${this.table} WHERE persistence_id = $1`,
         [persistenceId],
       );
-      const actualSeq = Number((head.rows[0] as { hi: string | number }).hi);
+      const deletedTo = await this.readDeletedTo(client, persistenceId);
+      // The high-water mark never rewinds: after a full delete the events
+      // MAX is 0 but deleted_to still holds the highest seq ever written.
+      const actualSeq = Math.max(Number((head.rows[0] as { hi: string | number }).hi), deletedTo);
       if (actualSeq !== expectedSeq) {
         await client.query('ROLLBACK');
         throw new JournalConcurrencyError(persistenceId, expectedSeq, actualSeq);
@@ -156,7 +162,8 @@ export class PostgresJournal implements Journal {
       `SELECT COALESCE(MAX(sequence_nr), 0) AS hi FROM ${this.table} WHERE persistence_id = $1`,
       [persistenceId],
     );
-    return Number((response.rows[0] as { hi: string | number }).hi);
+    const deletedTo = await this.readDeletedTo(pool, persistenceId);
+    return Math.max(Number((response.rows[0] as { hi: string | number }).hi), deletedTo);
   }
 
   async delete(persistenceId: string, toSeq: number): Promise<void> {
@@ -172,6 +179,23 @@ export class PostgresJournal implements Journal {
       `DELETE FROM ${this.table} WHERE persistence_id = $1 AND sequence_nr <= $2`,
       [persistenceId, toSeq],
     );
+    // Record the high-water mark so highestSeq / the append concurrency check
+    // don't rewind once the highest events are compacted away.
+    await pool.query(
+      `INSERT INTO ${this.metaTable}(persistence_id, deleted_to) VALUES ($1, $2)
+       ON CONFLICT (persistence_id) DO UPDATE SET deleted_to = GREATEST(${this.metaTable}.deleted_to, EXCLUDED.deleted_to)`,
+      [persistenceId, toSeq],
+    );
+  }
+
+  /** Read the compaction high-water mark for a pid — 0 when never compacted. */
+  private async readDeletedTo(runner: PgPoolLike | PgClientLike, persistenceId: string): Promise<number> {
+    const response = await runner.query(
+      `SELECT COALESCE(deleted_to, 0) AS d FROM ${this.metaTable} WHERE persistence_id = $1`,
+      [persistenceId],
+    );
+    const row = response.rows[0] as { d: string | number } | undefined;
+    return row ? Number(row.d) : 0;
   }
 
   async persistenceIds(): Promise<string[]> {
@@ -229,6 +253,12 @@ export class PostgresJournal implements Journal {
       );
       await pool.query(
         `CREATE INDEX IF NOT EXISTS idx_${this.tagsTable}_pid_seq ON ${this.tagsTable}(persistence_id, sequence_nr)`,
+      );
+      await pool.query(
+        `CREATE TABLE IF NOT EXISTS ${this.metaTable} (
+           persistence_id TEXT PRIMARY KEY,
+           deleted_to     BIGINT NOT NULL
+         )`,
       );
     }
     this.pool = pool;

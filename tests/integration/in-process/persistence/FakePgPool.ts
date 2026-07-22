@@ -43,6 +43,8 @@ export class FakePgPool implements PgPoolLike {
   private readonly tags = new Map<string, TagRow[]>();
   private readonly snaps = new Map<string, SnapRow[]>();
   private readonly states = new Map<string, Map<string, StateRow>>();
+  /** Compaction high-water mark: meta table name → persistence_id → deleted_to. */
+  private readonly meta = new Map<string, Map<string, number>>();
   ended = false;
   /** Every statement text, in order — lets tests assert on the issued SQL. */
   readonly log: string[] = [];
@@ -60,6 +62,21 @@ export class FakePgPool implements PgPoolLike {
       const rows = (this.events.get(table) ?? []).filter((r) => r.persistence_id === valuesArray[0]);
       const hi = rows.reduce((map, r) => Math.max(map, r.sequence_nr), 0);
       return { rows: [{ hi: String(hi) }], rowCount: 1 };
+    }
+
+    // ---- meta (compaction high-water mark) ----
+    if (/^INSERT INTO \w+\s*\(persistence_id, deleted_to\)/i.test(sql)) {
+      const table = tableFrom(sql, 'INTO');
+      const map = this.meta.get(table) ?? (this.meta.set(table, new Map()), this.meta.get(table)!);
+      const [persistence_id, deletedTo] = valuesArray as [string, number];
+      // ON CONFLICT … DO UPDATE SET deleted_to = GREATEST(existing, incoming)
+      map.set(persistence_id, Math.max(map.get(persistence_id) ?? 0, deletedTo));
+      return { rows: [], rowCount: 1 };
+    }
+    if (/^SELECT COALESCE\(deleted_to, 0\) AS d FROM/i.test(sql)) {
+      const table = tableFrom(sql, 'FROM');
+      const value = this.meta.get(table)?.get(valuesArray[0] as string);
+      return value === undefined ? { rows: [], rowCount: 0 } : { rows: [{ d: String(value) }], rowCount: 1 };
     }
 
     if (/^INSERT INTO \w+\s*\(persistence_id, sequence_nr, payload, tags, timestamp\)/i.test(sql)) {

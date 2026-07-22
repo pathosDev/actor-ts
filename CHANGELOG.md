@@ -81,6 +81,19 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Fixed
 
+- **Persistence: `highestSeq` no longer rewinds to 0 after a full delete**
+  (#379).  When `delete(pid, toSeq)` removed every event for a persistenceId,
+  the in-memory, SQLite, Postgres and MariaDB journals recomputed the highest
+  sequence number as `MAX(sequence_nr)` over the now-empty stream and returned
+  0 — so a recovered `PersistentActor` (snapshot at seq N, `deleteHistory(N)`,
+  then `persist`) sent `expectedSeq = N` against an `actualSeq` of 0 and hit a
+  spurious `JournalConcurrencyError`; worse, sequence numbers could be reused.
+  Each backend now keeps a monotonic high-water mark — an in-memory map for
+  `InMemoryJournal`, a small additive `<events>_meta(persistence_id,
+  deleted_to)` table (auto-created, `IF NOT EXISTS`) for the SQL backends — so
+  the counter never rewinds, matching Cassandra (which already tracked it in
+  its metadata table) and Akka semantics.  A parameterized contract test
+  covers full- and partial-delete-then-append across all four backends.
 - **Persistence: closing one store no longer tears down a shared connection
   pool / backend** (#378).  The Postgres and MariaDB journal, snapshot-store,
   and durable-state-store `close()` methods used to call `pool.end()`

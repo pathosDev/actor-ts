@@ -44,6 +44,8 @@ export class FakeMariaDbPool implements MariaDbPoolLike {
   private readonly tags = new Map<string, TagRow[]>();
   private readonly snaps = new Map<string, SnapRow[]>();
   private readonly states = new Map<string, Map<string, StateRow>>();
+  /** Compaction high-water mark: meta table name → persistence_id → deleted_to. */
+  private readonly meta = new Map<string, Map<string, number>>();
   ended = false;
   readonly log: string[] = [];
 
@@ -58,6 +60,21 @@ export class FakeMariaDbPool implements MariaDbPoolLike {
       const table = tableFrom(sql, 'FROM');
       const hi = (this.events.get(table) ?? []).filter((r) => r.persistence_id === valuesArray[0]).reduce((map, r) => Math.max(map, r.sequence_nr), 0);
       return [{ hi: BigInt(hi) }];
+    }
+
+    // ---- meta (compaction high-water mark) ----
+    if (/^INSERT INTO \w+\s*\(persistence_id, deleted_to\)/i.test(sql)) {
+      const table = tableFrom(sql, 'INTO');
+      const map = this.meta.get(table) ?? (this.meta.set(table, new Map()), this.meta.get(table)!);
+      const [persistence_id, deletedTo] = valuesArray as [string, number];
+      // ON DUPLICATE KEY UPDATE deleted_to = GREATEST(existing, incoming)
+      map.set(persistence_id, Math.max(map.get(persistence_id) ?? 0, deletedTo));
+      return ok(1);
+    }
+    if (/^SELECT COALESCE\(deleted_to, 0\) AS d FROM/i.test(sql)) {
+      const table = tableFrom(sql, 'FROM');
+      const value = this.meta.get(table)?.get(valuesArray[0] as string);
+      return value === undefined ? [] : [{ d: BigInt(value) }];
     }
 
     if (/^INSERT INTO \w+\s*\(persistence_id, sequence_nr, payload, tags, timestamp\)/i.test(sql)) {

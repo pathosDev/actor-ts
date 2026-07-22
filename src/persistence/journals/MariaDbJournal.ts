@@ -9,6 +9,7 @@ import {
   buildMariaDbPool,
   isDuplicateKeyError,
   rowsOf,
+  type MariaDbConnectionLike,
   type MariaDbPoolLike,
 } from './MariaDbClient.js';
 import type { MariaDbJournalOptions, MariaDbJournalOptionsType } from './MariaDbJournalOptions.js';
@@ -32,6 +33,7 @@ export class MariaDbJournal implements Journal {
   private readonly options: MariaDbJournalOptionsType;
   private readonly table: string;
   private readonly tagsTable: string;
+  private readonly metaTable: string;
   private readonly autoCreate: boolean;
 
   private pool: MariaDbPoolLike | null = null;
@@ -48,6 +50,7 @@ export class MariaDbJournal implements Journal {
     this.tagsTable = assertSafeIdentifier(
       resolvedOptions.tagsTable ?? `${this.table}_tags`, 'tags table',
     );
+    this.metaTable = assertSafeIdentifier(`${this.table}_meta`, 'meta table');
     this.autoCreate = resolvedOptions.autoCreateTables ?? true;
   }
 
@@ -67,7 +70,10 @@ export class MariaDbJournal implements Journal {
         `SELECT COALESCE(MAX(sequence_nr), 0) AS hi FROM ${this.table} WHERE persistence_id = ?`,
         [persistenceId],
       ));
-      const actualSeq = Number((head[0] as { hi: string | number | bigint }).hi);
+      const deletedTo = await this.readDeletedTo(connection, persistenceId);
+      // The high-water mark never rewinds: after a full delete the events
+      // MAX is 0 but deleted_to still holds the highest seq ever written.
+      const actualSeq = Math.max(Number((head[0] as { hi: string | number | bigint }).hi), deletedTo);
       if (actualSeq !== expectedSeq) {
         await connection.rollback();
         throw new JournalConcurrencyError(persistenceId, expectedSeq, actualSeq);
@@ -143,7 +149,8 @@ export class MariaDbJournal implements Journal {
       `SELECT COALESCE(MAX(sequence_nr), 0) AS hi FROM ${this.table} WHERE persistence_id = ?`,
       [persistenceId],
     ));
-    return Number((rows[0] as { hi: string | number | bigint }).hi);
+    const deletedTo = await this.readDeletedTo(pool, persistenceId);
+    return Math.max(Number((rows[0] as { hi: string | number | bigint }).hi), deletedTo);
   }
 
   async delete(persistenceId: string, toSeq: number): Promise<void> {
@@ -156,6 +163,23 @@ export class MariaDbJournal implements Journal {
       `DELETE FROM ${this.table} WHERE persistence_id = ? AND sequence_nr <= ?`,
       [persistenceId, toSeq],
     );
+    // Record the high-water mark so highestSeq / the append concurrency check
+    // don't rewind once the highest events are compacted away.
+    await pool.query(
+      `INSERT INTO ${this.metaTable}(persistence_id, deleted_to) VALUES (?, ?)
+       ON DUPLICATE KEY UPDATE deleted_to = GREATEST(deleted_to, VALUES(deleted_to))`,
+      [persistenceId, toSeq],
+    );
+  }
+
+  /** Read the compaction high-water mark for a pid — 0 when never compacted. */
+  private async readDeletedTo(runner: MariaDbPoolLike | MariaDbConnectionLike, persistenceId: string): Promise<number> {
+    const rows = rowsOf(await runner.query(
+      `SELECT COALESCE(deleted_to, 0) AS d FROM ${this.metaTable} WHERE persistence_id = ?`,
+      [persistenceId],
+    ));
+    const row = rows[0] as { d: string | number | bigint } | undefined;
+    return row ? Number(row.d) : 0;
   }
 
   async persistenceIds(): Promise<string[]> {
@@ -209,6 +233,13 @@ export class MariaDbJournal implements Journal {
            timestamp      BIGINT NOT NULL,
            PRIMARY KEY (tag, timestamp, persistence_id, sequence_nr),
            INDEX idx_${this.tagsTable}_pid_seq (persistence_id, sequence_nr)
+         )`,
+      );
+      await pool.query(
+        `CREATE TABLE IF NOT EXISTS ${this.metaTable} (
+           persistence_id VARCHAR(255) NOT NULL,
+           deleted_to     BIGINT NOT NULL,
+           PRIMARY KEY (persistence_id)
          )`,
       );
     }
