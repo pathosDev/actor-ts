@@ -79,6 +79,102 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   (`open`/`exec`/`prepare`/`run`/`get`/`all`/`transaction`/`close`) is
   unchanged, so no consumer migration is required.
 
+### Removed
+
+- **BREAKING — dead persistence options removed** (#381).  Three
+  declared-but-never-implemented knobs are gone (pre-1.0 hard cut):
+  `LiveQueryOptions.batchSize` and `LiveQueryOptions.clock` (no query
+  implementation ever batched or read an injected clock); the object-storage
+  plugin's `durableStatePluginId` option + `withDurableStatePluginId` builder
+  method (the plugin only ever registered the snapshot store by id, never the
+  durable-state store); and the HOCON key `actor-ts.persistence.recovery.mode`
+  (defined in the reference config + documented, but read by no code).
+  *Migration:* remove any use of these — they were no-ops.  (The Cassandra
+  `consistency` option is **not** removed — it is now honoured; see Fixed.)
+
+### Fixed
+
+- **Persistence: uniform `JournalError` wrapping + consistent missing-dependency
+  hints** (#383).  Driver errors from the read-side journal methods
+  (`highestSeq`, `delete`, `persistenceIds`, and Cassandra's `read`) now surface
+  as `JournalError` across all backends, matching what `append`/`read` already
+  did — callers can catch one error type regardless of backend.  The
+  Cassandra driver is now lazy-imported through the shared `lazyImportModule`
+  helper (was a hand-rolled `try/catch` with a `bun add` hint), so its
+  missing-dependency message matches Postgres/MariaDB.  Fixed the doubled verb
+  in the Postgres/MariaDB hint ("…backends require **requires** the 'pg'
+  package") by dropping the trailing word from the `context` string.
+- **Persistence examples repaired** (#382).  `examples/persistence/scylla-ledger.ts`
+  and `benchmarks/persistence/recovery.ts` overrode `snapshotPolicy` as a
+  property (`override readonly snapshotPolicy = everyNEvents(...)`) while the
+  base declares it as a method, which threw `snapshotPolicy is not a function`
+  on the first persist — both now override the method.  `examples/persistence/
+  cassandra-plugin-hello.ts` imported `FakeCassandraClient` from a stale
+  pre-test-split path and used the removed free `ask(...)` function; it now
+  imports from `tests/integration/in-process/persistence/` and calls
+  `ref.ask(...)`.
+- **Persistence (Cassandra): single-flight `start()`, a live `consistency`
+  option, and an accurate batch comment** (#380).  `CassandraJournal.start()`
+  and `CassandraSnapshotStore.start()` set `started` only at the very end, so
+  two concurrent first calls both ran `connect()` + DDL; they now share a
+  single in-flight start (a failed start clears the guard so a later call
+  retries).  The `consistency` option (exposed as `withConsistency`) was
+  declared but never sent — every read, write, and batch now passes the
+  configured CQL consistency level.  The `append` comment that claimed a logged
+  batch "only if same partition" (while the code always passed `logged: false`)
+  is corrected to describe the actual unlogged-batch-per-partition behaviour and
+  why it is safe under the single-writer contract.
+- **Persistence: `highestSeq` no longer rewinds to 0 after a full delete**
+  (#379).  When `delete(pid, toSeq)` removed every event for a persistenceId,
+  the in-memory, SQLite, Postgres and MariaDB journals recomputed the highest
+  sequence number as `MAX(sequence_nr)` over the now-empty stream and returned
+  0 — so a recovered `PersistentActor` (snapshot at seq N, `deleteHistory(N)`,
+  then `persist`) sent `expectedSeq = N` against an `actualSeq` of 0 and hit a
+  spurious `JournalConcurrencyError`; worse, sequence numbers could be reused.
+  Each backend now keeps a monotonic high-water mark — an in-memory map for
+  `InMemoryJournal`, a small additive `<events>_meta(persistence_id,
+  deleted_to)` table (auto-created, `IF NOT EXISTS`) for the SQL backends — so
+  the counter never rewinds, matching Cassandra (which already tracked it in
+  its metadata table) and Akka semantics.  A parameterized contract test
+  covers full- and partial-delete-then-append across all four backends.
+- **Persistence: closing one store no longer tears down a shared connection
+  pool / backend** (#378).  The Postgres and MariaDB journal, snapshot-store,
+  and durable-state-store `close()` methods used to call `pool.end()`
+  unconditionally — so when a single pool was injected and shared across all
+  three stores (the arrangement `registerPostgresPlugins` recommends), closing
+  one store ended the pool out from under the others.  Each store now tracks an
+  `ownsPool` flag and only ends a pool it built itself; an injected pool is left
+  to the caller.  The object-storage plugin had the mirror-image bug — both the
+  snapshot and durable-state stores closed the *same* shared backend — so the
+  stores gained an `ownsBackend` option (default true for standalone use; the
+  plugin sets it false) and `registerObjectStoragePlugins` now returns a
+  `close()` handle that closes the shared backend exactly once.
+- **Persistence: a misconfigured journal / snapshot-store plug-in now fails
+  fast instead of silently falling back to in-memory** (#377).  When
+  `actor-ts.persistence.journal.plugin` (or the snapshot-store key) names a
+  plug-in id that has no registered factory — e.g. the config is set but the
+  matching `registerXxxPlugins(...)` call was forgotten or ordered after the
+  first `PersistentActor` spawn — `PersistenceExtension` used to hand back the
+  in-memory implementation with no warning, so events were written to a
+  volatile store and lost on restart.  It now throws
+  `Unknown journal plugin '<id>': …` (and the snapshot-store equivalent).  The
+  zero-config default is unchanged: with no plugin key set, the in-memory
+  reference implementation is still used.
+
+### Security
+
+- **Persistence: event tags are validated at the journal boundary** (#136).
+  Tags (from `PersistentActor.tagsFor`, often derived from user input) are
+  always bound as query parameters, so SQL/CQL injection was never reachable —
+  but they were otherwise unchecked.  A shared `assertValidTags` now runs in
+  every journal's `append` and rejects a comma (which would split into extra
+  tags out of SQLite's CSV `tags` column and corrupt a peer event's tag list),
+  control characters / newlines (log-injection family), and enforces per-tag
+  length (255) and per-event count (64) caps against index/row-size blow-ups.
+  Also, `CassandraSnapshotStore` now validates its keyspace + table
+  identifiers through `assertSafeIdentifier` (the journal already did), closing
+  the last raw-interpolation gap in the Cassandra backend.
+
 ## [0.11.0] — 2026-07-15
 
 ### Changed — Naming conventions: no abbreviations, unified vocabulary

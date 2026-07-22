@@ -42,7 +42,7 @@ interface MariaDbModule {
 
 const mariadbLazy: Lazy<Promise<MariaDbModule>> = Lazy.of(
   () => lazyImportModule<MariaDbModule>('mariadb', {
-    context: 'The MariaDB persistence backends require',
+    context: 'The MariaDB persistence backends',
     installHint: 'npm install mariadb',
   }),
 );

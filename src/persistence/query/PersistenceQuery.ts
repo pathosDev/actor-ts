@@ -91,13 +91,6 @@ export interface PersistenceQuery {
 export interface LiveQueryOptions {
   /** Poll interval in ms.  Default: `1_000` (1 second). */
   readonly pollIntervalMs?: number;
-  /** Max events to buffer per poll.  Default: `100`. */
-  readonly batchSize?: number;
-  /**
-   * Optional clock — useful for tests that want to control
-   * time-based offset progression.  Defaults to `Date.now`.
-   */
-  readonly clock?: () => number;
 }
 
 /**

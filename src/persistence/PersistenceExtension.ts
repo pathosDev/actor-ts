@@ -40,8 +40,14 @@ export class PersistenceExtension implements Extension {
   get journal(): Journal {
     if (!this._journal) {
       const pluginId = this.currentJournalPluginId();
-      const factory = this.journalFactories.get(pluginId)
-        ?? this.journalFactories.get('actor-ts.persistence.journal.in-memory')!;
+      const factory = this.journalFactories.get(pluginId);
+      if (!factory) {
+        throw new Error(
+          `Unknown journal plugin '${pluginId}': no factory is registered under that id. `
+            + `Register the backend (e.g. registerPostgresPlugins(ext, ...)) before the first `
+            + `PersistentActor is created, or correct actor-ts.persistence.journal.plugin.`,
+        );
+      }
       this._journal = factory(this.system);
     }
     return this._journal;
@@ -51,8 +57,14 @@ export class PersistenceExtension implements Extension {
   get snapshotStore(): SnapshotStore {
     if (!this._snapshotStore) {
       const pluginId = this.currentSnapshotPluginId();
-      const factory = this.snapshotFactories.get(pluginId)
-        ?? this.snapshotFactories.get('actor-ts.persistence.snapshot-store.in-memory')!;
+      const factory = this.snapshotFactories.get(pluginId);
+      if (!factory) {
+        throw new Error(
+          `Unknown snapshot-store plugin '${pluginId}': no factory is registered under that id. `
+            + `Register the backend (e.g. registerPostgresPlugins(ext, ...)) before the first `
+            + `PersistentActor is created, or correct actor-ts.persistence.snapshot-store.plugin.`,
+        );
+      }
       this._snapshotStore = factory(this.system);
     }
     return this._snapshotStore;

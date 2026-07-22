@@ -9,8 +9,10 @@ import {
   buildMariaDbPool,
   isDuplicateKeyError,
   rowsOf,
+  type MariaDbConnectionLike,
   type MariaDbPoolLike,
 } from './MariaDbClient.js';
+import { assertValidTags } from '../storage/TagValidator.js';
 import type { MariaDbJournalOptions, MariaDbJournalOptionsType } from './MariaDbJournalOptions.js';
 
 interface EventRow {
@@ -32,19 +34,24 @@ export class MariaDbJournal implements Journal {
   private readonly options: MariaDbJournalOptionsType;
   private readonly table: string;
   private readonly tagsTable: string;
+  private readonly metaTable: string;
   private readonly autoCreate: boolean;
 
   private pool: MariaDbPoolLike | null = null;
+  /** True only when this store created the pool itself; an injected pool is caller-owned. */
+  private readonly ownsPool: boolean;
   private initPromise: Promise<void> | null = null;
   private closed = false;
 
   constructor(options: MariaDbJournalOptions = {}) {
     const resolvedOptions = (options as MariaDbJournalOptionsType);
     this.options = resolvedOptions;
+    this.ownsPool = resolvedOptions.pool === undefined;
     this.table = assertSafeIdentifier(resolvedOptions.eventsTable ?? 'events', 'events table');
     this.tagsTable = assertSafeIdentifier(
       resolvedOptions.tagsTable ?? `${this.table}_tags`, 'tags table',
     );
+    this.metaTable = assertSafeIdentifier(`${this.table}_meta`, 'meta table');
     this.autoCreate = resolvedOptions.autoCreateTables ?? true;
   }
 
@@ -55,6 +62,7 @@ export class MariaDbJournal implements Journal {
     tags?: ReadonlyArray<string>,
   ): Promise<PersistentEvent<E>[]> {
     if (events.length === 0) return [];
+    assertValidTags(tags);
     const pool = await this.ensureOpen();
     const connection = await pool.getConnection();
     const now = Date.now();
@@ -64,7 +72,10 @@ export class MariaDbJournal implements Journal {
         `SELECT COALESCE(MAX(sequence_nr), 0) AS hi FROM ${this.table} WHERE persistence_id = ?`,
         [persistenceId],
       ));
-      const actualSeq = Number((head[0] as { hi: string | number | bigint }).hi);
+      const deletedTo = await this.readDeletedTo(connection, persistenceId);
+      // The high-water mark never rewinds: after a full delete the events
+      // MAX is 0 but deleted_to still holds the highest seq ever written.
+      const actualSeq = Math.max(Number((head[0] as { hi: string | number | bigint }).hi), deletedTo);
       if (actualSeq !== expectedSeq) {
         await connection.rollback();
         throw new JournalConcurrencyError(persistenceId, expectedSeq, actualSeq);
@@ -136,35 +147,68 @@ export class MariaDbJournal implements Journal {
 
   async highestSeq(persistenceId: string): Promise<number> {
     const pool = await this.ensureOpen();
-    const rows = rowsOf(await pool.query(
-      `SELECT COALESCE(MAX(sequence_nr), 0) AS hi FROM ${this.table} WHERE persistence_id = ?`,
-      [persistenceId],
-    ));
-    return Number((rows[0] as { hi: string | number | bigint }).hi);
+    try {
+      const rows = rowsOf(await pool.query(
+        `SELECT COALESCE(MAX(sequence_nr), 0) AS hi FROM ${this.table} WHERE persistence_id = ?`,
+        [persistenceId],
+      ));
+      const deletedTo = await this.readDeletedTo(pool, persistenceId);
+      return Math.max(Number((rows[0] as { hi: string | number | bigint }).hi), deletedTo);
+    } catch (e) {
+      throw new JournalError(`MariaDbJournal.highestSeq failed: ${(e as Error).message}`, e);
+    }
   }
 
   async delete(persistenceId: string, toSeq: number): Promise<void> {
     const pool = await this.ensureOpen();
-    await pool.query(
-      `DELETE FROM ${this.tagsTable} WHERE persistence_id = ? AND sequence_nr <= ?`,
-      [persistenceId, toSeq],
-    );
-    await pool.query(
-      `DELETE FROM ${this.table} WHERE persistence_id = ? AND sequence_nr <= ?`,
-      [persistenceId, toSeq],
-    );
+    try {
+      await pool.query(
+        `DELETE FROM ${this.tagsTable} WHERE persistence_id = ? AND sequence_nr <= ?`,
+        [persistenceId, toSeq],
+      );
+      await pool.query(
+        `DELETE FROM ${this.table} WHERE persistence_id = ? AND sequence_nr <= ?`,
+        [persistenceId, toSeq],
+      );
+      // Record the high-water mark so highestSeq / the append concurrency check
+      // don't rewind once the highest events are compacted away.
+      await pool.query(
+        `INSERT INTO ${this.metaTable}(persistence_id, deleted_to) VALUES (?, ?)
+         ON DUPLICATE KEY UPDATE deleted_to = GREATEST(deleted_to, VALUES(deleted_to))`,
+        [persistenceId, toSeq],
+      );
+    } catch (e) {
+      throw new JournalError(`MariaDbJournal.delete failed: ${(e as Error).message}`, e);
+    }
+  }
+
+  /** Read the compaction high-water mark for a pid — 0 when never compacted. */
+  private async readDeletedTo(runner: MariaDbPoolLike | MariaDbConnectionLike, persistenceId: string): Promise<number> {
+    const rows = rowsOf(await runner.query(
+      `SELECT COALESCE(deleted_to, 0) AS d FROM ${this.metaTable} WHERE persistence_id = ?`,
+      [persistenceId],
+    ));
+    const row = rows[0] as { d: string | number | bigint } | undefined;
+    return row ? Number(row.d) : 0;
   }
 
   async persistenceIds(): Promise<string[]> {
     const pool = await this.ensureOpen();
-    const rows = rowsOf(await pool.query(`SELECT DISTINCT persistence_id FROM ${this.table}`));
-    return (rows as Array<{ persistence_id: string }>).map((r) => r.persistence_id);
+    try {
+      const rows = rowsOf(await pool.query(`SELECT DISTINCT persistence_id FROM ${this.table}`));
+      return (rows as Array<{ persistence_id: string }>).map((r) => r.persistence_id);
+    } catch (e) {
+      throw new JournalError(`MariaDbJournal.persistenceIds failed: ${(e as Error).message}`, e);
+    }
   }
 
   async close(): Promise<void> {
     if (this.closed) return;
     this.closed = true;
-    try { await this.pool?.end(); } catch { /* ignore */ }
+    // Only end a pool we built ourselves — an injected/shared pool is caller-owned.
+    if (this.ownsPool) {
+      try { await this.pool?.end(); } catch { /* ignore */ }
+    }
     this.pool = null;
   }
 
@@ -203,6 +247,13 @@ export class MariaDbJournal implements Journal {
            timestamp      BIGINT NOT NULL,
            PRIMARY KEY (tag, timestamp, persistence_id, sequence_nr),
            INDEX idx_${this.tagsTable}_pid_seq (persistence_id, sequence_nr)
+         )`,
+      );
+      await pool.query(
+        `CREATE TABLE IF NOT EXISTS ${this.metaTable} (
+           persistence_id VARCHAR(255) NOT NULL,
+           deleted_to     BIGINT NOT NULL,
+           PRIMARY KEY (persistence_id)
          )`,
       );
     }

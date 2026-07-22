@@ -82,9 +82,6 @@ actor-ts {
     snapshot-store {
       plugin = "actor-ts.persistence.snapshot-store.in-memory"
     }
-    recovery {
-      mode = "eager"    # eager | parallel
-    }
   }
 
   sharding {

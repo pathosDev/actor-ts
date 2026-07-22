@@ -4,6 +4,7 @@ import {
   JournalConcurrencyError,
   type PersistentEvent,
 } from '../JournalTypes.js';
+import { assertValidTags } from '../storage/TagValidator.js';
 
 /**
  * In-process journal backed by plain arrays.  The default plug-in used by
@@ -16,6 +17,14 @@ import {
  */
 export class InMemoryJournal implements Journal {
   private readonly streams = new Map<string, PersistentEvent<unknown>[]>();
+  /**
+   * Highest sequence number ever assigned per persistenceId — the "high
+   * water mark".  Kept separate from `streams` so `delete` (compaction)
+   * can drop events without rewinding the counter: sequence numbers must
+   * never be reused, even after every event for a pid is deleted (Akka
+   * semantics).  Mirrors the relational backends' `_meta.deleted_to`.
+   */
+  private readonly highWater = new Map<string, number>();
   readonly events: JournalEventBus = new InProcessJournalEventBus();
 
   async append<E>(
@@ -24,8 +33,9 @@ export class InMemoryJournal implements Journal {
     expectedSeq: number,
     tags?: ReadonlyArray<string>,
   ): Promise<PersistentEvent<E>[]> {
+    assertValidTags(tags);
     const stream = this.streams.get(persistenceId) ?? [];
-    const actualSeq = stream.length === 0 ? 0 : stream[stream.length - 1]!.sequenceNr;
+    const actualSeq = this.highWater.get(persistenceId) ?? 0;
     if (actualSeq !== expectedSeq) {
       throw new JournalConcurrencyError(persistenceId, expectedSeq, actualSeq);
     }
@@ -45,6 +55,7 @@ export class InMemoryJournal implements Journal {
       stream.push(pe as PersistentEvent<unknown>);
     }
     this.streams.set(persistenceId, stream);
+    this.highWater.set(persistenceId, seq);
     // Publish AFTER the in-memory state is updated so subscribers
     // that immediately re-read see the events they were notified
     // about.
@@ -55,21 +66,21 @@ export class InMemoryJournal implements Journal {
   async read<E>(persistenceId: string, fromSeq: number, toSeq?: number): Promise<PersistentEvent<E>[]> {
     const stream = this.streams.get(persistenceId);
     if (!stream) return [];
-    const to = toSeq ?? (stream.length === 0 ? 0 : stream[stream.length - 1]!.sequenceNr);
+    const to = toSeq ?? (this.highWater.get(persistenceId) ?? 0);
     return stream
       .filter(e => e.sequenceNr >= fromSeq && e.sequenceNr <= to)
       .map(e => e as PersistentEvent<E>);
   }
 
   async highestSeq(persistenceId: string): Promise<number> {
-    const stream = this.streams.get(persistenceId);
-    if (!stream || stream.length === 0) return 0;
-    return stream[stream.length - 1]!.sequenceNr;
+    return this.highWater.get(persistenceId) ?? 0;
   }
 
   async delete(persistenceId: string, toSeq: number): Promise<void> {
     const stream = this.streams.get(persistenceId);
     if (!stream) return;
+    // Drop the events but keep the high-water mark — sequence numbers never
+    // rewind, so a subsequent append still expects seq > the highest ever.
     const next = stream.filter(e => e.sequenceNr > toSeq);
     this.streams.set(persistenceId, next);
   }
@@ -78,7 +89,7 @@ export class InMemoryJournal implements Journal {
     return Array.from(this.streams.keys());
   }
 
-  async close(): Promise<void> { this.streams.clear(); }
+  async close(): Promise<void> { this.streams.clear(); this.highWater.clear(); }
 
   /**
    * Migration hook (#9).  Applies `transform` to every persisted

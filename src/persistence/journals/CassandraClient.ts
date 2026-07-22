@@ -4,6 +4,8 @@
  * so tests can supply an in-memory stand-in without pulling in the real
  * driver, and so the driver itself stays an *optional* peer dependency.
  */
+import { lazyImportModule } from '../../util/LazyImport.js';
+
 export interface CassandraRowResult {
   readonly rows: Array<Record<string, unknown>>;
 }
@@ -106,19 +108,13 @@ export async function createCassandraClient(connection: CassandraConnection): Pr
       connect(): Promise<void>;
     };
   };
-  let driver: CassandraDriver;
-  try {
-    // `cassandra-driver` is an OPTIONAL peer dependency.  We indirect
-    // through a runtime-built specifier to avoid the compile-time
-    // module-not-found error when users haven't installed it.
-    const moduleName = 'cassandra-driver';
-    driver = (await import(moduleName)) as unknown as CassandraDriver;
-  } catch (e) {
-    throw new Error(
-      'CassandraJournal requires the "cassandra-driver" package. Install it with: '
-      + 'bun add cassandra-driver\nOriginal error: ' + (e instanceof Error ? e.message : String(e)),
-    );
-  }
+  // `cassandra-driver` is an OPTIONAL peer dependency — lazy-imported through
+  // the shared helper so the missing-dependency message matches the other
+  // backends (Postgres/MariaDB) instead of hand-rolling its own wording.
+  const driver = await lazyImportModule<CassandraDriver>('cassandra-driver', {
+    context: 'The Cassandra/ScyllaDB persistence backends',
+    installHint: 'npm install cassandra-driver',
+  });
   const options: Record<string, unknown> = {
     contactPoints: connection.contactPoints,
     localDataCenter: connection.localDataCenter ?? 'datacenter1',

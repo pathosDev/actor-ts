@@ -7,8 +7,10 @@ import {
 import {
   assertSafeIdentifier,
   buildPgPool,
+  type PgClientLike,
   type PgPoolLike,
 } from './PostgresClient.js';
+import { assertValidTags } from '../storage/TagValidator.js';
 import type { PostgresJournalOptions, PostgresJournalOptionsType } from './PostgresJournalOptions.js';
 
 interface EventRow {
@@ -42,19 +44,24 @@ export class PostgresJournal implements Journal {
   private readonly options: PostgresJournalOptionsType;
   private readonly table: string;
   private readonly tagsTable: string;
+  private readonly metaTable: string;
   private readonly autoCreate: boolean;
 
   private pool: PgPoolLike | null = null;
+  /** True only when this store created the pool itself; an injected pool is caller-owned. */
+  private readonly ownsPool: boolean;
   private initPromise: Promise<void> | null = null;
   private closed = false;
 
   constructor(options: PostgresJournalOptions = {}) {
     const resolvedOptions = (options as PostgresJournalOptionsType);
     this.options = resolvedOptions;
+    this.ownsPool = resolvedOptions.pool === undefined;
     this.table = assertSafeIdentifier(resolvedOptions.eventsTable ?? 'events', 'events table');
     this.tagsTable = assertSafeIdentifier(
       resolvedOptions.tagsTable ?? `${this.table}_tags`, 'tags table',
     );
+    this.metaTable = assertSafeIdentifier(`${this.table}_meta`, 'meta table');
     this.autoCreate = resolvedOptions.autoCreateTables ?? true;
   }
 
@@ -65,6 +72,7 @@ export class PostgresJournal implements Journal {
     tags?: ReadonlyArray<string>,
   ): Promise<PersistentEvent<E>[]> {
     if (events.length === 0) return [];
+    assertValidTags(tags);
     const pool = await this.ensureOpen();
     const client = await pool.connect();
     const now = Date.now();
@@ -74,7 +82,10 @@ export class PostgresJournal implements Journal {
         `SELECT COALESCE(MAX(sequence_nr), 0) AS hi FROM ${this.table} WHERE persistence_id = $1`,
         [persistenceId],
       );
-      const actualSeq = Number((head.rows[0] as { hi: string | number }).hi);
+      const deletedTo = await this.readDeletedTo(client, persistenceId);
+      // The high-water mark never rewinds: after a full delete the events
+      // MAX is 0 but deleted_to still holds the highest seq ever written.
+      const actualSeq = Math.max(Number((head.rows[0] as { hi: string | number }).hi), deletedTo);
       if (actualSeq !== expectedSeq) {
         await client.query('ROLLBACK');
         throw new JournalConcurrencyError(persistenceId, expectedSeq, actualSeq);
@@ -149,38 +160,73 @@ export class PostgresJournal implements Journal {
 
   async highestSeq(persistenceId: string): Promise<number> {
     const pool = await this.ensureOpen();
-    const response = await pool.query(
-      `SELECT COALESCE(MAX(sequence_nr), 0) AS hi FROM ${this.table} WHERE persistence_id = $1`,
-      [persistenceId],
-    );
-    return Number((response.rows[0] as { hi: string | number }).hi);
+    try {
+      const response = await pool.query(
+        `SELECT COALESCE(MAX(sequence_nr), 0) AS hi FROM ${this.table} WHERE persistence_id = $1`,
+        [persistenceId],
+      );
+      const deletedTo = await this.readDeletedTo(pool, persistenceId);
+      return Math.max(Number((response.rows[0] as { hi: string | number }).hi), deletedTo);
+    } catch (e) {
+      throw new JournalError(`PostgresJournal.highestSeq failed: ${(e as Error).message}`, e);
+    }
   }
 
   async delete(persistenceId: string, toSeq: number): Promise<void> {
     const pool = await this.ensureOpen();
-    // Tags first (same order as SqliteJournal): a crash mid-delete then
-    // leaves orphan tag-less events rather than tags pointing at deleted
-    // events, which the JOIN-based query path would silently miss.
-    await pool.query(
-      `DELETE FROM ${this.tagsTable} WHERE persistence_id = $1 AND sequence_nr <= $2`,
-      [persistenceId, toSeq],
+    try {
+      // Tags first (same order as SqliteJournal): a crash mid-delete then
+      // leaves orphan tag-less events rather than tags pointing at deleted
+      // events, which the JOIN-based query path would silently miss.
+      await pool.query(
+        `DELETE FROM ${this.tagsTable} WHERE persistence_id = $1 AND sequence_nr <= $2`,
+        [persistenceId, toSeq],
+      );
+      await pool.query(
+        `DELETE FROM ${this.table} WHERE persistence_id = $1 AND sequence_nr <= $2`,
+        [persistenceId, toSeq],
+      );
+      // Record the high-water mark so highestSeq / the append concurrency check
+      // don't rewind once the highest events are compacted away.
+      await pool.query(
+        `INSERT INTO ${this.metaTable}(persistence_id, deleted_to) VALUES ($1, $2)
+         ON CONFLICT (persistence_id) DO UPDATE SET deleted_to = GREATEST(${this.metaTable}.deleted_to, EXCLUDED.deleted_to)`,
+        [persistenceId, toSeq],
+      );
+    } catch (e) {
+      throw new JournalError(`PostgresJournal.delete failed: ${(e as Error).message}`, e);
+    }
+  }
+
+  /** Read the compaction high-water mark for a pid — 0 when never compacted. */
+  private async readDeletedTo(runner: PgPoolLike | PgClientLike, persistenceId: string): Promise<number> {
+    const response = await runner.query(
+      `SELECT COALESCE(deleted_to, 0) AS d FROM ${this.metaTable} WHERE persistence_id = $1`,
+      [persistenceId],
     );
-    await pool.query(
-      `DELETE FROM ${this.table} WHERE persistence_id = $1 AND sequence_nr <= $2`,
-      [persistenceId, toSeq],
-    );
+    const row = response.rows[0] as { d: string | number } | undefined;
+    return row ? Number(row.d) : 0;
   }
 
   async persistenceIds(): Promise<string[]> {
     const pool = await this.ensureOpen();
-    const response = await pool.query(`SELECT DISTINCT persistence_id FROM ${this.table}`);
-    return (response.rows as Array<{ persistence_id: string }>).map((r) => r.persistence_id);
+    try {
+      const response = await pool.query(`SELECT DISTINCT persistence_id FROM ${this.table}`);
+      return (response.rows as Array<{ persistence_id: string }>).map((r) => r.persistence_id);
+    } catch (e) {
+      throw new JournalError(`PostgresJournal.persistenceIds failed: ${(e as Error).message}`, e);
+    }
   }
 
   async close(): Promise<void> {
     if (this.closed) return;
     this.closed = true;
-    try { await this.pool?.end(); } catch { /* ignore */ }
+    // Only end a pool we built ourselves.  An injected pool (shared across the
+    // journal + snapshot + durable-state stores via registerPostgresPlugins) is
+    // owned by the caller — ending it here would tear it out from under them.
+    if (this.ownsPool) {
+      try { await this.pool?.end(); } catch { /* ignore */ }
+    }
     this.pool = null;
   }
 
@@ -221,6 +267,12 @@ export class PostgresJournal implements Journal {
       );
       await pool.query(
         `CREATE INDEX IF NOT EXISTS idx_${this.tagsTable}_pid_seq ON ${this.tagsTable}(persistence_id, sequence_nr)`,
+      );
+      await pool.query(
+        `CREATE TABLE IF NOT EXISTS ${this.metaTable} (
+           persistence_id TEXT PRIMARY KEY,
+           deleted_to     BIGINT NOT NULL
+         )`,
       );
     }
     this.pool = pool;
