@@ -70,6 +70,14 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   Fastify HTTP backend examples/tests; no code changes required.
 - **CI: `actions/setup-node` 6 → 7** (#363) in the docs, multi-runtime, and
   publish workflows.
+- **`better-sqlite3` support widened to v13** (#376).  The optional
+  `better-sqlite3` peer dependency now accepts `^12.9.0 || ^13.0.0` (was
+  `^12.9.0`), and the dev/test toolchain tracks 13.0.1.  better-sqlite3 13
+  migrated to Node-API, which replaces its `prebuild-install` native-binding
+  dependency tree with `node-addon-api` and improves prebuilt-binary
+  portability across Node versions.  The `BetterSqliteDriver` surface
+  (`open`/`exec`/`prepare`/`run`/`get`/`all`/`transaction`/`close`) is
+  unchanged, so no consumer migration is required.
 
 ## [0.11.0] — 2026-07-15
 
