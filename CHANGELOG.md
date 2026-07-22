@@ -79,7 +79,19 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   (`open`/`exec`/`prepare`/`run`/`get`/`all`/`transaction`/`close`) is
   unchanged, so no consumer migration is required.
 
-## [0.11.0] — 2026-07-15
+### Fixed
+
+- **Persistence: a misconfigured journal / snapshot-store plug-in now fails
+  fast instead of silently falling back to in-memory** (#377).  When
+  `actor-ts.persistence.journal.plugin` (or the snapshot-store key) names a
+  plug-in id that has no registered factory — e.g. the config is set but the
+  matching `registerXxxPlugins(...)` call was forgotten or ordered after the
+  first `PersistentActor` spawn — `PersistenceExtension` used to hand back the
+  in-memory implementation with no warning, so events were written to a
+  volatile store and lost on restart.  It now throws
+  `Unknown journal plugin '<id>': …` (and the snapshot-store equivalent).  The
+  zero-config default is unchanged: with no plugin key set, the in-memory
+  reference implementation is still used.
 
 ### Changed — Naming conventions: no abbreviations, unified vocabulary
 
