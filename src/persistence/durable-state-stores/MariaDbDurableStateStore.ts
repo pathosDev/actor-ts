@@ -39,12 +39,15 @@ export class MariaDbDurableStateStore implements DurableStateStore {
   private readonly autoCreate: boolean;
 
   private pool: MariaDbPoolLike | null = null;
+  /** True only when this store created the pool itself; an injected pool is caller-owned. */
+  private readonly ownsPool: boolean;
   private initPromise: Promise<void> | null = null;
   private closed = false;
 
   constructor(options: MariaDbDurableStateStoreOptions = {}) {
     const resolvedOptions = (options as MariaDbDurableStateStoreOptionsType);
     this.options = resolvedOptions;
+    this.ownsPool = resolvedOptions.pool === undefined;
     this.table = assertSafeIdentifier(resolvedOptions.table ?? 'durable_state', 'durable-state table');
     this.autoCreate = resolvedOptions.autoCreateTables ?? true;
   }
@@ -121,7 +124,10 @@ export class MariaDbDurableStateStore implements DurableStateStore {
   async close(): Promise<void> {
     if (this.closed) return;
     this.closed = true;
-    try { await this.pool?.end(); } catch { /* ignore */ }
+    // Only end a pool we built ourselves — an injected/shared pool is caller-owned.
+    if (this.ownsPool) {
+      try { await this.pool?.end(); } catch { /* ignore */ }
+    }
     this.pool = null;
   }
 

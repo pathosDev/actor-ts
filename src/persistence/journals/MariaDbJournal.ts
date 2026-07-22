@@ -35,12 +35,15 @@ export class MariaDbJournal implements Journal {
   private readonly autoCreate: boolean;
 
   private pool: MariaDbPoolLike | null = null;
+  /** True only when this store created the pool itself; an injected pool is caller-owned. */
+  private readonly ownsPool: boolean;
   private initPromise: Promise<void> | null = null;
   private closed = false;
 
   constructor(options: MariaDbJournalOptions = {}) {
     const resolvedOptions = (options as MariaDbJournalOptionsType);
     this.options = resolvedOptions;
+    this.ownsPool = resolvedOptions.pool === undefined;
     this.table = assertSafeIdentifier(resolvedOptions.eventsTable ?? 'events', 'events table');
     this.tagsTable = assertSafeIdentifier(
       resolvedOptions.tagsTable ?? `${this.table}_tags`, 'tags table',
@@ -164,7 +167,10 @@ export class MariaDbJournal implements Journal {
   async close(): Promise<void> {
     if (this.closed) return;
     this.closed = true;
-    try { await this.pool?.end(); } catch { /* ignore */ }
+    // Only end a pool we built ourselves — an injected/shared pool is caller-owned.
+    if (this.ownsPool) {
+      try { await this.pool?.end(); } catch { /* ignore */ }
+    }
     this.pool = null;
   }
 

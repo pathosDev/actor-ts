@@ -30,12 +30,15 @@ export class MariaDbSnapshotStore implements SnapshotStore {
   private readonly autoCreate: boolean;
 
   private pool: MariaDbPoolLike | null = null;
+  /** True only when this store created the pool itself; an injected pool is caller-owned. */
+  private readonly ownsPool: boolean;
   private initPromise: Promise<void> | null = null;
   private closed = false;
 
   constructor(options: MariaDbSnapshotStoreOptions = {}) {
     const resolvedOptions = (options as MariaDbSnapshotStoreOptionsType);
     this.options = resolvedOptions;
+    this.ownsPool = resolvedOptions.pool === undefined;
     this.table = assertSafeIdentifier(resolvedOptions.snapshotsTable ?? 'snapshots', 'snapshots table');
     this.keepN = resolvedOptions.keepN ?? 3;
     this.autoCreate = resolvedOptions.autoCreateTables ?? true;
@@ -96,7 +99,10 @@ export class MariaDbSnapshotStore implements SnapshotStore {
   async close(): Promise<void> {
     if (this.closed) return;
     this.closed = true;
-    try { await this.pool?.end(); } catch { /* ignore */ }
+    // Only end a pool we built ourselves — an injected/shared pool is caller-owned.
+    if (this.ownsPool) {
+      try { await this.pool?.end(); } catch { /* ignore */ }
+    }
     this.pool = null;
   }
 

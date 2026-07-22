@@ -51,6 +51,12 @@ export interface ObjectStoragePluginHandles {
    * options.
    */
   readonly durableStateStore: ObjectStorageDurableStateStore;
+  /**
+   * Close the shared backend exactly once.  Both stores are built with
+   * `ownsBackend: false`, so neither closes the backend on its own
+   * `close()` — the caller invokes this on shutdown instead (idempotent).
+   */
+  close(): Promise<void>;
 }
 
 /**
@@ -97,6 +103,7 @@ export async function registerObjectStoragePlugins(
   ext.registerSnapshotStore(snapshotId, (_system: ActorSystem) => {
     return new ObjectStorageSnapshotStore({
       backend,
+      ownsBackend: false,
       ...(resolvedOptions.prefix !== undefined ? { prefix: resolvedOptions.prefix } : {}),
       ...(resolvedOptions.keepN !== undefined ? { keepN: resolvedOptions.keepN } : {}),
       ...(resolvedOptions.compression !== undefined ? { compression: resolvedOptions.compression } : {}),
@@ -107,13 +114,23 @@ export async function registerObjectStoragePlugins(
 
   const durableStateStore = new ObjectStorageDurableStateStore({
     backend,
+    ownsBackend: false,
     ...(resolvedOptions.prefix !== undefined ? { prefix: resolvedOptions.prefix } : {}),
     ...(resolvedOptions.compression !== undefined ? { compression: resolvedOptions.compression } : {}),
     ...(resolvedOptions.encryption !== undefined ? { encryption: resolvedOptions.encryption } : {}),
     ...(resolvedOptions.maxDecompressedBytes !== undefined ? { maxDecompressedBytes: resolvedOptions.maxDecompressedBytes } : {}),
   });
 
-  return { backend, durableStateStore };
+  // The backend is shared across both stores, so neither owns it.  The plugin
+  // owns it and closes it once, here, on shutdown.
+  let backendClosed = false;
+  const close = async (): Promise<void> => {
+    if (backendClosed) return;
+    backendClosed = true;
+    await backend.close?.();
+  };
+
+  return { backend, durableStateStore, close };
 }
 
 /**

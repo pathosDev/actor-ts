@@ -11,6 +11,15 @@ import type { ObjectStorageBackend } from '../object-storage/ObjectStorageBacken
 export interface ObjectStorageSnapshotStoreOptionsType {
   /** The underlying storage layer (S3 / Filesystem / …). */
   readonly backend: ObjectStorageBackend;
+  /**
+   * Whether `close()` should also close the injected `backend`.  Default
+   * true — a standalone store owns the backend it was given.  Set false
+   * when the same backend is shared with another store (as
+   * `registerObjectStoragePlugins` does across the snapshot + durable-state
+   * stores) so one store's `close()` can't tear the backend out from under
+   * the other; the owner closes it once.
+   */
+  readonly ownsBackend?: boolean;
   /** Prepended to every key before the persistenceId.  Default: ''. */
   readonly prefix?: string;
   /** Keep this many snapshots per persistenceId; older ones are deleted on save.  Default: 3. */
@@ -45,6 +54,11 @@ export class ObjectStorageSnapshotStoreOptionsBuilder extends OptionsBuilder<Obj
   /** The underlying storage layer (S3 / Filesystem / …). */
   withBackend(backend: ObjectStorageBackend): this {
     return this.set('backend', backend);
+  }
+
+  /** Whether `close()` also closes the injected backend.  Default true; set false when the backend is shared/owned elsewhere. */
+  withOwnsBackend(ownsBackend: boolean): this {
+    return this.set('ownsBackend', ownsBackend);
   }
 
   /** Key prefix prepended before the persistenceId.  Default: ''. */

@@ -58,6 +58,7 @@ interface CachedEntry {
 
 export class ObjectStorageDurableStateStore implements DurableStateStore {
   private readonly backend: ObjectStorageBackend;
+  private readonly ownsBackend: boolean;
   private readonly prefix: string;
   private readonly compression: CompressionConfig | CompressionResolver | undefined;
   private readonly encryption: EncryptionConfig | EncryptionResolver | undefined;
@@ -71,6 +72,7 @@ export class ObjectStorageDurableStateStore implements DurableStateStore {
     if (resolvedOptions.backend === undefined) throw new Error('ObjectStorageDurableStateStore: backend is required (call withBackend()).');
     new ObjectStorageDurableStateStoreOptionsValidator().validate(resolvedOptions);
     this.backend = resolvedOptions.backend;
+    this.ownsBackend = resolvedOptions.ownsBackend ?? true;
     this.prefix = resolvedOptions.prefix ?? '';
     this.compression = resolvedOptions.compression;
     this.encryption = resolvedOptions.encryption;
@@ -235,7 +237,9 @@ export class ObjectStorageDurableStateStore implements DurableStateStore {
 
   async close(): Promise<void> {
     this.etagCache.clear();
-    await this.backend.close?.();
+    // Only close a backend we own.  When it's shared (e.g. registerObjectStoragePlugins
+    // hands the same backend to the snapshot + durable-state stores) the owner closes it.
+    if (this.ownsBackend) await this.backend.close?.();
   }
 
   /** Test hook — drop the cached ETag for a persistenceId (simulates actor restart). */

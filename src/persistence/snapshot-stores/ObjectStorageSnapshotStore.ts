@@ -37,6 +37,7 @@ const utf8Decoder = new TextDecoder();
  */
 export class ObjectStorageSnapshotStore implements SnapshotStore {
   private readonly backend: ObjectStorageBackend;
+  private readonly ownsBackend: boolean;
   private readonly prefix: string;
   private readonly keepN: number;
   private readonly compression: CompressionConfig | CompressionResolver | undefined;
@@ -48,6 +49,7 @@ export class ObjectStorageSnapshotStore implements SnapshotStore {
     if (resolvedOptions.backend === undefined) throw new Error('ObjectStorageSnapshotStore: backend is required (call withBackend()).');
     new ObjectStorageSnapshotStoreOptionsValidator().validate(resolvedOptions);
     this.backend = resolvedOptions.backend;
+    this.ownsBackend = resolvedOptions.ownsBackend ?? true;
     this.prefix = resolvedOptions.prefix ?? '';
     this.keepN = resolvedOptions.keepN ?? 3;
     this.compression = resolvedOptions.compression;
@@ -147,7 +149,9 @@ export class ObjectStorageSnapshotStore implements SnapshotStore {
   }
 
   async close(): Promise<void> {
-    await this.backend.close?.();
+    // Only close a backend we own.  When it's shared (e.g. registerObjectStoragePlugins
+    // hands the same backend to the snapshot + durable-state stores) the owner closes it.
+    if (this.ownsBackend) await this.backend.close?.();
   }
 
   /* ----------------------------- internals ------------------------------ */

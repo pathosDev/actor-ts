@@ -81,6 +81,18 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Fixed
 
+- **Persistence: closing one store no longer tears down a shared connection
+  pool / backend** (#378).  The Postgres and MariaDB journal, snapshot-store,
+  and durable-state-store `close()` methods used to call `pool.end()`
+  unconditionally — so when a single pool was injected and shared across all
+  three stores (the arrangement `registerPostgresPlugins` recommends), closing
+  one store ended the pool out from under the others.  Each store now tracks an
+  `ownsPool` flag and only ends a pool it built itself; an injected pool is left
+  to the caller.  The object-storage plugin had the mirror-image bug — both the
+  snapshot and durable-state stores closed the *same* shared backend — so the
+  stores gained an `ownsBackend` option (default true for standalone use; the
+  plugin sets it false) and `registerObjectStoragePlugins` now returns a
+  `close()` handle that closes the shared backend exactly once.
 - **Persistence: a misconfigured journal / snapshot-store plug-in now fails
   fast instead of silently falling back to in-memory** (#377).  When
   `actor-ts.persistence.journal.plugin` (or the snapshot-store key) names a
