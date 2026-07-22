@@ -147,31 +147,39 @@ export class MariaDbJournal implements Journal {
 
   async highestSeq(persistenceId: string): Promise<number> {
     const pool = await this.ensureOpen();
-    const rows = rowsOf(await pool.query(
-      `SELECT COALESCE(MAX(sequence_nr), 0) AS hi FROM ${this.table} WHERE persistence_id = ?`,
-      [persistenceId],
-    ));
-    const deletedTo = await this.readDeletedTo(pool, persistenceId);
-    return Math.max(Number((rows[0] as { hi: string | number | bigint }).hi), deletedTo);
+    try {
+      const rows = rowsOf(await pool.query(
+        `SELECT COALESCE(MAX(sequence_nr), 0) AS hi FROM ${this.table} WHERE persistence_id = ?`,
+        [persistenceId],
+      ));
+      const deletedTo = await this.readDeletedTo(pool, persistenceId);
+      return Math.max(Number((rows[0] as { hi: string | number | bigint }).hi), deletedTo);
+    } catch (e) {
+      throw new JournalError(`MariaDbJournal.highestSeq failed: ${(e as Error).message}`, e);
+    }
   }
 
   async delete(persistenceId: string, toSeq: number): Promise<void> {
     const pool = await this.ensureOpen();
-    await pool.query(
-      `DELETE FROM ${this.tagsTable} WHERE persistence_id = ? AND sequence_nr <= ?`,
-      [persistenceId, toSeq],
-    );
-    await pool.query(
-      `DELETE FROM ${this.table} WHERE persistence_id = ? AND sequence_nr <= ?`,
-      [persistenceId, toSeq],
-    );
-    // Record the high-water mark so highestSeq / the append concurrency check
-    // don't rewind once the highest events are compacted away.
-    await pool.query(
-      `INSERT INTO ${this.metaTable}(persistence_id, deleted_to) VALUES (?, ?)
-       ON DUPLICATE KEY UPDATE deleted_to = GREATEST(deleted_to, VALUES(deleted_to))`,
-      [persistenceId, toSeq],
-    );
+    try {
+      await pool.query(
+        `DELETE FROM ${this.tagsTable} WHERE persistence_id = ? AND sequence_nr <= ?`,
+        [persistenceId, toSeq],
+      );
+      await pool.query(
+        `DELETE FROM ${this.table} WHERE persistence_id = ? AND sequence_nr <= ?`,
+        [persistenceId, toSeq],
+      );
+      // Record the high-water mark so highestSeq / the append concurrency check
+      // don't rewind once the highest events are compacted away.
+      await pool.query(
+        `INSERT INTO ${this.metaTable}(persistence_id, deleted_to) VALUES (?, ?)
+         ON DUPLICATE KEY UPDATE deleted_to = GREATEST(deleted_to, VALUES(deleted_to))`,
+        [persistenceId, toSeq],
+      );
+    } catch (e) {
+      throw new JournalError(`MariaDbJournal.delete failed: ${(e as Error).message}`, e);
+    }
   }
 
   /** Read the compaction high-water mark for a pid — 0 when never compacted. */
@@ -186,8 +194,12 @@ export class MariaDbJournal implements Journal {
 
   async persistenceIds(): Promise<string[]> {
     const pool = await this.ensureOpen();
-    const rows = rowsOf(await pool.query(`SELECT DISTINCT persistence_id FROM ${this.table}`));
-    return (rows as Array<{ persistence_id: string }>).map((r) => r.persistence_id);
+    try {
+      const rows = rowsOf(await pool.query(`SELECT DISTINCT persistence_id FROM ${this.table}`));
+      return (rows as Array<{ persistence_id: string }>).map((r) => r.persistence_id);
+    } catch (e) {
+      throw new JournalError(`MariaDbJournal.persistenceIds failed: ${(e as Error).message}`, e);
+    }
   }
 
   async close(): Promise<void> {

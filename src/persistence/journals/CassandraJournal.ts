@@ -214,21 +214,25 @@ export class CassandraJournal implements Journal {
     const lastPartition = Math.floor(Math.max(hi - 1, 0) / partitionSize);
 
     const out: PersistentEvent<E>[] = [];
-    for (let partition = firstPartition; partition <= lastPartition; partition++) {
-      const response = await this.client.execute(
-        `SELECT persistence_id, partition_nr, sequence_nr, timestamp, payload, tags FROM ${this.qualified(this.eventsTable)} WHERE persistence_id = ? AND partition_nr = ? AND sequence_nr >= ? AND sequence_nr <= ?`,
-        [persistenceId, partition, fromSeq, hi],
-        this.readOptions(),
-      );
-      for (const row of response.rows as unknown as EventRow[]) {
-        out.push({
-          persistenceId: row.persistence_id,
-          sequenceNr: Number(row.sequence_nr),
-          event: JSON.parse(row.payload) as E,
-          timestamp: Number(row.timestamp),
-          tags: row.tags && row.tags.length > 0 ? row.tags : undefined,
-        });
+    try {
+      for (let partition = firstPartition; partition <= lastPartition; partition++) {
+        const response = await this.client.execute(
+          `SELECT persistence_id, partition_nr, sequence_nr, timestamp, payload, tags FROM ${this.qualified(this.eventsTable)} WHERE persistence_id = ? AND partition_nr = ? AND sequence_nr >= ? AND sequence_nr <= ?`,
+          [persistenceId, partition, fromSeq, hi],
+          this.readOptions(),
+        );
+        for (const row of response.rows as unknown as EventRow[]) {
+          out.push({
+            persistenceId: row.persistence_id,
+            sequenceNr: Number(row.sequence_nr),
+            event: JSON.parse(row.payload) as E,
+            timestamp: Number(row.timestamp),
+            tags: row.tags && row.tags.length > 0 ? row.tags : undefined,
+          });
+        }
       }
+    } catch (e) {
+      throw new JournalError(`CassandraJournal.read failed: ${(e as Error).message}`, e);
     }
     // Partition reads come back sorted by clustering order; stitching is cheap.
     out.sort((a, b) => a.sequenceNr - b.sequenceNr);
@@ -259,12 +263,16 @@ export class CassandraJournal implements Journal {
 
   async persistenceIds(): Promise<string[]> {
     await this.ensureStarted();
-    const response = await this.client.execute(
-      `SELECT persistence_id FROM ${this.qualified(this.allIdsTable)} WHERE tag = ?`,
-      ['_all'],
-      this.readOptions(),
-    );
-    return (response.rows as unknown as Array<{ persistence_id: string }>).map(r => r.persistence_id);
+    try {
+      const response = await this.client.execute(
+        `SELECT persistence_id FROM ${this.qualified(this.allIdsTable)} WHERE tag = ?`,
+        ['_all'],
+        this.readOptions(),
+      );
+      return (response.rows as unknown as Array<{ persistence_id: string }>).map(r => r.persistence_id);
+    } catch (e) {
+      throw new JournalError(`CassandraJournal.persistenceIds failed: ${(e as Error).message}`, e);
+    }
   }
 
   async close(): Promise<void> {
@@ -296,13 +304,17 @@ export class CassandraJournal implements Journal {
   }
 
   private async readHighestSeq(persistenceId: string): Promise<number> {
-    const response = await this.client.execute(
-      `SELECT max_sequence_nr FROM ${this.qualified(this.metadataTable)} WHERE persistence_id = ?`,
-      [persistenceId],
-      this.readOptions(),
-    );
-    const row = response.rows[0] as { max_sequence_nr?: string | number } | undefined;
-    return row?.max_sequence_nr !== undefined ? Number(row.max_sequence_nr) : 0;
+    try {
+      const response = await this.client.execute(
+        `SELECT max_sequence_nr FROM ${this.qualified(this.metadataTable)} WHERE persistence_id = ?`,
+        [persistenceId],
+        this.readOptions(),
+      );
+      const row = response.rows[0] as { max_sequence_nr?: string | number } | undefined;
+      return row?.max_sequence_nr !== undefined ? Number(row.max_sequence_nr) : 0;
+    } catch (e) {
+      throw new JournalError(`CassandraJournal.highestSeq failed: ${(e as Error).message}`, e);
+    }
   }
 
   private async ensureStarted(): Promise<void> {

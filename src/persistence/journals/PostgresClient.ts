@@ -37,7 +37,7 @@ interface PgModule {
 
 const pgLazy: Lazy<Promise<PgModule>> = Lazy.of(
   () => lazyImportModule<PgModule>('pg', {
-    context: 'The Postgres persistence backends require',
+    context: 'The Postgres persistence backends',
     installHint: 'npm install pg',
   }),
 );

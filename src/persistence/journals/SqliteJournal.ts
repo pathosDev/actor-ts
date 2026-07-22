@@ -161,32 +161,44 @@ export class SqliteJournal implements Journal {
 
   async highestSeq(persistenceId: string): Promise<number> {
     await this.ensureOpen();
-    const row = this.stmts!.highestSeq.get(persistenceId) as { hi: number | null } | undefined;
-    const del = (this.stmts!.deletedTo.get(persistenceId) as { d: number | null } | undefined)?.d ?? 0;
-    // Highest ever = max of the surviving events and the compaction high-water
-    // mark, so the counter never rewinds after a full delete.
-    return Math.max(row?.hi ?? 0, del);
+    try {
+      const row = this.stmts!.highestSeq.get(persistenceId) as { hi: number | null } | undefined;
+      const del = (this.stmts!.deletedTo.get(persistenceId) as { d: number | null } | undefined)?.d ?? 0;
+      // Highest ever = max of the surviving events and the compaction high-water
+      // mark, so the counter never rewinds after a full delete.
+      return Math.max(row?.hi ?? 0, del);
+    } catch (e) {
+      throw new JournalError(`SqliteJournal.highestSeq failed: ${(e as Error).message}`, e);
+    }
   }
 
   async delete(persistenceId: string, toSeq: number): Promise<void> {
     await this.ensureOpen();
-    // Order matters: delete from the tags-table FIRST so that a
-    // crash mid-delete leaves an inconsistent state where tags exist
-    // for events that don't — recoverable via a manual cleanup or a
-    // future backfill.  Doing it the other way around would produce
-    // events with missing tags, which the JOIN-based query path
-    // would silently miss.
-    this.stmts!.deleteTagsUpTo.run(persistenceId, toSeq);
-    this.stmts!.deleteUpTo.run(persistenceId, toSeq);
-    // Record the high-water mark so highestSeq / the append concurrency check
-    // don't rewind once the highest events are compacted away.
-    this.stmts!.upsertDeletedTo.run(persistenceId, toSeq);
+    try {
+      // Order matters: delete from the tags-table FIRST so that a
+      // crash mid-delete leaves an inconsistent state where tags exist
+      // for events that don't — recoverable via a manual cleanup or a
+      // future backfill.  Doing it the other way around would produce
+      // events with missing tags, which the JOIN-based query path
+      // would silently miss.
+      this.stmts!.deleteTagsUpTo.run(persistenceId, toSeq);
+      this.stmts!.deleteUpTo.run(persistenceId, toSeq);
+      // Record the high-water mark so highestSeq / the append concurrency check
+      // don't rewind once the highest events are compacted away.
+      this.stmts!.upsertDeletedTo.run(persistenceId, toSeq);
+    } catch (e) {
+      throw new JournalError(`SqliteJournal.delete failed: ${(e as Error).message}`, e);
+    }
   }
 
   async persistenceIds(): Promise<string[]> {
     await this.ensureOpen();
-    const rows = this.stmts!.persistenceIds.all() as Array<{ persistence_id: string }>;
-    return rows.map(r => r.persistence_id);
+    try {
+      const rows = this.stmts!.persistenceIds.all() as Array<{ persistence_id: string }>;
+      return rows.map(r => r.persistence_id);
+    } catch (e) {
+      throw new JournalError(`SqliteJournal.persistenceIds failed: ${(e as Error).message}`, e);
+    }
   }
 
   async close(): Promise<void> {

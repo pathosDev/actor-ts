@@ -94,6 +94,16 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Fixed
 
+- **Persistence: uniform `JournalError` wrapping + consistent missing-dependency
+  hints** (#383).  Driver errors from the read-side journal methods
+  (`highestSeq`, `delete`, `persistenceIds`, and Cassandra's `read`) now surface
+  as `JournalError` across all backends, matching what `append`/`read` already
+  did — callers can catch one error type regardless of backend.  The
+  Cassandra driver is now lazy-imported through the shared `lazyImportModule`
+  helper (was a hand-rolled `try/catch` with a `bun add` hint), so its
+  missing-dependency message matches Postgres/MariaDB.  Fixed the doubled verb
+  in the Postgres/MariaDB hint ("…backends require **requires** the 'pg'
+  package") by dropping the trailing word from the `context` string.
 - **Persistence examples repaired** (#382).  `examples/persistence/scylla-ledger.ts`
   and `benchmarks/persistence/recovery.ts` overrode `snapshotPolicy` as a
   property (`override readonly snapshotPolicy = everyNEvents(...)`) while the
