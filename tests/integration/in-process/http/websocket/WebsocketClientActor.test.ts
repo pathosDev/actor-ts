@@ -21,7 +21,7 @@ class PingServer extends WebsocketServerActor<SMessage, CMessage> {
   onMessage(m: CMessage): void { this.reply({ kind: 'pong', n: m.n }); }
 }
 
-interface Rec { events: string[]; msgs: SMessage[] }
+interface Rec { events: string[]; messages: SMessage[] }
 
 class RecordingClient extends WebsocketClientActor<CMessage, SMessage> {
   constructor(url: string, private readonly rec: Rec) {
@@ -30,7 +30,7 @@ class RecordingClient extends WebsocketClientActor<CMessage, SMessage> {
       .withReconnect({ initialDelayMs: 50, maxDelayMs: 200, factor: 2, maxAttempts: 40 });
     super(clientOptions);
   }
-  onMessage(m: SMessage): void { this.rec.msgs.push(m); }
+  onMessage(m: SMessage): void { this.rec.messages.push(m); }
   protected override onConnected(): void {
     this.rec.events.push('connected');
     this.send({ kind: 'ping', n: this.rec.events.filter((e) => e === 'connected').length });
@@ -73,13 +73,13 @@ describe('WebsocketClientActor', () => {
     const server = srvSys.spawn(Props.create(() => new PingServer()), 'srv');
     const binding = await bindServer(srvSys, websocket('/ws', server));
 
-    const rec: Rec = { events: [], msgs: [] };
+    const rec: Rec = { events: [], messages: [] };
     const cliSys = mkSystem('cli');
     cliSys.spawn(Props.create(() => new RecordingClient(`ws://127.0.0.1:${binding.port}/ws`, rec)), 'client');
 
-    await waitUntil(() => rec.msgs.length >= 1);
+    await waitUntil(() => rec.messages.length >= 1);
     expect(rec.events).toContain('connected');
-    expect(rec.msgs[0]).toEqual({ kind: 'pong', n: 1 });
+    expect(rec.messages[0]).toEqual({ kind: 'pong', n: 1 });
   });
 
   test('another actor can push a typed send via websocketSend(ref)', async () => {
@@ -87,15 +87,15 @@ describe('WebsocketClientActor', () => {
     const server = srvSys.spawn(Props.create(() => new PingServer()), 'srv');
     const binding = await bindServer(srvSys, websocket('/ws', server));
 
-    const rec: Rec = { events: [], msgs: [] };
+    const rec: Rec = { events: [], messages: [] };
     const cliSys = mkSystem('cli2');
     const clientRef: ActorRef<WebsocketClientMessage<CMessage, SMessage>> =
       cliSys.spawn(Props.create(() => new RecordingClient(`ws://127.0.0.1:${binding.port}/ws`, rec)), 'client');
 
     await waitUntil(() => rec.events.includes('connected'));
     clientRef.tell(websocketSend({ kind: 'ping', n: 99 }));
-    await waitUntil(() => rec.msgs.some((m) => m.n === 99));
-    expect(rec.msgs.some((m) => m.n === 99)).toBe(true);
+    await waitUntil(() => rec.messages.some((m) => m.n === 99));
+    expect(rec.messages.some((m) => m.n === 99)).toBe(true);
   });
 
   test('reconnects after the server goes away and comes back', async () => {
@@ -104,7 +104,7 @@ describe('WebsocketClientActor', () => {
     const b1 = await bindServer(srvSys, websocket('/ws', server));
     const port = b1.port;
 
-    const rec: Rec = { events: [], msgs: [] };
+    const rec: Rec = { events: [], messages: [] };
     const cliSys = mkSystem('cli3');
     cliSys.spawn(Props.create(() => new RecordingClient(`ws://127.0.0.1:${port}/ws`, rec)), 'client');
     await waitUntil(() => rec.events.includes('connected'));
@@ -122,7 +122,7 @@ describe('WebsocketClientActor', () => {
     const connects = rec.events.filter((e) => e === 'connected').length;
     expect(connects).toBeGreaterThanOrEqual(2);
     // A ping was sent on the second connect → expect a matching pong.
-    await waitUntil(() => rec.msgs.some((m) => m.n >= 2), 4000);
-    expect(rec.msgs.some((m) => m.n >= 2)).toBe(true);
+    await waitUntil(() => rec.messages.some((m) => m.n >= 2), 4000);
+    expect(rec.messages.some((m) => m.n >= 2)).toBe(true);
   });
 });

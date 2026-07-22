@@ -226,12 +226,12 @@ export function useVoice(): {
       micStream.current = await navigator.mediaDevices.getUserMedia({
         audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
       });
-      const Ctx = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
-      const ctx = new Ctx();
-      if (ctx.state === 'suspended') await ctx.resume();
-      micContext.current = ctx;
-      const src = ctx.createMediaStreamSource(micStream.current);
-      const analyser = ctx.createAnalyser();
+      const AudioContextConstructor = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+      const audioContext = new AudioContextConstructor();
+      if (audioContext.state === 'suspended') await audioContext.resume();
+      micContext.current = audioContext;
+      const src = audioContext.createMediaStreamSource(micStream.current);
+      const analyser = audioContext.createAnalyser();
       analyser.fftSize = 512;
       src.connect(analyser);
       micAnalyser.current = analyser;

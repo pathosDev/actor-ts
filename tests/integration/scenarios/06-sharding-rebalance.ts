@@ -48,7 +48,7 @@ async function whoFromAny(
   throw new Error(`whoFromAny(${entityId}) failed against all ${liveHosts.length} hosts: ${(lastErr as Error)?.message}`);
 }
 
-async function leaveCmd(host: string, controlPort: number): Promise<void> {
+async function leaveCommand(host: string, controlPort: number): Promise<void> {
   const response = await fetch(`http://${host}:${controlPort}/test/leave`, { method: 'POST' });
   if (!response.ok) throw new Error(`/test/leave on ${host} → ${response.status}`);
 }
@@ -92,7 +92,7 @@ export const scenario: Scenario = {
     const [victim] = [...distribution.entries()].sort((a, b) => b[1] - a[1])[0]!;
     const entitiesOnVictim = ENTITY_IDS.filter((id) => idToHost.get(id) === victim);
     console.log(`[06] victim node ${victim} owns ${entitiesOnVictim.length} entities; leaving it...`);
-    await leaveCmd(victim, context.controlPort);
+    await leaveCommand(victim, context.controlPort);
 
     // 4. Wait for the cluster to remove the victim from membership.
     const stillLive = live.filter((h) => h !== victim);

@@ -73,12 +73,12 @@ export class VoiceService {
       this.micStream = await navigator.mediaDevices.getUserMedia({
         audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
       });
-      const Ctx = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
-      const ctx = new Ctx();
-      if (ctx.state === 'suspended') await ctx.resume();
-      this.micContext = ctx;
-      const src = ctx.createMediaStreamSource(this.micStream);
-      const analyser = ctx.createAnalyser();
+      const AudioContextConstructor = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+      const audioContext = new AudioContextConstructor();
+      if (audioContext.state === 'suspended') await audioContext.resume();
+      this.micContext = audioContext;
+      const src = audioContext.createMediaStreamSource(this.micStream);
+      const analyser = audioContext.createAnalyser();
       analyser.fftSize = 512;
       src.connect(analyser);
       this.micAnalyser = analyser;

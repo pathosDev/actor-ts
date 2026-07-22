@@ -33,8 +33,8 @@ describe('DeadLetter routing', () => {
     await sleep(30);
 
     expect(seen.length).toBeGreaterThan(0);
-    const msgs = seen.map(d => d.message);
-    expect(msgs).toContain('too-late');
+    const messages = seen.map(d => d.message);
+    expect(messages).toContain('too-late');
     // Sender is null since we called tell without a sender.
     expect(seen.find(d => d.message === 'too-late')!.sender).toBeNull();
     await sys.terminate();

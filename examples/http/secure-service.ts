@@ -64,8 +64,8 @@ async function main(): Promise<void> {
           <p>Your CSRF token: <code>${readCsrfToken(request) ?? '(none)'}</code></p>
         `)),
         path('api', path('echo', post((request) => {
-          const body = entity<{ readonly msg: string }>(request);
-          return completeJson(Status.OK, { echo: body.msg });
+          const body = entity<{ readonly message: string }>(request);
+          return completeJson(Status.OK, { echo: body.message });
         }))),
         fallback((request) => completeJson(Status.NotFound, { error: 'no such route', path: request.path })),
       ),
