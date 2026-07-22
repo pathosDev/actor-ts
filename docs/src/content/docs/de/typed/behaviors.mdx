@@ -35,8 +35,8 @@ behandelt die nächste Nachricht.
 ```ts
 const counter = (n: number): Behavior<Message> => Behaviors.receive<Message>((ctx, msg) => {
   switch (msg.kind) {
-    case 'inc': return counter(n + 1);
-    case 'dec': return counter(n - 1);
+    case 'increment': return counter(n + 1);
+    case 'decrement': return counter(n - 1);
     case 'get': msg.replyTo.tell(n); return Behaviors.same;
   }
 });
@@ -52,7 +52,7 @@ aktualisiertem Zustand an.
 
 ```ts
 const counter = (n: number): Behavior<Message> => Behaviors.receiveMessage<Message>((msg) => {
-  if (msg.kind === 'inc') return counter(n + 1);
+  if (msg.kind === 'increment') return counter(n + 1);
   return Behaviors.same;
 });
 ```

@@ -104,7 +104,7 @@ v1-Envelopes.  Der Actor nutzt einen **normalen Adapter** — es gibt
 keinen speziellen „Legacy-Wrapping"-Adapter zur Read-Time:
 
 ```ts
-class Account extends PersistentActor<Cmd, EventV2, State> {
+class Account extends PersistentActor<Command, EventV2, State> {
   override eventAdapter(): EventAdapter<EventV2> {
     return defaultsAdapter<EventV2>({
       manifest:       'BankAccount.deposited',

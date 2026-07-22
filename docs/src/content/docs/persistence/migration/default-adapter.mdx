@@ -14,7 +14,7 @@ import { defaultsAdapter, type EventAdapter } from 'actor-ts';
 type DepositedV1 = { kind: 'deposited'; amount: number };
 type DepositedV2 = { kind: 'deposited'; amount: number; currency: 'USD' | 'EUR' };
 
-class Account extends PersistentActor<Cmd, DepositedV2, State> {
+class Account extends PersistentActor<Command, DepositedV2, State> {
   override eventAdapter(): EventAdapter<DepositedV2> {
     return defaultsAdapter<DepositedV2>({
       manifest:       'BankAccount.Deposited',
@@ -80,7 +80,7 @@ fill gaps.
 
 ```ts
 // v1 → v2 added `currency`; v2 → v3 added `metadata`
-class Account extends PersistentActor<Cmd, EventV3, State> {
+class Account extends PersistentActor<Command, EventV3, State> {
   override eventAdapter(): EventAdapter<EventV3> {
     return defaultsAdapter<EventV3>({
       manifest:       'BankAccount.Deposited',

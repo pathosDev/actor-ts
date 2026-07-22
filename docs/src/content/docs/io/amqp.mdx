@@ -84,7 +84,7 @@ routing keys (`orders.placed.priority`, `orders.cancelled`,
 ## Ack / nack
 
 Set `autoAcknowledgment: false` in settings, then the handler tells the
-result back via `{ kind: 'ack', delivery }` or `{ kind: 'nack',
+result back via `{ kind: 'acknowledgment', delivery }` or `{ kind: 'negativeAcknowledgment',
 delivery, requeue }` on the AMQP actor's ref.
 
 ```ts
@@ -94,9 +94,9 @@ class OrderHandler extends Actor<AmqpDelivery> {
   override async onReceive(delivery: AmqpDelivery): Promise<void> {
     try {
       await processOrder(delivery);
-      this.amqp.tell({ kind: 'ack', delivery });
+      this.amqp.tell({ kind: 'acknowledgment', delivery });
     } catch (err) {
-      this.amqp.tell({ kind: 'nack', delivery, requeue: true });
+      this.amqp.tell({ kind: 'negativeAcknowledgment', delivery, requeue: true });
     }
   }
 }

@@ -23,8 +23,8 @@ import { Actor } from 'actor-ts';
 import { match } from 'ts-pattern';
 
 type Command =
-  | { readonly kind: 'inc' }
-  | { readonly kind: 'dec' }
+  | { readonly kind: 'increment' }
+  | { readonly kind: 'decrement' }
   | { readonly kind: 'set'; readonly to: number }
   | { readonly kind: 'reset' };
 
@@ -33,15 +33,15 @@ class Counter extends Actor<Command> {
 
   override onReceive(cmd: Command): void {
     match(cmd)
-      .with({ kind: 'inc' },   ()  => this.onInc())
-      .with({ kind: 'dec' },   ()  => this.onDec())
+      .with({ kind: 'increment' },   ()  => this.onIncrement())
+      .with({ kind: 'decrement' },   ()  => this.onDecrement())
       .with({ kind: 'set' },   (m) => this.onSet(m))
       .with({ kind: 'reset' }, ()  => this.onReset())
       .exhaustive();
   }
 
-  private onInc():   void { this.count++; }
-  private onDec():   void { this.count--; }
+  private onIncrement():   void { this.count++; }
+  private onDecrement():   void { this.count--; }
   private onSet(cmd: Extract<Command, { kind: 'set' }>): void { this.count = cmd.to; }
   private onReset(): void { this.count = 0; }
 }
@@ -66,7 +66,7 @@ each `.with(…)` **and** any `.otherwise(…)` delegates, even a
 one-liner, no exceptions.  The matcher stays a scannable dispatch
 table; the logic lives in named handlers.
 
-- Name the handler `on` + the PascalCase `kind` — `onInc`, `onData`,
+- Name the handler `on` + the PascalCase `kind` — `onIncrement`, `onData`,
   `onCloseAccount`; the `.otherwise(…)` fallback is `onUnhandled`.
 - Type the parameter as the narrowed variant
   (`Extract<Command, { kind: 'set' }>`) so the handler keeps
@@ -148,8 +148,8 @@ typed-actor `Behavior` returns, the expression form is convenient.
 
 ```ts
 match(cmd)
-  .with({ kind: 'inc' }, ()  => this.onInc())
-  .with({ kind: 'dec' }, ()  => this.onDec())
+  .with({ kind: 'increment' }, ()  => this.onIncrement())
+  .with({ kind: 'decrement' }, ()  => this.onDecrement())
   .otherwise((m) => this.onUnhandled(m));   // runtime fallback
 ```
 
@@ -168,8 +168,8 @@ For two- or three-variant unions, a plain `if`-chain reads cleaner:
 
 ```ts
 override onReceive(cmd: Command): void {
-  if (cmd.kind === 'inc') this.count++;
-  else if (cmd.kind === 'dec') this.count--;
+  if (cmd.kind === 'increment') this.count++;
+  else if (cmd.kind === 'decrement') this.count--;
   else cmd.replyTo.tell(this.count);
 }
 ```

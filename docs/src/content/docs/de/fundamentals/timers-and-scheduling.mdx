@@ -87,7 +87,7 @@ const system = ActorSystem.create('demo');
 system.scheduler.scheduleOnce(10_000, someActor, { kind: 'wake-up' });
 
 // Führe einen Callback alle 30 s aus, beginnend in 5 s.
-const cancellable = system.scheduler.scheduleAtFixedRateFn(
+const cancellable = system.scheduler.scheduleAtFixedRateFunction(
   5_000, 30_000,
   () => console.log('still alive'),
 );
@@ -102,9 +102,9 @@ Funktion aus":
 | Methode | Was sie tut |
 | --- | --- |
 | `scheduleOnce(delayMs, target, message, sender?)` | Sende `message` einmal an `target`, nach `delayMs`. |
-| `scheduleOnceFn(delayMs, fn)` | Führe `fn` einmal aus, nach `delayMs`. |
+| `scheduleOnceFunction(delayMs, fn)` | Führe `fn` einmal aus, nach `delayMs`. |
 | `scheduleAtFixedRate(initialDelayMs, intervalMs, target, message, sender?)` | Sende `message` wiederholt. |
-| `scheduleAtFixedRateFn(initialDelayMs, intervalMs, fn)` | Führe `fn` wiederholt aus. |
+| `scheduleAtFixedRateFunction(initialDelayMs, intervalMs, fn)` | Führe `fn` wiederholt aus. |
 
 Jede Methode gibt ein `Cancellable` zurück:
 
@@ -147,7 +147,7 @@ Beide Timer-Spielarten propagieren Fehler etwas anders:
   resultierende `onReceive`-Aufruf läuft durch den normalen
   Supervisions-Pfad.  Ein Throw im Handler wird vom Supervisor
   gefangen, genau wie bei einer regulären Nachricht.
-- **`system.scheduler.scheduleAtFixedRateFn(...)` / `scheduleOnceFn(...)`**
+- **`system.scheduler.scheduleAtFixedRateFunction(...)` / `scheduleOnceFunction(...)`**
   fängt und loggt Throws (`console.error('[actor-ts] scheduler error:', e)`),
   eskaliert aber nicht.  Ein fehlschlagender Scheduler-Callback
   crasht das System nicht; er wird auch nicht bemerkt, außer du

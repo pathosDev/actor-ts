@@ -11,11 +11,11 @@ faster for binary-heavy data, similar API surface.
 import { CborSerializer } from 'actor-ts';
 
 const serializer = new CborSerializer();
-const bytes = serializer.toBinary({ kind: 'inc', n: 1 });
+const bytes = serializer.toBinary({ kind: 'increment', n: 1 });
 //  → Uint8Array (binary CBOR, smaller than JSON)
 
 const decoded = serializer.fromBinary(bytes, '');
-//  → { kind: 'inc', n: 1 }
+//  → { kind: 'increment', n: 1 }
 ```
 
 ## When CBOR makes sense
@@ -34,7 +34,7 @@ the loss of human-debuggability.
 
 | Payload | JSON | CBOR | Savings |
 | --- | --- | --- | --- |
-| `{ kind: 'inc' }` | 14 bytes | 9 bytes | 36 % |
+| `{ kind: 'increment' }` | 14 bytes | 9 bytes | 36 % |
 | Order with 5 items | 250 bytes | 180 bytes | 28 % |
 | Image bytes (10 KB) | 13.3 KB (base64) | 10 KB (native) | 25 % |
 | Deeply nested object | varies | varies | typically 20-40 % |

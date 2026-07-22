@@ -23,10 +23,10 @@ Die Methoden-Form spiegelt die Standard-OO-API — `spawn` vs.
 ```ts
 import { ActorSystem, Behaviors, type Behavior, type ActorRef } from 'actor-ts';
 
-type Command = { kind: 'inc' } | { kind: 'get'; replyTo: ActorRef<number> };
+type Command = { kind: 'increment' } | { kind: 'get'; replyTo: ActorRef<number> };
 
 const counter = (n: number): Behavior<Command> => Behaviors.receive((ctx, cmd) => {
-  if (cmd.kind === 'inc') return counter(n + 1);
+  if (cmd.kind === 'increment') return counter(n + 1);
   if (cmd.kind === 'get') { cmd.replyTo.tell(n); return Behaviors.same; }
   return Behaviors.same;
 });
@@ -57,7 +57,7 @@ class UntypedParent extends Actor<...> {
   override preStart(): void {
     const typedChild = this.context.spawnTyped(counter(0), 'child');
     // typedChild: ActorRef<Command>
-    typedChild.tell({ kind: 'inc' });
+    typedChild.tell({ kind: 'increment' });
   }
 }
 ```

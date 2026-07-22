@@ -35,19 +35,19 @@ counter.Tell("inc");
 // actor-ts:
 import { Actor, ActorSystem, Props, type ActorRef } from 'actor-ts';
 
-type Command = { kind: 'inc' } | { kind: 'get'; replyTo: ActorRef<number> };
+type Command = { kind: 'increment' } | { kind: 'get'; replyTo: ActorRef<number> };
 
 class Counter extends Actor<Command> {
   private count = 0;
   override onReceive(cmd: Command): void {
-    if (cmd.kind === 'inc')  this.count++;
+    if (cmd.kind === 'increment')  this.count++;
     else if (cmd.kind === 'get') cmd.replyTo.tell(this.count);
   }
 }
 
 const system = ActorSystem.create('MySystem');
 const counter = system.spawn(Props.create(() => new Counter()), 'counter');
-counter.tell({ kind: 'inc' });
+counter.tell({ kind: 'increment' });
 ```
 
 Unterschiede zu Akka.NET:

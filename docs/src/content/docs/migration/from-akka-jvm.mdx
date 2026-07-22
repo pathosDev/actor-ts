@@ -54,12 +54,12 @@ class Counter extends Actor {
 // actor-ts:
 import { Actor, type ActorRef } from 'actor-ts';
 
-type Command = { kind: 'inc' } | { kind: 'get'; replyTo: ActorRef<number> };
+type Command = { kind: 'increment' } | { kind: 'get'; replyTo: ActorRef<number> };
 
 class Counter extends Actor<Command> {
   private count = 0;
   override onReceive(cmd: Command): void {
-    if (cmd.kind === 'inc') this.count++;
+    if (cmd.kind === 'increment') this.count++;
     else cmd.replyTo.tell(this.count);
   }
 }

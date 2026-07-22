@@ -27,8 +27,8 @@ einfach das primäre Ziel für Tests + Benchmarks.
 
 ```ts
 match(msg)
-  .with({ kind: 'inc' }, () => state.count++)
-  .with({ kind: 'dec' }, () => state.count--)
+  .with({ kind: 'increment' }, () => state.count++)
+  .with({ kind: 'decrement' }, () => state.count--)
   .exhaustive();
 ```
 

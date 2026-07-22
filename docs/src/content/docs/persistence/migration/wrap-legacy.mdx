@@ -97,7 +97,7 @@ The actor uses a **normal adapter** — there's no special
 "legacy-wrapping" adapter at read time:
 
 ```ts
-class Account extends PersistentActor<Cmd, EventV2, State> {
+class Account extends PersistentActor<Command, EventV2, State> {
   override eventAdapter(): EventAdapter<EventV2> {
     return defaultsAdapter<EventV2>({
       manifest:       'BankAccount.deposited',

@@ -112,7 +112,7 @@ override onMessage(msg: MqttMessage<Reading>): void {
   msg.payload.bytes;          // raw Uint8Array
   msg.payload.text();         // UTF-8 string (cached)
   msg.payload.entity();       // decoded T via the codec (cached)
-  msg.payload.entity<Ack>();  // decode as a different type on a specific topic
+  msg.payload.entity<Acknowledgment>();  // decode as a different type on a specific topic
 }
 ```
 

@@ -84,10 +84,10 @@ mutate the actor's fields freely — you're guaranteed to be the only one
 reading or writing.
 
 ```ts
-class Counter extends Actor<{ kind: 'inc' } | { kind: 'get'; replyTo: ActorRef<number> }> {
+class Counter extends Actor<{ kind: 'increment' } | { kind: 'get'; replyTo: ActorRef<number> }> {
   private count = 0;
   override onReceive(msg: typeof this.cmd): void {
-    if (msg.kind === 'inc')  this.count++;
+    if (msg.kind === 'increment')  this.count++;
     else if (msg.kind === 'get') msg.replyTo.tell(this.count);
   }
 }

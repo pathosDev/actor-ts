@@ -23,12 +23,12 @@ Same counter, two ways:
 ```ts
 import { Actor, Props, ActorSystem } from 'actor-ts';
 
-type Command = { kind: 'inc' } | { kind: 'dec' };
+type Command = { kind: 'increment' } | { kind: 'decrement' };
 
 class Counter extends Actor<Command> {
   private count = 0;
   override onReceive(cmd: Command): void {
-    if (cmd.kind === 'inc') this.count++;
+    if (cmd.kind === 'increment') this.count++;
     else this.count--;
   }
 }
@@ -42,10 +42,10 @@ const counter = system.spawnAnonymous(Props.create(() => new Counter()));
 ```ts
 import { ActorSystem, Behaviors } from 'actor-ts';
 
-type Command = { kind: 'inc' } | { kind: 'dec' };
+type Command = { kind: 'increment' } | { kind: 'decrement' };
 
 const counter = (n: number) => Behaviors.receive<Command>((_ctx, cmd) =>
-  cmd.kind === 'inc' ? counter(n + 1) : counter(n - 1)
+  cmd.kind === 'increment' ? counter(n + 1) : counter(n - 1)
 );
 
 const system = ActorSystem.create('demo');

@@ -10,11 +10,11 @@ description: JsonSerializer ist der Default — umschließt `JSON.stringify` / `
 import { JsonSerializer } from 'actor-ts';
 
 const serializer = new JsonSerializer();
-const bytes = serializer.toBinary({ kind: 'inc', n: 1 });
-//  → Uint8Array von '{"kind":"inc","n":1}' als UTF-8
+const bytes = serializer.toBinary({ kind: 'increment', n: 1 });
+//  → Uint8Array von '{"kind":"increment","n":1}' als UTF-8
 
 const decoded = serializer.fromBinary(bytes, '');
-//  → { kind: 'inc', n: 1 }
+//  → { kind: 'increment', n: 1 }
 ```
 
 ## Warum JSON der Default ist

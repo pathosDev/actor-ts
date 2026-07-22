@@ -61,9 +61,9 @@ Inherited from `Scheduler`:
 
 ```ts
 scheduleOnce(delayMs, target, message, sender?): Cancellable
-scheduleOnceFn(delayMs, fn): Cancellable
+scheduleOnceFunction(delayMs, fn): Cancellable
 scheduleAtFixedRate(initialDelay, interval, target, message, sender?): Cancellable
-scheduleAtFixedRateFn(initialDelay, interval, fn): Cancellable
+scheduleAtFixedRateFunction(initialDelay, interval, fn): Cancellable
 ```
 
 Real-time `setTimeout` is **not** used.  Every schedule is a

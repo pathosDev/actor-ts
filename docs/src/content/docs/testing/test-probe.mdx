@@ -196,8 +196,8 @@ needing the DB to exist.
 
 ```ts
 const counter = tk.system.spawnAnonymous(Props.create(() => new Counter()));
-counter.tell({ kind: 'inc' });
-counter.tell({ kind: 'inc' });
+counter.tell({ kind: 'increment' });
+counter.tell({ kind: 'increment' });
 counter.tell({ kind: 'get', replyTo: probe as ActorRef<number> });
 await probe.expectMessage(2);
 ```

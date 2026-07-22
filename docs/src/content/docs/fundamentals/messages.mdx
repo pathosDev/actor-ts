@@ -19,8 +19,8 @@ discriminated unions tagged by a `kind` field**.
 
 ```ts
 type CounterCommand =
-  | { readonly kind: 'inc' }
-  | { readonly kind: 'dec' }
+  | { readonly kind: 'increment' }
+  | { readonly kind: 'decrement' }
   | { readonly kind: 'set'; readonly to: number }
   | { readonly kind: 'get'; readonly replyTo: ActorRef<number> };
 ```
@@ -48,33 +48,33 @@ Capital-K `Kind` works too but isn't what the framework uses.
 import { Actor, ActorSystem, Props, type ActorRef } from 'actor-ts';
 import { match } from 'ts-pattern';
 
-type IncCommand = { readonly kind: 'inc' };
-type DecCommand = { readonly kind: 'dec' };
+type IncrementCommand = { readonly kind: 'increment' };
+type DecrementCommand = { readonly kind: 'decrement' };
 type GetCommand = { readonly kind: 'get'; readonly replyTo: ActorRef<number> };
-type CounterCommand = IncCommand | DecCommand | GetCommand;
+type CounterCommand = IncrementCommand | DecrementCommand | GetCommand;
 
 class Counter extends Actor<CounterCommand> {
   private count = 0;
 
   override onReceive(cmd: CounterCommand): void {
     match(cmd)
-      .with({ kind: 'inc' }, () => this.onInc())
-      .with({ kind: 'dec' }, () => this.onDec())
+      .with({ kind: 'increment' }, () => this.onIncrement())
+      .with({ kind: 'decrement' }, () => this.onDecrement())
       .with({ kind: 'get' }, (m) => this.onGet(m))
       .exhaustive();
   }
 
-  private onInc(): void { this.count++; }
-  private onDec(): void { this.count--; }
+  private onIncrement(): void { this.count++; }
+  private onDecrement(): void { this.count--; }
   private onGet(m: GetCommand): void { m.replyTo.tell(this.count); }
 }
 
 const system = ActorSystem.create('counters');
 const counter = system.spawnAnonymous(Props.create(() => new Counter()));
 
-counter.tell({ kind: 'inc' });
-counter.tell({ kind: 'inc' });
-counter.tell({ kind: 'inc' });
+counter.tell({ kind: 'increment' });
+counter.tell({ kind: 'increment' });
+counter.tell({ kind: 'increment' });
 // later, ask for the count via a reply-to ref — see Ask pattern.
 ```
 
@@ -213,7 +213,7 @@ full event-sourcing story.
 
 <Aside type="caution" title="Forgetting `readonly`">
   ```ts
-  type Command = { kind: 'inc'; amount: number };
+  type Command = { kind: 'increment'; amount: number };
   //                       ^ no `readonly`
 
   function evil(cmd: Command) {

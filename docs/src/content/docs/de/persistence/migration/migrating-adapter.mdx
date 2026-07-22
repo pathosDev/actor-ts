@@ -17,7 +17,7 @@ type DepositedV1 = { kind: 'deposited'; amount: number };
 type DepositedV2 = { kind: 'deposited'; cents: number; currency: string };
 type DepositedV3 = { kind: 'deposited'; cents: number; currency: string; tenantId: string };
 
-class Account extends PersistentActor<Cmd, DepositedV3, State> {
+class Account extends PersistentActor<Command, DepositedV3, State> {
   constructor(public readonly tenantId: string) { super(); }
 
   override eventAdapter(): EventAdapter<DepositedV3> {
@@ -92,7 +92,7 @@ einfacher.  Für beliebig geformte Migrationen schreib einen eigenen
 ## Closure-Kontext
 
 ```ts
-class Account extends PersistentActor<Cmd, EventV3, State> {
+class Account extends PersistentActor<Command, EventV3, State> {
   constructor(public readonly tenantId: string) { super(); }
 
   override eventAdapter(): EventAdapter<EventV3> {

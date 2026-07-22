@@ -37,14 +37,14 @@ Drei Eigenschaften definieren einen Actor in actor-ts:
 import { Actor, ActorSystem, Props } from 'actor-ts';
 
 type Command =
-  | { kind: 'inc' }
+  | { kind: 'increment' }
   | { kind: 'reset' };
 
 class Counter extends Actor<Command> {
   private count = 0;
 
   override onReceive(cmd: Command): void {
-    if (cmd.kind === 'inc')   this.count++;
+    if (cmd.kind === 'increment')   this.count++;
     else if (cmd.kind === 'reset') this.count = 0;
     this.log.info(`count is now ${this.count}`);
   }
@@ -93,8 +93,8 @@ für die volle Schnittstelle.
 Die zurückgegebene `ActorRef` hat ein wichtiges Verb: `tell(message)`.
 
 ```ts
-counter.tell({ kind: 'inc' });
-counter.tell({ kind: 'inc' });
+counter.tell({ kind: 'increment' });
+counter.tell({ kind: 'increment' });
 counter.tell({ kind: 'reset' });
 ```
 

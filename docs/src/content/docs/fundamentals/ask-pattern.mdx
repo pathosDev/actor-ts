@@ -20,13 +20,13 @@ Promise that resolves with the first reply or rejects on timeout.
 import { Actor, ActorSystem, Props, type ActorRef } from 'actor-ts';
 
 type Command =
-  | { readonly kind: 'inc' }
+  | { readonly kind: 'increment' }
   | { readonly kind: 'get'; readonly replyTo: ActorRef<number> };
 
 class Counter extends Actor<Command> {
   private count = 0;
   override onReceive(cmd: Command): void {
-    if (cmd.kind === 'inc') this.count++;
+    if (cmd.kind === 'increment') this.count++;
     else if (cmd.kind === 'get') cmd.replyTo.tell(this.count);
   }
 }
@@ -34,8 +34,8 @@ class Counter extends Actor<Command> {
 const system = ActorSystem.create('demo');
 const counter = system.spawnAnonymous(Props.create(() => new Counter()));
 
-counter.tell({ kind: 'inc' });
-counter.tell({ kind: 'inc' });
+counter.tell({ kind: 'increment' });
+counter.tell({ kind: 'increment' });
 
 // Method-on-ref form — terse, infers the reply type:
 const current = await counter.ask<number>({ kind: 'get' }, 5_000);
