@@ -98,8 +98,8 @@ import { Aside } from '@astrojs/starlight/components';
   Receiver gets a **string**, not a `Date`.  Convert
   explicitly:
   ```ts
-  override onReceive(msg) {
-    const at = new Date(msg.at);   // string → Date
+  override onReceive(message) {
+    const at = new Date(message.at);   // string → Date
   }
   ```
   Or use `Date.now()` (number) instead of `new Date()` in

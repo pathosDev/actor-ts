@@ -12,7 +12,7 @@ von dem aus du spawnst:
 | --- | --- |
 | Außerhalb eines Actors | `system.spawnTyped(behavior, name)` / `system.spawnTypedAnonymous(behavior)` |
 | Innerhalb eines untyped `Actor.onReceive` | `this.context.spawnTyped(behavior, name)` / `this.context.spawnTypedAnonymous(behavior)` |
-| Innerhalb eines typed `Behaviors.setup` / Handlers | `ctx.spawn(behavior, name)` |
+| Innerhalb eines typed `Behaviors.setup` / Handlers | `context.spawn(behavior, name)` |
 | Überall, wo `Props<T>` akzeptiert wird | `typedProps(behavior)` |
 
 Die Methoden-Form spiegelt die Standard-OO-API — `spawn` vs.
@@ -25,9 +25,9 @@ import { ActorSystem, Behaviors, type Behavior, type ActorRef } from 'actor-ts';
 
 type Command = { kind: 'increment' } | { kind: 'get'; replyTo: ActorRef<number> };
 
-const counter = (n: number): Behavior<Command> => Behaviors.receive((ctx, cmd) => {
-  if (cmd.kind === 'increment') return counter(n + 1);
-  if (cmd.kind === 'get') { cmd.replyTo.tell(n); return Behaviors.same; }
+const counter = (n: number): Behavior<Command> => Behaviors.receive((context, command) => {
+  if (command.kind === 'increment') return counter(n + 1);
+  if (command.kind === 'get') { command.replyTo.tell(n); return Behaviors.same; }
   return Behaviors.same;
 });
 
@@ -111,11 +111,11 @@ Innerhalb eines typisierten Handlers exponiert der Context sein
 eigenes `spawn`:
 
 ```ts
-const parent: Behavior<ParentMessage> = Behaviors.setup((ctx) => {
-  const child = ctx.spawn(workerBehavior, 'worker');
+const parent: Behavior<ParentMessage> = Behaviors.setup((context) => {
+  const child = context.spawn(workerBehavior, 'worker');
   //    ^- ActorRef<WorkerMessage>
 
-  return Behaviors.receive((ctx, msg) => {
+  return Behaviors.receive((context, message) => {
     child.tell({ kind: 'do-it' });
     return Behaviors.same;
   });
@@ -123,7 +123,7 @@ const parent: Behavior<ParentMessage> = Behaviors.setup((ctx) => {
 ```
 
 Das ist der **Standard-Weg** für typed-Parents, typed-Children zu
-spawnen — durchgehend typisiert.  `ctx.spawn(behavior)` kennt den
+spawnen — durchgehend typisiert.  `context.spawn(behavior)` kennt den
 Nachrichtentyp des Kindes aus dem Typ-Parameter des Behaviors.
 
 ## Naming + Pfade
@@ -137,9 +137,9 @@ Der Pfad des resultierenden Actors folgt dem Standardformat:
 
 - `system.spawnTyped(b, 'counter')` →
   `actor-ts://my-app/user/counter`
-- `parentCtx.spawnTyped(b, 'worker')` →
+- `parentContext.spawnTyped(b, 'worker')` →
   `actor-ts://my-app/user/<parent>/worker`
-- `ctx.spawn(b, 'worker')` →
+- `context.spawn(b, 'worker')` →
   `actor-ts://my-app/user/<parent>/worker`
 
 Siehe [Actor-Pfade](/de/fundamentals/actor-paths/) für die
@@ -157,7 +157,7 @@ Aufrufer ist innerhalb eines untyped Actor.onReceive:
     → this.context.spawnTypedAnonymous(b)
 
 Aufrufer ist innerhalb eines typed Behaviors.setup oder Handlers:
-    → ctx.spawn(b, name)
+    → context.spawn(b, name)
 
 Du hast eine Funktion, die Props<T> nimmt, und willst ein Behavior verwenden:
     → typedProps(b)

@@ -170,7 +170,7 @@ Erweiterungen des Hello-Actor-Beispiels, die das konkret machen:
 Echte Actors empfangen *Commands*, keine nackten Werte. Die
 Konvention ist eine Discriminated Union — jede Nachricht trägt ein
 `kind`-Literal, das die Union innerhalb von `onReceive` verengt.
-`match(cmd).exhaustive()` aus
+`match(command).exhaustive()` aus
 [`ts-pattern`](https://github.com/gvergnaud/ts-pattern) liefert Dir
 zur Compile-Zeit die Garantie, dass jede Variante behandelt ist:
 füge ein neues `kind` ohne passenden `with(...)`-Arm hinzu, und
@@ -187,8 +187,8 @@ type Command = IncrementCommand | DecrementCommand | GetCommand;
 
 class Counter extends Actor<Command> {
   private count = 0;
-  override onReceive(cmd: Command): void {
-    match(cmd)
+  override onReceive(command: Command): void {
+    match(command)
       .with({ kind: 'increment' }, () => this.onIncrement())
       .with({ kind: 'decrement' }, () => this.onDecrement())
       .with({ kind: 'get' }, (m) => this.onGet(m))

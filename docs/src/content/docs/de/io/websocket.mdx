@@ -27,9 +27,9 @@ class Feed extends WebsocketClientActor<ClientMessage, ServerMessage> {
     this.send({ kind: 'ping', n: 1 });
   }
 
-  onMessage(msg: ServerMessage): void {
+  onMessage(message: ServerMessage): void {
     // decoded server message
-    if (msg.kind === 'pong') this.log.info(`pong ${msg.n}`);
+    if (message.kind === 'pong') this.log.info(`pong ${message.n}`);
   }
 }
 
@@ -68,7 +68,7 @@ steht in der [BrokerActor-Basis](/de/io/broker-actor-base/).
 
 ## Senden und Empfangen
 
-Innerhalb des Actors kodiert `this.send(msg)` die Nachricht über
+Innerhalb des Actors kodiert `this.send(message)` die Nachricht über
 den Codec und stellt sie in die Queue; während der Trennung wird
 die Nachricht gepuffert und nach dem Reconnect erneut gesendet.
 Eingehende Frames werden dekodiert und an `onMessage` zugestellt.
@@ -84,13 +84,13 @@ class Chat extends WebsocketClientActor<ClientMessage, ServerMessage> {
     this.send({ kind: 'setName', name: 'alice' });   // encode + enqueue → true
   }
 
-  onMessage(msg: ServerMessage): void {
+  onMessage(message: ServerMessage): void {
     // one call per decoded server frame, in frame order
   }
 }
 ```
 
-`send(msg: TOut): boolean` gibt zurück, ob die Nachricht
+`send(message: TOut): boolean` gibt zurück, ob die Nachricht
 angenommen wurde (sie kann abgelehnt werden, wenn der
 Outbound-Buffer voll ist).  Für einen rohen Frame — unter Umgehung
 des Codecs — nutze `sendRaw(frame: WebsocketFrame): boolean`.
@@ -108,7 +108,7 @@ feed.tell(websocketSend({ kind: 'ping', n: 42 }));
 
 ## Hooks
 
-`onMessage(msg: TIn)` ist abstrakt — du musst es implementieren.
+`onMessage(message: TIn)` ist abstrakt — du musst es implementieren.
 Der Rest sind optionale Overrides:
 
 | Hook | Wann |
@@ -116,7 +116,7 @@ Der Rest sind optionale Overrides:
 | `onConnected()` | Die Verbindung ist (wieder) aufgebaut.  Guter Ort für einen Handshake / Re-Subscribe. |
 | `onDisconnected(cause?: Error)` | Die Verbindung ist abgerissen; `cause` ist bei fehlergetriebenen Abbrüchen gesetzt. |
 | `onInvalidMessage(error: WebsocketDecodeError)` | Ein Frame ließ sich nicht dekodieren (nur bei `onInvalidMessage: 'hook'`). |
-| `onSelfMessage(msg: TSelf)` | Behandelt den optionalen dritten Typparameter — Nachrichten, die der Actor an sich selbst sendet. |
+| `onSelfMessage(message: TSelf)` | Behandelt den optionalen dritten Typparameter — Nachrichten, die der Actor an sich selbst sendet. |
 
 ## Codecs
 
@@ -135,13 +135,13 @@ class Validated extends WebsocketClientActor<ClientMessage, ServerMessage> {
     const webSocketClientOptions = WebsocketClientOptions.create<ClientMessage, ServerMessage>()
       .withUrl('wss://...')
       .withCodec(jsonCodec<ClientMessage, ServerMessage>({
-        validate: (value: unknown): ServerMessage => ServerMsgSchema.parse(value),
+        validate: (value: unknown): ServerMessage => ServerMessageSchema.parse(value),
       }));
     super(
       webSocketClientOptions,
     );
   }
-  onMessage(msg: ServerMessage): void { /* already validated */ }
+  onMessage(message: ServerMessage): void { /* already validated */ }
 }
 ```
 
@@ -248,9 +248,9 @@ import { Aside } from '@astrojs/starlight/components';
 <Aside type="note" title="Umbenannt von WebsocketActor">
   Dieser Actor hieß früher `WebsocketActor`.  Die
   Command-Schnittstelle (`{ kind: 'subscribe' | 'send' }`) ist
-  weg: implementiere `onMessage`, rufe `this.send(msg)` auf und
+  weg: implementiere `onMessage`, rufe `this.send(message)` auf und
   pushe typisierte Sends aus anderen Actors mit
-  `ref.tell(websocketSend(msg))`.
+  `ref.tell(websocketSend(message))`.
 </Aside>
 
 <Aside type="note" title="Keine eigenen Handshake-Header">

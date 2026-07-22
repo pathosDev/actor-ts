@@ -28,8 +28,8 @@ import { ActorSystem, Props, Router, Actor, Broadcast } from 'actor-ts';
 type Message = { payload: string };
 
 class Worker extends Actor<Message> {
-  override onReceive(msg: Message): void {
-    this.log.info(`processed ${msg.payload}`);
+  override onReceive(message: Message): void {
+    this.log.info(`processed ${message.payload}`);
   }
 }
 

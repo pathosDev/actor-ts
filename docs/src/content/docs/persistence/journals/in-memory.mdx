@@ -30,10 +30,10 @@ The journal contract:
 
 ```ts
 interface Journal {
-  append<E>(pid: string, events: E[], expectedSeq: number, tags?: string[]): Promise<PersistentEvent<E>[]>;
-  read<E>(pid: string, fromSeq: number, toSeq?: number): Promise<PersistentEvent<E>[]>;
-  highestSeq(pid: string): Promise<number>;
-  deleteEventsUpTo(pid: string, seqNr: number): Promise<void>;
+  append<E>(persistenceId: string, events: E[], expectedSeq: number, tags?: string[]): Promise<PersistentEvent<E>[]>;
+  read<E>(persistenceId: string, fromSeq: number, toSeq?: number): Promise<PersistentEvent<E>[]>;
+  highestSeq(persistenceId: string): Promise<number>;
+  deleteEventsUpTo(persistenceId: string, seqNr: number): Promise<void>;
   persistenceIds(): AsyncIterable<string>;
   readonly events: JournalEventBus;
 }

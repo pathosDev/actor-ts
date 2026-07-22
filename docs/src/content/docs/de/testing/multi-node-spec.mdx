@@ -156,7 +156,7 @@ const spec = await MultiNodeSpec.create({ nodes: 3 });
 const startShardingOptions = StartShardingOptions.create<Command>()
   .withTypeName('entity')
   .withEntityProps(Props.create(() => new Entity()))
-  .withExtractEntityId((msg) => msg.id);
+  .withExtractEntityId((message) => message.id);
 const regions = spec.nodes.map(sys =>
   /* Cluster-Ref */.sharding.start(startShardingOptions)
 );

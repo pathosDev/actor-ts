@@ -89,7 +89,7 @@ manuell.
 
 ```ts
 interface ObjectStorageBackend {
-  put(key: string, body: Uint8Array, opts?: PutOptions): Promise<PutResult>;
+  put(key: string, body: Uint8Array, options?: PutOptions): Promise<PutResult>;
   get(key: string): Promise<Option<{ body: Uint8Array; info: ObjectInfo }>>;
   delete(key: string): Promise<void>;
   list(prefix: string): AsyncIterable<ObjectInfo>;

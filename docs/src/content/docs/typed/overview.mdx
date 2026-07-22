@@ -27,8 +27,8 @@ type Command = { kind: 'increment' } | { kind: 'decrement' };
 
 class Counter extends Actor<Command> {
   private count = 0;
-  override onReceive(cmd: Command): void {
-    if (cmd.kind === 'increment') this.count++;
+  override onReceive(command: Command): void {
+    if (command.kind === 'increment') this.count++;
     else this.count--;
   }
 }
@@ -44,8 +44,8 @@ import { ActorSystem, Behaviors } from 'actor-ts';
 
 type Command = { kind: 'increment' } | { kind: 'decrement' };
 
-const counter = (n: number) => Behaviors.receive<Command>((_ctx, cmd) =>
-  cmd.kind === 'increment' ? counter(n + 1) : counter(n - 1)
+const counter = (n: number) => Behaviors.receive<Command>((_context, command) =>
+  command.kind === 'increment' ? counter(n + 1) : counter(n - 1)
 );
 
 const system = ActorSystem.create('demo');
@@ -69,14 +69,14 @@ Four things the typed API does that untyped doesn't:
    from the handler.  Less footgun-prone than `this.x` mutation,
    especially when refactoring.
 2. **Pure-functional message handling.**  Handlers are
-   `(ctx, msg) => Behavior<T>` — no side effects on `this`, no
+   `(context, message) => Behavior<T>` — no side effects on `this`, no
    imperative state machine.  Easier to test in isolation; a
    behavior is just a value.
 3. **`Behaviors.same` / `Behaviors.stopped` sentinels.**  The
    handler return type is the actor's state-transition decision,
    so "keep the same behavior" and "stop the actor" are values
    you return rather than imperative `context.stopSelf()` calls.
-4. **Cast-free child spawning.**  `ctx.spawn(behavior)` returns
+4. **Cast-free child spawning.**  `context.spawn(behavior)` returns
    `ActorRef<U>` typed to the child's message type, derived from
    the behavior.  No `as ActorRef<...>` casts at spawn time.
 
@@ -121,10 +121,10 @@ Three things the untyped API does more cleanly:
   other libraries you've used.
 
 **You can mix them.**  An untyped parent can spawn typed children
-via `ctx.spawnTypedAnonymous(behavior)`, and a typed parent can spawn
-untyped children via `ctx.spawn(behavior)` where the behavior
+via `context.spawnTypedAnonymous(behavior)`, and a typed parent can spawn
+untyped children via `context.spawn(behavior)` where the behavior
 wraps an `Actor` subclass.  Refs are interoperable — both forms
-expose `ActorRef<T>` with the same `tell(msg)` signature.
+expose `ActorRef<T>` with the same `tell(message)` signature.
 
 ## What the typed surface looks like
 
@@ -132,9 +132,9 @@ A handful of building blocks:
 
 | Combinator | What it does |
 | --- | --- |
-| `Behaviors.setup(ctx => behavior)` | Run once with the context; returns the initial behavior.  Akin to a "constructor." |
-| `Behaviors.receive((ctx, msg) => behavior)` | Standard message handler.  Returns the next behavior. |
-| `Behaviors.receiveMessage(msg => behavior)` | Shortcut when you don't need the context. |
+| `Behaviors.setup(context => behavior)` | Run once with the context; returns the initial behavior.  Akin to a "constructor." |
+| `Behaviors.receive((context, message) => behavior)` | Standard message handler.  Returns the next behavior. |
+| `Behaviors.receiveMessage(message => behavior)` | Shortcut when you don't need the context. |
 | `Behaviors.receiveWithSignal(handler, signalHandler)` | Add a lifecycle-signal handler (postStop, preRestart, terminated). |
 | `Behaviors.withTimers(timers => behavior)` | Capture the per-actor `TimerScheduler` in a closure. |
 | `Behaviors.withStash(capacity, stash => behavior)` | Capture a `StashBuffer<T>` with the given capacity. |
@@ -157,6 +157,6 @@ the three spawn helpers.
 - **[Typed actor](/typed/typed-actor/)** — what runs a
   Behavior at runtime.
 - **[Spawn typed](/typed/spawn-typed/)** — `system.spawnTyped`,
-  `ctx.spawnTyped`, `typedProps`.
+  `context.spawnTyped`, `typedProps`.
 - **[Fundamentals overview](/fundamentals/overview/)** —
   the untyped concept map; many ideas carry over.

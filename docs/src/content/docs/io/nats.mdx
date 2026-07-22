@@ -93,9 +93,9 @@ nats.tell({
 });
 
 // Reply handler:
-override onReceive(msg: NatsRequestReply): void {
-  if (msg.kind === 'reply')  this.handleBalance(JSON.parse(...));
-  if (msg.kind === 'timeout') this.handleTimeout();
+override onReceive(message: NatsRequestReply): void {
+  if (message.kind === 'reply')  this.handleBalance(JSON.parse(...));
+  if (message.kind === 'timeout') this.handleTimeout();
 }
 ```
 

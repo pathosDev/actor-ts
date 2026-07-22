@@ -42,8 +42,8 @@ distinction between local pools and cluster groups.
 import { ActorSystem, Cluster, ClusterOptions, ClusterRouter, ClusterRouterOptions, Props, Actor } from 'actor-ts';
 
 class Worker extends Actor<{ payload: string }> {
-  override onReceive(msg: { payload: string }): void {
-    this.log.info(`worked on ${msg.payload}`);
+  override onReceive(message: { payload: string }): void {
+    this.log.info(`worked on ${message.payload}`);
   }
 }
 
@@ -90,7 +90,7 @@ interface ClusterRouterOptions<TMessage> {
   routerType:  'round-robin' | 'random' | 'consistent-hashing' | 'broadcast';
   routeePath:  string;
   role?:       string;
-  extractKey?: (msg: TMessage) => string;
+  extractKey?: (message: TMessage) => string;
 }
 ```
 
@@ -123,7 +123,7 @@ const clusterRouterOptions = ClusterRouterOptions.create()
   .withCluster(cluster)
   .withRouterType('consistent-hashing')
   .withRouteePath('/user/cache')
-  .withExtractKey((msg) => msg.userId);
+  .withExtractKey((message) => message.userId);
 ClusterRouter.props(
   clusterRouterOptions,
 );
@@ -237,7 +237,7 @@ import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="Consistent-hashing with skewed keys">
   ```ts
-  extractKey: (msg) => msg.userId,
+  extractKey: (message) => message.userId,
   // ↑ if 80 % of traffic is for one user, one routee handles 80 %
   ```
   Same problem as any hash-based scheme — skewed keys produce

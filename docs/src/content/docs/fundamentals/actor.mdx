@@ -41,9 +41,9 @@ type Command =
 class Counter extends Actor<Command> {
   private count = 0;
 
-  override onReceive(cmd: Command): void {
-    if (cmd.kind === 'increment')   this.count++;
-    else if (cmd.kind === 'reset') this.count = 0;
+  override onReceive(command: Command): void {
+    if (command.kind === 'increment')   this.count++;
+    else if (command.kind === 'reset') this.count = 0;
     this.log.info(`count is now ${this.count}`);
   }
 }
@@ -55,7 +55,7 @@ Three things to notice:
   accepts.  `ref.tell({ kind: 'bogus' })` is a TypeScript error at the
   call site.  See [Messages](/fundamentals/messages/) for the
   discriminated-union convention this codebase uses everywhere.
-- **`override onReceive(cmd: Command): void`** is the only required
+- **`override onReceive(command: Command): void`** is the only required
   override.  The base class declares it `abstract`, so the compiler
   refuses to compile if you forget it.
 - **`this.log`, `this.count`** — you have full access to instance
@@ -106,7 +106,7 @@ access to the runtime:
 
 ```ts
 class Echo extends Actor<{ text: string }> {
-  override onReceive(msg: { text: string }): void {
+  override onReceive(message: { text: string }): void {
     // 1. `this.self` — a ref to me.  Pass this around when other
     //    actors should be able to talk to me.
     this.log.info(`I am ${this.self.path}`);
@@ -115,7 +115,7 @@ class Echo extends Actor<{ text: string }> {
     //    `None` when no sender was attached (e.g. `tell` from outside
     //    the actor system).  Use `.forEach(...)` to reply only when
     //    there is one.
-    this.sender.forEach((replyTo) => replyTo.tell({ echo: msg.text }));
+    this.sender.forEach((replyTo) => replyTo.tell({ echo: message.text }));
 
     // 3. `this.system` — the ActorSystem.  Spawn top-level actors,
     //    schedule timers, register extensions.
@@ -152,8 +152,8 @@ class FileWriter extends Actor<{ line: string }> {
     this.log.info('opened ' + this.config.path);
   }
 
-  override onReceive(msg: { line: string }): void {
-    this.handle.write(msg.line + '\n').catch((e) => this.log.warn(e));
+  override onReceive(message: { line: string }): void {
+    this.handle.write(message.line + '\n').catch((e) => this.log.warn(e));
   }
 
   override async postStop(): Promise<void> {
@@ -194,10 +194,10 @@ Actors can have children.  Use `context.spawn` from inside the parent's
 
 ```ts
 class Parent extends Actor<{ kind: 'add-child'; name: string }> {
-  override onReceive(msg: { kind: 'add-child'; name: string }): void {
+  override onReceive(message: { kind: 'add-child'; name: string }): void {
     const child = this.context.spawn(
       Props.create(() => new Worker()),
-      msg.name,
+      message.name,
     );
     this.log.info(`spawned child ${child.path}`);
   }
@@ -219,9 +219,9 @@ how parent-child failure propagation works.
 
 ```ts
 class DbWriter extends Actor<{ row: Row }> {
-  override async onReceive(msg: { row: Row }): Promise<void> {
-    await this.db.insert(msg.row);
-    this.log.debug('wrote row ' + msg.row.id);
+  override async onReceive(message: { row: Row }): Promise<void> {
+    await this.db.insert(message.row);
+    this.log.debug('wrote row ' + message.row.id);
   }
 }
 ```
@@ -241,11 +241,11 @@ the slow op, and have it tell the parent the result:
 
 ```ts
 class DbWriterFanout extends Actor<{ row: Row }> {
-  override onReceive(msg: { row: Row }): void {
+  override onReceive(message: { row: Row }): void {
     // Spawn-and-forget: child does the slow DB write, parent stays
     // available for the next message in the mailbox.
     this.context.spawnAnonymous(Props.create(() =>
-      new SingleShotWriter(this.db, msg.row)
+      new SingleShotWriter(this.db, message.row)
     ));
   }
 }
@@ -257,17 +257,17 @@ class DbWriterFanout extends Actor<{ row: Row }> {
   ```ts
   // BAD: `seen` is a local in `onReceive` — every call gets a fresh
   // empty Map.  No deduplication across messages.
-  override onReceive(msg: M) {
+  override onReceive(message: M) {
     const seen = new Map();
-    if (seen.has(msg.id)) return;
-    seen.set(msg.id, true);
+    if (seen.has(message.id)) return;
+    seen.set(message.id, true);
   }
 
   // GOOD: `seen` is an instance field — persists across calls.
   private seen = new Map();
-  override onReceive(msg: M) {
-    if (this.seen.has(msg.id)) return;
-    this.seen.set(msg.id, true);
+  override onReceive(message: M) {
+    if (this.seen.has(message.id)) return;
+    this.seen.set(message.id, true);
   }
   ```
   Actor state lives on `this`, never inside the message handler.

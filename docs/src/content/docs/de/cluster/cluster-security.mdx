@@ -100,7 +100,7 @@ signiertes Cert**. Keine anonymen Joins; kein Plain-Text-Fallback.
 **Shared-Secret-Prüfung** im Cluster-Handshake:
 
 ```ts
-new TcpTransport(self, log, tlsOpts, /* maxFrame */ undefined, {
+new TcpTransport(self, log, tlsOptions, /* maxFrame */ undefined, {
   sharedSecret: process.env.CLUSTER_SECRET,
 });
 ```

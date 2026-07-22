@@ -63,14 +63,14 @@ Die Factory schließt jegliche benötigten Konstruktor-Argumente ein:
 class Worker extends Actor<...> {
   constructor(
     private readonly db: ActorRef<DbMessage>,
-    private readonly cfg: Config,
+    private readonly config: Config,
   ) { super(); }
 }
 
-const props = Props.create(() => new Worker(db, cfg));
+const props = Props.create(() => new Worker(db, config));
 ```
 
-`db` und `cfg` werden vom Closure gefangen; jeder Restart sieht
+`db` und `config` werden vom Closure gefangen; jeder Restart sieht
 dieselbe Verdrahtung.
 
 ## Die vier Builder

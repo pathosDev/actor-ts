@@ -20,11 +20,11 @@ abonnieren kann.
 import { Actor, ActorSystem, Props, Terminated, type ActorRef } from 'actor-ts';
 
 class Watcher extends Actor<Terminated | { kind: 'watch'; ref: ActorRef }> {
-  override onReceive(msg: Terminated | { kind: 'watch'; ref: ActorRef }): void {
-    if (msg instanceof Terminated) {
-      this.log.info(`watched actor stopped: ${msg.actor.path}`);
-    } else if (msg.kind === 'watch') {
-      this.context.watch(msg.ref);
+  override onReceive(message: Terminated | { kind: 'watch'; ref: ActorRef }): void {
+    if (message instanceof Terminated) {
+      this.log.info(`watched actor stopped: ${message.actor.path}`);
+    } else if (message.kind === 'watch') {
+      this.context.watch(message.ref);
     }
   }
 }
@@ -114,8 +114,8 @@ class Worker extends Actor<Message | Terminated> {
   override preStart(): void {
     this.context.watch(this.db);
   }
-  override onReceive(msg: Message | Terminated): void {
-    if (msg instanceof Terminated && msg.actor === this.db) {
+  override onReceive(message: Message | Terminated): void {
+    if (message instanceof Terminated && message.actor === this.db) {
       this.log.warn('DB stopped — winding down');
       this.context.stopSelf();
       return;
@@ -147,9 +147,9 @@ class Manager extends Actor<Command | Terminated> {
     }
   }
 
-  override onReceive(msg: Command | Terminated): void {
-    if (msg instanceof Terminated) {
-      this.alive.delete(msg.actor.path.name);
+  override onReceive(message: Command | Terminated): void {
+    if (message instanceof Terminated) {
+      this.alive.delete(message.actor.path.name);
       if (this.alive.size === 0) {
         this.log.info('all workers stopped — manager exiting');
         this.context.stopSelf();
@@ -203,8 +203,8 @@ import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="`Terminated` für einen Actor, den du nie beobachtet hast">
   ```ts
-  override onReceive(msg) {
-    if (msg instanceof Terminated) { ... }   // ← wird das jemals feuern?
+  override onReceive(message) {
+    if (message instanceof Terminated) { ... }   // ← wird das jemals feuern?
   }
   ```
   Wenn du nie `context.watch` aufrufst, kommt `Terminated` nicht an.

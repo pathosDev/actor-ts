@@ -25,9 +25,9 @@ type Command =
 
 class Counter extends Actor<Command> {
   private count = 0;
-  override onReceive(cmd: Command): void {
-    if (cmd.kind === 'increment') this.count++;
-    else if (cmd.kind === 'get') cmd.replyTo.tell(this.count);
+  override onReceive(command: Command): void {
+    if (command.kind === 'increment') this.count++;
+    else if (command.kind === 'get') command.replyTo.tell(this.count);
   }
 }
 
@@ -75,8 +75,8 @@ variant has `replyTo: ActorRef<number>`.
 For the recipient, it's just a regular `tell` on a regular ref:
 
 ```ts
-if (cmd.kind === 'get') {
-  cmd.replyTo.tell(this.count);
+if (command.kind === 'get') {
+  command.replyTo.tell(this.count);
 }
 ```
 
@@ -85,7 +85,7 @@ Inside the recipient, you can also reach the same ref via
 temporary ref through that channel too:
 
 ```ts
-if (cmd.kind === 'get') {
+if (command.kind === 'get') {
   this.sender.forEach((replyTo) => replyTo.tell(this.count));
 }
 ```
@@ -137,13 +137,13 @@ resolving with the message.
 
 ```ts
 class Service extends Actor<Command> {
-  override onReceive(cmd: Command): void {
-    if (cmd.kind === 'fetch') {
+  override onReceive(command: Command): void {
+    if (command.kind === 'fetch') {
       if (this.unavailable) {
-        cmd.replyTo.tell(new Error('service unavailable'));
+        command.replyTo.tell(new Error('service unavailable'));
         return;
       }
-      cmd.replyTo.tell(this.data);
+      command.replyTo.tell(this.data);
     }
   }
 }
@@ -182,7 +182,7 @@ right call instead:
 
 <Aside type="caution" title="Inside an actor's `onReceive`, when waiting blocks the mailbox">
   ```ts
-  override async onReceive(msg) {
+  override async onReceive(message) {
     const dep = await other.ask({ kind: 'q' });
     // ↑ this actor's mailbox blocks until the ask resolves.
     this.useDep(dep);

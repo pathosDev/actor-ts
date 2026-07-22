@@ -22,8 +22,8 @@ non-blocking, and receive the result as another message.
 
 ```ts
 class Slow extends Actor<...> {
-  override async onReceive(msg): Promise<void> {
-    const data = await this.downstream.fetch(msg.id);
+  override async onReceive(message): Promise<void> {
+    const data = await this.downstream.fetch(message.id);
     // ↑ everything in this actor's mailbox waits until fetch resolves.
     this.handle(data);
   }
@@ -49,15 +49,15 @@ type Message =
   | Failure;
 
 class Fast extends Actor<Message> {
-  override onReceive(msg: Message): void {
-    if (msg.kind === 'fetch') {
-      pipeTo(this.downstream.fetch(msg.id), this.context.self);
+  override onReceive(message: Message): void {
+    if (message.kind === 'fetch') {
+      pipeTo(this.downstream.fetch(message.id), this.context.self);
       return;   // doesn't block — onReceive returns immediately
     }
-    if (msg instanceof Success) {
-      this.handle(msg.value);
-    } else if (msg instanceof Failure) {
-      this.log.warn(`fetch failed: ${msg.error.message}`);
+    if (message instanceof Success) {
+      this.handle(message.value);
+    } else if (message instanceof Failure) {
+      this.log.warn(`fetch failed: ${message.error.message}`);
     }
   }
 }
@@ -125,11 +125,11 @@ Simple tagged classes — values are immutable after construction.
 Pattern-match with `instanceof`:
 
 ```ts
-override onReceive(msg: Success<Item> | Failure | Command): void {
-  if (msg instanceof Success) {
-    this.handle(msg.value);
-  } else if (msg instanceof Failure) {
-    this.fail(msg.error);
+override onReceive(message: Success<Item> | Failure | Command): void {
+  if (message instanceof Success) {
+    this.handle(message.value);
+  } else if (message instanceof Failure) {
+    this.fail(message.error);
   } else {
     // it's a Command
   }
@@ -141,7 +141,7 @@ Or in ts-pattern:
 ```ts
 import { P, match } from 'ts-pattern';
 
-match(msg)
+match(message)
   .with(P.instanceOf(Success), (s) => this.handle(s.value))
   .with(P.instanceOf(Failure), (f) => this.fail(f.error))
   .otherwise(() => { /* ... */ });
@@ -244,9 +244,9 @@ import { Aside } from '@astrojs/starlight/components';
   If the result needs the same correlation id as the request that
   initiated it, wrap the promise:
   ```ts
-  const ctx = LogContext.snapshot();
+  const context = LogContext.snapshot();
   pipeTo(
-    promise.then(v => LogContext.run(ctx, () => v)),
+    promise.then(v => LogContext.run(context, () => v)),
     target,
   );
   ```

@@ -29,7 +29,7 @@ type CounterCommand =
 
 Diese Form bringt drei Dinge:
 
-1. **Compile-time-Exhaustiveness.**  `match(cmd).with(...).exhaustive()`
+1. **Compile-time-Exhaustiveness.**  `match(command).with(...).exhaustive()`
    (über [ts-pattern](https://github.com/gvergnaud/ts-pattern)) weigert
    sich zu kompilieren, wenn du einen neuen `kind` hinzufügst und
    vergisst, ihn zu behandeln.  Die actor-ts-Codebasis verwendet dieses
@@ -61,8 +61,8 @@ type CounterCommand = IncrementCommand | DecrementCommand | GetCommand;
 class Counter extends Actor<CounterCommand> {
   private count = 0;
 
-  override onReceive(cmd: CounterCommand): void {
-    match(cmd)
+  override onReceive(command: CounterCommand): void {
+    match(command)
       .with({ kind: 'increment' }, () => this.onIncrement())
       .with({ kind: 'decrement' }, () => this.onDecrement())
       .with({ kind: 'get' }, (m) => this.onGet(m))
@@ -138,8 +138,8 @@ type ReplyOK = { readonly kind: 'reply-ok'; readonly value: number };
 
 class Counter extends Actor<Get> {
   private count = 42;
-  override onReceive(cmd: Get): void {
-    cmd.replyTo.tell(this.count);
+  override onReceive(command: Get): void {
+    command.replyTo.tell(this.count);
   }
 }
 ```
@@ -196,9 +196,9 @@ type Deposited = { readonly kind: 'deposited'; readonly amount: number; readonly
 
 class Account extends PersistentActor<DepositCommand, Deposited, { balance: number }> {
   // Command-Handler: validieren + Event persistieren
-  async onCommand(state, cmd: DepositCommand): Promise<void> {
-    if (cmd.kind === 'deposit') {
-      const event: Deposited = { kind: 'deposited', amount: cmd.amount, ts: Date.now() };
+  async onCommand(state, command: DepositCommand): Promise<void> {
+    if (command.kind === 'deposit') {
+      const event: Deposited = { kind: 'deposited', amount: command.amount, ts: Date.now() };
       await this.persist(event, () => { /* Seiteneffekte nach dem Persistieren */ });
     }
   }
@@ -228,8 +228,8 @@ vollständige Event-Sourcing-Geschichte.
   type Command = { kind: 'increment'; amount: number };
   //                       ^ kein `readonly`
 
-  function evil(cmd: Command) {
-    cmd.amount++;     // valides TS — kein Compile-Fehler
+  function evil(command: Command) {
+    command.amount++;     // valides TS — kein Compile-Fehler
   }
   ```
   Ohne `readonly` erlaubt der Typ Mutation, und irgendwer irgendwo
@@ -245,7 +245,7 @@ vollständige Event-Sourcing-Geschichte.
 </Aside>
 
 <Aside type="caution" title="Eine Nachricht zu senden bedeutet, dass du sie nicht mehr besitzt">
-  Nach `ref.tell(msg)` behandle `msg` als Eigentum des Empfängers.
+  Nach `ref.tell(message)` behandle `message` als Eigentum des Empfängers.
   Lies oder schreibe nicht von Sender-Seite aus auf ihren Feldern.
   Klingt offensichtlich — aber wenn du die Referenz für einen
   Folgeaufruf hältst, kopiere oder rebuilde lieber, als zu mutieren.
@@ -268,7 +268,7 @@ vollständige Event-Sourcing-Geschichte.
   das `match().exhaustive()`-Idiom, das in jedem Beispiel auf dieser
   Seite verwendet wird.
 - **[Ask-Pattern](/de/fundamentals/ask-pattern/)** —
-  `ref.ask(msg, timeout)` gibt ein Promise für die Antwort zurück
+  `ref.ask(message, timeout)` gibt ein Promise für die Antwort zurück
   und vermeidet den manuellen Reply-to-Ref-Tanz.
 - **[Actor](/de/fundamentals/actor/)** — die Basisklasse, die
   `onReceive`-Signatur, die Context-Referenzen, die Reply-Refs

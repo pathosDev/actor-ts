@@ -69,11 +69,11 @@ interface CachedSnapshotStoreOptionsType {
 
 ## Cache semantics
 
-- **`loadLatest(pid)`** — check cache; on hit, return.  On miss,
+- **`loadLatest(persistenceId)`** — check cache; on hit, return.  On miss,
   load from underlying, cache the result, return.
-- **`save(pid, snapshot)`** — write through to underlying, then
+- **`save(persistenceId, snapshot)`** — write through to underlying, then
   update the cache.
-- **`deleteUpTo(pid, seqNr)`** — write through, invalidate the
+- **`deleteUpTo(persistenceId, seqNr)`** — write through, invalidate the
   pid's cache entry.
 
 The cache is **consistent with writes** — a save followed by

@@ -25,9 +25,9 @@ Plus an extension point: implement `Serializer<T>` for
 
 ```
 Sender side:
-  tell(remoteRef, msg)
-    → SerializationExtension picks serializer for typeof(msg)
-    → serializer.toBinary(msg) → Uint8Array
+  tell(remoteRef, message)
+    → SerializationExtension picks serializer for typeof(message)
+    → serializer.toBinary(message) → Uint8Array
     → wrapped with serializerId + manifest + bytes
     → cluster transport sends over the wire
 

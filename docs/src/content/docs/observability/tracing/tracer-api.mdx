@@ -45,7 +45,7 @@ try {
 
 ```ts
 interface Tracer {
-  startSpan(name: string, opts?: SpanOptions): Span;
+  startSpan(name: string, options?: SpanOptions): Span;
   withActiveSpan<T>(span: Span, fn: () => T): T;
   activeSpan(): Span | null;
   injectContext(): TraceCarrier | null;
@@ -129,8 +129,8 @@ const carrier = tracer.injectContext();
 sendToOtherService(payload, carrier);
 
 // Receiver side — extract + create root from parent
-const parentCtx = tracer.extractContext(carrier);
-const span = tracer.startSpan('handle', { parent: parentCtx });
+const parentContext = tracer.extractContext(carrier);
+const span = tracer.startSpan('handle', { parent: parentContext });
 ```
 
 `TraceCarrier` is a key/value map; the framework's cluster

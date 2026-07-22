@@ -151,9 +151,9 @@ will, ist `retry` innerhalb von `onReceive` okay:
 
 ```ts
 class MyActor extends Actor<...> {
-  override async onReceive(msg): Promise<void> {
+  override async onReceive(message): Promise<void> {
     const result = await retry(
-      () => this.callDownstream(msg),
+      () => this.callDownstream(message),
       { attempts: 3, delayMs: 200, factor: 2 },
     );
     // ...

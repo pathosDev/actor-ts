@@ -34,7 +34,7 @@ class Reconciler extends Actor<{ kind: 'check' }> {
     );
   }
 
-  override onReceive(msg: { kind: 'check' }): void {
+  override onReceive(message: { kind: 'check' }): void {
     this.log.info(`reconciler #${this.index} ticking`);
     // ... per-index work
   }
@@ -87,7 +87,7 @@ interface ShardedDaemonProcessHandle<T> {
 - **`region`** — the underlying sharding region ref.  Messages
   sent here must be wrapped in `{ index, body }` envelopes; use
   `handle.tell` instead.
-- **`tell(index, msg)`** — convenience for sending to daemon `i`.
+- **`tell(index, message)`** — convenience for sending to daemon `i`.
 - **`stop()`** — stops the liveness heartbeat and cluster
   subscription.  Does **not** stop the daemons themselves —
   they keep running until the cluster shuts down.

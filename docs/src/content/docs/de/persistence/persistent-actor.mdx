@@ -61,8 +61,8 @@ class Account extends PersistentActor<Command, Event, State> {
   }
 
   // Ein Command behandeln — validieren, bei Gültigkeit persistieren.
-  onCommand(state: State, cmd: Command): void {
-    match(cmd)
+  onCommand(state: State, command: Command): void {
+    match(command)
       .with({ kind: 'deposit' }, (c) => this.onDeposit(c))
       .with({ kind: 'withdraw' }, (c) => this.onWithdraw(state, c))
       .exhaustive();
@@ -127,7 +127,7 @@ Actors viele Male abgespielt werden.  Ein Seiteneffekt in `onEvent`
 läuft bei jeder Recovery, was duplizierte E-Mails / duplizierte
 HTTP-Calls / alles dupliziert bedeutet.
 
-### `onCommand(state, cmd) → void | Promise<void>`
+### `onCommand(state, command) → void | Promise<void>`
 
 Validiert das Command gegen den aktuellen State und entscheidet,
 welche Events persistiert werden.  Drei gültige Ergebnisse:
@@ -142,14 +142,14 @@ welche Events persistiert werden.  Drei gültige Ergebnisse:
   Keine Events werden geschrieben.
 
 ```ts
-onCommand(state: State, cmd: Command): void {
-  if (cmd.kind === 'get-balance') {
-    cmd.replyTo.tell(state.balance);    // read-only — kein Persist
+onCommand(state: State, command: Command): void {
+  if (command.kind === 'get-balance') {
+    command.replyTo.tell(state.balance);    // read-only — kein Persist
     return;
   }
-  if (cmd.kind === 'withdraw') {
-    if (state.balance < cmd.amount) return;   // ablehnen
-    this.persist({ kind: 'withdrawn', amount: cmd.amount, ts: Date.now() },
+  if (command.kind === 'withdraw') {
+    if (state.balance < command.amount) return;   // ablehnen
+    this.persist({ kind: 'withdrawn', amount: command.amount, ts: Date.now() },
       () => {});
   }
 }
@@ -344,8 +344,8 @@ import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="State aus `onCommand` mutieren">
   ```ts
-  onCommand(state, cmd) {
-    state.balance += cmd.amount;   // ✗ State direkt mutieren
+  onCommand(state, command) {
+    state.balance += command.amount;   // ✗ State direkt mutieren
   }
   ```
   Schreibe nicht direkt in `state`.  Jede Zustandsänderung muss

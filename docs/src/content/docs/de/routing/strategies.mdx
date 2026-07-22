@@ -141,11 +141,11 @@ ClusterRouter.props({
   cluster,
   routerType: 'consistent-hashing',
   routeePath: '/user/worker',
-  extractKey: (msg) => msg.userId,
+  extractKey: (message) => message.userId,
 });
 ```
 
-Berechnet einen Hash von `extractKey(msg)` und wählt den Routee,
+Berechnet einen Hash von `extractKey(message)` und wählt den Routee,
 dessen eigener Hash am nächsten ist (Rendezvous-Hashing).  Gleicher
 Key → gleicher Routee, deterministisch, über den Cluster hinweg.
 

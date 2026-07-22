@@ -43,9 +43,9 @@ type Command =
 class Counter extends Actor<Command> {
   private count = 0;
 
-  override onReceive(cmd: Command): void {
-    if (cmd.kind === 'increment')   this.count++;
-    else if (cmd.kind === 'reset') this.count = 0;
+  override onReceive(command: Command): void {
+    if (command.kind === 'increment')   this.count++;
+    else if (command.kind === 'reset') this.count = 0;
     this.log.info(`count is now ${this.count}`);
   }
 }
@@ -58,7 +58,7 @@ Drei Dinge, die auffallen:
   TypeScript-Fehler an der Aufrufstelle.  Siehe
   [Nachrichten](/de/fundamentals/messages/) für die
   Discriminated-Union-Konvention, die diese Codebasis überall verwendet.
-- **`override onReceive(cmd: Command): void`** ist der einzige Pflicht-Override.
+- **`override onReceive(command: Command): void`** ist der einzige Pflicht-Override.
   Die Basisklasse deklariert ihn `abstract`, der Compiler kompiliert
   also nicht, wenn du ihn vergisst.
 - **`this.log`, `this.count`** — du hast vollen Zugriff auf
@@ -110,7 +110,7 @@ Referenzen Zugriff auf die Runtime:
 
 ```ts
 class Echo extends Actor<{ text: string }> {
-  override onReceive(msg: { text: string }): void {
+  override onReceive(message: { text: string }): void {
     // 1. `this.self` — eine Ref auf mich.  Gib das weiter, wenn andere
     //    Actors mit mir sprechen können sollen.
     this.log.info(`I am ${this.self.path}`);
@@ -119,7 +119,7 @@ class Echo extends Actor<{ text: string }> {
     //    Nachricht.  `None`, wenn kein Absender angehängt war (z.B.
     //    `tell` von außerhalb des Actor-Systems).  Verwende
     //    `.forEach(...)`, um nur dann zu antworten, wenn es einen gibt.
-    this.sender.forEach((replyTo) => replyTo.tell({ echo: msg.text }));
+    this.sender.forEach((replyTo) => replyTo.tell({ echo: message.text }));
 
     // 3. `this.system` — das ActorSystem.  Top-Level-Actors spawnen,
     //    Timer planen, Extensions registrieren.
@@ -157,8 +157,8 @@ class FileWriter extends Actor<{ line: string }> {
     this.log.info('opened ' + this.config.path);
   }
 
-  override onReceive(msg: { line: string }): void {
-    this.handle.write(msg.line + '\n').catch((e) => this.log.warn(e));
+  override onReceive(message: { line: string }): void {
+    this.handle.write(message.line + '\n').catch((e) => this.log.warn(e));
   }
 
   override async postStop(): Promise<void> {
@@ -201,10 +201,10 @@ Actors können Kinder haben.  Verwende `context.spawn` aus dem
 
 ```ts
 class Parent extends Actor<{ kind: 'add-child'; name: string }> {
-  override onReceive(msg: { kind: 'add-child'; name: string }): void {
+  override onReceive(message: { kind: 'add-child'; name: string }): void {
     const child = this.context.spawn(
       Props.create(() => new Worker()),
-      msg.name,
+      message.name,
     );
     this.log.info(`spawned child ${child.path}`);
   }
@@ -227,9 +227,9 @@ wie die Fehlerausbreitung zwischen Eltern und Kindern funktioniert.
 
 ```ts
 class DbWriter extends Actor<{ row: Row }> {
-  override async onReceive(msg: { row: Row }): Promise<void> {
-    await this.db.insert(msg.row);
-    this.log.debug('wrote row ' + msg.row.id);
+  override async onReceive(message: { row: Row }): Promise<void> {
+    await this.db.insert(message.row);
+    this.log.debug('wrote row ' + message.row.id);
   }
 }
 ```
@@ -252,11 +252,11 @@ lassen:
 
 ```ts
 class DbWriterFanout extends Actor<{ row: Row }> {
-  override onReceive(msg: { row: Row }): void {
+  override onReceive(message: { row: Row }): void {
     // Spawn-and-forget: Kind erledigt den langsamen DB-Write, Parent
     // bleibt für die nächste Nachricht in der Mailbox verfügbar.
     this.context.spawnAnonymous(Props.create(() =>
-      new SingleShotWriter(this.db, msg.row)
+      new SingleShotWriter(this.db, message.row)
     ));
   }
 }
@@ -269,17 +269,17 @@ class DbWriterFanout extends Actor<{ row: Row }> {
   // SCHLECHT: `seen` ist eine lokale Variable in `onReceive` — jeder
   // Aufruf bekommt eine frische, leere Map.  Keine Deduplikation über
   // Nachrichten hinweg.
-  override onReceive(msg: M) {
+  override onReceive(message: M) {
     const seen = new Map();
-    if (seen.has(msg.id)) return;
-    seen.set(msg.id, true);
+    if (seen.has(message.id)) return;
+    seen.set(message.id, true);
   }
 
   // GUT: `seen` ist ein Instanzfeld — bleibt über Aufrufe hinweg erhalten.
   private seen = new Map();
-  override onReceive(msg: M) {
-    if (this.seen.has(msg.id)) return;
-    this.seen.set(msg.id, true);
+  override onReceive(message: M) {
+    if (this.seen.has(message.id)) return;
+    this.seen.set(message.id, true);
   }
   ```
   Actor-Zustand lebt auf `this`, niemals innerhalb des Nachrichten-Handlers.

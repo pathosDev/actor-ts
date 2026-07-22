@@ -12,7 +12,7 @@ Replay — nur ein Snapshot des States, bei jedem
 flowchart LR
   subgraph DSA["DurableStateActor"]
     direction TB
-    CMD["onReceive(cmd)"]
+    CMD["onReceive(command)"]
     READ["this.state lesen"]
     NEXT["next = transform(...)"]
     PERSIST["await this.persist(next)"]
@@ -61,8 +61,8 @@ interface State { items: string[]; }
 class Cart extends DurableStateActor<CartCommand, State> {
   constructor(options: DurableStateOptions<State>) { super(options); }
 
-  override async onReceive(cmd: CartCommand): Promise<void> {
-    await match(cmd)
+  override async onReceive(command: CartCommand): Promise<void> {
+    await match(command)
       .with({ kind: 'add' },    (c) => this.onAdd(c))
       .with({ kind: 'remove' }, (c) => this.onRemove(c))
       .with({ kind: 'view' },   (c) => this.onView(c))
@@ -248,9 +248,9 @@ import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="`persist` nicht zu awaiten">
   ```ts
-  override onReceive(cmd) {
+  override onReceive(command) {
     this.persist(next);            // ✗ kein await
-    cmd.replyTo.tell('done');      // antwortet "done" bevor der Write fertig ist
+    command.replyTo.tell('done');      // antwortet "done" bevor der Write fertig ist
   }
   ```
   Ohne `await` passiert die Antwort, bevor der State durable ist.
@@ -262,7 +262,7 @@ import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="`this.state` direkt mutieren">
   ```ts
-  this.state.items.push(cmd.sku);    // ✗ mutiert die gespeicherte Referenz
+  this.state.items.push(command.sku);    // ✗ mutiert die gespeicherte Referenz
   await this.persist(this.state);    // persistiert den mutierten Wert
   ```
   Das funktioniert *zufällig* in manchen Store-Implementierungen,

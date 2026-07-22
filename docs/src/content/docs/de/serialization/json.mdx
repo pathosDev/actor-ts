@@ -99,8 +99,8 @@ import { Aside } from '@astrojs/starlight/components';
   Der Empfänger bekommt einen **String**, kein `Date`.  Wandle
   explizit:
   ```ts
-  override onReceive(msg) {
-    const at = new Date(msg.at);   // String → Date
+  override onReceive(message) {
+    const at = new Date(message.at);   // String → Date
   }
   ```
   Oder nimm in Nachrichten `Date.now()` (Zahl) statt

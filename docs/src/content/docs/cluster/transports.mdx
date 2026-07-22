@@ -23,8 +23,8 @@ interface Transport {
   readonly self: NodeAddress;
   start(): Promise<void>;
   shutdown(): Promise<void>;
-  setHandler(handler: (from: NodeAddress, msg: WireMessage) => void): void;
-  send(to: NodeAddress, msg: WireMessage): void;
+  setHandler(handler: (from: NodeAddress, message: WireMessage) => void): void;
+  send(to: NodeAddress, message: WireMessage): void;
   disconnect(peer: NodeAddress): void;
   peers(): NodeAddress[];
 }
@@ -153,7 +153,7 @@ How it works:
 
 - A **shared bus** routes messages between in-process transports.
 - Each transport registers itself with the bus by address.
-- `send(to, msg)` looks up the recipient in the bus and invokes
+- `send(to, message)` looks up the recipient in the bus and invokes
   its handler directly — no sockets, no serialization to bytes.
 
 Used by [MultiNodeSpec](/testing/multi-node-spec/) — the

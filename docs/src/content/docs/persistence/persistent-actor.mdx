@@ -59,8 +59,8 @@ class Account extends PersistentActor<Command, Event, State> {
   }
 
   // Handle a command — validate, persist if valid.
-  onCommand(state: State, cmd: Command): void {
-    match(cmd)
+  onCommand(state: State, command: Command): void {
+    match(command)
       .with({ kind: 'deposit' }, (c) => this.onDeposit(c))
       .with({ kind: 'withdraw' }, (c) => this.onWithdraw(state, c))
       .exhaustive();
@@ -124,7 +124,7 @@ over the actor's lifetime.  A side effect inside `onEvent` runs
 during every recovery, which means duplicate emails / duplicate
 HTTP calls / duplicated everything.
 
-### `onCommand(state, cmd) → void | Promise<void>`
+### `onCommand(state, command) → void | Promise<void>`
 
 Validates the command against the current state and decides what
 events to persist.  Three valid outcomes:
@@ -139,14 +139,14 @@ events to persist.  Three valid outcomes:
   written.
 
 ```ts
-onCommand(state: State, cmd: Command): void {
-  if (cmd.kind === 'get-balance') {
-    cmd.replyTo.tell(state.balance);    // read-only — no persist
+onCommand(state: State, command: Command): void {
+  if (command.kind === 'get-balance') {
+    command.replyTo.tell(state.balance);    // read-only — no persist
     return;
   }
-  if (cmd.kind === 'withdraw') {
-    if (state.balance < cmd.amount) return;   // reject
-    this.persist({ kind: 'withdrawn', amount: cmd.amount, ts: Date.now() },
+  if (command.kind === 'withdraw') {
+    if (state.balance < command.amount) return;   // reject
+    this.persist({ kind: 'withdrawn', amount: command.amount, ts: Date.now() },
       () => {});
   }
 }
@@ -337,8 +337,8 @@ import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="Mutating state from `onCommand`">
   ```ts
-  onCommand(state, cmd) {
-    state.balance += cmd.amount;   // ✗ mutating state directly
+  onCommand(state, command) {
+    state.balance += command.amount;   // ✗ mutating state directly
   }
   ```
   Don't write to `state` directly.  Every state change must go

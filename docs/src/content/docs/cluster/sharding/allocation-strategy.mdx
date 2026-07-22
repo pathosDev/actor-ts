@@ -27,7 +27,7 @@ import { HashAllocationStrategy, StartShardingOptions } from 'actor-ts';
 const startShardingOptions = StartShardingOptions.create()
   .withTypeName('cart')
   .withEntityProps(Props.create(() => new CartActor()))
-  .withExtractEntityId((msg) => msg.entityId)
+  .withExtractEntityId((message) => message.entityId)
   .withAllocationStrategy(new HashAllocationStrategy());
 sharding.start(
   startShardingOptions,   // default

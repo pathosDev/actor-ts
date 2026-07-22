@@ -74,9 +74,9 @@ const clusterOptions = ClusterOptions.create()
 const cluster = await Cluster.join(system, clusterOptions);
 
 // Wait for the test's instructions:
-process.on('message', (msg) => {
+process.on('message', (message) => {
   // Handle test commands sent via IPC
-  if (msg === 'spawn-counter') {
+  if (message === 'spawn-counter') {
     const ref = system.spawnAnonymous(Props.create(() => new Counter()));
     process.send!({ kind: 'ready', path: ref.path.toString() });
   }

@@ -54,7 +54,7 @@ options control only the **write** version:
 ```ts
 function migratingAdapter<E>(
   chain: MigrationChain<E>,
-  opts?: { writeVersion?: number },   // default: chain.currentVersion
+  options?: { writeVersion?: number },   // default: chain.currentVersion
 ): EventAdapter<E, unknown>;
 
 // Steps added to the chain:

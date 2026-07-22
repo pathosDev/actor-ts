@@ -10,7 +10,7 @@ actor's path:
 import { Actor } from 'actor-ts';
 
 class Worker extends Actor<...> {
-  override onReceive(msg): void {
+  override onReceive(message): void {
     this.log.info('handling message');
     // → [2025-05-13T11:42:01.123Z] INFO  actor-ts://my-app/user/worker - handling message
   }
@@ -75,7 +75,7 @@ Output (one `\n`-terminated JSON object per record):
 Every record carries `ts` (ISO-8601), `level`, `msg`, and the
 merged static + dynamic MDC (static from `withFields`, dynamic
 from `LogContext.run`, with dynamic winning on key collision).
-Extra positional `...args` from `log.info(msg, extra1, extra2)`
+Extra positional `...args` from `log.info(message, extra1, extra2)`
 land under an `args` array — log aggregators index nested keys
 automatically.
 
@@ -133,10 +133,10 @@ import { type Logger, LogLevel, type LogContextData } from 'actor-ts';
 
 class MyLogger implements Logger {
   level = LogLevel.Info;
-  debug(msg: string, ...args: unknown[]): void { /* ... */ }
-  info(msg: string, ...args: unknown[]): void  { /* ... */ }
-  warn(msg: string, ...args: unknown[]): void  { /* ... */ }
-  error(msg: string, ...args: unknown[]): void { /* ... */ }
+  debug(message: string, ...args: unknown[]): void { /* ... */ }
+  info(message: string, ...args: unknown[]): void  { /* ... */ }
+  warn(message: string, ...args: unknown[]): void  { /* ... */ }
+  error(message: string, ...args: unknown[]): void { /* ... */ }
   withSource(source: string): Logger { /* return a bound copy */ return this; }
   withFields(fields: LogContextData): Logger { /* return a bound copy */ return this; }
 }
@@ -156,7 +156,7 @@ class ShardCoordinator extends Actor<...> {
     shardId:   this.shardId,
   });
 
-  override onReceive(msg): void {
+  override onReceive(message): void {
     this.log.info('rebalance start');
     // → ... shard-coordinator - rebalance start {component=shard-coordinator, shardId=12}
   }
@@ -189,7 +189,7 @@ app.post('/orders', async (req, res) => {
 
 // Inside any actor reached via `tell` / `ask` from there:
 class OrderActor extends Actor<...> {
-  override onReceive(msg): void {
+  override onReceive(message): void {
     this.log.info('placing order');
     // → ... order-actor - placing order {correlationId=abc-123, userId=user-42}
     paymentActor.tell({ kind: 'charge', ... });
@@ -203,7 +203,7 @@ operations:
 
 | Method | What it does |
 | --- | --- |
-| `LogContext.run(ctx, fn)` | Runs `fn` with `ctx` as the current context. |
+| `LogContext.run(context, fn)` | Runs `fn` with `context` as the current context. |
 | `LogContext.with(extra, fn)` | Runs `fn` with `{ ...current, ...extra }` as the context. |
 | `LogContext.get()` | Reads the current context (empty object if none active). |
 
@@ -213,7 +213,7 @@ intuition).
 
 ## How MDC propagates across `tell`
 
-When you call `ref.tell(msg)` inside a `LogContext.run` scope, the
+When you call `ref.tell(message)` inside a `LogContext.run` scope, the
 runtime snapshots the current context onto the envelope.  The
 receiving actor's `onReceive` runs under a fresh `LogContext.run`
 of that snapshot.  This means:
@@ -242,7 +242,7 @@ import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="Logging inside `onReceive` ≠ logging inside a setTimeout">
   ```ts
-  override onReceive(msg) {
+  override onReceive(message) {
     this.log.info('handling');               // ✓ MDC present
     setTimeout(() => {
       this.log.info('later');                 // ✗ MDC may be lost
@@ -276,8 +276,8 @@ import { Aside } from '@astrojs/starlight/components';
 class PerSessionWorker extends Actor<...> {
   private readonly log = this.context.log.withFields({ sessionId: this.id });
 
-  override async onReceive(msg): Promise<void> {
-    await LogContext.run({ requestId: msg.requestId }, async () => {
+  override async onReceive(message): Promise<void> {
+    await LogContext.run({ requestId: message.requestId }, async () => {
       this.log.info('handling');
       // → ... per-session-worker - handling {sessionId=abc, requestId=xyz}
     });

@@ -118,7 +118,7 @@ Der Pod mountet das Secret als Files; der Actor liest sie.
 Cluster-Handshake verlangen:
 
 ```ts
-new TcpTransport(self, log, tlsOpts, /* maxFrame */ undefined, {
+new TcpTransport(self, log, tlsOptions, /* maxFrame */ undefined, {
   sharedSecret: process.env.CLUSTER_SECRET,
 });
 ```

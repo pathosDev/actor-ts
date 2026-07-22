@@ -70,10 +70,10 @@ Lease entstehen Konflikte einfach nicht.
 ## Wie sich Read-only-Replicas verhalten
 
 ```ts
-override async onCommand(state: State, cmd: Command): Promise<void> {
+override async onCommand(state: State, command: Command): Promise<void> {
   if (!this.lease.checkAlive()) {
     // Ich bin nicht der Writer — ablehnen oder weiterleiten
-    cmd.replyTo.tell({ kind: 'not-writer', currentWriter: ... });
+    command.replyTo.tell({ kind: 'not-writer', currentWriter: ... });
     return;
   }
   // Ich bin der Writer — normal fortfahren

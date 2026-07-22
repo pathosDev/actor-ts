@@ -28,19 +28,19 @@ type Message =
   | { readonly kind: 'press' };
 
 class Switch extends Actor<Message> {
-  override onReceive(msg: Message): void {
-    this.offState(msg);
+  override onReceive(message: Message): void {
+    this.offState(message);
   }
 
-  private offState = (msg: Message): void => {
-    if (msg.kind === 'press') {
+  private offState = (message: Message): void => {
+    if (message.kind === 'press') {
       this.log.info('turning on');
       this.context.become(this.onState);
     }
   };
 
-  private onState = (msg: Message): void => {
-    if (msg.kind === 'press') {
+  private onState = (message: Message): void => {
+    if (message.kind === 'press') {
       this.log.info('turning off');
       this.context.become(this.offState);
     }
@@ -74,17 +74,17 @@ and restores the previous one.
 
 ```ts
 class Loader extends Actor<Command> {
-  override onReceive(msg: Command): void { this.idle(msg); }
+  override onReceive(message: Command): void { this.idle(message); }
 
-  private idle = (msg: Command): void => {
-    if (msg.kind === 'load') {
+  private idle = (message: Command): void => {
+    if (message.kind === 'load') {
       this.context.become(this.loading, /* discardOld */ false);
       this.startLoading();
     }
   };
 
-  private loading = (msg: Command): void => {
-    if (msg.kind === 'done') {
+  private loading = (message: Command): void => {
+    if (message.kind === 'done') {
       this.context.unbecome();   // pops loading, idle returns
     }
   };
@@ -114,8 +114,8 @@ Without `become`, the same Switch would look like this:
 ```ts
 class Switch extends Actor<Message> {
   private isOn = false;
-  override onReceive(msg: Message): void {
-    if (msg.kind === 'press') {
+  override onReceive(message: Message): void {
+    if (message.kind === 'press') {
       this.isOn = !this.isOn;
       this.log.info(this.isOn ? 'turning on' : 'turning off');
     }
@@ -146,8 +146,8 @@ type Message = ConfigureMessage | RequestMessage;
 class Worker extends Actor<Message> {
   private url?: string;
 
-  override onReceive(msg: Message): void {
-    match(msg)
+  override onReceive(message: Message): void {
+    match(message)
       .with({ kind: 'configure' }, (m) => this.onConfigure(m))
       .with({ kind: 'request' }, (m) => this.onRequest(m))
       .exhaustive();
@@ -212,9 +212,9 @@ class Worker extends Actor<Message> {
     void this.loadConfig();
   }
 
-  private loading = (msg: Message): void => {
-    if (msg.kind === 'configure') {
-      this.url = msg.url;
+  private loading = (message: Message): void => {
+    if (message.kind === 'configure') {
+      this.url = message.url;
       this.context.become(this.ready);
       this.context.unstashAll();
     } else {
@@ -223,21 +223,21 @@ class Worker extends Actor<Message> {
     }
   };
 
-  private ready = (msg: Message): void => {
-    if (msg.kind === 'request') {
-      this.log.info(`POST ${this.url}: ${msg.payload}`);
+  private ready = (message: Message): void => {
+    if (message.kind === 'request') {
+      this.log.info(`POST ${this.url}: ${message.payload}`);
     }
   };
 
-  override onReceive(msg: Message): void {
+  override onReceive(message: Message): void {
     // Initial behavior — the preStart switches into 'loading' before
     // any user message arrives.  This is here to satisfy the signature.
-    this.loading(msg);
+    this.loading(message);
   }
 
   private async loadConfig(): Promise<void> {
-    const cfg = await fetchConfig();
-    this.context.self.tell({ kind: 'configure', url: cfg.url });
+    const config = await fetchConfig();
+    this.context.self.tell({ kind: 'configure', url: config.url });
   }
 }
 ```

@@ -95,8 +95,8 @@ fangen.
 ### `receiveOne(timeoutMs?)` / `receiveN(n, timeoutMs?)`
 
 ```ts
-const msg = await probe.receiveOne();
-const msgs = await probe.receiveN(3);
+const message = await probe.receiveOne();
+const messages = await probe.receiveN(3);
 ```
 
 Hole die nächste(n) Nachricht(en), **ohne zu asserten**. Nutze
@@ -104,9 +104,9 @@ es, wenn die Form variiert und du sie mit eigener Logik
 inspizieren willst:
 
 ```ts
-const msg = await probe.receiveOne();
-if (msg.kind === 'success') expect(msg.value).toBeGreaterThan(0);
-else expect(msg.error).toBeDefined();
+const message = await probe.receiveOne();
+if (message.kind === 'success') expect(message.value).toBeGreaterThan(0);
+else expect(message.error).toBeDefined();
 ```
 
 ### `fishForMessage(predicate)`
@@ -148,7 +148,7 @@ Nach `expectMessage` / `receiveOne` / etc. hält `probe.sender` den
 Sender der eben konsumierten Nachricht. Nützlich, um zu
 asserten, dass „diese Antwort vom richtigen Actor kam."
 
-`probe.reply(msg)` ist eine Abkürzung, die dem letzten Sender
+`probe.reply(message)` ist eine Abkürzung, die dem letzten Sender
 `tell`t:
 
 ```ts
@@ -183,8 +183,8 @@ Nächstes kommt.
 ```ts
 class OrderHandler extends Actor<OrderCommand> {
   constructor(private readonly db: ActorRef<DbCommand>) { super(); }
-  override onReceive(cmd: OrderCommand): void {
-    this.db.tell({ kind: 'insert', orderId: cmd.id });
+  override onReceive(command: OrderCommand): void {
+    this.db.tell({ kind: 'insert', orderId: command.id });
   }
 }
 

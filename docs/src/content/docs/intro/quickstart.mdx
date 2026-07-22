@@ -160,7 +160,7 @@ extensions of the hello-actor sample to make that concrete:
 
 Real actors receive *commands*, not bare values. The convention is a
 discriminated union — every message carries a `kind` literal that
-narrows the union inside `onReceive`. `match(cmd).exhaustive()` from
+narrows the union inside `onReceive`. `match(command).exhaustive()` from
 [`ts-pattern`](https://github.com/gvergnaud/ts-pattern) gives you a
 compile-time check that every variant is handled: add a new `kind`
 without a matching `with(...)` arm and TypeScript fails the build.
@@ -176,8 +176,8 @@ type Command = IncrementCommand | DecrementCommand | GetCommand;
 
 class Counter extends Actor<Command> {
   private count = 0;
-  override onReceive(cmd: Command): void {
-    match(cmd)
+  override onReceive(command: Command): void {
+    match(command)
       .with({ kind: 'increment' }, () => this.onIncrement())
       .with({ kind: 'decrement' }, () => this.onDecrement())
       .with({ kind: 'get' }, (m) => this.onGet(m))

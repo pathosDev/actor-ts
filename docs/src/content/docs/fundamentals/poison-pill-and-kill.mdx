@@ -67,8 +67,8 @@ reads better at the call site.
 Inside an `onReceive`, the actor can request its own termination:
 
 ```ts
-override onReceive(msg: Message): void {
-  if (msg.kind === 'done') {
+override onReceive(message: Message): void {
+  if (message.kind === 'done') {
     this.log.info('completed — winding down');
     this.context.stopSelf();
   }
@@ -171,8 +171,8 @@ These two are nearly equivalent from the supervisor's perspective:
 otherActor.tell(Kill.instance);
 
 // Option B: the actor itself throws on a specific message.
-override onReceive(msg) {
-  if (msg.kind === 'kill-me') throw new Error('requested');
+override onReceive(message) {
+  if (message.kind === 'kill-me') throw new Error('requested');
 }
 otherActor.tell({ kind: 'kill-me' });
 ```

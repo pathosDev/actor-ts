@@ -24,8 +24,8 @@ type ServerMessage = { kind: 'system'; text: string } | { kind: 'chat'; from: st
 class ChatRoom extends WebsocketServerActor<ServerMessage, ClientMessage> {
   private readonly names = new Map<string, string>();
 
-  onMessage(msg: ClientMessage): void {
-    match(msg)
+  onMessage(message: ClientMessage): void {
+    match(message)
       .with({ kind: 'setName' }, (m) => this.onSetName(m))
       .with({ kind: 'say' }, (m) => this.onSay(m))
       .exhaustive();
@@ -161,13 +161,13 @@ Verbindung, serialisiert:
 ```ts
 abstract class WebsocketServerActor<TOut, TIn, TSelf = never> {
   // You implement:
-  abstract onMessage(msg: TIn): void | Promise<void>;
+  abstract onMessage(message: TIn): void | Promise<void>;
 
   // Optional overrides:
   protected onClientConnected(client: WebsocketConnection<TOut>): void;
   protected onClientDisconnected(client: WebsocketConnection<TOut>, info: WebsocketCloseInfo): void;
   protected onInvalidMessage(client: WebsocketConnection<TOut>, error: WebsocketDecodeError): void;
-  protected onSelfMessage(msg: TSelf): void;
+  protected onSelfMessage(message: TSelf): void;
 }
 ```
 
@@ -178,13 +178,13 @@ Innerhalb von `onMessage` und den Hooks stehen zur Verfügung:
 | Member | Was er tut |
 | --- | --- |
 | `this.connection` | Die `WebsocketConnection<TOut>`, deren Event gerade verarbeitet wird. |
-| `this.reply(msg)` | Sendet `msg` an die aktuelle Verbindung. |
-| `this.broadcast(msg, filter?)` | Sendet an jede Verbindung (optional per Prädikat gefiltert). |
+| `this.reply(message)` | Sendet `message` an die aktuelle Verbindung. |
+| `this.broadcast(message, filter?)` | Sendet an jede Verbindung (optional per Prädikat gefiltert). |
 | `this.clients` | `ReadonlyMap<string, WebsocketConnection<TOut>>` aller aktiven Verbindungen. |
 | `this.closeAll(code?, reason?)` | Schließt jede Verbindung. |
 
 ```ts
-onMessage(msg: ClientMessage): void {
+onMessage(message: ClientMessage): void {
   this.reply({ kind: 'system', text: 'got it' });         // → the sender
   this.broadcast({ kind: 'chat', from: 'x', text: 'hi' }); // → everyone
   this.broadcast(notice, (c) => c.id !== this.connection.id); // → everyone else
@@ -228,7 +228,7 @@ interface WebsocketConnection<TOut> extends ActorRef<TOut> {
   readonly remoteAddress?: string;
   readonly upgrade: WebsocketUpgradeInfo;
   readonly isOpen: boolean;
-  tell(msg: TOut): void;         // encode via codec + send
+  tell(message: TOut): void;         // encode via codec + send
   sendRaw(frame: WebsocketFrame): void; // bypass the codec
   close(code?: number, reason?: string): void;
 }

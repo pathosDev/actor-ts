@@ -15,8 +15,8 @@ sind identisch benannt.  Dieser Guide führt durch die
 | `akka.actor.Actor` | `Actor<TMessage>` |
 | `akka.actor.ActorRef` | `ActorRef<T>` |
 | `akka.actor.Props` | `Props<TMessage>` |
-| `tell(msg)` / `!` | `tell(msg)` |
-| `ask(msg).mapTo[T]` | `ref.ask<TRes>(msg, timeoutMs)` |
+| `tell(message)` / `!` | `tell(message)` |
+| `ask(message).mapTo[T]` | `ref.ask<TRes>(message, timeoutMs)` |
 | `context.spawnAnonymous(props)` | `context.spawnAnonymous(props)` |
 | `OneForOneStrategy` | `OneForOneStrategy` |
 | `AllForOneStrategy` | `AllForOneStrategy` |
@@ -59,9 +59,9 @@ type Command = { kind: 'increment' } | { kind: 'get'; replyTo: ActorRef<number> 
 
 class Counter extends Actor<Command> {
   private count = 0;
-  override onReceive(cmd: Command): void {
-    if (cmd.kind === 'increment') this.count++;
-    else cmd.replyTo.tell(this.count);
+  override onReceive(command: Command): void {
+    if (command.kind === 'increment') this.count++;
+    else command.replyTo.tell(this.count);
   }
 }
 ```
@@ -121,7 +121,7 @@ const cluster = await Cluster.join(system, clusterOptions);
 const region = cluster.sharding.start({
   typeName: 'Counter',
   entityProps: Props.create(() => new Counter()),
-  extractEntityId: (msg) => msg.id,
+  extractEntityId: (message) => message.id,
   numShards: 100,
 });
 ```
@@ -165,9 +165,9 @@ class Account extends PersistentActor<Command, Event, State> {
     return state;
   }
 
-  onCommand(state: State, cmd: Command): void {
-    if (cmd.kind === 'deposit') {
-      this.persist({ kind: 'deposited', amount: cmd.amount }, () => {});
+  onCommand(state: State, command: Command): void {
+    if (command.kind === 'deposit') {
+      this.persist({ kind: 'deposited', amount: command.amount }, () => {});
     }
   }
 }

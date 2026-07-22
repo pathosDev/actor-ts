@@ -24,7 +24,7 @@ der wiederbelebte Actor dort weitermacht, wo der letzte aufgehört hat.
 flowchart LR
   subgraph PA["PersistentActor"]
     direction TB
-    PA_CMD["onCommand(cmd)"]
+    PA_CMD["onCommand(command)"]
     PA_PERSIST["persist(event)"]
     PA_EVT["onEvent → State ändert sich"]
     PA_CMD --> PA_PERSIST --> PA_EVT
@@ -36,7 +36,7 @@ flowchart LR
 
   subgraph DSA["DurableStateActor"]
     direction TB
-    DSA_CMD["onCommand(cmd)"]
+    DSA_CMD["onCommand(command)"]
     DSA_PERSIST["persist(newState)"]
     DSA_REV["revision++"]
     DSA_CMD --> DSA_PERSIST --> DSA_REV
@@ -93,16 +93,16 @@ class Account extends PersistentActor<Command, Event, State> {
   }
 
   // Validiert das Command, persistiert das Event, führt Seiteneffekte nach dem Persist aus.
-  onCommand(state: State, cmd: Command): void {
-    if (cmd.kind === 'deposit') {
-      this.persist({ kind: 'deposited', amount: cmd.amount, ts: Date.now() },
+  onCommand(state: State, command: Command): void {
+    if (command.kind === 'deposit') {
+      this.persist({ kind: 'deposited', amount: command.amount, ts: Date.now() },
         (next) => { /* Seiteneffekte mit dem persistierten-und-angewendeten State */ });
-    } else if (cmd.kind === 'withdraw') {
-      if (state.balance < cmd.amount) {
+    } else if (command.kind === 'withdraw') {
+      if (state.balance < command.amount) {
         // Ablehnen — nichts persistieren.
         return;
       }
-      this.persist({ kind: 'withdrawn', amount: cmd.amount, ts: Date.now() },
+      this.persist({ kind: 'withdrawn', amount: command.amount, ts: Date.now() },
         () => {});
     }
   }
@@ -138,12 +138,12 @@ interface State { items: string[]; }
 class Cart extends DurableStateActor<CartCommand, State> {
   constructor(options: DurableStateOptions<State>) { super(options); }
 
-  override async onReceive(cmd: CartCommand): Promise<void> {
-    if (cmd.kind === 'add') {
-      const next: State = { items: [...this.state.items, cmd.sku] };
+  override async onReceive(command: CartCommand): Promise<void> {
+    if (command.kind === 'add') {
+      const next: State = { items: [...this.state.items, command.sku] };
       await this.persist(next);   // überschreibt den gespeicherten State
-    } else if (cmd.kind === 'view') {
-      cmd.replyTo.tell(this.state);
+    } else if (command.kind === 'view') {
+      command.replyTo.tell(this.state);
     }
   }
 }

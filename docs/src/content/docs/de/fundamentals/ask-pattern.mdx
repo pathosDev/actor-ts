@@ -27,9 +27,9 @@ type Command =
 
 class Counter extends Actor<Command> {
   private count = 0;
-  override onReceive(cmd: Command): void {
-    if (cmd.kind === 'increment') this.count++;
-    else if (cmd.kind === 'get') cmd.replyTo.tell(this.count);
+  override onReceive(command: Command): void {
+    if (command.kind === 'increment') this.count++;
+    else if (command.kind === 'get') command.replyTo.tell(this.count);
   }
 }
 
@@ -79,8 +79,8 @@ Für den Empfänger ist es einfach ein normales `tell` auf einer
 normalen Ref:
 
 ```ts
-if (cmd.kind === 'get') {
-  cmd.replyTo.tell(this.count);
+if (command.kind === 'get') {
+  command.replyTo.tell(this.count);
 }
 ```
 
@@ -89,7 +89,7 @@ Innerhalb des Empfängers kannst du dieselbe Ref auch über
 hängt die temporäre Ref auch über diesen Kanal an:
 
 ```ts
-if (cmd.kind === 'get') {
+if (command.kind === 'get') {
   this.sender.forEach((replyTo) => replyTo.tell(this.count));
 }
 ```
@@ -143,13 +143,13 @@ Fehler rejected, statt mit der Nachricht resolved.
 
 ```ts
 class Service extends Actor<Command> {
-  override onReceive(cmd: Command): void {
-    if (cmd.kind === 'fetch') {
+  override onReceive(command: Command): void {
+    if (command.kind === 'fetch') {
       if (this.unavailable) {
-        cmd.replyTo.tell(new Error('service unavailable'));
+        command.replyTo.tell(new Error('service unavailable'));
         return;
       }
-      cmd.replyTo.tell(this.data);
+      command.replyTo.tell(this.data);
     }
   }
 }
@@ -188,7 +188,7 @@ Drei Situationen, in denen einfaches `tell` der richtige Aufruf ist:
 
 <Aside type="caution" title="Innerhalb des `onReceive` eines Actors, wenn das Warten die Mailbox blockiert">
   ```ts
-  override async onReceive(msg) {
+  override async onReceive(message) {
     const dep = await other.ask({ kind: 'q' });
     // ↑ die Mailbox dieses Actors blockiert, bis der ask resolved.
     this.useDep(dep);

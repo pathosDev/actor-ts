@@ -34,12 +34,12 @@ Three things the kit does for you:
 
 ```ts
 class TestKit {
-  static create(name?: string, opts?: TestKitOptions): TestKit;
-  static withManualScheduler(name?, opts?): { kit: TestKit; scheduler: ManualScheduler };
+  static create(name?: string, options?: TestKitOptions): TestKit;
+  static withManualScheduler(name?, options?): { kit: TestKit; scheduler: ManualScheduler };
 
   readonly system: ActorSystem;
 
-  createTestProbe(opts?: TestProbeOptions): TestProbe;
+  createTestProbe(options?: TestProbeOptions): TestProbe;
   within<T>(durationMs: number, fn: () => Promise<T>): Promise<T>;
   shutdown(): Promise<void>;
 }

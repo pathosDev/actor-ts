@@ -118,10 +118,10 @@ caller races with the actor's spawn.
 
 Two ways to send to a selection:
 
-- **`selection.tell(msg)`** — resolve once, deliver immediately
+- **`selection.tell(message)`** — resolve once, deliver immediately
   if found, dead-letter if not.  No retry.  Useful when you have
   a clear expectation the actor exists; missing it is an error.
-- **`(await selection.resolveOne(timeout)).tell(msg)`** — wait
+- **`(await selection.resolveOne(timeout)).tell(message)`** — wait
   until the actor exists (or time out).  Useful for spawn-race
   scenarios.
 
@@ -178,7 +178,7 @@ constructors / messages / parent-child relationships**:
 ```ts
 // ✗ awkward
 class Worker extends Actor<...> {
-  override onReceive(msg) {
+  override onReceive(message) {
     const cache = await this.context.actorSelection('/user/cache').resolveOne();
     cache.tell({ kind: 'put', ... });
   }
@@ -187,7 +187,7 @@ class Worker extends Actor<...> {
 // ✓ direct
 class Worker extends Actor<...> {
   constructor(private readonly cache: ActorRef<CacheMessage>) { super(); }
-  override onReceive(msg) {
+  override onReceive(message) {
     this.cache.tell({ kind: 'put', ... });
   }
 }

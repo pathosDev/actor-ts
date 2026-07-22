@@ -43,8 +43,8 @@ Drei Patterns:
 import { ActorSystem, Props, Router, Actor } from 'actor-ts';
 
 class Worker extends Actor<{ payload: string }> {
-  override onReceive(msg: { payload: string }): void {
-    this.log.info(`worked on ${msg.payload}`);
+  override onReceive(message: { payload: string }): void {
+    this.log.info(`worked on ${message.payload}`);
   }
 }
 

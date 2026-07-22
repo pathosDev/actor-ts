@@ -1,6 +1,6 @@
 ---
 title: Pattern Matching
-description: Das `match(msg).with(...).exhaustive()`-Idiom, das actor-ts überall verwendet — gebaut auf ts-pattern. Compile-time-Exhaustiveness, Typ-Narrowing und die Konventionen zum Matchen auf `kind`-Diskriminatoren.
+description: Das `match(message).with(...).exhaustive()`-Idiom, das actor-ts überall verwendet — gebaut auf ts-pattern. Compile-time-Exhaustiveness, Typ-Narrowing und die Konventionen zum Matchen auf `kind`-Diskriminatoren.
 ---
 
 Innerhalb des `onReceive` eines Actors empfängst du einen Wert vom
@@ -13,7 +13,7 @@ gegenüber handgeschriebenen `if/else`-Leitern:
 1. **Compile-time-Exhaustiveness.**  Vergiss ein `kind`, der
    Compiler scheitert — kein stiller Durchfall.
 2. **Typ-Narrowing innerhalb jedes Arms.**  Keine `as`-Casts, keine
-   manuellen `if (msg.kind === ...)`-Guards innerhalb von Handlern.
+   manuellen `if (message.kind === ...)`-Guards innerhalb von Handlern.
 3. **Lesbar für nicht-triviale Unions.**  Bei 5+ Varianten bleibt
    die `match`-Form scannbar; eine `if/else if`-Leiter tut das
    nicht.
@@ -33,8 +33,8 @@ type Command =
 class Counter extends Actor<Command> {
   private count = 0;
 
-  override onReceive(cmd: Command): void {
-    match(cmd)
+  override onReceive(command: Command): void {
+    match(command)
       .with({ kind: 'increment' },   ()  => this.onIncrement())
       .with({ kind: 'decrement' },   ()  => this.onDecrement())
       .with({ kind: 'set' },   (m) => this.onSet(m))
@@ -44,7 +44,7 @@ class Counter extends Actor<Command> {
 
   private onIncrement():   void { this.count++; }
   private onDecrement():   void { this.count--; }
-  private onSet(cmd: Extract<Command, { kind: 'set' }>): void { this.count = cmd.to; }
+  private onSet(command: Extract<Command, { kind: 'set' }>): void { this.count = command.to; }
   private onReset(): void { this.count = 0; }
 }
 ```
@@ -52,7 +52,7 @@ class Counter extends Actor<Command> {
 Jeder Arm ist ein dünner Aufruf einer privaten `onXxx`-Handler-Methode
 — die Hausregel (siehe unten), nie ein Inline-Rumpf.  Das Narrowing
 überlebt die Übergabe: Der Parameter von `onSet` ist als
-`Extract<Command, { kind: 'set' }>` typisiert, sodass `cmd.to` ohne
+`Extract<Command, { kind: 'set' }>` typisiert, sodass `command.to` ohne
 Cast eine `number` ist.
 
 `.exhaustive()` am Ende ist der **Compile-time-Check**: wenn du
@@ -110,7 +110,7 @@ Editoren können auf der Literal-Union autovervollständigen.
 ### Object-Pattern-Narrowing
 
 ```ts
-match(cmd)
+match(command)
   .with({ kind: 'deposit', amount: P.number },  (m) => { /* m.amount: number */ })
   .with({ kind: 'deposit', amount: 0 },          ()  => { /* Zero-Amount-Deposit */ })
   .otherwise(() => { /* Fallthrough */ });
@@ -140,7 +140,7 @@ für den vollen Set.
 `match` ist ein Ausdruck — du kannst Werte zurückgeben:
 
 ```ts
-const reply = match(cmd)
+const reply = match(command)
   .with({ kind: 'get' },  () => this.onGet())    // onGet(): number
   .with({ kind: 'next' }, () => this.onNext())   // onNext(): number
   .exhaustive();
@@ -154,7 +154,7 @@ bequem.
 ### `.otherwise` vs `.exhaustive`
 
 ```ts
-match(cmd)
+match(command)
   .with({ kind: 'increment' }, ()  => this.onIncrement())
   .with({ kind: 'decrement' }, ()  => this.onDecrement())
   .otherwise((m) => this.onUnhandled(m));   // Runtime-Fallback
@@ -175,10 +175,10 @@ Für Unions mit zwei oder drei Varianten liest sich eine einfache
 `if`-Kette sauberer:
 
 ```ts
-override onReceive(cmd: Command): void {
-  if (cmd.kind === 'increment') this.count++;
-  else if (cmd.kind === 'decrement') this.count--;
-  else cmd.replyTo.tell(this.count);
+override onReceive(command: Command): void {
+  if (command.kind === 'increment') this.count++;
+  else if (command.kind === 'decrement') this.count--;
+  else command.replyTo.tell(this.count);
 }
 ```
 
@@ -203,7 +203,7 @@ import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="Pattern-Matche nicht auf `instanceof` für Cross-Process-Nachrichten">
   ```ts
-  match(msg)
+  match(message)
     .with(P.instanceOf(UserLoggedIn), () => ...)   // ← bricht über das Wire
   ```
   Klassenidentität überlebt die Serialisierung nicht — der

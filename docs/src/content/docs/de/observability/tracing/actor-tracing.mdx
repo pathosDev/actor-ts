@@ -51,10 +51,10 @@ zu einem Trace zusammen.
 
 ```ts
 // Innerhalb eines Actors:
-override async onReceive(msg) {
+override async onReceive(message) {
   // tracer.activeSpan() gibt den actor.receive-Span zurück
   // tell erzeugt einen Envelope mit gesetztem traceparent
-  this.downstream.tell({ kind: 'derived', from: msg.id });
+  this.downstream.tell({ kind: 'derived', from: message.id });
   // Der actor.receive-Span des Downstream-Actors hat DIESEN Span als Parent
 }
 ```
@@ -115,12 +115,12 @@ durch denselben Tracer laufen.
 ## Anwendungs-Level-Spans hinzufügen
 
 ```ts
-override async onReceive(msg) {
+override async onReceive(message) {
   const tracer = this.context.system.extension(TracingExtensionId).get();
   const span = tracer.startSpan('process-order', {
     attributes: {
-      'order.id':     msg.orderId,
-      'order.amount': msg.amount,
+      'order.id':     message.orderId,
+      'order.amount': message.amount,
     },
   });
   try {
@@ -202,7 +202,7 @@ import { Aside } from '@astrojs/starlight/components';
   ```
   Manueller Workaround:
   ```ts
-  const ctx = tracer.injectContext();
+  const context = tracer.injectContext();
   pipeTo(externalCall(), target, { sender: this.self });
   // Dann liest das Target seinen eigenen Carrier aus den Message-Metadaten, falls nötig
   ```

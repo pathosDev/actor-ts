@@ -31,12 +31,12 @@ class Heartbeat extends Actor<Message> {
     this.context.timers.startTimerWithFixedDelay('hb', { kind: 'tick' }, 5_000);
   }
 
-  override onReceive(msg: Message): void {
-    if (msg.kind === 'tick') {
+  override onReceive(message: Message): void {
+    if (message.kind === 'tick') {
       this.log.info('heartbeat');
-    } else if (msg.kind === 'set') {
+    } else if (message.kind === 'set') {
       // Ersetze den Timer mit einem neuen Intervall.  Gleicher Key → alter wird gecancelt.
-      this.context.timers.startTimerWithFixedDelay('hb', { kind: 'tick' }, msg.intervalMs);
+      this.context.timers.startTimerWithFixedDelay('hb', { kind: 'tick' }, message.intervalMs);
     }
   }
 }
@@ -160,7 +160,7 @@ import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="`setTimeout` und `setInterval` direkt in `onReceive`">
   ```ts
-  override onReceive(msg) {
+  override onReceive(message) {
     setTimeout(() => {
       this.context.spawnAnonymous(...);   // ← Async-Escape
     }, 1_000);

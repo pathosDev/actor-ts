@@ -63,14 +63,14 @@ The factory closes over any constructor arguments you need:
 class Worker extends Actor<...> {
   constructor(
     private readonly db: ActorRef<DbMessage>,
-    private readonly cfg: Config,
+    private readonly config: Config,
   ) { super(); }
 }
 
-const props = Props.create(() => new Worker(db, cfg));
+const props = Props.create(() => new Worker(db, config));
 ```
 
-`db` and `cfg` are captured by the closure; every restart sees the
+`db` and `config` are captured by the closure; every restart sees the
 same wiring.
 
 ## The four builders

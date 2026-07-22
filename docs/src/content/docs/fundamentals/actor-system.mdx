@@ -100,7 +100,7 @@ not `system.spawn`:
 
 ```ts
 class Parent extends Actor<...> {
-  override onReceive(msg) {
+  override onReceive(message) {
     const child = this.context.spawn(
       Props.create(() => new Child()),
       'worker',

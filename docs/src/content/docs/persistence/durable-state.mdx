@@ -11,7 +11,7 @@ snapshot of the state, overwritten on each `persist(newState)`.
 flowchart LR
   subgraph DSA["DurableStateActor"]
     direction TB
-    CMD["onReceive(cmd)"]
+    CMD["onReceive(command)"]
     READ["read this.state"]
     NEXT["next = transform(...)"]
     PERSIST["await this.persist(next)"]
@@ -60,8 +60,8 @@ interface State { items: string[]; }
 class Cart extends DurableStateActor<CartCommand, State> {
   constructor(options: DurableStateOptions<State>) { super(options); }
 
-  override async onReceive(cmd: CartCommand): Promise<void> {
-    await match(cmd)
+  override async onReceive(command: CartCommand): Promise<void> {
+    await match(command)
       .with({ kind: 'add' },    (c) => this.onAdd(c))
       .with({ kind: 'remove' }, (c) => this.onRemove(c))
       .with({ kind: 'view' },   (c) => this.onView(c))
@@ -241,9 +241,9 @@ import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="Forgetting to `await` persist">
   ```ts
-  override onReceive(cmd) {
+  override onReceive(command) {
     this.persist(next);            // ✗ no await
-    cmd.replyTo.tell('done');      // replies "done" before write completes
+    command.replyTo.tell('done');      // replies "done" before write completes
   }
   ```
   Without `await`, the reply happens before the state is durable.
@@ -254,7 +254,7 @@ import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="Mutating `this.state` directly">
   ```ts
-  this.state.items.push(cmd.sku);    // ✗ mutates the stored reference
+  this.state.items.push(command.sku);    // ✗ mutates the stored reference
   await this.persist(this.state);    // persists the mutated value
   ```
   This works *accidentally* in some store implementations, but

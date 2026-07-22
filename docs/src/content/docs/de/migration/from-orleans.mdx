@@ -52,9 +52,9 @@ type Command =
 class UserActor extends Actor<Command> {
   private profile: UserProfile = { name: '', email: '' };
 
-  override onReceive(cmd: Command): void {
-    if (cmd.kind === 'get-profile') cmd.replyTo.tell(this.profile);
-    if (cmd.kind === 'update-name')  this.profile = { ...this.profile, name: cmd.name };
+  override onReceive(command: Command): void {
+    if (command.kind === 'get-profile') command.replyTo.tell(this.profile);
+    if (command.kind === 'update-name')  this.profile = { ...this.profile, name: command.name };
   }
 }
 ```
@@ -64,7 +64,7 @@ Unterschiede:
 - **Methodenaufrufe** werden zu **Nachrichten-Arten + Handlern**.
 - **`Task<T>`-Rückgaben** werden zu **expliziten `replyTo`-Refs**.
 - **`IGrainWithStringKey`** ist implizit -
-  `extractEntityId(cmd)` zieht die ID auf der Sharding-Schicht.
+  `extractEntityId(command)` zieht die ID auf der Sharding-Schicht.
 
 ### Grain-Client
 
@@ -82,7 +82,7 @@ import { ClusterSharding } from 'actor-ts';
 const region = cluster.sharding.start<Command>({
   typeName: 'user',
   entityProps: Props.create(() => new UserActor()),
-  extractEntityId: (cmd) => cmd.entityId,
+  extractEntityId: (command) => command.entityId,
 });
 
 // Profil via ask holen:
@@ -165,9 +165,9 @@ class Account extends PersistentActor<Command, Event, State> {
     return state;
   }
 
-  onCommand(state: State, cmd: Command): void {
-    if (cmd.kind === 'deposit') {
-      this.persist({ kind: 'deposited', amount: cmd.amount }, () => {});
+  onCommand(state: State, command: Command): void {
+    if (command.kind === 'deposit') {
+      this.persist({ kind: 'deposited', amount: command.amount }, () => {});
     }
   }
 }

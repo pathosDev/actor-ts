@@ -50,18 +50,18 @@ const actorSystemOptions = ActorSystemOptions.create().withConfig({
 const system = ActorSystem.create('my-app', actorSystemOptions);
 
 const ext = system.extension(PersistenceExtensionId);
-const mariaDbJournalOptions = MariaDbJournalOptions.create().withPoolConfig(conn);
+const mariaDbJournalOptions = MariaDbJournalOptions.create().withPoolConfig(connection);
 const mariaDbSnapshotStoreOptions = MariaDbSnapshotStoreOptions.create()
-  .withPoolConfig(conn)
+  .withPoolConfig(connection)
   .withKeepN(3);
-const mariaDbDurableStateStoreOptions = MariaDbDurableStateStoreOptions.create().withPoolConfig(conn);
+const mariaDbDurableStateStoreOptions = MariaDbDurableStateStoreOptions.create().withPoolConfig(connection);
 const registerMariaDbPluginsOptions = RegisterMariaDbPluginsOptions.create()
   .withJournal(mariaDbJournalOptions)
   .withSnapshotStore(mariaDbSnapshotStoreOptions)
   .withDurableStateStore(mariaDbDurableStateStoreOptions);
 const { durableStateStore } = registerMariaDbPlugins(ext, registerMariaDbPluginsOptions);
 
-// conn = { host, port: 3306, user, password, database } — or pass a
+// connection = { host, port: 3306, user, password, database } — or pass a
 // shared `pool` (from mariadb.createPool) at the top level via
 // `.withPool(pool)` to reuse one pool across all three, or a connection
 // URL via `.withUrl(...)`.

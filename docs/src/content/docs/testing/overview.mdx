@@ -34,9 +34,9 @@ type Command = { kind: 'increment' } | { kind: 'get'; replyTo: ActorRef<number> 
 
 class Counter extends Actor<Command> {
   private count = 0;
-  override onReceive(cmd: Command): void {
-    if (cmd.kind === 'increment') this.count++;
-    else cmd.replyTo.tell(this.count);
+  override onReceive(command: Command): void {
+    if (command.kind === 'increment') this.count++;
+    else command.replyTo.tell(this.count);
   }
 }
 

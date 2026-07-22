@@ -189,7 +189,7 @@ Partition.
 ## Knotenübergreifende Nachrichten
 
 Sobald zwei Nodes denselben Cluster teilen, **funktioniert**
-`ref.tell(msg)` auf einen Foreign-Node-Ref einfach so:
+`ref.tell(message)` auf einen Foreign-Node-Ref einfach so:
 
 ```ts
 const remote = await system.actorSelection(
@@ -265,7 +265,7 @@ import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="Cluster-Join ist nicht sofort fertig">
   ```ts
-  const cluster = await Cluster.join(system, opts);
+  const cluster = await Cluster.join(system, options);
   someActor.tell({ kind: 'broadcast' });
   // ↑ broadcast überholt für manche Peers möglicherweise das MemberUp
   ```

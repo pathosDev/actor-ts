@@ -1,6 +1,6 @@
 ---
 title: Pattern matching
-description: The `match(msg).with(...).exhaustive()` idiom that actor-ts uses everywhere — built on ts-pattern. Compile-time exhaustiveness, type narrowing, and the conventions for matching on `kind` discriminators.
+description: The `match(message).with(...).exhaustive()` idiom that actor-ts uses everywhere — built on ts-pattern. Compile-time exhaustiveness, type narrowing, and the conventions for matching on `kind` discriminators.
 ---
 
 Inside an actor's `onReceive`, you receive a value of the actor's
@@ -12,7 +12,7 @@ benefits over hand-rolled `if/else` ladders:
 1. **Compile-time exhaustiveness.**  Forget a `kind`, the compiler
    fails — no silent fallthrough.
 2. **Type narrowing inside each arm.**  No `as` casts, no manual
-   `if (msg.kind === ...)` guards inside handlers.
+   `if (message.kind === ...)` guards inside handlers.
 3. **Readable for non-trivial unions.**  At 5+ variants the
    `match` form stays scannable; an `if/else if` ladder doesn't.
 
@@ -31,8 +31,8 @@ type Command =
 class Counter extends Actor<Command> {
   private count = 0;
 
-  override onReceive(cmd: Command): void {
-    match(cmd)
+  override onReceive(command: Command): void {
+    match(command)
       .with({ kind: 'increment' },   ()  => this.onIncrement())
       .with({ kind: 'decrement' },   ()  => this.onDecrement())
       .with({ kind: 'set' },   (m) => this.onSet(m))
@@ -42,7 +42,7 @@ class Counter extends Actor<Command> {
 
   private onIncrement():   void { this.count++; }
   private onDecrement():   void { this.count--; }
-  private onSet(cmd: Extract<Command, { kind: 'set' }>): void { this.count = cmd.to; }
+  private onSet(command: Extract<Command, { kind: 'set' }>): void { this.count = command.to; }
   private onReset(): void { this.count = 0; }
 }
 ```
@@ -50,7 +50,7 @@ class Counter extends Actor<Command> {
 Every arm is a thin call into a private `onXxx` handler — the house
 rule (see below), never an inline body.  The narrowing survives the
 hand-off: `onSet`'s parameter is typed `Extract<Command, { kind: 'set' }>`,
-so `cmd.to` is a `number` with no cast.
+so `command.to` is a `number` with no cast.
 
 `.exhaustive()` at the end is the **compile-time check**: if you
 add `{ kind: 'double' }` to `Command` later and forget the matching
@@ -105,7 +105,7 @@ union.
 ### Object-pattern narrowing
 
 ```ts
-match(cmd)
+match(command)
   .with({ kind: 'deposit', amount: P.number },  (m) => { /* m.amount: number */ })
   .with({ kind: 'deposit', amount: 0 },          ()  => { /* zero-amount deposit */ })
   .otherwise(() => { /* fallthrough */ });
@@ -134,7 +134,7 @@ for the full set.
 `match` is an expression — you can return values:
 
 ```ts
-const reply = match(cmd)
+const reply = match(command)
   .with({ kind: 'get' },  () => this.onGet())    // onGet(): number
   .with({ kind: 'next' }, () => this.onNext())   // onNext(): number
   .exhaustive();
@@ -147,7 +147,7 @@ typed-actor `Behavior` returns, the expression form is convenient.
 ### `.otherwise` vs `.exhaustive`
 
 ```ts
-match(cmd)
+match(command)
   .with({ kind: 'increment' }, ()  => this.onIncrement())
   .with({ kind: 'decrement' }, ()  => this.onDecrement())
   .otherwise((m) => this.onUnhandled(m));   // runtime fallback
@@ -167,10 +167,10 @@ rest" is the right semantic.
 For two- or three-variant unions, a plain `if`-chain reads cleaner:
 
 ```ts
-override onReceive(cmd: Command): void {
-  if (cmd.kind === 'increment') this.count++;
-  else if (cmd.kind === 'decrement') this.count--;
-  else cmd.replyTo.tell(this.count);
+override onReceive(command: Command): void {
+  if (command.kind === 'increment') this.count++;
+  else if (command.kind === 'decrement') this.count--;
+  else command.replyTo.tell(this.count);
 }
 ```
 
@@ -194,7 +194,7 @@ import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="Don't pattern-match on `instanceof` for cross-process messages">
   ```ts
-  match(msg)
+  match(message)
     .with(P.instanceOf(UserLoggedIn), () => ...)   // ← breaks across the wire
   ```
   Class identity doesn't survive serialization — the receiver

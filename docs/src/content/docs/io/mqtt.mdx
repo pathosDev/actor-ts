@@ -22,14 +22,14 @@ const actorSystemOptions = ActorSystemOptions.create().withConfig({
     'actor-ts': { io: { broker: { mqtt: { brokerUrl: 'mqtt://localhost:1883' } } } },
   });
 class TemperatureHub extends MqttActor<Reading> {
-  constructor(opts: MqttOptions) {
-    super(opts.withQos(1).withClientId('temperature-hub'));
+  constructor(options: MqttOptions) {
+    super(options.withQos(1).withClientId('temperature-hub'));
     this.subscribe('sensors/+/temp');
     this.subscribe('alerts/#', { qos: 2 });
   }
 
-  override onMessage(msg: MqttMessage<Reading>): void {
-    const { sensor, celsius } = msg.payload.entity();   // decoded via the codec
+  override onMessage(message: MqttMessage<Reading>): void {
+    const { sensor, celsius } = message.payload.entity();   // decoded via the codec
     this.log.info(`${sensor}: ${celsius}°C`);
     this.publish(`ack/${sensor}`, 'ok');                // raw string
     this.publish('rollup', { sensor, celsius });        // encoded entity
@@ -41,7 +41,7 @@ const system = ActorSystem.create('demo', actorSystemOptions);
 system.spawn(Props.create(() => new TemperatureHub(MqttOptions.create())), 'hub');
 ```
 
-`T` (here `Reading`) types the inbound payload — `msg.payload.entity()`
+`T` (here `Reading`) types the inbound payload — `message.payload.entity()`
 returns a `T`.  A second generic, `TSelf`, types application messages
 other actors may `tell` the ref (see *External control* below); it
 defaults to `never`.
@@ -53,11 +53,11 @@ class dispatches to the hooks below; do not override it.
 
 | Hook | When |
 | --- | --- |
-| `onMessage(msg)` | A message arrived on one of this actor's own subscriptions.  **Required.** |
+| `onMessage(message)` | A message arrived on one of this actor's own subscriptions.  **Required.** |
 | `onConnected()` | The connection (re)opened; the subscription registry has been re-applied on the broker. |
 | `onDisconnected(cause?)` | The connection dropped; a reconnect cycle may follow (per settings). |
-| `onInvalidMessage(err, msg)` | `onMessage` threw an `MqttDecodeError` (a lazy `entity()` on a malformed payload).  Default: log + drop.  Rethrow to escalate. |
-| `onSelfMessage(msg)` | An application message (`TSelf`) was told to this ref. |
+| `onInvalidMessage(err, message)` | `onMessage` threw an `MqttDecodeError` (a lazy `entity()` on a malformed payload).  Default: log + drop.  Rethrow to escalate. |
+| `onSelfMessage(message)` | An application message (`TSelf`) was told to this ref. |
 
 Inbound and lifecycle events are delivered through the mailbox, so
 `onMessage` and the hooks always run on the actor thread (single-threaded,
@@ -70,7 +70,7 @@ HOCON (`actor-ts.io.broker.mqtt`) > built-in defaults.**  Use the fluent
 `MqttOptions` builder, or pass a plain `Partial<MqttOptionsType>`.
 
 ```ts
-const opts = MqttOptions.create()
+const options = MqttOptions.create()
   .withBrokerUrl('mqtts://mqtt.example.com:8883')
   .withClientId('my-app')
   .withCredentials(process.env.MQTT_USER, process.env.MQTT_PASS)
@@ -108,11 +108,11 @@ Common patterns:
 Inbound `MqttMessage<T>` carries a lazily-decoding `MqttPayload<T>`:
 
 ```ts
-override onMessage(msg: MqttMessage<Reading>): void {
-  msg.payload.bytes;          // raw Uint8Array
-  msg.payload.text();         // UTF-8 string (cached)
-  msg.payload.entity();       // decoded T via the codec (cached)
-  msg.payload.entity<Acknowledgment>();  // decode as a different type on a specific topic
+override onMessage(message: MqttMessage<Reading>): void {
+  message.payload.bytes;          // raw Uint8Array
+  message.payload.text();         // UTF-8 string (cached)
+  message.payload.entity();       // decoded T via the codec (cached)
+  message.payload.entity<Acknowledgment>();  // decode as a different type on a specific topic
 }
 ```
 
@@ -122,14 +122,14 @@ that happens inside `onMessage`, the base class catches it and routes it to
 `onInvalidMessage` (default: log + drop, no restart):
 
 ```ts
-protected override onInvalidMessage(err: MqttDecodeError, msg: MqttMessage<Reading>): void {
+protected override onInvalidMessage(err: MqttDecodeError, message: MqttMessage<Reading>): void {
   this.log.warn(`bad payload on ${err.topic}: ${err.message}`);
 }
 ```
 
 ## Publishing
 
-`this.publish(topic, payload, opts?)` returns `false` if the message was
+`this.publish(topic, payload, options?)` returns `false` if the message was
 dropped (encode failure or outbound-buffer overflow):
 
 - a `string` or `Uint8Array` payload is sent **raw**;
@@ -257,9 +257,9 @@ import { Aside } from '@astrojs/starlight/components';
   `tell`.  It is now **abstract** — extend it and override `onMessage`.
 
   - `new MqttActor({...})` → `class X extends MqttActor<T> { onMessage(m) {…} }`.
-  - `msg.payload` (a `Uint8Array`) → `msg.payload.bytes`;
-    `new TextDecoder().decode(msg.payload)` → `msg.payload.text()`;
-    JSON → `msg.payload.entity()`.
+  - `message.payload` (a `Uint8Array`) → `message.payload.bytes`;
+    `new TextDecoder().decode(message.payload)` → `message.payload.text()`;
+    JSON → `message.payload.entity()`.
   - `settings.subscriptions: [{ topic, target }]` (removed) →
     `this.subscribe(topic, { target })` in the constructor, or a
     `subscribe` command.

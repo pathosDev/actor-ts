@@ -27,7 +27,7 @@ type CounterCommand =
 
 This shape buys three things:
 
-1. **Compile-time exhaustiveness.**  `match(cmd).with(...).exhaustive()`
+1. **Compile-time exhaustiveness.**  `match(command).with(...).exhaustive()`
    (via [ts-pattern](https://github.com/gvergnaud/ts-pattern)) refuses
    to compile if you add a new `kind` and forget to handle it.  The
    actor-ts codebase uses this pattern everywhere — see
@@ -56,8 +56,8 @@ type CounterCommand = IncrementCommand | DecrementCommand | GetCommand;
 class Counter extends Actor<CounterCommand> {
   private count = 0;
 
-  override onReceive(cmd: CounterCommand): void {
-    match(cmd)
+  override onReceive(command: CounterCommand): void {
+    match(command)
       .with({ kind: 'increment' }, () => this.onIncrement())
       .with({ kind: 'decrement' }, () => this.onDecrement())
       .with({ kind: 'get' }, (m) => this.onGet(m))
@@ -129,8 +129,8 @@ type ReplyOK = { readonly kind: 'reply-ok'; readonly value: number };
 
 class Counter extends Actor<Get> {
   private count = 42;
-  override onReceive(cmd: Get): void {
-    cmd.replyTo.tell(this.count);
+  override onReceive(command: Get): void {
+    command.replyTo.tell(this.count);
   }
 }
 ```
@@ -185,9 +185,9 @@ type Deposited = { readonly kind: 'deposited'; readonly amount: number; readonly
 
 class Account extends PersistentActor<DepositCommand, Deposited, { balance: number }> {
   // command handler: validate + persist event
-  async onCommand(state, cmd: DepositCommand): Promise<void> {
-    if (cmd.kind === 'deposit') {
-      const event: Deposited = { kind: 'deposited', amount: cmd.amount, ts: Date.now() };
+  async onCommand(state, command: DepositCommand): Promise<void> {
+    if (command.kind === 'deposit') {
+      const event: Deposited = { kind: 'deposited', amount: command.amount, ts: Date.now() };
       await this.persist(event, () => { /* post-persist side effects */ });
     }
   }
@@ -216,8 +216,8 @@ full event-sourcing story.
   type Command = { kind: 'increment'; amount: number };
   //                       ^ no `readonly`
 
-  function evil(cmd: Command) {
-    cmd.amount++;     // valid TS — no compile error
+  function evil(command: Command) {
+    command.amount++;     // valid TS — no compile error
   }
   ```
   Without `readonly`, the type allows mutation, and somebody
@@ -233,7 +233,7 @@ full event-sourcing story.
 </Aside>
 
 <Aside type="caution" title="Sending a message means you no longer own it">
-  After `ref.tell(msg)`, treat `msg` as the receiver's property.
+  After `ref.tell(message)`, treat `message` as the receiver's property.
   Don't read or write its fields from the sender side.  Sounds
   obvious — but if you're holding the reference for a follow-up
   call, copy or rebuild rather than mutate.
@@ -255,7 +255,7 @@ full event-sourcing story.
   the `match().exhaustive()` idiom used in every example on this
   page.
 - **[Ask pattern](/fundamentals/ask-pattern/)** —
-  `ref.ask(msg, timeout)` returns a Promise for the reply, avoiding
+  `ref.ask(message, timeout)` returns a Promise for the reply, avoiding
   the manual reply-to-ref dance.
 - **[Actor](/fundamentals/actor/)** — the base class, the
   `onReceive` signature, the context references that produce reply
