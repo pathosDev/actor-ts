@@ -61,10 +61,13 @@ Push-basiertem, wenn:
 ## Wie aktivieren
 
 ```ts
+// Push-Zustellung braucht ein Journal mit In-Process-Event-Bus —
+// SqliteJournal (und InMemoryJournal) haben einen; SqliteQuery umschließt diese Instanz.
+const journal = new SqliteJournal(SqliteJournalOptions.create().withPath('/var/lib/events.db'));
 const byTagProjectionOptions = ByTagProjectionOptions.create<E>()
   .withName('realtime-balance')
   .withTag('account')
-  .withQuery(new SqliteQuery({ path: '...' }))
+  .withQuery(new SqliteQuery(journal))
   .withLiveOptions({
     push: true,                  // Bus-Subscription aktivieren
     pollIntervalMs: 5_000,       // Fallback-Poll-Kadenz — kann hoch sein

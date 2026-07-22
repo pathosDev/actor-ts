@@ -28,9 +28,11 @@ Das Interface ist über alle hinweg gleich — konstruiere einfach
 die passende Query für dein Journal-Backend.
 
 ```ts
-import { SqliteQuery } from 'actor-ts';
+import { SqliteJournal, SqliteJournalOptions, SqliteQuery } from 'actor-ts';
 
-const query = new SqliteQuery({ path: '/var/lib/events.db' });
+// SqliteQuery liest dasselbe Journal, in das deine PersistentActors schreiben.
+const journal = new SqliteJournal(SqliteJournalOptions.create().withPath('/var/lib/events.db'));
+const query = new SqliteQuery(journal);
 ```
 
 ## Die vier Methoden

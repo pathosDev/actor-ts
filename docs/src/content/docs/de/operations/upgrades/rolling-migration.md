@@ -199,7 +199,7 @@ dem Hot Path mehr gelesen werden dürften, kannst du:
    der Backfill durch ist:
 
     ```ts
-    const chain = MigrationChain.start<OrderEventV2>('OrderEvent', 2);
+    const chain = MigrationChain.for<OrderEventV2>('OrderEvent', 2);
     ```
 
     Alle zukünftigen Events werden jetzt nativ v2-geboren, ohne
@@ -398,7 +398,7 @@ wiederherstellbar.
 
 | Symbol                                    | Was es tut                                  |
 | ----------------------------------------- | ------------------------------------------- |
-| `MigrationChain.start(name, v).next(...)` | Definiert eine Multi-Version-Event/State-Chain |
+| `MigrationChain.for(name, v).add(...)` | Definiert eine Multi-Version-Event/State-Chain |
 | `migratingAdapter(chain, { writeVersion })` | Adapter, der die Chain zum Journal exponiert |
 | `chain.manifestFor(value, version)`       | Lower-Level-Envelope-Builder                |
 | `wrapEventAsEnvelope(event, manifestFor)` | One-Shot-Rewrite für Pre-Envelope-Daten     |

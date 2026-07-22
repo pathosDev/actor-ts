@@ -71,8 +71,19 @@ export class PersistenceExtension implements Extension {
   }
 
   /** Replace the active journal in code — useful for tests that need a spy. */
-  setJournal(j: Journal): void { this._journal = j; }
-  setSnapshotStore(s: SnapshotStore): void { this._snapshotStore = s; }
+  setJournal(journal: Journal): void { this._journal = journal; }
+  setSnapshotStore(snapshotStore: SnapshotStore): void { this._snapshotStore = snapshotStore; }
+
+  /**
+   * Set the active journal and/or snapshot store in one call — a thin
+   * convenience over {@link setJournal} / {@link setSnapshotStore} for tests
+   * and simple, single-backend apps that wire persistence directly in code
+   * rather than through the config-selected `registerXxxPlugins` helpers.
+   */
+  configure(stores: { journal?: Journal; snapshotStore?: SnapshotStore }): void {
+    if (stores.journal !== undefined) this.setJournal(stores.journal);
+    if (stores.snapshotStore !== undefined) this.setSnapshotStore(stores.snapshotStore);
+  }
 
   private currentJournalPluginId(): string {
     return this.system.config.hasPath('actor-ts.persistence.journal.plugin')

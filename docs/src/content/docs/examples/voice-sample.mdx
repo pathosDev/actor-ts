@@ -121,7 +121,7 @@ const byTagProjectionOptions = ByTagProjectionOptions.create<SessionEvent>()
   .withName('transcript-search')
   .withTag('transcript')
   .withQuery(new CassandraQuery({ /* ... */ }))
-  .withOffsetStore(new SqliteOffsetStore({ path: '/var/lib/offsets.db' }))
+  .withOffsetStore(new InMemoryOffsetStore()) // or DurableStateOffsetStore(store) for restart-safe offsets
   .withHandle(async (event) => {
     if (event.event.kind === 'chunk-transcribed') {
       await searchDb.execute(
