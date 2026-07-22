@@ -94,6 +94,15 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Fixed
 
+- **Persistence examples repaired** (#382).  `examples/persistence/scylla-ledger.ts`
+  and `benchmarks/persistence/recovery.ts` overrode `snapshotPolicy` as a
+  property (`override readonly snapshotPolicy = everyNEvents(...)`) while the
+  base declares it as a method, which threw `snapshotPolicy is not a function`
+  on the first persist — both now override the method.  `examples/persistence/
+  cassandra-plugin-hello.ts` imported `FakeCassandraClient` from a stale
+  pre-test-split path and used the removed free `ask(...)` function; it now
+  imports from `tests/integration/in-process/persistence/` and calls
+  `ref.ask(...)`.
 - **Persistence (Cassandra): single-flight `start()`, a live `consistency`
   option, and an accurate batch comment** (#380).  `CassandraJournal.start()`
   and `CassandraSnapshotStore.start()` set `started` only at the very end, so

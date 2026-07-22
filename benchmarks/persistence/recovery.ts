@@ -14,8 +14,8 @@ import {
   PersistenceExtensionId,
   PersistentActor,
   Props,
-  ask,
   everyNEvents,
+  type SnapshotPolicy,
 } from '../../src/index.js';
 import { runGroup } from '../lib/harness.js';
 
@@ -26,7 +26,7 @@ class Counter extends PersistentActor<Command, Event, number> {
   constructor(readonly persistenceId: string) { super(); }
   initialState(): number { return 0; }
   onEvent(s: number, e: Event): number { return s + e.delta; }
-  override snapshotPolicy = everyNEvents<number, Event>(100);
+  override snapshotPolicy(): SnapshotPolicy<number, Event> { return everyNEvents<number, Event>(100); }
   async onCommand(s: number, _command: Command): Promise<void> {
     this.sender.forEach((r) => r.tell(s));
   }
@@ -50,7 +50,7 @@ async function main(): Promise<void> {
 
   const recovery = (persistenceId: string) => async (): Promise<void> => {
     const ref = system.spawnAnonymous(Props.create(() => new Counter(persistenceId)));
-    await ask<Command, number>(ref, 'get', 30_000);
+    await ref.ask<number>('get', 30_000);
     ref.stop();
   };
 

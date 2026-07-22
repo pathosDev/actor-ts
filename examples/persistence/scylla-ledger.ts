@@ -25,6 +25,7 @@ import {
   RegisterCassandraPluginsOptions,
   everyNEvents,
   registerCassandraPlugins,
+  type SnapshotPolicy,
 } from '../../src/index.js';
 
 type DepositCommand = { kind: 'deposit'; amount: number };
@@ -40,7 +41,7 @@ interface State { readonly balance: number; }
 
 class Account extends PersistentActor<Command, Event, State> {
   override readonly persistenceId: string;
-  override readonly snapshotPolicy = everyNEvents<State, Event>(50);
+  override snapshotPolicy(): SnapshotPolicy<State, Event> { return everyNEvents<State, Event>(50); }
 
   constructor(accountId: string) {
     super();

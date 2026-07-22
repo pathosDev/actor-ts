@@ -7,8 +7,9 @@ import {
   InMemorySnapshotStore,
   PersistenceExtensionId,
 } from '../../../../src/persistence/index.js';
+import type { ConfigObject } from '../../../../src/index.js';
 
-function systemWith(config?: Record<string, unknown>): ActorSystem {
+function systemWith(config?: ConfigObject): ActorSystem {
   let options = ActorSystemOptions.create()
     .withLogger(new NoopLogger())
     .withLogLevel(LogLevel.Off);

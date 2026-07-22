@@ -21,7 +21,7 @@ import {
   RegisterCassandraPluginsOptions,
   registerCassandraPlugins,
 } from '../../src/index.js';
-import { FakeCassandraClient } from '../../tests/unit/persistence/FakeCassandraClient.js';
+import { FakeCassandraClient } from '../../tests/integration/in-process/persistence/FakeCassandraClient.js';
 
 type IncrementCommand = { kind: 'increment'; amount: number };
 type GetCommand = { kind: 'get' };
@@ -87,9 +87,8 @@ async function main(): Promise<void> {
   counter = system.spawnAnonymous(Props.create(() => new Counter()));
 
   await Bun.sleep(60);
-  // Use ask to read the state so we see the replay worked.
-  const { ask } = await import('../../src/index.js');
-  const value = await ask<Command, number>(counter, { kind: 'get' }, 500);
+  // Ask the actor for its state so we see the replay worked.
+  const value = await counter.ask<number>({ kind: 'get' }, 500);
   console.log(`counter after replay: ${value}`); // expect 42
 
   await system.terminate();
