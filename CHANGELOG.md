@@ -9,6 +9,13 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ## [Unreleased]
 
+### Added
+
+- **`PersistenceExtension.configure({ journal?, snapshotStore? })`** — a thin
+  convenience over `setJournal` / `setSnapshotStore` for tests and simple,
+  single-backend apps that wire persistence directly in code.  (The docs
+  already documented this call; it is now real.)
+
 ### Changed
 
 - **BREAKING — abbreviations spelled out across all identifiers.**  Type,
@@ -174,6 +181,21 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   Also, `CassandraSnapshotStore` now validates its keyspace + table
   identifiers through `assertSafeIdentifier` (the journal already did), closing
   the last raw-interpolation gap in the Cassandra backend.
+
+### Documentation
+
+- **Persistence doc snippets reconciled with the real API** (EN + DE, #384).
+  `projections.mdx` / `persistence-query.mdx` / `push-based-query.mdx` used
+  `new SqliteQuery({ path })` (the constructor takes a `SqliteJournal`
+  instance) and a nonexistent `SqliteOffsetStore`; they now construct a
+  `SqliteJournal` and use `InMemoryOffsetStore` / `DurableStateOffsetStore`.
+  `operations/upgrades/rolling-migration.md` used the renamed
+  `MigrationChain.start(...).next(...)` (now `MigrationChain.for(...).add(...)`).
+  The `.configure(...)` calls across the journal / snapshot-store pages are now
+  valid against the new `PersistenceExtension.configure` method.  A new
+  `docs/scripts/check-api-drift.mjs` guard (`npm run check:api-drift` in
+  `docs/`), wired into a `docs-checks` CI workflow that runs on every docs
+  change, fails on any reappearance of a removed/renamed API name (#385).
 
 ## [0.11.0] — 2026-07-15
 

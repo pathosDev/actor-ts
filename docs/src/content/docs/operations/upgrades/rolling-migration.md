@@ -192,7 +192,7 @@ be read on the hot path, you can:
    backfill is complete:
 
     ```ts
-    const chain = MigrationChain.start<OrderEventV2>('OrderEvent', 2);
+    const chain = MigrationChain.for<OrderEventV2>('OrderEvent', 2);
     ```
 
     All future events are now born v2 with no upcast overhead.
@@ -382,7 +382,7 @@ unrecoverable.
 
 | Symbol                                    | What it does                              |
 | ----------------------------------------- | ----------------------------------------- |
-| `MigrationChain.start(name, v).next(...)` | Define a multi-version event/state chain  |
+| `MigrationChain.for(name, v).add(...)` | Define a multi-version event/state chain  |
 | `migratingAdapter(chain, { writeVersion })` | Adapter exposing the chain to the journal |
 | `chain.manifestFor(value, version)`       | Lower-level envelope builder              |
 | `wrapEventAsEnvelope(event, manifestFor)` | One-shot rewrite for pre-envelope data    |

@@ -45,6 +45,26 @@ describe('PersistenceExtension — plugin resolution', () => {
     expect(() => ext.snapshotStore).toThrow(/Unknown snapshot-store plugin.*mariadb/s);
   });
 
+  test('configure() sets the active journal and snapshot store in one call', () => {
+    const system = systemWith();
+    const ext = system.extension(PersistenceExtensionId);
+    const journal = new InMemoryJournal();
+    const snapshotStore = new InMemorySnapshotStore();
+    ext.configure({ journal, snapshotStore });
+    expect(ext.journal).toBe(journal);
+    expect(ext.snapshotStore).toBe(snapshotStore);
+  });
+
+  test('configure() leaves an omitted store untouched', () => {
+    const system = systemWith();
+    const ext = system.extension(PersistenceExtensionId);
+    const journal = new InMemoryJournal();
+    ext.configure({ journal });
+    expect(ext.journal).toBe(journal);
+    // snapshotStore was not passed — still the in-memory default.
+    expect(ext.snapshotStore).toBeInstanceOf(InMemorySnapshotStore);
+  });
+
   test('a registered factory resolves normally after a hardened lookup', () => {
     const system = systemWith({
       'actor-ts': {

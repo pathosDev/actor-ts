@@ -10,7 +10,8 @@
     "build": "astro build",
     "preview": "astro preview",
     "astro": "astro",
-    "images": "node scripts/render-images.mjs"
+    "images": "node scripts/render-images.mjs",
+    "check:api-drift": "node scripts/check-api-drift.mjs"
   },
   "dependencies": {
     "@astrojs/starlight": "^0.39.3",

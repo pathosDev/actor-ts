@@ -36,17 +36,21 @@ from read throughput (denormalized, query-optimized).
 
 ```ts
 import { ProjectionActor, ByTagProjectionOptions } from 'actor-ts';
-import { SqliteQuery } from 'actor-ts';
+import { SqliteJournal, SqliteJournalOptions, SqliteQuery, InMemoryOffsetStore } from 'actor-ts';
 
 type AccountEvent =
   | { kind: 'deposited'; amount: number }
   | { kind: 'withdrawn'; amount: number };
 
+// The read side queries the SAME journal your PersistentActors write to —
+// SqliteQuery wraps a SqliteJournal instance (not a path).
+const eventsJournal = new SqliteJournal(SqliteJournalOptions.create().withPath('/var/lib/events.db'));
+
 const byTagProjectionOptions = ByTagProjectionOptions.create<AccountEvent>()
   .withName('account-balance-view')
   .withTag('account')
-  .withQuery(new SqliteQuery({ path: '/var/lib/events.db' }))
-  .withOffsetStore(new SqliteOffsetStore({ path: '/var/lib/offsets.db' }))
+  .withQuery(new SqliteQuery(eventsJournal))
+  .withOffsetStore(new InMemoryOffsetStore())
   .withHandle(async (event) => {
     if (event.event.kind === 'deposited') {
       await viewDb.execute(
@@ -109,13 +113,14 @@ complex, not provided out of the box.
 ## OffsetStore
 
 ```ts
-import { InMemoryOffsetStore, SqliteOffsetStore } from 'actor-ts';
+import { InMemoryOffsetStore, DurableStateOffsetStore } from 'actor-ts';
 
 // Default (lost on restart):
 new InMemoryOffsetStore();
 
-// Production (single-node):
-new SqliteOffsetStore({ path: '/var/lib/offsets.db' });
+// Durable — persist the cursor in any DurableStateStore (Postgres,
+// MariaDB, object-storage), so a restart resumes mid-stream:
+new DurableStateOffsetStore(durableStateStore);
 ```
 
 The cursor is just a number (or compound offset) — stored per
@@ -123,9 +128,10 @@ projection name + scope.  Implementations:
 
 - `InMemoryOffsetStore` — fine for tests, useless in production
   (every restart re-processes from the beginning).
-- `SqliteOffsetStore` — single-file durable offsets.
+- `DurableStateOffsetStore` — wraps any `DurableStateStore` (Postgres,
+  MariaDB, object-storage) so offsets survive restarts.
 - Custom — implement `OffsetStore` against your own store (Redis,
-  Postgres, whatever your read-model uses).
+  whatever your read-model uses).
 
 For real production setups, **co-locate the offset store with
 the read model** so they crash together — that minimizes the

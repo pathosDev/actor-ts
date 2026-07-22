@@ -38,17 +38,21 @@ Write-Durchsatz (durable, append-only) von Read-Durchsatz
 
 ```ts
 import { ProjectionActor, ByTagProjectionOptions } from 'actor-ts';
-import { SqliteQuery } from 'actor-ts';
+import { SqliteJournal, SqliteJournalOptions, SqliteQuery, InMemoryOffsetStore } from 'actor-ts';
 
 type AccountEvent =
   | { kind: 'deposited'; amount: number }
   | { kind: 'withdrawn'; amount: number };
 
+// Die Read-Seite fragt dasselbe Journal ab, in das deine PersistentActors
+// schreiben — SqliteQuery umschließt eine SqliteJournal-Instanz (keinen Pfad).
+const eventsJournal = new SqliteJournal(SqliteJournalOptions.create().withPath('/var/lib/events.db'));
+
 const byTagProjectionOptions = ByTagProjectionOptions.create<AccountEvent>()
   .withName('account-balance-view')
   .withTag('account')
-  .withQuery(new SqliteQuery({ path: '/var/lib/events.db' }))
-  .withOffsetStore(new SqliteOffsetStore({ path: '/var/lib/offsets.db' }))
+  .withQuery(new SqliteQuery(eventsJournal))
+  .withOffsetStore(new InMemoryOffsetStore())
   .withHandle(async (event) => {
     if (event.event.kind === 'deposited') {
       await viewDb.execute(
@@ -113,13 +117,14 @@ viel komplexer, nicht out-of-the-box bereitgestellt.
 ## OffsetStore
 
 ```ts
-import { InMemoryOffsetStore, SqliteOffsetStore } from 'actor-ts';
+import { InMemoryOffsetStore, DurableStateOffsetStore } from 'actor-ts';
 
 // Default (verloren beim Neustart):
 new InMemoryOffsetStore();
 
-// Produktion (Single-Node):
-new SqliteOffsetStore({ path: '/var/lib/offsets.db' });
+// Dauerhaft — speichert den Cursor in einem beliebigen DurableStateStore
+// (Postgres, MariaDB, Object-Storage), sodass ein Neustart mittendrin fortsetzt:
+new DurableStateOffsetStore(durableStateStore);
 ```
 
 Der Cursor ist nur eine Zahl (oder ein Compound-Offset) — pro
@@ -127,9 +132,10 @@ Projection-Name + Scope gespeichert.  Implementierungen:
 
 - `InMemoryOffsetStore` — okay für Tests, nutzlos in Produktion
   (jeder Neustart verarbeitet vom Anfang neu).
-- `SqliteOffsetStore` — Single-File-Durable-Offsets.
+- `DurableStateOffsetStore` — umschließt einen beliebigen `DurableStateStore`
+  (Postgres, MariaDB, Object-Storage), sodass Offsets Neustarts überstehen.
 - Benutzerdefiniert — implementiere `OffsetStore` gegen deinen
-  eigenen Store (Redis, Postgres, was auch immer dein Read-Model
+  eigenen Store (Redis, was auch immer dein Read-Model
   verwendet).
 
 Für echte Produktions-Setups **kollokiere den Offset-Store mit
