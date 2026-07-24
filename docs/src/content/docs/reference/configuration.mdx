@@ -111,7 +111,7 @@ Place this at the project root.  The framework auto-loads it on
 
 | Key | Default | Purpose |
 | --- | --- | --- |
-| `http.backend` | `"fastify"` | One of `fastify` / `bun` / `express`. |
+| `http.backend` | `"fastify"` | One of `fastify` / `express` / `hono`. |
 | `http.shutdown-grace-period` | `5s` | Time to drain in-flight requests on shutdown. |
 | `http.websocket` | *(see below)* | Server-side WebSocket defaults for [`websocket()`](/http/websocket/) routes. |
 
@@ -133,13 +133,22 @@ defaults from `actor-ts.http.websocket`:
 | --- | --- | --- |
 | `persistence.journal.plugin` | `"...in-memory"` | Fully-qualified key to the journal's config. |
 | `persistence.snapshot-store.plugin` | `"...in-memory"` | Fully-qualified key to the snapshot store's config. |
-| `persistence.recovery.mode` | `"eager"` | `eager` (default) — replay all events on preStart.  `parallel` — replay in chunks. |
 
 The plugin keys point to *another* config section that holds
 that plugin's settings.  E.g. `actor-ts.persistence.journal.sqlite`
 contains the SQLite journal's `path`, `pragmas`, etc.  See each
 journal page in [Persistence](/persistence/overview/) for
 the per-plugin keys.
+
+### `actor-ts.cache`
+
+| Key | Default | Purpose |
+| --- | --- | --- |
+| `cache.in-memory.maxEntries` | `10000` | Max entries before LRU eviction ([in-memory cache](/cache/in-memory/)). |
+| `cache.in-memory.cleanupMs` | `60000` | Interval (ms) of the background sweep for expired entries. |
+
+Redis and Memcached caches read their connection settings from
+`actor-ts.cache.redis` / `actor-ts.cache.memcached`.
 
 ### `actor-ts.sharding`
 
@@ -250,7 +259,7 @@ const interval = config.getDuration('actor-ts.cluster.gossip-interval');
 ```
 
 The `Config` interface has typed getters: `getString`, `getNumber`,
-`getBoolean`, `getDuration`, `getSize`, `getStringList`, etc.
+`getBoolean`, `getDuration`, `getBytes`, `getStringList`, etc.
 Missing keys throw unless you check first with `hasPath`.
 
 ## Loading order
@@ -329,18 +338,22 @@ absent from every layer).  Unset optional fields never trigger it; they
 fall through to their defaults.
 
 ```ts
-import { OptionsError } from 'actor-ts';
+import { CircuitBreaker, CircuitBreakerOptions, OptionsError } from 'actor-ts';
 
+// Non-broker consumers validate in their constructor, so the error is
+// thrown synchronously and a plain try/catch works:
 try {
-  const mqttOptions = MqttOptions.create()
-    .withBrokerUrl('mqtt://broker:1883')
-    .withQos(7 as MqttQos);          // invalid
-  system.spawn(Props.create(() => new FeedClient(mqttOptions)), 'feed');
+  const options = CircuitBreakerOptions.create()
+    .withMaxFailures(0);             // invalid — must be a positive integer
+  new CircuitBreaker(options);       // validates in the constructor
 } catch (e) {
   if (e instanceof OptionsError) {
     console.error(`bad option ${e.field}: ${e.message}`);
   }
 }
+// For a broker actor the OptionsError is thrown later in preStart and
+// re-wrapped as ActorInitializationError, so it surfaces via supervision
+// (not the spawning call's try/catch).
 ```
 
 ## Where to next
