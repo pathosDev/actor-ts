@@ -562,6 +562,7 @@ export default defineConfig({
               items: [
                 { label: 'In-memory',             slug: 'persistence/snapshot-stores/in-memory',             translations: { de: 'In-Memory', es: 'En memoria', fr: 'En mémoire', ja: 'インメモリ', ko: '인메모리', 'pt-BR': 'Em memória', ru: 'In-memory', 'zh-CN': '内存' } },
                 { label: 'SQLite',                slug: 'persistence/snapshot-stores/sqlite',                translations: { de: 'SQLite', es: 'SQLite', fr: 'SQLite', ja: 'SQLite', ko: 'SQLite', 'pt-BR': 'SQLite', ru: 'SQLite', 'zh-CN': 'SQLite' } },
+                { label: 'Cassandra',             slug: 'persistence/snapshot-stores/cassandra',             translations: { de: 'Cassandra', es: 'Cassandra', fr: 'Cassandra', ja: 'Cassandra', ko: 'Cassandra', 'pt-BR': 'Cassandra', ru: 'Cassandra', 'zh-CN': 'Cassandra' } },
                 { label: 'Cached snapshot store', slug: 'persistence/snapshot-stores/cached-snapshot-store', translations: { de: 'Cached Snapshot Store', es: 'Snapshot store con caché', fr: 'Magasin de Snapshots avec cache', ja: 'キャッシュ付きスナップショットストア', ko: '캐시드 스냅샷 스토어', 'pt-BR': 'Snapshot store com cache', ru: 'Кэшированное хранилище Snapshots', 'zh-CN': '带缓存的快照存储' } },
               ],
             },
@@ -687,6 +688,8 @@ export default defineConfig({
                     { label: 'Security headers', slug: 'http/middleware/security-headers', translations: { de: 'Security-Header', es: 'Cabeceras de seguridad', fr: 'En-têtes de sécurité', ja: 'セキュリティヘッダ', ko: '보안 헤더', 'pt-BR': 'Cabeçalhos de segurança', ru: 'Заголовки безопасности', 'zh-CN': '安全响应头' } },
                     { label: 'CSP',             slug: 'http/middleware/csp',             translations: { de: 'CSP', es: 'CSP', fr: 'CSP', ja: 'CSP', ko: 'CSP', 'pt-BR': 'CSP', ru: 'CSP', 'zh-CN': 'CSP' } },
                     { label: 'Basic auth',      slug: 'http/middleware/basic-auth',      translations: { de: 'Basic-Auth', es: 'Autenticación básica', fr: 'Authentification Basic', ja: 'Basic 認証', ko: 'Basic 인증', 'pt-BR': 'Autenticação básica', ru: 'Basic-аутентификация', 'zh-CN': 'Basic 认证' } },
+                    { label: 'Bearer token',    slug: 'http/middleware/bearer-token',    translations: { de: 'Bearer-Token', es: 'Token Bearer', fr: 'Jeton Bearer', ja: 'Bearer トークン', ko: 'Bearer 토큰', 'pt-BR': 'Token Bearer', ru: 'Bearer-токен', 'zh-CN': 'Bearer 令牌' } },
+                    { label: 'IP allowlist',    slug: 'http/middleware/ip-allowlist',    translations: { de: 'IP-Allowlist', es: 'Lista de IP permitidas', fr: 'Liste d’IP autorisées', ja: 'IP 許可リスト', ko: 'IP 허용 목록', 'pt-BR': 'Lista de IPs permitidos', ru: 'Список разрешённых IP', 'zh-CN': 'IP 白名单' } },
                     { label: 'Request ID',      slug: 'http/middleware/request-id',      translations: { de: 'Request-ID', es: 'ID de solicitud', fr: 'ID de requête', ja: 'リクエスト ID', ko: '요청 ID', 'pt-BR': 'ID de requisição', ru: 'ID запроса', 'zh-CN': '请求 ID' } },
                     { label: 'Timeout',         slug: 'http/middleware/timeout',         translations: { de: 'Timeout', es: 'Tiempo límite', fr: 'Délai d’attente', ja: 'タイムアウト', ko: '타임아웃', 'pt-BR': 'Timeout', ru: 'Тайм-аут', 'zh-CN': '超时' } },
                   ],

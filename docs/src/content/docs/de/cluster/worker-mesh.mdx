@@ -43,7 +43,97 @@ Für **Multi-Process**-Parallelität (separate OS-Prozesse) nutze
 den regulären Cluster + TCP-Transport. Worker-Mesh ist speziell
 für den In-Process-Fall.
 
-## Setup
+## High-Level-API: `WorkerCluster`
+
+Broker, Kanäle und den Per-Worker-Handshake von Hand zu verdrahten
+(siehe [Unter der Haube](#unter-der-haube-manuelle-verdrahtung) weiter
+unten) ist genau das, was `WorkerCluster` automatisiert.  Es spawnt
+einen Worker-Pool aus einem Entrypoint-Modul, führt den
+Hello/Init/Ready-Handshake aus, registriert jeden Worker an einem
+gemeinsamen `WorkerBroker` und startet abgestürzte Worker gemäß einer
+`restartPolicy` neu.  Das zugrunde liegende Worker-Primitiv wird pro
+Runtime gewählt — Web Workers auf Bun/Deno, `node:worker_threads` auf
+Node — sodass derselbe Code überall läuft.
+
+```ts
+// main.ts — Hauptthread
+import { WorkerCluster, WorkerClusterOptions } from 'actor-ts';
+
+const workerClusterOptions = WorkerClusterOptions.create()
+  .withWorkers(4)
+  .withBootstrap(new URL('./worker-node.js', import.meta.url))
+  .withSystemName('multi-core')
+  .withBasePort(2552);
+const cluster = await WorkerCluster.spawn(workerClusterOptions);
+
+console.log(`Spawned ${cluster.size} workers:`);
+for (const address of cluster.addresses) console.log('  -', address.toString());
+
+// ...später, beim Shutdown:
+await cluster.terminate();
+```
+
+Jeder Worker führt das **Bootstrap-Modul** aus.  Es ruft
+`WorkerNode.join()` auf, um den Handshake abzuschließen und seine
+Adresse, den System-Namen, den Transport und `initData` zu erhalten,
+und tritt dann dem Cluster bei wie jeder andere Knoten:
+
+```ts
+// worker-node.ts — läuft in jedem Worker
+import { ActorSystem, Cluster, ClusterOptions, Props, WorkerNode } from 'actor-ts';
+
+async function main(): Promise<void> {
+  const context = await WorkerNode.join<{ seedAddress?: string }>();
+  const system = ActorSystem.create(context.systemName);
+  const clusterOptions = ClusterOptions.create()
+    .withHost(context.self.host)
+    .withPort(context.self.port)
+    .withSeeds(context.initData.seedAddress ? [context.initData.seedAddress] : [])
+    .withTransport(context.transport);
+  await Cluster.join(system, clusterOptions);
+
+  system.spawn(Props.create(() => new MyActor()), 'worker');
+  context.ready();   // dem Hauptthread signalisieren, dass der Knoten läuft
+}
+
+void main();
+```
+
+| Option | Was |
+| --- | --- |
+| `withBootstrap(url)` | Worker-Entrypoint-Modul.  **Pflicht.** |
+| `withWorkers(n \| 'auto')` | Pool-Größe; `'auto'` nutzt die Hardware-Concurrency.  Default `'auto'`. |
+| `withSystemName(name)` | `ActorSystem`-Name, den jeder Worker hostet.  Default `'worker-cluster'`. |
+| `withHostname(host)` | Hostname-Komponente der Adresse jedes Workers.  Default `'worker'`. |
+| `withBasePort(port)` | Port des ersten Workers; jeder weitere inkrementiert.  Default `1`. |
+| `withInitData(data)` | Payload, die jedem Worker im `join()`-Context zugestellt wird (`initData`).  Default `null`. |
+| `withRestartPolicy(p)` | `'always'` / `'on-failure'` / `'never'`.  Default `'on-failure'`. |
+| `withReadyTimeoutMs(ms)` | Handshake-Timeout pro Worker.  Default `10000`. |
+
+Das zurückgegebene `WorkerCluster` bietet `size`, `addresses` (die
+`NodeAddress` jedes Workers), den gemeinsamen `broker` und
+`terminate()`.  Fehlkonfigurierte Optionen (ein falscher `basePort`,
+ein nicht-positives `workers`) werfen `OptionsError` bei `spawn`.
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="`WorkerNode.join()` in einer async-Funktion aufrufen">
+  ```ts
+  // ✗ Top-Level-await im Worker-Modul
+  const context = await WorkerNode.join();
+  ```
+  Rufe es aus einer `async function main() { … }` auf, die du
+  aufrufst, nicht als Top-Level-`await`.  Auf Bun suspendiert ein
+  Top-Level-await im Worker den Modul-Loader, sodass eingehende
+  Nachrichten nie dispatchen und der Handshake für immer hängt.
+</Aside>
+
+## Unter der Haube: manuelle Verdrahtung
+
+Das obige `WorkerCluster` übernimmt diese Verdrahtung für dich.  Greife
+zum manuellen Weg nur, wenn du volle Kontrolle brauchst — eine eigene
+Topologie, einen maßgeschneiderten Handshake oder zusätzliches
+Per-Node-Setup.
 
 ```ts
 // main.ts — Hauptthread
@@ -169,8 +259,6 @@ Ein abstürzender Worker reißt das Hauptsystem nicht mit —
 separate Event-Loops.
 
 ## Wann NICHT verwenden
-
-import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="Wenn Multi-Process funktioniert, nutze es">
   ```

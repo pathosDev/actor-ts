@@ -8,8 +8,8 @@ This document tracks the planned direction.  Nothing here is committed work — 
   sweep extended to every identifier (locals, generic parameters, the `kind`
   discriminant) + TypeScript 7 native compiler (#361) + raised runtime floors
   (Node ≥ 24, Bun ≥ 1.3) + dependency bumps.
-- ~2 665 tests green (unit + multi-node + in-process integration) + 15 real-network multi-node integration scenarios green; bug-backlog at 0.
-- A full audit-catalog of ~175 follow-up items is tracked in the issue tracker — security findings, framework features, code-quality refactors.  Filter by label `security` + `severity: <tier>` or by title prefix `[Security] ` / `[Feature] `.
+- ~2 665 tests green (unit + multi-node + in-process integration) + 15 real-network multi-node integration scenarios green; open bugs are tracked as `[Bug]` issues in the tracker.
+- A full audit-catalog of follow-up items is tracked in the issue tracker — security findings, framework features, code-quality refactors.  Filter by label `security` + `severity: <tier>` or by title prefix `[Security] ` / `[Feature] `.
 
 ## Done since the last roadmap update
 
@@ -86,4 +86,4 @@ This document tracks the planned direction.  Nothing here is committed work — 
 - Backwards-compatibility guarantees of any kind — pre-1.0.
 - Pull requests — not accepted; well-shaped issues are (the issue tracker is the contribution channel, see `README.md` → "Roadmap & status").
 
-→ Full catalog (all ~175 items): GitHub issues, filterable by title prefix `[Security]` / `[Feature]` and the `security` / `severity: …` labels.
+→ Full catalog: GitHub issues, filterable by title prefix `[Security]` / `[Feature]` and the `security` / `severity: …` labels.

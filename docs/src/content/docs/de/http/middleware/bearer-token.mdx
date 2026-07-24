@@ -1,0 +1,67 @@
+---
+title: Bearer-Token-Auth
+description: BearerTokenAuth() sichert Routen hinter einem vorab geteilten Authorization-Bearer-Secret — konstante Vergleichszeit, Multi-Token-Rotation und ein WWW-Authenticate-Challenge bei 401.
+---
+
+`BearerTokenAuth` sichert einen Route-Teilbaum hinter einem vorab
+geteilten `Authorization: Bearer <token>`-Secret — der übliche Schutz
+für die destruktiven
+[Management-Endpoints](/de/observability/management/http-endpoints/)
+(`/cluster/down`, `/cluster/leave`).  Tokens werden in konstanter Zeit
+verglichen, und ein `401` weist ein echtes
+`WWW-Authenticate: Bearer realm="…"`-Challenge aus.
+
+```ts
+import { BearerTokenAuth, withMiddleware } from 'actor-ts/http';
+
+const auth = BearerTokenAuth({ tokens: [process.env.MANAGEMENT_TOKEN!] });
+
+const managementRoutes = withMiddleware(auth, clusterRoutes);
+```
+
+`tokens` ist eine **nicht-leere Liste**, damit du ohne Downtime
+rotieren kannst: neues Token ausgeben, Clients darauf ausrollen, dann
+den alten Eintrag entfernen.
+
+```ts
+BearerTokenAuth({ tokens: [process.env.TOKEN_CURRENT!, process.env.TOKEN_PREVIOUS!] });
+```
+
+## Konfiguration
+
+`BearerTokenAuth` nimmt ein einfaches Options-Objekt:
+
+| Feld | Zweck |
+| --- | --- |
+| `tokens` | Akzeptierte Bearer-Tokens; mindestens eines muss passen.  Muss nicht-leer sein (wirft sonst).  Mehrere Einträge ermöglichen Rotation. |
+| `headerName` | Header, aus dem das Token gelesen wird.  Default `'authorization'` — klein geschrieben, da das Framework Header-Namen kleinschreibt. |
+| `realm` | Realm, das bei 401 im `WWW-Authenticate` ausgewiesen wird.  Default `'actor-ts'`. |
+
+Eine Anfrage wird mit `401` (plus `WWW-Authenticate`-Challenge)
+abgelehnt, wenn der Header fehlt, kein `Bearer <token>`-Wert ist oder
+ein Token trägt, das keinem der konfigurierten Einträge entspricht.
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Bearer-Auth braucht TLS">
+  Ein Token im Header ist nur so sicher wie der Transport, der es
+  trägt.  Nutze `BearerTokenAuth` über HTTPS (ein TLS-terminierender
+  Proxy zählt), damit das Secret nie im Klartext übertragen wird.
+</Aside>
+
+<Aside type="caution" title="Kombiniere es mit einer IP-Allowlist">
+  Defence in depth: kombiniere mit einer
+  [IP-Allowlist](/de/http/middleware/ip-allowlist/), sodass ein
+  geleaktes Token für einen Angreifer, der nicht in einem
+  allowgelisteten Netz ist, trotzdem nutzlos bleibt.
+</Aside>
+
+## Wie weiter
+
+- **[IP-Allowlist](/de/http/middleware/ip-allowlist/)** — der
+  CIDR-Schutz, den du darunterlegst.
+- **[Basic-Auth](/de/http/middleware/basic-auth/)** — das
+  `Authorization: Basic`-Gegenstück.
+- **[Sicherheit](/de/http/security/)** — wo Auth im Stack sitzt.
+- **[Management-Endpoints](/de/observability/management/http-endpoints/)** —
+  die Routen, die du damit am häufigsten schützt.
