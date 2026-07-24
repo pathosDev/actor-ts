@@ -5,7 +5,7 @@ and adhere to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 This is a pre-1.0 hobby project — every minor version is potentially
 breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
-"What's in here / What isn't" for current scope honesty.
+"What is this?" for current scope honesty.
 
 ## [Unreleased]
 
