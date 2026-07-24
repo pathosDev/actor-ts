@@ -1,0 +1,63 @@
+---
+title: IP-Allowlist
+description: IpAllowlist() beschränkt einen Route-Teilbaum auf Clients innerhalb konfigurierter IPv4/IPv6-CIDRs — liest standardmäßig den Socket-Peer und traut x-forwarded-for nur, wenn du es aktivierst.
+---
+
+`IpAllowlist` beschränkt einen Route-Teilbaum auf Clients, deren IP in
+einem der konfigurierten CIDRs liegt — Defence-in-depth zusätzlich zu
+[`BearerTokenAuth`](/de/http/middleware/bearer-token/): selbst ein
+geleaktes Token ist außerhalb eines allowgelisteten Netzes nutzlos.
+
+```ts
+import { IpAllowlist, withMiddleware } from 'actor-ts/http';
+
+const allowlist = IpAllowlist({ allow: ['10.0.0.0/8', '127.0.0.1/32'] });
+
+const managementRoutes = withMiddleware(allowlist, clusterRoutes);
+```
+
+IPv4- und IPv6-CIDRs werden beide unterstützt (`'::1/128'`,
+`'fd00::/8'`), und IPv4-gemappte IPv6-Peers (`::ffff:a.b.c.d`) auf einem
+Dual-Stack-Socket werden normalisiert, sodass ein einfaches
+IPv4-CIDR trotzdem matcht.  Eine nicht passende — oder fehlende —
+Client-IP schlägt fehl-geschlossen mit `403`.
+
+## Konfiguration
+
+`IpAllowlist` nimmt ein einfaches Options-Objekt:
+
+| Feld | Zweck |
+| --- | --- |
+| `allow` | Nicht-leere Liste von CIDR-Strings; mindestens eines muss die Client-IP enthalten, sonst `403`.  Ungültige CIDR-Syntax wirft bei Konstruktion. |
+| `getClientIp` | Überschreibt die IP-Extraktion.  Default liest `request.remoteAddress` (den Socket-Peer).  `null`/`undefined` lehnt die Anfrage ab (fail-closed). |
+
+### Hinter einem Reverse-Proxy
+
+Der Default liest den **Socket-Peer** und traut `x-forwarded-for`
+bewusst **nicht** — dieser Header ist client-fälschbar, wenn kein Proxy
+davor sitzt.  Hinter einem vertrauenswürdigen Proxy (Cloudflare, AWS
+ALB, NGINX), der ihn strippt und setzt, aktiviere es explizit:
+
+```ts
+IpAllowlist({
+  allow: ['10.0.0.0/8'],
+  getClientIp: (request) => request.headers['x-forwarded-for']?.split(',')[0]?.trim(),
+});
+```
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="x-forwarded-for nur hinter einem Proxy lesen, der ihn setzt">
+  Wenn Clients die App direkt erreichen können, können sie
+  `x-forwarded-for` fälschen und die Allowlist umgehen.  Überschreibe
+  `getClientIp` **nur**, wenn ein vertrauenswürdiger Proxy davor den
+  eingehenden Header strippt und seinen eigenen setzt.
+</Aside>
+
+## Wie weiter
+
+- **[Bearer-Token-Auth](/de/http/middleware/bearer-token/)** — der
+  Token-Schutz, den du darüberlegst.
+- **[Sicherheit](/de/http/security/)** — wo die Allowlist im Stack sitzt.
+- **[Management-Endpoints](/de/observability/management/http-endpoints/)** —
+  die Routen, die du am häufigsten per Netz beschränkst.
