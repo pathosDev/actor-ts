@@ -43,7 +43,94 @@ For **multi-process** parallelism (separate OS processes), use
 regular cluster + TCP transport.  Worker mesh is specifically
 for the in-process case.
 
-## Setup
+## High-level API: `WorkerCluster`
+
+Wiring the broker, channels, and per-worker handshake by hand (see
+[Under the hood](#under-the-hood-manual-wiring) below) is exactly what
+`WorkerCluster` automates.  It spawns a pool of workers from one
+entrypoint module, runs the hello/init/ready handshake, registers each
+worker with a shared `WorkerBroker`, and restarts crashed workers per a
+`restartPolicy`.  The underlying worker primitive is picked per runtime
+— Web Workers on Bun/Deno, `node:worker_threads` on Node — so the same
+code runs everywhere.
+
+```ts
+// main.ts — main thread
+import { WorkerCluster, WorkerClusterOptions } from 'actor-ts';
+
+const workerClusterOptions = WorkerClusterOptions.create()
+  .withWorkers(4)
+  .withBootstrap(new URL('./worker-node.js', import.meta.url))
+  .withSystemName('multi-core')
+  .withBasePort(2552);
+const cluster = await WorkerCluster.spawn(workerClusterOptions);
+
+console.log(`Spawned ${cluster.size} workers:`);
+for (const address of cluster.addresses) console.log('  -', address.toString());
+
+// ...later, on shutdown:
+await cluster.terminate();
+```
+
+Each worker runs the **bootstrap module**.  It calls `WorkerNode.join()`
+to complete the handshake and receive its address, system name,
+transport, and `initData`, then joins the cluster like any other node:
+
+```ts
+// worker-node.ts — runs inside each worker
+import { ActorSystem, Cluster, ClusterOptions, Props, WorkerNode } from 'actor-ts';
+
+async function main(): Promise<void> {
+  const context = await WorkerNode.join<{ seedAddress?: string }>();
+  const system = ActorSystem.create(context.systemName);
+  const clusterOptions = ClusterOptions.create()
+    .withHost(context.self.host)
+    .withPort(context.self.port)
+    .withSeeds(context.initData.seedAddress ? [context.initData.seedAddress] : [])
+    .withTransport(context.transport);
+  await Cluster.join(system, clusterOptions);
+
+  system.spawn(Props.create(() => new MyActor()), 'worker');
+  context.ready();   // tell the main thread this node is up
+}
+
+void main();
+```
+
+| Option | What |
+| --- | --- |
+| `withBootstrap(url)` | Worker entrypoint module.  **Required.** |
+| `withWorkers(n \| 'auto')` | Pool size; `'auto'` uses hardware concurrency.  Default `'auto'`. |
+| `withSystemName(name)` | `ActorSystem` name each worker hosts.  Default `'worker-cluster'`. |
+| `withHostname(host)` | Hostname component of each worker's address.  Default `'worker'`. |
+| `withBasePort(port)` | Port of the first worker; each subsequent worker increments.  Default `1`. |
+| `withInitData(data)` | Payload delivered to every worker's `join()` context (`initData`).  Default `null`. |
+| `withRestartPolicy(p)` | `'always'` / `'on-failure'` / `'never'`.  Default `'on-failure'`. |
+| `withReadyTimeoutMs(ms)` | Per-worker handshake timeout.  Default `10000`. |
+
+The returned `WorkerCluster` exposes `size`, `addresses`
+(the `NodeAddress` of each worker), the shared `broker`, and
+`terminate()`.  Misconfigured options (a bad `basePort`, a
+non-positive `workers`) throw `OptionsError` at `spawn`.
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Call `WorkerNode.join()` inside an async function">
+  ```ts
+  // ✗ top-level await in the worker module
+  const context = await WorkerNode.join();
+  ```
+  Run it from inside an `async function main() { … }` that you invoke,
+  not as a top-level `await`.  On Bun, a top-level await in a worker
+  suspends the module loader so incoming messages never dispatch, and
+  the handshake hangs forever.
+</Aside>
+
+## Under the hood: manual wiring
+
+The `WorkerCluster` above does this wiring for you.  Reach for the
+manual path only when you need full control — a custom topology, a
+bespoke handshake, or extra per-node setup.
 
 ```ts
 // main.ts — main thread
@@ -168,8 +255,6 @@ A worker crashing doesn't take down the main system — separate
 event loops.
 
 ## When NOT to use it
-
-import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="If multi-process works, use it">
   ```
