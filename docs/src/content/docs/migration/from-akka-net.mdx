@@ -140,7 +140,7 @@ explicit Address.
 var region = ClusterSharding.Get(system).Start(
   typeName: "Counter",
   entityProps: Props.Create<CounterActor>(),
-  settings: ClusterShardingOptionsType.Create(system),
+  settings: ClusterShardingSettings.Create(system),
   messageExtractor: new MessageExtractor()
 );
 ```

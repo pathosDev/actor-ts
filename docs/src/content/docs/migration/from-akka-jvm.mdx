@@ -105,7 +105,7 @@ cluster.join(Address("akka", "MySystem", "host", port))
 val region = ClusterSharding(system).start(
   typeName = "Counter",
   entityProps = Props[Counter],
-  settings = ClusterShardingOptionsType(system),
+  settings = ClusterShardingSettings(system),
   extractEntityId = ...,
   extractShardId  = ...,
 )
@@ -130,7 +130,7 @@ Mostly drop-in.  Differences:
 - `extractShardId` is **derived** from `extractEntityId + numShards`
   in actor-ts (`shardId = hash(entityId) % numShards`).  No
   separate function.
-- `ClusterShardingOptionsType` is inline as `start()` options.
+- `ClusterShardingSettings` is inline as `start()` options.
 
 ### PersistentActor
 
@@ -187,7 +187,7 @@ val singleton = system.spawn(
   ClusterSingletonManager.props(
     singletonProps = Props[MyActor],
     terminationMessage = PoisonPill,
-    settings = ClusterSingletonManagerOptionsType(system),
+    settings = ClusterSingletonManagerSettings(system),
   ),
   name = "singletonManager",
 )
