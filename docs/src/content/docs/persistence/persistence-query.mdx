@@ -172,7 +172,6 @@ Live streams poll the journal.  Configurable via `LiveQueryOptions`:
 | Option | Default | What |
 | --- | --- | --- |
 | `pollIntervalMs` | 1000 | How often to check for new events. |
-| `batchSize` | journal-specific | How many events to fetch per poll. |
 
 For sub-poll-interval delivery, see
 [Push-based query](/persistence/push-based-query/).
@@ -208,8 +207,8 @@ API directly.
   variants for unbounded reads.
 - **Live polling** is light at idle — empty queries return
   quickly.  Under heavy write load, polling can pile up if the
-  read side is slower than the write side.  Tune `batchSize` +
-  parallelize the handler if you see lag.
+  read side is slower than the write side.  Parallelize the
+  handler if you see lag.
 - **Tag indexes matter** — `events_tags` index is what makes
   by-tag queries fast.  The SQLite journal creates this
   automatically.

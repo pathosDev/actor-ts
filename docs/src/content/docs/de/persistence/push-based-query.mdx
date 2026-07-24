@@ -52,8 +52,8 @@ for await (const tagged of query.eventsByTag<AccountEvent>('account', offsetStar
 }
 ```
 
-`LiveQueryOptions` justiert das Fallback-Polling — `{ pollIntervalMs,
-batchSize, clock }`.  Es gibt **kein `push`-Feld**: Push ist
+`LiveQueryOptions` justiert das Fallback-Polling — `{ pollIntervalMs }`.
+Es gibt **kein `push`-Feld**: Push ist
 automatisch, wenn der Bus existiert, du kannst also ein *höheres*
 `pollIntervalMs` setzen (das Polling ist nur ein Backstop).
 
