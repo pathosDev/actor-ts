@@ -52,7 +52,7 @@ fast (no waits) and deterministic (advance fires timers in order).
 class ManualScheduler extends Scheduler {
   now(): number;                                  // current virtual time (ms)
   advance(durationMs: number): void;              // jump forward, fire matured timers
-  advanceTo(absoluteMs: number): void;            // jump to a specific virtual time
+  advanceToNext(): void;                          // jump to the next pending timer's fire time
   pendingCount: number;                           // non-cancelled scheduled tasks
 }
 ```
@@ -108,17 +108,18 @@ the settings.
 
 ```ts
 scheduler.advance(1_000);   // jump 1 second, fire timers maturing in that window
-scheduler.advanceTo(5_000); // jump to virtual time = 5000ms
-scheduler.now();            // → 5000
+scheduler.advanceToNext();  // jump straight to the next pending timer and fire it
+scheduler.now();            // → current virtual time
 ```
 
 `advance(ms)` is the common case.  Tasks scheduled to fire in the
 advanced window run **in order**, sequentially, before `advance`
 returns.
 
-`advanceTo(absoluteMs)` is for when you've recorded a target
-time and want to fast-forward to it (useful for testing
-"after-N-of-something" patterns).
+`advanceToNext()` fast-forwards straight to the fire time of the
+next pending timer (and fires it), skipping any idle gap — handy
+when you don't want to compute the exact delay by hand.  It is a
+no-op when nothing is scheduled.
 
 ### Repeating timers
 

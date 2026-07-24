@@ -5,30 +5,30 @@ description: Fahre N Cluster-Nodes in einem Prozess hoch, um Cluster-Verhalten z
 
 `MultiNodeSpec` lässt **N Cluster-Nodes innerhalb eines
 Test-Prozesses** laufen. Jeder ist ein echtes `ActorSystem`; sie
-kommunizieren via `InMemoryTransport` (kein TCP). Nützlich zum
+kommunizieren via einen In-Process-Transport (kein TCP). Nützlich zum
 Testen von Cluster-Verhalten — Sharding, Singletons, Gossip-
 Konvergenz, Failover — ohne Docker.
 
 ```ts
-import { MultiNodeSpec } from 'actor-ts/testkit';
+import { Props } from 'actor-ts';
+import { MultiNodeSpec, TestProbe } from 'actor-ts/testkit';
 
-const spec = await MultiNodeSpec.create({
-  systemName: 'cluster-spec',
-  nodes:      3,
-});
+// Jeder Rollenname ist ein Node — und zugleich dessen System-Name.
+const spec = new MultiNodeSpec({ roles: ['a', 'b', 'c'] });
+await spec.start();
+await spec.awaitMembers('a', 3);   // warten, bis der Cluster konvergiert
 
-// spec.nodes ist ein Array von ActorSystems, alle in einen Cluster gejoint:
-const node1 = spec.nodes[0];
-const node2 = spec.nodes[1];
+// Das ActorSystem jedes Nodes via systemFor(role) erreichen:
+const node2 = spec.systemFor('b');
 
-// Spawne Actor auf verschiedenen Nodes:
-const probe = spec.createTestProbe(0);
+// Actor auf einem bestimmten Node spawnen und mit einer Probe asserten:
+const probe = new TestProbe(spec.systemFor('a'));
 const remote = node2.spawnAnonymous(Props.create(() => new Worker()));
 
 remote.tell({ kind: 'do', replyTo: probe });
 await probe.expectMessage({ kind: 'done' });
 
-await spec.shutdown();
+await spec.stop();
 ```
 
 ## Wann nutzen
@@ -43,58 +43,72 @@ Drei primäre Fälle:
 3. **CI-freundliche Cluster-Tests** — schnell (sub-Sekunde),
    kein Docker, keine Ports.
 
-Für Tests, die **echtes Netzwerkverhalten** brauchen (TCP-
-Semantik, TLS, Cross-Host-Latenz), nutze
-[ParallelMultiNodeSpec](/de/testing/parallel-multi-node/)
-oder externes Docker-Compose.
+Für Tests, die **echte Parallelität** brauchen (echte OS-Threads
+— nebenläufige Journal-Schreibvorgänge, Scheduler-Interleaving),
+nutze [ParallelMultiNodeSpec](/de/testing/parallel-multi-node/).
+Für echtes TCP/TLS oder Cross-Host-Latenz nutze einen externen
+Docker-Compose-Cluster.
 
 ## Konfiguration
 
 ```ts
 interface MultiNodeSpecOptionsType {
-  systemName: string;
-  nodes:      number;
-  roles?:     Array<string | undefined>;   // Per-Node-Rollen
-  config?:    Record<string, unknown>;
+  roles:             ReadonlyArray<string>;   // ein Node pro Rolle; müssen eindeutig sein
+  seedRoles?:        ReadonlyArray<string>;   // Bootstrap-Seeds — Default [roles[0]]
+  addresses?:        Record<string, { host: string; port: number }>;
+  failureDetector?:  ClusterOptionsType['failureDetector'];
+  gossipIntervalMs?: number;                  // Default 100 (vs. 1 s in Produktion)
+  awaitTimeoutMs?:   number;                  // Default 10_000 — wie lange await*-Helfer warten
+  logLevel?:         LogLevel;                // Default: ein leiser NoopLogger
+  downing?:          (role: string) => DowningProvider | undefined;
 }
 ```
 
 | Feld | Zweck |
 | --- | --- |
-| `systemName` | Logischer Name — erscheint in Actor-Pfaden. |
-| `nodes` | Anzahl der hochzufahrenden Cluster-Nodes. |
-| `roles` | Per-Node-Rollen-Tags. |
-| `config` | HOCON-Overrides für alle Nodes. |
+| `roles` | Node-Liste — jeder Eintrag ist ein Node, und der String ist zugleich dessen System-Name. Müssen eindeutig sein. |
+| `seedRoles` | Welche Rollen als Bootstrap-Seeds dienen. Default ist die erste Rolle. |
+| `addresses` | Per-Rolle Host/Port-Overrides. Automatisch vergeben, wenn ausgelassen. |
+| `failureDetector` | Failure-Detector-Overrides — Tests ziehen diese meist enger, damit Crashes schnell erkannt werden. |
+| `gossipIntervalMs` | Gossip-Runden-Intervall. Default 100 ms. |
+| `awaitTimeoutMs` | Default-Timeout für die `await*`-Helfer. Default 10 s. |
+| `logLevel` | Log-Level — standardmäßig leise. |
+| `downing` | Per-Rolle Split-Brain-Resolver-Factory. |
 
-## Per-Node-Rollen
+Übergib ein einfaches Objekt wie gezeigt, oder baue es fluent mit
+`MultiNodeSpecOptions.create().withRoles(['a', 'b', 'c'])`.
+
+## Rollen, Seeds und Adressen
+
+Jeder Eintrag in `roles` ist ein **eigener Node** — der String
+ist die Identität dieses Nodes und sein `ActorSystem`-Name, muss
+also eindeutig sein (der Konstruktor wirft bei Duplikaten oder
+leerer Liste). Standardmäßig ist die **erste** Rolle der einzige
+Bootstrap-Seed; überschreibe das mit `seedRoles`:
 
 ```ts
-const spec = await MultiNodeSpec.create({
-  systemName: 'cluster-spec',
-  nodes:      3,
-  roles:      ['frontend', 'compute', 'compute'],
+const spec = new MultiNodeSpec({
+  roles:     ['seed', 'worker-1', 'worker-2'],
+  seedRoles: ['seed'],
 });
-
-// Nun:
-// Node 0 hat Rolle 'frontend'
-// Node 1 + 2 haben Rolle 'compute'
+await spec.start();
 ```
 
-Nützlich, um rollen-gefilterte Allokation zu testen:
+Ports werden automatisch auf `127.0.0.1` vergeben; fixiere
+bestimmte via `addresses`, wenn ein Test feste Endpunkte braucht:
 
 ```ts
-const shardingOptions = StartShardingOptions.create()
-  // ...
-  .withRole('compute');
-cluster1.sharding.start(shardingOptions);
-  // → nur Nodes 1 + 2 hosten Shards
+const spec = new MultiNodeSpec({
+  roles:     ['a', 'b'],
+  addresses: { a: { host: '127.0.0.1', port: 2551 } },
+});
 ```
 
 ## Was geteilt wird
 
 Alle Nodes teilen sich:
 
-- **Denselben `InMemoryTransport`-Bus** — sie können
+- **Einen gemeinsamen In-Process-Nachrichtenbus** — sie können
   miteinander reden.
 - **Dasselbe Gossip-Protokoll** — Membership konvergiert.
 - **Unabhängige Actor-Systeme** — separate Dispatcher,
@@ -111,37 +125,53 @@ Das heißt:
 
 ## Failover-Tests
 
+Zwei Wege, einen Node herunterzunehmen: `crash(role)` reißt
+dessen Transport abrupt weg (Peers erkennen das über den
+Failure-Detector), und `leave(role)` führt einen sauberen
+Cluster-Austritt durch.
+
 ```ts
 // Singleton-Failover verifizieren:
-const spec = await MultiNodeSpec.create({ systemName: 'spec', nodes: 3 });
+const spec = new MultiNodeSpec({
+  roles:           ['a', 'b', 'c'],
+  failureDetector: { heartbeatIntervalMs: 50, unreachableAfterMs: 200, downAfterMs: 400 },
+});
+await spec.start();
+await Promise.all([
+  spec.awaitMembers('a', 3),
+  spec.awaitMembers('b', 3),
+  spec.awaitMembers('c', 3),
+]);
 
-// ... Singleton starten ...
+// ... den Singleton auf jedem Node starten ...
 
-// Den Host-Node finden:
-const hostNode = ...;   // via cluster.state.leader identifizieren
+// Den aktuellen Host ermitteln, dann crashen:
+const host = spec.clusterFor('a').leader().toNullable();
+await spec.crash('a');
 
-// Failure simulieren:
-await spec.terminateNode(hostNode);
+// Warten, bis die Überlebenden 'a' downen und neu konvergieren:
+await spec.awaitMembers('b', 2);
+await spec.awaitMemberStatus('b', 'a', 'down');
 
-// Auf Failover warten:
-await new Promise(r => setTimeout(r, 5_000));
+// ... asserten, dass der Singleton zu einem Überlebenden umgezogen ist ...
 
-// Verifizieren, dass der Singleton umgezogen ist:
-const newHost = ...;
-expect(newHost).not.toBe(hostNode);
-
-await spec.shutdown();
+await spec.stop();
 ```
 
-`spec.terminateNode(index)` terminiert einen spezifischen Node
-— die anderen beobachten den Unreachable-Status, gossipen die
-Änderung, lösen Downing + Failover aus.
+`crash(role)` entfernt den Node abrupt; die anderen beobachten
+den Unreachable-Status, gossipen die Änderung und lösen dann
+Downing + Failover aus. Die `await*`-Helfer ersetzen fragile
+`setTimeout`-Schlafphasen — sie pollen, bis die Bedingung gilt
+(oder werfen nach `awaitTimeoutMs`).
 
 ## Per-Node-TestProbe
 
+`MultiNodeSpec` hat keine Probe-Factory — konstruiere eine
+`TestProbe` gegen das System des Nodes, den du beobachten willst:
+
 ```ts
-const probe0 = spec.createTestProbe(0);   // Probe auf Node 0
-const probe1 = spec.createTestProbe(1);   // Probe auf Node 1
+const probeA = new TestProbe(spec.systemFor('a'));   // Probe auf Node 'a'
+const probeB = new TestProbe(spec.systemFor('b'));   // Probe auf Node 'b'
 ```
 
 Jede Probe ist **an das Actor-System eines Nodes gebunden**.
@@ -150,15 +180,20 @@ Nachricht auf dem erwarteten Node landet.
 
 ## Sharding-Tests
 
+Starte eine Sharding-Region auf jedem Node über dessen `Cluster`
+— erreiche jede via `clusterFor(role)`:
+
 ```ts
-const spec = await MultiNodeSpec.create({ nodes: 3 });
+const spec = new MultiNodeSpec({ roles: ['a', 'b', 'c'] });
+await spec.start();
+await spec.awaitMembers('a', 3);
 
 const startShardingOptions = StartShardingOptions.create<Command>()
   .withTypeName('entity')
   .withEntityProps(Props.create(() => new Entity()))
   .withExtractEntityId((message) => message.id);
-const regions = spec.nodes.map(sys =>
-  /* Cluster-Ref */.sharding.start(startShardingOptions)
+const regions = spec.allRoles().map((role) =>
+  spec.clusterFor(role).sharding.start(startShardingOptions)
 );
 
 // Entities spawnen; verifizieren, dass sie sich über Nodes verteilen:
@@ -166,15 +201,11 @@ for (const id of ['e1', 'e2', 'e3', 'e4', 'e5']) {
   regions[0].tell({ id, kind: 'wake-up' });
 }
 
-// Placement inspizieren:
-const placement = await regions[0].ask({ kind: 'list-shards', replyTo: ... });
-expect(placement.regions.size).toBeGreaterThan(1);   // verteilt
-
-await spec.shutdown();
+await spec.stop();
 ```
 
-Der Koordinator des Frameworks verteilt Shards über die
-Multi-Node-Spec wie in einem echten Cluster.
+Der Koordinator des Frameworks verteilt Shards über die Nodes
+wie in einem echten Cluster.
 
 ## Was MultiNodeSpec nicht testet
 
@@ -198,13 +229,15 @@ import { Aside } from '@astrojs/starlight/components';
   nutze Toxiproxy + echte Docker-Setups.
 </Aside>
 
-<Aside type="caution" title="Prozess-Level-Isolation">
+<Aside type="caution" title="Keine Thread-Isolation">
   ```ts
   // Ein gecrashter Node in MultiNodeSpec → crasht den Test
   ```
   Alle „Nodes" teilen die Event-Loop + den Speicher des Test-
   Prozesses. Ein echter OOM auf einem Node OOMt den Test. Nutze
-  ParallelMultiNodeSpec für prozess-isolierte Tests.
+  [ParallelMultiNodeSpec](/de/testing/parallel-multi-node/), das
+  jeden Node in einem eigenen Worker-Thread laufen lässt, wenn du
+  diese Isolation brauchst.
 </Aside>
 
 ## Wo es weitergeht
@@ -214,6 +247,6 @@ import { Aside } from '@astrojs/starlight/components';
 - **[TestKit](/de/testing/testkit/)** — Single-System-
   Testing.
 - **[ParallelMultiNodeSpec](/de/testing/parallel-multi-node/)** —
-  die Multi-Prozess-Variante.
+  die Worker-Thread-Variante.
 - **[Cluster — Überblick](/de/cluster/overview/)** — was
   MultiNodeSpec simuliert.

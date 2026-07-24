@@ -169,7 +169,7 @@ for the pattern that comes closest to "spawn N global workers."
 | You stop... | Pool router | Group router |
 | --- | --- | --- |
 | The router | All routees stop (children cascade). | Routees keep running. |
-| One routee | Supervisor restarts it (default) or pool shrinks. | Router stops sending to it (after cluster notices), siblings unaffected. |
+| One routee | Supervisor restarts it (default); if stopped, its dead ref stays in the pool and round-robin keeps routing it ~1-in-N messages → dead letters. | Router stops sending to it (after cluster notices), siblings unaffected. |
 | The actor system | Everything stops normally. | Everything stops on this node; routees on other nodes continue. |
 
 The asymmetry matters for **graceful shutdown** — a pool router

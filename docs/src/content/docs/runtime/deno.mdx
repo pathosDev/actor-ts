@@ -19,7 +19,7 @@ support varies.
 | Persistence — Cassandra | ⚠ Untested |
 | HTTP — Fastify | ✓ Works |
 | HTTP — Bun.serve | ✗ (Bun-only) |
-| WebSocket server (`websocket()` route) | ⚠ Workaround needed |
+| WebSocket server (`websocket()` route) | ✓ Works (via Hono backend) |
 | Broker actors (Kafka, MQTT, etc.) | ⚠ Depends on Deno-compat of underlying npm package |
 
 For **production**, we recommend **Bun or Node** unless your
@@ -81,8 +81,10 @@ neither `bun:sqlite` nor `better-sqlite3` work natively.
 
 The `websocket()` route (backed by a `WebsocketServerActor`) relies
 on the HTTP backend's upgrade support — `@fastify/websocket` or `ws`
-on Node, `Bun.serve` on Bun.  For Deno, write a thin adapter using
-`Deno.serveHttp` + `Deno.upgradeWebSocket`.
+on Node, `Bun.serve` on Bun.  On Deno, use the **Hono backend**
+(`DenoHonoRunner`), which wires up `websocket()` on top of `Deno.serve`
++ `Deno.upgradeWebSocket` for you — just install `hono` with
+`deno add npm:hono`.  No hand-written adapter is needed.
 
 ## Permissions model
 
@@ -126,7 +128,6 @@ For Deno Deploy use cases:
 ## Testing on Deno
 
 ```ts
-import { Deno } from 'deno';
 import { TestKit } from 'actor-ts/testkit';
 
 Deno.test('counter increments', async () => {

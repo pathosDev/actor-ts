@@ -54,7 +54,7 @@ feuert Timer in Reihenfolge).
 class ManualScheduler extends Scheduler {
   now(): number;                                  // aktuelle virtuelle Zeit (ms)
   advance(durationMs: number): void;              // vorwärts springen, gereifte Timer feuern
-  advanceTo(absoluteMs: number): void;            // zu einer spezifischen virtuellen Zeit springen
+  advanceToNext(): void;                          // zum Feuerzeitpunkt des nächsten Timers springen
   pendingCount: number;                           // nicht abgebrochene geplante Aufgaben
 }
 ```
@@ -110,17 +110,18 @@ Gleiche Idee — übergib den Manual-Scheduler an
 
 ```ts
 scheduler.advance(1_000);   // 1 Sekunde springen, Timer in dem Fenster feuern
-scheduler.advanceTo(5_000); // zu virtueller Zeit = 5000 ms springen
-scheduler.now();            // → 5000
+scheduler.advanceToNext();  // direkt zum nächsten anstehenden Timer springen und ihn feuern
+scheduler.now();            // → aktuelle virtuelle Zeit
 ```
 
 `advance(ms)` ist der gängige Fall. Aufgaben, die im
 voraneilenden Fenster feuern sollen, laufen **in Reihenfolge**,
 sequenziell, bevor `advance` zurückkehrt.
 
-`advanceTo(absoluteMs)` ist für den Fall, dass du eine Zielzeit
-aufgenommen hast und dorthin vorspringen willst (nützlich für
-„nach-N-von-etwas"-Muster zu testen).
+`advanceToNext()` springt direkt zum Feuerzeitpunkt des nächsten
+anstehenden Timers (und feuert ihn) und überspringt jede
+Leerlauf-Lücke — praktisch, wenn du die genaue Verzögerung nicht
+von Hand berechnen willst. Ist nichts geplant, ist es ein No-op.
 
 ### Wiederholende Timer
 

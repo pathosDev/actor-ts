@@ -58,7 +58,7 @@ What does differ:
 | --- | --- | --- | --- |
 | **SQLite** | `bun:sqlite` (built-in) | `better-sqlite3` (peer dep) | Not supported |
 | **TCP** | `Bun.connect` / `Bun.listen` | `node:net` | `Deno.connect` / `Deno.listen` |
-| **WebSocket server** | `Bun.serve` (built-in) | `ws` (peer dep) | `Deno.serveHttp` |
+| **WebSocket server** | `Bun.serve` (built-in) | `ws` (peer dep) | `Deno.serve` (Hono) |
 | **HTTP server** | Fastify / Bun.serve / Express | Fastify / Express | Fastify |
 | **File I/O** | `Bun.file` / `node:fs` | `node:fs` | `Deno.open` |
 | **Test runner** | `bun:test` | `node:test` / vitest / jest | `Deno.test` |

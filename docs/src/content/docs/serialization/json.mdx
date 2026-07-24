@@ -3,8 +3,10 @@ title: JSON serializer
 description: JsonSerializer is the default — wraps `JSON.stringify` / `JSON.parse` with UTF-8 encoding. Human-debuggable; universal. The right choice unless you need the size or speed of CBOR or a typed schema like Protobuf.
 ---
 
-`JsonSerializer` is the **default** serializer.  Standard JSON
-via `JSON.stringify` + `JSON.parse`; bytes are UTF-8.
+`JsonSerializer` is the **default** serializer.  It wraps
+`JSON.stringify` + `JSON.parse` (bytes are UTF-8) with a tree
+walk that also round-trips `Date`, `Uint8Array`, `Map`, `Set`,
+and `bigint` via type tags.
 
 ```ts
 import { JsonSerializer } from 'actor-ts';
@@ -34,18 +36,17 @@ covers it.
 - Plain objects, arrays.
 - Strings, numbers, booleans, `null`.
 - Nested combinations.
+- `Date`, `Uint8Array`, `Map`, `Set`, and `bigint` — round-tripped
+  back into real instances via type tags (`__date__`, `__map__`, …).
 
-What gets **dropped or transformed**:
+What needs **care**:
 
 | Type | Behavior |
 | --- | --- |
-| `undefined` | Dropped from objects / arrays. |
-| `Date` | Stringified via `toISOString()`; round-trips as string. |
-| `Map` / `Set` | Serialized as empty `{}`. |
-| `BigInt` | Throws `TypeError`. |
-| `Function` | Dropped (in objects); arrays become `null`. |
-| `Symbol` | Dropped. |
-| Class instances | Serialized as plain `{ ...fields }`; methods lost. |
+| `undefined` | **Throws** a `SerializationError` (stricter than raw `JSON.stringify`, which drops it). |
+| `Function` / `Symbol` | **Throw** a `SerializationError`. |
+| Class instances | Decoded as plain `{ ...fields }`; methods + class identity lost. |
+| `Date` / `Map` / `Set` / `bigint` / `Uint8Array` | Round-trip as real instances, but the JSON carries an actor-ts-specific tag shape (e.g. `{"__date__":"…"}`) — a plain (non-actor-ts) JSON reader won't see a bare value. |
 
 For **most actor messages**, this is fine — the framework's
 [message conventions](/fundamentals/messages/) already
@@ -89,42 +90,44 @@ justify the operational complexity.
 
 import { Aside } from '@astrojs/starlight/components';
 
-<Aside type="caution" title="Date round-trip">
+<Aside type="caution" title="Type tags round-trip real instances">
   ```ts
-  ref.tell({ at: new Date() });
-  // Sender:   { at: Date(2025-05-13T12:00:00Z) }
-  // Receiver: { at: "2025-05-13T12:00:00.000Z" }  ← string, not Date
+  const serializer = new JsonSerializer();
+  const bytes = serializer.toBinary({ at: new Date('2025-05-13T12:00:00Z') });
+  // → {"at":{"__date__":"2025-05-13T12:00:00.000Z"}}
+  const back = serializer.fromBinary(bytes, '') as { at: Date };
+  // → { at: Date(2025-05-13T12:00:00.000Z) }  ← a real Date
   ```
-  Receiver gets a **string**, not a `Date`.  Convert
-  explicitly:
-  ```ts
-  override onReceive(message) {
-    const at = new Date(message.at);   // string → Date
-  }
-  ```
-  Or use `Date.now()` (number) instead of `new Date()` in
-  messages.
+  `JsonSerializer` restores `Date`, `Map`, `Set`, `bigint`, and
+  `Uint8Array` as real instances — but via actor-ts-specific tags.
+  A non-actor-ts consumer reading the raw JSON sees the tag shape,
+  not a bare value.  The **cluster wire** uses raw `JSON.stringify`
+  (not this serializer), so cross-node `tell`s do **not** get this
+  round-trip — see the [overview](/serialization/overview/).
 </Aside>
 
-<Aside type="caution" title="BigInt throws">
+<Aside type="caution" title="`undefined`, functions, and symbols throw">
   ```ts
-  ref.tell({ id: 1234567890123456789n });   // ✗ TypeError
+  const serializer = new JsonSerializer();
+  serializer.toBinary({ run: () => 1 });   // ✗ SerializationError
+  serializer.toBinary({ x: undefined });   // ✗ SerializationError
   ```
-  JSON can't serialize BigInt.  Convert to string in the
-  message:
-  ```ts
-  ref.tell({ id: String(myBigInt) });
-  ```
-  Or use CBOR, which has BigInt support.
+  Unlike raw `JSON.stringify` (which silently drops `undefined`
+  and functions), `JsonSerializer` throws a `SerializationError`.
+  Keep messages to plain data — `bigint` is fine, it round-trips
+  via a tag.
 </Aside>
 
-<Aside type="caution" title="`Map` and `Set` serialize to `{}`">
+<Aside type="caution" title="Class identity is not preserved">
   ```ts
-  ref.tell({ m: new Map([['a', 1]]) });
-  // → JSON: { "m": {} } — Map entries lost
+  class Money { constructor(readonly cents: number) {} plus(n: number) { return this.cents + n; } }
+  const serializer = new JsonSerializer();
+  const back = serializer.fromBinary(serializer.toBinary(new Money(500)), '');
+  // → { cents: 500 }  ← plain object, no `plus()` method, not `instanceof Money`
   ```
-  JSON doesn't know how to serialize Map / Set.  Convert to
-  arrays of tuples or plain objects before sending.
+  Class instances decode to plain objects — data fields survive,
+  methods and `instanceof` do not.  Register a custom serializer
+  if you need class-preserving round-trips.
 </Aside>
 
 ## Where to next

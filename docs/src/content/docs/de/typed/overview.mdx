@@ -127,10 +127,10 @@ Drei Dinge, die die untyped-API sauberer tut:
 
 **Du kannst sie mischen.**  Ein untyped-Parent kann typed-Kinder
 über `context.spawnTypedAnonymous(behavior)` spawnen, und ein typed-Parent
-kann untyped-Kinder über `context.spawn(behavior)` spawnen, wobei das
-Behavior eine `Actor`-Subklasse wickelt.  Refs sind interoperabel —
+spawnt Kinder über `context.spawn(behavior)`.  Refs sind interoperabel —
 beide Formen exponieren `ActorRef<T>` mit derselben
-`tell(message)`-Signatur.
+`tell(message)`-Signatur, sodass typed- und untyped-Actors einander über
+die Grenze hinweg Nachrichten senden können.
 
 ## Wie die typed-Schnittstelle aussieht
 

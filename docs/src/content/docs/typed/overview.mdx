@@ -121,10 +121,10 @@ Three things the untyped API does more cleanly:
   other libraries you've used.
 
 **You can mix them.**  An untyped parent can spawn typed children
-via `context.spawnTypedAnonymous(behavior)`, and a typed parent can spawn
-untyped children via `context.spawn(behavior)` where the behavior
-wraps an `Actor` subclass.  Refs are interoperable — both forms
-expose `ActorRef<T>` with the same `tell(message)` signature.
+via `context.spawnTypedAnonymous(behavior)`, and a typed parent spawns
+children via `context.spawn(behavior)`.  Refs are interoperable — both
+forms expose `ActorRef<T>` with the same `tell(message)` signature, so
+typed and untyped actors can message one another across the boundary.
 
 ## What the typed surface looks like
 

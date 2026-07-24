@@ -99,7 +99,7 @@ function typedProps<T>(behavior: Behavior<T>): Props<T>;
 ```
 
 The returned Props can be passed anywhere `Props<T>` is expected —
-`system.spawn`, `context.spawn`, `Cluster.singletonProxy`, the
+`system.spawn`, `context.spawn`, `ClusterSingleton.start`, the
 sharding region's entity-props slot.
 
 ## Typed-actor-to-typed-child: `ctx.spawn`
