@@ -562,6 +562,7 @@ export default defineConfig({
               items: [
                 { label: 'In-memory',             slug: 'persistence/snapshot-stores/in-memory',             translations: { de: 'In-Memory', es: 'En memoria', fr: 'En mémoire', ja: 'インメモリ', ko: '인메모리', 'pt-BR': 'Em memória', ru: 'In-memory', 'zh-CN': '内存' } },
                 { label: 'SQLite',                slug: 'persistence/snapshot-stores/sqlite',                translations: { de: 'SQLite', es: 'SQLite', fr: 'SQLite', ja: 'SQLite', ko: 'SQLite', 'pt-BR': 'SQLite', ru: 'SQLite', 'zh-CN': 'SQLite' } },
+                { label: 'Cassandra',             slug: 'persistence/snapshot-stores/cassandra',             translations: { de: 'Cassandra', es: 'Cassandra', fr: 'Cassandra', ja: 'Cassandra', ko: 'Cassandra', 'pt-BR': 'Cassandra', ru: 'Cassandra', 'zh-CN': 'Cassandra' } },
                 { label: 'Cached snapshot store', slug: 'persistence/snapshot-stores/cached-snapshot-store', translations: { de: 'Cached Snapshot Store', es: 'Snapshot store con caché', fr: 'Magasin de Snapshots avec cache', ja: 'キャッシュ付きスナップショットストア', ko: '캐시드 스냅샷 스토어', 'pt-BR': 'Snapshot store com cache', ru: 'Кэшированное хранилище Snapshots', 'zh-CN': '带缓存的快照存储' } },
               ],
             },
