@@ -80,9 +80,9 @@ export class TestProbe extends ActorRef<unknown> {
   }
 
   /** Receive the next `n` messages. */
-  async receiveN(name: number, timeoutMs?: number): Promise<unknown[]> {
+  async receiveN(count: number, timeoutMs?: number): Promise<unknown[]> {
     const out: unknown[] = [];
-    for (let i = 0; i < name; i++) out.push(await this.receiveOne(timeoutMs));
+    for (let i = 0; i < count; i++) out.push(await this.receiveOne(timeoutMs));
     return out;
   }
 
@@ -136,14 +136,14 @@ export class TestProbe extends ActorRef<unknown> {
 
   /** Receive messages until `pred` returns true.  Other messages are discarded. */
   async fishForMessage<T>(
-    pred: (m: unknown) => boolean,
+    predicate: (m: unknown) => boolean,
     timeoutMs: number = this.defaultTimeoutMs,
   ): Promise<T> {
     const deadline = Date.now() + timeoutMs;
     while (true) {
       const remaining = Math.max(0, deadline - Date.now());
       const message = await this.receiveOne(remaining || 1);
-      if (pred(message)) return message as T;
+      if (predicate(message)) return message as T;
     }
   }
 

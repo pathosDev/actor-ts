@@ -64,6 +64,9 @@ export {
   KeepRefereeOptionsBuilder,
   KeepMajorityOptions,
   KeepMajorityOptionsBuilder,
+  LeaseMajority,
+  LeaseMajorityOptions,
+  LeaseMajorityOptionsBuilder,
 } from './downing/index.js';
 export type {
   DowningProvider,
@@ -73,6 +76,7 @@ export type {
   KeepOldestOptionsType,
   StaticQuorumOptionsType,
   KeepRefereeOptionsType,
+  LeaseMajorityOptionsType,
 } from './downing/index.js';
 
 // Cluster Singleton.

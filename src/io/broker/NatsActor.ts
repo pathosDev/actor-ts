@@ -29,9 +29,8 @@ export type NatsCommand =
 
 /**
  * NATS-Core (no JetStream) actor backed by the official `nats` peer-dep.
- * Plain pub/sub with optional request/reply via `replyTo`.  JetStream
- * (durable streams + consumers) is out-of-scope for v1 — would warrant
- * its own actor with very different semantics.
+ * Plain pub/sub with optional request/reply via `replyTo`.  For durable
+ * streams + consumers, use the sister `JetStreamActor`.
  */
 export class NatsActor extends BrokerActor<NatsOptionsType, NatsCommand, NatsPublish> {
   private nc: NatsConnectionLike | null = null;

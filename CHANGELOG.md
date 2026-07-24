@@ -79,6 +79,31 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   (`open`/`exec`/`prepare`/`run`/`get`/`all`/`transaction`/`close`) is
   unchanged, so no consumer migration is required.
 
+### Fixed
+
+- **Public-API exports completed.**  Several documented/exported symbols
+  were unreachable from the package root: the CRDT map types (`LWWMap`,
+  `ORMap`, `GCounterMap`, `MVRegister`), the `LeaseMajority` downing
+  strategy (+options), `eventDispatcher`, `CachedSnapshotStore` (+options),
+  `reEncryptObjectStorage` / `InMemoryReEncryptProgressStore`, and the
+  `MasterKeyRing` types.  They are now re-exported from `actor-ts`, and the
+  TestKit multi-node helpers (`MultiNodeSpec`, `ParallelMultiNodeSpec`,
+  `MockCluster`, `SnapshotMigrationTest`) are reachable via a new
+  `actor-ts/testkit` subpath — the in-repo examples no longer need deep
+  relative imports.
+- Corrected stale JSDoc on public symbols surfaced by the docs audit
+  (`CoordinatedShutdown` `recover` flag, `JsonLogger` `source` field,
+  `DeathPactError`, `TestProbe.receiveN`/`fishForMessage` parameter names,
+  HTTP backend references, `PersistentActor` reply example,
+  `NatsActor`/`JetStreamActor` out-of-scope notes).
+
+### Documentation
+
+- Large docs↔source audit pass — corrected default values (gossip interval
+  500 → 1000 ms, bounded-mailbox default), reworded stale caution boxes, and
+  fixed drifted code samples across EN + DE; added a dedicated NATS JetStream
+  guide page.
+
 ## [0.11.0] — 2026-07-15
 
 ### Changed — Naming conventions: no abbreviations, unified vocabulary
