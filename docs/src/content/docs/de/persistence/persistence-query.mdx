@@ -1,6 +1,6 @@
 ---
 title: Persistence Query
-description: Die Read-Side-API über dem Journal — `currentEvents*` für One-Shot-Snapshots, `events*` für Live-Streams, die das Journal pollen, bis der Konsument stoppt. Treibt Projektionen an; auch nützlich für Ad-hoc-Reads.
+description: Die Read-Side-API über dem Journal — `currentEvents*` für One-Shot-Snapshots, `events*` für Live-Streams, die laufen, bis der Konsument stoppt. Treibt Projektionen an; auch nützlich für Ad-hoc-Reads.
 ---
 
 Das `PersistenceQuery`-Interface ist die **Read-Side-API** für das
@@ -12,7 +12,7 @@ Zwei Varianten:
 | Variante | Gibt zurück | Verwendung |
 | --- | --- | --- |
 | **`current*`** | `Promise<Event[]>` | Batch-Read von Events zur Aufrufzeit.  Wird einmal aufgelöst. |
-| **`events*`** | `AsyncIterable<Event>` | Live-Stream.  Pollt, bis der Konsument stoppt. |
+| **`events*`** | `AsyncIterable<Event>` | Live-Stream.  Läuft, bis der Konsument stoppt. |
 
 ## Implementierungen
 
@@ -28,9 +28,11 @@ Das Interface ist über alle hinweg gleich — konstruiere einfach
 die passende Query für dein Journal-Backend.
 
 ```ts
-import { SqliteQuery } from 'actor-ts';
+import { SqliteJournal, SqliteJournalOptions, SqliteQuery } from 'actor-ts';
 
-const query = new SqliteQuery({ path: '/var/lib/events.db' });
+const sqliteJournalOptions = SqliteJournalOptions.create().withPath('/var/lib/events.db');
+const journal = new SqliteJournal(sqliteJournalOptions);
+const query = new SqliteQuery(journal);
 ```
 
 ## Die vier Methoden
@@ -87,9 +89,9 @@ const events = await query.currentEventsByTag<Event>(
 One-Shot-Read jedes Events, das zu einem Tag passt (oder
 [Tag-Filter](#tag-filter)), ab einem Offset.
 
-Gibt `[Event, Offset][]`-Paare zurück — der Offset ist das, was du
-einem folgenden Aufruf weitergeben würdest, um den nächsten Batch
-zu lesen.
+Gibt `TaggedEvent<Event>[]` zurück — jedes Element trägt das
+`event` und den `offset`, den du einem folgenden Aufruf weitergeben
+würdest, um den nächsten Batch zu lesen.
 
 Verwende für:
 
@@ -100,16 +102,18 @@ Verwende für:
 ### `eventsByTag`
 
 ```ts
-for await (const [event, offset] of query.eventsByTag<Event>('account', offsetStart)) {
+for await (const { event, offset } of query.eventsByTag<Event>('account', offsetStart)) {
   await handle(event);
-  await offsetStore.save('my-projection', offset);
+  await offsetStore.saveOffset('my-projection', 'account', offset);
 }
 ```
 
-Live-Stream tag-gematchter Events.  Das ist das, was
-`ProjectionActor.byTag` intern verwendet — der Offset lässt die
-Projektion ihren Fortschritt persistieren und von dort
-fortsetzen.
+Live-Stream tag-gematchter Events.  Der Offset lässt einen
+Konsumenten seinen Fortschritt persistieren und von dort
+fortsetzen — dasselbe Offset-Cursor-Muster, dem
+`ProjectionActor.byTag` folgt, wobei der Actor jedoch seine eigene
+Poll-Schleife über `currentEventsByTag` fährt, statt diesen
+Live-Stream zu konsumieren.
 
 ## Offsets
 
@@ -170,22 +174,31 @@ const stream = query.eventsByTag<E>('account', offset, {
 });
 ```
 
-Live-Streams pollen das Journal.  Konfigurierbar über
-`LiveQueryOptions`:
+Live-Streams bevorzugen **Push-Delivery**: Wenn das Journal einen
+In-Process-Event-Bus bereitstellt — das In-Memory- und das
+SQLite-Journal tun das beide —, abonnieren die `events*`-Iterables
+ihn und liefern Events aus, sobald sie angehängt werden, wobei
+`pollIntervalMs` ignoriert wird.  Polling ist der **Fallback** für
+buslose, prozessübergreifende Journals (z. B. Cassandra), bei denen
+In-Process-Benachrichtigungen nicht jeden Reader erreichen können.
+
+Gegen die `SqliteQuery` oben ist das `pollIntervalMs: 500` also ein
+No-Op — die Auslieferung ist bereits Push-basiert.  `LiveQueryOptions`
+greift nur beim Polling-Fallback:
 
 | Option | Default | Was |
 | --- | --- | --- |
-| `pollIntervalMs` | 1000 | Wie oft auf neue Events geprüft wird. |
-| `batchSize` | Journal-spezifisch | Wie viele Events pro Poll geholt werden. |
+| `pollIntervalMs` | 1000 | Wie oft auf neue Events geprüft wird (nur Poll-Fallback). |
+| `batchSize` | 100 | Wie viele Events pro Poll geholt werden. |
 
-Für Sub-Poll-Intervall-Delivery siehe
+Für die Push-Delivery-Details siehe
 [Push-basierte Query](/de/persistence/push-based-query/).
 
 ## Wann direkt verwenden vs. über ProjectionActor
 
 ```ts
 // Manuelle Iteration — volle Kontrolle:
-for await (const [event, offset] of query.eventsByTag(...)) {
+for await (const { event, offset } of query.eventsByTag(...)) {
   // ... benutzerdefinierte Fehlerbehandlung, benutzerdefiniertes Dispatching ...
 }
 
@@ -196,9 +209,13 @@ ProjectionActor.byTag(system, ByTagProjectionOptions.create() /* .withName(...).
 `ProjectionActor` wickelt die Query-API ein mit:
 
 - Offset-Persistenz (du verwaltest sie nicht).
-- Supervised-Restart bei Handler-Fehlern.
-- Bewusstsein für koordiniertes Shutdown.
-- Konfigurierbarem Retry / Backoff.
+- Handler-Fehlerbehandlung: Ein werfender Handler wird gefangen und
+  geloggt, und — weil der Cursor nicht über das fehlgeschlagene
+  Event hinaus vorrückt — wird es beim nächsten Poll erneut
+  versucht.
+- Bewusstsein für koordiniertes Shutdown (der laufende Handler wird
+  abgewartet, bevor der Actor stoppt).
+- Ein konfigurierbares Poll-Intervall (`liveOptions.pollIntervalMs`).
 
 Für **Produktions-Projektionen** verwende `ProjectionActor`.  Für
 **Einmal-Skripte** und **Ad-hoc-Admin-Queries** verwende die

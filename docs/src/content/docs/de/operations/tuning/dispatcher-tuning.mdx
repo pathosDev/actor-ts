@@ -53,7 +53,7 @@ import { ThroughputDispatcher } from 'actor-ts';
 
 const heavyActor = system.spawn(
   Props.create(() => new HeavyWorker())
-    .withDispatcher(new ThroughputDispatcher({ throughput: 100 })),
+    .withDispatcher(new ThroughputDispatcher(100)),
 );
 ```
 
@@ -94,18 +94,19 @@ aushungern** (Netzwerk-Reads, Timer). Nur nutzen, wenn:
 ## ThroughputDispatcher-Optionen
 
 ```ts
-new ThroughputDispatcher({
-  throughput:        100,        // Nachrichten pro Batch
-  yieldStrategy:     'setImmediate',   // oder 'setTimeout' oder 'microtask'
-});
+new ThroughputDispatcher(100); // Nachrichten pro Batch
 ```
+
+Der Konstruktor ist positional — `throughput` zuerst, eine
+optionale Dispatcher-`id` als zweites:
 
 - **`throughput`** — Nachrichten, die pro Actor vor dem Yield
   verarbeitet werden. Höher = mehr Durchsatz, schlechtere
-  I/O-Verschränkung. Übliche Werte: 10-1000.
-- **`yieldStrategy`** — wie zwischen Batches geyieldet wird.
-  `setImmediate` ist der I/O-freundliche Default; `microtask`
-  yieldet kürzer, gibt aber die Event Loop nicht frei.
+  I/O-Verschränkung. Übliche Werte: 10-1000. Default ist 16.
+- Zwischen Batches yieldet er immer via `setImmediate` (mit
+  Fallback auf `setTimeout(0)`, wo `setImmediate` nicht verfügbar
+  ist), damit I/O und Timer verschränken. Das ist nicht
+  konfigurierbar.
 
 Für einen Batch-Prozessor, der Broker-Nachrichten verarbeitet:
 `throughput: 200` ist ein vernünftiger Startpunkt.
@@ -115,7 +116,7 @@ Für einen Batch-Prozessor, der Broker-Nachrichten verarbeitet:
 ```ts
 const heavy = system.spawn(
   Props.create(() => new BulkProcessor())
-    .withDispatcher(new ThroughputDispatcher({ throughput: 500 })),
+    .withDispatcher(new ThroughputDispatcher(500)),
 );
 
 const httpHandler = system.spawn(
@@ -131,7 +132,7 @@ Default. Das ist das **empfohlene Produktionsmuster**.
 ## Systemweiter Dispatcher
 
 ```ts
-const actorSystemOptions = ActorSystemOptions.create().withDispatcher(new ThroughputDispatcher({ throughput: 100 }));
+const actorSystemOptions = ActorSystemOptions.create().withDispatcher(new ThroughputDispatcher(100));
 const system = ActorSystem.create('my-app', actorSystemOptions);
 ```
 
@@ -188,7 +189,7 @@ import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="Sehr hohe Throughput-Werte">
   ```ts
-  new ThroughputDispatcher({ throughput: 100_000 });
+  new ThroughputDispatcher(100_000);
   ```
   100K Nachrichten ohne Yield zu verarbeiten hungert alles andere
   im selben Prozess aus. Bleib unter ~1000.

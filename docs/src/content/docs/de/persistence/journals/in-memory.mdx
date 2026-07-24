@@ -34,9 +34,10 @@ interface Journal {
   append<E>(persistenceId: string, events: E[], expectedSeq: number, tags?: string[]): Promise<PersistentEvent<E>[]>;
   read<E>(persistenceId: string, fromSeq: number, toSeq?: number): Promise<PersistentEvent<E>[]>;
   highestSeq(persistenceId: string): Promise<number>;
-  deleteEventsUpTo(persistenceId: string, seqNr: number): Promise<void>;
-  persistenceIds(): AsyncIterable<string>;
-  readonly events: JournalEventBus;
+  delete(persistenceId: string, toSeq: number): Promise<void>;
+  persistenceIds(): Promise<string[]>;
+  readonly events?: JournalEventBus;
+  close?(): Promise<void>;
 }
 ```
 
@@ -48,7 +49,7 @@ interface Journal {
   `JournalConcurrencyError`, wenn der aktuelle Head nicht passt).
 - **`read`** — das Array nach Sequenznummern-Bereich slicen.
 - **`highestSeq`** — die seqNr des letzten Eintrags lesen (oder 0).
-- **`deleteEventsUpTo`** — das Präfix abschneiden.
+- **`delete`** — das Präfix abschneiden.
 - **`persistenceIds`** — über die Keys der Map iterieren.
 
 Jedes `append` publiziert das Event außerdem in den In-Process-
@@ -140,10 +141,10 @@ import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="Unbegrenztes Speicherwachstum">
   Das Journal speichert jedes Event für immer (bis du
-  `deleteEventsUpTo` aufrufst).  Ein lange laufender Test, der
+  `delete` aufrufst).  Ein lange laufender Test, der
   Tausende Events pro Sekunde emittiert, lässt den Speicher des
   Journals linear wachsen.  Für lange laufende Benchmarks entweder
-  aggressiv snapshotten + nach jedem Snapshot `deleteEventsUpTo`
+  aggressiv snapshotten + nach jedem Snapshot `delete`
   aufrufen oder SQLite verwenden, das auf Disk flusht.
 </Aside>
 

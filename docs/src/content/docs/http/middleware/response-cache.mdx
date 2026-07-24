@@ -56,13 +56,13 @@ patterns:
 
 ```ts
 // Per-URL-path key:
-key: (req) => req.url.pathname,
+key: (req) => req.path,
 
 // Per-tenant:
-key: (req) => `${req.headers['x-tenant-id'] ?? 'public'}:${req.url.pathname}`,
+key: (req) => `${req.headers['x-tenant-id'] ?? 'public'}:${req.path}`,
 
 // Per-locale + content type:
-key: (req) => `${req.headers['accept-language']}:${req.headers['accept']}:${req.url.pathname}`,
+key: (req) => `${req.headers['accept-language']}:${req.headers['accept']}:${req.path}`,
 ```
 
 Build the key to be deterministic across equivalent requests

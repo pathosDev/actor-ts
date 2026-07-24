@@ -1,34 +1,28 @@
 ---
 title: Core-Metriken
-description: Die vier Metrik-Primitive — Counter, Gauge, Histogram, Timer — plus das Label-Modell, das aus einer Metrik viele Zeitreihen macht. Kardinalitätsdisziplin liegt in der Verantwortung des Anwenders.
+description: Die drei Metrik-Primitive — Counter, Gauge, Histogram — plus das Label-Modell, das aus einer Metrik viele Zeitreihen macht. Kardinalitätsdisziplin liegt in der Verantwortung des Anwenders.
 ---
 
-Die Metrics-Extension stellt vier klassische Primitive bereit:
+Die Metrics-Extension stellt drei klassische Primitive bereit:
 
 | Typ | Richtung | Wann |
 | --- | --- | --- |
 | **Counter** | Monoton steigend | Gesamtevents, Gesamtwerte über die Zeit. |
 | **Gauge** | Setzbar / inc / dec | Werte zu einem Zeitpunkt, die rauf und runter gehen. |
 | **Histogram** | Verteilung von Beobachtungen | Latenz, Payload-Größe. |
-| **Timer** | Histogram + ergonomisches Timing | „Wie lange hat das gedauert?" |
 
 ```ts
 import { ActorSystem, MetricsExtensionId } from 'actor-ts';
 
-const metrics = system.extension(MetricsExtensionId);
+const metrics = system.extension(MetricsExtensionId).enable();
 
 const requests = metrics.counter('http_requests_total', { route: '/orders' });
 const active   = metrics.gauge('sessions_active');
 const latency  = metrics.histogram('http_request_duration_ms', { route: '/orders' });
-const timer    = metrics.timer('db_query_duration_ms', { table: 'users' });
 
 requests.inc();
 active.set(123);
 latency.observe(42);
-
-const stop = timer.start();
-await heavyWork();
-stop();   // beobachtet die verstrichene Zeit
 ```
 
 ## Counter
@@ -38,7 +32,7 @@ const c = metrics.counter('events_total', { source: 'web' });
 
 c.inc();      // → +1
 c.inc(3);     // → +3
-c.value();    // → 4
+c.value;      // → 4
 ```
 
 **Monoton** — geht nur nach oben. Negative Inkremente werfen
@@ -61,7 +55,7 @@ const g = metrics.gauge('sessions_active');
 g.set(100);      // → 100
 g.inc();         // → 101
 g.dec(5);        // → 96
-g.value();       // → 96
+g.value;         // → 96
 ```
 
 Setzbar + bidirektional. Repräsentiert **einen Wert zu einem
@@ -114,26 +108,21 @@ Query-Zeit aus diesen Buckets.
   `[0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10]`
   — Sekundenskala. Überschreibe für ms-Skala.
 
-## Timer
+## Operationen timen
+
+Es gibt kein eigenes Timer-Primitiv — miss eine Operation, indem
+du ihre verstrichene Dauer in ein Histogram beobachtest:
 
 ```ts
-const t = metrics.timer('db_query_duration_ms', { table: 'users' });
+const timer = metrics.histogram('db_query_duration_ms', { table: 'users' });
 
-// Pattern 1: start/stop
-const stop = t.start();
+const start = performance.now();
 await runQuery();
-stop();
-
-// Pattern 2: wrap
-const result = await t.time(async () => runQuery());
+timer.observe(performance.now() - start);
 ```
 
-Ein Timer ist ein Histogram mit **Ergonomie zum Timen von
-Dingen**. `start()` gibt eine Stop-Funktion zurück, die die
-verstrichene Dauer beobachtet; `time(fn)` umhüllt eine Funktion.
-
-Das zugrundeliegende Histogram nutzt Default-Millisekunden-
-Buckets — okay für die meisten Workloads.
+`performance.now()` ist auf Bun, Node und Deno verfügbar. Wähle
+Buckets, die zur beobachteten Einheit passen — hier Millisekunden.
 
 ## Labels
 
@@ -182,18 +171,21 @@ Ziel: **< 100 Serien pro Metrik**. Darüber Alarm schlagen.
 ```ts
 const counter = metrics.counter('events_total');
 counter.inc();
-counter.value();   // → 1
+counter.value;   // → 1
 ```
 
-`value()` gibt den **aktuellen** Counter-/Gauge-Wert zurück. Für
-Histogramme nutze `snapshot()`:
+`value` ist der **aktuelle** Counter-/Gauge-Wert — eine
+readonly-Property, keine Methode. Für Histogramme lies `count`,
+`sum`, `buckets` und `counts` direkt:
 
 ```ts
 const h = metrics.histogram('latency');
 h.observe(10);
 h.observe(20);
-h.snapshot();
-// → { count: 2, sum: 30, buckets: Map<le, count> }
+h.count;     // → 2
+h.sum;       // → 30
+h.buckets;   // → readonly Bucket-Grenzen, endend mit Infinity
+h.counts;    // → kumulative Beobachtungsanzahl pro Bucket
 ```
 
 Nützlich für **Tests** und **eigene Exporter**.

@@ -60,7 +60,7 @@ class Fast extends Actor<Message> {
     if (message instanceof Success) {
       this.handle(message.value);
     } else if (message instanceof Failure) {
-      this.log.warn(`fetch failed: ${message.error.message}`);
+      this.log.warn(`fetch failed: ${message.cause.message}`);
     }
   }
 }

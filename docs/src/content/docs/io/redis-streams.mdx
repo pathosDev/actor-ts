@@ -1,10 +1,10 @@
 ---
 title: Redis Streams
-description: Redis Streams as a broker — `XADD` to publish, `XREAD` / `XREADGROUP` to consume. Consumer groups for work-sharing with ack semantics. The right shape when Redis is already in your stack and you want lightweight streaming.
+description: Redis Streams as a broker — `XADD` to publish, `XREADGROUP` to consume. Consumer groups for work-sharing with ack semantics. The right shape when Redis is already in your stack and you want lightweight streaming.
 ---
 
 `RedisStreamsActor` integrates with Redis Streams (the `XADD` /
-`XREAD` / `XREADGROUP` family).  Right shape when Redis is
+`XREADGROUP` family).  Right shape when Redis is
 already in your infrastructure and you want streaming without
 deploying Kafka or NATS.
 
@@ -51,29 +51,12 @@ interface RedisStreamsOptionsType extends BrokerCommonOptionsType {
 }
 ```
 
-## Consumer modes
+## Consuming with a consumer group
 
-### Without consumer group — `XREAD`
-
-```ts
-// No consumerGroup → uses XREAD
-const redisStreamsOptions = RedisStreamsOptions.create()
-  .withUrl(url)
-  .withStreams(['events'])
-  .withTarget(handler);
-new RedisStreamsActor(
-  redisStreamsOptions,
-);
-```
-
-Reads from the stream's **`$` (latest)** position by default —
-every consumer sees every message after the subscribe.  No
-ack; no work-sharing.
-
-Good for **broadcast-style** distribution where every consumer
-should process every message.
-
-### With consumer group — `XREADGROUP`
+Consumption always goes through a **consumer group** — the actor
+uses `XREADGROUP` exclusively.  The consumer starts only when
+`consumerGroup`, `streams`, and `target` are all set; there is no
+group-less `XREAD` broadcast path.
 
 ```ts
 const redisStreamsOptions = RedisStreamsOptions.create()
@@ -146,11 +129,11 @@ with the same group can pick up where the previous one stopped
 ## Peer dependency
 
 ```bash
-npm install redis
-# or: bun add redis
+npm install ioredis
+# or: bun add ioredis
 ```
 
-Uses the official `redis` (node-redis) v4+ client.
+`ioredis` is the underlying client.  Versions 5+ are tested.
 
 ## When to use Redis Streams
 

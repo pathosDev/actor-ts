@@ -15,11 +15,9 @@ const kafkaOptions = KafkaOptions.create()
   .withBrokers(['kafka-1:9092', 'kafka-2:9092'])
   .withClientId('my-app')
   // Consumer-actor target is configured here, once.
-  .withConsumer({
-    groupId: 'my-app-orders',
-    topics:  ['orders', 'payments'],
-    target:  orderHandler,
-  });
+  .withConsumer({ groupId: 'my-app-orders' })
+  .withTopics(['orders', 'payments'])
+  .withTarget(orderHandler);
 const kafka = system.spawn(
   Props.create(() => new KafkaActor(
     kafkaOptions,
@@ -56,9 +54,9 @@ interface KafkaOptionsType extends BrokerCommonOptionsType {
     fromBeginning?:  boolean;
     commitMode?:     'auto' | 'manual';
     commitTimeoutMs?: number;
-    topics?:         ReadonlyArray<string>;
-    target?:         ActorRef<KafkaRecord>;     // consumer-actor for inbound records
   };
+  target?:  ActorRef<KafkaRecord>;     // consumer-actor for inbound records
+  topics?:  ReadonlyArray<string>;
 }
 ```
 
@@ -101,7 +99,7 @@ class OrderHandler extends Actor<KafkaRecord> {
 }
 ```
 
-The actor delivers every consumed record to `consumer.target`.
+The actor delivers every consumed record to `target`.
 For Kafka's consumer-group work-sharing, use **multiple actor
 instances** with the same `groupId` — each instance owns a
 subset of partitions.

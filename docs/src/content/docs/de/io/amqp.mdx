@@ -44,7 +44,7 @@ amqp.tell({
 interface AmqpOptionsType extends BrokerCommonOptionsType {
   url:        string;                          // amqp:// oder amqps://
   prefetch?:  number;                          // ungeackte Nachrichten pro Consumer; Default 1
-  autoAcknowledgment?:   boolean;                         // ACK bei Auslieferung vs. nach Verarbeitung; Default true
+  autoAcknowledge?:      boolean;                         // ACK bei Auslieferung vs. nach Verarbeitung; Default true
   bindings?:  ReadonlyArray<AmqpQueueBinding>; // Queue ↔ Exchange ↔ Routing-Key ↔ Target
 }
 
@@ -69,13 +69,13 @@ beim Connect (idempotente erneute Deklaration).
 | **`fanout`** | Alle gebundenen Queues, Routing-Key ignoriert. |
 | **`headers`** | Match auf Nachrichten-Header, nicht Routing-Key. |
 
-```ts
-exchanges: [
-  { name: 'work',    type: 'direct',  durable: true },  // exaktes Routing
-  { name: 'audit',   type: 'topic',   durable: true },  // Pattern-Match
-  { name: 'notify',  type: 'fanout',  durable: false }, // Broadcast
-];
-```
+`AmqpActor` deklariert **keine** Exchanges — sie müssen bereits
+auf dem Broker existieren (angelegt über die
+RabbitMQ-Konfiguration, das Management-UI oder dein
+Infrastruktur-Tooling).  Beim Connect deklariert der Actor nur die
+in `bindings` genannten Queues und bindet sie an den angegebenen
+Exchange; das Publishen routet dann über diesen bestehenden
+Exchange per Name.
 
 Häufigstes Muster: **`topic`**-Exchanges mit hierarchischen
 Routing-Keys (`orders.placed.priority`, `orders.cancelled`,
@@ -83,7 +83,7 @@ Routing-Keys (`orders.placed.priority`, `orders.cancelled`,
 
 ## ACK / NACK
 
-Setze `autoAcknowledgment: false` in den Settings; dann teilt der Handler das
+Setze `autoAcknowledge: false` in den Settings; dann teilt der Handler das
 Ergebnis per `{ kind: 'acknowledgment', delivery }` oder `{ kind: 'negativeAcknowledgment',
 delivery, requeue }` an die Ref des AMQP-Actors mit.
 
@@ -119,10 +119,12 @@ nützlich, wenn ein Retry nicht hilft.
 prefetch: 10   // bis zu 10 ungeackte gleichzeitig pro Consumer konsumieren
 ```
 
-Der Default (laut AMQP-Spec) ist **unbegrenzt** — der Broker würde
-jede Nachricht in der Queue pushen.  Setze `prefetch` auf eine
-sinnvolle Batch-Größe (10–50), damit der Consumer nicht
-überfordert wird.
+Der Framework-Default ist **1** — eine einzige ungeackte
+Nachricht pro Consumer zur selben Zeit.  (Der reine
+AMQP-Protokoll-Default ist 0 = unbegrenzt, aber der Actor setzt
+`prefetch` auf 1, sofern Du ihn nicht überschreibst.)  Erhöhe ihn
+auf eine sinnvolle Batch-Größe (10–50), damit der Consumer
+ausgelastet, aber nicht überfordert wird.
 
 ## Peer-Dependency
 

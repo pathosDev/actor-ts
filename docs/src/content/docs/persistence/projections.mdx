@@ -36,7 +36,7 @@ from read throughput (denormalized, query-optimized).
 
 ```ts
 import { ProjectionActor, ByTagProjectionOptions } from 'actor-ts';
-import { SqliteQuery } from 'actor-ts';
+import { SqliteQuery, DurableStateOffsetStore, PostgresDurableStateStore } from 'actor-ts';
 
 type AccountEvent =
   | { kind: 'deposited'; amount: number }
@@ -46,7 +46,7 @@ const byTagProjectionOptions = ByTagProjectionOptions.create<AccountEvent>()
   .withName('account-balance-view')
   .withTag('account')
   .withQuery(new SqliteQuery({ path: '/var/lib/events.db' }))
-  .withOffsetStore(new SqliteOffsetStore({ path: '/var/lib/offsets.db' }))
+  .withOffsetStore(new DurableStateOffsetStore(new PostgresDurableStateStore()))
   .withHandle(async (event) => {
     if (event.event.kind === 'deposited') {
       await viewDb.execute(
@@ -109,13 +109,14 @@ complex, not provided out of the box.
 ## OffsetStore
 
 ```ts
-import { InMemoryOffsetStore, SqliteOffsetStore } from 'actor-ts';
+import { InMemoryOffsetStore, DurableStateOffsetStore } from 'actor-ts';
+import { PostgresDurableStateStore } from 'actor-ts';
 
 // Default (lost on restart):
 new InMemoryOffsetStore();
 
-// Production (single-node):
-new SqliteOffsetStore({ path: '/var/lib/offsets.db' });
+// Production (durable — reuses any DurableStateStore backend):
+new DurableStateOffsetStore(new PostgresDurableStateStore());
 ```
 
 The cursor is just a number (or compound offset) — stored per
@@ -123,7 +124,9 @@ projection name + scope.  Implementations:
 
 - `InMemoryOffsetStore` — fine for tests, useless in production
   (every restart re-processes from the beginning).
-- `SqliteOffsetStore` — single-file durable offsets.
+- `DurableStateOffsetStore` — persists offsets via any
+  `DurableStateStore` (Postgres, MariaDB, object-storage), so you
+  reuse a durable backend you already run.
 - Custom — implement `OffsetStore` against your own store (Redis,
   Postgres, whatever your read-model uses).
 

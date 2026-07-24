@@ -17,7 +17,8 @@ const props = Props.create(() => new MyActor());
 
 Eine Factory-Funktion, die eine frische `MyActor`-Instanz zurückgibt.
 Das ist alles, was du für einen Actor mit Default-Supervision,
-Default-Dispatcher und der Default-unbounded-FIFO-Mailbox brauchst.
+Default-Dispatcher und der Default-Mailbox brauchst — einer
+gebundenen FIFO-Queue (Kapazität 10.000, `drop-head`-Overflow).
 
 Für alles darüber hinaus verkettest du `with…`-Builder:
 
@@ -152,12 +153,17 @@ brauchst das nie.  Siehe
 Props.create(() => new SlowConsumer()).withMailboxCapacity(500);
 ```
 
-Kurzform für "die Default-FIFO-Mailbox, aber gebunden auf 500."
-Die Default-Overflow-Policy (`reject`) gilt — eine volle Mailbox
-wirft `MailboxFullError` an der `tell`-Stelle.
+Kurzform, um die Kapazität der Default-Mailbox auf 500 zu senken —
+dieselbe gebundene FIFO-Queue, nur mit kleinerem Limit.  Die
+Default-Overflow-Policy (`drop-head`) gilt: eine volle Mailbox
+verwirft die **älteste** eingereihte Nachricht, um Platz zu
+schaffen, ohne zu werfen.
 
 Das ist der häufigste Mailbox-Override: ein einfacher Cap mit der
-"Sender spürt den Druck"-Semantik.
+"unter Überlast das Älteste verwerfen"-Semantik.  Für die
+"Sender spürt den Druck"-Semantik — eine volle Mailbox, die
+`MailboxFullError` an der `tell`-Stelle wirft — greife stattdessen
+zu `withMailbox` mit einer expliziten `reject`-Policy.
 
 ### `withMailbox`
 
@@ -176,8 +182,11 @@ Props.create(() => new Worker())
 ```
 
 Volle Kontrolle — gib eine beliebige `Mailbox`-Subklasse zurück.  Die
-Factory wird einmal pro Actor-Inkarnation aufgerufen; bei einem
-Restart wird eine frische, leere Mailbox-Datenstruktur erstellt.
+Factory wird **einmal** aufgerufen, wenn die Cell des Actors gebaut
+wird; die Mailbox überlebt danach jeden Restart.  Bei einem Restart
+wird nur die `Actor`-Instanz neu gebaut — dieselbe Mailbox wird an
+Ort und Stelle fortgesetzt, sodass vor dem Crash eingereihte
+Nachrichten noch da sind.
 
 Siehe [Mailboxes](/de/fundamentals/mailboxes/) für die
 Overflow-Policies und Priority-Semantik.

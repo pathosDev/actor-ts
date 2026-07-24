@@ -180,12 +180,12 @@ and prod tuning is real.
 ## Measuring before tuning
 
 ```ts
-cluster.subscribe(MemberUnreachable, (evt) => {
-  metrics.counter('cluster_unreachable_total', { address: evt.member.address.toString() }).inc();
-});
-
-cluster.subscribe(MemberReachable, (evt) => {
-  // also track time spent unreachable
+cluster.subscribe((evt) => {
+  if (evt instanceof MemberUnreachable) {
+    metrics.counter('cluster_unreachable_total', { address: evt.member.address.toString() }).inc();
+  } else if (evt instanceof MemberReachable) {
+    // also track time spent unreachable
+  }
 });
 ```
 

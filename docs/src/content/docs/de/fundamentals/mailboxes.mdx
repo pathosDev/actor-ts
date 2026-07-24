@@ -61,6 +61,7 @@ import { Mailbox } from 'actor-ts';  // die unbounded Basis-Mailbox
 system.spawn(
   Props.create(() => new MyActor())
     .withMailbox(() => new Mailbox()),  // explizites Opt-out vom bounded Default
+  'my-actor',
 );
 ```
 
@@ -74,6 +75,7 @@ einzeilig — die Default-Factory respektiert sie:
 system.spawn(
   Props.create(() => new BurstyActor())
     .withMailboxCapacity(100_000),     // weiter bounded + drop-head, nur tiefer
+  'bursty',
 );
 ```
 
@@ -88,18 +90,20 @@ Supervisor-`failure` vor allen verarbeitet.
 
 Das ist wichtig, weil:
 
-- `ref.stop()` auf einem Actor mit langer Mailbox aufzurufen, wartet
-  nicht darauf, dass die Mailbox drained — die
-  `terminate`-System-Nachricht springt nach vorne, und der Actor
-  stoppt prompt.
+- `ref.stop()` aufzurufen springt **nicht** in der Queue vor — unter
+  der Haube ist es eine *User*-Nachricht (`PoisonPill`), der Actor
+  drained also erst die User-Nachrichten, die bereits davor in der
+  Queue stehen, und stoppt dann (ein sauberes Drain-dann-Stop).  Nur
+  vom Framework emittierte System-Nachrichten bekommen den absoluten
+  Vorrang von oben.
 - Die Supervisor-Entscheidung eines fehlschlagenden Actors (Restart
   / Resume / Stop) tritt sofort in Kraft, nicht erst nachdem die
   Queue leer ist.
 
 Du siehst diese Unterscheidung normalerweise nicht —
 System-Nachrichten werden vom Framework emittiert, nicht von deinem
-Code.  Aber sie zu verstehen, erklärt, warum "Stop schnell ist" und
-"Supervision sofort reagiert."
+Code.  Aber sie zu verstehen, erklärt, warum "Supervision sofort
+reagiert."
 
 ## `BoundedMailbox`
 
@@ -118,6 +122,7 @@ const system = ActorSystem.create('demo');
 const consumer = system.spawn(
   Props.create(() => new SlowConsumer())
     .withMailbox(() => new BoundedMailbox({ capacity: 1_000, overflow: 'drop-head' })),
+  'consumer',
 );
 ```
 
@@ -190,6 +195,7 @@ const worker = system.spawn(
                           : message.kind === 'normal' ? 5
                           : 10,
     })),
+  'worker',
 );
 
 worker.tell({ kind: 'bulk',   text: 'batch import row 1' });
@@ -248,16 +254,17 @@ Props.create(() => new MyActor())
 ```
 
 `withMailboxCapacity(n)` ist Kurzform für "die Default-FIFO, aber
-gebunden mit dem Default-`reject`-Overflow."  Nützlich, wenn du nur
+gebunden mit dem Default-`drop-head`-Overflow."  Nützlich, wenn du nur
 einen Cap willst und dich nicht für die Policy-Details kümmerst.
 
 `withMailbox(factory)` ist die allgemeine Form — du gibst eine
 brandneue Mailbox-Instanz aus der Factory zurück.  Die Factory wird
 einmal pro Actor-Instanz aufgerufen (inklusive bei Restart), jeder
 neu gestartete Actor bekommt also eine frische, leere
-Mailbox-Datenstruktur.  System-Level-Mailbox-Defaults können auch
-über `application.conf` konfiguriert werden (siehe
-[Konfiguration](/de/reference/configuration/)).
+Mailbox-Datenstruktur.  Es gibt keine systemweite Mailbox-Einstellung
+— Kapazität und Overflow werden pro Actor über `Props`
+(`withMailboxCapacity` / `withMailbox`) gewählt; die framework-weiten
+Defaults (Kapazität 10 000, `drop-head`) sind einkompiliert.
 
 <Aside type="caution" title="Teile keine Mailbox-Instanz über Actors hinweg">
   ```ts
@@ -293,7 +300,7 @@ volle Behavior-Switching-Geschichte.
 
 ## Wann die Mailbox-Wahl wichtig ist
 
-Für die meisten Actors ist die Default-unbounded-FIFO richtig.
+Für die meisten Actors ist die Default-bounded-FIFO richtig.
 Greife in drei Situationen zu einer Alternative:
 
 1. **Producer/Consumer-Mismatch.**  Der Producer kann schneller

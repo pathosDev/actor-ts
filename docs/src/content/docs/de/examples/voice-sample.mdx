@@ -1,16 +1,34 @@
 ---
 title: Voice-Sample
-description: Eine streamende Voice-Pipeline-App - Kafka-getriebene Audio-Chunks, sharded Sessions, PersistentActor für Transkripte, Projektion für durchsuchbare History. Demonstriert Broker-Integration mit Event-Sourced-Workflows.
+description: Ein verteiltes Walkie-Talkie - 1:1-Push-to-Talk über den Receptionist, Gruppen-/Raum-Fan-out über DistributedPubSub, Presence über DistributedData-ORSets, hinter einer ClusterSingleton-HTTP-Front-Door. Ephemer per Design - kein Sharding, keine Persistierung. Repo unter `examples/voice/`.
 ---
 
-Das Voice-Sample ist eine **Streaming-Audio-App**, die zeigt:
+Das Voice-Sample ist ein **verteiltes Walkie-Talkie**: drei Voice-Modi
+(1:1-Push-to-Talk, 1:N-Gruppen-Megafon, N:N-Räume im Teams-Stil) über
+einen WebSocket pro Client, bedient von einem selbstbildenden Cluster.
+Es ist das Schwester-Sample zum [Chat-Sample](/de/examples/chat-sample/)
+und exerziert bewusst die Framework-Primitiven durch, die das
+Chat-Sample *nicht* nutzt:
 
-- **Kafka-Integration** - Audio-Chunks fließen über ein
-  Kafka-Topic herein.
-- **Sharded Session-Actors** - einer pro aktiver Voice-Session.
-- **PersistentActor** - Transkript wird als Events persistiert.
-- **Projektion** - Read-Side-View für Transkript-Suche.
-- **WebSocket** - Live-Transkript-Streaming zum Client.
+- **Receptionist** - 1:1-Push-to-Talk: die Session eines Nutzers über
+  den Schlüssel `voice-user:<name>` nachschlagen und ihm das Audio
+  direkt zustellen.
+- **DistributedPubSub** - 1:N-Gruppen-Megafon und N:N-Raum-Fan-out über
+  die Topics `voice.group.<name>` / `voice.room.<name>`.
+- **DistributedData-ORSets** - globale Online-Presence
+  (`voice.online-users`) und Raum-Mitgliedschaft pro Raum
+  (`voice.room-users.<name>`).
+- **ClusterSingleton** - eine einzige HTTP- + WebSocket-Front-Door, die
+  per Failover zwischen Nodes wechselt.
+- **Kein `ClusterSharding`, keine `PersistenceExtension`** - Voice ist
+  ephemer per Design. Der Server ist ein reiner Audio-Relay; es gibt
+  kein Journal, keine Transkription, keinen gespeicherten State. Das ist
+  der bewusste didaktische Kontrast zum Chat-Sample.
+
+Audio läuft als **binäre** Frames über den bestehenden WebSocket pro
+Client - kein WebRTC, kein SFU, kein Transcoding - damit der
+PubSub-Fan-out, das Receptionist-Lookup und die DD-ORSet-Presence
+sichtbar die tragenden Teile sind.
 
 Zu finden unter [`examples/voice/`](https://github.com/pathosDev/actor-ts/tree/main/examples/voice)
 im Repo.
@@ -19,203 +37,234 @@ im Repo.
 
 ```mermaid
 flowchart TB
-  SRC[/"Audio-Quelle - Mikrofon, Datei"/]
-  KAFKA["KafkaActor (Consumer)"]
-  VOICE["VoiceSessionActor<br/><i>sharded, persistent</i>"]
-  JOURNAL[("Journal<br/><i>Transkript-Chunks als Events</i>")]
-  CLIENT[/"WS-Client"/]
-  PUB["Projektions-Topic"]
-  PROJ["TranscriptProjection"]
-  INDEX[("durchsuchbarer Index<br/><i>z. B. SQL</i>")]
-  SRC -- "Chunks via Kafka" --> KAFKA
-  KAFKA -- "Routing nach Session-ID" --> VOICE
-  VOICE --> JOURNAL
-  VOICE --> CLIENT
-  VOICE --> PUB --> PROJ --> INDEX
-  classDef src   fill:#1e293b,stroke:#06b6d4,color:#67e8f9;
-  classDef actor fill:#312e81,stroke:#818cf8,stroke-width:1.5px,color:#f1f5f9;
-  classDef store fill:#1e293b,stroke:#06b6d4,stroke-width:2px,color:#67e8f9;
-  classDef bus   fill:#0f172a,stroke:#6366f1,color:#f1f5f9;
-  classDef client fill:#1e293b,stroke:#475569,color:#cbd5e1;
-  class SRC,CLIENT src
-  class KAFKA,VOICE,PROJ actor
-  class JOURNAL,INDEX store
-  class PUB bus
+  CLIENTS[/"Browser-Clients<br/><i>je ein WebSocket</i>"/]
+  SINGLETON["HTTP-Ingress<br/><i>ClusterSingleton auf :8081</i>"]
+  subgraph CLUSTER["selbstbildender Cluster"]
+    direction TB
+    SESSION["VoiceSessionActor<br/><i>einer pro WebSocket</i>"]
+    RECEPTIONIST["Receptionist<br/><i>voice-user:NAME - 1:1-PTT</i>"]
+    PUBSUB["DistributedPubSub<br/><i>voice.group.* / voice.room.* Fan-out</i>"]
+    PRESENCE["VoicePresenceActor<br/><i>DD-ORSet-Presence</i>"]
+    SESSION -- "Peer-PTT-Lookup" --> RECEPTIONIST
+    SESSION -- "Gruppen-/Raum-Audio" --> PUBSUB
+    SESSION -- "Online + Raum-Mitgliedschaft" --> PRESENCE
+    RECEPTIONIST -- "Ziel-Refs" --> SESSION
+    PUBSUB -- "Frames zustellen" --> SESSION
+    PRESENCE -- "Presence-Updates" --> SESSION
+  end
+  CLIENTS -- "WebSocket - JSON-Control + binäres Opus" --> SINGLETON
+  SINGLETON --> SESSION
+  classDef client  fill:#1e293b,stroke:#475569,color:#cbd5e1;
+  classDef cluster fill:#0f172a,stroke:#6366f1,stroke-width:2px,color:#f1f5f9;
+  classDef edge    fill:#312e81,stroke:#818cf8,color:#f1f5f9;
+  classDef actor   fill:#312e81,stroke:#818cf8,stroke-width:1.5px,color:#f1f5f9;
+  classDef bus     fill:#1e293b,stroke:#06b6d4,stroke-width:2px,color:#67e8f9;
+  class CLIENTS client
+  class CLUSTER cluster
+  class SINGLETON edge
+  class SESSION,PRESENCE actor
+  class RECEPTIONIST,PUBSUB bus
 ```
+
+Der komplette Pfad eines "Gruppen-PTT-Knopf halten"-Flows:
+
+```
+1. Alice hält den PTT-Knopf einer Gruppen-Karte.
+2. Ihr Browser sendet voice-target { mode: 'group', group: 'engineering' }.
+3. Alices VoiceSessionActor setzt sein aktuelles Ziel auf das Gruppen-Topic.
+4. Jeder ~100-ms-Audio-Chunk trifft als binärer WS-Frame ein.
+5. Die Session publiziert ihn via DistributedPubSub auf voice.group.engineering.
+6. Jede auf dieses Topic abonnierte Session erhält den Frame...
+7. ...und schreibt ein längenpräfigiertes [nameLen][name][opus]-Envelope in ihren WebSocket.
+8. Bei PTT-Up publiziert voice-stop einen finalen End-Marker, damit Receiver flushen.
+```
+
+Receptionist + PubSub + CRDT-Presence + WebSocket - alles im
+Zusammenspiel, ohne Datenbank auf dem heißen Pfad.
 
 ## Ausführen
 
 ```bash
+# Repo klonen:
 git clone https://github.com/pathosDev/actor-ts.git
-cd actor-ts/examples/voice
+cd actor-ts
 
-docker compose up -d
-# Startet: 3 actor-ts-Nodes, Kafka, Zookeeper, Cassandra, Nginx
+# Drei Terminals, keine Flags - ein selbstbildender TCP-Cluster:
+bun examples/voice/backend/main.ts
+bun examples/voice/backend/main.ts
+bun examples/voice/backend/main.ts
 
-# Audio streamen (Mock-Client):
-bun run client/mock-stream.ts ./test-audio.wav
-
-# Transkripte beobachten:
-open http://localhost:3000
+# Die UI öffnen (bedient vom Node, der das Singleton hält):
+open http://localhost:8081/
 ```
 
-Die Transkripte erscheinen live in der UI, während die
-Audio-Chunks verarbeitet werden.
+Wähle ein Frontend, klicke einmal auf "Enable mic" (sowohl der
+Browser-Berechtigungsdialog als auch das `AudioContext`-Unlock brauchen
+eine Nutzer-Geste) und melde dich mit einem Demo-Account an:
+
+```
+alice / wonderland
+bob / builder
+charlie / chaplin
+diana / prince
+```
+
+Probiere die Modi: halte den PTT-Knopf neben dem Namen eines anderen
+Nutzers (1:1), halte den Knopf einer Gruppen-Karte (1:N-Gruppe) oder
+betritt einen Raum und schalte "Talk" um (N:N-Raum). Beende den Node,
+der aktuell das `http-ingress`-Singleton hält, und ein Überlebender
+bindet `:8081` innerhalb von ~5-10 s neu.
 
 ## Demonstrierte Schlüssel-Patterns
 
-### Broker-Integration
+### 1:1-Push-to-Talk über den Receptionist
 
 ```ts
-const kafkaOptions = KafkaOptions.create()
-  .withBrokers(['kafka:9092'])
-  .withConsumer({ groupId: 'voice-processor', topics: ['audio-chunks'] });
-const kafka = system.spawn(
-  Props.create(() => new KafkaActor(kafkaOptions)),
+// Jede Session registriert sich beim Login unter einem Schlüssel pro Nutzer:
+const userServiceKey = (username: string) =>
+  ServiceKey.of<BinaryFrame | BinaryStreamEnd>(`voice-user:${username}`);
+
+this.deps.receptionist.tell(new Register(userServiceKey(username), this.self, null));
+
+// Bei PTT-Down (Peer-Modus) sucht der Sender das Ziel per Find:
+this.deps.receptionist.tell(new Find(userServiceKey(target), this.self));
+
+// Auf die Listing-Antwort hin: Refs cachen und jeden Chunk direkt zustellen:
+for (const ref of cachedRefs) ref.tell(binaryFrame);
+```
+
+Die Refs werden für die Dauer des Tastendrucks gecacht - kein
+Registry-Lookup pro Audio-Frame.
+
+### Gruppen- + Raum-Fan-out über DistributedPubSub
+
+```ts
+// Gruppen werden beim Login eager abonniert, Räume lazy bei room-enter:
+this.deps.mediator.tell(new Subscribe(groupTopic(group), this.self));
+
+// Jeder Audio-Chunk während eines Gruppen-/Raum-Drucks wird aufs Topic publiziert:
+this.deps.mediator.tell(new Publish(topic, binaryFrame));
+```
+
+`groupTopic(g)` ist `voice.group.${g}` und `roomTopic(r)` ist
+`voice.room.${r}`. Das Topic fächert an **jeden** Abonnenten inklusive
+des Senders auf, daher verwerfen Empfänger ihre eigenen Frames (ein
+Self-Filter auf `senderUsername`).
+
+### Presence über DistributedData-ORSets
+
+```ts
+// VoicePresenceActor mutiert ein ORSet pro Schlüssel:
+this.dd.update<ORSet<string>>(
+  key, // 'voice.online-users' oder 'voice.room-users.<room>'
+  () => ORSet.empty<string>(),
+  (current) => current.add(this.replicaId, username),
 );
 
-kafka.tell({ kind: 'subscribe', subscriber: dispatchActor });
+// ...und fächert DD-Änderungen an abonnierte Sessions auf:
+this.dd.subscribe<ORSet<string>>(key, (next) => {
+  const users = [...next.value()];
+  // ein PresenceChanged an jeden lokalen Abonnenten pushen
+});
 ```
 
-Ein Broker-Actor konsumiert Audio-Chunks; ein Dispatch-Actor
-routet sie an die passende sharded Session.
+Ein globales Set verfolgt, wer online ist; ein Set pro Raum verfolgt,
+wer darin ist. Keine sharded Entity besitzt den Raum-State - es ist
+reine CRDT-Mitgliedschaft plus ein PubSub-Topic.
 
-### Sharded + persistente Session
+### HTTP-Front-Door als ClusterSingleton
 
 ```ts
-class VoiceSessionActor extends PersistentActor<SessionCommand, SessionEvent, SessionState> {
-  readonly persistenceId = `voice-${this.sessionId}`;
-
-  override onEvent(state, event) {
-    if (event.kind === 'chunk-transcribed') {
-      return { ...state, transcript: state.transcript + event.text };
-    }
-    return state;
-  }
-
-  async onCommand(state, command: SessionCommand) {
-    if (command.kind === 'audio-chunk') {
-      const text = await transcribe(command.audioBytes);
-      this.persist({ kind: 'chunk-transcribed', text, ts: Date.now() }, () => {
-        // Push an den WS-Client
-        this.context.system.eventStream.publish(new TranscriptUpdate(this.sessionId, text));
-      });
-    }
-  }
-
-  override tagsFor(event: SessionEvent) {
-    return event.kind === 'chunk-transcribed' ? ['transcript'] : undefined;
-  }
-}
+const singletonOptions = StartSingletonOptions.create()
+  .withTypeName('http-ingress')
+  .withProps(httpIngressProps({ host, httpPort, staticDir, /* ...Abhängigkeiten */ }));
+system.extension(ClusterSingletonId).start(cluster, singletonOptions);
 ```
 
-Beachte:
-
-- **Sharded** - ein Actor pro Session-ID, verteilt über die
-  Nodes.
-- **Persistent** - Transkripte überleben Restart + Failover.
-- **Getaggt** - `'transcript'`-Events füttern die Projektion.
-
-### Projektion für Suche
-
-```ts
-const byTagProjectionOptions = ByTagProjectionOptions.create<SessionEvent>()
-  .withName('transcript-search')
-  .withTag('transcript')
-  .withQuery(new CassandraQuery({ /* ... */ }))
-  .withOffsetStore(new SqliteOffsetStore({ path: '/var/lib/offsets.db' }))
-  .withHandle(async (event) => {
-    if (event.event.kind === 'chunk-transcribed') {
-      await searchDb.execute(
-        `INSERT INTO transcripts (sessionId, text, ts) VALUES (?, ?, ?)
-         ON CONFLICT (sessionId, ts) DO NOTHING`,
-        [event.persistenceId, event.event.text, event.event.ts],
-      );
-    }
-  });
-const projection = ProjectionActor.byTag<SessionEvent>(system, byTagProjectionOptions);
-
-system.spawnAnonymous(Props.create(() => projection));
-```
-
-Die Projektion liest die `'transcript'`-getaggten Events des
-Journals und schreibt in eine such-optimierte Tabelle - getrennt
-vom Session-Journal.
-
-### WebSocket-Pushes
-
-```ts
-// Im HTTP-Server, beim WS-Upgrade:
-const session = sharding.entityRefFor('voice', sessionId);
-session.tell({ kind: 'subscribe-ws', subscriber: wsBridge });
-```
-
-Der Session-Actor pusht Transkript-Updates an abonnierte
-WS-Clients - mehrere Clients können abonnieren (mehrere Geräte,
-die denselben Call beobachten).
+Genau ein Node bindet zu jeder Zeit `:8081`; der `HttpIngressActor`
+bindet in `preStart` und löst die Bindung in `postStop`, sodass Failover
+den Port automatisch auf einen Überlebenden verschiebt.
 
 ## Was es nicht demonstriert
 
-- **Cluster-Singleton-Koordinatoren** - Voice-Sessions brauchen
-  keinen Leader; sie sind pro Session sharded.
-- **DistributedData** - Transkript-State gehört zu einer
-  einzigen Session; kein replizierter State nötig.
-- **Komplexes Routing** - geradliniges 1:1-Routing von
-  Audio-Chunk → Session.
+- **`ClusterSharding`** - es gibt keine sharded Entity. Räume sind reine
+  DD-ORSet-Mitgliedschaft plus ein PubSub-Topic; Sessions sind ein
+  einfacher `Actor` pro WebSocket. (Das ist der bewusste Kontrast zum
+  [Chat-Sample](/de/examples/chat-sample/), das seine Räume sharded.)
+- **Persistierung / Event-Sourcing** - kein Journal, kein
+  `PersistentActor`, nichts gespeichert. Voice ist ephemer; eine
+  abgebrochene Session verschwindet einfach aus den ORSets.
+- **WebRTC / SFU / Transcoding** - der Server ist ein reiner Relay und
+  Audio läuft über den bestehenden WebSocket. Medienverarbeitung ist
+  außerhalb des Scopes.
 
-Dafür siehe die
-[eigenständigen Snippets](/de/examples/stand-alone-snippets/)
-oder das [Chat-Sample](/de/examples/chat-sample/).
+Für Sharding und Persistierung siehe das
+[Chat-Sample](/de/examples/chat-sample/) oder die
+[eigenständigen Snippets](/de/examples/stand-alone-snippets/).
 
 ## Dateistruktur
 
 ```
 examples/voice/
-├── docker-compose.yml
+├── application.conf
 ├── README.md
-├── package.json
-├── src/
-│   ├── main.ts                       # Einstieg
+├── smoke-test.ts                    # Ein-Node-, Zwei-Client-Relay-Test
+├── backend/
+│   ├── main.ts                      # Einstieg: Cluster-Join + Extensions + Singleton
+│   ├── config.ts                    # Argument-/Port-Parsing
+│   ├── routes.ts
 │   ├── actors/
-│   │   ├── VoiceSessionActor.ts     # sharded + persistent
-│   │   ├── DispatchActor.ts          # routet Kafka-Msgs
-│   │   └── TranscriptProjection.ts   # Read-Side
-│   ├── messages.ts
-│   ├── transcribe.ts                 # Mock-Transkription
-│   └── handlers/
-│       └── wsBridge.ts
-├── client/
-│   └── mock-stream.ts
-└── ui/
+│   │   ├── HttpIngressActor.ts      # ClusterSingleton-HTTP-Front-Door
+│   │   ├── WebsocketIngressActor.ts # spawnt eine Session pro WS-Verbindung
+│   │   ├── VoiceSessionActor.ts     # einer pro WebSocket - der Relay-Dreh- und Angelpunkt
+│   │   └── VoicePresenceActor.ts    # DD-ORSet-Presence
+│   ├── auth/                        # Demo-Credentials + Session-Tokens
+│   ├── discovery/                   # Same-Host-Seed-Scan
+│   └── plugins/                     # Statische-Datei-Auslieferung
+├── shared/                          # protocol, frameCodec, groups, rooms, users
+├── frontend-{plain,lit,svelte,react,next,angular}/
+└── static/                          # gebaute Frontend-Artefakte, ausgeliefert unter /
 ```
 
-~700 Zeilen.  Etwas größer als das Chat-Sample; die
-Broker-Integration kommt mit Setup-Aufwand.
+`backend/main.ts` ist reines Wiring; die interessante Logik steckt in
+`VoiceSessionActor.ts` (dem Relay-Dreh- und Angelpunkt) und
+`VoicePresenceActor.ts` (der CRDT-Presence). Sechs Frontends - plain JS,
+Lit, Svelte, React, Next, Angular - sprechen alle dasselbe
+Wire-Protokoll.
 
 ## Anpassung für die Praxis
 
-Für eine produktive Voice-Pipeline-App:
+Für eine produktive Voice-App:
 
-- Ersetze das Mock-`transcribe()` durch ein echtes ASR
-  (Whisper, Deepgram).
-- Füge den Management-Endpoint + Metriken für Ops-Visibility
-  hinzu.
-- Ersetze das SQL der Such-Projektion durch dein tatsächliches
-  Such-Backend (Elasticsearch, OpenSearch).
-- Füge Auth hinzu (der Mock spart sie aus).
+- **Reliability** - `DistributedPubSub` ist at-most-once; verlorene
+  Frames verursachen hörbare Knackser. Ergänze adaptive Jitter-Buffer
+  und eine Retransmission-Schicht über dem Relay.
+- **Playback** - tausche die `MediaSource`-Pipeline des Empfängers gegen
+  `WebCodecs` + einen Ring-Buffer für feinere Kontrolle über Latenz und
+  Buffering.
+- **Skalierung** - N gleichzeitige Sprecher bedeuten N
+  `MediaSource`-Instanzen im Browser jedes Zuhörers; ergänze
+  serverseitiges Mixing für große Räume.
+- **Sicherheit** - ersetze die Klartext-Demo-Credentials durch gehashte
+  Passwörter und Token-Rotation und stelle das Ganze hinter TLS/WSS.
+- **Topologie** - für Peer-to-Peer-Medien ergänze WebRTC oder einen SFU
+  auf dem Medienpfad und behalte actor-ts für Signaling, Discovery und
+  Presence.
 
-Das Skeleton ist wiederverwendbar für jedes
-**Streaming-Input + Per-Stream-State + Read-Side-Index**-Workload -
-Payments, IoT, Log-Ingestion, etc.
+Das Muster verallgemeinert auf jedes **ephemere Fan-out**-Workload -
+Live-Cursor, Presence, Telemetrie-Broadcast, Multiplayer-Input - bei dem
+Receptionist + DistributedPubSub + DistributedData eine Datenbank auf
+dem heißen Pfad ersetzen.
 
 ## Wohin als Nächstes
 
-- **[Chat-Sample](/de/examples/chat-sample/)** - Cluster
-  + PubSub.
-- **[Eigenständige Snippets](/de/examples/stand-alone-snippets/)** -
-  häppchengroße Beispiele.
-- **[Kafka](/de/io/kafka/)** - der Broker-Actor.
-- **[PersistentActor](/de/persistence/persistent-actor/)** -
-  Event-Sourced Sessions.
-- **[Projektionen](/de/persistence/projections/)** -
-  Read-Side-Views.
+- **[Chat-Sample](/de/examples/chat-sample/)** - das sharded +
+  persistente Schwester-Sample.
+- **[Receptionist](/de/discovery/receptionist/)** - clusterweites
+  Actor-Ref-Lookup per Schlüssel.
+- **[DistributedPubSub](/de/cluster/pubsub/)** - Topic-Fan-out über
+  Nodes.
+- **[Sets (ORSet)](/de/distributed-data/crdt-types/sets/)** - das CRDT
+  hinter der Presence.
+- **[ClusterSingleton](/de/cluster/singleton/overview/)** - die
+  Single-Instance-Front-Door.

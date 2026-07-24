@@ -44,10 +44,9 @@ interface NatsOptionsType extends BrokerCommonOptionsType {
   servers:    string[] | string;
   name?:      string;            // Client-Identifier
   user?:      string;
-  pass?:      string;
+  password?:  string;
   token?:     string;
-  tls?:       TlsOptions;
-  pingInterval?: number;         // Default 120s
+  subscriptions?: { subject: string; target: ActorRef<NatsMessage> }[];  // beim Connect eingerichtet
 }
 ```
 
@@ -81,26 +80,45 @@ punktgetrennt.
 
 ## Request / Reply
 
-NATS unterstützt synchrones Request/Reply nativ:
+Core-NATS modelliert Request/Reply über ein **Reply-Subject**: Der
+Requester publisht mit einem `replyTo`-Subject und hört darauf; der
+Responder schickt seine Antwort dorthin.  Es gibt kein dediziertes
+`request`-Command — du setzt es aus `publish` / `subscribe` und dem
+`replyTo`-Feld zusammen.
 
 ```ts
+// Requester — auf einem privaten Reply-Subject hören, dann den
+// Request mit `replyTo` darauf zeigend publishen:
+nats.tell({ kind: 'subscribe', subject: 'reply.balance.42', target: replyHandler });
 nats.tell({
-  kind:        'request',
-  subject:     'account.balance',
-  payload:     JSON.stringify({ accountId: '42' }),
-  timeoutMs:   1_000,
-  replyTo:     this.self,   // bekommt die Reply-Nachricht
+  kind: 'publish',
+  publish: {
+    subject: 'account.balance',
+    payload: JSON.stringify({ accountId: '42' }),
+    replyTo: 'reply.balance.42',   // Responder antwortet auf diesem Subject
+  },
 });
 
-// Reply-Handler:
-override onReceive(message: NatsRequestReply): void {
-  if (message.kind === 'reply')  this.handleBalance(JSON.parse(...));
-  if (message.kind === 'timeout') this.handleTimeout();
+// Responder — das Request-Subject subscriben, auf `replyTo` antworten:
+class BalanceService extends Actor<NatsMessage> {
+  constructor(private readonly nats: ActorRef<NatsCommand>) { super(); }
+  override onReceive(message: NatsMessage): void {
+    if (!message.replyTo) return;
+    this.nats.tell({
+      kind: 'publish',
+      publish: {
+        subject: message.replyTo,
+        payload: JSON.stringify({ balance: 100 }),
+      },
+    });
+  }
 }
 ```
 
-Das ist **schnell** — ein paar hundert Mikrosekunden Round-Trip
-auf localhost.  Wird viel als "RPC über NATS"-Muster genutzt.
+Eingehende `NatsMessage`s tragen `subject`, `payload` (ein
+`Uint8Array`) und `replyTo` (ein leerer String, wenn der Publisher
+keins gesetzt hat).  Das ist das "RPC über NATS"-Muster — ein paar
+hundert Mikrosekunden Round-Trip auf localhost.
 
 ## Wann NATS
 
@@ -130,7 +148,7 @@ const jetStreamOptions = JetStreamOptions.create()
     name:     'ORDERS',
     subjects: ['orders.>'],
     storage:  'file',
-    maxAge:   86_400 * 7,   // 7 Tage Retention
+    maxAge:   86_400 * 7 * 1_000_000_000,   // 7 Tage (maxAge ist in Nanosekunden)
   });
 const js = system.spawn(
   Props.create(() => new JetStreamActor(
@@ -181,11 +199,12 @@ import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="Verwaltung der Reply-Subjects">
   ```ts
-  // Jedes `request` allokiert ein temporäres Reply-Subject; Broker-Ressourcen skalieren mit gleichzeitigen Requests
+  // Jeder laufende Request braucht sein eigenes Reply-Subject + Subscription — unsubscribe, sobald die Antwort da ist
   ```
-  Schwere Request/Reply-Lasten (10K+ gleichzeitig) verbrauchen
-  viele temporäre Subjects.  Meist okay, aber beobachte die
-  Broker-Metriken.
+  Du verwaltest die Reply-Subjects selbst.  Bei schweren
+  Request/Reply-Lasten (10K+ gleichzeitig) sind das viele temporäre
+  Subjects und Subscriptions; unsubscribe, sobald die Antwort
+  eintrifft, und beobachte die Broker-Metriken.
 </Aside>
 
 <Aside type="caution" title="Wildcards + viele Subscriber">

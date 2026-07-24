@@ -122,34 +122,45 @@ Für Dashboard-Widgets, Echtzeit-UI-Updates oder Business-Logik,
 die auf Änderungen irgendwo im Cluster reagieren soll, ist
 `subscribe` der Hook.
 
-## Peers vergessen
+## Wenn ein Peer den Cluster verlässt
 
-Wenn `MemberRemoved` für ein Cluster-Mitglied feuert:
+Wenn `MemberRemoved` für ein Cluster-Mitglied feuert, tut
+DistributedData **nichts** — es gibt keinen Zustand pro Peer, der
+aufzuräumen wäre.  Gossip hält keinen Version Vector und keine
+Empfangs-Historie pro Peer; jeder Tick wählt einfach einen
+zufälligen Peer aus den *aktuellen* Up-Members, sodass ein
+ausgeschiedener Node schlicht kein Gossip-Ziel mehr ist.
 
-- Der Replicator vergisst den Gossip-Empfangszustand dieses Peers.
-- Die Tombstones des Peers (für ORSet etc.) werden gemäß den
-  Pruning-Regeln des CRDT irgendwann aus dem lokalen Zustand
-  entfernt.
+Der Zustand, den der Peer beigetragen hat, bleibt in der lokalen
+Replika, eingemerged wie jedes andere Update.  CRDT-Tombstones
+(ein entferntes `ORSet`-Element, ein `null`-Register in einer
+`LWWMap`) werden **nie garbage-collected** — sie bleiben dauerhaft
+erhalten, damit ein veraltetes Gossip einen entfernten Key nicht
+wiederauferstehen lassen kann.  Über einen langlebigen Store mit
+starkem Churn ist die Tombstone-Akkumulation der praktische
+Kostenpunkt, den man im Auge behalten sollte.
 
-Das heißt: **Ein Peer, der den Cluster verlässt, leakt keine
-Gossip-Historie** — sein Slot im Version Vector verschwindet.
-
-Für Replikas, die später **unter derselben Identität wieder
-beitreten könnten** (stabile Pod-Namen, persistente Volumes),
-gibt es ein kurzes Fenster, in dem der Zustand des Peers
-teilweise vergessen sein kann.  Meist harmlos — ein frisches
-Handshake bringt alles zurück.
+Eine Replika, die **später unter derselben Identität wieder
+beitritt** (stabile Pod-Namen, persistente Volumes), braucht keine
+Sonderbehandlung — sie ist einfach wieder ein weiterer Up-Member,
+und Gossip lässt ihren Zustand über die nächsten paar Ticks erneut
+konvergieren.
 
 ## Bandbreitenkosten
 
 Grobe Zahlen für einen 10-Node-Cluster mit Default-Gossip von 1
 Sekunde:
 
-- **Idle Steady State** — minimaler Traffic (~1 KB/sec pro Paar,
-  meist leere Deltas).
-- **Aktive Workload** — proportional zur Write-Rate.  Pro Write
-  geht eine Delta-Nachricht von ~100-500 Bytes über die nächsten
-  Gossip-Runden an jeden Peer.
+- **Pro Tick, pro Node** — eine Nachricht, die den vollständig
+  serialisierten Store trägt, geht an einen einzigen zufälligen
+  Peer.  Ihre Größe wird durch den **Gesamt-State** bestimmt, nicht
+  dadurch, wie viel sich seit dem letzten Tick geändert hat, sodass
+  ein Idle-Store das trotzdem bei jedem Tick zahlt; die Kosten
+  wachsen nur nicht mit der Write-Rate.
+- **Skalierungs-Stellschrauben** — die Store-Größe treibt die
+  Kosten pro Nachricht und `gossipIntervalMs` treibt, wie oft du
+  sie zahlst.  Ein großer Store bei einem schnellen Intervall ist
+  die teure Kombination.
 
 Für sehr große Cluster (50+ Nodes) kann das Gossip-Volumen
 relevant werden.  Das Gossip des Frameworks ist im

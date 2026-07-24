@@ -1,34 +1,28 @@
 ---
 title: Core metrics
-description: The four metric primitives — Counter, Gauge, Histogram, Timer — plus the label model that turns one metric into many time-series. Cardinality discipline is the user's responsibility.
+description: The three metric primitives — Counter, Gauge, Histogram — plus the label model that turns one metric into many time-series. Cardinality discipline is the user's responsibility.
 ---
 
-The metrics extension exposes four classic primitives:
+The metrics extension exposes three classic primitives:
 
 | Type | Direction | When |
 | --- | --- | --- |
 | **Counter** | Monotonically increases | Total events, totals over time. |
 | **Gauge** | Settable / inc / dec | Point-in-time values that go up and down. |
 | **Histogram** | Distribution of observations | Latency, payload size. |
-| **Timer** | Histogram + ergonomic timing | "How long did this take?" |
 
 ```ts
 import { ActorSystem, MetricsExtensionId } from 'actor-ts';
 
-const metrics = system.extension(MetricsExtensionId);
+const metrics = system.extension(MetricsExtensionId).enable();
 
 const requests = metrics.counter('http_requests_total', { route: '/orders' });
 const active   = metrics.gauge('sessions_active');
 const latency  = metrics.histogram('http_request_duration_ms', { route: '/orders' });
-const timer    = metrics.timer('db_query_duration_ms', { table: 'users' });
 
 requests.inc();
 active.set(123);
 latency.observe(42);
-
-const stop = timer.start();
-await heavyWork();
-stop();   // observes the elapsed time
 ```
 
 ## Counters
@@ -38,7 +32,7 @@ const c = metrics.counter('events_total', { source: 'web' });
 
 c.inc();      // → +1
 c.inc(3);     // → +3
-c.value();    // → 4
+c.value;      // → 4
 ```
 
 **Monotonic** — only goes up.  Negative increments throw.  Reset
@@ -61,7 +55,7 @@ const g = metrics.gauge('sessions_active');
 g.set(100);      // → 100
 g.inc();         // → 101
 g.dec(5);        // → 96
-g.value();       // → 96
+g.value;         // → 96
 ```
 
 Settable + bidirectional.  Represents **a point-in-time value**.
@@ -112,26 +106,21 @@ time from these buckets.
   `[0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10]`
   — seconds-scale.  Override for ms-scale.
 
-## Timers
+## Timing operations
+
+There is no dedicated timer primitive — time an operation by
+observing its elapsed duration into a histogram:
 
 ```ts
-const t = metrics.timer('db_query_duration_ms', { table: 'users' });
+const timer = metrics.histogram('db_query_duration_ms', { table: 'users' });
 
-// Pattern 1: start/stop
-const stop = t.start();
+const start = performance.now();
 await runQuery();
-stop();
-
-// Pattern 2: wrap
-const result = await t.time(async () => runQuery());
+timer.observe(performance.now() - start);
 ```
 
-A timer is a histogram with **ergonomics for timing things**.
-`start()` returns a stop function that observes the elapsed
-duration; `time(fn)` wraps a function.
-
-The underlying histogram uses default millisecond buckets — fine
-for most workloads.
+`performance.now()` is available on Bun, Node, and Deno.  Pick
+buckets that match the unit you observe — milliseconds, here.
 
 ## Labels
 
@@ -178,18 +167,21 @@ Aim for **< 100 series per metric**.  Above that, alarm.
 ```ts
 const counter = metrics.counter('events_total');
 counter.inc();
-counter.value();   // → 1
+counter.value;   // → 1
 ```
 
-`value()` returns the **current** counter / gauge value.  For
-histograms, use `snapshot()`:
+`value` is the **current** counter / gauge value — a readonly
+property, not a method.  For histograms, read `count`, `sum`,
+`buckets`, and `counts` directly:
 
 ```ts
 const h = metrics.histogram('latency');
 h.observe(10);
 h.observe(20);
-h.snapshot();
-// → { count: 2, sum: 30, buckets: Map<le, count> }
+h.count;     // → 2
+h.sum;       // → 30
+h.buckets;   // → readonly bucket bounds, ending in Infinity
+h.counts;    // → cumulative observation count per bucket
 ```
 
 Useful for **tests** and **custom exporters**.

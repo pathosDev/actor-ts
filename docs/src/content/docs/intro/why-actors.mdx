@@ -86,7 +86,7 @@ reading or writing.
 ```ts
 class Counter extends Actor<{ kind: 'increment' } | { kind: 'get'; replyTo: ActorRef<number> }> {
   private count = 0;
-  override onReceive(message: typeof this.command): void {
+  override onReceive(message: { kind: 'increment' } | { kind: 'get'; replyTo: ActorRef<number> }): void {
     if (message.kind === 'increment')  this.count++;
     else if (message.kind === 'get') message.replyTo.tell(this.count);
   }

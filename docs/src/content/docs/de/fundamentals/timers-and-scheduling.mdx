@@ -27,7 +27,8 @@ type Message = { readonly kind: 'tick' } | { readonly kind: 'set'; readonly inte
 
 class Heartbeat extends Actor<Message> {
   override preStart(): void {
-    // Feuere { kind: 'tick' } alle 5 s, sofort beginnend.
+    // Feuere { kind: 'tick' } alle 5 s; der erste Tick kommt nach 5 s.
+    // Übergib 0 als viertes Argument, um den ersten Tick sofort auszulösen.
     this.context.timers.startTimerWithFixedDelay('hb', { kind: 'tick' }, 5_000);
   }
 

@@ -13,14 +13,14 @@ import { TestKit, RecordingTracer, TracingExtensionId } from 'actor-ts';
 
 const tracer = new RecordingTracer();
 const tk = TestKit.create();
-tk.system.extension(TracingExtensionId).configure({ tracer });
+tk.system.extension(TracingExtensionId).enable(tracer);
 
 // ... run the actor ...
 ref.tell({ kind: 'process' });
 await probe.expectMessage(...);
 
 // Assert on recorded spans:
-const spans = tracer.recordedSpans();
+const spans = tracer.recorded();
 expect(spans).toHaveLength(1);
 expect(spans[0].name).toBe('actor.receive');
 expect(spans[0].attributes['actor.path']).toContain('worker');
@@ -32,16 +32,16 @@ Each `RecordedSpan`:
 
 ```ts
 interface RecordedSpan {
-  name:        string;
-  context:     SpanContext;
-  parent?:     SpanContext;
-  attributes:  Record<string, AttributeValue>;
-  events:      Array<{ name: string; attrs: ... }>;
-  status:      { status: 'ok' | 'error'; message?: string };
-  startTimeMs: number;
-  endTimeMs:   number;
-  ended:       boolean;
-  kind:        SpanKind;
+  name:           string;
+  kind:           SpanKind;
+  context:        SpanContext;
+  parent:         SpanContext | null;
+  startTimeMs:    number;
+  endTimeMs:      number;
+  attributes:     Record<string, AttributeValue>;
+  status:         SpanStatus;              // 'unset' | 'ok' | 'error'
+  statusMessage?: string;
+  exceptions:     ReadonlyArray<Error>;
 }
 ```
 
@@ -55,15 +55,14 @@ final status.
 class RecordingTracer implements Tracer {
   // ... full Tracer interface ...
 
-  recordedSpans(): RecordedSpan[];          // all spans, including unended
-  finishedSpans(): RecordedSpan[];          // spans where end() was called
+  recorded(): ReadonlyArray<RecordedSpan>;  // snapshot of every ended span
   reset(): void;                            // clear recorded state
 }
 ```
 
-`recordedSpans` returns every span the tracer was asked to
-create.  `finishedSpans` filters to those that ended — useful to
-detect "started a span and never ended it" bugs.
+`recorded` returns a snapshot of every span that **ended** — a
+span is captured only when `end()` is called, so one that was
+started but never ended never shows up.
 
 ## Common assertion patterns
 
@@ -73,16 +72,16 @@ detect "started a span and never ended it" bugs.
 ref.tell({ kind: 'work' });
 await probe.expectMessage(...);
 
-const spans = tracer.finishedSpans();
+const spans = tracer.recorded();
 const receive = spans.find(s => s.name === 'actor.receive' && s.attributes['actor.path']?.includes('worker'));
 expect(receive).toBeDefined();
-expect(receive!.status.status).toBe('ok');
+expect(receive!.status).toBe('ok');
 ```
 
 ### "Did my custom span fire with the right attributes?"
 
 ```ts
-const orderSpan = tracer.finishedSpans().find(s => s.name === 'place-order');
+const orderSpan = tracer.recorded().find(s => s.name === 'place-order');
 expect(orderSpan).toBeDefined();
 expect(orderSpan!.attributes['order.id']).toBe('o-1');
 expect(orderSpan!.attributes['order.amount']).toBe(42);
@@ -91,7 +90,7 @@ expect(orderSpan!.attributes['order.amount']).toBe(42);
 ### "Did spans link up correctly?"
 
 ```ts
-const spans = tracer.finishedSpans();
+const spans = tracer.recorded();
 const parent = spans.find(s => s.name === 'http-request');
 const child  = spans.find(s => s.name === 'db-query');
 

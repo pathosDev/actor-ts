@@ -103,9 +103,9 @@ await retry(
 );
 ```
 
-`shouldRetry` runs after every failed attempt.  Return `false` to
-**short-circuit** — the retry loop exits immediately with that
-error, no more attempts.
+`shouldRetry` runs after every failed attempt except the last.
+Return `false` to **short-circuit** — the retry loop exits
+immediately with that error, no more attempts.
 
 Use it to differentiate transient and permanent failures:
 
@@ -193,10 +193,10 @@ import { Aside } from '@astrojs/starlight/components';
   There's no built-in cancellation.  If you need to abort,
   pass an `AbortSignal` to the factory and check it inside:
   ```ts
-  retry(() => longCall({ signal: ac.signal }), { attempts: 5, delayMs: 1000 });
+  retry(() => longCall({ signal: abortController.signal }), { attempts: 5, delayMs: 1000 });
   ```
-  An `AbortError` thrown by the factory bypasses `shouldRetry`'s
-  default "retry any" — provide a `shouldRetry` that returns
+  By default, `retry` treats an `AbortError` like any other error
+  and keeps retrying it — provide a `shouldRetry` that returns
   `false` for `AbortError` to fail fast on cancellation.
 </Aside>
 

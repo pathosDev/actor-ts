@@ -37,8 +37,8 @@ Die `VectorClock`-Klasse des Frameworks wickelt das ein:
 import { VectorClock } from 'actor-ts';
 
 let vc = VectorClock.empty();
-vc = vc.increment('replica-a');   // → { 'replica-a': 1 }
-vc = vc.increment('replica-a');   // → { 'replica-a': 2 }
+vc = vc.tick('replica-a');        // → { 'replica-a': 1 }
+vc = vc.tick('replica-a');        // → { 'replica-a': 2 }
 vc = vc.merge(VectorClock.fromData({ 'replica-b': 3 }));
 //    → { 'replica-a': 2, 'replica-b': 3 }
 ```
@@ -50,10 +50,10 @@ vc = vc.merge(VectorClock.fromData({ 'replica-b': 3 }));
 | `empty()` | Null-Clock. |
 | `fromData(record)` | Aus einem plain Object bauen. |
 | `get(replicaId)` | Eine Komponente lesen. |
-| `increment(replicaId)` | Die Komponente einer Replica erhöhen — beim Persistieren aufgerufen. |
+| `tick(replicaId)` | Die Komponente einer Replica erhöhen — beim Persistieren aufgerufen. |
 | `merge(other)` | Per-Replica-Maximum. |
-| `compare(other)` | Gibt `'<'` / `'>'` / `'=='` / `'concurrent'` zurück. |
-| `toData()` | Plain-Object-Form für die Serialisierung. |
+| `compareTo(other)` | Gibt `'before'` / `'after'` / `'equal'` / `'concurrent'` zurück. |
+| `toJSON()` | Plain-Object-Form für die Serialisierung. |
 
 ## Wie Replicated ES sie verwendet
 
@@ -150,14 +150,15 @@ Clocks:
 vc { A: 100, B: 50, C: 25, RETIRED-D: 7 }
 ```
 
-Die Komponente der pensionierten Replica ist irrelevant, aber
-nimmt Platz ein.  Für lange laufende Deployments mit
-Replica-Churn unterstützt das Framework
-**Vector-Clock-Pruning** zur Snapshot-Zeit — wenn eine Replica
-lange genug weg ist, kann ihre Komponente sicher gedroppt werden.
+Die Komponente der pensionierten Replica ist irrelevant, nimmt
+aber weiterhin Platz ein.  **Vector-Clock-Garbage-Collection
+ist für v1 außerhalb des Scopes** — das Framework entfernt
+diese Einträge nie, sodass eine Clock mit jeder jemals
+gesehenen Replica wächst.
 
-Das ist ein fortgeschrittenes Thema; die Defaults sind für die
-meisten Deployments in Ordnung.
+Das ist für ein stabiles Cluster in Ordnung.  Ein Deployment
+mit viel Node-Churn wird irgendwann Kompaktierung wollen, doch
+das ist künftige Arbeit und heute kein unterstütztes Feature.
 
 ## Mit Vector Clocks in User-Code arbeiten
 
@@ -166,18 +167,12 @@ intern; dein Conflict Resolver erhält **Events mit ihren Vector
 Clocks bereits verglichen** — du entscheidest nur, wie der
 **State** angesichts der konfligierenden Events gemergt wird.
 
-Für Diagnostik:
-
-```ts
-override async onCommand(state, command) {
-  this.log.debug(`current vc: ${JSON.stringify(this.vectorClock.toData())}`);
-  await this.persist(event, () => {});
-}
-```
-
-`this.vectorClock` ist Read-only-Zugriff auf die aktuelle Clock
-des Actors.  Nützlich für Logging / Debugging von
-Nebenläufig-Write-Szenarien.
+Für Diagnostik gilt: Die aktuelle Clock des Actors wird privat
+gehalten und ist nicht über einen öffentlichen Getter
+zugänglich.  Sie wird mit jedem persistierten Event und
+Snapshot mitgeführt, inspiziere sie also im Journal- /
+Snapshot-JSON — dem `_vc`-Feld, das oben unter **Wire-Format**
+gezeigt wird — statt sie vom Actor abzulesen.
 
 import { Aside } from '@astrojs/starlight/components';
 

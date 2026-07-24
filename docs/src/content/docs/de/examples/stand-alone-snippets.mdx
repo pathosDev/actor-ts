@@ -8,34 +8,43 @@ eigenständigen Snippets der richtige Ort.  Jedes ist eine
 einzelne Datei, die ein Pattern demonstriert - kein Docker,
 keine Peers, lauffähig mit `bun`.
 
-Zu finden unter
-[`examples/snippets/`](https://github.com/pathosDev/actor-ts/tree/main/examples/snippets)
-im Repo.
+Zu finden in
+[`examples/`](https://github.com/pathosDev/actor-ts/tree/main/examples)
+im Repo - die grundlegenden liegen auf oberster Ebene, der Rest in
+themenbezogenen Unterverzeichnissen (`patterns/`, `persistence/`,
+`cluster/`, `fsm/`, `pubsub/`, `crdt/`, `typed/`, `management/`, …).
 
 ## Was es gibt
 
-| Snippet | Konzept |
+| Datei | Konzept |
 | --- | --- |
-| `01-counter.ts` | Der minimale Actor - extends Actor, behandelt zwei Nachrichten-Arten. |
-| `02-ask-pattern.ts` | Request/Response via `ask`. |
-| `03-supervision.ts` | Eigene Strategie mit `decideBy`. |
-| `04-become-state-machine.ts` | `context.become(...)` für State-Übergänge. |
-| `05-event-stream.ts` | Systemweites PubSub. |
-| `06-timers.ts` | `context.timers` für zeitgesteuerte Arbeit. |
-| `07-receive-timeout.ts` | Leerlauf-Erkennung. |
-| `08-typed-counter.ts` | Derselbe Counter via `Behaviors.*`. |
-| `09-routing.ts` | Lokaler Pool-Router. |
-| `10-circuit-breaker.ts` | `CircuitBreaker` um einen HTTP-Call. |
-| `11-backoff-supervisor.ts` | Exponentielles Backoff-Restart. |
-| `12-persistent-actor.ts` | Event-Sourced Bankkonto. |
-| `13-durable-state.ts` | Persistenz im Snapshot-Stil. |
-| `14-projection.ts` | Read-Side-View via `ProjectionActor`. |
-| `15-cluster-singleton.ts` | Singleton mit Manager + Proxy. |
-| `16-cluster-sharding.ts` | Sharded Entities pro Schlüssel. |
-| `17-pubsub.ts` | Cluster-weites DistributedPubSub. |
-| `18-distributed-data.ts` | GCounter + ORSet über den Cluster. |
-| `19-saga.ts` | Mehrstufige PersistentFSM. |
-| `20-management-http.ts` | Health-Checks + /metrics. |
+| `hello-world.ts` | Der minimale Actor - extends `Actor`, behandelt eine Nachricht. |
+| `ping-pong.ts` | Zwei Actors, die eine Nachricht hin- und herspielen. |
+| `bank-account.ts` | Request/Response via `ask`-Pattern. |
+| `supervision.ts` | Eigene Strategie mit `decideBy`. |
+| `become.ts` | `context.become(...)` für State-Übergänge. |
+| `death-watch.ts` | `Terminated`-Benachrichtigungen via Death Watch. |
+| `router.ts` | Lokaler Pool-Router, Round-Robin über Worker. |
+| `scheduler.ts` | `scheduleOnce` / `scheduleAtFixedRate`. |
+| `patterns/timers-heartbeat.ts` | Actor-eigene `context.timers`. |
+| `patterns/stash-init.ts` | Stash + Replay während async Initialisierung. |
+| `patterns/circuit-breaker-hello.ts` | `CircuitBreaker` um einen fehleranfälligen Call. |
+| `patterns/backoff-supervisor.ts` | Exponentielles Backoff-Restart. |
+| `typed/behaviors-receive.ts` | Derselbe Counter via typisierte `Behaviors`-DSL. |
+| `typed/behaviors-supervise.ts` | `setup` / `withTimers` / `supervise` kombiniert. |
+| `fsm/traffic-light.ts` | FSM-DSL - `when` / `onEnter` / `onTransition`. |
+| `fsm/order-workflow.ts` | Mehrstufige PersistentFSM (Saga). |
+| `persistence/bank-account.ts` | Event-Sourced Actor - persist, recover, Snapshot. |
+| `persistence/durable-state-kv.ts` | Durable-State-Persistenz (Snapshot-Stil). |
+| `persistence/projection-bank-statement.ts` | Read-Side-View via `ProjectionActor`. |
+| `persistence/replicated-counter.ts` | Multi-Master-repliziertes Event-Sourcing. |
+| `cluster/singleton-hello.ts` | Cluster-Singleton mit Manager + Proxy. |
+| `cluster/sharded-daemon-hello.ts` | Sharded Daemon Process - N Worker nach Index. |
+| `pubsub/chat-mediator.ts` | DistributedPubSub auf einem einzelnen Node. |
+| `pubsub/event-bus-across-nodes.ts` | Themenbasierter Event-Bus über Nodes. |
+| `crdt/shopping-cart-orset.ts` | OR-Set-CRDT - Add-Wins bei nebenläufigen Änderungen. |
+| `management/health-endpoint.ts` | `/health` + `/cluster/members`-Endpoints. |
+| `management/prometheus-endpoint.ts` | `/metrics` Prometheus-Exposition. |
 
 Jedes Snippet ist **50-200 Zeilen**.  Liest sich in ein paar
 Minuten; verändere es, um mit dem Konzept zu spielen.
@@ -44,10 +53,10 @@ Minuten; verändere es, um mit dem Konzept zu spielen.
 
 ```bash
 git clone https://github.com/pathosDev/actor-ts.git
-cd actor-ts/examples/snippets
+cd actor-ts
 
 bun install
-bun 01-counter.ts
+bun examples/hello-world.ts
 ```
 
 Jedes Snippet läuft bis zum Ende und beendet sich.  Keine
@@ -89,9 +98,9 @@ Snippets sind der einfachste Ort zum **Experimentieren**:
 
 ```bash
 # Kopieren, editieren, ausführen:
-cp 01-counter.ts my-experiment.ts
-# my-experiment.ts editieren
-bun my-experiment.ts
+cp examples/hello-world.ts examples/my-experiment.ts
+# examples/my-experiment.ts editieren
+bun examples/my-experiment.ts
 ```
 
 Das Framework wird über das `actor-ts`-Package des lokalen Repos
@@ -107,8 +116,9 @@ PR mit einem Snippet**.  Kriterien:
 - **Self-contained** - lauffähig ohne externe Services.
 - **Kommentare**, die erklären, was der Code zeigt.
 
-Vergib deinem Snippet die nächste freie Nummer in der
-bestehenden Sequenz; aktualisiere die README in `snippets/`.
+Lege sie für ein grundlegendes Konzept auf oberster Ebene von
+`examples/` ab, sonst im passenden themenbezogenen Unterverzeichnis;
+füge dann eine Zeile zur obigen Tabelle hinzu.
 
 ## Wohin als Nächstes
 

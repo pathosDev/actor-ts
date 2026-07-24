@@ -1,16 +1,24 @@
 ---
 title: Chat-Sample
-description: Eine funktionierende Chat-App - Cluster aus 3 Nodes, sharded User-Sessions, DistributedPubSub für Room-Broadcasts, HTTP für REST, WebSocket für Live-Updates. Repo unter `examples/chat/`.
+description: Eine funktionierende Chat-App - TCP-Cluster aus 3 Bun-Nodes, sharded Chatroom-Actors, DistributedPubSub für Room-Broadcasts, DistributedData für Presence, sämtlicher Client-Traffic über einen einzigen WebSocket-Endpoint. Repo unter `examples/chat/`.
 ---
 
 Das Chat-Sample ist eine **komplette Demo-App**, die zeigt, wie
 die Teile des Frameworks zusammenspielen:
 
-- **Cluster** aus 3 Nodes (über Docker Compose).
-- **Sharded User-Session-Actors** - einer pro eingeloggtem User.
+- **TCP-Cluster** aus 3 Bun-Prozessen, per Gossip verbunden.
+- **Sharded Chatroom-Actors** - ein `ChatRoomActor` pro Room,
+  über den Cluster als 16 Shards verteilt.
 - **DistributedPubSub** für Cross-Node-Chatroom-Broadcasts.
-- **PersistentActor** für die Chatroom-History.
-- **HTTP + WebSocket** für das Client-Interface.
+- **PersistentActor** für die Chatroom-History (SQLite-Journal +
+  Snapshots).
+- **DistributedData** für Presence, das Laufzeit-Room-Directory
+  und Read-Receipts.
+- **ClusterSingleton** als HTTP-Eingangstür - ein Node bindet
+  `:8080`; bei Failover übernimmt ein überlebender Node den Bind.
+- **WebSocket-only**-Client-Protokoll - ein einziger
+  `/ws`-Endpoint trägt Login, Rooms, History, Presence und
+  Nachrichten.
 
 Zu finden unter [`examples/chat/`](https://github.com/pathosDev/actor-ts/tree/main/examples/chat)
 im Repo.
@@ -19,45 +27,44 @@ im Repo.
 
 ```mermaid
 flowchart LR
-  HTTP[/"HTTP-Clients"/]
-  WS[/"WebSocket-Clients"/]
-  subgraph CLUSTER["3-Node-Cluster"]
+  WS[/"WebSocket-Clients<br/>(6 Frontends)"/]
+  subgraph CLUSTER["3-Node-Cluster (Bun)"]
     direction TB
-    HSRV["HTTP-Server"]
-    WSRV["WS-Server"]
-    US["Sharded UserSession-Actors<br/><i>einer pro eingeloggtem User<br/>hält Socket + State</i>"]
-    ROOM["ChatRoom-Actors (PersistentActor)<br/><i>einer pro Room<br/>persistiert Nachrichten-History</i>"]
+    ING["HTTP-Ingress<br/><i>ClusterSingleton - bindet :8080<br/>serviert Static + /ws-Upgrade</i>"]
+    US["UserSession-Actors<br/><i>einer pro WS-Verbindung<br/>hält Socket + State</i>"]
+    ROOM["ChatRoom-Actors (sharded PersistentActor)<br/><i>einer pro Room, 16 Shards<br/>persistiert Nachrichten-History</i>"]
     PUB["DistributedPubSub<br/><i>Topic pro Room<br/>Rooms publishen; Sessions abonnieren</i>"]
-    HSRV --> US
-    WSRV --> US
+    DD["DistributedData<br/><i>ORSet Presence + Room-Directory<br/>LWWMap Read-Receipts</i>"]
+    ING --> US
     US -- "join / send" --> ROOM
-    ROOM -- "publish" --> PUB
+    ROOM -- "persist + publish" --> PUB
     PUB -- "deliver" --> US
+    US -- "presence / receipts" --> DD
+    DD -- "converged state" --> US
   end
-  HTTP --> HSRV
-  WS --> WSRV
+  WS -- ":8080" --> ING
   classDef client  fill:#1e293b,stroke:#06b6d4,color:#67e8f9;
   classDef cluster fill:#0f172a,stroke:#6366f1,stroke-width:2px,color:#f1f5f9;
   classDef edge    fill:#312e81,stroke:#818cf8,color:#f1f5f9;
   classDef actor   fill:#312e81,stroke:#818cf8,stroke-width:1.5px,color:#f1f5f9;
   classDef bus     fill:#1e293b,stroke:#06b6d4,stroke-width:2px,color:#67e8f9;
-  class HTTP,WS client
+  class WS client
   class CLUSTER cluster
-  class HSRV,WSRV edge
+  class ING edge
   class US,ROOM actor
-  class PUB bus
+  class PUB,DD bus
 ```
 
 Der vollständige Pfad eines "User sendet Nachricht"-Flows:
 
 ```
-1. Der WS-Client des Users sendet "send-message" an seinen HTTP-Server.
-2. Der WS-Handler leitet an den UserSession-Actor des Users weiter (sharded).
-3. UserSession fragt den zuständigen ChatRoom-Actor (sharded nach Room-ID).
+1. Der WS-Client sendet einen "send"-Frame über /ws an den Ingress-Singleton.
+2. Der Ingress routet ihn an den UserSession-Actor dieser Verbindung (einer pro Socket).
+3. UserSession informiert die zuständige ChatRoom-Entity (sharded nach Room-Name).
 4. ChatRoom persistiert die Nachricht via PersistentActor.persist().
-5. ChatRoom publisht auf DistributedPubSub auf das Topic "room.<roomId>".
+5. ChatRoom publisht auf DistributedPubSub auf das Topic des Rooms.
 6. Jede UserSession, die dieses Topic abonniert hat, empfängt die Nachricht.
-7. UserSessions pushen an ihre jeweiligen WS-Clients.
+7. Jede UserSession pusht sie an ihren eigenen WS-Client.
 ```
 
 Cluster + Persistenz + PubSub + WebSocket - alle zusammen am
@@ -66,48 +73,54 @@ Werk.
 ## Ausführen
 
 ```bash
-# Repo klonen:
+# Repo klonen und Dev-Deps installieren:
 git clone https://github.com/pathosDev/actor-ts.git
-cd actor-ts/examples/chat
+cd actor-ts
+bun install
 
-# Alles starten (Cluster + Cassandra + WS):
-docker compose up -d
+# 3-Node-Cluster starten - drei Terminals, gleicher Befehl, keine Flags:
+bun examples/chat/backend/main.ts
+bun examples/chat/backend/main.ts
+bun examples/chat/backend/main.ts
 
-# Cluster prüfen:
-curl http://localhost:8551/cluster/members
-# → 3 members "up"
-
-# Chat-UI öffnen:
-open http://localhost:3000
+# Chat-UI öffnen (eine URL, egal welcher Node den Singleton hält):
+open http://localhost:8080/
 ```
 
-Das Docker-Compose-Setup startet:
-
-- 3 actor-ts-Pods.
-- 1 Cassandra-Node (geteiltes Journal für persistente Rooms).
-- 1 Nginx vor den HTTP+WS-Endpoints.
+Jeder Node führt dasselbe Binary aus. Sie finden einander,
+indem sie den Cluster-Port-Bereich ab `2551` scannen, sodass
+sich die drei Terminals ohne konfigurierte Seeds auf
+`2551 / 2552 / 2553` einpendeln. Der Cluster wählt dann einen
+Node, der den HTTP-Ingress-`ClusterSingleton` betreibt; dieser
+bindet `:8080` und serviert den Frontend-Selector sowie den
+`/ws`-Endpoint. Die Persistenz ist ein lokales SQLite-Journal +
+Snapshot-Store unter `./data/` - keine externe Datenbank.
+Beende den Node, der den Singleton hält, und ein überlebender
+Node bindet `:8080` innerhalb weniger Sekunden neu; die
+persistierte History bleibt erhalten.
 
 ## Demonstrierte Schlüssel-Patterns
 
-### Sharded Sessions
+### Sharded Chatrooms
 
 ```ts
-const startShardingOptions = StartShardingOptions.create<SessionMessage>()
-  .withTypeName('session')
-  .withEntityProps(Props.create(() => new UserSessionActor()))
-  .withExtractEntityId((message) => message.userId)
-  .withRememberEntities(true);
-const sessionRegion = cluster.sharding.start(startShardingOptions);
+const chatRoomRegion = cluster.sharding.start('ChatRoom', ChatRoomActor,
+  StartShardingOptions.create<ChatRoomCommand>()
+    .withExtractEntityId((message) => message.room)
+    .withNumShards(16));
 ```
 
-Ein Actor pro eingeloggtem User, verteilt über die Nodes.
-`rememberEntities` erhält die Registry über Failover hinweg.
+Ein `ChatRoomActor` pro Room, über den Cluster als 16 Shards
+verteilt - beende einen beliebigen Node, und die überlebenden
+Nodes übernehmen dessen Rooms. Direct-Message-Channels nutzen
+dasselbe Pattern in einer separaten Region, gekeyt auf die
+kanonische DM-Pair-ID.
 
 ### PersistentActor für Rooms
 
 ```ts
-class ChatRoomActor extends PersistentActor<RoomCommand, RoomEvent, RoomState> {
-  readonly persistenceId = `room-${this.roomId}`;
+class ChatRoomActor extends PersistentActor<ChatRoomCommand, ChatEvent, ChatState> {
+  readonly persistenceId = `room-${this.roomName}`;
   // ... onCommand persistiert; onEvent aktualisiert State ...
 }
 ```
@@ -148,8 +161,6 @@ zum Client.
 
 - **Sharded Daemon Processes** - das Chat-Sample braucht keine
   fixen Background-Worker.
-- **DistributedData CRDTs** - Chat-Daten gehen durch
-  PersistentActor, nicht DD.
 - **Replicated Event Sourcing** - ein Single-Writer pro Room
   reicht aus.
 
@@ -161,23 +172,39 @@ oder das [Voice-Sample](/de/examples/voice-sample/).
 
 ```
 examples/chat/
-├── docker-compose.yml
 ├── README.md
-├── package.json
-├── src/
-│   ├── main.ts                  # Einstieg: Cluster-Join + HTTP/WS-Bind
-│   ├── actors/
-│   │   ├── UserSessionActor.ts
-│   │   └── ChatRoomActor.ts
-│   ├── messages.ts              # geteilte Nachrichten-Typen
-│   └── handlers/
-│       ├── httpRoutes.ts
-│       └── wsHandlers.ts
-└── ui/                          # minimale HTML/JS-Chat-UI
+├── application.conf            # HOCON: Log-Level, Gossip-Kadenz
+├── data/                       # SQLite-Journal + Snapshots (gitignored)
+├── backend/
+│   ├── main.ts                 # Einstieg: nur Wiring (Cluster, Persistenz, Sharding, Singleton)
+│   ├── config.ts               # CLI-Argument-Parsing
+│   ├── routes.ts               # HTTP-DSL-Route (Frontend-Selector)
+│   ├── auth/                   # scrypt-Passwortprüfung + HMAC-Session-Tokens
+│   ├── discovery/              # Same-Host-Port-Scan-Seed-Provider
+│   └── actors/
+│       ├── ChatRoomActor.ts             # sharded PersistentActor (pro Room)
+│       ├── ChatRoomDirectoryActor.ts    # DistributedData ORSet (Laufzeit-Rooms)
+│       ├── DirectMessageChannelActor.ts # sharded PersistentActor (pro DM-Paar)
+│       ├── UserSessionActor.ts          # Session pro WS-Verbindung
+│       ├── OnlineUsersActor.ts          # DistributedData ORSet (Presence)
+│       ├── ReadReceiptsActor.ts         # DistributedData LWWMap (Read-Pointer)
+│       ├── HttpIngressActor.ts          # ClusterSingleton: hält den :8080-Bind
+│       └── WebsocketIngressActor.ts     # WS-Plumbing pro Verbindung
+├── shared/
+│   ├── protocol.ts             # geteilte WS-Nachrichten-Typen
+│   ├── rooms.ts                # Default-Room-Liste
+│   ├── users.ts                # Test-Credentials
+│   └── directMessage.ts        # Kanonisierung der DM-Pair-ID
+├── static/                     # gebaute Frontend-Assets (@fastify/static)
+├── frontend-{plain,angular,react,next,svelte,lit}/   # sechs UI-Varianten
+├── smoke-test.ts               # Single-Node-Messaging-Round-Trip
+└── failover-test.ts            # HTTP-Singleton-Failover
 ```
 
-~500 Zeilen TypeScript insgesamt.  Gute Größe, um es
-end-to-end zu lesen.
+Jeder Actor lebt in seiner eigenen Datei unter
+`backend/actors/`; `main.ts` ist reines Wiring. Sechs Frontends
+teilen sich ein WebSocket-Protokoll, sodass du sie direkt
+nebeneinander vergleichen kannst.
 
 ## Wohin als Nächstes
 

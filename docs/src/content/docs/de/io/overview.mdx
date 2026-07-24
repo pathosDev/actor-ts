@@ -123,19 +123,20 @@ Konfigurierbar über `BrokerCommonOptionsType`:
 ```ts
 {
   reconnect: {
-    minBackoffMs:  500,
-    maxBackoffMs:  30_000,
-    randomFactor:  0.2,
-    maxAttempts:   -1,    // -1 = unbegrenzt
+    initialDelayMs: 200,
+    maxDelayMs:     30_000,
+    factor:         2,
+    // maxAttempts weggelassen → Infinity (endlos wiederholen); eine
+    // endliche positive Zahl begrenzt die Versuche.  reconnect: false
+    // schaltet ihn ab.
   }
 }
 ```
 
 Jeder Versuch löst ein `BrokerReconnectAttempt`-Event aus.  Wenn
 `maxAttempts` überschritten wird (sofern endlich), meldet der Actor
-`BrokerReconnectFailed` und bleibt getrennt; gepufferte Nachrichten
-in der Outbound-Queue werden gemäß Buffer-Policy irgendwann
-verworfen.
+`BrokerReconnectFailed` und bleibt getrennt; Nachrichten im
+Outbound-Buffer werden bei Überlauf älteste zuerst verworfen.
 
 ## Outbound-Buffer
 
@@ -144,49 +145,48 @@ nicht sofort fehl — sie werden in einem begrenzten Outbound-Buffer
 eingereiht.  Sobald die Verbindung wiederhergestellt ist, wird der
 Buffer geleert.
 
-Konfigurierbare Größe + Überlauf-Policy:
+Konfigurierbare Größe — eine einfache Nachrichtenanzahl:
 
 ```ts
 {
-  outboundBuffer: {
-    capacity: 1_000,
-    overflow: 'drop-oldest',   // oder 'drop-new' oder 'reject'
-  }
+  outboundBuffer: 1_000,   // Nachrichten, die bei Trennung gehalten werden; 0 = Fail-Fast
 }
 ```
 
-Wenn der Buffer überläuft, publisht die Basisklasse ein
-`BrokerBufferOverflow`-Event, damit du es in Metriken verdrahten
-kannst.
+Wenn der Buffer voll ist, wird die **älteste** Nachricht verworfen
+(FIFO) und die Basisklasse publisht ein `BrokerBufferOverflow`-Event,
+damit du es in Metriken verdrahten kannst.  Mit `outboundBuffer: 0`
+gibt es stattdessen Fail-Fast — eine bei Trennung gesendete ausgehende
+Nachricht wird verworfen und ein `BrokerNotConnected`-Event publisht.
 
 ## Subscriber-Fan-out
 
-Für eingehende Nachrichten (z. B. eine Kafka-Nachricht, die auf einem
-subscribierten Topic landet) publisht der Broker-Actor an
-**Subscriber** — Actor-Refs, die sich als interessiert registriert
-haben:
+Für eingehende Nachrichten (z. B. ein Kafka-Record, der auf einem
+subscribierten Topic landet) liefert der Broker-Actor jede einzelne an
+eine **Target**-Actor-Ref, die du vorab über `withTarget` festlegst:
 
 ```ts
-const kafkaOptions = KafkaOptions.create()
-  .withBrokers('localhost:9092')
-  .withConsumer({ groupId: 'my-app', topics: ['orders'] });
-const kafka = system.spawn(
-  Props.create(() => new KafkaActor(
-    kafkaOptions,
-  )),
-);
-
 const handler = system.spawnAnonymous(Props.create(() => new OrderHandler()));
 
-kafka.tell({ kind: 'subscribe', subscriber: handler });
-// Jede eingehende Order wird jetzt an `handler` gesendet.
+const kafkaOptions = KafkaOptions.create()
+  .withBrokers('localhost:9092')
+  .withConsumer({ groupId: 'my-app' })
+  .withTopics(['orders'])
+  .withTarget(handler);
+const kafka = system.spawnAnonymous(
+  Props.create(() => new KafkaActor(kafkaOptions)),
+);
+// Jeder eingehende Order-Record wird jetzt an `handler` gesendet.
+
+// Zur Laufzeit ein weiteres Topic zum laufenden Consumer hinzufügen:
+kafka.tell({ kind: 'subscribe', topic: 'shipments' });
 ```
 
 Verschiedene Broker-Actors haben unterschiedliche Subscription-
 Semantiken (ein einzelnes Topic bei MQTT, eine Consumer-Group + Topic-
-Liste bei Kafka), aber das Muster ist konsistent: Subscriber-Ref
-registrieren, eingehende Protokollnachrichten als Actor-Nachrichten
-empfangen.
+Liste bei Kafka), aber das Muster ist konsistent: den Actor auf eine
+Target-Ref richten und eingehende Protokollnachrichten als
+Actor-Nachrichten empfangen.
 
 ## Reihenfolge der Settings
 
@@ -195,7 +195,7 @@ Drei Ebenen, höchste Priorität zuerst:
 1. **Konstruktor-Argument** — was du beim Spawnen des Actors
    übergeben hast.
 2. **HOCON-Config** unter einem protokollspezifischen Key (z. B.
-   `actor-ts.io.kafka { bootstrap-servers = "..." }`).
+   `actor-ts.io.broker.kafka { brokers = "..." }`).
 3. **Eingebaute Defaults** — vernünftige Produktions-Defaults, die
    der Actor mitbringt.
 

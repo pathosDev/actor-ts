@@ -122,18 +122,19 @@ schedules a reconnect with exponential backoff.  Configurable via
 ```ts
 {
   reconnect: {
-    minBackoffMs:  500,
-    maxBackoffMs:  30_000,
-    randomFactor:  0.2,
-    maxAttempts:   -1,    // -1 = unlimited
+    initialDelayMs: 200,
+    maxDelayMs:     30_000,
+    factor:         2,
+    // maxAttempts omitted → Infinity (retry forever); set a finite
+    // positive number to cap attempts.  reconnect: false disables it.
   }
 }
 ```
 
 Each attempt fires a `BrokerReconnectAttempt` event.  When
 `maxAttempts` is exceeded (if finite), the actor surfaces
-`BrokerReconnectFailed` and stays disconnected; messages buffered
-in the outbound queue are eventually dropped per the buffer policy.
+`BrokerReconnectFailed` and stays disconnected; messages held in
+the outbound buffer are dropped oldest-first as it overflows.
 
 ## Outbound buffer
 
@@ -141,46 +142,47 @@ While disconnected, outgoing messages don't fail immediately —
 they're enqueued in a bounded outbound buffer.  When the connection
 restores, the buffer is drained.
 
-Configurable size + overflow policy:
+Configurable size — a plain message count:
 
 ```ts
 {
-  outboundBuffer: {
-    capacity: 1_000,
-    overflow: 'drop-oldest',   // or 'drop-new' or 'reject'
-  }
+  outboundBuffer: 1_000,   // messages held while disconnected; 0 = fail-fast
 }
 ```
 
-When the buffer overflows, the base publishes a `BrokerBufferOverflow`
-event so you can wire it into metrics.
+When the buffer is full the **oldest** message is dropped (FIFO) and
+the base publishes a `BrokerBufferOverflow` event so you can wire it
+into metrics.  Set `outboundBuffer: 0` to fail-fast instead — an
+outbound message sent while disconnected is dropped and a
+`BrokerNotConnected` event is published.
 
 ## Subscriber fan-out
 
-For inbound messages (e.g., a Kafka message landing on a subscribed
-topic), the broker actor publishes to **subscribers** — actor refs
-registered as interested:
+For inbound messages (e.g., a Kafka record landing on a subscribed
+topic), the broker actor delivers each one to a **target** actor ref
+you designate up front via `withTarget`:
 
 ```ts
-const kafkaOptions = KafkaOptions.create()
-  .withBrokers('localhost:9092')
-  .withConsumer({ groupId: 'my-app', topics: ['orders'] });
-const kafka = system.spawn(
-  Props.create(() => new KafkaActor(
-    kafkaOptions,
-  )),
-);
-
 const handler = system.spawnAnonymous(Props.create(() => new OrderHandler()));
 
-kafka.tell({ kind: 'subscribe', subscriber: handler });
-// Now every inbound order is told to `handler`.
+const kafkaOptions = KafkaOptions.create()
+  .withBrokers('localhost:9092')
+  .withConsumer({ groupId: 'my-app' })
+  .withTopics(['orders'])
+  .withTarget(handler);
+const kafka = system.spawnAnonymous(
+  Props.create(() => new KafkaActor(kafkaOptions)),
+);
+// Now every inbound order record is told to `handler`.
+
+// Add another topic to the running consumer at runtime:
+kafka.tell({ kind: 'subscribe', topic: 'shipments' });
 ```
 
 Different broker actors have different subscription semantics (a
 single topic for MQTT, a consumer-group + topic list for Kafka),
-but the pattern is consistent: register a subscriber ref, receive
-the protocol's inbound messages as actor messages.
+but the pattern is consistent: point the actor at a target ref and
+receive the protocol's inbound messages as actor messages.
 
 ## Settings precedence
 
@@ -189,7 +191,7 @@ Three layers, highest-first:
 1. **Constructor argument** — what you passed when spawning the
    actor.
 2. **HOCON config** under a protocol-specific key (e.g.
-   `actor-ts.io.kafka { bootstrap-servers = "..." }`).
+   `actor-ts.io.broker.kafka { brokers = "..." }`).
 3. **Built-in defaults** — sensible production defaults the actor
    ships with.
 

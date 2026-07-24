@@ -15,10 +15,11 @@ write:
 }
 ```
 
-On read, the framework unwraps this and routes through the
-adapter's `upcast(payload, version)`.  The adapter sees the
-**version** + the **payload**; it returns the current-shape
-event.
+On read, the framework unwraps this into a **stored frame**
+`{ manifest, version, payload }` and routes it through the
+adapter's `fromJournal(stored)`.  The adapter sees the
+**manifest**, **version**, and **payload**; it returns the
+current-shape event.
 
 ## The fields
 
@@ -59,19 +60,42 @@ arrives.
 ## What the adapter sees
 
 ```ts
-interface EventAdapter<E> {
-  upcast(stored: unknown, version: number): E;
+interface EventAdapter<DomainEvent, JournalShape = DomainEvent> {
+  manifest(event: DomainEvent): string;
+  toJournal(event: DomainEvent): OutboundFrame<JournalShape>;
+  fromJournal(stored: StoredFrame): DomainEvent;
+}
+
+// what the adapter sees on the read path
+interface StoredFrame {
+  manifest: string;
+  version: number;
+  payload: unknown;
+}
+
+// what the adapter emits on the write path (wrapped into an envelope)
+interface OutboundFrame<JournalShape = unknown> {
+  manifest: string;
+  version: number;
+  payload: JournalShape;
 }
 ```
 
-`stored` is the **`_e` payload** — without the envelope.
-`version` is the **`_v`** value.  The adapter's job:
+On read, the framework unwraps the envelope into a `StoredFrame`
+and calls the adapter's `fromJournal(stored)`.  `stored.payload`
+is the **`_e`** payload — without the envelope; `stored.version`
+is the **`_v`** value; `stored.manifest` is the **`_t`** tag.
+The adapter's read-path job:
 
-- Inspect `version`.
-- If it's the current version, cast `stored` to `E` (the current
-  shape) and return.
-- If it's older, transform `stored` to the current shape, then
-  return.
+- Inspect `stored.version`.
+- If it's the current version, cast `stored.payload` to
+  `DomainEvent` (the current shape) and return.
+- If it's older, transform `stored.payload` to the current shape,
+  then return.
+
+`manifest` and `toJournal` cover the **write** path — they tag an
+outgoing event and package it as the triple the framework wraps
+into an envelope.
 
 The framework's built-in adapters (defaultsAdapter,
 migratingAdapter) encapsulate this pattern.  Custom adapters

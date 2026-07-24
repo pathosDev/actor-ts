@@ -255,11 +255,24 @@ ablehnen willst, statt durch den JSON-Fallback zu gehen.
 
 ### Streaming-Responses
 
-Das Framework unterstützt derzeit keine streamenden Response-
-Bodies in der Route-DSL — `HttpResponse.body` wird vor dem
-Schreiben im Speicher materialisiert.  Für SSE oder Chunked-
-Responses nimm den [`SseActor`](/de/io/sse/) oder steig auf die
-native Streaming-API des Backends ab.
+`HttpResponse.body` akzeptiert einen Web-`ReadableStream<Uint8Array>`,
+und alle drei Backends streamen ihn direkt zum Client, ohne ihn im
+Speicher zu puffern — Fastify reicht den Stream an `reply.send`,
+Express leitet ihn per `Readable.fromWeb` weiter, und Hono gibt ihn
+als `Response`-Body zurück.  Gib einen direkt aus einem Handler
+zurück:
+
+```ts
+get(async (req) => {
+  const rows = streamReport();   // ReadableStream<Uint8Array>
+  return complete(200, rows, { 'content-type': 'text/csv' });
+});
+```
+
+Ohne expliziten `Content-Type` fällt ein Stream auf
+`application/octet-stream` zurück.  Streams sind einmalig; leite
+eine streamende Response daher nicht durch die Caching-Middleware.
+Für SSE nimm den [`SseActor`](/de/io/sse/).
 
 import { Aside } from '@astrojs/starlight/components';
 

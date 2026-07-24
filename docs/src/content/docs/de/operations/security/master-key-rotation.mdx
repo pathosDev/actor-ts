@@ -6,27 +6,31 @@ description: Rotiere den Master-Verschlüsselungsschlüssel für At-rest-Daten (
 Für At-rest-Verschlüsselung
 ([Object-Storage-Verschlüsselung](/de/persistence/object-storage/encryption/),
 Durable-DD-Verschlüsselung) leben die Schlüssel des Frameworks in
-einem **`MasterKeyRing`** — einer versionierten Map von Key-ID zu
-Verschlüsselungsschlüssel. Rotation ist **online**: Neue Writes
-laufen unter einer frischen Key-ID; alte Reads funktionieren weiter
-unter dem Schlüssel, mit dem sie verschlüsselt wurden; ein
-Hintergrund-Sweep verschlüsselt ältere Daten irgendwann neu.
+einem **`MasterKeyRing`** — einem versionierten Satz von Schlüsseln:
+ein `active`-Schlüssel plus beliebig viele `retired`-Schlüssel,
+jeweils mit einer numerischen **Version** (ein einzelnes Byte, 0-255)
+getaggt. Rotation ist **online**: Neue Writes laufen unter dem
+`active`-Schlüssel; alte Reads funktionieren weiter unter der Version,
+mit der sie verschlüsselt wurden; ein Hintergrund-Sweep verschlüsselt
+ältere Daten irgendwann neu.
 
 ```ts
-import { MasterKeyRing } from 'actor-ts';
+import type { MasterKeyRing } from 'actor-ts';
 
-const keyRing = new MasterKeyRing({
-  keys: {
-    'k1': process.env.MASTER_KEY_V1!,
-    'k2': process.env.MASTER_KEY_V2!,   // neu — aktuell
-  },
-  currentKeyId: 'k2',
-});
+// Jeder Schlüssel ist 32 rohe Bytes (AES-256) — dekodiert aus einer
+// base64-Env-Var, einem gemounteten Secret oder einem KMS-Unwrap
+// (siehe "Speicherung der Master-Keys" unten).
+const keyRing: MasterKeyRing = {
+  active:  { version: 2, key: Buffer.from(process.env.MASTER_KEY_V2!, 'base64') },  // neu — aktuell
+  retired: [{ version: 1, key: Buffer.from(process.env.MASTER_KEY_V1!, 'base64') }],
+};
 ```
 
-`currentKeyId` ist der Schlüssel, der für **neue Writes** genutzt
-wird. Reads konsultieren `keys`, um den richtigen Schlüssel für die
-jeweils gespeicherten Daten zu finden.
+`MasterKeyRing` ist ein **Typ**, keine Klasse — du baust das obige
+einfache Objekt; es gibt nichts zu `new`. `active` ist der Schlüssel,
+der für **neue Writes** genutzt wird. Reads dispatchen anhand des
+Version-Bytes im Manifest jedes Blobs und matchen es gegen `active`
+oder einen der `retired`-Einträge.
 
 ## Wann rotieren
 
@@ -45,18 +49,19 @@ Praxis** — begrenzt den Blast Radius eines unentdeckten Leaks.
 ## Der Rotations-Ablauf
 
 ```
-   1. Frischen Schlüssel erzeugen. Zu keyRing.keys hinzufügen; NOCH
-      NICHT als currentKeyId promoten.
-   2. Den aktualisierten keyRing auf allen Nodes ausrollen.
-      Verifizieren, dass Reads funktionieren — alte Daten nutzen
-      weiter den alten Schlüssel, neue Daten weiter den vorherigen.
-   3. currentKeyId auf den neuen Schlüssel updaten. Ausrollen. Neue
-      Writes nutzen den neuen Schlüssel. Alte Daten weiter lesbar.
-   4. Den Re-Encryption-Sweep laufen lassen. Alte Daten werden
-      gelesen, entschlüsselt, mit dem neuen Schlüssel neu verschlüsselt.
-   5. Sobald der Sweep durch ist, den alten Schlüssel aus keyRing
-      entfernen. Ein Rollback-Fenster von ~7 Tagen halten, in dem
-      der alte Schlüssel noch verfügbar ist; danach droppen.
+   1. Frischen Schlüssel mit der nächsten Versionsnummer erzeugen. Zu
+      keyRing.retired hinzufügen; NOCH NICHT zu active promoten.
+   2. Den aktualisierten Ring auf allen Nodes ausrollen. Verifizieren,
+      dass Reads funktionieren — alte Daten entschlüsseln weiter,
+      Writes nutzen weiter den aktuellen active-Schlüssel.
+   3. Den frischen Schlüssel zu active promoten (den bisherigen active
+      nach retired verschieben). Ausrollen. Neue Writes nutzen den
+      neuen Schlüssel; alte Daten weiter lesbar.
+   4. Den Re-Encryption-Sweep laufen lassen. Alte Daten werden gelesen,
+      entschlüsselt, unter dem active-Schlüssel neu verschlüsselt.
+   5. Sobald der Sweep durch ist, den alten Schlüssel aus retired
+      droppen. Ein Rollback-Fenster von ~7 Tagen halten, in dem der
+      alte Schlüssel noch verfügbar ist; danach droppen.
 ```
 
 Das Framework unterstützt jeden dieser Schritte ohne Downtime.
@@ -64,36 +69,31 @@ Das Framework unterstützt jeden dieser Schritte ohne Downtime.
 ## Schritt 1 — den neuen Schlüssel hinzufügen
 
 ```ts
-const keyRing = new MasterKeyRing({
-  keys: {
-    'k1': process.env.MASTER_KEY_V1!,
-    'k2': process.env.MASTER_KEY_V2!,   // neu
-  },
-  currentKeyId: 'k1',   // weiter v1 — v2 nur zum Ring hinzugefügt
-});
+const keyRing: MasterKeyRing = {
+  active:  { version: 1, key: Buffer.from(process.env.MASTER_KEY_V1!, 'base64') },   // weiter v1 — active unverändert
+  retired: [{ version: 2, key: Buffer.from(process.env.MASTER_KEY_V2!, 'base64') }], // v2 zum Ring hinzugefügt, noch nicht active
+};
 ```
 
 Diese Config auf jeden Node ausrollen. Reads von v1-verschlüsselten
-Daten funktionieren weiter; Writes nutzen weiter v1.
+Daten funktionieren weiter; Writes nutzen weiter v1 — aber jeder Node
+hält jetzt v2 und kann darunter entschlüsseln.
 
 Dieser Schritt ist **sicher und umkehrbar** — wenn v2 doch nicht
-gebraucht wird, einfach aus `keys` entfernen.
+gebraucht wird, einfach aus `retired` entfernen.
 
 ## Schritt 2 — den neuen Schlüssel promoten
 
 ```ts
-const keyRing = new MasterKeyRing({
-  keys: {
-    'k1': process.env.MASTER_KEY_V1!,
-    'k2': process.env.MASTER_KEY_V2!,
-  },
-  currentKeyId: 'k2',   // ← jetzt v2
-});
+const keyRing: MasterKeyRing = {
+  active:  { version: 2, key: Buffer.from(process.env.MASTER_KEY_V2!, 'base64') },   // ← jetzt v2
+  retired: [{ version: 1, key: Buffer.from(process.env.MASTER_KEY_V1!, 'base64') }],
+};
 ```
 
-Ausrollen. Neue Writes laufen unter v2. Reads konsultieren den
-keyRing und finden den richtigen Schlüssel (v1 oder v2) anhand des
-Key-ID-Headers der gespeicherten Daten.
+Ausrollen. Neue Writes laufen unter v2. Reads konsultieren den Ring
+und finden den richtigen Schlüssel (v1 oder v2) anhand des
+Version-Bytes im Manifest des gespeicherten Blobs.
 
 Nach diesem Schritt **sammeln sich neue Daten unter v2 an**, sobald
 der Workload schreibt. Alte Daten **bleiben unter v1**, bis sie neu
@@ -102,45 +102,53 @@ verschlüsselt werden.
 ## Schritt 3 — Re-Encryption-Sweep
 
 ```ts
-import { ReEncryptionSweep } from 'actor-ts';
+import { reEncryptObjectStorage } from 'actor-ts';
 
-const sweep = new ReEncryptionSweep({
-  store:           snapshotStore,
-  keyRing,
-  targetKeyId:     'k2',
-  batchSize:       100,
-  rateLimit:       50,   // Items pro Sekunde
+// `backend` ist das ObjectStorageBackend, durch das dein Store
+// schreibt (ein FilesystemObjectStorageBackend, S3ObjectStorageBackend, …).
+const result = await reEncryptObjectStorage(backend, {
+  keyPrefix: 'snapshots/',   // welche Objekte gesweept werden
+  keyring:   keyRing,        // active = v2, retired = [v1]
 });
 
-await sweep.run();
+console.log(`re-encrypted ${result.rewrote} of ${result.scanned} objects`);
 ```
 
-Der Sweep läuft durch den Store, findet Items, die nicht unter
-`targetKeyId` verschlüsselt sind, entschlüsselt + verschlüsselt neu.
+Der Sweep listet jedes Objekt unter `keyPrefix` und entschlüsselt +
+verschlüsselt jedes, das noch nicht auf der `active`-Version des Rings
+ist, unter `active` neu. Objekte, die bereits aktuell sind, werden
+ohne Write übersprungen.
 
-Knöpfe:
+Nützliche Optionen:
 
-- **`batchSize`** — Items pro Batch.
-- **`rateLimit`** — begrenzt die I/O-Rate, damit der Sweep das
-  zugrundeliegende Storage nicht hämmert.
-- **`filter`** — auf spezifische PersistenceIds beschränken (für
-  partielle Rotation).
+- **`skip`** — ein `(key) => boolean`-Prädikat; matchende Keys
+  bleiben unangetastet (Nicht-Body-Objekte ausschließen oder eine
+  partielle Rotation eingrenzen).
+- **`onProgress`** — Per-Objekt-Callback fürs Logging oder ein
+  Operator-Dashboard bei langen Sweeps.
+- **`progress`** — ein `ReEncryptProgressStore` (z. B.
+  `InMemoryReEncryptProgressStore`) für Crash-Resume sehr großer
+  Sweeps.
+- **`verifyKeyringCompleteness`** — standardmäßig an: sampelt einige
+  Blobs und verweigert den Start, wenn eines eine Version referenziert,
+  die im Ring fehlt.
 
-Der Sweep ist **idempotent + wiederaufnehmbar** — unterbrechen und
-neu starten greift dort wieder, wo aufgehört wurde. Tracked
-Fortschritt in den Metadaten des Stores.
+Der Sweep ist **idempotent + wiederaufnehmbar** — ein Objekt, das
+bereits auf der `active`-Version ist, wird ohne Write übersprungen,
+sodass ein erneuter Lauf nach einer Unterbrechung sicher ist.
+Standardmäßig re-listet und re-checkt ein wiederaufgenommener Lauf
+jeden Key; übergib einen `progress`-Store, um direkt an den bereits
+erledigten Objekten vorbeizuspringen.
 
 ## Schritt 4 — den alten Schlüssel ausmustern
 
 Nachdem der Sweep durch ist (jedes Item unter v2 verschlüsselt):
 
 ```ts
-const keyRing = new MasterKeyRing({
-  keys: {
-    'k2': process.env.MASTER_KEY_V2!,
-  },
-  currentKeyId: 'k2',
-});
+const keyRing: MasterKeyRing = {
+  active: { version: 2, key: Buffer.from(process.env.MASTER_KEY_V2!, 'base64') },
+  // retired gedroppt — v1 ist weg
+};
 ```
 
 v1 komplett droppen. Daten, die weiter unter v1 verschlüsselt sind
@@ -178,23 +186,27 @@ import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="Den alten Schlüssel vor Sweep-Ende droppen">
   ```ts
-  // currentKeyId: 'k2' + k1 aus keyRing gedroppt
-  // ABER manche Daten weiter unter k1 verschlüsselt
+  // active: v2, retired: [] — v1 aus dem Ring gedroppt
+  // ABER manche Daten weiter unter v1 verschlüsselt
   ```
   Folge: Diese Daten sind **permanent unlesbar**. Keine Recovery
-  außer der gedroppte Schlüssel wird wiederhergestellt. Erst den
-  Sweep beenden + den alten Schlüssel ein Rollback-Fenster lang
-  behalten, dann ausmustern.
+  außer der gedroppte Schlüssel wird wiederhergestellt. Der
+  `verifyKeyringCompleteness`-Check des Sweeps fängt eine fehlende
+  Version vor dem Start ab, aber nichts schützt den Live-Read-Pfad —
+  erst den Sweep beenden + den alten Schlüssel ein Rollback-Fenster
+  lang behalten, dann ausmustern.
 </Aside>
 
-<Aside type="caution" title="Sweep mit zu strenger Rate-Limit">
+<Aside type="caution" title="Der Sweep hat keine eingebaute Drossel">
   ```ts
-  rateLimit: 1000_000,   // ✗ sättigt das Storage
+  // reEncryptObjectStorage läuft so schnell, wie das Backend erlaubt —
+  // es gibt keinen rateLimit- / batchSize-Knopf.
   ```
-  Der Sweep ist Hintergrundarbeit. Strenge Rate-Limits verhindern,
-  dass er gegen Foreground-Traffic konkurriert. Langsamer Sweep ist
-  okay — bias auf "beeinträchtigt Prod nicht" statt auf "ist schnell
-  fertig".
+  Ein großer Sweep kann gegen Foreground-Traffic konkurrieren (und,
+  auf S3, Request-Kosten hochtreiben). Lass ihn als Hintergrundarbeit
+  laufen, außerhalb der Stoßzeiten, und grenze ihn mit `keyPrefix` /
+  `skip` ein; beobachte ihn via `onProgress`. Bias auf "beeinträchtigt
+  Prod nicht" statt auf "ist schnell fertig".
 </Aside>
 
 <Aside type="caution" title="Master-Keys in plain Env">

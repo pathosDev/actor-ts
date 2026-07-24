@@ -38,7 +38,7 @@ Write-Durchsatz (durable, append-only) von Read-Durchsatz
 
 ```ts
 import { ProjectionActor, ByTagProjectionOptions } from 'actor-ts';
-import { SqliteQuery } from 'actor-ts';
+import { SqliteQuery, DurableStateOffsetStore, PostgresDurableStateStore } from 'actor-ts';
 
 type AccountEvent =
   | { kind: 'deposited'; amount: number }
@@ -48,7 +48,7 @@ const byTagProjectionOptions = ByTagProjectionOptions.create<AccountEvent>()
   .withName('account-balance-view')
   .withTag('account')
   .withQuery(new SqliteQuery({ path: '/var/lib/events.db' }))
-  .withOffsetStore(new SqliteOffsetStore({ path: '/var/lib/offsets.db' }))
+  .withOffsetStore(new DurableStateOffsetStore(new PostgresDurableStateStore()))
   .withHandle(async (event) => {
     if (event.event.kind === 'deposited') {
       await viewDb.execute(
@@ -113,13 +113,14 @@ viel komplexer, nicht out-of-the-box bereitgestellt.
 ## OffsetStore
 
 ```ts
-import { InMemoryOffsetStore, SqliteOffsetStore } from 'actor-ts';
+import { InMemoryOffsetStore, DurableStateOffsetStore } from 'actor-ts';
+import { PostgresDurableStateStore } from 'actor-ts';
 
 // Default (verloren beim Neustart):
 new InMemoryOffsetStore();
 
-// Produktion (Single-Node):
-new SqliteOffsetStore({ path: '/var/lib/offsets.db' });
+// Produktion (durable — nutzt ein beliebiges DurableStateStore-Backend wieder):
+new DurableStateOffsetStore(new PostgresDurableStateStore());
 ```
 
 Der Cursor ist nur eine Zahl (oder ein Compound-Offset) — pro
@@ -127,7 +128,9 @@ Projection-Name + Scope gespeichert.  Implementierungen:
 
 - `InMemoryOffsetStore` — okay für Tests, nutzlos in Produktion
   (jeder Neustart verarbeitet vom Anfang neu).
-- `SqliteOffsetStore` — Single-File-Durable-Offsets.
+- `DurableStateOffsetStore` — persistiert Offsets über einen
+  beliebigen `DurableStateStore` (Postgres, MariaDB, Object-Storage),
+  sodass du ein bereits laufendes durables Backend wiederverwendest.
 - Benutzerdefiniert — implementiere `OffsetStore` gegen deinen
   eigenen Store (Redis, Postgres, was auch immer dein Read-Model
   verwendet).

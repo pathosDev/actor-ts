@@ -31,22 +31,26 @@ interface Logger {
 }
 ```
 
-Calls below the configured `level` are no-ops — `this.log.debug(...)`
-on a system configured for `info` doesn't even evaluate the
-arguments (the level check happens first).
+Calls below the configured `level` emit nothing — `this.log.debug(...)`
+on a system configured for `info` produces no output.  The arguments
+are still evaluated first, though (they're ordinary function
+arguments), so guard expensive payloads with a manual level check
+(see below).
 
 ## Configuring the level
 
 System-wide via the settings:
 
 ```ts
-const actorSystemOptions = ActorSystemOptions.create().withLogLevel('debug');
+import { ActorSystem, ActorSystemOptions, LogLevel } from 'actor-ts';
+
+const actorSystemOptions = ActorSystemOptions.create().withLogLevel(LogLevel.Debug);
 const system = ActorSystem.create('my-app', actorSystemOptions);
 ```
 
-Or via the env / config file (`actor-ts.log-level = "debug"` in
+Or via the env / config file (`actor-ts.logger.level = "debug"` in
 `application.conf`).  Five levels: `debug` / `info` / `warn` /
-`error` / `silent`.  Default is `info`.
+`error` / `off`.  Default is `info`.
 
 ## Structured JSON logs — built-in `JsonLogger`
 
@@ -151,10 +155,14 @@ Static fields — same value on every record emitted by this logger:
 
 ```ts
 class ShardCoordinator extends Actor<...> {
-  private readonly log = this.context.log.withFields({
-    component: 'shard-coordinator',
-    shardId:   this.shardId,
-  });
+  private log!: Logger;
+
+  override preStart(): void {
+    this.log = this.context.log.withFields({
+      component: 'shard-coordinator',
+      shardId:   this.shardId,
+    });
+  }
 
   override onReceive(message): void {
     this.log.info('rebalance start');
@@ -165,7 +173,9 @@ class ShardCoordinator extends Actor<...> {
 
 `withFields` returns a new logger with the fields stamped on every
 emit.  Useful for component-level tagging that doesn't change
-across messages.
+across messages.  Bind it in `preStart` rather than a field
+initializer — `this.context` isn't available until the actor is
+attached, so a field initializer would throw at construction.
 
 ## Dynamic context — `LogContext` (MDC)
 
@@ -274,7 +284,11 @@ import { Aside } from '@astrojs/starlight/components';
 
 ```ts
 class PerSessionWorker extends Actor<...> {
-  private readonly log = this.context.log.withFields({ sessionId: this.id });
+  private log!: Logger;
+
+  override preStart(): void {
+    this.log = this.context.log.withFields({ sessionId: this.id });
+  }
 
   override async onReceive(message): Promise<void> {
     await LogContext.run({ requestId: message.requestId }, async () => {

@@ -190,13 +190,16 @@ forever.
 ## Ping / keep-alive
 
 ```ts
-new Feed(); // ...
-const webSocketClientOptions = WebsocketClientOptions.create()
-  .withUrl('wss://...')
-  .withPingIntervalMs(30_000);
-new WebsocketClientActor(
-  webSocketClientOptions,
-);
+class KeepAlive extends WebsocketClientActor<ClientMessage, ServerMessage> {
+  constructor() {
+    const webSocketClientOptions = WebsocketClientOptions.create<ClientMessage, ServerMessage>()
+      .withUrl('wss://...')
+      .withPingIntervalMs(30_000);
+    super(webSocketClientOptions);
+  }
+
+  onMessage(message: ServerMessage): void {}
+}
 ```
 
 An application-level ping every `pingIntervalMs` keeps
@@ -217,7 +220,7 @@ actor-ts.io.broker.websocket {
   protocols       = ["my-proto-v1"]
   pingIntervalMs  = 30000
   maxFrameBytes   = 1048576
-  reconnect       { initialDelayMs = 500, maxDelayMs = 30000, factor = 2.0, maxAttempts = -1 }
+  reconnect       { initialDelayMs = 500, maxDelayMs = 30000, factor = 2.0 }   // maxAttempts omitted = unlimited (the default)
   circuitBreaker  { /* ... */ }
   outboundBuffer  { /* ... */ }
 }

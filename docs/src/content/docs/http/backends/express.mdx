@@ -50,9 +50,9 @@ await http.newServerAt('0.0.0.0', 8080)
   .bind(routes);
 
 // Access the raw Express app:
-backend.app.use(express.session({ secret: '...' }));
-backend.app.use(expressRateLimitFromNpm);
-backend.app.use(customAuth);
+backend.getApp().use(express.session({ secret: '...' }));
+backend.getApp().use(expressRateLimitFromNpm);
+backend.getApp().use(customAuth);
 ```
 
 Express middleware **wraps** the actor-ts routes — request
@@ -114,22 +114,27 @@ If you have an existing Express app and want to add actor-ts:
 
 ```ts
 import express from 'express';
-import { actorTsRouter } from 'actor-ts/http/express-adapter';
+import { ExpressBackend, ExpressBackendOptions } from 'actor-ts/http';
 
 const app = express();
 
-// Existing routes:
+// Existing routes + middleware stay as-is:
 app.use('/legacy', oldLegacyRouter);
 
-// actor-ts routes mounted under a prefix:
-app.use('/v2', actorTsRouter(system, routes));
+// Hand the existing app to the backend; actor-ts registers its
+// routes on the same app, alongside your existing ones.
+const expressBackendOptions = ExpressBackendOptions.create().withApp(app);
+const backend = new ExpressBackend(expressBackendOptions);
 
-app.listen(8080);
+await http.newServerAt('0.0.0.0', 8080)
+  .useBackend(backend)
+  .bind(routes);
 ```
 
-The framework exposes an Express-router adapter for this case —
-mount actor-ts routes alongside existing Express ones without
-swapping the whole HTTP stack.
+Pass your existing app to the backend via `.withApp(app)` —
+actor-ts registers its routes on the same app, so your existing
+routes and middleware keep working without swapping the whole
+HTTP stack.
 
 import { Aside } from '@astrojs/starlight/components';
 

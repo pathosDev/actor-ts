@@ -67,12 +67,14 @@ for the deep dive on each.
 The framework auto-records a baseline of metrics when the
 extension is started:
 
-- **Actor metrics** — message counts per actor type, processing
-  duration histograms, mailbox depth gauges.
-- **Mailbox metrics** — enqueue rate, dequeue rate, dropped count
-  for bounded mailboxes.
-- **Cluster metrics** — member count by state, gossip lag,
-  reachability flips.
+- **Actor metrics** — a counter of messages delivered to
+  `onReceive` (`actor_messages_delivered_total`) and a
+  handler-duration histogram (`actor_message_handler_seconds`).
+- **Mailbox metrics** — a counter of messages dropped by a
+  bounded mailbox's overflow policy (`actor_mailbox_dropped_total`).
+- **Cluster metrics** — a gauge of members currently up
+  (`cluster_members_up`) and a counter of gossip rounds
+  (`cluster_gossip_rounds_total`).
 
 See [Stock metrics](/observability/metrics/stock-metrics/)
 for the full list.  These give you "are my actors processing

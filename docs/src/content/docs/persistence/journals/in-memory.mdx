@@ -33,9 +33,10 @@ interface Journal {
   append<E>(persistenceId: string, events: E[], expectedSeq: number, tags?: string[]): Promise<PersistentEvent<E>[]>;
   read<E>(persistenceId: string, fromSeq: number, toSeq?: number): Promise<PersistentEvent<E>[]>;
   highestSeq(persistenceId: string): Promise<number>;
-  deleteEventsUpTo(persistenceId: string, seqNr: number): Promise<void>;
-  persistenceIds(): AsyncIterable<string>;
-  readonly events: JournalEventBus;
+  delete(persistenceId: string, toSeq: number): Promise<void>;
+  persistenceIds(): Promise<string[]>;
+  readonly events?: JournalEventBus;
+  close?(): Promise<void>;
 }
 ```
 
@@ -47,7 +48,7 @@ internally.  Operations are:
   current head doesn't match).
 - **`read`** — slice the array by sequence number range.
 - **`highestSeq`** — read the last entry's seqNr (or 0).
-- **`deleteEventsUpTo`** — splice off the prefix.
+- **`delete`** — splice off the prefix.
 - **`persistenceIds`** — iterate the Map's keys.
 
 Every `append` also publishes the event to the in-process
@@ -137,10 +138,10 @@ import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="Unbounded memory growth">
   The journal stores every event forever (until you call
-  `deleteEventsUpTo`).  A long-running test that emits thousands
+  `delete`).  A long-running test that emits thousands
   of events per second will grow the journal's memory linearly.
   For long-running benchmarks, either snapshot aggressively + call
-  `deleteEventsUpTo` after each snapshot, or use SQLite which
+  `delete` after each snapshot, or use SQLite which
   flushes to disk.
 </Aside>
 

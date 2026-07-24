@@ -1,14 +1,14 @@
 ---
 title: Verschlüsselung
-description: AES-GCM-Verschlüsselung at rest für Object-Storage-Payloads — Schlüssel werden über einen versionierten `MasterKeyRing` für Online-Rotation verwaltet. Jeder Blob ist unter einem Master-Key verschlüsselt; Key-IDs werden neben dem Ciphertext gespeichert.
+description: AES-GCM-Verschlüsselung at rest für Object-Storage-Payloads — Schlüssel werden als einzelner Master-Key oder als versionierter Key-Ring für Online-Rotation verwaltet. Jeder Blob ist unter einem Per-persistenceId-Subkey verschlüsselt; die Schlüsselversion wird im Body-Manifest mitgeführt.
 ---
 
 Object-Storage-Payloads unterstützen
 **Client-Side-AES-GCM-Verschlüsselung** — das Framework
 verschlüsselt vor dem Put, entschlüsselt beim Get, Schlüssel
-werden über einen
-[MasterKeyRing](/de/operations/security/master-key-rotation/)
-verwaltet.
+werden als einzelner Master-Key oder als versionierter
+[Key-Ring](/de/operations/security/master-key-rotation/) für
+Rotation verwaltet.
 
 ```ts
 import {
@@ -16,22 +16,19 @@ import {
   ObjectStorageDurableStateStoreOptions,
   S3ObjectStorageBackend,
   S3ObjectStorageOptions,
-  MasterKeyRing,
 } from 'actor-ts';
 
-const keyRing = new MasterKeyRing({
-  keys: { 'k1': process.env.MASTER_KEY_V1! },
-  currentKeyId: 'k1',
-});
+const masterKey = Buffer.from(process.env.MASTER_KEY_V1!, 'base64'); // 32 Bytes
 
 const objectStorageDurableStateStoreOptions = ObjectStorageDurableStateStoreOptions.create()
   .withBackend(new S3ObjectStorageBackend(S3ObjectStorageOptions.create() /* .withRegion(...).withBucket(...) */))
-  .withEncryption({ keyRing });
+  .withEncryption({ mode: 'client-aes256-gcm', masterKey });
 const store = new ObjectStorageDurableStateStore(objectStorageDurableStateStoreOptions);
 ```
 
 Jetzt wird jeder persistierte State vor dem Upload mit AES-GCM
-unter `k1` verschlüsselt.  Reads entschlüsseln transparent.
+verschlüsselt — unter einem Per-`persistenceId`-Subkey, der aus
+dem Master-Key abgeleitet wird.  Reads entschlüsseln transparent.
 
 ## Warum Client-Side-Verschlüsselung
 
@@ -54,48 +51,63 @@ Baseline + Client-Side für sensible Payloads.
 ## Konfiguration
 
 ```ts
-interface EncryptionConfig {
-  keyRing: MasterKeyRing;
-  /** Den Algorithmus überschreiben; Default 'AES-GCM'. */
-  algorithm?: 'AES-GCM';
+type EncryptionConfig =
+  | { mode: 'none' }
+  | { mode: 'sse-s3' }                                    // serverseitig, S3-verwaltet
+  | { mode: 'sse-kms'; kmsKeyId: string }                // serverseitig, KMS-verwaltet
+  | { mode: 'client-aes256-gcm'; masterKey: Uint8Array; info?: string }
+  | { mode: 'client-aes256-gcm'; masterKeys: MasterKeyRing; info?: string };
+
+interface MasterKeyRing {
+  active: MasterKeyRingEntry;                // neue Writes verschlüsseln hierunter
+  retired?: MasterKeyRingEntry[];            // ältere Schlüssel, für Entschlüsselung behalten
+}
+interface MasterKeyRingEntry {
+  version: number;                           // 0..255, im Body-Manifest eingebettet
+  key: Uint8Array;                           // 32 Bytes (AES-256)
 }
 ```
 
-Der `MasterKeyRing` trägt:
+Client-Side-Verschlüsselung verwendet `mode: 'client-aes256-gcm'`
+mit entweder einem einzelnen **`masterKey`** (32 Bytes) oder
+einem **`masterKeys`**-Ring.  Der Ring trägt:
 
-- **`keys`** — keyId → Schlüssel-Bytes-Map.
-- **`currentKeyId`** — welchen Schlüssel neue Writes verwenden.
+- **`active`** — den Schlüssel, unter dem neue Writes verschlüsseln.
+- **`retired`** — ältere Schlüssel, behalten, um historische Blobs zu entschlüsseln.
 
-Mehrere Schlüssel im Ring lassen dich ältere Payloads (unter
-älteren Schlüsseln verschlüsselt) lesen, während neue Payloads
-den aktuellen Schlüssel verwenden.  Das ist das Fundament der
+Das **`version`**-Byte jedes Eintrags wird im Body-Manifest
+mitgeführt, damit die Entschlüsselung den passenden Schlüssel
+wählen kann.  Den aktiven Schlüssel plus die retired Schlüssel
+zu führen, ist das Fundament der
 [Schlüsselrotation](/de/persistence/object-storage/key-rotation/).
 
 ## Wie es funktioniert
 
 ```
 Beim Put:
-  Wert serialisieren → Bytes → AES-GCM(bytes, currentKey) → Ciphertext
-  → Metadaten { keyId: currentKeyId, iv, tag }
-  → S3.put(ciphertext, x-amz-meta-key-id: currentKeyId, etc.)
+  Wert serialisieren → komprimieren → Per-pid-Subkey ableiten (HKDF aus active key)
+  → AES-GCM(bytes, subkey, iv) → Ciphertext
+  → Body-Manifest "ATS1" { flags, keyVersion, iv, ciphertext }
+  → S3.put(body)                      // kein Key-ID-Metadaten-Header
 
 Beim Get:
-  S3.get → Ciphertext + Metadaten{ keyId, iv, tag }
-  → keyRing.get(keyId) → decrypt(ciphertext, key, iv, tag)
-  → Bytes → deserialisieren
+  S3.get → Body-Manifest { flags, keyVersion, iv, ciphertext }
+  → Master-Key nach keyVersion wählen (active oder ein retired-Eintrag)
+  → Per-pid-Subkey ableiten (HKDF) → AES-GCM entschlüsseln → dekomprimieren
+  → deserialisieren
 ```
 
-Die **Key-ID wird neben dem Ciphertext gespeichert** — jeder Blob
-weiß, mit welchem Schlüssel er verschlüsselt wurde.  Das lässt
-das Framework **alte Payloads** mit dem richtigen Schlüssel
-entschlüsseln, auch nachdem der aktuelle Schlüssel rotiert
-wurde.
+Die **Schlüsselversion ist im Body-Manifest eingebettet** — jeder
+Blob hält fest, unter welcher Schlüsselversion er verschlüsselt
+wurde.  Das lässt das Framework **alte Payloads** mit dem richtigen
+Schlüssel entschlüsseln, auch nachdem der active Schlüssel rotiert
+wurde (retired Schlüssel bleiben im Ring).
 
 ## Was es verschlüsselt
 
 - **Den Body** — serialisierter State / Event / Snapshot.
-- **Nicht** — den Object-Key, Metadaten-Header (außer der Key-ID),
-  den Bucket-Namen.
+- **Nicht** — den Object-Key, Object-Metadaten-Header, den
+  Bucket-Namen.
 
 Für Object-Metadaten, die nicht durchsickern sollten (sensible
 persistenceIds), verwende ein separates Naming-Schema (hashe IDs,
@@ -108,12 +120,8 @@ Die Master-Key-Bytes kommen irgendwoher.  Häufige Muster:
 ### Env-Vars
 
 ```ts
-new MasterKeyRing({
-  keys: {
-    'k1': Buffer.from(process.env.MASTER_KEY_V1!, 'base64'),
-  },
-  currentKeyId: 'k1',
-});
+const masterKey = Buffer.from(process.env.MASTER_KEY_V1!, 'base64'); // 32 Bytes
+// → .withEncryption({ mode: 'client-aes256-gcm', masterKey })
 ```
 
 Am einfachsten.  Jeder Schlüssel ist ein 32-Byte-Buffer (für
@@ -134,10 +142,8 @@ const decrypted = await kms.decrypt({
   CiphertextBlob:  Buffer.from(process.env.WRAPPED_KEY!, 'base64'),
 });
 
-const keyRing = new MasterKeyRing({
-  keys: { 'k1': decrypted.Plaintext! },
-  currentKeyId: 'k1',
-});
+const masterKey = decrypted.Plaintext!; // 32 Bytes, im Speicher gehalten
+// → .withEncryption({ mode: 'client-aes256-gcm', masterKey })
 ```
 
 Der Master-Key wird **verschlüsselt unter einem Cloud-KMS-Key
@@ -185,14 +191,15 @@ Nachdem du Verschlüsselung auf einem zuvor unverschlüsselten
 Bucket aktiviert hast:
 
 ```
-state/cart-42  ← alt, Plaintext, keine Key-ID-Metadaten
-state/cart-43  ← neu, verschlüsselt, Key-ID: k1
+state/cart-42  ← alt, Plaintext (Encrypted-Flag im Manifest nicht gesetzt)
+state/cart-43  ← neu, verschlüsselt (Encrypted-Flag gesetzt, Schlüsselversion 0)
 ```
 
-Das Framework erkennt jedes Pro-Payload über die Metadaten:
+Das Framework erkennt jedes Pro-Payload über das Body-Manifest:
 
-- **Keine Key-ID-Metadaten** → Plaintext-Pfad.
-- **Key-ID vorhanden** → über den keyRing entschlüsseln.
+- **Encrypted-Flag nicht gesetzt** → Plaintext-Pfad.
+- **Encrypted-Flag gesetzt** → mit der Schlüsselversion entschlüsseln,
+  die das Manifest festhält.
 
 Bedeutet, **du kannst Verschlüsselung schrittweise aktivieren** —
 neue Writes werden verschlüsselt, alte Reads funktionieren immer
@@ -214,15 +221,20 @@ import { Aside } from '@astrojs/starlight/components';
   Datenzerstörung.
 </Aside>
 
-<Aside type="caution" title="Per-Tenant-Schlüssel-Isolation ist nicht out-of-the-box">
+<Aside type="tip" title="Per-Tenant-Schlüssel bilden auf persistenceId ab">
   ```ts
-  // Kunde A und Kunde B verwenden beide denselben Master-Key
+  .withEncryption(encryptionByPrefix({
+    'tenant-a/': { mode: 'client-aes256-gcm', masterKey: keyA },
+    'tenant-b/': { mode: 'client-aes256-gcm', masterKey: keyB },
+    default:     { mode: 'client-aes256-gcm', masterKey: keyShared },
+  }))
   ```
-  Die Verschlüsselung des Frameworks ist **bucket-weit** — ein
-  keyRing für alles.  Für Per-Tenant-Schlüssel (verschiedene
-  Kunden verwenden verschiedene KEKs) wickle den Store mit
-  Per-Tenant-Logik ein oder implementiere einen
-  benutzerdefinierten DurableStateStore.
+  `withEncryption` akzeptiert einen **Per-`persistenceId`-Resolver**,
+  nicht nur eine flache Config — der Store löst Verschlüsselung pro
+  Schlüssel zur Lese-/Schreibzeit auf.  Wenn ein Tenant auf ein
+  pid-Präfix abbildet, gibt `encryptionByPrefix(...)` jedem Tenant
+  seinen eigenen Schlüssel ohne Wrapper oder benutzerdefinierten
+  Store; ein Actor kann `encryption()` auch pro Klasse überschreiben.
 </Aside>
 
 <Aside type="caution" title="Verschlüsselte Backups">

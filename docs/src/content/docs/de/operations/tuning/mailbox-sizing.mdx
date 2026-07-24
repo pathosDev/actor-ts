@@ -3,11 +3,13 @@ title: Mailbox-Sizing
 description: Wann bounded vs unbounded Mailboxes, wie man die Kapazität wählt und was Overflow-Policies kosten. Die Entscheidung ist pro Actor — Produktion benutzt selten one-size-fits-all-Defaults.
 ---
 
-Die Default-Mailbox eines Actors ist **unbounded** — die Queue
-eines Actors kann ohne Limit wachsen, wenn der Producer den
-Consumer überholt. Für die meisten Actors ist das in Ordnung.
-Wenn nicht, greifst du zu
-[bounded Mailboxes](/de/fundamentals/mailboxes/).
+Die Default-Mailbox eines Actors ist **bounded** — Kapazität
+10 000 mit einer `drop-head`-Overflow-Policy. Die Queue kann
+nicht ohne Limit wachsen; sobald sie voll ist, wird die älteste
+wartende Nachricht verworfen. Für die meisten Actors ist die
+Default-Obergrenze in Ordnung. Wenn nicht, passt du Kapazität
+und Overflow-Policy an — oder entscheidest dich für eine
+[unbounded Mailbox](/de/fundamentals/mailboxes/).
 
 Diese Seite ist der **Entscheidungs-Guide** für Produktions-Mailbox-Sizing.
 
@@ -15,26 +17,37 @@ Diese Seite ist der **Entscheidungs-Guide** für Produktions-Mailbox-Sizing.
 
 ```ts
 const ref = system.spawnAnonymous(Props.create(() => new Worker()));
-//  ↑ unbounded FIFO-Mailbox; Mailbox kann bis zum OOM wachsen
+//  ↑ bounded FIFO-Mailbox — Kapazität 10 000, drop-head-Overflow
 ```
 
-Unbounded Mailboxes sind **schnell** und **nachsichtig** — ein
-kurzer Burst wird absorbiert, der Actor arbeitet ihn irgendwann
-ab. Die meisten Actors sollten sie nutzen.
+Der Default gibt jedem Actor eine **garantierte
+Speicher-Obergrenze**: die Queue hält höchstens 10 000
+Nachrichten, und wenn eine neue Nachricht auf einer vollen
+Mailbox ankommt, wird die älteste wartende verworfen
+(`drop-head`). Für die meisten Actors ist das in Ordnung — ein
+kurzer Burst wird absorbiert, und ein außer Kontrolle geratener
+Producer kann den Heap nicht ohne Limit wachsen lassen.
 
-Die Falle: Ein **anhaltendes Mismatch** (Producer schneller als
-Consumer) lässt den Speicher monoton wachsen. Schließlich:
+Der Trade-off ist **stiller Nachrichtenverlust**: unter
+anhaltendem Druck hält `drop-head` die Queue frisch, verwirft
+aber ältere Arbeit, und der Sender wird nie benachrichtigt. Wenn
+Nachrichtenverlust die falsche Antwort ist, passe die Kapazität
+an oder wechsle die Overflow-Policy (unten).
+
+Das *Abwählen* — zurück zu einer [unbounded Mailbox](/de/fundamentals/mailboxes/) —
+tauscht diese Obergrenze gegen den Pre-#310-Fehlermodus:
 
 - Heap erschöpft → Prozess OOM-gekillt.
 - Lange GC-Pausen → Cluster flappt.
 - Kein Backpressure → der Producer weiß nicht, dass es ein Problem
   gibt.
 
-Für diese Fälle: bounden.
+Greif nur dazu, wenn ein Actor wirklich keinen Bound braucht.
 
-## Wann bounden
+## Wann den Bound tunen
 
-Drei Muster, in denen sich bounded Mailboxes lohnen:
+Drei Muster, in denen die Default-Kapazität oder -Policy nicht
+passt — überschreibe Kapazität, Overflow oder beides:
 
 ### 1. Producer/Consumer-Mismatch vorab bekannt
 
@@ -193,14 +206,15 @@ Protokoll-Design.
 
 import { Aside } from '@astrojs/starlight/components';
 
-<Aside type="caution" title="Alle Actors per Default bounded">
+<Aside type="caution" title="Pauschales Abwählen zu unbounded">
   ```ts
-  // ✗ pauschal überall bounded
+  // ✗ pauschal überall .withMailbox(() => new Mailbox())
   ```
-  Die meisten Actors sind mit unbounded fein. Bounden ergänzt eine
-  Overflow-Policy-Entscheidung; wenn die falsche gewählt wird, ist
-  die Medizin schlimmer als die Krankheit. Greif zu bounded nur,
-  wenn Evidenz (Speicherwachstum, OOM-Kills) es stützt.
+  Jeden Actor aus dem bounded Default abzuwählen führt die
+  Pre-#310-OOM-or-bust-Form wieder ein. Greif zu unbounded nur
+  für einen bestimmten Actor, dessen Semantik es braucht
+  (deterministisches Replay, ein Test-Harness) — niemals als
+  pauschale Policy.
 </Aside>
 
 <Aside type="caution" title="Winzige Kapazitäten">

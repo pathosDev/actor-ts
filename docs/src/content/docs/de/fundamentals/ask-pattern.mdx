@@ -46,18 +46,14 @@ console.log(current);  // 2
 await system.terminate();
 ```
 
-Zwei äquivalente Schreibweisen:
+`ask` ist eine Methode auf jeder `ActorRef`:
 
 ```ts
 // Methode auf jeder ActorRef — leitet Reply aus dem Type-Argument ab:
 ref.ask<Reply>(message, timeoutMs?): Promise<Reply>
-
-// Freie Funktion — nützlich, wo du die explizite Form willst:
-function target:    ActorRef<TReq>.ask<TRes = unknown>(message:   OmitReplyTo<TReq>,
-  timeoutMs: number = 5_000,): Promise<TRes>
 ```
 
-Der Parameter-Typ `OmitReplyTo<TReq>` zieht `replyTo` aus jeder
+Der Parameter-Typ `OmitReplyTo<TMessage>` zieht `replyTo` aus jeder
 Variante der Message-Union ab, die es deklariert — Aufrufer schreiben
 das Feld selbst nie hin.  Das Framework allokiert eine
 One-Shot-Reply-Ref, hängt sie sowohl als `context.sender` als auch
@@ -128,10 +124,12 @@ pro Aufrufstelle:
   HTTP-Call innerhalb des Actors): das Timeout des unterliegenden
   Calls + ein kleiner Puffer.
 
-Wenn der Timeout feuert, wird die temporäre Reply-to-Ref gestoppt.
-Eine späte Antwort vom Actor geht in die Dead Letters, und der
-`AskTimeoutError` rejected das Promise.  Der Actor selbst ist nicht
-betroffen — er hat keine Ahnung, dass der Asker aufgegeben hat.
+Wenn der Timeout feuert, rejected der `AskTimeoutError` das Promise.
+Die temporäre Reply-to-Ref ist ein One-Shot: sobald sie einmal
+abgeschlossen ist — durch den Timeout oder die erste Antwort — wird
+jede spätere Antwort still an Ort und Stelle verworfen (sie geht nicht
+in die Dead Letters).  Der Actor selbst ist nicht betroffen — er hat
+keine Ahnung, dass der Asker aufgegeben hat.
 
 ## Mit einem Error antworten
 
@@ -218,5 +216,5 @@ Drei Situationen, in denen einfaches `tell` der richtige Aufruf ist:
   `pipeTo`, `after`, sequence — async-Ergebnisse zurück in die
   Actor-Welt komponieren, ohne mit `await` zu blockieren.
 
-Die [`ask`-Funktions-API-Referenz](/api/functions/ask/) dokumentiert
-die volle Signatur und die Error-Typen.
+Die [`ActorRef`-Klassen-API-Referenz](/api/classes/actorref/)
+dokumentiert die volle Signatur der `ask`-Methode und die Error-Typen.

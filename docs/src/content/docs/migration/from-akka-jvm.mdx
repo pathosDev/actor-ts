@@ -193,17 +193,15 @@ val singleton = system.spawn(
 )
 
 // actor-ts:
-system.spawn(
-  ClusterSingletonManager.props({
-    cluster,
-    typeName: 'my-singleton',
-    singletonProps: Props.create(() => new MyActor()),
-  }),
-  'singleton-manager-my-singleton',
-);
+const startSingletonOptions = StartSingletonOptions.create()
+  .withTypeName('my-singleton')
+  .withProps(Props.create(() => new MyActor()));
+const handle = system.extension(ClusterSingletonId).start(cluster, startSingletonOptions);
 ```
 
-Same model, slightly different config shape.
+Same model — actor-ts starts the singleton through the
+`ClusterSingleton` extension, which returns a `SingletonHandle`
+you send to via `handle.proxy`.
 
 ## What's missing
 

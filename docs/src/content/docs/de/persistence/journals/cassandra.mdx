@@ -43,10 +43,15 @@ Cluster, Repair, Tuning), die du nicht brauchst.
 interface CassandraJournalOptions {
   contactPoints:    string[];      // Cluster-Contact-Points
   keyspace:         string;        // Keyspace (extern erstellt)
-  table?:           string;        // Name der Events-Tabelle, Default 'events'
-  tagsTable?:       string;        // Tag-Index-Tabelle, Default 'events_tags'
-  consistencyLevel?: ConsistencyLevel;   // Default LOCAL_QUORUM
-  /* ... plus Treiber-Level-Optionen ... */
+  eventsTable?:      string;        // Name der Events-Tabelle, Default 'events'
+  metadataTable?:    string;        // Max-Seq-pro-pid-Tabelle, Default 'metadata'
+  allIdsTable?:      string;        // persistenceIds()-Lookup, Default 'all_persistence_ids'
+  tagIndexTable?:    string;        // Tag-Index-Seitentabelle, Default 'events_by_tag'
+  partitionSize?:    number;        // Zeilen pro Partition, Default 500_000
+  autoCreateTables?: boolean;       // Tabellen bei erster Verbindung erstellen, Default true
+  useTagIndex?:      boolean;       // events_by_tag-Seitentabelle pflegen, Default false
+  consistency?:      number;        // CQL-Consistency, Default LOCAL_QUORUM (6)
+  /* ... plus Treiber-Level-Verbindungsoptionen ... */
 }
 ```
 
@@ -54,36 +59,63 @@ interface CassandraJournalOptions {
 | --- | --- |
 | `contactPoints` | Initiale Cassandra-Contact-Nodes.  Der Treiber entdeckt den Rest. |
 | `keyspace` | Bereits existierender Keyspace.  Das Framework erstellt Tabellen, aber **nicht** den Keyspace selbst. |
-| `table` | Name der Events-Tabelle.  Default `events`. |
-| `tagsTable` | Tag-Index-Tabelle.  Default `events_tags`. |
-| `consistencyLevel` | Treiber-Consistency für Reads/Writes.  `LOCAL_QUORUM` für Produktion. |
+| `eventsTable` | Name der Events-Tabelle.  Default `events`. |
+| `metadataTable` | Tabelle, die die höchste Sequenznummer pro pid verfolgt.  Default `metadata`. |
+| `allIdsTable` | Lookup-Tabelle hinter `persistenceIds()`.  Default `all_persistence_ids`. |
+| `tagIndexTable` | Tag-Index-Seitentabelle.  Default `events_by_tag`.  Wird nur geschrieben, wenn `useTagIndex` gesetzt ist. |
+| `partitionSize` | Zeilen pro Partition, bevor auf einen neuen Bucket gerollt wird.  Default `500_000`. |
+| `autoCreateTables` | Tabellen bei der ersten Verbindung automatisch erstellen.  Default `true`. |
+| `useTagIndex` | Die `events_by_tag`-Seitentabelle für indizierte Tag-Queries pflegen.  Default `false`. |
+| `consistency` | CQL-Consistency-Level (numerisch, aus `types.consistencies` des Treibers) für alle Reads und Writes.  Default `LOCAL_QUORUM` (6). |
 
-Das Framework erstellt die beiden Tabellen automatisch bei der
-ersten Verwendung, mit den Schemas:
+Das Framework erstellt drei Tabellen automatisch bei der ersten
+Verwendung — `events`, `metadata` und `all_persistence_ids` — plus
+`events_by_tag`, wenn `useTagIndex` aktiviert ist.  Schemas:
 
 ```cql
 CREATE TABLE events (
-  pid       text,
-  seq       bigint,
-  event     blob,
-  ts        bigint,
-  PRIMARY KEY (pid, seq)
+  persistence_id  text,
+  partition_nr    bigint,
+  sequence_nr     bigint,
+  timestamp       bigint,
+  payload         text,
+  tags            set<text>,
+  PRIMARY KEY ((persistence_id, partition_nr), sequence_nr)
+) WITH CLUSTERING ORDER BY (sequence_nr ASC);
+
+CREATE TABLE metadata (
+  persistence_id   text PRIMARY KEY,
+  max_sequence_nr  bigint,
+  updated_at       bigint
 );
 
-CREATE TABLE events_tags (
-  tag        text,
-  ts         bigint,
-  pid        text,
-  seq        bigint,
-  event_ref  blob,
-  PRIMARY KEY (tag, ts, pid, seq)
+CREATE TABLE all_persistence_ids (
+  tag             text,
+  persistence_id  text,
+  PRIMARY KEY (tag, persistence_id)
 );
+
+-- Only when useTagIndex is enabled:
+CREATE TABLE events_by_tag (
+  tag             text,
+  timestamp       bigint,
+  persistence_id  text,
+  sequence_nr     bigint,
+  payload         text,
+  tags            set<text>,
+  PRIMARY KEY ((tag), timestamp, persistence_id, sequence_nr)
+) WITH CLUSTERING ORDER BY (timestamp ASC, persistence_id ASC, sequence_nr ASC);
 ```
 
-Die Events-Tabelle ist nach `pid` geschlüsselt — Recovery für eine
-persistenceId liest eine Partition.  Die Tags-Tabelle ist nach
-`tag` geschlüsselt — Projection-Queries treffen eine Partition pro
-Tag.
+Die Events-Tabelle nutzt einen **zusammengesetzten Partition-Key**
+`(persistence_id, partition_nr)`: die Events einer persistenceId
+werden in Partitions von `partitionSize` Zeilen (Default 500.000)
+gebucketet, sodass ein langlebiger Stream mehrere Partitions
+umfasst und Recovery eine Partition pro Bucket liest.  Die
+`metadata`-Tabelle verfolgt die höchste Sequenznummer pro pid;
+`all_persistence_ids` stützt `persistenceIds()`.  Die optionale
+`events_by_tag`-Tabelle ist nach `tag` geschlüsselt —
+Projection-Queries treffen eine Partition pro Tag.
 
 ## Setup
 

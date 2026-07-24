@@ -157,14 +157,14 @@ class HealthMonitor {
   }
 
   private async tick(): Promise<void> {
-    for (const svc of this.services) {
-      const ok = await this.ping(svc);
-      this.status.set(svc, ok ? 'up' : 'down');
+    for (const service of this.services) {
+      const ok = await this.ping(service);
+      this.status.set(service, ok ? 'up' : 'down');
     }
   }
 
-  getStatus(svc: string): 'up' | 'down' {
-    return this.status.get(svc) ?? 'down';
+  getStatus(service: string): 'up' | 'down' {
+    return this.status.get(service) ?? 'down';
   }
 }
 ```
@@ -186,7 +186,7 @@ Ein langlebiges Objekt mit sowohl **State** als auch
 ```ts
 type Message =
   | { kind: 'tick' }
-  | { kind: 'get-status'; svc: string; replyTo: ActorRef<'up' | 'down'> };
+  | { kind: 'get-status'; service: string; replyTo: ActorRef<'up' | 'down'> };
 
 class HealthMonitor extends Actor<Message> {
   private status = new Map<string, 'up' | 'down'>();
@@ -199,12 +199,12 @@ class HealthMonitor extends Actor<Message> {
 
   override async onReceive(message: Message): Promise<void> {
     if (message.kind === 'tick') {
-      for (const svc of this.services) {
-        const ok = await this.ping(svc);
-        this.status.set(svc, ok ? 'up' : 'down');
+      for (const service of this.services) {
+        const ok = await this.ping(service);
+        this.status.set(service, ok ? 'up' : 'down');
       }
     } else if (message.kind === 'get-status') {
-      message.replyTo.tell(this.status.get(message.svc) ?? 'down');
+      message.replyTo.tell(this.status.get(message.service) ?? 'down');
     }
   }
 }
@@ -248,7 +248,7 @@ wenn das Refund selbst fehlschlägt?).
 ```ts
 type Command = { kind: 'place'; order: NewOrder };
 type Event =
-  | { kind: 'inventory-reserved'; resId: string }
+  | { kind: 'inventory-reserved'; reservationId: string }
   | { kind: 'payment-charged';     chargeId: string }
   | { kind: 'shipping-scheduled';  shippingId: string }
   | { kind: 'compensating-...' };
@@ -258,7 +258,7 @@ class OrderSaga extends PersistentActor<Command, Event, OrderSagaState> {
   async onCommand(state, command) {
     if (command.kind === 'place') {
       const reserved = await inventory.reserve(command.order.items);
-      this.persist({ kind: 'inventory-reserved', resId: reserved.id }, async () => {
+      this.persist({ kind: 'inventory-reserved', reservationId: reserved.id }, async () => {
         try {
           const charged = await payment.charge(...);
           this.persist({ kind: 'payment-charged', chargeId: charged.id }, async () => {

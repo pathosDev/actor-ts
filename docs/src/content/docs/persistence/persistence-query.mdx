@@ -1,6 +1,6 @@
 ---
 title: Persistence query
-description: The read-side API over the journal — `currentEvents*` for one-shot snapshots, `events*` for live streams polling the journal until the consumer stops. Powers projections; also useful for ad-hoc reads.
+description: The read-side API over the journal — `currentEvents*` for one-shot snapshots, `events*` for live streams that run until the consumer stops. Powers projections; also useful for ad-hoc reads.
 ---
 
 The `PersistenceQuery` interface is the **read-side API** for the
@@ -12,7 +12,7 @@ Two flavors:
 | Flavor | Returns | Use |
 | --- | --- | --- |
 | **`current*`** | `Promise<Event[]>` | Batch read of events at call time.  Resolves once. |
-| **`events*`** | `AsyncIterable<Event>` | Live stream.  Polls until the consumer stops. |
+| **`events*`** | `AsyncIterable<Event>` | Live stream.  Runs until the consumer stops. |
 
 ## Implementations
 
@@ -28,9 +28,11 @@ The interface is the same across all of them — just construct the
 matching query for your journal backend.
 
 ```ts
-import { SqliteQuery } from 'actor-ts';
+import { SqliteJournal, SqliteJournalOptions, SqliteQuery } from 'actor-ts';
 
-const query = new SqliteQuery({ path: '/var/lib/events.db' });
+const sqliteJournalOptions = SqliteJournalOptions.create().withPath('/var/lib/events.db');
+const journal = new SqliteJournal(sqliteJournalOptions);
+const query = new SqliteQuery(journal);
 ```
 
 ## The four methods
@@ -86,8 +88,9 @@ const events = await query.currentEventsByTag<Event>(
 One-shot read of every event matching a tag (or
 [tag filter](#tag-filters)), starting from an offset.
 
-Returns `[Event, Offset][]` pairs — the offset is what you'd
-pass to a subsequent call to read the next batch.
+Returns `TaggedEvent<Event>[]` — each element carries the `event`
+and the `offset` you'd pass to a subsequent call to read the next
+batch.
 
 Use for:
 
@@ -97,15 +100,17 @@ Use for:
 ### `eventsByTag`
 
 ```ts
-for await (const [event, offset] of query.eventsByTag<Event>('account', offsetStart)) {
+for await (const { event, offset } of query.eventsByTag<Event>('account', offsetStart)) {
   await handle(event);
-  await offsetStore.save('my-projection', offset);
+  await offsetStore.saveOffset('my-projection', 'account', offset);
 }
 ```
 
-Live stream of tag-matched events.  This is what `ProjectionActor.byTag`
-uses internally — the offset lets the projection persist its
-progress and resume from there.
+Live stream of tag-matched events.  The offset lets a consumer
+persist its progress and resume from there — the same offset-cursor
+pattern `ProjectionActor.byTag` follows, though the actor drives its
+own poll loop over `currentEventsByTag` rather than consuming this
+live stream.
 
 ## Offsets
 
@@ -165,21 +170,30 @@ const stream = query.eventsByTag<E>('account', offset, {
 });
 ```
 
-Live streams poll the journal.  Configurable via `LiveQueryOptions`:
+Live streams prefer **push delivery**: when the journal exposes an
+in-process event bus — the in-memory and SQLite journals both do —
+the `events*` iterables subscribe to it and deliver events as
+they're appended, ignoring `pollIntervalMs`.  Polling is the
+**fallback** for busless, cross-process journals (e.g. Cassandra),
+where in-process notifications can't reach every reader.
+
+So against the `SqliteQuery` above, the `pollIntervalMs: 500` is a
+no-op — delivery is already push-based.  `LiveQueryOptions` only
+takes effect on the polling fallback:
 
 | Option | Default | What |
 | --- | --- | --- |
-| `pollIntervalMs` | 1000 | How often to check for new events. |
-| `batchSize` | journal-specific | How many events to fetch per poll. |
+| `pollIntervalMs` | 1000 | How often to check for new events (poll fallback only). |
+| `batchSize` | 100 | How many events to fetch per poll. |
 
-For sub-poll-interval delivery, see
+For the push-delivery details, see
 [Push-based query](/persistence/push-based-query/).
 
 ## When to use it directly vs via ProjectionActor
 
 ```ts
 // Manual iteration — full control:
-for await (const [event, offset] of query.eventsByTag(...)) {
+for await (const { event, offset } of query.eventsByTag(...)) {
   // ... custom error handling, custom dispatching ...
 }
 
@@ -190,9 +204,12 @@ ProjectionActor.byTag(system, ByTagProjectionOptions.create() /* .withName(...).
 `ProjectionActor` wraps the query API with:
 
 - Offset persistence (you don't manage it).
-- Supervised restart on handler errors.
-- Coordinated shutdown awareness.
-- Configurable retry / backoff.
+- Handler-error handling: a throwing handler is caught and logged,
+  and — because the cursor isn't advanced past the failed event —
+  it's retried on the next poll.
+- Coordinated shutdown awareness (the in-flight handler is awaited
+  before the actor stops).
+- A configurable poll interval (`liveOptions.pollIntervalMs`).
 
 For **production projections**, use `ProjectionActor`.  For
 **one-off scripts** and **ad-hoc admin queries**, use the query

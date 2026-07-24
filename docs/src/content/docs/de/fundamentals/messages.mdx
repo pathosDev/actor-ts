@@ -192,13 +192,13 @@ bereits passiert ist):
 ```ts
 type DepositCommand = { readonly kind: 'deposit'; readonly amount: number };
 
-type Deposited = { readonly kind: 'deposited'; readonly amount: number; readonly ts: number };
+type Deposited = { readonly kind: 'deposited'; readonly amount: number; readonly timestamp: number };
 
 class Account extends PersistentActor<DepositCommand, Deposited, { balance: number }> {
   // Command-Handler: validieren + Event persistieren
   async onCommand(state, command: DepositCommand): Promise<void> {
     if (command.kind === 'deposit') {
-      const event: Deposited = { kind: 'deposited', amount: command.amount, ts: Date.now() };
+      const event: Deposited = { kind: 'deposited', amount: command.amount, timestamp: Date.now() };
       await this.persist(event, () => { /* Seiteneffekte nach dem Persistieren */ });
     }
   }

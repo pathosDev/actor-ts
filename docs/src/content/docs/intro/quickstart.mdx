@@ -207,8 +207,8 @@ for the deep dive.
 
 ### Getting a reply with `ask`
 
-`tell` is fire-and-forget. For request/response there are two
-equivalent shapes:
+`tell` is fire-and-forget. For request/response, use the `ask`
+method on the ref:
 
 ```ts
 import { ActorSystem, Props } from 'actor-ts';
@@ -219,22 +219,14 @@ const counter = system.spawnAnonymous(Props.create(() => new Counter()));
 counter.tell({ kind: 'increment' });
 counter.tell({ kind: 'increment' });
 
-// Method-on-ref — terse, infers the reply type:
+// ask infers the reply type:
 const value = await counter.ask<number>({ kind: 'get' }, 5_000);
 console.log(value);  // 2
 
 await system.terminate();
 ```
 
-Or use the free function for the same effect:
-
-```ts
-import { ask } from 'actor-ts';
-
-const value = await ask<Command, number>(counter, { kind: 'get' }, 5_000);
-```
-
-Either way, the framework spawns a one-shot reply actor under the
+The framework spawns a one-shot reply actor under the
 hood, fills it in as `replyTo` AND as `context.sender` on the
 target, and resolves the promise with the first reply (or rejects
 with `AskTimeoutError`).  Callers never write `replyTo` themselves.

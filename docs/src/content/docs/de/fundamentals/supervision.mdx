@@ -48,10 +48,12 @@ class Boss extends Actor<{ kind: 'spawn-worker' }> {
   // Eigene Supervisor-Strategie für die Kinder dieses Boss: immer
   // restarten, aber bei 5 Restarts pro Minute cappen — darüber das
   // Kind stoppen.
-  override supervisorStrategy = new OneForOneStrategy(
-    (err) => Directive.Restart,
-    { maxRetries: 5, withinTimeRangeMs: 60_000 },
-  );
+  override supervisorStrategy() {
+    return new OneForOneStrategy(
+      (err) => Directive.Restart,
+      { maxRetries: 5, withinTimeRangeMs: 60_000 },
+    );
+  }
 
   override onReceive(message: { kind: 'spawn-worker' }): void {
     const worker = this.context.spawnAnonymous(Props.create(() => new Worker()));
@@ -89,10 +91,12 @@ internen Channel spricht.
 ```ts
 import { AllForOneStrategy, Directive } from 'actor-ts';
 
-override supervisorStrategy = new AllForOneStrategy(
-  () => Directive.Restart,
-  { maxRetries: 3, withinTimeRangeMs: 30_000 },
-);
+override supervisorStrategy() {
+  return new AllForOneStrategy(
+    () => Directive.Restart,
+    { maxRetries: 3, withinTimeRangeMs: 30_000 },
+  );
+}
 ```
 
 Die überwältigende Mehrheit des actor-ts-Codes verwendet
@@ -111,16 +115,18 @@ class TransientNetworkError extends Error {}
 class CorruptedStateError   extends Error {}
 class UnknownProblem        extends Error {}
 
-override supervisorStrategy = new OneForOneStrategy(
-  decideBy(
-    [
-      { match: TransientNetworkError, then: Directive.Resume   },  // schlechte Nachricht überspringen
-      { match: CorruptedStateError,   then: Directive.Restart  },  // sauberer Reboot
-      { match: UnknownProblem,        then: Directive.Escalate },  // Großeltern fragen
-    ],
-    Directive.Restart,   // Fallback, wenn nichts matchte
-  ),
-);
+override supervisorStrategy() {
+  return new OneForOneStrategy(
+    decideBy(
+      [
+        { match: TransientNetworkError, then: Directive.Resume   },  // schlechte Nachricht überspringen
+        { match: CorruptedStateError,   then: Directive.Restart  },  // sauberer Reboot
+        { match: UnknownProblem,        then: Directive.Escalate },  // Großeltern fragen
+      ],
+      Directive.Restart,   // Fallback, wenn nichts matchte
+    ),
+  );
+}
 ```
 
 `decideBy` ist ein Helfer, der einen Decider aus einer Liste von
@@ -256,6 +262,7 @@ Actors, die über `system.spawnAnonymous(...)` gespawnt werden, haben den
 const ref = system.spawn(
   Props.create(() => new MyTopActor())
     .withSupervisorStrategy(stoppingStrategy),
+  'my-top-actor',
 );
 ```
 
@@ -320,7 +327,7 @@ auf der Klasse gesetzt).
   Der Supervisor sieht nur, was `onReceive` throwt oder mit was es
   rejected.  Code, der in einem losgelösten Callback läuft (rohes
   `setTimeout`, rohe `Promise.then`-Chains, die dem Actor entkommen),
-  umgeht die Supervision.  Verwende `context.scheduler` für
+  umgeht die Supervision.  Verwende `context.timers` für
   actor-gebundene Timer; sie propagieren Fehler zurück in die
   Mailbox.
 </Aside>

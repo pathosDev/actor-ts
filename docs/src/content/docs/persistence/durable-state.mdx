@@ -11,7 +11,7 @@ snapshot of the state, overwritten on each `persist(newState)`.
 flowchart LR
   subgraph DSA["DurableStateActor"]
     direction TB
-    CMD["onReceive(command)"]
+    CMD["onCommand(command)"]
     READ["read this.state"]
     NEXT["next = transform(...)"]
     PERSIST["await this.persist(next)"]
@@ -60,7 +60,7 @@ interface State { items: string[]; }
 class Cart extends DurableStateActor<CartCommand, State> {
   constructor(options: DurableStateOptions<State>) { super(options); }
 
-  override async onReceive(command: CartCommand): Promise<void> {
+  override async onCommand(command: CartCommand): Promise<void> {
     await match(command)
       .with({ kind: 'add' },    (c) => this.onAdd(c))
       .with({ kind: 'remove' }, (c) => this.onRemove(c))
@@ -130,7 +130,7 @@ Inside the actor's handlers:
 ```ts
 this.state       // current state value — read anywhere
 this.revision    // monotonic counter, bumped on every persist
-this.persist(s)  // overwrite the stored state with `s`, returns Promise<void>
+this.persist(s)  // overwrite the stored state with `s`, returns Promise<DurableStateRecord<S>>
 ```
 
 `this.state` is **synchronous** — the framework loads the state in
@@ -139,7 +139,7 @@ Before the first persist (or load), it returns `emptyState()`.
 
 `this.persist(next)` writes the new state to the store with the
 current revision + 1.  Returns once the store acknowledges.  Inside
-`onReceive`, `await` it before treating the next state as
+`onCommand`, `await` it before treating the next state as
 authoritative.
 
 ## Optimistic concurrency
@@ -201,20 +201,21 @@ through an adapter:
 ```ts
 import { StateAdapter } from 'actor-ts';
 
-class V1ToV2Adapter implements StateAdapter<StateV2> {
-  upcast(stored: unknown, version: number): StateV2 {
-    if (version === 1) return migrate(stored as StateV1);
-    return stored as StateV2;
-  }
-}
+const v1ToV2Adapter: StateAdapter<StateV2> = {
+  manifest: () => 'Cart',
+  toJournal: (state) => ({ manifest: 'Cart', version: 2, payload: state }),
+  fromJournal: (stored) => stored.version === 1
+    ? migrate(stored.payload as StateV1)
+    : stored.payload as StateV2,
+};
 
 class Cart extends DurableStateActor<...> {
-  protected stateAdapter() { return new V1ToV2Adapter(); }
+  protected stateAdapter() { return v1ToV2Adapter; }
 }
 ```
 
 The persisted record gets wrapped in a `{ _v, _t, _e }` envelope;
-on load, the adapter's `upcast` runs to migrate older versions.
+on load, the adapter's `fromJournal` runs to migrate older versions.
 See [Migration overview](/persistence/migration/overview/)
 for the full story.
 
@@ -241,7 +242,7 @@ import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="Forgetting to `await` persist">
   ```ts
-  override onReceive(command) {
+  override onCommand(command) {
     this.persist(next);            // ✗ no await
     command.replyTo.tell('done');      // replies "done" before write completes
   }

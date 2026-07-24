@@ -1,18 +1,18 @@
 ---
 title: Stock-Metriken
-description: Die Metriken, die das Framework automatisch aufzeichnet — Actor-Message-Raten, Mailbox-Tiefen, Cluster-Mitgliedschaft, Sharding-Zähler. Geben dir „ist das System gesund?" Out-of-the-Box, ohne eine einzige Instrumentierung zu schreiben.
+description: Die Metriken, die das Framework automatisch aufzeichnet — Actor-Lebenszyklus und Nachrichten-Zähler, Mailbox-Drops und Cluster-Mitgliedschaft. Geben dir „ist das System gesund?" Out-of-the-Box, ohne eine einzige Instrumentierung zu schreiben.
 ---
 
-Wenn die Metrics-Extension startet, **zeichnet das Framework
-automatisch** eine Basislinie an Metriken auf, die das Actor-
-System, Mailboxen, Cluster, Sharding, Persistence und Broker-
-Actor abdecken.
+Wenn die Metrics-Extension aktiviert ist, **zeichnet das Framework
+automatisch** eine Basislinie an Metriken auf, die den
+Actor-Lebenszyklus, die Nachrichtenverarbeitung, beschränkte
+Mailboxen und den Cluster abdecken.
 
 ```ts
 import { ActorSystem, MetricsExtensionId } from 'actor-ts';
 
-const metrics = system.extension(MetricsExtensionId);
-// Stock-Metriken beginnen aufzuzeichnen — kein weiteres Setup
+const metrics = system.extension(MetricsExtensionId).enable();
+// Stock-Metriken zeichnen jetzt in die Live-Registry auf — kein weiteres Setup
 ```
 
 Das sind die Metriken, die du dir sonst selbst schreiben
@@ -21,154 +21,79 @@ Dashboard zu verdrahten.
 
 ## Actor-Metriken
 
-Per-Actor-Class-Metriken — deckt die Actor ab, die
-Anwendungslogik hosten:
+Metriken für Actor-Lebenszyklus und Nachrichtenverarbeitung,
+systemweit aufgezeichnet — jede ist eine einzelne Serie ohne
+Labels:
 
 | Metrik | Typ | Labels | Bedeutung |
 | --- | --- | --- | --- |
-| `actor_messages_received_total` | counter | `class`, `path` | Insgesamt in eine Actor-Mailbox geroutete Nachrichten. |
-| `actor_messages_processed_total` | counter | `class`, `path` | Insgesamt an `onReceive` übergebene Nachrichten. |
-| `actor_messages_failed_total` | counter | `class`, `path` | Nachrichten, deren `onReceive` geworfen hat. |
-| `actor_message_duration_ms` | histogram | `class`, `path` | Verarbeitungszeit pro Nachricht. |
-| `actor_restarts_total` | counter | `class`, `path` | Supervisor-getriebene Restarts. |
+| `actor_created_total` | counter | — | Erfolgreich gestartete Actor. |
+| `actor_terminated_total` | counter | — | Gestoppte Actor (sauberer Stopp oder nach einem Fehler). |
+| `actor_restarted_total` | counter | — | Supervisor-getriebene Restarts. |
+| `actor_messages_delivered_total` | counter | — | An `onReceive` zugestellte User-Nachrichten. |
+| `actor_message_handler_seconds` | histogram | — | Zeit in `onReceive`-Handlern, in Sekunden. |
 
-Das `path`-Label kann hoch-kardinal sein (ein Pfad pro Actor).
-Für sharded Entities (Tausende Pfade) deckelt das Framework
-Label-Serien — nur die **ersten N Pfade** werden individuell
-verfolgt, der Rest aggregiert in eine einzige `_other`-Serie.
+`actor_message_handler_seconds` nutzt die standardmäßigen
+Sekunden-Buckets; sein p99 ist dein Signal „wie langsam ist ein
+Handler".
 
 ## Mailbox-Metriken
 
 | Metrik | Typ | Labels | Bedeutung |
 | --- | --- | --- | --- |
-| `actor_mailbox_size` | gauge | `class`, `path` | Aktuelle Tiefe. |
-| `actor_mailbox_enqueued_total` | counter | `class`, `path` | Enqueues insgesamt. |
-| `actor_mailbox_dequeued_total` | counter | `class`, `path` | Dequeues insgesamt. |
-| `actor_mailbox_dropped_total` | counter | `class`, `path`, `reason` | Drops nach Overflow-Policy. |
+| `actor_mailbox_dropped_total` | counter | `class`, `path`, `reason` | Von der Overflow-Policy einer beschränkten Mailbox verworfene Nachrichten. |
 
-`mailbox_size` ist die **Zeitpunkt-Tiefe**; kombiniert mit
-Enqueue-/Dequeue-Raten kannst du Backpressure berechnen.
-
-Ein hohes `mailbox_size` mit wachsendem `dropped_total` ist ein
+Ein wachsendes `actor_mailbox_dropped_total` ist ein
 **Slow-Consumer-Signal** — der Actor kommt mit seiner
-Eingangsrate nicht mit.
+Eingangsrate nicht mit und seine beschränkte Mailbox wirft Last
+ab. Das `reason`-Label hält die ausgelöste Overflow-Policy fest
+(`drop-head` / `drop-new`).
 
 ## Cluster-Metriken
 
 | Metrik | Typ | Labels | Bedeutung |
 | --- | --- | --- | --- |
-| `cluster_members_count` | gauge | `status` | Mitglieder in jedem Zustand (Joining/Up/Unreachable/etc.) |
-| `cluster_gossip_messages_total` | counter | `direction` | Gossip-Count ein/aus. |
-| `cluster_member_transitions_total` | counter | `from`, `to` | Zustandsübergänge pro Typ. |
-| `cluster_unreachable_duration_ms` | histogram | — | Wie lange unerreichbare Mitglieder so bleiben. |
+| `cluster_members_up` | gauge | — | Mitglieder aktuell im Zustand `up` (Sicht dieses Knotens). |
+| `cluster_gossip_rounds_total` | counter | — | Von diesem Knoten initiierte Gossip-Push-Runden. |
 
 Zum Monitoring der Cluster-Gesundheit:
 
-- `cluster_members_count{status="up"}` sollte deiner
-  konfigurierten Replica-Anzahl entsprechen.
-- `cluster_members_count{status="unreachable"} > 0` ist ein
-  Alert-Auslöser.
-- `cluster_unreachable_duration_ms` p99 gibt „wie flappy ist
-  das Netzwerk" — hohe Werte heißen, dein Failure-Detector
-  braucht möglicherweise Tuning.
+- `cluster_members_up` sollte deiner konfigurierten Replica-Anzahl
+  entsprechen; ein dauerhafter Fehlbetrag heißt, Mitglieder sind
+  down oder unerreichbar.
+- Die Rate von `cluster_gossip_rounds_total` bestätigt, dass Gossip
+  fließt — eine flache Linie heißt, dieser Knoten hat aufgehört zu
+  gossippen.
 
-## Sharding-Metriken
+## Overhead
 
-| Metrik | Typ | Labels | Bedeutung |
-| --- | --- | --- | --- |
-| `sharding_shards_hosted` | gauge | `type`, `region` | Shards pro Region pro Typ gehostet. |
-| `sharding_entities_count` | gauge | `type`, `region` | Aktive Entities pro Region. |
-| `sharding_rebalances_total` | counter | `type` | Rebalance-Events. |
-| `sharding_handoffs_total` | counter | `type`, `outcome` | Handoff-Erfolg/-Fehlschlag. |
-| `sharding_passivations_total` | counter | `type`, `reason` | Idle-Timeout / Max-Entities / manuell. |
-
-Nützliche Dashboards:
-
-- **Heiße Regionen** — `sharding_shards_hosted` pro Region.
-- **Entity-Churn** — `sharding_passivations_total`-Rate.
-- **Rebalance-Frequenz** — hohe Werte deuten auf Cluster-
-  Instabilität.
-
-## Persistence-Metriken
-
-| Metrik | Typ | Labels | Bedeutung |
-| --- | --- | --- | --- |
-| `persistence_events_written_total` | counter | `pid_prefix` | Geschriebene Events. |
-| `persistence_events_replayed_total` | counter | `pid_prefix` | Während Recovery gelesene Events. |
-| `persistence_snapshot_saves_total` | counter | `pid_prefix` | Geschriebene Snapshots. |
-| `persistence_recovery_duration_ms` | histogram | `pid_prefix` | Zeit von preStart bis Recovery-Complete. |
-
-`recovery_duration_ms` ist eine der actionable-sten Metriken —
-wenn Recovery anfängt Sekunden zu brauchen, **snapshot
-aggressiver**.
-
-`pid_prefix` ist eine Label-Gruppe, abgeleitet aus deiner
-`persistenceId` — z. B. aggregiert `account-*` alle
-Account-Events.
-
-## Broker-Actor-Metriken
-
-Für [BrokerActor](/de/io/broker-actor-base/)-Subklassen
-(Kafka, MQTT usw.):
-
-| Metrik | Typ | Labels | Bedeutung |
-| --- | --- | --- | --- |
-| `broker_state` | gauge | `actor`, `endpoint` | 0 = disconnected, 1 = connected, etc. |
-| `broker_connect_attempts_total` | counter | `actor`, `endpoint`, `outcome` | Connect-Versuche, Erfolg/Fehlschlag. |
-| `broker_messages_in_total` | counter | `actor`, `topic` | Eingehende Nachrichten vom Broker. |
-| `broker_messages_out_total` | counter | `actor`, `topic` | Ausgehende Nachrichten zum Broker. |
-| `broker_buffer_size` | gauge | `actor` | Ausgangs-Buffer-Tiefe. |
-| `broker_buffer_overflow_total` | counter | `actor`, `policy` | Buffer-Overflows. |
-
-`broker_state` ist das **schnellste Signal** für
-Verbindungsprobleme — ein Gauge, der unter 1 fällt, heißt, ein
-Broker ist down.
-
-## Stock-Metriken deaktivieren
-
-```ts
-system.extension(MetricsExtensionId, {
-  enableStockMetrics: false,    // aus
-});
-```
-
-Wenn der Overhead der Stock-Metriken zählt (CPU-enge Loops,
-sehr hoher Actor-Churn), kannst du dich abmelden. Die meisten
-Produktivsysteme lassen sie an — der Overhead ist
-vernachlässigbar.
-
-## Labels anpassen
-
-```ts
-const metrics = system.extension(MetricsExtensionId);
-metrics.registry.setStaticLabels({
-  region: 'eu-west-1',
-  env:    'production',
-});
-```
-
-Statische Labels gelten für **jede Metrik**. Nützlich für den
-globalen Kontext, auf den das Metrik-Backend joinen sollte
-(Region, Env, Pod-Name).
+Es gibt **kein Opt-out-Flag** — Stock-Metriken sind immer im
+Framework verdrahtet. Bis du `.enable()` aufrufst, löst jeder
+Instrumentierungsaufruf gegen eine **Noop-Registry** auf (ein
+einzelner Objekt-Lookup, der nichts aufzeichnet), sodass die
+Kosten vernachlässigbar sind. Das Aktivieren der Extension tauscht
+die Live-Registry ein und dieselben Aufrufe beginnen aufzuzeichnen.
 
 import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="Hoch-kardinales `path`-Label">
   ```ts
   // Per-sharded-Entity-Actor: Tausende verschiedene Pfade
-  actor_messages_processed_total{path="actor-ts://.../entity-1"}
-  actor_messages_processed_total{path="actor-ts://.../entity-2"}
+  actor_mailbox_dropped_total{path="actor-ts://.../entity-1"}
+  actor_mailbox_dropped_total{path="actor-ts://.../entity-2"}
   ...
   ```
-  Das Framework deckelt Per-Pfad-Serien auf die ersten N
-  eindeutigen Pfade (konfigurierbar). Oberhalb des Caps
-  aggregieren Pfade in `path="_other"`. Tune den Cap oder
-  strippe das Pfad-Label für hoch-kardinale Szenarien.
+  `actor_mailbox_dropped_total` trägt ein `path`-Label, das für
+  sharded Entities hoch-kardinal sein kann (ein Pfad pro Actor).
+  Das Framework deckelt oder aggregiert diese Serien **nicht** —
+  Kardinalitäts-Disziplin liegt vollständig in deiner
+  Verantwortung. Aggregiere neu oder strippe das Label downstream,
+  wenn die Serien-Anzahl unbeschränkt wächst.
 </Aside>
 
 <Aside type="caution" title="Counter werden beim Neustart zurückgesetzt">
   ```ts
-  // Nach einem Pod-Neustart fängt actor_messages_processed_total wieder bei 0 an
+  // Nach einem Pod-Neustart fängt actor_messages_delivered_total wieder bei 0 an
   ```
   Counter sind **per-Prozess**. Prometheus versteht das
   (berechnet Raten über die steigende Serie; behandelt Resets
