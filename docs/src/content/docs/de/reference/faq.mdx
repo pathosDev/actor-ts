@@ -295,9 +295,10 @@ Siehe [Runtime — Compatibility Matrix](/de/runtime/compatibility-matrix/).
 <Aside type="caution" title="Warum startet mein Actor ständig neu?">
   Normalerweise wirft `onReceive`.  Prüfe das System-Log — jeder
   Fehler wird mit dem Error und der angewendeten Direktive
-  geloggt.  Der Default-Supervisor restartet bis zu 10/Minute,
-  dann eskaliert er; darüber hinaus siehst Du "supervisor
-  giving up" in den Logs.
+  geloggt.  Der Default-Supervisor restartet bis zu 10/Minute;
+  sobald diese Schwelle überschritten wird, stoppt er das Kind
+  und loggt "Restart threshold exceeded (10 in 60000ms) —
+  stopping children".
 </Aside>
 
 <Aside type="caution" title="Warum läuft mein Ask in ein Timeout?">
