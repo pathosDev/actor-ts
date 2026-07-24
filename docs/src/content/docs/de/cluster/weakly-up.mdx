@@ -126,12 +126,12 @@ wenn es gestoppt wird, ohne jemals `up` erreicht zu haben.
 ```ts
 import { MemberWeaklyUp, MemberUp } from 'actor-ts';
 
-cluster.subscribe(MemberWeaklyUp, (evt) => {
-  console.log(`${evt.member.address} zu weakly-up befördert`);
-});
-
-cluster.subscribe(MemberUp, (evt) => {
-  console.log(`${evt.member.address} hat volles up erreicht`);
+cluster.subscribe((evt) => {
+  if (evt instanceof MemberWeaklyUp) {
+    console.log(`${evt.member.address} zu weakly-up befördert`);
+  } else if (evt instanceof MemberUp) {
+    console.log(`${evt.member.address} hat volles up erreicht`);
+  }
 });
 ```
 

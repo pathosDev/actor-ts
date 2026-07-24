@@ -1,15 +1,15 @@
 ---
 title: Replikation
-description: Wie DistributedData Zustand zwischen Nodes gossipt — periodisches Delta-Gossip, Merge beim Empfang, Benachrichtigung der Subscriber. Die Mechanik, die du normalerweise nicht kennen musst — aber das Verständnis hilft beim Troubleshooting "warum ist mein Write noch nicht angekommen?".
+description: Wie DistributedData Zustand zwischen Nodes gossipt — periodisches Full-State-Gossip, Merge beim Empfang, Benachrichtigung der Subscriber. Die Mechanik, die du normalerweise nicht kennen musst — aber das Verständnis hilft beim Troubleshooting "warum ist mein Write noch nicht angekommen?".
 ---
 
 DistributedData repliziert Zustand via **Gossip**:
 
 - Alle `gossipIntervalMs` wählt jeder Node einen zufälligen Peer.
-- Der Node sendet seine **State Deltas** seit dem letzten Gossip
-  mit diesem Peer.
-- Der Peer merged; wenn sich sein Zustand geändert hat,
-  benachrichtigt er die lokalen Subscriber.
+- Der Node sendet einen **vollständigen Snapshot** jedes Keys, den
+  er aktuell hält.
+- Der Peer merged jeden Eintrag; wenn sich sein Zustand geändert
+  hat, benachrichtigt er die lokalen Subscriber.
 
 Das bedeutet, Writes propagieren **eventually** — typischerweise
 in 1-2 Gossip-Runden (1-2 Sekunden default).  Für die meisten
@@ -24,7 +24,7 @@ sequenceDiagram
   participant A as node-A
   participant B as node-B
   Note over A: lokales Update angewendet — sofort
-  A->>B: Gossip-Tick — Delta kommt an
+  A->>B: Gossip-Tick — vollständiger Snapshot kommt an
   Note over B: in lokalen Zustand mergen<br/>per-CRDT-Merge-Funktion
   Note over B: falls sich der lokale Wert geändert hat<br/>Subscriber benachrichtigen
 ```
@@ -58,19 +58,23 @@ Für typische Anwendungen:
 
 ## Was gegossipt wird
 
-**Nur Deltas** — DistributedData tracked, was jeder Peer gesehen
-hat, und sendet nur die Änderungen seit dem letzten erfolgreichen
-Austausch.
+**Der vollständige State** — bei jedem Tick serialisiert
+DistributedData jeden Key seiner lokalen Replika und pusht den
+gesamten Snapshot an einen zufälligen Peer.  Es gibt kein
+Delta-Tracking und keine Empfangs-Historie pro Peer; jedes Gossip
+trägt die komplette Menge.
 
-So ist das Gossip-Volumen proportional zur **Update-Rate**, nicht
-zur Gesamt-State-Größe.  Eine Map mit einer Million Einträgen,
-die sich nicht ändert, kostet im Gossip nichts; ein kleiner
-Counter, der 1000-mal pro Sekunde inkrementiert wird, kostet viel
-mehr.
+So ist das Gossip-Volumen proportional zur **Gesamt-State-Größe**,
+nicht zur Update-Rate.  Eine Map mit einer Million Einträgen kostet
+jedes Mal, wenn sie gegossipt wird, ihre volle serialisierte Größe
+— egal ob sie sich geändert hat; ein kleiner Counter kostet fast
+nichts, egal wie oft er inkrementiert wird.
 
-Die Ausnahme: bei einem frischen Peer-Beitritt (oder nach einer
-langen Partition) ist der erste Gossip der **Full State** — es
-gibt keine Delta-Historie.
+Das ist bewusst simpel — kein Digest, kein Delta — was billig zu
+implementieren und für die kleinen bis mittleren Stores, für die
+DistributedData gedacht ist, gut genug ist.  Wenn dein Store groß
+wird, erhöhe `gossipIntervalMs`, um die Kosten über die Zeit zu
+verteilen.
 
 ## Auswahl des Peers pro Runde
 

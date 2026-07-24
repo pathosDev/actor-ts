@@ -139,7 +139,7 @@ Glue.
 ## Ein minimales Beispiel
 
 ```ts
-import { ClusterSingletonManager, KubernetesLease, KubernetesLeaseOptions, Props } from 'actor-ts';
+import { ClusterSingletonId, StartSingletonOptions, KubernetesLease, KubernetesLeaseOptions, Props } from 'actor-ts';
 
 const kubernetesLeaseOptions = KubernetesLeaseOptions.create()
   .withName('my-app-singleton-lease')
@@ -151,15 +151,11 @@ const lease = new KubernetesLease(
   kubernetesLeaseOptions,
 );
 
-system.spawn(
-  ClusterSingletonManager.props({
-    cluster,
-    typeName:        'job-scheduler',
-    singletonProps:  Props.create(() => new JobScheduler()),
-    lease,           // ← Split-Brain-Schutz
-  }),
-  'singleton-manager-job-scheduler',
-);
+const startSingletonOptions = StartSingletonOptions.create()
+  .withTypeName('job-scheduler')
+  .withProps(Props.create(() => new JobScheduler()))
+  .withLease(lease);        // ← Split-Brain-Schutz
+system.extension(ClusterSingletonId).start(cluster, startSingletonOptions);
 ```
 
 Der Singleton Manager:
@@ -192,14 +188,16 @@ import { Aside } from '@astrojs/starlight/components';
   Singleton-Invariante.
 </Aside>
 
-<Aside type="caution" title="Renewal-Fehler ≠ Lease verloren">
+<Aside type="caution" title="Renewal-Fehler = Lease sofort verloren">
   ```ts
-  // Einzelner Renewal-Versuch schlägt fehl — meist transient
+  // Ein einzelnes fehlgeschlagenes Renewal feuert onLost sofort — kein Retry
   ```
-  Das Framework retried Renewals, bevor es den Lease für
-  verloren erklärt.  Nicht beim ersten fehlgeschlagenen Renew
-  panisch werden; nur `onLost` feuert, wenn das Eigentum
-  wirklich weg ist.
+  Keines der eingebauten Backends retried Renewals.  Das erste
+  fehlgeschlagene Renew — ein verlorenes Race, ein `409`/`404`
+  oder ein beliebiger transienter Backend-Fehler — feuert
+  `onLost` und verliert den Lease sofort.  `acquireRetries` gilt
+  nur für `acquire()`, nie für den Renewal-Loop; behandle daher
+  jedes `onLost` als echten Eigentumswechsel.
 </Aside>
 
 ## Wohin als Nächstes

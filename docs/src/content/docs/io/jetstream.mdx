@@ -1,0 +1,216 @@
+---
+title: NATS JetStream
+description: Durable NATS streaming — persistent streams, durable push/pull consumers, explicit ack/nak/term, and idempotent publish. Wraps `nats.js` JetStream. The durable sister of the core NATS actor.
+---
+
+`JetStreamActor` integrates with **NATS JetStream** — the durable
+streaming layer on top of core NATS.  Where [`NatsActor`](/io/nats/)
+is fire-and-forget pub/sub, `JetStreamActor` gives you **persistent
+streams, replay, and explicit acknowledgment** with Kafka-style
+"exactly-once-with-processing" semantics via the
+`acknowledgment` / `negativeAcknowledgment` / `terminate` handshake.
+
+```ts
+import { ActorSystem, Actor, Props, JetStreamActor, JetStreamOptions } from 'actor-ts';
+import type { ActorRef, JetStreamMessage, JetStreamCommand } from 'actor-ts';
+
+const jetStreamOptions = JetStreamOptions.create()
+  .withServers(['nats://localhost:4222'])
+  .withStream({ name: 'ORDERS', subjects: ['orders.>'] })
+  .withConsumer({ durable: 'order-processor', ackWaitMs: 30_000 })
+  .withTarget(orderProcessor);
+const jetStream = system.spawn(
+  Props.create(() => new JetStreamActor(
+    jetStreamOptions,
+  )),
+  'orders-stream',
+);
+
+// Publish (idempotent when messageId is set):
+jetStream.tell({
+  kind: 'publish',
+  publish: {
+    subject:   'orders.created',
+    payload:   JSON.stringify(order),
+    messageId: order.id,          // server dedupes within the stream's dedup window
+  },
+});
+```
+
+The consumer forwards every message to `target` and waits for an
+explicit ack **before the ack-window (`ackWaitMs`) expires** — if none
+arrives, the server redelivers:
+
+```ts
+class OrderProcessor extends Actor<JetStreamMessage> {
+  constructor(private readonly jetStream: ActorRef<JetStreamCommand>) { super(); }
+
+  async onReceive(message: JetStreamMessage): Promise<void> {
+    try {
+      await db.insertOrder(JSON.parse(new TextDecoder().decode(message.payload)));
+      this.jetStream.tell({ kind: 'acknowledgment', streamSeq: message.streamSeq });
+    } catch {
+      // redeliver after 5 s
+      this.jetStream.tell({
+        kind:      'negativeAcknowledgment',
+        streamSeq: message.streamSeq,
+        delayMs:   5_000,
+      });
+    }
+  }
+}
+```
+
+## Settings
+
+```ts
+interface JetStreamOptionsType extends BrokerCommonOptionsType {
+  servers?:  string[] | string;       // NATS server URLs
+  token?:    string;
+  user?:     string;
+  password?: string;
+  name?:     string;                  // client identifier
+  stream?:   JetStreamStreamConfig;   // set when this actor owns the stream
+  consumer?: JetStreamConsumerConfig; // required to start a subscription
+  target?:   ActorRef<JetStreamMessage>; // receives every consumed message
+  acknowledgmentTimeout?: number;     // ack-wait ceiling; default consumer.ackWaitMs ?? 30_000
+}
+```
+
+The builder is the primary style; a plain object works too.  Common
+broker fields — `withReconnect`, `withCircuitBreaker`,
+`withOutboundBuffer` — come from the shared
+[BrokerActor base](/io/broker-actor-base/).  `servers` is required.
+
+### Stream config
+
+Set `stream` when the actor should **create or update** the stream at
+connect time (`create` defaults to `true`).
+
+| Field | Meaning |
+| --- | --- |
+| `name` | Stream name (required). |
+| `subjects` | Subjects captured by the stream, e.g. `['orders.>']` (required). |
+| `retention` | `'limits'` *(default)*, `'interest'`, or `'workqueue'`. |
+| `storage` | `'file'` (durable) or `'memory'`. |
+| `maxMessages` / `maxBytes` | Retention caps. |
+| `maxAge` | Max age in **nanoseconds** (passed through verbatim). |
+| `create` | Create/update the stream at connect time.  Default `true`. |
+
+### Consumer config
+
+Set `consumer` to bind a durable subscription.
+
+| Field | Meaning |
+| --- | --- |
+| `durable` | Durable consumer name (required — survives restarts). |
+| `mode` | `'push'` *(default)* or `'pull'` (see below). |
+| `deliverPolicy` | `'all'` *(default)*, `'last'`, `'new'`, `{ kind: 'byStartSeq', startSeq }`, or `{ kind: 'byStartTime', startTimeMs }`. |
+| `ackPolicy` | `'explicit'` *(default — ack/nak/term required)*, `'none'`, or `'all'`. |
+| `ackWaitMs` | Time before the server redelivers without an ack.  Default `30_000`. |
+| `filterSubject` | Subject filter — defaults to all subjects in the stream. |
+| `maxAcknowledgmentPending` | Max in-flight unacked messages.  Default `1024`. |
+| `create` | Create/update the consumer at connect time.  Default `true`. |
+
+## Commands
+
+`JetStreamActor` accepts a `JetStreamCommand` (discriminated on `kind`):
+
+| `kind` | Fields | Purpose |
+| --- | --- | --- |
+| `publish` | `publish: JetStreamPublish` | Publish a message (see [idempotent publish](#idempotent-publish)). |
+| `acknowledgment` | `streamSeq` | Ack a delivered message — the server marks it consumed. |
+| `negativeAcknowledgment` | `streamSeq`, `delayMs?` | Redeliver (optionally after `delayMs`). |
+| `terminate` | `streamSeq`, `reason?` | Terminal failure — server drops the message permanently. |
+| `inProgress` | `streamSeq` | Heartbeat — extend the ack-wait window for a long handler. |
+| `fetch` | `batch`, `expiresMs?` | **Pull mode only** — request up to `batch` messages. |
+
+Every inbound `JetStreamMessage` carries `subject`, `payload`
+(`Uint8Array`), `replyTo`, `streamSeq`, `consumerSeq`, `deliveries`
+(delivery count — `1` on first try), `timestamp`, and `headers`.
+
+## The ack handshake
+
+With the default `ackPolicy: 'explicit'`, every delivered message must
+be resolved with exactly one of `acknowledgment`, `negativeAcknowledgment`,
+or `terminate`, keyed by `streamSeq`:
+
+- **`acknowledgment`** — processing succeeded; the server advances the consumer.
+- **`negativeAcknowledgment`** — retry; the server redelivers (after `delayMs` if given).
+- **`terminate`** — give up permanently; the server will not redeliver.
+- **`inProgress`** — not terminal; resets the ack-wait timer so a slow handler isn't redelivered mid-flight.
+
+Set `ackPolicy: 'none'` for pure fire-and-hose delivery where no ack is
+expected.
+
+## Push vs pull consumers
+
+- **Push** *(default)* — the server streams messages; the actor's
+  internal pump fans each one to `target` and waits per-message for the
+  ack handshake.  The natural fit for actor-style fan-out.
+- **Pull** (`mode: 'pull'`) — the application self-paces by sending
+  `{ kind: 'fetch', batch, expiresMs }`.  Each fetch delivers up to
+  `batch` messages (returning early after `expiresMs`, default `5_000`);
+  every message still goes through the same ack handshake.  Fits
+  slow/bursty consumers better than push fan-out.
+
+## Idempotent publish
+
+`JetStreamPublish` supports JetStream's server-side dedup and
+optimistic concurrency:
+
+```ts
+jetStream.tell({
+  kind: 'publish',
+  publish: {
+    subject:         'orders.created',
+    payload:         JSON.stringify(order),
+    messageId:       order.id,   // sent as Nats-Msg-Id — dedupes re-publishes in the stream's window
+    expectedLastSeq: lastSeq,    // server rejects the publish if the stream head moved (optimistic concurrency)
+  },
+});
+```
+
+## Peer dependency
+
+```bash
+npm install nats
+# or: bun add nats
+```
+
+The `nats` package includes both core NATS and the JetStream client.
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="ackWaitMs must exceed handler time">
+  If a handler routinely takes longer than `ackWaitMs`, the server
+  redelivers the message mid-processing.  Either raise `ackWaitMs`, or
+  send `{ kind: 'inProgress', streamSeq }` to extend the window for a
+  long-running handler.
+</Aside>
+
+<Aside type="caution" title="`fetch` is pull-mode only">
+  Sending a `fetch` command to a **push**-mode consumer is a no-op
+  (logged as a warning).  Use `mode: 'pull'` on the consumer config to
+  drive delivery with `fetch`.
+</Aside>
+
+<Aside type="caution" title="Create-or-update only — no deletion">
+  The actor only ever **creates or updates** streams and consumers at
+  connect time; it never deletes them.  Destroying a stream is an
+  operator concern, not a runtime one.
+</Aside>
+
+<Aside type="caution" title="KV and Object Store are separate">
+  JetStream's Key-Value and Object-Store sub-APIs have different
+  semantics and are not covered by this actor
+  ([roadmap #74](https://github.com/pathosDev/actor-ts/issues/74)).
+  This actor is stream publish/consume only.
+</Aside>
+
+## Where to next
+
+- **[NATS](/io/nats/)** — core (non-durable) pub/sub + request-reply.
+- **[Kafka](/io/kafka/)** — heavier durable streaming at massive scale.
+- **[BrokerActor base](/io/broker-actor-base/)** — the shared reconnect / buffer / circuit-breaker lifecycle.
+- **[I/O overview](/io/overview/)** — the bigger picture.

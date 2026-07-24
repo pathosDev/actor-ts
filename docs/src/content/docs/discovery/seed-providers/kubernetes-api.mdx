@@ -1,12 +1,12 @@
 ---
 title: Kubernetes API seed provider
-description: Query the K8s API server for pods matching a label selector — returns the running pod IPs as seed addresses. The standard choice for K8s deployments.
+description: Read the Endpoints of a named Service from the K8s API — returns the ready pod IPs as seed addresses. The standard choice for K8s deployments.
 ---
 
-`KubernetesApiSeedProvider` queries the K8s API for pods matching
-a label selector and returns their IPs as seeds.  Works without
-DNS, without SRV, without manual seed-list maintenance — the
-selector is your contract.
+`KubernetesApiSeedProvider` reads the Endpoints of a named
+Service from the K8s API and returns the ready pod IPs as seeds.
+Works without DNS, without SRV, without manual seed-list
+maintenance — the Service is your contract.
 
 ```ts
 import { Cluster, ClusterOptions, KubernetesApiSeedProvider, KubernetesApiSeedProviderOptions } from 'actor-ts';

@@ -51,11 +51,9 @@ const clusterSingletonManagerOptions = ClusterSingletonManagerOptions.create()
   .withSingletonProps(Props.create(() => new JobScheduler()))
   .withRole('control-plane')            // optional
   .withLease(leaseImpl)                  // optional split-brain protection
-  .withAcquireRetryIntervalMs(5_000);
+  .withAcquireRetryIntervalMs(5_000);   // retry cadence when lease acquire fails
 system.spawn(
-  ClusterSingletonManager.props(
-    clusterSingletonManagerOptions,    // when lease acquire fails
-  ),
+  Props.create(() => new ClusterSingletonManager(clusterSingletonManagerOptions)),
   'singleton-manager-job-scheduler',
 );
 ```
@@ -117,7 +115,7 @@ to prevent.
 const managerOptions = ClusterSingletonManagerOptions.create()
   // ...
   .withLease(someLeaseImpl);
-ClusterSingletonManager.props(managerOptions);
+Props.create(() => new ClusterSingletonManager(managerOptions));
 ```
 
 Adds an async gate on the lease.  The flow:
@@ -181,9 +179,11 @@ default, the child is restarted.  Manager doesn't intervene
 unless leadership also changed.
 
 If the child explicitly stops itself (`context.stopSelf()`), the
-manager sees the Terminated, releases the lease (if held), and
-**doesn't re-spawn**.  The singleton is gone until the next
-leader change.
+manager sees the Terminated but does nothing with it: it
+**doesn't re-spawn**, and it **doesn't release the lease** — a held
+lease stays held, and the manager's `child` reference is left
+pointing at the now-dead singleton.  The singleton is gone until the
+next leader change.
 
 If you want a self-stopping singleton to be re-spawned, the
 manager isn't the place — write a watchdog actor at a level
@@ -223,8 +223,10 @@ Direct manager contact is useful only for:
 ```ts
 import { MemberUp, LeaderChanged } from 'actor-ts';
 
-cluster.subscribe(LeaderChanged, (evt) => {
-  console.log(`leader is now ${evt.leader}`);
+cluster.subscribe((evt) => {
+  if (evt instanceof LeaderChanged) {
+    console.log(`leader is now ${evt.leader.map((m) => m.address).getOrElse('<none>')}`);
+  }
 });
 ```
 
@@ -250,7 +252,7 @@ import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="Manager name must match the convention">
   ```ts
-  system.spawn(ClusterSingletonManager.props(ClusterSingletonManagerOptions.create()/* ... */), 'whatever');
+  system.spawn(Props.create(() => new ClusterSingletonManager(ClusterSingletonManagerOptions.create()/* ... */)), 'whatever');
   // ✗ proxy looks for `/user/singleton-manager-<typeName>`, not /user/whatever
   ```
   Use `singletonManagerPath(...)` or just spell out the
@@ -258,14 +260,17 @@ import { Aside } from '@astrojs/starlight/components';
   are invisible to proxies.
 </Aside>
 
-<Aside type="caution" title="Lease failure with no retry">
+<Aside type="caution" title="acquireRetryIntervalMs must be positive">
   ```ts
-  acquireRetryIntervalMs: 0,
+  acquireRetryIntervalMs: 0,   // ✗ does not disable retries
   ```
-  Setting to 0 disables retries — a single failed acquire leaves
-  the singleton un-spawned until the next `LeaderChanged` event.
-  Use a sensible value (default 5s is reasonable for most lease
-  providers).
+  `0` does not disable retries — there is no disable switch.  The
+  value is validated as a positive number when you start the
+  singleton, so a non-positive value is rejected up front with an
+  `OptionsError`.  And `0` never means "stop retrying" internally: the
+  5s default applies only to an *unset* value, so `0` would just retry
+  immediately.  Use a positive interval; the 5s default suits most
+  lease providers.
 </Aside>
 
 ## Where to next

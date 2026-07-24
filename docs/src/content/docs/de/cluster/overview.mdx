@@ -121,13 +121,13 @@ stateDiagram-v2
   wiederbelebt.
 
 Der Event-Stream des Clusters legt jeden Übergang offen — abonniere
-`MemberUp` / `MemberRemoved` / `UnreachableMember` etc. und
+`MemberUp` / `MemberRemoved` / `MemberUnreachable` etc. und
 reagiere.
 
 ## Was Gossip macht
 
 Gossip ist der Mechanismus, mit dem sich Mitglieder darauf einigen,
-wer im Cluster ist. Alle `gossipIntervalMs` (Standard 500 ms) wählt
+wer im Cluster ist. Alle `gossipIntervalMs` (Standard 1000 ms) wählt
 jedes Mitglied einen zufälligen erreichbaren Peer und tauscht seine
 Sicht auf den Cluster aus. Über ein paar Runden konvergieren alle
 Peers auf denselben Zustand — ohne zentralen Koordinator.
@@ -149,20 +149,21 @@ Für den tiefen Einstieg siehe
 
 ## Was der Failure Detector macht
 
-Das Framework verwendet einen **Phi-Accrual**-Failure-Detector.
-Jedes Mitglied führt eine Heartbeat-Historie pro Peer; wenn die
-Heartbeats eines Peers innerhalb eines statistischen Fensters
-ausbleiben, markiert der Detector ihn als verdächtig.
+Das Framework verwendet einen einfachen, deterministischen Failure
+Detector auf Basis von **abgelaufenen Zeitschwellen**. Jedes
+Mitglied verfolgt pro Peer einen Zuletzt-gesehen-Zeitstempel — jede
+Nachricht zählt als Heartbeat; bleibt ein Peer länger als eine
+Schwelle still, markiert ihn der Detector.
 
-- **`unreachableAfterMs`** — sobald der Verdacht den Schwellwert
-  diese Zeit lang überschreitet, wird das Mitglied als
-  `unreachable` markiert.
-- **`downAfterMs`** — bleibt der Verdacht *diese* Zeit lang
-  bestehen, wird das Mitglied heruntergefahren (Split-Brain-Auflösung).
+- **`unreachableAfterMs`** — sobald ein Peer diese Zeit lang still
+  war, wird das Mitglied als `unreachable` markiert.
+- **`downAfterMs`** — hält die Stille *diese* Zeit lang an, wird das
+  Mitglied heruntergefahren (Split-Brain-Auflösung).
 
-Adaptiv — der Detector kommt mit variabler Netzwerklatenz zurecht,
-nicht nur mit einem festen Timeout. Siehe
-[Failure Detector](/de/cluster/failure-detector/) für die Phi-Mathematik.
+Schlichte abgelaufene Zeitgrenzen, kein Tracking statistischer
+Varianz — ausreichend für Cluster auf LAN-Skala. Siehe
+[Failure Detector](/de/cluster/failure-detector/) für Tuning und die
+WAN-Vorbehalte.
 
 ## Split-Brain und Downing
 
@@ -179,7 +180,8 @@ actor-ts liefert mehrere **Downing-Strategien** mit:
 | `KeepMajority` | Die Seite mit mehr Nodes gewinnt; die kleinere Seite fährt sich selbst herunter. |
 | `KeepOldest` | Die Seite mit dem ältesten Mitglied gewinnt. |
 | `KeepReferee` | Die Sicht eines bestimmten Schiedsrichter-Nodes gewinnt. |
-| `KeepQuorum` | Erfordert eine konfigurierte Quorum-Größe; Ausfälle darunter fahren den Cluster herunter. |
+| `StaticQuorum` | Die Seite, die eine konfigurierte Quorum-Größe erreicht, gewinnt; eine Seite darunter fährt sich selbst herunter. |
+| `LeaseMajority` | Die Mehrheitsseite gewinnt, aber nur solange sie eine Koordinations-Lease hält. |
 
 Siehe [Downing-Strategien](/de/cluster/downing-strategies/) für die
 vollständige Liste. Wähle bewusst — der Standard (keine
@@ -295,7 +297,7 @@ import { Aside } from '@astrojs/starlight/components';
 - **[Distributed-Data-Überblick](/de/distributed-data/overview/)** —
   gemeinsamer Zustand über CRDTs.
 - **[Failure Detector](/de/cluster/failure-detector/)** — der
-  Phi-Accrual-Mechanismus.
+  Heartbeat-Mechanismus auf Basis abgelaufener Zeitschwellen.
 - **[Downing-Strategien](/de/cluster/downing-strategies/)** —
   Split-Brain auflösen.
 

@@ -31,8 +31,8 @@ The simplest provider for the simplest case.
 
 ```ts
 interface ConfigSeedProviderOptionsType {
-  seeds?:     string[];           // explicit list
-  envVar?:    string;             // env-var name (CSV)
+  seeds:      string[];           // "system@host:port" or "host:port"
+  systemName: string;             // default system name for seeds omitting it
 }
 ```
 

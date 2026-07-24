@@ -107,12 +107,12 @@ is durable in production.
 ## Custom store
 
 ```ts
-import type { RememberEntitiesStore } from 'actor-ts/cluster/sharding';
+import type { RememberEntitiesStore, RememberEvent } from 'actor-ts';
 
 class RedisRememberEntitiesStore implements RememberEntitiesStore {
-  async addEntity(typeName: string, entityId: string): Promise<void> { /* SADD */ }
-  async removeEntity(typeName: string, entityId: string): Promise<void> { /* SREM */ }
-  async listEntities(typeName: string): Promise<ReadonlyArray<string>> { /* SMEMBERS */ }
+  async append(typeName: string, event: RememberEvent): Promise<void> { /* RPUSH the event as JSON */ }
+  async load(typeName: string): Promise<RememberEvent[]> { /* LRANGE 0 -1 → JSON.parse each */ return []; }
+  async clear(typeName: string): Promise<void> { /* DEL the key */ }
 }
 
 const shardingOptions = StartShardingOptions.create()
@@ -132,8 +132,10 @@ Cassandra).
 `rememberEntities: true` adds two write operations per entity
 lifetime:
 
-1. **One write when the entity spawns** (`addEntity`).
-2. **One write when the entity passivates / stops** (`removeEntity`).
+1. **One write when the entity spawns** (an `append` of a
+   `started` event).
+2. **One write when the entity passivates / stops** (an `append`
+   of a `stopped` event).
 
 For high-churn entities (millions of short-lived sessions per
 hour), this is real overhead.  Consider:
@@ -165,14 +167,14 @@ message?" is yes**, enable it.
 Passivation stops idle entities.  With `rememberEntities`:
 
 ```
-entity active → passivate (idle) → entity stops → store: removeEntity?
+entity active → passivate (idle) → entity stops → store: append stopped?
 ```
 
 The framework's behavior:
 
-- **Idle-timeout passivation** (`passivationIdleMs`) — removes the
-  entity from the store.  Next message respawns it; the store
-  receives an `addEntity` again.
+- **Idle-timeout passivation** (`passivationIdleMs`) — appends a
+  `stopped` event.  Next message respawns it; the store
+  receives a `started` event again.
 - **`maxEntities` LRU passivation** — same.
 - **`Passivate` from the entity itself** — same.
 

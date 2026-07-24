@@ -48,7 +48,7 @@ für den In-Process-Fall.
 ```ts
 // main.ts — Hauptthread
 import { Worker } from 'node:worker_threads';
-import { ActorSystem, Cluster, ClusterOptions, MessageChannelTransport } from 'actor-ts';
+import { ActorSystem, Cluster, ClusterOptions, MessageChannelTransport, NodeAddress } from 'actor-ts';
 
 const channel = new MessageChannel();
 
@@ -57,10 +57,8 @@ const w1 = new Worker('./worker.js', {
   transferList: [channel.port2],
 });
 
-const transport = new MessageChannelTransport({
-  self:   'main',
-  ports: [channel.port1],
-});
+const mainAddress = new NodeAddress('main', 'main', 0);
+const transport = new MessageChannelTransport(mainAddress, channel.port1);
 
 const system = ActorSystem.create('main');
 const clusterOptions = ClusterOptions.create()
@@ -75,12 +73,10 @@ await Cluster.join(
 
 // worker.js — läuft im Worker-Thread
 import { parentPort, workerData } from 'node:worker_threads';
-import { ActorSystem, Cluster, ClusterOptions, MessageChannelTransport } from 'actor-ts';
+import { ActorSystem, Cluster, ClusterOptions, MessageChannelTransport, NodeAddress } from 'actor-ts';
 
-const transport = new MessageChannelTransport({
-  self:  'w1',
-  ports: [workerData.mainPort],
-});
+const workerAddress = new NodeAddress('w1', 'w1', 0);
+const transport = new MessageChannelTransport(workerAddress, workerData.mainPort);
 
 const system = ActorSystem.create('w1');
 const cluster2Options = ClusterOptions.create()
@@ -98,29 +94,34 @@ await Cluster.join(
 
 ## Die Mesh-Form
 
-Für **mehrere Worker** braucht jedes Paar einen MessageChannel.
-Ein voll vermaschtes Mesh mit 4 Workern braucht 6 Channels
-(binomial(4,2)).
-
-Der `MessageChannelTransport` des Frameworks akzeptiert ein
-**Array von Ports**:
+Der Transport ist ein **Stern, kein voll vermaschtes Mesh**. Ein
+einzelner `WorkerBroker` im Hauptthread ist die Nabe: Er hält
+einen `MessagePort` pro Node und leitet jeden Frame an den Node
+weiter, den die `to`-Adresse des Envelopes benennt. Der
+`MessageChannelTransport` jedes Nodes hält einen **einzelnen
+Port** — sein eigenes Ende eines Channels zum Broker, niemals ein
+Array:
 
 ```ts
-new MessageChannelTransport({
-  self:  'main',
-  ports: [
-    portToW1,
-    portToW2,
-    portToW3,
-  ],
-});
+import { MessageChannelTransport, NodeAddress, WorkerBroker } from 'actor-ts';
+
+// Hauptthread: ein Broker ist die Nabe für jeden Node.
+const broker = new WorkerBroker();
+
+// Ein MessageChannel pro Worker — der Broker behält das eine Ende und
+// der Worker erhält das andere (übertragen via workerData).
+const workerAddress = new NodeAddress('w1', 'w1', 0);
+const channel = new MessageChannel();
+broker.register(workerAddress, channel.port1);
+
+// In diesem Worker hält sein Transport das einzelne ferne Ende:
+const transport = new MessageChannelTransport(workerAddress, channel.port2);
 ```
 
-Jeder Port zielt auf einen Peer.
-
-Für größere Meshes ist die **Stern-Topologie** (alle reden mit
-main; main leitet weiter) einfacher — nur N-1 Channels nötig.
-Aber das macht main zum Flaschenhals.
+Also brauchen **N Worker N Channels** (einen pro Worker) — nicht
+binomial(N,2). Der Broker leitet jeden Hop weiter, was die
+Verdrahtung linear hält, aber den Hauptthread zum Relay für den
+gesamten Node-übergreifenden Verkehr macht.
 
 ## Wie es sich vom TCP-Cluster unterscheidet
 

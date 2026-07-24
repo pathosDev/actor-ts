@@ -173,12 +173,12 @@ provider model.
 ```ts
 import { SelfUp, MemberUp } from 'actor-ts';
 
-cluster.subscribe(SelfUp, (evt) => {
-  console.log(`this node is now Up`);
-});
-
-cluster.subscribe(MemberUp, (evt) => {
-  console.log(`peer ${evt.member.address} reached Up`);
+cluster.subscribe((evt) => {
+  if (evt instanceof SelfUp) {
+    console.log(`this node is now Up`);
+  } else if (evt instanceof MemberUp) {
+    console.log(`peer ${evt.member.address} reached Up`);
+  }
 });
 ```
 

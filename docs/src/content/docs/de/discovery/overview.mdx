@@ -31,7 +31,8 @@ const provider = new KubernetesApiSeedProvider(
   kubernetesApiSeedProviderOptions,
 );
 
-const seeds = await provider.lookup();
+const addresses = await provider.lookup();
+const seeds = addresses.map((address) => address.toString());
 
 const clusterOptions = ClusterOptions.create()
   .withHost(host)
@@ -67,16 +68,18 @@ Der Receptionist beantwortet: **"Welche Actors sind unter diesem
 Service Key registriert, irgendwo im Cluster?"**
 
 ```ts
-import { Receptionist, ServiceKey } from 'actor-ts';
+import { Find, ReceptionistId, Register, ServiceKey } from 'actor-ts';
 
 // Auf node-A:
 const receptionist = system.extension(ReceptionistId).start(cluster);
 const key = ServiceKey.of<MyMessage>('my-service');
 
-receptionist.register(key, myActor);
+receptionist.tell(new Register(key, myActor));
 
-// Auf node-B:
-const refs = await receptionist.find(key);   // → ActorRef[] über den ganzen Cluster
+// Auf node-B — Find antwortet mit einem Listing (dessen .refs sind die
+// passenden Actors über den ganzen Cluster) an den als Reply-Ziel
+// angegebenen Actor:
+receptionist.tell(new Find(key, replyTo));
 ```
 
 Ein cluster-weites Service-Registry.  Jeder Node hostet einen
@@ -121,9 +124,10 @@ const kubernetesApiSeedProviderOptions = KubernetesApiSeedProviderOptions.create
   .withServiceName('actor-ts')
   .withSystemName('my-app')
   .withPort(2552);
-const seeds = await new KubernetesApiSeedProvider(
+const addresses = await new KubernetesApiSeedProvider(
   kubernetesApiSeedProviderOptions,
 ).lookup();
+const seeds = addresses.map((address) => address.toString());
 
 const clusterOptions = ClusterOptions.create()
   .withHost(host)
@@ -135,13 +139,13 @@ await Cluster.join(system, clusterOptions);
 const receptionist = system.extension(ReceptionistId).start(cluster);
 
 // Den API-Actor dieses Pods registrieren:
-receptionist.register(
+receptionist.tell(new Register(
   ServiceKey.of<ApiMessage>('api'),
   system.spawn(Props.create(() => new ApiActor()), 'api'),
-);
+));
 
-// Andere Actors finden ihn:
-const apis = await receptionist.find(ServiceKey.of<ApiMessage>('api'));
+// Andere Actors finden ihn — das Listing wird an das Reply-Ziel geliefert:
+receptionist.tell(new Find(ServiceKey.of<ApiMessage>('api'), replyTo));
 ```
 
 Seed Provider laufen **einmal**; der Receptionist läuft

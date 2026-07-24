@@ -63,9 +63,9 @@ acknowledgments** from the configured number of replicas.
 | `consistency` | What it waits for |
 | --- | --- |
 | `'local'` (default) | Self only — local apply is the ack. |
-| `'majority'` | ⌈N/2 + 1⌉ replicas have acked. |
+| `'majority'` | ⌊N/2⌋ + 1 replicas have acked. |
 | `'all'` | Every up-member replica has acked. |
-| `{ kind: 'count'; n: 3 }` | Exactly `n` replicas have acked. |
+| `{ from: 3 }` | `from` replicas have acked (clamped to `[1, N]`). |
 
 The Promise:
 
@@ -166,8 +166,8 @@ await dd.updateAsync('x', ..., {
 });
 ```
 
-Default timeout is `gossipIntervalMs × 5` — five gossip rounds,
-typically 5 seconds.  Override per call when:
+Default timeout is a fixed 5 seconds (`DEFAULT_ASK_TIMEOUT_MS`),
+independent of the gossip interval.  Override per call when:
 
 - **Stricter latency budget** — set lower; reject early if
   consistency can't be achieved.

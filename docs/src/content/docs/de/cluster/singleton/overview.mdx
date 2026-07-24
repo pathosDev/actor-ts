@@ -67,7 +67,7 @@ ein Singleton vermutlich das Richtige.
 
 ```ts
 import { Actor, ActorSystem, Cluster, ClusterOptions, Props } from 'actor-ts';
-import { ClusterSingletonManager, ClusterSingletonManagerOptions, ClusterSingletonProxy } from 'actor-ts';
+import { ClusterSingletonId, StartSingletonOptions } from 'actor-ts';
 
 class JobScheduler extends Actor<JobCommand> {
   override onReceive(message: JobCommand): void { /* ... */ }
@@ -80,30 +80,17 @@ const clusterOptions = ClusterOptions.create()
   .withSeeds(seeds);
 const cluster = await Cluster.join(system, clusterOptions);
 
-// Auf jedem Node: starte den Manager.
-const clusterSingletonManagerOptions = ClusterSingletonManagerOptions.create<JobCommand>()
-  .withCluster(cluster)
+// Auf jedem Node: starte das Singleton über die ClusterSingleton-Extension.
+// Ein Aufruf spawnt den Manager dieses Nodes und baut den Proxy; nur der
+// Manager des Leaders konstruiert tatsächlich den JobScheduler.
+const startSingletonOptions = StartSingletonOptions.create<JobCommand>()
   .withTypeName('job-scheduler')
-  .withSingletonProps(Props.create(() => new JobScheduler()))
-  .withRole('control-plane');
-system.spawn(
-  ClusterSingletonManager.props(
-    clusterSingletonManagerOptions,   // optional: nur diese Nodes können hosten
-  ),
-  'singleton-manager-job-scheduler',
-);
-
-// Auf jedem Node: ein Proxy, um mit ihm zu reden.
-const proxy = system.spawn(
-  ClusterSingletonProxy.props({
-    cluster,
-    typeName: 'job-scheduler',
-  }),
-  'singleton-proxy-job-scheduler',
-);
+  .withProps(Props.create(() => new JobScheduler()))
+  .withRole('control-plane');   // optional: nur diese Nodes können hosten
+const handle = system.extension(ClusterSingletonId).start(cluster, startSingletonOptions);
 
 // Irgendwo in der App — derselbe Aufruf auf jedem Node:
-proxy.tell({ kind: 'schedule', jobId: '42' });
+handle.proxy.tell({ kind: 'schedule', jobId: '42' });
 ```
 
 Der Proxy sieht aus wie ein einzelner `ActorRef`. Hinter den

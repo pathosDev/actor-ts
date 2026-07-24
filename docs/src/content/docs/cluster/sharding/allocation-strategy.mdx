@@ -174,7 +174,7 @@ the same decision** — or at least not undo each other's work.
 ## Performance
 
 `allocate` runs once per new shard ID — bounded by `numShards`
-(default 100).  Even an expensive strategy is fine here.
+(default 64).  Even an expensive strategy is fine here.
 
 `rebalance` runs every `rebalanceIntervalMs` (default 2 s).  It
 sees the full current state.  Keep it under 100 ms or so to

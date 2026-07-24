@@ -289,7 +289,7 @@ class DbWriterFanout extends Actor<{ row: Row }> {
   Eine `ActorRef`, die in einem globalen `setTimeout`-Callback gefangen
   ist, überlebt die Lebenszeit des Actors — wenn der Actor stoppt,
   feuert der Timer trotzdem und das `tell` landet in den Dead Letters.
-  Verwende `context.scheduler` (das Timer auf `postStop` automatisch
+  Verwende `context.timers` (das Timer auf `postStop` automatisch
   cancelt) statt rohem `setTimeout` für actor-gebundenes Scheduling.
   Siehe [Timer und Scheduling](/de/fundamentals/timers-and-scheduling/).
 </Aside>
