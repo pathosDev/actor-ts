@@ -14,7 +14,8 @@ import {
   CachedSnapshotStoreOptions,
   ObjectStorageSnapshotStore,
   ObjectStorageSnapshotStoreOptions,
-  PersistenceExtensionId,
+  ActorSystem,
+  ActorSystemOptions,
 } from 'actor-ts';
 
 const objectStorageSnapshotStoreOptions = ObjectStorageSnapshotStoreOptions.create().withBackend(backend);
@@ -30,10 +31,11 @@ const cached = new CachedSnapshotStore(
   cachedSnapshotStoreOptions,        // optional TTL
 );
 
-system.extension(PersistenceExtensionId).configure({
+const actorSystemOptions = ActorSystemOptions.create().withPersistence({
   journal:       myJournal,
   snapshotStore: cached,
 });
+const system = ActorSystem.create('app', actorSystemOptions);
 ```
 
 ## When you need it
