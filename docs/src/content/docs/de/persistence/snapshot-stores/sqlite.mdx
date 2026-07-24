@@ -14,19 +14,19 @@ import {
   SqliteJournalOptions,
   SqliteSnapshotStore,
   SqliteSnapshotStoreOptions,
-  PersistenceExtensionId,
   ActorSystem,
+  ActorSystemOptions,
 } from 'actor-ts';
 
-const system = ActorSystem.create('my-app');
 const sqliteJournalOptions = SqliteJournalOptions.create()
   .withPath('/var/lib/my-app/events.db')
   .withWal(true);
 const sqliteSnapshotStoreOptions = SqliteSnapshotStoreOptions.create().withPath('/var/lib/my-app/snapshots.db');
-system.extension(PersistenceExtensionId).configure({
+const actorSystemOptions = ActorSystemOptions.create().withPersistence({
   journal: new SqliteJournal(sqliteJournalOptions),
   snapshotStore: new SqliteSnapshotStore(sqliteSnapshotStoreOptions),
 });
+const system = ActorSystem.create('my-app', actorSystemOptions);
 ```
 
 ## Konfiguration

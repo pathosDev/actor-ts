@@ -9,15 +9,16 @@ Cluster-Nodes geteilt** — jeder Node kann Events für jede
 persistenceId anhängen, lesen oder abfragen.
 
 ```ts
-import { CassandraJournal, CassandraJournalOptions, PersistenceExtensionId } from 'actor-ts';
+import { ActorSystem, ActorSystemOptions, CassandraJournal, CassandraJournalOptions } from 'actor-ts';
 
 const cassandraJournalOptions = CassandraJournalOptions.create()
   .withContactPoints(['cassandra-1:9042', 'cassandra-2:9042'])
   .withKeyspace('my_app_events')
   .withEventsTable('events');
-system.extension(PersistenceExtensionId).configure({
+const actorSystemOptions = ActorSystemOptions.create().withPersistence({
   journal: new CassandraJournal(cassandraJournalOptions),
 });
+const system = ActorSystem.create('my-app', actorSystemOptions);
 ```
 
 ## Wann verwenden

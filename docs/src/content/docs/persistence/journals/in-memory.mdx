@@ -8,13 +8,16 @@ description: The reference Journal implementation — backed by plain arrays, ze
 persistence — fast, zero setup, perfect for tests and dev.
 
 ```ts
-import { InMemoryJournal, InMemorySnapshotStore, PersistenceExtensionId, ActorSystem } from 'actor-ts';
+import { ActorSystem, ActorSystemOptions, InMemoryJournal, InMemorySnapshotStore } from 'actor-ts';
 
-const system = ActorSystem.create('demo');
-system.extension(PersistenceExtensionId).configure({
+// In-memory journal + snapshot store are the DEFAULT — a bare
+// ActorSystem.create('demo') already uses them.  To set them explicitly
+// (or to swap in other stores later), wire them at creation:
+const actorSystemOptions = ActorSystemOptions.create().withPersistence({
   journal:       new InMemoryJournal(),
   snapshotStore: new InMemorySnapshotStore(),
 });
+const system = ActorSystem.create('demo', actorSystemOptions);
 
 // Now `PersistentActor`s in this system write to the in-memory journal.
 ```
@@ -74,17 +77,13 @@ For anything that needs to **persist across restarts**, switch to
 
 ```ts
 import { describe, it, beforeEach, afterEach } from 'bun:test';
-import { TestKit, InMemoryJournal, InMemorySnapshotStore, PersistenceExtensionId } from 'actor-ts';
+import { TestKit, Props } from 'actor-ts';
 
 describe('OrderActor', () => {
   let tk: TestKit;
 
   beforeEach(() => {
-    tk = TestKit.create();
-    tk.system.extension(PersistenceExtensionId).configure({
-      journal:       new InMemoryJournal(),
-      snapshotStore: new InMemorySnapshotStore(),
-    });
+    tk = TestKit.create();   // in-memory journal + snapshot store by default
   });
 
   afterEach(async () => { await tk.shutdown(); });
@@ -126,8 +125,10 @@ import { Aside } from '@astrojs/starlight/components';
 <Aside type="caution" title="Not shared across systems">
   ```ts
   const j = new InMemoryJournal();
-  systemA.extension(PersistenceExtensionId).configure({ journal: j });
-  systemB.extension(PersistenceExtensionId).configure({ journal: j });
+  const optionsA = ActorSystemOptions.create().withPersistence({ journal: j });
+  const systemA = ActorSystem.create('a', optionsA);
+  const optionsB = ActorSystemOptions.create().withPersistence({ journal: j });
+  const systemB = ActorSystem.create('b', optionsB);
   // ↑ same instance, but in a real multi-process setup each process
   //   has its own — the in-memory data isn't shared across them.
   ```
@@ -148,17 +149,19 @@ import { Aside } from '@astrojs/starlight/components';
 ## Switching to a real journal
 
 ```ts
-// Before (test / dev):
-system.extension(PersistenceExtensionId).configure({
+// Before (test / dev) — in-memory is the default:
+const devOptions = ActorSystemOptions.create().withPersistence({
   journal: new InMemoryJournal(),
 });
+const system = ActorSystem.create('app', devOptions);
 
 // After (production):
 import { SqliteJournal, SqliteJournalOptions } from 'actor-ts';
 const sqliteJournalOptions = SqliteJournalOptions.create().withPath('/var/lib/my-app/events.db');
-system.extension(PersistenceExtensionId).configure({
+const prodOptions = ActorSystemOptions.create().withPersistence({
   journal: new SqliteJournal(sqliteJournalOptions),
 });
+const prodSystem = ActorSystem.create('app', prodOptions);
 ```
 
 No code changes inside actors — the `Journal` interface is the
