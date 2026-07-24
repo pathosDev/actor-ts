@@ -276,7 +276,7 @@ class DbWriterFanout extends Actor<{ row: Row }> {
 <Aside type="caution" title="Don't capture refs from outside the actor in closures that survive the actor">
   An `ActorRef` captured in a global `setTimeout` callback survives the
   actor's lifetime — when the actor stops, the timer still fires and
-  the `tell` goes to dead letters.  Use `context.scheduler` (which
+  the `tell` goes to dead letters.  Use `context.timers` (which
   cancels timers automatically on `postStop`) instead of raw
   `setTimeout` for actor-bound scheduling.  See
   [Timers and scheduling](/fundamentals/timers-and-scheduling/).

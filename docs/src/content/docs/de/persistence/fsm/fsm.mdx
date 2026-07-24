@@ -1,6 +1,6 @@
 ---
 title: FSM
-description: Die In-Memory-Zustandsmaschine — erweitere `FSM<StateName, StateData, Message>`, registriere `when(...)`-Handler + `onEnter` / `onExit`-Callbacks. Der State lebt nur im Speicher; beim Neustart verloren.
+description: Die In-Memory-Zustandsmaschine — erweitere `FSM<StateName, StateData, Message>`, registriere `when(...)`-Handler + `onEnter` / `onExitState`-Callbacks. Der State lebt nur im Speicher; beim Neustart verloren.
 ---
 
 `FSM<SName, SData, Message>` ist die Basisklasse für
@@ -34,7 +34,7 @@ class Door extends FSM<DoorState, DoorData, DoorMessage> {
     });
 
     this.onEnter('open',  (data) => this.log.info(`door opened at ${data.openedAt}`));
-    this.onExit('open',   () => this.log.info(`door closing`));
+    this.onExitState('open', () => this.log.info(`door closing`));
   }
 }
 ```
@@ -46,7 +46,7 @@ class FSM<SName, SData, Message> extends Actor<Message> {
   // Im Subklassen-Konstruktor:
   protected when(state: SName, handler: StateHandler<SName, SData, Message>): void;
   protected onEnter(state: SName, fn: (data: SData) => void | Promise<void>): void;
-  protected onExit(state: SName, fn: (data: SData) => void | Promise<void>): void;
+  protected onExitState(state: SName, fn: (data: SData) => void | Promise<void>): void;
   protected onTransition(fn: TransitionCallback<SName, SData>): void;
 
   // In Handlern:
@@ -54,8 +54,8 @@ class FSM<SName, SData, Message> extends Actor<Message> {
   protected stay(data: SData): StayTransition<SData>;
 
   // Read-only:
-  protected readonly stateName: SName;
-  protected readonly stateData: SData;
+  protected get state(): SName;
+  protected get data(): SData;
 }
 ```
 
@@ -92,15 +92,15 @@ this.stay({ ...data, lastChecked: Date.now() });  // → bleiben; neue Daten
 this.stay(data);   // → bleiben; unveränderte Daten
 ```
 
-- **`goto(state, data)`** — Übergang.  Feuert `onExit` für den
+- **`goto(state, data)`** — Übergang.  Feuert `onExitState` für den
   aktuellen Zustand, setzt den neuen Zustand + Daten, feuert
   `onEnter` für den neuen Zustand.
 - **`stay(data)`** — kein Übergang, aber Daten werden
-  aktualisiert.  Kein `onEnter` / `onExit` feuert.
+  aktualisiert.  Kein `onEnter` / `onExitState` feuert.
 
 Beide geben Werte zurück, die du direkt `return`-en kannst.
 
-## `onEnter` und `onExit`
+## `onEnter` und `onExitState`
 
 ```ts
 this.onEnter('open', (data) => {
@@ -108,21 +108,23 @@ this.onEnter('open', (data) => {
   this.context.timers.startSingleTimer('auto-close', 'close', 10_000);
 });
 
-this.onExit('open', () => {
+this.onExitState('open', () => {
   this.context.timers.cancel('auto-close');
 });
 ```
 
 Feuern beim Zustands-Eintritt / -Austritt.  Nützlich für:
 
-- **Timer einrichten** in `onEnter` und sie in `onExit` abbauen.
+- **Timer einrichten** in `onEnter` und sie in `onExitState` abbauen.
 - **Übergänge loggen**, ohne das an die Message-Behandlung zu
   koppeln.
 - **Watcher benachrichtigen** beim Eintritt in bestimmte
   Zustände.
 
-Fehler in diesen Callbacks **propagieren zum Supervisor des
-Actors** — genauso wie jeder `onReceive`-Fehler.
+In diesen Callbacks geworfene Fehler werden **abgefangen und
+geloggt** (eine Warnung via `this.log.warn`) — sie erreichen den
+Supervisor des Actors **nicht**, und der Übergang wird trotzdem
+abgeschlossen.
 
 ## `onTransition`
 
@@ -143,8 +145,8 @@ an.
 
 ```ts
 // In Handler- / Callback-Code:
-this.stateName;   // → SName
-this.stateData;   // → SData
+this.state;   // → SName
+this.data;    // → SData
 ```
 
 Read-only-Zugriff.  Diese direkt zu mutieren würde

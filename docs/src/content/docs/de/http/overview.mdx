@@ -1,6 +1,6 @@
 ---
 title: HTTP im Überblick
-description: Eine typisierte Route-DSL mit drei pluggable Backends (Fastify, Bun.serve, Express), ein gemeinsamer HTTP-Client und Middleware für Caching, Rate-Limiting und Idempotenz. Gebaut als Extension; nicht auf `BrokerActor` aufgesetzt.
+description: Eine typisierte Route-DSL mit drei pluggable Backends (Fastify, Hono, Express), ein gemeinsamer HTTP-Client und Middleware für Caching, Rate-Limiting und Idempotenz. Gebaut als Extension; nicht auf `BrokerActor` aufgesetzt.
 ---
 
 Das HTTP-Modul ist **getrennt von den I/O-Broker-Actors** —
@@ -112,10 +112,22 @@ Client in einen [Retry](/de/patterns/retry/)- +
 
 ```ts
 import { cached, rateLimit } from 'actor-ts/http';
+import { InMemoryCache } from 'actor-ts';
+
+const cache = new InMemoryCache();
 
 const routes = concat(
-  rateLimit({ max: 100, intervalMs: 1_000 })(
-    cached({ ttlMs: 30_000 })(
+  rateLimit({
+    cache,
+    windowMs: 1_000,
+    max: 100,
+    key: (request) => request.remoteAddress ?? 'unknown',
+  })(
+    cached({
+      cache,
+      ttlMs: 30_000,
+      key: (request) => request.path,
+    })(
       path('api', /* ... */),
     ),
   ),
@@ -191,7 +203,7 @@ import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="Backend-spezifische Eigenheiten">
   Jedes Backend hat sein eigenes vorhandenes Ökosystem: Fastifys
-  Schema-Validierung, Bun.serves WebSocket-Integration, Express-
+  Schema-Validierung, Honos Edge-Adapter, Express-
   Middleware.  Diese sind **nicht** über die DSL exponiert — du
   greifst zu ihnen, indem du die Backend-Instanz direkt
   konfigurierst, bevor du sie an `useBackend` übergibst.  Die
@@ -207,7 +219,7 @@ import { Aside } from '@astrojs/starlight/components';
   Content-Type-gesteuerte Dekodierung, Response-Kodierung.
 - **[Fastify-Backend](/de/http/backends/fastify/)** —
   Konfiguration des Default-Backends.
-- **[Bun.serve-Backend](/de/http/backends/fastify/) /
+- **[Hono-Backend](/de/http/backends/hono/) /
   [Express-Backend](/de/http/backends/express/)** —
   Alternativen.
 - **[Response-Cache-Middleware](/de/http/middleware/response-cache/)** —

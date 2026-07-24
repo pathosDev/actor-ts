@@ -4,9 +4,10 @@ This document tracks the planned direction.  Nothing here is committed work — 
 
 ## Status
 
-- Post-v0.10.0, preparing v0.11.0 (`[Unreleased]` window): repo-wide naming
-  conventions + the `OptionsValidator` / `OptionsError` layer + WebSocket/HTTP
-  security hardening.
+- Post-v0.11.0, preparing the next minor (`[Unreleased]` window): the naming
+  sweep extended to every identifier (locals, generic parameters, the `kind`
+  discriminant) + TypeScript 7 native compiler (#361) + raised runtime floors
+  (Node ≥ 24, Bun ≥ 1.3) + dependency bumps.
 - ~2 665 tests green (unit + multi-node + in-process integration) + 15 real-network multi-node integration scenarios green; bug-backlog at 0.
 - A full audit-catalog of ~175 follow-up items is tracked in the issue tracker — security findings, framework features, code-quality refactors.  Filter by label `security` + `severity: <tier>` or by title prefix `[Security] ` / `[Feature] `.
 
@@ -40,6 +41,7 @@ This document tracks the planned direction.  Nothing here is committed work — 
   - `JsonLogger` + `otelLogger` for OTLP-Logs pipelines (#311)
   - HTTP route middleware + `BearerTokenAuth` + `IpAllowlist` + `managementRoutes` auth integration (#312)
   - Real-network multi-node integration tests — docker-compose, tc-netem, 15 scenarios covering cluster primitives end-to-end (#313)
+  - MultiNodeSpec `enterBarrier` — Akka-style cross-node test synchronization (#198, was #47)
   - Backend `remoteAddress` wiring for Fastify / Express / Hono (#312 follow-up)
 - v0.7.0 — `mget` / `mset` on the `Cache` interface (#14), MQTT 5.0 user properties + reason codes (#13)
 - v0.8.0 — Cluster-management extended HTTP endpoints (#56), Re-encryption sweep + journal-to-journal copy + ClusterClient + WriteConsistency/ReadConsistency
@@ -51,7 +53,6 @@ This document tracks the planned direction.  Nothing here is committed work — 
 - PersistenceQuery `AllPersistenceIds` live + cursor-paginated `currentPersistenceIds` — #156
 - `DeathWatch.watchWith` — custom termination message — #159
 - `ShardCommand` types — `StartEntity`, `GetShardStats`, `GetClusterShardingStats` — #151
-- MultiNodeSpec `enterBarrier` — #198 (was #47)
 
 ## Production features (Orleans / Vlingo-inspired)
 

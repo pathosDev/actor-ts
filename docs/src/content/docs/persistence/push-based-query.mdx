@@ -1,178 +1,112 @@
 ---
 title: Push-based query
-description: Sub-poll-interval event delivery — the journal publishes to an in-process `JournalEventBus`; subscribers wake immediately on new events. Bypasses polling for low-latency projections without changing the projection's at-least-once contract.
+description: Sub-poll-interval delivery for the live `events*` query streams — when the journal exposes an in-process event bus, the stream subscribes and delivers each event object directly instead of polling. Automatic; no opt-in. At-least-once preserved.
 ---
 
-The default
-[`PersistenceQuery`](/persistence/persistence-query/) is
-**poll-based**: live streams check the journal every
+The live [`PersistenceQuery`](/persistence/persistence-query/)
+streams — `eventsByPersistenceId` and `eventsByTag` — are
+**poll-based by default**: they re-read the journal every
 `pollIntervalMs` (default 1 s) for new events.  Fine for most
-projections, but introduces up to 1 second of latency per event.
+projections, but up to a second of latency per event.
 
-For lower latency, the framework adds **push delivery** via an
-in-process **`JournalEventBus`**:
+When the underlying journal exposes an in-process **event bus**
+(`journal.events`), those same live streams **automatically**
+switch to **push delivery** — they subscribe to the bus and yield
+each new event within milliseconds, keeping the poll only as a
+safety net.  There is **no opt-in flag**; it happens whenever the
+journal has a bus.
 
 ```mermaid
 sequenceDiagram
   participant PA as PersistentActor
   participant J as Journal
-  participant BUS as JournalEventBus
-  participant PROJ as ProjectionActor
+  participant BUS as journal.events
+  participant Q as events* stream
   PA->>J: persist event
-  Note over J: store event
-  J->>BUS: publish
-  BUS->>PROJ: wake immediately
-  PROJ->>PROJ: handle event
-  PROJ->>PROJ: save offset
-  Note over PROJ: next poll would also<br/>catch it eventually
+  Note over J: append event
+  J->>BUS: publish(event)
+  BUS->>Q: deliver event object
+  Note over Q: consumer's for-await yields it
 ```
 
-The bus delivers in **single-digit milliseconds** instead of the
-poll interval.  At-least-once semantics are preserved — if the
-subscriber misses a publication (start-up race, crash), the next
-poll picks it up.
+## Which journals push
 
-## When this matters
+The in-memory and SQLite journals wire up `journal.events`
+automatically, so their live streams push.  A journal without a
+bus simply polls.  A custom `Journal` opts in by exposing an
+`events` bus and publishing on each successful append.
 
-Sub-poll-interval delivery is **only valuable in one specific
-case**:
+## Consuming a live stream
 
-- The `PersistentActor` and the `ProjectionActor` are **on the
-  same node**.
-- The latency from `persist()` to projection handler is
-  user-visible.
-
-Across nodes (writer on node-A, projection on node-B), the bus
-doesn't help — it's an in-process bus.  Across nodes, you're
-bounded by either polling cadence or the journal's own
-replication / pub/sub layer (Cassandra's CDC, Postgres logical
-replication, etc.).
-
-For most apps, **the default polling is fine** — 1-second
-projection lag is rarely a problem.  Reach for push-based when:
-
-- A real-time UI subscribes to a projection.
-- A cluster-singleton-coordinator needs to react to its own
-  persistence events in real-time.
-- The projection drives compensating actions in a saga, where
-  poll lag stacks across steps.
-
-## How to enable it
+Push applies to the **live** streams (`eventsByTag` /
+`eventsByPersistenceId`), which return an `AsyncIterable`:
 
 ```ts
-// Push delivery needs a journal that exposes an in-process event bus —
-// SqliteJournal (and InMemoryJournal) do; SqliteQuery wraps that instance.
-const journal = new SqliteJournal(SqliteJournalOptions.create().withPath('/var/lib/events.db'));
-const byTagProjectionOptions = ByTagProjectionOptions.create<E>()
-  .withName('realtime-balance')
-  .withTag('account')
-  .withQuery(new SqliteQuery(journal))
-  .withLiveOptions({
-    push: true,                  // enable bus subscription
-    pollIntervalMs: 5_000,       // fallback poll cadence — can be high
-  })
-  .withHandle(async (event) => { /* ... */ });
-const projection = ProjectionActor.byTag<E>(system, byTagProjectionOptions);
+import { offsetStart } from 'actor-ts';
+// `query` is a PersistenceQuery (SqliteQuery / InMemoryQuery / …) — see Persistence query.
+
+for await (const tagged of query.eventsByTag<AccountEvent>('account', offsetStart())) {
+  handle(tagged.event);   // delivered by the bus in ~ms when available,
+                          // otherwise by the next poll
+}
 ```
 
-With `push: true`:
+`LiveQueryOptions` tunes the fallback poll — `{ pollIntervalMs,
+batchSize, clock }`.  There is **no `push` field**: push is
+automatic when the bus exists, so you can set a *higher*
+`pollIntervalMs` (the poll is only a backstop).
 
-- The projection **also** subscribes to the journal's in-process
-  bus.
-- On bus delivery, the projection wakes immediately, queries the
-  journal for the new event(s), and processes them.
-- The poll still runs as a safety net at `pollIntervalMs` — set
-  to 5-30 seconds since push handles the hot path.
+## The bus delivers the event, not just a wake-up
 
-The fallback poll catches:
+The push stream subscribes to the bus **first**, does the
+catch-up read for history, then drains buffered bus events — so
+there's no start-up gap.  Each publication carries the **event
+object itself**, so the stream yields it directly; it does not
+re-query the journal on every notification.
 
-- Events the bus missed (rare — subscription races at start-up).
-- Events from cross-process writers (not delivered via the
-  in-process bus).
-- Events your handler crashed on and needs to retry on restart.
+At-least-once is preserved: if a subscription misses a
+publication (start-up race, crash), the fallback poll picks it up.
 
-## The mechanism
+## ProjectionActor polls — it does not use the bus
 
-```ts
-// Inside the journal, on each successful append:
-this.events.publish(persistentEvent);
+[`ProjectionActor`](/persistence/projections/) drives itself by
+**polling** the one-shot `currentEventsByTag` /
+`currentEventsByPersistenceId` on a timer (`pollIntervalMs`); it
+does **not** subscribe to the journal bus.  So a projection's
+latency is bounded by its poll interval.  For true push latency,
+consume the live `events*` stream directly (as above) rather than
+going through `ProjectionActor`.
 
-// Inside the projection, on each subscription:
-this.events.subscribe((event) => {
-  if (matchesFilter(event)) wakeUpAndProcess();
-});
-```
+## In-process only
 
-The bus is a simple in-process pub/sub — no network, no
-serialization.  Publish is synchronous; subscribers fire on the
-same tick.
-
-For the SQLite + in-memory journals, the bus is wired up
-automatically.  For custom journals, your `Journal` implementation
-should call `this.events.publish(...)` on each successful append
-to enable push delivery to in-process consumers.
-
-## Out of scope
-
-Push delivery is **strictly in-process**.  For cross-node push
-delivery:
-
-- The framework's
-  [DistributedPubSub](/cluster/pubsub/) handles
-  general-purpose cluster pub/sub.  You'd manually publish on
-  events you want streamed cluster-wide.
-- The Cassandra journal has the option of using **CDC** for
-  cross-cluster delivery, but it's not wired in by default.
-
-For "real-time projections across nodes," the simplest pattern
-is:
-
-- The `PersistentActor` (on whichever node hosts it) **also
-  publishes via DistributedPubSub** when persisting (custom
-  code on top of the per-persist callback).
-- Subscribers on any node receive the notification and trigger
-  their projections.
-
-## When NOT to use it
+`journal.events` is an in-process bus — push works only when the
+writer and the stream consumer share an `ActorSystem` (same
+node).  Across nodes you're bounded by polling, by the journal's
+own replication / CDC, or by publishing on
+[DistributedPubSub](/cluster/pubsub/) yourself.
 
 import { Aside } from '@astrojs/starlight/components';
 
-<Aside type="caution" title="Cross-process writer/projection">
+<Aside type="caution" title="Cross-node: the bus doesn't reach">
   ```ts
-  // Writer on node-A, projection on node-B
-  liveOptions: { push: true };   // useless — bus is in-process
+  // Writer on node-A, stream consumer on node-B
   ```
-  Push delivery happens only when writer and reader share an
-  ActorSystem.  Cross-node delivery is bounded by polling or by
-  a manual cluster-pubsub layer.
+  The event bus is in-process.  Cross-node real-time delivery is
+  bounded by polling or a manual DistributedPubSub layer.
 </Aside>
 
-<Aside type="caution" title="High event-rate publishers">
+<Aside type="caution" title="Synchronous publish on the hot path">
   ```ts
-  // 10 000 events/sec — bus fires synchronously each time
+  // The journal publishes synchronously on each append
   ```
-  At high rates, the bus's synchronous-publish path can stall the
-  writer's persist callback.  For very-high-throughput
-  scenarios, lower the projection's batch size and accept poll-only.
-</Aside>
-
-<Aside type="caution" title="Bus delivery is a wake-up, not a delivery">
-  ```ts
-  // Subscriber gets "something happened" → queries journal → handles
-  ```
-  The bus signals "check the journal."  The actual event is still
-  read from the journal.  This means the bus can fire after the
-  event has already been read by a recent poll — that's fine; the
-  query returns no new events and the projection idles.
+  The bus fires synchronously on the writer's append path.  At
+  very high event rates this adds work to the persist path; keep
+  bus subscribers light (yield the event; do heavy work
+  downstream).
 </Aside>
 
 ## Where to next
 
-- **[Persistence overview](/persistence/overview/)** —
-  the bigger picture.
-- **[Persistence query](/persistence/persistence-query/)** —
-  the underlying API.
-- **[Projections](/persistence/projections/)** — what
-  consumes the bus.
-- **[DistributedPubSub](/cluster/pubsub/)** — for
-  cross-node real-time fan-out.
+- **[Persistence query](/persistence/persistence-query/)** — the underlying `events*` API.
+- **[Projections](/persistence/projections/)** — the poll-based projection actor.
+- **[DistributedPubSub](/cluster/pubsub/)** — cross-node real-time fan-out.

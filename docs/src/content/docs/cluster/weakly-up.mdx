@@ -122,12 +122,12 @@ stopped without ever reaching `up`.
 ```ts
 import { MemberWeaklyUp, MemberUp } from 'actor-ts';
 
-cluster.subscribe(MemberWeaklyUp, (evt) => {
-  console.log(`${evt.member.address} promoted to weakly-up`);
-});
-
-cluster.subscribe(MemberUp, (evt) => {
-  console.log(`${evt.member.address} reached full up`);
+cluster.subscribe((evt) => {
+  if (evt instanceof MemberWeaklyUp) {
+    console.log(`${evt.member.address} promoted to weakly-up`);
+  } else if (evt instanceof MemberUp) {
+    console.log(`${evt.member.address} reached full up`);
+  }
 });
 ```
 

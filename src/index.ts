@@ -373,6 +373,11 @@ export {
   VectorClock,
   LastWriterWinsResolver,
   CustomMergeResolver,
+  eventDispatcher,
+  CachedSnapshotStore,
+  CachedSnapshotStoreOptions,
+  reEncryptObjectStorage,
+  InMemoryReEncryptProgressStore,
 } from './persistence/index.js';
 export type {
   Journal,
@@ -452,6 +457,16 @@ export type {
   VectorClockOrder,
   ConflictResolver,
   ConflictCandidate,
+  EventDispatcherBuilder,
+  EventDispatcherIncomplete,
+  CachedSnapshotStoreOptionsType,
+  ReEncryptOptions,
+  ReEncryptResult,
+  ReEncryptProgress,
+  ReEncryptResumeState,
+  ReEncryptProgressStore,
+  MasterKeyRing,
+  MasterKeyRingEntry,
 } from './persistence/index.js';
 
 // CRDTs + DistributedData (gossip-replicated key-value store of CRDTs).
@@ -461,6 +476,10 @@ export {
   GSet,
   ORSet,
   LWWRegister,
+  GCounterMap,
+  LWWMap,
+  MVRegister,
+  ORMap,
   DistributedData,
   DistributedDataOptions,
   DistributedDataId,
@@ -473,6 +492,13 @@ export type {
   GSetJson,
   ORSetJson,
   LWWRegisterJson,
+  GCounterMapJson,
+  GCounterMapOptions,
+  LWWMapJson,
+  LWWMapOptions,
+  MVRegisterJson,
+  ORMapJson,
+  ORMapOptions,
   DistributedDataOptionsType,
   CrdtFactory,
   CrdtJson,
@@ -571,7 +597,7 @@ export type {
   HealthCheckResult,
 } from './management/index.js';
 
-// Coordination (Lease API + InMemoryLease reference + KubernetesLease stub).
+// Coordination (Lease API + InMemoryLease reference + KubernetesLease).
 export { InMemoryLease, inMemoryLeaseStore, KubernetesLease, LeaseOptions, KubernetesLeaseOptions } from './coordination/index.js';
 export type { Lease, LeaseOptionsType, KubernetesLeaseOptionsType } from './coordination/index.js';
 

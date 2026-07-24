@@ -1,6 +1,6 @@
 ---
 title: Replicated Event Sourcing im Überblick
-description: Multi-Writer-Event-Sourcing — mehrere Replicas derselben Entity persistieren gleichzeitig in ein geteiltes Journal, Vector Clocks erkennen Konflikte, Conflict Resolver mergen sie. Die richtige Form für Active-Active- / Multi-Region-Setups.
+description: Multi-Writer-Event-Sourcing — mehrere Replicas derselben Entity, auf verschiedenen Cluster-Knoten, persistieren gleichzeitig in ihre eigenen lokalen Journals und verteilen Events per DistributedPubSub; Vector Clocks erkennen Konflikte, Conflict Resolver mergen sie. Die richtige Form für gleichzeitige Schreiber auf dieselbe Entity innerhalb eines Clusters.
 ---
 
 Standard-[Event Sourcing](/de/persistence/persistent-actor/) hat
@@ -82,18 +82,17 @@ import {
 type State = { value: number };
 type Event = { kind: 'set'; value: number };
 
-const resolver: ConflictResolver<State, Event> = {
-  resolve(state, conflicts) {
-    // Wenn zwei Replicas gleichzeitig unterschiedliche Werte setzen, gewinnt das Maximum:
-    const values = conflicts.map(c => (c.event as Event).value);
-    return { value: Math.max(...values) };
+const maxWinsResolver: ConflictResolver<Event> = {
+  // Wenn zwei Replicas gleichzeitig unterschiedliche Werte setzen, gewinnt der höhere:
+  resolve(a, b) {
+    return a.event.value >= b.event.value ? a.event : b.event;
   },
 };
 
 class Counter extends ReplicatedEventSourcedActor<Command, Event, State> {
   readonly persistenceId = 'counter-42';
   readonly replicaId     = process.env.REPLICA_ID!;
-  readonly conflictResolver = resolver;
+  protected override resolver(): ConflictResolver<Event> { return maxWinsResolver; }
 
   initialState() { return { value: 0 }; }
   onEvent(state: State, event: Event) {
@@ -108,8 +107,8 @@ Der Actor erweitert `ReplicatedEventSourcedActor` statt
 
 - **`replicaId`** — der stabile Identifier dieser Replica
   (anders als `persistenceId`).
-- **`conflictResolver`** — wie nebenläufige Events gemergt
-  werden.
+- **`resolver()`** — wie nebenläufige Events gemergt werden
+  (optional; Default ist Last-Writer-Wins).
 - Das Journal muss **über Replicas geteilt** sein (Cassandra,
   geteilter Object Storage, etc.).
 

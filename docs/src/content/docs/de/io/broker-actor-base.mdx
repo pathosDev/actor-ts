@@ -95,34 +95,39 @@ Lifecycle-Events auftaucht.
 ### Outbound-Buffering
 
 ```ts
-this.outbound({ topic: 'orders', payload: ... });
+this.enqueueOutbound(payload);
 ```
 
-Subklassen rufen `this.outbound(envelope)` zum Senden auf.  Die
-Basisklasse:
+Subklassen rufen `this.enqueueOutbound(payload)` zum Senden auf; es
+gibt `true` zurück, wenn die Nachricht gesendet oder gepuffert
+wurde, `false`, wenn sie verworfen wurde.  Die Basisklasse:
 
-- Wenn **connected** — ruft sofort `dispatchOutgoing(envelope)`
-  auf.
-- Wenn **disconnected** — puffert bis zu `outboundBuffer.capacity`
-  Envelopes.  Beim Reconnect wird der Buffer geleert.
+- Wenn **connected** — verpackt `payload` in ein `OutboundEnvelope`
+  und ruft sofort `dispatchOutgoing(envelope)` auf.
+- Wenn **disconnected** (oder `connecting`) — puffert bis zu
+  `outboundBuffer` Envelopes (Default `1000`).  Beim Reconnect wird
+  der Buffer der Reihe nach geleert.
 
-Überlauf gemäß Policy: `'drop-oldest'` / `'drop-new'` / `'reject'`
-(wirft `BrokerBufferOverflow`).
+Bei Überlauf verwirft die Basisklasse immer das **älteste**
+gepufferte Envelope (FIFO) und publisht ein `BrokerBufferOverflow`-
+Event auf dem Event-Stream — es wird nie geworfen.  Mit
+`outboundBuffer: 0` ist das Puffern deaktiviert: die Nachricht wird
+verworfen und ein `BrokerNotConnected`-Event publisht.
 
 ### Subscriber-Tracking
 
 ```ts
 this.onReceive(message) {
   if (message.kind === 'subscribe') {
-    this.subscribe(message.topic, message.subscriber);
+    this.subscribeRef(message.topic, message.subscriber);
   }
   if (message.kind === 'unsubscribe') {
-    this.unsubscribe(message.topic, message.subscriber);
+    this.unsubscribeRef(message.topic, message.subscriber);
   }
 }
 ```
 
-`subscribe(topic, ref)` registriert `ref` als interessiert an den
+`subscribeRef(topic, ref)` registriert `ref` als interessiert an den
 eingehenden Nachrichten von `topic`.  Die Basisklasse **death-
 watcht** die Ref — wenn sie stoppt, wird die Subscription
 automatisch entfernt.  Keine Lecks.
@@ -131,7 +136,7 @@ Wenn das Protokoll eine eingehende Nachricht pusht, ruft die
 Subklasse auf:
 
 ```ts
-this.fanOut(topic, inboundMessage);
+this.fanOutToTopic(topic, inboundMessage);
 ```
 
 Die Basisklasse stellt sie an jeden Subscriber für dieses Topic
@@ -141,17 +146,17 @@ zu.
 
 ```ts
 reconnect: {
-  minBackoffMs:   500,
-  maxBackoffMs:   30_000,
-  randomFactor:   0.2,
-  maxAttempts:    -1,    // -1 = unbegrenzt
+  initialDelayMs: 200,
+  maxDelayMs:     30_000,
+  factor:         2,
+  maxAttempts:    Infinity,   // der Default — endlos wiederholen
 }
 ```
 
-Pro Actor konfigurierbar.  Die Basisklasse verwendet dieselbe
-exponentielle Backoff-Mathematik wie die
-[BackoffPolicy](/de/patterns/backoff-policy/), mit Jitter, um
-synchronisierte Retries über alle Clients zu vermeiden.
+Pro Actor konfigurierbar (oder `reconnect: false`, um
+Auto-Reconnect ganz zu deaktivieren).  Jeder Versuch wartet
+`min(initialDelayMs * factor^(attempt - 1), maxDelayMs)` — reines
+exponentielles Backoff, ohne Jitter.
 
 Jeder Versuch löst `BrokerReconnectAttempt` auf dem Event-Stream
 aus; nachdem `maxAttempts` erschöpft sind (sofern endlich), löst
@@ -190,7 +195,7 @@ verschiedener Broker-Actors im System.
 
 `preStart` mergt die drei Ebenen, validiert gegen
 `requiredOptions()` und legt das Ergebnis für den Rest des Actor-
-Lebens unter `this.settings` ab.
+Lebens unter `this.options` ab.
 
 Fehlende Pflicht-Settings führen zu einem frühen Fehler-Throw in
 `preStart` — der Actor durchläuft den Fehlerpfad des Supervisors,
@@ -212,11 +217,11 @@ class MyProtocolActor extends BrokerActor<MyProtocolOptionsType, Command, MyPayl
   protected builtInDefaultOptions() { return { /* ... */ }; }
   protected readOptionsFromConfig(c) { /* HOCON parsen */ return {}; }
   protected requiredOptions() { return ['url'] as const; }
-  protected endpointLabel() { return this.settings.url; }
+  protected endpointLabel() { return this.options.url; }
 
   protected async connectImplementation(): Promise<void> {
-    this.connection = await MyClient.connect(this.settings.url);
-    this.connection.onMessage((m) => this.fanOut(m.topic, m));
+    this.connection = await MyClient.connect(this.options.url);
+    this.connection.onMessage((m) => this.fanOutToTopic(m.topic, m));
   }
 
   protected async disconnectImplementation(): Promise<void> {
@@ -232,7 +237,7 @@ class MyProtocolActor extends BrokerActor<MyProtocolOptionsType, Command, MyPayl
 
 Den Rest übernimmt die Basisklasse.  Die meisten Drittanbieter-
 Clients (kafkajs, nats.js usw.) haben eine eventbasierte
-Message-Receive-API, die sich sauber auf `this.fanOut(...)`
+Message-Receive-API, die sich sauber auf `this.fanOutToTopic(...)`
 abbilden lässt.
 
 ## Wohin als Nächstes
@@ -244,4 +249,4 @@ abbilden lässt.
 - **[Event-Stream](/de/fundamentals/event-stream/)** —
   wo Lifecycle-Events publisht werden.
 - **[Backoff-Policy](/de/patterns/backoff-policy/)** —
-  die Mathematik hinter der Reconnect-Schleife.
+  ein eigenständiges Backoff-Primitiv (die Reconnect-Schleife rechnet selbst).

@@ -14,19 +14,19 @@ import {
   SqliteJournalOptions,
   SqliteSnapshotStore,
   SqliteSnapshotStoreOptions,
-  PersistenceExtensionId,
   ActorSystem,
+  ActorSystemOptions,
 } from 'actor-ts';
 
-const system = ActorSystem.create('my-app');
 const sqliteJournalOptions = SqliteJournalOptions.create()
   .withPath('/var/lib/my-app/events.db')
   .withWal(true);
 const sqliteSnapshotStoreOptions = SqliteSnapshotStoreOptions.create().withPath('/var/lib/my-app/snapshots.db');
-system.extension(PersistenceExtensionId).configure({
+const actorSystemOptions = ActorSystemOptions.create().withPersistence({
   journal: new SqliteJournal(sqliteJournalOptions),
   snapshotStore: new SqliteSnapshotStore(sqliteSnapshotStoreOptions),
 });
+const system = ActorSystem.create('my-app', actorSystemOptions);
 ```
 
 ## Konfiguration
@@ -35,30 +35,34 @@ system.extension(PersistenceExtensionId).configure({
 interface SqliteSnapshotStoreOptions {
   path?:           string;     // Dateipfad oder ':memory:'
   snapshotsTable?: string;     // Default 'snapshots'
-  wal?:            boolean;    // WAL-Modus aktivieren
+  keepN?:          number;     // max. Snapshots pro persistenceId, beim Speichern beschnitten (Default 3)
   driver?:         SqliteDriver;
 }
 ```
 
-Gleiche Felder wie beim Journal — siehe
-[SQLite-Journal](/de/persistence/journals/sqlite/) für die
-vollständige Diskussion jedes einzelnen.
+`path` und `driver` verhalten sich genau wie beim
+[SQLite-Journal](/de/persistence/journals/sqlite/).  Es
+gibt hier **keine `wal`-Option**; stattdessen bietet der
+Snapshot-Store `keepN` — die maximale Anzahl an Snapshots,
+die pro `persistenceId` behalten werden, wobei ältere bei
+jedem Speichern beschnitten werden (Default `3`).
 
 ## Schema
 
 ```sql
 CREATE TABLE snapshots (
-  pid     TEXT NOT NULL,
-  seq     INTEGER NOT NULL,
-  state   BLOB NOT NULL,
-  ts      INTEGER NOT NULL,
-  PRIMARY KEY (pid, seq)
+  persistence_id TEXT NOT NULL,
+  sequence_nr    INTEGER NOT NULL,
+  payload        TEXT NOT NULL,
+  timestamp      INTEGER NOT NULL,
+  PRIMARY KEY (persistence_id, sequence_nr)
 );
 ```
 
-Gleiches Pattern wie das Journal: nach `(pid, seq)` geschlüsselt.
-Das Framework liest die **höchste seq** für eine gegebene pid bei
-`loadLatest`.
+Gleiches Pattern wie das Journal: nach
+`(persistence_id, sequence_nr)` geschlüsselt.  Das
+Framework liest die **höchste `sequence_nr`** für eine
+gegebene `persistence_id` bei `loadLatest`.
 
 ## Paarung mit dem Journal
 

@@ -103,9 +103,9 @@ await retry(
 );
 ```
 
-`shouldRetry` läuft nach jedem fehlgeschlagenen Versuch.  Gib
-`false` zurück, um **kurzzuschließen** — die Retry-Loop endet
-sofort mit diesem Fehler, keine weiteren Versuche.
+`shouldRetry` läuft nach jedem fehlgeschlagenen Versuch außer dem
+letzten.  Gib `false` zurück, um **kurzzuschließen** — die
+Retry-Loop endet sofort mit diesem Fehler, keine weiteren Versuche.
 
 Verwende es, um zwischen transienten und permanenten Fehlern zu
 unterscheiden:
@@ -197,10 +197,10 @@ import { Aside } from '@astrojs/starlight/components';
   Es gibt keine eingebaute Cancellation.  Wenn du abbrechen musst,
   übergib ein `AbortSignal` an die Factory und prüfe es innen:
   ```ts
-  retry(() => longCall({ signal: ac.signal }), { attempts: 5, delayMs: 1000 });
+  retry(() => longCall({ signal: abortController.signal }), { attempts: 5, delayMs: 1000 });
   ```
-  Ein von der Factory geworfener `AbortError` umgeht den Default
-  "retrye alles" von `shouldRetry` — liefere ein `shouldRetry`,
+  Standardmäßig behandelt `retry` einen `AbortError` wie jeden
+  anderen Fehler und retryt ihn weiter — liefere ein `shouldRetry`,
   das für `AbortError` `false` zurückgibt, um bei Cancellation
   schnell zu scheitern.
 </Aside>

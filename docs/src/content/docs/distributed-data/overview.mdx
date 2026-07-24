@@ -82,7 +82,7 @@ dd.update<GCounter>(
 
 // Read the local view — gives you the latest known merged state.
 const counter = dd.get<GCounter>('request-count');
-console.log(counter?.value);   // sum across all known replicas
+console.log(counter?.value());   // sum across all known replicas
 ```
 
 The local update is immediate; gossip propagates it to peers over
@@ -124,9 +124,9 @@ const hits = await dd.getAsync<GCounter>('hits',
 | Level | What it means |
 | --- | --- |
 | `'local'` *(default)* | Apply locally; rely on gossip to propagate.  Read returns the local replica's view. |
-| `'majority'` | Wait until ⌈N/2 + 1⌉ replicas have acked.  Read merges majority responses. |
+| `'majority'` | Wait until ⌊N/2⌋+1 replicas have acked.  Read merges majority responses. |
 | `'all'` | Wait for every up-member.  Strongest consistency, highest latency. |
-| `{ kind: 'count'; n: 3 }` | Wait for exactly `n` acks. |
+| `{ from: 3 }` | Wait for exactly `from` acks (clamped to `[1, N]`). |
 
 Quorum doesn't change the merge semantics — every update still
 merges into every replica eventually.  Quorum just gives you a
@@ -145,7 +145,7 @@ for `'majority'` when:
 
 ```ts
 const unsubscribe = dd.subscribe<GCounter>('hits', (counter) => {
-  console.log(`hits is now ${counter.value}`);
+  console.log(`hits is now ${counter.value()}`);
 });
 
 // ... later

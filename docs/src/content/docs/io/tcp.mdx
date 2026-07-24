@@ -13,7 +13,8 @@ import { ActorSystem, Props, TcpSocketActor, TcpSocketOptions } from 'actor-ts';
 
 const tcpSocketOptions = TcpSocketOptions.create()
   .withHost('metrics-collector.example.com')
-  .withPort(8125);
+  .withPort(8125)
+  .withTarget(protocolHandler);   // required: where inbound frames go
 const tcp = system.spawn(
   Props.create(() => new TcpSocketActor(
     tcpSocketOptions,
@@ -24,56 +25,50 @@ const tcp = system.spawn(
 // Send raw bytes:
 tcp.tell({ kind: 'send', payload: new Uint8Array([0x01, 0x02, 0x03]) });
 
-// Or text:
-tcp.tell({ kind: 'send-text', payload: 'PING\n' });
-
-// Subscribe to inbound bytes:
-tcp.tell({ kind: 'subscribe', subscriber: protocolHandler });
+// Or a string (UTF-8 encoded for you):
+tcp.tell({ kind: 'send', payload: 'PING\n' });
 ```
 
 ## Settings
 
 ```ts
 interface TcpSocketOptionsType extends BrokerCommonOptionsType {
-  host:           string;
-  port:           number;
-  keepAlive?:     boolean;
-  keepAliveDelay?: number;
-  noDelay?:       boolean;         // disable Nagle's algorithm
-  framer?:        TcpFramer;       // optional frame-parsing layer
+  host?:    string;              // required
+  port?:    number;              // required
+  framing?: TcpFraming;          // frame extraction; default { kind: 'bytes' }
+  target?:  ActorRef<unknown>;   // required: where inbound frames go
 }
 ```
 
 ## Inbound messages
 
+Inbound frames are pushed straight to the `target` actor you wire
+in through `.withTarget(..)` — there is no `subscribe` command and
+no envelope.  Each message **is** the frame: a `Uint8Array` for
+`bytes` / `length-prefixed` framing, a `string` for `lines`.
+
 ```ts
-import { match } from 'ts-pattern';
-
-class ProtocolHandler extends Actor<TcpInbound> {
-  override onReceive(message: TcpInbound): void {
-    match(message)
-      .with({ kind: 'data' },         (m) => this.onData(m))
-      .with({ kind: 'connected' },    ()  => this.onConnected())
-      .with({ kind: 'disconnected' }, ()  => this.onDisconnected())
-      .exhaustive();
-  }
-
-  private onData(message: Extract<TcpInbound, { kind: 'data' }>): void {
-    this.handleBytes(message.payload);   // Uint8Array
-  }
-
-  private onConnected(): void {
-    this.log.info('TCP connected');
-  }
-
-  private onDisconnected(): void {
-    this.log.info('TCP disconnected');
+class ProtocolHandler extends Actor<Uint8Array> {
+  override onReceive(frame: Uint8Array): void {
+    this.handleBytes(frame);
   }
 }
 ```
 
-Each `data` message carries a chunk of bytes — **NOT** a logical
-message.  TCP is a byte stream; framing is your job.
+Without a framer (`{ kind: 'bytes' }`, the default) each message is
+a raw chunk of bytes — **NOT** a logical message.  TCP is a byte
+stream; framing is your job.
+
+Connection lifecycle is **not** delivered to the target — it is
+published on `system.eventStream` as `BrokerConnected` /
+`BrokerDisconnected` events, shared by every broker actor:
+
+```ts
+import { BrokerConnected, BrokerDisconnected } from 'actor-ts';
+
+system.eventStream.subscribe(monitorRef, BrokerConnected);
+system.eventStream.subscribe(monitorRef, BrokerDisconnected);
+```
 
 ## Framing
 
@@ -88,18 +83,27 @@ const tcpSocketOptions = TcpSocketOptions.create()
 new TcpSocketActor(tcpSocketOptions);
 ```
 
-Optional framer that parses byte stream into discrete messages.
-The framework ships:
+Framing is chosen through `.withFraming(..)` with a `TcpFraming`
+config union — there are no framer classes to instantiate.  Three
+strategies ship:
 
-- **`LengthPrefixedFramer`** — 4-byte (configurable) length
-  prefix.
-- **`DelimitedFramer`** — line-delimited or terminated by a
-  specific byte sequence (newline, NUL, etc.).
-- **Custom** — implement `TcpFramer` for protocols like
-  HTTP/1.1, redis-protocol, etc.
+```ts
+type TcpFraming =
+  | { kind: 'bytes' }                                          // default — raw chunks
+  | { kind: 'lines'; delimiter?: string; maxLineLen?: number }
+  | { kind: 'length-prefixed'; maxFrameLen?: number };
+```
 
-With a framer, `TcpInbound`'s `data` message contains **one full
-frame**, not arbitrary chunks.
+- **`bytes`** (default) — every chunk delivered raw; the target
+  handles byte-stream semantics itself.
+- **`lines`** — split on `delimiter` (default `'\n'`); each frame
+  arrives as a `string`.  `maxLineLen` caps an un-terminated line.
+- **`length-prefixed`** — the first **4 bytes** (big-endian
+  `uint32`) carry the payload size; the prefix width is fixed, only
+  `maxFrameLen` is configurable.
+
+With `lines` or `length-prefixed`, each message the target receives
+is **one full frame**, not an arbitrary chunk.
 
 ## Listener pattern for inbound
 
@@ -142,8 +146,8 @@ import { Aside } from '@astrojs/starlight/components';
 <Aside type="caution" title="TCP gives you bytes, not messages">
   ```ts
   // Send 'hello' and 'world' separately
-  tcp.tell({ kind: 'send-text', payload: 'hello' });
-  tcp.tell({ kind: 'send-text', payload: 'world' });
+  tcp.tell({ kind: 'send', payload: 'hello' });
+  tcp.tell({ kind: 'send', payload: 'world' });
   // Receiver might see: 'hel', 'loworld' or 'hellowor', 'ld' — chunks not aligned
   ```
   Use a framer.  Always.  Without one, application code has to

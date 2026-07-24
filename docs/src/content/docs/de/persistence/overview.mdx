@@ -58,8 +58,10 @@ Framework liefert mit:
 | Backend | Journal | Durable State | Snapshot Store |
 | --- | --- | --- | --- |
 | In-Memory | ✓ | ✓ | ✓ |
-| SQLite (Bun + better-sqlite3) | ✓ | ✓ | ✓ |
-| Cassandra | ✓ | — | — |
+| SQLite (Bun + better-sqlite3) | ✓ | — | ✓ |
+| PostgreSQL | ✓ | ✓ | ✓ |
+| MariaDB / MySQL | ✓ | ✓ | ✓ |
+| Cassandra | ✓ | — | ✓ |
 | Filesystem / S3 (Object Storage) | — | ✓ | ✓ |
 
 Plus einen Erweiterungspunkt — implementiere die Interfaces `Journal` /
@@ -138,7 +140,7 @@ interface State { items: string[]; }
 class Cart extends DurableStateActor<CartCommand, State> {
   constructor(options: DurableStateOptions<State>) { super(options); }
 
-  override async onReceive(command: CartCommand): Promise<void> {
+  override async onCommand(command: CartCommand): Promise<void> {
     if (command.kind === 'add') {
       const next: State = { items: [...this.state.items, command.sku] };
       await this.persist(next);   // überschreibt den gespeicherten State
@@ -235,19 +237,19 @@ konsumiert sie und baut eine abgeleitete View, die für Queries
 zugeschnitten ist:
 
 ```ts
-import { ProjectionActor } from 'actor-ts';
+import { ProjectionActor, ByTagProjectionOptions } from 'actor-ts';
 
-class CartView extends ProjectionActor<CartEvent> {
-  readonly persistenceId = 'view-cart-summary';
-  readonly tag = 'cart';
-
-  async handleEvent(event: CartEvent, seqNr: number): Promise<void> {
-    if (event.kind === 'added') {
-      await this.db.execute('INSERT INTO cart_items ...');
+const cartViewOptions = ByTagProjectionOptions.create<CartEvent>()
+  .withName('view-cart-summary')
+  .withTag('cart')
+  .withQuery(query)
+  .withHandle(async (event) => {
+    if (event.event.kind === 'added') {
+      await db.execute('INSERT INTO cart_items ...');
     }
     // ...
-  }
-}
+  });
+const cartView = ProjectionActor.byTag<CartEvent>(system, cartViewOptions);
 ```
 
 Die Projektion abonniert Events mit Tag `'cart'` aus dem
@@ -284,7 +286,7 @@ Eingebaute Implementierungen leben unter
 und [`persistence/snapshot-stores/*`](/de/persistence/snapshot-stores/in-memory/).
 
 Für Produktion deckt die **SQLite**-Kombination aus Journal +
-Snapshot + State Single-Node-Deployments ab; das
+Snapshot Single-Node-Deployments ab; das
 **Cassandra**-Journal deckt Multi-Node-Cluster ab, in denen das
 Journal geteilt werden muss.
 

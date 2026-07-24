@@ -85,9 +85,9 @@ interface MqttOptionsType extends BrokerCommonOptionsType {
   brokerUrl?:  string;          // mqtt:// mqtts:// ws:// wss://
   clientId?:   string;
   credentials?: { username?: string; password?: string };
-  defaultQos?: 0 | 1 | 2;       // used when a call omits qos
+  qos?: 0 | 1 | 2;              // default QoS for publish/subscribe
   cleanSession?: boolean;       // default true
-  keepAliveSec?: number;        // default 60
+  keepAlive?: number;           // seconds; default 60
   protocolVersion?: 4 | 5;      // default 4 (= MQTT 3.1.1)
   codec?: MqttCodec<unknown>;   // default mqttJsonCodec()
   will?: { topic: string; payload: string | Uint8Array; qos?: 0 | 1 | 2; retain?: boolean };

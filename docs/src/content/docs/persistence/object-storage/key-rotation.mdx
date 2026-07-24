@@ -1,6 +1,6 @@
 ---
 title: Key rotation
-description: Online rotation of the master encryption key — add a new key, promote it to current, then run a background re-encryption sweep over existing payloads. Zero downtime; old payloads remain readable throughout.
+description: Online rotation of the object-storage master key — carry the new key as active plus the old as retired, then run a re-encryption sweep over existing payloads. Zero downtime; old payloads stay readable throughout.
 ---
 
 For object-storage encryption, the master key needs to rotate
@@ -11,172 +11,161 @@ data readable throughout.
 The flow:
 
 ```
-   1. Generate new key.  Add to keyRing.keys.  Don't promote yet.
-   2. Roll out.  Old payloads still readable; new writes still use old key.
-   3. Promote new key to currentKeyId.  Roll out.
-   4. New writes use new key.  Old payloads readable via keyRing.
-   5. Run re-encryption sweep.  Old payloads → new key.
-   6. Wait rollback window (~7 days).
-   7. Remove old key from ring.  Cleanup.
+   1. Generate a new key.  Add it to the keyring as `active`; keep the old one under `retired`.
+   2. Roll out.  New writes encrypt under `active`; old payloads decrypt via `retired`.
+   3. Run the re-encryption sweep.  Old payloads → the active key.
+   4. Wait the rollback window (~7 days) — backups may still reference the old key.
+   5. Drop the `retired` entry from the keyring.  Cleanup.
 ```
 
-This page covers the **store-side mechanics**; for the
-operational walkthrough of the broader rotation,
-see [Master key rotation (operations)](/operations/security/master-key-rotation/).
+This page covers the **store-side mechanics**; for the operational
+walkthrough see
+[Master key rotation (operations)](/operations/security/master-key-rotation/).
+
+## The keyring
+
+Encryption keys live in a `MasterKeyRing` — an `active` key for
+new writes plus any `retired` keys still needed to decrypt older
+payloads.  Each entry pairs a numeric `version` (embedded in the
+payload manifest) with the 32-byte AES-256 key:
+
+```ts
+import type { MasterKeyRing } from 'actor-ts';
+
+const keyring: MasterKeyRing = {
+  active:  { version: 2, key: newKey },       // new writes use this
+  retired: [{ version: 1, key: oldKey }],     // still decrypts old payloads
+};
+```
 
 ## The sweep
 
 ```ts
-import { reEncryptionSweep } from 'actor-ts';
+import { reEncryptObjectStorage } from 'actor-ts';
 
-await reEncryptionSweep({
-  backend:         myBackend,
-  keyRing:         currentKeyRing,
-  targetKeyId:     'k2',                        // re-encrypt under this key
-  batchSize:       100,
-  rateLimit:       50,                          // items / sec
-  filter:          (key) => key.startsWith('state/'),
+const result = await reEncryptObjectStorage(backend, {
+  keyPrefix: 'snapshots/',                      // which keys to process
+  keyring,                                      // active + retired keys
+  skip: (key) => key.endsWith('.manifest'),     // optional: exclude keys
+  onProgress: (e) => console.log(`${e.index}/${e.total} ${e.key}`),
 });
+console.log(`re-encrypted ${result.rewrote} of ${result.scanned}`);
 ```
 
-The sweep:
+The sweep lists every object under `keyPrefix`, and for each one:
 
-1. Lists objects in the backend matching `filter`.
-2. For each object: read, check if it's already encrypted under
-   `targetKeyId`.  Skip if so.
-3. Otherwise: decrypt with whichever key it currently uses,
-   re-encrypt with `targetKeyId`, put.
-4. Throttled by `rateLimit`.
+1. Reads it; if it's already at the **active** version, skips it
+   (the idempotent fast-path — no PUT).
+2. Otherwise decrypts it with the matching `retired` key and
+   re-writes it under the `active` key.
+
+It returns a `ReEncryptResult`: `{ scanned, rewrote,
+skippedCurrent, skippedUnencrypted, skippedNonAts1 }`.
 
 ## Idempotent + resumable
 
-```ts
-// Sweep crashes mid-run; on restart, picks up where it stopped
-await reEncryptionSweep({ /* same options */ });
-```
-
-The sweep is **stateless** — at each iteration, it checks
-whether the object needs re-encryption and skips if not.
-Re-running is safe (no duplicate work) and resumes from where
-the previous run failed.
-
-For very-large stores, run the sweep in the **background** —
-not blocking the app's primary persistence work.
-
-## Filter for partial rotation
+Re-running is safe: an object already at the active version is
+skipped without a write.  A plain re-run re-lists and re-checks
+every key (fine for small buckets).  For million-object stores,
+pass a **progress store** so a crashed sweep resumes near where it
+stopped instead of re-scanning from the start:
 
 ```ts
-await reEncryptionSweep({
-  backend,
-  keyRing,
-  targetKeyId: 'k2',
-  filter: (key) => key.startsWith('state/account-'),
+import { InMemoryReEncryptProgressStore } from 'actor-ts';
+
+await reEncryptObjectStorage(backend, {
+  keyPrefix: 'snapshots/',
+  keyring,
+  progress: new InMemoryReEncryptProgressStore(),   // or a durable store
 });
 ```
 
-Re-encrypt only matching objects.  Useful for:
+## Partial rotation with `skip`
 
-- **Per-tenant rotation** — re-encrypt only that tenant's keys.
-- **Per-actor-type rotation** — only `account-` objects.
-- **Phased rotation** — rotate small subsets first to test.
-
-## Rate limiting
+`skip(key) => boolean` **excludes** matching keys — the inverse of
+a filter.  Process a subset by skipping everything else:
 
 ```ts
-rateLimit: 50,   // 50 ops / sec
+await reEncryptObjectStorage(backend, {
+  keyPrefix: 'state/',
+  keyring,
+  skip: (key) => !key.startsWith('state/account-'),   // only account-*
+});
 ```
 
-The sweep's I/O can compete with foreground traffic if uncapped.
-A conservative rate-limit lets the sweep run **alongside
-production** without impact.
+Useful for per-tenant, per-actor-type, or phased rotations.
 
-For a million-object store at 50 ops/sec, the sweep takes
-~5.5 hours.  Acceptable for non-urgent rotations; raise rate for
-urgent ones (compromise response).
+## Keyring-completeness pre-check
 
-## Reading partially-rotated state
-
-During the sweep, the store contains a mix:
-
-```
-state/cart-42   ← still encrypted under k1
-state/cart-43   ← already re-encrypted under k2
-```
-
-The framework reads each using **whichever key the metadata
-says**.  No downtime; partial state is fine.
+By default the sweep samples the first encrypted objects and
+**refuses to start** if any payload's key version is missing from
+the keyring — catching the "operator dropped the retired key too
+soon" footgun *before* a mid-sweep decrypt failure leaves the
+corpus half-rewritten.  Disable with `verifyKeyringCompleteness:
+false` only if you have independent assurance the keyring is
+complete.
 
 ## Confirming completion
 
-```ts
-import { listObjectsNotMatchingKey } from 'actor-ts';
+Read the returned counts — a complete sweep has `scanned ===
+rewrote + skippedCurrent + skippedUnencrypted + skippedNonAts1`,
+and a *second* run reports `rewrote === 0`:
 
-const stragglers = await listObjectsNotMatchingKey({
-  backend,
-  keyId: 'k2',
-  filter: (key) => key.startsWith('state/'),
-});
+```ts
+const result = await reEncryptObjectStorage(backend, { keyPrefix: 'state/', keyring });
+if (result.rewrote === 0) {
+  // everything is already at the active key — safe to plan retiring the old one
+}
 ```
 
-After the sweep completes, **verify** no objects are still
-under the old key.  Stragglers might be:
-
-- Newly-created objects that beat the sweep (rare; just run
-  again).
-- Objects in a partial state due to a sweep crash (run again).
-- Objects matching your filter that you forgot about.
-
-Address before retiring the old key.
+There is no separate "list stragglers" helper; the counts are the
+source of truth.
 
 ## After the sweep
 
+Once every payload is re-encrypted **and** the rollback window has
+passed, drop the `retired` entry:
+
 ```ts
-// 1. Remove old key from ring.
-const newKeyRing = new MasterKeyRing({
-  keys:         { 'k2': process.env.MASTER_KEY_V2! },
-  currentKeyId: 'k2',
-});
-// 2. Roll out — old key is gone.
+const keyringAfterRotation: MasterKeyRing = {
+  active: { version: 2, key: newKey },   // retired[] removed
+};
 ```
 
-**Wait the rollback window** (typically 7 days) before
-removing the old key.  Backups might still reference it; you
-want a recovery path.
+Wait the rollback window (typically 7 days) first — backups may
+still reference the old key.
 
 import { Aside } from '@astrojs/starlight/components';
 
-<Aside type="caution" title="Deleting old keys without verification">
-  ```ts
-  // Drop k1 from ring before sweep completes
-  // → some objects encrypted with k1 are now unreadable
-  ```
-  Always confirm sweep completion before dropping a key.
-  Lost keys = lost data.
+<Aside type="caution" title="Dropping a retired key too soon">
+  Remove a `retired` entry only after the sweep reports every
+  object at the active version *and* the rollback window has
+  passed.  A payload whose key is no longer in the ring is
+  unreadable — the completeness pre-check guards the *start* of a
+  sweep, not your own keyring edits afterward.
 </Aside>
 
-<Aside type="caution" title="Sweep rate too high">
+<Aside type="caution" title="Failures stop the sweep — they aren't swallowed">
   ```ts
-  rateLimit: 10_000   // ✗ saturates S3, costs spike
+  // a decrypt error or backend fault bubbles up and aborts the sweep
   ```
-  Sweep I/O is **opex** — S3 requests cost money.  Rate-limit
-  to a reasonable background pace; don't burn through quota.
+  Per-object failures are not swallowed; the sweep stops at the
+  first one.  Fix the cause and re-run — already-rewritten objects
+  are idempotently skipped on the next pass.
 </Aside>
 
-<Aside type="caution" title="Sweep + new writes race">
+<Aside type="caution" title="Concurrent write during the sweep">
   ```ts
-  // Sweep reads cart-42; app writes cart-42 under new key;
-  // sweep re-encrypts with old version → overwrite race
+  // app writes an object the sweep is rewriting → ETag mismatch
   ```
-  The framework uses **CAS via ETags** on the sweep's put.  If
-  the app wrote a newer version, the sweep skips this object
-  (it's already current).  Safe; no overwrites.
+  The sweep writes with a compare-and-set on the object's ETag.
+  If the app wrote a newer version first, the CAS fails and the
+  sweep throws `ObjectStorageConcurrencyError` and aborts — re-run
+  it (the freshly-written object is already current and is skipped).
 </Aside>
 
 ## Where to next
 
-- **[Object storage overview](/persistence/object-storage/overview/)** —
-  the bigger picture.
-- **[Encryption](/persistence/object-storage/encryption/)** —
-  the at-rest encryption setup.
-- **[Master key rotation (ops)](/operations/security/master-key-rotation/)** —
-  the operations-side rotation walkthrough.
+- **[Object storage overview](/persistence/object-storage/overview/)** — the bigger picture.
+- **[Encryption](/persistence/object-storage/encryption/)** — the at-rest encryption setup.
+- **[Master key rotation (ops)](/operations/security/master-key-rotation/)** — the operations-side walkthrough.

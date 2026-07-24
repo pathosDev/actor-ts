@@ -160,7 +160,7 @@ Implementiere das `BackoffPolicy`-Interface:
 import type { BackoffPolicy } from 'actor-ts';
 
 // Fibonacci-Backoff — zum Spaß.
-function fibBackoff(options: { maxMs: number }): BackoffPolicy {
+function fibonacciBackoff(options: { maxMs: number }): BackoffPolicy {
   return {
     delayFor(n: number): number {
       let a = 100, b = 100;

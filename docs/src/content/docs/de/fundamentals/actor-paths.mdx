@@ -52,7 +52,7 @@ class Logger extends Actor<Message> {
     // → "depth = 2"  (Root ist 0, /user ist 1, /user/logger ist 2)
 
     this.log.info(`elements = ${this.context.path.elements().join(' → ')}`);
-    // → "elements = / → user → logger"
+    // → "elements =  → user → logger"  (führende Lücke = die leer benannte Wurzel)
   }
 }
 ```
@@ -91,9 +91,13 @@ Wenn du den Namen weglässt, synthetisiert das Framework einen
 1. **Namen müssen unter Geschwistern eindeutig sein.**  Zweimal
    `context.spawn(props, 'bar')` auf demselben Parent wirft einen
    Fehler — der Pfad ist bereits in Verwendung.
-2. **Der Name "sieht aus wie ein Pfadsegment."**  Keine Slashes,
-   keine führenden Punkte, keine Leerzeichen.  Das Framework
-   validiert das.
+2. **Der Name sollte "wie ein Pfadsegment aussehen."**  Keine
+   Slashes, keine führenden Punkte, keine Leerzeichen.  Das Framework
+   erzwingt das **nicht** — es prüft nur die Eindeutigkeit unter
+   Geschwistern (Regel 1) und dass der Parent nicht bereits gestoppt
+   ist —, sodass ein Name mit einem Slash stillschweigend das
+   Pfad-Parsing und `ActorSelection` bricht.  Validiere Segmente
+   selbst (siehe den Warnhinweis unten).
 
 Das `uid`-Feld auf `ActorPath` unterscheidet aufeinanderfolgende
 Inkarnationen desselben Pfads — wenn `my-foo` stoppt und dann am

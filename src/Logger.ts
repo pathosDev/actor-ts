@@ -126,8 +126,9 @@ const LEVEL_TAG: Record<LogLevel, string> = {
  * Structured-logging logger that emits one **`\n`-delimited JSON object
  * per record** to `process.stdout` (or an injected `JsonLogSink`).
  *
- * Each record always carries the four core fields — `ts`, `level`,
- * `source`, and `msg` — followed by the merged static + dynamic MDC
+ * Each record always carries `ts`, `level`, and `msg`; `source` is
+ * emitted only when one is bound (via `withSource`).  These are
+ * followed by the merged static + dynamic MDC
  * (static from `withFields`, dynamic from `LogContext.run`, with
  * dynamic winning on key collision to match the "innermost scope wins"
  * intuition).  Extra positional `...args` from

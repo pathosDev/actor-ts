@@ -91,6 +91,8 @@ bun add hono @hono/node-server    # @hono/node-server ist Node-only
 | Paket | Aktiviert |
 | --- | --- |
 | `better-sqlite3` *(nur Node)* | SQLite-Journal + Snapshot Store auf Node.  Bun verwendet `bun:sqlite` (eingebaut, keine Peer-Dep). |
+| `pg` | PostgreSQL Journal + Snapshot + Durable-State Store. |
+| `mariadb` | MariaDB / MySQL Journal + Snapshot + Durable-State Store. |
 | `cassandra-driver` | Cassandra / ScyllaDB Journal + Tag-Index. |
 | `@aws-sdk/client-s3` | S3-kompatibles Object-Storage-Backend (funktioniert mit MinIO, R2, Backblaze B2). |
 | `fzstd` *(optional)* | zstd-Kompression für Object-Storage-Blobs, wenn kein nativer Runtime-Support verfügbar ist. |
@@ -117,9 +119,13 @@ bun add hono @hono/node-server    # @hono/node-server ist Node-only
 
 ### Discovery + Koordination
 
+`KubernetesApiSeedProvider` und `KubernetesLease` benötigen **keine Peer-Dependency** —
+beide erreichen die Kubernetes-API über eingebautes `node:https` + `node:fs` und
+verwenden standardmäßig das ServiceAccount-Token im Pod.
+
 | Paket | Aktiviert |
 | --- | --- |
-| `@kubernetes/client-node` | `KubernetesApiSeedProvider` + `KubernetesLease`. |
+| `@kubernetes/client-node` *(optional)* | Nicht erforderlich.  Optionaler Austausch für den `fetchEndpoints`-Hook des `KubernetesApiSeedProvider`, falls du lieber den offiziellen Client statt des eingebauten HTTPS-Aufrufs verwenden möchtest. |
 
 ## TypeScript-Konfiguration
 

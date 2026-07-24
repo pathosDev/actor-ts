@@ -195,6 +195,38 @@ This means: **your handler doesn't pay any latency cost for
 the Ack**.  The controller emits the Ack after `handler(body)`
 resolves and moves on.
 
+## Observing the ack on the producer side
+
+The consumer handler decides *whether* the Ack fires; the
+producer's **`confirm` callback** is how your own code
+*observes* it landing.  Reach for the ergonomic
+`ReliableDelivery` facade: `ReliableDelivery.producer` returns
+a `ProducerHandle` whose `tell(body, confirm?)` takes an
+optional `ConfirmationCallback` — `(err: Error | null) => void`.
+
+```ts
+const consumer = ReliableDelivery.consumer<OrderEvent>(system, {
+  handler: async (order) => {
+    await save(order);
+  },
+});
+
+const producerOptions = ProducerControllerOptions.create<OrderEvent>().withConsumer(consumer.ref as never);
+const producer = ReliableDelivery.producer<OrderEvent>(system, producerOptions);
+
+producer.tell(order, (err) => {
+  // err === null → the consumer Acked this seq; the slot is freed
+  // err !== null → the producer was stopped before the Ack arrived
+});
+```
+
+`confirm(null)` fires exactly once — after the consumer's Ack
+reaches the producer and the in-flight slot is freed.  A
+redelivered (duplicate) Ack for the same seq is ignored, so the
+callback never double-fires.  This is the **only** producer-side
+signal that a message landed; without it the send is
+fire-and-forget from your code's point of view.
+
 ## When NOT to use the controllers
 
 import { Aside } from '@astrojs/starlight/components';

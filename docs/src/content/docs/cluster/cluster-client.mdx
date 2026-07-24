@@ -19,8 +19,8 @@ const client = new ClusterClient(
 // Send to a well-known cluster actor:
 client.send('/user/api/orders', { kind: 'place', ... });
 
-// Or via receptionist by service key:
-client.sendByKey(ServiceKey.of<ApiMessage>('api'), { kind: 'list-orders' });
+// Or ask and await the reply:
+const orders = await client.ask('/user/api/orders', { kind: 'list-orders' });
 ```
 
 ## When to use it
@@ -45,66 +45,63 @@ ClusterClient is the escape hatch for cases where it can't be.
 sequenceDiagram
   participant Ext as External process
   participant Cluster
-  Ext->>Cluster: contact cluster receptionist via well-known path
-  Cluster-->>Ext: known service refs
-  Ext->>Cluster: send messages to refs
+  Ext->>Cluster: connect + hello handshake
+  Ext->>Cluster: envelope with target path + message
+  Cluster-->>Ext: reply (for ask)
 ```
 
 The client:
 
-1. Connects to one or more **contacts** (known cluster nodes
+1. Connects to one or more **contact points** (cluster nodes
    running a `ClusterClientReceptionist`).
-2. Discovers available services via the receptionist.
-3. Routes messages to the right actors.
-4. Handles failover when contacts become unreachable —
+2. Sends each message in an envelope addressed to a target
+   actor **path** — `send` for fire-and-forget, `ask` for
+   request/reply.
+3. The receptionist on the contact node resolves that path in
+   its local actor tree and delivers the message.
+4. Handles failover when a contact point becomes unreachable —
    reconnects to another.
 
 ## Configuration
 
 ```ts
 interface ClusterClientOptionsType {
-  contacts:            string[];       // at least one cluster-node path
-  reconnectIntervalMs?: number;
-  acceptableHeartbeatPauseMs?: number;
+  contactPoints: ReadonlyArray<string>;            // at least one node: host:port or <system>@host:port
+  systemName?: string;                             // synthetic system name in the client's hello
+  clientIdentity?: { host: string; port: number }; // identity used for reply routing
+  askTimeoutMs?: number;                           // default ask timeout (ms; default 5000)
+  tls?: TlsTransportOptionsType;                   // must match the cluster's
+  logger?: Logger;                                 // default: ConsoleLogger at WARN
 }
 ```
 
-`contacts` is the list of receptionist paths.  The client
-randomly picks one to connect to; on failure, falls back to
-others.
+`contactPoints` is the list of cluster nodes to dial — each a
+`host:port` or `<system>@host:port` string.  The client tries
+them in order; on failure, it falls back to the next.
 
 For **stable contact addresses**, the cluster side typically
-deploys a `ClusterClientReceptionist` on a fixed pod (or
-sharded set) at a well-known path.
+runs a `ClusterClientReceptionist` on a fixed set of nodes,
+whose addresses become the client's contact points.
 
 ## Server side — ClusterClientReceptionist
 
 ```ts
-import { ClusterClientReceptionist } from 'actor-ts';
+import { ClusterClientReceptionistId } from 'actor-ts';
 
-system.spawn(
-  ClusterClientReceptionist.props({
-    cluster,
-    role: 'frontend',   // optional — restrict to specific nodes
-  }),
-  'cluster-client-receptionist',
-);
+// The receptionist is a per-system extension — start it on each
+// node that should accept outside-in client connections:
+system.extension(ClusterClientReceptionistId).start(cluster);
 ```
 
-The receptionist exposes registered services to external
-clients.  Register actors:
+There's no service registry to populate.  The receptionist
+resolves each envelope's target path against the local actor
+tree and delivers the message — any actor already running under
+`/user` is reachable by the path the client sends to (e.g.
+`client.send('/user/api/orders', ...)`).
 
-```ts
-const receptionistRef = system.actorSelection('/user/cluster-client-receptionist');
-
-receptionistRef.tell({
-  kind:    'register-service',
-  key:     ServiceKey.of<OrdersMessage>('orders'),
-  ref:     ordersActor,
-});
-```
-
-External clients can then `sendByKey('orders', message)`.
+Its one option, `askTimeoutMs`, bounds the wait when a client
+envelope carries an ask; set it via
+`ClusterClientReceptionistOptions`.
 
 ## Comparison with cluster-aware ActorRef
 
@@ -155,6 +152,7 @@ import { Aside } from '@astrojs/starlight/components';
 - **[Refs across nodes](/cluster/refs-across-nodes/)** —
   in-cluster ref semantics for comparison.
 - **[Receptionist](/discovery/receptionist/)** — the
-  in-cluster service registry; ClusterClient builds on top.
+  in-cluster service registry (a distinct component with a
+  similar name).
 - **[HTTP overview](/http/overview/)** — the more
   common external-facing alternative.

@@ -146,7 +146,7 @@ Zwei Wege, das zu erkennen:
   unerreichbar+downed wird. Das `Terminated.addressTerminated`-Flag
   unterscheidet "Actor gestoppt" von "Node verloren".
 - **Cluster-Events abonnieren** — `MemberRemoved` /
-  `UnreachableMember` für die Adresse des Hosts sagt dir, dass der
+  `MemberUnreachable` für die Adresse des Hosts sagt dir, dass der
   ganze Node weg ist.
 
 Siehe [Death watch](/de/fundamentals/death-watch/) für die
@@ -220,12 +220,12 @@ import { Aside } from '@astrojs/starlight/components';
   ```ts
   remoteActor.tell({ kind: 'upload', data: hugeBlob });   // 100 MB
   ```
-  Der Max-Frame-Size-Default des Cluster-Transports ist 1 MB
-  (konfigurierbar über `actor-ts.remote.max-frame-size`). Größere
-  Frames scheitern; die Nachricht landet in Dead Letters. Für
-  große Payloads nutze einen separaten Nebenkanal (HTTP-Upload,
-  S3 Presigned URL) und übergib eine Referenz in der
-  Actor-Nachricht.
+  Der Max-Frame-Size-Default des Cluster-Transports ist 16 MiB
+  (konfigurierbar über das `maxFrameBytes`-Konstruktorargument von
+  `TcpTransport`). Größere Frames scheitern; die Nachricht landet
+  in Dead Letters. Für große Payloads nutze einen separaten
+  Nebenkanal (HTTP-Upload, S3 Presigned URL) und übergib eine
+  Referenz in der Actor-Nachricht.
 </Aside>
 
 ## Wohin als Nächstes

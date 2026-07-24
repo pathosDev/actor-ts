@@ -17,6 +17,8 @@ export type {
   CompressionConfig,
   EncryptionConfig,
   PersistenceOptions,
+  MasterKeyRing,
+  MasterKeyRingEntry,
 } from './PersistenceOptions.js';
 
 export { InMemoryJournal } from './journals/InMemoryJournal.js';

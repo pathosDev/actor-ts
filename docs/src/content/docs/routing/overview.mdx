@@ -96,9 +96,8 @@ shape is the right fit.
 
 ## Routers and supervision
 
-The router is a regular actor — it has its own supervisor strategy.
-The default is "watch each routee, log if it stops."  When a routee
-crashes:
+The router is a regular actor — it has its own supervisor strategy,
+and it `watch`es each routee.  When a routee crashes:
 
 - Without intervention, the routee's parent (the router) applies
   its supervisor strategy.  By default that's the framework's
@@ -106,8 +105,9 @@ crashes:
 - The restarted routee re-joins the pool at the same path.  The
   router doesn't have to do anything special.
 - Anything routed to the routee during its brief restart window
-  goes to dead letters (the routee's mailbox is drained before
-  the restart, then fresh).
+  stays in its mailbox — the mailbox is suspended for the restart
+  and resumed afterwards (the same instance, not drained), so those
+  messages are processed once the routee is running again.
 
 For per-routee supervision strategies, configure them on the
 routee `Props`:
@@ -120,9 +120,11 @@ system.spawn(Router.roundRobin(4, routeeProps), 'workers');
 ```
 
 Now any worker that throws is **stopped** instead of restarted —
-and the router watches it die, but the pool just becomes smaller.
-You'd combine this with a higher-level supervisor that decides
-when to re-spawn the whole pool.
+and the router watches it die, but its ref stays in the pool.
+Round-robin keeps handing that slot roughly 1-in-N messages, which
+land in dead letters until the whole router restarts.  You'd combine
+this with a higher-level supervisor that decides when to re-spawn
+the whole pool.
 
 ## Routers are not (the only) way to parallelize
 

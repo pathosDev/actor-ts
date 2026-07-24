@@ -1,6 +1,6 @@
 ---
 title: Examples - Übersicht
-description: Lauffähige Beispiele im Repo - eine Chat-App, die Clustering + PubSub demonstriert, eine Voice-Pipeline mit Brokern + Persistenz, plus eigenständige Snippets für einzelne Konzepte.
+description: Lauffähige Beispiele im Repo - eine Chat-App, die Clustering + PubSub demonstriert, ein Voice-Sample mit ephemerem Pub/Sub + Presence-CRDTs, plus eigenständige Snippets für einzelne Konzepte.
 ---
 
 Das Framework liefert **lauffähige Beispiele** unter
@@ -12,8 +12,8 @@ und starten kannst.
 
 | Beispiel | Demonstriert |
 | --- | --- |
-| **[Chat-Sample](/de/examples/chat-sample/)** | Cluster + DistributedPubSub + sharded User-Sessions + HTTP/WS-Endpoint. |
-| **[Voice-Sample](/de/examples/voice-sample/)** | WebSocket + Kafka + PersistentActor + Projektionen. |
+| **[Chat-Sample](/de/examples/chat-sample/)** | Cluster + DistributedPubSub + DistributedData + sharded persistente Chat-Room- / Direktnachrichten-Entities + HTTP/WS-Endpoint. |
+| **[Voice-Sample](/de/examples/voice-sample/)** | WebSocket + Receptionist + DistributedPubSub + DistributedData ORSets - ephemer konzipiert (kein Sharding, keine Persistenz). |
 | **[Eigenständige Snippets](/de/examples/stand-alone-snippets/)** | Häppchengroße Beispiele pro Konzept - Counter, Saga, Health, etc. |
 
 Für den **ersten Kontakt mit actor-ts** starte mit dem
@@ -26,11 +26,13 @@ funktionierende Multi-Feature-App.
 ```bash
 # Repo klonen:
 git clone https://github.com/pathosDev/actor-ts.git
-cd actor-ts/examples/chat
+cd actor-ts
 
-# Installieren + starten:
+# Abhängigkeiten einmalig im Repo-Root installieren:
 bun install
-bun run dev
+
+# Chat-Sample starten - drei Terminals, in jedem derselbe Befehl:
+bun examples/chat/backend/main.ts
 ```
 
 Jedes Beispiel hat seine eigene README mit Setup-Schritten.
@@ -40,9 +42,10 @@ Jedes Beispiel hat seine eigene README mit Setup-Schritten.
 Wenn du sehen willst...
 
 - **Cluster + Entities** → Chat-Sample.
-- **Broker-Integration (Kafka)** → Voice-Sample.
-- **PersistentActor-Patterns** → Voice-Sample.
-- **Distributed Pub/Sub** → Chat-Sample.
+- **PersistentActor-Patterns** → Chat-Sample.
+- **Distributed Pub/Sub** → Chat- oder Voice-Sample.
+- **Receptionist + ephemere (CRDT-)Räume** → Voice-Sample.
+- **Broker-Integration (Kafka)** → das Snippet `examples/io/kafka-exactly-once.ts`.
 - **HTTP + WebSocket** → beide Samples.
 - **Ein einzelnes Konzept isoliert** → eigenständige Snippets.
 
@@ -50,11 +53,12 @@ Wenn du sehen willst...
 
 Die Beispiele folgen ein paar Konventionen:
 
-- **`src/actors/`** - Actor-Klassen.
-- **`src/messages.ts`** - geteilte Nachrichten-Typen.
-- **`src/main.ts`** - Einstiegspunkt mit Cluster-Join und
-  HTTP-Server-Start.
-- **`src/handlers/`** - HTTP-/WS-Route-Handler.
+- **`backend/actors/`** - Actor-Klassen.
+- **`backend/main.ts`** - Einstiegspunkt; nur Verdrahtung
+  (Cluster-Join, Extensions, Sharding, HTTP-Singleton).
+- **`backend/routes.ts`** - HTTP-Directive-DSL-Routen.
+- **`shared/`** - mit den Frontends geteilter Code: `protocol.ts`
+  (WS-Nachrichten-Typen), `rooms.ts`, `users.ts`.
 
 Ein Beispiel zu lesen dauert ~30 Minuten für die ganze
 Architektur; schneller, wenn du das Framework schon kennst.
@@ -77,8 +81,8 @@ Beispiele, die aufgenommen werden:
 
 - **[Chat-Sample](/de/examples/chat-sample/)** -
   Cluster + PubSub.
-- **[Voice-Sample](/de/examples/voice-sample/)** - Broker
-  + Persistenz.
+- **[Voice-Sample](/de/examples/voice-sample/)** - ephemeres
+  Pub/Sub + Presence.
 - **[Eigenständige Snippets](/de/examples/stand-alone-snippets/)** -
   Code pro Konzept.
 - **[Quickstart](/de/intro/quickstart/)** - die

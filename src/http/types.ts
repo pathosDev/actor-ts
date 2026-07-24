@@ -1,7 +1,7 @@
 /**
  * Shared HTTP types.  Kept small and backend-agnostic: the Route DSL works
- * only with these shapes, and the different backends (Fastify, BunServe,
- * Express) translate to/from their native APIs.
+ * only with these shapes, and the different backends (Fastify, Express,
+ * Hono) translate to/from their native APIs.
  */
 
 export type HttpMethod = 'GET' | 'POST' | 'PUT' | 'DELETE' | 'PATCH' | 'HEAD' | 'OPTIONS';

@@ -36,8 +36,8 @@ The framework's `VectorClock` class wraps this:
 import { VectorClock } from 'actor-ts';
 
 let vc = VectorClock.empty();
-vc = vc.increment('replica-a');   // → { 'replica-a': 1 }
-vc = vc.increment('replica-a');   // → { 'replica-a': 2 }
+vc = vc.tick('replica-a');        // → { 'replica-a': 1 }
+vc = vc.tick('replica-a');        // → { 'replica-a': 2 }
 vc = vc.merge(VectorClock.fromData({ 'replica-b': 3 }));
 //    → { 'replica-a': 2, 'replica-b': 3 }
 ```
@@ -49,10 +49,10 @@ vc = vc.merge(VectorClock.fromData({ 'replica-b': 3 }));
 | `empty()` | Zero clock. |
 | `fromData(record)` | Build from a plain object. |
 | `get(replicaId)` | Read one component. |
-| `increment(replicaId)` | Bump a replica's component — called when persisting. |
+| `tick(replicaId)` | Bump a replica's component — called when persisting. |
 | `merge(other)` | Per-replica max. |
-| `compare(other)` | Returns `'<'` / `'>'` / `'=='` / `'concurrent'`. |
-| `toData()` | Plain-object form for serialization. |
+| `compareTo(other)` | Returns `'before'` / `'after'` / `'equal'` / `'concurrent'`. |
+| `toJSON()` | Plain-object form for serialization. |
 
 ## How replicated ES uses them
 
@@ -145,14 +145,14 @@ nodes) leave entries in vector clocks:
 vc { A: 100, B: 50, C: 25, RETIRED-D: 7 }
 ```
 
-The retired replica's component is irrelevant but takes up
-space.  For long-running deployments with replica churn, the
-framework supports **vector-clock pruning** at snapshot time —
-when a replica is gone for long enough, its component can be
-safely dropped.
+The retired replica's component is irrelevant but still takes
+up space.  **Vector-clock garbage collection is out of scope
+for v1** — the framework never prunes these entries, so a
+clock grows with every replica it has ever seen.
 
-This is an advanced topic; the defaults are fine for most
-deployments.
+That is fine for a stable cluster.  A node-churn-heavy
+deployment will eventually want compaction, but that is future
+work rather than a supported feature today.
 
 ## Working with vector clocks in user code
 
@@ -161,18 +161,11 @@ your conflict resolver receives **events with their vector
 clocks already compared** — you just decide how to merge the
 **state** given the conflicting events.
 
-For diagnostics:
-
-```ts
-override async onCommand(state, command) {
-  this.log.debug(`current vc: ${JSON.stringify(this.vectorClock.toData())}`);
-  await this.persist(event, () => {});
-}
-```
-
-`this.vectorClock` is read-only access to the actor's current
-clock.  Useful for logging / debugging concurrent-write
-scenarios.
+For diagnostics, note that the actor's current clock is held
+privately and isn't exposed through a public getter.  It
+travels with every persisted event and snapshot, so inspect it
+in the journal / snapshot JSON — the `_vc` field shown under
+**Wire format** above — rather than reading it off the actor.
 
 import { Aside } from '@astrojs/starlight/components';
 

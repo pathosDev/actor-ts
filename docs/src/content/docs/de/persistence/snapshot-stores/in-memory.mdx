@@ -10,25 +10,29 @@ der **Default**, wenn kein Snapshot-Store konfiguriert ist — null
 Setup, ideal für Tests, **niemals in Produktion verwenden**.
 
 ```ts
-import { InMemorySnapshotStore, PersistenceExtensionId, ActorSystem } from 'actor-ts';
+import { ActorSystem, ActorSystemOptions, InMemoryJournal, InMemorySnapshotStore } from 'actor-ts';
 
-const system = ActorSystem.create('demo');
-system.extension(PersistenceExtensionId).configure({
+// In-Memory-Stores sind der Default; hier explizit gezeigt:
+const actorSystemOptions = ActorSystemOptions.create().withPersistence({
   journal:       new InMemoryJournal(),
   snapshotStore: new InMemorySnapshotStore(),
 });
+const system = ActorSystem.create('demo', actorSystemOptions);
 ```
 
 ## Was es tut
 
 Implementiert das `SnapshotStore`-Interface — `save`,
-`loadLatest`, `deleteUpTo`.  Jede `persistenceId` mappt auf ein
-Array von Snapshots, geordnet nach Sequenznummer.
+`loadLatest`, `loadBefore`, `delete`.  Jede `persistenceId` mappt auf
+ein Array von Snapshots, geordnet nach Sequenznummer.
 
-- **`save(persistenceId, snapshot)`** — an das Array der pid anhängen.
-- **`loadLatest(persistenceId)`** — den Snapshot mit der höchsten seq
-  zurückgeben oder `None`.
-- **`deleteUpTo(persistenceId, seqNr)`** — Snapshots mit seq ≤ seqNr
+- **`save(persistenceId, seq, state, options?)`** — an das Array der pid
+  anhängen.
+- **`loadLatest(persistenceId, options?)`** — den Snapshot mit der
+  höchsten seq zurückgeben oder `None`.
+- **`loadBefore(persistenceId, seq, options?)`** — den neuesten Snapshot
+  mit `sequenceNr < seq` zurückgeben oder `None`.
+- **`delete(persistenceId, toSeq)`** — Snapshots mit seq ≤ toSeq
   abschneiden.
 
 Die Implementierung ist **Referenz-Semantik** — jeder andere
@@ -57,7 +61,7 @@ import { Aside } from '@astrojs/starlight/components';
 <Aside type="caution" title="Lange laufende Tests">
   Snapshots akkumulieren im Speicher.  Ein Benchmark, der über
   einen Run 1M Snapshots macht, lässt die Map linear wachsen.  Für
-  lange Tests konfiguriere `deleteUpTo`-Cleanup oder verwende den
+  lange Tests konfiguriere `delete`-Cleanup oder verwende den
   SQLite-Store mit `:memory:`.
 </Aside>
 

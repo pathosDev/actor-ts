@@ -200,11 +200,11 @@ Drei Details, die zählen:
   werden sie über die Priority-Funktion erneut eingefügt — eine
   unstashed Nachricht reiht sich wieder in ihre Priority-Schicht ein,
   nicht an die absolute Front der Queue.
-- **Der Stash hat eine Kapazität.**  Standardmäßig ist der Buffer
-  gebunden, um Memory-Leaks durch ausuferndes Stashing zu verhindern;
-  Overflow wirft `StashOverflowError`.  Konfiguriere über
-  System-Settings, wenn du größere / kleinere brauchst; siehe
-  [Konfiguration](/de/reference/configuration/).
+- **Der Stash hat eine Kapazität.**  Der Buffer ist gebunden, um
+  Memory-Leaks durch ausuferndes Stashing zu verhindern; Overflow
+  wirft `StashOverflowError`.  Der Bound ist fest auf 1024
+  Nachrichten einkompiliert — es gibt keinen Konfigurations-Knopf
+  dafür.
 
 ### `stash` + `become` — die kanonische Kombination
 
@@ -274,11 +274,11 @@ Initialisierungs-Fensters kein Traffic verloren geht.
 
 <Aside type="caution" title="Stash + Restart = Zustand verloren">
   Bei `Restart` wird die Actor-Instanz weggeworfen — inklusive des
-  Stash-Buffers.  Gestashed Nachrichten werden zusammen mit der
-  kurz-vor-dem-Fehlschlag-stehenden Nachricht zu Dead Letters
-  geroutet.  Wenn die Nachrichten über den Fehler hinweg wichtig
-  sind, persistiere sie (PersistentActor) oder lass einen Parent sie
-  nach Abschluss des Restarts erneut senden.
+  Stash-Buffers.  Gestashed Nachrichten werden stillschweigend
+  verworfen, nicht zu Dead Letters geroutet.  Wenn die Nachrichten
+  über den Fehler hinweg wichtig sind, persistiere sie
+  (PersistentActor) oder lass einen Parent sie nach Abschluss des
+  Restarts erneut senden.
 </Aside>
 
 ## Wann zu welchem greifen

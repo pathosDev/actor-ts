@@ -58,8 +58,10 @@ framework ships:
 | Backend | Journal | Durable state | Snapshot store |
 | --- | --- | --- | --- |
 | In-memory | ✓ | ✓ | ✓ |
-| SQLite (Bun + better-sqlite3) | ✓ | ✓ | ✓ |
-| Cassandra | ✓ | — | — |
+| SQLite (Bun + better-sqlite3) | ✓ | — | ✓ |
+| PostgreSQL | ✓ | ✓ | ✓ |
+| MariaDB / MySQL | ✓ | ✓ | ✓ |
+| Cassandra | ✓ | — | ✓ |
 | Filesystem / S3 (object storage) | — | ✓ | ✓ |
 
 Plus an extension point — implement the `Journal` /
@@ -137,7 +139,7 @@ interface State { items: string[]; }
 class Cart extends DurableStateActor<CartCommand, State> {
   constructor(options: DurableStateOptions<State>) { super(options); }
 
-  override async onReceive(command: CartCommand): Promise<void> {
+  override async onCommand(command: CartCommand): Promise<void> {
     if (command.kind === 'add') {
       const next: State = { items: [...this.state.items, command.sku] };
       await this.persist(next);   // overwrites the stored state
@@ -231,19 +233,19 @@ A `PersistentActor` writes events.  A **projection** consumes
 them, building a derived view tailored for queries:
 
 ```ts
-import { ProjectionActor } from 'actor-ts';
+import { ProjectionActor, ByTagProjectionOptions } from 'actor-ts';
 
-class CartView extends ProjectionActor<CartEvent> {
-  readonly persistenceId = 'view-cart-summary';
-  readonly tag = 'cart';
-
-  async handleEvent(event: CartEvent, seqNr: number): Promise<void> {
-    if (event.kind === 'added') {
-      await this.db.execute('INSERT INTO cart_items ...');
+const cartViewOptions = ByTagProjectionOptions.create<CartEvent>()
+  .withName('view-cart-summary')
+  .withTag('cart')
+  .withQuery(query)
+  .withHandle(async (event) => {
+    if (event.event.kind === 'added') {
+      await db.execute('INSERT INTO cart_items ...');
     }
     // ...
-  }
-}
+  });
+const cartView = ProjectionActor.byTag<CartEvent>(system, cartViewOptions);
 ```
 
 The projection subscribes to events tagged `'cart'` from the
@@ -279,7 +281,7 @@ Built-in implementations live under
 [`persistence/journals/*`](/persistence/journals/in-memory/)
 and [`persistence/snapshot-stores/*`](/persistence/snapshot-stores/in-memory/).
 
-For production, the **SQLite** journal+snapshot+state combo
+For production, the **SQLite** journal+snapshot combo
 covers single-node deployments; the **Cassandra** journal covers
 multi-node clusters where the journal must be shared.
 

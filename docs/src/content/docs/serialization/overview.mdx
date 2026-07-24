@@ -23,23 +23,28 @@ Plus an extension point: implement `Serializer<T>` for
 
 ## How it works
 
+For a cross-node `tell`, the cluster wraps the message in an
+envelope and sends it as a length-prefixed **`JSON.stringify`**
+frame — the pluggable `Serializer` is not consulted on the wire:
+
 ```
 Sender side:
-  tell(remoteRef, message)
-    → SerializationExtension picks serializer for typeof(message)
-    → serializer.toBinary(message) → Uint8Array
-    → wrapped with serializerId + manifest + bytes
+  remoteRef.tell(message)
+    → wrapped in an envelope { to, from, body, tag }
+    → ActorRefs embedded in body → wire-safe markers
+    → JSON.stringify(envelope) → length-prefixed frame
     → cluster transport sends over the wire
 
 Receiver side:
-    cluster transport receives bytes
-    → SerializationExtension picks serializer by serializerId
-    → serializer.fromBinary(bytes, manifest) → reconstituted value
-    → delivered to actor's onReceive
+    cluster transport reassembles the frame
+    → JSON.parse(frame) → envelope
+    → ActorRef markers → live remote refs
+    → body delivered to the actor's onReceive
 ```
 
-The `serializerId` + `manifest` tell the receiver **which
-serializer to use** + **what type to reconstruct**.
+The `body` must be **JSON-safe**.  The only type hint on the wire
+is `tag` — the message's constructor name — for routing; there is
+no `serializerId` / `manifest` framing on the cluster wire.
 
 ## The Serializer interface
 
@@ -55,9 +60,10 @@ interface Serializer<T = unknown> {
 ```
 
 Small surface — encode, decode, identify.  The framework's
-`SerializationExtension` maps classes to serializers (via
-`bind`); on serialization, the extension looks up which
-serializer to use for the value's class.
+`SerializationExtension` is a **registry** that maps classes to
+serializers (via `bind`); when you encode a value through the
+extension (`ext.encode`), it looks up the serializer bound to the
+value's class.
 
 ## Default behavior
 
@@ -99,38 +105,40 @@ register:
 import { SerializationExtensionId } from 'actor-ts';
 
 const ext = system.extension(SerializationExtensionId);
-ext.bind(MyEvent, new ProtobufSerializer<MyEvent>(MyEventSchema));
+const serializer = new ProtobufSerializer<MyEvent>(MyEventSchema);
+ext.register(serializer);          // add it to the id lookup table
+ext.bind(MyEvent, serializer.id);  // route MyEvent through it
 ```
 
-Now every `MyEvent` value uses Protobuf for serialization
-across the wire / to journal.  Other types still use JSON.
+`bind` takes a **numeric serializer id**, so the serializer must
+be `register`ed first.  Now the extension resolves every `MyEvent`
+value to Protobuf; other types fall back to JSON.
 
 See [Custom serializers](/serialization/custom/) for
 the full setup.
 
 ## What can be serialized
 
-The default JSON serializer handles:
+The `JsonSerializer` class handles:
 
 - Plain objects (`{ a: 1, b: 'two' }`).
 - Arrays.
 - Strings, numbers, booleans, `null`.
 - Nested combinations of the above.
+- `Date`, `Uint8Array`, `Map`, `Set`, and `bigint` — round-tripped
+  as real instances via type tags.
 
-**Cannot serialize**:
+It **throws** on functions, symbols, and `undefined`; class
+instances decode to plain objects (methods + identity lost).
+`CborSerializer` also round-trips `Uint8Array`, `Date`, and
+`bigint`, but — unlike `JsonSerializer` — it does **not** preserve
+`Map` / `Set` (they encode to an empty `{}`).
 
-- Functions / closures (no method survival).
-- Class instances with methods (methods lost; data fields
-  survive).
-- `Map` / `Set` (JSON-stringified as `{}`).
-- `Date` (round-trips through string; type info lost).
-- `BigInt` (throws).
-- Symbols (silently dropped).
-
-CBOR handles a few more (binary `Uint8Array` natively, `Map`
-as a real map), but not functions.
-
-For complex types, **convert to plain objects before sending**:
+The **cluster wire is different**: cross-node messages go through
+raw `JSON.stringify` (not `JsonSerializer`), so the usual JSON
+limits apply on the wire — `Date` → ISO string, `Map` / `Set` →
+`{}`, `bigint` throws, `undefined` / functions dropped.  Convert
+to plain, JSON-safe shapes before a cross-node `tell`:
 
 ```ts
 // ✗
@@ -143,16 +151,18 @@ ref.tell({ when: Date.now() });
 ## Where serialization fires
 
 ```
-1. cluster wire — every cross-node tell.
+1. cluster wire — every cross-node tell (raw JSON.stringify).
 2. PersistentActor.persist(event) — events to the journal.
 3. DurableStateActor.persist(state) — state to the store.
 4. Snapshot writes — snapshots to the snapshot store.
 5. DistributedData — replicated state across the cluster.
 ```
 
-In-process tells **don't** serialize — the receiver gets the
-exact in-memory reference.  Serialization happens only at
-**process / disk / cluster** boundaries.
+The cluster wire uses `JSON.stringify` on the envelope directly —
+not the pluggable `Serializer` (see *How it works*).  In-process
+tells **don't** serialize — the receiver gets the exact in-memory
+reference.  Serialization happens only at **process / disk /
+cluster** boundaries.
 
 import { Aside } from '@astrojs/starlight/components';
 

@@ -70,9 +70,10 @@ await http.newServerAt('0.0.0.0', 8080)
   .useBackend(backend)
   .bind(routes);
 
-// After bind, the raw Fastify instance is available:
-backend.app.register(fastifyJwt, { secret: '...' });
-backend.app.addHook('onRequest', authHook);
+// After bind, register a native plugin via the escape hatch...
+await backend.withPlugin(fastifyJwt, { secret: '...' });
+// ...or reach the raw Fastify instance for lower-level hooks:
+backend.fastify.addHook('onRequest', authHook);
 ```
 
 Use for **plugins not exposed via the framework's DSL**:
@@ -88,7 +89,7 @@ concerns.  They compose cleanly.
 ## Lifecycle
 
 ```
-1. FastifyBackend.start(host, port) — creates Fastify instance
+1. new FastifyBackend() — the constructor creates the Fastify instance
 2. The framework registers each compiled route on Fastify
 3. Fastify.listen() — opens the port
 4. On shutdown: Fastify.close() — drains in-flight requests, then exits
@@ -97,16 +98,14 @@ concerns.  They compose cleanly.
 `Fastify.close()` waits for in-flight requests to complete
 before resolving — pairs with
 [coordinated shutdown](/fundamentals/coordinated-shutdown/)'s
-`service-stop` phase.
+`service-unbind` phase.
 
-## Peer dependency
+## Bundled dependency
 
-```bash
-npm install fastify
-# or: bun add fastify
-```
-
-The framework doesn't bundle Fastify; install separately.
+Fastify is a **hard dependency** of actor-ts — it installs with
+the framework, so there's nothing extra to add.  (The Express and
+Hono backends, by contrast, are optional peer dependencies you
+install on demand.)
 
 ## Performance
 
@@ -150,5 +149,5 @@ import { Aside } from '@astrojs/starlight/components';
   registered with Fastify.
 - **[Express backend](/http/backends/express/)** — the
   alternative.
-- **[Bun.serve backend](/http/backends/fastify/)** —
-  Bun-native option.
+- **[Hono backend](/http/backends/hono/)** — the
+  lightweight alternative.

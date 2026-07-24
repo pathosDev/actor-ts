@@ -277,8 +277,9 @@ See [Runtime — Compatibility matrix](/runtime/compatibility-matrix/).
 <Aside type="caution" title="Why does my actor keep restarting?">
   Usually `onReceive` is throwing.  Check the system log — every
   failure is logged with the error and the directive applied.
-  The default supervisor restarts up to 10/minute, then escalates;
-  beyond that you'll see "supervisor giving up" in the logs.
+  The default supervisor restarts up to 10/minute; once that
+  threshold is exceeded it stops the child, logging "Restart
+  threshold exceeded (10 in 60000ms) — stopping children".
 </Aside>
 
 <Aside type="caution" title="Why is my ask timing out?">

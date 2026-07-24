@@ -10,6 +10,7 @@ Backing Store (in-memory, K8s, etcd); der Vertrag ist identisch.
 ```ts
 interface Lease {
   acquire(): Promise<boolean>;
+  acquireWithToken?(): Promise<{ readonly token: string } | null>;
   release(): Promise<void>;
   checkAlive(): boolean;
   onLost(handler: (reason: string) => void): () => void;
@@ -17,7 +18,9 @@ interface Lease {
 ```
 
 Drei Methoden, die Arbeit verrichten + eine, die einen Callback
-registriert.
+registriert.  `acquireWithToken` ist eine optionale fünfte Methode
+(mit `?` markiert) — Backends implementieren sie nur, wenn sie
+Fencing-Tokens unterstützen.
 
 ## `acquire(): Promise<boolean>`
 
@@ -47,6 +50,43 @@ ein Reject heißt "ich weiß es nicht".
 `acquire()` ist idempotent **wenn dieser Caller den Lease bereits
 hält** — `acquire()` zweimal hintereinander vom selben Owner
 aufzurufen, gibt beide Male `true` zurück.
+
+## `acquireWithToken?(): Promise<{ readonly token: string } | null>`
+
+Eine **optionale** Variante von `acquire()`, die bei Erfolg
+zusätzlich ein vom Backend ausgestelltes **Fencing-Token**
+zurückgibt:
+
+```ts
+if (typeof lease.acquireWithToken === 'function') {
+  const result = await lease.acquireWithToken();
+  if (result) {
+    // Acquired — `result.token` ist das Fencing-Token
+  }
+} else {
+  const got = await lease.acquire();   // kein Fencing-Support — Fallback
+  // ...
+}
+```
+
+- **Resolved mit `{ token }`** bei Erfolg — das semantische
+  Äquivalent dazu, dass `acquire()` `true` zurückgibt, plus ein
+  opakes Token.
+- **Resolved mit `null`** bei Contention — äquivalent dazu, dass
+  `acquire()` `false` zurückgibt.
+
+Ein Fencing-Token erlaubt es einem externen Beobachter, zwei
+Acquires gegen denselben Lease zu ordnen.  Es stützt sich auf das
+eigene Optimistic-Concurrency-Primitiv des Koordinations-Service —
+Kubernetes `resourceVersion`, Redis `SETNX` mit Zähler, etcd
+`revision`.  Tokens sind **opake Strings**, exakt-string
+verglichen.
+
+Da die Methode optional ist, **feature-detecten** Consumer sie und
+fallen auf einfaches `acquire()` zurück, wenn sie fehlt — genau das
+macht die [`LeaseMajority`](/de/cluster/downing-strategies/)-Split-Brain-Strategie.
+Sowohl `InMemoryLease` als auch `KubernetesLease` implementieren
+sie.
 
 ## `release(): Promise<void>`
 

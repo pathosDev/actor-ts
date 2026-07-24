@@ -44,18 +44,14 @@ console.log(current);  // 2
 await system.terminate();
 ```
 
-Two equivalent shapes:
+`ask` is a method on every `ActorRef`:
 
 ```ts
 // Method on every ActorRef — infers Reply from the type argument:
 ref.ask<Reply>(message, timeoutMs?): Promise<Reply>
-
-// Free function — useful in places where you want the explicit form:
-function target:    ActorRef<TReq>.ask<TRes = unknown>(message:   OmitReplyTo<TReq>,
-  timeoutMs: number = 5_000,): Promise<TRes>
 ```
 
-The `OmitReplyTo<TReq>` parameter type subtracts `replyTo` from
+The `OmitReplyTo<TMessage>` parameter type subtracts `replyTo` from
 every variant of the message union that declares it — callers never
 write the field themselves.  The framework allocates a one-shot
 reply ref, attaches it both as `context.sender` and (when the
@@ -122,10 +118,11 @@ the case where you forgot to think about it.  Tune per call site:
   inside the actor): match the underlying-call's timeout + a
   small buffer.
 
-When the timeout fires, the temporary reply-to ref is stopped.  A
-late reply from the actor goes to dead letters and the
-`AskTimeoutError` rejects the Promise.  The actor itself isn't
-affected — it has no idea the asker gave up.
+When the timeout fires, the `AskTimeoutError` rejects the Promise.
+The temporary reply-to ref is a one-shot: once it has settled — on
+the timeout or on the first reply — any later reply is silently
+discarded in place (it does not go to dead letters).  The actor
+itself isn't affected — it has no idea the asker gave up.
 
 ## Replying with an Error
 
@@ -211,5 +208,5 @@ right call instead:
   `pipeTo`, `after`, sequence — composing async results back into
   the actor world without `await`-blocking.
 
-The [`ask` function API reference](/api/functions/ask/)
-documents the full signature and error types.
+The [`ActorRef` class API reference](/api/classes/actorref/)
+documents the `ask` method's full signature and error types.

@@ -123,20 +123,20 @@ Durchsatz — sie sind nur für einzelne große Nachrichten relevant.
 ## InMemoryTransport (Tests)
 
 ```ts
-import { InMemoryTransport, Cluster, ClusterOptions } from 'actor-ts';
+import { InMemoryTransport, NodeAddress, Cluster, ClusterOptions } from 'actor-ts';
 import { TestKit } from 'actor-ts/testkit';
 
-// Gemeinsamer globaler Bus — jeder Transport mit demselben Bus kann mit den anderen reden
-const bus = InMemoryTransport.newBus();
-
+// Kein Bus zu verdrahten — In-Memory-Transports finden einander über eine
+// prozessglobale Registry, indiziert nach der eigenen NodeAddress jedes Transports.
 const tk1 = TestKit.create('node-1');
 const tk2 = TestKit.create('node-2');
 
+// Die self-Adresse jedes Transports muss dem system@host:port seines Knotens entsprechen.
 const clusterOptions = ClusterOptions.create()
   .withHost('1')
   .withPort(0)
   .withSeeds(['1:0'])
-  .withTransport(new InMemoryTransport({ self: 'actor-ts://node-1@1:0', bus, log: tk1.system.log }));
+  .withTransport(new InMemoryTransport(new NodeAddress('node-1', '1', 0)));
 await Cluster.join(
   tk1.system,
   clusterOptions,
@@ -146,19 +146,22 @@ const cluster2Options = ClusterOptions.create()
   .withHost('2')
   .withPort(0)
   .withSeeds(['1:0'])
-  .withTransport(new InMemoryTransport({ self: 'actor-ts://node-2@2:0', bus, log: tk2.system.log }));
+  .withTransport(new InMemoryTransport(new NodeAddress('node-2', '2', 0)));
 await Cluster.join(
   tk2.system,
   cluster2Options,
 );
 ```
 
+Die Factory `inMemoryTransport(system, host, port)` ist eine Kurzform für
+dieselbe Konstruktion — sie leitet die `NodeAddress` aus `system.name` ab.
+
 Wie es funktioniert:
 
-- Ein **gemeinsamer Bus** routet Nachrichten zwischen
+- Eine **prozessglobale Registry** routet Nachrichten zwischen
   In-Process-Transports.
-- Jeder Transport registriert sich beim Bus per Adresse.
-- `send(to, message)` schlägt den Empfänger im Bus nach und ruft
+- Jeder Transport registriert sich beim Start per Adresse in der Registry.
+- `send(to, message)` schlägt den Empfänger in der Registry nach und ruft
   dessen Handler direkt auf — keine Sockets, keine Serialisierung
   zu Bytes.
 
@@ -168,9 +171,9 @@ Multi-Node-Test-Harness — verwendet, um Multi-Node-Cluster in
 
 ### Was er nicht simuliert
 
-- **Netzwerkausfälle.** Per Default liefert der Bus zuverlässig.
-  Für Fault Injection würdest du den Bus mit
-  Drop-/Delay-/Reorder-Logik erweitern.
+- **Netzwerkausfälle.** Per Default liefert die Registry zuverlässig.
+  Für Fault Injection würdest du einen eigenen `Transport` mit
+  Drop-/Delay-/Reorder-Logik implementieren.
 - **Latenz.** Die Zustellung ist synchron innerhalb einer
   Event-Loop-Drehung.
 - **Serialisierung.** Nachrichten werden per Referenz, nicht in

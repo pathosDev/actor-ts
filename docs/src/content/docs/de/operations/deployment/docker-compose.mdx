@@ -102,7 +102,7 @@ const seeds = await new ConfigSeedProvider(configSeedProviderOptions).lookup();
 const clusterOptions = ClusterOptions.create()
   .withHost(process.env.ACTOR_TS_HOSTNAME!)
   .withPort(parseInt(process.env.ACTOR_TS_PORT!))
-  .withSeeds(seeds);
+  .withSeeds(seeds.map(a => a.toString()));
 await Cluster.join(system, clusterOptions);
 ```
 

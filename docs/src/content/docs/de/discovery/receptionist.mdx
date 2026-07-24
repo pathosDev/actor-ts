@@ -10,7 +10,15 @@ wohldefinierten Pfad; Registrierungen sind **lokal autoritativ**
 erfahren über Gossip von fremden Registrierungen.
 
 ```ts
-import { ReceptionistId, ServiceKey } from 'actor-ts';
+import {
+  Actor,
+  ReceptionistId,
+  ServiceKey,
+  Register,
+  Find,
+  ReceptionistSubscribe,
+  Listing,
+} from 'actor-ts';
 
 const receptionist = system.extension(ReceptionistId).start(cluster);
 
@@ -19,16 +27,19 @@ const apiKey = ServiceKey.of<ApiMessage>('api-service');
 
 // 2. Einen Actor unter dem Key registrieren
 const api = system.spawn(Props.create(() => new ApiActor()), 'api');
-receptionist.register(apiKey, api);
+receptionist.tell(new Register(apiKey, api));
 
-// 3. Von jedem Node — jeden registrierten Actor finden
-const refs = await receptionist.find(apiKey);
-console.log(`${refs.length} API-Actors im Cluster`);
+// 3. Ein Consumer-Actor empfängt das Listing, mit dem Find / Subscribe antworten
+class Consumer extends Actor<Listing<ApiMessage>> {
+  override onReceive(listing: Listing<ApiMessage>): void {
+    console.log(`${listing.refs.length} API-Actors im Cluster`);
+  }
+}
+const consumer = system.spawn(Props.create(() => new Consumer()), 'consumer');
 
-// 4. Auf Änderungen subscriben
-receptionist.subscribe(apiKey, (listing) => {
-  console.log(`aktuelles Listing: ${listing.refs.length} Actors`);
-});
+// 4. Von jedem Node — jeden registrierten Actor finden oder auf Änderungen subscriben
+receptionist.tell(new Find(apiKey, consumer));
+receptionist.tell(new ReceptionistSubscribe(apiKey, consumer));
 ```
 
 Der Receptionist ist **pro Cluster** — jeder Node sieht dasselbe
@@ -48,8 +59,9 @@ Ein `ServiceKey<T>` trägt:
 - **Einen Typ-Parameter** — der Nachrichtentyp, den der
   registrierte Actor akzeptiert.
 
-Typsicheres Lookup: `await receptionist.find(apiKey)` gibt
-`ActorRef<ApiMessage>[]` zurück.
+Typsicheres Lookup: das `Listing<ApiMessage>`, das als Antwort auf
+ein `Find` gesendet wird, trägt `refs` getypt als
+`ActorRef<ApiMessage>[]`.
 
 Keys sind **Werte** — einmal definieren, überall importieren.
 Konvention: in einem geteilten `Keys.ts`-Modul pro App.
@@ -57,62 +69,84 @@ Konvention: in einem geteilten `Keys.ts`-Modul pro App.
 ## Registrieren
 
 ```ts
-receptionist.register(key, actorRef);
+receptionist.tell(new Register(key, actorRef));
 ```
 
 Sagt dem lokalen Receptionist: "Dieser Actor auf diesem Node
 liefert den Service."  Der Receptionist:
 
 1. Fügt die Ref seiner lokalen Map unter `key` hinzu.
-2. Watcht die Ref, damit sie bei Stop automatisch deregistriert
-   wird.
-3. Gossipt das Hinzufügen an Peers (nächste Gossip-Runde).
+2. Gossipt das Hinzufügen an Peers (nächste Gossip-Runde).
+
+Übergib ein optionales `replyTo` als drittes Argument
+(`new Register(key, actorRef, replyTo)`), um eine
+`Registered`-Nachricht zu erhalten, sobald die Registrierung
+aufgezeichnet ist.
 
 ```ts
-receptionist.deregister(key, actorRef);
+receptionist.tell(new Deregister(key, actorRef));
 ```
 
 Freiwilliges Entfernen.  Nützlich, wenn ein Actor einen Service
 "verlässt", ohne zu stoppen (vorübergehender Statuswechsel).
 
-Wenn der Actor einfach normal stoppt, sieht der Receptionist
-`Terminated` und deregistriert automatisch — kein manuelles
-Aufräumen nötig.
+Der Receptionist watcht registrierte Refs **nicht** — wenn ein
+Actor stoppt, bleibt seine Registrierung bestehen, bis du
+`Deregister` sendest (oder, in einem Cluster, bis sein ganzer
+Node den Cluster verlässt — siehe unten).  Ein `Find` kann also
+eine Ref auf einen gestoppten Actor zurückgeben; sichere dich auf
+der Consumer-Seite dagegen ab.
 
 ## Finden
 
+`Find` ist ein einmaliges Lookup — das Ergebnis kommt als einzelne
+`Listing`-Nachricht zurück, zugestellt an den `replyTo`-Actor, den
+du benennst:
+
 ```ts
-const refs = await receptionist.find(key);
-//      ^^^^^^^^
-//      Array jedes Actors, der unter diesem Key im Cluster registriert ist
+class ApiConsumer extends Actor<Listing<ApiMessage>> {
+  override onReceive(listing: Listing<ApiMessage>): void {
+    // listing.refs: jeder Actor, der unter dem Key registriert ist, cluster-weit
+    console.log(`${listing.refs.length} Actors unter ${listing.key.id}`);
+  }
+}
+const consumer = system.spawn(Props.create(() => new ApiConsumer()), 'consumer');
+
+receptionist.tell(new Find(key, consumer));
 ```
 
-Das Find:
+Bei der Behandlung eines `Find` tut der Receptionist:
 
 1. Liest lokale Registrierungen unter `key`.
 2. Fügt bekannte Remote-Registrierungen aus Gossip hinzu.
-3. Gibt die kombinierte Liste zurück.
+3. Antwortet `replyTo` mit einem einzelnen `Listing` der
+   kombinierten Liste.
 
-Kehrt sofort mit der **aktuellen lokalen Sicht** zurück — keine
-synchrone Cluster-Abfrage.  Bedeutet: Registrierungen auf
-anderen Nodes, die noch nicht gegossipt wurden, fehlen.
+Die Antwort trägt die **aktuelle Sicht** — keine synchrone
+Cluster-Abfrage.  Bedeutet: Registrierungen auf anderen Nodes,
+die noch nicht gegossipt wurden, fehlen.
 
 Innerhalb einer Gossip-Runde oder zwei (1-2 Sekunden Default)
 konvergiert jeder Node auf dieselbe Sicht.
 
 ## Subscriben
 
-```ts
-const unsubscribe = receptionist.subscribe(key, (listing) => {
-  console.log(`aktualisiertes Listing für ${key.id}: ${listing.refs.length} Refs`);
-});
+`Subscribe` ist kontinuierlich — `replyTo` erhält jetzt ein
+`Listing` und danach bei jeder Änderung erneut.  Es wird aus dem
+Package-Root als `ReceptionistSubscribe` exportiert (und
+`Unsubscribe` als `ReceptionistUnsubscribe`):
 
-// Später: unsubscribe();
+```ts
+receptionist.tell(new ReceptionistSubscribe(key, consumer));
+
+// Später — keine Updates mehr erhalten:
+receptionist.tell(new ReceptionistUnsubscribe(key, consumer));
 ```
 
-Der Handler feuert, wann immer sich das Listing für `key`
-ändert — lokal (register/deregister/stop) oder via eingehendem
-Gossip.
+Ein frisches `Listing` wird an den Subscriber gesendet, wann
+immer sich die Menge der Refs für `key` ändert — lokal
+(register/deregister) oder via eingehendem Gossip und
+Node-Abgängen.
 
 Nutze es für **dynamisches Routing**: ein Actor, der auf einen
 Key subscribet und seine Routing-Entscheidungen anpasst, wenn
@@ -150,11 +184,11 @@ Bereinigung.
 ## Mehrere Actors pro Key
 
 ```ts
-receptionist.register(apiKey, instance1);
-receptionist.register(apiKey, instance2);
-receptionist.register(apiKey, instance3);   // alle drei unter demselben Key
+receptionist.tell(new Register(apiKey, instance1));
+receptionist.tell(new Register(apiKey, instance2));
+receptionist.tell(new Register(apiKey, instance3));   // alle drei unter demselben Key
 
-await receptionist.find(apiKey);   // → [instance1, instance2, instance3]
+receptionist.tell(new Find(apiKey, consumer));   // Listing.refs → [instance1, instance2, instance3]
 ```
 
 Ein häufiges Muster: **N Worker registrieren sich alle unter
@@ -165,8 +199,8 @@ routen, wie sie wollen — Round-Robin, Broadcast, Zufallsauswahl.
 
 ```ts
 // Ein Singleton für den Cluster registriert
-receptionist.register(coordinatorKey, theCoordinator);
-await receptionist.find(coordinatorKey);   // → [theCoordinator]
+receptionist.tell(new Register(coordinatorKey, theCoordinator));
+receptionist.tell(new Find(coordinatorKey, consumer));   // Listing.refs → [theCoordinator]
 ```
 
 Für Singleton-artige Services hat der Key eine Ref.  Consumer
@@ -194,27 +228,27 @@ import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="`find` kann stale Refs zurückgeben">
   ```ts
-  const refs = await receptionist.find(key);
-  refs[0].tell(...);   // ← Ref könnte auf einen gestoppten Actor auf einem anderen Node zeigen
+  // im onReceive(listing) des Consumers:
+  listing.refs[0]?.tell(/* … */);   // ← Ref könnte auf einen gestoppten Actor auf einem anderen Node zeigen
   ```
-  Wenn eine Registrierung gerade auf einem anderen Node
+  Wenn eine Registrierung gerade eben auf einem anderen Node
   deregistriert wurde, der Gossip aber noch nicht propagiert
-  ist, gibt `find` die stale Ref zurück.  Das `tell` landet
-  still in Dead Letters.  Für hochwertige Operationen die Ref
-  watchen und auf `Terminated` reagieren.
+  ist, trägt das `Listing` immer noch die stale Ref.  Das `tell`
+  landet still in Dead Letters.  Für hochwertige Operationen die
+  Ref watchen und auf `Terminated` reagieren.
 </Aside>
 
 <Aside type="caution" title="Gossip-Lag bei der ersten Registrierung">
   ```ts
-  receptionist.register(key, actor);
+  receptionist.tell(new Register(key, actor));
   await new Promise(r => setImmediate(r));
   // Lokales Find funktioniert sofort; Remote-Nodes warten auf Gossip.
   ```
-  Lokale Registrierungen sind sofort für lokale `find`-Aufrufe
+  Lokale Registrierungen sind sofort für lokale `Find`-Anfragen
   sichtbar.  Remote-Sichtbarkeit ist durch `gossipIntervalMs`
   begrenzt (1 s Default).  Für "warte, bis die Registrierung
-  überall propagiert ist"-Muster: auf Consumer-Seite `subscribe`-en
-  und reagieren, wenn das Listing eintrifft.
+  überall propagiert ist"-Muster: auf Consumer-Seite `Subscribe`-n
+  und reagieren, wenn das `Listing` eintrifft.
 </Aside>
 
 <Aside type="caution" title="Gleicher Key, verschiedene Typen">

@@ -32,8 +32,13 @@ Causes to check (in order):
 Diagnostics:
 
 ```ts
-cluster.subscribe(MemberJoined, (e) => system.log.info(`saw join: ${e.member.address}`));
-cluster.subscribe(SelfUp, () => system.log.info('self up'));
+cluster.subscribe((evt) => {
+  if (evt instanceof MemberJoined) {
+    system.log.info(`saw join: ${evt.member.address}`);
+  } else if (evt instanceof SelfUp) {
+    system.log.info('self up');
+  }
+});
 ```
 
 Check whether `SelfUp` fires.  If not, the local node hasn't

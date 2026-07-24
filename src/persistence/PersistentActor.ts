@@ -49,7 +49,7 @@ export function everyNEvents<State, Event>(n: number): SnapshotPolicy<State, Eve
  *     onCommand(state: State, command: Command): void {
  *       if (command.kind === 'deposit') {
  *         this.persist({ kind: 'deposited', amount: command.amount }, (s) => {
- *           this.sender?.tell({ ok: s.balance });
+ *           this.sender.forEach(replyTo => replyTo.tell({ ok: s.balance }));
  *         });
  *       }
  *     }

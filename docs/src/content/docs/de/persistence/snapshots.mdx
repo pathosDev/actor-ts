@@ -96,12 +96,12 @@ Startpunkt; miss die Recovery-Latenz in Produktion, bevor du
 ## Wo Snapshots leben
 
 Snapshots werden in einem **separaten** Snapshot Store gespeichert,
-konfiguriert auf Persistence-Extension-Ebene:
+bei der System-Erstellung via `withPersistence` verdrahtet:
 
 ```ts
-import { PersistenceExtensionId, InMemoryJournal, InMemorySnapshotStore } from 'actor-ts';
+import { ActorSystemOptions, InMemoryJournal, InMemorySnapshotStore } from 'actor-ts';
 
-system.extension(PersistenceExtensionId).configure({
+const actorSystemOptions = ActorSystemOptions.create().withPersistence({
   journal:       new InMemoryJournal(),
   snapshotStore: new InMemorySnapshotStore(),
 });
@@ -113,6 +113,9 @@ Eingebaute Snapshot Stores:
 | --- | --- |
 | `InMemorySnapshotStore` | Tests, Dev. |
 | `SqliteSnapshotStore` | Single-Node-Produktion. |
+| `PostgresSnapshotStore` | PostgreSQL-gestützte Produktion. |
+| `MariaDbSnapshotStore` | MariaDB / MySQL-gestützte Produktion. |
+| `CassandraSnapshotStore` | Verteilt — Cassandra / ScyllaDB. |
 | `ObjectStorageSnapshotStore` | Filesystem / S3 mit optionaler Verschlüsselung. |
 | `CachedSnapshotStore` | Wickelt einen anderen Store mit einem Read-Through-Cache ein. |
 
@@ -174,15 +177,21 @@ neue Form deserialisiert werden.  Zwei Optionen:
    Laden hochzukasten:
 
    ```ts
-   class V1ToV2SnapAdapter implements SnapshotAdapter<StateV2> {
-     upcast(stored: unknown, version: number): StateV2 {
-       if (version === 1) return migrateSnapshot(stored as StateV1);
-       return stored as StateV2;
+   class V1ToV2SnapshotAdapter implements SnapshotAdapter<StateV2> {
+     manifest(_state: StateV2): string { return 'Account.State'; }
+
+     toJournal(state: StateV2): OutboundFrame<StateV2> {
+       return { manifest: 'Account.State', version: 2, payload: state };
+     }
+
+     fromJournal(stored: StoredFrame): StateV2 {
+       if (stored.version === 1) return migrateSnapshot(stored.payload as StateV1);
+       return stored.payload as StateV2;
      }
    }
 
    class Account extends PersistentActor<...> {
-     override snapshotAdapter() { return new V1ToV2SnapAdapter(); }
+     override snapshotAdapter() { return new V1ToV2SnapshotAdapter(); }
    }
    ```
 

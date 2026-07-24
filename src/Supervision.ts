@@ -91,7 +91,7 @@ export class ActorInitializationError extends Error {
   }
 }
 
-/** Raised when an actor explicitly watches another that terminates and does not handle Terminated. */
+/** Death-pact error for an actor that watches another which terminates without handling Terminated.  Note: not currently raised automatically by the runtime — an unhandled Terminated is swallowed. */
 export class DeathPactError extends Error {
   constructor(public readonly actorPath: string) {
     super(`Death pact with terminated actor ${actorPath}`);

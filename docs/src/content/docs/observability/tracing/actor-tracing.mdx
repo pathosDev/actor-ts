@@ -1,24 +1,21 @@
 ---
 title: Actor tracing
-description: What the framework auto-spans when tracing is enabled — one span per `onReceive`, attributes for the actor path / class / message kind, parent context from sender. Spans chain across `tell` and across cluster nodes via W3C `traceparent`.
+description: What the framework auto-spans when tracing is enabled — one span per `onReceive`, attributes for the actor path and message type, parent context from sender. Spans chain across `tell` and across cluster nodes via W3C `traceparent`.
 ---
 
 When the tracing extension is configured, the framework
-**automatically creates one span per actor message** plus
-infrastructure spans for cluster-wire envelopes.  Spans **chain
-across tells** — a message handler that `tell`s another actor
-passes the active span context, so the receiver's span links
-back to the sender's.
+**automatically creates one span per actor message** plus an
+infrastructure span for inbound cluster-wire envelopes.  Spans
+**chain across tells** — a message handler that `tell`s another
+actor passes the active span context, so the receiver's span
+links back to the sender's.
 
 ## Auto-instrumented spans
 
 | Span name | When | Notable attributes |
 | --- | --- | --- |
-| `actor.receive` | Once per message delivered to `onReceive`. | `actor.path`, `actor.class`, `messaging.message_kind` |
-| `actor.persist` | PersistentActor.persist() call. | `persistence.id`, `persistence.sequence_nr` |
-| `actor.ask` | An `ask(...)` call. | `actor.path` of the target |
-| `cluster.envelope.send` | Outbound cross-cluster envelope. | `peer.address`, `messaging.message_kind` |
-| `cluster.envelope.receive` | Inbound cross-cluster envelope. | Same |
+| `actor.receive` | Once per message delivered to `onReceive`. | `actor.path`, `actor.message.type` |
+| `cluster.envelope.received` | Inbound cross-cluster envelope carrying a parent trace context. | `cluster.from`, `cluster.to.path` |
 
 For a typical request flow:
 
@@ -26,21 +23,19 @@ For a typical request flow:
 flowchart TB
   R[/"HTTP request<br/><i>root span</i>"/]
   API["actor.receive — api-actor"]
-  ASK["actor.ask — ask db-actor"]
-  SEND["cluster.envelope.send<br/><i>cross-wire</i>"]
-  RECV["cluster.envelope.receive on db node<br/><i>peer side</i>"]
+  TELL["tell db-actor<br/><i>cross-wire: traceparent injected, no span</i>"]
+  RECV["cluster.envelope.received on db node<br/><i>peer side</i>"]
   DB["actor.receive — db-actor"]
-  PERSIST["actor.persist<br/><i>writes journal</i>"]
-  R --> API --> ASK
-  ASK --> SEND --> RECV --> DB --> PERSIST
+  R --> API --> TELL
+  TELL --> RECV --> DB
   classDef root fill:#0f172a,stroke:#6366f1,stroke-width:2px,color:#f1f5f9;
   classDef api  fill:#312e81,stroke:#818cf8,color:#f1f5f9;
   classDef wire fill:#1e293b,stroke:#06b6d4,color:#67e8f9;
   classDef db   fill:#7c2d12,stroke:#fb923c,color:#fed7aa;
   class R root
-  class API,ASK api
-  class SEND,RECV wire
-  class DB,PERSIST db
+  class API api
+  class TELL,RECV wire
+  class DB db
 ```
 
 Each span carries the trace ID — your tracing backend stitches
@@ -72,22 +67,21 @@ envelope.  The receiving node extracts it; its
 ```ts
 // actor.receive attributes:
 {
-  'actor.path':            'actor-ts://my-app/user/api/sessions/user-42',
-  'actor.class':           'SessionActor',
-  'actor.system':          'my-app',
-  'messaging.message_kind': 'login',
-  // Persisted on error:
-  'error.message':         '...',
+  'actor.path':         'actor-ts://my-app/user/api/sessions/user-42',
+  'actor.message.type': 'LoginMessage',
 }
+// On error the span records the exception and sets an error
+// status (span.recordException(err) + span.setStatus('error', …)) —
+// there is no error.message attribute.
 ```
 
 For cluster envelopes:
 
 ```ts
+// cluster.envelope.received attributes:
 {
-  'peer.address':          'actor-ts://my-app@10.0.0.5:2552',
-  'messaging.message_kind': 'login',
-  'wire.bytes':            234,
+  'cluster.from':    'actor-ts://my-app@10.0.0.5:2552',
+  'cluster.to.path': '/user/api/sessions/user-42',
 }
 ```
 
@@ -143,18 +137,30 @@ inside the actor's processing.
 
 ## MDC integration
 
-When tracing is active, the framework merges `traceId` and
+The framework does **not** automatically merge `traceId` /
 `spanId` into the
-[LogContext](/fundamentals/logging/) so every log line
-emitted during a span includes them:
+[LogContext](/fundamentals/logging/) — log lines are **not**
+stamped with the active span's IDs out of the box.  The MDC
+fields you set yourself (e.g. `correlationId`) still flow into
+every log line as usual; the trace IDs simply aren't among them
+unless you add them.
 
-```
-[2025-05-13T12:00:00Z] INFO ... actor processing {traceId=abc, spanId=def, correlationId=...}
+To share IDs between logs and traces, copy them from the active
+span into the MDC yourself:
+
+```ts
+const span = tracer.activeSpan();
+if (span) {
+  const { traceId, spanId } = span.context();
+  LogContext.with({ traceId, spanId }, () => {
+    // log lines emitted in here now carry traceId + spanId
+  });
+}
 ```
 
-Means your logs and traces share IDs — click from a slow trace
-in Honeycomb to the matching log lines in Loki.  Plus: spans
-include the existing MDC keys as attributes.
+With the IDs in the MDC, your logs and traces share them — you
+can pivot from a slow trace in Honeycomb to the matching log
+lines in Loki.
 
 ## Performance
 
@@ -183,7 +189,7 @@ import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="Span attributes from message contents">
   ```ts
-  // The framework includes messaging.message_kind by default
+  // The framework includes actor.message.type by default
   // It does NOT auto-include message field values
   ```
   This is by design — message contents may contain PII or
@@ -215,4 +221,4 @@ import { Aside } from '@astrojs/starlight/components';
 - **[Recording tracer](/observability/tracing/recording-tracer/)** —
   for test assertions.
 - **[Logging — LogContext](/fundamentals/logging/)** —
-  the MDC that gets enriched with trace IDs.
+  the MDC you can stamp with trace IDs yourself.

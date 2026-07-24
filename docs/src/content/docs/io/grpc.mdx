@@ -261,17 +261,17 @@ takes precedence over built-in defaults.  The HOCON keys live under
 ```hocon
 actor-ts.io.broker.grpc {
   server {
-    proto-path  = "./proto/sensor.proto"
-    package-name = "sensor.v1"
-    service-name = "SensorService"
-    bind = "0.0.0.0:50051"
+    protoPath   = "./proto/sensor.proto"
+    packageName = "sensor.v1"
+    serviceName = "SensorService"
+    bind        = "0.0.0.0:50051"
   }
   client {
-    proto-path  = "./proto/sensor.proto"
-    package-name = "sensor.v1"
-    service-name = "SensorService"
-    endpoint = "sensor.svc:50051"
-    deadline-ms = 30s
+    protoPath   = "./proto/sensor.proto"
+    packageName = "sensor.v1"
+    serviceName = "SensorService"
+    endpoint    = "sensor.svc:50051"
+    deadlineMs  = 30s
   }
 }
 ```

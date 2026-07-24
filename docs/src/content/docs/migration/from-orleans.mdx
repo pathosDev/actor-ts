@@ -224,7 +224,8 @@ await stream.SubscribeAsync((order, _) => ...);
 
 ```ts
 // actor-ts equivalent — DistributedPubSub:
-const ps = DistributedPubSub.start(system, { cluster });
+const ps = system.extension(DistributedPubSubId);
+ps.start(cluster);
 
 ps.mediator.tell(new Publish('orders', order));
 ps.mediator.tell(new Subscribe('orders', subscriberRef));

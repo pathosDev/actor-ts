@@ -167,6 +167,21 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   `Unknown journal plugin '<id>': …` (and the snapshot-store equivalent).  The
   zero-config default is unchanged: with no plugin key set, the in-memory
   reference implementation is still used.
+- **Public-API exports completed.**  Several documented/exported symbols
+  were unreachable from the package root: the CRDT map types (`LWWMap`,
+  `ORMap`, `GCounterMap`, `MVRegister`), the `LeaseMajority` downing
+  strategy (+options), `eventDispatcher`, `CachedSnapshotStore` (+options),
+  `reEncryptObjectStorage` / `InMemoryReEncryptProgressStore`, and the
+  `MasterKeyRing` types.  They are now re-exported from `actor-ts`, and the
+  TestKit multi-node helpers (`MultiNodeSpec`, `ParallelMultiNodeSpec`,
+  `MockCluster`, `SnapshotMigrationTest`) are reachable via a new
+  `actor-ts/testkit` subpath — the in-repo examples no longer need deep
+  relative imports.
+- Corrected stale JSDoc on public symbols surfaced by the docs audit
+  (`CoordinatedShutdown` `recover` flag, `JsonLogger` `source` field,
+  `DeathPactError`, `TestProbe.receiveN`/`fishForMessage` parameter names,
+  HTTP backend references, `PersistentActor` reply example,
+  `NatsActor`/`JetStreamActor` out-of-scope notes).
 
 ### Security
 
@@ -191,11 +206,18 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   `SqliteJournal` and use `InMemoryOffsetStore` / `DurableStateOffsetStore`.
   `operations/upgrades/rolling-migration.md` used the renamed
   `MigrationChain.start(...).next(...)` (now `MigrationChain.for(...).add(...)`).
-  The `.configure(...)` calls across the journal / snapshot-store pages are now
-  valid against the new `PersistenceExtension.configure` method.  A new
+  The new `PersistenceExtension.configure` method makes the previously-documented
+  `.configure(...)` call real; the docs-audit pass instead migrated the journal /
+  snapshot-store pages to the builder-first `ActorSystemOptions.withPersistence(...)`
+  at system creation (both are valid ways to wire persistence).  A new
   `docs/scripts/check-api-drift.mjs` guard (`npm run check:api-drift` in
   `docs/`), wired into a `docs-checks` CI workflow that runs on every docs
   change, fails on any reappearance of a removed/renamed API name (#385).
+- **Large docs↔source audit pass** (EN + DE) — corrected default values
+  (gossip interval 500 → 1000 ms, bounded-mailbox default), reworded stale
+  caution boxes, rewrote drifted pages (conflict-resolver, key-rotation,
+  single-writer-lease, push-based-query) to the real APIs, and added a
+  dedicated NATS JetStream guide page.
 
 ## [0.11.0] — 2026-07-15
 

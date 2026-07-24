@@ -32,7 +32,7 @@ but indexed.  Concurrent writes to the same key resolve by
 timestamp; writes to different keys don't conflict.
 
 ```ts
-m = m.remove('theme');   // also LWW — most-recent action wins
+m = m.remove('node-a', 'theme');   // also LWW — most-recent action wins
 ```
 
 `remove` is also tracked as an LWW operation — a recent remove
@@ -98,8 +98,8 @@ m = m.increment('node-a', 'page-home',  1);
 m = m.increment('node-a', 'page-about', 1);
 m = m.increment('node-b', 'page-home',  1);
 
-m.get('page-home');   // → 2 (sum across replicas)
-m.get('page-about');  // → 1
+m.value('page-home');   // → 2 (sum across replicas)
+m.value('page-about');  // → 1
 ```
 
 A `GCounterMap<K>` is functionally `ORMap<K, GCounter>` — a map
@@ -111,8 +111,8 @@ The API is flatter:
 
 ```ts
 m.increment(replicaId, key, delta);   // bump one key's counter
-m.get(key);                             // → number (sum across replicas)
-m.entries();                            // → IterableIterator<[K, number]>
+m.value(key);                         // → number (sum across replicas)
+m.pairs();                            // → ReadonlyArray<readonly [K, number]>
 ```
 
 Use anywhere you'd type `Map<K, number>` in regular code and need

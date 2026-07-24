@@ -138,10 +138,12 @@ oneRoutee.stop();
 ```
 
 When a routee stops, the router watches it and… does nothing by
-default in the framework's current router.  The pool size
-effectively shrinks until restart.  For self-healing pools, wrap
-the routee Props in a supervisor strategy that restarts on Stop
-(or wrap the whole pool in a BackoffSupervisor).
+default in the framework's current router.  Its ref stays in the
+pool — the router never prunes it — so round-robin keeps handing it
+roughly 1-in-N messages, which land in dead letters until the whole
+router restarts.  For self-healing pools, wrap the routee Props in a
+supervisor strategy that restarts on Stop (or wrap the whole pool in
+a BackoffSupervisor).
 
 import { Aside } from '@astrojs/starlight/components';
 

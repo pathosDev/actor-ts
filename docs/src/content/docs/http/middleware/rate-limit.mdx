@@ -1,6 +1,6 @@
 ---
 title: Rate limit middleware
-description: Per-key token-bucket rate limiting on HTTP routes. Default per-IP; configurable key (per-user, per-tenant). Backed by the Cache abstraction, so single-pod uses memory and multi-pod uses Redis.
+description: Per-key fixed-window rate limiting on HTTP routes. Default per-IP; configurable key (per-user, per-tenant). Backed by the Cache abstraction, so single-pod uses memory and multi-pod uses Redis.
 ---
 
 `rateLimit` is a per-key request limiter.  It returns a

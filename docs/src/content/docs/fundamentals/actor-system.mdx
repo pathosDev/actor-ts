@@ -36,7 +36,7 @@ argument:
 
 ```ts
 const actorSystemOptions = ActorSystemOptions.create()
-  .withLogLevel('info')
+  .withLogLevel(LogLevel.Info)
   .withConfigFile('./application.conf');
 const system = ActorSystem.create('my-app', actorSystemOptions);
 ```
@@ -46,8 +46,8 @@ The full settings shape:
 | Field | Purpose |
 | --- | --- |
 | `logger` | Custom `Logger` instance.  Defaults to a console logger respecting `logLevel`. |
-| `logLevel` | One of `debug` / `info` / `warn` / `error` / `silent`. |
-| `dispatcher` | Custom `Dispatcher`.  Defaults to a microtask-based dispatcher; tests typically swap in an immediate or manual one. |
+| `logLevel` | One of `debug` / `info` / `warn` / `error` / `off`. |
+| `dispatcher` | Custom `Dispatcher`.  Defaults to the immediate dispatcher; swap in a microtask- or throughput-based one to tune scheduling. |
 | `scheduler` | Custom `Scheduler`.  Defaults to a real-time scheduler; tests inject `ManualScheduler` to control time. |
 | `config` | Either a prebuilt `Config` or a plain object of HOCON overrides.  Layered on top of reference defaults + any `application.conf`. |
 | `configFile` | Explicit path to an `application.conf` file.  Overrides the `ACTOR_TS_CONFIG` env var and the CWD lookup. |
@@ -62,7 +62,9 @@ project root:
 
 ```hocon
 actor-ts {
-  log-level = "info"
+  logger {
+    level = "info"
+  }
   dispatcher {
     throughput = 100
   }
@@ -171,17 +173,17 @@ adopt features by reaching for them, drop them by stopping reaching.
 ### Writing your own extension
 
 ```ts
-import { type Extension, type ExtensionId } from 'actor-ts';
+import { extensionId, type Extension, type ExtensionId } from 'actor-ts';
 
 class MetricsCollector implements Extension {
   constructor(private readonly system: ActorSystem) {}
   incCounter(name: string): void { /* ... */ }
 }
 
-const MetricsCollectorId: ExtensionId<MetricsCollector> = {
-  name: 'MetricsCollector',
-  create: (system) => new MetricsCollector(system),
-};
+const MetricsCollectorId: ExtensionId<MetricsCollector> = extensionId(
+  'MetricsCollector',
+  (system) => new MetricsCollector(system),
+);
 
 // Lookup is idempotent — first call creates, subsequent calls return
 // the cached instance.

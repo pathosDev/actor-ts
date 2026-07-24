@@ -68,12 +68,15 @@ für den Deep-Dive zu jedem.
 Das Framework zeichnet automatisch eine Basislinie an Metriken
 auf, sobald die Extension gestartet wird:
 
-- **Actor-Metriken** — Message-Counts pro Actor-Typ,
-  Verarbeitungsdauer-Histogramme, Mailbox-Tiefe-Gauges.
-- **Mailbox-Metriken** — Enqueue-Rate, Dequeue-Rate, Anzahl
-  gedroppter Nachrichten für Bounded Mailboxes.
-- **Cluster-Metriken** — Anzahl der Mitglieder nach Zustand,
-  Gossip-Lag, Reachability-Flips.
+- **Actor-Metriken** — ein Counter der an `onReceive` zugestellten
+  Nachrichten (`actor_messages_delivered_total`) und ein
+  Handler-Dauer-Histogramm (`actor_message_handler_seconds`).
+- **Mailbox-Metriken** — ein Counter der Nachrichten, die von der
+  Overflow-Policy einer Bounded Mailbox verworfen werden
+  (`actor_mailbox_dropped_total`).
+- **Cluster-Metriken** — ein Gauge der aktuell im Up-Zustand
+  befindlichen Mitglieder (`cluster_members_up`) und ein Counter
+  der Gossip-Runden (`cluster_gossip_rounds_total`).
 
 Siehe [Stock-Metriken](/de/observability/metrics/stock-metrics/)
 für die vollständige Liste. Damit bekommst du „Verarbeiten meine

@@ -115,13 +115,13 @@ stateDiagram-v2
   resurrect it.
 
 The cluster's events stream surfaces every transition — subscribe
-to `MemberUp` / `MemberRemoved` / `UnreachableMember` etc. and
+to `MemberUp` / `MemberRemoved` / `MemberUnreachable` etc. and
 react.
 
 ## What gossip does
 
 Gossip is how members agree on who's in the cluster.  Every
-`gossipIntervalMs` (default 500 ms), each member picks a random
+`gossipIntervalMs` (default 1000 ms), each member picks a random
 reachable peer and exchanges its view of the cluster.  Over a few
 rounds, every peer converges on the same state — without any
 central coordinator.
@@ -142,20 +142,20 @@ For the deep dive, see
 
 ## What the failure detector does
 
-The framework uses a **phi accrual** failure detector.  Each
-member maintains a per-peer heartbeat history; if a peer's
-heartbeats stop arriving within a statistical window, the
-detector flags it as suspect.
+The framework uses a simple, deterministic failure detector based
+on **elapsed-time thresholds**.  Each member tracks a per-peer
+last-seen timestamp — any message counts as a heartbeat; if a
+peer goes silent past a threshold, the detector flags it.
 
-- **`unreachableAfterMs`** — once suspicion exceeds the threshold
-  for this long, the member is marked `unreachable`.
-- **`downAfterMs`** — if the suspicion persists *this* long, the
+- **`unreachableAfterMs`** — once a peer has been silent this
+  long, the member is marked `unreachable`.
+- **`downAfterMs`** — if the silence persists *this* long, the
   member is downed (split-brain resolution).
 
-Adaptive — the detector accommodates variable network latency,
-not just a fixed timeout.  See
-[Failure detector](/cluster/failure-detector/) for the
-phi math.
+Plain elapsed-time limits, no statistical variance tracking —
+sufficient for LAN-scale clusters.  See
+[Failure detector](/cluster/failure-detector/) for tuning and
+the WAN caveats.
 
 ## Split-brain and downing
 
@@ -171,7 +171,8 @@ actor-ts ships several **downing strategies**:
 | `KeepMajority` | The side with more nodes wins; the smaller side downs itself. |
 | `KeepOldest` | The side containing the oldest member wins. |
 | `KeepReferee` | A designated referee node's view wins. |
-| `KeepQuorum` | Requires a configured quorum size; failures below it down the cluster. |
+| `StaticQuorum` | The side that meets a configured quorum size wins; a side below it downs itself. |
+| `LeaseMajority` | The majority side wins, but only while it holds a coordination lease. |
 
 See [Downing strategies](/cluster/downing-strategies/) for
 the full set.  Pick deliberately — the default (no downing
@@ -283,7 +284,7 @@ import { Aside } from '@astrojs/starlight/components';
 - **[Distributed data overview](/distributed-data/overview/)** —
   shared state via CRDTs.
 - **[Failure detector](/cluster/failure-detector/)** — the
-  phi-accrual mechanism.
+  elapsed-time heartbeat mechanism.
 - **[Downing strategies](/cluster/downing-strategies/)** —
   resolving split-brain.
 

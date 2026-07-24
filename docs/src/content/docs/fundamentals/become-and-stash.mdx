@@ -193,10 +193,10 @@ Three details that matter:
   they were stashed.  For a `PriorityMailbox`, they're re-inserted
   through the priority function — so an unstashed message rejoins
   its priority tier, not the absolute front of the queue.
-- **The stash has a capacity.**  By default the buffer is bounded
-  to prevent memory leaks from runaway stashing; overflow throws
-  `StashOverflowError`.  Configure via system settings if you need
-  larger / smaller; see [Configuration](/reference/configuration/).
+- **The stash has a capacity.**  The buffer is bounded to prevent
+  memory leaks from runaway stashing; overflow throws
+  `StashOverflowError`.  The bound is a fixed 1024 messages,
+  compiled in — there's no configuration knob for it.
 
 ### `stash` + `become` — the canonical combo
 
@@ -266,10 +266,10 @@ dropped during the initialization window.
 
 <Aside type="caution" title="Stash + restart = state lost">
   On `Restart`, the actor instance is thrown away — including the
-  stash buffer.  Stashed messages are routed to dead letters along
-  with the about-to-be-failed message.  If the messages matter
-  across failure, persist them (PersistentActor) or have a parent
-  re-send them after the restart settles.
+  stash buffer.  Stashed messages are silently dropped, not routed
+  to dead letters.  If the messages matter across failure, persist
+  them (PersistentActor) or have a parent re-send them after the
+  restart settles.
 </Aside>
 
 ## When to reach for which

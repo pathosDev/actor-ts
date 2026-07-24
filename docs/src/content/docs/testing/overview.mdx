@@ -28,7 +28,8 @@ actor system; the last two for **distributed scenarios**.
 
 ```ts
 import { describe, it, expect } from 'bun:test';
-import { Actor, Props, TestKit } from 'actor-ts/testkit';
+import { Actor, Props, ActorRef } from 'actor-ts';
+import { TestKit } from 'actor-ts/testkit';
 
 type Command = { kind: 'increment' } | { kind: 'get'; replyTo: ActorRef<number> };
 
@@ -112,20 +113,20 @@ See [ManualScheduler](/testing/manual-scheduler/).
 ### Distributed — `MultiNodeSpec`
 
 ```ts
-import { MultiNodeSpec } from 'actor-ts/testkit';
+import { Props } from 'actor-ts';
+import { MultiNodeSpec, TestProbe } from 'actor-ts/testkit';
 
-const spec = await MultiNodeSpec.create({
-  systemName: 'cluster-spec',
-  nodes:      3,
-});
+const spec = new MultiNodeSpec({ roles: ['frontend', 'worker-1', 'worker-2'] });
+await spec.start();
+await spec.awaitMembers('frontend', 3);   // wait for all three to converge
 
-// `spec.nodes` is an array of ActorSystems, all joined into one cluster.
-const node1Probe = spec.createTestProbe(0);
-const remote = spec.nodes[1].spawnAnonymous(Props.create(() => new Worker()));
-remote.tell({ kind: 'do', replyTo: node1Probe });
-await node1Probe.expectMessage({ kind: 'done' });
+// Each role is a full ActorSystem — reach it via systemFor(role):
+const probe = new TestProbe(spec.systemFor('frontend'));
+const remote = spec.systemFor('worker-1').spawnAnonymous(Props.create(() => new Worker()));
+remote.tell({ kind: 'do', replyTo: probe });
+await probe.expectMessage({ kind: 'done' });
 
-await spec.shutdown();
+await spec.stop();
 ```
 
 Three actor systems join a cluster inside one test process, with

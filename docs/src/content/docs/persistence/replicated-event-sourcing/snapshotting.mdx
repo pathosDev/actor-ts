@@ -56,19 +56,28 @@ re-process on recovery — sub-second.
 
 ## What gets serialized
 
+A `ReplicatedSnapshot` carries more than state + clock:
+
 ```
 {
-  state:        State,
-  vectorClock:  { A: 100, B: 95, C: 60 },
-  seqNr:        205,   // local-replica seq for compatibility
-  ts:           1716297600000
+  state:                State,
+  vc:                   { A: 100, B: 95, C: 60 },  // current vector-clock view
+  seenIds:              [ ... ],  // dedupe set: (replica, seqAtReplica)
+  events:               [ ... ],  // canonical sorted history — the heaviest field
+  localSeq:             205,  // _localSeq at snapshot time
+  journalSeqAtSnapshot: 4096,  // recovery resumes from here + 1
+  takenBy:              'A',  // replica that took it (informational)
+  takenAt:              1716297600000  // wall-clock ms (informational)
 }
 ```
 
-The snapshot is **a normal snapshot blob** with the vector clock
-as an extra metadata field.  Existing snapshot stores
-(in-memory, SQLite, object-storage) handle it without changes —
-the framework adds the vc transparently.
+The snapshot is **a normal snapshot blob** persisted to the
+standard snapshot store; existing stores (in-memory, SQLite,
+object-storage) handle it without changes.  Note it carries the
+full deduped `events` history and the `seenIds` dedupe set — not
+just state + clock — so an out-of-order remote arrival can refold
+without re-reading the whole journal.  `events` is the heaviest
+field: a 100k-event actor snapshots 100k envelopes on disk.
 
 ## Recovery flow
 
@@ -76,7 +85,7 @@ the framework adds the vc transparently.
 preStart():
   ↓ load latest snapshot
   ↓     state = snapshot.state
-  ↓     vc    = snapshot.vectorClock
+  ↓     vc    = snapshot.vc
   ↓ read events from journal
   ↓     for each event in journal:
   ↓       if event.vc <= snapshot.vc: skip (already incorporated)
@@ -110,7 +119,7 @@ replica**, not just its own.
 }
 ```
 
-## Pruning vector clocks at snapshot time
+## Vector clocks grow with retired replicas
 
 Long-lived deployments accumulate **retired replicas** in vector
 clocks:
@@ -122,25 +131,12 @@ vc { A: 1000, B: 500, C: 200, RETIRED-D: 50, RETIRED-E: 30 }
 The retired replicas' components are inert but take space + slow
 comparisons.
 
-The framework's snapshot machinery can **prune** retired replicas
-from the vector clock at snapshot time:
-
-```ts
-class Account extends ReplicatedEventSourcedActor<...> {
-  override pruneVectorClockOnSnapshot(): ReplicaId[] {
-    // Return replica IDs we know are retired
-    return ['retired-d', 'retired-e'];
-  }
-}
-```
-
-Snapshots then store smaller vector clocks; recovery skips
-considering retired replicas.
-
-Use carefully — pruning a replica that's still alive (but
-quiet) effectively forgets its history.  Only prune **after
-confirmed retirement** (decommissioned, removed from rotation
-for ≫ replication lag).
+Vector-clock garbage collection is **out of scope for v1** —
+there is no pruning hook, and a snapshot stores the **full,
+unpruned** vector clock.  VC entries grow with the set of
+replicas ever seen: fine for a stable cluster, but a
+node-churn-heavy deployment will eventually want compaction.
+Keep this in mind before relying on aggressive replica rotation.
 
 ## Concurrent writes during snapshot
 

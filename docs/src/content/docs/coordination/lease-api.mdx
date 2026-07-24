@@ -10,6 +10,7 @@ K8s, etcd); the contract is identical.
 ```ts
 interface Lease {
   acquire(): Promise<boolean>;
+  acquireWithToken?(): Promise<{ readonly token: string } | null>;
   release(): Promise<void>;
   checkAlive(): boolean;
   onLost(handler: (reason: string) => void): () => void;
@@ -17,6 +18,8 @@ interface Lease {
 ```
 
 Three methods that do work + one that registers a callback.
+`acquireWithToken` is an optional fifth method (marked `?`) —
+backends implement it only when they support fencing tokens.
 
 ## `acquire(): Promise<boolean>`
 
@@ -42,6 +45,40 @@ holder definitively has it"; a rejection means "I don't know."
 `acquire()` is idempotent **when this caller already holds the
 lease** — calling `acquire()` twice in a row by the same owner
 returns `true` both times.
+
+## `acquireWithToken?(): Promise<{ readonly token: string } | null>`
+
+An **optional** variant of `acquire()` that also returns a
+backend-issued **fencing token** on success:
+
+```ts
+if (typeof lease.acquireWithToken === 'function') {
+  const result = await lease.acquireWithToken();
+  if (result) {
+    // Acquired — `result.token` is the fencing token
+  }
+} else {
+  const got = await lease.acquire();   // no fencing support — fall back
+  // ...
+}
+```
+
+- **Resolves `{ token }`** on success — the semantic equivalent of
+  `acquire()` returning `true`, plus an opaque token.
+- **Resolves `null`** on contention — equivalent to `acquire()`
+  returning `false`.
+
+A fencing token lets an external observer order two acquires
+against the same lease.  It's backed by the coordination service's
+own optimistic-concurrency primitive — Kubernetes `resourceVersion`,
+Redis `SETNX` with a counter, etcd `revision`.  Tokens are **opaque
+strings**, compared exact-string.
+
+Because the method is optional, consumers **feature-detect** it and
+fall back to plain `acquire()` when it's absent — the
+[`LeaseMajority`](/cluster/downing-strategies/) split-brain strategy
+does exactly this.  Both `InMemoryLease` and `KubernetesLease`
+implement it.
 
 ## `release(): Promise<void>`
 

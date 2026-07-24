@@ -1,16 +1,23 @@
 ---
 title: Chat sample
-description: A working chat app — cluster of 3 nodes, sharded user sessions, DistributedPubSub for room broadcasts, HTTP for REST, WebSocket for live updates. Repo at `examples/chat/`.
+description: A working chat app — TCP cluster of 3 Bun nodes, sharded chat-room actors, DistributedPubSub for room broadcasts, DistributedData for presence, all client traffic over one WebSocket endpoint. Repo at `examples/chat/`.
 ---
 
 The chat sample is a **complete demo app** showing how the
 framework's pieces compose:
 
-- **Cluster** of 3 nodes (via Docker Compose).
-- **Sharded user-session actors** — one per logged-in user.
+- **TCP cluster** of 3 Bun processes, joined via gossip.
+- **Sharded chat-room actors** — one `ChatRoomActor` per room,
+  spread across the cluster as 16 shards.
 - **DistributedPubSub** for cross-node chat-room broadcasts.
-- **PersistentActor** for chat-room history.
-- **HTTP + WebSocket** for the client interface.
+- **PersistentActor** for chat-room history (SQLite journal +
+  snapshots).
+- **DistributedData** for presence, the runtime room directory,
+  and read receipts.
+- **ClusterSingleton** HTTP front door — one node binds `:8080`;
+  a survivor re-binds it on failover.
+- **WebSocket-only** client protocol — a single `/ws` endpoint
+  carries login, rooms, history, presence, and messages.
 
 Find it under [`examples/chat/`](https://github.com/pathosDev/actor-ts/tree/main/examples/chat)
 in the repo.
@@ -19,45 +26,44 @@ in the repo.
 
 ```mermaid
 flowchart LR
-  HTTP[/"HTTP clients"/]
-  WS[/"WebSocket clients"/]
-  subgraph CLUSTER["3-node cluster"]
+  WS[/"WebSocket clients<br/>(6 frontends)"/]
+  subgraph CLUSTER["3-node cluster (Bun)"]
     direction TB
-    HSRV["HTTP server"]
-    WSRV["WS server"]
-    US["Sharded UserSession actors<br/><i>one per logged-in user<br/>holds their socket + state</i>"]
-    ROOM["ChatRoom actors (PersistentActor)<br/><i>one per room<br/>persists message history</i>"]
+    ING["HTTP ingress<br/><i>ClusterSingleton — binds :8080<br/>serves static + /ws upgrade</i>"]
+    US["UserSession actors<br/><i>one per WS connection<br/>holds their socket + state</i>"]
+    ROOM["ChatRoom actors (sharded PersistentActor)<br/><i>one per room, 16 shards<br/>persists message history</i>"]
     PUB["DistributedPubSub<br/><i>per-room topic<br/>rooms publish; sessions subscribe</i>"]
-    HSRV --> US
-    WSRV --> US
+    DD["DistributedData<br/><i>ORSet presence + room directory<br/>LWWMap read receipts</i>"]
+    ING --> US
     US -- "join / send" --> ROOM
-    ROOM -- "publish" --> PUB
+    ROOM -- "persist + publish" --> PUB
     PUB -- "deliver" --> US
+    US -- "presence / receipts" --> DD
+    DD -- "converged state" --> US
   end
-  HTTP --> HSRV
-  WS --> WSRV
+  WS -- ":8080" --> ING
   classDef client  fill:#1e293b,stroke:#06b6d4,color:#67e8f9;
   classDef cluster fill:#0f172a,stroke:#6366f1,stroke-width:2px,color:#f1f5f9;
   classDef edge    fill:#312e81,stroke:#818cf8,color:#f1f5f9;
   classDef actor   fill:#312e81,stroke:#818cf8,stroke-width:1.5px,color:#f1f5f9;
   classDef bus     fill:#1e293b,stroke:#06b6d4,stroke-width:2px,color:#67e8f9;
-  class HTTP,WS client
+  class WS client
   class CLUSTER cluster
-  class HSRV,WSRV edge
+  class ING edge
   class US,ROOM actor
-  class PUB bus
+  class PUB,DD bus
 ```
 
 The full path of a "user sends message" flow:
 
 ```
-1. User's WS client sends "send-message" to their HTTP server.
-2. WS handler forwards to that user's UserSession actor (sharded).
-3. UserSession asks the relevant ChatRoom actor (sharded by room ID).
+1. The WS client sends a "send" frame over /ws to the ingress singleton.
+2. The ingress routes it to that connection's UserSession actor (one per socket).
+3. UserSession tells the relevant ChatRoom entity (sharded by room name).
 4. ChatRoom persists the message via PersistentActor.persist().
-5. ChatRoom publishes to DistributedPubSub on "room.<roomId>" topic.
+5. ChatRoom publishes to DistributedPubSub on the room's topic.
 6. Every UserSession subscribed to that topic receives the message.
-7. UserSessions push to their respective WS clients.
+7. Each UserSession pushes it to its own WS client.
 ```
 
 Cluster + persistence + pubsub + websocket — all working
@@ -66,48 +72,52 @@ together.
 ## Running it
 
 ```bash
-# Clone repo:
+# Clone the repo and install dev deps:
 git clone https://github.com/pathosDev/actor-ts.git
-cd actor-ts/examples/chat
+cd actor-ts
+bun install
 
-# Start everything (cluster + Cassandra + WS):
-docker compose up -d
+# Start a 3-node cluster — three terminals, same command, no flags:
+bun examples/chat/backend/main.ts
+bun examples/chat/backend/main.ts
+bun examples/chat/backend/main.ts
 
-# Verify cluster:
-curl http://localhost:8551/cluster/members
-# → 3 members "up"
-
-# Open the chat UI:
-open http://localhost:3000
+# Open the chat UI (one URL, whichever node holds the singleton):
+open http://localhost:8080/
 ```
 
-The Docker Compose spins up:
-
-- 3 actor-ts pods.
-- 1 Cassandra node (shared journal for persistent rooms).
-- 1 Nginx in front of the HTTP+WS endpoints.
+Each node runs the same binary. They discover each other by
+scanning the cluster-port range from `2551`, so the three
+terminals settle on `2551 / 2552 / 2553` with no seeds to
+configure. The cluster then elects one node to run the
+HTTP-ingress `ClusterSingleton`, which binds `:8080` and serves
+the frontend selector plus the `/ws` endpoint. Persistence is a
+local SQLite journal + snapshot store under `./data/` — no
+external database. Kill the node holding the singleton and a
+survivor re-binds `:8080` within a few seconds; the persisted
+history survives.
 
 ## Key patterns demonstrated
 
-### Sharded sessions
+### Sharded chat rooms
 
 ```ts
-const startShardingOptions = StartShardingOptions.create<SessionMessage>()
-  .withTypeName('session')
-  .withEntityProps(Props.create(() => new UserSessionActor()))
-  .withExtractEntityId((message) => message.userId)
-  .withRememberEntities(true);
-const sessionRegion = cluster.sharding.start(startShardingOptions);
+const chatRoomRegion = cluster.sharding.start('ChatRoom', ChatRoomActor,
+  StartShardingOptions.create<ChatRoomCommand>()
+    .withExtractEntityId((message) => message.room)
+    .withNumShards(16));
 ```
 
-One actor per logged-in user, distributed across nodes.
-`rememberEntities` keeps the registry across failover.
+One `ChatRoomActor` per room, spread across the cluster as 16
+shards — kill any node and the survivors take over its rooms.
+Direct-message channels use the same pattern in a separate
+region, keyed on the canonical DM pair-id.
 
 ### PersistentActor for rooms
 
 ```ts
-class ChatRoomActor extends PersistentActor<RoomCommand, RoomEvent, RoomState> {
-  readonly persistenceId = `room-${this.roomId}`;
+class ChatRoomActor extends PersistentActor<ChatRoomCommand, ChatEvent, ChatState> {
+  readonly persistenceId = `room-${this.roomName}`;
   // ... onCommand persists; onEvent updates state ...
 }
 ```
@@ -147,8 +157,6 @@ straight to the client.
 
 - **Sharded daemon processes** — the chat sample doesn't need
   fixed background workers.
-- **DistributedData CRDTs** — chat data goes through
-  PersistentActor, not DD.
 - **Replicated event sourcing** — single-writer per room is
   sufficient.
 
@@ -160,23 +168,38 @@ or the [voice sample](/examples/voice-sample/).
 
 ```
 examples/chat/
-├── docker-compose.yml
 ├── README.md
-├── package.json
-├── src/
-│   ├── main.ts                  # entry: cluster join + HTTP/WS bind
-│   ├── actors/
-│   │   ├── UserSessionActor.ts
-│   │   └── ChatRoomActor.ts
-│   ├── messages.ts              # shared message types
-│   └── handlers/
-│       ├── httpRoutes.ts
-│       └── wsHandlers.ts
-└── ui/                          # minimal HTML/JS chat UI
+├── application.conf            # HOCON: log level, gossip cadence
+├── data/                       # SQLite journal + snapshots (gitignored)
+├── backend/
+│   ├── main.ts                 # entry: wiring only (cluster, persistence, sharding, singleton)
+│   ├── config.ts               # CLI-argument parsing
+│   ├── routes.ts               # HTTP-DSL route (frontend selector)
+│   ├── auth/                   # scrypt password verify + HMAC session tokens
+│   ├── discovery/              # same-host port-scan seed provider
+│   └── actors/
+│       ├── ChatRoomActor.ts             # sharded PersistentActor (per room)
+│       ├── ChatRoomDirectoryActor.ts    # DistributedData ORSet (runtime rooms)
+│       ├── DirectMessageChannelActor.ts # sharded PersistentActor (per DM pair)
+│       ├── UserSessionActor.ts          # per-WS-connection session
+│       ├── OnlineUsersActor.ts          # DistributedData ORSet (presence)
+│       ├── ReadReceiptsActor.ts         # DistributedData LWWMap (read pointers)
+│       ├── HttpIngressActor.ts          # ClusterSingleton: owns the :8080 bind
+│       └── WebsocketIngressActor.ts     # per-connection WS plumbing
+├── shared/
+│   ├── protocol.ts             # shared WS message types
+│   ├── rooms.ts                # default room list
+│   ├── users.ts                # test credentials
+│   └── directMessage.ts        # DM pair-id canonicalization
+├── static/                     # built frontend assets (@fastify/static)
+├── frontend-{plain,angular,react,next,svelte,lit}/   # six UI variants
+├── smoke-test.ts               # single-node messaging round-trip
+└── failover-test.ts            # HTTP-singleton fail-over
 ```
 
-~500 lines of TypeScript total.  Good size for reading
-end-to-end.
+Every actor lives in its own file under `backend/actors/`;
+`main.ts` is pure wiring. Six frontends share one WebSocket
+protocol, so you can compare them side-by-side.
 
 ## Where to next
 

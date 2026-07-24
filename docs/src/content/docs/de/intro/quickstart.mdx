@@ -217,8 +217,8 @@ Tiefe siehe [Messages](/de/fundamentals/messages/) und
 
 ### Antwort bekommen mit `ask`
 
-`tell` ist Fire-and-Forget.  Für Request/Response gibt es zwei
-äquivalente Schreibweisen:
+`tell` ist Fire-and-Forget.  Für Request/Response gibt es die
+`ask`-Methode auf der Ref:
 
 ```ts
 import { ActorSystem, Props } from 'actor-ts';
@@ -229,22 +229,14 @@ const counter = system.spawnAnonymous(Props.create(() => new Counter()));
 counter.tell({ kind: 'increment' });
 counter.tell({ kind: 'increment' });
 
-// Methode-auf-Ref — knapp, leitet den Reply-Typ ab:
+// ask leitet den Reply-Typ ab:
 const value = await counter.ask<number>({ kind: 'get' }, 5_000);
 console.log(value);  // 2
 
 await system.terminate();
 ```
 
-Oder mit der freien Funktion für denselben Effekt:
-
-```ts
-import { ask } from 'actor-ts';
-
-const value = await ask<Command, number>(counter, { kind: 'get' }, 5_000);
-```
-
-In beiden Fällen spawnt das Framework unter der Haube einen
+Das Framework spawnt unter der Haube einen
 One-Shot-Reply-Actor, setzt ihn als `replyTo` UND als
 `context.sender` beim Ziel ein und löst das Promise mit der
 ersten Antwort auf (oder rejected mit `AskTimeoutError`).  Aufrufer

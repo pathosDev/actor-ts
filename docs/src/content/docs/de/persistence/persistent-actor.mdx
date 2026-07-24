@@ -290,21 +290,22 @@ Lesen auf:
 ```ts
 import { EventAdapter } from 'actor-ts';
 
-class V1ToV2Adapter implements EventAdapter<EventV2> {
-  upcast(stored: unknown, version: number): EventV2 {
-    if (version === 1) return migrate(stored as EventV1);
-    return stored as EventV2;
-  }
-}
+const v1ToV2Adapter: EventAdapter<EventV2> = {
+  manifest: () => 'deposited',
+  toJournal: (event) => ({ manifest: 'deposited', version: 2, payload: event }),
+  fromJournal: (stored) => stored.version === 1
+    ? migrate(stored.payload as EventV1)
+    : stored.payload as EventV2,
+};
 
 class Account extends PersistentActor<...> {
-  override eventAdapter() { return new V1ToV2Adapter(); }
+  override eventAdapter() { return v1ToV2Adapter; }
 }
 ```
 
 Mit einem konfigurierten Adapter wird jedes Event in einem
 `{ _v, _t, _e }`-Envelope (Version + Typ + Payload) zur Persist-Zeit
-verpackt und beim Lesen über `adapter.upcast(stored, version)`
+verpackt und beim Lesen über `adapter.fromJournal(stored)`
 entpackt.  Rückwärtskompatibilität ist die Verantwortung des Actors.
 
 Siehe [Migration im Überblick](/de/persistence/migration/overview/)

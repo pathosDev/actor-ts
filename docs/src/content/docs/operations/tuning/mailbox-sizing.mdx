@@ -3,10 +3,12 @@ title: Mailbox sizing
 description: When to use bounded vs unbounded mailboxes, how to pick capacity, and what overflow policies cost. The decision is per-actor — production rarely uses one-size-fits-all defaults.
 ---
 
-The default actor mailbox is **unbounded** — an actor's queue
-can grow without limit if the producer outpaces the consumer.
-For most actors that's fine.  When it's not, you reach for
-[bounded mailboxes](/fundamentals/mailboxes/).
+The default actor mailbox is **bounded** — capacity 10 000 with
+a `drop-head` overflow policy.  The queue can't grow without
+limit; once full, the oldest pending message is dropped.  For
+most actors the default ceiling is fine.  When it isn't, you
+tune the capacity and overflow policy — or opt into an
+[unbounded mailbox](/fundamentals/mailboxes/).
 
 This page is the **decision guide** for production mailbox
 sizing.
@@ -15,25 +17,35 @@ sizing.
 
 ```ts
 const ref = system.spawnAnonymous(Props.create(() => new Worker()));
-//  ↑ unbounded FIFO mailbox; mailbox can grow until OOM
+//  ↑ bounded FIFO mailbox — capacity 10 000, drop-head overflow
 ```
 
-Unbounded mailboxes are **fast** and **forgiving** — a brief
-burst is absorbed, the actor drains it eventually.  Most actors
-should use them.
+The default gives every actor a **guaranteed memory ceiling**:
+the queue holds at most 10 000 messages, and when a new message
+arrives on a full mailbox the oldest pending one is dropped
+(`drop-head`).  For most actors that's fine — a brief burst is
+absorbed, and a runaway producer can't grow the heap without
+limit.
 
-The trap: a **sustained mismatch** (producer faster than
-consumer) grows memory monotonically.  Eventually:
+The trade-off is **silent message loss**: under sustained
+pressure `drop-head` keeps the queue fresh but discards older
+work, and the sender is never told.  When losing messages is
+the wrong answer, tune the capacity or switch the overflow
+policy (below).
+
+Opting *out* — back to an [unbounded mailbox](/fundamentals/mailboxes/) —
+trades that ceiling for the pre-#310 failure mode:
 
 - Heap exhaustion → process OOM-killed.
 - Long GC pauses → cluster flaps.
 - Backpressure absent → producer doesn't know there's a problem.
 
-For these cases, bound.
+Reach for it only when an actor genuinely needs no bound.
 
-## When to bound
+## When to tune the bound
 
-Three patterns where bounded mailboxes pay off:
+Three patterns where the default capacity or policy isn't the
+right fit — override capacity, overflow, or both:
 
 ### 1. Producer/consumer mismatch known in advance
 
@@ -191,14 +203,14 @@ protocol design.
 
 import { Aside } from '@astrojs/starlight/components';
 
-<Aside type="caution" title="Defaulting all actors to bounded">
+<Aside type="caution" title="Blanket-opting out to unbounded">
   ```ts
-  // ✗ blanket bounded everywhere
+  // ✗ blanket .withMailbox(() => new Mailbox()) everywhere
   ```
-  Most actors are fine with unbounded.  Bounding adds an
-  overflow-policy decision; if the wrong one is picked, the
-  cure is worse than the disease.  Reach for bounded only when
-  evidence (memory growth, OOM kills) supports it.
+  Opting every actor out of the bounded default reintroduces the
+  pre-#310 OOM-or-bust shape.  Reach for unbounded only for a
+  specific actor whose semantics need it (deterministic replay,
+  a test harness) — never as a blanket policy.
 </Aside>
 
 <Aside type="caution" title="Tiny capacities">

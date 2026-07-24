@@ -9,7 +9,7 @@ import type { HttpRequest, HttpResponse } from './types.js';
 import { ConnectionTracker, trackSocket } from './websocket/ConnectionWiring.js';
 
 export interface ServerBuilder {
-  /** Override the default Fastify backend (or use BunServe / Express). */
+  /** Override the default Fastify backend (or use Express / Hono). */
   useBackend(backend: HttpServerBackend): ServerBuilder;
   /**
    * Last-resort handler for errors that escape every route-level
@@ -27,7 +27,7 @@ export interface ServerBuilder {
  * System-wide HTTP extension — entry point for the routing DSL and the
  * shared HttpClient.  Every ActorSystem gets one HttpClient and a factory
  * for HTTP servers.  The default server backend is Fastify; swap it per
- * server via `builder.useBackend(new BunServeBackend())`.
+ * server via `builder.useBackend(new HonoBackend())`.
  */
 export class HttpExtension implements Extension {
   /** Shared HTTP client — uses the global fetch. */

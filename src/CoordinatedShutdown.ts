@@ -42,7 +42,7 @@ export interface PhaseDefinition {
   readonly timeoutMs: number;
   /** Names of phases that must run before this one. */
   readonly dependsOn: ReadonlyArray<string>;
-  /** If true, task failures halt the pipeline.  Defaults to false. */
+  /** If true, task failures are swallowed and the phase continues; if false, a failure halts the pipeline.  Required — no default. */
   readonly recover: boolean;
 }
 

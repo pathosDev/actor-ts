@@ -26,10 +26,8 @@ const objectStorageSnapshotStoreOptions = ObjectStorageSnapshotStoreOptions.crea
   .withEncryption(encryption);
 const snapshotStore = new ObjectStorageSnapshotStore(objectStorageSnapshotStoreOptions);
 
-system.extension(PersistenceExtensionId).configure({
-  journal: someJournal,
-  snapshotStore,
-});
+system.extension(PersistenceExtensionId).setJournal(someJournal);
+system.extension(PersistenceExtensionId).setSnapshotStore(snapshotStore);
 ```
 
 Snapshots written by every `PersistentActor` go to the S3
@@ -57,10 +55,12 @@ is faster + simpler.
 
 ```ts
 interface ObjectStorageSnapshotStoreOptionsType {
-  backend:      ObjectStorageBackend;
-  prefix?:      string;             // default 'snapshots/'
-  compression?: CompressionConfig;
-  encryption?:  EncryptionConfig;
+  backend:               ObjectStorageBackend;
+  prefix?:               string;   // default ''
+  keepN?:                number;   // default 3
+  compression?:          CompressionConfig | CompressionResolver;
+  encryption?:           EncryptionConfig | EncryptionResolver;
+  maxDecompressedBytes?: number;   // default 512 MiB
 }
 ```
 
@@ -68,8 +68,10 @@ interface ObjectStorageSnapshotStoreOptionsType {
 | --- | --- |
 | `backend` | Filesystem or S3 backend. |
 | `prefix` | Object-key prefix.  Useful for sharing buckets. |
+| `keepN` | Snapshots retained per persistenceId; older ones are pruned on save.  Default 3. |
 | `compression` | At-rest compression — see [Compression](/persistence/object-storage/compression/). |
 | `encryption` | At-rest encryption — see [Encryption](/persistence/object-storage/encryption/). |
+| `maxDecompressedBytes` | Decompression-bomb guard — cap on a decoded snapshot's size.  Default 512 MiB. |
 
 ## Key layout
 
@@ -154,9 +156,11 @@ const objectStorageSnapshotStoreOptions = ObjectStorageSnapshotStoreOptions.crea
 new ObjectStorageSnapshotStore(objectStorageSnapshotStoreOptions);   // keep 5 most recent; delete older
 ```
 
-Without cleanup, old snapshots accumulate indefinitely.
-Configuring `maxSnapshotsPerPid` triggers a cleanup pass on
-each save — only the N most recent are retained.
+Pruning is on by default: `keepN` defaults to 3, so each save
+retains only the most-recent snapshots per persistenceId and
+deletes the older ones.  Raise or lower the bound with
+`withKeepN`; set `keepN: 0` to disable pruning and keep every
+snapshot.
 
 The framework doesn't auto-delete during reads — there's a
 small window where old snapshots co-exist with new ones.
@@ -186,11 +190,13 @@ import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="LIST cost on large pids">
   ```ts
-  // 100K snapshots for one pid — list returns 100K entries
+  // keepN: 0 disables pruning — one pid can accumulate 100K
+  // snapshots, so each loadLatest LIST returns 100K entries
   ```
-  Without `maxSnapshotsPerPid`, lists grow unbounded.
-  Configure cleanup; better, use a tighter snapshotPolicy
-  (every N events instead of every event).
+  `keepN` defaults to 3, so per-pid lists stay bounded; they only
+  grow unbounded when you set `keepN: 0`.  Keep pruning on; better
+  still, use a tighter snapshotPolicy (every N events instead of
+  every event) to cut write volume.
 </Aside>
 
 <Aside type="caution" title="Snapshot loss is recovery-time loss">

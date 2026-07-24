@@ -34,8 +34,13 @@ Ursachen zum Prüfen (in dieser Reihenfolge):
 Diagnostik:
 
 ```ts
-cluster.subscribe(MemberJoined, (e) => system.log.info(`saw join: ${e.member.address}`));
-cluster.subscribe(SelfUp, () => system.log.info('self up'));
+cluster.subscribe((evt) => {
+  if (evt instanceof MemberJoined) {
+    system.log.info(`saw join: ${evt.member.address}`);
+  } else if (evt instanceof SelfUp) {
+    system.log.info('self up');
+  }
+});
 ```
 
 Prüfe, ob `SelfUp` feuert. Wenn nicht, hat der lokale Node nicht

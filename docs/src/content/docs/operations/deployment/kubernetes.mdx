@@ -115,13 +115,13 @@ spec:
                   key: db-password
           readinessProbe:
             httpGet:
-              path: /health/ready
+              path: /ready
               port: management
             initialDelaySeconds: 5
             periodSeconds: 5
           livenessProbe:
             httpGet:
-              path: /health/alive
+              path: /health
               port: management
             initialDelaySeconds: 15
             periodSeconds: 10
@@ -219,19 +219,19 @@ in-flight requests can see "draining" responses.
 ### Readiness + liveness probes
 
 ```yaml
-readinessProbe: /health/ready
-livenessProbe:  /health/alive
+readinessProbe: /ready
+livenessProbe:  /health
 ```
 
 The framework's
 [management routes](/observability/management/overview/)
 expose these endpoints.
 
-- **`/health/ready`** — "should this pod receive traffic?"
+- **`/ready`** — "should this pod receive traffic?"
   Returns 503 during shutdown so the LB drops it before SIGTERM.
   Use to gate per-app health checks (DB reachable, dependencies
   warm, etc.).
-- **`/health/alive`** — "is this pod fundamentally broken?"
+- **`/health`** — "is this pod fundamentally broken?"
   Failing means K8s restarts the pod.  Reserve for genuinely
   unrecoverable states — actor-system not running, OOM-like
   conditions.
@@ -239,8 +239,7 @@ expose these endpoints.
 ## App-side wiring
 
 ```ts
-import { ActorSystem, Cluster, ClusterOptions, CoordinatedShutdownId, managementRoutes } from 'actor-ts';
-import { KubernetesApiSeedProvider, KubernetesApiSeedProviderOptions } from 'actor-ts/discovery';
+import { ActorSystem, Cluster, ClusterOptions, CoordinatedShutdownId, KubernetesApiSeedProvider, KubernetesApiSeedProviderOptions, managementRoutes } from 'actor-ts';
 
 const system = ActorSystem.create('my-app');
 const cs     = system.extension(CoordinatedShutdownId);
@@ -251,12 +250,12 @@ const kubernetesApiSeedProviderOptions = KubernetesApiSeedProviderOptions.create
   .withServiceName(process.env.K8S_SERVICE_NAME!)
   .withSystemName(system.name)
   .withPort(2552);
-const seeds = await new KubernetesApiSeedProvider(kubernetesApiSeedProviderOptions).discover();
+const seeds = await new KubernetesApiSeedProvider(kubernetesApiSeedProviderOptions).lookup();
 
 const clusterOptions = ClusterOptions.create()
   .withHost(process.env.ACTOR_TS_HOSTNAME!)
   .withPort(parseInt(process.env.ACTOR_TS_PORT!))
-  .withSeeds(seeds)
+  .withSeeds(seeds.map(a => a.toString()))
   .withRoles(['compute']);
 const cluster = await Cluster.join(system, clusterOptions);
 
@@ -281,7 +280,7 @@ Five pieces in order:
    provider queries pods matching `app=actor-ts` and uses their
    IPs as seeds.  On the first pod, the seed list is just itself
    (the auto-promote-to-leader path).
-2. **Management endpoints** — `/health/*` for K8s probes,
+2. **Management endpoints** — `/health` + `/ready` for K8s probes,
    `/cluster/members` for debugging.
 3. **App HTTP** — your routes, separate port from management.
 4. **SIGTERM hooks** — coordinated-shutdown installs hooks that
@@ -353,7 +352,7 @@ import { Aside } from '@astrojs/starlight/components';
 - **[Coordinated shutdown](/fundamentals/coordinated-shutdown/)** —
   the phased-shutdown DSL.
 - **[Management endpoints](/observability/management/overview/)** —
-  the /health/* endpoints K8s probes hit.
+  the /health + /ready endpoints K8s probes hit.
 - **[Cluster security](/operations/security/cluster-security/)** —
   TLS + auth for the cluster transport.
 - **[Rolling migration](/operations/upgrades/rolling-migration/)** —

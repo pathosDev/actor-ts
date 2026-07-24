@@ -1,12 +1,12 @@
 ---
 title: Kubernetes API seed provider
-description: Query the K8s API server for pods matching a label selector — returns the running pod IPs as seed addresses. The standard choice for K8s deployments.
+description: Read the Endpoints of a named Service from the K8s API — returns the ready pod IPs as seed addresses. The standard choice for K8s deployments.
 ---
 
-`KubernetesApiSeedProvider` queries the K8s API for pods matching
-a label selector and returns their IPs as seeds.  Works without
-DNS, without SRV, without manual seed-list maintenance — the
-selector is your contract.
+`KubernetesApiSeedProvider` reads the Endpoints of a named
+Service from the K8s API and returns the ready pod IPs as seeds.
+Works without DNS, without SRV, without manual seed-list
+maintenance — the Service is your contract.
 
 ```ts
 import { Cluster, ClusterOptions, KubernetesApiSeedProvider, KubernetesApiSeedProviderOptions } from 'actor-ts';
@@ -31,60 +31,61 @@ await Cluster.join(
 );
 ```
 
-For every pod matching `app=actor-ts` in the namespace, the
-provider returns `<pod-ip>:2552`.
+For every ready pod backing the `actor-ts` Service in the
+namespace, the provider returns `<pod-ip>:2552`.
 
 ## Configuration
 
 ```ts
 interface KubernetesApiSeedProviderOptionsType {
-  namespace:           string;
-  labelSelector:       string;
-  containerPort:       number;
-  apiBaseUrl?:         string;   // override in-cluster default
-  serviceAccountToken?: string;  // override in-cluster default
+  namespace:       string;
+  serviceName:     string;
+  systemName:      string;
+  port:            number;
+  fetchEndpoints?: () => Promise<string[]>;  // override the in-cluster API
 }
 ```
 
 | Field | What |
 | --- | --- |
 | `namespace` | K8s namespace to query — typically your app's namespace. |
-| `labelSelector` | The selector for matching pods (`app=actor-ts`, `role=compute,env=prod`, etc.). |
-| `containerPort` | The cluster-transport port on each matching pod. |
-| `apiBaseUrl` | Defaults to `https://kubernetes.default.svc` (in-cluster). |
-| `serviceAccountToken` | Defaults to the in-cluster token at `/var/run/secrets/.../token`. |
+| `serviceName` | The Service (or Endpoints) name whose ready pods form the cluster. |
+| `systemName` | The actor-system name stamped on each discovered address. |
+| `port` | The cluster-transport port on each backing pod. |
+| `fetchEndpoints` | Override the Endpoints-fetch function — defaults to the in-cluster API. |
 
-For pods running in-cluster, only the first three are required.
-The framework reads the API URL and SA token from standard
-locations.
+For pods running in-cluster, only `fetchEndpoints` is optional —
+the framework reads the Endpoints from the standard API at
+`https://kubernetes.default.svc` using the mounted ServiceAccount
+token.  The other four fields are required.
 
 ## RBAC
 
-The pod's ServiceAccount needs read access to pods in the
-namespace:
+The pod's ServiceAccount needs read access to the Service's
+Endpoints in the namespace:
 
 ```yaml
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
-  name: actor-ts-pod-reader
+  name: actor-ts-endpoints-reader
   namespace: my-app
 rules:
   - apiGroups: [""]
-    resources: ["pods"]
-    verbs: ["get", "list"]
+    resources: ["endpoints"]
+    verbs: ["get"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
-  name: actor-ts-pod-reader
+  name: actor-ts-endpoints-reader
   namespace: my-app
 subjects:
   - kind: ServiceAccount
     name: actor-ts
-roleBinding:
+roleRef:
   kind: Role
-  name: actor-ts-pod-reader
+  name: actor-ts-endpoints-reader
   apiGroup: rbac.authorization.k8s.io
 ```
 
@@ -93,35 +94,43 @@ indefinitely.
 
 ## What it returns
 
-For each pod matching the selector:
+From the Service's Endpoints object:
 
-- **Running pods** with non-empty `status.podIP` → included as
-  `<podIP>:<containerPort>`.
-- **Pending / not-running pods** → skipped (no IP yet).
+- **Ready pods** in `subsets[].addresses[]` → included as
+  `<podIP>:<port>`.
+- **Not-ready / pending pods** (in `notReadyAddresses`) → skipped
+  (no ready IP yet).
 - **This pod itself** → may be included or not depending on
-  startup race; the cluster handles self-as-seed correctly.
+  readiness timing; the cluster handles self-as-seed correctly.
 
 ## Cluster-wide vs replica-set
 
+Membership is defined by the Service's own `spec.selector` — the
+provider only needs the Service *name*:
+
 ```yaml
-# Match all pods in the app:
-labelSelector: 'app=actor-ts'
-
-# Match only specific role:
-labelSelector: 'app=actor-ts,role=compute'
-
-# Match across multiple deployments:
-labelSelector: 'cluster=my-app'
+# One Service fronting every cluster pod:
+apiVersion: v1
+kind: Service
+metadata:
+  name: actor-ts
+spec:
+  clusterIP: None        # headless — Endpoints carry the pod IPs
+  selector:
+    app: actor-ts
+  ports:
+    - port: 2552
 ```
 
-The selector is what defines your cluster's membership at
-bootstrap.  For most deployments, **one selector per cluster** —
-all pods carrying it bootstrap into one cluster.
+Point the provider at that Service with
+`.withServiceName('actor-ts')`.  For most deployments, **one
+Service per cluster** — every pod the Service selects bootstraps
+into one cluster.
 
-For role-based asymmetric clusters (`role=compute` for workers,
-`role=gateway` for HTTP), a single selector (`app=actor-ts`)
-covers both; the role tag inside the cluster is separate from
-the discovery selector.
+For role-based asymmetric clusters (workers vs. HTTP gateways), a
+single Service whose selector (`app=actor-ts`) covers both roles
+is enough; the role tag inside the cluster is separate from the
+Service's pod selection.
 
 ## What happens at startup
 
@@ -129,8 +138,8 @@ the discovery selector.
 flowchart TB
   START(["Pod starts → Cluster.join called"])
   LOOKUP["KubernetesApiSeedProvider.lookup"]
-  API["GET /api/v1/namespaces/&lt;ns&gt;/pods<br/>?labelSelector=&lt;sel&gt;"]
-  FILTER["filter for Running<br/>+ non-empty podIP"]
+  API["GET /api/v1/namespaces/&lt;ns&gt;/<br/>endpoints/&lt;serviceName&gt;"]
+  FILTER["read subsets[].addresses[].ip"]
   RETURN["return [...podIp:port]"]
   JOIN["Cluster.join tries each seed"]
   CHECK{"existing cluster?"}
@@ -154,27 +163,27 @@ to leader.
 
 Subsequent pods see the existing pods and join through them.
 
-## Tuning the selector
+## One Service per cluster
 
-| Selector pattern | Effect |
+| Service layout | Effect |
 | --- | --- |
-| `app=actor-ts` | One cluster across the namespace. |
-| `app=actor-ts,env=prod` | Separate prod and staging clusters in one namespace. |
-| `cluster=my-app-cluster-1` | Explicit cluster name; multiple clusters in one namespace. |
+| One Service, selector `app=actor-ts` | One cluster across the namespace. |
+| Two Services, selectors `env=prod` / `env=staging` | Separate prod and staging clusters in one namespace. |
+| One Service per named cluster | Explicit cluster name; multiple clusters in one namespace. |
 
-Stable selector design matters — the **cluster's identity** is
-implicit in the selector.  Changing the selector splits the
-cluster.
+Stable Service design matters — the **cluster's identity** is the
+Service you point at.  Changing which pods the Service selects (or
+the Service name) splits the cluster.
 
 ## When NOT
 
 import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="Pods without IPs">
-  Pods in `Pending` state have no `podIP` — the provider skips
-  them.  Until at least one pod is `Running`, the lookup returns
-  an empty list.  This is rarely a problem (first pod
-  self-bootstraps), but be aware during fast scale-ups.
+  Not-ready pods aren't in the Service's Endpoints `addresses` —
+  the provider skips them.  Until at least one pod is `Ready`, the
+  lookup returns an empty list.  This is rarely a problem (first
+  pod self-bootstraps), but be aware during fast scale-ups.
 </Aside>
 
 <Aside type="caution" title="Cross-namespace lookup">

@@ -37,7 +37,7 @@ Argument:
 
 ```ts
 const actorSystemOptions = ActorSystemOptions.create()
-  .withLogLevel('info')
+  .withLogLevel(LogLevel.Info)
   .withConfigFile('./application.conf');
 const system = ActorSystem.create('my-app', actorSystemOptions);
 ```
@@ -47,8 +47,8 @@ Die vollständige Settings-Form:
 | Feld | Zweck |
 | --- | --- |
 | `logger` | Eigene `Logger`-Instanz.  Standardmäßig ein Console-Logger, der `logLevel` respektiert. |
-| `logLevel` | Einer von `debug` / `info` / `warn` / `error` / `silent`. |
-| `dispatcher` | Eigener `Dispatcher`.  Standardmäßig ein Microtask-basierter Dispatcher; Tests tauschen typischerweise einen Immediate- oder Manual-Dispatcher ein. |
+| `logLevel` | Einer von `debug` / `info` / `warn` / `error` / `off`. |
+| `dispatcher` | Eigener `Dispatcher`.  Standardmäßig der Immediate-Dispatcher; tausche einen Microtask- oder Throughput-basierten ein, um das Scheduling anzupassen. |
 | `scheduler` | Eigener `Scheduler`.  Standardmäßig ein Echtzeit-Scheduler; Tests injizieren `ManualScheduler`, um die Zeit zu kontrollieren. |
 | `config` | Entweder eine vorgefertigte `Config` oder ein einfaches Objekt mit HOCON-Overrides.  Wird über die Referenz-Defaults + einer eventuellen `application.conf` gelegt. |
 | `configFile` | Expliziter Pfad zu einer `application.conf`-Datei.  Überschreibt die `ACTOR_TS_CONFIG`-Env-Variable und das CWD-Lookup. |
@@ -63,7 +63,9 @@ Projekt-Root:
 
 ```hocon
 actor-ts {
-  log-level = "info"
+  logger {
+    level = "info"
+  }
   dispatcher {
     throughput = 100
   }
@@ -174,17 +176,17 @@ indem du nach ihnen greifst, lass sie weg, indem du es nicht tust.
 ### Eine eigene Extension schreiben
 
 ```ts
-import { type Extension, type ExtensionId } from 'actor-ts';
+import { extensionId, type Extension, type ExtensionId } from 'actor-ts';
 
 class MetricsCollector implements Extension {
   constructor(private readonly system: ActorSystem) {}
   incCounter(name: string): void { /* ... */ }
 }
 
-const MetricsCollectorId: ExtensionId<MetricsCollector> = {
-  name: 'MetricsCollector',
-  create: (system) => new MetricsCollector(system),
-};
+const MetricsCollectorId: ExtensionId<MetricsCollector> = extensionId(
+  'MetricsCollector',
+  (system) => new MetricsCollector(system),
+);
 
 // Lookup ist idempotent — der erste Aufruf erzeugt, folgende Aufrufe
 // geben die gecachte Instanz zurück.

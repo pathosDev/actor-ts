@@ -181,12 +181,12 @@ und Prod-Tuning ist real.
 ## Vor dem Tuning messen
 
 ```ts
-cluster.subscribe(MemberUnreachable, (evt) => {
-  metrics.counter('cluster_unreachable_total', { address: evt.member.address.toString() }).inc();
-});
-
-cluster.subscribe(MemberReachable, (evt) => {
-  // Auch die Dauer im Unreachable-Zustand tracken
+cluster.subscribe((evt) => {
+  if (evt instanceof MemberUnreachable) {
+    metrics.counter('cluster_unreachable_total', { address: evt.member.address.toString() }).inc();
+  } else if (evt instanceof MemberReachable) {
+    // Auch die Dauer im Unreachable-Zustand tracken
+  }
 });
 ```
 

@@ -175,12 +175,12 @@ Framework nutzt sie, um den Join zu bootstrappen. Siehe
 ```ts
 import { SelfUp, MemberUp } from 'actor-ts';
 
-cluster.subscribe(SelfUp, (evt) => {
-  console.log(`dieser Node ist jetzt Up`);
-});
-
-cluster.subscribe(MemberUp, (evt) => {
-  console.log(`Peer ${evt.member.address} hat Up erreicht`);
+cluster.subscribe((evt) => {
+  if (evt instanceof SelfUp) {
+    console.log(`dieser Node ist jetzt Up`);
+  } else if (evt instanceof MemberUp) {
+    console.log(`Peer ${evt.member.address} hat Up erreicht`);
+  }
 });
 ```
 

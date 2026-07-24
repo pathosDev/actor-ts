@@ -84,7 +84,7 @@ have established — are the operational pieces around the actor.
   pluggable journals (in-memory, SQLite, Cassandra) and snapshot
   stores.  Plus the migration toolchain for evolving schemas
   without rewriting old events.
-- **Distributed data** — eight CRDTs (counters, registers, sets,
+- **Distributed data** — nine CRDTs (counters, registers, sets,
   maps) with durable storage and gossip replication, for state
   that should converge across the cluster without leader
   coordination.
@@ -127,7 +127,7 @@ import { Aside } from '@astrojs/starlight/components';
 <Aside type="caution" title="This is an AI-assisted hobby project">
   Large parts of actor-ts were written with AI pair-programming and
   **have not been battle-tested in production**.  Test coverage is
-  good (~1740 tests, ~85 % line) but the surface area is enormous.
+  good (~2657 tests, ~91 % line) but the surface area is enormous.
   Use it to learn, to prototype, to benchmark ideas — not to handle
   real money, users, or data.
 

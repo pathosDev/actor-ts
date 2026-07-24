@@ -52,11 +52,9 @@ const clusterSingletonManagerOptions = ClusterSingletonManagerOptions.create()
   .withSingletonProps(Props.create(() => new JobScheduler()))
   .withRole('control-plane')            // optional
   .withLease(leaseImpl)                  // optionaler Split-Brain-Schutz
-  .withAcquireRetryIntervalMs(5_000);
+  .withAcquireRetryIntervalMs(5_000);   // Retry-Takt, wenn Lease-Acquire scheitert
 system.spawn(
-  ClusterSingletonManager.props(
-    clusterSingletonManagerOptions,    // wenn Lease-Acquire scheitert
-  ),
+  Props.create(() => new ClusterSingletonManager(clusterSingletonManagerOptions)),
   'singleton-manager-job-scheduler',
 );
 ```
@@ -121,7 +119,7 @@ schützen soll.
 const managerOptions = ClusterSingletonManagerOptions.create()
   // ...
   .withLease(someLeaseImpl);
-ClusterSingletonManager.props(managerOptions);
+Props.create(() => new ClusterSingletonManager(managerOptions));
 ```
 
 Fügt ein asynchrones Gate über die Lease hinzu. Der Ablauf:
@@ -186,9 +184,11 @@ Manager greift nicht ein, wenn sich das Leadership nicht auch
 geändert hat.
 
 Wenn das Kind sich explizit selbst stoppt (`context.stopSelf()`),
-sieht der Manager das Terminated, gibt die Lease frei (falls
-gehalten) und **spawnt nicht erneut**. Der Singleton ist weg, bis
-der nächste Leader-Wechsel kommt.
+sieht der Manager das Terminated, tut damit aber nichts: er
+**spawnt nicht erneut** und **gibt die Lease nicht frei** — eine
+gehaltene Lease bleibt gehalten, und die `child`-Referenz des
+Managers zeigt weiter auf den nun toten Singleton. Der Singleton
+ist weg, bis der nächste Leader-Wechsel kommt.
 
 Wenn du willst, dass ein sich selbst stoppender Singleton neu
 gespawnt wird, ist der Manager nicht der richtige Ort — schreibe
@@ -230,8 +230,10 @@ Direkter Manager-Kontakt ist nur nützlich für:
 ```ts
 import { MemberUp, LeaderChanged } from 'actor-ts';
 
-cluster.subscribe(LeaderChanged, (evt) => {
-  console.log(`Leader ist jetzt ${evt.leader}`);
+cluster.subscribe((evt) => {
+  if (evt instanceof LeaderChanged) {
+    console.log(`Leader ist jetzt ${evt.leader.map((m) => m.address).getOrElse('<none>')}`);
+  }
 });
 ```
 
@@ -259,7 +261,7 @@ import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="Manager-Name muss der Konvention folgen">
   ```ts
-  system.spawn(ClusterSingletonManager.props(ClusterSingletonManagerOptions.create()/* ... */), 'whatever');
+  system.spawn(Props.create(() => new ClusterSingletonManager(ClusterSingletonManagerOptions.create()/* ... */)), 'whatever');
   // ✗ Proxy sucht `/user/singleton-manager-<typeName>`, nicht /user/whatever
   ```
   Nutze `singletonManagerPath(...)` oder buchstabier die
@@ -267,15 +269,18 @@ import { Aside } from '@astrojs/starlight/components';
   benannte Manager sind für Proxies unsichtbar.
 </Aside>
 
-<Aside type="caution" title="Lease-Fehler ohne Retry">
+<Aside type="caution" title="acquireRetryIntervalMs muss positiv sein">
   ```ts
-  acquireRetryIntervalMs: 0,
+  acquireRetryIntervalMs: 0,   // ✗ deaktiviert keine Retries
   ```
-  Auf 0 setzen deaktiviert Retries — ein einzelnes
-  fehlgeschlagenes Acquire lässt den Singleton un-gespawnt, bis
-  das nächste `LeaderChanged`-Event kommt. Nutze einen sinnvollen
-  Wert (Default 5s ist für die meisten Lease-Provider
-  vernünftig).
+  `0` deaktiviert keine Retries — es gibt keinen Abschalt-Schalter.
+  Der Wert wird beim Starten des Singletons als positive Zahl
+  validiert, sodass ein nicht-positiver Wert vorab mit einem
+  `OptionsError` abgelehnt wird. Und `0` bedeutet intern nie "nicht
+  mehr versuchen": der 5s-Default gilt nur für einen *nicht gesetzten*
+  Wert, also würde `0` einfach sofort erneut versuchen. Nutze ein
+  positives Intervall; der 5s-Default passt für die meisten
+  Lease-Provider.
 </Aside>
 
 ## Wohin als Nächstes

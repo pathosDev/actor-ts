@@ -19,7 +19,7 @@ sind, wo die Unterstützung variiert.
 | Persistenz — Cassandra | ⚠ Ungetestet |
 | HTTP — Fastify | ✓ Funktioniert |
 | HTTP — Bun.serve | ✗ (Bun-only) |
-| WebSocket-Server (`websocket()`-Route) | ⚠ Workaround nötig |
+| WebSocket-Server (`websocket()`-Route) | ✓ Funktioniert (via Hono-Backend) |
 | Broker-Actor (Kafka, MQTT usw.) | ⚠ Hängt von der Deno-Kompat des zugrundeliegenden npm-Pakets ab |
 
 Für **Produktion** empfehlen wir **Bun oder Node**, außer deine
@@ -84,8 +84,11 @@ Nicht unterstützt. Deno hat kein eingebautes SQLite, und weder
 Die `websocket()`-Route (durch einen `WebsocketServerActor`
 gestützt) verlässt sich auf die Upgrade-Unterstützung des
 HTTP-Backends — `@fastify/websocket` oder `ws` auf Node,
-`Bun.serve` auf Bun. Für Deno schreibe einen dünnen Adapter mit
-`Deno.serveHttp` + `Deno.upgradeWebSocket`.
+`Bun.serve` auf Bun. Auf Deno nutzt du das **Hono-Backend**
+(`DenoHonoRunner`), das `websocket()` für dich auf Basis von
+`Deno.serve` + `Deno.upgradeWebSocket` verdrahtet — installiere
+einfach `hono` mit `deno add npm:hono`. Kein handgeschriebener
+Adapter nötig.
 
 ## Permissions-Modell
 
@@ -130,7 +133,6 @@ Für Deno-Deploy-Use-Cases:
 ## Tests auf Deno
 
 ```ts
-import { Deno } from 'deno';
 import { TestKit } from 'actor-ts/testkit';
 
 Deno.test('Counter inkrementiert', async () => {

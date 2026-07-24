@@ -84,9 +84,9 @@ available stock, balance after settlements.
 ## Using them with DistributedData
 
 ```ts
-import { GCounter, type DistributedData } from 'actor-ts';
+import { GCounter } from 'actor-ts';
 
-const dd: DistributedData = system.extension(DistributedDataId).start(cluster);
+const dd = system.extension(DistributedDataId).start(cluster);
 
 dd.update<GCounter>(
   'request-count',

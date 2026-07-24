@@ -56,13 +56,13 @@ dort aufnimmst, bestimmt, was separat gecacht wird.  Gängige Muster:
 
 ```ts
 // Per-URL-path key:
-key: (req) => req.url.pathname,
+key: (req) => req.path,
 
 // Per-tenant:
-key: (req) => `${req.headers['x-tenant-id'] ?? 'public'}:${req.url.pathname}`,
+key: (req) => `${req.headers['x-tenant-id'] ?? 'public'}:${req.path}`,
 
 // Per-locale + content type:
-key: (req) => `${req.headers['accept-language']}:${req.headers['accept']}:${req.url.pathname}`,
+key: (req) => `${req.headers['accept-language']}:${req.headers['accept']}:${req.path}`,
 ```
 
 Baue den Key so, dass er über äquivalente Requests deterministisch,

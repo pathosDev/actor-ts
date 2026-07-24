@@ -84,7 +84,7 @@ dd.update<GCounter>(
 
 // Lokale Sicht lesen — liefert den letzten bekannten gemergten Stand.
 const counter = dd.get<GCounter>('request-count');
-console.log(counter?.value);   // Summe über alle bekannten Replikas
+console.log(counter?.value());   // Summe über alle bekannten Replikas
 ```
 
 Das lokale Update ist sofort wirksam; Gossip propagiert es in
@@ -126,9 +126,9 @@ const hits = await dd.getAsync<GCounter>('hits',
 | Level | Was es bedeutet |
 | --- | --- |
 | `'local'` *(Default)* | Lokal anwenden; auf Gossip vertrauen, dass es propagiert.  Read liefert die Sicht der lokalen Replika. |
-| `'majority'` | Warten, bis ⌈N/2 + 1⌉ Replikas geACKt haben.  Read merged die Mehrheitsantworten. |
+| `'majority'` | Warten, bis ⌊N/2⌋+1 Replikas geACKt haben.  Read merged die Mehrheitsantworten. |
 | `'all'` | Auf jedes Up-Member warten.  Stärkste Konsistenz, höchste Latenz. |
-| `{ kind: 'count'; n: 3 }` | Auf genau `n` ACKs warten. |
+| `{ from: 3 }` | Auf genau `from` ACKs warten (begrenzt auf `[1, N]`). |
 
 Quorum ändert die Merge-Semantik nicht — jedes Update merged
 irgendwann in jede Replika.  Quorum gibt dir nur eine **Garantie**,
@@ -149,7 +149,7 @@ Default.  Greife zu `'majority'`, wenn:
 
 ```ts
 const unsubscribe = dd.subscribe<GCounter>('hits', (counter) => {
-  console.log(`hits liegt jetzt bei ${counter.value}`);
+  console.log(`hits liegt jetzt bei ${counter.value()}`);
 });
 
 // ... später

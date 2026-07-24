@@ -1,14 +1,15 @@
 ---
 title: Replication
-description: How DistributedData gossips state between nodes — periodic delta-gossip, merge on receive, subscriber notification. The mechanics you usually don't need to know, but understanding helps when troubleshooting "why hasn't my write propagated?"
+description: How DistributedData gossips state between nodes — periodic full-state gossip, merge on receive, subscriber notification. The mechanics you usually don't need to know, but understanding helps when troubleshooting "why hasn't my write propagated?"
 ---
 
 DistributedData replicates state by **gossip**:
 
-- Every `gossipIntervalMs`, each node picks a random peer.
-- The node sends its **state deltas** since the last gossip with
-  that peer.
-- The peer merges; if its state changed, notify local subscribers.
+- Every `gossipIntervalMs`, each node picks one random peer.
+- The node sends a **full snapshot** of every key it currently
+  holds.
+- The peer merges each entry; if its state changed, notify local
+  subscribers.
 
 This means writes propagate **eventually** — usually within 1-2
 gossip rounds (1-2 seconds default).  For most workloads this is
@@ -22,7 +23,7 @@ sequenceDiagram
   participant A as node-A
   participant B as node-B
   Note over A: local update applied — immediate
-  A->>B: gossip tick — delta arrives
+  A->>B: gossip tick — full snapshot arrives
   Note over B: merge into local state<br/>per-CRDT merge function
   Note over B: if local value changed<br/>notify subscribers
 ```
@@ -55,16 +56,20 @@ For typical applications:
 
 ## What gets gossiped
 
-**Deltas only** — DistributedData tracks what each peer has seen
-and sends only the changes since the last successful exchange.
+**The full state** — each tick, DistributedData serializes every
+key in its local replica and pushes the whole snapshot to one
+random peer.  There's no delta tracking and no per-peer receipt
+history; every gossip carries the complete set.
 
-This makes gossip volume proportional to **update rate**, not
-total state size.  A million-entry map that doesn't change costs
-nothing to gossip; a small counter that increments 1000 times per
-second costs much more.
+This makes gossip volume proportional to **total state size**, not
+update rate.  A million-entry map costs its full serialized size
+every time it's gossiped, whether or not it changed; a small
+counter costs almost nothing no matter how often it increments.
 
-The exception: on a fresh peer join (or after a long partition),
-the first gossip is the **full state** — there's no delta history.
+It's deliberately simple — no digest, no delta — which is cheap to
+implement and good enough for the small-to-medium stores
+DistributedData is meant for.  If your store grows large, raise
+`gossipIntervalMs` to spread the cost over time.
 
 ## Per-peer round selection
 
@@ -110,31 +115,38 @@ For dashboard widgets, real-time UI updates, or business logic
 that should react to changes anywhere in the cluster, `subscribe`
 is the hook.
 
-## Forgetting peers
+## When a peer leaves
 
-When `MemberRemoved` fires for a cluster member:
+When `MemberRemoved` fires for a cluster member, DistributedData
+does **nothing** — there's no per-peer state to clean up.  Gossip
+holds no version vector and no per-peer receipt history; each tick
+just picks a random peer from the *current* up-members, so a
+departed node simply stops being a gossip target.
 
-- The replicator forgets that peer's gossip-receipt state.
-- The peer's tombstones (for ORSet etc.) eventually prune from
-  local state per the CRDT's pruning rules.
+State the peer contributed stays in the local replica, merged in
+like any other update.  CRDT tombstones (a removed `ORSet`
+element, a `null` register in an `LWWMap`) are **never garbage
+collected** — they're kept permanently so a stale gossip can't
+resurrect a removed key.  Over a long-lived store with heavy
+churn, tombstone accumulation is the practical cost to watch.
 
-This means **a peer that leaves doesn't leak gossip history** —
-its slot in the version vector goes away.
-
-For replicas that may **rejoin under the same identity later**
-(stable pod names, persistent volumes), there's a short window
-where the peer's state may be partially-forgotten.  Usually
-benign — a fresh handshake brings everything back.
+A replica that **rejoins under the same identity later** (stable
+pod names, persistent volumes) needs no special handling — it's
+just another up-member again, and gossip reconverges its state
+over the next few ticks.
 
 ## Bandwidth costs
 
-Rough numbers for a 10-node cluster, default 1-second gossip:
+Rough shape for a 10-node cluster, default 1-second gossip:
 
-- **Steady-state idle** — minimal traffic (~1 KB/sec per pair,
-  mostly empty deltas).
-- **Active workload** — proportional to write rate.  Per write,
-  one delta message of ~100-500 bytes goes to each peer over the
-  next few gossip rounds.
+- **Per tick, per node** — one message carrying the full
+  serialized store goes to a single random peer.  Its size is set
+  by **total state**, not by how much changed since the last tick,
+  so an idle store still pays this each tick; the cost just doesn't
+  grow with write rate.
+- **Scaling knobs** — store size drives the per-message cost and
+  `gossipIntervalMs` drives how often you pay it.  A large store on
+  a fast interval is the expensive combination.
 
 For very-large clusters (50+ nodes), gossip volume can become
 significant.  The framework's gossip is **anti-entropy** style —

@@ -208,13 +208,9 @@ import { Aside } from '@astrojs/starlight/components';
 
 ## ts-pattern as a runtime dependency
 
-ts-pattern is a peer dependency of the framework — you install it
-yourself:
-
-```bash
-bun add ts-pattern
-# or: npm install ts-pattern
-```
+ts-pattern is a regular runtime dependency of the framework —
+it's installed automatically alongside actor-ts, so there's
+nothing extra to add.
 
 The framework doesn't require you to use it; you can write
 `onReceive` as a plain switch.  But every code example in the

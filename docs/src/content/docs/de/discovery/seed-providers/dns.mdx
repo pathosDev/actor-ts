@@ -36,9 +36,14 @@ await Cluster.join(system, clusterOptions);
 
 ```ts
 interface DnsSeedProviderOptionsType {
-  service:    string;     // SRV-Record (oder Hostname für A-Record)
-  port?:      number;     // erforderlich für A-Record-Modus
-  resolver?:  DnsResolver; // Default-Node-DNS überschreiben
+  hostname:    string;   // SRV-Record-Name (oder Hostname für A-Record)
+  systemName:  string;   // wird auf entdeckte Node-Adressen gestempelt
+  port:        number;   // wird im A-Record-Modus mit jeder IP gepaart
+  useSrv?:     boolean;  // SRV-Records (die einen Port tragen) A vorziehen
+  cacheTtlMs?: number;   // In-Process-TTL-Cache; Default 60_000 ms, 0 deaktiviert
+  // DNS-Funktionen überschreiben (Default: node:dns/promises) — v. a. für Tests:
+  resolve?:    (hostname: string) => Promise<string[]>;
+  resolveSrv?: (hostname: string) => Promise<Array<{ name: string; port: number }>>;
 }
 ```
 
@@ -101,20 +106,37 @@ Seed-Kandidaten.
 
 ## DNS-Caching
 
+`lookup()` ist kein Einmal-Aufruf — die Bootstrap-Schicht ruft
+es beim Start auf, und übergeordnete Retry-Logik kann es erneut
+aufrufen.  Damit wiederholte Aufrufe DNS nicht überlasten, hält
+der Provider einen In-Memory-TTL-Cache pro Instanz:
+
 ```ts
-// Der Provider macht EIN Lookup beim Start.  Kein späteres Refresh.
+const dnsSeedProviderOptions = DnsSeedProviderOptions.create()
+  .withHostname('_actor-ts._tcp.example.com')
+  .withSystemName('my-app')
+  .withUseSrv()
+  .withCacheTtlMs(30_000); // Default 60_000 ms; 0 deaktiviert den Cache
 ```
 
+- Aufrufe innerhalb des `cacheTtlMs`-Fensters (Default
+  **60 000 ms**) werden aus dem Cache bedient, ohne DNS zu
+  berühren.
+- Der erste Aufruf nach Ablauf der TTL fragt DNS erneut ab.
+- Ein fehlgeschlagener Lookup wird **nicht** gecacht — er wird
+  beim nächsten Aufruf wiederholt.
+
 Sobald `Cluster.join` fertig ist, übernimmt die Gossip-Schicht
-des Clusters das Membership-Tracking — DNS wird nicht mehr
-konsultiert.  Das heißt:
+des Clusters das Membership-Tracking, sodass DNS nicht mehr auf
+dem heißen Pfad liegt.  Das heißt:
 
 - **Ein Node, der nach dem Start hinzugefügt wird**, ist für
   existierende Peers nicht via DNS sichtbar.  Er joint über
   seinen eigenen DNS-Lookup, kontaktiert einen existierenden
   Seed, Gossip propagiert weiter.
-- **DNS-TTLs spielen für die Cluster-Laufzeit keine Rolle** —
-  nur beim Start.
+- **DNS-Record-TTLs** spielen nur eine Rolle, wenn ein Lookup
+  tatsächlich DNS trifft (Start und Re-Queries nach Ablauf),
+  nicht für die Steady-State-Laufzeit des Clusters.
 
 ## Wann NICHT
 

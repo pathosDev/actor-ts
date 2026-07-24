@@ -249,11 +249,23 @@ explicitly rather than going through the JSON fallback.
 
 ### Streaming responses
 
-The framework doesn't currently support streaming response bodies
-in the route DSL — `HttpResponse.body` is materialized in memory
-before write.  For SSE or chunked responses, use the
-[`SseActor`](/io/sse/) or drop down to the backend's
-native streaming API.
+`HttpResponse.body` accepts a web `ReadableStream<Uint8Array>`, and
+all three backends stream it straight to the client without
+buffering it in memory — Fastify hands the stream to `reply.send`,
+Express pipes it through `Readable.fromWeb`, and Hono returns it as
+a `Response` body.  Return one straight from a handler:
+
+```ts
+get(async (req) => {
+  const rows = streamReport();   // ReadableStream<Uint8Array>
+  return complete(200, rows, { 'content-type': 'text/csv' });
+});
+```
+
+Without an explicit `Content-Type` a stream defaults to
+`application/octet-stream`.  Streams are one-shot, so don't wrap a
+streaming response in the caching middleware.  For SSE, use the
+[`SseActor`](/io/sse/).
 
 import { Aside } from '@astrojs/starlight/components';
 

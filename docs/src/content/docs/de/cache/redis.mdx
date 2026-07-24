@@ -36,11 +36,9 @@ interface RedisCacheOptionsType {
   host?:      string;
   port?:      number;
   password?:  string;
-  username?:  string;
   db?:        number;
   keyPrefix?: string;
-  tls?:       boolean;               // true für `rediss://`
-  cluster?:   ClusterNodes;          // für Redis Cluster
+  client?:    RedisClientLike;       // vorgefertigter ioredis-Client
 }
 ```
 
@@ -108,7 +106,8 @@ const redisCache2Options = RedisCacheOptions.create().withUrl('rediss://redis.ex
 new RedisCache(redisCache2Options);
 ```
 
-URL-Präfix `rediss://` oder explizit `tls: true`.  Cert-
+Das URL-Präfix `rediss://` wählt TLS — oder gib einen
+vorgefertigten TLS-Client via `withClient` mit.  Cert-
 Verifizierung läuft über Nodes TLS-Defaults; für selbstsignierte
 Zertifikate im Dev brauchst du explizite ioredis-TLS-Optionen.
 

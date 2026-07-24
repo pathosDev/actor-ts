@@ -175,12 +175,13 @@ Für größere Codebases mit vielen Event-Typen gibt die
 Event-Formen + ihrer Versionen:
 
 ```ts
-import { SchemaRegistry } from 'actor-ts';
+import { InMemorySchemaRegistry, zodCodec } from 'actor-ts';
 
-const registry = new SchemaRegistry()
-  .add('Deposited', 2)
-  .add('Withdrawn', 1)
-  .add('AccountClosed', 1);
+const registry = new InMemorySchemaRegistry();
+
+registry.register('Deposited', 2, { codec: zodCodec(DepositedV2) });
+registry.register('Withdrawn', 1, { codec: zodCodec(WithdrawnV1) });
+registry.register('AccountClosed', 1, { codec: zodCodec(AccountClosedV1) });
 ```
 
 Optional — Adapter funktionieren ohne sie.  Nützlich, wenn:

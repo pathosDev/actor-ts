@@ -176,8 +176,7 @@ Das Framework publisht mehrere Event-Typen, die du abonnieren kannst:
 | Event | Woher es kommt |
 | --- | --- |
 | `DeadLetter` | Jede an `/deadLetters` geroutete Nachricht wird auch publisht.  Nützlich für "Alarme auf verlorene Nachrichten". |
-| `ClusterEvent` (Subklassen) | `MemberUp`, `MemberRemoved`, `UnreachableMember`, etc.  Siehe [Cluster](/de/cluster/overview/). |
-| `JournalEvent` | Persistierte Events, emittiert von `PersistentActor`s, für `Projection`-Consumer. |
+| `MemberUp`, `MemberRemoved`, `MemberUnreachable`, … | Konkrete Cluster-Mitgliedschaftsevents, publisht von der Cluster-Extension.  Abonniere jede Klasse direkt — `ClusterEvent` ist ein Union-Typ, keine abonnierbare Basisklasse.  Siehe [Cluster](/de/cluster/overview/). |
 | Broker-Events | `BrokerActor`-Subklassen publishen Connect/Disconnect/Lag-Events. |
 
 Siehe die Docs jeder Extension für das volle Event-Vokabular, das

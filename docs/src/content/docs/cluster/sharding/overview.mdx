@@ -115,7 +115,7 @@ The `cartRegion` is a single `ActorRef` from the caller's
 perspective.  Behind the scenes:
 
 1. The region computes a shard from `entityId` (default: hash to
-   one of 100 shards).
+   one of 64 shards).
 2. It asks the coordinator "who owns this shard?"
 3. If the owner is *this* node, it spawns the entity (if not
    already present) and forwards the message.
@@ -146,7 +146,7 @@ interface ShardingOptionsType<TMessage> {
   entityProps:            Props<TMessage>;
   extractEntityId:        (message: TMessage) => string;
   extractEntityMessage?:  (message: TMessage) => unknown;
-  numShards?:             number;             // default 100
+  numShards?:             number;             // default 64
   role?:                  string;             // restrict to nodes carrying this role
   proxy?:                 boolean;            // route-only, no local entities
   rememberEntities?:      boolean;            // re-spawn entities on failover (#)
@@ -160,7 +160,7 @@ interface ShardingOptionsType<TMessage> {
 | `typeName` | A string identifying this sharded type.  Different types can coexist in the same cluster (`cart`, `session`, `order`). |
 | `extractEntityId(message)` | Pull the entity ID from a message.  This is the key that gets hashed to a shard. |
 | `extractEntityMessage(message)` | *(Optional)* If the message envelope contains routing info plus a payload, this strips the envelope before the entity sees it.  Defaults to the message as-is. |
-| `numShards` | How many shards the entity space is divided into.  100 is fine for most clusters; bump to 1000 for very large clusters (>50 nodes). |
+| `numShards` | How many shards the entity space is divided into.  64 is fine for most clusters; bump to 1000 for very large clusters (>50 nodes). |
 | `role` | Only members with this role host shards of this type.  Useful for placing compute-heavy entities on dedicated nodes. |
 | `proxy` | This node *forwards* messages to the region but never hosts entities locally.  Used for client nodes in an asymmetric cluster. |
 | `rememberEntities` | Persist the set of *active* entity IDs.  After a coordinator failover (or full cluster restart), those IDs are spawned eagerly so messages don't have to recreate the entire fleet. |
@@ -173,28 +173,44 @@ matched to your traffic pattern.
 
 ## Passivation
 
-```ts
-import { Passivate, Actor } from 'actor-ts';
+Passivation stops an idle entity to free memory; the next message
+for the same ID re-creates it.  However it is triggered, the region
+buffers messages that arrive while the entity is stopping and
+replays them to the fresh incarnation, so nothing is lost.
 
-class CartActor extends Actor<CartCommand | Passivate> {
-  override onReceive(message): void {
-    if (message instanceof Passivate) {
-      // Optionally do shutdown work, then send the passivate ack.
-      this.context.parent.forEach(p => p.tell({ kind: 'passivate-ack' }));
-      return;
+**Automatic** — when `passivationIdleMs` elapses with no traffic, or
+`maxEntities` is exceeded (the least-recently-used entity is
+evicted), the region stops the entity directly.  Nothing is sent to
+the entity and no acknowledgment is involved.
+
+**Manual (graceful)** — an entity asks its region to passivate it by
+sending a `Passivate` to its parent.  `Passivate` carries a
+*stop-message* that the region forwards back to the entity, so the
+entity decides exactly when and how it shuts down (finish in-flight
+work, flush state, then terminate).  Using `PoisonPill` as the
+stop-message terminates the entity as soon as the region forwards it
+back:
+
+```ts
+import { Passivate, PoisonPill, Actor } from 'actor-ts';
+
+type CartCommand =
+  | { entityId: string; kind: 'add'; sku: string }
+  | { entityId: string; kind: 'checkout' };
+
+class CartActor extends Actor<CartCommand> {
+  private items: string[] = [];
+
+  override onReceive(command: CartCommand): void {
+    if (command.kind === 'add') { this.items.push(command.sku); return; }
+    if (command.kind === 'checkout') {
+      // Done with this cart — ask the region to passivate us.
+      this.context.parent.forEach((parent) =>
+        parent.tell(new Passivate(PoisonPill.instance, this.self), this.self));
     }
-    // ...
   }
 }
 ```
-
-When `passivationIdleMs` is configured (or `maxEntities` is hit),
-the region sends `Passivate` to the entity.  The entity acks; the
-region stops it and ensures buffered messages for the same ID are
-drained to the next incarnation when it spawns.
-
-If you want fully manual control, send the parent a
-`{ kind: 'passivate' }` message yourself.
 
 ## Rebalancing
 

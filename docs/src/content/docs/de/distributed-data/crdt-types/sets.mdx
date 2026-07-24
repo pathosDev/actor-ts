@@ -23,7 +23,7 @@ import { GSet } from 'actor-ts';
 let s = GSet.empty<string>();
 s = s.add('apple');
 s = s.add('banana');
-s.value();   // → Set(['apple', 'banana'])
+s.value();   // → ['apple', 'banana']
 ```
 
 Der State ist ein einfaches Set; Merge ist eine Vereinigung.
@@ -46,7 +46,7 @@ Wenn du Removes brauchst, ist `GSet` die falsche Form; greif zu
 let s = GSet.empty<UserSession>({ identity: (u) => u.id });
 s = s.add({ id: 'user-42', name: 'Alice' });
 s = s.add({ id: 'user-42', name: 'Alice updated' });
-s.value().size;   // → 1 (gleiche Identität)
+s.value().length;   // → 1 (gleiche Identität)
 ```
 
 Standardmäßig werden Elemente per `JSON.stringify(element)`
@@ -63,7 +63,7 @@ let s = ORSet.empty<string>();
 s = s.add('node-a', 'apple');
 s = s.add('node-b', 'banana');
 s = s.remove('apple');
-s.value();   // → Set(['banana'])
+s.value();   // → ['banana']
 ```
 
 Der Trick: jedes `add` stempelt das Element mit einem
@@ -80,7 +80,7 @@ let b0 = a0;                              // beide sehen 'apple' mit demselben T
 let a1 = a0.remove('apple');               // A entfernt
 let b1 = b0.add('b', 'apple');             // B fügt ein NEUES 'apple' hinzu (neuer Tag)
 
-a1.merge(b1).value();   // → Set(['apple'])   — Bs Add überlebt
+a1.merge(b1).value();   // → ['apple']   — Bs Add überlebt
 ```
 
 Das ursprüngliche 'apple' hatte den Tag, den B nie sah, also

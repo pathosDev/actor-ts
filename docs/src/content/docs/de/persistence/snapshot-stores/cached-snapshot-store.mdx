@@ -1,11 +1,12 @@
 ---
 title: Cached-Snapshot-Store
-description: Ein Decorator, der jeden `SnapshotStore` mit einem LRU-Read-Through-Cache einwickelt. Nützlich, wenn der zugrunde liegende Store langsam ist (netzwerk-gemountet, verschlüsselt) und Snapshot-Loads häufig passieren (hohe Actor-Churn).
+description: Ein Decorator, der jeden `SnapshotStore` mit einem TTL-basierten Read-Through-Cache auf Basis eines beliebigen `Cache` (In-Memory, Redis oder Memcached) einwickelt. Nützlich, wenn der zugrunde liegende Store langsam ist (netzwerk-gemountet, verschlüsselt) und Snapshot-Loads häufig passieren (hohe Actor-Churn).
 ---
 
 `CachedSnapshotStore` ist ein **Decorator** — wickle jeden
-`SnapshotStore` ein, um einen In-Process-LRU-Cache für Reads
-hinzuzufügen.
+`SnapshotStore` ein, um einen TTL-basierten Read-Through-Cache
+für `loadLatest` hinzuzufügen, gestützt auf einen beliebigen
+`Cache` (In-Memory, Redis oder Memcached).
 
 ```ts
 import {
@@ -13,12 +14,13 @@ import {
   CachedSnapshotStoreOptions,
   ObjectStorageSnapshotStore,
   ObjectStorageSnapshotStoreOptions,
-  PersistenceExtensionId,
+  ActorSystem,
+  ActorSystemOptions,
 } from 'actor-ts';
 
 const objectStorageSnapshotStoreOptions = ObjectStorageSnapshotStoreOptions.create().withBackend(backend);
 const underlying = new ObjectStorageSnapshotStore(
-  objectStorageSnapshotStoreOptions, // S3-/Filesystem-Backend
+  objectStorageSnapshotStoreOptions, // S3- / Filesystem-Backend
 );
 
 const cachedSnapshotStoreOptions = CachedSnapshotStoreOptions.create()
@@ -29,101 +31,108 @@ const cached = new CachedSnapshotStore(
   cachedSnapshotStoreOptions,        // optionale TTL
 );
 
-system.extension(PersistenceExtensionId).configure({
+const actorSystemOptions = ActorSystemOptions.create().withPersistence({
   journal:       myJournal,
   snapshotStore: cached,
 });
+const system = ActorSystem.create('app', actorSystemOptions);
 ```
 
-## Wann du es brauchst
+## Wann du ihn brauchst
 
 Drei Muster:
 
-1. **Langsamer zugrunde liegender Store** — Object Storage mit
+1. **Langsamer zugrunde liegender Store** — Object-Storage mit
    Multi-Hop-Netzwerklatenz, verschlüsselter State mit teurer
    Entschlüsselung.
-2. **Häufige Actor-Churn** — Sharded Entities, die ständig
-   passivieren / re-spawnen, jeder Load liest denselben Snapshot
-   erneut.
-3. **Recovery-Stürme** — Cluster-weiter Neustart, jeder Actor
-   lädt seinen Snapshot auf einmal.  Der Cache reduziert
-   redundante Loads, wenn derselbe Snapshot während des Sturms
-   abgefragt wird.
+2. **Häufige Actor-Churn** — gesharde Entities, die ständig
+   passivieren / neu spawnen und jeweils denselben Snapshot neu
+   lesen.
+3. **Recovery-Stürme** — Full-Cluster-Restart, jeder Actor lädt
+   seinen Snapshot auf einmal.  Der Cache reduziert redundante
+   Loads, wenn derselbe Snapshot während des Sturms abgefragt
+   wird.
 
 Für lokale SQLite-gestützte Snapshots (Sub-Millisekunden-Reads)
-fügt der Cache Overhead ohne Nutzen hinzu.  **Verwende ihn nur,
-wenn der zugrunde liegende Store messbare Read-Latenz hat.**
+fügt der Cache Overhead ohne Nutzen hinzu.  **Nutze ihn nur, wenn
+der zugrunde liegende Store messbare Read-Latenz hat.**
 
 ## Konfiguration
 
 ```ts
 interface CachedSnapshotStoreOptionsType {
-  underlying: SnapshotStore;
-  maxEntries: number;     // LRU-Kapazität
-  ttlMs?:     number;     // optionale Expiration
+  cache:      Cache;   // Backing-Cache (erforderlich)
+  ttlMs?:     number;  // Cache-TTL in ms, Default 5 Minuten
+  keyPrefix?: string;  // Key-Prefix, Default 'snap:'
 }
 ```
 
 | Feld | Was |
 | --- | --- |
-| `underlying` | Der echte Snapshot-Store, dem der Cache vorgeschaltet ist. |
-| `maxEntries` | Maximale gecachte Einträge.  LRU-Eviction darüber hinaus. |
-| `ttlMs` | Optional — Cache-Einträge dieses Alters droppen.  Nützlich, wenn Snapshots extern gelöscht werden können. |
+| `cache` | Backing-Cache (**erforderlich**) — in Produktion typischerweise Redis.  Jeder `Cache`: In-Memory, Redis oder Memcached. |
+| `ttlMs` | Cache-TTL in Millisekunden.  Default: 5 Minuten. |
+| `keyPrefix` | Key-Prefix (Default `'snap:'`) — verhindert Kollisionen in geteilten Caches. |
+
+Der zugrunde liegende Store ist das **erste Argument** des
+Konstruktors — `new CachedSnapshotStore(underlying, options)` —
+keine Option.
 
 ## Cache-Semantik
 
-- **`loadLatest(persistenceId)`** — Cache prüfen; bei Hit zurückgeben.  Bei
-  Miss vom Underlying laden, das Ergebnis cachen, zurückgeben.
-- **`save(persistenceId, snapshot)`** — durch zum Underlying schreiben, dann
-  den Cache aktualisieren.
-- **`deleteUpTo(persistenceId, seqNr)`** — durchschreiben, den Cache-Eintrag
-  der pid invalidieren.
+- **`loadLatest(persistenceId)`** — Read-Through mit TTL.  Cache prüfen; bei
+  Treffer zurückgeben.  Bei Miss aus dem zugrunde liegenden Store laden, das
+  Ergebnis mit `ttlMs` cachen, zurückgeben.
+- **`save(persistenceId, seq, state)`** — Write-Through-with-Invalidate: an den
+  zugrunde liegenden Store delegieren, dann den Cache-Eintrag **löschen**.  Es
+  schreibt den neuen Snapshot bewusst *nicht* zurück — im Cluster können zwei
+  Knoten beim Save konkurrieren, und ein lokaler Write würde einen veralteten
+  Eintrag hinterlassen.  Der nächste Read füllt neu.
+- **`loadBefore(persistenceId, seq)`** — **nicht gecacht** (zu viele mögliche
+  `seq`-Werte, und selten genutzt — nur bei Recovery).
+- **`delete(persistenceId, toSeq)`** — an den zugrunde liegenden Store
+  delegieren, dann den Cache-Eintrag invalidieren.
 
-Der Cache ist **konsistent mit Writes** — ein Save gefolgt von
-`loadLatest` gibt den gerade gespeicherten Snapshot zurück,
-niemals einen veralteten Wert.
+Nach einem `save` ist der Cache-Eintrag invalidiert, sodass der
+nächste `loadLatest` aus dem zugrunde liegenden Store neu holt und
+den gerade gespeicherten Snapshot zurückgibt.  Die TTL ist das
+Sicherheitsnetz: selbst wenn ein Knoten zwischen dem
+zugrunde-liegenden Write und der Cache-Invalidierung abstürzt,
+läuft der veraltete Eintrag innerhalb von `ttlMs` ab.
 
 ## Performance
 
-Für einen langsamen zugrunde liegenden Store (sagen wir 50 ms pro
-Load) verwandelt der Cache nachfolgende Loads desselben Snapshots
-in Sub-Mikrosekunden-Operationen.  Eine typische
-Sharded-Entity-Workload sieht 80-95 % Hit-Rate nach Warm-up.
+Für einen langsamen zugrunde liegenden Store (etwa 50 ms pro Load)
+macht der Cache nachfolgende Loads desselben Snapshots zu
+Sub-Mikrosekunden-Operationen.  Ein typischer
+Sharded-Entity-Workload sieht nach dem Aufwärmen 80–95 % Trefferquote.
 
-Der Cache selbst ist In-Process — kein geteilter Cache über
-Nodes.  Für einen Cluster aus N Nodes hat jeder seinen eigenen
-Cache; Misses auf einem frischen Node zahlen die vollen
-Underlying-Load-Kosten.
+Der Cache kann **über Knoten geteilt** werden — stütze ihn auf
+Redis oder Memcached, und jeder Knoten liest aus demselben Cache,
+sodass ein auf einem Knoten geladener Snapshot auf allen anderen
+ein Treffer ist.  Stütze ihn stattdessen auf einen In-Memory-Cache,
+behält jeder Knoten seine eigene Kopie; Misses auf einem frischen
+Knoten zahlen die vollen Load-Kosten.
 
-## Stolperfallen
+## Fallstricke
 
 import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="Externe Modifikationen">
   ```ts
-  // Zugrunde liegender Store wird außerhalb des Caches modifiziert (manuelles
-  // SQL-Update, Batch-Backfill) → Cache gibt veraltete Daten zurück
+  // Zugrunde liegender Store außerhalb des Caches geändert (manuelles
+  // SQL-Update, Batch-Backfill) → Cache liefert veraltete Daten
   ```
-  Der Cache geht davon aus, dass **er der einzige Writer ist**.
-  Wenn etwas anderes in den Underlying-Store schreibt, setze eine
-  TTL oder invalidiere manuell.
+  Der Cache nimmt an, **er ist der einzige Writer**.  Schreibt
+  etwas anderes in den zugrunde liegenden Store, setze eine TTL
+  oder invalidiere manuell.
 </Aside>
 
-<Aside type="caution" title="Zu klein dimensioniert">
-  ```ts
-  maxEntries: 100;   // ✗ bei 10 000 aktiven Entities
-  ```
-  Ein zu kleiner Cache thrasht — jeder Load trifft den Cache, dann
-  evictet.  Dimensioniere `maxEntries` mindestens auf die
-  Working-Set-Größe.
-</Aside>
+## Wie geht es weiter
 
-## Wie geht's weiter
-
-- **[Snapshots](/de/persistence/snapshots/)** — die Policy,
-  in deren Dienst das hier steht.
+- **[Snapshots](/de/persistence/snapshots/)** — die Policy, der
+  dies dient.
 - **[Object-Storage-Snapshot-Store](/de/persistence/object-storage/snapshot-store-backend/)** —
-  der häufige langsame zugrunde liegende Store.
+  der übliche langsame zugrunde liegende Store.
 - **[In-Memory-Snapshot-Store](/de/persistence/snapshot-stores/in-memory/)** —
   für Tests.
 - **[SQLite-Snapshot-Store](/de/persistence/snapshot-stores/sqlite/)** —

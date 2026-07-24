@@ -34,9 +34,6 @@ import type { JetStreamOptions, JetStreamOptionsType } from './JetStreamOptions.
  *
  * **Out of scope for v1.**
  *
- *   - **Pull consumers**.  Push is the natural fit for actor-style
- *     fan-out; pull consumers introduce a separate async loop and a
- *     batch-fetch API.  File a follow-up if needed.
  *   - **KV / Object Store**.  Different JetStream sub-APIs; warrant
  *     their own actors.
  *   - **Stream / consumer deletion**.  Actor only ever creates or

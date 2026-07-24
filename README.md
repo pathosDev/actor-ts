@@ -50,11 +50,12 @@ A short tour of what's in the box:
   resolvers, weakly-up, multiple transports (TCP, MessageChannel, in-memory).
 - **Cluster sharding + singleton + pub-sub + reliable delivery + receptionist**
   — production patterns from the actor-model tradition.
-- **Distributed Data** — eight CRDTs (counters, registers, sets, maps) with
+- **Distributed Data** — nine CRDTs (counters, registers, sets, maps) with
   durable-storage backend, quorum reads/writes, automatic gossip.
 - **Persistence** — `PersistentActor`, `DurableState`, snapshots, projections,
   persistence-query, replicated event sourcing.  Journals for in-memory,
-  SQLite (via Bun-SQLite + better-sqlite3), Cassandra / ScyllaDB.
+  SQLite (via Bun-SQLite + better-sqlite3), PostgreSQL, MariaDB,
+  Cassandra / ScyllaDB.
 - **Object storage** — S3 / MinIO / R2 / filesystem with optional gzip/zstd
   compression and client-side AES-256-GCM encryption (per-tenant subkeys via
   HKDF).
@@ -136,23 +137,23 @@ build.
 import { Actor, ActorSystem, Props, type ActorRef } from 'actor-ts';
 import { match } from 'ts-pattern';
 
-type IncCommand = { kind: 'inc' };
-type DecCommand = { kind: 'dec' };
+type IncrementCommand = { kind: 'increment' };
+type DecrementCommand = { kind: 'decrement' };
 type GetCommand = { kind: 'get'; replyTo: ActorRef<number> };
-type Command = IncCommand | DecCommand | GetCommand;
+type Command = IncrementCommand | DecrementCommand | GetCommand;
 
 class Counter extends Actor<Command> {
   private count = 0;
   override onReceive(cmd: Command): void {
     match(cmd)
-      .with({ kind: 'inc' }, () => this.onInc())
-      .with({ kind: 'dec' }, () => this.onDec())
+      .with({ kind: 'increment' }, () => this.onIncrement())
+      .with({ kind: 'decrement' }, () => this.onDecrement())
       .with({ kind: 'get' }, m => this.onGet(m))
       .exhaustive();
   }
 
-  private onInc(): void { this.count++; }
-  private onDec(): void { this.count--; }
+  private onIncrement(): void { this.count++; }
+  private onDecrement(): void { this.count--; }
   private onGet(m: GetCommand): void { m.replyTo.tell(this.count); }
 }
 ```
@@ -170,8 +171,8 @@ import { ActorSystem, Props } from 'actor-ts';
 const system  = ActorSystem.create('demo');
 const counter = system.spawnAnonymous(Props.create(() => new Counter()));
 
-counter.tell({ kind: 'inc' });
-counter.tell({ kind: 'inc' });
+counter.tell({ kind: 'increment' });
+counter.tell({ kind: 'increment' });
 
 const value = await counter.ask<number>({ kind: 'get' }, 5_000);
 console.log(value);  // 2
@@ -186,7 +187,7 @@ the rest of the app sees, every mutation durable.
 ```ts
 import { PersistentActor, ActorSystem, Props } from 'actor-ts';
 
-type Command   = { kind: 'inc' } | { kind: 'dec' };
+type Command   = { kind: 'increment' } | { kind: 'decrement' };
 type Event = { kind: 'incremented' } | { kind: 'decremented' };
 interface State { count: number }
 
@@ -200,7 +201,7 @@ class Counter extends PersistentActor<Command, Event, State> {
   }
   onCommand(_state: State, cmd: Command): void {
     this.persist({
-      kind: cmd.kind === 'inc' ? 'incremented' : 'decremented',
+      kind: cmd.kind === 'increment' ? 'incremented' : 'decremented',
     });
   }
 }
