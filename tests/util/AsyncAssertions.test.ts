@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import { assertCompletesWithin, assertDoesNotCompleteWithin } from './AsyncAssertions.js';
+import { minimumElapsedMs } from './TimerTolerance.js';
 
 describe('assertCompletesWithin', () => {
   test('passes when promise resolves within budget', async () => {
@@ -37,10 +38,14 @@ describe('assertCompletesWithin', () => {
 
 describe('assertDoesNotCompleteWithin', () => {
   test('returns normally after ms when promise stays pending', async () => {
+    const budgetMs = 30;
     const pending = new Promise<number>(() => { /* never */ });
     const t0 = performance.now();
-    await assertDoesNotCompleteWithin(pending, 30, 'expected-pending');
-    expect(performance.now() - t0).toBeGreaterThanOrEqual(25);
+    await assertDoesNotCompleteWithin(pending, budgetMs, 'expected-pending');
+    // Lower bound only, a full timer quantum below the budget: Bun fires a
+    // 30ms setTimeout up to ~11ms early on Windows (#477).  A sub-ms clock
+    // does not help — the timer, not the clock, is early.
+    expect(performance.now() - t0).toBeGreaterThanOrEqual(minimumElapsedMs(budgetMs));
   });
 
   test('rejects when promise settles early', async () => {

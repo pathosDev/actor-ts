@@ -54,7 +54,9 @@ A short tour of what's in the box:
   durable-storage backend, quorum reads/writes, automatic gossip.
 - **Persistence** — `PersistentActor`, `DurableState`, snapshots, projections,
   persistence-query, replicated event sourcing.  Journals for in-memory,
-  SQLite (via Bun-SQLite + better-sqlite3), PostgreSQL, MariaDB,
+  SQLite (built-in driver on every runtime — `bun:sqlite`, `node:sqlite`, or
+  `better-sqlite3`), libSQL / Turso, PostgreSQL, MariaDB,
+  Microsoft SQL Server, MongoDB, DynamoDB, Cloudflare D1,
   Cassandra / ScyllaDB.
 - **Object storage** — S3 / MinIO / R2 / filesystem with optional gzip/zstd
   compression and client-side AES-256-GCM encryption (per-tenant subkeys via

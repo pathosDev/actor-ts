@@ -1,5 +1,6 @@
 import type { ActorSystem } from '../../ActorSystem.js';
 import type { PersistenceExtension } from '../PersistenceExtension.js';
+import { mergeLeafOptions } from '../relational/RelationalPlugin.js';
 import { MariaDbJournal } from './MariaDbJournal.js';
 import type { MariaDbJournalOptionsType } from './MariaDbJournalOptions.js';
 import { MariaDbSnapshotStore } from '../snapshot-stores/MariaDbSnapshotStore.js';
@@ -37,12 +38,10 @@ export function registerMariaDbPlugins(
   options: RegisterMariaDbPluginsOptions,
 ): MariaDbPluginHandles {
   const resolvedOptions = (options as RegisterMariaDbPluginsOptionsType);
-  // Resolve each leaf to a plain object and merge the shared pool (when set)
-  // onto it.  A missing leaf falls back to an empty object so the shared
-  // pool still reaches every store.
-  const journal = { ...((resolvedOptions.journal ?? {}) as Partial<MariaDbJournalOptionsType>), ...(resolvedOptions.pool ? { pool: resolvedOptions.pool } : {}) };
-  const snapshotStore = { ...((resolvedOptions.snapshotStore ?? {}) as Partial<MariaDbSnapshotStoreOptionsType>), ...(resolvedOptions.pool ? { pool: resolvedOptions.pool } : {}) };
-  const durableState = { ...((resolvedOptions.durableStateStore ?? {}) as Partial<MariaDbDurableStateStoreOptionsType>), ...(resolvedOptions.pool ? { pool: resolvedOptions.pool } : {}) };
+  const { pool } = resolvedOptions;
+  const journal = mergeLeafOptions<Partial<MariaDbJournalOptionsType>>(resolvedOptions.journal, { pool });
+  const snapshotStore = mergeLeafOptions<Partial<MariaDbSnapshotStoreOptionsType>>(resolvedOptions.snapshotStore, { pool });
+  const durableState = mergeLeafOptions<Partial<MariaDbDurableStateStoreOptionsType>>(resolvedOptions.durableStateStore, { pool });
   ext.registerJournal(
     MARIADB_JOURNAL_PLUGIN_ID,
     (_system: ActorSystem) => new MariaDbJournal(journal),

@@ -1,0 +1,114 @@
+---
+title: Wire-compatible databases
+description: CockroachDB and YugabyteDB run on the unmodified Postgres stores, because they speak the PostgreSQL wire protocol. What the live suites certify, and the caveats each brings — including CockroachDB's SERIALIZABLE retry errors.
+---
+
+Several distributed databases speak the **PostgreSQL wire protocol**, which
+means the [Postgres backend](/persistence/journals/postgres/) drives them with
+no new code:
+
+| Database | Journal | Snapshot store | Durable state | Certified by |
+| --- | --- | --- | --- | --- |
+| [CockroachDB](https://www.cockroachlabs.com) | ✓ | ✓ | ✓ | `test:integration:cockroachdb` |
+| [YugabyteDB](https://www.yugabyte.com) (YSQL) | ✓ | ✓ | ✓ | `test:integration:yugabytedb` |
+
+There is no `CockroachJournal` and no `YugabyteJournal` — you use
+`PostgresJournal` and point it at the other server:
+
+```ts
+import { PostgresJournal, PostgresJournalOptions } from 'actor-ts';
+
+// CockroachDB
+const cockroachJournalOptions = PostgresJournalOptions.create()
+  .withUrl('postgres://root@localhost:26257/defaultdb?sslmode=verify-full');
+const journal = new PostgresJournal(cockroachJournalOptions);
+```
+
+YugabyteDB serves YSQL on **5433**, not 5432:
+
+```ts
+const yugabyteJournalOptions = PostgresJournalOptions.create()
+  .withUrl('postgres://yugabyte@localhost:5433/yugabyte');
+```
+
+Everything else — `registerPostgresPlugins`, the plugin IDs, the options
+families — is exactly as documented for Postgres.
+
+## Why this works, and why it is tested rather than assumed
+
+Wire compatibility gets you the protocol; it does not automatically get you
+identical *semantics*. Two things in particular could have broken and did not:
+
+- **Error classification.** The journal's optimistic-concurrency backstop
+  translates a duplicate-key failure into `JournalConcurrencyError`. It matches
+  on **SQLSTATE `23505`**, never on message text — which matters because
+  YugabyteDB is known to reword some Postgres error messages
+  ([yugabyte/yugabyte-db#9294](https://github.com/yugabyte/yugabyte-db/issues/9294)).
+  A text-matching implementation would have failed silently there, in the worst
+  possible way: a real conflict surfacing as a generic error.
+- **The SQL itself.** `ON CONFLICT … DO UPDATE`, `GREATEST`, `CREATE INDEX IF
+  NOT EXISTS` and `LIMIT` inside a subquery are all used by the Postgres stores
+  and all accepted by both servers.
+
+Both suites run the **same** contract as the Postgres suite — journal append,
+ranged reads, the compaction high-water mark, tags, snapshot `keepN` pruning,
+durable-state CAS, and racing appends — so a future upstream divergence turns a
+CI job red instead of surfacing in production.
+
+## Caveats
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="CockroachDB: contended appends can report a retry error">
+  CockroachDB runs every transaction at `SERIALIZABLE`. When two writers contend
+  for the same key it may abort one with a **retry error (SQLSTATE `40001`)**
+  rather than a duplicate-key violation — and the journal only classifies
+  `23505`, so a `40001` currently surfaces as a generic `JournalError` instead of
+  `JournalConcurrencyError`.
+
+  Nothing is corrupted: the losing append did not write. But a caller that
+  retries on `JournalConcurrencyError` will not recognise it. If you run a
+  write-contended stream on CockroachDB, either retry on `JournalError` too or
+  serialize writes per persistenceId — cluster sharding already does the latter,
+  which is why this rarely bites in practice.
+</Aside>
+
+<Aside type="caution" title="Distributed write latency">
+  Both databases replicate synchronously by consensus, so a journal append costs
+  a Raft round-trip rather than a local fsync. Snapshot more aggressively than
+  you would on single-node Postgres, and keep the actor system in the same region
+  as the cluster.
+</Aside>
+
+<Aside type="caution" title="Only the certified surface is certified">
+  These suites cover the persistence stores. They do **not** cover the
+  `PersistenceQuery` tag path (the Postgres stores fall back to polling anyway,
+  on any server) or anything outside persistence. Other Postgres-wire databases
+  — Neon, Timescale, AlloyDB, Aurora — very likely work for the same reasons,
+  but "likely" is exactly the word this page exists to remove, so they are not
+  listed above.
+</Aside>
+
+<Aside type="note" title="Version pinning">
+  The suites track each vendor's `latest` tag deliberately, so an upstream
+  regression shows up in the nightly run. Pin your own version in production.
+</Aside>
+
+## Running the suites
+
+```bash
+bun run test:integration:cockroachdb
+bun run test:integration:yugabytedb
+```
+
+Both need Docker. YugabyteDB initializes its system catalogs on first boot and
+takes noticeably longer to become ready than any other image in the matrix; the
+runner waits up to three minutes for it.
+
+## Where to next
+
+- **[PostgreSQL](/persistence/journals/postgres/)** — the backend that serves
+  all of these, and the full options reference.
+- **[Cassandra journal](/persistence/journals/cassandra/)** — if you want a
+  distributed store with a native driver rather than the Postgres protocol.
+- **[Persistence overview](/persistence/overview/)** — the backend matrix.

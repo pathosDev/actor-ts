@@ -1,0 +1,54 @@
+# YugabyteDB wire-compatibility suite (#401).
+#
+# No new backend: this runs the EXISTING Postgres stores against YugabyteDB's
+# YSQL layer, which reuses the PostgreSQL wire protocol and query layer.
+#
+# Yugabyte is the more interesting of the two certifications, because it is
+# known to reword some Postgres error messages (yugabyte/yugabyte-db#9294).
+# That is harmless here precisely because `postgresDialect` classifies a
+# duplicate key by SQLSTATE `23505` and never by message text — this suite is
+# what proves it.
+#
+# Run locally:
+#   bun run test:integration:yugabytedb
+#   bun run test:integration:yugabytedb:teardown
+
+name: actor-ts-integration-yugabytedb
+
+services:
+  yugabytedb:
+    # `latest` deliberately — surface upstream regressions as soon as they ship.
+    image: yugabytedb/yugabyte:latest
+    # `yugabyted` brings up a single-node cluster with YSQL enabled.  Staying in
+    # the foreground is what lets compose manage the lifecycle.
+    command: bin/yugabyted start --daemon=false --background=false
+    healthcheck:
+      # YSQL listens on 5433 (not 5432) and comes up well after the process
+      # starts, so `pg_isready` against that port is the real readiness gate.
+      test: ["CMD-SHELL", "postgres/bin/pg_isready -h 127.0.0.1 -p 5433 -U yugabyte || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 60
+      # Yugabyte's first boot initializes the system catalogs and takes
+      # noticeably longer than any other image in the matrix.
+      start_period: 60s
+    networks:
+      ybnet: {}
+
+  runner:
+    build:
+      context: ../../../..
+      dockerfile: tests/integration/brokers/yugabytedb/Dockerfile.runner
+    depends_on:
+      yugabytedb:
+        condition: service_healthy
+    environment:
+      # The `yugabyte` user and database exist out of the box, without a
+      # password in the default (unauthenticated) configuration.
+      PG_URL: postgres://yugabyte@yugabytedb:5433/yugabyte
+      WIRE_LABEL: yugabytedb
+    networks:
+      ybnet: {}
+
+networks:
+  ybnet: {}

@@ -135,26 +135,35 @@ Runtime automatisch, sodass du `driver` normalerweise ungesetzt
 lässt:
 
 - **Bun** → `bun:sqlite` (eingebaut).
-- **Node** → `better-sqlite3` (Peer-Dependency, die du
-  installierst).
-- **Deno** → noch nicht unterstützt.
+- **Node** → `better-sqlite3`, wenn installiert, sonst das eingebaute
+  `node:sqlite`.
+- **Deno** → `node:sqlite` (eingebaut, Deno >= 2.2).
 
-Die Auto-Detection deckt jede unterstützte Runtime ab.  Die
+Die Auto-Detection deckt jede unterstützte Runtime ab, und jede von
+ihnen hat einen Treiber, der keine Installation braucht.  Die
 konkreten Treiber-Klassen sind nicht Teil der öffentlichen API — es
 gibt keinen Import-Pfad, um selbst einen zu konstruieren — daher ist
 der `driver`-Slot eine interne Naht, die die Tests des Frameworks
 verwenden, nichts, was du in Anwendungscode verdrahtest.
 
-## Peer-Dependency auf Node
+## Peer-Dependency auf Node — optional
 
 ```bash
 npm install better-sqlite3
 ```
 
-Wenn du auf Node läufst, ist `better-sqlite3` eine
-**Peer-Dependency** — das Framework bundlet es nicht, du
-installierst es.  Bun-User brauchen das nicht; Bun hat natives
-SQLite.
+Auf Node ist `better-sqlite3` eine **optionale** Peer-Dependency:
+installiert bevorzugt das Framework es, ohne es übernimmt das
+eingebaute `node:sqlite`.  Es lohnt sich, wenn du den zusätzlichen
+Durchsatz willst oder dein Deployment es schon einsetzt; andernfalls
+ist der Zero-Dependency-Pfad ein nativer Build weniger im Image.
+
+Bun und Deno brauchen nichts: `bun:sqlite` und `node:sqlite` sind
+eingebaut.
+
+Für eine **entfernte** SQLite-Datenbank siehe
+[libSQL / Turso](/de/persistence/journals/libsql/) — gleiches Schema,
+über HTTP erreichbar, und mit einem Durable-State-Store obendrauf.
 
 Die Auto-Detection importiert `better-sqlite3` lazy — nur wenn das
 Framework tatsächlich eine SQLite-Datenbank öffnen muss.  Wenn du
