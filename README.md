@@ -83,6 +83,12 @@ A short tour of what's in the box:
 - **Observability** — Prometheus exporter, OTel tracing, management
   HTTP endpoints (`/health`, `/ready`, `/cluster/members`, `/sharding/regions`),
   out-of-the-box stock metrics.
+- **DevTools** — `DevTools.attach(system)` opens an embedded web UI: live
+  actor tree and mailbox depths, cluster topology and shard distribution,
+  a span flame graph, a per-actor explain plan, time travel over a
+  persistence journal, and a profiler.  Vanilla TypeScript bundled into the
+  package — no UI framework, no CDN.  Loopback-only and unauthenticated by
+  default, and it refuses a routable bind without a gate.
 - **TestKit** — `TestProbe`, `ManualScheduler`, `MultiNodeSpec` for
   deterministic tests including cluster scenarios.
 
@@ -248,6 +254,8 @@ The docs site is the canonical entry point.  Highlights:
   what the actor model gives you that Promise/Worker code doesn't.
 - **[Migrating from Akka / Pekko / Orleans](https://actor-ts.dev/migration/overview/)** —
   for people coming from another actor framework.
+- **[DevTools](https://actor-ts.dev/observability/devtools/overview/)** —
+  attach the embedded UI to a running system and look inside it.
 - **[API reference](https://actor-ts.dev/api/)** —
   every public class, function, type generated from JSDoc.
 
