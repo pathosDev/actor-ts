@@ -67,6 +67,16 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
     (borrowed automatically) or from `DevToolsOptions.replayFolds`; where
     neither exists the event log still works and the panel says why the
     state cannot be derived.  Ships as a panel only — no CLI.  #201
+  - **Profiler panel** — an aggregated flame graph of where the system
+    spends its time, grouped by actor path and message type, plus the
+    heaviest handlers as a table.  Wallclock mode uses the framework's
+    own per-message timings (the ones behind
+    `actor_message_handler_seconds`) and exports speedscope JSON; CPU
+    mode hands back a V8 `.cpuprofile` for Chrome DevTools where
+    `node:inspector` exists, and says so plainly where it does not.  One
+    session at a time, auto-stoppable, and the hook is removed when the
+    session ends or DevTools detaches.  #226
+    With this the DevTools suite (#445) has all five panels.
 - **`replayState()`** (`actor-ts` → `src/persistence/Replay.ts`) — the
   journal fold behind `PersistentActor` recovery, now callable on its own
   against a journal and snapshot store with no `ActorSystem` involved.

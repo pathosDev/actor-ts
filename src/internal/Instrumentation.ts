@@ -64,6 +64,30 @@ export class ExplainRecorder {
   }
 }
 
+/** One completed message handling, as seen by a profiler. */
+export interface DispatchObservation {
+  readonly actorPath: string;
+  /** Constructor name of the actor instance. */
+  readonly className: string;
+  readonly messageType: string;
+  readonly handleTimeMs: number;
+  readonly outcome: MessageOutcome;
+}
+
+/**
+ * Notified after every message an actor finishes handling.
+ *
+ * A system holds at most one — profiling is a whole-system activity
+ * with a single owner, and a chain of observers on the hottest path in
+ * the framework would be a cost nobody asked for.  The observer is
+ * called synchronously, so an implementation must be cheap: anything
+ * slow belongs in an aggregation the observer feeds, not in the
+ * observer itself.
+ */
+export interface DispatchObserver {
+  onMessageProcessed(observation: DispatchObservation): void;
+}
+
 /** A point-in-time description of one actor cell. */
 export interface CellInspection {
   /** Full path, e.g. `actor-ts://system/user/orders/order-42`. */

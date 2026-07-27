@@ -47,6 +47,7 @@ import { ReplayRegistry } from './replay/ReplayRegistry.js';
 import { TimeTravelMethods } from './replay/TimeTravelMethods.js';
 import { PersistenceExtensionId } from '../persistence/PersistenceExtension.js';
 import { MailboxSamplerTap } from './taps/MailboxSamplerTap.js';
+import { ProfilerTap } from './taps/ProfilerTap.js';
 import { SpanTap } from './taps/SpanTap.js';
 import { StatsTap } from './taps/StatsTap.js';
 import { UI_ASSETS } from './generated/uiAssets.js';
@@ -196,6 +197,13 @@ export class DevToolsServer implements DevToolsHubContext {
         settings.spanFlushIntervalMs ?? 250,
       ));
       this.registerPanel({ id: 'tracing', status: 'active' });
+    }
+
+    if (this.isPanelEnabled('profiler')) {
+      const profiler = new ProfilerTap(this.system);
+      this.registerTap(profiler);
+      profiler.installMethods(this);
+      this.registerPanel({ id: 'profiler', status: 'active' });
     }
 
     if (this.isPanelEnabled('time-travel')) {

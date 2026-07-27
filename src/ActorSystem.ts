@@ -17,7 +17,7 @@ import { Props } from './Props.js';
 import { Scheduler } from './Scheduler.js';
 import type { ActorSystemOptions, ActorSystemOptionsType } from './ActorSystemOptions.js';
 import { ActorCell } from './internal/ActorCell.js';
-import type { CellInspection } from './internal/Instrumentation.js';
+import type { CellInspection, DispatchObserver } from './internal/Instrumentation.js';
 import { DeadLetterRef } from './internal/DeadLetterRef.js';
 import { Guardian, systemGuardianStrategy, userGuardianStrategy } from './internal/Guardian.js';
 import { LocalActorRef } from './internal/LocalActorRef.js';
@@ -47,6 +47,15 @@ export class ActorSystem {
   private readonly rootCell: ActorCell<unknown>;
   private readonly userGuardianCell: ActorCell<unknown>;
   private readonly systemGuardianCell: ActorCell<unknown>;
+
+  /**
+   * @internal Profiling hook, `null` unless a profiler is running.
+   *
+   * Read once per message on the dispatch path, so it is a field rather
+   * than an extension lookup.  Single-owner by design — see
+   * {@link DispatchObserver}.
+   */
+  _dispatchObserver: DispatchObserver | null = null;
 
   private _terminating = false;
   private _terminated = false;
@@ -223,6 +232,17 @@ export class ActorSystem {
     };
     visit(this.rootCell);
     return out;
+  }
+
+  /**
+   * @internal Install (or clear, with `null`) the profiling hook.
+   *
+   * Replaces any existing observer: two profilers running at once would
+   * each see half a picture, so the last caller wins and is expected to
+   * put back what it found.
+   */
+  _setDispatchObserver(observer: DispatchObserver | null): void {
+    this._dispatchObserver = observer;
   }
 
   /** @internal — walk the actor tree and return the ref at `segments`. */
