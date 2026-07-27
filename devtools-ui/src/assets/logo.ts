@@ -1,0 +1,40 @@
+/**
+ * The actor-ts wordmark, inline.
+ *
+ * Inlined rather than served as a file so it needs no URL resolution:
+ * DevTools can be mounted at the server root or under a path prefix,
+ * and a markup constant is correct in both without a base-href dance.
+ *
+ * Mirrors `docs/public/logo-header.svg` — the mesh-and-wordmark variant
+ * used in the documentation top nav.  Keep the two in step if the brand
+ * changes; it is a logo, so that is approximately never.
+ */
+export const ACTOR_TS_LOGO_SVG = `
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 514.47 119.03" role="img" aria-label="actor-ts">
+  <defs>
+    <linearGradient id="dt-node-gradient" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#fcd34d"/><stop offset="100%" stop-color="#ef4444"/>
+    </linearGradient>
+    <linearGradient id="dt-edge-gradient" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#6366f1"/><stop offset="100%" stop-color="#06b6d4"/>
+    </linearGradient>
+  </defs>
+  <g fill="none" stroke="url(#dt-edge-gradient)" stroke-width="2.5" stroke-linecap="round">
+    <line x1="33" y1="28" x2="75" y2="10"/><line x1="33" y1="28" x2="11" y2="74"/>
+    <line x1="33" y1="28" x2="81" y2="76"/><line x1="75" y1="10" x2="105" y2="46"/>
+    <line x1="81" y1="76" x2="105" y2="46"/><line x1="11" y1="74" x2="81" y2="76"/>
+    <line x1="11" y1="74" x2="37" y2="108"/><line x1="37" y1="108" x2="81" y2="76"/>
+    <line x1="37" y1="108" x2="89" y2="104"/><line x1="89" y1="104" x2="105" y2="46"/>
+  </g>
+  <g fill="url(#dt-node-gradient)" stroke="#1e293b" stroke-width="1.5">
+    <circle cx="33" cy="28" r="10"/><circle cx="75" cy="10" r="8"/>
+    <circle cx="11" cy="74" r="9"/><circle cx="105" cy="46" r="11"/>
+    <circle cx="81" cy="76" r="9"/><circle cx="37" cy="108" r="8"/>
+    <circle cx="89" cy="104" r="7"/>
+  </g>
+  <g font-family="ui-monospace, 'JetBrains Mono', 'Fira Code', Menlo, monospace" font-weight="700">
+    <text x="130" y="82" font-size="64" fill="#6366f1" letter-spacing="-1">
+      actor<tspan fill="#ef4444">-</tspan><tspan fill="#6366f1">ts</tspan>
+    </text>
+  </g>
+</svg>`.trim();

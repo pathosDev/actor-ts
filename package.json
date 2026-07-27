@@ -26,6 +26,11 @@
       "import": "./dist/testkit/index.js",
       "default": "./dist/testkit/index.js"
     },
+    "./devtools": {
+      "types": "./dist/devtools/index.d.ts",
+      "import": "./dist/devtools/index.js",
+      "default": "./dist/devtools/index.js"
+    },
     "./package.json": "./package.json"
   },
   "files": [
@@ -35,10 +40,12 @@
     "LICENSE"
   ],
   "scripts": {
-    "build": "bunx tsc",
+    "build": "bun run build:ui && bunx tsc",
+    "build:ui": "bun scripts/build-devtools-ui.mjs",
+    "dev:devtools": "bun scripts/devtools-dev.ts",
     "watch": "bunx tsc --watch",
     "clean": "rm -rf dist",
-    "typecheck": "bunx tsc --noEmit",
+    "typecheck": "bunx tsc --noEmit && bunx tsc -p devtools-ui --noEmit",
     "typecheck:dev": "bunx tsc -p tsconfig.dev.json --noEmit",
     "test": "bun test",
     "test:coverage": "bun test --coverage",

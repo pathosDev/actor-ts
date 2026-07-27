@@ -1,0 +1,248 @@
+/*
+ * DevTools design tokens.
+ *
+ * Dark-first on purpose: this is a developer tool that sits open next
+ * to an editor, and `:root` is dark regardless of `prefers-color-scheme`
+ * so it matches that context out of the box.  The toggle in the header
+ * stamps `data-theme="light"` and persists the choice.
+ *
+ * The chrome palette is the one from the documentation site and the
+ * logo — indigo accent on a slate ladder — so the tool looks like part
+ * of the project rather than a bolted-on admin page.  Colour is spent
+ * on DATA, not on furniture: `--dt-data-*` is the categorical ramp for
+ * charts and `--dt-state-*` carries fixed meaning (running, suspended,
+ * failed) so the same status reads the same in every panel.
+ */
+
+:root {
+  color-scheme: dark;
+
+  --dt-bg: #0f172a;             /* slate-900 — page */
+  --dt-bg-elevated: #1e293b;    /* slate-800 — cards, code */
+  --dt-bg-inset: #172033;       /* between page and card — nav rail */
+  --dt-border: #334155;         /* slate-700 */
+  --dt-border-strong: #475569;  /* slate-600 */
+  --dt-text: #cbd5e1;           /* slate-300 — body */
+  --dt-text-strong: #f1f5f9;    /* slate-100 — headings, numbers */
+  --dt-text-muted: #94a3b8;     /* slate-400 — labels */
+  --dt-accent: #818cf8;         /* indigo-400 — bright enough on dark */
+  --dt-accent-strong: #c7d2fe;  /* indigo-200 */
+  --dt-accent-low: #1e1b4b;     /* indigo-950 — hover fill */
+  --dt-shadow: 0 1px 2px rgb(0 0 0 / 40%);
+
+  /* Categorical ramp for charts and series. */
+  --dt-data-1: #818cf8;   /* indigo */
+  --dt-data-2: #22c55e;   /* green  */
+  --dt-data-3: #f59e0b;   /* amber  */
+  --dt-data-4: #ef4444;   /* red    */
+  --dt-data-5: #a855f7;   /* purple */
+  --dt-data-6: #06b6d4;   /* cyan   */
+  --dt-data-7: #ec4899;   /* pink   */
+  --dt-data-8: #84cc16;   /* lime   */
+
+  /* Fixed meanings — never reuse these for series colours. */
+  --dt-state-ok: #22c55e;
+  --dt-state-warn: #f59e0b;
+  --dt-state-error: #ef4444;
+  --dt-state-idle: #64748b;
+
+  --dt-radius: 10px;
+  --dt-gap: 16px;
+  --dt-font: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --dt-font-mono: ui-monospace, 'JetBrains Mono', 'Fira Code', Menlo, monospace;
+}
+
+:root[data-theme='light'] {
+  color-scheme: light;
+
+  --dt-bg: #ffffff;
+  --dt-bg-elevated: #f8fafc;
+  --dt-bg-inset: #f1f5f9;
+  --dt-border: #e2e8f0;
+  --dt-border-strong: #cbd5e1;
+  --dt-text: #334155;
+  --dt-text-strong: #0f172a;
+  --dt-text-muted: #64748b;
+  --dt-accent: #4f46e5;         /* indigo-600 — dark enough on white */
+  --dt-accent-strong: #312e81;
+  --dt-accent-low: #e0e7ff;
+  --dt-shadow: 0 1px 2px rgb(15 23 42 / 8%);
+
+  --dt-data-1: #4f46e5;
+  --dt-data-2: #16a34a;
+  --dt-data-3: #d97706;
+  --dt-data-4: #dc2626;
+  --dt-data-5: #9333ea;
+  --dt-data-6: #0891b2;
+  --dt-data-7: #db2777;
+  --dt-data-8: #65a30d;
+
+  --dt-state-ok: #16a34a;
+  --dt-state-warn: #d97706;
+  --dt-state-error: #dc2626;
+  --dt-state-idle: #94a3b8;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--dt-bg);
+  color: var(--dt-text);
+  font-family: var(--dt-font);
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+a { color: var(--dt-accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+/* ------------------------------- shell -------------------------------- */
+
+.dt-app { display: grid; grid-template-rows: auto 1fr; min-height: 100vh; }
+
+.dt-header {
+  display: flex;
+  align-items: center;
+  gap: var(--dt-gap);
+  padding: 10px 18px;
+  background: var(--dt-bg-inset);
+  border-bottom: 1px solid var(--dt-border);
+}
+.dt-header__logo { display: block; height: 26px; }
+.dt-header__logo svg { height: 100%; width: auto; display: block; }
+.dt-header__system {
+  font-family: var(--dt-font-mono);
+  color: var(--dt-text-strong);
+  font-weight: 600;
+}
+.dt-header__spacer { flex: 1; }
+
+.dt-status { display: inline-flex; align-items: center; gap: 7px; font-size: 12.5px; }
+.dt-status__dot { width: 8px; height: 8px; border-radius: 50%; background: var(--dt-state-idle); }
+.dt-status--open .dt-status__dot { background: var(--dt-state-ok); }
+.dt-status--connecting .dt-status__dot { background: var(--dt-state-warn); }
+.dt-status--closed .dt-status__dot,
+.dt-status--incompatible .dt-status__dot { background: var(--dt-state-error); }
+
+.dt-iconbutton {
+  background: transparent;
+  border: 1px solid var(--dt-border);
+  color: var(--dt-text);
+  border-radius: 8px;
+  padding: 4px 10px;
+  cursor: pointer;
+  font: inherit;
+  font-size: 13px;
+}
+.dt-iconbutton:hover { background: var(--dt-accent-low); border-color: var(--dt-accent); }
+
+.dt-body { display: grid; grid-template-columns: 208px 1fr; min-height: 0; }
+
+.dt-nav {
+  background: var(--dt-bg-inset);
+  border-right: 1px solid var(--dt-border);
+  padding: 12px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.dt-nav__item {
+  display: block;
+  padding: 7px 11px;
+  border-radius: 8px;
+  color: var(--dt-text);
+  font-size: 13.5px;
+}
+.dt-nav__item:hover { background: var(--dt-accent-low); text-decoration: none; }
+.dt-nav__item--current { background: var(--dt-accent-low); color: var(--dt-accent-strong); font-weight: 600; }
+.dt-nav__item--unavailable { color: var(--dt-text-muted); cursor: not-allowed; }
+.dt-nav__item--unavailable:hover { background: transparent; }
+
+.dt-panel { padding: 22px 26px; min-width: 0; }
+.dt-panel__title { margin: 0 0 4px; font-size: 19px; color: var(--dt-text-strong); }
+.dt-panel__subtitle { margin: 0 0 22px; color: var(--dt-text-muted); }
+
+/* ------------------------------ dashboard ----------------------------- */
+
+.dt-tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+  gap: var(--dt-gap);
+  margin-bottom: 28px;
+}
+.dt-tile {
+  background: var(--dt-bg-elevated);
+  border: 1px solid var(--dt-border);
+  border-radius: var(--dt-radius);
+  padding: 13px 15px;
+  box-shadow: var(--dt-shadow);
+}
+.dt-tile__label {
+  font-size: 11.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--dt-text-muted);
+}
+.dt-tile__value {
+  font-family: var(--dt-font-mono);
+  font-size: 22px;
+  color: var(--dt-text-strong);
+  margin-top: 3px;
+  overflow-wrap: anywhere;
+}
+.dt-tile__accent { color: var(--dt-accent); }
+
+.dt-section { margin: 0 0 12px; font-size: 15px; color: var(--dt-text-strong); }
+
+.dt-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+  gap: var(--dt-gap);
+}
+.dt-card {
+  display: block;
+  background: var(--dt-bg-elevated);
+  border: 1px solid var(--dt-border);
+  border-left: 3px solid var(--dt-card-accent, var(--dt-accent));
+  border-radius: var(--dt-radius);
+  padding: 15px 17px;
+  color: var(--dt-text);
+  box-shadow: var(--dt-shadow);
+}
+.dt-card:hover { border-color: var(--dt-accent); text-decoration: none; }
+.dt-card--unavailable {
+  --dt-card-accent: var(--dt-state-idle);
+  opacity: 0.62;
+  cursor: not-allowed;
+}
+.dt-card--unavailable:hover { border-color: var(--dt-border); }
+.dt-card__title { font-weight: 600; color: var(--dt-text-strong); margin-bottom: 3px; }
+.dt-card__text { font-size: 13px; color: var(--dt-text-muted); }
+.dt-card__badge {
+  display: inline-block;
+  margin-top: 9px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: var(--dt-accent-low);
+  color: var(--dt-accent-strong);
+}
+.dt-card__badge--unavailable { background: transparent; border: 1px solid var(--dt-border-strong); color: var(--dt-text-muted); }
+
+/* ------------------------------- notices ------------------------------ */
+
+.dt-notice {
+  border: 1px solid var(--dt-state-error);
+  border-radius: var(--dt-radius);
+  padding: 14px 16px;
+  margin-bottom: var(--dt-gap);
+  background: color-mix(in srgb, var(--dt-state-error) 12%, transparent);
+  color: var(--dt-text-strong);
+}
+.dt-notice__title { font-weight: 600; margin-bottom: 3px; }
+.dt-notice code { font-family: var(--dt-font-mono); }
+
+.dt-empty { color: var(--dt-text-muted); }
