@@ -13,6 +13,12 @@ import {
   LibSqlJournalOptions,
   LibSqlSnapshotStore,
   LibSqlSnapshotStoreOptions,
+  MongoDurableStateStore,
+  MongoDurableStateStoreOptions,
+  MongoJournal,
+  MongoJournalOptions,
+  MongoSnapshotStore,
+  MongoSnapshotStoreOptions,
   MsSqlDurableStateStore,
   MsSqlDurableStateStoreOptions,
   MsSqlJournal,
@@ -47,6 +53,7 @@ import {
 import { FakeCassandraClient } from './FakeCassandraClient.js';
 import { FakeLibSqlClient } from './FakeLibSqlClient.js';
 import { FakeMariaDbPool } from './FakeMariaDbPool.js';
+import { FakeMongoClient } from './FakeMongoClient.js';
 import { FakeMsSqlPool } from './FakeMsSqlPool.js';
 import { FakePgPool } from './FakePgPool.js';
 
@@ -115,6 +122,15 @@ const journalHarnesses: ReadonlyArray<JournalHarness> = [
       const journalOptions = LibSqlJournalOptions.create()
         .withClient(new FakeLibSqlClient());
       return new LibSqlJournal(journalOptions);
+    },
+  },
+  {
+    label: 'MongoJournal',
+    pid: namespacer('mongo'),
+    make: async () => {
+      const journalOptions = MongoJournalOptions.create()
+        .withClient(new FakeMongoClient());
+      return new MongoJournal(journalOptions);
     },
   },
   {
@@ -188,6 +204,16 @@ const snapshotHarnesses: ReadonlyArray<SnapshotHarness> = [
     },
   },
   {
+    label: 'MongoSnapshotStore',
+    pid: namespacer('mongo'),
+    capabilities: { keepN: 'configurable' },
+    make: async (keepN) => {
+      const storeOptions = MongoSnapshotStoreOptions.create()
+        .withClient(new FakeMongoClient());
+      return new MongoSnapshotStore(keepN === undefined ? storeOptions : storeOptions.withKeepN(keepN));
+    },
+  },
+  {
     label: 'MsSqlSnapshotStore',
     pid: namespacer('mssql'),
     capabilities: { keepN: 'configurable' },
@@ -231,6 +257,15 @@ const durableStateHarnesses: ReadonlyArray<DurableStateHarness> = [
       const storeOptions = LibSqlDurableStateStoreOptions.create()
         .withClient(new FakeLibSqlClient());
       return new LibSqlDurableStateStore(storeOptions);
+    },
+  },
+  {
+    label: 'MongoDurableStateStore',
+    pid: namespacer('mongo'),
+    make: async () => {
+      const storeOptions = MongoDurableStateStoreOptions.create()
+        .withClient(new FakeMongoClient());
+      return new MongoDurableStateStore(storeOptions);
     },
   },
   {

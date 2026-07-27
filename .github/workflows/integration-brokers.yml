@@ -71,6 +71,7 @@ jobs:
           - { dir: mariadb,       npm: mariadb,  image: "MariaDB" }
           - { dir: libsql,        npm: libsql,   image: "libSQL (sqld)" }
           - { dir: mssql,         npm: mssql,    image: "SQL Server 2022" }
+          - { dir: mongodb,       npm: mongodb,  image: "MongoDB" }
           # Postgres-wire certifications (#401): the existing Postgres
           # stores against a different server, not new backends.
           - { dir: cockroachdb,   npm: cockroachdb, image: "CockroachDB (pg wire)" }

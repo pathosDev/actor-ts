@@ -119,7 +119,7 @@ import { InMemoryOffsetStore, DurableStateOffsetStore } from 'actor-ts';
 new InMemoryOffsetStore();
 
 // Durable — persist the cursor in any DurableStateStore (Postgres,
-// MariaDB, libSQL, SQL Server, object-storage), so a restart resumes mid-stream:
+// MariaDB, libSQL, SQL Server, MongoDB, object-storage), so a restart resumes mid-stream:
 new DurableStateOffsetStore(durableStateStore);
 ```
 
@@ -129,7 +129,7 @@ projection name + scope.  Implementations:
 - `InMemoryOffsetStore` — fine for tests, useless in production
   (every restart re-processes from the beginning).
 - `DurableStateOffsetStore` — wraps any `DurableStateStore` (Postgres,
-  MariaDB, libSQL, SQL Server, object-storage) so offsets survive restarts.
+  MariaDB, libSQL, SQL Server, MongoDB, object-storage) so offsets survive restarts.
 - Custom — implement `OffsetStore` against your own store (Redis,
   whatever your read-model uses).
 

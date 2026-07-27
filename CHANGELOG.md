@@ -11,6 +11,23 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Added
 
+- **MongoDB persistence backend** (#397) — `MongoJournal`,
+  `MongoSnapshotStore`, `MongoDurableStateStore` and `MongoQuery`, the first
+  document-store backend and the first with an indexed tag query outside the
+  SQL/Cassandra families (a multikey index over the `tags` array).  Optimistic
+  concurrency uses the same two-layer scheme as the relational backends, with a
+  unique compound index on `(persistenceId, sequenceNr)` and server error 11000
+  standing in for a primary key and SQLSTATE 23505.  It needs **no
+  transactions** — appends are contiguous from the head, so a losing writer fails
+  on its first document and writes nothing — which keeps it working on a
+  standalone `mongod` rather than requiring a replica set.  Payloads are stored as
+  JSON text so a document with dotted or `$`-prefixed keys round-trips exactly.
+  **Pin the driver to `mongodb@^6`**: version 7's bundled `bson` calls
+  `v8.startupSnapshot.isBuildingSnapshot()` at module scope, which Bun does not
+  implement, so importing it throws before any framework code runs.
+- **`LazyStore`** — the store lifecycle (lazy connection, memoized init, one-shot
+  schema preparation, ownership-aware teardown) is now shared by the relational
+  and MongoDB families instead of living inside `RelationalStore`.
 - **CockroachDB and YugabyteDB certified on the Postgres stores** (#401).  Both
   speak the PostgreSQL wire protocol, so they need no new backend — but "should
   work" is not the same as verified.  Two live suites now run the full

@@ -56,7 +56,7 @@ A short tour of what's in the box:
   persistence-query, replicated event sourcing.  Journals for in-memory,
   SQLite (built-in driver on every runtime — `bun:sqlite`, `node:sqlite`, or
   `better-sqlite3`), libSQL / Turso, PostgreSQL, MariaDB,
-  Microsoft SQL Server, Cassandra / ScyllaDB.
+  Microsoft SQL Server, MongoDB, Cassandra / ScyllaDB.
 - **Object storage** — S3 / MinIO / R2 / filesystem with optional gzip/zstd
   compression and client-side AES-256-GCM encryption (per-tenant subkeys via
   HKDF).

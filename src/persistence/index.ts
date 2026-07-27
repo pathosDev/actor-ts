@@ -107,6 +107,57 @@ export type {
   PgClientLike,
 } from './journals/PostgresClient.js';
 
+// MongoDB plug-in (journal + snapshot + durable-state + indexed tag query).
+// The first document-store backend: no SqlDialect, but the same two-layer
+// optimistic concurrency, with a unique compound index in place of a primary key.
+export { MongoJournal } from './journals/MongoJournal.js';
+export {
+  MongoJournalOptions,
+  MongoJournalOptionsBuilder,
+  MongoJournalOptionsValidator,
+  MONGO_URL_PROTOCOLS,
+} from './journals/MongoJournalOptions.js';
+export type { MongoJournalOptionsType } from './journals/MongoJournalOptions.js';
+export { MongoSnapshotStore } from './snapshot-stores/MongoSnapshotStore.js';
+export {
+  MongoSnapshotStoreOptions,
+  MongoSnapshotStoreOptionsBuilder,
+  MongoSnapshotStoreOptionsValidator,
+} from './snapshot-stores/MongoSnapshotStoreOptions.js';
+export type { MongoSnapshotStoreOptionsType } from './snapshot-stores/MongoSnapshotStoreOptions.js';
+export { MongoDurableStateStore } from './durable-state-stores/MongoDurableStateStore.js';
+export {
+  MongoDurableStateStoreOptions,
+  MongoDurableStateStoreOptionsBuilder,
+  MongoDurableStateStoreOptionsValidator,
+} from './durable-state-stores/MongoDurableStateStoreOptions.js';
+export type { MongoDurableStateStoreOptionsType } from './durable-state-stores/MongoDurableStateStoreOptions.js';
+export { MongoQuery } from './query/MongoQuery.js';
+export { MongoStore } from './journals/MongoStore.js';
+export type { MongoStoreConfig } from './journals/MongoStore.js';
+export {
+  registerMongoPlugins,
+  MONGO_JOURNAL_PLUGIN_ID,
+  MONGO_SNAPSHOT_PLUGIN_ID,
+  MONGO_DURABLE_STATE_PLUGIN_ID,
+} from './journals/MongoPlugin.js';
+export { RegisterMongoPluginsOptions, RegisterMongoPluginsOptionsBuilder } from './journals/MongoPluginOptions.js';
+export type { RegisterMongoPluginsOptionsType } from './journals/MongoPluginOptions.js';
+export type { MongoPluginHandles } from './journals/MongoPlugin.js';
+export { DEFAULT_MONGO_DATABASE, isMongoDuplicateKeyError } from './journals/MongoClient.js';
+export type {
+  MongoClientLike,
+  MongoCollectionLike,
+  MongoConnection,
+  MongoCursorLike,
+  MongoDatabaseLike,
+  MongoDeleteResult,
+  MongoDocument,
+  MongoResource,
+  MongoSortSpec,
+  MongoUpdateResult,
+} from './journals/MongoClient.js';
+
 // Microsoft SQL Server plug-in (journal + snapshot + durable-state).  The
 // `mssql`/tedious driver is pure JavaScript, so it runs on all three runtimes.
 export { MsSqlJournal } from './journals/MsSqlJournal.js';

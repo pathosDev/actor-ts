@@ -96,6 +96,7 @@ bun add hono @hono/node-server    # @hono/node-server ist Node-only
 | `pg` | PostgreSQL Journal + Snapshot + Durable-State Store. |
 | `mariadb` | MariaDB / MySQL Journal + Snapshot + Durable-State Store. |
 | `mssql` | Microsoft SQL Server Journal + Snapshot + Durable-State Store.  Reiner JavaScript-Treiber (tedious), kein nativer Build-Schritt. |
+| `mongodb` *(auf `^6` pinnen)* | MongoDB Journal + Snapshot + Durable-State Store + indizierte Tag-Query.  Version 7 lässt sich auf Bun nicht importieren — siehe die [MongoDB-Seite](/de/persistence/journals/mongodb/). |
 | `cassandra-driver` | Cassandra / ScyllaDB Journal + Tag-Index. |
 | `@aws-sdk/client-s3` | S3-kompatibles Object-Storage-Backend (funktioniert mit MinIO, R2, Backblaze B2). |
 | `fzstd` *(optional)* | zstd-Kompression für Object-Storage-Blobs, wenn kein nativer Runtime-Support verfügbar ist. |
