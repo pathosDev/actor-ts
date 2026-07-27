@@ -28,6 +28,7 @@
  *   DEVTOOLS_PORT=N     same, via the environment
  */
 import type { ActorSystem } from '../src/index.js';
+import type { Cluster } from '../src/cluster/Cluster.js';
 import { DevTools, DevToolsOptions } from '../src/devtools/index.js';
 
 /** Handle returned by {@link attachDevTools}; inert when DevTools is off. */
@@ -61,6 +62,12 @@ export interface AttachDevToolsOptions {
    * their own copy of this module and would otherwise all claim 9333.
    */
   readonly port?: number;
+  /**
+   * Cluster to inspect.  Without it the cluster panel reports itself as
+   * unavailable — a system cannot hand out its own `Cluster`, so a
+   * clustered example has to pass it, and after `Cluster.join` at that.
+   */
+  readonly cluster?: Cluster;
 }
 
 /**
@@ -76,6 +83,7 @@ export async function attachDevTools(
   if (nextPort === 0) nextPort = readPort();
   const port = options.port ?? nextPort++;
   const devtoolsOptions = DevToolsOptions.create().withPort(port);
+  if (options.cluster !== undefined) devtoolsOptions.withCluster(options.cluster);
   const devtools = await DevTools.attach(system, devtoolsOptions);
 
   console.log(`[devtools] ${system.name} → ${devtools.url}`);
