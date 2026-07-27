@@ -40,12 +40,23 @@ Wire compatibility gets you the protocol; it does not automatically get you
 identical *semantics*. Two things in particular could have broken and did not:
 
 - **Error classification.** The journal's optimistic-concurrency backstop
-  translates a duplicate-key failure into `JournalConcurrencyError`. It matches
-  on **SQLSTATE `23505`**, never on message text — which matters because
-  YugabyteDB is known to reword some Postgres error messages
+  translates a lost write race into `JournalConcurrencyError`. It matches on
+  **SQLSTATE**, never on message text — which matters because YugabyteDB is
+  known to reword some Postgres error messages
   ([yugabyte/yugabyte-db#9294](https://github.com/yugabyte/yugabyte-db/issues/9294)).
   A text-matching implementation would have failed silently there, in the worst
   possible way: a real conflict surfacing as a generic error.
+
+  Matching the code was necessary but, it turned out, not sufficient. Both
+  engines run at `SERIALIZABLE` and abort the losing transaction *before* it
+  reaches the primary key, so they report **`40001` (serialization failure)**
+  where PostgreSQL reports `23505` (unique violation). The stores classify both,
+  but they do not trust a contention abort on its own: an abort proves only that
+  the engine picked a victim, not that anyone else wrote. So they re-read the
+  head and report a conflict only if it actually moved — otherwise an ordinary
+  lock-wait timeout against an unrelated transaction would be relabelled as
+  someone else's append and send the caller into a retry loop against a head
+  that is never going to change.
 - **The SQL itself.** `ON CONFLICT … DO UPDATE`, `GREATEST`, `CREATE INDEX IF
   NOT EXISTS` and `LIMIT` inside a subquery are all used by the Postgres stores
   and all accepted by both servers.
@@ -58,20 +69,6 @@ CI job red instead of surfacing in production.
 ## Caveats
 
 import { Aside } from '@astrojs/starlight/components';
-
-<Aside type="caution" title="CockroachDB: contended appends can report a retry error">
-  CockroachDB runs every transaction at `SERIALIZABLE`. When two writers contend
-  for the same key it may abort one with a **retry error (SQLSTATE `40001`)**
-  rather than a duplicate-key violation — and the journal only classifies
-  `23505`, so a `40001` currently surfaces as a generic `JournalError` instead of
-  `JournalConcurrencyError`.
-
-  Nothing is corrupted: the losing append did not write. But a caller that
-  retries on `JournalConcurrencyError` will not recognise it. If you run a
-  write-contended stream on CockroachDB, either retry on `JournalError` too or
-  serialize writes per persistenceId — cluster sharding already does the latter,
-  which is why this rarely bites in practice.
-</Aside>
 
 <Aside type="caution" title="Distributed write latency">
   Both databases replicate synchronously by consensus, so a journal append costs
