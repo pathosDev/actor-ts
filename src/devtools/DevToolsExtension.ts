@@ -86,6 +86,12 @@ export class DevToolsExtension implements Extension {
       'devtools-detach',
       () => this.detach(),
     );
+    // `system.terminate()` does NOT run CoordinatedShutdown, so the task
+    // above would never fire for the many programs that just terminate.
+    // A debugger attached to a system that no longer exists is useless
+    // and holds a port open, keeping the process alive forever — so
+    // follow the system's own lifetime as well.
+    void this.system.whenTerminated().then(() => this.detach());
     return server;
   }
 }

@@ -131,6 +131,20 @@ describe('DevTools.attach', () => {
     expect(second.port).toBe(first.port);
   });
 
+  test('terminating the system releases the port', async () => {
+    // `system.terminate()` does not run CoordinatedShutdown, so without
+    // an explicit lifetime link the DevTools server would stay bound and
+    // keep the process alive after the system it debugs is gone.
+    const system = newSystem();
+    const devtools = await attach(system);
+    const url = devtools.url;
+    await system.terminate();
+    // The unbind is kicked off from `whenTerminated`, so give it a turn.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(devtoolsOf(system).isAttached()).toBe(false);
+    await expect(fetch(`${url}/api/info`)).rejects.toThrow();
+  });
+
   test('detach releases the port', async () => {
     const system = newSystem();
     const devtools = await attach(system);
