@@ -5,9 +5,10 @@
 #
 # Yugabyte is the more interesting of the two certifications, because it is
 # known to reword some Postgres error messages (yugabyte/yugabyte-db#9294).
-# That is harmless here precisely because `postgresDialect` classifies a
-# duplicate key by SQLSTATE `23505` and never by message text — this suite is
-# what proves it.
+# That is harmless here precisely because `postgresDialect` classifies by
+# SQLSTATE and never by message text — this suite is what proves it.  Matching
+# the code was necessary but not sufficient: at SERIALIZABLE the losing append
+# is aborted as `40001` before it ever reaches the primary key (#479).
 #
 # Run locally:
 #   bun run test:integration:yugabytedb
@@ -25,7 +26,15 @@ services:
     healthcheck:
       # YSQL listens on 5433 (not 5432) and comes up well after the process
       # starts, so `pg_isready` against that port is the real readiness gate.
-      test: ["CMD-SHELL", "postgres/bin/pg_isready -h 127.0.0.1 -p 5433 -U yugabyte || exit 1"]
+      #
+      # Probe the container's OWN address, not 127.0.0.1: `yugabyted` binds
+      # every service to the node's advertise address, so loopback is never
+      # listening and a 127.0.0.1 probe fails forever even once the cluster is
+      # fully up.  That is what happened — the container went `unhealthy` after
+      # a clean "✅ YugabyteDB Started", compose refused to start the runner on
+      # the unmet `service_healthy` condition, and this certification silently
+      # never ran at all while looking like a slow image.
+      test: ["CMD-SHELL", "postgres/bin/pg_isready -h \"$$(hostname -i)\" -p 5433 -U yugabyte || exit 1"]
       interval: 5s
       timeout: 5s
       retries: 60

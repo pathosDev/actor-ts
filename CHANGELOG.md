@@ -359,6 +359,16 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   becoming a retry loop against a head that will never change.
   `RelationalDurableStateStore.upsert` had the identical hole and is fixed
   the same way.
+- **The YugabyteDB certification suite actually runs now** (#401).  Its
+  healthcheck probed `127.0.0.1:5433`, but `yugabyted` binds every service to
+  the node's advertise address, so loopback never listens.  The container went
+  `unhealthy` after a clean startup, compose refused to start the runner on the
+  unmet `service_healthy` condition, and the whole thing read as a slow image
+  rather than a suite that silently never executed.  It probes the container's
+  own address now — and passes all 28 contract scenarios, which makes
+  YugabyteDB's ✓ row in the docs true for the first time.  With that, every one
+  of the eight database suites has run green against a real server: Postgres,
+  MariaDB, libSQL, MSSQL, MongoDB, DynamoDB, CockroachDB, YugabyteDB.
 - **Persistence: the InMemory reference stores now match the cross-backend
   contract** (#390).  `InMemoryJournal.append` ran the optimistic-concurrency
   check even for an empty event batch, so `append(pid, [], staleSeq)` threw
