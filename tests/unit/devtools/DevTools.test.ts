@@ -233,7 +233,9 @@ describe('DevTools tap handshake', () => {
     const frame = await withSocket(devtools.url, async (socket, next) => {
       socket.send(JSON.stringify(helloFrame()));
       await next();
-      socket.send(JSON.stringify({ kind: 'request', requestId: 42, method: 'journal.ids' }));
+      // `profiler.*` lands with #226 — the last namespace with no
+      // handler behind it.
+      socket.send(JSON.stringify({ kind: 'request', requestId: 42, method: 'profiler.start' }));
       return next();
     });
     expect(frame.kind).toBe('error');

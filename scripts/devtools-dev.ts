@@ -23,6 +23,7 @@ import { ClusterOptions } from '../src/cluster/ClusterOptions.js';
 import { InMemoryTransport } from '../src/cluster/Transport.js';
 import { NodeAddress } from '../src/cluster/NodeAddress.js';
 import { tracerOf } from '../src/tracing/TracingExtension.js';
+import { PersistentActor } from '../src/persistence/PersistentActor.js';
 import { DevTools } from '../src/devtools/DevTools.js';
 import { DevToolsOptions } from '../src/devtools/DevToolsOptions.js';
 
@@ -44,6 +45,28 @@ class WorkerActor extends Actor<WorkMessage> {
   }
 }
 
+interface DepositEvent {
+  readonly kind: 'deposited';
+  readonly amount: number;
+}
+
+interface LedgerState {
+  readonly balance: number;
+  readonly deposits: number;
+}
+
+/** Gives the time-travel panel a journal with a growing history. */
+class LedgerActor extends PersistentActor<WorkMessage, DepositEvent, LedgerState> {
+  readonly persistenceId = 'ledger-1';
+  initialState(): LedgerState { return { balance: 0, deposits: 0 }; }
+  onEvent(state: LedgerState, event: DepositEvent): LedgerState {
+    return { balance: state.balance + event.amount, deposits: state.deposits + 1 };
+  }
+  async onCommand(_state: LedgerState, _command: WorkMessage): Promise<void> {
+    await this.persist({ kind: 'deposited', amount: 1 + Math.floor(Math.random() * 20) });
+  }
+}
+
 class SupervisorActor extends Actor<TickMessage> {
   private index = 0;
   /** A short-lived child that has already been stopped. */
@@ -53,6 +76,7 @@ class SupervisorActor extends Actor<TickMessage> {
     for (let i = 0; i < 4; i++) {
       this.context.spawn(Props.create(() => new WorkerActor()), `worker-${i}`);
     }
+    this.context.spawn(Props.create(() => new LedgerActor()), 'ledger');
     this.context.timers.startTimerWithFixedDelay('tick', { kind: 'tick', index: 0 }, 500, 500);
   }
 
@@ -71,6 +95,14 @@ class SupervisorActor extends Actor<TickMessage> {
       }
     });
     root.end();
+
+    // Every other tick, append to the journal so the time-travel panel
+    // has a history that grows while you watch it.
+    if (this.index % 2 === 0) {
+      this.context.child('ledger').forEach((ledger) => {
+        ledger.tell({ kind: 'work', payload: 'deposit' } as never);
+      });
+    }
 
     // Churn a short-lived child so the lifecycle counters, the tree and
     // their sparklines actually move; a static tree tells you nothing

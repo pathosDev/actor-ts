@@ -280,6 +280,18 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
   }
 
   /**
+   * @internal The actor instance, or `null` before creation.
+   *
+   * For introspection that has to ask what KIND of actor this is —
+   * the time-travel panel derives a replay fold from a live
+   * `PersistentActor` this way.  Callers must not retain it: the
+   * instance is replaced on every restart.
+   */
+  _actorForInspection(): Actor<TMessage> | null {
+    return this.actor;
+  }
+
+  /**
    * @internal Iterate the child cells.
    *
    * `children` returns refs, which cannot be walked further — a tree

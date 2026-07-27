@@ -43,6 +43,9 @@ import { uiAssetRoutes } from './UiAssetRoutes.js';
 import { ActorTreeTap } from './taps/ActorTreeTap.js';
 import { ClusterTap } from './taps/ClusterTap.js';
 import { ExplainMethods } from './taps/ExplainTap.js';
+import { ReplayRegistry } from './replay/ReplayRegistry.js';
+import { TimeTravelMethods } from './replay/TimeTravelMethods.js';
+import { PersistenceExtensionId } from '../persistence/PersistenceExtension.js';
 import { MailboxSamplerTap } from './taps/MailboxSamplerTap.js';
 import { SpanTap } from './taps/SpanTap.js';
 import { StatsTap } from './taps/StatsTap.js';
@@ -193,6 +196,16 @@ export class DevToolsServer implements DevToolsHubContext {
         settings.spanFlushIntervalMs ?? 250,
       ));
       this.registerPanel({ id: 'tracing', status: 'active' });
+    }
+
+    if (this.isPanelEnabled('time-travel')) {
+      const registry = new ReplayRegistry(
+        this.system,
+        settings.replayFolds ?? [],
+        settings.replayAutoCapture !== false,
+      );
+      new TimeTravelMethods(this.system.extension(PersistenceExtensionId), registry).install(this);
+      this.registerPanel({ id: 'time-travel', status: 'active' });
     }
 
     if (this.isPanelEnabled('cluster')) {
