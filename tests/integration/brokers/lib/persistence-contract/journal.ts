@@ -88,9 +88,6 @@ export function journalContractScenarios(): ContractScenario<JournalHarness>[] {
     },
     {
       name: 'concurrent appends at the same expectedSeq leave exactly one winner',
-      skip: (harness) => (harness.capabilities?.serializesConcurrentAppends === false
-        ? 'store does not serialize racing appends'
-        : null),
       async run(harness) {
         const journal = await harness.make();
         const persistenceId = harness.pid('race');
