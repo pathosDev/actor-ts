@@ -2,7 +2,10 @@
 # Marked generated so reviews collapse it and diffs stay readable; the
 # file is committed on purpose (see scripts/build-devtools-ui.mjs) so
 # typecheck, tests and smoke runs work straight from a fresh clone.
-src/devtools/generated/uiAssets.ts linguist-generated -diff
+# `eol=lf` matters as much as the rest: the build writes LF, so without
+# it a CRLF checkout reports the file as modified after every build and
+# the freshness check can never pass on Windows.
+src/devtools/generated/uiAssets.ts linguist-generated -diff text eol=lf
 
 # The DevTools UI sources are embedded verbatim into the generated
 # bundle above, so their bytes must not depend on a checkout's
