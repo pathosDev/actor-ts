@@ -6,6 +6,7 @@
  */
 import { match } from 'ts-pattern';
 import { Actor, ActorSystem, Props } from '../src/index.js';
+import { attachDevTools } from './devtools.js';
 
 type PingMessage = { kind: 'ping'; n: number };
 type PongMessage = { kind: 'pong'; n: number };
@@ -54,6 +55,7 @@ class Ponger extends Actor<PingPong> {
 
 async function main(): Promise<void> {
   const system = ActorSystem.create('ping-pong');
+  const devtools = await attachDevTools(system);
 
   const ponger = system.spawn(Props.create(() => new Ponger()), 'ponger');
   const pinger = system.spawn(Props.create(() => new Pinger(() => ponger)), 'pinger');
@@ -62,6 +64,7 @@ async function main(): Promise<void> {
 
   // Let them finish, then clean up.
   await new Promise(resolve => setTimeout(resolve, 100));
+  await devtools.holdOpen();
   await system.terminate();
 }
 

@@ -30,6 +30,7 @@ import {
   zodCodec,
   type ParserLike,
 } from '../../src/index.js';
+import { attachDevTools } from '../devtools.js';
 
 /* ------------------- Domain types (three versions) ------------------- */
 
@@ -112,6 +113,7 @@ async function main(): Promise<void> {
   const journal = new InMemoryJournal();
   const sysOptions = ActorSystemOptions.create().withPersistence({ journal });
   const sys = ActorSystem.create('schema-registry-demo', sysOptions);
+  const devtools = await attachDevTools(sys);
 
   // Pre-seed the journal with a v1-shaped event (representing data
   // written before the schema evolved) — wrapped in the standard
@@ -129,6 +131,7 @@ async function main(): Promise<void> {
   state = await ref.ask<AccountState>({ kind: 'deposit', cents: 250 }, 1_000);
   console.log('after deposit:', state);
 
+  await devtools.holdOpen();
   await sys.terminate();
 }
 

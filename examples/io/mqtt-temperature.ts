@@ -32,6 +32,7 @@ import {
   Props,
   type MqttMessage,
 } from '../../src/index.js';
+import { attachDevTools } from '../devtools.js';
 
 type Reading = { sensor: string; celsius: number };
 
@@ -89,6 +90,7 @@ async function main(): Promise<void> {
       },
     });
   const system = ActorSystem.create('mqtt-demo', systemOptions);
+  const devtools = await attachDevTools(system);
 
   system.spawn(
     Props.create(() => new TemperatureHub(MqttOptions.create())),
@@ -96,6 +98,7 @@ async function main(): Promise<void> {
   );
 
   await Bun.sleep(3_000);
+  await devtools.holdOpen();
   await system.terminate();
 }
 

@@ -32,6 +32,7 @@ import {
   type JetStreamMessage,
 } from '../../src/index.js';
 import type { ActorRef } from '../../src/index.js';
+import { attachDevTools } from '../devtools.js';
 
 interface Order { orderId: string; amount: number }
 
@@ -67,6 +68,7 @@ async function db_insertOrder(o: Order): Promise<void> {
 
 async function main(): Promise<void> {
   const system = ActorSystem.create('js-orders-demo');
+  const devtools = await attachDevTools(system);
   let js!: ActorRef<JetStreamCommand>;
 
   const processor = system.spawn(

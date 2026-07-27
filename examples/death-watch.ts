@@ -4,6 +4,7 @@
  *   tsx examples/death-watch.ts
  */
 import { Actor, ActorSystem, Props, Terminated } from '../src/index.js';
+import { attachDevTools } from './devtools.js';
 
 class Child extends Actor<'work' | 'die'> {
   override onReceive(message: 'work' | 'die'): void {
@@ -39,11 +40,13 @@ class Watcher extends Actor<'start' | 'kill' | Terminated> {
 
 async function main(): Promise<void> {
   const system = ActorSystem.create('death-watch');
+  const devtools = await attachDevTools(system);
   const watcher = system.spawn(Props.create(() => new Watcher()), 'watcher');
   watcher.tell('start');
   await new Promise(resolve => setTimeout(resolve, 40));
   watcher.tell('kill');
   await new Promise(resolve => setTimeout(resolve, 80));
+  await devtools.holdOpen();
   await system.terminate();
 }
 

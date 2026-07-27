@@ -32,6 +32,15 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   - The UI is vanilla TypeScript bundled at build time and embedded in the
     package — no UI framework in the dependency tree, no CDN loads, no
     filesystem access at runtime.
+  - **Every example is wired for it**, opt-in via `DEVTOOLS=1` (see
+    `examples/devtools.ts`).  Short-lived example scripts park just before
+    shutdown so there is time to open a browser; multi-system examples give
+    each system its own port counting up from `DEVTOOLS_PORT`.  Without the
+    flag their timing and output are unchanged.
+  - A DevTools attachment now ends with the system it debugs:
+    `system.terminate()` releases the port even though it does not run
+    `CoordinatedShutdown`.  Previously a terminated system left the server
+    bound, keeping the process alive.
 - **`PersistenceExtension.configure({ journal?, snapshotStore? })`** — a thin
   convenience over `setJournal` / `setSnapshotStore` for tests and simple,
   single-backend apps that wire persistence directly in code.  (The docs

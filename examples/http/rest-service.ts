@@ -28,6 +28,7 @@ import {
   post,
   put,
 } from '../../src/index.js';
+import { attachDevTools } from '../devtools.js';
 
 interface User { readonly id: string; readonly name: string; readonly email: string; }
 
@@ -69,6 +70,7 @@ class UserEntity extends Actor<UserCommand> {
 
 async function main(): Promise<void> {
   const system = ActorSystem.create('rest-service');
+  const devtools = await attachDevTools(system);
   const clusterOptions = ClusterOptions.create()
     .withHost('127.0.0.1')
     .withPort(2552);

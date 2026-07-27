@@ -52,6 +52,7 @@ import {
 import { SessionStore } from './auth/sessionStore.js';
 import { VoicePresenceActor } from './actors/VoicePresenceActor.js';
 import { httpIngressProps } from './actors/HttpIngressActor.js';
+import { attachDevTools } from '../../devtools.js';
 
 async function main(): Promise<void> {
   const config = parseArguments(process.argv.slice(2));
@@ -81,6 +82,7 @@ async function main(): Promise<void> {
   );
   const systemOptions = ActorSystemOptions.create().withConfigFile(configFile);
   const system = ActorSystem.create(SYSTEM_NAME, systemOptions);
+  const devtools = await attachDevTools(system);
   const seedSummary = seeds.length > 0
     ? ` · seeds=[${seeds.join(',')}]`
     : ' · bootstrap (no seeds)';

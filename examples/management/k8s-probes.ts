@@ -20,9 +20,11 @@ import {
   NodeAddress,
   managementRoutes,
 } from '../../src/index.js';
+import { attachDevTools } from '../devtools.js';
 
 async function main(): Promise<void> {
   const system = ActorSystem.create('k8s-probes');
+  const devtools = await attachDevTools(system);
   const clusterOptions = ClusterOptions.create()
     .withHost('pod')
     .withPort(2552)

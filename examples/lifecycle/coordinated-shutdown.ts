@@ -13,6 +13,7 @@ import {
   Props,
   UnknownReason,
 } from '../../src/index.js';
+import { attachDevTools } from '../devtools.js';
 
 class Worker extends Actor<'tick'> {
   override preStart(): void {
@@ -28,6 +29,7 @@ class Worker extends Actor<'tick'> {
 
 async function main(): Promise<void> {
   const system = ActorSystem.create('cs-demo');
+  const devtools = await attachDevTools(system);
   const cs = system.extension(CoordinatedShutdownId);
 
   // Register tasks across several phases so the ordering becomes visible.
@@ -51,6 +53,10 @@ async function main(): Promise<void> {
 
   system.spawn(Props.create(() => new Worker()), 'worker');
   await new Promise(r => setTimeout(r, 150));
+
+  // DevTools registers its own ServiceUnbind task, so `cs.run()` below
+  // also tears the UI down — visible in the phase output.
+  await devtools.holdOpen();
 
   console.log('--- cs.run() ---');
   await cs.run(UnknownReason.instance);

@@ -36,9 +36,11 @@ import {
   securityHeaders,
   withMiddleware,
 } from '../../src/index.js';
+import { attachDevTools } from '../devtools.js';
 
 async function main(): Promise<void> {
   const system = ActorSystem.create('secure-service');
+  const devtools = await attachDevTools(system);
 
   const corsOptions = CorsOptions.create()
     .withOrigins('https://app.example')

@@ -18,6 +18,7 @@ import {
   websocket,
   websocketSend,
 } from '../../src/index.js';
+import { attachDevTools } from '../devtools.js';
 
 type Up = { kind: 'tick'; n: number };   // client → server
 type Down = { kind: 'ack'; n: number };  // server → client
@@ -41,6 +42,7 @@ const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms
 
 async function main(): Promise<void> {
   const system = ActorSystem.create('ws-feed-demo');
+  const devtools = await attachDevTools(system);
 
   const server = system.spawn(Props.create(() => new EchoServer()), 'echo');
   const binding = await system.extension(HttpExtensionId).newServerAt('127.0.0.1', 0).bind(websocket('/ws', server));
@@ -56,6 +58,7 @@ async function main(): Promise<void> {
 
   await sleep(400);
   await binding.unbind();
+  await devtools.holdOpen();
   await system.terminate();
 }
 

@@ -26,6 +26,7 @@ import {
   websocket,
   type WebsocketConnection,
 } from '../../src/index.js';
+import { attachDevTools } from '../devtools.js';
 
 type SetNameMessage = { kind: 'setName'; name: string };
 type SayMessage = { kind: 'say'; text: string };
@@ -72,6 +73,7 @@ class ChatRoom extends WebsocketServerActor<ServerMessage, ClientMessage> {
 
 async function main(): Promise<void> {
   const system = ActorSystem.create('ws-server-demo');
+  const devtools = await attachDevTools(system);
   const chat = system.spawn(Props.create(() => new ChatRoom()), 'chat');
 
   const routes = concat(

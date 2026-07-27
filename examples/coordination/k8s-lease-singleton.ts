@@ -40,6 +40,7 @@ import {
 } from '../../src/index.js';
 import { KubernetesLease } from '../../src/coordination/leases/KubernetesLease.js';
 import { KubernetesLeaseOptions } from '../../src/coordination/leases/KubernetesLeaseOptions.js';
+import { attachDevTools } from '../devtools.js';
 
 const NAMESPACE = process.env.K8S_NAMESPACE ?? 'default';
 const POD_NAME = process.env.HOSTNAME ?? `local-${process.pid}`;
@@ -65,6 +66,7 @@ class CronActor extends Actor<{ kind: 'tick' }> {
 
 async function main(): Promise<void> {
   const system = ActorSystem.create('app');
+  const devtools = await attachDevTools(system);
 
   // The cluster is what drives leader election; the lease arbitrates
   // ties under split-brain.  In a real deploy you'd point seeds at

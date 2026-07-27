@@ -26,11 +26,13 @@ import {
   path,
   post,
 } from '../../src/index.js';
+import { attachDevTools } from '../devtools.js';
 
 interface User { readonly id: string; readonly name: string; }
 
 async function main(): Promise<void> {
   const system = ActorSystem.create('express-demo');
+  const devtools = await attachDevTools(system);
 
   const users = new Map<string, User>();
 

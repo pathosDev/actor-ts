@@ -35,6 +35,7 @@ import {
   TracingExtensionId,
   otelTracer, OtelAdapterOptions,
 } from '../../src/index.js';
+import { attachDevTools } from '../devtools.js';
 
 // 1. Bring up the OTel SDK with the OTLP exporter.  Loaded lazily so
 //    the framework build still works without the peer deps installed.
@@ -42,6 +43,7 @@ const { api, shutdown } = await initOtel();
 
 // 2. Wire the framework's tracing extension to the OTel API namespace.
 const system = ActorSystem.create('actor-ts-voice-demo');
+const devtools = await attachDevTools(system);
 const otelAdapterOptions = OtelAdapterOptions.create()
   .withApi(api)
   .withTracerName('actor-ts')

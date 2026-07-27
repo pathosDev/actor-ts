@@ -22,6 +22,7 @@ import {
   BackoffSupervisor,
   Props,
 } from '../../src/index.js';
+import { attachDevTools } from '../devtools.js';
 
 type Command =
   | { kind: 'fetch'; id: number }
@@ -52,6 +53,7 @@ class FlakyConnector extends Actor<Command> {
 
 async function main(): Promise<void> {
   const system = ActorSystem.create('backoff-demo');
+  const devtools = await attachDevTools(system);
 
   const supervisor = system.spawn(
     BackoffSupervisor.props({
@@ -91,6 +93,7 @@ async function main(): Promise<void> {
   console.log('client ← got:', replies);
 
   supervisor.stop();
+  await devtools.holdOpen();
   await system.terminate();
 }
 

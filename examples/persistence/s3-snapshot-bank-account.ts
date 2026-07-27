@@ -45,6 +45,7 @@ import type {
   EncryptionConfig,
   ObjectStorageBackendSpec,
 } from '../../src/index.js';
+import { attachDevTools } from '../devtools.js';
 
 type DepositCommand = { kind: 'deposit'; amount: number };
 type WithdrawCommand = { kind: 'withdraw'; amount: number };
@@ -160,6 +161,7 @@ async function main(): Promise<void> {
     })
     .withPersistence({ journal });
   const sys1 = ActorSystem.create('bank-s3', sys1Options);
+  const devtools = await attachDevTools(sys1);
   const snapshotPluginOptions = ObjectStoragePluginOptions.create()
     .withBackend(spec)
     .withPrefix('env-prod/snapshots/')
@@ -178,6 +180,7 @@ async function main(): Promise<void> {
   }
   console.log('withdraw 60 →', await acct1.ask({ kind: 'withdraw', amount: 60 }, 500));
   console.log('balance     →', await acct1.ask({ kind: 'balance' }, 500));
+  await devtools.holdOpen();
   await sys1.terminate();
 
   // --- second incarnation: recover from the same journal + snapshot bucket ---
@@ -191,12 +194,14 @@ async function main(): Promise<void> {
     })
     .withPersistence({ journal });
   const sys2 = ActorSystem.create('bank-s3-restart', sys2Options);
+  const secondDevtools = await attachDevTools(sys2);
   const restartSnapshotPluginOptions = ObjectStoragePluginOptions.create()
     .withBackend(spec)
     .withPrefix('env-prod/snapshots/');
   await registerObjectStoragePlugins(sys2.extension(PersistenceExtensionId), restartSnapshotPluginOptions);
   const acct2 = sys2.spawn(Props.create(() => new Account('alice')), 'alice');
   console.log('after restart, balance →', await acct2.ask({ kind: 'balance' }, 500));
+  await secondDevtools.holdOpen();
   await sys2.terminate();
 
   cleanup();
