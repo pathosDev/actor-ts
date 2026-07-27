@@ -4,21 +4,28 @@
  * Every example can be inspected in the DevTools UI, but none of them
  * pay for it by default:
  *
- *     bun run examples/hello-world.ts               # unchanged
- *     DEVTOOLS=1 bun run examples/hello-world.ts    # + http://127.0.0.1:9333
+ *     bun run examples/hello-world.ts              # unchanged
+ *     bun run examples/hello-world.ts --devtools   # + http://127.0.0.1:9333
+ *
+ * The `--devtools` argument works in every shell.  `DEVTOOLS=1` does the
+ * same on a POSIX shell, but `VAR=value command` is a parser error in
+ * PowerShell — which is most Windows contributors — so the flag is the
+ * form worth leading with.
  *
  * Most examples are scripts that finish in a few hundred milliseconds —
  * far too fast to open a browser.  {@link ExampleDevTools.holdOpen}
- * solves that: with `DEVTOOLS=1` it parks the example just before
- * shutdown so you can actually look at it, and without the flag it
- * returns immediately, leaving the example's timing exactly as it was.
+ * solves that: when enabled it parks the example just before shutdown so
+ * you can actually look at it, and when not it returns immediately,
+ * leaving the example's timing exactly as it was.
  *
  * Multi-system examples (cluster demos, two-node persistence) call
  * `attachDevTools` per system and each gets its own port, counting up
  * from `DEVTOOLS_PORT` — so a three-node cluster is 9333, 9334, 9335.
  *
- *   DEVTOOLS=1        enable
- *   DEVTOOLS_PORT     first port to use (default 9333)
+ *   --devtools          enable (any shell)
+ *   DEVTOOLS=1          enable (POSIX shells)
+ *   --devtools-port=N   first port to use (default 9333)
+ *   DEVTOOLS_PORT=N     same, via the environment
  */
 import type { ActorSystem } from '../src/index.js';
 import { DevTools, DevToolsOptions } from '../src/devtools/index.js';
@@ -80,14 +87,34 @@ export async function attachDevTools(
 }
 
 function isEnabled(): boolean {
+  // The argument first: it is the form that works in every shell.
+  if (commandLineArguments().includes('--devtools')) return true;
   const flag = readEnvironment('DEVTOOLS');
   return flag !== undefined && flag !== '' && flag !== '0' && flag.toLowerCase() !== 'false';
 }
 
 function readPort(): number {
-  const raw = readEnvironment('DEVTOOLS_PORT');
+  const raw = argumentValue('--devtools-port') ?? readEnvironment('DEVTOOLS_PORT');
   const parsed = raw === undefined ? Number.NaN : Number.parseInt(raw, 10);
   return Number.isInteger(parsed) && parsed >= 0 && parsed <= 65535 ? parsed : 9333;
+}
+
+/** `--devtools-port=9400` or `--devtools-port 9400`. */
+function argumentValue(name: string): string | undefined {
+  const argv = commandLineArguments();
+  const inline = argv.find((argument) => argument.startsWith(`${name}=`));
+  if (inline !== undefined) return inline.slice(name.length + 1);
+  const index = argv.indexOf(name);
+  return index >= 0 ? argv[index + 1] : undefined;
+}
+
+/** Command-line arguments on Bun, Node and Deno alike. */
+function commandLineArguments(): ReadonlyArray<string> {
+  const scope = globalThis as {
+    process?: { argv?: string[] };
+    Deno?: { args?: string[] };
+  };
+  return scope.Deno?.args ?? scope.process?.argv?.slice(2) ?? [];
 }
 
 /** Read an environment variable on Bun, Node and Deno alike. */
