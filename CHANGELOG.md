@@ -11,6 +11,27 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Added
 
+- **DevTools — embeddable web UI for a running system** (`actor-ts/devtools`,
+  new `"./devtools"` subpath export).  `DevTools.attach(system, options)` binds
+  a small server whose dashboard shows the system at a glance and links into
+  one panel per tool; `DevTools.mount(system)` returns the routes for an
+  existing server instead.  This first drop is the foundation — the versioned
+  tap protocol, the WebSocket hub and the UI shell with its dashboard.  The
+  panels themselves (actor tree + cluster, tracing, explain plan, time travel,
+  profiler) follow, and the UI already lists them, marking each unavailable
+  with a reason until it lands.  #445
+  - **Security:** binds `127.0.0.1` unauthenticated by default, and
+    `DevToolsOptions` *refuses* a routable bind unless `auth`, `ipAllowlist`
+    or an explicit `allowRemote: true` is present — DevTools reads live actor
+    state, so exposing it cannot be the result of a typo.  Auth and the IP
+    allowlist wrap the UI, the JSON endpoints and the WebSocket upgrade alike.
+    Individual panels can be switched off via `withPanels({ … })`.
+  - Creating the extension does nothing: no port, no taps, no instrumentation
+    until `attach()`, and each panel's collection runs only while a browser is
+    subscribed to it.
+  - The UI is vanilla TypeScript bundled at build time and embedded in the
+    package — no UI framework in the dependency tree, no CDN loads, no
+    filesystem access at runtime.
 - **`PersistenceExtension.configure({ journal?, snapshotStore? })`** — a thin
   convenience over `setJournal` / `setSnapshotStore` for tests and simple,
   single-backend apps that wire persistence directly in code.  (The docs

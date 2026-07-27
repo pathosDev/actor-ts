@@ -56,7 +56,7 @@ class SupervisorActor extends Actor<TickMessage> {
   }
 }
 
-const system = new ActorSystem('devtools-playground');
+const system = ActorSystem.create('devtools-playground');
 system.spawn(Props.create(() => new SupervisorActor()), 'supervisor');
 
 const devtoolsOptions = DevToolsOptions.create()

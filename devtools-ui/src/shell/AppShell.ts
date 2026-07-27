@@ -74,9 +74,17 @@ function renderNavigation(navigation: HTMLElement, tap: TapClient): void {
     const classes = ['dt-nav__item'];
     if (panel.id === active) classes.push('dt-nav__item--current');
     if (!usable) classes.push('dt-nav__item--unavailable');
-    return usable
-      ? h('a', { class: classes.join(' '), href: panelHref(panel.id) }, panel.title)
-      : h('span', { class: classes.join(' '), title: descriptor.reason ?? '' }, panel.title);
+    if (usable) return h('a', { class: classes.join(' '), href: panelHref(panel.id) }, panel.title);
+    // `title` alone would BECOME the accessible name, so a screen
+    // reader would announce the reason and never the panel.  Spell out
+    // both, in that order.
+    const reason = descriptor.reason ?? 'not available';
+    return h('span', {
+      class: classes.join(' '),
+      title: reason,
+      'aria-label': `${panel.title} — ${reason}`,
+      'aria-disabled': 'true',
+    }, panel.title);
   }));
 }
 

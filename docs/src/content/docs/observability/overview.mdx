@@ -241,3 +241,17 @@ import { Aside } from '@astrojs/starlight/components';
   liveness + readiness.
 - **[HTTP endpoints](/observability/management/http-endpoints/)** —
   the management server's full endpoint set.
+
+### DevTools
+
+The three pillars above are for watching a system from the outside, over
+time.  When you want to *look inside* one right now — the actor tree,
+the mailboxes, what a single actor has been doing — attach the
+[DevTools](/observability/devtools/overview/) UI instead.  It is a
+debugger, not a monitoring stack: loopback and unauthenticated by
+default, and off until you reach for it.
+
+- **[DevTools overview](/observability/devtools/overview/)** —
+  attaching, the dashboard, per-panel switches, security.
+- **[Tap protocol](/observability/devtools/protocol/)** —
+  the versioned wire contract, if you want your own client.

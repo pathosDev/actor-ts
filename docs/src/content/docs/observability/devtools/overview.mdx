@@ -1,0 +1,193 @@
+---
+title: DevTools overview
+description: An embeddable web UI for a running actor system — attach it to a port, open a browser, and see the system. Dashboard first, then one panel per tool. Loopback-only and unauthenticated by default.
+---
+
+import { Aside, Steps } from '@astrojs/starlight/components';
+
+Part of why the BEAM feels the way it does is that you can *see* the
+system: `observer` connects to a live node and shows you the process
+tree, the mailboxes, the load.  DevTools is that idea for `actor-ts` —
+an embeddable web UI you attach to a running `ActorSystem`.
+
+```ts
+import { ActorSystem } from 'actor-ts';
+import { DevTools, DevToolsOptions } from 'actor-ts/devtools';
+
+const system = ActorSystem.create('orders');
+
+const devtoolsOptions = DevToolsOptions.create().withPort(9333);
+const devtools = await DevTools.attach(system, devtoolsOptions);
+console.log(devtools.url);   // http://127.0.0.1:9333
+```
+
+Open that URL and you land on the **dashboard**: the system at a
+glance, plus a card for every tool.  From there you move between the
+individual panels, and the nav rail takes you back.
+
+<Aside type="caution" title="Treat the DevTools port like a debugger port">
+DevTools reads live actor state — class names, mailbox depths, and (with
+the time-travel panel) persisted events.  It binds `127.0.0.1` and stays
+unauthenticated by default, which is right for a laptop and wrong for
+anything else.  See [Security](#security) before you change the host.
+</Aside>
+
+## What ships, and when
+
+DevTools is one product assembled from several tools, and they land in
+sequence.  The UI always shows the full roster: a tool that this system
+cannot offer appears as a greyed card **with the reason**, so nothing is
+hidden behind a click that fails.
+
+| Panel | Shows | Status |
+| --- | --- | --- |
+| **Overview** | System identity, uptime, live figures, links to every tool | Available |
+| **Actors** | Live actor tree, mailbox depths, busiest actors | In progress |
+| **Cluster** | Node topology, shard distribution, membership history | In progress |
+| **Tracing** | Flame graph and waterfall over recorded message spans | Planned |
+| **Explain plan** | The last messages one actor handled, with timings | Planned |
+| **Time travel** | Browse a journal, reconstruct state at any point | Planned |
+| **Profiler** | Where the actor system spends its time | Planned |
+
+All of them speak one [tap protocol](/observability/devtools/protocol/)
+over a single WebSocket, so they share a connection rather than each
+opening their own.
+
+## Attaching
+
+`DevTools.attach` binds a server of its own — usually what you want,
+since the DevTools port should be firewalled separately from your
+application's.
+
+<Steps>
+
+1. **Attach**, ideally behind a flag so production never runs it:
+
+   ```ts
+   if (process.env.DEVTOOLS === '1') {
+     await DevTools.attach(system);   // http://127.0.0.1:9333
+   }
+   ```
+
+2. **Open the URL** the returned binding reports.  With `port: 0` the
+   operating system picks a free port and the binding tells you which.
+
+3. **Detach** when you are done.  This also happens automatically
+   during `CoordinatedShutdown`, so a `SIGTERM` releases the port:
+
+   ```ts
+   await devtools.detach();
+   ```
+
+</Steps>
+
+### Mounting into an existing server
+
+To put DevTools next to your
+[management endpoints](/observability/management/overview/) instead of
+on a port of its own, take the routes and bind them yourself:
+
+```ts
+import { concat, path } from 'actor-ts';
+import { DevTools } from 'actor-ts/devtools';
+
+const routes = concat(
+  managementRoutes(system, cluster).routes,
+  path('devtools', DevTools.mount(system)),
+);
+await system.http(8558, { host: '127.0.0.1' }).bind(routes);
+```
+
+Whatever middleware wraps that subtree applies to DevTools too.
+
+## Options
+
+Builder-first, as everywhere else in the framework; a plain object works
+just as well.
+
+```ts
+const devtoolsOptions = DevToolsOptions.create()
+  .withPort(9333)
+  .withHost('127.0.0.1')
+  .withPanels({ timeTravel: false });
+```
+
+| Option | Default | Meaning |
+| --- | --- | --- |
+| `host` | `'127.0.0.1'` | Interface to bind.  Anything routable needs a gate — see below. |
+| `port` | `9333` | Port to bind; `0` picks a free one. |
+| `auth` | — | Middleware wrapping the whole tree (e.g. `BearerTokenAuth`). |
+| `ipAllowlist` | — | Middleware wrapping the whole tree. |
+| `allowRemote` | `false` | Acknowledge an ungated, routable bind. |
+| `backend` | framework default | HTTP backend for the DevTools server. |
+| `serveUi` | `true` | `false` leaves the tap without the UI. |
+| `allowedOrigins` | same-origin | Origins allowed to open the WebSocket. |
+| `panels` | all enabled | Per-panel switches — see below. |
+| `uiDevelopmentRoot` | — | Serve the UI from disk; panel development only. |
+
+### Switching panels off
+
+Each panel can be disabled individually, and a disabled panel is
+disabled for good — its data never leaves the process, whatever a
+client asks for:
+
+```ts
+const devtoolsOptions = DevToolsOptions.create()
+  .withPanels({ timeTravel: false, profiler: false });
+```
+
+Time travel is the one to think about first: it is the panel that
+surfaces raw persisted events.
+
+## Security
+
+DevTools is a debugger, and the defaults treat it as one.
+
+- **Loopback by default.** `host` is `127.0.0.1`, so nothing outside the
+  machine can reach it.
+- **A routable bind must be deliberate.** Setting `host` to anything
+  that is not loopback throws unless you also pass `auth`,
+  `ipAllowlist`, or `allowRemote: true`.  The error names all three, so
+  a typo in a host string cannot quietly publish your actor state.
+- **Gates cover everything.** `auth` and `ipAllowlist` wrap the UI, the
+  JSON endpoints *and* the WebSocket upgrade — a gate on only the JSON
+  would leave the actual data channel open.
+- **Same-origin sockets.** The tap rejects a WebSocket upgrade from an
+  origin you did not list, so a page you visit cannot dial your local
+  DevTools.
+
+If you do expose it, put it behind the same auth as your management
+endpoints and treat the credentials as production secrets:
+
+```ts
+import { BearerTokenAuth } from 'actor-ts';
+
+const devtoolsOptions = DevToolsOptions.create()
+  .withHost('0.0.0.0')
+  .withAuth(BearerTokenAuth({ tokens: [process.env.DEVTOOLS_TOKEN!] }));
+```
+
+## Cost when unused
+
+Creating the extension does nothing: no port, no taps, no
+instrumentation.  Everything starts at `attach()`, and each panel's data
+collection only runs while a browser is actually subscribed to it — an
+open dashboard does not make the system record spans.
+
+## Working on the UI
+
+The UI is vanilla TypeScript bundled by `Bun.build` and embedded into
+the published package, so it needs no UI framework at runtime and no
+network access.  To work on a panel:
+
+```bash
+bun run build:ui -- --dev --watch
+```
+
+```bash
+bun run dev:devtools
+```
+
+The first rebuilds on save into `devtools-ui/.dev`; the second boots a
+demo system serving that directory via `uiDevelopmentRoot`.  The loop is
+save → refresh, with no TypeScript build and no server restart.

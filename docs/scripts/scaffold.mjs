@@ -586,6 +586,12 @@ const PAGES = [
   ['observability/management/http-endpoints.md',
    'Management HTTP endpoints',
    '/cluster/members, /sharding/regions, opt-in /cluster/leave and /cluster/down.'],
+  ['observability/devtools/overview.md',
+   'DevTools overview',
+   'Embeddable web UI — attach to a port, open a browser, see the system.'],
+  ['observability/devtools/protocol.md',
+   'DevTools tap protocol',
+   'The versioned wire contract between the DevTools UI and a running system.'],
 
   // ---- PART 7 — Test --------------------------------------------
   ['testing/overview.md',
