@@ -43,6 +43,42 @@ export interface CassandraJournalOptionsType extends CassandraConnection {
    */
   readonly useTagIndex?: boolean;
   /**
+   * Serialize concurrent appends with a Cassandra **lightweight
+   * transaction** (Paxos) that claims the sequence range on the `metadata`
+   * row before any event is written (#475).  Default: `true`.
+   *
+   * Without it the append path is a plain read-modify-write: two writers
+   * that both read head `N` both pass the `expectedSeq` check and both
+   * `INSERT` at `sequence_nr = N+1`.  A Cassandra `INSERT` is an upsert, so
+   * the later write silently overwrites the earlier one and *both* callers
+   * are told their event was persisted.  The relational backends can't lose
+   * that race — their primary key rejects the loser — so the LWT is what
+   * gives Cassandra the same `JournalConcurrencyError` contract.
+   *
+   * The cost is **one Paxos round-trip per `append`**, not per event: the
+   * claim is a single conditional statement on the metadata row, while the
+   * events themselves still go out in the same unlogged per-partition
+   * batch.  Turn it off only if you genuinely guarantee a single writer per
+   * persistence id and want that round-trip back — a losing concurrent
+   * append then loses its event with no error.
+   */
+  readonly lightweightTransactions?: boolean;
+  /**
+   * Serial consistency for the LWT claim's Paxos phase.  Ignored when
+   * `lightweightTransactions` is off.  Pass the numeric value from
+   * `cassandra-driver`'s `types.consistencies` — `localSerial` (9) or
+   * `serial` (8).
+   *
+   * Left unset the driver picks cluster-wide `SERIAL`, which needs a quorum
+   * of replicas across **every** datacenter — so on a multi-DC keyspace each
+   * append pays a cross-DC round-trip, quietly undoing the local-DC-only
+   * write path that `consistency: LOCAL_QUORUM` buys.  Set `localSerial` (9)
+   * to keep Paxos inside the local DC, at the cost of losing linearizability
+   * against writers in another DC (fine when a pid is only ever written from
+   * one DC — the usual sharding layout).
+   */
+  readonly serialConsistency?: number;
+  /**
    * Inject a pre-built client instead of letting the journal instantiate
    * `cassandra-driver` itself — useful for tests and when the host already
    * owns the client lifecycle.
@@ -147,6 +183,16 @@ export class CassandraJournalOptionsBuilder extends OptionsBuilder<CassandraJour
   /** Opt in to maintaining an `events_by_tag` side table for indexed `eventsByTag` queries (#44). */
   withUseTagIndex(useTagIndex = true): this {
     return this.set('useTagIndex', useTagIndex);
+  }
+
+  /** Serialize concurrent appends with a lightweight transaction on the metadata row (#475).  Default: `true`. */
+  withLightweightTransactions(lightweightTransactions = true): this {
+    return this.set('lightweightTransactions', lightweightTransactions);
+  }
+
+  /** Serial consistency for the LWT claim — `localSerial` (9) keeps Paxos inside the local DC. */
+  withSerialConsistency(serialConsistency: number): this {
+    return this.set('serialConsistency', serialConsistency);
   }
 
   /** Inject a pre-built client instead of letting the journal instantiate `cassandra-driver` itself. */
