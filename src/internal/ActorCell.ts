@@ -37,7 +37,13 @@ import {
   Terminated,
 } from '../SystemMessages.js';
 import { Envelope, Mailbox } from './Mailbox.js';
-import type { CellInspection, CellState } from './Instrumentation.js';
+import {
+  ExplainRecorder,
+  type CellInspection,
+  type CellState,
+  type MessageExplain,
+  type MessageOutcome,
+} from './Instrumentation.js';
 import { BoundedMailbox } from '../mailbox/BoundedMailbox.js';
 import { DEFAULT_MAILBOX_CAPACITY, DEFAULT_MAILBOX_OVERFLOW } from '../util/Constants.js';
 import { LocalActorRef } from './LocalActorRef.js';
@@ -54,6 +60,9 @@ import { fromNullable, type Option } from '../util/Option.js';
 import { TokenBucket } from '../util/TokenBucket.js';
 
 const DEFAULT_STASH_CAPACITY = 1024;
+
+/** Messages kept by an explain plan when the caller names no capacity. */
+const DEFAULT_EXPLAIN_CAPACITY = 100;
 
 /**
  * Internal runtime for a single actor.  Bridges the user-visible Actor /
@@ -94,6 +103,13 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
   private _throttleOnExcess: ThrottleOnExcess = 'pause';
   /** Pending pause-mode resume, so we don't double-schedule. */
   private _throttleResumeTimer: Cancellable | null = null;
+
+  /**
+   * Recent-message recorder, `null` until `enableExplainPlan()`.
+   * Its presence is also what turns on envelope timestamping, so an
+   * actor nobody is inspecting pays nothing.
+   */
+  private _explain: ExplainRecorder | null = null;
 
   /** Per-actor timer scheduler. */
   readonly timers: TimerScheduler<TMessage> = new CellTimerScheduler<TMessage>(this);
@@ -198,6 +214,69 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
       dispatcher: this.props.config.dispatcher?.id ?? null,
       childCount: this._children.size,
     };
+  }
+
+  enableExplainPlan(options: { readonly capacity?: number } = {}): void {
+    this._enableExplain(options.capacity ?? DEFAULT_EXPLAIN_CAPACITY);
+  }
+
+  disableExplainPlan(): void {
+    this._disableExplain();
+  }
+
+  explainPlan(): ReadonlyArray<MessageExplain> {
+    return this._explainEntries();
+  }
+
+  /**
+   * @internal Start recording recent message handlings.  Re-enabling
+   * with a different capacity starts a fresh ring.
+   */
+  _enableExplain(capacity: number): void {
+    if (this._explain !== null && this._explain.capacity === capacity) return;
+    this._explain = new ExplainRecorder(capacity);
+  }
+
+  /** @internal Stop recording and discard what was recorded. */
+  _disableExplain(): void {
+    this._explain = null;
+  }
+
+  /** @internal Recorded handlings, oldest first; empty when disabled. */
+  _explainEntries(): ReadonlyArray<MessageExplain> {
+    return this._explain?.snapshot() ?? [];
+  }
+
+  /** @internal Ring capacity, or `0` when recording is off. */
+  _explainCapacity(): number {
+    return this._explain?.capacity ?? 0;
+  }
+
+  /** @internal Fold one completed handling into the ring. */
+  private _recordExplain(
+    env: Envelope<TMessage>,
+    startedAtMs: number,
+    handleTimeMs: number,
+    failure: Error | null,
+    span: Span | null,
+  ): void {
+    // `stash()` nulls the current envelope to mark the message as owned
+    // by the stash — which is exactly how a stashed handling is told
+    // apart from one that simply returned.
+    const outcome: MessageOutcome = failure !== null
+      ? 'error'
+      : this._currentEnvelope === null ? 'stashed' : 'ok';
+    const message = env.message as { constructor?: { name?: string } } | null;
+    this._explain?.record({
+      atMs: startedAtMs,
+      messageType: message?.constructor?.name ?? typeof env.message,
+      senderPath: env.sender?.path.toString() ?? null,
+      mailboxWaitMs: env.enqueuedAtMs === undefined ? null : startedAtMs - env.enqueuedAtMs,
+      handleTimeMs,
+      outcome,
+      errorMessage: failure?.message ?? null,
+      spanId: span?.context().spanId ?? null,
+    });
   }
 
   /**
@@ -372,7 +451,9 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
       this.system.deadLetters.tell(new DeadLetter(message, sender, this.self));
       return;
     }
-    this.mailbox.enqueue({ message, sender });
+    this.mailbox.enqueue(this._explain === null
+      ? { message, sender }
+      : { message, sender, enqueuedAtMs: Date.now() });
     this.schedule();
   }
 
@@ -387,7 +468,9 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
       this.system.deadLetters.tell(new DeadLetter(env.message, env.sender, this.self));
       return;
     }
-    this.mailbox.enqueue(env);
+    this.mailbox.enqueue(this._explain === null || env.enqueuedAtMs !== undefined
+      ? env
+      : { ...env, enqueuedAtMs: Date.now() });
     this.schedule();
   }
 
@@ -666,6 +749,8 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
       this._currentSender = env.sender;
       this._currentEnvelope = env;
       const startNs = performance.now();
+      const startedAtMs = Date.now();
+      let failure: Error | null = null;
       try {
         if (message instanceof Terminated) {
           // Only deliver when we are actually watching.
@@ -687,6 +772,7 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
         if (span) span.setStatus('ok');
       } catch (e) {
         const err = e instanceof Error ? e : new Error(String(e));
+        failure = err;
         if (span) {
           span.recordException(err);
           span.setStatus('error', err.message);
@@ -694,13 +780,19 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
         this.failToParent(err, message);
       } finally {
         if (span) span.end();
+        const elapsedMs = performance.now() - startNs;
         // Record handler duration in seconds — Prom convention.  Using
         // the per-call `metrics` ref keeps a single dispatch through
         // the extension chain.
         metrics.histogram(
           'actor_message_handler_seconds', {},
           { help: 'Time spent inside actor onReceive handlers, seconds.' },
-        ).observe((performance.now() - startNs) / 1000);
+        ).observe(elapsedMs / 1000);
+        // One null check on the hot path; the recorder only exists
+        // while somebody is inspecting this actor.
+        if (this._explain !== null) {
+          this._recordExplain(env, startedAtMs, elapsedMs, failure, span);
+        }
         this._currentSender = null;
         this._currentEnvelope = null;
       }

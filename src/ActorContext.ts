@@ -121,6 +121,31 @@ export interface ActorContext<TMessage = unknown> {
   /** Number of currently-stashed messages. */
   readonly stashSize: number;
 
+  /* -------------------------- Diagnostics ------------------------------- */
+
+  /**
+   * Start recording this actor's recent message handlings — type,
+   * sender, mailbox wait, handling time and outcome — for the DevTools
+   * explain plan or for reading back in code.
+   *
+   * Opt-in per actor because it is not free: recording every message on
+   * every actor would cost more than many of the handlers being
+   * measured.  Enabling it also starts timestamping this actor's
+   * incoming envelopes, which is what makes the mailbox-wait figure
+   * possible.
+   *
+   *     override preStart(): void {
+   *       this.context.enableExplainPlan({ capacity: 100 });
+   *     }
+   */
+  enableExplainPlan(options?: { readonly capacity?: number }): void;
+
+  /** Stop recording and discard what was recorded. */
+  disableExplainPlan(): void;
+
+  /** Recorded handlings, oldest first.  Empty while recording is off. */
+  explainPlan(): ReadonlyArray<import('./internal/Instrumentation.js').MessageExplain>;
+
   /* ----------------------------- Timers --------------------------------- */
 
   /**

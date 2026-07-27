@@ -11,6 +11,59 @@
 /** Lifecycle state of an actor cell. */
 export type CellState = 'creating' | 'running' | 'suspended' | 'terminating' | 'terminated';
 
+/** How one message handling finished. */
+export type MessageOutcome = 'ok' | 'error' | 'stashed';
+
+/** One recorded message handling — see {@link ExplainRecorder}. */
+export interface MessageExplain {
+  /** Monotonically increasing per actor, so a gap is visible. */
+  readonly sequenceNumber: number;
+  /** Wall clock at handler start. */
+  readonly atMs: number;
+  readonly messageType: string;
+  readonly senderPath: string | null;
+  /**
+   * Time from first enqueue to handler start, or `null` when the
+   * envelope was queued before recording began.
+   *
+   * A stashed message keeps its ORIGINAL stamp when replayed, so stash
+   * residency is included here — which is the honest answer to "how
+   * long did this message wait?".
+   */
+  readonly mailboxWaitMs: number | null;
+  readonly handleTimeMs: number;
+  readonly outcome: MessageOutcome;
+  readonly errorMessage: string | null;
+  /** Span produced by this handling, for cross-linking into a trace. */
+  readonly spanId: string | null;
+}
+
+/**
+ * Per-actor ring of recent message handlings.
+ *
+ * Opt-in and per actor: recording every message on every actor would
+ * cost more than most of the handlers being measured.  The question it
+ * answers — "what has THIS actor been doing?" — is asked about one
+ * actor at a time anyway.
+ */
+export class ExplainRecorder {
+  private readonly entries: MessageExplain[] = [];
+  private sequenceNumber = 0;
+
+  constructor(readonly capacity: number) {}
+
+  /** Append one handling, evicting the oldest once full. */
+  record(entry: Omit<MessageExplain, 'sequenceNumber'>): void {
+    this.entries.push({ ...entry, sequenceNumber: ++this.sequenceNumber });
+    if (this.entries.length > this.capacity) this.entries.shift();
+  }
+
+  /** Recorded handlings, oldest first. */
+  snapshot(): ReadonlyArray<MessageExplain> {
+    return [...this.entries];
+  }
+}
+
 /** A point-in-time description of one actor cell. */
 export interface CellInspection {
   /** Full path, e.g. `actor-ts://system/user/orders/order-42`. */
