@@ -13,14 +13,19 @@ import type { MailboxDepthEntry } from './ActorStreamFrames.js';
 /** Host runtime, mirrored from `RuntimeKind`. */
 export type StatsRuntime = 'bun' | 'node' | 'deno';
 
-/** Cluster figures folded into the dashboard; absent when no cluster runs. */
+/**
+ * Cluster figures folded into the dashboard; absent when no cluster
+ * runs.  Sharding is deliberately not summarised here — the framework
+ * never registers sharded types centrally, so a count would either be
+ * a guess or a lie.  The cluster panel reports shard maps as the
+ * coordinator republishes them.
+ */
 export interface ClusterStatsSummary {
   readonly members: number;
   readonly up: number;
   readonly unreachable: number;
   readonly leader: string | null;
   readonly selfAddress: string;
-  readonly shardedTypes: number;
 }
 
 /** One dashboard sample, emitted on the sampler interval. */

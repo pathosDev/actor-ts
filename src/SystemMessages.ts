@@ -72,7 +72,11 @@ export class DeadLetter {
  * them, and a slow subscriber cannot delay an actor's lifecycle.
  */
 export abstract class ActorLifecycleEvent {
-  protected constructor(
+  // Public rather than protected: the class doubles as an EventStream
+  // channel token, and a protected constructor is not assignable to the
+  // public constructor type `subscribe` takes.  Abstract already stops
+  // anyone instantiating it.
+  constructor(
     /** The actor the event is about. */
     public readonly actor: ActorRef,
   ) {}
