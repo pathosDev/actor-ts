@@ -59,6 +59,12 @@ export {
 export { RegisterCassandraPluginsOptions, RegisterCassandraPluginsOptionsBuilder } from './journals/CassandraPluginOptions.js';
 export type { RegisterCassandraPluginsOptionsType } from './journals/CassandraPluginOptions.js';
 
+// Store lifecycle shared by every backend that talks to an external system —
+// lazy first-use connection, one-shot schema preparation, ownership-aware
+// teardown.  The relational and MongoDB families both build on it.
+export { LazyStore } from './LazyStore.js';
+export type { LazyStoreConfig } from './LazyStore.js';
+
 // Relational base layer — the extension point for a new SQL backend.  Supply a
 // `SqlDialect` plus a `SqlPool` adapter and the journal / snapshot /
 // durable-state trio comes with it, instead of a third copy of three stores.
