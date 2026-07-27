@@ -1,6 +1,7 @@
 import { OptionsBuilder } from '../util/OptionsBuilder.js';
 import { OptionsValidator } from '../util/OptionsValidator.js';
 import type { HttpServerBackend, Middleware } from '../http/index.js';
+import type { Cluster } from '../cluster/Cluster.js';
 
 /**
  * Hosts that cannot be reached from another machine.  Binding anywhere
@@ -67,6 +68,19 @@ export interface DevToolsOptionsType {
   readonly allowedOrigins?: ReadonlyArray<string>;
   /** Per-panel switches; unset panels default to enabled. */
   readonly panels?: DevToolsPanelOptionsType;
+  /**
+   * Cluster to inspect.  Required for the cluster panel and for the
+   * cluster figures on the dashboard — a system has no way to hand out
+   * its own `Cluster`, so it has to be passed in (the same reason
+   * `managementRoutes` takes one).
+   */
+  readonly cluster?: Cluster;
+  /** How often mailbox depths are sampled, in ms.  Default `1000`. */
+  readonly mailboxSampleIntervalMs?: number;
+  /** How many mailboxes one sample carries.  Default `50`. */
+  readonly mailboxSampleLimit?: number;
+  /** How often dashboard figures are sampled, in ms.  Default `1000`. */
+  readonly statsIntervalMs?: number;
 }
 
 /** Fluent builder for {@link DevToolsOptionsType}. */
@@ -125,6 +139,26 @@ export class DevToolsOptionsBuilder extends OptionsBuilder<DevToolsOptionsType> 
   withPanels(panels: DevToolsPanelOptionsType): this {
     return this.set('panels', panels);
   }
+
+  /** Cluster to inspect — enables the cluster panel. */
+  withCluster(cluster: Cluster): this {
+    return this.set('cluster', cluster);
+  }
+
+  /** How often mailbox depths are sampled, in ms. */
+  withMailboxSampleIntervalMs(intervalMs: number): this {
+    return this.set('mailboxSampleIntervalMs', intervalMs);
+  }
+
+  /** How many mailboxes one sample carries. */
+  withMailboxSampleLimit(limit: number): this {
+    return this.set('mailboxSampleLimit', limit);
+  }
+
+  /** How often dashboard figures are sampled, in ms. */
+  withStatsIntervalMs(intervalMs: number): this {
+    return this.set('statsIntervalMs', intervalMs);
+  }
 }
 
 /**
@@ -146,6 +180,9 @@ export class DevToolsOptionsValidator extends OptionsValidator<DevToolsOptionsTy
     }
     this.nonEmptyString('host');
     this.nonEmptyString('uiDevelopmentRoot');
+    this.positiveNumber('mailboxSampleIntervalMs');
+    this.positiveNumber('statsIntervalMs');
+    this.positiveInt('mailboxSampleLimit');
 
     // The security rule this whole validator exists for: DevTools can
     // read every actor's class, mailbox and (with time travel) persisted
@@ -186,4 +223,7 @@ export const DEVTOOLS_DEFAULTS = {
   port: 9333,
   allowRemote: false,
   serveUi: true,
+  mailboxSampleIntervalMs: 1_000,
+  mailboxSampleLimit: 50,
+  statsIntervalMs: 1_000,
 } as const satisfies Partial<DevToolsOptionsType>;

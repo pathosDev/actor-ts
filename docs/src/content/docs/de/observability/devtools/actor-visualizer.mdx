@@ -1,0 +1,114 @@
+---
+title: Actor- & Cluster-Panel
+description: Der lebende Supervision-Baum mit Mailbox-Tiefen, die Cluster-Topologie mit Shard-Verteilung und ein Dashboard, dessen Zahlen jeweils die jüngste Vergangenheit mitführen — damit Spitzen sichtbar werden.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+Drei Ansichten landen gemeinsam, weil sie dieselbe Frage aus
+unterschiedlicher Entfernung beantworten: **Ist dieses System gesund —
+und wenn nicht, wo?**
+
+## Dashboard
+
+Die Seite, mit der DevTools öffnet. Jede Kachel trägt eine Sparkline,
+und der Chart darunter zeichnet dieselben Reihen über die letzten
+Minuten — denn eine einzelne Zahl sagt dir nicht, ob 40 wartende
+Nachrichten der Normalzustand sind oder der Anfang eines Staus.
+
+| Kachel | Liest sich als |
+| --- | --- |
+| **Actors** | Lebende Actors, inklusive Guardians |
+| **Mailbox backlog** | Alle wartenden Nachrichten im System, summiert |
+| **Spawns / s**, **Stops / s** | Actor-Fluktuation |
+| **Restarts** | Supervisor-getriebene Neustarts seit dem Attach |
+| **Dead letters** | Unzustellbare Nachrichten seit dem Attach |
+| **Cluster** | Members up, sofern ein Cluster angehängt ist |
+
+Zähler sind auf dem Draht **kumulativ seit dem Attach**; die Raten pro
+Sekunde leitet die UI selbst ab. Ein Browser, der sich neu verbindet, im
+Hintergrund gedrosselt wird oder einen Tick verpasst, zeigt damit
+weiterhin korrekte Zahlen statt einer Phantom-Spitze.
+
+Unter dem Chart listet **Busiest mailboxes** die tiefsten Queues von
+jetzt — der schnellste Weg von „irgendwo staut es sich" zu „dieser Actor
+staut sich".
+
+## Actors
+
+Der lebende Supervision-Baum, vom Root-Guardian abwärts.
+
+- **Filtern** nach Pfad oder Klassenname. Treffer behalten ihre Vorfahren
+  sichtbar, damit ein Fund tief in einem zugeklappten Ast erreichbar
+  bleibt — und ein Filter hebt das Zuklappen vorübergehend auf, denn ein
+  Treffer, den man nicht sieht, wirkt wie eine gescheiterte Suche.
+- **Badges** zeigen das Ungewöhnliche: wartende Nachrichten, gestashte
+  Nachrichten, eine suspendierte Mailbox. Ein untätiger Actor trägt
+  keine.
+- **Ein Restart lässt die Zeile aufblitzen.** Der Pfad überlebt einen
+  Neustart, im Baum bewegt sich also nichts — ohne das Aufblitzen wäre er
+  unsichtbar.
+- **Hide DevTools actors** ist standardmäßig an. DevTools betreibt Hub
+  und Taps als gewöhnliche Actors; sie existieren wirklich und werden
+  deshalb gelistet, sind aber nicht das, wofür du gekommen bist.
+
+Der Baum kommt als ein Snapshot plus Deltas, damit ein System, das
+ständig Actors erzeugt, nicht jedes Mal den ganzen Baum überträgt.
+Mailbox-Tiefen laufen über einen eigenen Stream und aktualisieren
+sekündlich.
+
+<Aside type="note" title="Warum der Baum voller wirken kann als dein Code">
+Jede WebSocket-Verbindung zu DevTools erzeugt einen Connection-Actor, und
+auch die Framework-Maschinerie (Sharding, Singletons, Pub-Sub) erzeugt
+Actors. Verborgen wird nichts außer DevTools' eigenen — und das ist eine
+Checkbox.
+</Aside>
+
+## Cluster
+
+Verfügbar, sobald du einen `Cluster` übergibst — ein System kann seinen
+eigenen nicht herausgeben, aus demselben Grund, aus dem
+`managementRoutes` einen entgegennimmt:
+
+```ts
+import { DevTools, DevToolsOptions } from 'actor-ts/devtools';
+
+const devtoolsOptions = DevToolsOptions.create().withCluster(cluster);
+await DevTools.attach(system, devtoolsOptions);
+```
+
+Ohne ihn bleibt das Panel sichtbar und erklärt, warum es nicht verfügbar
+ist, statt zu verschwinden.
+
+- **Topologie** — Members auf einem Ring, nach Status eingefärbt. Der
+  Leader wird größer gezeichnet, der eigene Knoten mit dickem Rand. Ein
+  Ring statt eines Force-Layouts: Jeder Knoten gossipt mit jedem, der
+  Graph ist also vollständig, und eine Simulation würde nur einen langsam
+  einschwingenden Kreis erzeugen — während ein Ring dieselbe Membership
+  jedes Mal gleich zeichnet.
+- **Members** — Adresse, Status, Rollen und wer führt.
+- **Shard-Verteilung** — Shards pro Region, pro geshardetem Typ. Typen
+  erscheinen, sobald ihr Coordinator sie republiziert (das Framework
+  führt kein zentrales Register geshardeter Typen), ein frisch geöffnetes
+  Panel füllt sich also binnen eines Coordinator-Ticks.
+- **Membership-Historie** — Übergänge seit dem Attach, neueste zuerst.
+  Unreachable und Down sind als Probleme eingefärbt, Joins und Leaves
+  nicht.
+
+## Kosten
+
+Beide Sampling-Streams laufen im Leerlauf, bis ein Panel sie abonniert —
+ein Dashboard, das in einem anderen Tab offen liegt, kostet das System
+nichts. Der Tree-Tap hört auf Actor-Lifecycle-Events, die die Runtime
+ohnehin publiziert: dieselben Events, die schon die Metriken
+`actor_created_total` / `actor_terminated_total` speisen.
+
+## Ausprobieren
+
+```bash
+DEVTOOLS=1 bun run examples/cluster/singleton-hello.ts
+```
+
+Jedes Example ist für DevTools verdrahtet; ein Drei-Knoten-Cluster-Demo
+gibt dir drei Ports ab `9333`. Details im
+[Überblick](/de/observability/devtools/overview/).

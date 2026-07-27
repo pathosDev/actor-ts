@@ -21,14 +21,12 @@ registerPanel({
   load: () => import('./panels/dashboard/dashboardPanel.js'),
 });
 
-// Declared but not built yet — see `panels/notImplemented.ts`.  Each
-// later phase swaps one of these `load` lines for its real panel.
 registerPanel({
   id: 'actors',
   title: 'Actors',
   description: 'Live actor tree, mailbox depths and the busiest actors.',
   order: 10,
-  load: () => import('./panels/notImplementedPanel.js'),
+  load: () => import('./panels/actors/actorsPanel.js'),
 });
 
 registerPanel({
@@ -36,9 +34,11 @@ registerPanel({
   title: 'Cluster',
   description: 'Node topology, shard distribution and membership history.',
   order: 20,
-  load: () => import('./panels/notImplementedPanel.js'),
+  load: () => import('./panels/cluster/clusterPanel.js'),
 });
 
+// Declared but not built yet — see `panels/notImplementedPanel.ts`.
+// Each later phase swaps one of these `load` lines for its real panel.
 registerPanel({
   id: 'tracing',
   title: 'Tracing',

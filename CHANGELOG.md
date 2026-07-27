@@ -155,6 +155,23 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
     `system.terminate()` releases the port even though it does not run
     `CoordinatedShutdown`.  Previously a terminated system left the server
     bound, keeping the process alive.
+  - **Actor and cluster panels**, plus a dashboard with live figures.  The
+    actor panel shows the live supervision tree with mailbox depths,
+    filtering and restart highlighting; the cluster panel shows topology,
+    members, shard distribution and membership history (pass
+    `withCluster(cluster)` — a system cannot hand out its own).  Every
+    dashboard tile carries a sparkline and feeds a shared chart, so a
+    figure is readable as a trend rather than a snapshot.  Both sampling
+    streams idle until a panel subscribes.  #204
+- **Actor lifecycle events on the `EventStream`** — `ActorStarted`,
+  `ActorStopped` and `ActorRestarted`, sharing an `ActorLifecycleEvent`
+  base so `subscribe(ref, ActorLifecycleEvent)` takes the whole family.
+  Previously the stream carried dead letters, cluster and broker events
+  but nothing about actors coming and going, so tracking the tree meant
+  polling it.  #204
+- **`EventStream` channels may be abstract classes.**  Matching is by
+  `instanceof`, so an abstract base is a valid channel — and the most
+  useful one, since it subscribes to a whole event family at once.
 - **`PersistenceExtension.configure({ journal?, snapshotStore? })`** — a thin
   convenience over `setJournal` / `setSnapshotStore` for tests and simple,
   single-backend apps that wire persistence directly in code.  (The docs
@@ -322,6 +339,15 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   `--frozen-lockfile`, and `docs-checks` — which runs on every `docs/**` change
   — gained a lockfile-sync job, so this drift fails on the PR instead of
   silently at release time.
+
+- **Dead-letter delivery no longer recurses into a stack overflow.**  An
+  actor subscribed to the `DeadLetter` channel that stopped without
+  unsubscribing made every subsequent dead letter bounce between the
+  event stream and the dead-letter office until the stack blew.  A dead
+  letter wrapping another dead letter is now dropped — that nesting is
+  the loop signature, and there is nowhere further to send an
+  undeliverable dead letter.
+
 - **Persistence: uniform `JournalError` wrapping + consistent missing-dependency
   hints** (#383).  Driver errors from the read-side journal methods
   (`highestSeq`, `delete`, `persistenceIds`, and Cassandra's `read`) now surface

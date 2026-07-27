@@ -17,6 +17,7 @@ import { Props } from './Props.js';
 import { Scheduler } from './Scheduler.js';
 import type { ActorSystemOptions, ActorSystemOptionsType } from './ActorSystemOptions.js';
 import { ActorCell } from './internal/ActorCell.js';
+import type { CellInspection } from './internal/Instrumentation.js';
 import { DeadLetterRef } from './internal/DeadLetterRef.js';
 import { Guardian, systemGuardianStrategy, userGuardianStrategy } from './internal/Guardian.js';
 import { LocalActorRef } from './internal/LocalActorRef.js';
@@ -201,6 +202,27 @@ export class ActorSystem {
       return new ActorSelection(this, ['<mismatched-system>'], path);
     }
     return new ActorSelection(this, segments, path);
+  }
+
+  /**
+   * @internal Describe every live actor, root first, parents before
+   * children.
+   *
+   * The whole tree in one pass, for introspection tooling that has no
+   * path to start from.  `_resolvePath` answers "what is at this path?";
+   * this answers "what is there at all?", which is the question a
+   * debugger opens with.  The result is a plain snapshot — no cells
+   * escape, so a caller cannot accidentally keep a terminated actor
+   * alive.
+   */
+  _inspectTree(): ReadonlyArray<CellInspection> {
+    const out: CellInspection[] = [];
+    const visit = (cell: ActorCell<unknown>): void => {
+      out.push(cell._inspect());
+      cell._eachChildCell(visit);
+    };
+    visit(this.rootCell);
+    return out;
   }
 
   /** @internal — walk the actor tree and return the ref at `segments`. */

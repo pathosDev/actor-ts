@@ -212,12 +212,14 @@ describe('DevTools tap handshake', () => {
   });
 
   test('reports a stream with no tap behind it as unavailable', async () => {
+    // `spans` lands with the tracing panel (#217); until then nothing
+    // produces it, and asking must fail rather than hang.
     const system = newSystem();
     const devtools = await attach(system);
     const frame = await withSocket(devtools.url, async (socket, next) => {
       socket.send(JSON.stringify(helloFrame()));
       await next();
-      socket.send(JSON.stringify({ kind: 'subscribe', stream: 'actors' }));
+      socket.send(JSON.stringify({ kind: 'subscribe', stream: 'spans' }));
       return next();
     });
     expect(frame.kind).toBe('error');

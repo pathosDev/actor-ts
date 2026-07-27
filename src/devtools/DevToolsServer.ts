@@ -40,6 +40,10 @@ import {
 } from './internal/DevToolsHubActor.js';
 import { isLoopbackHost, type DevToolsOptionsType, type DevToolsPanelOptionsType } from './DevToolsOptions.js';
 import { uiAssetRoutes } from './UiAssetRoutes.js';
+import { ActorTreeTap } from './taps/ActorTreeTap.js';
+import { ClusterTap } from './taps/ClusterTap.js';
+import { MailboxSamplerTap } from './taps/MailboxSamplerTap.js';
+import { StatsTap } from './taps/StatsTap.js';
 import { UI_ASSETS } from './generated/uiAssets.js';
 import { getFromDirectory } from '../http/static/index.js';
 
@@ -138,13 +142,52 @@ export class DevToolsServer implements DevToolsHubContext {
 
   /* ------------------------------ lifecycle ---------------------------- */
 
-  /** Spawn the hub.  Idempotent; required before the routes can serve. */
+  /** Spawn the hub and install the taps.  Idempotent. */
   start(): void {
     if (this.hubRef !== null) return;
     this.hubRef = this.system.spawn(
       Props.create<DevToolsHubCommand>(() => new DevToolsHubActor(this) as never),
       'devtools-hub',
     );
+    this.installDefaultTaps();
+  }
+
+  /**
+   * Install the taps this system can actually support.
+   *
+   * The hub must exist first: a tap may emit the moment it is
+   * installed, and `publish` needs somewhere to send it.
+   */
+  private installDefaultTaps(): void {
+    const settings = this.settings;
+    this.registerTap(new StatsTap(
+      this.system,
+      settings.cluster ?? null,
+      settings.statsIntervalMs ?? 1_000,
+    ));
+
+    if (this.isPanelEnabled('actors')) {
+      this.registerTap(new ActorTreeTap(this.system));
+      this.registerTap(new MailboxSamplerTap(
+        this.system,
+        settings.mailboxSampleIntervalMs ?? 1_000,
+        settings.mailboxSampleLimit ?? 50,
+      ));
+      this.registerPanel({ id: 'actors', status: 'active' });
+    }
+
+    if (this.isPanelEnabled('cluster')) {
+      if (settings.cluster === undefined) {
+        this.registerPanel({
+          id: 'cluster',
+          status: 'unavailable',
+          reason: 'this system is not clustered — pass `cluster` in DevToolsOptions',
+        });
+      } else {
+        this.registerTap(new ClusterTap(settings.cluster));
+        this.registerPanel({ id: 'cluster', status: 'active' });
+      }
+    }
   }
 
   /** Build the route tree.  Safe to mount into any existing server. */

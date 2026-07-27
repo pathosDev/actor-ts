@@ -39,6 +39,9 @@ describe('DevToolsOptions defaults', () => {
       port: 9333,
       allowRemote: false,
       serveUi: true,
+      mailboxSampleIntervalMs: 1_000,
+      mailboxSampleLimit: 50,
+      statsIntervalMs: 1_000,
     });
   });
 });

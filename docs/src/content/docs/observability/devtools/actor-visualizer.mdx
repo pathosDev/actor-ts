@@ -1,0 +1,109 @@
+---
+title: Actor & cluster panels
+description: The live supervision tree with mailbox depths, the cluster topology with shard distribution, and a dashboard whose every figure carries the recent past so spikes are visible.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+Three views land together because they answer the same question from
+different distances: **is this system healthy, and if not, where?**
+
+## Dashboard
+
+The page DevTools opens on. Each tile carries a sparkline, and the chart
+below plots the same series over the last few minutes — because a single
+number cannot tell you whether 40 queued messages is the steady state or
+the start of a pile-up.
+
+| Tile | Reads |
+| --- | --- |
+| **Actors** | Live actors, including the guardians |
+| **Mailbox backlog** | Every pending message in the system, summed |
+| **Spawns / s**, **Stops / s** | Actor churn |
+| **Restarts** | Supervisor-driven restarts since attach |
+| **Dead letters** | Undeliverable messages since attach |
+| **Cluster** | Members up, when a cluster is attached |
+
+Counters are **cumulative since attach** on the wire; the UI derives the
+per-second rates itself. That means a browser that reconnects, throttles
+in a background tab, or misses a tick still shows correct figures rather
+than a phantom spike.
+
+Below the chart, **Busiest mailboxes** lists the deepest queues right
+now — the fastest way from "something is backing up" to "this actor is
+backing up".
+
+## Actors
+
+The live supervision tree, from the root guardian down.
+
+- **Filter** by path or class name. Matching keeps ancestors visible, so
+  a hit deep in a collapsed branch is still reachable — and a filter
+  temporarily overrides collapsing, because a match you cannot see reads
+  as a search that failed.
+- **Badges** show what is unusual: messages waiting, stashed messages, a
+  suspended mailbox. An idle actor carries none.
+- **A restart flashes** the row. The path survives a restart, so nothing
+  moves in the tree — without the flash it would be invisible.
+- **Hide DevTools actors** is on by default. DevTools runs its own hub
+  and taps as ordinary actors; they are real, so they are listed, but
+  they are not what you came to look at.
+
+The tree arrives as one snapshot followed by deltas, so a system that
+spawns constantly does not re-send its whole tree every time. Mailbox
+depths come on their own stream and refresh once a second.
+
+<Aside type="note" title="Why the tree can look busier than your code">
+Every WebSocket connection to DevTools spawns a connection actor, and
+the framework's own machinery (sharding, singletons, pub-sub) spawns
+actors too.  Nothing is hidden except DevTools' own, and that is a
+checkbox.
+</Aside>
+
+## Cluster
+
+Available when you pass a `Cluster` — a system cannot hand out its own,
+the same reason `managementRoutes` takes one:
+
+```ts
+import { DevTools, DevToolsOptions } from 'actor-ts/devtools';
+
+const devtoolsOptions = DevToolsOptions.create().withCluster(cluster);
+await DevTools.attach(system, devtoolsOptions);
+```
+
+Without it the panel stays visible but explains why it is unavailable,
+rather than disappearing.
+
+- **Topology** — members on a ring, coloured by status. The leader draws
+  larger, this node draws with a thick outline. A ring rather than a
+  force-directed layout: every node gossips with every other, so the
+  graph is complete and a simulation would only produce a slowly
+  settling circle — while a ring draws the same membership the same way
+  every time.
+- **Members** — address, status, roles, and who leads.
+- **Shard distribution** — shards per region, per sharded type. Types
+  appear as their coordinator republishes them (the framework keeps no
+  central registry of sharded types), so a freshly opened panel fills in
+  within a coordinator tick.
+- **Membership history** — transitions since you attached, newest first.
+  Unreachable and down are coloured as problems; joins and leaves are
+  not.
+
+## Cost
+
+Both sampling streams idle until a panel subscribes, so a dashboard left
+open on another tab costs the system nothing. The tree tap listens to
+actor lifecycle events, which the runtime publishes whether or not
+anyone is watching — the same events that already drive the
+`actor_created_total` / `actor_terminated_total` metrics.
+
+## Trying it
+
+```bash
+DEVTOOLS=1 bun run examples/cluster/singleton-hello.ts
+```
+
+Every example is wired for DevTools; a three-node cluster demo gives you
+three ports, `9333` upwards. See the
+[overview](/observability/devtools/overview/) for the details.

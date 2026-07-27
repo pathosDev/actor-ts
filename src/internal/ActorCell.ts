@@ -27,6 +27,9 @@ import {
 } from '../Supervision.js';
 import {
   ActorKilledError,
+  ActorRestarted,
+  ActorStarted,
+  ActorStopped,
   DeadLetter,
   Kill,
   PoisonPill,
@@ -34,6 +37,7 @@ import {
   Terminated,
 } from '../SystemMessages.js';
 import { Envelope, Mailbox } from './Mailbox.js';
+import type { CellInspection, CellState } from './Instrumentation.js';
 import { BoundedMailbox } from '../mailbox/BoundedMailbox.js';
 import { DEFAULT_MAILBOX_CAPACITY, DEFAULT_MAILBOX_OVERFLOW } from '../util/Constants.js';
 import { LocalActorRef } from './LocalActorRef.js';
@@ -50,13 +54,6 @@ import { fromNullable, type Option } from '../util/Option.js';
 import { TokenBucket } from '../util/TokenBucket.js';
 
 const DEFAULT_STASH_CAPACITY = 1024;
-
-type CellState =
-  | 'creating'
-  | 'running'
-  | 'suspended'
-  | 'terminating'
-  | 'terminated';
 
 /**
  * Internal runtime for a single actor.  Bridges the user-visible Actor /
@@ -178,6 +175,40 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
   /** @internal — used by ActorSelection to walk down the tree. */
   _findChildCell(name: string): ActorCell<unknown> | null {
     return this._children.get(name) ?? null;
+  }
+
+  /**
+   * @internal Describe this cell for introspection tooling.
+   *
+   * A snapshot of what a debugger wants to show, taken from fields that
+   * are otherwise private.  Deliberately separate from the public
+   * `children` / `stashSize` accessors: those are the actor-facing API
+   * and should not grow diagnostic surface.
+   */
+  _inspect(): CellInspection {
+    return {
+      path: this.path.toString(),
+      parentPath: this._parent?.path.toString() ?? null,
+      name: this.path.name,
+      className: this.actor?.constructor.name ?? '?',
+      cellState: this.state,
+      mailboxSize: this.mailbox.size,
+      stashSize: this._stashBuffer.length,
+      suspended: this.mailbox.suspended,
+      dispatcher: this.props.config.dispatcher?.id ?? null,
+      childCount: this._children.size,
+    };
+  }
+
+  /**
+   * @internal Iterate the child cells.
+   *
+   * `children` returns refs, which cannot be walked further — a tree
+   * view needs the cells.  Callers must not retain them: a cell
+   * outlives its usefulness the moment the actor terminates.
+   */
+  _eachChildCell(visit: (child: ActorCell<unknown>) => void): void {
+    for (const child of this._children.values()) visit(child);
   }
 
   actorSelection(path: string): import('../ActorSelection.js').ActorSelection {
@@ -476,6 +507,9 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
         'actor_created_total', {},
         { help: 'Cumulative count of actors successfully started.' },
       ).inc();
+      this.system.eventStream.publish(
+        new ActorStarted(this.self, actor.constructor.name, this._parent?.path.toString() ?? null),
+      );
     } catch (e) {
       const err = e instanceof Error ? e : new Error(String(e));
       this.log.error('Actor initialization failed', err);
@@ -524,6 +558,7 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
       'actor_terminated_total', {},
       { help: 'Cumulative count of actors that have been stopped.' },
     ).inc();
+    this.system.eventStream.publish(new ActorStopped(this.self));
 
     // Notify watchers
     const term = new Terminated(this.self);
@@ -573,6 +608,7 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
         'actor_restarted_total', {},
         { help: 'Cumulative count of supervisor-driven actor restarts.' },
       ).inc();
+      this.system.eventStream.publish(new ActorRestarted(this.self, cause));
     } catch (e) {
       const err = e instanceof Error ? e : new Error(String(e));
       this.failToParent(new ActorInitializationError(`Actor ${this.path} failed to restart`, err));
