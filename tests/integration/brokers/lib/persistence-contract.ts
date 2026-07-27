@@ -75,6 +75,45 @@ export function sqlPersistenceScenarios(): BrokerScenario<SqlPersistenceContext>
       },
     },
     {
+      name: 'journal — concurrent appends at the same expectedSeq leave exactly one winner',
+      async run(context) {
+        // Racing appends must not both land: a journal that lets the loser
+        // through overwrites the winner's event and tells both callers they
+        // persisted (#475).  The relational backends get this from the
+        // events primary key — the losing INSERT is rejected and translated
+        // back into a JournalConcurrencyError.
+        const persistenceId = `${context.label}:journal-race`;
+        // Race at whatever the current head is rather than 0, so re-running
+        // the suite without `down -v` still exercises a real contention.
+        const head = await context.journal.highestSeq(persistenceId);
+        const attempts = 4;
+
+        const settled = await Promise.allSettled(
+          Array.from({ length: attempts }, (_, i) =>
+            context.journal.append(persistenceId, [`race-${i}`], head)),
+        );
+        const winners = settled.filter((r) => r.status === 'fulfilled');
+        const losers = settled.filter((r) => r.status === 'rejected');
+
+        assert(winners.length === 1, `exactly one winner, got ${winners.length}`);
+        for (const loser of losers) {
+          const name = ((loser as PromiseRejectedResult).reason as Error).name;
+          assert(name === 'JournalConcurrencyError', `loser reports JournalConcurrencyError, got ${name}`);
+        }
+
+        assert(
+          await context.journal.highestSeq(persistenceId) === head + 1,
+          'head advanced exactly once',
+        );
+        const stored = await context.journal.read<string>(persistenceId, head + 1);
+        assert(stored.length === 1, `exactly one event at the contested seq, got ${stored.length}`);
+        // The surviving payload must be the winner's — an upsert-style
+        // overwrite would leave a different one under the same seq.
+        const won = (winners[0] as PromiseFulfilledResult<Array<{ event: unknown }>>).value;
+        assert(stored[0]!.event === won[0]!.event, 'the surviving event belongs to the winner');
+      },
+    },
+    {
       name: 'snapshot — save / loadLatest / loadBefore / keepN prune / delete',
       async run(context) {
         const persistenceId = `${context.label}:snap`;
