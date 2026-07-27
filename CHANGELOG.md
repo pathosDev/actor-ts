@@ -11,6 +11,27 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Added
 
+- **libSQL / Turso persistence backend** (#400) — `LibSqlJournal`,
+  `LibSqlSnapshotStore` and `LibSqlDurableStateStore`, SQLite reached over
+  HTTP or WebSocket via `@libsql/client` (a new optional peer dependency,
+  imported through its `/web` entry point so nothing native loads at runtime).
+  The statements match the local SQLite backend's, so a database can move
+  between a local file and Turso without a migration, and it is the first
+  durable-state store in the SQLite family.  Remote URLs only — a `file:` or
+  `:memory:` URL is rejected at construction with a pointer to `SqliteJournal`,
+  because the HTTP driver cannot open one either.  Registration works like
+  Postgres': `registerLibSqlPlugins` plus the plugin ids
+  `actor-ts.persistence.{journal,snapshot-store,durable-state}.libsql`.
+- **SQLite persistence now runs on Deno** (#400).  `getSqliteDriver()` used to
+  throw there, because both drivers need a native binding — so `SqliteJournal`,
+  `SqliteSnapshotStore` and `SqliteQuery` were unavailable and the docs pointed
+  Deno users at the in-memory or Cassandra journal.  The new `NodeSqliteDriver`
+  wraps the built-in `node:sqlite` (Deno >= 2.2, Node >= 22.13, recent Bun), so
+  every supported runtime now has a SQLite driver that needs no install.  On
+  Node, `better-sqlite3` is still preferred when present — existing deployments
+  keep the driver they run — and `node:sqlite` is the fallback, which makes the
+  peer dependency genuinely optional there.  A new `06-sqlite-journal` smoke
+  case verifies append / read / concurrency on Bun, Node and Deno.
 - **Relational persistence base layer** (#389) — `RelationalJournal`,
   `RelationalSnapshotStore`, `RelationalDurableStateStore` and the `SqlDialect`
   / `SqlPool` contracts are now exported.  A new SQL backend is a dialect

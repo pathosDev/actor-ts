@@ -553,6 +553,7 @@ export default defineConfig({
                 { label: 'Cassandra', slug: 'persistence/journals/cassandra', translations: { de: 'Cassandra', es: 'Cassandra', fr: 'Cassandra', ja: 'Cassandra', ko: 'Cassandra', 'pt-BR': 'Cassandra', ru: 'Cassandra', 'zh-CN': 'Cassandra' } },
                 { label: 'PostgreSQL', slug: 'persistence/journals/postgres', translations: { de: 'PostgreSQL', es: 'PostgreSQL', fr: 'PostgreSQL', ja: 'PostgreSQL', ko: 'PostgreSQL', 'pt-BR': 'PostgreSQL', ru: 'PostgreSQL', 'zh-CN': 'PostgreSQL' } },
                 { label: 'MariaDB',    slug: 'persistence/journals/mariadb',   translations: { de: 'MariaDB', es: 'MariaDB', fr: 'MariaDB', ja: 'MariaDB', ko: 'MariaDB', 'pt-BR': 'MariaDB', ru: 'MariaDB', 'zh-CN': 'MariaDB' } },
+                { label: 'libSQL / Turso', slug: 'persistence/journals/libsql', translations: { de: 'libSQL / Turso', es: 'libSQL / Turso', fr: 'libSQL / Turso', ja: 'libSQL / Turso', ko: 'libSQL / Turso', 'pt-BR': 'libSQL / Turso', ru: 'libSQL / Turso', 'zh-CN': 'libSQL / Turso' } },
               ],
             },
             {

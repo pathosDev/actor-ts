@@ -55,14 +55,22 @@ flowchart LR
 The journal and the durable-state store are **pluggable**.  The
 framework ships:
 
-| Backend | Journal | Durable state | Snapshot store |
-| --- | --- | --- | --- |
-| In-memory | ✓ | ✓ | ✓ |
-| SQLite (Bun + better-sqlite3) | ✓ | — | ✓ |
-| PostgreSQL | ✓ | ✓ | ✓ |
-| MariaDB / MySQL | ✓ | ✓ | ✓ |
-| Cassandra | ✓ | — | ✓ |
-| Filesystem / S3 (object storage) | — | ✓ | ✓ |
+| Backend | Journal | Durable state | Snapshot store | Indexed tag query | Runtimes |
+| --- | --- | --- | --- | --- | --- |
+| In-memory | ✓ | ✓ | ✓ | in-process scan | all |
+| SQLite | ✓ | — | ✓ | ✓ (join table) | all |
+| libSQL / Turso | ✓ | ✓ | ✓ | ✓ (join table) | all |
+| PostgreSQL | ✓ | ✓ | ✓ | — (polling scan) | all |
+| MariaDB / MySQL | ✓ | ✓ | ✓ | — (polling scan) | all |
+| Cassandra | ✓ | — | ✓ | ✓ (tag-index table) | all |
+| Filesystem / S3 (object storage) | — | ✓ | ✓ | n/a | all |
+
+"Indexed tag query" is what `PersistenceQuery.currentEventsByTag` can push
+down to storage: a backend with a tag index walks it, while the others scan
+the journal and refine in memory — correct either way, but only bounded in
+cost where there is an index.  SQLite runs on every runtime since the
+built-in `node:sqlite` driver landed; the local file needs `better-sqlite3`
+only if you prefer it on Node.
 
 Plus an extension point — implement the `Journal` /
 `DurableStateStore` / `SnapshotStore` interfaces for your own

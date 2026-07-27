@@ -55,14 +55,23 @@ flowchart LR
 Das Journal und der Durable-State-Store sind **austauschbar**.  Das
 Framework liefert mit:
 
-| Backend | Journal | Durable State | Snapshot Store |
-| --- | --- | --- | --- |
-| In-Memory | ✓ | ✓ | ✓ |
-| SQLite (Bun + better-sqlite3) | ✓ | — | ✓ |
-| PostgreSQL | ✓ | ✓ | ✓ |
-| MariaDB / MySQL | ✓ | ✓ | ✓ |
-| Cassandra | ✓ | — | ✓ |
-| Filesystem / S3 (Object Storage) | — | ✓ | ✓ |
+| Backend | Journal | Durable State | Snapshot Store | Indizierte Tag-Query | Runtimes |
+| --- | --- | --- | --- | --- | --- |
+| In-Memory | ✓ | ✓ | ✓ | In-Process-Scan | alle |
+| SQLite | ✓ | — | ✓ | ✓ (Join-Tabelle) | alle |
+| libSQL / Turso | ✓ | ✓ | ✓ | ✓ (Join-Tabelle) | alle |
+| PostgreSQL | ✓ | ✓ | ✓ | — (Polling-Scan) | alle |
+| MariaDB / MySQL | ✓ | ✓ | ✓ | — (Polling-Scan) | alle |
+| Cassandra | ✓ | — | ✓ | ✓ (Tag-Index-Tabelle) | alle |
+| Filesystem / S3 (Object Storage) | — | ✓ | ✓ | n/a | alle |
+
+"Indizierte Tag-Query" beschreibt, was `PersistenceQuery.currentEventsByTag`
+in den Storage hinunterdrücken kann: ein Backend mit Tag-Index läuft diesen
+ab, die übrigen scannen das Journal und verfeinern im Speicher — korrekt in
+beiden Fällen, aber nur mit Index in den Kosten begrenzt.  SQLite läuft auf
+jeder Runtime, seit der eingebaute `node:sqlite`-Treiber dazugekommen ist;
+`better-sqlite3` brauchst du für die lokale Datei nur, wenn du es auf Node
+bevorzugst.
 
 Plus einen Erweiterungspunkt — implementiere die Interfaces `Journal` /
 `DurableStateStore` / `SnapshotStore` für deinen eigenen Storage.
