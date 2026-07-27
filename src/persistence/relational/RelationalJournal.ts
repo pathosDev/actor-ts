@@ -146,6 +146,18 @@ export class RelationalJournal extends RelationalStore implements Journal {
         const actual = await this.highestSeq(persistenceId).catch(() => expectedSeq);
         throw new JournalConcurrencyError(persistenceId, expectedSeq, actual);
       }
+      // The engine may also abort the loser to resolve contention *before* the
+      // primary key is checked — MariaDB does exactly that (#479).  Same race,
+      // so it owes the caller the same JournalConcurrencyError; but unlike a
+      // duplicate key, a contention abort is not proof of one.  Only translate
+      // when the head actually moved, so an ordinary lock-wait timeout against
+      // an unrelated long transaction stays the storage failure it is.
+      if (this.dialect.isSerializationConflictError(e)) {
+        const actual = await this.highestSeq(persistenceId).catch(() => expectedSeq);
+        if (actual !== expectedSeq) {
+          throw new JournalConcurrencyError(persistenceId, expectedSeq, actual);
+        }
+      }
       this.fail('append', e);
     }
   }

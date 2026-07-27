@@ -178,7 +178,12 @@ Pre-provision these (and grant only `INSERT/SELECT/UPDATE/DELETE`) and set
   one transaction; the caller's `expectedSeq` is checked against the
   current head.  A racing writer that slips through trips the primary-key
   unique constraint (SQLSTATE `23505`), which is translated to
-  `JournalConcurrencyError` as a backstop.
+  `JournalConcurrencyError` as a backstop.  An engine that aborts the loser
+  for contention *before* the key is checked (`40001` / `40P01` — reachable
+  at `SERIALIZABLE`, and the norm on the wire-compatible engines) gets the
+  same treatment, but only once a re-read confirms the head moved: an
+  ordinary lock problem stays a `JournalError` rather than becoming a retry
+  loop.
 - **Durable-state CAS** uses the `revision` column: a create
   (`expectedRevision === 0`) is `INSERT … ON CONFLICT DO NOTHING`, and an
   update is `UPDATE … WHERE revision = expected`.  Zero rows affected ⇒

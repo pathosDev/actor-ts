@@ -109,4 +109,10 @@ export const sqliteDialect: SqlDialect = {
     return typeof candidate.message === 'string'
       && /UNIQUE constraint failed|PRIMARY KEY constraint failed/i.test(candidate.message);
   },
+  // SQLite serializes writers with a database-level lock instead of aborting
+  // one of them, so a contended writer waits and then proceeds — there is no
+  // deadlock victim to classify.  `SQLITE_BUSY` is the closest relative, but
+  // it means "the lock did not free in time", not "you lost a race", and the
+  // head will not have moved — so translating it would be a lie either way.
+  isSerializationConflictError: () => false,
 };

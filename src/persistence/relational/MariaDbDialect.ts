@@ -100,4 +100,15 @@ export const mariaDbDialect: SqlDialect = {
     const candidate = error as { errno?: number; code?: string };
     return candidate.errno === 1062 || candidate.code === 'ER_DUP_ENTRY';
   },
+  // 1020 `ER_CHECKREAD` is the one that actually bites: InnoDB aborts the
+  // losing writer with "Record has changed since last read" before the
+  // duplicate key is ever checked (#479).  1213/1205 round out the family —
+  // a deadlock victim and a lock-wait timeout are the same "you lost, retry"
+  // signal wearing different numbers.
+  isSerializationConflictError: (error) => {
+    const candidate = error as { errno?: number; code?: string };
+    const codes = new Set(['ER_CHECKREAD', 'ER_LOCK_DEADLOCK', 'ER_LOCK_WAIT_TIMEOUT']);
+    return (candidate.errno !== undefined && new Set([1020, 1213, 1205]).has(candidate.errno))
+      || (candidate.code !== undefined && codes.has(candidate.code));
+  },
 };

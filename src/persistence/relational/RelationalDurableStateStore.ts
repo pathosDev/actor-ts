@@ -105,6 +105,17 @@ export class RelationalDurableStateStore extends RelationalStore implements Dura
       return { persistenceId, revision: newRevision, state, timestamp: now };
     } catch (e) {
       if (e instanceof DurableStateConcurrencyError) throw e;
+      // Same hole the journal had (#479): a CAS loser can be aborted for
+      // contention instead of losing on the duplicate key or the affected-row
+      // count, and that owes the caller a concurrency error too.  Confirmed
+      // against the stored revision first — a contention abort on its own
+      // does not prove someone else won.
+      if (this.dialect.isSerializationConflictError(e)) {
+        const actual = await this.currentRevision(pool, persistenceId).catch(() => expectedRevision);
+        if (actual !== expectedRevision) {
+          throw new DurableStateConcurrencyError(persistenceId, expectedRevision, actual);
+        }
+      }
       this.fail('upsert', e);
     }
   }

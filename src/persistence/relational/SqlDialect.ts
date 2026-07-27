@@ -13,6 +13,7 @@
  *     `keepN` prune needs a derived table on MySQL/MariaDB and therefore a
  *     different parameter list);
  *   - **how a duplicate key is reported** — SQLSTATE `23505`, errno `1062`;
+ *   - **how a contention abort is reported** — SQLSTATE `40001`, errno `1213`;
  *   - **column types** in the DDL.
  *
  * Everything else is written once in the relational bases as canonical `?`
@@ -96,6 +97,26 @@ export interface SqlDialect {
    * YugabyteDB word the message differently but keep the SQLSTATE).
    */
   isDuplicateKeyError(error: unknown): boolean;
+
+  /**
+   * True when `error` is the engine aborting a transaction to resolve
+   * contention — a serialization failure, deadlock victim, or lock-wait
+   * timeout — rather than a constraint violation.
+   *
+   * The duplicate-key backstop above assumes the losing writer gets far
+   * enough to violate the primary key, and that is not guaranteed: under real
+   * contention MariaDB aborts the loser with errno 1020 (`ER_CHECKREAD`)
+   * *before* the insert is checked, so the race surfaced as an opaque
+   * `JournalError` instead of `JournalConcurrencyError` and callers could no
+   * longer tell a retryable race from a storage failure (#479).
+   *
+   * A conflict alone does not prove a race, so the bases never translate on
+   * this predicate alone — they re-read the head and only report a
+   * concurrency error when it actually moved.  That keeps an ordinary lock
+   * problem (a long-running unrelated transaction) from being relabelled as
+   * someone else's append.
+   */
+  isSerializationConflictError(error: unknown): boolean;
 }
 
 /**

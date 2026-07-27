@@ -128,10 +128,23 @@ Das Verhalten ist identisch; das SQL unterscheidet sich:
 | `keepN`-Prune | `NOT IN (SELECT … LIMIT)` | derived-table-gewrappte Subquery¹ |
 | Durable-Create-Konflikt | `ON CONFLICT DO NOTHING` → rowCount | reines `INSERT`, `ER_DUP_ENTRY` (1062) fangen |
 | Concurrency-Backstop | SQLSTATE `23505` | `ER_DUP_ENTRY` / 1062 |
+| Contention-Backstop | SQLSTATE `40001` / `40P01` | `ER_CHECKREAD` (1020), 1213, 1205² |
 
 ¹ MySQL/MariaDB lehnen `LIMIT` in einer nackten `IN (SELECT …)` gegen die
 zu löschende Tabelle ab, daher wrappt der Prune die Subquery in eine
 Derived Table.
+
+² Ein unterlegener Writer erreicht den Primary Key nicht immer.  Unter
+echter Contention bricht InnoDB ihn vorher ab — *„Record has changed since
+last read"* (errno 1020) — der Duplicate-Key-Backstop allein hätte dem
+Caller also einen undurchsichtigen `JournalError` gereicht, ohne
+Unterscheidungsmöglichkeit zwischen wiederholbarem Race und echtem
+Speicherfehler.  Diese Abbrüche werden ebenfalls klassifiziert, aber nur
+dann als `JournalConcurrencyError` gemeldet, wenn ein erneutes Lesen zeigt,
+dass der Head sich tatsächlich bewegt hat; sonst bleibt der Fehler stehen,
+denn ein Lock-Wait-Timeout gegen eine unbeteiligte lange Transaktion ist
+ein echter Fehler, und ein Retry würde sich nur drehen.  Für Durable-State-
+CAS gilt dasselbe.
 
 `BIGINT` kann der Connector als JS-`bigint` liefern; das Backend coerct
 Sequence/Revision/Timestamp an der Mapping-Grenze zu `number`.
