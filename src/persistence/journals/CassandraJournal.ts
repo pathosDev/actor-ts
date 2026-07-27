@@ -32,11 +32,15 @@ interface EventRow {
  *   - clustering column `sequence_nr` for in-stream ordering;
  *   - a small metadata row per persistence_id tracking `max_sequence_nr`.
  *
- * The journal relies on a *single writer per persistence id* — the
- * standard PersistentActor contract, one instance per id at a time.
- * Under that assumption the "read max-seq → append → write max-seq"
- * sequence is safe without server-side LWT.  If you need multi-writer
- * safety, wrap the metadata update in an LWT (`IF max_sequence_nr = ?`).
+ * Appends are serialized by a **lightweight transaction** on the metadata
+ * row: the writer claims its sequence range with a conditional statement
+ * before a single event is written, so two writers that both read head `N`
+ * can never both proceed (#475).  A plain read-check would not be enough —
+ * a Cassandra `INSERT` is an upsert, so the loser of that race would
+ * silently overwrite the winner's event instead of being rejected the way
+ * the relational backends' primary key rejects it.  Costs one Paxos
+ * round-trip per `append`; `lightweightTransactions: false` trades the
+ * guarantee back for the round-trip.
  */
 export class CassandraJournal implements Journal {
   private readonly options: Partial<CassandraJournalOptionsType>;
@@ -94,6 +98,18 @@ export class CassandraJournal implements Journal {
       : { prepare: true, consistency: this.options.consistency };
   }
 
+  /**
+   * Query options for the LWT claim.  Adds the serial consistency governing
+   * the Paxos phase: left unset the driver uses cluster-wide `SERIAL`, which
+   * drags every append across datacenters on a multi-DC keyspace — the exact
+   * cost `consistency: LOCAL_QUORUM` exists to avoid.
+   */
+  private conditionalOptions(): { prepare: boolean; consistency?: number; serialConsistency?: number } {
+    return this.options.serialConsistency === undefined
+      ? this.readOptions()
+      : { ...this.readOptions(), serialConsistency: this.options.serialConsistency };
+  }
+
   /** CQL batch options — unlogged (see `append`), honouring the configured consistency level. */
   private batchOptions(): { prepare: boolean; logged: boolean; consistency?: number } {
     return this.options.consistency === undefined
@@ -111,8 +127,13 @@ export class CassandraJournal implements Journal {
     assertValidTags(tags);
     await this.ensureStarted();
 
-    // 1) Read current max-seq from metadata; throw on mismatch.
-    const actualSeq = await this.readHighestSeq(persistenceId);
+    // 1) Read current max-seq from metadata; throw on mismatch.  Under LWT
+    //    this is only a cheap pre-check that spares an obviously-stale
+    //    caller a Paxos round — the claim in step 2 is the authority, and a
+    //    read that raced a concurrent commit is caught there.  Whether the
+    //    row EXISTS (not merely whether it reads 0) picks the claim variant.
+    const metadata = await this.readMetadata(persistenceId);
+    const actualSeq = metadata?.maxSequenceNr ?? 0;
     if (actualSeq !== expectedSeq) {
       throw new JournalConcurrencyError(persistenceId, expectedSeq, actualSeq);
     }
@@ -121,14 +142,24 @@ export class CassandraJournal implements Journal {
     const partitionSize = this.options.partitionSize ?? 500_000;
     const tagList = tags ? Array.from(tags) : null;
     const written: PersistentEvent<E>[] = [];
+    const lastSeq = actualSeq + events.length;
 
-    // 2) Batch INSERT events, one unlogged batch per partition.  Unlogged
-    //    (not atomic across rows) is fine here: the single-writer-per-pid
-    //    contract means no concurrent writer races these inserts, and the
-    //    metadata max-seq is written only after the batch succeeds, so a
-    //    partial batch is recovered by re-running from the last committed
-    //    max-seq.  Splitting per partition avoids Cassandra's multi-partition
-    //    logged-batch warning.
+    // 2) Claim the whole range [actualSeq+1, lastSeq] on the metadata row
+    //    BEFORE writing any event.  Ordering matters: the events insert is
+    //    an upsert, so a claim taken afterwards would let a loser overwrite
+    //    the winner's payload and still be told it won.  Claiming first
+    //    inverts the crash window instead — see `releaseSequenceRange`.
+    if (this.lightweightTransactions) {
+      await this.claimSequenceRange(persistenceId, metadata !== null, expectedSeq, lastSeq, now);
+    }
+
+    // 3) Batch INSERT events, one unlogged batch per partition.  Unlogged
+    //    (not atomic across rows) is fine here: the sequence range is already
+    //    claimed, so no concurrent writer races these inserts, and a partial
+    //    batch is recovered by re-running from the last committed max-seq.
+    //    Splitting per partition avoids Cassandra's multi-partition
+    //    logged-batch warning — and the claim can't join the batch anyway,
+    //    since a conditional batch must stay inside one partition.
     let batchPartition: number | null = null;
     let batchOps: Array<{ query: string; params: ReadonlyArray<unknown> }> = [];
     const flush = async (): Promise<void> => {
@@ -143,52 +174,62 @@ export class CassandraJournal implements Journal {
     };
 
     let seq = actualSeq;
-    for (const ev of events) {
-      seq++;
-      const partition = Math.floor((seq - 1) / partitionSize);
-      if (batchPartition !== null && partition !== batchPartition) await flush();
-      batchPartition = partition;
-      const payload = JSON.stringify(ev);
-      batchOps.push({
-        query:
-          `INSERT INTO ${this.qualified(this.eventsTable)} (persistence_id, partition_nr, sequence_nr, timestamp, payload, tags) VALUES (?, ?, ?, ?, ?, ?)`,
-        params: [persistenceId, partition, seq, now, payload, tagList],
-      });
-      // Tag-index side-table dual-write (#44).  One row per (event, tag)
-      // pair so a tag-query walks a single (tag) partition.  Each row
-      // also carries the full tag set, letting `CassandraQuery` JS-
-      // refine multi-tag filters without a follow-up read.
-      if (this.options.useTagIndex && tagList && tagList.length > 0) {
-        for (const tag of tagList) {
-          batchOps.push({
-            query:
-              `INSERT INTO ${this.qualified(this.tagIndexTable)} (tag, timestamp, persistence_id, sequence_nr, payload, tags) VALUES (?, ?, ?, ?, ?, ?)`,
-            params: [tag, now, persistenceId, seq, payload, tagList],
-          });
-        }
-      }
-      written.push({
-        persistenceId: persistenceId,
-        sequenceNr: seq,
-        event: ev,
-        timestamp: now,
-        tags: tagList ? [...tagList] : undefined,
-      });
-    }
-    await flush();
-
-    // 3) Upsert the metadata row with the new max-seq.
     try {
-      await this.client.execute(
-        `INSERT INTO ${this.qualified(this.metadataTable)} (persistence_id, max_sequence_nr, updated_at) VALUES (?, ?, ?)`,
-        [persistenceId, seq, now],
-        this.readOptions(),
-      );
+      for (const ev of events) {
+        seq++;
+        const partition = Math.floor((seq - 1) / partitionSize);
+        if (batchPartition !== null && partition !== batchPartition) await flush();
+        batchPartition = partition;
+        const payload = JSON.stringify(ev);
+        batchOps.push({
+          query:
+            `INSERT INTO ${this.qualified(this.eventsTable)} (persistence_id, partition_nr, sequence_nr, timestamp, payload, tags) VALUES (?, ?, ?, ?, ?, ?)`,
+          params: [persistenceId, partition, seq, now, payload, tagList],
+        });
+        // Tag-index side-table dual-write (#44).  One row per (event, tag)
+        // pair so a tag-query walks a single (tag) partition.  Each row
+        // also carries the full tag set, letting `CassandraQuery` JS-
+        // refine multi-tag filters without a follow-up read.
+        if (this.options.useTagIndex && tagList && tagList.length > 0) {
+          for (const tag of tagList) {
+            batchOps.push({
+              query:
+                `INSERT INTO ${this.qualified(this.tagIndexTable)} (tag, timestamp, persistence_id, sequence_nr, payload, tags) VALUES (?, ?, ?, ?, ?, ?)`,
+              params: [tag, now, persistenceId, seq, payload, tagList],
+            });
+          }
+        }
+        written.push({
+          persistenceId: persistenceId,
+          sequenceNr: seq,
+          event: ev,
+          timestamp: now,
+          tags: tagList ? [...tagList] : undefined,
+        });
+      }
+      await flush();
     } catch (e) {
-      throw new JournalError(`CassandraJournal.append: metadata update failed: ${(e as Error).message}`, e);
+      if (this.lightweightTransactions) {
+        await this.releaseSequenceRange(persistenceId, actualSeq, lastSeq, now);
+      }
+      throw e;
     }
 
-    // 4) Index the persistence id so `persistenceIds()` can enumerate them.
+    // 4) Publish the new max-seq.  Under LWT the claim in step 2 already
+    //    wrote it — re-writing here would clobber a newer writer's head.
+    if (!this.lightweightTransactions) {
+      try {
+        await this.client.execute(
+          `INSERT INTO ${this.qualified(this.metadataTable)} (persistence_id, max_sequence_nr, updated_at) VALUES (?, ?, ?)`,
+          [persistenceId, seq, now],
+          this.readOptions(),
+        );
+      } catch (e) {
+        throw new JournalError(`CassandraJournal.append: metadata update failed: ${(e as Error).message}`, e);
+      }
+    }
+
+    // 5) Index the persistence id so `persistenceIds()` can enumerate them.
     //    Skipped on re-inserts thanks to the PK — no-ops are free.
     if (actualSeq === 0) {
       try {
@@ -293,6 +334,8 @@ export class CassandraJournal implements Journal {
   get tagIndexTable(): string { return this.options.tagIndexTable ?? 'events_by_tag'; }
   /** Whether dual-writes to the tag-index side table are enabled. */
   get useTagIndex(): boolean { return this.options.useTagIndex === true; }
+  /** Whether appends claim their sequence range with an LWT (#475).  On by default. */
+  private get lightweightTransactions(): boolean { return this.options.lightweightTransactions ?? true; }
 
   private qualified(table: string): string {
     // keyspace + table are interpolated into CQL (identifiers can't be bound)
@@ -304,6 +347,15 @@ export class CassandraJournal implements Journal {
   }
 
   private async readHighestSeq(persistenceId: string): Promise<number> {
+    return (await this.readMetadata(persistenceId))?.maxSequenceNr ?? 0;
+  }
+
+  /**
+   * Read the metadata row, distinguishing "no row yet" (`null`) from "row
+   * holding 0" — `append` needs that difference to pick between the
+   * `IF NOT EXISTS` and `IF max_sequence_nr = ?` claim variants.
+   */
+  private async readMetadata(persistenceId: string): Promise<{ maxSequenceNr: number } | null> {
     try {
       const response = await this.client.execute(
         `SELECT max_sequence_nr FROM ${this.qualified(this.metadataTable)} WHERE persistence_id = ?`,
@@ -311,10 +363,97 @@ export class CassandraJournal implements Journal {
         this.readOptions(),
       );
       const row = response.rows[0] as { max_sequence_nr?: string | number } | undefined;
-      return row?.max_sequence_nr !== undefined ? Number(row.max_sequence_nr) : 0;
+      if (row?.max_sequence_nr === undefined || row.max_sequence_nr === null) return null;
+      return { maxSequenceNr: Number(row.max_sequence_nr) };
     } catch (e) {
       throw new JournalError(`CassandraJournal.highestSeq failed: ${(e as Error).message}`, e);
     }
+  }
+
+  /**
+   * Claim `[…, lastSeq]` on the metadata row with a lightweight transaction.
+   * Returns normally only when Paxos accepted OUR claim; a rejected claim
+   * means another writer took the same range, and Cassandra hands back the
+   * row as it actually stands — so the loser reports an accurate
+   * `actualSeq` without paying for a second read.
+   */
+  private async claimSequenceRange(
+    persistenceId: string,
+    metadataExists: boolean,
+    expectedSeq: number,
+    lastSeq: number,
+    now: number,
+  ): Promise<void> {
+    // `IF NOT EXISTS` and `IF max_sequence_nr = ?` are both guarded by the
+    // same Paxos round, so picking the wrong variant off a stale read is
+    // safe: it fails to apply rather than overwriting anything.
+    const claim = metadataExists
+      ? await this.executeConditional(
+        `UPDATE ${this.qualified(this.metadataTable)} SET max_sequence_nr = ?, updated_at = ? WHERE persistence_id = ? IF max_sequence_nr = ?`,
+        [lastSeq, now, persistenceId, expectedSeq],
+      )
+      : await this.executeConditional(
+        `INSERT INTO ${this.qualified(this.metadataTable)} (persistence_id, max_sequence_nr, updated_at) VALUES (?, ?, ?) IF NOT EXISTS`,
+        [persistenceId, lastSeq, now],
+      );
+    if (claim.applied) return;
+    throw new JournalConcurrencyError(persistenceId, expectedSeq, claim.currentSeq ?? expectedSeq);
+  }
+
+  /**
+   * Best-effort undo of a claim whose event batch then failed, so a retry
+   * can re-claim the same range instead of leaving a permanent gap.
+   * Conditional on the value WE claimed — a writer that has legitimately
+   * moved the head on past us is never rewound.  Failures are swallowed:
+   * the append is already throwing, and the residual gap (claim committed,
+   * events missing, release lost too) is the documented crash window.
+   */
+  private async releaseSequenceRange(
+    persistenceId: string,
+    previousSeq: number,
+    claimedSeq: number,
+    now: number,
+  ): Promise<void> {
+    try {
+      await this.client.execute(
+        `UPDATE ${this.qualified(this.metadataTable)} SET max_sequence_nr = ?, updated_at = ? WHERE persistence_id = ? IF max_sequence_nr = ?`,
+        [previousSeq, now, persistenceId, claimedSeq],
+        this.conditionalOptions(),
+      );
+    } catch { /* best-effort — the original failure is what the caller sees */ }
+  }
+
+  /**
+   * Run a conditional statement and decode Cassandra's LWT result row —
+   * `[applied]`, plus the current column values when the condition failed.
+   * A missing `[applied]` marker means the statement did not run as an LWT
+   * at all; that is raised loudly rather than assumed to have applied,
+   * because assuming success is exactly the silent-overwrite this guards.
+   */
+  private async executeConditional(
+    query: string,
+    params: ReadonlyArray<unknown>,
+  ): Promise<{ applied: boolean; currentSeq: number | null }> {
+    let response;
+    try {
+      response = await this.client.execute(query, params, this.conditionalOptions());
+    } catch (e) {
+      throw new JournalError(`CassandraJournal.append: sequence claim failed: ${(e as Error).message}`, e);
+    }
+    const row = (response.rows[0] ?? {}) as Record<string, unknown>;
+    const applied = row['[applied]'];
+    if (typeof applied !== 'boolean') {
+      throw new JournalError(
+        `CassandraJournal.append: conditional metadata write returned no [applied] marker`
+        + ` — the driver did not execute it as a lightweight transaction.`
+        + ` Set lightweightTransactions: false to opt out of LWT-serialized appends.`,
+      );
+    }
+    const current = row['max_sequence_nr'];
+    return {
+      applied,
+      currentSeq: current === undefined || current === null ? null : Number(current),
+    };
   }
 
   private async ensureStarted(): Promise<void> {
