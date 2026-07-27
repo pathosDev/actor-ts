@@ -57,7 +57,7 @@ jobs:
 
       # `bun install` is fast and reads `docs/bun.lock`, but `bun run build`
       # ultimately invokes `astro build` whose shebang spawns Node — so the
-      # system Node has to satisfy Astro's minimum (>= 22.12 for Astro 6).
+      # system Node has to satisfy Astro's minimum (>= 22.12 for Astro 7).
       # We install the repo's `engines` floor.
       - name: Setup Node.js
         uses: actions/setup-node@v7

@@ -98,6 +98,16 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   (defined in the reference config + documented, but read by no code).
   *Migration:* remove any use of these — they were no-ops.  (The Cassandra
   `consistency` option is **not** removed — it is now honoured; see Fixed.)
+- **Docs toolchain: Astro 7 + Starlight 0.41** (#474).  The upgrade #473 had to
+  defer: `@astrojs/starlight@0.41.4` peers `astro: "^7.0.2"`, so the coordinated
+  bump (`astro` `^6.4.8` → `^7.1.3`, `@astrojs/starlight` `^0.39.3` → `^0.41.4`)
+  is now viable.  Astro 7 also makes `@astrojs/markdown-satteri` the default
+  Markdown pipeline and demotes the remark/rehype one to the optional peer
+  `@astrojs/markdown-remark`, which deprecates `markdown.rehypePlugins`; the
+  Mermaid SSR wiring in `docs/astro.config.mjs` therefore moves to
+  `markdown.processor: unified({ rehypePlugins: [...] })` and `docs` takes an
+  explicit `@astrojs/markdown-remark` dependency (pinned to `7.2.1`, Astro's
+  exact peer).  Site-only — no runtime or public-API impact.
 
 ### Fixed
 
@@ -111,8 +121,9 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   astro 7 and `astro build` died on `Package subpath './jsx/rehype.js' is not
   defined by "exports"`.  The `astro` range is back at `^6.4.8` (the other
   bumps are peer-compatible and stay) and `docs/bun.lock` is regenerated, so
-  package.json and lockfile agree.  Astro 7 waits for a Starlight release that
-  peer-supports it.  Both CI docs workflows now install with
+  package.json and lockfile agree.  (Astro 7 lands separately, together with the
+  Starlight release that peer-supports it — see Changed → #474.)
+  Both CI docs workflows now install with
   `--frozen-lockfile`, and `docs-checks` — which runs on every `docs/**` change
   — gained a lockfile-sync job, so this drift fails on the PR instead of
   silently at release time.
