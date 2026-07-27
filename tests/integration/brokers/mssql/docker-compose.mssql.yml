@@ -1,0 +1,55 @@
+# Microsoft SQL Server live-integration suite (#399).
+#
+# Brings up SQL Server 2022 plus a runner container that exercises the SQL
+# Server journal / snapshot / durable-state backends against it via the
+# `mssql` (tedious) driver.
+#
+# Run locally:
+#   bun run test:integration:mssql
+#   bun run test:integration:mssql:teardown
+
+name: actor-ts-integration-mssql
+
+services:
+  mssql:
+    # 2022-latest rather than a bare `latest`: Microsoft publishes no moving
+    # `latest` tag for this image, and the DDL relies on the 1700-byte
+    # nonclustered index-key limit introduced in SQL Server 2016.
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    environment:
+      ACCEPT_EULA: "Y"
+      MSSQL_SA_PASSWORD: "Actor_ts_integration_1"
+      MSSQL_PID: Developer
+    healthcheck:
+      # `sqlcmd` returns non-zero until the instance finishes recovery, so this
+      # is a true "ready for the runner" gate.  The 2022 image ships the tool
+      # under /opt/mssql-tools18 and needs -C to trust its self-signed cert.
+      test: ["CMD-SHELL", "/opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P \"$$MSSQL_SA_PASSWORD\" -C -Q 'SELECT 1' || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 20s
+    networks:
+      mssqlnet: {}
+
+  runner:
+    build:
+      context: ../../../..
+      dockerfile: tests/integration/brokers/mssql/Dockerfile.runner
+    depends_on:
+      mssql:
+        condition: service_healthy
+    environment:
+      # Inside the compose bridge SQL Server is reachable by service name.  The
+      # contract runs against `master`; the image creates no other database and
+      # the stores create their own tables.
+      MSSQL_HOST: mssql
+      MSSQL_PORT: "1433"
+      MSSQL_USER: sa
+      MSSQL_PASSWORD: "Actor_ts_integration_1"
+      MSSQL_DATABASE: master
+    networks:
+      mssqlnet: {}
+
+networks:
+  mssqlnet: {}

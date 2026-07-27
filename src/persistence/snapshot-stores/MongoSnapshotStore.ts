@@ -1,0 +1,132 @@
+import { type Snapshot } from '../JournalTypes.js';
+import type { PersistenceOptions } from '../PersistenceOptions.js';
+import type { SnapshotStore } from '../SnapshotStore.js';
+import { none, some, type Option } from '../../util/Option.js';
+import {
+  buildMongoResource,
+  type MongoCollectionLike,
+  type MongoDatabaseLike,
+} from '../journals/MongoClient.js';
+import { MongoStore } from '../journals/MongoStore.js';
+import {
+  MongoSnapshotStoreOptionsValidator,
+  type MongoSnapshotStoreOptions,
+  type MongoSnapshotStoreOptionsType,
+} from './MongoSnapshotStoreOptions.js';
+
+interface SnapshotDocument {
+  readonly persistenceId: string;
+  readonly sequenceNr: number;
+  readonly payload: string;
+  readonly timestamp: number;
+  readonly [field: string]: unknown;
+}
+
+/**
+ * SnapshotStore backed by MongoDB.
+ *
+ * One document per `(persistenceId, sequenceNr)` behind a unique index, so
+ * `save` at an existing sequence number overwrites in place and `loadLatest` is
+ * an indexed descending read.  Payloads are JSON text for the same reason as in
+ * `MongoJournal` — exact round-trip fidelity over queryability the framework
+ * does not use.
+ *
+ * `PersistenceOptions` (compression, encryption) are ignored, matching the SQL
+ * and Cassandra stores; the object-storage store is the one that honours them.
+ */
+export class MongoSnapshotStore extends MongoStore implements SnapshotStore {
+  private readonly collectionName: string;
+  private readonly keepN: number;
+
+  constructor(options: MongoSnapshotStoreOptions = {}) {
+    const resolvedOptions = (options as MongoSnapshotStoreOptionsType);
+    new MongoSnapshotStoreOptionsValidator().validate(resolvedOptions);
+    super({
+      storeName: 'MongoSnapshotStore',
+      autoCreateIndexes: resolvedOptions.autoCreateIndexes,
+      ownsClient: resolvedOptions.client === undefined,
+      openClient: () => buildMongoResource(resolvedOptions),
+    });
+    this.collectionName = resolvedOptions.snapshotsCollection ?? 'snapshots';
+    this.keepN = resolvedOptions.keepN ?? 3;
+  }
+
+  protected async createIndexes(database: MongoDatabaseLike): Promise<void> {
+    await this.snapshots(database).createIndex({ persistenceId: 1, sequenceNr: 1 }, { unique: true });
+  }
+
+  async save<S>(persistenceId: string, seq: number, state: S, _options?: PersistenceOptions): Promise<Snapshot<S>> {
+    const { database } = await this.ensureOpen();
+    const now = Date.now();
+    try {
+      await this.snapshots(database).updateOne(
+        { persistenceId, sequenceNr: seq },
+        { $set: { payload: JSON.stringify(state), timestamp: now } },
+        { upsert: true },
+      );
+      if (this.keepN > 0) await this.prune(database, persistenceId);
+      return { persistenceId, sequenceNr: seq, state, timestamp: now };
+    } catch (e) {
+      this.fail('save', e);
+    }
+  }
+
+  async loadLatest<S>(persistenceId: string, _options?: PersistenceOptions): Promise<Option<Snapshot<S>>> {
+    const { database } = await this.ensureOpen();
+    const [document] = await this.snapshots(database)
+      .find({ persistenceId })
+      .sort({ sequenceNr: -1 })
+      .limit(1)
+      .toArray();
+    return document ? some(toSnapshot<S>(document)) : none;
+  }
+
+  async loadBefore<S>(persistenceId: string, seq: number, _options?: PersistenceOptions): Promise<Option<Snapshot<S>>> {
+    const { database } = await this.ensureOpen();
+    const [document] = await this.snapshots(database)
+      .find({ persistenceId, sequenceNr: { $lt: seq } })
+      .sort({ sequenceNr: -1 })
+      .limit(1)
+      .toArray();
+    return document ? some(toSnapshot<S>(document)) : none;
+  }
+
+  async delete(persistenceId: string, toSeq: number): Promise<void> {
+    const { database } = await this.ensureOpen();
+    await this.snapshots(database).deleteMany({ persistenceId, sequenceNr: { $lte: toSeq } });
+  }
+
+  /* --------------------------- internals -------------------------------- */
+
+  private snapshots(database: MongoDatabaseLike): MongoCollectionLike<SnapshotDocument> {
+    return database.collection<SnapshotDocument>(this.collectionName);
+  }
+
+  /**
+   * Prune-on-save.  Rather than fetch every snapshot and delete the tail, skip
+   * to the first one that falls outside `keepN` and delete from there down — one
+   * bounded read plus one ranged delete, whatever the history length.
+   */
+  private async prune(database: MongoDatabaseLike, persistenceId: string): Promise<void> {
+    const [cutoff] = await this.snapshots(database)
+      .find({ persistenceId })
+      .sort({ sequenceNr: -1 })
+      .skip(this.keepN)
+      .limit(1)
+      .toArray();
+    if (!cutoff) return;   // fewer than keepN snapshots — nothing to prune
+    await this.snapshots(database).deleteMany({
+      persistenceId,
+      sequenceNr: { $lte: Number(cutoff.sequenceNr) },
+    });
+  }
+}
+
+function toSnapshot<S>(document: SnapshotDocument): Snapshot<S> {
+  return {
+    persistenceId: document.persistenceId,
+    sequenceNr: Number(document.sequenceNr),
+    state: JSON.parse(document.payload) as S,
+    timestamp: Number(document.timestamp),
+  };
+}

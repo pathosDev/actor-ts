@@ -132,28 +132,38 @@ The framework auto-detects the right driver based on the runtime,
 so you normally leave `driver` unset:
 
 - **Bun** → `bun:sqlite` (built-in).
-- **Node** → `better-sqlite3` (peer dependency you install).
-- **Deno** → not yet supported.
+- **Node** → `better-sqlite3` when it is installed, otherwise the
+  built-in `node:sqlite`.
+- **Deno** → `node:sqlite` (built-in, Deno >= 2.2).
 
-Auto-detection covers every supported runtime.  The concrete
+Auto-detection covers every supported runtime, and every one of them
+has a driver that needs no install.  The concrete
 driver classes aren't part of the public API — there's no import
 path to construct one by hand — so the `driver` slot is an
 internal seam the framework's own tests use, not something you
 wire up in application code.
 
-## Peer dependency on Node
+## Peer dependency on Node — optional
 
 ```bash
 npm install better-sqlite3
 ```
 
-When running on Node, `better-sqlite3` is a **peer dependency** —
-the framework doesn't bundle it, you install it.  Bun users don't
-need this; Bun has native SQLite.
+On Node, `better-sqlite3` is an **optional** peer dependency: install
+it and the framework prefers it, skip it and the built-in
+`node:sqlite` takes over.  It is worth installing if you want the
+extra throughput or if your deployment already runs it; otherwise the
+zero-dependency path is one less native build in your image.
 
-The auto-detection imports `better-sqlite3` lazily — only when the
-framework actually needs to open a SQLite database.  If you're on
-Bun and never use SQLite, the missing peer doesn't matter.
+Either way the import is lazy — only when the framework actually needs
+to open a SQLite database.  If you never use SQLite, a missing peer
+doesn't matter.
+
+Bun and Deno need nothing: `bun:sqlite` and `node:sqlite` are built in.
+
+For a **remote** SQLite database, see
+[libSQL / Turso](/persistence/journals/libsql/) — same schema, reached
+over HTTP, and it adds a durable-state store.
 
 ## How it performs
 

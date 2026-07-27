@@ -43,6 +43,17 @@ sleeps for 5.1 s but the scheduler fires at 5.0 s vs the
 fast; the test waits 5.1 s every time even though the timer
 fires at 5.0 s — slow.
 
+Widening the tolerance doesn't rescue it either, because timers
+also fire **early**.  Platform timer quanta are coarse — Windows'
+default is 15.625 ms — and an event loop that checks deadlines on
+the tick boundary can consider a timer due before its nominal
+delay has passed: a 30 ms `setTimeout` measured as low as 18.7 ms
+on Bun/Windows, and as high as 201 ms under CPU load.  One nominal
+delay, an order of magnitude of spread. No wall-clock bound is
+both tight enough to mean something and loose enough to hold, and
+a more precise clock doesn't help — the timer is early, not the
+measurement.
+
 `ManualScheduler` removes the dependency on real time.  Tests are
 fast (no waits) and deterministic (advance fires timers in order).
 

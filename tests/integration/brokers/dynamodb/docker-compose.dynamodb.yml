@@ -1,0 +1,44 @@
+# DynamoDB live-integration suite (#398).
+#
+# Brings up `dynamodb-local` plus a runner container that exercises the DynamoDB
+# journal / snapshot / durable-state backends against it via
+# `@aws-sdk/client-dynamodb`.
+#
+# Run locally:
+#   bun run test:integration:dynamodb
+#   bun run test:integration:dynamodb:teardown
+
+name: actor-ts-integration-dynamodb
+
+services:
+  dynamodb:
+    # AWS's own local emulator — the same image the AWS docs recommend for tests.
+    image: amazon/dynamodb-local:latest
+    # In-memory: the suite creates its own tables on first use, and a fresh
+    # instance per run is exactly what makes it reproducible.
+    command: -jar DynamoDBLocal.jar -inMemory -sharedDb
+    networks:
+      ddbnet: {}
+
+  runner:
+    build:
+      context: ../../../..
+      dockerfile: tests/integration/brokers/dynamodb/Dockerfile.runner
+    # No `service_healthy` gate: the image is a bare JRE with no shell utilities
+    # to probe with.  The runner waits on the port itself via `waitForPort` and
+    # the SDK retries its first call — see runner.ts.
+    depends_on:
+      dynamodb:
+        condition: service_started
+    environment:
+      DYNAMODB_ENDPOINT: http://dynamodb:8000
+      # dynamodb-local ignores credentials but the SDK refuses to sign without
+      # them, so any non-empty pair will do.
+      AWS_REGION: eu-central-1
+      AWS_ACCESS_KEY_ID: local
+      AWS_SECRET_ACCESS_KEY: local
+    networks:
+      ddbnet: {}
+
+networks:
+  ddbnet: {}
