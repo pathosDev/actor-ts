@@ -7,6 +7,7 @@
     "fastify": "^5.8.5",
     "ts-pattern": "^5.9.0",
     "@aws-sdk/client-s3": "^3.1048.0",
+    "@aws-sdk/client-dynamodb": "^3.1095.0",
     "mqtt": "^5.15.1",
     "kafkajs": "^2.2.4",
     "amqplib": "^2.0.1",
@@ -15,6 +16,9 @@
     "@grpc/grpc-js": "^1.14.3",
     "@grpc/proto-loader": "^0.8.1",
     "pg": "^8.21.0",
-    "mariadb": "^3.5.2"
+    "mariadb": "^3.5.2",
+    "@libsql/client": "^0.15.15",
+    "mssql": "^12.7.0",
+    "mongodb": "^6.21.0"
   }
 }

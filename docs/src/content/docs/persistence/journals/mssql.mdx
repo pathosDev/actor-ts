@@ -1,0 +1,256 @@
+---
+title: Microsoft SQL Server
+description: Event journal, snapshot store, and durable-state store backed by Microsoft SQL Server via the `mssql` (tedious) driver — the enterprise relational backend. Pure-JavaScript driver, so it runs on Bun, Node and Deno alike.
+---
+
+The SQL Server backend provides all three persistence components against a
+single SQL Server database, via the
+[`mssql`](https://www.npmjs.com/package/mssql) driver (tedious under the
+hood):
+
+- **`MsSqlJournal`** — the event journal for `PersistentActor`s.
+- **`MsSqlSnapshotStore`** — snapshots to bound recovery.
+- **`MsSqlDurableStateStore`** — key-value durable state for
+  `DurableStateActor`s.
+
+Like Postgres, it is **shared across cluster nodes** — any node can read or
+write any persistenceId — and `mssql`/tedious is **pure JavaScript**, so it
+needs no native build step and runs on all three supported runtimes.
+
+## Install
+
+`mssql` is an optional peer dependency — install it alongside actor-ts:
+
+```bash
+bun add mssql
+```
+
+The framework lazy-imports it only when a SQL Server store is first used, so
+it stays out of your bundle until you opt in.
+
+## Setup
+
+Register the journal + snapshot store against the `PersistenceExtension` and
+receive a ready-to-use durable-state store.  Pass a shared `pool` so all
+three components reuse one connection pool:
+
+```ts
+import sql from 'mssql';
+import {
+  ActorSystem,
+  ActorSystemOptions,
+  MsSqlDurableStateStoreOptions,
+  MsSqlJournalOptions,
+  MsSqlSnapshotStoreOptions,
+  PersistenceExtensionId,
+  RegisterMsSqlPluginsOptions,
+  registerMsSqlPlugins,
+} from 'actor-ts';
+
+const systemOptions = ActorSystemOptions.create()
+  // Select the SQL Server plugins as the active journal + snapshot store.
+  .withConfig({
+    'actor-ts': {
+      persistence: {
+        journal: { plugin: 'actor-ts.persistence.journal.mssql' },
+        'snapshot-store': { plugin: 'actor-ts.persistence.snapshot-store.mssql' },
+      },
+    },
+  });
+const system = ActorSystem.create('my-app', systemOptions);
+
+const ext = system.extension(PersistenceExtensionId);
+const pool = await new sql.ConnectionPool({
+  server: 'db.example.com',
+  port: 1433,
+  user: 'actor_ts',
+  password: process.env.MSSQL_PASSWORD,
+  database: 'app',
+  options: { encrypt: true },
+}).connect();
+
+const msSqlSnapshotStoreOptions = MsSqlSnapshotStoreOptions.create()
+  .withKeepN(3);
+const registerOptions = RegisterMsSqlPluginsOptions.create()
+  // One pool shared by journal + snapshot + durable-state (recommended).
+  .withPool(pool)
+  .withJournal(MsSqlJournalOptions.create() /* .withEventsTable(...).withTagsTable(...) */)
+  .withSnapshotStore(msSqlSnapshotStoreOptions)
+  .withDurableStateStore(MsSqlDurableStateStoreOptions.create() /* .withTable(...) */);
+const { durableStateStore } = registerMsSqlPlugins(ext, registerOptions);
+```
+
+`registerMsSqlPlugins` registers the journal + snapshot store via the
+extension (selected by the config plugin IDs above) and **returns** the
+durable-state store.  `PersistenceExtension` has no durable-state registry —
+hand `durableStateStore` to your `DurableStateActor` settings directly (same
+pattern as the Postgres and object-storage plugins).
+
+A shared pool is **caller-owned**: no store ends it, so close it yourself at
+shutdown.  Without one, each component lazily builds its own from its
+`poolConfig` / `url` and closes it on `close()`:
+
+```ts
+const poolConfig = {
+  server: 'db.example.com', database: 'app',
+  user: 'actor_ts', password: process.env.MSSQL_PASSWORD,
+  options: { encrypt: true },
+};
+const msSqlJournalOptions = MsSqlJournalOptions.create()
+  .withPoolConfig(poolConfig);
+```
+
+## When to use it
+
+- **SQL Server is your system of record.** The enterprise default in a lot of
+  stacks, and Akka.NET's primary backend — this is the closest analogue.
+- **Cluster-shared persistence.** Sharded entities that move between nodes, or
+  cross-node projections, need a journal every node can read.
+- **You want a relational backend without a native driver.** tedious is pure
+  JavaScript, unlike `better-sqlite3`.
+
+For single-node development, [`SqliteJournal`](/persistence/journals/sqlite/)
+is simpler (one file, no server).
+
+## Configuration
+
+```ts
+interface MsSqlConnection {
+  url?:        string;                    // Server=…;Database=… or mssql://user:pass@host:1433/db
+  poolConfig?: Record<string, unknown>;   // mssql config object; takes precedence over url
+  pool?:       MsSqlPoolLike;             // pre-built / shared pool
+}
+
+interface MsSqlJournalOptions extends MsSqlConnection {
+  eventsTable?:      string;   // default 'events'
+  tagsTable?:        string;   // default '<eventsTable>_tags'
+  autoCreateTables?: boolean;  // default true
+}
+interface MsSqlSnapshotStoreOptions extends MsSqlConnection {
+  snapshotsTable?:   string;   // default 'snapshots'
+  keepN?:            number;   // keep newest N per pid; default 3, <=0 keeps all
+  autoCreateTables?: boolean;
+}
+interface MsSqlDurableStateStoreOptions extends MsSqlConnection {
+  table?:            string;   // default 'durable_state'
+  autoCreateTables?: boolean;
+}
+```
+
+Options are validated when the store is constructed.  Table names come from
+config (not user input) and are checked against a safe-identifier pattern;
+everything else — persistenceIds, tags, payloads — is passed as a **named bind
+parameter** (`@p1`, `@p2`, …), never string-concatenated.
+
+## Schema
+
+With `autoCreateTables` (the default), the backend runs guarded `CREATE TABLE`
+statements on first use.  T-SQL has no `CREATE TABLE IF NOT EXISTS`, so each is
+wrapped in an `IF OBJECT_ID(…) IS NULL` check:
+
+```sql
+CREATE TABLE events (
+  persistence_id NVARCHAR(255) NOT NULL,
+  sequence_nr    BIGINT NOT NULL,
+  payload        NVARCHAR(MAX) NOT NULL,   -- JSON
+  tags           NVARCHAR(MAX) NULL,       -- CSV (also mirrored into events_tags)
+  timestamp      BIGINT NOT NULL,
+  CONSTRAINT PK_events PRIMARY KEY (persistence_id, sequence_nr)
+);
+CREATE TABLE events_tags (                 -- indexed tag lookups for projections
+  persistence_id NVARCHAR(255) NOT NULL,
+  sequence_nr    BIGINT NOT NULL,
+  tag            NVARCHAR(255) NOT NULL,
+  timestamp      BIGINT NOT NULL,
+  CONSTRAINT PK_events_tags PRIMARY KEY NONCLUSTERED
+    (tag, timestamp, persistence_id, sequence_nr)
+);
+CREATE TABLE events_meta (                 -- compaction high-water mark
+  persistence_id NVARCHAR(255) NOT NULL,
+  deleted_to     BIGINT NOT NULL,
+  CONSTRAINT PK_events_meta PRIMARY KEY (persistence_id)
+);
+CREATE TABLE snapshots (
+  persistence_id NVARCHAR(255) NOT NULL,
+  sequence_nr    BIGINT NOT NULL,
+  payload        NVARCHAR(MAX) NOT NULL,
+  timestamp      BIGINT NOT NULL,
+  CONSTRAINT PK_snapshots PRIMARY KEY (persistence_id, sequence_nr)
+);
+CREATE TABLE durable_state (
+  persistence_id NVARCHAR(255) NOT NULL,
+  revision       BIGINT NOT NULL,
+  payload        NVARCHAR(MAX) NOT NULL,
+  timestamp      BIGINT NOT NULL,
+  CONSTRAINT PK_durable_state PRIMARY KEY (persistence_id)
+);
+```
+
+The tags table's primary key is **nonclustered** on purpose.  `NVARCHAR(n)`
+counts 2n bytes toward an index key, so `(tag, timestamp, persistence_id,
+sequence_nr)` needs 1036 bytes — past SQL Server's 900-byte clustered limit,
+but inside the 1700-byte nonclustered one.  That is why **SQL Server 2016 or
+later** is required.
+
+Pre-provision these (granting only `INSERT/SELECT/UPDATE/DELETE`) and set
+`autoCreateTables: false` if the database role cannot run DDL.
+
+## Concurrency model
+
+- **Journal append** reads the current head and inserts inside one
+  transaction; the caller's `expectedSeq` is checked against that head.  A
+  racing writer that slips through trips the primary key, and SQL Server error
+  **2627** (or 2601 for a unique index) is translated to
+  `JournalConcurrencyError` as a backstop.
+- **Durable-state CAS** uses the `revision` column: a create
+  (`expectedRevision === 0`) is a plain `INSERT`, so a collision arrives as
+  error 2627; an update is `UPDATE … WHERE revision = expected`, where zero
+  affected rows means the stored revision diverged.  Either way the current
+  revision is read back for the `DurableStateConcurrencyError`.
+- **Upserts use `MERGE … WITH (HOLDLOCK)`.** Without the hint, two concurrent
+  merges can both take the `NOT MATCHED` branch and one fails on the primary
+  key.
+
+## Pitfalls
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="SQL Server 2016 or later">
+  The tags table's four-column key exceeds the 900-byte clustered index limit
+  and relies on the 1700-byte **nonclustered** limit, which SQL Server 2016
+  introduced.  On an older instance the `CREATE TABLE` fails.
+</Aside>
+
+<Aside type="caution" title="persistenceIds and tags are capped at 255 characters">
+  `NVARCHAR(255)` is what keeps those index keys inside the limit above.  A
+  longer persistenceId or tag is rejected by the server rather than silently
+  truncated.
+</Aside>
+
+<Aside type="caution" title="TLS is on by default in the driver">
+  `mssql` defaults to `encrypt: true`.  Against a server with a self-signed
+  certificate you must either install the certificate or set
+  `options: { trustServerCertificate: true }` — the latter disables chain
+  verification, so keep it to development.
+</Aside>
+
+<Aside type="caution" title="No in-process event bus">
+  SQL Server is a cross-process backend (like Postgres and Cassandra), so it
+  does NOT publish an in-process journal event bus.  `PersistenceQuery` live
+  subscribers fall back to polling.
+</Aside>
+
+<Aside type="caution" title="Compression / encryption options are ignored">
+  Per-call `PersistenceOptions` (compression, encryption) apply only to the
+  object-storage stores.  The SQL backends store JSON as text — the options are
+  silently ignored here, same as SQLite, Postgres, MariaDB and Cassandra.
+</Aside>
+
+## Where to next
+
+- **[PostgreSQL](/persistence/journals/postgres/)** — the other relational
+  backend, with a richer upsert vocabulary.
+- **[MariaDB](/persistence/journals/mariadb/)** — the MySQL-family sibling.
+- **[Durable state](/persistence/durable-state/)** — the state-oriented
+  alternative to event sourcing.
+- **[Snapshots](/persistence/snapshots/)** — bound the recovery scan.
