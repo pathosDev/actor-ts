@@ -37,16 +37,16 @@ registerPanel({
   load: () => import('./panels/cluster/clusterPanel.js'),
 });
 
-// Declared but not built yet — see `panels/notImplementedPanel.ts`.
-// Each later phase swaps one of these `load` lines for its real panel.
 registerPanel({
   id: 'tracing',
   title: 'Tracing',
   description: 'Flame graph and waterfall over recorded message spans.',
   order: 30,
-  load: () => import('./panels/notImplementedPanel.js'),
+  load: () => import('./panels/tracing/tracingPanel.js'),
 });
 
+// Declared but not built yet — see `panels/notImplementedPanel.ts`.
+// Each later phase swaps one of these `load` lines for its real panel.
 registerPanel({
   id: 'explain',
   title: 'Explain plan',

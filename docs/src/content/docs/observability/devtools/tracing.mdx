@@ -1,0 +1,97 @@
+---
+title: Tracing panel
+description: A flame graph and waterfall over recorded message spans, live in the browser — no collector, no Jaeger, and without giving up the exporter you already have.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+In production, traces go to Jaeger or an OTel collector. On a laptop
+that setup is overkill for the question "why did this request take
+80 ms?". The tracing panel answers it in the browser, from the spans the
+framework already produces.
+
+## Two views, one trace
+
+| View | Vertical axis | Answers |
+| --- | --- | --- |
+| **Flame graph** | Stack depth — children on their parent | Where did the time go? |
+| **Waterfall** | One row per span, in time order | What happened, and when? |
+
+Pick a trace on the left, hover a span for its detail. Duration, **self
+time** (its own work, with children subtracted), offset within the
+trace, status and attributes are all in the panel below the graph.
+
+Timings come from a monotonic clock and are shown in microseconds where
+that is the honest unit — actor message handling routinely completes
+inside a single millisecond, so wall-clock timestamps would draw every
+bar as zero-width.
+
+<Aside type="caution" title="Actors trace a message only when it already belongs to a trace">
+This is the one thing that surprises people.  A cell opens an
+`actor.receive` span when the incoming message carries a trace context
+**or** a span is already active — and nothing in the framework starts
+the first one.  Until your code does, the panel stays empty (and says
+so, with the snippet below).
+</Aside>
+
+## Starting a trace
+
+Seed a span at your entry point — an HTTP handler, a broker consumer, a
+scheduled job — and every `tell` inside it carries the context onwards:
+
+```ts
+import { tracerOf } from 'actor-ts';
+
+const tracer = tracerOf(system);
+const span = tracer.startSpan('handle-request', { kind: 'server' });
+tracer.withActiveSpan(span, () => {
+  orders.tell({ kind: 'place', id });
+});
+span.end();
+```
+
+From there the tree builds itself: each actor that receives a traced
+message opens a child span, and each `tell` it makes passes the context
+along.
+
+## Living with an existing tracer
+
+Attaching DevTools does **not** take your tracer away. If nothing is
+installed it enables a recorder; if something already is — an OTel
+adapter exporting to a collector — it wraps it in a `TeeTracer`, so both
+consumers see every span. Detaching puts the original back exactly as it
+was.
+
+That means you can run the panel against a service that is also
+exporting traces for real, which is usually when you most want it.
+
+```ts
+// Both work: the collector keeps receiving, the panel fills up.
+system.extension(TracingExtensionId).enable(otelTracer(...));
+await DevTools.attach(system);
+```
+
+## Cost
+
+Nothing is recorded until the panel is open: the tap subscribes on
+mount, and buffering stops when the last viewer leaves. Spans are
+flushed to the browser in batches (250 ms by default) rather than one at
+a time — a single message can produce several spans, and a busy system
+would otherwise turn a debugging aid into a firehose.
+
+When the buffer overflows, the **oldest** spans are dropped and the
+panel says how many. A flame graph is about the recent past, so that is
+the half worth keeping.
+
+| Option | Default | Meaning |
+| --- | --- | --- |
+| `spanBufferCapacity` | `2000` | Spans held between flushes |
+| `spanFlushIntervalMs` | `250` | How often a batch is sent |
+| `panels: { tracing: false }` | — | Switch the panel off entirely |
+
+## What gets traced today
+
+The framework opens spans at two places: `actor.receive` (per message,
+with `actor.path` and `actor.message.type`) and
+`cluster.envelope.received`. Anything else in a trace comes from spans
+your own code starts — the panel renders whatever the tracer sees.

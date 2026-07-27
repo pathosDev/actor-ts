@@ -81,6 +81,10 @@ export interface DevToolsOptionsType {
   readonly mailboxSampleLimit?: number;
   /** How often dashboard figures are sampled, in ms.  Default `1000`. */
   readonly statsIntervalMs?: number;
+  /** Spans held between flushes before the oldest is dropped.  Default `2000`. */
+  readonly spanBufferCapacity?: number;
+  /** How often buffered spans are flushed to the panel, in ms.  Default `250`. */
+  readonly spanFlushIntervalMs?: number;
 }
 
 /** Fluent builder for {@link DevToolsOptionsType}. */
@@ -159,6 +163,16 @@ export class DevToolsOptionsBuilder extends OptionsBuilder<DevToolsOptionsType> 
   withStatsIntervalMs(intervalMs: number): this {
     return this.set('statsIntervalMs', intervalMs);
   }
+
+  /** Spans held between flushes before the oldest is dropped. */
+  withSpanBufferCapacity(capacity: number): this {
+    return this.set('spanBufferCapacity', capacity);
+  }
+
+  /** How often buffered spans are flushed to the panel, in ms. */
+  withSpanFlushIntervalMs(intervalMs: number): this {
+    return this.set('spanFlushIntervalMs', intervalMs);
+  }
 }
 
 /**
@@ -183,6 +197,8 @@ export class DevToolsOptionsValidator extends OptionsValidator<DevToolsOptionsTy
     this.positiveNumber('mailboxSampleIntervalMs');
     this.positiveNumber('statsIntervalMs');
     this.positiveInt('mailboxSampleLimit');
+    this.positiveInt('spanBufferCapacity');
+    this.positiveNumber('spanFlushIntervalMs');
 
     // The security rule this whole validator exists for: DevTools can
     // read every actor's class, mailbox and (with time travel) persisted
@@ -226,4 +242,6 @@ export const DEVTOOLS_DEFAULTS = {
   mailboxSampleIntervalMs: 1_000,
   mailboxSampleLimit: 50,
   statsIntervalMs: 1_000,
+  spanBufferCapacity: 2_000,
+  spanFlushIntervalMs: 250,
 } as const satisfies Partial<DevToolsOptionsType>;

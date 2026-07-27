@@ -42,6 +42,8 @@ describe('DevToolsOptions defaults', () => {
       mailboxSampleIntervalMs: 1_000,
       mailboxSampleLimit: 50,
       statsIntervalMs: 1_000,
+      spanBufferCapacity: 2_000,
+      spanFlushIntervalMs: 250,
     });
   });
 });

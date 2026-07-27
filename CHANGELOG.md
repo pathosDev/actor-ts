@@ -49,6 +49,22 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
     dashboard tile carries a sparkline and feeds a shared chart, so a
     figure is readable as a trend rather than a snapshot.  Both sampling
     streams idle until a panel subscribes.  #204
+  - **Tracing panel** — flame graph and waterfall over recorded message
+    spans, with microsecond timings, self time and per-span attributes.
+    Attaching DevTools no longer costs you your tracer: if one is already
+    installed it is wrapped in the new `TeeTracer` so an OTel exporter and
+    the local panel both see every span, and detaching restores the
+    original.  #217
+- **`TeeTracer`** — a `Tracer` that forwards to another and reports every
+  completed span to an observer.  The tracing extension holds exactly one
+  tracer, so watching spans previously meant replacing whatever was
+  installed; teeing removes the either/or.
+- **`RecordingTracer` can be bounded and records monotonic timings.**
+  `maxRecorded` caps the in-memory buffer (oldest evicted; `0` keeps none
+  while still calling `onSpanEnd`) — an unbounded recorder left enabled on
+  a busy system grew without limit.  `RecordedSpan` additionally carries
+  `startHighResolutionMs`/`endHighResolutionMs`, because wall-clock
+  milliseconds cannot resolve actor message handling.
 - **Actor lifecycle events on the `EventStream`** — `ActorStarted`,
   `ActorStopped` and `ActorRestarted`, sharing an `ActorLifecycleEvent`
   base so `subscribe(ref, ActorLifecycleEvent)` takes the whole family.

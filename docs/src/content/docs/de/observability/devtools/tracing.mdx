@@ -1,0 +1,99 @@
+---
+title: Tracing-Panel
+description: Flame-Graph und Waterfall über aufgezeichnete Message-Spans, live im Browser — ohne Collector, ohne Jaeger, und ohne den Exporter aufzugeben, den du schon hast.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+In Produktion gehen Traces an Jaeger oder einen OTel-Collector. Auf
+einem Laptop ist dieses Setup überzogen für die Frage „warum hat dieser
+Request 80 ms gebraucht?". Das Tracing-Panel beantwortet sie im Browser,
+aus den Spans, die das Framework ohnehin erzeugt.
+
+## Zwei Ansichten, ein Trace
+
+| Ansicht | Vertikale Achse | Beantwortet |
+| --- | --- | --- |
+| **Flame-Graph** | Stack-Tiefe — Kinder auf ihrem Elternteil | Wo ist die Zeit geblieben? |
+| **Waterfall** | Eine Zeile pro Span, zeitlich sortiert | Was ist wann passiert? |
+
+Links einen Trace wählen, einen Span überfahren für die Details.
+Dauer, **Self time** (die eigene Arbeit, Kinder abgezogen), Offset im
+Trace, Status und Attribute stehen im Panel unter dem Graphen.
+
+Die Zeiten kommen von einer monotonen Uhr und werden in Mikrosekunden
+gezeigt, wo das die ehrliche Einheit ist — Actor-Message-Handling ist
+regelmäßig in unter einer Millisekunde fertig, Wall-Clock-Zeitstempel
+würden jeden Balken mit Breite null zeichnen.
+
+<Aside type="caution" title="Actors tracen eine Nachricht nur, wenn sie schon zu einem Trace gehört">
+Das ist die eine Sache, die überrascht. Eine Cell öffnet einen
+`actor.receive`-Span, wenn die eingehende Nachricht einen Trace-Context
+trägt **oder** bereits ein Span aktiv ist — und den ersten startet
+nichts im Framework. Bis dein Code das tut, bleibt das Panel leer (und
+sagt das auch, mit dem Snippet unten).
+</Aside>
+
+## Einen Trace starten
+
+Setze am Einstiegspunkt einen Span — ein HTTP-Handler, ein
+Broker-Consumer, ein geplanter Job —, und jedes `tell` darin trägt den
+Context weiter:
+
+```ts
+import { tracerOf } from 'actor-ts';
+
+const tracer = tracerOf(system);
+const span = tracer.startSpan('handle-request', { kind: 'server' });
+tracer.withActiveSpan(span, () => {
+  orders.tell({ kind: 'place', id });
+});
+span.end();
+```
+
+Ab da baut sich der Baum von selbst: Jeder Actor, der eine getracete
+Nachricht empfängt, öffnet einen Kind-Span, und jedes `tell` von dort
+reicht den Context weiter.
+
+## Mit einem vorhandenen Tracer leben
+
+DevTools anzuhängen nimmt dir deinen Tracer **nicht** weg. Ist keiner
+installiert, aktiviert es einen Recorder; ist schon einer da — etwa ein
+OTel-Adapter, der an einen Collector exportiert —, wird er in einen
+`TeeTracer` gewickelt, sodass beide Konsumenten jeden Span sehen. Beim
+Detachen steht der ursprüngliche exakt wie vorher wieder da.
+
+Damit läuft das Panel auch gegen einen Service, der echt exportiert —
+und genau dann willst du es meistens.
+
+```ts
+// Beides geht: Der Collector bekommt weiter alles, das Panel füllt sich.
+system.extension(TracingExtensionId).enable(otelTracer(...));
+await DevTools.attach(system);
+```
+
+## Kosten
+
+Aufgezeichnet wird nichts, bevor das Panel offen ist: Der Tap abonniert
+beim Mounten, und das Puffern endet, wenn der letzte Betrachter geht.
+Spans gehen gebündelt an den Browser (standardmäßig alle 250 ms) statt
+einzeln — eine einzelne Nachricht kann mehrere Spans erzeugen, und ein
+ausgelastetes System machte aus einer Debug-Hilfe sonst eine Sturzflut.
+
+Läuft der Puffer über, werden die **ältesten** Spans verworfen, und das
+Panel sagt wie viele. Ein Flame-Graph handelt von der jüngsten
+Vergangenheit — das ist die Hälfte, die es zu behalten lohnt.
+
+| Option | Default | Bedeutung |
+| --- | --- | --- |
+| `spanBufferCapacity` | `2000` | Spans zwischen zwei Flushes |
+| `spanFlushIntervalMs` | `250` | Wie oft ein Batch gesendet wird |
+| `panels: { tracing: false }` | — | Panel komplett abschalten |
+
+## Was heute getracet wird
+
+Das Framework öffnet Spans an zwei Stellen: `actor.receive` (pro
+Nachricht, mit `actor.path` und `actor.message.type`) und
+`cluster.envelope.received`. Alles Weitere in einem Trace kommt aus
+Spans, die dein eigener Code startet — das Panel rendert, was der Tracer
+sieht.

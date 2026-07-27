@@ -766,6 +766,7 @@ export default defineConfig({
               items: [
                 { label: 'Overview',      slug: 'observability/devtools/overview', translations: { de: 'Überblick', es: 'Visión general', fr: 'Vue d’ensemble', ja: '概要', ko: '개요', 'pt-BR': 'Visão geral', ru: 'Обзор', 'zh-CN': '概览' } },
                 { label: 'Actors & cluster', slug: 'observability/devtools/actor-visualizer', translations: { de: 'Actors & Cluster', es: 'Actores y clúster', fr: 'Acteurs et cluster', ja: 'アクターとクラスタ', ko: '액터 및 클러스터', 'pt-BR': 'Atores e cluster', ru: 'Акторы и кластер', 'zh-CN': 'Actor 与集群' } },
+                { label: 'Tracing panel', slug: 'observability/devtools/tracing', translations: { de: 'Tracing-Panel', es: 'Panel de trazado', fr: 'Panneau de tracing', ja: 'トレーシングパネル', ko: '트레이싱 패널', 'pt-BR': 'Painel de tracing', ru: 'Панель трассировки', 'zh-CN': '追踪面板' } },
                 { label: 'Tap protocol',  slug: 'observability/devtools/protocol', translations: { de: 'Tap-Protokoll', es: 'Protocolo del tap', fr: 'Protocole du tap', ja: 'Tap プロトコル', ko: 'Tap 프로토콜', 'pt-BR': 'Protocolo do tap', ru: 'Протокол tap', 'zh-CN': 'Tap 协议' } },
               ],
             },
