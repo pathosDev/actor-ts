@@ -52,6 +52,8 @@ interface CassandraJournalOptions {
   autoCreateTables?: boolean;       // Tabellen bei erster Verbindung erstellen, Default true
   useTagIndex?:      boolean;       // events_by_tag-Seitentabelle pflegen, Default false
   consistency?:      number;        // CQL-Consistency, Default LOCAL_QUORUM (6)
+  lightweightTransactions?: boolean; // LWT-serialisierte Appends, Default true
+  serialConsistency?: number;        // Paxos-Consistency für den LWT-Anspruch
   /* ... plus Treiber-Level-Verbindungsoptionen ... */
 }
 ```
@@ -68,6 +70,8 @@ interface CassandraJournalOptions {
 | `autoCreateTables` | Tabellen bei der ersten Verbindung automatisch erstellen.  Default `true`. |
 | `useTagIndex` | Die `events_by_tag`-Seitentabelle für indizierte Tag-Queries pflegen.  Default `false`. |
 | `consistency` | CQL-Consistency-Level (numerisch, aus `types.consistencies` des Treibers) für alle Reads und Writes.  Default `LOCAL_QUORUM` (6). |
+| `lightweightTransactions` | Nebenläufige Appends per LWT auf der `metadata`-Zeile serialisieren.  Default `true`.  Siehe [Gleichzeitige Appends](#gleichzeitige-appends). |
+| `serialConsistency` | Consistency für die Paxos-Phase der LWT (numerisch, aus `types.consistencies` des Treibers).  Unbelegt gilt das Cluster-weite `SERIAL` des Treibers; auf einem Multi-DC-Keyspace setze `localSerial` (9). |
 
 Das Framework erstellt drei Tabellen automatisch bei der ersten
 Verwendung — `events`, `metadata` und `all_persistence_ids` — plus
@@ -137,8 +141,9 @@ typisch für Produktion.  Die Writes des Frameworks gehen via
 ## Konsistenzmodell
 
 Cassandra ist **schließlich konsistent über Replicas** — aber
-jeder Write ist **pro pid linearisiert** (über `seq` als
-Partitioning-Key).  Praktische Garantien:
+die Appends jeder pid werden **serialisiert** (siehe
+[Gleichzeitige Appends](#gleichzeitige-appends)).  Praktische
+Garantien:
 
 - Die Events einer gegebenen pid haben eine strikte Total-Order
   (sequenceNr).
@@ -152,6 +157,105 @@ Für die meisten Event-sourced Anwendungen ist das in Ordnung —
 innerhalb einer einzelnen Entity (pid) ist die Reihenfolge strikt;
 über Entities hinweg ist die partielle Reihenfolge über Timestamp
 akzeptabel.
+
+## Gleichzeitige Appends
+
+Jeder `append` beansprucht seinen Sequenzbereich per Cassandra
+**Lightweight Transaction** (LWT) auf der `metadata`-Zeile,
+bevor auch nur ein Event geschrieben wird:
+
+```cql
+-- first append for a pid
+INSERT INTO metadata (persistence_id, max_sequence_nr, updated_at)
+  VALUES (?, ?, ?) IF NOT EXISTS;
+
+-- every later append
+UPDATE metadata SET max_sequence_nr = ?, updated_at = ?
+  WHERE persistence_id = ? IF max_sequence_nr = ?;
+```
+
+Nur der Anspruch eines Writers gewinnt die Paxos-Runde.  Die
+übrigen erhalten einen `JournalConcurrencyError`, der den vom
+Gewinner hinterlassenen Head trägt — derselbe Kontrakt, den die
+relationalen Backends bieten.
+
+Das ist keine optionale Buchhaltung.  Ein CQL-`INSERT` ist ein
+**Upsert**: ohne den Anspruch würden zwei Writer, die beide Head
+`N` lesen, beide die `expectedSeq`-Prüfung bestehen und beide
+`sequence_nr = N+1` schreiben — der zweite überschreibt den
+ersten stillschweigend, während *beiden* Aufrufern gemeldet wird,
+ihr Event sei persistiert.  Die relationalen Journals können
+dieses Rennen nicht verlieren — ihr Primary Key weist den
+Verlierer ab — die LWT schließt diese Lücke also für Cassandra.
+
+### Was es kostet
+
+**Ein Paxos-Round-Trip pro `append`**, nicht pro Event.  Der
+Anspruch ist ein einzelnes konditionales Statement gegen eine
+kleine Partition; die Events selbst gehen weiterhin im selben
+unlogged Batch pro Partition raus wie zuvor.  Kalkuliere grob
+das **3–4-Fache** der Latenz eines Appends ohne LWT — Paxos ist
+eine Prepare/Propose/Commit-Sequenz über ein Quorum, gegenüber
+einem Round-Trip für einen normalen Write.  Der Durchsatz pro
+pid sinkt entsprechend; der Durchsatz *über* pids hinweg bleibt
+unberührt, da jeder Anspruch nur auf seiner eigenen
+`metadata`-Partition konkurriert.
+
+Der Anspruch auf der Metadata-Zeile ist bewusst günstiger als
+die naheliegende Alternative `INSERT … IF NOT EXISTS` auf den
+Events: die kostet einen Round-Trip **pro Event**, und ein
+konditionaler Batch muss innerhalb einer einzelnen Partition
+bleiben — was der `events_by_tag`-Dual-Write ohnehin
+ausschließt.
+
+### Das Crash-Fenster
+
+Der Anspruch vor dem Schreiben kehrt das Fehlerfenster um,
+statt es zu beseitigen:
+
+- Schlägt der Event-Batch fehl, gibt das Journal eine
+  **kompensierende Freigabe** ab — konditional auf den
+  beanspruchten Wert, sodass ein Writer, der den Head
+  berechtigterweise weiterbewegt hat, nie zurückgedreht wird —
+  und ein Retry mit demselben `expectedSeq` gelingt.
+- Stirbt der Prozess *zwischen* dem committeten Anspruch und
+  den Events, steht der Head vor den gespeicherten Events: eine
+  Lücke.  Ein Replay liest dann weniger Events, als
+  `highestSeq` meldet, und der nächste Append setzt hinter der
+  Lücke fort.
+
+Die vorherige Reihenfolge hatte das spiegelbildliche Fenster
+(Events geschrieben, Head nicht vorgerückt, Waisen beim Retry
+überschrieben).  Die Lücke ist der sicherere der beiden
+Kompromisse für die Nebenläufigkeitsgarantie, weil sie
+erkennbar ist — vergleiche `highestSeq` mit der höchsten
+tatsächlich vorhandenen `sequence_nr` — ein verlorener Write
+dagegen nicht.
+
+### Abwählen
+
+```ts
+const cassandraJournalOptions = CassandraJournalOptions.create()
+  .withContactPoints(['cassandra-1:9042'])
+  .withKeyspace('my_app_events')
+  .withLightweightTransactions(false);
+```
+
+Tu das nur, wenn du **einen Writer pro persistenceId** wirklich
+garantierst und den Round-Trip zurückbrauchst.  Cluster-Sharding
+strebt diese Invariante an, garantiert sie aber nicht während
+eines Rebalance oder eines Split-Brain — also genau dann, wenn
+zwei Writer für eine pid koexistieren.  Mit abgeschalteter LWT
+verwirft ein unterlegener nebenläufiger Append sein Event und
+meldet Erfolg.
+
+Setze die Option **einheitlich über die gesamte Flotte**.
+Cassandra garantiert LWT-Linearisierbarkeit nur, wenn jeder
+Write auf eine Partition durch Paxos läuft; ein Rolling Change,
+bei dem einige Nodes `metadata` konditional und andere es
+schlicht schreiben, hebt die Garantie für die Dauer des Rollouts
+auf.  Musst du auf einem laufenden Cluster umschalten, drainiere
+zuvor die Writer der betroffenen pids.
 
 ## Multi-DC
 
@@ -171,14 +275,44 @@ Das actor-ts-Journal kümmert das nicht — Writes gehen ins lokale
 DC (über `LOCAL_QUORUM`), Cross-DC-Replikation ist asynchron und
 wird von Cassandra gehandhabt.
 
+**Setze `serialConsistency` auf einem Multi-DC-Keyspace.**  Der
+Append-Anspruch ist eine Paxos-Runde, und die Default-Serial-
+Consistency des Treibers ist das Cluster-weite `SERIAL` — ein
+Quorum von Replicas über *jedes* DC.  Unangetastet zieht das
+jeden Append über die Inter-DC-Strecke und hebt genau das auf,
+was `LOCAL_QUORUM` dir bringt:
+
+```ts
+import { types } from 'cassandra-driver';
+
+const cassandraJournalOptions = CassandraJournalOptions.create()
+  .withContactPoints(['cassandra-1:9042'])
+  .withKeyspace('my_app_events')
+  .withSerialConsistency(types.consistencies.localSerial);
+```
+
+`LOCAL_SERIAL` hält Paxos innerhalb des lokalen DC.  Der
+Kompromiss: Appends sind dann nur *innerhalb* eines DC
+linearisierbar — in Ordnung, wenn eine gegebene pid zu einem
+Zeitpunkt aus einem DC geschrieben wird (das übliche
+Sharding-Layout), und unsicher, wenn du dieselbe pid gleichzeitig
+in zwei DCs routest.
+
 ## Kosten
 
 Approximative Write-Performance (einzelner Cassandra-Cluster):
 
-- **Single-pid-Append** — Sub-Millisekunde auf Journal-Ebene.
-  Getrieben von Cassandras Commit-Log + Memtable.
+- **Single-pid-Append** — dominiert von der Paxos-Runde, die den
+  Sequenzbereich beansprucht, also grob das 3–4-Fache eines
+  einfachen Quorum-Writes.  Mit `lightweightTransactions: false`
+  fällt er zurück auf Sub-Millisekunde auf Journal-Ebene,
+  getrieben von Cassandras Commit-Log + Memtable — lies
+  [Gleichzeitige Appends](#gleichzeitige-appends), bevor du diesen
+  Kompromiss eingehst.
 - **Cross-pid-Durchsatz** — skaliert linear mit der Cluster-Größe.
-  10K Events/sec pro Cassandra-Node sind realistisch.
+  Jede pid konkurriert nur auf ihrer eigenen
+  `metadata`-Partition, die LWT serialisiert also keine
+  unbeteiligten Writer.
 - **Tag-Query** — durch die Tag-Partitions-Größe begrenzt.  Heiße
   Tags (jedes Event mit 'audit' getaggt) werden zu heißen
   Partitions; überlege feinkörnigeres Tagging oder Bucketing,
