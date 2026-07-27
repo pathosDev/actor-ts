@@ -83,4 +83,13 @@ export const postgresDialect: SqlDialect = {
   stateInsertConflictSignal: 'affected-rows',
 
   isDuplicateKeyError: (error) => (error as { code?: string }).code === '23505',
+  // `40001` serialization_failure and `40P01` deadlock_detected.  Postgres
+  // reaches the duplicate key under READ COMMITTED, so today it never gets
+  // here — but a caller running the journal at SERIALIZABLE would, and the
+  // wire-compatible engines (CockroachDB, YugabyteDB) retry-abort far more
+  // eagerly than Postgres does.  Classified now so they behave (#479).
+  isSerializationConflictError: (error) => {
+    const code = (error as { code?: string }).code;
+    return code === '40001' || code === '40P01';
+  },
 };

@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import { mariaDbDialect } from '../../../src/persistence/relational/MariaDbDialect.js';
 import { msSqlDialect } from '../../../src/persistence/relational/MsSqlDialect.js';
 import { postgresDialect } from '../../../src/persistence/relational/PostgresDialect.js';
+import { sqliteDialect } from '../../../src/persistence/relational/SqliteDialect.js';
 import { expandPlaceholders } from '../../../src/persistence/relational/SqlDialect.js';
 
 /**
@@ -36,6 +37,25 @@ describe('postgresDialect — placeholders and error codes', () => {
     expect(postgresDialect.isDuplicateKeyError({ code: '23505' })).toBe(true);
     expect(postgresDialect.isDuplicateKeyError({ code: '23503' })).toBe(false);
     expect(postgresDialect.isDuplicateKeyError(new Error('duplicate key'))).toBe(false);
+  });
+
+  test('a contention abort is SQLSTATE 40001 / 40P01', () => {
+    // Unreachable on stock Postgres at READ COMMITTED, but SERIALIZABLE and
+    // the wire-compatible engines abort rather than reach the key (#479).
+    expect(postgresDialect.isSerializationConflictError({ code: '40001' })).toBe(true);
+    expect(postgresDialect.isSerializationConflictError({ code: '40P01' })).toBe(true);
+    expect(postgresDialect.isSerializationConflictError({ code: '23505' })).toBe(false);
+  });
+});
+
+describe('sqliteDialect — error classification', () => {
+  test('there is no contention abort to classify', () => {
+    // SQLite serializes writers with a database-level lock: a contended
+    // writer waits rather than being picked as a victim, so nothing here
+    // should ever be reported as a lost race.
+    expect(sqliteDialect.isSerializationConflictError({ code: 'SQLITE_BUSY' })).toBe(false);
+    expect(sqliteDialect.isSerializationConflictError({ code: 'SQLITE_LOCKED' })).toBe(false);
+    expect(sqliteDialect.isDuplicateKeyError({ code: 'SQLITE_CONSTRAINT_PRIMARYKEY' })).toBe(true);
   });
 });
 
@@ -122,6 +142,20 @@ describe('mariaDbDialect — placeholders and error codes', () => {
     expect(mariaDbDialect.isDuplicateKeyError({ errno: 1062 })).toBe(true);
     expect(mariaDbDialect.isDuplicateKeyError({ code: 'ER_DUP_ENTRY' })).toBe(true);
     expect(mariaDbDialect.isDuplicateKeyError({ errno: 1048 })).toBe(false);
+  });
+
+  test('a contention abort is errno 1020 / 1213 / 1205', () => {
+    // 1020 is the one a live racing append actually produces (#479) — InnoDB
+    // aborts the loser before the duplicate key is ever checked.
+    expect(mariaDbDialect.isSerializationConflictError({ errno: 1020 })).toBe(true);
+    expect(mariaDbDialect.isSerializationConflictError({ code: 'ER_CHECKREAD' })).toBe(true);
+    expect(mariaDbDialect.isSerializationConflictError({ errno: 1213 })).toBe(true);
+    expect(mariaDbDialect.isSerializationConflictError({ errno: 1205 })).toBe(true);
+    // A duplicate key is a constraint violation, not a contention abort — the
+    // two predicates must not overlap, or the base's head check would run for
+    // a case the duplicate-key branch already handles correctly.
+    expect(mariaDbDialect.isSerializationConflictError({ errno: 1062 })).toBe(false);
+    expect(mariaDbDialect.isSerializationConflictError(new Error('deadlock'))).toBe(false);
   });
 });
 
@@ -215,6 +249,10 @@ describe('msSqlDialect — placeholders, row limiting and error numbers', () => 
     expect(msSqlDialect.isDuplicateKeyError({ number: 547 })).toBe(false);
     // `mssql` wraps the tedious error for some failures.
     expect(msSqlDialect.isDuplicateKeyError({ originalError: { info: { number: 2627 } } })).toBe(true);
+    expect(msSqlDialect.isSerializationConflictError({ number: 1205 })).toBe(true);
+    expect(msSqlDialect.isSerializationConflictError({ number: 1222 })).toBe(true);
+    expect(msSqlDialect.isSerializationConflictError({ originalError: { info: { number: 1205 } } })).toBe(true);
+    expect(msSqlDialect.isSerializationConflictError({ number: 2627 })).toBe(false);
     expect(msSqlDialect.isDuplicateKeyError(new Error('duplicate key'))).toBe(false);
   });
 });

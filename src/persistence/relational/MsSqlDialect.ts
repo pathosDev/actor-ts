@@ -148,15 +148,22 @@ export const msSqlDialect: SqlDialect = {
 
   /**
    * 2627 is a primary-key / unique-constraint violation, 2601 a duplicate key
-   * in a unique index.  The `mssql` driver surfaces the number on the error
-   * itself, but wraps the tedious error for some failures, so the original is
-   * checked too.
+   * in a unique index.
    */
-  isDuplicateKeyError: (error) => {
-    const numbers = new Set([2627, 2601]);
-    const candidate = error as { number?: unknown; originalError?: { info?: { number?: unknown } } };
-    if (typeof candidate.number === 'number' && numbers.has(candidate.number)) return true;
-    const original = candidate.originalError?.info?.number;
-    return typeof original === 'number' && numbers.has(original);
-  },
+  isDuplicateKeyError: (error) => hasErrorNumber(error, new Set([2627, 2601])),
+  // 1205 is the deadlock victim ("chosen as the deadlock victim; rerun the
+  // transaction"); 1222 is a lock-request timeout (#479).
+  isSerializationConflictError: (error) => hasErrorNumber(error, new Set([1205, 1222])),
 };
+
+/**
+ * True when the error carries one of `numbers` as its T-SQL error number.
+ * The `mssql` driver surfaces the number on the error itself, but wraps the
+ * tedious error for some failures, so the original is checked too.
+ */
+function hasErrorNumber(error: unknown, numbers: ReadonlySet<number>): boolean {
+  const candidate = error as { number?: unknown; originalError?: { info?: { number?: unknown } } };
+  if (typeof candidate.number === 'number' && numbers.has(candidate.number)) return true;
+  const original = candidate.originalError?.info?.number;
+  return typeof original === 'number' && numbers.has(original);
+}

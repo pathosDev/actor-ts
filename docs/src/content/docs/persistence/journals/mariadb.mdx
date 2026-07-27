@@ -126,9 +126,20 @@ The behaviour is identical; the SQL differs:
 | `keepN` prune | `NOT IN (SELECT … LIMIT)` | derived-table-wrapped subquery¹ |
 | Durable create conflict | `ON CONFLICT DO NOTHING` → rowCount | plain `INSERT`, catch `ER_DUP_ENTRY` (1062) |
 | Concurrency backstop | SQLSTATE `23505` | `ER_DUP_ENTRY` / 1062 |
+| Contention backstop | SQLSTATE `40001` / `40P01` | `ER_CHECKREAD` (1020), 1213, 1205² |
 
 ¹ MySQL/MariaDB reject `LIMIT` inside a bare `IN (SELECT …)` against the
 table being deleted, so the prune wraps the subquery in a derived table.
+
+² A losing writer does not always reach the primary key.  Under real
+contention InnoDB aborts it first — *"Record has changed since last read"*
+(errno 1020) — so the duplicate-key backstop alone would have handed the
+caller an opaque `JournalError` and no way to tell a retryable race from a
+storage failure.  Those aborts are classified too, but they are only
+reported as `JournalConcurrencyError` when a re-read shows the head actually
+moved; otherwise the error stands, because a lock-wait timeout against an
+unrelated long transaction is a real failure and retrying it would spin.
+The same applies to durable-state CAS.
 
 `BIGINT` may surface from the connector as a JS `bigint`; the backend
 coerces sequence/revision/timestamp to `number` at the mapping boundary.

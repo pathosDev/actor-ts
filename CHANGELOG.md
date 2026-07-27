@@ -339,6 +339,26 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Fixed
 
+- **Relational journals: a contention-aborted append reports
+  `JournalConcurrencyError`, not an opaque `JournalError`** (#479).  The
+  optimistic-concurrency backstop assumed a losing writer always gets far
+  enough to violate the events primary key.  Against a live MariaDB it does
+  not: InnoDB aborts the loser with errno 1020 (`ER_CHECKREAD`, *"Record has
+  changed since last read"*) **before** the key is checked, so the race fell
+  through to the generic wrapper and callers could no longer tell a retryable
+  race from a storage failure.  Found by running the #390 contract's
+  "concurrent appends leave exactly one winner" scenario against the live
+  MariaDB suite, where it was the only failure; the data was never at risk
+  (exactly one event stored, head advanced once) — only the error type was
+  wrong.  `SqlDialect` gains `isSerializationConflictError`, implemented per
+  dialect (MariaDB 1020/1213/1205, Postgres `40001`/`40P01`, MSSQL 1205/1222,
+  SQLite none — it serializes writers with a lock rather than picking a
+  victim).  Crucially the bases translate only after re-reading and finding
+  the head (or revision) actually moved: a lock-wait timeout against an
+  unrelated long transaction stays the storage failure it is, instead of
+  becoming a retry loop against a head that will never change.
+  `RelationalDurableStateStore.upsert` had the identical hole and is fixed
+  the same way.
 - **Persistence: the InMemory reference stores now match the cross-backend
   contract** (#390).  `InMemoryJournal.append` ran the optimistic-concurrency
   check even for an empty event batch, so `append(pid, [], staleSeq)` threw
