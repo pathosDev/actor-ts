@@ -1,0 +1,214 @@
+---
+title: Cloudflare D1
+description: Event journal, snapshot store and durable-state store backed by Cloudflare D1 — SQLite at the edge, over the REST API, with no SDK and no dependency. Schema-compatible with the local SQLite and libSQL backends.
+---
+
+The D1 backend provides all three persistence components against a
+[Cloudflare D1](https://developers.cloudflare.com/d1/) database:
+
+- **`D1Journal`** — the event journal for `PersistentActor`s.
+- **`D1SnapshotStore`** — snapshots to bound recovery.
+- **`D1DurableStateStore`** — key-value durable state for
+  `DurableStateActor`s.
+
+Two things are unusual about it:
+
+- **It needs no package.** D1 has no Node SDK — outside a Worker it is a REST
+  API — so the backend speaks that API with the framework's own HTTP client. It
+  is the only backend that adds nothing to your dependency tree.
+- **Its verification stops at a fake.** D1 has no emulator that can be brought
+  up in a container, so unlike every other backend there is no live integration
+  suite. See [What is and is not verified](#what-is-and-is-not-verified) — this is
+  stated up front because it should affect how you adopt it.
+
+The SQL is shared with the [SQLite](/persistence/journals/sqlite/) and
+[libSQL](/persistence/journals/libsql/) backends, so the schema is identical
+across all three and a database can move between them without a migration.
+
+## Install
+
+Nothing to install:
+
+```bash
+bun add actor-ts
+```
+
+You need a D1 database and an API token with the **`D1:Edit`** permission, plus
+your account id and the database's UUID (not its name) — all three are in the
+Cloudflare dashboard or `wrangler d1 info <name>`.
+
+## Setup
+
+```ts
+import {
+  ActorSystem,
+  ActorSystemOptions,
+  D1DurableStateStoreOptions,
+  D1JournalOptions,
+  D1SnapshotStoreOptions,
+  PersistenceExtensionId,
+  RegisterD1PluginsOptions,
+  registerD1Plugins,
+} from 'actor-ts';
+
+const systemOptions = ActorSystemOptions.create()
+  // Select the D1 plugins as the active journal + snapshot store.
+  .withConfig({
+    'actor-ts': {
+      persistence: {
+        journal: { plugin: 'actor-ts.persistence.journal.cloudflare-d1' },
+        'snapshot-store': { plugin: 'actor-ts.persistence.snapshot-store.cloudflare-d1' },
+      },
+    },
+  });
+const system = ActorSystem.create('my-app', systemOptions);
+
+const ext = system.extension(PersistenceExtensionId);
+const d1SnapshotStoreOptions = D1SnapshotStoreOptions.create()
+  .withKeepN(3);
+const registerOptions = RegisterD1PluginsOptions.create()
+  .withAccountId(process.env.CLOUDFLARE_ACCOUNT_ID!)
+  .withDatabaseId(process.env.D1_DATABASE_ID!)
+  .withApiToken(process.env.CLOUDFLARE_API_TOKEN!)
+  .withJournal(D1JournalOptions.create() /* .withEventsTable(...) */)
+  .withSnapshotStore(d1SnapshotStoreOptions)
+  .withDurableStateStore(D1DurableStateStoreOptions.create() /* .withTable(...) */);
+const { durableStateStore } = registerD1Plugins(ext, registerOptions);
+```
+
+The API token is sent as a bearer token, so treat it like any other secret —
+read it from the environment rather than committing it. Setting only some of
+the three credentials is rejected at wiring time, since that is almost always a
+forgotten environment variable.
+
+## When to use it
+
+- **Your data has to live in D1.** A Workers-adjacent deployment where D1 is
+  already the system of record.
+- **You want zero dependencies.** No driver, no native build, nothing to audit.
+
+For anything else, prefer [libSQL / Turso](/persistence/journals/libsql/): same
+schema, same SQLite semantics, a real client, interactive transactions, and a
+live integration suite behind it.
+
+## Configuration
+
+```ts
+interface D1Connection {
+  accountId?:  string;        // Cloudflare account id
+  databaseId?: string;        // the database UUID, not its name
+  apiToken?:   string;        // token with D1:Edit
+  baseUrl?:    string;        // override for a proxy; default api.cloudflare.com
+  timeoutMs?:  number;        // per-request timeout, default 30_000
+  client?:     D1ClientLike;  // pre-built / shared transport
+}
+
+interface D1JournalOptions extends D1Connection {
+  eventsTable?:      string;   // default 'events'
+  tagsTable?:        string;   // default '<eventsTable>_tags'
+  autoCreateTables?: boolean;  // default true
+}
+interface D1SnapshotStoreOptions extends D1Connection {
+  snapshotsTable?:   string;   // default 'snapshots'
+  keepN?:            number;   // keep newest N per pid; default 3, <=0 keeps all
+  autoCreateTables?: boolean;
+}
+interface D1DurableStateStoreOptions extends D1Connection {
+  table?:            string;   // default 'durable_state'
+  autoCreateTables?: boolean;
+}
+```
+
+## Schema
+
+Identical to the [SQLite backend's](/persistence/journals/sqlite/#schema) —
+`events`, `events_tags`, `events_meta`, `snapshots` and `durable_state`, created
+with `CREATE TABLE IF NOT EXISTS` on first use.
+
+## Concurrency model
+
+import { Aside } from '@astrojs/starlight/components';
+
+- **The journal's optimistic concurrency rests on the primary key.** `append`
+  reads the current head and inserts; a racing writer trips the
+  `(persistence_id, sequence_nr)` primary key, and the resulting
+  `UNIQUE constraint failed` is translated into `JournalConcurrencyError`.
+- **Durable-state CAS** uses `INSERT … ON CONFLICT DO NOTHING` to create and
+  `UPDATE … WHERE revision = expected` to update, reading D1's `meta.changes` as
+  the affected-row count.
+
+<Aside type="caution" title="No transactions — by transport, not by choice">
+  D1's HTTP API exposes one statement per request: there is no `BEGIN`, and no
+  parameterized batch either (`db.batch` is a Workers-binding feature, not an API
+  one).
+
+  The journal is still correct, because its concurrency never depended on the
+  transaction — appends are contiguous from the head, so two writers that agree
+  on the head try the same first sequence number and the loser fails on its
+  *first* insert, writing nothing.
+
+  What the missing transaction costs: if the connection fails partway through a
+  **multi-event** append, the events already written stay written. The stream
+  remains gap-free and the next append continues from the new head, so recovery is
+  consistent — but the caller's error does not mean "nothing was written".
+  Single-event appends are unaffected. MongoDB carries the same caveat for the
+  same reason; libSQL does not, because it has interactive transactions.
+</Aside>
+
+## What is and is not verified
+
+Every other backend in the framework has a live integration suite running the
+full persistence contract against a real server in CI. D1 does not, and cannot
+as things stand: there is no D1 container image, and locally it exists only
+inside `wrangler`/Miniflare — a Workers runtime rather than a database you can
+start in compose.
+
+So, precisely:
+
+| Layer | How it is verified |
+| --- | --- |
+| The SQL | Shared with SQLite and libSQL, and exercised against a **real SQLite** by their suites |
+| The three storage contracts | The shared contract suite, against an in-process fake |
+| The REST envelope and error handling | Unit tests against a stubbed `fetch` |
+| End-to-end against real D1 | **Not verified** |
+
+<Aside type="danger" title="Treat this backend as unproven against the real service">
+  The layer that is untested is the transport: authentication, the exact response
+  envelope of the deployed API, rate limits, and how D1 reports errors the fake
+  does not model. Before running it on anything you care about, exercise your
+  own workload against your own D1 database — and prefer
+  [libSQL / Turso](/persistence/journals/libsql/) if you have the choice, since it
+  is the same schema with live coverage.
+</Aside>
+
+## Pitfalls
+
+<Aside type="caution" title="Every statement is an HTTPS round-trip">
+  This is by far the slowest backend per operation — a recovery of N events is N
+  API calls plus overhead, and each carries authentication and TLS. Snapshot
+  aggressively, and do not expect journal throughput comparable to a local
+  database or even to Turso.
+</Aside>
+
+<Aside type="caution" title="D1 has service limits">
+  Database size, statement size and requests per minute are all capped, and the
+  caps differ by plan. A busy event stream can reach them; check the current
+  [D1 limits](https://developers.cloudflare.com/d1/platform/limits/) before
+  sizing.
+</Aside>
+
+<Aside type="caution" title="No in-process event bus">
+  D1 is a remote, cross-process store, so `PersistenceQuery` live subscribers
+  poll. The tag path each poll takes is indexed, as on SQLite.
+</Aside>
+
+<Aside type="caution" title="Compression / encryption options are ignored">
+  Per-call `PersistenceOptions` apply only to the object-storage stores.
+</Aside>
+
+## Where to next
+
+- **[libSQL / Turso](/persistence/journals/libsql/)** — the same schema with a
+  real client, transactions and live test coverage.
+- **[SQLite journal](/persistence/journals/sqlite/)** — the local sibling.
+- **[Persistence overview](/persistence/overview/)** — the backend matrix.

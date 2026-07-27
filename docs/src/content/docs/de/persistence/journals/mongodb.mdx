@@ -1,0 +1,256 @@
+---
+title: MongoDB
+description: Event-Journal, Snapshot-Store, Durable-State-Store und indizierte Tag-Query auf Basis von MongoDB. Das erste Document-Store-Backend — Optimistic Concurrency über einen Unique-Index, ohne Transaktionen, mit Multikey-Tag-Index.
+---
+
+Das MongoDB-Backend liefert alle vier Persistence-Komponenten gegen ein einzelnes
+MongoDB-Deployment, über den
+[`mongodb`](https://www.npmjs.com/package/mongodb)-Treiber:
+
+- **`MongoJournal`** — das Event-Journal für `PersistentActor`s.
+- **`MongoSnapshotStore`** — Snapshots, um die Recovery zu begrenzen.
+- **`MongoDurableStateStore`** — Key-Value-Durable-State für
+  `DurableStateActor`s.
+- **`MongoQuery`** — ein *indiziertes* `currentEventsByTag`, das die relationalen
+  Backends nicht haben.
+
+Es ist das erste Document-Store-Backend und braucht kein Replica Set: siehe
+[Keine Transaktionen nötig](#keine-transaktionen-nötig).
+
+## Installation
+
+`mongodb` ist eine optionale Peer-Dependency.  **Pinne sie auf Version 6:**
+
+```bash
+bun add mongodb@^6
+```
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="danger" title="mongodb@7 lässt sich auf Bun nicht importieren">
+  Version 7 bringt ein `bson` mit, das auf Modulebene
+  `v8.startupSnapshot.isBuildingSnapshot()` aufruft.  Bun implementiert diese API
+  nicht, `import 'mongodb'` wirft daher `ERR_NOT_IMPLEMENTED`, bevor irgendein
+  Framework-Code läuft — auf Bun, der primären Runtime des Projekts.  Version 6
+  importiert auf Bun, Node und Deno gleichermaßen sauber, deshalb lautet die
+  Peer-Range `^6`.  Wenn du ausschließlich auf Node läufst, funktioniert Version
+  7, aber nichts hier ist dagegen getestet.
+</Aside>
+
+Das Framework importiert den Treiber lazy, erst wenn ein MongoDB-Store zum ersten
+Mal genutzt wird — bis dahin bleibt er aus deinem Bundle heraus.
+
+## Einrichtung
+
+Registriere Journal + Snapshot-Store an der `PersistenceExtension` und erhalte
+einen einsatzbereiten Durable-State-Store.  Setz die Verbindung einmal am
+Composite, dann erben sie alle drei Komponenten:
+
+```ts
+import {
+  ActorSystem,
+  ActorSystemOptions,
+  MongoDurableStateStoreOptions,
+  MongoJournalOptions,
+  MongoSnapshotStoreOptions,
+  PersistenceExtensionId,
+  RegisterMongoPluginsOptions,
+  registerMongoPlugins,
+} from 'actor-ts';
+
+const systemOptions = ActorSystemOptions.create()
+  // Die MongoDB-Plugins als aktives Journal + Snapshot-Store auswählen.
+  .withConfig({
+    'actor-ts': {
+      persistence: {
+        journal: { plugin: 'actor-ts.persistence.journal.mongodb' },
+        'snapshot-store': { plugin: 'actor-ts.persistence.snapshot-store.mongodb' },
+      },
+    },
+  });
+const system = ActorSystem.create('my-app', systemOptions);
+
+const ext = system.extension(PersistenceExtensionId);
+const mongoSnapshotStoreOptions = MongoSnapshotStoreOptions.create()
+  .withKeepN(3);
+const registerOptions = RegisterMongoPluginsOptions.create()
+  .withUrl('mongodb://user:pass@localhost:27017')
+  .withDatabaseName('app')
+  .withJournal(MongoJournalOptions.create() /* .withEventsCollection(...) */)
+  .withSnapshotStore(mongoSnapshotStoreOptions)
+  .withDurableStateStore(MongoDurableStateStoreOptions.create() /* .withCollection(...) */);
+const { durableStateStore } = registerMongoPlugins(ext, registerOptions);
+```
+
+`registerMongoPlugins` registriert Journal + Snapshot-Store über die Extension
+(ausgewählt durch die Plugin-IDs in der Config oben) und **gibt** den
+Durable-State-Store zurück.  `PersistenceExtension` hat keine
+Durable-State-Registry — übergib `durableStateStore` direkt an die Settings
+deines `DurableStateActor`.
+
+### Einen Client teilen
+
+Ein `MongoClient` ist selbst schon ein Connection-Pool; einen zu übergeben ist
+daher die effiziente Variante, wenn alle Komponenten dasselbe Deployment
+adressieren:
+
+```ts
+import { MongoClient } from 'mongodb';
+
+const client = new MongoClient('mongodb://localhost:27017');
+await client.connect();
+const registerMongoPluginsOptions = RegisterMongoPluginsOptions.create()
+  .withClient(client)
+  .withDatabaseName('app');
+registerMongoPlugins(ext, registerMongoPluginsOptions);
+```
+
+Ein geteilter Client gehört dem **Caller**: kein Store schließt ihn, du schließt
+ihn also selbst beim Shutdown.  Übergib stattdessen `url`, dann baut jeder Store
+seinen eigenen Client und schließt ihn bei `close()`.
+
+## Wann du es einsetzt
+
+- **MongoDB ist schon deine Datenbank.** Der größte Treiber im Ökosystem und
+  derjenige, den viele Teams ohnehin betreiben.
+- **Du willst indizierte Tag-Queries.** Nur MongoDB, SQLite/libSQL und Cassandra
+  drücken `currentEventsByTag` in den Storage hinunter; die relationalen
+  Backends pollen.
+- **Du willst ein Deployment für Events und Read-Models.** Projections können
+  ihre Views in dieselbe Datenbank schreiben.
+
+## Konfiguration
+
+```ts
+interface MongoConnection {
+  url?:           string;                    // mongodb:// oder mongodb+srv://
+  databaseName?:  string;                    // Default 'actor_ts'
+  clientOptions?: Record<string, unknown>;   // { tls, authSource, maxPoolSize, … }
+  client?:        MongoClientLike;           // vorgebauter / geteilter Client
+}
+
+interface MongoJournalOptions extends MongoConnection {
+  eventsCollection?:  string;   // Default 'events'; die Mark-Collection ist '<it>_meta'
+  autoCreateIndexes?: boolean;  // Default true
+}
+interface MongoSnapshotStoreOptions extends MongoConnection {
+  snapshotsCollection?: string; // Default 'snapshots'
+  keepN?:               number; // neueste N pro pid; Default 3, <=0 behält alle
+  autoCreateIndexes?:   boolean;
+}
+interface MongoDurableStateStoreOptions extends MongoConnection {
+  collection?: string;          // Default 'durable_state'
+}
+```
+
+Die Optionen werden bei der Konstruktion des Stores validiert — ein falsches
+URL-Schema oder ein Datenbankname, den MongoDB ablehnen würde (mit `/`, `\`, `.`,
+`"` oder Leerzeichen), schlägt beim Verdrahten fehl, nicht erst beim ersten
+Schreiben.
+
+## Collections und Indizes
+
+| Collection | Shape | Index |
+| --- | --- | --- |
+| `events` | `{ persistenceId, sequenceNr, payload, tags?, timestamp }` | **unique** `(persistenceId, sequenceNr)`; `(tags, timestamp)` |
+| `events_meta` | `{ _id: persistenceId, deletedTo }` | `_id` |
+| `snapshots` | `{ persistenceId, sequenceNr, payload, timestamp }` | **unique** `(persistenceId, sequenceNr)` |
+| `durable_state` | `{ _id: persistenceId, revision, payload, timestamp }` | `_id` |
+
+<Aside type="caution" title="Der Unique-Index ist tragend">
+  Er ist keine Performance-Optimierung — er **ist** der
+  Optimistic-Concurrency-Backstop des Journals und übernimmt die Rolle, die in
+  den relationalen Backends der Primary Key spielt.  `autoCreateIndexes: false`
+  heißt daher „ich habe sie selbst angelegt", nicht „ich brauche sie nicht".
+  Ohne den Unique-Index auf `(persistenceId, sequenceNr)` überschreibt ein
+  konkurrierender Writer still ein Event.
+</Aside>
+
+## Concurrency-Modell
+
+- **Journal-Append** liest den aktuellen Head und fügt dann ein.  Der Unique-
+  Compound-Index weist einen konkurrierenden Writer mit Serverfehler **11000**
+  ab, der in einen `JournalConcurrencyError` übersetzt wird — dasselbe
+  zweischichtige Schema wie bei den SQL-Backends (Head-Prüfung für den
+  Normalfall, konditionaler Write für das Rennen), mit Fehler 11000 in der Rolle
+  von SQLSTATE `23505`.
+- **Durable-State-CAS** steckt die Revision in den *Filter*:
+  `updateOne({ _id, revision: expected }, …)`.  Eine Abweichung matcht nichts,
+  `matchedCount === 0` heißt also, dass die gespeicherte Revision abgewichen ist.
+  Ein Create ist `insertOne`, wo `_id` das Duplikat abweist.
+- **Die Kompaktierungs-Marke ist monoton** über `$max`, das nur schreibt, wenn
+  der neue Wert größer ist — genau das, was `GREATEST` in den SQL-Dialekten tut.
+
+### Keine Transaktionen nötig
+
+MongoDBs Multi-Document-Transaktionen brauchen ein Replica Set, und dieses
+Backend nutzt sie bewusst nicht — es läuft daher auf einem Standalone-`mongod`.
+
+Das ist begründet, nicht Glück.  Appends sind vom Head aus lückenlos, zwei
+Writer, die sich über den Head einig sind, versuchen also **dieselbe erste**
+Sequenznummer: das `insertMany` des Verlierers scheitert an seinem allerersten
+Dokument, und `ordered: true` bricht den Batch dort ab — er schreibt nichts.  Ein
+partieller Append ist über Contention also nicht erreichbar, und genau das wäre
+das Einzige gewesen, was eine Transaktion gebracht hätte.
+
+<Aside type="caution" title="Ein Infrastrukturfehler mitten im Batch kann ein Präfix persistieren">
+  Contention ist sicher; eine abgebrochene Verbindung ist etwas anderes.  Reißt
+  die Verbindung nach dem zweiten von fünf Events, sind diese zwei persistiert
+  und der Aufruf meldet trotzdem einen Fehler.  Der Stream bleibt lückenlos und
+  der nächste Append setzt beim neuen Head fort, die Recovery ist also
+  konsistent — aber der Fehler des Callers garantiert nicht „nichts wurde
+  geschrieben".  Einzel-Event-Appends, der Normalfall, sind ohnehin atomar.
+</Aside>
+
+## Tag-Queries
+
+`MongoQuery` gibt `currentEventsByTag` einen indizierten Pfad.  Weil `tags` ein
+Array ist, indiziert MongoDB es als **Multikey**-Index — ein Eintrag pro Tag pro
+Event — eine Query auf einen Tag plus eine Timestamp-Untergrenze läuft damit
+einen zusammenhängenden Bereich ab statt zu scannen:
+
+```ts
+import { MongoQuery, offsetStart } from 'actor-ts';
+
+const query = new MongoQuery(journal);
+const tagged = await query.currentEventsByTag({ all: ['ledger'], not: ['audit'] }, offsetStart);
+```
+
+Der Server vorfiltert auf einen Tag; `all` jenseits des ersten Tags,
+Cross-Tag-`any` und `not` werden im Speicher verfeinert, genau wie in den
+SQLite- und Cassandra-Pfaden.  Ein Filter mit nur `not` hat nichts zum
+Vorfiltern und fällt auf den Journal-Scan zurück.
+
+## Fallstricke
+
+<Aside type="caution" title="Payloads sind JSON-Text, keine BSON-Dokumente">
+  Du kannst nicht innerhalb einer Event-Payload suchen, was das Framework nie tut
+  — es fragt nach persistenceId, Sequenznummer und Tags.  Der Grund ist
+  Genauigkeit: BSON würde eine Payload ablehnen oder verfälschen, deren Keys
+  einen Punkt enthalten oder mit `$` beginnen, und würde still ändern, wie
+  `undefined` und Datumswerte zurückkommen.  Jedes andere Backend speichert
+  ebenfalls JSON-Text, ein Event-Stream bedeutet also überall dasselbe.
+</Aside>
+
+<Aside type="caution" title="Kein In-Process-Event-Bus">
+  MongoDB ist ein Cross-Process-Backend und veröffentlicht daher KEINEN
+  In-Process-Journal-Event-Bus.  `PersistenceQuery`-Live-Subscriber pollen —
+  wobei der Tag-Pfad jedes Polls indiziert ist, anders als bei Postgres.  (Ein
+  Bus auf Basis von Change Streams bräuchte ein Replica Set und ist ein mögliches
+  künftiges Feature.)
+</Aside>
+
+<Aside type="caution" title="Compression- / Encryption-Optionen werden ignoriert">
+  Per-Call-`PersistenceOptions` gelten nur für die Object-Storage-Stores.  Das
+  gilt genauso für jedes SQL-Backend und Cassandra.
+</Aside>
+
+## Wie geht's weiter
+
+- **[PostgreSQL](/de/persistence/journals/postgres/)** — das relationale
+  Gegenstück, mit transaktionalen Multi-Event-Appends.
+- **[Cassandra-Journal](/de/persistence/journals/cassandra/)** — der andere
+  verteilte Store mit indiziertem Tag-Pfad.
+- **[Durable State](/de/persistence/durable-state/)** — die State-orientierte
+  Alternative zum Event-Sourcing.
+- **[Snapshots](/de/persistence/snapshots/)** — begrenzt den Recovery-Scan.

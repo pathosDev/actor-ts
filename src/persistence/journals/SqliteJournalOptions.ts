@@ -11,7 +11,8 @@ export interface SqliteJournalOptionsType {
   /**
    * Explicit driver — useful for tests or when you want to pin a
    * specific SQLite backend.  Default: auto-detect via `getSqliteDriver()`
-   * (Bun → `bun:sqlite`, Node → `better-sqlite3`).
+   * (Bun → `bun:sqlite`, Node → `better-sqlite3` or `node:sqlite`,
+   * Deno → `node:sqlite`).
    */
   readonly driver?: SqliteDriver;
 }
