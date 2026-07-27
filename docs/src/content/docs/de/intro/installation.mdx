@@ -99,6 +99,7 @@ bun add hono @hono/node-server    # @hono/node-server ist Node-only
 | `mongodb` *(auf `^6` pinnen)* | MongoDB Journal + Snapshot + Durable-State Store + indizierte Tag-Query.  Version 7 lässt sich auf Bun nicht importieren — siehe die [MongoDB-Seite](/de/persistence/journals/mongodb/). |
 | `cassandra-driver` | Cassandra / ScyllaDB Journal + Tag-Index. |
 | `@aws-sdk/client-s3` | S3-kompatibles Object-Storage-Backend (funktioniert mit MinIO, R2, Backblaze B2). |
+| `@aws-sdk/client-dynamodb` | DynamoDB Journal + Snapshot + Durable-State Store. |
 | `fzstd` *(optional)* | zstd-Kompression für Object-Storage-Blobs, wenn kein nativer Runtime-Support verfügbar ist. |
 
 ### Cache

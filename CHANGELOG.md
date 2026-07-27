@@ -11,6 +11,24 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Added
 
+- **DynamoDB persistence backend** (#398) — `DynamoDbJournal`,
+  `DynamoDbSnapshotStore` and `DynamoDbDurableStateStore` over
+  `@aws-sdk/client-dynamodb` (a new optional peer, the same SDK family already
+  used for S3).  Its optimistic concurrency is the **strongest** of any backend:
+  the append is one `TransactWriteItems` where every put carries
+  `attribute_not_exists`, so it is atomic across all items and a losing writer
+  cannot leave a partial append behind — no equivalent of MongoDB's prefix
+  caveat.  DynamoDB caps a transaction at 100 items, and an append beyond that is
+  refused with a clear error rather than silently chunked, which would break that
+  atomicity.  The compaction high-water mark lives in the same table at the
+  reserved sort key 0, raised with a conditional update that expresses `GREATEST`
+  as a condition.  Reads, deletes and `persistenceIds` page through
+  `LastEvaluatedKey`; there is no indexed tag query yet, so `currentEventsByTag`
+  falls back to the journal scan as it does on Postgres.
+- **`MsSql`/`Mongo`/`DynamoDb` option validators** now reject an endpoint that is
+  not an `http(s)` URL.  Worth noting because `new URL('localhost:8000')`
+  *succeeds* — it reads `localhost:` as the scheme — so a bare `host:port` used to
+  pass validation and fail later at connect time.
 - **MongoDB persistence backend** (#397) — `MongoJournal`,
   `MongoSnapshotStore`, `MongoDurableStateStore` and `MongoQuery`, the first
   document-store backend and the first with an indexed tag query outside the

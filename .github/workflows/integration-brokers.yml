@@ -72,6 +72,7 @@ jobs:
           - { dir: libsql,        npm: libsql,   image: "libSQL (sqld)" }
           - { dir: mssql,         npm: mssql,    image: "SQL Server 2022" }
           - { dir: mongodb,       npm: mongodb,  image: "MongoDB" }
+          - { dir: dynamodb,      npm: dynamodb, image: "DynamoDB Local" }
           # Postgres-wire certifications (#401): the existing Postgres
           # stores against a different server, not new backends.
           - { dir: cockroachdb,   npm: cockroachdb, image: "CockroachDB (pg wire)" }

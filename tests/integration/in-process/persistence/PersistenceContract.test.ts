@@ -4,6 +4,12 @@ import {
   CassandraJournalOptions,
   CassandraSnapshotStore,
   CassandraSnapshotStoreOptions,
+  DynamoDbDurableStateStore,
+  DynamoDbDurableStateStoreOptions,
+  DynamoDbJournal,
+  DynamoDbJournalOptions,
+  DynamoDbSnapshotStore,
+  DynamoDbSnapshotStoreOptions,
   InMemoryDurableStateStore,
   InMemoryJournal,
   InMemorySnapshotStore,
@@ -51,6 +57,7 @@ import {
   type SnapshotHarness,
 } from '../../brokers/lib/persistence-contract/index.js';
 import { FakeCassandraClient } from './FakeCassandraClient.js';
+import { FakeDynamoDb } from './FakeDynamoDb.js';
 import { FakeLibSqlClient } from './FakeLibSqlClient.js';
 import { FakeMariaDbPool } from './FakeMariaDbPool.js';
 import { FakeMongoClient } from './FakeMongoClient.js';
@@ -122,6 +129,15 @@ const journalHarnesses: ReadonlyArray<JournalHarness> = [
       const journalOptions = LibSqlJournalOptions.create()
         .withClient(new FakeLibSqlClient());
       return new LibSqlJournal(journalOptions);
+    },
+  },
+  {
+    label: 'DynamoDbJournal',
+    pid: namespacer('dynamodb'),
+    make: async () => {
+      const journalOptions = DynamoDbJournalOptions.create()
+        .withOperations(new FakeDynamoDb());
+      return new DynamoDbJournal(journalOptions);
     },
   },
   {
@@ -204,6 +220,16 @@ const snapshotHarnesses: ReadonlyArray<SnapshotHarness> = [
     },
   },
   {
+    label: 'DynamoDbSnapshotStore',
+    pid: namespacer('dynamodb'),
+    capabilities: { keepN: 'configurable' },
+    make: async (keepN) => {
+      const storeOptions = DynamoDbSnapshotStoreOptions.create()
+        .withOperations(new FakeDynamoDb());
+      return new DynamoDbSnapshotStore(keepN === undefined ? storeOptions : storeOptions.withKeepN(keepN));
+    },
+  },
+  {
     label: 'MongoSnapshotStore',
     pid: namespacer('mongo'),
     capabilities: { keepN: 'configurable' },
@@ -257,6 +283,15 @@ const durableStateHarnesses: ReadonlyArray<DurableStateHarness> = [
       const storeOptions = LibSqlDurableStateStoreOptions.create()
         .withClient(new FakeLibSqlClient());
       return new LibSqlDurableStateStore(storeOptions);
+    },
+  },
+  {
+    label: 'DynamoDbDurableStateStore',
+    pid: namespacer('dynamodb'),
+    make: async () => {
+      const storeOptions = DynamoDbDurableStateStoreOptions.create()
+        .withOperations(new FakeDynamoDb());
+      return new DynamoDbDurableStateStore(storeOptions);
     },
   },
   {

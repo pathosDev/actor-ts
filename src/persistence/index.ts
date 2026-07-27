@@ -107,6 +107,70 @@ export type {
   PgClientLike,
 } from './journals/PostgresClient.js';
 
+// DynamoDB plug-in (journal + snapshot + durable-state).  The concurrency
+// backstop is a conditional write, and `TransactWriteItems` makes a multi-event
+// append atomic — stronger than the relational backends manage.
+export { DynamoDbJournal } from './journals/DynamoDbJournal.js';
+export {
+  DynamoDbJournalOptions,
+  DynamoDbJournalOptionsBuilder,
+  DynamoDbJournalOptionsValidator,
+} from './journals/DynamoDbJournalOptions.js';
+export type { DynamoDbJournalOptionsType } from './journals/DynamoDbJournalOptions.js';
+export { DynamoDbSnapshotStore } from './snapshot-stores/DynamoDbSnapshotStore.js';
+export {
+  DynamoDbSnapshotStoreOptions,
+  DynamoDbSnapshotStoreOptionsBuilder,
+  DynamoDbSnapshotStoreOptionsValidator,
+} from './snapshot-stores/DynamoDbSnapshotStoreOptions.js';
+export type { DynamoDbSnapshotStoreOptionsType } from './snapshot-stores/DynamoDbSnapshotStoreOptions.js';
+export { DynamoDbDurableStateStore } from './durable-state-stores/DynamoDbDurableStateStore.js';
+export {
+  DynamoDbDurableStateStoreOptions,
+  DynamoDbDurableStateStoreOptionsBuilder,
+  DynamoDbDurableStateStoreOptionsValidator,
+} from './durable-state-stores/DynamoDbDurableStateStoreOptions.js';
+export type { DynamoDbDurableStateStoreOptionsType } from './durable-state-stores/DynamoDbDurableStateStoreOptions.js';
+export { DynamoDbStore } from './journals/DynamoDbStore.js';
+export type { DynamoDbStoreConfig, DynamoDbTableSchema } from './journals/DynamoDbStore.js';
+export {
+  DynamoDbOptionsBuilderBase,
+  DynamoDbOptionsValidatorBase,
+  assertDynamoDbTableName,
+} from './journals/DynamoDbOptionsBase.js';
+export type { DynamoDbOptionsBaseType, DynamoDbTableProvisioning } from './journals/DynamoDbOptionsBase.js';
+export {
+  registerDynamoDbPlugins,
+  DYNAMODB_JOURNAL_PLUGIN_ID,
+  DYNAMODB_SNAPSHOT_PLUGIN_ID,
+  DYNAMODB_DURABLE_STATE_PLUGIN_ID,
+} from './journals/DynamoDbPlugin.js';
+export { RegisterDynamoDbPluginsOptions, RegisterDynamoDbPluginsOptionsBuilder } from './journals/DynamoDbPluginOptions.js';
+export type { RegisterDynamoDbPluginsOptionsType } from './journals/DynamoDbPluginOptions.js';
+export type { DynamoDbPluginHandles } from './journals/DynamoDbPlugin.js';
+export {
+  isConditionalCheckFailed,
+  isTableAlreadyExists,
+  isTableNotFound,
+  numberAttribute,
+  readNumber,
+  readString,
+  readStringSet,
+  stringAttribute,
+  stringSetAttribute,
+} from './journals/DynamoDbClient.js';
+export type {
+  DynamoDbAttribute,
+  DynamoDbBatchWriteResult,
+  DynamoDbClientLike,
+  DynamoDbConnection,
+  DynamoDbGetResult,
+  DynamoDbItem,
+  DynamoDbOperations,
+  DynamoDbQueryResult,
+  DynamoDbTableDescription,
+} from './journals/DynamoDbClient.js';
+
 // MongoDB plug-in (journal + snapshot + durable-state + indexed tag query).
 // The first document-store backend: no SqlDialect, but the same two-layer
 // optimistic concurrency, with a unique compound index in place of a primary key.
