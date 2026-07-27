@@ -101,6 +101,21 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Fixed
 
+- **Docs site builds from a fresh install again** (#473).  `docs/package.json`
+  and `docs/bun.lock` had drifted apart across three dependency bumps — the
+  lockfile's workspace header still recorded the pre-bump ranges, so
+  `bun install --frozen-lockfile` failed outright ("lockfile had changes, but
+  lockfile is frozen").  Worse, PR #472 raised `astro` to `^7.1.3` while
+  `@astrojs/starlight@0.39.3` and its transitive `@astrojs/mdx@5.0.4` both
+  declare `peerDependencies: { astro: "^6.0.0" }`; a clean install resolved
+  astro 7 and `astro build` died on `Package subpath './jsx/rehype.js' is not
+  defined by "exports"`.  The `astro` range is back at `^6.4.8` (the other
+  bumps are peer-compatible and stay) and `docs/bun.lock` is regenerated, so
+  package.json and lockfile agree.  Astro 7 waits for a Starlight release that
+  peer-supports it.  Both CI docs workflows now install with
+  `--frozen-lockfile`, and `docs-checks` — which runs on every `docs/**` change
+  — gained a lockfile-sync job, so this drift fails on the PR instead of
+  silently at release time.
 - **Persistence: uniform `JournalError` wrapping + consistent missing-dependency
   hints** (#383).  Driver errors from the read-side journal methods
   (`highestSeq`, `delete`, `persistenceIds`, and Cassandra's `read`) now surface

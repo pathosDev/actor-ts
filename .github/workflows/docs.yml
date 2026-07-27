@@ -76,12 +76,18 @@ jobs:
       # Without this, TypeDoc errors out with TS2307 ("cannot find
       # module 'ts-pattern'") + TS2503 ("cannot find namespace
       # 'NodeJS'") on every source file.
+      #
+      # Both installs are `--frozen-lockfile`: this workflow used to install
+      # whatever `package.json` resolved to, so a lockfile that had drifted from
+      # its manifest (Dependabot never regenerates `bun.lock`) built green here
+      # against a dependency set nobody had recorded — until a bump resolved to
+      # something that did not work and the release docs deploy broke (#473).
       - name: Install root dependencies (for TypeDoc to resolve src/ imports)
-        run: bun install
+        run: bun install --frozen-lockfile
 
       - name: Install docs dependencies
         working-directory: docs
-        run: bun install
+        run: bun install --frozen-lockfile
 
       # rehype-mermaid renders ```mermaid``` blocks at build time by
       # driving headless Chromium via Playwright.  The npm package
