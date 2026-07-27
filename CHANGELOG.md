@@ -15,6 +15,17 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   convenience over `setJournal` / `setSnapshotStore` for tests and simple,
   single-backend apps that wire persistence directly in code.  (The docs
   already documented this call; it is now real.)
+- **`CassandraJournalOptions.withLightweightTransactions(boolean)`** (#475) —
+  opt out of the LWT-serialized append path (see *Security*) and get the
+  single-round-trip write back.  Default `true`.  Only safe when a single
+  writer per persistence id is genuinely guaranteed; with it off, a losing
+  concurrent append silently discards its event.
+- **`CassandraJournalOptions.withSerialConsistency(number)`** (#475) — the
+  consistency governing the LWT claim's Paxos phase, applied to the
+  conditional statement only.  Unset, the driver uses cluster-wide `SERIAL`,
+  which needs a quorum across *every* datacenter — so on a multi-DC keyspace
+  each append would pay a cross-DC round-trip, undoing the local-DC write path
+  `consistency: LOCAL_QUORUM` exists to provide.  Set `localSerial` (9) there.
 
 ### Changed
 
@@ -200,6 +211,31 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Security
 
+- **Cassandra journal: concurrent appends no longer silently lose events**
+  (#475).  `CassandraJournal.append` did a plain read-modify-write — read the
+  head from `metadata`, compare it to `expectedSeq`, then `INSERT` the events.
+  A CQL `INSERT` is an *upsert*, so two writers that both read head `N` both
+  passed the check and both wrote `sequence_nr = N+1`: the second overwrote the
+  first, and **both callers were told their event was persisted**.  Six racing
+  appends produced six successes, one surviving event, and no
+  `JournalConcurrencyError`.  The relational backends never had this — their
+  events primary key rejects the loser and the duplicate-key error is
+  translated back into `JournalConcurrencyError` — so Cassandra was the only
+  backend where a system-of-record write could vanish without a trace.
+  Appends now claim their sequence range with a **lightweight transaction** on
+  the `metadata` row (`IF NOT EXISTS` for a fresh stream, `IF max_sequence_nr =
+  ?` thereafter) *before* any event is written, so exactly one writer wins and
+  every loser gets a `JournalConcurrencyError` carrying the real head.
+  *Behaviour change:* an append now costs one Paxos round-trip — roughly 3–4×
+  the latency of a plain quorum write, per `append` rather than per event.
+  Cross-pid throughput is unaffected (each claim contends only on its own
+  `metadata` partition).  Claiming before writing also inverts the crash
+  window: a failed event batch triggers a compensating release of the claim,
+  but a process death between the committed claim and the events leaves a gap
+  (head ahead of stored events) instead of the previous orphan-events case.
+  Both are documented in `docs/.../persistence/journals/cassandra.mdx`.
+  `withLightweightTransactions(false)` restores the old single-round-trip
+  path — and the old race with it.
 - **Persistence: event tags are validated at the journal boundary** (#136).
   Tags (from `PersistentActor.tagsFor`, often derived from user input) are
   always bound as query parameters, so SQL/CQL injection was never reachable —
