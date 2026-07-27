@@ -135,7 +135,7 @@ Phase zu ihrer eigenen Funktion, mit ihrem eigenen
 Valid-Message-Set, natürlich verengt.
 
 Für eine formellere Version derselben Idee siehe das
-[FSM](/de/persistence/fsm/)-Pattern — explizite Zustands- +
+[FSM](/de/persistence/fsm/overview/)-Pattern — explizite Zustands- +
 Transition-Deklarationen auf derselben Engine.
 
 ## `stash` — parken, dann replayen
@@ -297,7 +297,7 @@ Initialisierungs-Fensters kein Traffic verloren geht.
   `onReceive` du mit `become` austauschst.
 - **[Mailboxes](/de/fundamentals/mailboxes/)** — `unstashAll`
   fügt in die Mailbox ein; die Mailbox entscheidet die Reihenfolge.
-- **[FSM](/de/persistence/fsm/)** — ein formellerer
+- **[FSM im Überblick](/de/persistence/fsm/overview/)** — ein formellerer
   State-Machine-Stil auf derselben `become`-Engine.
 - **[Typed Behaviors](/de/typed/behaviors/)** — die typed-API
   drückt dieselbe Idee als funktionale `Behavior<T>`-Werte aus, statt
