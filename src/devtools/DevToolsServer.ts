@@ -43,6 +43,7 @@ import { uiAssetRoutes } from './UiAssetRoutes.js';
 import { ActorTreeTap } from './taps/ActorTreeTap.js';
 import { ClusterTap } from './taps/ClusterTap.js';
 import { MailboxSamplerTap } from './taps/MailboxSamplerTap.js';
+import { SpanTap } from './taps/SpanTap.js';
 import { StatsTap } from './taps/StatsTap.js';
 import { UI_ASSETS } from './generated/uiAssets.js';
 import { getFromDirectory } from '../http/static/index.js';
@@ -174,6 +175,15 @@ export class DevToolsServer implements DevToolsHubContext {
         settings.mailboxSampleLimit ?? 50,
       ));
       this.registerPanel({ id: 'actors', status: 'active' });
+    }
+
+    if (this.isPanelEnabled('tracing')) {
+      this.registerTap(new SpanTap(
+        this.system,
+        settings.spanBufferCapacity ?? 2_000,
+        settings.spanFlushIntervalMs ?? 250,
+      ));
+      this.registerPanel({ id: 'tracing', status: 'active' });
     }
 
     if (this.isPanelEnabled('cluster')) {

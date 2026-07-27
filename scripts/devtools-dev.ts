@@ -22,6 +22,7 @@ import { Cluster } from '../src/cluster/Cluster.js';
 import { ClusterOptions } from '../src/cluster/ClusterOptions.js';
 import { InMemoryTransport } from '../src/cluster/Transport.js';
 import { NodeAddress } from '../src/cluster/NodeAddress.js';
+import { tracerOf } from '../src/tracing/TracingExtension.js';
 import { DevTools } from '../src/devtools/DevTools.js';
 import { DevToolsOptions } from '../src/devtools/DevToolsOptions.js';
 
@@ -58,9 +59,18 @@ class SupervisorActor extends Actor<TickMessage> {
   override onReceive(_message: TickMessage): void {
     this.index++;
     const workers = this.context.children.filter((child) => child.path.name.startsWith('worker-'));
-    for (const worker of workers) {
-      worker.tell({ kind: 'work', payload: `job-${this.index}` } as never);
-    }
+
+    // Actors only open a span for a message that already belongs to a
+    // trace, and nothing in the framework starts one — so the entry
+    // point seeds it, exactly as an application would.
+    const tracer = tracerOf(this.context.system);
+    const root = tracer.startSpan('tick', { kind: 'server' });
+    tracer.withActiveSpan(root, () => {
+      for (const worker of workers) {
+        worker.tell({ kind: 'work', payload: `job-${this.index}` } as never);
+      }
+    });
+    root.end();
 
     // Churn a short-lived child so the lifecycle counters, the tree and
     // their sparklines actually move; a static tree tells you nothing
