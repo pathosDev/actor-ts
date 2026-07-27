@@ -246,3 +246,184 @@ a:hover { text-decoration: underline; }
 .dt-notice code { font-family: var(--dt-font-mono); }
 
 .dt-empty { color: var(--dt-text-muted); }
+
+/* ------------------------- tiles: live additions ----------------------- */
+
+.dt-tile { position: relative; overflow: hidden; }
+.dt-tile__alert { color: var(--dt-state-warn); }
+.dt-tile__spark { display: block; width: 100%; height: 26px; margin-top: 6px; }
+
+/* --------------------------------- chart -------------------------------- */
+
+.dt-chart { margin-bottom: 28px; }
+.dt-chart__canvas {
+  display: block;
+  width: 100%;
+  height: 140px;
+  background: var(--dt-bg-elevated);
+  border: 1px solid var(--dt-border);
+  border-radius: var(--dt-radius);
+}
+.dt-chart__legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  align-items: center;
+  margin-bottom: 8px;
+  font-size: 12.5px;
+  color: var(--dt-text-muted);
+}
+.dt-legend__item { display: inline-flex; align-items: center; gap: 6px; }
+.dt-legend__swatch { width: 10px; height: 3px; border-radius: 2px; }
+.dt-legend__peak { margin-left: auto; font-family: var(--dt-font-mono); }
+
+/* -------------------------- horizontal bar rows ------------------------- */
+
+.dt-hotlist, .dt-timeline, .dt-members { display: flex; flex-direction: column; gap: 5px; }
+.dt-hotrow {
+  display: grid;
+  grid-template-columns: minmax(90px, 200px) 1fr 62px;
+  gap: 12px;
+  align-items: center;
+  font-size: 13px;
+}
+.dt-hotrow__name {
+  font-family: var(--dt-font-mono);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dt-hotrow__bar {
+  display: block;
+  height: 8px;
+  border-radius: 4px;
+  background: var(--dt-bg-elevated);
+  border: 1px solid var(--dt-border);
+  overflow: hidden;
+}
+.dt-hotrow__fill { display: block; height: 100%; background: var(--dt-data-3); }
+.dt-hotrow__value { font-family: var(--dt-font-mono); text-align: right; color: var(--dt-text-strong); }
+
+/* -------------------------------- toolbar ------------------------------- */
+
+.dt-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  align-items: center;
+  margin-bottom: 14px;
+}
+.dt-toolbar__summary { margin-left: auto; font-size: 12.5px; color: var(--dt-text-muted); }
+.dt-input {
+  flex: 1 1 220px;
+  max-width: 340px;
+  padding: 6px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--dt-border);
+  background: var(--dt-bg-elevated);
+  color: var(--dt-text);
+  font: inherit;
+  font-size: 13px;
+}
+.dt-input:focus { outline: 2px solid var(--dt-accent); outline-offset: 1px; }
+.dt-checkbox {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--dt-text-muted);
+  cursor: pointer;
+}
+
+/* ------------------------------ actor tree ------------------------------ */
+
+.dt-tree {
+  border: 1px solid var(--dt-border);
+  border-radius: var(--dt-radius);
+  background: var(--dt-bg-elevated);
+  overflow: auto;
+  max-height: 62vh;
+}
+.dt-tree__row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 12px 3px calc(12px + var(--dt-tree-depth, 0) * 16px);
+  font-size: 13px;
+  border-bottom: 1px solid color-mix(in srgb, var(--dt-border) 45%, transparent);
+}
+.dt-tree__row:last-child { border-bottom: none; }
+.dt-tree__row:hover { background: var(--dt-accent-low); }
+.dt-tree__row--restarted { animation: dt-flash 1.2s ease-out; }
+@keyframes dt-flash {
+  from { background: color-mix(in srgb, var(--dt-data-5) 45%, transparent); }
+  to   { background: transparent; }
+}
+.dt-tree__twisty {
+  width: 18px;
+  flex: none;
+  background: transparent;
+  border: none;
+  color: var(--dt-text-muted);
+  cursor: pointer;
+  font: inherit;
+  padding: 0;
+  text-align: left;
+}
+.dt-tree__twisty--leaf { cursor: default; }
+.dt-tree__name { font-family: var(--dt-font-mono); color: var(--dt-text-strong); }
+.dt-tree__class { color: var(--dt-text-muted); font-size: 12.5px; }
+
+/* State dot with a fixed meaning per colour — never reused for series. */
+.dt-state { width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--dt-state-idle); }
+.dt-state--ok { background: var(--dt-state-ok); }
+.dt-state--warn { background: var(--dt-state-warn); }
+.dt-state--error { background: var(--dt-state-error); }
+.dt-state--pending { background: var(--dt-state-idle); }
+
+.dt-badge {
+  font-size: 11px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--dt-accent-low);
+  color: var(--dt-accent-strong);
+  white-space: nowrap;
+}
+.dt-badge--warn { background: color-mix(in srgb, var(--dt-state-warn) 22%, transparent); color: var(--dt-state-warn); }
+.dt-badge--error { background: color-mix(in srgb, var(--dt-state-error) 22%, transparent); color: var(--dt-state-error); }
+.dt-badge--muted { background: transparent; border: 1px solid var(--dt-border); color: var(--dt-text-muted); }
+
+/* -------------------------------- cluster ------------------------------- */
+
+.dt-topology { display: flex; flex-direction: column; align-items: center; margin-bottom: 18px; }
+.dt-topology__svg { width: 100%; max-width: 360px; height: auto; }
+.dt-topology__edge { stroke: var(--dt-border); stroke-width: 1; }
+.dt-topology__circle { stroke: var(--dt-bg); }
+.dt-topology__label { fill: var(--dt-text-muted); font-size: 11px; font-family: var(--dt-font-mono); }
+.dt-topology__legend { font-size: 12px; color: var(--dt-text-muted); margin: 4px 0 0; }
+
+.dt-member { display: flex; align-items: center; gap: 10px; font-size: 13px; }
+.dt-member__address { font-family: var(--dt-font-mono); color: var(--dt-text-strong); }
+.dt-member__status { color: var(--dt-text-muted); }
+
+.dt-shards { display: flex; flex-direction: column; gap: 18px; margin-bottom: 24px; }
+.dt-shardmap {
+  border: 1px solid var(--dt-border);
+  border-radius: var(--dt-radius);
+  background: var(--dt-bg-elevated);
+  padding: 13px 15px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.dt-shardmap__head { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; }
+
+.dt-timeline__row {
+  display: grid;
+  grid-template-columns: 82px minmax(120px, auto) 1fr;
+  gap: 12px;
+  align-items: center;
+  font-size: 13px;
+}
+.dt-timeline__time { font-family: var(--dt-font-mono); color: var(--dt-text-muted); }
+.dt-timeline__subject { font-family: var(--dt-font-mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
