@@ -37,3 +37,24 @@ jobs:
       - name: Check docs for removed/renamed API names
         working-directory: docs
         run: node scripts/check-api-drift.mjs
+
+  # Dependabot bumps `docs/package.json` but never regenerates `docs/bun.lock`
+  # (it does not speak the Bun lockfile format).  The slow `docs.yml` build only
+  # runs on `main` at release time, so a drifted lockfile — or a bump whose peer
+  # ranges do not actually resolve — stayed invisible for weeks and then broke
+  # the release docs deploy (#473).  This job is a ~10 s frozen install that
+  # fails on the PR instead.
+  lockfile-sync:
+    name: docs/bun.lock in sync with docs/package.json
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Frozen install
+        working-directory: docs
+        run: bun install --frozen-lockfile
