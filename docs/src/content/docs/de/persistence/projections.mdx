@@ -123,7 +123,7 @@ import { InMemoryOffsetStore, DurableStateOffsetStore } from 'actor-ts';
 new InMemoryOffsetStore();
 
 // Dauerhaft — speichert den Cursor in einem beliebigen DurableStateStore
-// (Postgres, MariaDB, Object-Storage), sodass ein Neustart mittendrin fortsetzt:
+// (Postgres, MariaDB, libSQL, SQL Server, MongoDB, DynamoDB, Object-Storage), sodass ein Neustart fortsetzt:
 new DurableStateOffsetStore(durableStateStore);
 ```
 
@@ -133,7 +133,7 @@ Projection-Name + Scope gespeichert.  Implementierungen:
 - `InMemoryOffsetStore` — okay für Tests, nutzlos in Produktion
   (jeder Neustart verarbeitet vom Anfang neu).
 - `DurableStateOffsetStore` — umschließt einen beliebigen `DurableStateStore`
-  (Postgres, MariaDB, Object-Storage), sodass Offsets Neustarts überstehen.
+  (Postgres, MariaDB, libSQL, SQL Server, MongoDB, DynamoDB, Object-Storage), sodass Offsets Neustarts überstehen.
 - Benutzerdefiniert — implementiere `OffsetStore` gegen deinen
   eigenen Store (Redis, was auch immer dein Read-Model
   verwendet).

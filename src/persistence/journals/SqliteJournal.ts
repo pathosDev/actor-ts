@@ -32,10 +32,11 @@ interface Stmts {
 /**
  * Journal backed by SQLite — zero-dependency, single-file persistence.
  *
- * Works on Bun (`bun:sqlite`) and Node.js (`better-sqlite3`) via the
- * `SqliteDriver` abstraction in `src/runtime/sqlite/`.  Both backends
- * share the same prepared-statement + transaction shape, so the journal
- * code itself is unchanged across runtimes.
+ * Works on all three runtimes via the `SqliteDriver` abstraction in
+ * `src/runtime/sqlite/` — Bun (`bun:sqlite`), Node (`better-sqlite3`, or the
+ * built-in `node:sqlite` when it is not installed) and Deno (`node:sqlite`).
+ * Every driver shares the same prepared-statement + transaction shape, so the
+ * journal code itself is unchanged across runtimes.
  *
  * Construction is lazy: the native DB is opened on the first `append` /
  * `read` / `highestSeq` / `delete` / `persistenceIds` call.  This keeps

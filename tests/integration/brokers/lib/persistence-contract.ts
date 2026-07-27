@@ -1,162 +1,91 @@
 /**
- * Shared live-DB persistence contract — exercised by both the Postgres
- * and MariaDB suites against a REAL database container.  The behaviour
- * under test is identical (same `Journal` / `SnapshotStore` /
- * `DurableStateStore` contract); only construction differs, so each
- * runner builds the concrete backends, drops them into the context, and runs
- * these scenarios.  This is the live counterpart to the in-process
- * Fake{Pg,MariaDb}Pool unit tests.
+ * Live-database adapter for the parameterized persistence contract (#390).
  *
- * Each scenario resets its persistence-id up front (delete) so re-running
- * a suite without `down -v` is idempotent.
+ * The scenarios themselves live in `persistence-contract/` and are shared with
+ * the fast `bun test` pass (`PersistenceContract.test.ts`); this module only
+ * adapts them to the `BrokerScenario` shape the Docker runners execute.  A
+ * backend therefore gets its live coverage by supplying three factories — no
+ * scenario is written twice, and a case added for one backend is immediately
+ * checked against all of them.
+ *
+ * Persistence ids are namespaced with a per-process run id rather than reset
+ * up front.  A journal's high-water mark deliberately survives compaction, so
+ * "delete everything, then append at 0" is not a valid reset — after
+ * `delete(pid, MAX_SAFE_INTEGER)` the mark *is* `MAX_SAFE_INTEGER` and every
+ * later append correctly reports a concurrency conflict.  Fresh ids per run
+ * make the suites idempotent without fighting that guarantee.
  */
+import type { DurableStateStore } from '../../../../src/persistence/DurableStateStore.js';
 import type { Journal } from '../../../../src/persistence/Journal.js';
 import type { SnapshotStore } from '../../../../src/persistence/SnapshotStore.js';
-import type { DurableStateStore } from '../../../../src/persistence/DurableStateStore.js';
+import {
+  durableStateContractScenarios,
+  journalContractScenarios,
+  snapshotContractScenarios,
+  type ContractScenario,
+  type DurableStateHarness,
+  type JournalHarness,
+  type SnapshotHarness,
+} from './persistence-contract/index.js';
 import type { BrokerScenario, BrokerScenarioContext } from './scenario.js';
 
 export interface SqlPersistenceContext extends BrokerScenarioContext {
-  /** Short label — used in messages and to namespace persistence-ids ("pg", "mariadb"). */
+  /** Short label — used in scenario names and to namespace persistence ids ("pg", "mariadb"). */
   readonly label: string;
-  readonly journal: Journal;
-  /** Constructed with `keepN: 2` so the prune assertion is meaningful. */
-  readonly snapshotStore: SnapshotStore;
-  readonly durableState: DurableStateStore;
+  /** Build a journal against the live database.  Each scenario gets its own. */
+  makeJournal(): Promise<Journal>;
+  /** Build a snapshot store; `keepN` must be honoured so the prune scenarios are meaningful. */
+  makeSnapshotStore(keepN?: number): Promise<SnapshotStore>;
+  makeDurableStateStore(): Promise<DurableStateStore>;
 }
 
-const MAX_SEQ = Number.MAX_SAFE_INTEGER;
+/**
+ * Unique per process: two runs against the same container (a re-run without
+ * `docker compose down -v`) must not collide on persistence ids.
+ */
+const runId = `${Date.now().toString(36)}`;
 
-function assert(cond: boolean, message: string): asserts cond {
-  if (!cond) throw new Error(`assertion failed: ${message}`);
+function namespacer(context: SqlPersistenceContext, contract: string) {
+  return (name: string): string => `${context.label}:${runId}:${contract}:${name}`;
 }
 
-async function expectThrows(fn: () => Promise<unknown>, name: string, what: string): Promise<void> {
-  try {
-    await fn();
-  } catch (e) {
-    if ((e as Error).name === name) return;
-    throw new Error(`${what}: expected ${name}, got ${(e as Error).name}: ${(e as Error).message}`);
-  }
-  throw new Error(`${what}: expected ${name} to be thrown, but nothing was`);
+/** Adapt one contract scenario to a `BrokerScenario`, honouring `skip`. */
+function adapt<Harness>(
+  contract: string,
+  scenario: ContractScenario<Harness>,
+  buildHarness: (context: SqlPersistenceContext) => Harness,
+): BrokerScenario<SqlPersistenceContext> {
+  return {
+    name: `${contract} — ${scenario.name}`,
+    async run(context) {
+      const harness = buildHarness(context);
+      const skipReason = scenario.skip?.(harness) ?? null;
+      if (skipReason !== null) {
+        console.log(`[runner] SKIP ${contract} — ${scenario.name}: ${skipReason}`);
+        return;
+      }
+      await scenario.run(harness);
+    },
+  };
 }
 
 export function sqlPersistenceScenarios(): BrokerScenario<SqlPersistenceContext>[] {
   return [
-    {
-      name: 'journal — append / read / range / concurrency / tags / delete / ids',
-      async run(context) {
-        const persistenceId = `${context.label}:journal`;
-        await context.journal.delete(persistenceId, MAX_SEQ);   // reset for idempotent re-runs
-
-        const written = await context.journal.append(persistenceId, ['e1', 'e2', 'e3'], 0, ['tagA', 'tagB']);
-        assert(written.map((e) => e.sequenceNr).join(',') === '1,2,3', 'monotonic seq 1,2,3');
-
-        const all = await context.journal.read<string>(persistenceId, 1);
-        assert(all.length === 3, `read 3, got ${all.length}`);
-        assert(all[0]!.event === 'e1', 'payload round-trip');
-        assert(typeof all[0]!.sequenceNr === 'number', 'sequenceNr coerced to number');
-        assert(JSON.stringify(all[0]!.tags) === JSON.stringify(['tagA', 'tagB']), 'tags round-trip');
-
-        assert(await context.journal.highestSeq(persistenceId) === 3, 'highestSeq is 3');
-
-        const ranged = await context.journal.read(persistenceId, 2, 2);
-        assert(ranged.length === 1 && ranged[0]!.sequenceNr === 2, 'inclusive range read');
-
-        await expectThrows(() => context.journal.append(persistenceId, ['x'], 0), 'JournalConcurrencyError', 'stale append');
-
-        const more = await context.journal.append(persistenceId, ['e4'], 3);
-        assert(more[0]!.sequenceNr === 4, 'append resumes after correct expectedSeq');
-
-        await context.journal.delete(persistenceId, 2);
-        const afterDelete = await context.journal.read(persistenceId, 1);
-        assert(afterDelete.map((e) => e.sequenceNr).join(',') === '3,4', 'delete compacts up to toSeq');
-
-        assert((await context.journal.persistenceIds()).includes(persistenceId), 'persistenceIds includes our pid');
-      },
-    },
-    {
-      name: 'journal — concurrent appends at the same expectedSeq leave exactly one winner',
-      async run(context) {
-        // Racing appends must not both land: a journal that lets the loser
-        // through overwrites the winner's event and tells both callers they
-        // persisted (#475).  The relational backends get this from the
-        // events primary key — the losing INSERT is rejected and translated
-        // back into a JournalConcurrencyError.
-        const persistenceId = `${context.label}:journal-race`;
-        // Race at whatever the current head is rather than 0, so re-running
-        // the suite without `down -v` still exercises a real contention.
-        const head = await context.journal.highestSeq(persistenceId);
-        const attempts = 4;
-
-        const settled = await Promise.allSettled(
-          Array.from({ length: attempts }, (_, i) =>
-            context.journal.append(persistenceId, [`race-${i}`], head)),
-        );
-        const winners = settled.filter((r) => r.status === 'fulfilled');
-        const losers = settled.filter((r) => r.status === 'rejected');
-
-        assert(winners.length === 1, `exactly one winner, got ${winners.length}`);
-        for (const loser of losers) {
-          const name = ((loser as PromiseRejectedResult).reason as Error).name;
-          assert(name === 'JournalConcurrencyError', `loser reports JournalConcurrencyError, got ${name}`);
-        }
-
-        assert(
-          await context.journal.highestSeq(persistenceId) === head + 1,
-          'head advanced exactly once',
-        );
-        const stored = await context.journal.read<string>(persistenceId, head + 1);
-        assert(stored.length === 1, `exactly one event at the contested seq, got ${stored.length}`);
-        // The surviving payload must be the winner's — an upsert-style
-        // overwrite would leave a different one under the same seq.
-        const won = (winners[0] as PromiseFulfilledResult<Array<{ event: unknown }>>).value;
-        assert(stored[0]!.event === won[0]!.event, 'the surviving event belongs to the winner');
-      },
-    },
-    {
-      name: 'snapshot — save / loadLatest / loadBefore / keepN prune / delete',
-      async run(context) {
-        const persistenceId = `${context.label}:snap`;
-        await context.snapshotStore.delete(persistenceId, MAX_SEQ);   // reset
-
-        await context.snapshotStore.save(persistenceId, 1, { v: 1 });
-        await context.snapshotStore.save(persistenceId, 2, { v: 2 });
-        await context.snapshotStore.save(persistenceId, 3, { v: 3 });   // keepN=2 → seq 1 pruned
-
-        const latest = (await context.snapshotStore.loadLatest<{ v: number }>(persistenceId)).toNullable();
-        assert(latest?.sequenceNr === 3 && latest.state.v === 3, 'loadLatest is seq 3');
-
-        const before = (await context.snapshotStore.loadBefore<{ v: number }>(persistenceId, 3)).toNullable();
-        assert(before?.sequenceNr === 2, 'loadBefore(3) is seq 2');
-
-        const pruned = (await context.snapshotStore.loadBefore(persistenceId, 2)).toNullable();
-        assert(pruned === null, 'seq 1 pruned by keepN=2');
-
-        await context.snapshotStore.delete(persistenceId, 3);
-        assert((await context.snapshotStore.loadLatest(persistenceId)).toNullable() === null, 'delete removes snapshots');
-      },
-    },
-    {
-      name: 'durable-state — insert / load / update / CAS conflict / re-insert / delete',
-      async run(context) {
-        const persistenceId = `${context.label}:ds`;
-        await context.durableState.delete(persistenceId);   // reset
-
-        const r1 = await context.durableState.upsert(persistenceId, 0, { count: 1 });
-        assert(r1.revision === 1, 'insert yields revision 1');
-
-        const loaded = (await context.durableState.load<{ count: number }>(persistenceId)).toNullable();
-        assert(loaded?.revision === 1 && loaded.state.count === 1, 'load reflects insert');
-
-        const r2 = await context.durableState.upsert(persistenceId, 1, { count: 2 });
-        assert(r2.revision === 2, 'update bumps revision to 2');
-
-        await expectThrows(() => context.durableState.upsert(persistenceId, 1, { count: 9 }), 'DurableStateConcurrencyError', 'stale update');
-        await expectThrows(() => context.durableState.upsert(persistenceId, 0, { count: 9 }), 'DurableStateConcurrencyError', 're-insert on existing key');
-
-        await context.durableState.delete(persistenceId);
-        assert((await context.durableState.load(persistenceId)).toNullable() === null, 'delete removes the record');
-      },
-    },
+    ...journalContractScenarios().map((scenario) => adapt('journal', scenario, (context): JournalHarness => ({
+      label: context.label,
+      pid: namespacer(context, 'journal'),
+      make: () => context.makeJournal(),
+    }))),
+    ...snapshotContractScenarios().map((scenario) => adapt('snapshot', scenario, (context): SnapshotHarness => ({
+      label: context.label,
+      pid: namespacer(context, 'snapshot'),
+      capabilities: { keepN: 'configurable' },
+      make: (keepN) => context.makeSnapshotStore(keepN),
+    }))),
+    ...durableStateContractScenarios().map((scenario) => adapt('durable-state', scenario, (context): DurableStateHarness => ({
+      label: context.label,
+      pid: namespacer(context, 'durable-state'),
+      make: () => context.makeDurableStateStore(),
+    }))),
   ];
 }

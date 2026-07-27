@@ -11,6 +11,120 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Added
 
+- **Cloudflare D1 persistence backend** (#438) — `D1Journal`, `D1SnapshotStore`
+  and `D1DurableStateStore`, completing the umbrella's five backends.  Spoken over
+  D1's REST API with the framework's own `HttpClient`, so it adds **no dependency
+  at all** — D1 has no Node SDK, which for once makes the SDK-free path the only
+  path.  The SQL is `sqliteDialect`'s, so the schema is identical to the local
+  SQLite and libSQL backends and a database can move between all three without a
+  migration; the whole backend is a client plus three constructors.
+  `withTransaction` provides no isolation because the HTTP API has no `BEGIN` and
+  no parameterized batch — which `SqlPool` always documented as adapter-defined,
+  and which the journal survives because concurrency rests on the primary key
+  rejecting a racing writer.  The cost is documented: a multi-event append can
+  persist a prefix if the connection drops midway.
+  **Verification stops at the fake**, deliberately: D1 has no emulator that fits a
+  container suite (locally it exists only inside `wrangler`/Miniflare), so there is
+  no live suite and no CI row, and the docs say so plainly.
+- **DynamoDB persistence backend** (#398) — `DynamoDbJournal`,
+  `DynamoDbSnapshotStore` and `DynamoDbDurableStateStore` over
+  `@aws-sdk/client-dynamodb` (a new optional peer, the same SDK family already
+  used for S3).  Its optimistic concurrency is the **strongest** of any backend:
+  the append is one `TransactWriteItems` where every put carries
+  `attribute_not_exists`, so it is atomic across all items and a losing writer
+  cannot leave a partial append behind — no equivalent of MongoDB's prefix
+  caveat.  DynamoDB caps a transaction at 100 items, and an append beyond that is
+  refused with a clear error rather than silently chunked, which would break that
+  atomicity.  The compaction high-water mark lives in the same table at the
+  reserved sort key 0, raised with a conditional update that expresses `GREATEST`
+  as a condition.  Reads, deletes and `persistenceIds` page through
+  `LastEvaluatedKey`; there is no indexed tag query yet, so `currentEventsByTag`
+  falls back to the journal scan as it does on Postgres.
+- **`MsSql`/`Mongo`/`DynamoDb` option validators** now reject an endpoint that is
+  not an `http(s)` URL.  Worth noting because `new URL('localhost:8000')`
+  *succeeds* — it reads `localhost:` as the scheme — so a bare `host:port` used to
+  pass validation and fail later at connect time.
+- **MongoDB persistence backend** (#397) — `MongoJournal`,
+  `MongoSnapshotStore`, `MongoDurableStateStore` and `MongoQuery`, the first
+  document-store backend and the first with an indexed tag query outside the
+  SQL/Cassandra families (a multikey index over the `tags` array).  Optimistic
+  concurrency uses the same two-layer scheme as the relational backends, with a
+  unique compound index on `(persistenceId, sequenceNr)` and server error 11000
+  standing in for a primary key and SQLSTATE 23505.  It needs **no
+  transactions** — appends are contiguous from the head, so a losing writer fails
+  on its first document and writes nothing — which keeps it working on a
+  standalone `mongod` rather than requiring a replica set.  Payloads are stored as
+  JSON text so a document with dotted or `$`-prefixed keys round-trips exactly.
+  **Pin the driver to `mongodb@^6`**: version 7's bundled `bson` calls
+  `v8.startupSnapshot.isBuildingSnapshot()` at module scope, which Bun does not
+  implement, so importing it throws before any framework code runs.
+- **`LazyStore`** — the store lifecycle (lazy connection, memoized init, one-shot
+  schema preparation, ownership-aware teardown) is now shared by the relational
+  and MongoDB families instead of living inside `RelationalStore`.
+- **CockroachDB and YugabyteDB certified on the Postgres stores** (#401).  Both
+  speak the PostgreSQL wire protocol, so they need no new backend — but "should
+  work" is not the same as verified.  Two live suites now run the full
+  persistence contract against them via the unmodified `PostgresJournal` /
+  `PostgresSnapshotStore` / `PostgresDurableStateStore`, plus a docs page
+  recording what is certified and what is not.  Notably CockroachDB's
+  SERIALIZABLE isolation can reject a contended append with a retry error
+  (SQLSTATE 40001) rather than a duplicate key, which currently surfaces as
+  `JournalError`; that is documented rather than silently papered over.
+- **Contract scenario for racing appends** — the persistence contract now
+  asserts that concurrent `append`s at the same `expectedSeq` leave exactly one
+  winner, no lost or duplicated events, and a `JournalConcurrencyError` for every
+  loser.  This is the scenario that reaches the duplicate-key backstop at all,
+  which nothing previously covered.  It also surfaced a genuine limitation in
+  `CassandraJournal`, whose append is a read-then-write with no conditional write
+  behind it — see the capability gate on its harness.
+- **Microsoft SQL Server persistence backend** (#399) — `MsSqlJournal`,
+  `MsSqlSnapshotStore` and `MsSqlDurableStateStore` on the relational base, via
+  the `mssql`/tedious driver (a new optional peer dependency).  T-SQL needed four
+  genuine dialect additions: `IF OBJECT_ID(…) IS NULL`-guarded DDL (there is no
+  `CREATE TABLE IF NOT EXISTS`), `MERGE … WITH (HOLDLOCK)` upserts (the hint
+  matters — without it two concurrent merges can both take the `NOT MATCHED`
+  branch), `OFFSET/FETCH` row limiting, and named `@pN` parameters, which the
+  pool adapter maps from the ordered array every other driver takes.  Requires
+  SQL Server 2016+: the tags table's four-column key needs 1036 index bytes, so
+  its primary key is nonclustered.  The driver is pure JavaScript and verified to
+  import and build a pool on Bun, Node **and Deno 2** — the 2021 tedious
+  crypto-shim issue that made Deno support an open question is fixed.
+- **`SqlDialect.rowLimit(count)`** — row limiting moved into the dialect, since
+  T-SQL has no `LIMIT` at all.  Unchanged for the `LIMIT`-based dialects.
+- **libSQL / Turso persistence backend** (#400) — `LibSqlJournal`,
+  `LibSqlSnapshotStore` and `LibSqlDurableStateStore`, SQLite reached over
+  HTTP or WebSocket via `@libsql/client` (a new optional peer dependency,
+  imported through its `/web` entry point so nothing native loads at runtime).
+  The statements match the local SQLite backend's, so a database can move
+  between a local file and Turso without a migration, and it is the first
+  durable-state store in the SQLite family.  Remote URLs only — a `file:` or
+  `:memory:` URL is rejected at construction with a pointer to `SqliteJournal`,
+  because the HTTP driver cannot open one either.  Registration works like
+  Postgres': `registerLibSqlPlugins` plus the plugin ids
+  `actor-ts.persistence.{journal,snapshot-store,durable-state}.libsql`.
+- **SQLite persistence now runs on Deno** (#400).  `getSqliteDriver()` used to
+  throw there, because both drivers need a native binding — so `SqliteJournal`,
+  `SqliteSnapshotStore` and `SqliteQuery` were unavailable and the docs pointed
+  Deno users at the in-memory or Cassandra journal.  The new `NodeSqliteDriver`
+  wraps the built-in `node:sqlite` (Deno >= 2.2, Node >= 22.13, recent Bun), so
+  every supported runtime now has a SQLite driver that needs no install.  On
+  Node, `better-sqlite3` is still preferred when present — existing deployments
+  keep the driver they run — and `node:sqlite` is the fallback, which makes the
+  peer dependency genuinely optional there.  A new `06-sqlite-journal` smoke
+  case verifies append / read / concurrency on Bun, Node and Deno.
+- **Relational persistence base layer** (#389) — `RelationalJournal`,
+  `RelationalSnapshotStore`, `RelationalDurableStateStore` and the `SqlDialect`
+  / `SqlPool` contracts are now exported.  A new SQL backend is a dialect
+  (placeholder syntax, conflict clauses, duplicate-key classification, DDL)
+  plus a pool adapter, instead of a third hand-written copy of three stores;
+  `PostgresJournal` shrank from 280 lines to 31 on top of it.  `withTransaction`
+  is deliberately specified as *adapter-defined* isolation, so an HTTP-fronted
+  store that can only offer an atomic batch (libSQL, Cloudflare D1) still
+  implements the journal correctly — the duplicate-key backstop, not the
+  transaction, is what makes optimistic concurrency sound under a racing
+  writer.  The Postgres dialect classifies conflicts by SQLSTATE rather than
+  message text, which is what lets CockroachDB and YugabyteDB reuse it.
+
 - **DevTools — embeddable web UI for a running system** (`actor-ts/devtools`,
   new `"./devtools"` subpath export).  `DevTools.attach(system, options)` binds
   a small server whose dashboard shows the system at a glance and links into
@@ -114,6 +228,11 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   which needs a quorum across *every* datacenter — so on a multi-DC keyspace
   each append would pay a cross-DC round-trip, undoing the local-DC write path
   `consistency: LOCAL_QUORUM` exists to provide.  Set `localSerial` (9) there.
+- **`RetryOptions.sleep`** (#477) — override how `retry` awaits the delay
+  between attempts.  Defaults to `setTimeout`; pass a `ManualScheduler`-backed
+  sleep to run the backoff on virtual time, so a test can assert the schedule
+  exactly and instantly instead of measuring real gaps.  Same escape hatch as
+  `BackoffPolicy`'s `random`.
 
 ### Changed
 
@@ -210,6 +329,41 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Fixed
 
+- **Persistence: the InMemory reference stores now match the cross-backend
+  contract** (#390).  `InMemoryJournal.append` ran the optimistic-concurrency
+  check even for an empty event batch, so `append(pid, [], staleSeq)` threw
+  where the SQLite, Cassandra, Postgres and MariaDB journals all return `[]`
+  early — nothing is written, so there is nothing to conflict over.  And
+  `InMemoryDurableStateStore.upsert` accepted a negative or fractional
+  `expectedRevision`, reporting it as a `DurableStateConcurrencyError` (which
+  invites an endless retry) instead of the `JournalError` the relational and
+  object-storage stores raise for a bogus argument.  Both divergences surfaced
+  while specifying the new parameterized persistence contract, which now runs
+  one shared scenario set against every `Journal` / `SnapshotStore` /
+  `DurableStateStore` implementation — and, via the live-database adapter,
+  extends the Postgres and MariaDB Docker suites with the cases they lacked.
+  That adapter also fixes those suites, which had been failing since the
+  journal high-water mark landed: they reset each scenario with
+  `delete(pid, MAX_SAFE_INTEGER)`, which now *sets* the mark to that value, so
+  the following `append(pid, …, 0)` correctly reported a conflict.
+- **Three wall-clock test assertions no longer flake the coverage gate**
+  (#477).  `bun run test:coverage:gate` failed intermittently — not on the
+  coverage floor (line coverage sits around 94 %) but because `bun test`
+  exited non-zero.  The cause was not clock granularity but the **timer**:
+  Bun's event loop decides a deadline is due on the platform's tick boundary,
+  so a `setTimeout` whose delay sits just under a tick multiple fires a full
+  quantum **early** — a 30 ms timer measured as low as 18.7 ms on
+  Bun 1.3.1 / Windows 11 (15.625 ms quantum) and as high as 201 ms under load.
+  `after`'s and `assertDoesNotCompleteWithin`'s `>= 25` bounds on a 30 ms
+  delay had no margin against that and now assert a quantum below nominal via
+  the new `tests/util/TimerTolerance.ts` (which records the measurements), plus
+  a deterministic check that the factory is not invoked synchronously.  `retry`'s
+  backoff test is off the wall clock entirely — it drives the new
+  `RetryOptions.sleep` seam with `ManualScheduler`, asserting attempts at
+  virtual 0/20/50 ms and thereby proving the third delay is capped at 30 ms
+  rather than 40 ms, which the old `gap2 < 40` bound could not do reliably at
+  any tolerance.  Test-only change beyond the `sleep` addition; no runtime
+  behaviour changed.
 - **Docs site builds from a fresh install again** (#473).  `docs/package.json`
   and `docs/bun.lock` had drifted apart across three dependency bumps — the
   lockfile's workspace header still recorded the pre-bump ranges, so

@@ -16,8 +16,8 @@ import { Tabs, TabItem } from '@astrojs/starlight/components';
 | Runtime | Mindestversion | Hinweise |
 | --- | --- | --- |
 | **Bun** | 1.3 | Empfohlen für Entwicklung — schnellster Startup, natives SQLite via `bun:sqlite`, nativer WebSocket-Server. |
-| **Node.js** | 24.0 | Bringt alles nativ mit: WebSocket-Client, zstd-Kompression, WebCrypto, fetch.  SQLite via `better-sqlite3` (Peer-Dep). |
-| **Deno** | 2.0 | Verwende den `npm:`-Specifier — `import { ... } from 'npm:actor-ts'`.  Mit `--allow-net` / `--allow-read` ausführen, wenn nötig. |
+| **Node.js** | 24.0 | Bringt alles nativ mit: WebSocket-Client, zstd-Kompression, WebCrypto, fetch.  SQLite über das eingebaute `node:sqlite` oder `better-sqlite3`, wenn du es installierst. |
+| **Deno** | 2.2 | Verwende den `npm:`-Specifier — `import { ... } from 'npm:actor-ts'`.  Mit `--allow-net` / `--allow-read` ausführen, wenn nötig.  SQLite braucht Deno 2.2 für `node:sqlite`; alles andere läuft ab 2.0. |
 
 Das Framework erkennt automatisch, unter welcher Runtime es ausgeführt
 wird, und wählt die richtigen Backends transparent — siehe
@@ -90,11 +90,17 @@ bun add hono @hono/node-server    # @hono/node-server ist Node-only
 
 | Paket | Aktiviert |
 | --- | --- |
-| `better-sqlite3` *(nur Node)* | SQLite-Journal + Snapshot Store auf Node.  Bun verwendet `bun:sqlite` (eingebaut, keine Peer-Dep). |
+| *(nichts nötig)* | SQLite-Journal + Snapshot Store.  Jede Runtime hat einen eingebauten Treiber: `bun:sqlite` auf Bun, `node:sqlite` auf Node >= 22.13 und Deno >= 2.2. |
+| `better-sqlite3` *(nur Node, optional)* | Wird auf Node gegenüber `node:sqlite` bevorzugt, wenn installiert — etwas schneller, und das, was bestehende Deployments schon einsetzen. |
+| `@libsql/client` | libSQL- / Turso-Journal + Snapshot + Durable-State Store — SQLite über HTTP, braucht daher auf keiner Runtime ein natives Binding. |
 | `pg` | PostgreSQL Journal + Snapshot + Durable-State Store. |
 | `mariadb` | MariaDB / MySQL Journal + Snapshot + Durable-State Store. |
+| `mssql` | Microsoft SQL Server Journal + Snapshot + Durable-State Store.  Reiner JavaScript-Treiber (tedious), kein nativer Build-Schritt. |
+| `mongodb` *(auf `^6` pinnen)* | MongoDB Journal + Snapshot + Durable-State Store + indizierte Tag-Query.  Version 7 lässt sich auf Bun nicht importieren — siehe die [MongoDB-Seite](/de/persistence/journals/mongodb/). |
 | `cassandra-driver` | Cassandra / ScyllaDB Journal + Tag-Index. |
 | `@aws-sdk/client-s3` | S3-kompatibles Object-Storage-Backend (funktioniert mit MinIO, R2, Backblaze B2). |
+| `@aws-sdk/client-dynamodb` | DynamoDB Journal + Snapshot + Durable-State Store. |
+| *(nichts nötig)* | Cloudflare D1 Journal + Snapshot + Durable-State Store — über D1s REST-API mit dem eingebauten HTTP-Client. |
 | `fzstd` *(optional)* | zstd-Kompression für Object-Storage-Blobs, wenn kein nativer Runtime-Support verfügbar ist. |
 
 ### Cache

@@ -1,0 +1,50 @@
+# CockroachDB wire-compatibility suite (#401).
+#
+# No new backend: this runs the EXISTING Postgres stores against CockroachDB,
+# which speaks the PostgreSQL wire protocol.  The point is to certify that
+# claim rather than assert it — and in particular that the journal's
+# optimistic-concurrency backstop still fires, since it matches on SQLSTATE
+# `23505` rather than on message text.
+#
+# Run locally:
+#   bun run test:integration:cockroachdb
+#   bun run test:integration:cockroachdb:teardown
+
+name: actor-ts-integration-cockroachdb
+
+services:
+  cockroachdb:
+    # `latest` deliberately — surface upstream regressions as soon as they
+    # ship.  Production users pin their own version.
+    image: cockroachdb/cockroach:latest
+    # Single node, no TLS: this is a throwaway test instance, and insecure
+    # mode is what lets the runner connect with `sslmode=disable`.
+    command: start-single-node --insecure
+    healthcheck:
+      # The `cockroach` binary is in the image, and a successful query is a
+      # stronger gate than an open port — the SQL layer accepts connections
+      # only after the node has finished initializing.
+      test: ["CMD-SHELL", "cockroach sql --insecure --execute='SELECT 1' || exit 1"]
+      interval: 3s
+      timeout: 5s
+      retries: 40
+      start_period: 10s
+    networks:
+      crdbnet: {}
+
+  runner:
+    build:
+      context: ../../../..
+      dockerfile: tests/integration/brokers/cockroachdb/Dockerfile.runner
+    depends_on:
+      cockroachdb:
+        condition: service_healthy
+    environment:
+      # `defaultdb` and the `root` user exist out of the box in insecure mode.
+      PG_URL: postgres://root@cockroachdb:26257/defaultdb?sslmode=disable
+      WIRE_LABEL: cockroachdb
+    networks:
+      crdbnet: {}
+
+networks:
+  crdbnet: {}

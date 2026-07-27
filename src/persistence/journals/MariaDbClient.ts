@@ -1,5 +1,6 @@
 import { Lazy } from '../../util/Lazy.js';
 import { lazyImportModule } from '../../util/LazyImport.js';
+import type { SqlPool, SqlResult } from '../relational/SqlPool.js';
 
 /**
  * Minimal shapes of the `mariadb` connector API the MariaDB backends use.
@@ -75,21 +76,39 @@ export function affectedRowsOf(response: MariaDbResult): number {
   return Array.isArray(response) ? 0 : Number(response.affectedRows ?? 0);
 }
 
-/** MariaDB/MySQL duplicate-key error (errno 1062 / `ER_DUP_ENTRY`). */
-export function isDuplicateKeyError(e: unknown): boolean {
-  const err = e as { errno?: number; code?: string };
-  return err.errno === 1062 || err.code === 'ER_DUP_ENTRY';
-}
-
-/** Guard configurable table names against injection (see PostgresClient). */
-export function assertSafeIdentifier(name: string, what: string): string {
-  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) {
-    throw new Error(
-      `MariaDB: unsafe ${what} identifier ${JSON.stringify(name)} — `
-      + 'must match /^[A-Za-z_][A-Za-z0-9_]*$/.',
-    );
-  }
-  return name;
+/**
+ * Adapt a `mariadb` pool to the uniform `SqlPool` the relational stores use,
+ * collapsing the connector's dual result shape (row array vs OK-packet) into
+ * one `SqlResult`.
+ */
+export function adaptMariaDbPool(pool: MariaDbPoolLike): SqlPool {
+  const normalize = (response: MariaDbResult): SqlResult => ({
+    rows: rowsOf(response),
+    affectedRows: affectedRowsOf(response),
+  });
+  return {
+    async query(sql, params) {
+      return normalize(await pool.query(sql, params));
+    },
+    async withTransaction(body) {
+      const connection = await pool.getConnection();
+      try {
+        await connection.beginTransaction();
+        const result = await body({
+          query: async (sql, params) => normalize(await connection.query(sql, params)),
+        });
+        await connection.commit();
+        return result;
+      } catch (e) {
+        // Best-effort: a rollback failure must not mask the original error.
+        try { await connection.rollback(); } catch { /* already rolled back */ }
+        throw e;
+      } finally {
+        connection.release();
+      }
+    },
+    end: () => pool.end(),
+  };
 }
 
 /** Test hook — reset the cached lazy `mariadb` import. */

@@ -4,8 +4,10 @@ import { ActorSystem } from '../../../src/ActorSystem.js';
 import { LogLevel, NoopLogger } from '../../../src/Logger.js';
 import { Props } from '../../../src/Props.js';
 import { after, pipeTo, retry, Success, Failure } from '../../../src/pattern/index.js';
+import { ManualScheduler } from '../../../src/testkit/ManualScheduler.js';
 import { TestKit } from '../../../src/testkit/TestKit.js';
 import { TestKitOptions } from '../../../src/testkit/TestKitOptions.js';
+import { minimumElapsedMs } from '../../util/TimerTolerance.js';
 
 const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
 
@@ -76,11 +78,20 @@ describe('pipeTo', () => {
 
 describe('after', () => {
   test('resolves with the factory value after the delay', async () => {
-    const start = Date.now();
-    const value = await after(30, () => Promise.resolve('done'));
-    const elapsed = Date.now() - start;
+    const delayMs = 30;
+    let invoked = false;
+    const start = performance.now();
+    const promise = after(delayMs, () => { invoked = true; return Promise.resolve('done'); });
+    // The deterministic half of the contract: the factory waits for the
+    // timer instead of running on the way in.
+    expect(invoked).toBe(false);
+    const value = await promise;
+    const elapsed = performance.now() - start;
+    expect(invoked).toBe(true);
     expect(value).toBe('done');
-    expect(elapsed).toBeGreaterThanOrEqual(25); // ~30ms, tolerate scheduling jitter
+    // Only claims "a real timer elapsed" — see TimerTolerance for why a
+    // bound anywhere near 30 ms flakes (#477).
+    expect(elapsed).toBeGreaterThanOrEqual(minimumElapsedMs(delayMs));
   });
 
   test('propagates rejection from the factory', async () => {
@@ -140,23 +151,33 @@ describe('retry', () => {
   });
 
   test('exponential backoff respects maxDelayMs', async () => {
-    const delays: number[] = [];
-    const start = Date.now();
+    // Virtual time, via the `sleep` seam.  On the wall clock a 30ms timer
+    // lands anywhere between ~19ms and ~200ms (#477), so no tolerance can
+    // both survive the jitter and still tell a delay capped at 30ms apart
+    // from an uncapped 40ms one.  ManualScheduler fires each sleep
+    // synchronously, so the schedule is exact and the test costs no time.
+    const scheduler = new ManualScheduler();
+    const attemptTimes: number[] = [];
     let calls = 0;
     try {
       await retry(async () => {
         calls++;
-        delays.push(Date.now() - start);
+        attemptTimes.push(scheduler.now());
         throw new Error('fail');
-      }, { attempts: 3, delayMs: 20, factor: 2, maxDelayMs: 30 });
+      }, {
+        attempts: 3,
+        delayMs: 20,
+        factor: 2,
+        maxDelayMs: 30,
+        sleep: (ms) => new Promise<void>((resolve) => {
+          scheduler.scheduleOnceFunction(ms, resolve);
+          scheduler.advance(ms);
+        }),
+      });
     } catch { /* ignore */ }
     expect(calls).toBe(3);
-    // Gaps should be ~20ms, ~30ms (capped by maxDelayMs instead of 40ms).
-    const gap1 = delays[1]! - delays[0]!;
-    const gap2 = delays[2]! - delays[1]!;
-    expect(gap1).toBeGreaterThanOrEqual(18);
-    expect(gap2).toBeGreaterThanOrEqual(25);
-    expect(gap2).toBeLessThan(40);
+    // Waits of 20ms, then 40ms (20 × 2) clamped to maxDelayMs = 30.
+    expect(attemptTimes).toEqual([0, 20, 50]);
   });
 
   test('onAttempt hook fires for each failure', async () => {

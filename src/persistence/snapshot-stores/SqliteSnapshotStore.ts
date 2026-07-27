@@ -16,9 +16,9 @@ interface Stmts {
 
 /**
  * SQLite-backed SnapshotStore — JSON payloads, single table, prune-on-save.
- * Works on Bun (`bun:sqlite`) and Node.js (`better-sqlite3`) via the
- * `SqliteDriver` abstraction.  Construction is lazy (same pattern as
- * `SqliteJournal`): the DB is opened on the first save / load call.
+ * Works on Bun, Node and Deno via the `SqliteDriver` abstraction.
+ * Construction is lazy (same pattern as `SqliteJournal`): the DB is opened on
+ * the first save / load call.
  */
 export class SqliteSnapshotStore implements SnapshotStore {
   private readonly options: SqliteSnapshotStoreOptionsType;

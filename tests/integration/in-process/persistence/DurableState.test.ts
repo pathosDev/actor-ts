@@ -65,6 +65,16 @@ describe('InMemoryDurableStateStore', () => {
     await store.delete('c');
     expect((await store.load('c')).isNone()).toBe(true);
   });
+
+  test('rejects a negative or non-integer expectedRevision as an argument error', async () => {
+    const store = new InMemoryDurableStateStore();
+    // A bogus revision is a caller bug, not a lost race — surfacing it as a
+    // concurrency conflict would invite an endless retry loop.  Same guard as
+    // the relational and object-storage stores.
+    await expect(store.upsert('d', -1, { n: 1 })).rejects.toThrow(/non-negative integer/);
+    await expect(store.upsert('d', 1.5, { n: 1 })).rejects.toThrow(/non-negative integer/);
+    expect((await store.load('d')).isNone()).toBe(true);
+  });
 });
 
 describe('DurableStateActor', () => {
