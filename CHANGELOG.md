@@ -11,6 +11,18 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Added
 
+- **Relational persistence base layer** (#389) — `RelationalJournal`,
+  `RelationalSnapshotStore`, `RelationalDurableStateStore` and the `SqlDialect`
+  / `SqlPool` contracts are now exported.  A new SQL backend is a dialect
+  (placeholder syntax, conflict clauses, duplicate-key classification, DDL)
+  plus a pool adapter, instead of a third hand-written copy of three stores;
+  `PostgresJournal` shrank from 280 lines to 31 on top of it.  `withTransaction`
+  is deliberately specified as *adapter-defined* isolation, so an HTTP-fronted
+  store that can only offer an atomic batch (libSQL, Cloudflare D1) still
+  implements the journal correctly — the duplicate-key backstop, not the
+  transaction, is what makes optimistic concurrency sound under a racing
+  writer.  The Postgres dialect classifies conflicts by SQLSTATE rather than
+  message text, which is what lets CockroachDB and YugabyteDB reuse it.
 - **`PersistenceExtension.configure({ journal?, snapshotStore? })`** — a thin
   convenience over `setJournal` / `setSnapshotStore` for tests and simple,
   single-backend apps that wire persistence directly in code.  (The docs
