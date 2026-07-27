@@ -1,0 +1,45 @@
+# libSQL / Turso live-integration suite (#400).
+#
+# Brings up `sqld` (the libSQL server Turso runs) plus a runner container that
+# exercises the libSQL journal / snapshot / durable-state backends against it
+# over HTTP via `@libsql/client`.
+#
+# Run locally:
+#   bun run test:integration:libsql
+#   bun run test:integration:libsql:teardown
+
+name: actor-ts-integration-libsql
+
+services:
+  libsql:
+    # `latest` deliberately — surface upstream regressions as soon as they
+    # ship.  Production users pin their own version (or use hosted Turso).
+    image: ghcr.io/tursodatabase/libsql-server:latest
+    environment:
+      # Standalone primary: no replication, which is all the contract needs.
+      SQLD_NODE: primary
+      SQLD_HTTP_LISTEN_ADDR: 0.0.0.0:8080
+    networks:
+      libsqlnet: {}
+
+  runner:
+    build:
+      context: ../../../..
+      dockerfile: tests/integration/brokers/libsql/Dockerfile.runner
+    # No `service_healthy` gate: the sqld image is distroless-ish and ships
+    # neither a shell nor curl, so a compose healthcheck has nothing to run.
+    # The runner waits on the port itself via `waitForPort`, then retries its
+    # first statement — see runner.ts.
+    depends_on:
+      libsql:
+        condition: service_started
+    environment:
+      # Inside the compose bridge sqld is reachable by service name.  http://
+      # rather than libsql:// so the client uses plain HTTP without trying to
+      # upgrade to a WebSocket first.
+      LIBSQL_URL: http://libsql:8080
+    networks:
+      libsqlnet: {}
+
+networks:
+  libsqlnet: {}
