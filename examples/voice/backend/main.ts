@@ -82,7 +82,6 @@ async function main(): Promise<void> {
   );
   const systemOptions = ActorSystemOptions.create().withConfigFile(configFile);
   const system = ActorSystem.create(SYSTEM_NAME, systemOptions);
-  const devtools = await attachDevTools(system);
   const seedSummary = seeds.length > 0
     ? ` · seeds=[${seeds.join(',')}]`
     : ' · bootstrap (no seeds)';
@@ -102,6 +101,9 @@ async function main(): Promise<void> {
     })
     .withGossipIntervalMs(500);
   const cluster = await Cluster.join(system, clusterOptions);
+  // After the join, so the cluster panel has something to show — a
+  // system cannot hand out its own `Cluster`.
+  await attachDevTools(system, { cluster });
   cluster.subscribe((evt) => {
     if (evt instanceof MemberUp)
       system.log.info(`[+] ${evt.member.address} is UP`);
