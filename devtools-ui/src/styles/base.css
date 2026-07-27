@@ -497,3 +497,43 @@ a:hover { text-decoration: underline; }
   overflow-x: auto;
   color: var(--dt-text);
 }
+
+/* ------------------------------ explain plan ----------------------------- */
+
+.dt-input--narrow { flex: 0 0 88px; max-width: 88px; }
+
+.dt-explain {
+  border: 1px solid var(--dt-border);
+  border-radius: var(--dt-radius);
+  background: var(--dt-bg-elevated);
+  overflow: auto;
+  max-height: 62vh;
+}
+.dt-explain__row {
+  display: grid;
+  grid-template-columns: 76px 78px minmax(110px, 1fr) minmax(90px, 1fr) 84px 84px;
+  gap: 12px;
+  align-items: center;
+  padding: 4px 12px;
+  font-size: 13px;
+  font-family: var(--dt-font-mono);
+  border-bottom: 1px solid color-mix(in srgb, var(--dt-border) 45%, transparent);
+}
+.dt-explain__row:last-child { border-bottom: none; }
+.dt-explain__row--head {
+  position: sticky;
+  top: 0;
+  background: var(--dt-bg-inset);
+  color: var(--dt-text-muted);
+  font-family: var(--dt-font);
+  font-size: 11.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.dt-explain__sequence { display: inline-flex; align-items: center; gap: 7px; }
+.dt-explain__type { color: var(--dt-text-strong); }
+.dt-explain__sender, .dt-explain__type {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

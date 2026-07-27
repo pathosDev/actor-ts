@@ -169,6 +169,18 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
     installed it is wrapped in the new `TeeTracer` so an OTel exporter and
     the local panel both see every span, and detaching restores the
     original.  #217
+  - **Explain-plan panel** — the last messages one actor handled, with
+    type, sender, mailbox wait, handling time and outcome (clean,
+    stashed, threw).  Switched on per actor from the browser rather than
+    by a code change and a restart, and switched back off when you leave
+    the panel or detach.  #218
+- **`ActorContext.enableExplainPlan()` / `disableExplainPlan()` /
+  `explainPlan()`** — the same per-actor recorder from code, for when
+  you already know which actor you care about.  Opt-in per actor: an
+  actor with no plan costs one null check on the dispatch path, and
+  envelope timestamping is switched on only for actors being recorded.
+  A stashed message keeps its original timestamp on replay, so its
+  mailbox wait spans the whole stash residency.
 - **`TeeTracer`** — a `Tracer` that forwards to another and reports every
   completed span to an observer.  The tracing extension holds exactly one
   tracer, so watching spans previously meant replacing whatever was

@@ -20,6 +20,14 @@ export interface Envelope<T = unknown> {
    * hops and cluster nodes.  See {@link Tracer}.
    */
   readonly trace?: SpanContext;
+  /**
+   * Wall clock at first enqueue, stamped only while the receiving
+   * actor has an explain plan enabled — see `ActorContext.
+   * enableExplainPlan`.  A stashed message keeps its original stamp
+   * when replayed (`prependUser` does not restamp), so mailbox wait
+   * measures the whole time from arrival to handling.
+   */
+  readonly enqueuedAtMs?: number;
 }
 
 /**
