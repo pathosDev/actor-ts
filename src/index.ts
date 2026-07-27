@@ -180,6 +180,10 @@ export {
   Terminated,
   ReceiveTimeout,
   DeadLetter,
+  ActorLifecycleEvent,
+  ActorStarted,
+  ActorStopped,
+  ActorRestarted,
   ActorKilledError,
   AskTimeoutError,
 } from './SystemMessages.js';
