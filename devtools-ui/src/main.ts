@@ -61,14 +61,12 @@ registerPanel({
   load: () => import('./panels/timetravel/timeTravelPanel.js'),
 });
 
-// Declared but not built yet — see `panels/notImplementedPanel.ts`.
-// The profiler panel lands with #226.
 registerPanel({
   id: 'profiler',
   title: 'Profiler',
   description: 'Sample where the actor system spends its time.',
   order: 60,
-  load: () => import('./panels/notImplementedPanel.js'),
+  load: () => import('./panels/profiler/profilerPanel.js'),
 });
 
 const root = document.getElementById('app');

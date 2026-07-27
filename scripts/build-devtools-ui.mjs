@@ -48,13 +48,12 @@ const SHELL_BUDGET_KIB = 60;
 const TOTAL_BUDGET_KIB = 400;
 const PANEL_BUDGETS_KIB = {
   dashboard: 60,
-  notImplemented: 10,
+  timeTravel: 80,
+  profiler: 100,
   actors: 200,
   cluster: 120,
   tracing: 100,
   explain: 60,
-  timeTravel: 80,
-  profiler: 100,
 };
 
 /** `assets/dashboardPanel-a1b2c3.js` → `dashboard`; anything else → shell. */

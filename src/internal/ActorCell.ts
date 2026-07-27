@@ -41,6 +41,7 @@ import {
   ExplainRecorder,
   type CellInspection,
   type CellState,
+  type DispatchObserver,
   type MessageExplain,
   type MessageOutcome,
 } from './Instrumentation.js';
@@ -250,6 +251,25 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
   /** @internal Ring capacity, or `0` when recording is off. */
   _explainCapacity(): number {
     return this._explain?.capacity ?? 0;
+  }
+
+  /** @internal Report one completed handling to a running profiler. */
+  private _observeDispatch(
+    observer: DispatchObserver,
+    env: Envelope<TMessage>,
+    handleTimeMs: number,
+    failure: Error | null,
+  ): void {
+    const message = env.message as { constructor?: { name?: string } } | null;
+    observer.onMessageProcessed({
+      actorPath: this.path.toString(),
+      className: this.actor?.constructor.name ?? '?',
+      messageType: message?.constructor?.name ?? typeof env.message,
+      handleTimeMs,
+      outcome: failure !== null
+        ? 'error'
+        : this._currentEnvelope === null ? 'stashed' : 'ok',
+    });
   }
 
   /** @internal Fold one completed handling into the ring. */
@@ -805,6 +825,11 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
         if (this._explain !== null) {
           this._recordExplain(env, startedAtMs, elapsedMs, failure, span);
         }
+        // A second null check, for the whole-system profiler (#226).
+        // Reading the field directly avoids an extension lookup per
+        // message.
+        const observer = this.system._dispatchObserver;
+        if (observer !== null) this._observeDispatch(observer, env, elapsedMs, failure);
         this._currentSender = null;
         this._currentEnvelope = null;
       }

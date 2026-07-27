@@ -212,10 +212,12 @@ describe('DevTools tap handshake', () => {
   });
 
   test('reports a stream with no tap behind it as unavailable', async () => {
-    // `profiler` lands with #226; until then nothing produces it, and
-    // asking must fail rather than hang.
+    // A panel the operator switched off registers no tap, so asking for
+    // its stream must fail rather than hang.  (Every stream is
+    // implemented now, so a disabled panel is the honest way to produce
+    // one with nothing behind it.)
     const system = newSystem();
-    const devtools = await attach(system);
+    const devtools = await attach(system, { panels: { profiler: false } });
     const frame = await withSocket(devtools.url, async (socket, next) => {
       socket.send(JSON.stringify(helloFrame()));
       await next();
@@ -228,13 +230,14 @@ describe('DevTools tap handshake', () => {
   });
 
   test('reports a method with no handler behind it, keeping the request id', async () => {
+    // Same reasoning as the stream case: a disabled panel never
+    // registers its methods, so its data cannot leave the process
+    // whatever a client asks for.
     const system = newSystem();
-    const devtools = await attach(system);
+    const devtools = await attach(system, { panels: { profiler: false } });
     const frame = await withSocket(devtools.url, async (socket, next) => {
       socket.send(JSON.stringify(helloFrame()));
       await next();
-      // `profiler.*` lands with #226 — the last namespace with no
-      // handler behind it.
       socket.send(JSON.stringify({ kind: 'request', requestId: 42, method: 'profiler.start' }));
       return next();
     });
