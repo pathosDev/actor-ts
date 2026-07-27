@@ -98,6 +98,18 @@ export class CassandraJournal implements Journal {
       : { prepare: true, consistency: this.options.consistency };
   }
 
+  /**
+   * Query options for the LWT claim.  Adds the serial consistency governing
+   * the Paxos phase: left unset the driver uses cluster-wide `SERIAL`, which
+   * drags every append across datacenters on a multi-DC keyspace — the exact
+   * cost `consistency: LOCAL_QUORUM` exists to avoid.
+   */
+  private conditionalOptions(): { prepare: boolean; consistency?: number; serialConsistency?: number } {
+    return this.options.serialConsistency === undefined
+      ? this.readOptions()
+      : { ...this.readOptions(), serialConsistency: this.options.serialConsistency };
+  }
+
   /** CQL batch options — unlogged (see `append`), honouring the configured consistency level. */
   private batchOptions(): { prepare: boolean; logged: boolean; consistency?: number } {
     return this.options.consistency === undefined
@@ -406,7 +418,7 @@ export class CassandraJournal implements Journal {
       await this.client.execute(
         `UPDATE ${this.qualified(this.metadataTable)} SET max_sequence_nr = ?, updated_at = ? WHERE persistence_id = ? IF max_sequence_nr = ?`,
         [previousSeq, now, persistenceId, claimedSeq],
-        this.readOptions(),
+        this.conditionalOptions(),
       );
     } catch { /* best-effort — the original failure is what the caller sees */ }
   }
@@ -424,7 +436,7 @@ export class CassandraJournal implements Journal {
   ): Promise<{ applied: boolean; currentSeq: number | null }> {
     let response;
     try {
-      response = await this.client.execute(query, params, this.readOptions());
+      response = await this.client.execute(query, params, this.conditionalOptions());
     } catch (e) {
       throw new JournalError(`CassandraJournal.append: sequence claim failed: ${(e as Error).message}`, e);
     }

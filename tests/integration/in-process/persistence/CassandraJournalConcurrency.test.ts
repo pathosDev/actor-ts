@@ -261,6 +261,61 @@ describe('CassandraJournal — lightweightTransactions opt-out', () => {
   });
 });
 
+describe('CassandraJournal — serial consistency for the claim', () => {
+  type ExecuteOptions = { prepare?: boolean; consistency?: number; serialConsistency?: number };
+
+  /** Pairs each statement with the options it was executed under. */
+  class OptionsSpyClient extends FakeCassandraClient {
+    readonly calls: Array<{ statement: string; options?: ExecuteOptions }> = [];
+
+    override async execute(
+      query: string,
+      params: ReadonlyArray<unknown> = [],
+      options?: ExecuteOptions,
+    ): Promise<CassandraRowResult> {
+      this.calls.push({ statement: query.trim().replace(/\s+/g, ' '), options });
+      return super.execute(query, params, options);
+    }
+  }
+
+  const conditionalCalls = (client: OptionsSpyClient) =>
+    client.calls.filter((c) => !/^CREATE /i.test(c.statement) && /\bIF (NOT EXISTS|\w+ =)/i.test(c.statement));
+
+  test('it rides along on the claim only, never on plain reads and writes', async () => {
+    const client = new OptionsSpyClient();
+    const journal = new CassandraJournal(
+      CassandraJournalOptions.create()
+        .withContactPoints(['fake'])
+        .withKeyspace('app')
+        .withConsistency(6)
+        .withSerialConsistency(9)
+        .withClient(client),
+    );
+    await journal.append('pid', ['e1'], 0);
+
+    const claims = conditionalCalls(client);
+    expect(claims).toHaveLength(1);
+    expect(claims[0]!.options?.serialConsistency).toBe(9);
+    expect(claims[0]!.options?.consistency).toBe(6);
+
+    // Everything else is a normal quorum operation — Paxos options there
+    // would be meaningless at best and misleading at worst.
+    for (const call of client.calls.filter((c) => !claims.includes(c))) {
+      expect(call.options?.serialConsistency).toBeUndefined();
+    }
+  });
+
+  test('unset means the driver keeps its own default', async () => {
+    const client = new OptionsSpyClient();
+    const journal = journalWith(client);
+    await journal.append('pid', ['e1'], 0);
+
+    for (const call of client.calls) {
+      expect(call.options?.serialConsistency).toBeUndefined();
+    }
+  });
+});
+
 describe('CassandraJournal — a driver that ignores the conditional fails loudly', () => {
   /** Strips the `[applied]` marker, as a non-LWT execution path would. */
   class NonConditionalClient extends FakeCassandraClient {
