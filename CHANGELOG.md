@@ -101,6 +101,23 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Fixed
 
+- **Persistence: the InMemory reference stores now match the cross-backend
+  contract** (#390).  `InMemoryJournal.append` ran the optimistic-concurrency
+  check even for an empty event batch, so `append(pid, [], staleSeq)` threw
+  where the SQLite, Cassandra, Postgres and MariaDB journals all return `[]`
+  early — nothing is written, so there is nothing to conflict over.  And
+  `InMemoryDurableStateStore.upsert` accepted a negative or fractional
+  `expectedRevision`, reporting it as a `DurableStateConcurrencyError` (which
+  invites an endless retry) instead of the `JournalError` the relational and
+  object-storage stores raise for a bogus argument.  Both divergences surfaced
+  while specifying the new parameterized persistence contract, which now runs
+  one shared scenario set against every `Journal` / `SnapshotStore` /
+  `DurableStateStore` implementation — and, via the live-database adapter,
+  extends the Postgres and MariaDB Docker suites with the cases they lacked.
+  That adapter also fixes those suites, which had been failing since the
+  journal high-water mark landed: they reset each scenario with
+  `delete(pid, MAX_SAFE_INTEGER)`, which now *sets* the mark to that value, so
+  the following `append(pid, …, 0)` correctly reported a conflict.
 - **Persistence: uniform `JournalError` wrapping + consistent missing-dependency
   hints** (#383).  Driver errors from the read-side journal methods
   (`highestSeq`, `delete`, `persistenceIds`, and Cassandra's `read`) now surface
