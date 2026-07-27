@@ -53,16 +53,16 @@ registerPanel({
   load: () => import('./panels/explain/explainPanel.js'),
 });
 
-// Declared but not built yet — see `panels/notImplementedPanel.ts`.
-// Each later phase swaps one of these `load` lines for its real panel.
 registerPanel({
   id: 'time-travel',
   title: 'Time travel',
   description: 'Browse a journal and reconstruct state at any point.',
   order: 50,
-  load: () => import('./panels/notImplementedPanel.js'),
+  load: () => import('./panels/timetravel/timeTravelPanel.js'),
 });
 
+// Declared but not built yet — see `panels/notImplementedPanel.ts`.
+// The profiler panel lands with #226.
 registerPanel({
   id: 'profiler',
   title: 'Profiler',

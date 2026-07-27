@@ -785,6 +785,7 @@ export default defineConfig({
                 { label: 'Actors & cluster', slug: 'observability/devtools/actor-visualizer', translations: { de: 'Actors & Cluster', es: 'Actores y clúster', fr: 'Acteurs et cluster', ja: 'アクターとクラスタ', ko: '액터 및 클러스터', 'pt-BR': 'Atores e cluster', ru: 'Акторы и кластер', 'zh-CN': 'Actor 与集群' } },
                 { label: 'Tracing panel', slug: 'observability/devtools/tracing', translations: { de: 'Tracing-Panel', es: 'Panel de trazado', fr: 'Panneau de tracing', ja: 'トレーシングパネル', ko: '트레이싱 패널', 'pt-BR': 'Painel de tracing', ru: 'Панель трассировки', 'zh-CN': '追踪面板' } },
                 { label: 'Explain plan', slug: 'observability/devtools/explain-plan', translations: { de: 'Explain-Plan', es: 'Plan de explicación', fr: 'Plan d’explication', ja: '実行計画', ko: '실행 계획', 'pt-BR': 'Plano de explicação', ru: 'План выполнения', 'zh-CN': '执行计划' } },
+                { label: 'Time travel', slug: 'observability/devtools/time-travel', translations: { de: 'Time Travel', es: 'Viaje en el tiempo', fr: 'Voyage dans le temps', ja: 'タイムトラベル', ko: '타임 트래블', 'pt-BR': 'Viagem no tempo', ru: 'Путешествие во времени', 'zh-CN': '时间旅行' } },
                 { label: 'Tap protocol',  slug: 'observability/devtools/protocol', translations: { de: 'Tap-Protokoll', es: 'Protocolo del tap', fr: 'Protocole du tap', ja: 'Tap プロトコル', ko: 'Tap 프로토콜', 'pt-BR': 'Protocolo do tap', ru: 'Протокол tap', 'zh-CN': 'Tap 协议' } },
               ],
             },

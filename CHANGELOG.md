@@ -174,6 +174,19 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
     stashed, threw).  Switched on per actor from the browser rather than
     by a code change and a restart, and switched back off when you leave
     the panel or detach.  #218
+  - **Time-travel panel** — read a persistence journal in the browser and
+    reconstruct an event-sourced actor's state at any sequence number,
+    with a field-level diff of what each event changed.  Strictly
+    read-only.  A fold comes either from a running `PersistentActor`
+    (borrowed automatically) or from `DevToolsOptions.replayFolds`; where
+    neither exists the event log still works and the panel says why the
+    state cannot be derived.  Ships as a panel only — no CLI.  #201
+- **`replayState()`** (`actor-ts` → `src/persistence/Replay.ts`) — the
+  journal fold behind `PersistentActor` recovery, now callable on its own
+  against a journal and snapshot store with no `ActorSystem` involved.
+  A `toSequenceNr` bound replays to a point in the past, using the newest
+  snapshot before it.  Snapshot-integrity failures throw the new
+  `SnapshotIntegrityError` (an `Error` subclass, messages unchanged).
 - **`ActorContext.enableExplainPlan()` / `disableExplainPlan()` /
   `explainPlan()`** — the same per-actor recorder from code, for when
   you already know which actor you care about.  Opt-in per actor: an

@@ -2,6 +2,7 @@ import { OptionsBuilder } from '../util/OptionsBuilder.js';
 import { OptionsValidator } from '../util/OptionsValidator.js';
 import type { HttpServerBackend, Middleware } from '../http/index.js';
 import type { Cluster } from '../cluster/Cluster.js';
+import type { ReplayFoldRegistration } from './replay/ReplayRegistry.js';
 
 /**
  * Hosts that cannot be reached from another machine.  Binding anywhere
@@ -85,6 +86,19 @@ export interface DevToolsOptionsType {
   readonly spanBufferCapacity?: number;
   /** How often buffered spans are flushed to the panel, in ms.  Default `250`. */
   readonly spanFlushIntervalMs?: number;
+  /**
+   * Folds the time-travel panel uses to reconstruct state.
+   *
+   * Only needed for persistence ids whose actor is not running — a live
+   * `PersistentActor` lends its own `onEvent` automatically.
+   */
+  readonly replayFolds?: ReadonlyArray<ReplayFoldRegistration>;
+  /**
+   * Borrow a fold from a running `PersistentActor`.  Default `true`.
+   * Turn off if you would rather see raw events than a state derived
+   * from an `onEvent` you have not vetted for purity.
+   */
+  readonly replayAutoCapture?: boolean;
 }
 
 /** Fluent builder for {@link DevToolsOptionsType}. */
@@ -173,6 +187,16 @@ export class DevToolsOptionsBuilder extends OptionsBuilder<DevToolsOptionsType> 
   withSpanFlushIntervalMs(intervalMs: number): this {
     return this.set('spanFlushIntervalMs', intervalMs);
   }
+
+  /** Folds the time-travel panel uses to reconstruct state. */
+  withReplayFolds(folds: ReadonlyArray<ReplayFoldRegistration>): this {
+    return this.set('replayFolds', folds);
+  }
+
+  /** Borrow a fold from a running `PersistentActor`.  Default `true`. */
+  withReplayAutoCapture(enabled = true): this {
+    return this.set('replayAutoCapture', enabled);
+  }
 }
 
 /**
@@ -244,4 +268,5 @@ export const DEVTOOLS_DEFAULTS = {
   statsIntervalMs: 1_000,
   spanBufferCapacity: 2_000,
   spanFlushIntervalMs: 250,
+  replayAutoCapture: true,
 } as const satisfies Partial<DevToolsOptionsType>;

@@ -8,6 +8,7 @@ import type {
   PersistenceOptions,
 } from './PersistenceOptions.js';
 import type { SnapshotStore } from './SnapshotStore.js';
+import { replayState } from './Replay.js';
 import type { EventAdapter, SnapshotAdapter } from './migration/Adapter.js';
 import {
   decodeEvent,
@@ -147,57 +148,29 @@ export abstract class PersistentActor<Command, Event, State> extends Actor<Comma
   }
 
   private async recover(): Promise<void> {
-    this._state = this.initialState();
-    this._seq = 0;
-    const snapAdapter = this.snapshotAdapter();
-    const evAdapter = this.eventAdapter();
-    const persistOptions = this.persistenceOptions();
     this.log.debug(`[persistence] '${this.persistenceId}' recovery starting`);
-    const snapshot = await this._snapshotStore.loadLatest<unknown>(this.persistenceId, persistOptions);
-    if (snapshot.isSome()) {
-      const snapSeq = snapshot.value.sequenceNr;
-      // Security: validate the snapshot's claimed seq number BEFORE
-      // trusting it for replay.  An attacker with write access to
-      // the snapshot store (shared bucket, co-tenant, insider) could
-      // craft a snapshot with `sequenceNr = MAX_SAFE_INTEGER` (or
-      // NaN, Infinity, -1, etc.); the old code accepted it and
-      // skipped event replay entirely, recovering with the
-      // attacker's chosen state.  Two-layer check:
-      //   1. seq must be a finite non-negative integer
-      //   2. seq must not exceed what the journal can corroborate
-      if (!Number.isInteger(snapSeq) || snapSeq < 0) {
-        throw new Error(
-          `[persistence] '${this.persistenceId}' snapshot has malformed sequenceNr=${snapSeq} ` +
-          `— refusing to recover from a corrupted or tampered snapshot`,
-        );
-      }
-      // Cross-check against the journal's highest seq: a snapshot that
-      // claims to be AHEAD of the journal but the journal *has*
-      // events for this pid is the classic attack vector — the
-      // attacker pumps the seq sky-high so all real events get
-      // skipped during replay.  An empty journal is fine (legitimate
-      // when state-only snapshots survive a journal compaction or
-      // migration).
-      const journalHigh = await this._journal.highestSeq(this.persistenceId);
-      if (journalHigh > 0 && snapSeq > journalHigh) {
-        throw new Error(
-          `[persistence] '${this.persistenceId}' snapshot claims sequenceNr=${snapSeq} ` +
-          `but journal's highest seq is ${journalHigh} — refusing to recover from a ` +
-          `corrupted or tampered snapshot (would silently skip event replay)`,
-        );
-      }
-      this._state = decodeState<State>(snapshot.value.state, snapAdapter);
-      this._seq = snapSeq;
-      this.log.debug(`[persistence] '${this.persistenceId}' loaded snapshot @seq=${this._seq}`);
-    }
-    const events = await this._journal.read<unknown>(this.persistenceId, this._seq + 1);
-    for (const ev of events) {
-      const decoded = decodeEvent<Event>(ev.event, evAdapter);
-      this._state = this.onEvent(this._state, decoded);
-      this._seq = ev.sequenceNr;
+    // The fold, the snapshot fast-path and the snapshot-integrity
+    // checks all live in `replayState`, shared with the DevTools
+    // time-travel panel (#201).  One implementation means a debugger
+    // reconstructing state cannot quietly disagree with what the actor
+    // itself recovers — which is the whole reason to look at it.
+    const result = await replayState<Event, State>({
+      journal: this._journal,
+      snapshotStore: this._snapshotStore,
+      persistenceId: this.persistenceId,
+      initialState: () => this.initialState(),
+      fold: (state, event) => this.onEvent(state, event),
+      ...(this.eventAdapter() === undefined ? {} : { eventAdapter: this.eventAdapter()! }),
+      ...(this.snapshotAdapter() === undefined ? {} : { snapshotAdapter: this.snapshotAdapter()! }),
+      ...(this.persistenceOptions() === undefined ? {} : { persistenceOptions: this.persistenceOptions()! }),
+    });
+    this._state = result.state;
+    this._seq = result.sequenceNr;
+    if (result.fromSnapshotSequenceNr !== null) {
+      this.log.debug(`[persistence] '${this.persistenceId}' loaded snapshot @seq=${result.fromSnapshotSequenceNr}`);
     }
     this.log.debug(
-      `[persistence] '${this.persistenceId}' recovery complete: replayed ${events.length} event(s), seq=${this._seq}`,
+      `[persistence] '${this.persistenceId}' recovery complete: replayed ${result.eventsApplied} event(s), seq=${this._seq}`,
     );
     this._recovering = false;
     await this.onRecoveryComplete(this._state);

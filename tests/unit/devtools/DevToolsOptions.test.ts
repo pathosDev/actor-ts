@@ -44,6 +44,7 @@ describe('DevToolsOptions defaults', () => {
       statsIntervalMs: 1_000,
       spanBufferCapacity: 2_000,
       spanFlushIntervalMs: 250,
+      replayAutoCapture: true,
     });
   });
 });

@@ -1,0 +1,115 @@
+---
+title: Time Travel
+description: Ein Persistence-Journal im Browser lesen und den Zustand eines event-sourced Actors zu jedem Zeitpunkt rekonstruieren — read-only, mit demselben Fold, mit dem der Actor selbst recovert.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+„Wie sah dieser Warenkorb am Dienstag um 15 Uhr aus?" Ohne Werkzeug
+lautet die Antwort: Events von Hand nachspielen. Das Time-Travel-Panel
+macht es für dich — Persistence-ID wählen, auf eine Sequenznummer
+ziehen, und du siehst den Zustand von damals plus genau das, was das
+Event an dieser Stelle verändert hat.
+
+<Aside type="note" title="Read-only, per Konstruktion">
+Nichts in diesem Panel schreibt in ein Journal, einen Snapshot-Store
+oder einen lebenden Actor. „Wie sah das aus?" ist eine Frage, und sie zu
+beantworten darf die Antwort nicht verändern.
+</Aside>
+
+## Die zwei Hälften
+
+**Events** gehen immer. Jedes Journal lässt sich auflisten und
+seitenweise lesen — mit dekodiertem Payload, Tags und, wo ein
+Migrations-Envelope vorliegt, Manifest und Schema-Version. Genau das
+willst du, wenn eine Migration unter Verdacht steht.
+
+**Zustand** braucht einen *Fold*. Events zurück in Zustand zu verwandeln
+verlangt `onEvent`, das in deiner Actor-Klasse lebt und sich nicht aus
+gespeicherten Daten rekonstruieren lässt. Das Panel findet einen auf
+zwei Wegen:
+
+| Quelle | Wann | Bedeutung |
+| --- | --- | --- |
+| `auto-captured` | Der Actor läuft gerade | Sein eigenes `initialState` / `onEvent` wird geborgt |
+| `registered` | Du hast einen Fold in `DevToolsOptions` übergeben | Funktioniert auch, wenn der Actor nicht läuft |
+
+Trifft keines von beidem zu, sagt das Panel das klar und lässt das
+Event-Log weiterlaufen — statt einen Zustand zu zeigen, den es gar nicht
+herleiten kann.
+
+### Einen Fold registrieren
+
+Nötig für IDs, deren Actor nicht läuft — eine abgeschlossene Saga, eine
+passivierte Entity, ein Journal, das du im Nachhinein untersuchst:
+
+```ts
+const devtoolsOptions = DevToolsOptions.create().withReplayFolds([{
+  match: (persistenceId) => persistenceId.startsWith('order-'),
+  initialState: () => ({ items: [], total: 0 }),
+  fold: (state, event) => applyOrderEvent(state, event),
+}]);
+await DevTools.attach(system, devtoolsOptions);
+```
+
+Eine explizite Registrierung schlägt Auto-Capture: Sie ist eine bewusste
+Aussage darüber, wie diese ID faltet, während Auto-Capture nur eine
+Bequemlichkeit ist, die gerade verfügbar war.
+
+Auto-Capture ganz abschalten — falls du lieber rohe Events siehst als
+einen Zustand aus einem `onEvent`, das du nicht geprüft hast:
+
+```ts
+DevToolsOptions.create().withReplayAutoCapture(false)
+```
+
+## Derselbe Fold wie im Actor
+
+Der Zustand wird von `replayState` rekonstruiert — exakt der Funktion,
+die auch die `PersistentActor`-Recovery aufruft, inklusive
+Snapshot-Fast-Path und der beiden Snapshot-Integritätsprüfungen. Das ist
+Absicht: Ein Debugger mit *leicht anderem* Replay dürfte von dem
+abweichen, was der Actor tatsächlich recovert — und genau das willst du
+mit ihm ja überprüfen.
+
+Eine Konsequenz ist wissenswert: Der Sprung auf Sequenz N nutzt den
+neuesten Snapshot **vor** N. Ein Sprung weit zurück ist damit so günstig
+wie eine Recovery und kein Fold ab Event eins.
+
+## Den Diff lesen
+
+Das Panel zeigt die Änderung zwischen dem gewählten Punkt und dem davor,
+denn „was hat dieses Event getan?" ist meist die Frage — nicht der
+absolute Zustand. Feldpfade sind gepunktet (`items.0.price`),
+Hinzufügungen, Entfernungen und Änderungen sind farblich codiert.
+Unveränderte Felder liegen hinter einem Schalter; ein Event, das nichts
+verändert hat, sagt das.
+
+Der vollständige Zustand am gewählten Punkt ist einen Klick entfernt
+unter **Full state at this point**.
+
+## Grenzen und Sicherheit
+
+- Große Werte werden für den Transport gekürzt, und das Panel sagt,
+  wenn das passiert ist — ein Debugger darf nicht der Grund sein, aus
+  dem ein System umfällt.
+- Event-Seiten sind gedeckelt (200 als Default, 2 000 maximal), ein
+  unbegrenzter Read über ein Journal mit einer Million Events ist also
+  gar nicht anforderbar.
+- Dieses Panel legt rohe persistierte Events offen, es ist damit das
+  erste, das man abschaltet, sobald DevTools nicht auf einer
+  Entwicklungsmaschine läuft:
+
+  ```ts
+  DevToolsOptions.create().withPanels({ timeTravel: false })
+  ```
+
+  Die Methoden eines abgeschalteten Panels werden gar nicht erst
+  registriert — die Daten verlassen den Prozess also nicht, egal was ein
+  Client anfragt.
+
+## Kein CLI
+
+Time Travel gibt es nur als Panel. Der
+[Überblick](/de/observability/devtools/overview/) erklärt das Attachen;
+ab da ist es ein Browser-Tab.

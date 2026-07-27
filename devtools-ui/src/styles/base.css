@@ -537,3 +537,65 @@ a:hover { text-decoration: underline; }
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+/* ------------------------------ time travel ------------------------------ */
+
+.dt-timetravel { display: grid; grid-template-columns: minmax(260px, 420px) 1fr; gap: var(--dt-gap); }
+.dt-timetravel__events {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  max-height: 62vh;
+  overflow: auto;
+}
+.dt-timetravel__state { min-width: 0; display: flex; flex-direction: column; gap: 12px; }
+.dt-timetravel__slider { margin-bottom: 4px; }
+.dt-slider { width: 100%; accent-color: var(--dt-accent); }
+
+.dt-event {
+  display: grid;
+  grid-template-columns: 44px 66px 1fr auto;
+  gap: 9px;
+  align-items: center;
+  padding: 4px 9px;
+  border: 1px solid var(--dt-border);
+  border-radius: 8px;
+  background: var(--dt-bg-elevated);
+  color: var(--dt-text);
+  font: inherit;
+  font-size: 12.5px;
+  font-family: var(--dt-font-mono);
+  text-align: left;
+  cursor: pointer;
+}
+.dt-event:hover { border-color: var(--dt-accent); }
+.dt-event--current { border-color: var(--dt-accent); background: var(--dt-accent-low); }
+/* Events after the slider have not happened yet at this point in time. */
+.dt-event--future { opacity: 0.45; }
+.dt-event__sequence { color: var(--dt-text-strong); }
+.dt-event__time { color: var(--dt-text-muted); }
+.dt-event__payload { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.dt-diff { display: flex; flex-direction: column; gap: 3px; }
+.dt-diff__row {
+  display: grid;
+  grid-template-columns: minmax(90px, 1fr) minmax(60px, 1fr) 18px minmax(60px, 1fr);
+  gap: 9px;
+  align-items: baseline;
+  font-family: var(--dt-font-mono);
+  font-size: 12.5px;
+  padding: 3px 9px;
+  border-radius: 6px;
+  border-left: 3px solid transparent;
+}
+.dt-diff__row--added { border-left-color: var(--dt-state-ok); }
+.dt-diff__row--removed { border-left-color: var(--dt-state-error); }
+.dt-diff__row--changed { border-left-color: var(--dt-state-warn); }
+.dt-diff__row--unchanged { opacity: 0.55; }
+.dt-diff__path { color: var(--dt-text-muted); overflow-wrap: anywhere; }
+.dt-diff__before, .dt-diff__after { overflow-wrap: anywhere; }
+.dt-diff__after { color: var(--dt-text-strong); }
+.dt-diff__arrow { color: var(--dt-text-muted); text-align: center; }
+
+.dt-details summary { cursor: pointer; color: var(--dt-text-muted); font-size: 13px; }
+.dt-details pre { max-height: 320px; overflow: auto; }
