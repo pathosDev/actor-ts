@@ -182,21 +182,29 @@ Jedes Example im Repository ist für DevTools verdrahtet, und keines
 zahlt dafür, solange du nicht fragst:
 
 ```bash
-DEVTOOLS=1 bun run examples/hello-world.ts
+bun run examples/hello-world.ts --devtools
+```
+
+`--devtools` funktioniert in jeder Shell. `DEVTOOLS=1 bun run …` tut
+dasselbe in einer POSIX-Shell, aber `VAR=wert befehl` ist in PowerShell
+ein Parser-Fehler — dort setzt du die Variable separat:
+
+```powershell
+$env:DEVTOOLS = '1'; bun run examples/hello-world.ts
 ```
 
 Die meisten Examples sind Skripte, die nach ein paar hundert
 Millisekunden fertig sind — zu schnell, um einen Browser zu öffnen. Mit
-gesetztem Flag halten sie kurz vor dem Herunterfahren an, geben die URL
-aus und warten auf `Ctrl+C`, damit es überhaupt etwas zu sehen gibt.
-Ohne das Flag bleiben Timing und Ausgabe exakt wie vorher.
+aktivierten DevTools halten sie kurz vor dem Herunterfahren an, geben die
+URL aus und warten auf `Ctrl+C`, damit es überhaupt etwas zu sehen gibt.
+Ohne bleiben Timing und Ausgabe exakt wie vorher.
 
 Examples mit mehreren Systemen geben jedem System einen eigenen Port,
-aufsteigend ab `DEVTOOLS_PORT` (Default `9333`) — ein Drei-Knoten-Cluster
+aufsteigend ab `--devtools-port` / `DEVTOOLS_PORT` (Default `9333`) — ein Drei-Knoten-Cluster
 läuft also auf `9333`, `9334`, `9335`:
 
 ```bash
-DEVTOOLS=1 bun run examples/cluster/singleton-hello.ts
+bun run examples/cluster/singleton-hello.ts --devtools
 ```
 
 Langlaufende Examples (die Chat- und Voice-Backends, die HTTP-Services)

@@ -173,21 +173,29 @@ Every example in the repository is wired for DevTools, and none of them
 pay for it unless you ask:
 
 ```bash
-DEVTOOLS=1 bun run examples/hello-world.ts
+bun run examples/hello-world.ts --devtools
+```
+
+`--devtools` works in every shell.  `DEVTOOLS=1 bun run …` does the same
+on a POSIX shell, but `VAR=value command` is a parser error in
+PowerShell — there, set it separately:
+
+```powershell
+$env:DEVTOOLS = '1'; bun run examples/hello-world.ts
 ```
 
 Most examples are scripts that finish in a few hundred milliseconds —
-too fast to open a browser.  With the flag set they park just before
+too fast to open a browser.  With DevTools enabled they park just before
 shutting down, print the URL, and wait for `Ctrl+C`, so there is
 something to look at.  Without it, their timing and output are exactly
 as before.
 
 Multi-system examples give each system its own port, counting up from
-`DEVTOOLS_PORT` (default `9333`) — so a three-node cluster demo is
+`--devtools-port` / `DEVTOOLS_PORT` (default `9333`) — so a three-node cluster demo is
 `9333`, `9334`, `9335`:
 
 ```bash
-DEVTOOLS=1 bun run examples/cluster/singleton-hello.ts
+bun run examples/cluster/singleton-hello.ts --devtools
 ```
 
 Long-running examples (the chat and voice backends, the HTTP services)
