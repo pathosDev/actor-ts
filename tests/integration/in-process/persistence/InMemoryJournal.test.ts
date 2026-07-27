@@ -108,6 +108,24 @@ describe('InMemoryJournal.delete', () => {
   });
 });
 
+describe('InMemoryJournal.append — empty batch', () => {
+  test('is a no-op and does not run the concurrency check', async () => {
+    const j = new InMemoryJournal();
+    await j.append('p', ['a', 'b'], 0);
+    // Nothing is written, so there is nothing to conflict over — matches the
+    // SQLite / Cassandra / relational journals, which all return early.
+    expect(await j.append('p', [], 0)).toEqual([]);
+    expect(await j.highestSeq('p')).toBe(2);
+    expect((await j.read('p', 1)).length).toBe(2);
+  });
+
+  test('leaves an untouched pid unknown', async () => {
+    const j = new InMemoryJournal();
+    expect(await j.append('fresh', [], 0)).toEqual([]);
+    expect(await j.highestSeq('fresh')).toBe(0);
+  });
+});
+
 describe('InMemoryJournal.persistenceIds + close', () => {
   test('persistenceIds lists all streams', async () => {
     const j = new InMemoryJournal();

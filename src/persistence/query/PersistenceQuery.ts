@@ -235,3 +235,37 @@ export function eventMatchesTagFilter(
   }
   return true;
 }
+
+/**
+ * Turn pre-filtered storage rows into ordered `TaggedEvent`s.
+ *
+ * Every indexed tag query has the same tail: the storage layer can only
+ * pre-filter on one tag and a coarse `timestamp >= …` bound, so the caller
+ * refines each row in JS, drops rows that fall before the requested offset —
+ * a per-row compare is unavoidable, because `Offset` breaks timestamp ties on
+ * `(persistenceId, sequenceNr)` and the coarse SQL bound cannot — and sorts
+ * the survivors.  That tail is shared here; the row *shape* is not, since
+ * Cassandra returns a CQL set of tags and already-wide numbers while SQLite
+ * returns a CSV string.
+ *
+ * `mapMatching` therefore does the backend-specific work and returns `null`
+ * for a row the full filter rejects.  Keeping the reject decision inside the
+ * callback is what lets a backend skip parsing the payload of a row it is
+ * about to discard.
+ */
+export function refineTaggedRows<Row, E>(
+  rows: ReadonlyArray<Row>,
+  fromOffset: Offset,
+  mapMatching: (row: Row) => PersistentEvent<E> | null,
+): TaggedEvent<E>[] {
+  const refined: TaggedEvent<E>[] = [];
+  for (const row of rows) {
+    const event = mapMatching(row);
+    if (event === null) continue;
+    const offset = offsetOfEvent(event);
+    if (offsetCompare(offset, fromOffset) < 0) continue;
+    refined.push({ event, offset });
+  }
+  refined.sort((a, b) => offsetCompare(a.offset, b.offset));
+  return refined;
+}

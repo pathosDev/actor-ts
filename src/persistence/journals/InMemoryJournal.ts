@@ -34,6 +34,11 @@ export class InMemoryJournal implements Journal {
     tags?: ReadonlyArray<string>,
   ): Promise<PersistentEvent<E>[]> {
     assertValidTags(tags);
+    // Nothing is being written, so there is nothing to conflict over — an
+    // empty append is a no-op, and notably does NOT run the optimistic-
+    // concurrency check.  Every other journal returns early here; the
+    // in-memory one used to fall through and reject a stale expectedSeq.
+    if (events.length === 0) return [];
     const stream = this.streams.get(persistenceId) ?? [];
     const actualSeq = this.highWater.get(persistenceId) ?? 0;
     if (actualSeq !== expectedSeq) {

@@ -1,0 +1,24 @@
+# Runner image for the DynamoDB live-integration suite (#398).
+#
+# Identical shape to the other broker runners — installs deps from the shared
+# tests/integration/brokers/package.json (which already lists
+# `@aws-sdk/client-dynamodb` alongside the S3 client), then runs the persistence
+# contract against the live dynamodb-local service.
+# See tests/integration/brokers/README.md for the package.json rationale.
+
+FROM oven/bun:1.3-debian
+
+RUN apt-get update  && apt-get install -y --no-install-recommends ca-certificates curl  && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+COPY tests/integration/brokers/package.json ./package.json
+RUN bun install --no-progress --ignore-scripts
+
+COPY tsconfig.json ./
+COPY src/ src/
+COPY tests/ tests/
+
+ENV NODE_ENV=production
+
+CMD ["bun", "tests/integration/brokers/dynamodb/runner.ts"]
