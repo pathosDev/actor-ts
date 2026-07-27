@@ -1,7 +1,6 @@
 import type { ActorSystem } from '../../ActorSystem.js';
 import type { PersistenceExtension } from '../PersistenceExtension.js';
-import { withSharedPool } from '../relational/RelationalPlugin.js';
-import type { MariaDbPoolLike } from './MariaDbClient.js';
+import { mergeLeafOptions } from '../relational/RelationalPlugin.js';
 import { MariaDbJournal } from './MariaDbJournal.js';
 import type { MariaDbJournalOptionsType } from './MariaDbJournalOptions.js';
 import { MariaDbSnapshotStore } from '../snapshot-stores/MariaDbSnapshotStore.js';
@@ -40,9 +39,9 @@ export function registerMariaDbPlugins(
 ): MariaDbPluginHandles {
   const resolvedOptions = (options as RegisterMariaDbPluginsOptionsType);
   const { pool } = resolvedOptions;
-  const journal = withSharedPool<Partial<MariaDbJournalOptionsType>, MariaDbPoolLike>(resolvedOptions.journal, pool);
-  const snapshotStore = withSharedPool<Partial<MariaDbSnapshotStoreOptionsType>, MariaDbPoolLike>(resolvedOptions.snapshotStore, pool);
-  const durableState = withSharedPool<Partial<MariaDbDurableStateStoreOptionsType>, MariaDbPoolLike>(resolvedOptions.durableStateStore, pool);
+  const journal = mergeLeafOptions<Partial<MariaDbJournalOptionsType>>(resolvedOptions.journal, { pool });
+  const snapshotStore = mergeLeafOptions<Partial<MariaDbSnapshotStoreOptionsType>>(resolvedOptions.snapshotStore, { pool });
+  const durableState = mergeLeafOptions<Partial<MariaDbDurableStateStoreOptionsType>>(resolvedOptions.durableStateStore, { pool });
   ext.registerJournal(
     MARIADB_JOURNAL_PLUGIN_ID,
     (_system: ActorSystem) => new MariaDbJournal(journal),

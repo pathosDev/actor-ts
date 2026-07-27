@@ -69,6 +69,7 @@ jobs:
           - { dir: k8s,           npm: k8s,   image: "k3s" }
           - { dir: postgres,      npm: postgres, image: "PostgreSQL" }
           - { dir: mariadb,       npm: mariadb,  image: "MariaDB" }
+          - { dir: libsql,        npm: libsql,   image: "libSQL (sqld)" }
 
     name: ${{ matrix.broker.image }} (${{ matrix.broker.dir }})
 

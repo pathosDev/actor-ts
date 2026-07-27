@@ -65,8 +65,10 @@
     "test:integration:postgres:teardown": "docker compose -f tests/integration/brokers/postgres/docker-compose.postgres.yml down -v --remove-orphans",
     "test:integration:mariadb": "docker compose -f tests/integration/brokers/mariadb/docker-compose.mariadb.yml up --build --abort-on-container-exit --exit-code-from runner",
     "test:integration:mariadb:teardown": "docker compose -f tests/integration/brokers/mariadb/docker-compose.mariadb.yml down -v --remove-orphans",
-    "test:integration:brokers": "bun run test:integration:s3 && bun run test:integration:mqtt && bun run test:integration:kafka && bun run test:integration:amqp && bun run test:integration:nats && bun run test:integration:redis && bun run test:integration:grpc && bun run test:integration:k8s && bun run test:integration:postgres && bun run test:integration:mariadb",
-    "test:integration:brokers:teardown": "bun run test:integration:s3:teardown; bun run test:integration:mqtt:teardown; bun run test:integration:kafka:teardown; bun run test:integration:amqp:teardown; bun run test:integration:nats:teardown; bun run test:integration:redis:teardown; bun run test:integration:grpc:teardown; bun run test:integration:k8s:teardown; bun run test:integration:postgres:teardown; bun run test:integration:mariadb:teardown",
+    "test:integration:libsql": "docker compose -f tests/integration/brokers/libsql/docker-compose.libsql.yml up --build --abort-on-container-exit --exit-code-from runner",
+    "test:integration:libsql:teardown": "docker compose -f tests/integration/brokers/libsql/docker-compose.libsql.yml down -v --remove-orphans",
+    "test:integration:brokers": "bun run test:integration:s3 && bun run test:integration:mqtt && bun run test:integration:kafka && bun run test:integration:amqp && bun run test:integration:nats && bun run test:integration:redis && bun run test:integration:grpc && bun run test:integration:k8s && bun run test:integration:postgres && bun run test:integration:mariadb && bun run test:integration:libsql",
+    "test:integration:brokers:teardown": "bun run test:integration:s3:teardown; bun run test:integration:mqtt:teardown; bun run test:integration:kafka:teardown; bun run test:integration:amqp:teardown; bun run test:integration:nats:teardown; bun run test:integration:redis:teardown; bun run test:integration:grpc:teardown; bun run test:integration:k8s:teardown; bun run test:integration:postgres:teardown; bun run test:integration:mariadb:teardown; bun run test:integration:libsql:teardown",
     "smoke:bun": "bun tests/smoke/run-cases.mjs",
     "smoke:node": "bun run build && ACTOR_TS_SMOKE_USE_DIST=1 node tests/smoke/run-cases.mjs",
     "smoke:deno": "bun run build && ACTOR_TS_SMOKE_USE_DIST=1 deno run --allow-read --allow-env --allow-write --allow-net tests/smoke/run-cases.mjs",
@@ -102,6 +104,7 @@
   },
   "peerDependencies": {
     "@aws-sdk/client-s3": "^3.1048.0",
+    "@libsql/client": "^0.15.15",
     "@fastify/websocket": "^11.0.0",
     "@grpc/grpc-js": "^1.14.3",
     "@grpc/proto-loader": "^0.8.1",
@@ -125,6 +128,9 @@
   },
   "peerDependenciesMeta": {
     "@aws-sdk/client-s3": {
+      "optional": true
+    },
+    "@libsql/client": {
       "optional": true
     },
     "@fastify/websocket": {

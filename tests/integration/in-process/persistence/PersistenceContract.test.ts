@@ -7,6 +7,12 @@ import {
   InMemoryDurableStateStore,
   InMemoryJournal,
   InMemorySnapshotStore,
+  LibSqlDurableStateStore,
+  LibSqlDurableStateStoreOptions,
+  LibSqlJournal,
+  LibSqlJournalOptions,
+  LibSqlSnapshotStore,
+  LibSqlSnapshotStoreOptions,
   MariaDbDurableStateStore,
   MariaDbDurableStateStoreOptions,
   MariaDbJournal,
@@ -33,6 +39,7 @@ import {
   type SnapshotHarness,
 } from '../../brokers/lib/persistence-contract/index.js';
 import { FakeCassandraClient } from './FakeCassandraClient.js';
+import { FakeLibSqlClient } from './FakeLibSqlClient.js';
 import { FakeMariaDbPool } from './FakeMariaDbPool.js';
 import { FakePgPool } from './FakePgPool.js';
 
@@ -83,6 +90,15 @@ const journalHarnesses: ReadonlyArray<JournalHarness> = [
       const journalOptions = PostgresJournalOptions.create()
         .withPool(new FakePgPool());
       return new PostgresJournal(journalOptions);
+    },
+  },
+  {
+    label: 'LibSqlJournal',
+    pid: namespacer('libsql'),
+    make: async () => {
+      const journalOptions = LibSqlJournalOptions.create()
+        .withClient(new FakeLibSqlClient());
+      return new LibSqlJournal(journalOptions);
     },
   },
   {
@@ -137,6 +153,16 @@ const snapshotHarnesses: ReadonlyArray<SnapshotHarness> = [
     },
   },
   {
+    label: 'LibSqlSnapshotStore',
+    pid: namespacer('libsql'),
+    capabilities: { keepN: 'configurable' },
+    make: async (keepN) => {
+      const storeOptions = LibSqlSnapshotStoreOptions.create()
+        .withClient(new FakeLibSqlClient());
+      return new LibSqlSnapshotStore(keepN === undefined ? storeOptions : storeOptions.withKeepN(keepN));
+    },
+  },
+  {
     label: 'MariaDbSnapshotStore',
     pid: namespacer('mariadb'),
     capabilities: { keepN: 'configurable' },
@@ -161,6 +187,15 @@ const durableStateHarnesses: ReadonlyArray<DurableStateHarness> = [
       const storeOptions = PostgresDurableStateStoreOptions.create()
         .withPool(new FakePgPool());
       return new PostgresDurableStateStore(storeOptions);
+    },
+  },
+  {
+    label: 'LibSqlDurableStateStore',
+    pid: namespacer('libsql'),
+    make: async () => {
+      const storeOptions = LibSqlDurableStateStoreOptions.create()
+        .withClient(new FakeLibSqlClient());
+      return new LibSqlDurableStateStore(storeOptions);
     },
   },
   {

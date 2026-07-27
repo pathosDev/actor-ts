@@ -1,7 +1,6 @@
 import type { ActorSystem } from '../../ActorSystem.js';
 import type { PersistenceExtension } from '../PersistenceExtension.js';
-import { withSharedPool } from '../relational/RelationalPlugin.js';
-import type { PgPoolLike } from './PostgresClient.js';
+import { mergeLeafOptions } from '../relational/RelationalPlugin.js';
 import { PostgresJournal } from './PostgresJournal.js';
 import type { PostgresJournalOptionsType } from './PostgresJournalOptions.js';
 import { PostgresSnapshotStore } from '../snapshot-stores/PostgresSnapshotStore.js';
@@ -46,9 +45,9 @@ export function registerPostgresPlugins(
   const resolvedOptions = (options as RegisterPostgresPluginsOptionsType);
 
   const { pool } = resolvedOptions;
-  const journal = withSharedPool<Partial<PostgresJournalOptionsType>, PgPoolLike>(resolvedOptions.journal, pool);
-  const snapshotStore = withSharedPool<Partial<PostgresSnapshotStoreOptionsType>, PgPoolLike>(resolvedOptions.snapshotStore, pool);
-  const durableState = withSharedPool<Partial<PostgresDurableStateStoreOptionsType>, PgPoolLike>(resolvedOptions.durableStateStore, pool);
+  const journal = mergeLeafOptions<Partial<PostgresJournalOptionsType>>(resolvedOptions.journal, { pool });
+  const snapshotStore = mergeLeafOptions<Partial<PostgresSnapshotStoreOptionsType>>(resolvedOptions.snapshotStore, { pool });
+  const durableState = mergeLeafOptions<Partial<PostgresDurableStateStoreOptionsType>>(resolvedOptions.durableStateStore, { pool });
 
   ext.registerJournal(
     POSTGRES_JOURNAL_PLUGIN_ID,

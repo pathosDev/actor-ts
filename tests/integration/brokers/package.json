@@ -15,6 +15,7 @@
     "@grpc/grpc-js": "^1.14.3",
     "@grpc/proto-loader": "^0.8.1",
     "pg": "^8.21.0",
-    "mariadb": "^3.5.2"
+    "mariadb": "^3.5.2",
+    "@libsql/client": "^0.15.15"
   }
 }

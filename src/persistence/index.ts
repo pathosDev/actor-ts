@@ -101,6 +101,48 @@ export type {
   PgClientLike,
 } from './journals/PostgresClient.js';
 
+// libSQL / Turso plug-in (journal + snapshot + durable-state) — SQLite over
+// HTTP/WebSocket, so it needs no native binding and runs on all three runtimes.
+export { LibSqlJournal } from './journals/LibSqlJournal.js';
+export {
+  LibSqlJournalOptions,
+  LibSqlJournalOptionsBuilder,
+  LibSqlJournalOptionsValidator,
+  LIBSQL_URL_PROTOCOLS,
+} from './journals/LibSqlJournalOptions.js';
+export type { LibSqlJournalOptionsType } from './journals/LibSqlJournalOptions.js';
+export { LibSqlSnapshotStore } from './snapshot-stores/LibSqlSnapshotStore.js';
+export {
+  LibSqlSnapshotStoreOptions,
+  LibSqlSnapshotStoreOptionsBuilder,
+  LibSqlSnapshotStoreOptionsValidator,
+} from './snapshot-stores/LibSqlSnapshotStoreOptions.js';
+export type { LibSqlSnapshotStoreOptionsType } from './snapshot-stores/LibSqlSnapshotStoreOptions.js';
+export { LibSqlDurableStateStore } from './durable-state-stores/LibSqlDurableStateStore.js';
+export {
+  LibSqlDurableStateStoreOptions,
+  LibSqlDurableStateStoreOptionsBuilder,
+  LibSqlDurableStateStoreOptionsValidator,
+} from './durable-state-stores/LibSqlDurableStateStoreOptions.js';
+export type { LibSqlDurableStateStoreOptionsType } from './durable-state-stores/LibSqlDurableStateStoreOptions.js';
+export {
+  registerLibSqlPlugins,
+  LIBSQL_JOURNAL_PLUGIN_ID,
+  LIBSQL_SNAPSHOT_PLUGIN_ID,
+  LIBSQL_DURABLE_STATE_PLUGIN_ID,
+} from './journals/LibSqlPlugin.js';
+export { RegisterLibSqlPluginsOptions, RegisterLibSqlPluginsOptionsBuilder } from './journals/LibSqlPluginOptions.js';
+export type { RegisterLibSqlPluginsOptionsType } from './journals/LibSqlPluginOptions.js';
+export type { LibSqlPluginHandles } from './journals/LibSqlPlugin.js';
+export type {
+  LibSqlConnection,
+  LibSqlClientLike,
+  LibSqlResultSet,
+  LibSqlStatement,
+  LibSqlTransactionLike,
+} from './journals/LibSqlClient.js';
+export { sqliteDialect } from './relational/SqliteDialect.js';
+
 // MariaDB / MySQL plug-in (journal + snapshot + durable-state).
 export { MariaDbJournal } from './journals/MariaDbJournal.js';
 export { MariaDbJournalOptions, MariaDbJournalOptionsBuilder } from './journals/MariaDbJournalOptions.js';
