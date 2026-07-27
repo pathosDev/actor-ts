@@ -53,11 +53,12 @@ export class RelationalSnapshotStore extends RelationalStore implements Snapshot
     this.statements = {
       upsert: config.dialect.upsertSnapshotSql(table),
       prune: config.dialect.pruneSnapshotsStatement(table),
+      // Row limiting is dialect-specific — T-SQL has no `LIMIT` at all.
       latest: expand(
-        `SELECT persistence_id, sequence_nr, payload, timestamp FROM ${table} WHERE persistence_id = ? ORDER BY sequence_nr DESC LIMIT 1`,
+        `SELECT persistence_id, sequence_nr, payload, timestamp FROM ${table} WHERE persistence_id = ? ORDER BY sequence_nr DESC ${config.dialect.rowLimit(1)}`,
       ),
       before: expand(
-        `SELECT persistence_id, sequence_nr, payload, timestamp FROM ${table} WHERE persistence_id = ? AND sequence_nr < ? ORDER BY sequence_nr DESC LIMIT 1`,
+        `SELECT persistence_id, sequence_nr, payload, timestamp FROM ${table} WHERE persistence_id = ? AND sequence_nr < ? ORDER BY sequence_nr DESC ${config.dialect.rowLimit(1)}`,
       ),
       deleteUpTo: expand(`DELETE FROM ${table} WHERE persistence_id = ? AND sequence_nr <= ?`),
     };

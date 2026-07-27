@@ -13,6 +13,12 @@ import {
   LibSqlJournalOptions,
   LibSqlSnapshotStore,
   LibSqlSnapshotStoreOptions,
+  MsSqlDurableStateStore,
+  MsSqlDurableStateStoreOptions,
+  MsSqlJournal,
+  MsSqlJournalOptions,
+  MsSqlSnapshotStore,
+  MsSqlSnapshotStoreOptions,
   MariaDbDurableStateStore,
   MariaDbDurableStateStoreOptions,
   MariaDbJournal,
@@ -41,6 +47,7 @@ import {
 import { FakeCassandraClient } from './FakeCassandraClient.js';
 import { FakeLibSqlClient } from './FakeLibSqlClient.js';
 import { FakeMariaDbPool } from './FakeMariaDbPool.js';
+import { FakeMsSqlPool } from './FakeMsSqlPool.js';
 import { FakePgPool } from './FakePgPool.js';
 
 /**
@@ -99,6 +106,15 @@ const journalHarnesses: ReadonlyArray<JournalHarness> = [
       const journalOptions = LibSqlJournalOptions.create()
         .withClient(new FakeLibSqlClient());
       return new LibSqlJournal(journalOptions);
+    },
+  },
+  {
+    label: 'MsSqlJournal',
+    pid: namespacer('mssql'),
+    make: async () => {
+      const journalOptions = MsSqlJournalOptions.create()
+        .withPool(new FakeMsSqlPool());
+      return new MsSqlJournal(journalOptions);
     },
   },
   {
@@ -163,6 +179,16 @@ const snapshotHarnesses: ReadonlyArray<SnapshotHarness> = [
     },
   },
   {
+    label: 'MsSqlSnapshotStore',
+    pid: namespacer('mssql'),
+    capabilities: { keepN: 'configurable' },
+    make: async (keepN) => {
+      const storeOptions = MsSqlSnapshotStoreOptions.create()
+        .withPool(new FakeMsSqlPool());
+      return new MsSqlSnapshotStore(keepN === undefined ? storeOptions : storeOptions.withKeepN(keepN));
+    },
+  },
+  {
     label: 'MariaDbSnapshotStore',
     pid: namespacer('mariadb'),
     capabilities: { keepN: 'configurable' },
@@ -196,6 +222,15 @@ const durableStateHarnesses: ReadonlyArray<DurableStateHarness> = [
       const storeOptions = LibSqlDurableStateStoreOptions.create()
         .withClient(new FakeLibSqlClient());
       return new LibSqlDurableStateStore(storeOptions);
+    },
+  },
+  {
+    label: 'MsSqlDurableStateStore',
+    pid: namespacer('mssql'),
+    make: async () => {
+      const storeOptions = MsSqlDurableStateStoreOptions.create()
+        .withPool(new FakeMsSqlPool());
+      return new MsSqlDurableStateStore(storeOptions);
     },
   },
   {

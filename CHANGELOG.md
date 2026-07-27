@@ -11,6 +11,20 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Added
 
+- **Microsoft SQL Server persistence backend** (#399) — `MsSqlJournal`,
+  `MsSqlSnapshotStore` and `MsSqlDurableStateStore` on the relational base, via
+  the `mssql`/tedious driver (a new optional peer dependency).  T-SQL needed four
+  genuine dialect additions: `IF OBJECT_ID(…) IS NULL`-guarded DDL (there is no
+  `CREATE TABLE IF NOT EXISTS`), `MERGE … WITH (HOLDLOCK)` upserts (the hint
+  matters — without it two concurrent merges can both take the `NOT MATCHED`
+  branch), `OFFSET/FETCH` row limiting, and named `@pN` parameters, which the
+  pool adapter maps from the ordered array every other driver takes.  Requires
+  SQL Server 2016+: the tags table's four-column key needs 1036 index bytes, so
+  its primary key is nonclustered.  The driver is pure JavaScript and verified to
+  import and build a pool on Bun, Node **and Deno 2** — the 2021 tedious
+  crypto-shim issue that made Deno support an open question is fixed.
+- **`SqlDialect.rowLimit(count)`** — row limiting moved into the dialect, since
+  T-SQL has no `LIMIT` at all.  Unchanged for the `LIMIT`-based dialects.
 - **libSQL / Turso persistence backend** (#400) — `LibSqlJournal`,
   `LibSqlSnapshotStore` and `LibSqlDurableStateStore`, SQLite reached over
   HTTP or WebSocket via `@libsql/client` (a new optional peer dependency,

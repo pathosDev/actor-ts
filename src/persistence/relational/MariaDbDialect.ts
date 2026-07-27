@@ -20,6 +20,8 @@ export const mariaDbDialect: SqlDialect = {
 
   placeholder: () => '?',
 
+  rowLimit: (count) => `LIMIT ${count}`,
+
   journalDdl: (tables: JournalTableNames) => [
     // Indexes are declared inline: `CREATE INDEX IF NOT EXISTS` is not
     // portable across MariaDB/MySQL versions, but inline `INDEX` is.

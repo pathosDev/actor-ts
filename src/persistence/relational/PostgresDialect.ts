@@ -13,6 +13,8 @@ export const postgresDialect: SqlDialect = {
 
   placeholder: (index) => `$${index + 1}`,
 
+  rowLimit: (count) => `LIMIT ${count}`,
+
   journalDdl: (tables: JournalTableNames) => [
     `CREATE TABLE IF NOT EXISTS ${tables.events} (
            persistence_id TEXT NOT NULL,

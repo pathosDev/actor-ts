@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import { mariaDbDialect } from '../../../src/persistence/relational/MariaDbDialect.js';
+import { msSqlDialect } from '../../../src/persistence/relational/MsSqlDialect.js';
 import { postgresDialect } from '../../../src/persistence/relational/PostgresDialect.js';
 import { expandPlaceholders } from '../../../src/persistence/relational/SqlDialect.js';
 
@@ -23,6 +24,10 @@ describe('postgresDialect — placeholders and error codes', () => {
   test('placeholders are one-based $n', () => {
     expect(postgresDialect.placeholder(0)).toBe('$1');
     expect(postgresDialect.placeholder(4)).toBe('$5');
+  });
+
+  test('row limiting uses LIMIT', () => {
+    expect(postgresDialect.rowLimit(1)).toBe('LIMIT 1');
   });
 
   test('a unique violation is SQLSTATE 23505', () => {
@@ -109,6 +114,10 @@ describe('mariaDbDialect — placeholders and error codes', () => {
     expect(mariaDbDialect.placeholder(9)).toBe('?');
   });
 
+  test('row limiting uses LIMIT', () => {
+    expect(mariaDbDialect.rowLimit(1)).toBe('LIMIT 1');
+  });
+
   test('a duplicate key is errno 1062 / ER_DUP_ENTRY', () => {
     expect(mariaDbDialect.isDuplicateKeyError({ errno: 1062 })).toBe(true);
     expect(mariaDbDialect.isDuplicateKeyError({ code: 'ER_DUP_ENTRY' })).toBe(true);
@@ -187,6 +196,126 @@ describe('mariaDbDialect — golden DDL', () => {
   });
 });
 
+describe('msSqlDialect — placeholders, row limiting and error numbers', () => {
+  test('placeholders are named @pN, which lets a statement reuse one', () => {
+    // The reuse is what makes the keepN prune bind the persistence id once
+    // where the positional dialects have to bind it twice.
+    expect(msSqlDialect.placeholder(0)).toBe('@p1');
+    expect(msSqlDialect.placeholder(4)).toBe('@p5');
+  });
+
+  test('row limiting uses the ANSI OFFSET/FETCH tail — T-SQL has no LIMIT', () => {
+    expect(msSqlDialect.rowLimit(1)).toBe('OFFSET 0 ROWS FETCH NEXT 1 ROWS ONLY');
+    expect(msSqlDialect.rowLimit(5)).toBe('OFFSET 0 ROWS FETCH NEXT 5 ROWS ONLY');
+  });
+
+  test('a duplicate key is error 2627 or 2601, wrapped or not', () => {
+    expect(msSqlDialect.isDuplicateKeyError({ number: 2627 })).toBe(true);
+    expect(msSqlDialect.isDuplicateKeyError({ number: 2601 })).toBe(true);
+    expect(msSqlDialect.isDuplicateKeyError({ number: 547 })).toBe(false);
+    // `mssql` wraps the tedious error for some failures.
+    expect(msSqlDialect.isDuplicateKeyError({ originalError: { info: { number: 2627 } } })).toBe(true);
+    expect(msSqlDialect.isDuplicateKeyError(new Error('duplicate key'))).toBe(false);
+  });
+});
+
+describe('msSqlDialect — golden DML', () => {
+  test('tag insert is INSERT … SELECT … WHERE NOT EXISTS', () => {
+    // T-SQL has neither INSERT IGNORE nor ON CONFLICT DO NOTHING.
+    expect(norm(msSqlDialect.insertTagSql('events_tags'))).toBe(
+      'INSERT INTO [events_tags] ([persistence_id], [sequence_nr], [tag], [timestamp]) '
+      + 'SELECT @p1, @p2, @p3, @p4 '
+      + 'WHERE NOT EXISTS (SELECT 1 FROM [events_tags] '
+      + 'WHERE [tag] = @p3 AND [timestamp] = @p4 '
+      + 'AND [persistence_id] = @p1 AND [sequence_nr] = @p2)',
+    );
+  });
+
+  test('deleted_to upsert is a HOLDLOCK merge with a monotonic guard', () => {
+    expect(norm(msSqlDialect.upsertDeletedToSql('events_meta'))).toBe(
+      'MERGE INTO [events_meta] WITH (HOLDLOCK) AS target '
+      + 'USING (SELECT @p1 AS [persistence_id], @p2 AS [deleted_to]) AS source '
+      + 'ON target.[persistence_id] = source.[persistence_id] '
+      + 'WHEN MATCHED AND target.[deleted_to] < source.[deleted_to] '
+      + 'THEN UPDATE SET [deleted_to] = source.[deleted_to] '
+      + 'WHEN NOT MATCHED '
+      + 'THEN INSERT ([persistence_id], [deleted_to]) '
+      + 'VALUES (source.[persistence_id], source.[deleted_to]);',
+    );
+  });
+
+  test('snapshot upsert is a HOLDLOCK merge', () => {
+    // Without HOLDLOCK two concurrent merges can both take NOT MATCHED.
+    const sql = norm(msSqlDialect.upsertSnapshotSql('snapshots'));
+    expect(sql).toContain('MERGE INTO [snapshots] WITH (HOLDLOCK) AS target');
+    expect(sql).toContain('WHEN MATCHED THEN UPDATE SET [payload] = @p3, [timestamp] = @p4');
+    expect(sql).toContain('WHEN NOT MATCHED THEN INSERT ([persistence_id], [sequence_nr], [payload], [timestamp]) '
+      + 'VALUES (@p1, @p2, @p3, @p4);');
+  });
+
+  test('keepN prune uses TOP and binds the persistence id once', () => {
+    const prune = msSqlDialect.pruneSnapshotsStatement('snapshots');
+    expect(norm(prune.sql)).toBe(
+      'DELETE FROM [snapshots] WHERE [persistence_id] = @p1 AND [sequence_nr] NOT IN ( '
+      + 'SELECT TOP (@p2) [sequence_nr] FROM [snapshots] '
+      + 'WHERE [persistence_id] = @p1 ORDER BY [sequence_nr] DESC)',
+    );
+    // Named parameters can be referenced twice — so, unlike MariaDB and SQLite,
+    // the id is bound once.
+    expect(prune.params('account-1', 2)).toEqual(['account-1', 2]);
+  });
+
+  test('durable-state insert is unguarded, so a collision throws', () => {
+    expect(norm(msSqlDialect.insertStateSql('durable_state'))).toBe(
+      'INSERT INTO [durable_state] ([persistence_id], [revision], [payload], [timestamp]) '
+      + 'VALUES (@p1, @p2, @p3, @p4)',
+    );
+    expect(msSqlDialect.stateInsertConflictSignal).toBe('duplicate-key-error');
+  });
+});
+
+describe('msSqlDialect — golden DDL', () => {
+  test('every CREATE is guarded, since T-SQL has no IF NOT EXISTS', () => {
+    const statements = msSqlDialect.journalDdl(tables).map(norm);
+    expect(statements).toHaveLength(5);
+    expect(statements[0]).toContain("IF OBJECT_ID(N'[events]', N'U') IS NULL CREATE TABLE [events]");
+    expect(statements[1]).toBe(
+      "IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'idx_events_pid' "
+      + "AND object_id = OBJECT_ID(N'[events]')) CREATE INDEX [idx_events_pid] ON [events] ([persistence_id])",
+    );
+    expect(statements[4]).toContain("IF OBJECT_ID(N'[events_meta]', N'U') IS NULL");
+  });
+
+  test('the tags primary key is NONCLUSTERED because the key exceeds 900 bytes', () => {
+    // NVARCHAR(255) counts 510 index bytes, so tag + timestamp + pid + seq is
+    // 1036 — past the clustered limit, inside the nonclustered one.
+    const tagsDdl = norm(msSqlDialect.journalDdl(tables)[2]!);
+    expect(tagsDdl).toContain('[persistence_id] NVARCHAR(255) NOT NULL');
+    expect(tagsDdl).toContain(
+      'CONSTRAINT [PK_events_tags] PRIMARY KEY NONCLUSTERED '
+      + '([tag], [timestamp], [persistence_id], [sequence_nr])',
+    );
+    // The events key is 518 bytes, so it stays clustered.
+    expect(norm(msSqlDialect.journalDdl(tables)[0]!))
+      .toContain('CONSTRAINT [PK_events] PRIMARY KEY ([persistence_id], [sequence_nr])');
+  });
+
+  test('column identifiers are bracketed so `timestamp` cannot be read as a type', () => {
+    // `timestamp` is a deprecated type alias in T-SQL; bare in a column
+    // definition it invites the parser to read it as one.
+    for (const statements of [
+      msSqlDialect.journalDdl(tables), msSqlDialect.snapshotDdl('snapshots'),
+      msSqlDialect.durableStateDdl('durable_state'),
+    ]) {
+      for (const statement of statements) {
+        expect(norm(statement)).not.toMatch(/[ ,(]timestamp +BIGINT/);
+      }
+    }
+    expect(norm(msSqlDialect.snapshotDdl('snapshots')[0]!)).toContain('[timestamp] BIGINT NOT NULL');
+    expect(norm(msSqlDialect.durableStateDdl('durable_state')[0]!)).toContain('[payload] NVARCHAR(MAX) NOT NULL');
+  });
+});
+
 describe('expandPlaceholders', () => {
   test('rewrites canonical ? placeholders left to right', () => {
     const canonical = 'SELECT a FROM t WHERE b = ? AND c >= ? AND d <= ?';
@@ -194,6 +323,8 @@ describe('expandPlaceholders', () => {
       .toBe('SELECT a FROM t WHERE b = $1 AND c >= $2 AND d <= $3');
     // A `?`-native dialect is the identity case.
     expect(expandPlaceholders(canonical, mariaDbDialect)).toBe(canonical);
+    expect(expandPlaceholders(canonical, msSqlDialect))
+      .toBe('SELECT a FROM t WHERE b = @p1 AND c >= @p2 AND d <= @p3');
   });
 
   test('leaves a statement without placeholders alone', () => {

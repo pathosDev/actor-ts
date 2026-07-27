@@ -101,6 +101,47 @@ export type {
   PgClientLike,
 } from './journals/PostgresClient.js';
 
+// Microsoft SQL Server plug-in (journal + snapshot + durable-state).  The
+// `mssql`/tedious driver is pure JavaScript, so it runs on all three runtimes.
+export { MsSqlJournal } from './journals/MsSqlJournal.js';
+export {
+  MsSqlJournalOptions,
+  MsSqlJournalOptionsBuilder,
+  MsSqlJournalOptionsValidator,
+} from './journals/MsSqlJournalOptions.js';
+export type { MsSqlJournalOptionsType } from './journals/MsSqlJournalOptions.js';
+export { MsSqlSnapshotStore } from './snapshot-stores/MsSqlSnapshotStore.js';
+export {
+  MsSqlSnapshotStoreOptions,
+  MsSqlSnapshotStoreOptionsBuilder,
+  MsSqlSnapshotStoreOptionsValidator,
+} from './snapshot-stores/MsSqlSnapshotStoreOptions.js';
+export type { MsSqlSnapshotStoreOptionsType } from './snapshot-stores/MsSqlSnapshotStoreOptions.js';
+export { MsSqlDurableStateStore } from './durable-state-stores/MsSqlDurableStateStore.js';
+export {
+  MsSqlDurableStateStoreOptions,
+  MsSqlDurableStateStoreOptionsBuilder,
+  MsSqlDurableStateStoreOptionsValidator,
+} from './durable-state-stores/MsSqlDurableStateStoreOptions.js';
+export type { MsSqlDurableStateStoreOptionsType } from './durable-state-stores/MsSqlDurableStateStoreOptions.js';
+export {
+  registerMsSqlPlugins,
+  MSSQL_JOURNAL_PLUGIN_ID,
+  MSSQL_SNAPSHOT_PLUGIN_ID,
+  MSSQL_DURABLE_STATE_PLUGIN_ID,
+} from './journals/MsSqlPlugin.js';
+export { RegisterMsSqlPluginsOptions, RegisterMsSqlPluginsOptionsBuilder } from './journals/MsSqlPluginOptions.js';
+export type { RegisterMsSqlPluginsOptionsType } from './journals/MsSqlPluginOptions.js';
+export type { MsSqlPluginHandles } from './journals/MsSqlPlugin.js';
+export type {
+  MsSqlConnection,
+  MsSqlPoolLike,
+  MsSqlRequestLike,
+  MsSqlResult,
+  MsSqlTransactionLike,
+} from './journals/MsSqlClient.js';
+export { msSqlDialect } from './relational/MsSqlDialect.js';
+
 // libSQL / Turso plug-in (journal + snapshot + durable-state) — SQLite over
 // HTTP/WebSocket, so it needs no native binding and runs on all three runtimes.
 export { LibSqlJournal } from './journals/LibSqlJournal.js';

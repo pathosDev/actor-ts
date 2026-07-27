@@ -43,6 +43,17 @@ export interface SqlDialect {
   /** Placeholder text for a zero-based parameter index: `$1` / `?` / `@p1`. */
   placeholder(index: number): string;
 
+  /**
+   * Trailing clause that caps a `SELECT` at `count` rows.
+   *
+   * Row limiting is the most famously non-standard corner of SQL: `LIMIT n`
+   * on Postgres, MySQL and SQLite, but T-SQL has no `LIMIT` at all and needs
+   * either `TOP` (before the select list) or the ANSI
+   * `OFFSET … FETCH NEXT … ROWS ONLY` (after `ORDER BY`).  Returning the
+   * trailing form keeps the shared statements' shape intact for every dialect.
+   */
+  rowLimit(count: number): string;
+
   /* ------------------------------- DDL ---------------------------------- */
 
   /**

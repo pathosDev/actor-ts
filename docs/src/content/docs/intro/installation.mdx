@@ -93,6 +93,7 @@ bun add hono @hono/node-server    # @hono/node-server is Node-only
 | `@libsql/client` | libSQL / Turso journal + snapshot + durable-state store — SQLite over HTTP, so it needs no native binding on any runtime. |
 | `pg` | PostgreSQL journal + snapshot + durable-state store. |
 | `mariadb` | MariaDB / MySQL journal + snapshot + durable-state store. |
+| `mssql` | Microsoft SQL Server journal + snapshot + durable-state store.  Pure-JavaScript driver (tedious), no native build step. |
 | `cassandra-driver` | Cassandra / ScyllaDB journal + tag-index. |
 | `@aws-sdk/client-s3` | S3-compatible object-storage backend (works with MinIO, R2, Backblaze B2). |
 | `fzstd` *(optional)* | zstd compression for object-storage blobs when no native runtime support is available. |

@@ -70,6 +70,7 @@ jobs:
           - { dir: postgres,      npm: postgres, image: "PostgreSQL" }
           - { dir: mariadb,       npm: mariadb,  image: "MariaDB" }
           - { dir: libsql,        npm: libsql,   image: "libSQL (sqld)" }
+          - { dir: mssql,         npm: mssql,    image: "SQL Server 2022" }
 
     name: ${{ matrix.broker.image }} (${{ matrix.broker.dir }})
 
