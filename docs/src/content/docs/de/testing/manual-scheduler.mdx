@@ -44,6 +44,18 @@ schläft 5,1 s, aber der Scheduler feuert bei 5,0 s, während
 ist schnell; der Test wartet jedes Mal 5,1 s, obwohl der Timer
 bei 5,0 s feuert — langsam.
 
+Die Toleranz aufzuweiten rettet es auch nicht, denn Timer feuern
+ebenso **zu früh**. Timer-Quanten der Plattform sind grob — unter
+Windows sind 15,625 ms der Default — und eine Event-Loop, die
+Deadlines auf der Tick-Grenze prüft, kann einen Timer als fällig
+ansehen, bevor sein nominales Delay verstrichen ist: ein
+30-ms-`setTimeout` wurde unter Bun/Windows mit nur 18,7 ms
+gemessen, und unter CPU-Last mit bis zu 201 ms. Ein nominales
+Delay, eine Zehnerpotenz Streuung. Keine Wall-Clock-Grenze ist
+gleichzeitig eng genug, um etwas zu bedeuten, und weit genug, um
+zu halten — und eine präzisere Uhr hilft nicht: zu früh ist der
+Timer, nicht die Messung.
+
 `ManualScheduler` entfernt die Abhängigkeit von echter Zeit.
 Tests sind schnell (kein Warten) und deterministisch (advance
 feuert Timer in Reihenfolge).

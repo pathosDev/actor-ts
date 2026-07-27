@@ -26,6 +26,11 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   which needs a quorum across *every* datacenter — so on a multi-DC keyspace
   each append would pay a cross-DC round-trip, undoing the local-DC write path
   `consistency: LOCAL_QUORUM` exists to provide.  Set `localSerial` (9) there.
+- **`RetryOptions.sleep`** (#477) — override how `retry` awaits the delay
+  between attempts.  Defaults to `setTimeout`; pass a `ManualScheduler`-backed
+  sleep to run the backoff on virtual time, so a test can assert the schedule
+  exactly and instantly instead of measuring real gaps.  Same escape hatch as
+  `BackoffPolicy`'s `random`.
 
 ### Changed
 
@@ -122,6 +127,24 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Fixed
 
+- **Three wall-clock test assertions no longer flake the coverage gate**
+  (#477).  `bun run test:coverage:gate` failed intermittently — not on the
+  coverage floor (line coverage sits around 94 %) but because `bun test`
+  exited non-zero.  The cause was not clock granularity but the **timer**:
+  Bun's event loop decides a deadline is due on the platform's tick boundary,
+  so a `setTimeout` whose delay sits just under a tick multiple fires a full
+  quantum **early** — a 30 ms timer measured as low as 18.7 ms on
+  Bun 1.3.1 / Windows 11 (15.625 ms quantum) and as high as 201 ms under load.
+  `after`'s and `assertDoesNotCompleteWithin`'s `>= 25` bounds on a 30 ms
+  delay had no margin against that and now assert a quantum below nominal via
+  the new `tests/util/TimerTolerance.ts` (which records the measurements), plus
+  a deterministic check that the factory is not invoked synchronously.  `retry`'s
+  backoff test is off the wall clock entirely — it drives the new
+  `RetryOptions.sleep` seam with `ManualScheduler`, asserting attempts at
+  virtual 0/20/50 ms and thereby proving the third delay is capped at 30 ms
+  rather than 40 ms, which the old `gap2 < 40` bound could not do reliably at
+  any tolerance.  Test-only change beyond the `sleep` addition; no runtime
+  behaviour changed.
 - **Docs site builds from a fresh install again** (#473).  `docs/package.json`
   and `docs/bun.lock` had drifted apart across three dependency bumps — the
   lockfile's workspace header still recorded the pre-bump ranges, so
