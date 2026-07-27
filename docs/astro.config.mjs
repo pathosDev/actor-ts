@@ -26,6 +26,7 @@ import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 import { defineConfig } from 'astro/config';
+import { unified } from '@astrojs/markdown-remark';
 import starlight from '@astrojs/starlight';
 import { createStarlightTypeDocPlugin } from 'starlight-typedoc';
 import rehypeMermaid from 'rehype-mermaid';
@@ -99,81 +100,91 @@ export default defineConfig({
   // We tell Shiki (Starlight's default syntax highlighter) to NOT touch
   // mermaid code blocks — otherwise it would consume them as plain code
   // and our rehype plugin would see nothing to render.
+  //
+  // Astro 7 made `@astrojs/markdown-satteri` the default Markdown
+  // pipeline and demoted the remark/rehype one to the optional peer
+  // `@astrojs/markdown-remark` — so `markdown.rehypePlugins` is
+  // deprecated and `markdown.processor` is how you opt back in.  We
+  // stay on unified because `rehype-mermaid` is a rehype (hast) plugin
+  // written against that pipeline; Starlight 0.41 detects either
+  // processor and pushes its own plugins into whichever is configured.
   markdown: {
     syntaxHighlight: {
       type: 'shiki',
       excludeLangs: ['mermaid', 'math'],
     },
-    rehypePlugins: [
-      [
-        rehypeMermaid,
-        {
-          // 'inline-svg' inlines the rendered SVG directly into the HTML.
-          // Other options: 'img-svg' (SVG in <img>), 'img-png' (PNG in
-          // <img>), 'pre-mermaid' (no SSR, client-side render).  Inline
-          // is the cleanest for theming + accessibility.
-          strategy: 'inline-svg',
-          // Inject JetBrains Mono into the Playwright/Chromium page so
-          // SSR text-measurement matches the runtime browser (which
-          // also loads JetBrains Mono via @fontsource).  Without this
-          // the headless Chromium falls back to a narrow sans-serif,
-          // computes a too-small bbox, and node labels like "routee-1"
-          // get clipped to "routee-:" at runtime.  The plugin's `css`
-          // option expects a file PATH (not inline CSS) — generated
-          // above into `.astro/mermaid-fonts.css`.
-          css: mermaidCssPath,
-          // Match our dark/light palette.  Mermaid's 'dark' theme uses a
-          // dark background which fits Starlight's default dark mode;
-          // light pages get re-themed via CSS variables on the SVG.
-          mermaidConfig: {
-            theme: 'dark',
-            themeVariables: {
-              // ---- Flowchart + state-diagram palette ----
-              // Indigo accents, slate base — same palette as the logo.
-              primaryColor:       '#1e293b',  // slate-800   — node bg
-              primaryTextColor:   '#f1f5f9',  // slate-100   — node text
-              primaryBorderColor: '#6366f1',  // indigo-500  — node border
-              lineColor:          '#94a3b8',  // slate-400   — connection lines
-              secondaryColor:     '#312e81',  // indigo-900  — alt node bg
-              tertiaryColor:      '#0f172a',  // slate-900   — bg
+    processor: unified({
+      rehypePlugins: [
+        [
+          rehypeMermaid,
+          {
+            // 'inline-svg' inlines the rendered SVG directly into the HTML.
+            // Other options: 'img-svg' (SVG in <img>), 'img-png' (PNG in
+            // <img>), 'pre-mermaid' (no SSR, client-side render).  Inline
+            // is the cleanest for theming + accessibility.
+            strategy: 'inline-svg',
+            // Inject JetBrains Mono into the Playwright/Chromium page so
+            // SSR text-measurement matches the runtime browser (which
+            // also loads JetBrains Mono via @fontsource).  Without this
+            // the headless Chromium falls back to a narrow sans-serif,
+            // computes a too-small bbox, and node labels like "routee-1"
+            // get clipped to "routee-:" at runtime.  The plugin's `css`
+            // option expects a file PATH (not inline CSS) — generated
+            // above into `.astro/mermaid-fonts.css`.
+            css: mermaidCssPath,
+            // Match our dark/light palette.  Mermaid's 'dark' theme uses a
+            // dark background which fits Starlight's default dark mode;
+            // light pages get re-themed via CSS variables on the SVG.
+            mermaidConfig: {
+              theme: 'dark',
+              themeVariables: {
+                // ---- Flowchart + state-diagram palette ----
+                // Indigo accents, slate base — same palette as the logo.
+                primaryColor:       '#1e293b',  // slate-800   — node bg
+                primaryTextColor:   '#f1f5f9',  // slate-100   — node text
+                primaryBorderColor: '#6366f1',  // indigo-500  — node border
+                lineColor:          '#94a3b8',  // slate-400   — connection lines
+                secondaryColor:     '#312e81',  // indigo-900  — alt node bg
+                tertiaryColor:      '#0f172a',  // slate-900   — bg
 
-              // ---- Sequence-diagram palette ----
-              // Mermaid uses an entirely separate set of variables for
-              // sequence diagrams — the flowchart `primaryColor` etc.
-              // are NOT picked up there.  Mirror the indigo/slate look
-              // explicitly so sequence diagrams don't render as plain
-              // grey while the rest of the docs use the brand palette.
-              actorBkg:              '#1e293b',  // slate-800  — actor box bg
-              actorBorder:           '#6366f1',  // indigo-500 — actor box border
-              actorTextColor:        '#f1f5f9',  // slate-100  — actor name
-              actorLineColor:        '#475569',  // slate-600  — vertical lifelines
-              signalColor:           '#94a3b8',  // slate-400  — arrows
-              signalTextColor:       '#cbd5e1',  // slate-300  — arrow labels
-              noteBkgColor:          '#312e81',  // indigo-900 — note bg
-              noteBorderColor:       '#818cf8',  // indigo-400 — note border
-              noteTextColor:         '#f1f5f9',  // slate-100  — note text
-              labelBoxBkgColor:      '#0f172a',  // slate-900  — sequence-numbered loop labels
-              labelBoxBorderColor:   '#6366f1',  // indigo-500
-              labelTextColor:        '#f1f5f9',
-              loopTextColor:         '#cbd5e1',  // slate-300
-              activationBkgColor:    '#312e81',  // indigo-900 — activation bar bg
-              activationBorderColor: '#818cf8',  // indigo-400
-              sequenceNumberColor:   '#0f172a',  // slate-900  — sequence-step circles
+                // ---- Sequence-diagram palette ----
+                // Mermaid uses an entirely separate set of variables for
+                // sequence diagrams — the flowchart `primaryColor` etc.
+                // are NOT picked up there.  Mirror the indigo/slate look
+                // explicitly so sequence diagrams don't render as plain
+                // grey while the rest of the docs use the brand palette.
+                actorBkg:              '#1e293b',  // slate-800  — actor box bg
+                actorBorder:           '#6366f1',  // indigo-500 — actor box border
+                actorTextColor:        '#f1f5f9',  // slate-100  — actor name
+                actorLineColor:        '#475569',  // slate-600  — vertical lifelines
+                signalColor:           '#94a3b8',  // slate-400  — arrows
+                signalTextColor:       '#cbd5e1',  // slate-300  — arrow labels
+                noteBkgColor:          '#312e81',  // indigo-900 — note bg
+                noteBorderColor:       '#818cf8',  // indigo-400 — note border
+                noteTextColor:         '#f1f5f9',  // slate-100  — note text
+                labelBoxBkgColor:      '#0f172a',  // slate-900  — sequence-numbered loop labels
+                labelBoxBorderColor:   '#6366f1',  // indigo-500
+                labelTextColor:        '#f1f5f9',
+                loopTextColor:         '#cbd5e1',  // slate-300
+                activationBkgColor:    '#312e81',  // indigo-900 — activation bar bg
+                activationBorderColor: '#818cf8',  // indigo-400
+                sequenceNumberColor:   '#0f172a',  // slate-900  — sequence-step circles
 
-              // JetBrains Mono matches the rest of the site's code-block
-              // font + the logo wordmark — keeps diagrams visually
-              // unified with the surrounding docs.  Loaded into
-              // Playwright via the `css` option above so SSR and
-              // runtime measure with the same font.
-              fontFamily:         "'JetBrains Mono', ui-monospace, monospace",
-              fontSize:           '14px',
+                // JetBrains Mono matches the rest of the site's code-block
+                // font + the logo wordmark — keeps diagrams visually
+                // unified with the surrounding docs.  Loaded into
+                // Playwright via the `css` option above so SSR and
+                // runtime measure with the same font.
+                fontFamily:         "'JetBrains Mono', ui-monospace, monospace",
+                fontSize:           '14px',
+              },
+              flowchart:  { htmlLabels: true, curve: 'basis', padding: 12 },
+              sequence:   { actorMargin: 50 },
             },
-            flowchart:  { htmlLabels: true, curve: 'basis', padding: 12 },
-            sequence:   { actorMargin: 50 },
           },
-        },
+        ],
       ],
-    ],
+    }),
   },
   integrations: [
     starlight({

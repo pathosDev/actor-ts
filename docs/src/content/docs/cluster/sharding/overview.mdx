@@ -130,9 +130,9 @@ perspective.  Behind the scenes:
 | **Coordinator** | One per cluster (singleton, on the leader).  Decides which node owns each shard.  Handles rebalancing on membership changes. |
 | **Entity** | One per `entityId`.  Hosted on whichever node currently owns the shard the ID hashes to. |
 
-Each level has its own page in the cluster section — see
-[ShardRegion](/cluster/sharding/), the
-[allocation strategy](/cluster/sharding/allocation-strategy/),
+The region is the subject of this page; the coordinator's decisions
+have pages of their own — see the
+[allocation strategy](/cluster/sharding/allocation-strategy/)
 and [rebalance](/cluster/sharding/rebalance/) for the
 mechanics.
 
@@ -299,8 +299,6 @@ import { Aside } from '@astrojs/starlight/components';
 
 ## Where to next
 
-- **[ShardRegion](/cluster/sharding/) ** *(stub)* — the
-  per-node region actor; configuration deep dive.
 - **[Allocation strategy](/cluster/sharding/allocation-strategy/)** —
   default hash-mod-regions, custom strategies.
 - **[Rebalance](/cluster/sharding/rebalance/)** — the
@@ -312,5 +310,6 @@ import { Aside } from '@astrojs/starlight/components';
 - **[Sharded daemon process](/cluster/sharding/sharded-daemon-process/)** —
   fixed-count workers distributed by sharding.
 
-The [`ClusterSharding`](/api/classes/clustersharding/)
-API reference covers the full surface.
+The [`ClusterSharding`](/api/classes/clustersharding/) and
+[`ShardRegion`](/api/classes/shardregion/) API references cover
+the full surface, including the per-node region actor.

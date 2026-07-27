@@ -95,14 +95,19 @@ export function journalContractScenarios(): ContractScenario<JournalHarness>[] {
         const journal = await harness.make();
         const persistenceId = harness.pid('race');
         try {
-          // Six writers all believing the stream is empty.  Whether a given one
-          // loses at the head check or at the primary key is a matter of timing
-          // — the guarantee under test is that the *stream* stays sound either
-          // way, which is what the duplicate-key backstop exists for.  On a
-          // relational store this is also the only scenario that reaches that
-          // backstop at all.
+          // Race at whatever the current head is rather than assuming 0, so a
+          // live suite re-run against a database that was not wiped still
+          // exercises real contention instead of failing on the first append.
+          const head = await journal.highestSeq(persistenceId);
+
+          // Six writers all believing they hold the current head.  Whether a
+          // given one loses at the head check or at the conditional write is a
+          // matter of timing — the guarantee under test is that the *stream*
+          // stays sound either way, which is what the duplicate-key backstop
+          // exists for.  On a relational store this is also the only scenario
+          // that reaches that backstop at all.
           const attempts = await Promise.allSettled(
-            Array.from({ length: 6 }, (_, index) => journal.append(persistenceId, [`writer-${index}`], 0)),
+            Array.from({ length: 6 }, (_, index) => journal.append(persistenceId, [`writer-${index}`], head)),
           );
           const winners = attempts.filter((attempt) => attempt.status === 'fulfilled');
           const losers = attempts.filter((attempt) => attempt.status === 'rejected');
@@ -115,9 +120,14 @@ export function journalContractScenarios(): ContractScenario<JournalHarness>[] {
             );
           }
           // No lost or duplicated writes: the stream holds exactly the winner.
-          assertEqual(await journal.highestSeq(persistenceId), 1, 'the head advanced exactly once');
-          const stored = await journal.read<string>(persistenceId, 1);
-          assertEqual(stored.map((event) => event.sequenceNr), [1], 'exactly one event is stored');
+          assertEqual(await journal.highestSeq(persistenceId), head + 1, 'the head advanced exactly once');
+          const stored = await journal.read<string>(persistenceId, head + 1);
+          assertEqual(stored.map((event) => event.sequenceNr), [head + 1], 'exactly one event is stored');
+          // And it is the *winner's* event.  A store that upserts instead of
+          // rejecting would keep one row at the contested sequence number while
+          // silently replacing its payload — the row count alone cannot see that.
+          const won = (winners[0] as PromiseFulfilledResult<Array<{ event: string }>>).value;
+          assertEqual(stored[0]!.event, won[0]!.event, 'the surviving event belongs to the winner');
         } finally {
           await closeQuietly(journal);
         }

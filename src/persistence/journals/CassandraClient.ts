@@ -21,7 +21,7 @@ export interface CassandraClientLike {
   execute(
     query: string,
     params?: ReadonlyArray<unknown>,
-    options?: { prepare?: boolean; consistency?: number },
+    options?: { prepare?: boolean; consistency?: number; serialConsistency?: number },
   ): Promise<CassandraRowResult>;
   batch(
     queries: ReadonlyArray<CassandraBatchQuery>,

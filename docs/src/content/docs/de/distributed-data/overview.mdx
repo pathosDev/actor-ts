@@ -106,9 +106,12 @@ kein Netzwerk) und liefern, was die lokale Replika aktuell weiß
 | **`ORMap<K, C>`** | Eine Map, deren Werte selbst CRDTs sind. | Counter pro Key, Sets pro Key. |
 | **`GCounterMap<K>`** | Convenience: eine Map von GCounters. | Klicks pro Key, Requests pro Tenant. |
 
-In [CRDT-Typen](/de/distributed-data/crdt-types/) findest du den
-Deep Dive zu jedem — `merge()`-Semantik, wann sie passen, wann
-nicht.
+Die Deep Dives zu den CRDT-Typen behandeln `merge()`-Semantik, wann
+sie passen und wann nicht —
+[Counter](/de/distributed-data/crdt-types/counters/),
+[Register](/de/distributed-data/crdt-types/registers/),
+[Sets](/de/distributed-data/crdt-types/sets/) und
+[Maps](/de/distributed-data/crdt-types/maps/).
 
 ## Konsistenz-Stellschrauben
 
@@ -230,8 +233,9 @@ import { Aside } from '@astrojs/starlight/components';
 
 ## Wohin als Nächstes
 
-- **[CRDT-Typen](/de/distributed-data/crdt-types/)** —
-  Deep Dive zur Semantik jedes Typs.
+- **[Counter](/de/distributed-data/crdt-types/counters/)** — der erste
+  der CRDT-Typ-Deep-Dives; jede Seite verlinkt weiter auf Register,
+  Sets und Maps.
 - **[Replikation](/de/distributed-data/replication/)** — wie
   Gossip Updates zwischen Replikas verteilt.
 - **[Quorum Reads/Writes](/de/distributed-data/quorum-reads-writes/)** —
