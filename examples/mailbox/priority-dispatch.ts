@@ -13,6 +13,7 @@ import {
   PriorityMailbox,
   Props,
 } from '../../src/index.js';
+import { attachDevTools } from '../devtools.js';
 
 type HeartbeatMessage = { kind: 'heartbeat'; ts: number };
 type CommandMessage = { kind: 'command'; id: string };
@@ -51,6 +52,7 @@ class Dispatcher extends Actor<Message> {
 
 async function main(): Promise<void> {
   const system = ActorSystem.create('pri-dispatch');
+  const devtools = await attachDevTools(system);
   const props = Props.create(() => new Dispatcher())
     .withMailbox(() => new PriorityMailbox<Message>({ priorityFor }) as never);
   const ref = system.spawnAnonymous(props);
@@ -63,6 +65,7 @@ async function main(): Promise<void> {
 
   // Wait for the actor to drain.
   await Bun.sleep(300);
+  await devtools.holdOpen();
   await system.terminate();
 }
 

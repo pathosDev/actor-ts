@@ -8,6 +8,7 @@
  * when it reaches the limit.
  */
 import { ActorSystem, Behaviors, type Behavior } from '../../src/index.js';
+import { attachDevTools } from '../devtools.js';
 
 type CounterCommand = { kind: 'increment' } | { kind: 'get' };
 
@@ -32,6 +33,7 @@ const counter = (n: number, limit: number): Behavior<CounterCommand> =>
 
 async function main(): Promise<void> {
   const system = ActorSystem.create('typed-counter');
+  const devtools = await attachDevTools(system);
   const ref = system.spawnTyped(counter(0, 3), 'counter');
 
   ref.tell({ kind: 'increment' });
@@ -40,6 +42,7 @@ async function main(): Promise<void> {
   ref.tell({ kind: 'increment' }); // reaches limit, actor stops
 
   await Bun.sleep(60);
+  await devtools.holdOpen();
   await system.terminate();
 }
 

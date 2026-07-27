@@ -20,6 +20,7 @@ import {
   Props,
   prometheusHandler,
 } from '../../src/index.js';
+import { attachDevTools } from '../devtools.js';
 
 class Worker extends Actor<{ id: number }> {
   override async onReceive(_m: { id: number }): Promise<void> {
@@ -29,6 +30,7 @@ class Worker extends Actor<{ id: number }> {
 }
 
 const system = ActorSystem.create('metrics-demo');
+const devtools = await attachDevTools(system);
 const registry = system.extension(MetricsExtensionId).enable();
 
 const worker = system.spawn(Props.create(() => new Worker()), 'worker');

@@ -8,6 +8,7 @@
  */
 import { Actor, ActorSystem, Cluster, ClusterOptions, InMemoryTransport, NodeAddress, Props } from '../../src/index.js';
 import { DistributedPubSubId, Publish, Subscribe } from '../../src/cluster/pubsub/index.js';
+import { attachDevTools } from '../devtools.js';
 
 interface ChatMessage { readonly from: string; readonly text: string; }
 
@@ -20,6 +21,7 @@ class Subscriber extends Actor<ChatMessage> {
 
 async function main(): Promise<void> {
   const system = ActorSystem.create('chat');
+  const devtools = await attachDevTools(system);
   // Single-node in-memory cluster — pub-sub also works cluster-wide (see event-bus-across-nodes.ts).
   const clusterOptions = ClusterOptions.create()
     .withHost('local')
@@ -43,6 +45,7 @@ async function main(): Promise<void> {
 
   await Bun.sleep(50);
   await cluster.leave();
+  await devtools.holdOpen();
   await system.terminate();
 }
 

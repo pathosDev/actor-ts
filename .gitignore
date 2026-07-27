@@ -53,3 +53,9 @@ examples/chat/frontend-*/.svelte-kit/
 
 # Throwaway scratch space (release-note drafts, smoke-test files etc.).
 tmp/
+
+# DevTools UI bundler scratch.  `.build/` feeds the generated embedded
+# module (src/devtools/generated/uiAssets.ts, which IS committed);
+# `.dev/` is the unminified output served via `uiDevelopmentRoot`.
+devtools-ui/.build/
+devtools-ui/.dev/

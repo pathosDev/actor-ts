@@ -124,6 +124,37 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   transaction, is what makes optimistic concurrency sound under a racing
   writer.  The Postgres dialect classifies conflicts by SQLSTATE rather than
   message text, which is what lets CockroachDB and YugabyteDB reuse it.
+
+- **DevTools — embeddable web UI for a running system** (`actor-ts/devtools`,
+  new `"./devtools"` subpath export).  `DevTools.attach(system, options)` binds
+  a small server whose dashboard shows the system at a glance and links into
+  one panel per tool; `DevTools.mount(system)` returns the routes for an
+  existing server instead.  This first drop is the foundation — the versioned
+  tap protocol, the WebSocket hub and the UI shell with its dashboard.  The
+  panels themselves (actor tree + cluster, tracing, explain plan, time travel,
+  profiler) follow, and the UI already lists them, marking each unavailable
+  with a reason until it lands.  #445
+  - **Security:** binds `127.0.0.1` unauthenticated by default, and
+    `DevToolsOptions` *refuses* a routable bind unless `auth`, `ipAllowlist`
+    or an explicit `allowRemote: true` is present — DevTools reads live actor
+    state, so exposing it cannot be the result of a typo.  Auth and the IP
+    allowlist wrap the UI, the JSON endpoints and the WebSocket upgrade alike.
+    Individual panels can be switched off via `withPanels({ … })`.
+  - Creating the extension does nothing: no port, no taps, no instrumentation
+    until `attach()`, and each panel's collection runs only while a browser is
+    subscribed to it.
+  - The UI is vanilla TypeScript bundled at build time and embedded in the
+    package — no UI framework in the dependency tree, no CDN loads, no
+    filesystem access at runtime.
+  - **Every example is wired for it**, opt-in via `DEVTOOLS=1` (see
+    `examples/devtools.ts`).  Short-lived example scripts park just before
+    shutdown so there is time to open a browser; multi-system examples give
+    each system its own port counting up from `DEVTOOLS_PORT`.  Without the
+    flag their timing and output are unchanged.
+  - A DevTools attachment now ends with the system it debugs:
+    `system.terminate()` releases the port even though it does not run
+    `CoordinatedShutdown`.  Previously a terminated system left the server
+    bound, keeping the process alive.
 - **`PersistenceExtension.configure({ journal?, snapshotStore? })`** — a thin
   convenience over `setJournal` / `setSnapshotStore` for tests and simple,
   single-backend apps that wire persistence directly in code.  (The docs

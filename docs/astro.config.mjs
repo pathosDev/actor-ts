@@ -776,6 +776,15 @@ export default defineConfig({
                 { label: 'HTTP endpoints', slug: 'observability/management/http-endpoints', translations: { de: 'HTTP-Endpoints', es: 'Endpoints HTTP', fr: 'Endpoints HTTP', ja: 'HTTP エンドポイント', ko: 'HTTP 엔드포인트', 'pt-BR': 'Endpoints HTTP', ru: 'HTTP-эндпоинты', 'zh-CN': 'HTTP 端点' } },
               ],
             },
+            {
+              label: 'DevTools',
+              translations: { de: 'DevTools', es: 'DevTools', fr: 'DevTools', ja: 'DevTools', ko: 'DevTools', 'pt-BR': 'DevTools', ru: 'DevTools', 'zh-CN': 'DevTools' },
+              collapsed: true,
+              items: [
+                { label: 'Overview',      slug: 'observability/devtools/overview', translations: { de: 'Überblick', es: 'Visión general', fr: 'Vue d’ensemble', ja: '概要', ko: '개요', 'pt-BR': 'Visão geral', ru: 'Обзор', 'zh-CN': '概览' } },
+                { label: 'Tap protocol',  slug: 'observability/devtools/protocol', translations: { de: 'Tap-Protokoll', es: 'Protocolo del tap', fr: 'Protocole du tap', ja: 'Tap プロトコル', ko: 'Tap 프로토콜', 'pt-BR': 'Protocolo do tap', ru: 'Протокол tap', 'zh-CN': 'Tap 协议' } },
+              ],
+            },
           ],
         },
         {

@@ -7,6 +7,7 @@
  *   bun run examples/selection/lookup-named-workers.ts
  */
 import { Actor, ActorSystem, Props } from '../../src/index.js';
+import { attachDevTools } from '../devtools.js';
 
 interface Job { readonly kind: string; readonly payload: unknown; }
 
@@ -37,6 +38,7 @@ class Dispatcher extends Actor<Job> {
 
 async function main(): Promise<void> {
   const system = ActorSystem.create('selection-realistic');
+  const devtools = await attachDevTools(system);
 
   // Spawn workers under a shared "workers" parent so the path prefix is stable.
   class WorkersRoot extends Actor<never> {
@@ -59,6 +61,7 @@ async function main(): Promise<void> {
   dispatcher.tell({ kind: 'unknown', payload: null });
 
   await Bun.sleep(40);
+  await devtools.holdOpen();
   await system.terminate();
 }
 

@@ -19,11 +19,13 @@ import {
   getFromFile,
   path,
 } from '../../src/index.js';
+import { attachDevTools } from '../devtools.js';
 
 const assets = join(fileURLToPath(new URL('.', import.meta.url)), 'static-site-assets');
 
 async function main(): Promise<void> {
   const system = ActorSystem.create('static-site');
+  const devtools = await attachDevTools(system);
 
   const routes = concat(
     // A single file at an explicit route, served with its detected MIME type.

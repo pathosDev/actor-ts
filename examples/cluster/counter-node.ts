@@ -21,6 +21,7 @@ import {
   ShardMapChanged,
   StartShardingOptions,
 } from '../../src/index.js';
+import { attachDevTools } from '../devtools.js';
 
 type Command =
   | { id: string; op: 'increment' }
@@ -77,6 +78,7 @@ async function main(): Promise<void> {
       .withShutdownOnSignals(false)
       .withFailureDetector({ heartbeatIntervalMs: 300, unreachableAfterMs: 1_500, downAfterMs: 3_500 })
       .withGossipIntervalMs(500));
+  await attachDevTools(system);
 
   cluster.subscribe(evt => {
     if (evt instanceof MemberUp) system.log.info(`[+] ${evt.member.address} is UP`);

@@ -5,6 +5,7 @@
  *   bun run examples/fsm/traffic-light.ts
  */
 import { ActorSystem, FSM, Props } from '../../src/index.js';
+import { attachDevTools } from '../devtools.js';
 
 type Color = 'red' | 'green' | 'yellow';
 interface Data { readonly enteredAt: number; }
@@ -27,6 +28,7 @@ class TrafficLight extends FSM<Color, Data, Command> {
 
 async function main(): Promise<void> {
   const system = ActorSystem.create('fsm-hello');
+  const devtools = await attachDevTools(system);
   const ref = system.spawn(Props.create(() => new TrafficLight()), 'light');
 
   for (let i = 0; i < 6; i++) {
@@ -34,6 +36,7 @@ async function main(): Promise<void> {
     await Bun.sleep(80);
   }
 
+  await devtools.holdOpen();
   await system.terminate();
 }
 

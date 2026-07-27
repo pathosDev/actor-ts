@@ -19,6 +19,7 @@ import {
   MigrationChain,
   type EventAdapter,
 } from '../../src/index.js';
+import { attachDevTools } from '../devtools.js';
 
 type DepositedV1 = { kind: 'deposited'; amount: number };                                    // dollars
 type DepositedV2 = { kind: 'deposited'; amount: number; currency: 'USD' | 'EUR' };           // dollars + currency
@@ -74,6 +75,7 @@ async function main(): Promise<void> {
 
   const sysOptions = ActorSystemOptions.create().withPersistence({ journal, snapshotStore: snapshots });
   const sys = ActorSystem.create('migration-chain', sysOptions);
+  const devtools = await attachDevTools(sys);
 
   const acct = sys.spawn(Props.create(() => new Account('alice')), 'alice');
   // v1 (1.5 USD = 150 cents) + v2 (2 EUR = 200 cents) + v3 (99 cents) = 449 cents.
@@ -81,6 +83,7 @@ async function main(): Promise<void> {
   console.log('deposit 100 cents EUR  →', await acct.ask({ kind: 'deposit', cents: 100 }, 500));
   console.log('final (cents)          →', await acct.ask({ kind: 'balance' }, 500));
 
+  await devtools.holdOpen();
   await sys.terminate();
 }
 

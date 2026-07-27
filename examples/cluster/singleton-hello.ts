@@ -19,6 +19,7 @@ import {
   Props,
   StartSingletonOptions,
 } from '../../src/index.js';
+import { attachDevTools } from '../devtools.js';
 
 class Echo extends Actor<string> {
   constructor(private readonly where: string) { super(); }
@@ -42,6 +43,7 @@ async function startNode(host: string, port: number, seeds: string[] = []): Prom
       .withGossipIntervalMs(80)
       .withReceptionist(false)
       .withShutdownOnSignals(false));
+  await attachDevTools(system);
   return { sys: system, cluster, name: host };
 }
 

@@ -16,6 +16,7 @@ import {
   ShardedDaemonProcess,
   ShardedDaemonProcessOptions,
 } from '../../src/index.js';
+import { attachDevTools } from '../devtools.js';
 
 class Worker extends Actor<string> {
   constructor(private readonly index: number) { super(); }
@@ -35,6 +36,7 @@ async function main(): Promise<void> {
       .withTransport(new InMemoryTransport(new NodeAddress('daemon-hello', 'local', 1)))
       .withReceptionist(false)
       .withShutdownOnSignals(false));
+  await attachDevTools(system);
 
   const handle = ShardedDaemonProcess.init<string>(system, cluster,
     ShardedDaemonProcessOptions.create<string>()

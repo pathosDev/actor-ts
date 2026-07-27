@@ -1,0 +1,14 @@
+{
+  "//": "Type-checks the browser bundle. Separate from the root config because rootDir there is `src/` — compiling DOM code into dist/ would ship dead JavaScript and .d.ts files. Checked by `bun run typecheck`; the emit is Bun.build's job, so this config never writes anything.",
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "rootDir": "..",
+    "outDir": "../.tsbuild-devtools-ui",
+    "declaration": false,
+    "declarationMap": false,
+    "sourceMap": false
+  },
+  "include": ["src/**/*.ts", "../src/devtools/protocol/**/*.ts"],
+  "exclude": ["node_modules", ".build", ".dev"]
+}

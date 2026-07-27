@@ -1,0 +1,5 @@
+# The DevTools UI bundle, embedded as base64 by `bun run build:ui`.
+# Marked generated so reviews collapse it and diffs stay readable; the
+# file is committed on purpose (see scripts/build-devtools-ui.mjs) so
+# typecheck, tests and smoke runs work straight from a fresh clone.
+src/devtools/generated/uiAssets.ts linguist-generated -diff

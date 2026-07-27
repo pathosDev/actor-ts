@@ -22,6 +22,7 @@ import {
   StartSingletonOptions,
   type ActorRef,
 } from '../../src/index.js';
+import { attachDevTools } from '../devtools.js';
 
 type CronCommand = { kind: 'subscribe'; sub: ActorRef<CronEvent> } | { kind: 'tick' };
 interface CronEvent { readonly tickNumber: number; readonly hostedOn: string; }
@@ -64,6 +65,7 @@ async function startNode(host: string, port: number, seeds: string[] = []): Prom
       .withGossipIntervalMs(80)
       .withReceptionist(false)
       .withShutdownOnSignals(false));
+  await attachDevTools(system);
   return { sys: system, cluster, name: host };
 }
 

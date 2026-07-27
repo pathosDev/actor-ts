@@ -27,6 +27,7 @@ import {
   registerCassandraPlugins,
   type SnapshotPolicy,
 } from '../../src/index.js';
+import { attachDevTools } from '../devtools.js';
 
 type DepositCommand = { kind: 'deposit'; amount: number };
 type WithdrawCommand = { kind: 'withdraw'; amount: number };
@@ -113,6 +114,7 @@ async function main(): Promise<void> {
       },
     });
   const system = ActorSystem.create('ledger', systemOptions);
+  const devtools = await attachDevTools(system);
 
   const ext = system.extension(PersistenceExtensionId);
   const journalOptions = CassandraJournalOptions.create()
@@ -149,6 +151,7 @@ async function main(): Promise<void> {
 
   await ext.journal.close?.();
   await ext.snapshotStore.close?.();
+  await devtools.holdOpen();
   await system.terminate();
 }
 

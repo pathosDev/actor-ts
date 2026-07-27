@@ -250,3 +250,17 @@ import { Aside } from '@astrojs/starlight/components';
   Liveness + Readiness.
 - **[HTTP-Endpunkte](/de/observability/management/http-endpoints/)** —
   der volle Endpunkt-Satz des Management-Servers.
+
+### DevTools
+
+Die drei Säulen oben dienen dazu, ein System von außen und über die Zeit
+zu beobachten. Willst du stattdessen gerade jetzt *hineinschauen* — in
+den Actor-Baum, die Mailboxes, das, was ein einzelner Actor tut —, hänge
+die [DevTools](/de/observability/devtools/overview/)-UI an. Sie ist ein
+Debugger, kein Monitoring-Stack: standardmäßig Loopback und ohne Auth,
+und aus, bis du danach greifst.
+
+- **[DevTools — Überblick](/de/observability/devtools/overview/)** —
+  Attachen, Dashboard, Schalter pro Panel, Sicherheit.
+- **[Tap-Protokoll](/de/observability/devtools/protocol/)** —
+  der versionierte Wire-Contract, falls du einen eigenen Client willst.

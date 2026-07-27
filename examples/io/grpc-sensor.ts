@@ -29,6 +29,7 @@ import {
   type GrpcServerStreamCall,
   type GrpcUnaryCall,
 } from '../../src/index.js';
+import { attachDevTools } from '../devtools.js';
 
 // --- proto definition (inlined for self-contained example) -----------------
 
@@ -92,6 +93,7 @@ async function main(): Promise<void> {
 
   try {
     const sys = ActorSystem.create('grpc-demo');
+    const devtools = await attachDevTools(sys);
 
     // Server side.
     const getHandler = sys.spawn(Props.create(() => new GetSensorHandler()), 'get');
@@ -128,6 +130,7 @@ async function main(): Promise<void> {
     });
 
     await Bun.sleep(1_500);
+    await devtools.holdOpen();
     await sys.terminate();
   } finally {
     try { unlinkSync(protoPath); } catch { /* ignore */ }

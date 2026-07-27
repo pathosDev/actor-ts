@@ -16,6 +16,7 @@ import {
   pipeTo,
   retry,
 } from '../../../src/index.js';
+import { attachDevTools } from '../../devtools.js';
 
 class TransientError extends Error {
   constructor(message: string) { super(message); this.name = 'TransientError'; }
@@ -43,6 +44,7 @@ class UserHandler extends Actor<Success<{ userId: number }> | Failure> {
 
 async function main(): Promise<void> {
   const system = ActorSystem.create('retry-demo');
+  const devtools = await attachDevTools(system);
   const ref = system.spawn(Props.create(() => new UserHandler()), 'user-handler');
 
   const work = (): Promise<{ userId: number }> =>
@@ -59,6 +61,7 @@ async function main(): Promise<void> {
   pipeTo(after(50, work), ref);
 
   await Bun.sleep(500);
+  await devtools.holdOpen();
   await system.terminate();
 }
 

@@ -48,6 +48,7 @@ import {
   rateLimit,
 } from '../../src/index.js';
 import type { Cache } from '../../src/index.js';
+import { attachDevTools } from '../devtools.js';
 
 interface User { readonly id: string; readonly name: string; }
 
@@ -99,6 +100,7 @@ function pickCache(): Cache {
 
 async function main(): Promise<void> {
   const system = ActorSystem.create('rest-cache');
+  const devtools = await attachDevTools(system);
   const clusterOptions = ClusterOptions.create()
     .withHost('127.0.0.1')
     .withPort(2552);

@@ -15,6 +15,7 @@ import {
   InMemoryDurableStateStore,
   Props,
 } from '../../src/index.js';
+import { attachDevTools } from '../devtools.js';
 
 interface KV { readonly map: Record<string, string>; }
 type SetCommand = { kind: 'set'; key: string; value: string };
@@ -48,6 +49,7 @@ class KVStore extends DurableStateActor<Command, KV> {
 
 async function main(): Promise<void> {
   const system = ActorSystem.create('durable-kv');
+  const devtools = await attachDevTools(system);
   const store = new InMemoryDurableStateStore();
 
   let ref = system.spawnAnonymous(Props.create(() => new KVStore(
@@ -75,6 +77,7 @@ async function main(): Promise<void> {
 
   ref.tell({ kind: 'dump' });
   await Bun.sleep(50);
+  await devtools.holdOpen();
   await system.terminate();
 }
 

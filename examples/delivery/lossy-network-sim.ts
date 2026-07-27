@@ -14,6 +14,7 @@ import {
   ProducerControllerOptions,
   type Delivery,
 } from '../../src/index.js';
+import { attachDevTools } from '../devtools.js';
 
 /** A relay that forwards only a random half of incoming deliveries. */
 class LossyRelay extends Actor<Delivery<string>> {
@@ -30,6 +31,7 @@ class LossyRelay extends Actor<Delivery<string>> {
 
 async function main(): Promise<void> {
   const system = ActorSystem.create('rd-lossy');
+  const devtools = await attachDevTools(system);
 
   const handled: string[] = [];
   const consumer = ReliableDelivery.consumer<string>(system, {
@@ -64,6 +66,7 @@ async function main(): Promise<void> {
   console.log(`[result] unique handled: ${handled.length} / ${N}`);
 
   producer.stop(); consumer.stop();
+  await devtools.holdOpen();
   await system.terminate();
 }
 
