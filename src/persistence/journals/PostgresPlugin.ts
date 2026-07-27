@@ -1,5 +1,7 @@
 import type { ActorSystem } from '../../ActorSystem.js';
 import type { PersistenceExtension } from '../PersistenceExtension.js';
+import { withSharedPool } from '../relational/RelationalPlugin.js';
+import type { PgPoolLike } from './PostgresClient.js';
 import { PostgresJournal } from './PostgresJournal.js';
 import type { PostgresJournalOptionsType } from './PostgresJournalOptions.js';
 import { PostgresSnapshotStore } from '../snapshot-stores/PostgresSnapshotStore.js';
@@ -43,12 +45,10 @@ export function registerPostgresPlugins(
 ): PostgresPluginHandles {
   const resolvedOptions = (options as RegisterPostgresPluginsOptionsType);
 
-  // Resolve each leaf to a plain object and merge the shared pool (when
-  // set) onto it — no more mutating nested builders.  A missing leaf falls
-  // back to an empty object so the shared pool still reaches every store.
-  const journal = { ...((resolvedOptions.journal ?? {}) as Partial<PostgresJournalOptionsType>), ...(resolvedOptions.pool ? { pool: resolvedOptions.pool } : {}) };
-  const snapshotStore = { ...((resolvedOptions.snapshotStore ?? {}) as Partial<PostgresSnapshotStoreOptionsType>), ...(resolvedOptions.pool ? { pool: resolvedOptions.pool } : {}) };
-  const durableState = { ...((resolvedOptions.durableStateStore ?? {}) as Partial<PostgresDurableStateStoreOptionsType>), ...(resolvedOptions.pool ? { pool: resolvedOptions.pool } : {}) };
+  const { pool } = resolvedOptions;
+  const journal = withSharedPool<Partial<PostgresJournalOptionsType>, PgPoolLike>(resolvedOptions.journal, pool);
+  const snapshotStore = withSharedPool<Partial<PostgresSnapshotStoreOptionsType>, PgPoolLike>(resolvedOptions.snapshotStore, pool);
+  const durableState = withSharedPool<Partial<PostgresDurableStateStoreOptionsType>, PgPoolLike>(resolvedOptions.durableStateStore, pool);
 
   ext.registerJournal(
     POSTGRES_JOURNAL_PLUGIN_ID,

@@ -59,6 +59,23 @@ export {
 export { RegisterCassandraPluginsOptions, RegisterCassandraPluginsOptionsBuilder } from './journals/CassandraPluginOptions.js';
 export type { RegisterCassandraPluginsOptionsType } from './journals/CassandraPluginOptions.js';
 
+// Relational base layer — the extension point for a new SQL backend.  Supply a
+// `SqlDialect` plus a `SqlPool` adapter and the journal / snapshot /
+// durable-state trio comes with it, instead of a third copy of three stores.
+export { RelationalJournal } from './relational/RelationalJournal.js';
+export type { RelationalJournalConfig } from './relational/RelationalJournal.js';
+export { RelationalSnapshotStore } from './relational/RelationalSnapshotStore.js';
+export type { RelationalSnapshotStoreConfig } from './relational/RelationalSnapshotStore.js';
+export { RelationalDurableStateStore } from './relational/RelationalDurableStateStore.js';
+export type { RelationalDurableStateStoreConfig } from './relational/RelationalDurableStateStore.js';
+export { RelationalStore } from './relational/RelationalStore.js';
+export type { RelationalStoreConfig } from './relational/RelationalStore.js';
+export { expandPlaceholders } from './relational/SqlDialect.js';
+export type { InsertConflictSignal, JournalTableNames, SqlDialect } from './relational/SqlDialect.js';
+export type { SqlExecutor, SqlPool, SqlResult } from './relational/SqlPool.js';
+export { postgresDialect } from './relational/PostgresDialect.js';
+export { mariaDbDialect } from './relational/MariaDbDialect.js';
+
 // PostgreSQL plug-in (journal + snapshot + durable-state).
 export { PostgresJournal } from './journals/PostgresJournal.js';
 export { PostgresJournalOptions, PostgresJournalOptionsBuilder } from './journals/PostgresJournalOptions.js';
