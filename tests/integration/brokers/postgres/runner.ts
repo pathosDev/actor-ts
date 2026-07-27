@@ -31,19 +31,28 @@ async function main(): Promise<void> {
     deadlineMs: 60_000,
   });
 
-  const journalOptions = PostgresJournalOptions.create()
-    .withUrl(url);
-  const snapshotStoreOptions = PostgresSnapshotStoreOptions.create()
-    .withUrl(url)
-    .withKeepN(2);
-  const durableStateOptions = PostgresDurableStateStoreOptions.create()
-    .withUrl(url);
+  // Factories, not instances: every contract scenario builds its own store so
+  // the scenarios stay independent (and identical to the in-process suite,
+  // where each one gets a fresh fake pool).
   const context: SqlPersistenceContext = {
     env: process.env,
     label: 'pg',
-    journal: new PostgresJournal(journalOptions),
-    snapshotStore: new PostgresSnapshotStore(snapshotStoreOptions),
-    durableState: new PostgresDurableStateStore(durableStateOptions),
+    async makeJournal() {
+      const journalOptions = PostgresJournalOptions.create()
+        .withUrl(url);
+      return new PostgresJournal(journalOptions);
+    },
+    async makeSnapshotStore(keepN) {
+      const snapshotStoreOptions = PostgresSnapshotStoreOptions.create()
+        .withUrl(url)
+        .withKeepN(keepN ?? 2);
+      return new PostgresSnapshotStore(snapshotStoreOptions);
+    },
+    async makeDurableStateStore() {
+      const durableStateOptions = PostgresDurableStateStoreOptions.create()
+        .withUrl(url);
+      return new PostgresDurableStateStore(durableStateOptions);
+    },
   };
 
   await runScenarios(sqlPersistenceScenarios(), context);
