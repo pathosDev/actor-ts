@@ -46,7 +46,7 @@ on:
 jobs:
   broker:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     strategy:
       # fail-fast=false so a single broker regression doesn't mask
       # the status of the others.  Each suite gets its own green/red
@@ -71,6 +71,10 @@ jobs:
           - { dir: mariadb,       npm: mariadb,  image: "MariaDB" }
           - { dir: libsql,        npm: libsql,   image: "libSQL (sqld)" }
           - { dir: mssql,         npm: mssql,    image: "SQL Server 2022" }
+          # Postgres-wire certifications (#401): the existing Postgres
+          # stores against a different server, not new backends.
+          - { dir: cockroachdb,   npm: cockroachdb, image: "CockroachDB (pg wire)" }
+          - { dir: yugabytedb,    npm: yugabytedb,  image: "YugabyteDB (pg wire)" }
 
     name: ${{ matrix.broker.image }} (${{ matrix.broker.dir }})
 

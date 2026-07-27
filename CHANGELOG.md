@@ -11,6 +11,22 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Added
 
+- **CockroachDB and YugabyteDB certified on the Postgres stores** (#401).  Both
+  speak the PostgreSQL wire protocol, so they need no new backend — but "should
+  work" is not the same as verified.  Two live suites now run the full
+  persistence contract against them via the unmodified `PostgresJournal` /
+  `PostgresSnapshotStore` / `PostgresDurableStateStore`, plus a docs page
+  recording what is certified and what is not.  Notably CockroachDB's
+  SERIALIZABLE isolation can reject a contended append with a retry error
+  (SQLSTATE 40001) rather than a duplicate key, which currently surfaces as
+  `JournalError`; that is documented rather than silently papered over.
+- **Contract scenario for racing appends** — the persistence contract now
+  asserts that concurrent `append`s at the same `expectedSeq` leave exactly one
+  winner, no lost or duplicated events, and a `JournalConcurrencyError` for every
+  loser.  This is the scenario that reaches the duplicate-key backstop at all,
+  which nothing previously covered.  It also surfaced a genuine limitation in
+  `CassandraJournal`, whose append is a read-then-write with no conditional write
+  behind it — see the capability gate on its harness.
 - **Microsoft SQL Server persistence backend** (#399) — `MsSqlJournal`,
   `MsSqlSnapshotStore` and `MsSqlDurableStateStore` on the relational base, via
   the `mssql`/tedious driver (a new optional peer dependency).  T-SQL needed four

@@ -46,6 +46,16 @@ interface HarnessBase {
 export interface JournalCapabilities {
   /** Journal round-trips `tags` on append/read.  Default `true`. */
   readonly tags?: boolean;
+  /**
+   * Racing appends at the same `expectedSeq` produce exactly one winner.
+   * Default `true`.
+   *
+   * Set `false` only for a store that genuinely cannot serialize them — a
+   * read-then-write append with no conditional write behind it.  That is a
+   * documented limitation of the store, not a licence to skip the scenario for
+   * convenience.
+   */
+  readonly serializesConcurrentAppends?: boolean;
 }
 
 export interface JournalHarness extends HarnessBase {

@@ -63,8 +63,14 @@ framework ships:
 | PostgreSQL | ✓ | ✓ | ✓ | — (polling scan) | all |
 | MariaDB / MySQL | ✓ | ✓ | ✓ | — (polling scan) | all |
 | Microsoft SQL Server | ✓ | ✓ | ✓ | — (polling scan) | all |
+| CockroachDB, YugabyteDB | ✓ | ✓ | ✓ | — (polling scan) | all |
 | Cassandra | ✓ | — | ✓ | ✓ (tag-index table) | all |
 | Filesystem / S3 (object storage) | — | ✓ | ✓ | n/a | all |
+
+CockroachDB and YugabyteDB are not separate backends — they speak the
+PostgreSQL wire protocol, so the Postgres stores serve them unchanged.  See
+[wire-compatible databases](/persistence/journals/wire-compatible/) for what
+is certified and the caveats that come with each.
 
 "Indexed tag query" is what `PersistenceQuery.currentEventsByTag` can push
 down to storage: a backend with a tag index walks it, while the others scan

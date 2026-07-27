@@ -87,6 +87,43 @@ export function journalContractScenarios(): ContractScenario<JournalHarness>[] {
       },
     },
     {
+      name: 'concurrent appends at the same expectedSeq leave exactly one winner',
+      skip: (harness) => (harness.capabilities?.serializesConcurrentAppends === false
+        ? 'store does not serialize racing appends'
+        : null),
+      async run(harness) {
+        const journal = await harness.make();
+        const persistenceId = harness.pid('race');
+        try {
+          // Six writers all believing the stream is empty.  Whether a given one
+          // loses at the head check or at the primary key is a matter of timing
+          // — the guarantee under test is that the *stream* stays sound either
+          // way, which is what the duplicate-key backstop exists for.  On a
+          // relational store this is also the only scenario that reaches that
+          // backstop at all.
+          const attempts = await Promise.allSettled(
+            Array.from({ length: 6 }, (_, index) => journal.append(persistenceId, [`writer-${index}`], 0)),
+          );
+          const winners = attempts.filter((attempt) => attempt.status === 'fulfilled');
+          const losers = attempts.filter((attempt) => attempt.status === 'rejected');
+          assertEqual(winners.length, 1, 'exactly one append succeeds');
+          for (const loser of losers) {
+            const error = (loser as PromiseRejectedResult).reason as Error;
+            assert(
+              error.name === 'JournalConcurrencyError',
+              `a losing append reports a concurrency conflict, got ${error.name}: ${error.message}`,
+            );
+          }
+          // No lost or duplicated writes: the stream holds exactly the winner.
+          assertEqual(await journal.highestSeq(persistenceId), 1, 'the head advanced exactly once');
+          const stored = await journal.read<string>(persistenceId, 1);
+          assertEqual(stored.map((event) => event.sequenceNr), [1], 'exactly one event is stored');
+        } finally {
+          await closeQuietly(journal);
+        }
+      },
+    },
+    {
       name: 'highestSeq is 0 for an unknown persistence id',
       async run(harness) {
         const journal = await harness.make();

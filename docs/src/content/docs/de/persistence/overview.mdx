@@ -63,8 +63,14 @@ Framework liefert mit:
 | PostgreSQL | ✓ | ✓ | ✓ | — (Polling-Scan) | alle |
 | MariaDB / MySQL | ✓ | ✓ | ✓ | — (Polling-Scan) | alle |
 | Microsoft SQL Server | ✓ | ✓ | ✓ | — (Polling-Scan) | alle |
+| CockroachDB, YugabyteDB | ✓ | ✓ | ✓ | — (Polling-Scan) | alle |
 | Cassandra | ✓ | — | ✓ | ✓ (Tag-Index-Tabelle) | alle |
 | Filesystem / S3 (Object Storage) | — | ✓ | ✓ | n/a | alle |
+
+CockroachDB und YugabyteDB sind keine eigenen Backends — sie sprechen das
+PostgreSQL-Wire-Protokoll, die Postgres-Stores bedienen sie also unverändert.
+Siehe [wire-kompatible Datenbanken](/de/persistence/journals/wire-compatible/)
+für das Zertifizierte und die jeweiligen Vorbehalte.
 
 "Indizierte Tag-Query" beschreibt, was `PersistenceQuery.currentEventsByTag`
 in den Storage hinunterdrücken kann: ein Backend mit Tag-Index läuft diesen

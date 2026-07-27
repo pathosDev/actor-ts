@@ -81,6 +81,15 @@ const journalHarnesses: ReadonlyArray<JournalHarness> = [
   {
     label: 'CassandraJournal',
     pid: namespacer('cassandra'),
+    // `append` reads the max-sequence metadata and then writes the events
+    // batch unconditionally — no lightweight transaction behind it — so two
+    // writers that agree on the head both pass the check and the second
+    // overwrites the first at the same (persistence_id, sequence_nr).  The
+    // relational backends survive this because their primary key rejects the
+    // loser; Cassandra has no equivalent here.  A real limitation, gated rather
+    // than hidden: making it an `INSERT … IF NOT EXISTS` is a Paxos round-trip
+    // per event and a decision of its own.
+    capabilities: { serializesConcurrentAppends: false },
     make: async () => {
       const journalOptions = CassandraJournalOptions.create()
         .withContactPoints(['fake'])

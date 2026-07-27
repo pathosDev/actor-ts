@@ -1,0 +1,23 @@
+# Runner image for the YugabyteDB wire-compatibility suite (#401).
+#
+# Identical shape to the other broker runners.  Note it installs the SAME deps
+# as every other suite from tests/integration/brokers/package.json — the only
+# driver it needs is `pg`, because this suite exercises the existing Postgres
+# stores against a different server rather than a new backend.
+
+FROM oven/bun:1.3-debian
+
+RUN apt-get update  && apt-get install -y --no-install-recommends ca-certificates curl  && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+COPY tests/integration/brokers/package.json ./package.json
+RUN bun install --no-progress --ignore-scripts
+
+COPY tsconfig.json ./
+COPY src/ src/
+COPY tests/ tests/
+
+ENV NODE_ENV=production
+
+CMD ["bun", "tests/integration/brokers/yugabytedb/runner.ts"]
