@@ -42,6 +42,7 @@ import { isLoopbackHost, type DevToolsOptionsType, type DevToolsPanelOptionsType
 import { uiAssetRoutes } from './UiAssetRoutes.js';
 import { ActorTreeTap } from './taps/ActorTreeTap.js';
 import { ClusterTap } from './taps/ClusterTap.js';
+import { ExplainMethods } from './taps/ExplainTap.js';
 import { MailboxSamplerTap } from './taps/MailboxSamplerTap.js';
 import { SpanTap } from './taps/SpanTap.js';
 import { StatsTap } from './taps/StatsTap.js';
@@ -100,6 +101,7 @@ export class DevToolsServer implements DevToolsHubContext {
   private readonly methods = new Map<DevToolsRequestMethod, DevToolsRequestHandler>();
   private readonly panels = new Map<DevToolsPanelId, DevToolsPanelDescriptor>();
   private hubRef: ActorRef<DevToolsHubCommand> | null = null;
+  private explainMethods: ExplainMethods | null = null;
   private binding: ServerBinding | null = null;
   private stopped = false;
 
@@ -175,6 +177,13 @@ export class DevToolsServer implements DevToolsHubContext {
         settings.mailboxSampleLimit ?? 50,
       ));
       this.registerPanel({ id: 'actors', status: 'active' });
+    }
+
+    if (this.isPanelEnabled('explain')) {
+      const explain = new ExplainMethods(this.system);
+      explain.install(this);
+      this.explainMethods = explain;
+      this.registerPanel({ id: 'explain', status: 'active' });
     }
 
     if (this.isPanelEnabled('tracing')) {
@@ -253,6 +262,10 @@ export class DevToolsServer implements DevToolsHubContext {
     this.stopped = true;
     for (const tap of this.taps.values()) tap.uninstall();
     this.taps.clear();
+    // Leaves no actor recording behind: a ring left running because a
+    // browser tab closed is a leak nobody asked for.
+    this.explainMethods?.uninstall();
+    this.explainMethods = null;
     if (this.binding) await this.binding.unbind();
     this.binding = null;
     if (this.hubRef) this.system.stop(this.hubRef);

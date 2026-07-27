@@ -1,0 +1,87 @@
+---
+title: Explain-Plan
+description: Die letzten Nachrichten, die ein Actor verarbeitet hat — Typ, Absender, Wartezeit in der Mailbox und Bearbeitungsdauer — aus dem Browser eingeschaltet, ohne Codeänderung und ohne Neustart.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+„Was macht dieser Actor gerade?" fragt man, *während* er sich
+danebenbenimmt. Der Explain-Plan antwortet darauf: ein Ring seiner
+letzten Nachrichtenverarbeitungen, aus dem Panel eingeschaltet — keine
+Codeänderung, kein Neustart.
+
+| Spalte | Bedeutung |
+| --- | --- |
+| **seq** | Zähler pro Actor; eine Lücke heißt, der Ring hat übergeschrieben |
+| **time** | Wann der Handler startete |
+| **message** | Konstruktorname der Nachricht |
+| **sender** | Wer sie geschickt hat, sofern es einen Absender gab |
+| **waited** | Zeit von der Ankunft in der Mailbox bis zum Handler-Start |
+| **handled** | Zeit im Handler |
+
+Der Punkt in jeder Zeile trägt das Ergebnis: grün für sauberes
+Zurückkehren, amber für eine **gestashte** Nachricht, rot für einen
+Handler, der geworfen hat (Fehler per Hover).
+
+## Aus dem Panel
+
+Actor wählen, Ringgröße setzen, **Start recording** drücken. Die Tabelle
+aktualisiert sich sekündlich. Stop drücken — oder das Panel verlassen,
+oder DevTools detachen — schaltet den Actor wieder ab; ein Ring, der
+weiterläuft, weil ein Browser-Tab geschlossen wurde, wäre ein Leck, das
+niemand bestellt hat.
+
+## Aus Code
+
+Derselbe Recorder liegt auf dem `ActorContext` — die bessere Wahl, wenn
+du ohnehin weißt, welcher Actor dich interessiert:
+
+```ts
+class OrderActor extends Actor<OrderCommand> {
+  override preStart(): void {
+    this.context.enableExplainPlan({ capacity: 100 });
+  }
+
+  override onReceive(command: OrderCommand): void {
+    if (isSuspicious(command)) {
+      this.log.warn(`recent traffic: ${JSON.stringify(this.context.explainPlan())}`);
+    }
+  }
+}
+```
+
+`explainPlan()` liefert die Einträge älteste-zuerst;
+`disableExplainPlan()` stoppt und verwirft sie.
+
+<Aside type="note" title="Warum pro Actor und opt-in">
+Jede Nachricht auf jedem Actor aufzuzeichnen würde mehr kosten als viele
+der gemessenen Handler selbst. Die Frage stellt sich immer für einen
+Actor, also wird auch nur für einen bezahlt — ein Actor ohne Plan läuft
+exakt wie vorher, bis auf einen einzelnen Null-Check auf dem
+Dispatch-Pfad.
+</Aside>
+
+## Mailbox-Wartezeit — und was sie einschließt
+
+Einen Plan zu aktivieren startet zugleich das Zeitstempeln der
+eingehenden Envelopes dieses Actors. Genau das macht die Wartezeit
+möglich, und genau deshalb kostet ein Actor ohne Plan nichts dafür.
+
+Zwei Konsequenzen sind wissenswert:
+
+- Eine Nachricht, die beim Einschalten **schon in der Queue lag**, hat
+  keinen Zeitstempel; ihre Wartezeit erscheint als `—` statt als
+  erfundene Null.
+- Eine **gestashte** Nachricht behält beim Wiedereinspielen ihren
+  ursprünglichen Zeitstempel, ihre Wartezeit umfasst also die gesamte
+  Stash-Verweildauer. Das ist die ehrliche Antwort auf „wie lange hat
+  diese Nachricht gewartet?" — und meist die interessante: Eine
+  Nachricht, die vier Sekunden im Stash lag, hat vier Sekunden gewartet.
+
+## Kosten
+
+Ein Null-Check pro Nachricht bei Actors ohne Plan. Mit Plan: ein
+Zeitstempel beim Einreihen und ein Ring-Eintrag fester Größe pro
+Nachricht. Der Ring wächst nie über seine Kapazität hinaus, und das
+Panel deckelt eine angeforderte Kapazität bei 10 000 — es ist eine
+Debug-Hilfe, kein Log.

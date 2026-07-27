@@ -1,0 +1,85 @@
+---
+title: Explain plan
+description: The last messages one actor handled — type, sender, how long each waited in the mailbox and how long it took — switched on from the browser, without a code change or a restart.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+"What has this actor been doing?" is a question you ask *while* an actor
+is misbehaving. The explain plan answers it: a ring of its most recent
+message handlings, switched on from the panel — no code change, no
+restart.
+
+| Column | Meaning |
+| --- | --- |
+| **seq** | Per-actor counter; a gap means the ring wrapped |
+| **time** | When the handler started |
+| **message** | Constructor name of the message |
+| **sender** | Who sent it, when there was a sender |
+| **waited** | Time from arrival in the mailbox to handler start |
+| **handled** | Time inside the handler |
+
+The dot on each row carries the outcome: green for a clean return,
+amber for a message the actor **stashed**, red for a handler that threw
+(hover for the error).
+
+## From the panel
+
+Pick an actor, set how many messages to keep, press **Start recording**.
+The table refreshes once a second while recording. Pressing stop — or
+leaving the panel, or detaching DevTools — switches the actor back off;
+a ring left running because a browser tab closed would be a leak nobody
+asked for.
+
+## From code
+
+The same recorder is available on `ActorContext`, which is the better
+choice when you already know which actor you care about:
+
+```ts
+class OrderActor extends Actor<OrderCommand> {
+  override preStart(): void {
+    this.context.enableExplainPlan({ capacity: 100 });
+  }
+
+  override onReceive(command: OrderCommand): void {
+    if (isSuspicious(command)) {
+      this.log.warn(`recent traffic: ${JSON.stringify(this.context.explainPlan())}`);
+    }
+  }
+}
+```
+
+`explainPlan()` returns the entries oldest-first; `disableExplainPlan()`
+stops and discards them.
+
+<Aside type="note" title="Why it is opt-in per actor">
+Recording every message on every actor would cost more than many of the
+handlers being measured.  The question is asked about one actor at a
+time, so the cost is paid for one actor at a time — an actor with no
+plan runs exactly as it did before, down to a single null check on the
+dispatch path.
+</Aside>
+
+## Mailbox wait, and what it includes
+
+Enabling a plan also starts timestamping that actor's incoming
+envelopes — that is what makes the wait figure possible, and why an
+actor without a plan pays nothing for it.
+
+Two consequences worth knowing:
+
+- A message that was **already queued** when you pressed record has no
+  timestamp, so its wait shows as `—` rather than a made-up zero.
+- A **stashed** message keeps its original timestamp when it is
+  replayed, so its wait spans the whole stash residency. That is the
+  honest answer to "how long did this message wait?", and it is usually
+  the interesting one — a message that sat in a stash for four seconds
+  did wait four seconds.
+
+## Cost
+
+One null check per message on actors without a plan. With a plan: a
+timestamp at enqueue and a fixed-size ring entry per message. The ring
+never grows past its capacity, and the panel caps a requested capacity
+at 10 000 — it is a debugging aid, not a log.
