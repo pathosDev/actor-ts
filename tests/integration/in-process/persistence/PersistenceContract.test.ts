@@ -4,6 +4,12 @@ import {
   CassandraJournalOptions,
   CassandraSnapshotStore,
   CassandraSnapshotStoreOptions,
+  D1DurableStateStore,
+  D1DurableStateStoreOptions,
+  D1Journal,
+  D1JournalOptions,
+  D1SnapshotStore,
+  D1SnapshotStoreOptions,
   DynamoDbDurableStateStore,
   DynamoDbDurableStateStoreOptions,
   DynamoDbJournal,
@@ -57,6 +63,7 @@ import {
   type SnapshotHarness,
 } from '../../brokers/lib/persistence-contract/index.js';
 import { FakeCassandraClient } from './FakeCassandraClient.js';
+import { FakeD1Client } from './FakeD1Client.js';
 import { FakeDynamoDb } from './FakeDynamoDb.js';
 import { FakeLibSqlClient } from './FakeLibSqlClient.js';
 import { FakeMariaDbPool } from './FakeMariaDbPool.js';
@@ -129,6 +136,15 @@ const journalHarnesses: ReadonlyArray<JournalHarness> = [
       const journalOptions = LibSqlJournalOptions.create()
         .withClient(new FakeLibSqlClient());
       return new LibSqlJournal(journalOptions);
+    },
+  },
+  {
+    label: 'D1Journal',
+    pid: namespacer('d1'),
+    make: async () => {
+      const journalOptions = D1JournalOptions.create()
+        .withClient(new FakeD1Client());
+      return new D1Journal(journalOptions);
     },
   },
   {
@@ -220,6 +236,16 @@ const snapshotHarnesses: ReadonlyArray<SnapshotHarness> = [
     },
   },
   {
+    label: 'D1SnapshotStore',
+    pid: namespacer('d1'),
+    capabilities: { keepN: 'configurable' },
+    make: async (keepN) => {
+      const storeOptions = D1SnapshotStoreOptions.create()
+        .withClient(new FakeD1Client());
+      return new D1SnapshotStore(keepN === undefined ? storeOptions : storeOptions.withKeepN(keepN));
+    },
+  },
+  {
     label: 'DynamoDbSnapshotStore',
     pid: namespacer('dynamodb'),
     capabilities: { keepN: 'configurable' },
@@ -283,6 +309,15 @@ const durableStateHarnesses: ReadonlyArray<DurableStateHarness> = [
       const storeOptions = LibSqlDurableStateStoreOptions.create()
         .withClient(new FakeLibSqlClient());
       return new LibSqlDurableStateStore(storeOptions);
+    },
+  },
+  {
+    label: 'D1DurableStateStore',
+    pid: namespacer('d1'),
+    make: async () => {
+      const storeOptions = D1DurableStateStoreOptions.create()
+        .withClient(new FakeD1Client());
+      return new D1DurableStateStore(storeOptions);
     },
   },
   {

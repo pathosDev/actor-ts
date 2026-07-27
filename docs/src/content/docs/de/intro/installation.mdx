@@ -100,6 +100,7 @@ bun add hono @hono/node-server    # @hono/node-server ist Node-only
 | `cassandra-driver` | Cassandra / ScyllaDB Journal + Tag-Index. |
 | `@aws-sdk/client-s3` | S3-kompatibles Object-Storage-Backend (funktioniert mit MinIO, R2, Backblaze B2). |
 | `@aws-sdk/client-dynamodb` | DynamoDB Journal + Snapshot + Durable-State Store. |
+| *(nichts nötig)* | Cloudflare D1 Journal + Snapshot + Durable-State Store — über D1s REST-API mit dem eingebauten HTTP-Client. |
 | `fzstd` *(optional)* | zstd-Kompression für Object-Storage-Blobs, wenn kein nativer Runtime-Support verfügbar ist. |
 
 ### Cache

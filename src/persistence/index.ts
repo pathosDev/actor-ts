@@ -107,6 +107,48 @@ export type {
   PgClientLike,
 } from './journals/PostgresClient.js';
 
+// Cloudflare D1 plug-in (journal + snapshot + durable-state).  SQLite at the
+// edge over D1's REST API — SDK-free, using the built-in HttpClient, and sharing
+// `sqliteDialect` with the local SQLite and libSQL backends.
+export { D1Journal } from './journals/D1Journal.js';
+export {
+  D1JournalOptions,
+  D1JournalOptionsBuilder,
+  D1JournalOptionsValidator,
+} from './journals/D1JournalOptions.js';
+export type { D1JournalOptionsType } from './journals/D1JournalOptions.js';
+export { D1SnapshotStore } from './snapshot-stores/D1SnapshotStore.js';
+export {
+  D1SnapshotStoreOptions,
+  D1SnapshotStoreOptionsBuilder,
+  D1SnapshotStoreOptionsValidator,
+} from './snapshot-stores/D1SnapshotStoreOptions.js';
+export type { D1SnapshotStoreOptionsType } from './snapshot-stores/D1SnapshotStoreOptions.js';
+export { D1DurableStateStore } from './durable-state-stores/D1DurableStateStore.js';
+export {
+  D1DurableStateStoreOptions,
+  D1DurableStateStoreOptionsBuilder,
+  D1DurableStateStoreOptionsValidator,
+} from './durable-state-stores/D1DurableStateStoreOptions.js';
+export type { D1DurableStateStoreOptionsType } from './durable-state-stores/D1DurableStateStoreOptions.js';
+export {
+  D1OptionsBuilderBase,
+  D1OptionsValidatorBase,
+  assertD1BaseUrl,
+} from './journals/D1OptionsBase.js';
+export type { D1OptionsBaseType } from './journals/D1OptionsBase.js';
+export {
+  registerD1Plugins,
+  D1_JOURNAL_PLUGIN_ID,
+  D1_SNAPSHOT_PLUGIN_ID,
+  D1_DURABLE_STATE_PLUGIN_ID,
+} from './journals/D1Plugin.js';
+export { RegisterD1PluginsOptions, RegisterD1PluginsOptionsBuilder } from './journals/D1PluginOptions.js';
+export type { RegisterD1PluginsOptionsType } from './journals/D1PluginOptions.js';
+export type { D1PluginHandles } from './journals/D1Plugin.js';
+export { D1RequestError, DEFAULT_D1_BASE_URL, adaptD1Client, buildD1Client } from './journals/D1Client.js';
+export type { D1ClientLike, D1Connection, D1QueryResult } from './journals/D1Client.js';
+
 // DynamoDB plug-in (journal + snapshot + durable-state).  The concurrency
 // backstop is a conditional write, and `TransactWriteItems` makes a multi-event
 // append atomic — stronger than the relational backends manage.

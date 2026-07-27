@@ -11,6 +11,21 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Added
 
+- **Cloudflare D1 persistence backend** (#438) — `D1Journal`, `D1SnapshotStore`
+  and `D1DurableStateStore`, completing the umbrella's five backends.  Spoken over
+  D1's REST API with the framework's own `HttpClient`, so it adds **no dependency
+  at all** — D1 has no Node SDK, which for once makes the SDK-free path the only
+  path.  The SQL is `sqliteDialect`'s, so the schema is identical to the local
+  SQLite and libSQL backends and a database can move between all three without a
+  migration; the whole backend is a client plus three constructors.
+  `withTransaction` provides no isolation because the HTTP API has no `BEGIN` and
+  no parameterized batch — which `SqlPool` always documented as adapter-defined,
+  and which the journal survives because concurrency rests on the primary key
+  rejecting a racing writer.  The cost is documented: a multi-event append can
+  persist a prefix if the connection drops midway.
+  **Verification stops at the fake**, deliberately: D1 has no emulator that fits a
+  container suite (locally it exists only inside `wrangler`/Miniflare), so there is
+  no live suite and no CI row, and the docs say so plainly.
 - **DynamoDB persistence backend** (#398) — `DynamoDbJournal`,
   `DynamoDbSnapshotStore` and `DynamoDbDurableStateStore` over
   `@aws-sdk/client-dynamodb` (a new optional peer, the same SDK family already
