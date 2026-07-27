@@ -131,8 +131,8 @@ Aus Sicht des Aufrufers ist die `cartRegion` ein einzelner
 | **Koordinator** | Einer pro Cluster (Singleton, auf dem Leader). Entscheidet, welcher Node welchen Shard besitzt. Behandelt Rebalancing bei Mitgliedschaftsänderungen. |
 | **Entity** | Eine pro `entityId`. Hosted auf dem Node, dem aktuell der Shard gehört, in den die ID hasht. |
 
-Jede Ebene hat eine eigene Seite im Cluster-Abschnitt — siehe
-[ShardRegion](/de/cluster/sharding/), die
+Die Region ist das Thema dieser Seite; die Entscheidungen des
+Koordinators haben eigene Seiten — siehe die
 [Allokationsstrategie](/de/cluster/sharding/allocation-strategy/)
 und [Rebalance](/de/cluster/sharding/rebalance/) für die
 Mechanik.
@@ -303,8 +303,6 @@ import { Aside } from '@astrojs/starlight/components';
 
 ## Wohin als Nächstes
 
-- **[ShardRegion](/de/cluster/sharding/) ** *(Stub)* — der
-  Per-Node-Region-Actor; Konfigurations-Deep-Dive.
 - **[Allokationsstrategie](/de/cluster/sharding/allocation-strategy/)** —
   Default Hash-mod-Regions, eigene Strategien.
 - **[Rebalance](/de/cluster/sharding/rebalance/)** — das
@@ -316,5 +314,6 @@ import { Aside } from '@astrojs/starlight/components';
 - **[Sharded Daemon Process](/de/cluster/sharding/sharded-daemon-process/)** —
   Worker in fester Anzahl, verteilt per Sharding.
 
-Die [`ClusterSharding`](/api/classes/clustersharding/) API-Referenz
-deckt die vollständige Oberfläche ab.
+Die API-Referenzen [`ClusterSharding`](/api/classes/clustersharding/) und
+[`ShardRegion`](/api/classes/shardregion/) decken die vollständige
+Oberfläche ab, inklusive des Per-Node-Region-Actors.
