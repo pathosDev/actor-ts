@@ -3,3 +3,10 @@
 # file is committed on purpose (see scripts/build-devtools-ui.mjs) so
 # typecheck, tests and smoke runs work straight from a fresh clone.
 src/devtools/generated/uiAssets.ts linguist-generated -diff
+
+# The DevTools UI sources are embedded verbatim into the generated
+# bundle above, so their bytes must not depend on a checkout's
+# line-ending conversion — otherwise the same commit produces a
+# different bundle on Windows than on Linux and the freshness check
+# fails for half the contributors.
+devtools-ui/** text eol=lf

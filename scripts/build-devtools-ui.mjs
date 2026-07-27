@@ -102,7 +102,7 @@ async function run() {
   }
 
   const files = [
-    { path: 'index.html', bytes: new Uint8Array(await readFile(indexHtml)) },
+    { path: 'index.html', bytes: await readNormalised(indexHtml) },
     ...await Promise.all(result.outputs.map(async (output) => ({
       path: relative(outputDirectory, output.path).replaceAll('\\', '/'),
       bytes: new Uint8Array(await output.arrayBuffer()),
@@ -133,6 +133,20 @@ async function run() {
   enforceBudgets(assets);
   report(assets);
   await emitModule(assets);
+}
+
+/**
+ * Read a text file with its line endings normalised to LF.
+ *
+ * `index.html` is embedded verbatim, so its bytes would otherwise
+ * depend on how the checkout converted line endings — the same commit
+ * producing a different bundle on Windows than on Linux, and the
+ * freshness check failing for half the contributors.  `.gitattributes`
+ * pins the checkout too; this is the belt to that pair of braces.
+ */
+async function readNormalised(path) {
+  const text = await readFile(path, 'utf8');
+  return new TextEncoder().encode(text.split('\r\n').join('\n'));
 }
 
 function gzip(bytes) {
