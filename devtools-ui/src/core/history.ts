@@ -16,10 +16,20 @@ export interface SeriesPoint {
 }
 
 /** Numeric fields of a sample that can be plotted directly. */
-export type LevelField = 'actorCount' | 'mailboxBacklog';
+export type LevelField =
+  | 'actorCount'
+  | 'mailboxBacklog'
+  | 'stashedTotal'
+  | 'suspendedActors';
 
 /** Cumulative counters that only make sense as a rate. */
-export type CounterField = 'actorsStarted' | 'actorsStopped' | 'actorsRestarted' | 'deadLetters';
+export type CounterField =
+  | 'actorsStarted'
+  | 'actorsStopped'
+  | 'actorsRestarted'
+  | 'deadLetters'
+  | 'messagesProcessed'
+  | 'mailboxDrops';
 
 /**
  * Ring of the most recent samples.

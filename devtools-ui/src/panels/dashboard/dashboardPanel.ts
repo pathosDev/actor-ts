@@ -1,26 +1,23 @@
 /**
- * The dashboard — the page DevTools opens on.
+ * The overview — the page DevTools opens on.
  *
- * Two jobs.  First, answer "what am I looking at and is it healthy?"
- * at a glance, without picking a tool.  Second, be the map: one card
- * per panel, each either a link or a greyed card saying *why* it is
- * not available, so nothing about this system's capabilities is hidden
- * behind a click that fails.
+ * Three sections, in the order you actually ask the questions: *what am
+ * I looking at* (identity and uptime), *how much is it doing* (the
+ * numbers), *and is that normal* (the same numbers over time).  It is
+ * deliberately not a menu — the nav rail is the way into the tools, and
+ * duplicating it here only pushed the figures below the fold.
  *
- * Every figure carries a sparkline and feeds the chart below, because
- * a single number cannot tell you whether 40 queued messages is the
- * steady state or the start of a pile-up.
+ * Every figure carries a sparkline and feeds a chart, because a single
+ * number cannot tell you whether 40 queued messages is the steady state
+ * or the start of a pile-up.
  */
 import { h, replaceChildren } from '../../core/dom.js';
-import { panelHref } from '../../core/router.js';
 import { effect } from '../../core/signal.js';
-import { formatCount, formatDuration, formatTime, shortActorPath } from '../../core/format.js';
-import { DEVTOOLS_PROTOCOL_VERSION } from '../../core/tapClient.js';
+import { formatCount, formatDuration, shortActorPath } from '../../core/format.js';
 import { peakOf, StatsHistory, type SeriesPoint } from '../../core/history.js';
 import { drawChart, drawSparkline, themeColor, type ChartSeries } from '../../render/timeseries.js';
 import { currentTheme } from '../../core/theme.js';
-import { registeredPanels, type PanelContext, type PanelInstance } from '../../shell/PanelRegistry.js';
-import { panelStatusOf } from '../../shell/panelStatus.js';
+import type { PanelContext, PanelInstance } from '../../shell/PanelRegistry.js';
 import type { StatsSamplePayload, WelcomeFrame } from '../../../../src/devtools/protocol/index.js';
 
 /** Roughly fifteen minutes at the server's default one-second tick. */
@@ -29,58 +26,74 @@ const HISTORY_CAPACITY = 900;
 /** Uptime has to advance on its own; nothing pushes a frame for it. */
 const CLOCK_INTERVAL_MS = 1000;
 
+/**
+ * Server uptime plus the local time since we were told it.
+ *
+ * Reading the server's own figure rather than differencing wall clocks
+ * keeps the tile right across a reload, a reconnect, and a browser whose
+ * clock disagrees with the host's.
+ */
+interface UptimeAnchor {
+  readonly uptimeMs: number;
+  readonly receivedAtMs: number;
+}
+
 export function mount(host: HTMLElement, context: PanelContext): PanelInstance {
   const history = new StatsHistory(HISTORY_CAPACITY);
+  let uptime: UptimeAnchor | null = null;
 
-  const tiles = h('div', { class: 'dt-tiles' });
-  const chartCanvas = h('canvas', { class: 'dt-chart__canvas' }) as HTMLCanvasElement;
-  const chartLegend = h('div', { class: 'dt-chart__legend' });
+  const commonTiles = h('div', { class: 'dt-tiles' });
+  const numberTiles = h('div', { class: 'dt-tiles' });
+  const throughput = chartBlock('Throughput');
+  const population = chartBlock('Actors');
+  const backlog = chartBlock('Backlog');
   const hotList = h('div', { class: 'dt-hotlist' });
-  const cards = h('div', { class: 'dt-cards' });
 
   replaceChildren(host,
     h('h1', { class: 'dt-panel__title' }, 'Overview'),
-    h('p', { class: 'dt-panel__subtitle' }, 'System at a glance, and the way into every tool.'),
-    tiles,
-    h('section', { class: 'dt-chart' },
-      h('h2', { class: 'dt-section' }, 'Last few minutes'),
-      chartLegend,
-      chartCanvas,
+    h('p', { class: 'dt-panel__subtitle' }, 'What this system is, what it is doing, and how that is trending.'),
+    h('section', {},
+      h('h2', { class: 'dt-section' }, 'Common'),
+      commonTiles,
     ),
     h('section', {},
-      h('h2', { class: 'dt-section' }, 'Busiest mailboxes'),
+      h('h2', { class: 'dt-section' }, 'Numbers'),
+      numberTiles,
+    ),
+    h('section', {},
+      h('h2', { class: 'dt-section' }, 'Charts'),
+      h('div', { class: 'dt-charts' }, throughput.node, population.node, backlog.node),
+      h('h3', { class: 'dt-chart__title' }, 'Busiest mailboxes'),
       hotList,
     ),
-    h('h2', { class: 'dt-section' }, 'Tools'),
-    cards,
   );
 
+  const renderTiles = (): void => {
+    const welcome = context.tap.welcome.get();
+    renderCommon(commonTiles, welcome, history, uptimeMillis(uptime, welcome));
+    renderNumbers(numberTiles, history);
+  };
   const render = (): void => {
-    renderTiles(tiles, context.tap.welcome.get(), history);
-    renderChart(chartCanvas, chartLegend, history);
+    renderTiles();
+    renderCharts(throughput, population, backlog, history);
     renderHotList(hotList, history.latest());
   };
 
   const stopListening = context.tap.listen('stats', (payload) => {
     if (payload.kind !== 'stats-sample') return;
     history.push(payload);
+    uptime = { uptimeMs: payload.uptimeMs, receivedAtMs: Date.now() };
     render();
   });
 
-  const disposeWelcome = effect(() => {
-    renderTiles(tiles, context.tap.welcome.get(), history);
-    replaceChildren(cards, ...buildCards(context.tap.welcome.get()));
-  }, [context.tap.welcome]);
+  const disposeWelcome = effect(renderTiles, [context.tap.welcome]);
 
   // Canvas colours are read from CSS variables, so a theme flip needs a
   // repaint — nothing re-renders on its own.
   const disposeTheme = effect(render, [currentTheme]);
 
-  const clock = setInterval(
-    () => renderTiles(tiles, context.tap.welcome.get(), history),
-    CLOCK_INTERVAL_MS,
-  );
-  const onResize = (): void => renderChart(chartCanvas, chartLegend, history);
+  const clock = setInterval(renderTiles, CLOCK_INTERVAL_MS);
+  const onResize = (): void => renderCharts(throughput, population, backlog, history);
   window.addEventListener('resize', onResize);
 
   return {
@@ -94,40 +107,68 @@ export function mount(host: HTMLElement, context: PanelContext): PanelInstance {
   };
 }
 
-/* -------------------------------- tiles --------------------------------- */
+/* -------------------------------- uptime -------------------------------- */
 
-function renderTiles(host: HTMLElement, welcome: WelcomeFrame | null, history: StatsHistory): void {
+function uptimeMillis(anchor: UptimeAnchor | null, welcome: WelcomeFrame | null): number | null {
+  if (anchor !== null) return anchor.uptimeMs + (Date.now() - anchor.receivedAtMs);
+  // Before the first sample the handshake is all we have.  It reports
+  // the system's start, so this is right too — just clock-skewed on a
+  // remote host.
+  return welcome === null ? null : Date.now() - welcome.startedAtMs;
+}
+
+/* ----------------------------- common section ---------------------------- */
+
+function renderCommon(
+  host: HTMLElement,
+  welcome: WelcomeFrame | null,
+  history: StatsHistory,
+  uptimeMs: number | null,
+): void {
   if (welcome === null) {
     replaceChildren(host, tile('Connection', 'connecting…'));
     return;
   }
   const latest = history.latest();
-  const parts: HTMLElement[] = [
+  replaceChildren(host,
     tile('Actor system', welcome.systemName, { accent: true }),
-    tile('Uptime', formatDuration(Date.now() - welcome.startedAtMs)),
-  ];
+    tile('Uptime', uptimeMs === null ? '—' : formatDuration(uptimeMs)),
+    tile('Runtime', latest?.runtime ?? '—'),
+    clusterTile(latest),
+  );
+}
 
+function clusterTile(latest: StatsSamplePayload | null): HTMLElement {
+  const cluster = latest?.cluster;
+  if (cluster === undefined) {
+    return tile('Cluster', latest === null ? '—' : 'not clustered');
+  }
+  const leader = cluster.leader ?? 'none';
+  return tile('Cluster', `${cluster.up} / ${cluster.members} up`, {
+    alert: cluster.unreachable > 0,
+    title: `leader ${leader} · self ${cluster.selfAddress}`
+      + (cluster.unreachable > 0 ? ` · ${cluster.unreachable} unreachable` : ''),
+  });
+}
+
+/* ----------------------------- numbers section --------------------------- */
+
+function renderNumbers(host: HTMLElement, history: StatsHistory): void {
+  const latest = history.latest();
   if (latest === null) {
-    // Subscribed, but the stream has not ticked yet.
-    parts.push(
-      tile('Framework', welcome.serverVersion),
-      tile('Tap protocol', `v${DEVTOOLS_PROTOCOL_VERSION}`),
-      tile('Live figures', 'waiting for first sample…'),
-    );
-    replaceChildren(host, ...parts, panelCountTile(welcome));
+    replaceChildren(host, tile('Live figures', 'waiting for first sample…'));
     return;
   }
-
-  parts.push(
-    tile('Runtime', latest.runtime),
+  replaceChildren(host,
     tile('Actors', formatCount(latest.actorCount), {
       series: history.levels('actorCount'),
       color: '--dt-data-1',
     }),
-    tile('Mailbox backlog', formatCount(latest.mailboxBacklog), {
-      series: history.levels('mailboxBacklog'),
-      color: latest.mailboxBacklog > 0 ? '--dt-data-3' : '--dt-data-2',
+    tile('Messages / s', history.latestRate('messagesProcessed').toFixed(1), {
+      series: history.rates('messagesProcessed'),
+      color: '--dt-data-1',
     }),
+    tile('Processed messages', formatCount(latest.messagesProcessed)),
     tile('Spawns / s', history.latestRate('actorsStarted').toFixed(1), {
       series: history.rates('actorsStarted'),
       color: '--dt-data-2',
@@ -141,28 +182,51 @@ function renderTiles(host: HTMLElement, welcome: WelcomeFrame | null, history: S
       color: '--dt-data-5',
       alert: latest.actorsRestarted > 0,
     }),
+    tile('Mailbox backlog', formatCount(latest.mailboxBacklog), {
+      series: history.levels('mailboxBacklog'),
+      color: latest.mailboxBacklog > 0 ? '--dt-data-3' : '--dt-data-2',
+    }),
+    tile('Stashed', formatCount(latest.stashedTotal), {
+      series: history.levels('stashedTotal'),
+      color: '--dt-data-6',
+    }),
+    tile('Suspended actors', formatCount(latest.suspendedActors), {
+      series: history.levels('suspendedActors'),
+      color: '--dt-data-5',
+      alert: latest.suspendedActors > 0,
+    }),
     tile('Dead letters', formatCount(latest.deadLetters), {
       series: history.rates('deadLetters'),
       color: '--dt-data-4',
       alert: latest.deadLetters > 0,
     }),
+    tile('Mailbox drops', formatCount(latest.mailboxDrops), {
+      series: history.rates('mailboxDrops'),
+      color: '--dt-data-4',
+      alert: latest.mailboxDrops > 0,
+      title: 'Messages a bounded mailbox threw away on overflow.',
+    }),
+    latencyTile(latest),
   );
-
-  const cluster = latest.cluster;
-  if (cluster !== undefined) {
-    parts.push(tile('Cluster', `${cluster.up} / ${cluster.members} up`, {
-      alert: cluster.unreachable > 0,
-    }));
-  }
-
-  parts.push(tile('Attached since', formatTime(welcome.startedAtMs)));
-  replaceChildren(host, ...parts, panelCountTile(welcome));
 }
 
-function panelCountTile(welcome: WelcomeFrame): HTMLElement {
-  const active = welcome.panels.filter((panel) => panel.status === 'active').length;
-  return tile('Tools available', `${active} / ${welcome.panels.length}`);
+function latencyTile(latest: StatsSamplePayload): HTMLElement {
+  const latency = latest.handlerLatency;
+  if (latency === undefined) return tile('Handler p99', '—');
+  return tile('Handler p99', formatMillis(latency.p99Ms), {
+    title: `p50 ${formatMillis(latency.p50Ms)} over ${formatCount(latency.count)} messages`
+      + ' — interpolated from histogram buckets, so approximate.',
+  });
 }
+
+/** Latency reads in ms, and the interesting range spans four decades. */
+function formatMillis(value: number): string {
+  if (value < 1) return `${value.toFixed(2)} ms`;
+  if (value < 100) return `${value.toFixed(1)} ms`;
+  return `${Math.round(value)} ms`;
+}
+
+/* --------------------------------- tiles --------------------------------- */
 
 interface TileOptions {
   readonly accent?: boolean;
@@ -170,6 +234,8 @@ interface TileOptions {
   readonly series?: ReadonlyArray<SeriesPoint>;
   /** CSS custom property naming the series colour. */
   readonly color?: string;
+  /** Hover text for the figures that need a sentence of context. */
+  readonly title?: string;
 }
 
 function tile(label: string, value: string, options: TileOptions = {}): HTMLElement {
@@ -177,7 +243,10 @@ function tile(label: string, value: string, options: TileOptions = {}): HTMLElem
   if (options.accent) classes.push('dt-tile__accent');
   if (options.alert) classes.push('dt-tile__alert');
 
-  const node = h('div', { class: 'dt-tile' },
+  const attributes = options.title === undefined
+    ? { class: 'dt-tile' }
+    : { class: 'dt-tile', title: options.title };
+  const node = h('div', attributes,
     h('div', { class: 'dt-tile__label' }, label),
     h('div', { class: classes.join(' ') }, value),
   );
@@ -197,42 +266,76 @@ function tile(label: string, value: string, options: TileOptions = {}): HTMLElem
   return node;
 }
 
-/* -------------------------------- chart --------------------------------- */
+/* --------------------------------- charts -------------------------------- */
 
-function renderChart(canvas: HTMLCanvasElement, legend: HTMLElement, history: StatsHistory): void {
+interface ChartBlock {
+  readonly node: HTMLElement;
+  readonly canvas: HTMLCanvasElement;
+  readonly legend: HTMLElement;
+}
+
+function chartBlock(title: string): ChartBlock {
+  const canvas = h('canvas', { class: 'dt-chart__canvas' }) as HTMLCanvasElement;
+  const legend = h('div', { class: 'dt-chart__legend' });
+  return {
+    canvas,
+    legend,
+    node: h('section', { class: 'dt-chart' },
+      h('h3', { class: 'dt-chart__title' }, title),
+      legend,
+      canvas,
+    ),
+  };
+}
+
+/**
+ * Three charts rather than one, because a level and a rate cannot share
+ * a y-axis honestly: a backlog of 400 flattens a 2/s line to nothing.
+ * Each chart holds one kind of quantity and scales to its own peak.
+ */
+function renderCharts(
+  throughput: ChartBlock,
+  population: ChartBlock,
+  backlog: ChartBlock,
+  history: StatsHistory,
+): void {
+  renderChart(throughput, history, [
+    series('messages / s', '--dt-data-1', '#818cf8', history.rates('messagesProcessed')),
+    series('dead letters / s', '--dt-data-4', '#ef4444', history.rates('deadLetters')),
+  ]);
+  renderChart(population, history, [
+    series('actors', '--dt-data-2', '#22c55e', history.levels('actorCount')),
+    series('suspended', '--dt-data-5', '#a78bfa', history.levels('suspendedActors')),
+  ]);
+  renderChart(backlog, history, [
+    series('mailbox backlog', '--dt-data-3', '#f59e0b', history.levels('mailboxBacklog')),
+    series('stashed', '--dt-data-6', '#22d3ee', history.levels('stashedTotal')),
+  ]);
+}
+
+function series(
+  label: string,
+  variable: string,
+  fallback: string,
+  points: ReadonlyArray<SeriesPoint>,
+): ChartSeries {
+  return { label, color: themeColor(variable, fallback), points };
+}
+
+function renderChart(block: ChartBlock, history: StatsHistory, lines: ReadonlyArray<ChartSeries>): void {
   if (history.size < 2) {
-    replaceChildren(legend, h('span', { class: 'dt-empty' }, 'collecting samples…'));
+    replaceChildren(block.legend, h('span', { class: 'dt-empty' }, 'collecting samples…'));
     return;
   }
-  const series: ChartSeries[] = [
-    {
-      label: 'mailbox backlog',
-      color: themeColor('--dt-data-3', '#f59e0b'),
-      points: history.levels('mailboxBacklog'),
-    },
-    {
-      label: 'spawns / s',
-      color: themeColor('--dt-data-2', '#22c55e'),
-      points: history.rates('actorsStarted'),
-    },
-    {
-      label: 'dead letters / s',
-      color: themeColor('--dt-data-4', '#ef4444'),
-      points: history.rates('deadLetters'),
-    },
-  ];
-  // One shared scale keeps the lines comparable; scaling each to itself
-  // would make a quiet series look as busy as a loud one.
-  const peak = Math.max(...series.map((line) => peakOf(line.points)), 0);
-
-  replaceChildren(legend,
-    ...series.map((line) => h('span', { class: 'dt-legend__item' },
+  const peak = Math.max(...lines.map((line) => peakOf(line.points)), 0);
+  replaceChildren(block.legend,
+    ...lines.map((line) => h('span', { class: 'dt-legend__item' },
       h('span', { class: 'dt-legend__swatch', style: `background:${line.color}` }),
       line.label,
     )),
     h('span', { class: 'dt-legend__peak' }, `peak ${formatCount(peak)}`),
   );
-  drawChart(canvas, series, peak);
+  drawChart(block.canvas, lines, peak);
 }
 
 /* ------------------------------- hot list -------------------------------- */
@@ -251,28 +354,4 @@ function renderHotList(host: HTMLElement, latest: StatsSamplePayload | null): vo
     ),
     h('span', { class: 'dt-hotrow__value' }, formatCount(entry.size)),
   )));
-}
-
-/* --------------------------------- cards --------------------------------- */
-
-function buildCards(welcome: WelcomeFrame | null): ReadonlyArray<HTMLElement> {
-  const panels = registeredPanels().filter((panel) => panel.id !== 'dashboard');
-  if (panels.length === 0) {
-    return [h('p', { class: 'dt-empty' }, 'No tools are registered in this build.')];
-  }
-  return panels.map((panel) => {
-    const descriptor = panelStatusOf(welcome, panel.id);
-    if (descriptor.status === 'active') {
-      return h('a', { class: 'dt-card', href: panelHref(panel.id) },
-        h('div', { class: 'dt-card__title' }, panel.title),
-        h('div', { class: 'dt-card__text' }, panel.description),
-        h('span', { class: 'dt-card__badge' }, 'open'),
-      );
-    }
-    return h('div', { class: 'dt-card dt-card--unavailable' },
-      h('div', { class: 'dt-card__title' }, panel.title),
-      h('div', { class: 'dt-card__text' }, descriptor.reason ?? panel.description),
-      h('span', { class: 'dt-card__badge dt-card__badge--unavailable' }, descriptor.status),
-    );
-  });
 }

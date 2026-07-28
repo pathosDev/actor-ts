@@ -1,6 +1,6 @@
 ---
 title: DevTools — Überblick
-description: Eine einbettbare Web-UI für ein laufendes Actor-System — an einen Port hängen, Browser öffnen, das System sehen. Erst das Dashboard, dann ein Panel pro Werkzeug. Standardmäßig nur Loopback und ohne Auth.
+description: Eine einbettbare Web-UI für ein laufendes Actor-System — an einen Port hängen, Browser öffnen, das System sehen. Erst die Übersicht, dann ein Panel pro Werkzeug. Standardmäßig nur Loopback und ohne Auth.
 ---
 
 import { Aside, Steps } from '@astrojs/starlight/components';
@@ -22,9 +22,9 @@ const devtools = await DevTools.attach(system, devtoolsOptions);
 console.log(devtools.url);   // http://127.0.0.1:9333
 ```
 
-Öffnest du diese URL, landest du auf dem **Dashboard**: das System auf
-einen Blick, dazu eine Karte pro Werkzeug. Von dort springst du in die
-einzelnen Panels, und die Nav-Leiste bringt dich zurück.
+Öffnest du diese URL, landest du auf der **Übersicht**: was dieses
+System ist, was es tut, und wohin sich das entwickelt. Die Nav-Leiste
+links ist der Weg in jedes andere Werkzeug.
 
 <Aside type="caution" title="Behandle den DevTools-Port wie einen Debugger-Port">
 DevTools liest lebenden Actor-Zustand — Klassennamen, Mailbox-Tiefen und
@@ -33,28 +33,41 @@ DevTools liest lebenden Actor-Zustand — Klassennamen, Mailbox-Tiefen und
 alles andere. Lies [Sicherheit](#sicherheit), bevor du den Host änderst.
 </Aside>
 
-## Was ausgeliefert wird — und wann
+## Die Panels
 
-DevTools ist ein Produkt, zusammengesetzt aus mehreren Werkzeugen, die
-nacheinander landen. Die UI zeigt immer die vollständige Liste: Ein
-Werkzeug, das dieses System nicht anbieten kann, erscheint als
-ausgegraute Karte **mit Begründung** — nichts versteckt sich hinter
-einem Klick, der ins Leere läuft.
+DevTools ist ein Produkt, zusammengesetzt aus mehreren Werkzeugen. Die
+Nav-Leiste zeigt immer die vollständige Liste: Ein Werkzeug, das dieses
+System nicht anbieten kann, bleibt ausgegraut — **mit Begründung**, denn
+nichts soll sich hinter einem Klick verstecken, der ins Leere läuft.
 
-| Panel | Zeigt | Status |
-| --- | --- | --- |
-| **Übersicht** | Systemidentität, Uptime, Live-Zahlen, Links zu allen Werkzeugen | Verfügbar |
-| **Actors** | Live-Actor-Baum, Mailbox-Tiefen, ausgelastetste Actors | In Arbeit |
-| **Cluster** | Node-Topologie, Shard-Verteilung, Membership-Historie | In Arbeit |
-| **Tracing** | Flame-Graph und Waterfall über aufgezeichnete Message-Spans | Geplant |
-| **Explain-Plan** | Die letzten Nachrichten eines Actors, mit Timings | Geplant |
-| **Time Travel** | Journal durchsehen, Zustand zu beliebigem Zeitpunkt rekonstruieren | Geplant |
-| **Profiler** | Wo das Actor-System seine Zeit verbringt | Geplant |
+| Panel | Zeigt |
+| --- | --- |
+| **Übersicht** | Systemidentität, Uptime, Live-Zahlen, Verläufe |
+| **Actors** | Live-Actor-Baum, Cell-States, Mailbox-Tiefen, ausgelastetste Actors |
+| **Cluster** | Node-Topologie, Shard-Verteilung, Membership-Historie |
+| **Tracing** | Flame-Graph und Waterfall über aufgezeichnete Message-Spans |
+| **Explain-Plan** | Die letzten Nachrichten eines Actors, mit Timings |
+| **Time Travel** | Journal durchsehen, Zustand zu beliebigem Zeitpunkt rekonstruieren |
+| **Profiler** | Wo das Actor-System seine Zeit verbringt |
 
 Alle sprechen ein gemeinsames
 [Tap-Protokoll](/de/observability/devtools/protocol/) über einen
 einzigen WebSocket — sie teilen sich eine Verbindung, statt dass jedes
 seine eigene öffnet.
+
+Die Übersicht selbst besteht aus drei Abschnitten, in der Reihenfolge,
+in der man die Fragen tatsächlich stellt:
+
+- **Common** — Actor-System, Uptime, Runtime, Cluster-Status. Die Uptime
+  ist die *des Systems*, vom Server gelesen — sie übersteht damit einen
+  Reload der Seite und eine abgerissene Verbindung.
+- **Numbers** — Aktoren, Nachrichten pro Sekunde, verarbeitete
+  Nachrichten, Spawn- und Stop-Raten, Restarts, Mailbox-Rückstau,
+  gestashte Nachrichten, suspendierte Aktoren, Dead Letters,
+  Mailbox-Drops und Handler-p99.
+- **Charts** — dieselben Zahlen über die letzten Minuten, auf drei
+  Diagramme verteilt, damit sich ein Füllstand und eine Rate nie eine
+  y-Achse teilen, dazu die aktuell vollsten Mailboxen.
 
 ## Attachen
 
@@ -212,13 +225,23 @@ halten nicht an — sie laufen ohnehin, bis du sie stoppst. Die Verdrahtung
 liegt in `examples/devtools.ts`, rund dreißig Zeilen, falls du das Muster
 in deine eigene App übernehmen willst.
 
-## Kosten, wenn ungenutzt
+## Kosten
 
-Die Extension zu erzeugen tut nichts: kein Port, keine Taps, keine
-Instrumentierung. Alles beginnt bei `attach()`, und die Datenerfassung
-eines Panels läuft nur, solange ein Browser sie tatsächlich abonniert
-hat — ein offenes Dashboard bringt das System nicht dazu, Spans
-aufzuzeichnen.
+**Ungenutzt: keine.** Die Extension zu erzeugen tut nichts: kein Port,
+keine Taps, keine Instrumentierung. Alles beginnt bei `attach()`, und
+die Datenerfassung eines Panels läuft nur, solange ein Browser sie
+tatsächlich abonniert hat — eine offene Übersicht bringt das System
+nicht dazu, Spans aufzuzeichnen.
+
+**Solange DevTools hängt**, schaltet es die
+[Metrics-Registry](/de/observability/metrics/core-metrics/) ein, falls
+du das nicht schon getan hast: Nachrichtendurchsatz, Mailbox-Drops und
+Handler-Latenz zählt das Framework selbst, und gegen die
+Noop-Registry stehen sie alle auf 0. Damit laufen alle
+Framework-Metriken scharf, Cluster-Zähler eingeschlossen, solange
+DevTools attached ist; `detach()` setzt die Noop-Registry zurück. Eine
+Registry, die du selbst eingeschaltet hast, bleibt in beide Richtungen
+unangetastet — DevTools liest sie und schaltet sie nie ab.
 
 ## An der UI arbeiten
 

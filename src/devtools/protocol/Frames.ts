@@ -157,6 +157,11 @@ export interface WelcomeFrame {
   /** `package.json` version of the running framework. */
   readonly serverVersion: string;
   readonly systemName: string;
+  /**
+   * When the `ActorSystem` was created — not when this socket connected.
+   * A client may reconnect any number of times; the system's age is the
+   * same each time it asks.
+   */
   readonly startedAtMs: number;
   /** Streams this server will actually serve. */
   readonly streams: ReadonlyArray<DevToolsStreamId>;

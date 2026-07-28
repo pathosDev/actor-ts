@@ -25,6 +25,14 @@ active.set(123);
 latency.observe(42);
 ```
 
+Bis `enable()` gerufen wird, ist die Registry eine Noop-Implementierung —
+die Instrumentierung des Frameworks zeichnet also nichts auf. Genau eine
+Sache schaltet sie für dich ein:
+[DevTools](/de/observability/devtools/overview/) aktiviert die Registry,
+solange es attached ist — die Übersicht braucht diese Zähler — und ruft
+beim Detach `disable()`. Eine Registry, die du selbst eingeschaltet
+hast, wird nie hinter deinem Rücken abgeschaltet.
+
 ## Counter
 
 ```ts

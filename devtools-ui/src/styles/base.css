@@ -256,6 +256,22 @@ a:hover { text-decoration: underline; }
 /* --------------------------------- chart -------------------------------- */
 
 .dt-chart { margin-bottom: 28px; }
+/* Side by side while there is room; each chart keeps its own scale. */
+.dt-charts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(330px, 1fr));
+  gap: var(--dt-gap);
+  margin-bottom: 24px;
+}
+.dt-charts .dt-chart { margin-bottom: 0; }
+.dt-chart__title {
+  margin: 0 0 7px;
+  font-size: 11.5px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--dt-text-muted);
+}
 .dt-chart__canvas {
   display: block;
   width: 100%;

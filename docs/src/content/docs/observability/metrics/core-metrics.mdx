@@ -25,6 +25,13 @@ active.set(123);
 latency.observe(42);
 ```
 
+Until `enable()` is called the registry is a noop, so the framework's
+own instrumentation records nothing.  One thing switches it on for you:
+[DevTools](/observability/devtools/overview/) enables the registry while
+it is attached — it needs those counters for the overview — and calls
+`disable()` on detach.  A registry you enabled yourself is never
+disabled behind your back.
+
 ## Counters
 
 ```ts

@@ -34,6 +34,13 @@ import { typedProps } from './typed/spawn.js';
  */
 export class ActorSystem {
   readonly name: string;
+  /**
+   * Wall-clock time this system was created.  Stamped first in the
+   * constructor, so `Date.now() - startedAtMs` is the system's uptime —
+   * the one clock that survives a monitoring tool attaching, detaching,
+   * or reconnecting halfway through the run.
+   */
+  readonly startedAtMs: number;
   readonly dispatcher: Dispatcher;
   readonly scheduler: Scheduler;
   readonly eventStream: EventStream;
@@ -62,6 +69,7 @@ export class ActorSystem {
   private _terminationResolvers: Array<() => void> = [];
 
   private constructor(name: string, options: ActorSystemOptionsType) {
+    this.startedAtMs = Date.now();
     this.name = name;
     this.config = buildConfig(options);
     this.dispatcher = options.dispatcher ?? dispatcherFromConfig(this.config);

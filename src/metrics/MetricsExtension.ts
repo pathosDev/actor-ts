@@ -56,6 +56,16 @@ export class MetricsExtension implements Extension {
   isEnabled(): boolean {
     return !(this.registry instanceof NoopMetricsRegistry);
   }
+
+  /**
+   * Go back to the noop registry, discarding whatever was collected.
+   * Mirrors `TracingExtension.disable()`, and lets a tool that switched
+   * metrics on for its own use (DevTools does) leave the system as it
+   * found it.
+   */
+  disable(): void {
+    this.registry = new NoopMetricsRegistry();
+  }
 }
 
 export const MetricsExtensionId: ExtensionId<MetricsExtension> =
