@@ -69,10 +69,17 @@ every message a root span for as long as the panel is open:
   sampling policy — spans are capped by `spanBufferCapacity` (default
   2000) and the panel reports what it had to drop.
 - It needs a tracer, which DevTools installs while attached.
-- DevTools' own actors are excluded. They are marked with
+- DevTools' own actors are excluded — never a root span and never a
+  child one either, since its probes receive event-stream publishes
+  *during* an application message and would otherwise reappear in the
+  middle of its route. They are marked with
   [`Props.asInternal()`](/fundamentals/props/#asinternal), without which
   the hub publishing the spans it just recorded would feed every batch
   back in as the payload of the next one.
+
+On a system that is otherwise idle this means the overview can report a
+message rate while the trace list stays empty: that traffic is DevTools
+talking to your browser, not your actors.
 
 Message payloads are captured only while the panel is subscribed, and
 are bounded in depth and length before they reach the wire — production

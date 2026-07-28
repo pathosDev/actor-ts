@@ -853,12 +853,13 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
     // The flag is read before the extension lookup because it is a plain
     // field: on the ordinary path (no trace, no root recording) this
     // costs one boolean instead of walking the extension chain.
-    // `_internal` keeps the debugger out of its own trace: DevTools'
-    // hub publishes the spans just recorded, so tracing it would feed
-    // every batch back in as the payload of the next one.
-    if (env.trace
-      || (this.system._traceRootSpans && !this._internal)
-      || tracerOf(this.system).activeSpan()) {
+    // A tooling actor is never part of the application's trace — not as
+    // a root and not as a child.  Excluding it only from roots was not
+    // enough: DevTools' probes receive event-stream publishes *during* an
+    // application message, so they inherited its trace and reappeared in
+    // the middle of the route.
+    if (!this._internal
+      && (env.trace || this.system._traceRootSpans || tracerOf(this.system).activeSpan())) {
       // The sender and the payload are what turn a flame graph into a
       // readable message trail; the payload only when something is
       // watching, since serialising every message is not free.

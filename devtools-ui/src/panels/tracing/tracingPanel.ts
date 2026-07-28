@@ -362,8 +362,19 @@ function preparedContext(canvas: HTMLCanvasElement): CanvasRenderingContext2D | 
  */
 function emptyExplanation(recording: boolean): HTMLElement {
   if (recording) {
+    // "Waiting for traffic" alone reads as broken next to an overview
+    // that is counting hundreds of messages a minute — most of which,
+    // on an idle system, are DevTools talking to this very browser.
     return h('div', { class: 'dt-emptystate' },
-      h('p', { class: 'dt-empty' }, 'Recording every message. Waiting for traffic…'),
+      h('p', { class: 'dt-empty' }, 'Recording. Nothing from your actors yet.'),
+      h('p', { class: 'dt-empty' },
+        "DevTools' own messages are excluded: its hub publishes the spans it "
+        + 'just recorded, so tracing them would feed every batch back in as the '
+        + 'payload of the next one.'),
+      h('p', { class: 'dt-empty' },
+        'So an otherwise idle system can show a message rate on the overview '
+        + 'while this list stays empty — that traffic is the tool, not the '
+        + 'application. Make your actors do something and it will appear here.'),
     );
   }
   return h('div', { class: 'dt-emptystate' },
