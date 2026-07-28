@@ -25,6 +25,7 @@ import {
 } from '../../render/profileTree.js';
 import type { PanelContext, PanelInstance } from '../../shell/PanelRegistry.js';
 import type {
+  ProfilerCapabilitiesResult,
   ProfilerMode,
   ProfilerStartResult,
   ProfilerStopResult,
@@ -55,16 +56,44 @@ export function mount(host: HTMLElement, context: PanelContext): PanelInstance {
   let rectangles: ReadonlyArray<ProfileRectangle> = [];
   let hovered: ProfileNode | null = null;
 
+  const wallclockOption = h('option', { value: 'wallclock' }, 'Wallclock — per actor and message');
+  const cpuOption = h('option', { value: 'cpu' }, 'CPU — V8 profile') as HTMLOptionElement;
+
   const modeChooser = h('select', {
     class: 'dt-input',
     'aria-label': 'Profiling mode',
     onchange: (event: Event) => {
       mode.set((event.target as HTMLSelectElement).value as ProfilerMode);
     },
-  },
-    h('option', { value: 'wallclock' }, 'Wallclock — per actor and message'),
-    h('option', { value: 'cpu' }, 'CPU — V8 profile (needs an inspector)'),
-  );
+  }, wallclockOption, cpuOption) as HTMLSelectElement;
+
+  /**
+   * Grey out a mode this host cannot run, with the reason in its label.
+   *
+   * Better than letting Start fail: on Bun `node:inspector` imports fine
+   * and throws only when a session is constructed, so without asking
+   * first the user meets a runtime's internal error message.
+   */
+  async function applyCapabilities(): Promise<void> {
+    let capabilities: ProfilerCapabilitiesResult;
+    try {
+      capabilities = await context.tap.request<ProfilerCapabilitiesResult>('profiler.capabilities');
+    } catch {
+      return;   // An older server: leave every mode offered, as before.
+    }
+    for (const capability of capabilities.modes) {
+      if (capability.mode !== 'cpu') continue;
+      cpuOption.disabled = !capability.available;
+      cpuOption.textContent = capability.available
+        ? 'CPU — V8 profile'
+        : `CPU — unavailable (${capability.reason ?? 'no inspector here'})`;
+      // Never leave an unusable mode selected.
+      if (!capability.available && mode.get() === 'cpu') {
+        mode.set('wallclock');
+        modeChooser.value = 'wallclock';
+      }
+    }
+  }
 
   const runButton = h('button', {
     class: 'dt-iconbutton',
@@ -306,6 +335,7 @@ export function mount(host: HTMLElement, context: PanelContext): PanelInstance {
   const onResize = (): void => render();
   window.addEventListener('resize', onResize);
   render();
+  void applyCapabilities();
 
   return {
     dispose(): void {

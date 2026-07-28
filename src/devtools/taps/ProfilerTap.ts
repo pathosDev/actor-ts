@@ -24,7 +24,9 @@ import {
   profilerProgressPayload,
   type DevToolsStreamId,
   type DevToolsStreamPayload,
+  type ProfilerCapabilitiesResult,
   type ProfilerMode,
+  type ProfilerModeCapability,
   type ProfilerStartParameters,
   type ProfilerStartResult,
   type ProfilerStopResult,
@@ -95,10 +97,27 @@ export class ProfilerTap implements DevToolsTap {
     return [];
   }
 
-  /** Register the two control methods on `server`. */
+  /** Register the control methods on `server`. */
   installMethods(server: DevToolsServer): void {
+    server.registerMethod('profiler.capabilities', () => this.onCapabilities());
     server.registerMethod('profiler.start', (p) => this.onStart(p));
     server.registerMethod('profiler.stop', () => this.onStop());
+  }
+
+  /**
+   * Which modes this host can actually run.
+   *
+   * Asked before the panel offers them, so an unsupported mode is greyed
+   * out with its reason instead of throwing a runtime's internal error
+   * message at whoever pressed Start.
+   */
+  private async onCapabilities(): Promise<ProfilerCapabilitiesResult> {
+    return {
+      modes: [
+        { mode: 'wallclock', available: true },
+        await cpuCapability(),
+      ],
+    };
   }
 
   private async onStart(parameters: unknown): Promise<ProfilerStartResult> {
@@ -154,13 +173,7 @@ export class ProfilerTap implements DevToolsTap {
    * worse than one that says it cannot run here.
    */
   private async startCpu(sessionId: string, startedAtMs: number): Promise<CpuSession> {
-    let inspector: typeof import('node:inspector');
-    try {
-      inspector = await import('node:inspector');
-    } catch {
-      throw new Error(`CPU profiling needs node:inspector, which is unavailable on ${detectRuntime()}`);
-    }
-    const inspectorSession = new inspector.Session();
+    const inspectorSession = await openInspectorSession();
     try {
       inspectorSession.connect();
     } catch (cause) {
@@ -344,4 +357,53 @@ function toSpeedscope(session: WallclockSession, stoppedAtMs: number): unknown {
       })),
     },
   };
+}
+
+/* --------------------------- inspector probing --------------------------- */
+
+/** Cached, because the answer cannot change while the process runs. */
+let cpuCapabilityCache: ProfilerModeCapability | null = null;
+
+/**
+ * Can this host produce a V8 CPU profile?
+ *
+ * Importing `node:inspector` is not the test.  On Bun the import
+ * **succeeds** and even exports a `Session` symbol; the failure comes
+ * from the constructor, which throws `NotImplementedError`.  So the
+ * probe constructs one and throws it away.
+ */
+async function cpuCapability(): Promise<ProfilerModeCapability> {
+  if (cpuCapabilityCache !== null) return cpuCapabilityCache;
+  try {
+    const inspector = await import('node:inspector');
+    new inspector.Session();
+    cpuCapabilityCache = { mode: 'cpu', available: true };
+  } catch (cause) {
+    cpuCapabilityCache = { mode: 'cpu', available: false, reason: refusal(cause) };
+  }
+  return cpuCapabilityCache;
+}
+
+/**
+ * A reason short enough to sit in a dropdown label.
+ *
+ * Runtimes tend to append links and advice — Bun's message carries a
+ * GitHub issue URL — and only the first sentence is the answer.
+ */
+function refusal(cause: unknown): string {
+  const message = cause instanceof Error ? cause.message.trim() : '';
+  const sentence = message.split('. ')[0]?.trim();
+  return sentence === undefined || sentence.length === 0
+    ? `node:inspector is unavailable on ${detectRuntime()}`
+    : sentence.replace(/\.$/, '');
+}
+
+/** An inspector session, or a clear refusal naming the runtime. */
+async function openInspectorSession(): Promise<import('node:inspector').Session> {
+  const capability = await cpuCapability();
+  if (!capability.available) {
+    throw new Error(`CPU profiling is not available here: ${capability.reason ?? 'no inspector'}`);
+  }
+  const inspector = await import('node:inspector');
+  return new inspector.Session();
 }

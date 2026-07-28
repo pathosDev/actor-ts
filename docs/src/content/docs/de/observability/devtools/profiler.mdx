@@ -51,8 +51,11 @@ nicht: Die Chrome DevTools können das besser als eine mitgelieferte UI —
 also herunterladen und dort öffnen.
 
 Es braucht `node:inspector`, das nicht auf jeder Runtime vorhanden ist.
-Wo es fehlt, sagt das Panel das klar, statt erst beim Drücken von Start
-zu scheitern.
+Das Panel fragt nach, bevor es den Modus anbietet: Wo der Inspector
+fehlt, ist die Option ausgegraut und trägt die Begründung im Label,
+statt erst beim Drücken von Start zu scheitern. Auf Bun heißt das heute
+*„CPU — unavailable (node:inspector is not yet implemented in Bun)"*;
+Wallclock funktioniert überall.
 
 ## Herunterladen
 
