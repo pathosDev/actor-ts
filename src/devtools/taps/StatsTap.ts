@@ -11,6 +11,7 @@ import type { ActorSystem } from '../../ActorSystem.js';
 import type { Cluster } from '../../cluster/Cluster.js';
 import type { Cancellable } from '../../Scheduler.js';
 import { detectRuntime } from '../../runtime/detect.js';
+import { MetricsExtensionId } from '../../metrics/MetricsExtension.js';
 import { ActorLifecycleEvent, ActorRestarted, ActorStarted, ActorStopped, DeadLetter } from '../../SystemMessages.js';
 import { match, P } from 'ts-pattern';
 import {
@@ -22,9 +23,15 @@ import {
 } from '../protocol/index.js';
 import type { DevToolsTap } from '../DevToolsServer.js';
 import { subscribeToEventStream, type EventStreamProbe } from '../internal/EventStreamProbe.js';
+import { counterTotal, handlerLatency } from '../internal/MetricsDigest.js';
 
 /** How many hot mailboxes the dashboard tile shows. */
 const TOP_MAILBOX_COUNT = 5;
+
+/** Framework counters the dashboard reads back. */
+const MESSAGES_DELIVERED = 'actor_messages_delivered_total';
+const MAILBOX_DROPPED = 'actor_mailbox_dropped_total';
+const HANDLER_SECONDS = 'actor_message_handler_seconds';
 
 export class StatsTap implements DevToolsTap {
   readonly stream: DevToolsStreamId = 'stats';
@@ -33,8 +40,9 @@ export class StatsTap implements DevToolsTap {
   private ticker: Cancellable | null = null;
   private lifecycleProbe: EventStreamProbe | null = null;
   private deadLetterProbe: EventStreamProbe | null = null;
+  /** Did *we* switch metrics on?  Only then may we switch them off. */
+  private enabledMetrics = false;
 
-  private readonly attachedAtMs = Date.now();
   private actorsStarted = 0;
   private actorsStopped = 0;
   private actorsRestarted = 0;
@@ -48,6 +56,16 @@ export class StatsTap implements DevToolsTap {
 
   install(emit: (payload: DevToolsStreamPayload) => void): void {
     this.emit = emit;
+    // Message throughput, mailbox drops and handler latency are already
+    // instrumented in the framework — against a noop registry, so every
+    // reading is 0 until somebody switches metrics on.  Take that over
+    // the way SpanTap takes over the tracer, and hand it back on detach
+    // so a system that had metrics off gets them off again.
+    const metrics = this.system.extension(MetricsExtensionId);
+    if (!metrics.isEnabled()) {
+      metrics.enable();
+      this.enabledMetrics = true;
+    }
     // Counting starts at attach, not at first subscribe: the dashboard
     // should be able to say "312 actors started since you attached",
     // which is impossible if counting begins when a panel opens.
@@ -71,6 +89,10 @@ export class StatsTap implements DevToolsTap {
     this.deadLetterProbe?.stop();
     this.lifecycleProbe = null;
     this.deadLetterProbe = null;
+    if (this.enabledMetrics) {
+      this.system.extension(MetricsExtensionId).disable();
+      this.enabledMetrics = false;
+    }
     this.emit = null;
   }
 
@@ -115,9 +137,13 @@ export class StatsTap implements DevToolsTap {
   private sample(): DevToolsStreamPayload {
     const tree = this.system._inspectTree();
     let mailboxBacklog = 0;
+    let stashedTotal = 0;
+    let suspendedActors = 0;
     const busiest: MailboxDepthEntry[] = [];
     for (const cell of tree) {
       mailboxBacklog += cell.mailboxSize;
+      stashedTotal += cell.stashSize;
+      if (cell.suspended) suspendedActors++;
       if (cell.mailboxSize > 0) {
         busiest.push({
           path: cell.path,
@@ -129,18 +155,25 @@ export class StatsTap implements DevToolsTap {
     }
     busiest.sort((a, b) => b.size - a.size);
 
+    const metrics = this.system.extension(MetricsExtensionId).get().collect();
+    const latency = handlerLatency(metrics, HANDLER_SECONDS);
     const now = Date.now();
     const cluster = this.clusterSummary();
     return statsSamplePayload({
       atMs: now,
-      uptimeMs: now - this.attachedAtMs,
+      uptimeMs: now - this.system.startedAtMs,
       runtime: detectRuntime(),
       actorCount: tree.length,
       actorsStarted: this.actorsStarted,
       actorsStopped: this.actorsStopped,
       actorsRestarted: this.actorsRestarted,
       deadLetters: this.deadLetters,
+      messagesProcessed: counterTotal(metrics, MESSAGES_DELIVERED),
+      mailboxDrops: counterTotal(metrics, MAILBOX_DROPPED),
       mailboxBacklog,
+      stashedTotal,
+      suspendedActors,
+      ...(latency === null ? {} : { handlerLatency: latency }),
       topMailboxes: busiest.slice(0, TOP_MAILBOX_COUNT),
       ...(cluster === null ? {} : { cluster }),
     });

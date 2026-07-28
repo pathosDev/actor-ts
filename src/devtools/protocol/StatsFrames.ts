@@ -28,11 +28,28 @@ export interface ClusterStatsSummary {
   readonly selfAddress: string;
 }
 
+/**
+ * Handler-latency percentiles, interpolated from the framework's
+ * `actor_message_handler_seconds` histogram.  Bucket-derived, so they
+ * are approximations bounded by the bucket edges — good enough to spot
+ * a regression, not a substitute for a real latency profile.  Absent
+ * until the histogram has an observation.
+ */
+export interface HandlerLatencySummary {
+  readonly p50Ms: number;
+  readonly p99Ms: number;
+  readonly count: number;
+}
+
 /** One dashboard sample, emitted on the sampler interval. */
 export interface StatsSamplePayload {
   readonly kind: 'stats-sample';
   readonly atMs: number;
-  /** Milliseconds since `DevTools.attach`. */
+  /**
+   * Milliseconds since the `ActorSystem` was created — **not** since
+   * DevTools attached.  A tool that connects late, or a browser that
+   * reloads, must not make the system look younger than it is.
+   */
   readonly uptimeMs: number;
   readonly runtime: StatsRuntime;
   /** Live actors, including the guardians. */
@@ -43,8 +60,21 @@ export interface StatsSamplePayload {
   readonly actorsRestarted: number;
   /** Cumulative dead letters observed on the event stream since attach. */
   readonly deadLetters: number;
+  /**
+   * Cumulative user messages delivered to `onReceive`, read from the
+   * framework's own counter.  Counts from whenever metrics were switched
+   * on — which DevTools does at attach if nobody else had.
+   */
+  readonly messagesProcessed: number;
+  /** Cumulative messages a bounded mailbox threw away on overflow. */
+  readonly mailboxDrops: number;
   /** Sum of all mailbox depths at sample time — the system-wide backlog. */
   readonly mailboxBacklog: number;
+  /** Sum of all stashes at sample time. */
+  readonly stashedTotal: number;
+  /** Actors currently suspended — the supervision-trouble signal. */
+  readonly suspendedActors: number;
+  readonly handlerLatency?: HandlerLatencySummary;
   /** Deepest mailboxes, for the dashboard's hot-actor tile. */
   readonly topMailboxes: ReadonlyArray<MailboxDepthEntry>;
   readonly cluster?: ClusterStatsSummary;

@@ -7,6 +7,7 @@ import { LogLevel, NoopLogger } from '../../../src/Logger.js';
 import { ActorTreeTap } from '../../../src/devtools/taps/ActorTreeTap.js';
 import { MailboxSamplerTap } from '../../../src/devtools/taps/MailboxSamplerTap.js';
 import { StatsTap } from '../../../src/devtools/taps/StatsTap.js';
+import { MetricsExtensionId } from '../../../src/metrics/MetricsExtension.js';
 import type {
   ActorStartedPayload,
   ActorStoppedPayload,
@@ -23,6 +24,13 @@ class IdleActor extends Actor<string> {
 class SlowActor extends Actor<string> {
   override async onReceive(): Promise<void> {
     await new Promise((resolve) => setTimeout(resolve, 300));
+  }
+}
+
+/** Never unstashes — the stash depth is the point. */
+class StashingActor extends Actor<string> {
+  override onReceive(): void {
+    this.context.stash();
   }
 }
 
@@ -222,6 +230,74 @@ describe('StatsTap', () => {
 
       const [sample] = tap.snapshot() as [StatsSamplePayload];
       expect(sample.deadLetters).toBeGreaterThan(0);
+    } finally {
+      tap.uninstall();
+    }
+  });
+
+  test('measures uptime from system start, not from attach', async () => {
+    const system = newSystem('tap-stats-uptime');
+    await settle(40);
+    const tap = new StatsTap(system, null, 1_000);
+    tap.install(() => {});
+    try {
+      const [sample] = tap.snapshot() as [StatsSamplePayload];
+      // The system predates the tap, so uptime must already exceed the
+      // gap — measuring from attach would report roughly zero.
+      expect(sample.uptimeMs).toBeGreaterThanOrEqual(35);
+      expect(sample.uptimeMs).toBeLessThanOrEqual(Date.now() - system.startedAtMs + 5);
+    } finally {
+      tap.uninstall();
+    }
+  });
+
+  test('switches metrics on while attached and hands them back on detach', async () => {
+    const system = newSystem('tap-stats-metrics');
+    const metrics = system.extension(MetricsExtensionId);
+    expect(metrics.isEnabled()).toBe(false);
+
+    const tap = new StatsTap(system, null, 1_000);
+    tap.install(() => {});
+    expect(metrics.isEnabled()).toBe(true);
+
+    const ref = system.spawn(Props.create(() => new IdleActor()), 'chatty');
+    for (let i = 0; i < 4; i++) ref.tell(`m${i}`);
+    await settle();
+
+    const [sample] = tap.snapshot() as [StatsSamplePayload];
+    expect(sample.messagesProcessed).toBeGreaterThanOrEqual(4);
+    expect(sample.mailboxDrops).toBe(0);
+    expect(sample.handlerLatency?.count).toBeGreaterThanOrEqual(4);
+
+    tap.uninstall();
+    expect(metrics.isEnabled()).toBe(false);
+  });
+
+  test('leaves a registry the application enabled itself alone', () => {
+    const system = newSystem('tap-stats-metrics-preowned');
+    const metrics = system.extension(MetricsExtensionId);
+    const registry = metrics.enable();
+
+    const tap = new StatsTap(system, null, 1_000);
+    tap.install(() => {});
+    tap.uninstall();
+
+    expect(metrics.isEnabled()).toBe(true);
+    expect(metrics.get()).toBe(registry);
+  });
+
+  test('reports stash depth and suspended actors', async () => {
+    const system = newSystem('tap-stats-stash');
+    const tap = new StatsTap(system, null, 1_000);
+    tap.install(() => {});
+    try {
+      const ref = system.spawn(Props.create(() => new StashingActor()), 'hoarder');
+      for (let i = 0; i < 3; i++) ref.tell(`m${i}`);
+      await settle();
+
+      const [sample] = tap.snapshot() as [StatsSamplePayload];
+      expect(sample.stashedTotal).toBe(3);
+      expect(sample.suspendedActors).toBe(0);
     } finally {
       tap.uninstall();
     }
