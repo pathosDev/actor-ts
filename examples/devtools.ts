@@ -84,9 +84,9 @@ export async function attachDevTools(
   const port = options.port ?? nextPort++;
   const devtoolsOptions = DevToolsOptions.create().withPort(port);
   if (options.cluster !== undefined) devtoolsOptions.withCluster(options.cluster);
+  // No banner here: `DevTools.attach` already logs the URL it bound.
   const devtools = await DevTools.attach(system, devtoolsOptions);
 
-  console.log(`[devtools] ${system.name} → ${devtools.url}`);
   return {
     url: devtools.url,
     holdOpen: () => waitForInterrupt(devtools.url),
