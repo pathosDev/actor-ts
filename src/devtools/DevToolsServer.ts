@@ -299,7 +299,10 @@ export class DevToolsServer implements DevToolsHubContext {
     return {
       serverVersion: DEVTOOLS_SERVER_VERSION,
       systemName: this.system.name,
-      startedAtMs: Date.now(),
+      // The system's clock, not this handshake's: `welcome()` runs on
+      // every `hello`, so `Date.now()` here made the uptime restart on
+      // every page reload and every silent reconnect.
+      startedAtMs: this.system.startedAtMs,
       streams: Array.from(this.taps.keys()),
       panels: Array.from(this.panels.values()),
     };
