@@ -40,6 +40,13 @@ rates itself. That means a browser that reconnects, throttles in a
 background tab, or misses a tick still shows correct figures rather than
 a phantom spike.
 
+In a cluster the figures are the **whole cluster**: every node runs a
+DevTools agent that answers with its own numbers, and the totals above
+are the sum of them.  A **Per node** section breaks the same figures
+down one row per node.  A node that stops answering keeps its last
+reading, marked *not answering*, rather than disappearing — and is
+forgotten an hour later, the same window the cluster panel uses.
+
 **Charts** plots those series over the recent past, split across three
 so that a level (queued messages) and a rate (messages per second) never
 share a y-axis — on one scale a backlog of 400 flattens a 2/s line to

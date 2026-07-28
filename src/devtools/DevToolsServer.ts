@@ -53,6 +53,9 @@ import { StatsTap } from './taps/StatsTap.js';
 import { UI_ASSETS } from './generated/uiAssets.js';
 import { getFromDirectory } from '../http/static/index.js';
 import { freeActorName } from './internal/ActorNames.js';
+import { NodeSampler } from './internal/NodeSampler.js';
+import { DevToolsNodeAgent } from './cluster/NodeAgent.js';
+import { DevToolsFederation } from './cluster/Federation.js';
 
 /** Version reported in the handshake; kept in step with `package.json`. */
 const DEVTOOLS_SERVER_VERSION = '0.11.0';
@@ -109,11 +112,19 @@ export class DevToolsServer implements DevToolsHubContext {
   private explainMethods: ExplainMethods | null = null;
   private binding: ServerBinding | null = null;
   private stopped = false;
+  /**
+   * One per system: the probes and counters behind every figure, shared
+   * by the local overview and the answers this node gives its peers.
+   */
+  private readonly sampler: NodeSampler;
+  private agent: DevToolsNodeAgent | null = null;
+  private federation: DevToolsFederation | null = null;
 
   constructor(
     private readonly system: ActorSystem,
     private readonly settings: DevToolsOptionsType,
   ) {
+    this.sampler = new NodeSampler(system);
     this.panels.set('dashboard', { id: 'dashboard', status: 'active' });
     for (const panel of OPTIONAL_PANELS) {
       this.panels.set(panel.id, settings.panels?.[panel.option] === false
@@ -168,10 +179,23 @@ export class DevToolsServer implements DevToolsHubContext {
    */
   private installDefaultTaps(): void {
     const settings = this.settings;
+    this.sampler.start();
+    const cluster = settings.cluster ?? null;
+    if (cluster !== null) {
+      // Every clustered node answers for itself, and the one serving the
+      // UI additionally collects.  Both run here because any node may
+      // end up being the one that serves.
+      this.agent = new DevToolsNodeAgent(this.system, cluster, this.sampler);
+      this.agent.start();
+      this.federation = new DevToolsFederation(cluster);
+      this.federation.start();
+    }
     this.registerTap(new StatsTap(
       this.system,
-      settings.cluster ?? null,
+      cluster,
       settings.statsIntervalMs ?? 1_000,
+      this.sampler,
+      this.federation,
     ));
 
     if (this.isPanelEnabled('actors')) {
@@ -291,6 +315,11 @@ export class DevToolsServer implements DevToolsHubContext {
     // browser tab closed is a leak nobody asked for.
     this.explainMethods?.uninstall();
     this.explainMethods = null;
+    this.agent?.stop();
+    this.agent = null;
+    this.federation?.stop();
+    this.federation = null;
+    this.sampler.stop();
     if (this.binding) await this.binding.unbind();
     this.binding = null;
     if (this.hubRef) this.system.stop(this.hubRef);

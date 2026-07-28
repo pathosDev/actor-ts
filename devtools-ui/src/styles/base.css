@@ -263,6 +263,44 @@ a:hover { text-decoration: underline; }
 .dt-tile__alert { color: var(--dt-state-warn); }
 .dt-tile__spark { display: block; width: 100%; height: 26px; margin-top: 6px; }
 
+/* ------------------------------- per node -------------------------------- */
+
+.dt-nodetable { display: flex; flex-direction: column; gap: 3px; margin-bottom: 28px; }
+.dt-nodetable__head,
+.dt-nodetable__row {
+  display: grid;
+  grid-template-columns: minmax(180px, 2fr) repeat(6, minmax(70px, 1fr));
+  gap: 12px;
+  align-items: center;
+}
+.dt-nodetable__head {
+  padding: 0 12px 4px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--dt-text-muted);
+}
+.dt-nodetable__row {
+  padding: 7px 12px;
+  border: 1px solid var(--dt-border);
+  border-radius: 8px;
+  background: var(--dt-bg-elevated);
+  font-size: 12.5px;
+}
+/* A node that stopped answering keeps its last figures, visibly aged. */
+.dt-nodetable__row--stale { opacity: 0.6; border-left: 3px solid var(--dt-state-error); }
+.dt-nodetable__address {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  font-family: var(--dt-font-mono);
+  color: var(--dt-text-strong);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dt-nodetable__figure { font-family: var(--dt-font-mono); text-align: right; }
+
 /* --------------------------------- chart -------------------------------- */
 
 .dt-chart { margin-bottom: 28px; }

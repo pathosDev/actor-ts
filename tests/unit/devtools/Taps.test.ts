@@ -8,6 +8,7 @@ import { ActorTreeTap } from '../../../src/devtools/taps/ActorTreeTap.js';
 import { MailboxSamplerTap } from '../../../src/devtools/taps/MailboxSamplerTap.js';
 import { StatsTap } from '../../../src/devtools/taps/StatsTap.js';
 import { MetricsExtensionId } from '../../../src/metrics/MetricsExtension.js';
+import { NodeSampler } from '../../../src/devtools/internal/NodeSampler.js';
 import type {
   ActorStartedPayload,
   ActorStoppedPayload,
@@ -47,6 +48,21 @@ function newSystem(name: string): ActorSystem {
 }
 
 const settle = (ms = 60): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * The sampler a `DevToolsServer` would own.  Shared with the cluster
+ * node agent in real use, so the tap takes one rather than making it.
+ */
+const samplers: NodeSampler[] = [];
+afterEach(() => {
+  for (const sampler of samplers.splice(0)) sampler.stop();
+});
+function startedSampler(system: ActorSystem): NodeSampler {
+  const sampler = new NodeSampler(system);
+  sampler.start();
+  samplers.push(sampler);
+  return sampler;
+}
 
 describe('ActorTreeTap', () => {
   test('snapshots the whole tree', () => {
@@ -215,7 +231,7 @@ describe('MailboxSamplerTap', () => {
 describe('StatsTap', () => {
   test('counts lifecycle events cumulatively from attach', async () => {
     const system = newSystem('tap-stats');
-    const tap = new StatsTap(system, null, 1_000);
+    const tap = new StatsTap(system, null, 1_000, startedSampler(system));
     tap.install(() => {});
     try {
       const first = (tap.snapshot() as [StatsSamplePayload])[0];
@@ -240,7 +256,7 @@ describe('StatsTap', () => {
 
   test('reports the runtime, actor count and mailbox backlog', async () => {
     const system = newSystem('tap-stats-shape');
-    const tap = new StatsTap(system, null, 1_000);
+    const tap = new StatsTap(system, null, 1_000, startedSampler(system));
     tap.install(() => {});
     try {
       const ref = system.spawn(Props.create(() => new SlowActor()), 'busy');
@@ -260,7 +276,7 @@ describe('StatsTap', () => {
 
   test('omits the cluster block on a system with no cluster', () => {
     const system = newSystem('tap-stats-nocluster');
-    const tap = new StatsTap(system, null, 1_000);
+    const tap = new StatsTap(system, null, 1_000, startedSampler(system));
     tap.install(() => {});
     try {
       const [sample] = tap.snapshot() as [StatsSamplePayload];
@@ -272,7 +288,7 @@ describe('StatsTap', () => {
 
   test('counts dead letters', async () => {
     const system = newSystem('tap-stats-deadletters');
-    const tap = new StatsTap(system, null, 1_000);
+    const tap = new StatsTap(system, null, 1_000, startedSampler(system));
     tap.install(() => {});
     try {
       const ref = system.spawn(Props.create(() => new IdleActor()), 'gone');
@@ -291,7 +307,7 @@ describe('StatsTap', () => {
   test('measures uptime from system start, not from attach', async () => {
     const system = newSystem('tap-stats-uptime');
     await settle(40);
-    const tap = new StatsTap(system, null, 1_000);
+    const tap = new StatsTap(system, null, 1_000, startedSampler(system));
     tap.install(() => {});
     try {
       const [sample] = tap.snapshot() as [StatsSamplePayload];
@@ -304,44 +320,47 @@ describe('StatsTap', () => {
     }
   });
 
-  test('switches metrics on while attached and hands them back on detach', async () => {
+  test('reads throughput, drops and latency off the framework counters', async () => {
     const system = newSystem('tap-stats-metrics');
-    const metrics = system.extension(MetricsExtensionId);
-    expect(metrics.isEnabled()).toBe(false);
-
-    const tap = new StatsTap(system, null, 1_000);
+    const tap = new StatsTap(system, null, 1_000, startedSampler(system));
     tap.install(() => {});
-    expect(metrics.isEnabled()).toBe(true);
+    try {
+      const ref = system.spawn(Props.create(() => new IdleActor()), 'chatty');
+      for (let i = 0; i < 4; i++) ref.tell(`m${i}`);
+      await settle();
 
-    const ref = system.spawn(Props.create(() => new IdleActor()), 'chatty');
-    for (let i = 0; i < 4; i++) ref.tell(`m${i}`);
-    await settle();
-
-    const [sample] = tap.snapshot() as [StatsSamplePayload];
-    expect(sample.messagesProcessed).toBeGreaterThanOrEqual(4);
-    expect(sample.mailboxDrops).toBe(0);
-    expect(sample.handlerLatency?.count).toBeGreaterThanOrEqual(4);
-
-    tap.uninstall();
-    expect(metrics.isEnabled()).toBe(false);
+      const [sample] = tap.snapshot() as [StatsSamplePayload];
+      expect(sample.messagesProcessed).toBeGreaterThanOrEqual(4);
+      expect(sample.mailboxDrops).toBe(0);
+      expect(sample.handlerLatency?.count).toBeGreaterThanOrEqual(4);
+    } finally {
+      tap.uninstall();
+    }
   });
 
-  test('leaves a registry the application enabled itself alone', () => {
-    const system = newSystem('tap-stats-metrics-preowned');
-    const metrics = system.extension(MetricsExtensionId);
-    const registry = metrics.enable();
-
-    const tap = new StatsTap(system, null, 1_000);
+  test('every sample carries the per-node breakdown, cluster or not', async () => {
+    const system = newSystem('tap-stats-nodes');
+    const tap = new StatsTap(system, null, 1_000, startedSampler(system));
     tap.install(() => {});
-    tap.uninstall();
-
-    expect(metrics.isEnabled()).toBe(true);
-    expect(metrics.get()).toBe(registry);
+    try {
+      const [sample] = tap.snapshot() as [StatsSamplePayload];
+      // One node, but the same shape a cluster produces — so the panel
+      // has one way to render "total and per node", not two.
+      expect(sample.nodes).toHaveLength(1);
+      expect(sample.nodes[0]!.isSelf).toBe(true);
+      expect(sample.nodes[0]!.stale).toBe(false);
+      expect(sample.nodes[0]!.figures.address).toBe('local');
+      expect(sample.nodes[0]!.figures.systemName).toBe('tap-stats-nodes');
+      // The totals are the sum of the breakdown, not a second count.
+      expect(sample.actorCount).toBe(sample.nodes[0]!.figures.actorCount);
+    } finally {
+      tap.uninstall();
+    }
   });
 
   test('reports stash depth and suspended actors', async () => {
     const system = newSystem('tap-stats-stash');
-    const tap = new StatsTap(system, null, 1_000);
+    const tap = new StatsTap(system, null, 1_000, startedSampler(system));
     tap.install(() => {});
     try {
       const ref = system.spawn(Props.create(() => new StashingActor()), 'hoarder');

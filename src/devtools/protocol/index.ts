@@ -46,6 +46,8 @@ export { statsSamplePayload } from './StatsFrames.js';
 export type {
   ClusterStatsSummary,
   HandlerLatencySummary,
+  NodeFigures,
+  NodeSample,
   StatsRuntime,
   StatsSamplePayload,
   StatsStreamPayload,

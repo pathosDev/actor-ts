@@ -1,98 +1,71 @@
 /**
- * The `stats` stream — the figures behind the dashboard.
+ * The `stats` stream — the figures behind the overview.
  *
- * Counters are **cumulative since attach**, never per-tick deltas.  The
- * UI keeps a ring of samples and differentiates, so a client that
- * reconnects, throttles, or misses a tick still computes correct rates,
- * and the same series drives both the "per second" tile and the
- * spike-revealing chart underneath it.
+ * Counters are **cumulative**, never per-tick deltas.  The UI keeps a
+ * ring of samples and differentiates, so a client that reconnects,
+ * throttles, or misses a tick still computes correct rates, and the same
+ * series drives both the "per second" tile and the spike-revealing chart
+ * underneath it.
+ *
+ * In a cluster the sample carries both: the total across every node, and
+ * each node on its own.  The total is a plain sum of the per-node
+ * figures rather than a separately gathered number — two ways of
+ * counting the same thing eventually disagree, and then nobody knows
+ * which to believe.
  */
 import type { ActorSystem } from '../../ActorSystem.js';
 import type { Cluster } from '../../cluster/Cluster.js';
 import type { Cancellable } from '../../Scheduler.js';
 import { detectRuntime } from '../../runtime/detect.js';
-import { MetricsExtensionId } from '../../metrics/MetricsExtension.js';
-import { ActorLifecycleEvent, ActorRestarted, ActorStarted, ActorStopped, DeadLetter } from '../../SystemMessages.js';
-import { match, P } from 'ts-pattern';
 import {
   statsSamplePayload,
   type ClusterStatsSummary,
   type DevToolsStreamId,
   type DevToolsStreamPayload,
+  type HandlerLatencySummary,
   type MailboxDepthEntry,
+  type NodeFigures,
+  type NodeSample,
 } from '../protocol/index.js';
 import type { DevToolsTap } from '../DevToolsServer.js';
-import { subscribeToEventStream, type EventStreamProbe } from '../internal/EventStreamProbe.js';
-import { counterTotal, handlerLatency } from '../internal/MetricsDigest.js';
+import { NodeSampler } from '../internal/NodeSampler.js';
+import type { DevToolsFederation } from '../cluster/Federation.js';
 
-/** How many hot mailboxes the dashboard tile shows. */
+/** How many hot mailboxes the overview shows, across all nodes. */
 const TOP_MAILBOX_COUNT = 5;
 
-/** Framework counters the dashboard reads back. */
-const MESSAGES_DELIVERED = 'actor_messages_delivered_total';
-const MAILBOX_DROPPED = 'actor_mailbox_dropped_total';
-const HANDLER_SECONDS = 'actor_message_handler_seconds';
+/** Address used for the single node of a system with no cluster. */
+const LOCAL_ADDRESS = 'local';
 
 export class StatsTap implements DevToolsTap {
   readonly stream: DevToolsStreamId = 'stats';
 
   private emit: ((payload: DevToolsStreamPayload) => void) | null = null;
   private ticker: Cancellable | null = null;
-  private lifecycleProbe: EventStreamProbe | null = null;
-  private deadLetterProbe: EventStreamProbe | null = null;
-  /** Did *we* switch metrics on?  Only then may we switch them off. */
-  private enabledMetrics = false;
+  private readonly sampler: NodeSampler;
 
-  private actorsStarted = 0;
-  private actorsStopped = 0;
-  private actorsRestarted = 0;
-  private deadLetters = 0;
 
   constructor(
     private readonly system: ActorSystem,
     private readonly cluster: Cluster | null,
     private readonly intervalMs: number,
-  ) {}
+    /**
+     * Shared with the node agent when there is one: two samplers on one
+     * system would install two sets of probes and count everything
+     * twice.
+     */
+    sampler: NodeSampler,
+    private readonly federation: DevToolsFederation | null = null,
+  ) {
+    this.sampler = sampler;
+  }
 
   install(emit: (payload: DevToolsStreamPayload) => void): void {
     this.emit = emit;
-    // Message throughput, mailbox drops and handler latency are already
-    // instrumented in the framework — against a noop registry, so every
-    // reading is 0 until somebody switches metrics on.  Take that over
-    // the way SpanTap takes over the tracer, and hand it back on detach
-    // so a system that had metrics off gets them off again.
-    const metrics = this.system.extension(MetricsExtensionId);
-    if (!metrics.isEnabled()) {
-      metrics.enable();
-      this.enabledMetrics = true;
-    }
-    // Counting starts at attach, not at first subscribe: the dashboard
-    // should be able to say "312 actors started since you attached",
-    // which is impossible if counting begins when a panel opens.
-    this.lifecycleProbe = subscribeToEventStream(
-      this.system,
-      ActorLifecycleEvent,
-      (event) => this.onLifecycleEvent(event),
-      'devtools-stats',
-    );
-    this.deadLetterProbe = subscribeToEventStream(
-      this.system,
-      DeadLetter,
-      () => this.onDeadLetter(),
-      'devtools-stats-dead-letters',
-    );
   }
 
   uninstall(): void {
     this.stopTicking();
-    this.lifecycleProbe?.stop();
-    this.deadLetterProbe?.stop();
-    this.lifecycleProbe = null;
-    this.deadLetterProbe = null;
-    if (this.enabledMetrics) {
-      this.system.extension(MetricsExtensionId).disable();
-      this.enabledMetrics = false;
-    }
     this.emit = null;
   }
 
@@ -105,27 +78,12 @@ export class StatsTap implements DevToolsTap {
     else this.stopTicking();
   }
 
-  private onLifecycleEvent(event: ActorLifecycleEvent): void {
-    match(event)
-      .with(P.instanceOf(ActorStarted), () => this.onActorStarted())
-      .with(P.instanceOf(ActorStopped), () => this.onActorStopped())
-      .with(P.instanceOf(ActorRestarted), () => this.onActorRestarted())
-      .otherwise(() => this.onUnknownEvent());
-  }
-
-  private onActorStarted(): void { this.actorsStarted++; }
-  private onActorStopped(): void { this.actorsStopped++; }
-  private onActorRestarted(): void { this.actorsRestarted++; }
-  private onDeadLetter(): void { this.deadLetters++; }
-  /** A lifecycle variant added after this build — ignore it. */
-  private onUnknownEvent(): void {}
-
   private startTicking(): void {
     if (this.ticker !== null) return;
     this.ticker = this.system.scheduler.scheduleAtFixedRateFunction(
       this.intervalMs,
       this.intervalMs,
-      () => this.emit?.(this.sample()),
+      () => this.tick(),
     );
   }
 
@@ -134,48 +92,45 @@ export class StatsTap implements DevToolsTap {
     this.ticker = null;
   }
 
-  private sample(): DevToolsStreamPayload {
-    const tree = this.system._inspectTree();
-    let mailboxBacklog = 0;
-    let stashedTotal = 0;
-    let suspendedActors = 0;
-    const busiest: MailboxDepthEntry[] = [];
-    for (const cell of tree) {
-      mailboxBacklog += cell.mailboxSize;
-      stashedTotal += cell.stashSize;
-      if (cell.suspended) suspendedActors++;
-      if (cell.mailboxSize > 0) {
-        busiest.push({
-          path: cell.path,
-          size: cell.mailboxSize,
-          stashSize: cell.stashSize,
-          suspended: cell.suspended,
-        });
-      }
-    }
-    busiest.sort((a, b) => b.size - a.size);
+  private tick(): void {
+    // Ask first, emit second: this round's peers answer into the next
+    // sample.  One interval of lag beats a dashboard that stalls
+    // whenever a node does.
+    this.federation?.poll();
+    this.emit?.(this.sample());
+  }
 
-    const metrics = this.system.extension(MetricsExtensionId).get().collect();
-    const latency = handlerLatency(metrics, HANDLER_SECONDS);
+  private sample(): DevToolsStreamPayload {
     const now = Date.now();
+    const selfAddress = this.cluster?.selfAddress.toString() ?? LOCAL_ADDRESS;
+    const self: NodeSample = {
+      figures: this.sampler.figures(selfAddress),
+      receivedAtMs: now,
+      stale: false,
+      isSelf: true,
+    };
+    const nodes = [self, ...(this.federation?.peers(now) ?? [])];
+    const total = totalOf(nodes.map((node) => node.figures));
     const cluster = this.clusterSummary();
+
     return statsSamplePayload({
       atMs: now,
-      uptimeMs: now - this.system.startedAtMs,
+      uptimeMs: self.figures.uptimeMs,
       runtime: detectRuntime(),
-      actorCount: tree.length,
-      actorsStarted: this.actorsStarted,
-      actorsStopped: this.actorsStopped,
-      actorsRestarted: this.actorsRestarted,
-      deadLetters: this.deadLetters,
-      messagesProcessed: counterTotal(metrics, MESSAGES_DELIVERED),
-      mailboxDrops: counterTotal(metrics, MAILBOX_DROPPED),
-      mailboxBacklog,
-      stashedTotal,
-      suspendedActors,
-      ...(latency === null ? {} : { handlerLatency: latency }),
-      topMailboxes: busiest.slice(0, TOP_MAILBOX_COUNT),
+      actorCount: total.actorCount,
+      actorsStarted: total.actorsStarted,
+      actorsStopped: total.actorsStopped,
+      actorsRestarted: total.actorsRestarted,
+      deadLetters: total.deadLetters,
+      messagesProcessed: total.messagesProcessed,
+      mailboxDrops: total.mailboxDrops,
+      mailboxBacklog: total.mailboxBacklog,
+      stashedTotal: total.stashedTotal,
+      suspendedActors: total.suspendedActors,
+      ...(total.handlerLatency === undefined ? {} : { handlerLatency: total.handlerLatency }),
+      topMailboxes: total.topMailboxes,
       ...(cluster === null ? {} : { cluster }),
+      nodes,
     });
   }
 
@@ -191,4 +146,73 @@ export class StatsTap implements DevToolsTap {
       selfAddress: cluster.selfAddress.toString(),
     };
   }
+}
+
+/** Everything summable, summed; the rest merged sensibly. */
+function totalOf(all: ReadonlyArray<NodeFigures>): Omit<NodeFigures, 'address' | 'systemName' | 'uptimeMs'> {
+  let actorCount = 0;
+  let actorsStarted = 0;
+  let actorsStopped = 0;
+  let actorsRestarted = 0;
+  let deadLetters = 0;
+  let messagesProcessed = 0;
+  let mailboxDrops = 0;
+  let mailboxBacklog = 0;
+  let stashedTotal = 0;
+  let suspendedActors = 0;
+  const mailboxes: MailboxDepthEntry[] = [];
+
+  for (const figures of all) {
+    actorCount += figures.actorCount;
+    actorsStarted += figures.actorsStarted;
+    actorsStopped += figures.actorsStopped;
+    actorsRestarted += figures.actorsRestarted;
+    deadLetters += figures.deadLetters;
+    messagesProcessed += figures.messagesProcessed;
+    mailboxDrops += figures.mailboxDrops;
+    mailboxBacklog += figures.mailboxBacklog;
+    stashedTotal += figures.stashedTotal;
+    suspendedActors += figures.suspendedActors;
+    mailboxes.push(...figures.topMailboxes);
+  }
+  mailboxes.sort((a, b) => b.size - a.size);
+
+  return {
+    actorCount,
+    actorsStarted,
+    actorsStopped,
+    actorsRestarted,
+    deadLetters,
+    messagesProcessed,
+    mailboxDrops,
+    mailboxBacklog,
+    stashedTotal,
+    suspendedActors,
+    ...(latencyOf(all) === null ? {} : { handlerLatency: latencyOf(all)! }),
+    topMailboxes: mailboxes.slice(0, TOP_MAILBOX_COUNT),
+  };
+}
+
+/**
+ * Cluster-wide handler latency, weighted by how many messages each node
+ * measured.
+ *
+ * A plain average would let an idle node with one slow message drag the
+ * figure as hard as a busy one — the percentile a developer wants is
+ * "across all the messages", not "across all the nodes".  Still an
+ * approximation of an approximation, and labelled as such in the panel.
+ */
+function latencyOf(all: ReadonlyArray<NodeFigures>): HandlerLatencySummary | null {
+  let count = 0;
+  let p50 = 0;
+  let p99 = 0;
+  for (const figures of all) {
+    const latency = figures.handlerLatency;
+    if (latency === undefined || latency.count === 0) continue;
+    count += latency.count;
+    p50 += latency.p50Ms * latency.count;
+    p99 += latency.p99Ms * latency.count;
+  }
+  if (count === 0) return null;
+  return { p50Ms: p50 / count, p99Ms: p99 / count, count };
 }
