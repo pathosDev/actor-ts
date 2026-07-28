@@ -132,9 +132,11 @@ export type {
 
 export { profilerCompletedPayload, profilerProgressPayload } from './ProfilerFrames.js';
 export type {
+  ProfilerCapabilitiesResult,
   ProfilerCompletedPayload,
   ProfilerFormat,
   ProfilerMode,
+  ProfilerModeCapability,
   ProfilerProgressPayload,
   ProfilerStartParameters,
   ProfilerStartResult,

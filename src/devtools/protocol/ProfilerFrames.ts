@@ -22,6 +22,24 @@ export type ProfilerMode = 'wallclock' | 'cpu';
 /** Output format of a finished session. */
 export type ProfilerFormat = 'speedscope' | 'cpuprofile';
 
+/** One mode, and whether this host can actually run it. */
+export interface ProfilerModeCapability {
+  readonly mode: ProfilerMode;
+  readonly available: boolean;
+  /** Why not, when `available` is false — shown next to the option. */
+  readonly reason?: string;
+}
+
+/**
+ * Result of `profiler.capabilities`.
+ *
+ * Asked before the panel offers a mode, so an unsupported one is greyed
+ * out with its reason rather than failing when Start is pressed.
+ */
+export interface ProfilerCapabilitiesResult {
+  readonly modes: ReadonlyArray<ProfilerModeCapability>;
+}
+
 /** Parameters of `profiler.start`. */
 export interface ProfilerStartParameters {
   /** Default `'wallclock'`. */

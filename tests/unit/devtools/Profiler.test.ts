@@ -9,6 +9,7 @@ import type { DevToolsRequestHandler, DevToolsServer } from '../../../src/devtoo
 import type {
   DevToolsRequestMethod,
   DevToolsStreamPayload,
+  ProfilerCapabilitiesResult,
   ProfilerStartResult,
   ProfilerStopResult,
 } from '../../../src/devtools/protocol/index.js';
@@ -301,5 +302,49 @@ describe('ProfilerTap — lifecycle', () => {
     tap.install(() => {});
     expect(tap.snapshot()).toEqual([]);
     tap.uninstall();
+  });
+});
+
+describe('ProfilerTap — capabilities', () => {
+  test('wallclock is always available; CPU answers for this runtime', async () => {
+    const system = newSystem('prof-capabilities');
+    const tap = new ProfilerTap(system);
+    const { server, invoke } = fakeServer();
+    tap.install(() => {});
+    tap.installMethods(server);
+    try {
+      const capabilities = await invoke<ProfilerCapabilitiesResult>('profiler.capabilities');
+      const wallclock = capabilities.modes.find((m) => m.mode === 'wallclock');
+      const cpu = capabilities.modes.find((m) => m.mode === 'cpu');
+
+      expect(wallclock).toEqual({ mode: 'wallclock', available: true });
+      expect(cpu).toBeDefined();
+      // Whatever the answer is on this host, an unavailable mode must
+      // carry a reason — that string is what the panel shows instead of
+      // letting Start fail.
+      if (!cpu!.available) expect(cpu!.reason).toBeTruthy();
+    } finally {
+      tap.uninstall();
+    }
+  });
+
+  test('starting an unsupported CPU profile fails with our message, not the runtime\'s', async () => {
+    const system = newSystem('prof-cpu-refusal');
+    const tap = new ProfilerTap(system);
+    const { server, invoke } = fakeServer();
+    tap.install(() => {});
+    tap.installMethods(server);
+    try {
+      const capabilities = await invoke<ProfilerCapabilitiesResult>('profiler.capabilities');
+      const cpu = capabilities.modes.find((m) => m.mode === 'cpu')!;
+      if (cpu.available) return;   // Nothing to assert on a host that has an inspector.
+
+      await expect(invoke<ProfilerStartResult>('profiler.start', { mode: 'cpu' }))
+        .rejects.toThrow('CPU profiling is not available here');
+      // The failed start must not leave a session behind.
+      await expect(invoke('profiler.stop')).rejects.toThrow('no profiling session is running');
+    } finally {
+      tap.uninstall();
+    }
   });
 });
