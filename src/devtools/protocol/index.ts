@@ -42,12 +42,19 @@ export type {
   WelcomeFrame,
 } from './Frames.js';
 
-export { statsSamplePayload } from './StatsFrames.js';
+export {
+  STATS_HISTORY_DEFAULT_SPAN_MS,
+  STATS_HISTORY_SPANS_MS,
+  statsSamplePayload,
+} from './StatsFrames.js';
 export type {
   ClusterStatsSummary,
   HandlerLatencySummary,
   NodeFigures,
   NodeSample,
+  StatsHistoryParameters,
+  StatsHistoryPoint,
+  StatsHistoryResult,
   StatsRuntime,
   StatsSamplePayload,
   StatsStreamPayload,

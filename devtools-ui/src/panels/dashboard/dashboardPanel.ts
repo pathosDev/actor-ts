@@ -18,14 +18,22 @@ import { peakOf, StatsHistory, type SeriesPoint } from '../../core/history.js';
 import { drawChart, drawSparkline, themeColor, type ChartSeries } from '../../render/timeseries.js';
 import { currentTheme } from '../../core/theme.js';
 import type { PanelContext, PanelInstance } from '../../shell/PanelRegistry.js';
-import type {
-  NodeSample,
-  StatsSamplePayload,
-  WelcomeFrame,
+import {
+  STATS_HISTORY_DEFAULT_SPAN_MS,
+  STATS_HISTORY_SPANS_MS,
+  type NodeSample,
+  type StatsHistoryResult,
+  type StatsSamplePayload,
+  type WelcomeFrame,
 } from '../../../../src/devtools/protocol/index.js';
 
-/** Roughly fifteen minutes at the server's default one-second tick. */
-const HISTORY_CAPACITY = 900;
+/**
+ * Backstop on plotted points.
+ *
+ * The window is bounded by time, not by count — see `StatsHistory` — so
+ * this only guards a very long session on a very short span.
+ */
+const HISTORY_CAPACITY = 6_000;
 
 /** Uptime has to advance on its own; nothing pushes a frame for it. */
 const CLOCK_INTERVAL_MS = 1000;
@@ -43,8 +51,10 @@ interface UptimeAnchor {
 }
 
 export function mount(host: HTMLElement, context: PanelContext): PanelInstance {
-  const history = new StatsHistory(HISTORY_CAPACITY);
+  let spanMs = STATS_HISTORY_DEFAULT_SPAN_MS;
+  const history = new StatsHistory(HISTORY_CAPACITY, spanMs);
   let uptime: UptimeAnchor | null = null;
+  let resolutionMs = 0;
 
   const commonTiles = h('div', { class: 'dt-tiles' });
   const numberTiles = h('div', { class: 'dt-tiles' });
@@ -52,6 +62,42 @@ export function mount(host: HTMLElement, context: PanelContext): PanelInstance {
   const population = chartBlock('Actors');
   const backlog = chartBlock('Backlog');
   const hotList = h('div', { class: 'dt-hotlist' });
+  const spanNote = h('span', { class: 'dt-toolbar__summary' });
+
+  const spanChooser = h('select', {
+    class: 'dt-input',
+    'aria-label': 'Charted timespan',
+    onchange: (event: Event) => {
+      void loadHistory(Number((event.target as HTMLSelectElement).value));
+    },
+  }, ...STATS_HISTORY_SPANS_MS.map((choice) => h('option', {
+    value: String(choice),
+    ...(choice === STATS_HISTORY_DEFAULT_SPAN_MS ? { selected: true } : {}),
+  }, `last ${spanLabel(choice)}`))) as HTMLSelectElement;
+
+  /**
+   * Fetch the chosen window from the server.
+   *
+   * The server has been recording since it attached, so switching to
+   * "last 24 hours" fills the charts immediately instead of starting an
+   * empty one that would take a day to become useful.
+   */
+  async function loadHistory(wantedMs: number): Promise<void> {
+    spanMs = wantedMs;
+    try {
+      const result = await context.tap.request<StatsHistoryResult>(
+        'stats.history', { spanMs: wantedMs },
+      );
+      resolutionMs = result.resolutionMs;
+      history.seed(result.points, result.spanMs);
+    } catch {
+      // An older server, or the request failed — keep collecting live
+      // rather than blanking a chart that already has something in it.
+      resolutionMs = 0;
+    }
+    spanChooser.value = String(spanMs);
+    render();
+  }
   const nodeTable = h('div', { class: 'dt-nodetable' });
   const nodeSection = h('section', {},
     h('h2', { class: 'dt-section' }, 'Per node'),
@@ -61,6 +107,7 @@ export function mount(host: HTMLElement, context: PanelContext): PanelInstance {
   replaceChildren(host,
     h('h1', { class: 'dt-panel__title' }, 'Overview'),
     h('p', { class: 'dt-panel__subtitle' }, 'What this system is, what it is doing, and how that is trending.'),
+    h('div', { class: 'dt-toolbar' }, spanChooser, spanNote),
     h('section', {},
       h('h2', { class: 'dt-section' }, 'Common'),
       commonTiles,
@@ -86,6 +133,12 @@ export function mount(host: HTMLElement, context: PanelContext): PanelInstance {
   };
   const render = (): void => {
     renderTiles();
+    // Say the resolution out loud: a day of data in two-minute buckets
+    // is a different chart from a minute of it per second, and only the
+    // label distinguishes them.
+    spanNote.textContent = resolutionMs === 0
+      ? ''
+      : `${formatCount(history.size)} points · ${spanLabel(resolutionMs)} resolution`;
     renderCharts(throughput, population, backlog, history);
     renderHotList(hotList, history.latest());
   };
@@ -103,6 +156,7 @@ export function mount(host: HTMLElement, context: PanelContext): PanelInstance {
   // repaint — nothing re-renders on its own.
   const disposeTheme = effect(render, [currentTheme]);
 
+  void loadHistory(STATS_HISTORY_DEFAULT_SPAN_MS);
   const clock = setInterval(renderTiles, CLOCK_INTERVAL_MS);
   const onResize = (): void => renderCharts(throughput, population, backlog, history);
   window.addEventListener('resize', onResize);
@@ -116,6 +170,13 @@ export function mount(host: HTMLElement, context: PanelContext): PanelInstance {
       disposeTheme();
     },
   };
+}
+
+/** `90s`, `5min`, `2h` — short enough for an option label. */
+function spanLabel(ms: number): string {
+  if (ms < 60_000) return `${Math.round(ms / 1000)}s`;
+  if (ms < 3_600_000) return `${Math.round(ms / 60_000)} min`;
+  return `${Math.round(ms / 3_600_000)} h`;
 }
 
 /* -------------------------------- uptime -------------------------------- */

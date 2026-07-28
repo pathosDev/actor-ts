@@ -190,13 +190,15 @@ export class DevToolsServer implements DevToolsHubContext {
       this.federation = new DevToolsFederation(cluster);
       this.federation.start();
     }
-    this.registerTap(new StatsTap(
+    const stats = new StatsTap(
       this.system,
       cluster,
       settings.statsIntervalMs ?? 1_000,
       this.sampler,
       this.federation,
-    ));
+    );
+    this.registerTap(stats);
+    stats.installMethods(this);
 
     if (this.isPanelEnabled('actors')) {
       const sampleIntervalMs = settings.mailboxSampleIntervalMs ?? 1_000;

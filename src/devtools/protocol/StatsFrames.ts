@@ -130,6 +130,60 @@ export interface StatsSamplePayload {
   readonly nodes: ReadonlyArray<NodeSample>;
 }
 
+/** Spans the overview offers, shortest first. */
+export const STATS_HISTORY_SPANS_MS: ReadonlyArray<number> = [
+  60_000,          // 1 min
+  120_000,         // 2 min
+  300_000,         // 5 min — the default
+  600_000,         // 10 min
+  1_200_000,       // 20 min
+  1_800_000,       // 30 min
+  3_600_000,       // 1 h
+  7_200_000,       // 2 h
+  18_000_000,      // 5 h
+  28_800_000,      // 8 h
+  43_200_000,      // 12 h
+  86_400_000,      // 24 h
+];
+
+/** What a client gets before it chooses. */
+export const STATS_HISTORY_DEFAULT_SPAN_MS = 300_000;
+
+/** Parameters of `stats.history`. */
+export interface StatsHistoryParameters {
+  readonly spanMs: number;
+}
+
+/**
+ * Result of `stats.history` — the charted series, already summarised.
+ *
+ * `resolutionMs` is what the server could offer for the span asked for,
+ * not what was requested: a day is answered in two-minute buckets, and
+ * saying so lets the panel label the chart honestly.
+ */
+export interface StatsHistoryResult {
+  readonly spanMs: number;
+  readonly resolutionMs: number;
+  readonly points: ReadonlyArray<StatsHistoryPoint>;
+}
+
+/** One summarised interval of the overview's series. */
+export interface StatsHistoryPoint {
+  readonly atMs: number;
+  /** Levels, as the interval's peak — so a spike survives summarising. */
+  readonly actorCount: number;
+  readonly mailboxBacklog: number;
+  readonly stashedTotal: number;
+  readonly suspendedActors: number;
+  /** Cumulative counters, as the interval's last reading. */
+  readonly actorsStarted: number;
+  readonly actorsStopped: number;
+  readonly actorsRestarted: number;
+  readonly deadLetters: number;
+  readonly messagesProcessed: number;
+  readonly mailboxDrops: number;
+}
+
 /** Payloads carried by the `stats` stream. */
 export type StatsStreamPayload = StatsSamplePayload;
 

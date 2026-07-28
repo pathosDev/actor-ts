@@ -56,6 +56,7 @@ export type DevToolsRequestMethod =
   | 'replay.capabilities'
   | 'replay.state'
   | 'replay.diff'
+  | 'stats.history'
   | 'profiler.capabilities'
   | 'profiler.start'
   | 'profiler.stop'
@@ -71,6 +72,7 @@ export const DEVTOOLS_REQUEST_METHODS: ReadonlyArray<DevToolsRequestMethod> = [
   'replay.capabilities',
   'replay.state',
   'replay.diff',
+  'stats.history',
   'profiler.capabilities',
   'profiler.start',
   'profiler.stop',
