@@ -28,10 +28,14 @@ import {
   type TraceLayout,
 } from '../../render/flamegraph.js';
 import type { PanelContext, PanelInstance } from '../../shell/PanelRegistry.js';
-import type { TracingRecordResult, WireSpan } from '../../../../src/devtools/protocol/index.js';
+import {
+  TRACING_BUFFER_DEFAULT,
+  type TracingBufferResult,
+  type WireSpan,
+} from '../../../../src/devtools/protocol/index.js';
 
-/** Spans kept in the browser; well beyond what one screen can show. */
-const SPAN_CAPACITY = 5_000;
+/** Ring sizes the buffer selector offers, smallest first. */
+const BUFFER_CHOICES: ReadonlyArray<number> = [100, 250, 500, 1_000, 2_500, 5_000, 10_000];
 
 /** Traces listed at once — older ones are still counted, not drawn. */
 const TRACE_ROWS = 200;
@@ -48,7 +52,7 @@ export function mount(host: HTMLElement, context: PanelContext): PanelInstance {
   const mode = signal<ViewMode>('flame');
   const openTraceId = signal<string | null>(null);
   const hovered = signal<LayoutSpan | null>(null);
-  const recording = signal(false);
+  let capacity = TRACING_BUFFER_DEFAULT;
 
   const traceList = h('div', { class: 'dt-tracetable' });
   const listView = h('section', {}, traceList);
@@ -85,32 +89,43 @@ export function mount(host: HTMLElement, context: PanelContext): PanelInstance {
     details,
   );
 
-  const recordButton = h('button', {
-    class: 'dt-iconbutton',
-    type: 'button',
-    onclick: () => { void toggleRecording(); },
-  }, 'Record all messages');
+  const bufferChooser = h('select', {
+    class: 'dt-input',
+    'aria-label': 'Messages to keep',
+    onchange: (event: Event) => {
+      void setCapacity(Number((event.target as HTMLSelectElement).value));
+    },
+  }, ...BUFFER_CHOICES.map((choice) => h('option', {
+    value: String(choice),
+  }, `keep ${formatCount(choice)} messages`))) as HTMLSelectElement;
 
   /**
-   * Ask the system to open a root span for every message.
+   * Ask the server to retain more (or less) of the recent past.
    *
-   * Without this the panel is empty on a system that is plainly busy:
-   * actors trace a message only when it already belongs to a trace, and
-   * a plain `tell` never starts one.
+   * Recording itself is not negotiable — it runs from the moment
+   * DevTools attaches, which is what puts the interesting messages on
+   * screen before you thought to look.  This is only how far back it
+   * keeps, and the reply is what the server settled on rather than what
+   * was asked for.
    */
-  async function toggleRecording(): Promise<void> {
-    const wanted = !recording.get();
+  async function setCapacity(wanted: number): Promise<void> {
     try {
-      const result = await context.tap.request<TracingRecordResult>(
-        'tracing.record', { enabled: wanted },
+      const result = await context.tap.request<TracingBufferResult>(
+        'tracing.buffer', { capacity: wanted },
       );
-      recording.set(result.recording);
+      capacity = result.capacity;
     } catch {
-      // The server refused (no tracer, panel disabled) — reflect what is
-      // actually true rather than what was asked for.
-      recording.set(false);
+      // An older server, or the panel is disabled — leave local trimming
+      // where it was rather than pretending anything changed.
     }
-    render();
+    bufferChooser.value = String(capacity);
+    trimSpans();
+    regroup();
+  }
+
+  /** Hold no more than the server does; anything else is a slow leak. */
+  function trimSpans(): void {
+    if (spans.length > capacity) spans = spans.slice(spans.length - capacity);
   }
 
   const clearButton = h('button', {
@@ -127,9 +142,9 @@ export function mount(host: HTMLElement, context: PanelContext): PanelInstance {
   replaceChildren(host,
     h('h1', { class: 'dt-panel__title' }, 'Tracing'),
     h('p', { class: 'dt-panel__subtitle' },
-      'Every message recorded while this panel is open, with the route it took. '
-      + 'Open one to see where its time went.'),
-    h('div', { class: 'dt-toolbar' }, recordButton, clearButton, summary),
+      'Every message the system handled, with the route it took. Recording runs '
+      + 'from the moment DevTools attaches, so the recent past is already here.'),
+    h('div', { class: 'dt-toolbar' }, bufferChooser, clearButton, summary),
     listView,
     detailView,
   );
@@ -149,10 +164,6 @@ export function mount(host: HTMLElement, context: PanelContext): PanelInstance {
   }
 
   function render(): void {
-    recordButton.textContent = recording.get() ? 'Stop recording' : 'Record all messages';
-    recordButton.className = recording.get()
-      ? 'dt-iconbutton dt-iconbutton--active'
-      : 'dt-iconbutton';
     summary.textContent = dropped > 0
       ? `${formatCount(spans.length)} spans · ${formatCount(traces.length)} traces · ${formatCount(dropped)} dropped`
       : `${formatCount(spans.length)} spans · ${formatCount(traces.length)} traces`;
@@ -166,7 +177,7 @@ export function mount(host: HTMLElement, context: PanelContext): PanelInstance {
 
   function renderTraceList(): void {
     if (traces.length === 0) {
-      replaceChildren(traceList, emptyExplanation(recording.get()));
+      replaceChildren(traceList, emptyExplanation());
       return;
     }
     replaceChildren(traceList,
@@ -262,9 +273,9 @@ export function mount(host: HTMLElement, context: PanelContext): PanelInstance {
     if (payload.kind !== 'span-batch') return;
     dropped += payload.dropped;
     spans.push(...payload.spans);
-    // Drop the distant past rather than grow without bound; the recent
-    // past is what a live trace list is for.
-    if (spans.length > SPAN_CAPACITY) spans = spans.slice(spans.length - SPAN_CAPACITY);
+    // Never hold more than the server retains: the ring size is the
+    // same answer to "how far back do I care?" on both sides.
+    trimSpans();
     regroup();
   });
 
@@ -272,17 +283,12 @@ export function mount(host: HTMLElement, context: PanelContext): PanelInstance {
   const onResize = (): void => { if (openTrace() !== null) draw(); };
   window.addEventListener('resize', onResize);
   regroup();
+  // Say the default out loud, so the two rings agree even if their
+  // defaults ever drift apart.
+  void setCapacity(TRACING_BUFFER_DEFAULT);
 
   return {
     dispose(): void {
-      // The server also stops recording when the last subscriber goes,
-      // but saying so explicitly means leaving the panel never depends
-      // on unsubscribe ordering.
-      if (recording.get()) {
-        void context.tap.request('tracing.record', { enabled: false }).catch(() => {
-          /* the socket is going away anyway */
-        });
-      }
       stop();
       disposeTheme();
       window.removeEventListener('resize', onResize);
@@ -360,41 +366,22 @@ function preparedContext(canvas: HTMLCanvasElement): CanvasRenderingContext2D | 
  * nothing in the framework starts one on its own.  So the empty state
  * has to name the button that fixes it, not just report emptiness.
  */
-function emptyExplanation(recording: boolean): HTMLElement {
-  if (recording) {
-    // "Waiting for traffic" alone reads as broken next to an overview
-    // that is counting hundreds of messages a minute — most of which,
-    // on an idle system, are DevTools talking to this very browser.
-    return h('div', { class: 'dt-emptystate' },
-      h('p', { class: 'dt-empty' }, 'Recording. Nothing from your actors yet.'),
-      h('p', { class: 'dt-empty' },
-        "DevTools' own messages are excluded: its hub publishes the spans it "
-        + 'just recorded, so tracing them would feed every batch back in as the '
-        + 'payload of the next one.'),
-      h('p', { class: 'dt-empty' },
-        'So an otherwise idle system can show a message rate on the overview '
-        + 'while this list stays empty — that traffic is the tool, not the '
-        + 'application. Make your actors do something and it will appear here.'),
-    );
-  }
+function emptyExplanation(): HTMLElement {
+  // "Nothing yet" alone reads as broken next to an overview that is
+  // counting hundreds of messages a minute — most of which, on an idle
+  // system, are DevTools talking to this very browser.
   return h('div', { class: 'dt-emptystate' },
+    h('p', { class: 'dt-empty' }, 'Recording. Nothing from your actors yet.'),
     h('p', { class: 'dt-empty' },
-      'No spans yet. Actors trace a message only when it already belongs to '
-      + 'a trace, so an ordinary tell records nothing.'),
+      "DevTools' own messages are excluded: its hub publishes the spans it "
+      + 'just recorded, so tracing them would feed every batch back in as the '
+      + 'payload of the next one.'),
     h('p', { class: 'dt-empty' },
-      'Press ', h('strong', {}, 'Record all messages'),
-      ' to make every message a root span for as long as this panel is open.'),
-    h('p', { class: 'dt-empty' },
-      'In production you would start the trace yourself, at the entry point:'),
-    h('pre', { class: 'dt-code' }, [
-      'const tracer = tracerOf(system);',
-      "const span = tracer.startSpan('handle-request');",
-      'tracer.withActiveSpan(span, () => ref.tell(message));',
-      'span.end();',
-    ].join('\n')),
+      'So an otherwise idle system can show a message rate on the overview '
+      + 'while this list stays empty — that traffic is the tool, not the '
+      + 'application. Make your actors do something and it will appear here.'),
   );
 }
-
 function paint(
   canvas: HTMLCanvasElement,
   rectangles: ReadonlyArray<SpanRectangle>,

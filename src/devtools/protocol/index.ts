@@ -91,11 +91,16 @@ export type {
   ShardRegionInfo,
 } from './ClusterStreamFrames.js';
 
-export { spanBatchPayload } from './TracingStreamFrames.js';
+export {
+  spanBatchPayload,
+  TRACING_BUFFER_DEFAULT,
+  TRACING_BUFFER_MAXIMUM,
+  TRACING_BUFFER_MINIMUM,
+} from './TracingStreamFrames.js';
 export type {
   SpanBatchPayload,
-  TracingRecordParameters,
-  TracingRecordResult,
+  TracingBufferParameters,
+  TracingBufferResult,
   TracingStreamPayload,
   WireSpan,
   WireSpanKind,

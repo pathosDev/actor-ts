@@ -6,6 +6,7 @@ import { RecordingTracer } from '../../../src/tracing/RecordingTracer.js';
 import { TracingExtensionId } from '../../../src/tracing/TracingExtension.js';
 import { tracerOf } from '../../../src/tracing/TracingExtension.js';
 import { SpanTap } from '../../../src/devtools/taps/SpanTap.js';
+import { TRACING_BUFFER_MINIMUM } from '../../../src/devtools/protocol/index.js';
 import type { DevToolsRequestHandler, DevToolsServer } from '../../../src/devtools/DevToolsServer.js';
 import { Actor } from '../../../src/Actor.js';
 import { Props } from '../../../src/Props.js';
@@ -194,15 +195,16 @@ describe('SpanTap — streaming', () => {
     }
   });
 
-  test('gives a new subscriber nothing rather than a stale trace', () => {
-    // A flame graph is built from spans recorded while you watch;
-    // replaying an older buffer shows a trace you cannot correlate.
+  test('hands a new subscriber the recent past', () => {
+    // Recording starts at attach precisely so the messages worth looking
+    // at are already there when the panel is opened.  Withholding them
+    // would make that pointless.
     const system = newSystem('span-snapshot');
     const tap = new SpanTap(system, 100, 20);
     tap.install(() => {});
     try {
       tracerOf(system).startSpan('before').end();
-      expect(tap.snapshot()).toEqual([]);
+      expect(spansOf(tap.snapshot()).map((span) => span.name)).toEqual(['before']);
     } finally {
       tap.uninstall();
     }
@@ -232,7 +234,7 @@ describe('SpanTap — streaming', () => {
 });
 
 describe('SpanTap — recording every message', () => {
-  test('an ordinary tell records nothing until recording is switched on', async () => {
+  test('an ordinary tell is recorded, with nobody having asked', async () => {
     const system = newSystem('span-record');
     const tap = new SpanTap(system, 100, 20);
     const payloads: DevToolsStreamPayload[] = [];
@@ -240,14 +242,9 @@ describe('SpanTap — recording every message', () => {
     tap.subscribersChanged(1);
     try {
       const ref = system.spawn(Props.create(() => new EchoActor()), 'echo');
-
-      // The framework is propagate-only: no active span, no trace.
-      ref.tell('quiet');
-      await settle(80);
-      expect(spansOf(payloads)).toHaveLength(0);
-
-      await recordMethod(tap)({ enabled: true });
-      ref.tell('loud');
+      // The framework is propagate-only — no active span, no trace — so
+      // this only produces anything because the tap seeds roots itself.
+      ref.tell('hello');
       await settle(80);
 
       const spans = spansOf(payloads);
@@ -260,40 +257,62 @@ describe('SpanTap — recording every message', () => {
     }
   });
 
-  test('closing the panel stops recording — a walked-away tab must not trace forever', async () => {
+  test('closing the last panel does not stop recording', async () => {
     const system = newSystem('span-record-stop');
     const tap = new SpanTap(system, 100, 20);
     tap.install(() => {});
-    tap.subscribersChanged(1);
+    const tracing = system.extension(TracingExtensionId);
     try {
-      await recordMethod(tap)({ enabled: true });
-      expect(system.extension(TracingExtensionId).isRecordingRootSpans()).toBe(true);
+      expect(tracing.isRecordingRootSpans()).toBe(true);
 
+      tap.subscribersChanged(1);
       tap.subscribersChanged(0);
-      expect(system.extension(TracingExtensionId).isRecordingRootSpans()).toBe(false);
+      // Only the flush ticker idles.  Stopping here would empty the
+      // buffer the next panel is supposed to open onto.
+      expect(tracing.isRecordingRootSpans()).toBe(true);
+
+      const ref = system.spawn(Props.create(() => new EchoActor()), 'echo');
+      ref.tell('unobserved');
+      await settle(80);
+      expect(spansOf(tap.snapshot()).length).toBeGreaterThan(0);
     } finally {
       tap.uninstall();
     }
   });
 
-  test('detaching leaves the system as it was found', async () => {
+  test('detaching stops recording and leaves the tracer as it was', () => {
     const system = newSystem('span-record-detach');
     const tap = new SpanTap(system, 100, 20);
     tap.install(() => {});
-    tap.subscribersChanged(1);
-    await recordMethod(tap)({ enabled: true });
-
     tap.uninstall();
-    expect(system.extension(TracingExtensionId).isRecordingRootSpans()).toBe(false);
-    expect(system.extension(TracingExtensionId).isEnabled()).toBe(false);
+
+    const tracing = system.extension(TracingExtensionId);
+    expect(tracing.isRecordingRootSpans()).toBe(false);
+    expect(tracing.isEnabled()).toBe(false);
   });
 
-  test('rejects a request that is not a boolean', async () => {
-    const system = newSystem('span-record-bad');
-    const tap = new SpanTap(system, 100, 20);
+  test('the retained ring is resizable, and clamped at both ends', async () => {
+    const system = newSystem('span-buffer');
+    // Ceiling of 20, so a client asking for more cannot have it.
+    const tap = new SpanTap(system, 20, 20);
     tap.install(() => {});
     try {
-      await expect(recordMethod(tap)({ enabled: 'yes' })).rejects.toThrow('must be a boolean');
+      expect(await bufferMethod(tap)({ capacity: 10 })).toEqual({ capacity: 10, retained: 0 });
+
+      const tracer = tracerOf(system);
+      for (let i = 0; i < 12; i++) tracer.startSpan(`s${i}`).end();
+      const kept = spansOf(tap.snapshot()).map((span) => span.name);
+      expect(kept).toHaveLength(10);
+      expect(kept[0]).toBe('s2');
+
+      // Both ends clamp, and the answer says what was settled on rather
+      // than erroring at a caller who can do nothing about it.
+      expect((await bufferMethod(tap)({ capacity: 10_000 }) as { capacity: number }).capacity)
+        .toBe(20);
+      expect((await bufferMethod(tap)({ capacity: 1 }) as { capacity: number }).capacity)
+        .toBe(TRACING_BUFFER_MINIMUM);
+
+      await expect(bufferMethod(tap)({ capacity: 'lots' })).rejects.toThrow('must be a number');
     } finally {
       tap.uninstall();
     }
@@ -314,15 +333,15 @@ class OrderActor extends Actor<{ kind: string; id: number }> {
  * Only `registerMethod` is exercised, so a stub of that one call is a
  * truer test subject than a whole `DevToolsServer`.
  */
-function recordMethod(tap: SpanTap): DevToolsRequestHandler {
+function bufferMethod(tap: SpanTap): DevToolsRequestHandler {
   const registered = new Map<string, DevToolsRequestHandler>();
   tap.installMethods({
     registerMethod(method: string, handler: DevToolsRequestHandler) {
       registered.set(method, handler);
     },
   } as unknown as DevToolsServer);
-  const handler = registered.get('tracing.record');
-  if (handler === undefined) throw new Error('SpanTap did not register tracing.record');
+  const handler = registered.get('tracing.buffer');
+  if (handler === undefined) throw new Error('SpanTap did not register tracing.buffer');
   return handler;
 }
 
@@ -334,7 +353,6 @@ describe('SpanTap — sender and payload', () => {
     tap.install((payload) => payloads.push(payload));
     tap.subscribersChanged(1);          // also switches payload capture on
     try {
-      await recordMethod(tap)({ enabled: true });
       const ref = system.spawn(Props.create(() => new OrderActor()), 'orders');
       ref.tell({ kind: 'place', id: 7 });
       await settle(80);
@@ -351,19 +369,21 @@ describe('SpanTap — sender and payload', () => {
     }
   });
 
-  test('stops capturing payloads when nobody is watching', async () => {
+  test('captures payloads from attach, and stops at detach', () => {
     const system = newSystem('span-payload-off');
     const tap = new SpanTap(system, 100, 20);
-    tap.install(() => {});
     const tracing = system.extension(TracingExtensionId);
 
-    tap.subscribersChanged(1);
+    tap.install(() => {});
+    // Payloads are part of what is recorded, not something the panel
+    // switches on — a span kept without one is a row that cannot say
+    // which message it was.
     expect(tracing.isCapturingMessagePayloads()).toBe(true);
 
-    tap.subscribersChanged(0);
-    expect(tracing.isCapturingMessagePayloads()).toBe(false);
-
     tap.subscribersChanged(1);
+    tap.subscribersChanged(0);
+    expect(tracing.isCapturingMessagePayloads()).toBe(true);
+
     tap.uninstall();
     expect(tracing.isCapturingMessagePayloads()).toBe(false);
   });
