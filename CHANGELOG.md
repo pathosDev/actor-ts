@@ -179,6 +179,13 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
     stays on screen for 30 seconds**, greyed out and red, before it is
     swept: the actor worth looking at is usually the one that just died,
     and removing its row on the spot meant you never saw it.
+  - **The actors panel lists every node**, each under its own heading —
+    which is how a singleton hosted on one node, or work piling up on
+    one of several, becomes visible at all.  Paths repeat across a
+    cluster (every node runs the same system name), so trees are kept
+    apart by address.  Remote nodes report whole trees each round and the
+    client diffs them, so an actor that dies on a peer gets the same
+    thirty-second tombstone a local one does.
   - **The overview covers the whole cluster.**  Every clustered node with
     DevTools attached runs an agent that answers for itself; the node
     serving the UI polls them on its sampling tick and reports both the

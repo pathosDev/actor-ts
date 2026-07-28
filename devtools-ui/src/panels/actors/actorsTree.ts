@@ -72,6 +72,23 @@ export class ActorTreeModel {
   }
 
   /**
+   * Fold a complete tree in, marking whatever is no longer in it stopped.
+   *
+   * How a remote node's tree arrives: it has no channel to push a spawn
+   * as it happens, so it reports everything each round.  Diffing here
+   * rather than accepting it wholesale is what keeps a remote actor that
+   * died visible for its thirty seconds, exactly as a local one is.
+   */
+  applyFullTree(actors: ReadonlyArray<ActorNode>, atMs: number): void {
+    const present = new Set(actors.map((actor) => actor.path));
+    for (const actor of actors) this.upsert(actor);
+    for (const path of [...this.nodes.keys()]) {
+      if (present.has(path) || this.stopped.has(path)) continue;
+      this.markStopped(path, atMs);
+    }
+  }
+
+  /**
    * Drop tombstones older than `retentionMs`.  Returns whether anything
    * went, so a caller can skip a re-render on a quiet tick.
    */

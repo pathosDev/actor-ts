@@ -100,8 +100,19 @@ Der lebende Supervision-Baum, vom Root-Guardian abwärts.
   statt über den Namen erraten — so verschwinden auch ihre Kinder, und
   eine DevTools-Websocket-Verbindung ist ein Kind ihres Hubs.
 
-Der Baum kommt als ein Snapshot plus Deltas, damit ein System, das
+Im Cluster listet das Panel **jeden Knoten** unter einer eigenen
+Überschrift — so sieht man, dass ein Knoten ein Singleton hostet und die
+anderen nicht, oder dass sich nur bei einem die Arbeit staut. Pfade
+wiederholen sich über Knoten hinweg (alle tragen denselben Systemnamen),
+die Bäume werden deshalb über die Adresse auseinandergehalten, nicht über
+den Pfad.
+
+Der lokale Baum kommt als ein Snapshot plus Deltas, damit ein System, das
 ständig Actors erzeugt, nicht jedes Mal den ganzen Baum überträgt.
+Entfernte Knoten melden jede Runde ihren kompletten Baum — sie haben
+keinen Kanal, um einen Spawn im Moment des Entstehens zu schicken —, und
+ein Actor, der darin nicht mehr auftaucht, bekommt dieselben dreißig
+Sekunden Grabstein wie ein lokaler.
 Mailbox-Tiefen laufen über einen eigenen Stream und aktualisieren
 sekündlich.
 

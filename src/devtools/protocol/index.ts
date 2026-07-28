@@ -55,6 +55,7 @@ export type {
 
 export {
   actorChangedPayload,
+  actorNodeTreePayload,
   actorRestartedPayload,
   actorStartedPayload,
   actorStoppedPayload,
@@ -65,6 +66,7 @@ export type {
   ActorCellState,
   ActorChangedPayload,
   ActorNode,
+  ActorNodeTreePayload,
   ActorRestartedPayload,
   ActorStartedPayload,
   ActorStoppedPayload,

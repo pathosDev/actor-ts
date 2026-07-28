@@ -18,6 +18,14 @@ export type ActorCellState =
 
 /** One node of the actor tree. */
 export interface ActorNode {
+  /**
+   * Cluster address of the node this actor lives on, or `'local'`.
+   *
+   * Paths are not unique across a cluster — every node runs the same
+   * system name, so `/user/orders` exists on all of them.  The address
+   * is what tells two of them apart.
+   */
+  readonly nodeAddress: string;
   /** Full path, e.g. `actor-ts://system/user/orders/order-42`. */
   readonly path: string;
   /** Path of the parent, or `null` for the root guardian. */
@@ -77,10 +85,27 @@ export interface ActorChangedPayload {
   readonly actor: ActorNode;
 }
 
+/**
+ * The complete tree of one *other* node.
+ *
+ * Peers report whole trees rather than deltas: a remote node has no
+ * channel to push a spawn down as it happens, and reconstructing deltas
+ * from two snapshots on the sending side would duplicate work the client
+ * already does.  Replaces everything known about that node.
+ */
+export interface ActorNodeTreePayload {
+  readonly kind: 'actor-node-tree';
+  readonly atMs: number;
+  readonly address: string;
+  readonly actors: ReadonlyArray<ActorNode>;
+}
+
 /** An actor terminated; its subtree is gone with it. */
 export interface ActorStoppedPayload {
   readonly kind: 'actor-stopped';
   readonly atMs: number;
+  /** Which node's tree this path belongs to — paths repeat across nodes. */
+  readonly nodeAddress: string;
   readonly path: string;
 }
 
@@ -88,6 +113,7 @@ export interface ActorStoppedPayload {
 export interface ActorRestartedPayload {
   readonly kind: 'actor-restarted';
   readonly atMs: number;
+  readonly nodeAddress: string;
   readonly path: string;
   readonly reason: string;
 }
@@ -107,6 +133,7 @@ export type ActorStreamPayload =
   | ActorTreeSnapshotPayload
   | ActorStartedPayload
   | ActorChangedPayload
+  | ActorNodeTreePayload
   | ActorStoppedPayload
   | ActorRestartedPayload;
 
@@ -132,17 +159,31 @@ export function actorChangedPayload(atMs: number, actor: ActorNode): ActorChange
 }
 
 /** @internal */
-export function actorStoppedPayload(atMs: number, path: string): ActorStoppedPayload {
-  return { kind: 'actor-stopped', atMs, path };
+export function actorNodeTreePayload(
+  atMs: number,
+  address: string,
+  actors: ReadonlyArray<ActorNode>,
+): ActorNodeTreePayload {
+  return { kind: 'actor-node-tree', atMs, address, actors };
+}
+
+/** @internal */
+export function actorStoppedPayload(
+  atMs: number,
+  nodeAddress: string,
+  path: string,
+): ActorStoppedPayload {
+  return { kind: 'actor-stopped', atMs, nodeAddress, path };
 }
 
 /** @internal */
 export function actorRestartedPayload(
   atMs: number,
+  nodeAddress: string,
   path: string,
   reason: string,
 ): ActorRestartedPayload {
-  return { kind: 'actor-restarted', atMs, path, reason };
+  return { kind: 'actor-restarted', atMs, nodeAddress, path, reason };
 }
 
 /** @internal */
