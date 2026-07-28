@@ -14,9 +14,6 @@ import type { PanelContext, PanelInstance } from '../../shell/PanelRegistry.js';
 import { ActorTreeModel, type TreeRow } from './actorsTree.js';
 import type { ActorCellState, MailboxDepthEntry } from '../../../../src/devtools/protocol/index.js';
 
-/** DevTools' own actors, which would otherwise clutter the tree. */
-const DEVTOOLS_ACTOR_PREFIX = 'devtools-';
-
 /**
  * How long a stopped actor stays on screen, greyed and red.
  *
@@ -167,25 +164,17 @@ export function mount(host: HTMLElement, context: PanelContext): PanelInstance {
 }
 
 /**
- * Drop DevTools' own actors, and anything under them.
+ * Drop DevTools' own actors.
  *
- * Filtering row by row would leave a hidden parent's children on screen
- * at their original indent.  Rows arrive in depth-first order, so one
- * pass carrying the hidden prefixes forward is enough.
+ * The server marks them, so this no longer has to guess from names —
+ * which missed their children, and a DevTools websocket connection is a
+ * child of the DevTools hub.
  */
 function withoutInternal(
   rows: ReadonlyArray<TreeRow>,
   hide: boolean,
 ): ReadonlyArray<TreeRow> {
-  if (!hide) return rows;
-  const hidden: string[] = [];
-  return rows.filter((row) => {
-    const path = row.node.path;
-    if (hidden.some((prefix) => path.startsWith(`${prefix}/`))) return false;
-    if (!row.node.name.startsWith(DEVTOOLS_ACTOR_PREFIX)) return true;
-    hidden.push(path);
-    return false;
-  });
+  return hide ? rows.filter((row) => !row.node.internal) : rows;
 }
 
 function renderRow(

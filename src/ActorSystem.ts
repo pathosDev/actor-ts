@@ -74,6 +74,17 @@ export class ActorSystem {
    */
   _traceRootSpans = false;
 
+  /**
+   * @internal Attach the serialised message to each `actor.receive`
+   * span.  Owned by `TracingExtension`; see `captureMessagePayloads`.
+   *
+   * Separate from {@link _traceRootSpans} because the costs differ: one
+   * decides *whether* to open a span, this one decides whether to
+   * `JSON.stringify` a user object while doing so.  Production tracing
+   * wants the first without paying for the second.
+   */
+  _traceMessagePayloads = false;
+
   private _terminating = false;
   private _terminated = false;
   private _terminationResolvers: Array<() => void> = [];

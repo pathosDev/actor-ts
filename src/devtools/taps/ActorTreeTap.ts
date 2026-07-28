@@ -139,6 +139,7 @@ export class ActorTreeTap implements DevToolsTap {
       suspended: false,
       dispatcher: null,
       childCount: 0,
+      internal: false,
     }));
   }
 
@@ -197,6 +198,7 @@ function toActorNode(cell: CellInspection): ActorNode {
     suspended: cell.suspended,
     dispatcher: cell.dispatcher,
     childCount: cell.childCount,
+    internal: cell.internal,
   };
 }
 

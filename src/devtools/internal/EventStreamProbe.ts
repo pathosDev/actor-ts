@@ -50,7 +50,7 @@ export function subscribeToEventStream<T extends object>(
     }
   }
 
-  const ref: ActorRef<T> = system.spawn(Props.create(() => new ProbeActor()), name);
+  const ref: ActorRef<T> = system.spawn(Props.create(() => new ProbeActor()).asInternal(), name);
   system.eventStream.subscribe(ref as ActorRef, channel);
 
   let stopped = false;
