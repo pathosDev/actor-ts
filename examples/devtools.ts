@@ -21,15 +21,19 @@
  * Multi-system examples (cluster demos, two-node persistence) call
  * `attachDevTools` per system and each gets its own port, counting up
  * from `DEVTOOLS_PORT` — so a three-node cluster is 9333, 9334, 9335.
+ * That counter is per process, so a cluster built from *separate*
+ * terminals would have every node claim 9333; the first free port in the
+ * range is taken instead, the same way the cluster transport scans for
+ * its own port.
  *
  *   --devtools          enable (any shell)
  *   DEVTOOLS=1          enable (POSIX shells)
  *   --devtools-port=N   first port to use (default 9333)
  *   DEVTOOLS_PORT=N     same, via the environment
  */
-import type { ActorSystem } from '../src/index.js';
+import { concat, type ActorSystem } from '../src/index.js';
 import type { Cluster } from '../src/cluster/Cluster.js';
-import { DevTools, DevToolsOptions } from '../src/devtools/index.js';
+import { DevTools, DevToolsOptions, type DevToolsBinding } from '../src/devtools/index.js';
 
 /** Handle returned by {@link attachDevTools}; inert when DevTools is off. */
 export interface ExampleDevTools {
@@ -52,6 +56,14 @@ const DISABLED: ExampleDevTools = {
 
 /** Next port to hand out — bumped per attachment within one process. */
 let nextPort = 0;
+
+/**
+ * How many ports the scan tries before giving up.
+ *
+ * Matches `MAX_NODE_SLOTS` in the cluster examples: however many nodes
+ * you can start there, each of them can have DevTools.
+ */
+const PORT_SCAN_SLOTS = 16;
 
 /** Per-attachment overrides. */
 export interface AttachDevToolsOptions {
@@ -81,17 +93,84 @@ export async function attachDevTools(
   if (!isEnabled()) return DISABLED;
 
   if (nextPort === 0) nextPort = readPort();
-  const port = options.port ?? nextPort++;
-  const devtoolsOptions = DevToolsOptions.create().withPort(port);
-  if (options.cluster !== undefined) devtoolsOptions.withCluster(options.cluster);
-  // No banner here: `DevTools.attach` already logs the URL it bound.
-  const devtools = await DevTools.attach(system, devtoolsOptions);
+  const first = options.port ?? nextPort++;
+  // An explicit port is an instruction, not a hint: honour it exactly so
+  // a script that publishes "DevTools is on 9400" stays true.
+  const slots = options.port === undefined ? PORT_SCAN_SLOTS : 1;
+  const devtools = await attachScanning(system, options, first, slots);
+  if (devtools === null) return DISABLED;
 
   return {
     url: devtools.url,
     holdOpen: () => waitForInterrupt(devtools.url),
     detach: () => devtools.detach(),
   };
+}
+
+/**
+ * Bind the first free port from `first`, or give up without DevTools.
+ *
+ * A cluster started from three terminals is three processes, each with
+ * its own copy of the counter above and so each claiming 9333 — the
+ * second and third have to move along, the same way the cluster
+ * transport scans for its own port.
+ *
+ * The port is *probed* rather than attached-and-retried, because a
+ * failed attach is not free: it has already spawned the DevTools hub,
+ * whose actor name is then taken for as long as its termination takes to
+ * settle, and the retry fails on that instead of the port.
+ *
+ * Whatever remains unsolved, the example still starts.  A debugger that
+ * cannot bind is not a reason for the program under debug to die — which
+ * is exactly what happened before: "voice backend failed to start: Is
+ * port 9333 in use?".
+ */
+async function attachScanning(
+  system: ActorSystem,
+  options: AttachDevToolsOptions,
+  first: number,
+  slots: number,
+): Promise<DevToolsBinding | null> {
+  for (let offset = 0; offset < slots; offset++) {
+    const port = first + offset;
+    if (slots > 1 && !(await isPortFree(system, port))) continue;
+    const devtoolsOptions = DevToolsOptions.create().withPort(port);
+    if (options.cluster !== undefined) devtoolsOptions.withCluster(options.cluster);
+    try {
+      // No banner here: `DevTools.attach` already logs the URL it bound.
+      const binding = await DevTools.attach(system, devtoolsOptions);
+      // Leave the shared counter past what we took, so a second system
+      // in this process does not probe this port again.
+      if (options.port === undefined) nextPort = port + 1;
+      return binding;
+    } catch (cause) {
+      const reason = cause instanceof Error ? cause.message : String(cause);
+      system.log.warn(`DevTools not attached — continuing without it: ${reason}`);
+      return null;
+    }
+  }
+  system.log.warn(
+    `DevTools not attached — continuing without it: ports ${first}-${first + slots - 1} are all in use`,
+  );
+  return null;
+}
+
+/**
+ * Is this port free?
+ *
+ * Answered by binding it through the framework's own HTTP layer and
+ * letting go again, so the check works the same on Bun, Node and Deno
+ * instead of guessing at each runtime's `EADDRINUSE` wording.  An empty
+ * route matches nothing, which is all a probe needs.
+ */
+async function isPortFree(system: ActorSystem, port: number): Promise<boolean> {
+  try {
+    const probe = await system.http(port, { host: '127.0.0.1' }).bind(concat());
+    await probe.unbind();
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function isEnabled(): boolean {

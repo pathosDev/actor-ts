@@ -195,3 +195,23 @@ describe('HttpExtension — server builder + client', () => {
     }
   });
 });
+
+describe('HttpExtension — rebinding an address', () => {
+  test('unbind frees the shutdown task, so the same port can be bound again', async () => {
+    const system = newSystem('http-rebind');
+    const first = await bindOk(system);
+    await first.unbind();
+
+    // Re-binding the very same address used to throw "task … already
+    // registered": the shutdown task is named after the address and
+    // outlived the server it belonged to.
+    const second = await system.extension(HttpExtensionId)
+      .newServerAt(first.host, first.port)
+      .useBackend(new FastifyBackend({ logger: false }))
+      .bind(get(() => complete(Status.OK, 'ok')));
+    expect(second.port).toBe(first.port);
+
+    await second.unbind();
+    await system.terminate();
+  });
+});

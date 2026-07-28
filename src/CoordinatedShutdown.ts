@@ -137,6 +137,24 @@ export class CoordinatedShutdown implements Extension {
     this.tasks.set(phase, list);
   }
 
+  /**
+   * Unregister a task, returning whether one was there.
+   *
+   * A task registered for a resource that has since been released must
+   * be able to go with it.  Without this, a component that registers on
+   * acquire — the HTTP layer's `http-unbind-<host>:<port>`, say — could
+   * never re-acquire the same resource in one process: the second
+   * registration collides with a task whose binding no longer exists.
+   */
+  removeTask(phase: string, name: string): boolean {
+    const list = this.tasks.get(phase);
+    if (list === undefined) return false;
+    const index = list.findIndex((t) => t.name === name);
+    if (index < 0) return false;
+    list.splice(index, 1);
+    return true;
+  }
+
   /** Add a custom phase.  `dependsOn` tells the coordinator where in the order it sits. */
   addPhase(def: PhaseDefinition): void {
     if (this.phases.has(def.name)) {

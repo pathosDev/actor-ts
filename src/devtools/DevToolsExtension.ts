@@ -20,6 +20,8 @@ import { DevToolsServer, type DevToolsBinding } from './DevToolsServer.js';
 export class DevToolsExtension implements Extension {
   private server: DevToolsServer | null = null;
   private binding: DevToolsBinding | null = null;
+  /** Shutdown wiring is per system, not per attachment — see below. */
+  private shutdownHooksInstalled = false;
 
   constructor(private readonly system: ActorSystem) {}
 
@@ -39,7 +41,18 @@ export class DevToolsExtension implements Extension {
       return this.binding;
     }
     const server = this.createServer(options);
-    const bound = await server.bind();
+    let bound: DevToolsBinding;
+    try {
+      bound = await server.bind();
+    } catch (cause) {
+      // A failed bind has to leave the system exactly as it was.  It did
+      // not: the server stayed installed, so a caller retrying on
+      // another port — which is what a second cluster node started from
+      // its own terminal does — tripped over our own half-attachment
+      // instead of the port conflict it was working around.
+      await this.detach();
+      throw cause;
+    }
     // Route the handle's `detach` back through the extension so the
     // attachment state is cleared too — otherwise `isAttached()` would
     // keep reporting true and a later `attach()` would hand back a
@@ -78,6 +91,23 @@ export class DevToolsExtension implements Extension {
     new DevToolsOptionsValidator().validate(settings);
     const server = new DevToolsServer(this.system, settings);
     this.server = server;
+    this.installShutdownHooks();
+    return server;
+  }
+
+  /**
+   * Wire teardown into the system's lifetime, at most once.
+   *
+   * Both hooks call `detach()`, which is a no-op when nothing is
+   * attached, so one registration covers every attachment this extension
+   * ever makes.  Registering per attachment threw on the second one —
+   * `addTask` rejects a duplicate name — which made attach/detach/attach
+   * impossible and turned a retry after a port conflict into a different
+   * error.
+   */
+  private installShutdownHooks(): void {
+    if (this.shutdownHooksInstalled) return;
+    this.shutdownHooksInstalled = true;
     // Tear down with the rest of the service layer, so a SIGTERM
     // releases the port and stops the taps instead of leaving a
     // half-instrumented system behind.
@@ -92,7 +122,6 @@ export class DevToolsExtension implements Extension {
     // and holds a port open, keeping the process alive forever — so
     // follow the system's own lifetime as well.
     void this.system.whenTerminated().then(() => this.detach());
-    return server;
   }
 }
 

@@ -196,3 +196,29 @@ describe('CoordinatedShutdown Reasons', () => {
     expect(sig.toString()).toContain('SIGTERM');
   });
 });
+
+describe('CoordinatedShutdown — removing tasks', () => {
+  test('a removed task does not run, and its name is free again', async () => {
+    const system = newSystem('cs-remove');
+    const shutdown = system.extension(CoordinatedShutdownId);
+    const ran: string[] = [];
+
+    shutdown.addTask(Phases.ServiceUnbind, 'release', async () => { ran.push('first'); });
+    expect(shutdown.removeTask(Phases.ServiceUnbind, 'release')).toBe(true);
+
+    // The point of removal: the same name can be registered again, which
+    // is what lets a component re-acquire a resource it gave back.
+    shutdown.addTask(Phases.ServiceUnbind, 'release', async () => { ran.push('second'); });
+
+    await shutdown.run();
+    expect(ran).toEqual(['second']);
+  });
+
+  test('removing something that is not there is not an error', () => {
+    const system = newSystem('cs-remove-missing');
+    const shutdown = system.extension(CoordinatedShutdownId);
+    expect(shutdown.removeTask(Phases.ServiceUnbind, 'never-added')).toBe(false);
+    expect(shutdown.removeTask('no-such-phase', 'never-added')).toBe(false);
+    void system.terminate();
+  });
+});

@@ -230,6 +230,13 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   stamped first in the constructor.  `Date.now() - system.startedAtMs` is
   the system's uptime, and unlike a monitoring tool's own clock it does
   not restart when that tool attaches, detaches or reconnects.
+- **`CoordinatedShutdown.removeTask(phase, name)`** — unregister a task,
+  so a component that registers on acquiring a resource can register
+  again after releasing it.  Without it, `bind()` → `unbind()` →
+  `bind()` on the same address was impossible: the HTTP layer's task is
+  named `http-unbind-<host>:<port>` and outlived the server it belonged
+  to, so the second bind collided with a task for a server that no
+  longer existed.  `unbind()` now removes it.
 - **`Props.asInternal()`** — marks an actor as belonging to tooling
   rather than to the application, inherited by its children.  Whole-system
   instrumentation skips it, which is what keeps a debugger out of its own
@@ -415,6 +422,22 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   exact peer).  Site-only — no runtime or public-API impact.
 
 ### Fixed
+
+- **DevTools no longer stops a clustered example from starting.** Three
+  nodes started from three terminals are three processes, each claiming
+  port 9333, and the second and third died outright: *"voice backend
+  failed to start: Is port 9333 in use?"*.  A debugger that cannot bind
+  is not a reason for the program under debug to die.  The examples now
+  take the first free port in the range — `9333`, `9334`, `9335` with no
+  flags — and, if that fails too, log a warning and run without DevTools.
+  Four separate faults were in the way, each hidden behind the last: the
+  example gave up on the first conflict; a failed `attach()` left the
+  extension half-attached so a retry hit *"task devtools-detach already
+  registered"*; `unbind()` left its own shutdown task behind so the same
+  port could never be re-bound; and DevTools' actors kept their names
+  until an asynchronous termination settled, so re-attaching hit *"Child
+  name 'devtools-hub' is not unique"*.  `attach()` now rolls back
+  cleanly, and `attach` → `detach` → `attach` on one system works.
 
 - **Relational journals: a contention-aborted append reports
   `JournalConcurrencyError`, not an opaque `JournalError`** (#479).  The

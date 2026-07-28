@@ -14,6 +14,7 @@ import { Actor } from '../../Actor.js';
 import type { ActorRef } from '../../ActorRef.js';
 import type { ActorSystem } from '../../ActorSystem.js';
 import { Props } from '../../Props.js';
+import { freeActorName } from './ActorNames.js';
 
 /**
  * Class-channel token accepted by `EventStream.subscribe`.  Abstract
@@ -50,7 +51,10 @@ export function subscribeToEventStream<T extends object>(
     }
   }
 
-  const ref: ActorRef<T> = system.spawn(Props.create(() => new ProbeActor()).asInternal(), name);
+  const ref: ActorRef<T> = system.spawn(
+    Props.create(() => new ProbeActor()).asInternal(),
+    freeActorName(system, name),
+  );
   system.eventStream.subscribe(ref as ActorRef, channel);
 
   let stopped = false;

@@ -211,6 +211,14 @@ Multi-system examples give each system its own port, counting up from
 bun run examples/cluster/singleton-hello.ts --devtools
 ```
 
+A cluster built from *separate terminals* works the same way, even
+though each process has its own copy of that counter: the first free
+port in the range is taken, so three `bun run examples/voice/backend/main.ts
+--devtools` give you `9333`, `9334` and `9335` without any flags. If
+none is free — or anything else about DevTools fails — the example logs
+a warning and starts anyway. A debugger that cannot bind is not a reason
+for the program under debug to die.
+
 Long-running examples (the chat and voice backends, the HTTP services)
 do not park — they already run until you stop them.  The wiring lives
 in `examples/devtools.ts`, which is about thirty lines if you want to
