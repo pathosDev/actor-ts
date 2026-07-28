@@ -8,7 +8,9 @@ export function formatDuration(milliseconds: number): string {
   if (!Number.isFinite(milliseconds) || milliseconds < 0) return '—';
   if (milliseconds < 1000) return `${Math.round(milliseconds)} ms`;
   const seconds = milliseconds / 1000;
-  if (seconds < 60) return `${seconds.toFixed(1)} s`;
+  // A tenth of a second is noise in an uptime; it only ever draws the
+  // eye to a digit that changes on its own.
+  if (seconds < 60) return `${Math.round(seconds)} s`;
   const minutes = Math.floor(seconds / 60);
   if (minutes < 60) return `${minutes} min`;
   const hours = Math.floor(minutes / 60);

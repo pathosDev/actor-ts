@@ -34,6 +34,7 @@ import type { DevToolsServer, DevToolsTap } from '../DevToolsServer.js';
 import { HISTORY_MAXIMUM_SPAN_MS, StatsHistoryStore } from '../internal/StatsHistoryStore.js';
 import { NodeSampler } from '../internal/NodeSampler.js';
 import type { DevToolsFederation } from '../cluster/Federation.js';
+import type { ClusterMembership } from '../internal/ClusterMembership.js';
 
 /** How many hot mailboxes the overview shows, across all nodes. */
 const TOP_MAILBOX_COUNT = 5;
@@ -70,6 +71,7 @@ export class StatsTap implements DevToolsTap {
      */
     sampler: NodeSampler,
     private readonly federation: DevToolsFederation | null = null,
+    private readonly membership: ClusterMembership | null = null,
   ) {
     this.sampler = sampler;
   }
@@ -170,17 +172,14 @@ export class StatsTap implements DevToolsTap {
     });
   }
 
+  /**
+   * The cluster tile, counting the recently departed.
+   *
+   * A cluster of three that has lost one is "2 / 3 up", not a cluster of
+   * two — the missing node is the whole point of looking.
+   */
   private clusterSummary(): ClusterStatsSummary | null {
-    const cluster = this.cluster;
-    if (cluster === null) return null;
-    const members = cluster.getMembers();
-    return {
-      members: members.length,
-      up: members.filter((member) => member.status === 'up').length,
-      unreachable: members.filter((member) => member.status === 'unreachable').length,
-      leader: cluster.leader().fold(() => null as string | null, (m) => m.address.toString()),
-      selfAddress: cluster.selfAddress.toString(),
-    };
+    return this.membership?.summary() ?? null;
   }
 }
 

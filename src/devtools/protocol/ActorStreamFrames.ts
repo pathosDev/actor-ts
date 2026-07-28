@@ -97,6 +97,14 @@ export interface ActorNodeTreePayload {
   readonly kind: 'actor-node-tree';
   readonly atMs: number;
   readonly address: string;
+  /**
+   * The node has stopped answering, so this tree is the last one it
+   * sent.  Without saying so the panel would show a dead node's actors
+   * as cheerfully running.
+   */
+  readonly stale: boolean;
+  /** When the tree was received — how old "last known" actually is. */
+  readonly receivedAtMs: number;
   readonly actors: ReadonlyArray<ActorNode>;
 }
 
@@ -163,8 +171,10 @@ export function actorNodeTreePayload(
   atMs: number,
   address: string,
   actors: ReadonlyArray<ActorNode>,
+  stale: boolean,
+  receivedAtMs: number,
 ): ActorNodeTreePayload {
-  return { kind: 'actor-node-tree', atMs, address, actors };
+  return { kind: 'actor-node-tree', atMs, address, stale, receivedAtMs, actors };
 }
 
 /** @internal */

@@ -179,6 +179,17 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
     stays on screen for 30 seconds**, greyed out and red, before it is
     swept: the actor worth looking at is usually the one that just died,
     and removing its row on the spot meant you never saw it.
+  - The panel reads as one thing rather than three.  Corners are square
+    throughout — rounded boxes made a developer tool look like a landing
+    page — the per-node columns line up with their headings, uptimes
+    under a minute lose their decimal, and the actor tree no longer
+    scrolls inside its own box: the page scrolls, so the bottom of the
+    tree is reachable without hunting for the right scrollbar.
+  - Two places disagreed about how many nodes a cluster has, so one that
+    had lost a node showed three rows and "2 / 2 up".  The cluster panel
+    and the overview now read the same retained membership, and the
+    topology graph colours a node by what it is now rather than by the
+    status it had when it left.  The chosen timespan survives a reload.
   - **The overview's charts have a timespan** — one minute to
     twenty-four hours, five by default — and the series is recorded on
     the server rather than accumulated in the browser.  A panel opened an

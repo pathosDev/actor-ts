@@ -99,7 +99,9 @@ export class ActorTreeTap implements DevToolsTap {
     for (const peer of federation.peers(atMs)) {
       const actors = federation.actorsOf(peer.figures.address);
       if (actors === null) continue;
-      out.push(actorNodeTreePayload(atMs, peer.figures.address, actors));
+      out.push(actorNodeTreePayload(
+        atMs, peer.figures.address, actors, peer.stale, peer.receivedAtMs,
+      ));
     }
     return out;
   }

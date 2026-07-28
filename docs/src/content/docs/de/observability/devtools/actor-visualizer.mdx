@@ -125,7 +125,9 @@ ständig Actors erzeugt, nicht jedes Mal den ganzen Baum überträgt.
 Entfernte Knoten melden jede Runde ihren kompletten Baum — sie haben
 keinen Kanal, um einen Spawn im Moment des Entstehens zu schicken —, und
 ein Actor, der darin nicht mehr auftaucht, bekommt dieselben dreißig
-Sekunden Grabstein wie ein lokaler.
+Sekunden Grabstein wie ein lokaler. Ein Knoten, der aufhört zu
+antworten, behält seinen letzten Baum — gedimmt und mit neutralen
+Status-Punkten: Diese Actors laufen nicht, niemand weiß, was sie tun.
 Mailbox-Tiefen laufen über einen eigenen Stream und aktualisieren
 sekündlich.
 
