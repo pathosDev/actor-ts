@@ -64,6 +64,16 @@ export class ActorSystem {
    */
   _dispatchObserver: DispatchObserver | null = null;
 
+  /**
+   * @internal Open a span for every message, not only for ones that
+   * already belong to a trace.  Owned by `TracingExtension`; see
+   * `recordRootSpans`.
+   *
+   * A field for the same reason as {@link _dispatchObserver}: it is read
+   * once per message, and an extension lookup per message is not.
+   */
+  _traceRootSpans = false;
+
   private _terminating = false;
   private _terminated = false;
   private _terminationResolvers: Array<() => void> = [];
