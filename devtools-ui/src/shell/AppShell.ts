@@ -10,7 +10,7 @@ import { h, replaceChildren } from '../core/dom.js';
 import { effect } from '../core/signal.js';
 import { currentRoute, panelHref } from '../core/router.js';
 import { currentTheme, toggleTheme } from '../core/theme.js';
-import type { ConnectionStatus, TapClient } from '../core/tapClient.js';
+import { DEVTOOLS_PROTOCOL_VERSION, type ConnectionStatus, type TapClient } from '../core/tapClient.js';
 import { findPanel, registeredPanels, type PanelInstance } from './PanelRegistry.js';
 import { panelStatusOf } from './panelStatus.js';
 import { ACTOR_TS_LOGO_SVG } from '../assets/logo.js';
@@ -57,7 +57,14 @@ export function mountAppShell(root: HTMLElement, tap: TapClient): void {
   }, [tap.status]);
 
   effect(() => {
-    systemName.textContent = tap.welcome.get()?.systemName ?? '…';
+    const welcome = tap.welcome.get();
+    systemName.textContent = welcome?.systemName ?? '…';
+    // Versions matter when something looks wrong and never otherwise, so
+    // they live on the badge you are already hovering rather than taking
+    // a tile on the overview.
+    statusBadge.title = welcome === null
+      ? ''
+      : `actor-ts ${welcome.serverVersion} · tap protocol v${DEVTOOLS_PROTOCOL_VERSION}`;
   }, [tap.welcome]);
 
   effect(() => renderNavigation(navigation, tap), [tap.welcome, currentRoute]);
