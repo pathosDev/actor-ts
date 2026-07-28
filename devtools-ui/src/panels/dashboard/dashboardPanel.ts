@@ -35,6 +35,35 @@ import {
  */
 const HISTORY_CAPACITY = 6_000;
 
+/** Where the chosen timespan is remembered, alongside the theme. */
+const SPAN_STORAGE_KEY = 'actor-ts.devtools.span';
+
+/**
+ * The timespan this browser last chose.
+ *
+ * Persisted because it is a preference, not a session detail: someone
+ * who works in "last 1 h" wants that after a reload, and reloading is
+ * often the first thing they do when something looks wrong.
+ * `localStorage` throws in a sandboxed context, so a failure just means
+ * the default.
+ */
+function storedSpanMs(): number {
+  try {
+    const raw = Number(window.localStorage.getItem(SPAN_STORAGE_KEY));
+    return STATS_HISTORY_SPANS_MS.includes(raw) ? raw : STATS_HISTORY_DEFAULT_SPAN_MS;
+  } catch {
+    return STATS_HISTORY_DEFAULT_SPAN_MS;
+  }
+}
+
+function rememberSpanMs(spanMs: number): void {
+  try {
+    window.localStorage.setItem(SPAN_STORAGE_KEY, String(spanMs));
+  } catch {
+    /* nothing to do — the choice simply will not survive the reload */
+  }
+}
+
 /** Uptime has to advance on its own; nothing pushes a frame for it. */
 const CLOCK_INTERVAL_MS = 1000;
 
@@ -51,7 +80,7 @@ interface UptimeAnchor {
 }
 
 export function mount(host: HTMLElement, context: PanelContext): PanelInstance {
-  let spanMs = STATS_HISTORY_DEFAULT_SPAN_MS;
+  let spanMs = storedSpanMs();
   const history = new StatsHistory(HISTORY_CAPACITY, spanMs);
   let uptime: UptimeAnchor | null = null;
   let resolutionMs = 0;
@@ -72,7 +101,7 @@ export function mount(host: HTMLElement, context: PanelContext): PanelInstance {
     },
   }, ...STATS_HISTORY_SPANS_MS.map((choice) => h('option', {
     value: String(choice),
-    ...(choice === STATS_HISTORY_DEFAULT_SPAN_MS ? { selected: true } : {}),
+    ...(choice === spanMs ? { selected: true } : {}),
   }, `last ${spanLabel(choice)}`))) as HTMLSelectElement;
 
   /**
@@ -84,6 +113,7 @@ export function mount(host: HTMLElement, context: PanelContext): PanelInstance {
    */
   async function loadHistory(wantedMs: number): Promise<void> {
     spanMs = wantedMs;
+    rememberSpanMs(wantedMs);
     try {
       const result = await context.tap.request<StatsHistoryResult>(
         'stats.history', { spanMs: wantedMs },
@@ -156,7 +186,7 @@ export function mount(host: HTMLElement, context: PanelContext): PanelInstance {
   // repaint — nothing re-renders on its own.
   const disposeTheme = effect(render, [currentTheme]);
 
-  void loadHistory(STATS_HISTORY_DEFAULT_SPAN_MS);
+  void loadHistory(spanMs);
   const clock = setInterval(renderTiles, CLOCK_INTERVAL_MS);
   const onResize = (): void => renderCharts(throughput, population, backlog, history);
   window.addEventListener('resize', onResize);

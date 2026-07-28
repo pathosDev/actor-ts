@@ -46,7 +46,7 @@
   --dt-state-error: #ef4444;
   --dt-state-idle: #64748b;
 
-  --dt-radius: 10px;
+  --dt-radius: 0;
   --dt-gap: 16px;
   --dt-font: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
   --dt-font-mono: ui-monospace, 'JetBrains Mono', 'Fira Code', Menlo, monospace;
@@ -129,7 +129,7 @@ a:hover { text-decoration: underline; }
   background: transparent;
   border: 1px solid var(--dt-border);
   color: var(--dt-text);
-  border-radius: 8px;
+  border-radius: 0;
   padding: 4px 10px;
   cursor: pointer;
   font: inherit;
@@ -160,7 +160,7 @@ a:hover { text-decoration: underline; }
 .dt-nav__item {
   display: block;
   padding: 7px 11px;
-  border-radius: 8px;
+  border-radius: 0;
   color: var(--dt-text);
   font-size: 13.5px;
 }
@@ -184,7 +184,7 @@ a:hover { text-decoration: underline; }
 .dt-tile {
   background: var(--dt-bg-elevated);
   border: 1px solid var(--dt-border);
-  border-radius: var(--dt-radius);
+  border-radius: 0;
   padding: 13px 15px;
   box-shadow: var(--dt-shadow);
 }
@@ -215,7 +215,7 @@ a:hover { text-decoration: underline; }
   background: var(--dt-bg-elevated);
   border: 1px solid var(--dt-border);
   border-left: 3px solid var(--dt-card-accent, var(--dt-accent));
-  border-radius: var(--dt-radius);
+  border-radius: 0;
   padding: 15px 17px;
   color: var(--dt-text);
   box-shadow: var(--dt-shadow);
@@ -236,7 +236,7 @@ a:hover { text-decoration: underline; }
   text-transform: uppercase;
   letter-spacing: 0.06em;
   padding: 2px 7px;
-  border-radius: 999px;
+  border-radius: 0;
   background: var(--dt-accent-low);
   color: var(--dt-accent-strong);
 }
@@ -246,7 +246,7 @@ a:hover { text-decoration: underline; }
 
 .dt-notice {
   border: 1px solid var(--dt-state-error);
-  border-radius: var(--dt-radius);
+  border-radius: 0;
   padding: 14px 16px;
   margin-bottom: var(--dt-gap);
   background: color-mix(in srgb, var(--dt-state-error) 12%, transparent);
@@ -283,7 +283,7 @@ a:hover { text-decoration: underline; }
 .dt-nodetable__row {
   padding: 7px 12px;
   border: 1px solid var(--dt-border);
-  border-radius: 8px;
+  border-radius: 0;
   background: var(--dt-bg-elevated);
   font-size: 12.5px;
 }
@@ -300,6 +300,8 @@ a:hover { text-decoration: underline; }
   white-space: nowrap;
 }
 .dt-nodetable__figure { font-family: var(--dt-font-mono); text-align: right; }
+/* The heading has to move with the column, or the two disagree. */
+.dt-nodetable__head > span:not(:first-child) { text-align: right; }
 
 /* --------------------------------- chart -------------------------------- */
 
@@ -326,7 +328,7 @@ a:hover { text-decoration: underline; }
   height: 140px;
   background: var(--dt-bg-elevated);
   border: 1px solid var(--dt-border);
-  border-radius: var(--dt-radius);
+  border-radius: 0;
 }
 .dt-chart__legend {
   display: flex;
@@ -338,7 +340,7 @@ a:hover { text-decoration: underline; }
   color: var(--dt-text-muted);
 }
 .dt-legend__item { display: inline-flex; align-items: center; gap: 6px; }
-.dt-legend__swatch { width: 10px; height: 3px; border-radius: 2px; }
+.dt-legend__swatch { width: 10px; height: 3px; border-radius: 0; }
 .dt-legend__peak { margin-left: auto; font-family: var(--dt-font-mono); }
 
 /* -------------------------- horizontal bar rows ------------------------- */
@@ -360,7 +362,7 @@ a:hover { text-decoration: underline; }
 .dt-hotrow__bar {
   display: block;
   height: 8px;
-  border-radius: 4px;
+  border-radius: 0;
   background: var(--dt-bg-elevated);
   border: 1px solid var(--dt-border);
   overflow: hidden;
@@ -382,7 +384,7 @@ a:hover { text-decoration: underline; }
   flex: 1 1 220px;
   max-width: 340px;
   padding: 6px 10px;
-  border-radius: 8px;
+  border-radius: 0;
   border: 1px solid var(--dt-border);
   background: var(--dt-bg-elevated);
   color: var(--dt-text);
@@ -401,13 +403,18 @@ a:hover { text-decoration: underline; }
 
 /* ------------------------------ actor tree ------------------------------ */
 
+/* No inner scroller.  A viewport inside a viewport gives you two
+   scrollbars and a tree whose bottom you cannot reach without finding
+   the right one first; the page scrolls instead. */
 .dt-tree {
   border: 1px solid var(--dt-border);
-  border-radius: var(--dt-radius);
   background: var(--dt-bg-elevated);
-  overflow: auto;
-  max-height: 62vh;
 }
+
+/* A node that stopped answering: its tree is the last one it sent, so
+   nothing in it is known to be running any more. */
+.dt-tree__group--stale { opacity: 0.55; }
+.dt-tree__group--stale .dt-state { background: var(--dt-state-idle); }
 .dt-tree__row {
   display: flex;
   align-items: center;
@@ -468,7 +475,7 @@ a:hover { text-decoration: underline; }
 .dt-badge {
   font-size: 11px;
   padding: 1px 7px;
-  border-radius: 999px;
+  border-radius: 0;
   background: var(--dt-accent-low);
   color: var(--dt-accent-strong);
   white-space: nowrap;
@@ -497,7 +504,7 @@ a:hover { text-decoration: underline; }
 .dt-shards { display: flex; flex-direction: column; gap: 18px; margin-bottom: 24px; }
 .dt-shardmap {
   border: 1px solid var(--dt-border);
-  border-radius: var(--dt-radius);
+  border-radius: 0;
   background: var(--dt-bg-elevated);
   padding: 13px 15px;
   display: flex;
@@ -538,7 +545,7 @@ a:hover { text-decoration: underline; }
 .dt-tracetable__row {
   padding: 6px 10px;
   border: 1px solid var(--dt-border);
-  border-radius: 8px;
+  border-radius: 0;
   background: var(--dt-bg-elevated);
   color: var(--dt-text);
   font: inherit;
@@ -571,7 +578,7 @@ a:hover { text-decoration: underline; }
   width: 100%;
   background: var(--dt-bg-elevated);
   border: 1px solid var(--dt-border);
-  border-radius: var(--dt-radius);
+  border-radius: 0;
 }
 
 .dt-spandetails { min-width: 0; display: flex; flex-direction: column; gap: 10px; margin-top: 12px; }
@@ -597,7 +604,7 @@ a:hover { text-decoration: underline; }
   font-size: 12px;
   background: var(--dt-bg-elevated);
   border: 1px solid var(--dt-border);
-  border-radius: 8px;
+  border-radius: 0;
   padding: 10px 12px;
   margin: 0;
   overflow-x: auto;
@@ -610,7 +617,7 @@ a:hover { text-decoration: underline; }
 
 .dt-explain {
   border: 1px solid var(--dt-border);
-  border-radius: var(--dt-radius);
+  border-radius: 0;
   background: var(--dt-bg-elevated);
   overflow: auto;
   max-height: 62vh;
@@ -665,7 +672,7 @@ a:hover { text-decoration: underline; }
   align-items: center;
   padding: 4px 9px;
   border: 1px solid var(--dt-border);
-  border-radius: 8px;
+  border-radius: 0;
   background: var(--dt-bg-elevated);
   color: var(--dt-text);
   font: inherit;
@@ -691,7 +698,7 @@ a:hover { text-decoration: underline; }
   font-family: var(--dt-font-mono);
   font-size: 12.5px;
   padding: 3px 9px;
-  border-radius: 6px;
+  border-radius: 0;
   border-left: 3px solid transparent;
 }
 .dt-diff__row--added { border-left-color: var(--dt-state-ok); }

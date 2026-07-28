@@ -8,7 +8,7 @@
  * honest about what is on screen.
  */
 import { h, replaceChildren } from '../../core/dom.js';
-import { formatCount } from '../../core/format.js';
+import { formatCount, formatDuration } from '../../core/format.js';
 import { signal } from '../../core/signal.js';
 import type { PanelContext, PanelInstance } from '../../shell/PanelRegistry.js';
 import { ActorTreeModel, type TreeRow } from './actorsTree.js';
@@ -46,6 +46,8 @@ export function mount(host: HTMLElement, context: PanelContext): PanelInstance {
    * a single map keyed by path would have them overwrite each other.
    */
   const models = new Map<string, ActorTreeModel>();
+  /** Nodes that stopped answering → when they last did. */
+  const staleNodes = new Map<string, number>();
   const modelFor = (address: string): ActorTreeModel => {
     const existing = models.get(address);
     if (existing !== undefined) return existing;
@@ -126,16 +128,28 @@ export function mount(host: HTMLElement, context: PanelContext): PanelInstance {
       stoppedShown += rows.filter((row) => row.stoppedAtMs !== null).length;
       if (rows.length === 0) continue;
 
+      const staleSince = staleNodes.get(address);
       if (grouped) {
         blocks.push(h('h3', { class: 'dt-tree__node' },
           address,
           h('span', { class: 'dt-tree__nodecount' }, `${formatCount(rows.length)}`),
+          staleSince === undefined
+            ? null
+            : h('span', { class: 'dt-badge dt-badge--error' },
+              `not answering · last seen ${formatDuration(now - staleSince)} ago`),
         ));
       }
-      blocks.push(...rows.map((row) => renderRow(row, mailboxes, now, () => {
+      // A node that has stopped answering left a snapshot behind.  Its
+      // actors are not running — nobody knows what they are — so the
+      // whole group is dimmed and its state dots go neutral rather than
+      // reporting the green they had when the last tree arrived.
+      const group = h('div', {
+        class: staleSince === undefined ? 'dt-tree__group' : 'dt-tree__group dt-tree__group--stale',
+      }, ...rows.map((row) => renderRow(row, mailboxes, now, () => {
         model.toggle(row.node.path);
         render();
       })));
+      blocks.push(group);
     }
 
     // Tombstones are rows but not population, so they are counted apart
@@ -161,6 +175,8 @@ export function mount(host: HTMLElement, context: PanelContext): PanelInstance {
         break;
       case 'actor-node-tree':
         modelFor(payload.address).applyFullTree(payload.actors, payload.atMs);
+        if (payload.stale) staleNodes.set(payload.address, payload.receivedAtMs);
+        else staleNodes.delete(payload.address);
         break;
       case 'actor-started':
       case 'actor-changed':

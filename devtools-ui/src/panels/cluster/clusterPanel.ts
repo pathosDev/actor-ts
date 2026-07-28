@@ -157,9 +157,14 @@ function renderTopology(
 
   members.forEach((member, index) => {
     const point = placed[index]!;
-    const color = themeColor(STATUS_TOKENS[member.status], '#64748b');
+    // A departed node is listed from memory; drawing it in the green it
+    // had when it left is the one thing this graph must not do.
+    const color = themeColor(
+      member.gone ? '--dt-state-error' : STATUS_TOKENS[member.status], '#64748b',
+    );
     const group = svg('g', { class: 'dt-topology__node' });
-    group.appendChild(svg('title', {}, `${member.address} — ${member.status}`));
+    group.appendChild(svg('title', {},
+      `${member.address} — ${member.gone ? 'not answering' : member.status}`));
     group.appendChild(svg('circle', {
       cx: point.x, cy: point.y,
       r: member.address === leader ? 15 : 11,

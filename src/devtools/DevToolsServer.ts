@@ -56,6 +56,7 @@ import { freeActorName } from './internal/ActorNames.js';
 import { NodeSampler } from './internal/NodeSampler.js';
 import { DevToolsNodeAgent } from './cluster/NodeAgent.js';
 import { DevToolsFederation } from './cluster/Federation.js';
+import { ClusterMembership } from './internal/ClusterMembership.js';
 
 /** Version reported in the handshake; kept in step with `package.json`. */
 const DEVTOOLS_SERVER_VERSION = '0.11.0';
@@ -119,6 +120,7 @@ export class DevToolsServer implements DevToolsHubContext {
   private readonly sampler: NodeSampler;
   private agent: DevToolsNodeAgent | null = null;
   private federation: DevToolsFederation | null = null;
+  private membership: ClusterMembership | null = null;
 
   constructor(
     private readonly system: ActorSystem,
@@ -189,6 +191,7 @@ export class DevToolsServer implements DevToolsHubContext {
       this.agent.start();
       this.federation = new DevToolsFederation(cluster);
       this.federation.start();
+      this.membership = new ClusterMembership(cluster);
     }
     const stats = new StatsTap(
       this.system,
@@ -196,6 +199,7 @@ export class DevToolsServer implements DevToolsHubContext {
       settings.statsIntervalMs ?? 1_000,
       this.sampler,
       this.federation,
+      this.membership,
     );
     this.registerTap(stats);
     stats.installMethods(this);
@@ -259,7 +263,7 @@ export class DevToolsServer implements DevToolsHubContext {
           reason: 'this system is not clustered — pass `cluster` in DevToolsOptions',
         });
       } else {
-        this.registerTap(new ClusterTap(settings.cluster, this.system));
+        this.registerTap(new ClusterTap(settings.cluster, this.system, this.membership!));
         this.registerPanel({ id: 'cluster', status: 'active' });
       }
     }
@@ -326,6 +330,7 @@ export class DevToolsServer implements DevToolsHubContext {
     this.agent = null;
     this.federation?.stop();
     this.federation = null;
+    this.membership = null;
     this.sampler.stop();
     if (this.binding) await this.binding.unbind();
     this.binding = null;

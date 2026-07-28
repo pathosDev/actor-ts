@@ -32,7 +32,6 @@ import {
 } from '../../cluster/ClusterEvents.js';
 import { match, P } from 'ts-pattern';
 import {
-  CLUSTER_MEMBER_RETENTION_MS,
   clusterEventPayload,
   clusterSnapshotPayload,
   shardMapChangedPayload,
@@ -45,6 +44,7 @@ import {
 import type { ActorSystem } from '../../ActorSystem.js';
 import type { Cancellable } from '../../Scheduler.js';
 import type { DevToolsTap } from '../DevToolsServer.js';
+import type { ClusterMembership } from '../internal/ClusterMembership.js';
 
 /** How often departed members are checked for expiry. */
 const SWEEP_INTERVAL_MS = 30_000;
@@ -74,18 +74,15 @@ export class ClusterTap implements DevToolsTap {
   private sweeper: Cancellable | null = null;
   /** Latest shard map per sharded type, as learned from events. */
   private readonly shardMaps = new Map<string, ShardMapInfo>();
-  /**
-   * Every member seen since attach, live or not.
-   *
-   * Kept on the server rather than in the browser so the record survives
-   * a page reload — the reload usually happens *because* something went
-   * wrong, which is the worst moment to forget which node left.
-   */
-  private readonly seen = new Map<string, ClusterMemberInfo>();
-
   constructor(
     private readonly cluster: Cluster,
     private readonly system: ActorSystem,
+    /**
+     * Shared with the overview.  Two memories of who is in the cluster
+     * disagreed the moment a node left: this panel kept it listed while
+     * the overview counted only the living.
+     */
+    private readonly membership: ClusterMembership,
   ) {}
 
   install(emit: (payload: DevToolsStreamPayload) => void): void {
@@ -112,7 +109,6 @@ export class ClusterTap implements DevToolsTap {
     this.sweeper = null;
     this.unsubscribe?.();
     this.unsubscribe = null;
-    this.seen.clear();
     this.emit = null;
   }
 
@@ -120,45 +116,23 @@ export class ClusterTap implements DevToolsTap {
     return [this.currentSnapshot()];
   }
 
-  /**
-   * Live membership, plus everyone recently in it.
-   *
-   * Refreshed from the cluster each time rather than accumulated from
-   * events alone: the cluster's own view is authoritative, and rebuilding
-   * from it means a missed event cannot leave a ghost behind.
-   */
+  /** Live membership, plus everyone recently in it. */
   private currentSnapshot(): DevToolsStreamPayload {
     const now = Date.now();
-    const live = new Set<string>();
-    for (const member of this.cluster.getMembers()) {
-      const info = this.toMemberInfo(member, now, false);
-      live.add(info.address);
-      this.seen.set(info.address, info);
-    }
-    for (const [address, info] of this.seen) {
-      if (live.has(address) || info.gone) continue;
-      this.seen.set(address, { ...info, gone: true });
-    }
-    this.sweep(now);
-
     return clusterSnapshotPayload(
       now,
       this.cluster.selfAddress.toString(),
       this.cluster.leader().fold(() => null as string | null, (m) => m.address.toString()),
-      [...this.seen.values()],
+      this.membership.members(now),
       [...this.shardMaps.values()],
     );
   }
 
-  /** Forget departed members once they are older than the retention. */
-  private sweep(nowMs = Date.now()): void {
-    let removed = false;
-    for (const [address, info] of this.seen) {
-      if (!info.gone || nowMs - info.lastSeenAtMs < CLUSTER_MEMBER_RETENTION_MS) continue;
-      this.seen.delete(address);
-      removed = true;
-    }
-    if (removed) this.emit?.(this.currentSnapshot());
+  /** Re-state the list when a retained member ages out of it. */
+  private sweep(): void {
+    const before = this.membership.members().length;
+    this.membership.refresh();
+    if (this.membership.members().length !== before) this.emit?.(this.currentSnapshot());
   }
 
   private onClusterEvent(event: ClusterEvent): void {
@@ -180,9 +154,7 @@ export class ClusterTap implements DevToolsTap {
       this.onUnknownEvent();
       return;
     }
-    this.emit?.(clusterEventPayload(
-      Date.now(), name, this.toMemberInfo(event.member, Date.now(), false),
-    ));
+    this.emit?.(clusterEventPayload(Date.now(), name, this.toMemberInfo(event.member)));
     // Membership moved, so re-state the whole list.  Events alone tell a
     // client what changed but not that a departed node is still being
     // remembered, which is the point of keeping it.
@@ -212,15 +184,15 @@ export class ClusterTap implements DevToolsTap {
   /** A cluster event added after this build — ignore it. */
   private onUnknownEvent(): void {}
 
-  private toMemberInfo(member: Member, nowMs: number, gone: boolean): ClusterMemberInfo {
+  private toMemberInfo(member: Member): ClusterMemberInfo {
     return {
       address: member.address.toString(),
       status: member.status,
       roles: [...member.roles],
       version: member.version,
       isSelf: member.address.equals(this.cluster.selfAddress),
-      lastSeenAtMs: nowMs,
-      gone,
+      lastSeenAtMs: Date.now(),
+      gone: false,
     };
   }
 }
