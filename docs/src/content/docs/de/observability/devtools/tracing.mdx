@@ -70,10 +70,18 @@ macht jede Nachricht zu einem Root-Span, solange das Panel offen ist:
   begrenzt (Default 2000), und das Panel meldet, was es verwerfen musste.
 - Es braucht einen Tracer; den installiert DevTools, solange es attached
   ist.
-- DevTools' eigene Actors sind ausgenommen. Sie sind mit
+- DevTools' eigene Actors sind ausgenommen — weder als Root-Span noch
+  als Kind-Span, denn seine Probes empfangen Event-Stream-Publishes
+  *während* einer Anwendungsnachricht und tauchten sonst mitten in deren
+  Route wieder auf. Sie sind mit
   [`Props.asInternal()`](/de/fundamentals/props/#asinternal) markiert —
   ohne das würde der Hub, der die eben aufgezeichneten Spans publiziert,
   jeden Batch als Payload des nächsten zurückspeisen.
+
+Auf einem ansonsten untätigen System heißt das: Die Übersicht kann eine
+Nachrichtenrate melden, während die Trace-Liste leer bleibt — dieser
+Verkehr ist DevTools im Gespräch mit deinem Browser, nicht deine
+Actors.
 
 Nachrichten-Payloads werden nur erfasst, solange das Panel abonniert
 ist, und sind in Tiefe und Länge begrenzt, bevor sie auf die Leitung

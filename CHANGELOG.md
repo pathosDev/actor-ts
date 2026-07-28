@@ -236,7 +236,10 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   output: DevTools' hub publishes the spans it just recorded, so tracing
   it fed every batch back in as the payload of the next one.  Application
   actors should not be marked — hiding real work from a profiler is how a
-  performance problem stays invisible.
+  performance problem stays invisible.  A marked actor opens no span at
+  all, root or child: its probes receive event-stream publishes *during*
+  an application message, so excluding only roots left them showing up in
+  the middle of that message's route.
 - **`TracingExtension.captureMessagePayloads(enabled)` /
   `isCapturingMessagePayloads()`** — attach the message itself, as JSON,
   to each `actor.receive` span.  A separate switch from
