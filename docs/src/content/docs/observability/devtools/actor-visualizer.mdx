@@ -64,8 +64,17 @@ The live supervision tree, from the root guardian down.
   as a search that failed.
 - **Badges** show what is unusual: messages waiting, stashed messages, a
   suspended mailbox. An idle actor carries none.
+- **The state dot is live.** Green running, amber suspended or
+  terminating, red terminated. Lifecycle events only announce births,
+  deaths and restarts — nothing announces a suspension — so the tap
+  re-inspects the tree each second and sends the cells that moved.
 - **A restart flashes** the row. The path survives a restart, so nothing
   moves in the tree — without the flash it would be invisible.
+- **A stopped actor stays for 30 seconds**, greyed out with its name
+  struck through and a "stopped 12s ago" badge, then disappears. The
+  actor you want to look at is usually the one that just died; removing
+  its row the instant it stopped meant you never saw it. Uncheck *Keep
+  stopped* if you would rather see only the living.
 - **Hide DevTools actors** is on by default. DevTools runs its own hub
   and taps as ordinary actors; they are real, so they are listed, but
   they are not what you came to look at.
@@ -79,6 +88,14 @@ Every WebSocket connection to DevTools spawns a connection actor, and
 the framework's own machinery (sharding, singletons, pub-sub) spawns
 actors too.  Nothing is hidden except DevTools' own, and that is a
 checkbox.
+</Aside>
+
+<Aside type="note" title="Why /system is empty">
+`ActorSystem` builds two guardians under the root, `/user` and
+`/system`, but **every** `spawn` goes through the user guardian — the
+system guardian exists as a supervision placeholder and never gets
+children. So a childless `/system` is the truth, not a missing branch,
+and DevTools' own actors live under `/user` like everyone else's.
 </Aside>
 
 ## Cluster
