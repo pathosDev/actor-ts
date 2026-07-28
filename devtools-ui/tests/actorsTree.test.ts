@@ -4,6 +4,7 @@ import type { ActorNode } from '../../src/devtools/protocol/index.js';
 
 function node(path: string, parentPath: string | null, className = 'SomeActor'): ActorNode {
   return {
+    nodeAddress: 'local',
     path,
     parentPath,
     name: path.split('/').pop() ?? path,
@@ -171,5 +172,29 @@ describe('ActorTreeModel — filtering', () => {
 
   test('whitespace is not a filter', () => {
     expect(sampleTree().rows('   ')).toHaveLength(5);
+  });
+});
+
+describe('ActorTreeModel — a whole tree at once', () => {
+  test('folds a whole tree in, and tombstones what left it', () => {
+    const model = new ActorTreeModel();
+    model.applyFullTree([node('/user', null), node('/user/a', '/user')], 1_000);
+    expect(model.size).toBe(2);
+
+    // The second round no longer mentions `/user/a`.  A remote node
+    // reports everything each time, so its absence *is* the stop event —
+    // and it earns the same thirty seconds a local one gets.
+    model.applyFullTree([node('/user', null), node('/user/b', '/user')], 2_000);
+    const rows = model.rows();
+    const gone = rows.find((row) => row.node.path === '/user/a');
+    expect(gone).toBeDefined();
+    expect(gone!.stoppedAtMs).toBe(2_000);
+    expect(gone!.node.cellState).toBe('terminated');
+    expect(rows.find((row) => row.node.path === '/user/b')!.stoppedAtMs).toBeNull();
+    expect(model.size).toBe(2);
+
+    // Coming back is just another upsert.
+    model.applyFullTree([node('/user', null), node('/user/a', '/user')], 3_000);
+    expect(model.rows().find((row) => row.node.path === '/user/a')!.stoppedAtMs).toBeNull();
   });
 });

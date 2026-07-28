@@ -200,7 +200,12 @@ export class DevToolsServer implements DevToolsHubContext {
 
     if (this.isPanelEnabled('actors')) {
       const sampleIntervalMs = settings.mailboxSampleIntervalMs ?? 1_000;
-      this.registerTap(new ActorTreeTap(this.system, sampleIntervalMs));
+      this.registerTap(new ActorTreeTap(
+        this.system,
+        sampleIntervalMs,
+        cluster?.selfAddress.toString(),
+        this.federation,
+      ));
       this.registerTap(new MailboxSamplerTap(
         this.system,
         sampleIntervalMs,

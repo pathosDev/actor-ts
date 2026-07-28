@@ -58,7 +58,10 @@ export class DevToolsNodeAgent {
       round: body.round,
       figures: this.figures(),
       ...(body.wantActors
-        ? { actors: this.system._inspectTree().map(toActorNode) }
+        ? {
+          actors: this.system._inspectTree()
+            .map((cell) => toActorNode(cell, this.cluster.selfAddress.toString())),
+        }
         : {}),
     };
     const to = parseAddress(body.from);

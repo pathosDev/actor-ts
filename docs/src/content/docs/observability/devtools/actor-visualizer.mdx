@@ -89,8 +89,17 @@ The live supervision tree, from the root guardian down.
   matched by name, so their children — a DevTools websocket connection
   is a child of its hub — are hidden too.
 
-The tree arrives as one snapshot followed by deltas, so a system that
-spawns constantly does not re-send its whole tree every time. Mailbox
+In a cluster the panel lists **every node**, each under its own
+heading — which is how you see that one node is hosting a singleton and
+the others are not, or that only one of them is piling up work.  Paths
+repeat across nodes (they all run the same system name), so the trees
+are kept apart by address rather than by path.
+
+The local tree arrives as one snapshot followed by deltas, so a system
+that spawns constantly does not re-send its whole tree every time.
+Remote nodes report their whole tree each round — they have no channel
+to push a spawn as it happens — and an actor that stops appearing in one
+is tombstoned for the same thirty seconds a local one gets. Mailbox
 depths come on their own stream and refresh once a second.
 
 <Aside type="note" title="Why the tree can look busier than your code">

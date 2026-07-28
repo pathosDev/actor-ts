@@ -12,7 +12,11 @@ import { formatCount } from '../../core/format.js';
 import { signal } from '../../core/signal.js';
 import type { PanelContext, PanelInstance } from '../../shell/PanelRegistry.js';
 import { ActorTreeModel, type TreeRow } from './actorsTree.js';
-import type { ActorCellState, MailboxDepthEntry } from '../../../../src/devtools/protocol/index.js';
+import type {
+  ActorCellState,
+  ActorNode,
+  MailboxDepthEntry,
+} from '../../../../src/devtools/protocol/index.js';
 
 /**
  * How long a stopped actor stays on screen, greyed and red.
@@ -36,7 +40,19 @@ const STATE_TOKENS: Readonly<Record<ActorCellState, string>> = {
 };
 
 export function mount(host: HTMLElement, context: PanelContext): PanelInstance {
-  const model = new ActorTreeModel();
+  /**
+   * One tree per node.  Paths repeat across a cluster — every node runs
+   * the same system name, so `/user/orders` exists on all of them — and
+   * a single map keyed by path would have them overwrite each other.
+   */
+  const models = new Map<string, ActorTreeModel>();
+  const modelFor = (address: string): ActorTreeModel => {
+    const existing = models.get(address);
+    if (existing !== undefined) return existing;
+    const created = new ActorTreeModel();
+    models.set(address, created);
+    return created;
+  };
   const filter = signal('');
   const hideInternal = signal(true);
   const showStopped = signal(true);
@@ -90,39 +106,68 @@ export function mount(host: HTMLElement, context: PanelContext): PanelInstance {
 
   function render(): void {
     const now = Date.now();
-    // Age out tombstones here rather than only on a timer: a background
-    // browser tab has its intervals throttled to about once a minute,
-    // and a rendered frame is the moment it actually matters.
-    model.sweep(now, STOPPED_RETENTION_MS);
-    let rows = withoutInternal(model.rows(filter.get()), hideInternal.get());
-    if (!showStopped.get()) rows = rows.filter((row) => row.stoppedAtMs === null);
+    const addresses = [...models.keys()].sort();
+    const grouped = addresses.length > 1;
+    const blocks: Array<HTMLElement> = [];
+    let shown = 0;
+    let live = 0;
+    let stoppedShown = 0;
+
+    for (const address of addresses) {
+      const model = models.get(address)!;
+      // Age out tombstones here rather than only on a timer: a background
+      // browser tab has its intervals throttled to about once a minute,
+      // and a rendered frame is the moment it actually matters.
+      model.sweep(now, STOPPED_RETENTION_MS);
+      let rows = withoutInternal(model.rows(filter.get()), hideInternal.get());
+      if (!showStopped.get()) rows = rows.filter((row) => row.stoppedAtMs === null);
+      live += model.size;
+      shown += rows.length;
+      stoppedShown += rows.filter((row) => row.stoppedAtMs !== null).length;
+      if (rows.length === 0) continue;
+
+      if (grouped) {
+        blocks.push(h('h3', { class: 'dt-tree__node' },
+          address,
+          h('span', { class: 'dt-tree__nodecount' }, `${formatCount(rows.length)}`),
+        ));
+      }
+      blocks.push(...rows.map((row) => renderRow(row, mailboxes, now, () => {
+        model.toggle(row.node.path);
+        render();
+      })));
+    }
+
     // Tombstones are rows but not population, so they are counted apart
     // rather than inflating "n of m actors" past m.
-    const stoppedShown = rows.filter((row) => row.stoppedAtMs !== null).length;
-    summary.textContent = `${formatCount(rows.length - stoppedShown)} of ${formatCount(model.size)} actors`
+    summary.textContent = `${formatCount(shown - stoppedShown)} of ${formatCount(live)} actors`
+      + (grouped ? ` across ${formatCount(addresses.length)} nodes` : '')
       + (stoppedShown > 0 ? ` · ${formatCount(stoppedShown)} recently stopped` : '');
-    if (rows.length === 0) {
+    if (blocks.length === 0) {
       replaceChildren(rowsHost, h('p', { class: 'dt-empty' },
-        model.size === 0 ? 'Waiting for the actor tree…' : 'No actor matches that filter.'));
+        live === 0 ? 'Waiting for the actor tree…' : 'No actor matches that filter.'));
       return;
     }
-    replaceChildren(rowsHost, ...rows.map((row) => renderRow(row, mailboxes, now, () => {
-      model.toggle(row.node.path);
-      render();
-    })));
+    replaceChildren(rowsHost, ...blocks);
   }
 
   const stopActors = context.tap.listen('actors', (payload) => {
     switch (payload.kind) {
       case 'actor-tree-snapshot':
-        model.reset(payload.actors);
+        // One frame can carry several nodes; each replaces its own tree.
+        for (const [address, actors] of byNode(payload.actors)) {
+          modelFor(address).reset(actors);
+        }
+        break;
+      case 'actor-node-tree':
+        modelFor(payload.address).applyFullTree(payload.actors, payload.atMs);
         break;
       case 'actor-started':
       case 'actor-changed':
-        model.upsert(payload.actor);
+        modelFor(payload.actor.nodeAddress).upsert(payload.actor);
         break;
       case 'actor-stopped':
-        model.markStopped(payload.path, payload.atMs);
+        modelFor(payload.nodeAddress).markStopped(payload.path, payload.atMs);
         break;
       case 'actor-restarted':
         // The path survives a restart, so nothing structural changes —
@@ -149,7 +194,9 @@ export function mount(host: HTMLElement, context: PanelContext): PanelInstance {
   // sweeping itself happens in `render`, so this only has to keep the
   // badges counting up — throttling it in a background tab is harmless.
   const sweeper = setInterval(() => {
-    if (model.stoppedCount > 0) render();
+    for (const model of models.values()) {
+      if (model.stoppedCount > 0) { render(); return; }
+    }
   }, SWEEP_INTERVAL_MS);
 
   render();
@@ -161,6 +208,19 @@ export function mount(host: HTMLElement, context: PanelContext): PanelInstance {
       stopMailboxes();
     },
   };
+}
+
+/** Split one snapshot into the trees it actually contains. */
+function byNode(
+  actors: ReadonlyArray<ActorNode>,
+): ReadonlyMap<string, ActorNode[]> {
+  const out = new Map<string, ActorNode[]>();
+  for (const actor of actors) {
+    const bucket = out.get(actor.nodeAddress);
+    if (bucket === undefined) out.set(actor.nodeAddress, [actor]);
+    else bucket.push(actor);
+  }
+  return out;
 }
 
 /**

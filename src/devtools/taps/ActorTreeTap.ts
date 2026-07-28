@@ -15,6 +15,7 @@ import type { CellInspection } from '../../internal/Instrumentation.js';
 import { match, P } from 'ts-pattern';
 import {
   actorChangedPayload,
+  actorNodeTreePayload,
   actorRestartedPayload,
   actorStartedPayload,
   actorStoppedPayload,
@@ -25,6 +26,10 @@ import {
 } from '../protocol/index.js';
 import type { DevToolsTap } from '../DevToolsServer.js';
 import { subscribeToEventStream, type EventStreamProbe } from '../internal/EventStreamProbe.js';
+import type { DevToolsFederation } from '../cluster/Federation.js';
+
+/** Address used for the single node of a system with no cluster. */
+const LOCAL_ADDRESS = 'local';
 
 export class ActorTreeTap implements DevToolsTap {
   readonly stream: DevToolsStreamId = 'actors';
@@ -38,6 +43,9 @@ export class ActorTreeTap implements DevToolsTap {
   constructor(
     private readonly system: ActorSystem,
     private readonly intervalMs: number,
+    /** This node's cluster address, or `'local'` when unclustered. */
+    private readonly selfAddress: string = LOCAL_ADDRESS,
+    private readonly federation: DevToolsFederation | null = null,
   ) {}
 
   install(emit: (payload: DevToolsStreamPayload) => void): void {
@@ -59,14 +67,41 @@ export class ActorTreeTap implements DevToolsTap {
   }
 
   subscribersChanged(count: number): void {
+    // Peer trees are far larger than their figures, so they are only
+    // asked for while somebody is looking at the actors panel.
+    this.federation?.requestActors(count > 0);
     if (count > 0) this.startTicking();
     else this.stopTicking();
   }
 
   snapshot(): ReadonlyArray<DevToolsStreamPayload> {
-    const actors = this.system._inspectTree().map(toActorNode);
+    const atMs = Date.now();
+    const actors = this.localTree();
     for (const actor of actors) this.lastSeen.set(actor.path, actor);
-    return [actorTreeSnapshotPayload(Date.now(), actors)];
+    return [actorTreeSnapshotPayload(atMs, actors), ...this.peerTrees(atMs)];
+  }
+
+  private localTree(): ReadonlyArray<ActorNode> {
+    return this.system._inspectTree().map((cell) => toActorNode(cell, this.selfAddress));
+  }
+
+  /**
+   * Whatever each peer last reported.
+   *
+   * Re-sent every tick rather than diffed here: the client already knows
+   * how to fold a full tree into what it is showing, and doing it twice
+   * would be two places to get the same subtlety wrong.
+   */
+  private peerTrees(atMs: number): ReadonlyArray<DevToolsStreamPayload> {
+    const federation = this.federation;
+    if (federation === null) return [];
+    const out: DevToolsStreamPayload[] = [];
+    for (const peer of federation.peers(atMs)) {
+      const actors = federation.actorsOf(peer.figures.address);
+      if (actors === null) continue;
+      out.push(actorNodeTreePayload(atMs, peer.figures.address, actors));
+    }
+    return out;
   }
 
   private startTicking(): void {
@@ -96,8 +131,7 @@ export class ActorTreeTap implements DevToolsTap {
     if (emit === null) return;
     const atMs = Date.now();
     const alive = new Set<string>();
-    for (const cell of this.system._inspectTree()) {
-      const actor = toActorNode(cell);
+    for (const actor of this.localTree()) {
       alive.add(actor.path);
       const previous = this.lastSeen.get(actor.path);
       if (previous !== undefined && !hasMoved(previous, actor)) continue;
@@ -109,6 +143,7 @@ export class ActorTreeTap implements DevToolsTap {
     for (const path of this.lastSeen.keys()) {
       if (!alive.has(path)) this.lastSeen.delete(path);
     }
+    for (const tree of this.peerTrees(atMs)) emit(tree);
   }
 
   private onLifecycleEvent(
@@ -129,6 +164,7 @@ export class ActorTreeTap implements DevToolsTap {
     const cell = this.inspect(event.actor.path.toString());
     if (cell !== null) this.lastSeen.set(cell.path, cell);
     emit(actorStartedPayload(Date.now(), cell ?? {
+      nodeAddress: this.selfAddress,
       path: event.actor.path.toString(),
       parentPath: event.parentPath,
       name: event.actor.path.name,
@@ -146,11 +182,13 @@ export class ActorTreeTap implements DevToolsTap {
   private onActorStopped(event: ActorStopped, emit: (payload: DevToolsStreamPayload) => void): void {
     const path = event.actor.path.toString();
     this.lastSeen.delete(path);
-    emit(actorStoppedPayload(Date.now(), path));
+    emit(actorStoppedPayload(Date.now(), this.selfAddress, path));
   }
 
   private onActorRestarted(event: ActorRestarted, emit: (payload: DevToolsStreamPayload) => void): void {
-    emit(actorRestartedPayload(Date.now(), event.actor.path.toString(), event.cause.message));
+    emit(actorRestartedPayload(
+      Date.now(), this.selfAddress, event.actor.path.toString(), event.cause.message,
+    ));
   }
 
   /** A lifecycle variant added after this build — ignore it. */
@@ -161,7 +199,7 @@ export class ActorTreeTap implements DevToolsTap {
     // alternative (a live index) would have to be invalidated on every
     // mailbox change to stay truthful.
     const found = this.system._inspectTree().find((cell) => cell.path === path);
-    return found === undefined ? null : toActorNode(found);
+    return found === undefined ? null : toActorNode(found, this.selfAddress);
   }
 }
 
@@ -186,8 +224,9 @@ function hasMoved(previous: ActorNode, current: ActorNode): boolean {
  * wire protocol.  The explicit copy is what keeps a field added to the
  * runtime from silently becoming part of the published protocol.
  */
-function toActorNode(cell: CellInspection): ActorNode {
+function toActorNode(cell: CellInspection, nodeAddress: string): ActorNode {
   return {
+    nodeAddress,
     path: cell.path,
     parentPath: cell.parentPath,
     name: cell.name,
