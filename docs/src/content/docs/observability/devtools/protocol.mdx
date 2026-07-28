@@ -142,6 +142,7 @@ Pull operations, namespaced by the panel that owns them:
 | `journal.ids` / `journal.read` | Browse a persistence journal |
 | `replay.capabilities` / `replay.state` / `replay.diff` | Reconstruct past state |
 | `profiler.start` / `profiler.stop` | Control a profiling session |
+| `tracing.record` | Open a root span for every message, or stop |
 
 A method with no handler on this system answers `error` with code
 `unavailable` — the same signal the panel descriptor already gave, so a

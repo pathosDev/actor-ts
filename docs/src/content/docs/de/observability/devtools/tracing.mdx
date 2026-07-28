@@ -30,15 +30,32 @@ würden jeden Balken mit Breite null zeichnen.
 Das ist die eine Sache, die überrascht. Eine Cell öffnet einen
 `actor.receive`-Span, wenn die eingehende Nachricht einen Trace-Context
 trägt **oder** bereits ein Span aktiv ist — und den ersten startet
-nichts im Framework. Bis dein Code das tut, bleibt das Panel leer (und
-sagt das auch, mit dem Snippet unten).
+nichts im Framework. Ein schlichtes `ref.tell(...)` zeichnet also nichts
+auf, und ein sichtbar beschäftigtes System kann das Panel leer lassen.
 </Aside>
 
-## Einen Trace starten
+## Alle Nachrichten aufzeichnen
 
-Setze am Einstiegspunkt einen Span — ein HTTP-Handler, ein
-Broker-Consumer, ein geplanter Job —, und jedes `tell` darin trägt den
-Context weiter:
+Die Antwort des Panels darauf ist ein Schalter. **Record all messages**
+macht jede Nachricht zu einem Root-Span, solange das Panel offen ist:
+
+- Ausschalten, das Panel verlassen oder DevTools detachen beendet es
+  jeweils. Ein Tab, den jemand geöffnet und dann vergessen hat, darf das
+  System nicht dauerhaft alles tracen lassen.
+- Das Datenvolumen entspricht deinem Traffic. Das ist ein Debug-Modus,
+  keine Sampling-Strategie — Spans sind durch `spanBufferCapacity`
+  begrenzt (Default 2000), und das Panel meldet, was es verwerfen musste.
+- Es braucht einen Tracer; den installiert DevTools, solange es attached
+  ist.
+
+Aus Code heißt derselbe Schalter
+`system.extension(TracingExtensionId).recordRootSpans(true)`.
+
+## Einen Trace selbst starten
+
+In Produktion entscheidest du, was einen Trace wert ist. Setze am
+Einstiegspunkt einen Span — ein HTTP-Handler, ein Broker-Consumer, ein
+geplanter Job —, und jedes `tell` darin trägt den Context weiter:
 
 ```ts
 import { tracerOf } from 'actor-ts';
@@ -54,6 +71,14 @@ span.end();
 Ab da baut sich der Baum von selbst: Jeder Actor, der eine getracete
 Nachricht empfängt, öffnet einen Kind-Span, und jedes `tell` von dort
 reicht den Context weiter.
+
+<Aside type="tip" title="Den Tracer nach dem Attach holen, nicht davor">
+`tracerOf(system)` liefert den Tracer, der *gerade jetzt* installiert
+ist. In einer Variablen von vor `DevTools.attach` gehalten, ist es
+weiterhin der Noop-Tracer — dessen `withActiveSpan` deinen Callback
+ausführt und stillschweigend nichts aufzeichnet. Rufe `tracerOf(system)`
+an der Stelle auf, an der du ihn brauchst.
+</Aside>
 
 ## Mit einem vorhandenen Tracer leben
 

@@ -30,14 +30,31 @@ bar as zero-width.
 This is the one thing that surprises people.  A cell opens an
 `actor.receive` span when the incoming message carries a trace context
 **or** a span is already active — and nothing in the framework starts
-the first one.  Until your code does, the panel stays empty (and says
-so, with the snippet below).
+the first one.  So a plain `ref.tell(...)` records nothing, and a system
+that is plainly busy can leave the panel empty.
 </Aside>
 
-## Starting a trace
+## Record all messages
 
-Seed a span at your entry point — an HTTP handler, a broker consumer, a
-scheduled job — and every `tell` inside it carries the context onwards:
+The panel's answer to that is a switch. **Record all messages** makes
+every message a root span for as long as the panel is open:
+
+- Turning it off, leaving the panel, or detaching DevTools all stop it.
+  A tab somebody opened and walked away from must not leave the system
+  tracing everything forever.
+- Expect volume to match your traffic. This is a debugging mode, not a
+  sampling policy — spans are capped by `spanBufferCapacity` (default
+  2000) and the panel reports what it had to drop.
+- It needs a tracer, which DevTools installs while attached.
+
+From code the same switch is
+`system.extension(TracingExtensionId).recordRootSpans(true)`.
+
+## Starting a trace yourself
+
+In production you decide what is worth tracing. Seed a span at your
+entry point — an HTTP handler, a broker consumer, a scheduled job — and
+every `tell` inside it carries the context onwards:
 
 ```ts
 import { tracerOf } from 'actor-ts';
@@ -53,6 +70,13 @@ span.end();
 From there the tree builds itself: each actor that receives a traced
 message opens a child span, and each `tell` it makes passes the context
 along.
+
+<Aside type="tip" title="Fetch the tracer after attaching, not before">
+`tracerOf(system)` returns the tracer installed *right now*.  Held in a
+variable from before `DevTools.attach`, it is still the noop — whose
+`withActiveSpan` runs your callback and records nothing, silently.  Call
+`tracerOf(system)` at the point of use.
+</Aside>
 
 ## Living with an existing tracer
 
