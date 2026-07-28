@@ -74,6 +74,7 @@ export type {
 } from './ActorStreamFrames.js';
 
 export {
+  CLUSTER_MEMBER_RETENTION_MS,
   clusterEventPayload,
   clusterSnapshotPayload,
   shardMapChangedPayload,

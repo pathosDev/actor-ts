@@ -228,7 +228,7 @@ export class DevToolsServer implements DevToolsHubContext {
           reason: 'this system is not clustered — pass `cluster` in DevToolsOptions',
         });
       } else {
-        this.registerTap(new ClusterTap(settings.cluster));
+        this.registerTap(new ClusterTap(settings.cluster, this.system));
         this.registerPanel({ id: 'cluster', status: 'active' });
       }
     }

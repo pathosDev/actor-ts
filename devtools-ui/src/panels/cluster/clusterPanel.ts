@@ -21,6 +21,9 @@ import type {
   ShardMapInfo,
 } from '../../../../src/devtools/protocol/index.js';
 
+/** Ticks the "last seen" ages of members that have left. */
+const GONE_CLOCK_INTERVAL_MS = 1000;
+
 /** How many membership transitions the timeline keeps. */
 const TIMELINE_CAPACITY = 60;
 
@@ -100,10 +103,18 @@ export function mount(host: HTMLElement, context: PanelContext): PanelInstance {
   }
 
   const disposeTheme = effect(render, [currentTheme]);
+  // A departed node's "last seen" has to keep counting.  Nothing arrives
+  // on the stream to prompt it: membership changes are the events, and
+  // the whole point of a retained member is that it stopped producing
+  // any.
+  const clock = setInterval(() => {
+    if (members.some((member) => member.gone)) render();
+  }, GONE_CLOCK_INTERVAL_MS);
   render();
 
   return {
     dispose(): void {
+      clearInterval(clock);
       stop();
       disposeTheme();
     },
@@ -184,18 +195,38 @@ function renderMembers(
     replaceChildren(host);
     return;
   }
-  const sorted = [...members].sort((a, b) => a.address.localeCompare(b.address));
-  replaceChildren(host, ...sorted.map((member) => h('div', { class: 'dt-member' },
+  const now = Date.now();
+  // Live members first, then the departed, each group by address — so a
+  // node that dropped out does not shuffle the list it left.
+  const sorted = [...members].sort((a, b) =>
+    Number(a.gone) - Number(b.gone) || a.address.localeCompare(b.address));
+  replaceChildren(host, ...sorted.map((member) => h('div', {
+    class: member.gone ? 'dt-member dt-member--gone' : 'dt-member',
+  },
     h('span', {
       class: 'dt-state',
-      style: `background:${themeColor(STATUS_TOKENS[member.status], '#64748b')}`,
+      style: `background:${themeColor(
+        member.gone ? '--dt-state-error' : STATUS_TOKENS[member.status], '#64748b',
+      )}`,
     }),
     h('span', { class: 'dt-member__address' }, member.address),
-    h('span', { class: 'dt-member__status' }, member.status),
-    member.address === leader ? h('span', { class: 'dt-badge' }, 'leader') : null,
+    h('span', { class: 'dt-member__status' }, member.gone ? 'unreachable' : member.status),
+    member.gone
+      ? h('span', { class: 'dt-badge dt-badge--error' }, `last seen ${sinceLabel(now - member.lastSeenAtMs)}`)
+      : null,
+    member.address === leader && !member.gone ? h('span', { class: 'dt-badge' }, 'leader') : null,
     member.isSelf ? h('span', { class: 'dt-badge' }, 'self') : null,
     ...member.roles.map((role) => h('span', { class: 'dt-badge dt-badge--muted' }, role)),
   )));
+}
+
+/** Coarse ages read better than precise ones for something an hour old. */
+function sinceLabel(elapsedMs: number): string {
+  const seconds = Math.max(0, Math.round(elapsedMs / 1000));
+  if (seconds < 60) return `${seconds}s ago`;
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 60) return `${minutes}m ago`;
+  return `${Math.round(minutes / 60)}h ago`;
 }
 
 /* --------------------------------- shards -------------------------------- */

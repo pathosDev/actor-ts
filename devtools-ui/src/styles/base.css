@@ -434,6 +434,10 @@ a:hover { text-decoration: underline; }
 .dt-topology__legend { font-size: 12px; color: var(--dt-text-muted); margin: 4px 0 0; }
 
 .dt-member { display: flex; align-items: center; gap: 10px; font-size: 13px; }
+/* A node that left is listed from memory, not from the membership. */
+.dt-member--gone { opacity: 0.7; }
+.dt-member--gone .dt-member__address { text-decoration: line-through; }
+
 .dt-member__address { font-family: var(--dt-font-mono); color: var(--dt-text-strong); }
 .dt-member__status { color: var(--dt-text-muted); }
 

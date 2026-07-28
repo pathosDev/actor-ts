@@ -27,7 +27,27 @@ export interface ClusterMemberInfo {
   readonly version: number;
   /** True for the node serving these DevTools. */
   readonly isSelf: boolean;
+  /** When this member was last seen in the live membership. */
+  readonly lastSeenAtMs: number;
+  /**
+   * The member is no longer in the membership at all, and is listed from
+   * memory.
+   *
+   * A node that drops out is exactly the one you want to look at, and it
+   * used to vanish from the panel at the moment it became interesting.
+   * Retained entries age out after {@link CLUSTER_MEMBER_RETENTION_MS}.
+   */
+  readonly gone: boolean;
 }
+
+/**
+ * How long a departed member stays listed.
+ *
+ * An hour, because the question "what happened to that node?" is often
+ * asked long after it happened — by someone who was in a meeting when
+ * the alert fired.
+ */
+export const CLUSTER_MEMBER_RETENTION_MS = 60 * 60 * 1000;
 
 /** Where one shard currently lives. */
 export interface ShardAssignment {

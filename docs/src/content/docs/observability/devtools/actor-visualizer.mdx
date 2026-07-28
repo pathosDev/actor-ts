@@ -122,7 +122,12 @@ rather than disappearing.
   graph is complete and a simulation would only produce a slowly
   settling circle — while a ring draws the same membership the same way
   every time.
-- **Members** — address, status, roles, and who leads.
+- **Members** — address, status, roles, and who leads.  A node that
+  leaves the membership is **kept for an hour**, struck through and
+  red, with how long ago it was last seen.  The node that drops out is
+  the one you want to look at, and it used to disappear at exactly that
+  moment.  The record lives on the server, so reloading the page — which
+  is often the first thing you do — does not erase it.
 - **Shard distribution** — shards per region, per sharded type. Types
   appear as their coordinator republishes them (the framework keeps no
   central registry of sharded types), so a freshly opened panel fills in
