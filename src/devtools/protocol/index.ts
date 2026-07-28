@@ -52,6 +52,7 @@ export type {
 } from './StatsFrames.js';
 
 export {
+  actorChangedPayload,
   actorRestartedPayload,
   actorStartedPayload,
   actorStoppedPayload,
@@ -60,6 +61,7 @@ export {
 } from './ActorStreamFrames.js';
 export type {
   ActorCellState,
+  ActorChangedPayload,
   ActorNode,
   ActorRestartedPayload,
   ActorStartedPayload,

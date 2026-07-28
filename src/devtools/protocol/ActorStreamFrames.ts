@@ -57,6 +57,20 @@ export interface ActorStartedPayload {
   readonly actor: ActorNode;
 }
 
+/**
+ * A live actor whose inspected state moved since it was last reported.
+ *
+ * `actor-started` describes an actor at birth and nothing re-described
+ * it afterwards, so a cell that later suspended or filled its stash kept
+ * claiming to be a healthy `running` for the rest of the session.  The
+ * tap re-inspects on its sampling interval and sends only what changed.
+ */
+export interface ActorChangedPayload {
+  readonly kind: 'actor-changed';
+  readonly atMs: number;
+  readonly actor: ActorNode;
+}
+
 /** An actor terminated; its subtree is gone with it. */
 export interface ActorStoppedPayload {
   readonly kind: 'actor-stopped';
@@ -86,6 +100,7 @@ export interface MailboxSamplePayload {
 export type ActorStreamPayload =
   | ActorTreeSnapshotPayload
   | ActorStartedPayload
+  | ActorChangedPayload
   | ActorStoppedPayload
   | ActorRestartedPayload;
 
@@ -103,6 +118,11 @@ export function actorTreeSnapshotPayload(
 /** @internal */
 export function actorStartedPayload(atMs: number, actor: ActorNode): ActorStartedPayload {
   return { kind: 'actor-started', atMs, actor };
+}
+
+/** @internal */
+export function actorChangedPayload(atMs: number, actor: ActorNode): ActorChangedPayload {
+  return { kind: 'actor-changed', atMs, actor };
 }
 
 /** @internal */

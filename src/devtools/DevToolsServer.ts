@@ -174,10 +174,11 @@ export class DevToolsServer implements DevToolsHubContext {
     ));
 
     if (this.isPanelEnabled('actors')) {
-      this.registerTap(new ActorTreeTap(this.system));
+      const sampleIntervalMs = settings.mailboxSampleIntervalMs ?? 1_000;
+      this.registerTap(new ActorTreeTap(this.system, sampleIntervalMs));
       this.registerTap(new MailboxSamplerTap(
         this.system,
-        settings.mailboxSampleIntervalMs ?? 1_000,
+        sampleIntervalMs,
         settings.mailboxSampleLimit ?? 50,
       ));
       this.registerPanel({ id: 'actors', status: 'active' });

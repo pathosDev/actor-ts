@@ -76,7 +76,13 @@ export interface DevToolsOptionsType {
    * `managementRoutes` takes one).
    */
   readonly cluster?: Cluster;
-  /** How often mailbox depths are sampled, in ms.  Default `1000`. */
+  /**
+   * How often live actor state is sampled, in ms.  Default `1000`.
+   *
+   * Covers both mailbox depths and cell states: nothing on the event
+   * stream announces a suspension or a growing stash, so the actors
+   * panel only learns about them by re-inspecting on this interval.
+   */
   readonly mailboxSampleIntervalMs?: number;
   /** How many mailboxes one sample carries.  Default `50`. */
   readonly mailboxSampleLimit?: number;
@@ -163,7 +169,7 @@ export class DevToolsOptionsBuilder extends OptionsBuilder<DevToolsOptionsType> 
     return this.set('cluster', cluster);
   }
 
-  /** How often mailbox depths are sampled, in ms. */
+  /** How often live actor state (depths and cell states) is sampled, in ms. */
   withMailboxSampleIntervalMs(intervalMs: number): this {
     return this.set('mailboxSampleIntervalMs', intervalMs);
   }
