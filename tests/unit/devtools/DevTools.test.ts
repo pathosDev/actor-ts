@@ -268,3 +268,37 @@ describe('DevTools.mount', () => {
     }
   });
 });
+
+describe('DevTools.attach — a failed bind leaves nothing behind', () => {
+  test('the port conflict is thrown, and the next attach succeeds', async () => {
+    const occupier = newSystem('devtools-occupier');
+    const taken = await DevTools.attach(occupier, DevToolsOptions.create().withPort(0));
+
+    const system = newSystem('devtools-retry');
+    // Same port, already held by the other system's DevTools.
+    await expect(DevTools.attach(system, DevToolsOptions.create().withPort(taken.port)))
+      .rejects.toThrow();
+    // The failed attempt must not count as an attachment, or the retry
+    // below would be handed back a binding whose port never opened.
+    expect(devtoolsOf(system).isAttached()).toBe(false);
+
+    await taken.detach();
+
+    // Retrying used to fail on our own leftovers — a CoordinatedShutdown
+    // task and an HTTP task both named after something that no longer
+    // existed — rather than on anything to do with the port.
+    const second = await DevTools.attach(system, DevToolsOptions.create().withPort(0));
+    expect(second.port).toBeGreaterThan(0);
+    expect(devtoolsOf(system).isAttached()).toBe(true);
+    await second.detach();
+  });
+
+  test('attach / detach / attach on one system', async () => {
+    const system = newSystem('devtools-cycle');
+    const first = await DevTools.attach(system, DevToolsOptions.create().withPort(0));
+    await first.detach();
+    const second = await DevTools.attach(system, DevToolsOptions.create().withPort(0));
+    expect(devtoolsOf(system).isAttached()).toBe(true);
+    await second.detach();
+  });
+});

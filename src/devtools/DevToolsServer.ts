@@ -52,6 +52,7 @@ import { SpanTap } from './taps/SpanTap.js';
 import { StatsTap } from './taps/StatsTap.js';
 import { UI_ASSETS } from './generated/uiAssets.js';
 import { getFromDirectory } from '../http/static/index.js';
+import { freeActorName } from './internal/ActorNames.js';
 
 /** Version reported in the handshake; kept in step with `package.json`. */
 const DEVTOOLS_SERVER_VERSION = '0.11.0';
@@ -154,7 +155,7 @@ export class DevToolsServer implements DevToolsHubContext {
     if (this.hubRef !== null) return;
     this.hubRef = this.system.spawn(
       Props.create<DevToolsHubCommand>(() => new DevToolsHubActor(this) as never).asInternal(),
-      'devtools-hub',
+      freeActorName(this.system, 'devtools-hub'),
     );
     this.installDefaultTaps();
   }
