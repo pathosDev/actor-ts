@@ -256,7 +256,7 @@ export class FakeDynamoDb implements DynamoDbOperations {
 
   private keyOf(table: FakeTable, item: DynamoDbItem): string {
     const partition = scalar(item[table.partitionKey]);
-    return table.sortKey === undefined ? `${partition}` : `${partition} ${scalar(item[table.sortKey])}`;
+    return table.sortKey === undefined ? `${partition}` : `${partition}\0${scalar(item[table.sortKey])}`;
   }
 
   /** Evaluate the narrow set of `ConditionExpression` forms the stores emit. */
