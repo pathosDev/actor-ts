@@ -185,12 +185,17 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
     enables the metrics registry at attach if the application had not,
     and restores the noop on detach; a registry you enabled yourself is
     left alone.
-  - **Tracing panel** — flame graph and waterfall over recorded message
-    spans, with microsecond timings, self time and per-span attributes.
-    A **Record all messages** switch makes every message a root span for
-    as long as the panel is open, so the panel has something to show on
-    a system nobody has instrumented yet; leaving the panel, switching
-    it off or detaching all stop it.
+  - **Tracing panel** — the route a message took, and where its time
+    went.  The panel opens on a full-width list: one row per trace with
+    `sender → actor → actor`, the message's name, its payload as JSON
+    and the duration; opening a row shows the flame graph or waterfall
+    for that trace.  Spans carry microsecond timings, self time and
+    per-span attributes.  A **Record all messages** switch makes every
+    message a root span for as long as the panel is open, so the panel
+    has something to show on a system nobody has instrumented yet;
+    leaving the panel, switching it off or detaching all stop it, and
+    DevTools' own actors are excluded so the hub publishing spans cannot
+    feed its own output back in.
     Attaching DevTools no longer costs you your tracer: if one is already
     installed it is wrapped in the new `TeeTracer` so an OTel exporter and
     the local panel both see every span, and detaching restores the
@@ -225,6 +230,20 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   stamped first in the constructor.  `Date.now() - system.startedAtMs` is
   the system's uptime, and unlike a monitoring tool's own clock it does
   not restart when that tool attaches, detaches or reconnects.
+- **`Props.asInternal()`** — marks an actor as belonging to tooling
+  rather than to the application, inherited by its children.  Whole-system
+  instrumentation skips it, which is what keeps a debugger out of its own
+  output: DevTools' hub publishes the spans it just recorded, so tracing
+  it fed every batch back in as the payload of the next one.  Application
+  actors should not be marked — hiding real work from a profiler is how a
+  performance problem stays invisible.
+- **`TracingExtension.captureMessagePayloads(enabled)` /
+  `isCapturingMessagePayloads()`** — attach the message itself, as JSON,
+  to each `actor.receive` span.  A separate switch from
+  `recordRootSpans` because the costs differ: one decides whether to open
+  a span, this one decides whether to `JSON.stringify` a user object
+  while doing so.  Bounded in depth and length, cycle-safe, and never
+  allowed to throw into the dispatch it describes.
 - **`TracingExtension.recordRootSpans(enabled)` /
   `isRecordingRootSpans()`** — trace **every** message, not only the ones
   that already belong to a trace.  The framework is propagate-only by
@@ -291,6 +310,15 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   `BackoffPolicy`'s `random`.
 
 ### Changed
+
+- **Messages are named by their `kind`, not `Object`.** Every tool that
+  lists what an actor handled — the profiler's heaviest handlers, the
+  explain plan, the tracing panel — took the message's `constructor.name`,
+  which answers `Object` for a plain object literal.  Since the house
+  convention is a `kind`-discriminated union of object literals, that was
+  the answer for nearly every message.  A tagged literal now reads as its
+  discriminant (`place-order`), a tagged class as `Class.kind`, and
+  classes and primitives are unchanged.
 
 - **BREAKING — abbreviations spelled out across all identifiers.**  Type,
   class, file, method, field, generic-type-parameter and local names now use
