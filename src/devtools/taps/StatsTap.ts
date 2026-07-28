@@ -26,8 +26,12 @@ import {
   type MailboxDepthEntry,
   type NodeFigures,
   type NodeSample,
+  type StatsHistoryParameters,
+  type StatsHistoryResult,
+  type StatsSamplePayload,
 } from '../protocol/index.js';
-import type { DevToolsTap } from '../DevToolsServer.js';
+import type { DevToolsServer, DevToolsTap } from '../DevToolsServer.js';
+import { HISTORY_MAXIMUM_SPAN_MS, StatsHistoryStore } from '../internal/StatsHistoryStore.js';
 import { NodeSampler } from '../internal/NodeSampler.js';
 import type { DevToolsFederation } from '../cluster/Federation.js';
 
@@ -43,6 +47,16 @@ export class StatsTap implements DevToolsTap {
   private emit: ((payload: DevToolsStreamPayload) => void) | null = null;
   private ticker: Cancellable | null = null;
   private readonly sampler: NodeSampler;
+  /**
+   * Kept whether or not anybody is watching.
+   *
+   * The point of a history is to answer a question asked *after* the
+   * interesting thing happened, so recording it only while a panel is
+   * open would defeat it.
+   */
+  private readonly history = new StatsHistoryStore();
+  /** Frames are pushed only while somebody is subscribed; the series is not. */
+  private subscribed = false;
 
 
   constructor(
@@ -62,6 +76,16 @@ export class StatsTap implements DevToolsTap {
 
   install(emit: (payload: DevToolsStreamPayload) => void): void {
     this.emit = emit;
+    // One ticker, running from attach.  Sampling has to continue with no
+    // panel open — a history that only exists while somebody is watching
+    // answers no question worth asking — and sampling twice when one is
+    // would walk the actor tree twice a second for nothing.
+    this.startTicking();
+  }
+
+  /** Register the history query on `server`. */
+  installMethods(server: DevToolsServer): void {
+    server.registerMethod('stats.history', async (p) => this.onHistory(p));
   }
 
   uninstall(): void {
@@ -74,8 +98,7 @@ export class StatsTap implements DevToolsTap {
   }
 
   subscribersChanged(count: number): void {
-    if (count > 0) this.startTicking();
-    else this.stopTicking();
+    this.subscribed = count > 0;
   }
 
   private startTicking(): void {
@@ -93,11 +116,24 @@ export class StatsTap implements DevToolsTap {
   }
 
   private tick(): void {
-    // Ask first, emit second: this round's peers answer into the next
+    // Ask first, sample second: this round's peers answer into the next
     // sample.  One interval of lag beats a dashboard that stalls
     // whenever a node does.
     this.federation?.poll();
-    this.emit?.(this.sample());
+    const sample = this.sample() as StatsSamplePayload;
+    this.history.record(sample);
+    if (this.subscribed) this.emit?.(sample);
+  }
+
+  private async onHistory(parameters: unknown): Promise<StatsHistoryResult> {
+    const request = (parameters ?? {}) as Partial<StatsHistoryParameters>;
+    const wanted = request.spanMs;
+    if (typeof wanted !== 'number' || !Number.isFinite(wanted) || wanted <= 0) {
+      throw new Error('`spanMs` must be a positive number');
+    }
+    const spanMs = Math.min(wanted, HISTORY_MAXIMUM_SPAN_MS);
+    const { resolutionMs, points } = this.history.query(spanMs);
+    return { spanMs, resolutionMs, points };
   }
 
   private sample(): DevToolsStreamPayload {

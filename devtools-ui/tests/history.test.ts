@@ -1,7 +1,13 @@
 import { describe, expect, test } from 'bun:test';
 import { StatsHistory, peakOf } from '../src/core/history.js';
 import { projectPoints } from '../src/render/timeseries.js';
-import type { StatsSamplePayload } from '../../src/devtools/protocol/index.js';
+import type {
+  StatsHistoryPoint,
+  StatsSamplePayload,
+} from '../../src/devtools/protocol/index.js';
+
+/** Long enough that these cases only ever hit the count backstop. */
+const HOUR_MS = 3_600_000;
 
 /** Build a sample with only the fields the maths reads. */
 function sample(atMs: number, fields: Partial<StatsSamplePayload> = {}): StatsSamplePayload {
@@ -15,15 +21,20 @@ function sample(atMs: number, fields: Partial<StatsSamplePayload> = {}): StatsSa
     actorsStopped: 0,
     actorsRestarted: 0,
     deadLetters: 0,
+    messagesProcessed: 0,
+    mailboxDrops: 0,
     mailboxBacklog: 0,
+    stashedTotal: 0,
+    suspendedActors: 0,
     topMailboxes: [],
+    nodes: [],
     ...fields,
   };
 }
 
 describe('StatsHistory', () => {
   test('keeps only the most recent samples', () => {
-    const history = new StatsHistory(3);
+    const history = new StatsHistory(3, HOUR_MS);
     for (let i = 1; i <= 5; i++) history.push(sample(i * 1000, { actorCount: i }));
     expect(history.size).toBe(3);
     expect(history.latest()!.actorCount).toBe(5);
@@ -31,11 +42,11 @@ describe('StatsHistory', () => {
   });
 
   test('has no latest sample before the first arrives', () => {
-    expect(new StatsHistory(10).latest()).toBeNull();
+    expect(new StatsHistory(10, HOUR_MS).latest()).toBeNull();
   });
 
   test('derives a per-second rate from cumulative counters', () => {
-    const history = new StatsHistory(10);
+    const history = new StatsHistory(10, HOUR_MS);
     history.push(sample(0, { actorsStarted: 0 }));
     history.push(sample(1000, { actorsStarted: 10 }));
     history.push(sample(3000, { actorsStarted: 30 }));
@@ -46,7 +57,7 @@ describe('StatsHistory', () => {
   });
 
   test('a rate needs two readings', () => {
-    const history = new StatsHistory(10);
+    const history = new StatsHistory(10, HOUR_MS);
     history.push(sample(0, { deadLetters: 7 }));
     expect(history.rates('deadLetters')).toHaveLength(0);
     expect(history.latestRate('deadLetters')).toBe(0);
@@ -54,21 +65,21 @@ describe('StatsHistory', () => {
 
   test('a counter that went backwards reads as zero, not a negative spike', () => {
     // Means the server restarted and began counting again.
-    const history = new StatsHistory(10);
+    const history = new StatsHistory(10, HOUR_MS);
     history.push(sample(0, { deadLetters: 500 }));
     history.push(sample(1000, { deadLetters: 3 }));
     expect(history.latestRate('deadLetters')).toBe(0);
   });
 
   test('ignores samples that did not advance the clock', () => {
-    const history = new StatsHistory(10);
+    const history = new StatsHistory(10, HOUR_MS);
     history.push(sample(1000, { actorsStopped: 1 }));
     history.push(sample(1000, { actorsStopped: 9 }));
     expect(history.rates('actorsStopped')).toHaveLength(0);
   });
 
   test('surfaces a spike in the derived series', () => {
-    const history = new StatsHistory(10);
+    const history = new StatsHistory(10, HOUR_MS);
     let total = 0;
     for (let i = 0; i <= 5; i++) {
       total += i === 3 ? 500 : 5;
@@ -81,7 +92,7 @@ describe('StatsHistory', () => {
   });
 
   test('clear drops the window', () => {
-    const history = new StatsHistory(5);
+    const history = new StatsHistory(5, HOUR_MS);
     history.push(sample(0));
     history.clear();
     expect(history.size).toBe(0);
@@ -148,3 +159,58 @@ describe('projectPoints', () => {
     expect(padded[1]!.y).toBe(5);
   });
 });
+
+describe('StatsHistory — seeding and the time bound', () => {
+  test('a seeded series is what gets plotted, and live samples extend it', () => {
+    const history = new StatsHistory(100, HOUR_MS);
+    history.seed([
+      { ...point(1_000), actorCount: 1 },
+      { ...point(2_000), actorCount: 2 },
+    ], HOUR_MS);
+    expect(history.levels('actorCount').map((p) => p.value)).toEqual([1, 2]);
+
+    history.push(sample(3_000, { actorCount: 3 }));
+    expect(history.levels('actorCount').map((p) => p.value)).toEqual([1, 2, 3]);
+    // `latest` is the live sample, not a seeded point — the tiles need
+    // fields the summarised series does not carry.
+    expect(history.latest()!.actorCount).toBe(3);
+  });
+
+  test('drops what has aged out of the span, whatever its resolution', () => {
+    // Seeded points are coarse and live ones are per-second, so a count
+    // bound would mean a different window depending on the mix.
+    const history = new StatsHistory(1_000, 10_000);
+    history.seed([point(1_000), point(5_000), point(9_000)], 10_000);
+    expect(history.size).toBe(3);
+
+    history.push(sample(12_000));
+    // 1_000 is now more than ten seconds behind the newest point.
+    expect(history.levels('actorCount')).toHaveLength(3);
+    history.push(sample(20_000));
+    expect(history.levels('actorCount').map((p) => p.atMs)).toEqual([12_000, 20_000]);
+  });
+
+  test('seeding replaces rather than appends', () => {
+    const history = new StatsHistory(100, HOUR_MS);
+    history.push(sample(1_000, { actorCount: 9 }));
+    history.seed([point(5_000)], HOUR_MS);
+    expect(history.levels('actorCount').map((p) => p.atMs)).toEqual([5_000]);
+  });
+});
+
+/** A summarised point, as the server sends them. */
+function point(atMs: number): StatsHistoryPoint {
+  return {
+    atMs,
+    actorCount: 0,
+    mailboxBacklog: 0,
+    stashedTotal: 0,
+    suspendedActors: 0,
+    actorsStarted: 0,
+    actorsStopped: 0,
+    actorsRestarted: 0,
+    deadLetters: 0,
+    messagesProcessed: 0,
+    mailboxDrops: 0,
+  };
+}

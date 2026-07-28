@@ -19,6 +19,8 @@ function span(
   return {
     name: `span-${spanId}`,
     spanKind: 'internal',
+    senderPath: null,
+    messagePayload: null,
     traceId: 'trace-1',
     spanId,
     parentSpanId,

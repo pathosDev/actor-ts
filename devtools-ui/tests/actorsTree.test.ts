@@ -15,6 +15,7 @@ function node(path: string, parentPath: string | null, className = 'SomeActor'):
     suspended: false,
     dispatcher: null,
     childCount: 0,
+    internal: false,
   };
 }
 

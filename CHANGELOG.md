@@ -179,6 +179,16 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
     stays on screen for 30 seconds**, greyed out and red, before it is
     swept: the actor worth looking at is usually the one that just died,
     and removing its row on the spot meant you never saw it.
+  - **The overview's charts have a timespan** — one minute to
+    twenty-four hours, five by default — and the series is recorded on
+    the server rather than accumulated in the browser.  A panel opened an
+    hour into a run shows that hour instead of filling an empty graph,
+    and a reload does not lose it.  Stored in tiers so a day is neither
+    unsendable nor unreadable: one second for fifteen minutes, fifteen
+    seconds for four hours, two minutes for a day, with the query
+    answered from the finest tier that reaches back far enough.  Levels
+    keep each interval's peak so a spike survives summarising; counters
+    keep its last reading so the rate maths stays correct.
   - **The actors panel lists every node**, each under its own heading —
     which is how a singleton hosted on one node, or work piling up on
     one of several, becomes visible at all.  Paths repeat across a

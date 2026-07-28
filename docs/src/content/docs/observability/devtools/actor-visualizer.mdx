@@ -47,9 +47,20 @@ down one row per node.  A node that stops answering keeps its last
 reading, marked *not answering*, rather than disappearing — and is
 forgotten an hour later, the same window the cluster panel uses.
 
-**Charts** plots those series over the recent past, split across three
-so that a level (queued messages) and a rate (messages per second) never
-share a y-axis — on one scale a backlog of 400 flattens a 2/s line to
+**Charts** plots those series over a **timespan you choose** — one
+minute to twenty-four hours, five minutes by default.  The series is
+recorded on the server from the moment DevTools attaches, so a panel
+opened an hour in shows that hour rather than starting an empty graph;
+reloading the page does not lose it either.
+
+Longer spans are summarised: a day arrives in two-minute buckets, an
+hour in fifteen-second ones, and the panel says which.  Levels keep each
+interval's **peak** so a spike survives being summarised, and cumulative
+counters keep the interval's last reading so the per-second maths stays
+correct however coarse the buckets are.
+
+The three plots are split so that a level (queued messages) and a rate
+(messages per second) never share a y-axis — on one scale a backlog of 400 flattens a 2/s line to
 nothing. Below them, **Busiest mailboxes** lists the deepest queues
 right now: the fastest way from "something is backing up" to "*this*
 actor is backing up".

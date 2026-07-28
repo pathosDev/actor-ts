@@ -50,9 +50,22 @@ aufhört zu antworten, behält seine letzte Messung mit dem Vermerk *not
 answering*, statt zu verschwinden — und wird eine Stunde später
 vergessen, dasselbe Fenster wie im Cluster-Panel.
 
-**Charts** zeichnet diese Reihen über die jüngste Vergangenheit, verteilt
-auf drei Diagramme — damit sich ein Füllstand (wartende Nachrichten) und
-eine Rate (Nachrichten pro Sekunde) nie eine y-Achse teilen: Auf einer
+**Charts** zeichnet diese Reihen über einen **wählbaren Zeitraum** — von
+einer Minute bis 24 Stunden, standardmäßig fünf Minuten. Die Reihe wird
+ab dem Attach auf dem Server aufgezeichnet: Ein Panel, das eine Stunde
+später geöffnet wird, zeigt diese Stunde, statt einen leeren Graphen zu
+füllen — und ein Reload der Seite verliert sie auch nicht.
+
+Längere Zeiträume werden zusammengefasst: Ein Tag kommt in
+Zwei-Minuten-Buckets, eine Stunde in 15-Sekunden-Buckets, und das Panel
+schreibt dazu welche. Füllstände behalten je Intervall das **Maximum**,
+damit eine Spitze das Zusammenfassen überlebt; kumulative Zähler behalten
+den letzten Wert des Intervalls, damit die Sekundenrechnung stimmt, wie
+grob die Buckets auch sind.
+
+Die drei Diagramme sind getrennt, damit sich ein Füllstand (wartende
+Nachrichten) und eine Rate (Nachrichten pro Sekunde) nie eine y-Achse
+teilen: Auf einer
 gemeinsamen Skala drückt ein Rückstau von 400 eine 2/s-Linie auf null.
 Darunter listet **Busiest mailboxes** die tiefsten Queues von jetzt —
 der schnellste Weg von „irgendwo staut es sich" zu „*dieser* Actor staut
