@@ -59,7 +59,7 @@ export type DevToolsRequestMethod =
   | 'profiler.capabilities'
   | 'profiler.start'
   | 'profiler.stop'
-  | 'tracing.record';
+  | 'tracing.buffer';
 
 /** Every request method, for validation and iteration. */
 export const DEVTOOLS_REQUEST_METHODS: ReadonlyArray<DevToolsRequestMethod> = [
@@ -74,7 +74,7 @@ export const DEVTOOLS_REQUEST_METHODS: ReadonlyArray<DevToolsRequestMethod> = [
   'profiler.capabilities',
   'profiler.start',
   'profiler.stop',
-  'tracing.record',
+  'tracing.buffer',
 ];
 
 /** Panels of the UI shell — the cards on the dashboard. */

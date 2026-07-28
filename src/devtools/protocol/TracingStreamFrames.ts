@@ -59,20 +59,28 @@ export interface SpanBatchPayload {
 /** Payloads carried by the `spans` stream. */
 export type TracingStreamPayload = SpanBatchPayload;
 
+/** Smallest and largest span ring a client may ask for. */
+export const TRACING_BUFFER_MINIMUM = 10;
+export const TRACING_BUFFER_MAXIMUM = 10_000;
+/** What a fresh client gets before it chooses. */
+export const TRACING_BUFFER_DEFAULT = 100;
+
 /**
- * `tracing.record` — turn root-span recording on or off.
+ * `tracing.buffer` — how many recent spans the server keeps.
  *
- * The framework only traces a message that already belongs to a trace,
- * so a panel opened on a busy system shows nothing until somebody asks
- * for it.  This is that ask, and it lives for as long as the panel does.
+ * Recording is not something the client turns on; it runs from the
+ * moment DevTools attaches, so the last messages are already there when
+ * the panel is opened.  What the client does choose is how far back
+ * "recent" goes, because that is the part it pays for on the wire.
  */
-export interface TracingRecordParameters {
-  readonly enabled: boolean;
+export interface TracingBufferParameters {
+  readonly capacity: number;
 }
 
-export interface TracingRecordResult {
-  /** What the system is doing now — not necessarily what was asked. */
-  readonly recording: boolean;
+export interface TracingBufferResult {
+  /** What the server settled on, after clamping to its own ceiling. */
+  readonly capacity: number;
+  readonly retained: number;
 }
 
 /** @internal */

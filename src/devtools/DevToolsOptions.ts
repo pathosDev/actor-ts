@@ -88,7 +88,13 @@ export interface DevToolsOptionsType {
   readonly mailboxSampleLimit?: number;
   /** How often dashboard figures are sampled, in ms.  Default `1000`. */
   readonly statsIntervalMs?: number;
-  /** Spans held between flushes before the oldest is dropped.  Default `2000`. */
+  /**
+   * Ceiling on retained spans, in messages.  Default `10000`.
+   *
+   * Tracing records from the moment DevTools attaches, so there is
+   * always a recent history to open the panel onto.  The panel chooses
+   * how much of it to keep — this is the most it may ask for.
+   */
   readonly spanBufferCapacity?: number;
   /** How often buffered spans are flushed to the panel, in ms.  Default `250`. */
   readonly spanFlushIntervalMs?: number;
@@ -184,7 +190,7 @@ export class DevToolsOptionsBuilder extends OptionsBuilder<DevToolsOptionsType> 
     return this.set('statsIntervalMs', intervalMs);
   }
 
-  /** Spans held between flushes before the oldest is dropped. */
+  /** Ceiling on retained spans, in messages. */
   withSpanBufferCapacity(capacity: number): this {
     return this.set('spanBufferCapacity', capacity);
   }
@@ -272,7 +278,7 @@ export const DEVTOOLS_DEFAULTS = {
   mailboxSampleIntervalMs: 1_000,
   mailboxSampleLimit: 50,
   statsIntervalMs: 1_000,
-  spanBufferCapacity: 2_000,
+  spanBufferCapacity: 10_000,
   spanFlushIntervalMs: 250,
   replayAutoCapture: true,
 } as const satisfies Partial<DevToolsOptionsType>;

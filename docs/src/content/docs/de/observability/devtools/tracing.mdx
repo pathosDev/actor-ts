@@ -57,19 +57,22 @@ nichts im Framework. Ein schlichtes `ref.tell(...)` zeichnet also nichts
 auf, und ein sichtbar beschäftigtes System kann das Panel leer lassen.
 </Aside>
 
-## Alle Nachrichten aufzeichnen
+## Aufzeichnung
 
-Die Antwort des Panels darauf ist ein Schalter. **Record all messages**
-macht jede Nachricht zu einem Root-Span, solange das Panel offen ist:
+Tracing läuft ab dem Moment, in dem DevTools attached — ohne Knopfdruck,
+denn die interessanten Nachrichten sind die, die schon vorbei sind. Panel
+öffnen, und die jüngste Historie ist da.
 
-- Ausschalten, das Panel verlassen oder DevTools detachen beendet es
-  jeweils. Ein Tab, den jemand geöffnet und dann vergessen hat, darf das
-  System nicht dauerhaft alles tracen lassen.
-- Das Datenvolumen entspricht deinem Traffic. Das ist ein Debug-Modus,
-  keine Sampling-Strategie — Spans sind durch `spanBufferCapacity`
-  begrenzt (Default 2000), und das Panel meldet, was es verwerfen musste.
-- Es braucht einen Tracer; den installiert DevTools, solange es attached
-  ist.
+- Standardmäßig hält das Panel die letzten **100 Nachrichten**; die
+  Auswahl in der Toolbar geht hoch bis **10 000**. Der Server hält
+  denselben Ring, ein spät verbundener Browser bekommt ihn also auch.
+  `withSpanBufferCapacity` ist die Obergrenze, die ein Client erfragen
+  darf.
+- Das Datenvolumen entspricht deinem Traffic. Das hier ist ein
+  Debug-Werkzeug: Es öffnet für jede Nachricht einen Root-Span und
+  serialisiert jeden Payload, und zwar solange DevTools attached ist. Das
+  ist der Handel, den `DevTools.attach` eingeht — ein System, das sich das
+  nicht leisten kann, sollte keinen Debugger angehängt haben.
 - DevTools' eigene Actors sind ausgenommen — weder als Root-Span noch
   als Kind-Span, denn seine Probes empfangen Event-Stream-Publishes
   *während* einer Anwendungsnachricht und tauchten sonst mitten in deren
@@ -80,15 +83,11 @@ macht jede Nachricht zu einem Root-Span, solange das Panel offen ist:
 
 Auf einem ansonsten untätigen System heißt das: Die Übersicht kann eine
 Nachrichtenrate melden, während die Trace-Liste leer bleibt — dieser
-Verkehr ist DevTools im Gespräch mit deinem Browser, nicht deine
-Actors.
+Verkehr ist DevTools im Gespräch mit deinem Browser, nicht deine Actors.
 
-Nachrichten-Payloads werden nur erfasst, solange das Panel abonniert
-ist, und sind in Tiefe und Länge begrenzt, bevor sie auf die Leitung
-gehen — Produktions-Tracing zahlt kein `JSON.stringify` pro Nachricht.
-
-Aus Code heißt derselbe Schalter
-`system.extension(TracingExtensionId).recordRootSpans(true)`.
+Aus Code heißen dieselben Schalter
+`system.extension(TracingExtensionId).recordRootSpans(…)` und
+`captureMessagePayloads(…)`.
 
 ## Einen Trace selbst starten
 

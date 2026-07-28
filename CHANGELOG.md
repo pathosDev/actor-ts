@@ -190,10 +190,11 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
     `sender → actor → actor`, the message's name, its payload as JSON
     and the duration; opening a row shows the flame graph or waterfall
     for that trace.  Spans carry microsecond timings, self time and
-    per-span attributes.  A **Record all messages** switch makes every
-    message a root span for as long as the panel is open, so the panel
-    has something to show on a system nobody has instrumented yet;
-    leaving the panel, switching it off or detaching all stop it, and
+    per-span attributes.  Recording runs from the moment DevTools
+    attaches rather than on a button press, so the messages worth
+    looking at — the ones that already went past — are there when the
+    panel opens.  The last 100 are kept by default and a selector takes
+    that to 10 000 (`tracing.buffer`, ceiling `withSpanBufferCapacity`).
     DevTools' own actors are excluded so the hub publishing spans cannot
     feed its own output back in.
     Attaching DevTools no longer costs you your tracer: if one is already

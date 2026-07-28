@@ -143,7 +143,7 @@ Pull operations, namespaced by the panel that owns them:
 | `replay.capabilities` / `replay.state` / `replay.diff` | Reconstruct past state |
 | `profiler.capabilities` | Which profiling modes this host can run |
 | `profiler.start` / `profiler.stop` | Control a profiling session |
-| `tracing.record` | Open a root span for every message, or stop |
+| `tracing.buffer` | How many recent spans the server retains |
 
 A method with no handler on this system answers `error` with code
 `unavailable` — the same signal the panel descriptor already gave, so a

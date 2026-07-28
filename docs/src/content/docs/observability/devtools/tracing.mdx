@@ -57,18 +57,21 @@ the first one.  So a plain `ref.tell(...)` records nothing, and a system
 that is plainly busy can leave the panel empty.
 </Aside>
 
-## Record all messages
+## Recording
 
-The panel's answer to that is a switch. **Record all messages** makes
-every message a root span for as long as the panel is open:
+Tracing runs from the moment DevTools attaches — there is no button,
+because the messages worth looking at are the ones that already went
+past. Open the panel and the recent history is there.
 
-- Turning it off, leaving the panel, or detaching DevTools all stop it.
-  A tab somebody opened and walked away from must not leave the system
-  tracing everything forever.
-- Expect volume to match your traffic. This is a debugging mode, not a
-  sampling policy — spans are capped by `spanBufferCapacity` (default
-  2000) and the panel reports what it had to drop.
-- It needs a tracer, which DevTools installs while attached.
+- The panel keeps the last **100 messages** by default; the selector in
+  the toolbar takes that up to **10 000**. The server holds the same
+  ring, so a browser that connects late still gets it.
+  `withSpanBufferCapacity` is the ceiling a client may ask for.
+- Expect volume to match your traffic. This is a debugging tool: it
+  opens a root span for every message and serialises each payload, and
+  it does so for as long as DevTools is attached. That is the trade
+  `DevTools.attach` makes; a system that cannot afford it should not
+  have a debugger attached to it.
 - DevTools' own actors are excluded — never a root span and never a
   child one either, since its probes receive event-stream publishes
   *during* an application message and would otherwise reappear in the
@@ -81,12 +84,9 @@ On a system that is otherwise idle this means the overview can report a
 message rate while the trace list stays empty: that traffic is DevTools
 talking to your browser, not your actors.
 
-Message payloads are captured only while the panel is subscribed, and
-are bounded in depth and length before they reach the wire — production
-tracing does not pay for a `JSON.stringify` per message.
-
-From code the same switch is
-`system.extension(TracingExtensionId).recordRootSpans(true)`.
+From code, the same switches are
+`system.extension(TracingExtensionId).recordRootSpans(…)` and
+`captureMessagePayloads(…)`.
 
 ## Starting a trace yourself
 
