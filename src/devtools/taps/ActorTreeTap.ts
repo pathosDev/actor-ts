@@ -9,10 +9,12 @@
  * `actor-started` a harmless overwrite.
  */
 import type { ActorSystem } from '../../ActorSystem.js';
+import type { Cancellable } from '../../Scheduler.js';
 import { ActorLifecycleEvent, ActorRestarted, ActorStarted, ActorStopped } from '../../SystemMessages.js';
 import type { CellInspection } from '../../internal/Instrumentation.js';
 import { match, P } from 'ts-pattern';
 import {
+  actorChangedPayload,
   actorRestartedPayload,
   actorStartedPayload,
   actorStoppedPayload,
@@ -28,10 +30,18 @@ export class ActorTreeTap implements DevToolsTap {
   readonly stream: DevToolsStreamId = 'actors';
 
   private probe: EventStreamProbe | null = null;
+  private emit: ((payload: DevToolsStreamPayload) => void) | null = null;
+  private ticker: Cancellable | null = null;
+  /** Last state reported per path, so a tick only sends what moved. */
+  private readonly lastSeen = new Map<string, ActorNode>();
 
-  constructor(private readonly system: ActorSystem) {}
+  constructor(
+    private readonly system: ActorSystem,
+    private readonly intervalMs: number,
+  ) {}
 
   install(emit: (payload: DevToolsStreamPayload) => void): void {
+    this.emit = emit;
     this.probe = subscribeToEventStream(
       this.system,
       ActorLifecycleEvent,
@@ -41,12 +51,64 @@ export class ActorTreeTap implements DevToolsTap {
   }
 
   uninstall(): void {
+    this.stopTicking();
     this.probe?.stop();
     this.probe = null;
+    this.lastSeen.clear();
+    this.emit = null;
+  }
+
+  subscribersChanged(count: number): void {
+    if (count > 0) this.startTicking();
+    else this.stopTicking();
   }
 
   snapshot(): ReadonlyArray<DevToolsStreamPayload> {
-    return [actorTreeSnapshotPayload(Date.now(), this.system._inspectTree().map(toActorNode))];
+    const actors = this.system._inspectTree().map(toActorNode);
+    for (const actor of actors) this.lastSeen.set(actor.path, actor);
+    return [actorTreeSnapshotPayload(Date.now(), actors)];
+  }
+
+  private startTicking(): void {
+    if (this.ticker !== null) return;
+    this.ticker = this.system.scheduler.scheduleAtFixedRateFunction(
+      this.intervalMs,
+      this.intervalMs,
+      () => this.emitChanges(),
+    );
+  }
+
+  private stopTicking(): void {
+    this.ticker?.cancel();
+    this.ticker = null;
+  }
+
+  /**
+   * Re-inspect the tree and report the cells that moved.
+   *
+   * Lifecycle events describe births, deaths and restarts; nothing
+   * announces a suspension or a growing stash, so without this pass a
+   * node kept the state it was born with forever.  Sending only the
+   * difference keeps a quiet system's tick empty.
+   */
+  private emitChanges(): void {
+    const emit = this.emit;
+    if (emit === null) return;
+    const atMs = Date.now();
+    const alive = new Set<string>();
+    for (const cell of this.system._inspectTree()) {
+      const actor = toActorNode(cell);
+      alive.add(actor.path);
+      const previous = this.lastSeen.get(actor.path);
+      if (previous !== undefined && !hasMoved(previous, actor)) continue;
+      this.lastSeen.set(actor.path, actor);
+      emit(actorChangedPayload(atMs, actor));
+    }
+    // Departed cells are announced by `actor-stopped`; drop them here so
+    // the map cannot outgrow the tree it mirrors.
+    for (const path of this.lastSeen.keys()) {
+      if (!alive.has(path)) this.lastSeen.delete(path);
+    }
   }
 
   private onLifecycleEvent(
@@ -65,6 +127,7 @@ export class ActorTreeTap implements DevToolsTap {
     // handled the actor may already have a mailbox backlog, and the
     // panel wants the live figures, not the ones from birth.
     const cell = this.inspect(event.actor.path.toString());
+    if (cell !== null) this.lastSeen.set(cell.path, cell);
     emit(actorStartedPayload(Date.now(), cell ?? {
       path: event.actor.path.toString(),
       parentPath: event.parentPath,
@@ -80,7 +143,9 @@ export class ActorTreeTap implements DevToolsTap {
   }
 
   private onActorStopped(event: ActorStopped, emit: (payload: DevToolsStreamPayload) => void): void {
-    emit(actorStoppedPayload(Date.now(), event.actor.path.toString()));
+    const path = event.actor.path.toString();
+    this.lastSeen.delete(path);
+    emit(actorStoppedPayload(Date.now(), path));
   }
 
   private onActorRestarted(event: ActorRestarted, emit: (payload: DevToolsStreamPayload) => void): void {
@@ -97,6 +162,21 @@ export class ActorTreeTap implements DevToolsTap {
     const found = this.system._inspectTree().find((cell) => cell.path === path);
     return found === undefined ? null : toActorNode(found);
   }
+}
+
+/**
+ * Did anything the panel renders change?
+ *
+ * Only the mutable fields are compared — path, parent, name, class and
+ * dispatcher are fixed for a cell's lifetime, so reading them would only
+ * cost time.
+ */
+function hasMoved(previous: ActorNode, current: ActorNode): boolean {
+  return previous.cellState !== current.cellState
+    || previous.mailboxSize !== current.mailboxSize
+    || previous.stashSize !== current.stashSize
+    || previous.suspended !== current.suspended
+    || previous.childCount !== current.childCount;
 }
 
 /**

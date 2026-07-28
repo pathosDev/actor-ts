@@ -62,27 +62,71 @@ describe('ActorTreeModel — structure', () => {
   });
 });
 
-describe('ActorTreeModel — removal', () => {
-  test('removing an actor takes its subtree with it', () => {
+describe('ActorTreeModel — stopping', () => {
+  test('stopping an actor takes its subtree with it', () => {
     const model = sampleTree();
-    model.remove('/user/alpha');
+    model.markStopped('/user/alpha', 1_000);
+    const stopped = model.rows().filter((row) => row.stoppedAtMs !== null);
+    expect(stopped.map((row) => row.node.path))
+      .toEqual(['/user/alpha', '/user/alpha/leaf']);
+    expect(stopped.every((row) => row.node.cellState === 'terminated')).toBe(true);
+    expect(model.rows().find((row) => row.node.path === '/user/beta')!.stoppedAtMs).toBeNull();
+  });
+
+  test('keeps the row visible so the actor you were watching does not vanish', () => {
+    const model = sampleTree();
+    const before = model.rows().length;
+    model.markStopped('/user/alpha', 1_000);
+    expect(model.rows().length).toBe(before);
+    // Shown, but not counted as population.
+    expect(model.size).toBe(3);
+    expect(model.stoppedCount).toBe(2);
+  });
+
+  test('stopping is idempotent, so a repeated or missed frame is harmless', () => {
+    const model = sampleTree();
+    model.markStopped('/user/alpha', 1_000);
+    expect(() => model.markStopped('/user/alpha', 9_000)).not.toThrow();
+    // The first stop time wins — a duplicate frame must not restart the
+    // countdown and keep the row alive forever.
+    expect(model.rows().find((row) => row.node.path === '/user/alpha')!.stoppedAtMs).toBe(1_000);
+  });
+
+  test('does not stop a sibling with a shared name prefix', () => {
+    const model = new ActorTreeModel();
+    model.reset([node('/user/work', '/user'), node('/user/worker', '/user')]);
+    model.markStopped('/user/work', 1_000);
+    expect(model.rows().find((row) => row.node.path === '/user/worker')!.stoppedAtMs).toBeNull();
+  });
+
+  test('sweeps tombstones once they age out, and only then', () => {
+    const model = sampleTree();
+    model.markStopped('/user/alpha', 1_000);
+
+    expect(model.sweep(20_000, 30_000)).toBe(false);
+    expect(model.has('/user/alpha')).toBe(true);
+
+    expect(model.sweep(31_001, 30_000)).toBe(true);
     expect(model.has('/user/alpha')).toBe(false);
     expect(model.has('/user/alpha/leaf')).toBe(false);
     expect(model.has('/user/beta')).toBe(true);
+    expect(model.stoppedCount).toBe(0);
   });
 
-  test('removal is idempotent, so a repeated or missed frame is harmless', () => {
+  test('a respawn on the same path is alive again', () => {
     const model = sampleTree();
-    model.remove('/user/alpha');
-    expect(() => model.remove('/user/alpha')).not.toThrow();
-    expect(model.size).toBe(3);
+    model.markStopped('/user/beta', 1_000);
+    model.upsert(node('/user/beta', '/user'));
+    expect(model.rows().find((row) => row.node.path === '/user/beta')!.stoppedAtMs).toBeNull();
+    expect(model.stoppedCount).toBe(0);
   });
 
-  test('does not remove a sibling with a shared name prefix', () => {
-    const model = new ActorTreeModel();
-    model.reset([node('/user/work', '/user'), node('/user/worker', '/user')]);
-    model.remove('/user/work');
-    expect(model.has('/user/worker')).toBe(true);
+  test('a fresh snapshot clears tombstones — it describes only the living', () => {
+    const model = sampleTree();
+    model.markStopped('/user/alpha', 1_000);
+    model.reset([node('/user', null)]);
+    expect(model.stoppedCount).toBe(0);
+    expect(model.size).toBe(1);
   });
 });
 

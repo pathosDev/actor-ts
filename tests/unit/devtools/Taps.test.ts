@@ -114,6 +114,59 @@ describe('ActorTreeTap', () => {
   });
 });
 
+describe('ActorTreeTap — live state', () => {
+  test('reports a cell whose state moved after it started', async () => {
+    const system = newSystem('tap-tree-changed');
+    const tap = new ActorTreeTap(system, 20);
+    const payloads: DevToolsStreamPayload[] = [];
+    tap.install((payload) => payloads.push(payload));
+    try {
+      const ref = system.spawn(Props.create(() => new StashingActor()), 'hoarder');
+      // Let the actor finish starting first: `actor-started` re-inspects,
+      // so anything that happens before it lands is already in that frame
+      // and would not prove the ticker did anything.
+      await settle();
+      tap.snapshot();          // seeds the baseline, as a subscription does
+      tap.subscribersChanged(1);
+      for (let i = 0; i < 3; i++) ref.tell(`m${i}`);
+      await settle(120);
+
+      const changed = payloads.filter((p) => p.kind === 'actor-changed');
+      const hoarder = changed.find((p) => p.actor.path.endsWith('/hoarder'));
+      expect(hoarder).toBeDefined();
+      expect(hoarder!.actor.stashSize).toBe(3);
+    } finally {
+      tap.uninstall();
+    }
+  });
+
+  test('a quiet tick says nothing, and no subscriber means no tick', async () => {
+    const system = newSystem('tap-tree-quiet');
+    const tap = new ActorTreeTap(system, 20);
+    const payloads: DevToolsStreamPayload[] = [];
+    tap.install((payload) => payloads.push(payload));
+    try {
+      system.spawn(Props.create(() => new IdleActor()), 'still');
+      await settle();
+      tap.snapshot();
+      payloads.length = 0;
+
+      // Nobody is watching yet.
+      await settle(100);
+      expect(payloads).toHaveLength(0);
+
+      // Watching, but nothing is happening.
+      tap.subscribersChanged(1);
+      await settle(100);
+      expect(payloads.filter((p) => p.kind === 'actor-changed')).toHaveLength(0);
+
+      tap.subscribersChanged(0);
+    } finally {
+      tap.uninstall();
+    }
+  });
+});
+
 describe('MailboxSamplerTap', () => {
   test('reports a backlogged actor and hides the idle majority', async () => {
     const system = newSystem('tap-mailbox');

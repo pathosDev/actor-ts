@@ -17,6 +17,18 @@ import type { ActorCellState, MailboxDepthEntry } from '../../../../src/devtools
 /** DevTools' own actors, which would otherwise clutter the tree. */
 const DEVTOOLS_ACTOR_PREFIX = 'devtools-';
 
+/**
+ * How long a stopped actor stays on screen, greyed and red.
+ *
+ * Long enough to notice and read after the fact — the interesting actor
+ * is usually the one that just died — and short enough that a system
+ * churning actors does not turn the tree into a graveyard.
+ */
+const STOPPED_RETENTION_MS = 30_000;
+
+/** Ticks the "stopped 12s" badges and runs the sweeper. */
+const SWEEP_INTERVAL_MS = 1000;
+
 /** Cell state → the semantic colour token that carries its meaning. */
 const STATE_TOKENS: Readonly<Record<ActorCellState, string>> = {
   creating: 'dt-state--pending',
@@ -30,6 +42,7 @@ export function mount(host: HTMLElement, context: PanelContext): PanelInstance {
   const model = new ActorTreeModel();
   const filter = signal('');
   const hideInternal = signal(true);
+  const showStopped = signal(true);
   const mailboxes = new Map<string, MailboxDepthEntry>();
 
   const rowsHost = h('div', { class: 'dt-tree' });
@@ -58,24 +71,45 @@ export function mount(host: HTMLElement, context: PanelContext): PanelInstance {
     'Hide DevTools actors',
   );
 
+  const stoppedToggle = h('label', { class: 'dt-checkbox' },
+    h('input', {
+      type: 'checkbox',
+      checked: true,
+      onchange: (event: Event) => {
+        showStopped.set((event.target as HTMLInputElement).checked);
+        render();
+      },
+    }),
+    `Keep stopped for ${STOPPED_RETENTION_MS / 1000}s`,
+  );
+
   replaceChildren(host,
     h('h1', { class: 'dt-panel__title' }, 'Actors'),
     h('p', { class: 'dt-panel__subtitle' },
       'The live supervision tree. Depth counts messages waiting in the mailbox.'),
-    h('div', { class: 'dt-toolbar' }, search, internalToggle, summary),
+    h('div', { class: 'dt-toolbar' }, search, internalToggle, stoppedToggle, summary),
     rowsHost,
   );
 
   function render(): void {
-    const rows = model.rows(filter.get())
-      .filter((row) => !hideInternal.get() || !isInternal(row));
-    summary.textContent = `${formatCount(rows.length)} of ${formatCount(model.size)} actors`;
+    const now = Date.now();
+    // Age out tombstones here rather than only on a timer: a background
+    // browser tab has its intervals throttled to about once a minute,
+    // and a rendered frame is the moment it actually matters.
+    model.sweep(now, STOPPED_RETENTION_MS);
+    let rows = withoutInternal(model.rows(filter.get()), hideInternal.get());
+    if (!showStopped.get()) rows = rows.filter((row) => row.stoppedAtMs === null);
+    // Tombstones are rows but not population, so they are counted apart
+    // rather than inflating "n of m actors" past m.
+    const stoppedShown = rows.filter((row) => row.stoppedAtMs !== null).length;
+    summary.textContent = `${formatCount(rows.length - stoppedShown)} of ${formatCount(model.size)} actors`
+      + (stoppedShown > 0 ? ` · ${formatCount(stoppedShown)} recently stopped` : '');
     if (rows.length === 0) {
       replaceChildren(rowsHost, h('p', { class: 'dt-empty' },
         model.size === 0 ? 'Waiting for the actor tree…' : 'No actor matches that filter.'));
       return;
     }
-    replaceChildren(rowsHost, ...rows.map((row) => renderRow(row, mailboxes, () => {
+    replaceChildren(rowsHost, ...rows.map((row) => renderRow(row, mailboxes, now, () => {
       model.toggle(row.node.path);
       render();
     })));
@@ -87,10 +121,11 @@ export function mount(host: HTMLElement, context: PanelContext): PanelInstance {
         model.reset(payload.actors);
         break;
       case 'actor-started':
+      case 'actor-changed':
         model.upsert(payload.actor);
         break;
       case 'actor-stopped':
-        model.remove(payload.path);
+        model.markStopped(payload.path, payload.atMs);
         break;
       case 'actor-restarted':
         // The path survives a restart, so nothing structural changes —
@@ -112,29 +147,59 @@ export function mount(host: HTMLElement, context: PanelContext): PanelInstance {
     render();
   });
 
+  // Nothing on the wire says "that row is now old enough to drop", and
+  // on an idle system no frame arrives to trigger a render either.  The
+  // sweeping itself happens in `render`, so this only has to keep the
+  // badges counting up — throttling it in a background tab is harmless.
+  const sweeper = setInterval(() => {
+    if (model.stoppedCount > 0) render();
+  }, SWEEP_INTERVAL_MS);
+
   render();
 
   return {
     dispose(): void {
+      clearInterval(sweeper);
       stopActors();
       stopMailboxes();
     },
   };
 }
 
-function isInternal(row: TreeRow): boolean {
-  return row.node.name.startsWith(DEVTOOLS_ACTOR_PREFIX);
+/**
+ * Drop DevTools' own actors, and anything under them.
+ *
+ * Filtering row by row would leave a hidden parent's children on screen
+ * at their original indent.  Rows arrive in depth-first order, so one
+ * pass carrying the hidden prefixes forward is enough.
+ */
+function withoutInternal(
+  rows: ReadonlyArray<TreeRow>,
+  hide: boolean,
+): ReadonlyArray<TreeRow> {
+  if (!hide) return rows;
+  const hidden: string[] = [];
+  return rows.filter((row) => {
+    const path = row.node.path;
+    if (hidden.some((prefix) => path.startsWith(`${prefix}/`))) return false;
+    if (!row.node.name.startsWith(DEVTOOLS_ACTOR_PREFIX)) return true;
+    hidden.push(path);
+    return false;
+  });
 }
 
 function renderRow(
   row: TreeRow,
   mailboxes: ReadonlyMap<string, MailboxDepthEntry>,
+  nowMs: number,
   onToggle: () => void,
 ): HTMLElement {
   const node = row.node;
+  const stopped = row.stoppedAtMs !== null;
   // The sampled depth is fresher than the one carried by the tree
-  // delta, which was accurate only at spawn time.
-  const depth = mailboxes.get(node.path)?.size ?? node.mailboxSize;
+  // delta, which was accurate only at spawn time — but a stopped actor
+  // is not in the sample any more, so its last known depth is the truth.
+  const depth = stopped ? node.mailboxSize : mailboxes.get(node.path)?.size ?? node.mailboxSize;
 
   const twisty = row.hasChildren
     ? h('button', {
@@ -146,7 +211,7 @@ function renderRow(
     : h('span', { class: 'dt-tree__twisty dt-tree__twisty--leaf' });
 
   return h('div', {
-    class: 'dt-tree__row',
+    class: stopped ? 'dt-tree__row dt-tree__row--stopped' : 'dt-tree__row',
     style: `--dt-tree-depth:${row.depth}`,
     title: node.path,
   },
@@ -161,6 +226,10 @@ function renderRow(
       ? h('span', { class: 'dt-badge', title: 'stashed messages' }, `stash ${formatCount(node.stashSize)}`)
       : null,
     node.suspended ? h('span', { class: 'dt-badge dt-badge--error' }, 'suspended') : null,
+    stopped
+      ? h('span', { class: 'dt-badge dt-badge--error', title: 'removed shortly' },
+        `stopped ${Math.max(0, Math.round((nowMs - row.stoppedAtMs!) / 1000))}s ago`)
+      : null,
   );
 }
 

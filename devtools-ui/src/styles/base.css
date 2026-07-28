@@ -392,6 +392,11 @@ a:hover { text-decoration: underline; }
 
 /* State dot with a fixed meaning per colour — never reused for series. */
 .dt-state { width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--dt-state-idle); }
+/* A stopped actor lingers so you can read it, without pretending to be
+   part of the live tree. */
+.dt-tree__row--stopped { opacity: 0.55; }
+.dt-tree__row--stopped .dt-tree__name { text-decoration: line-through; }
+
 .dt-state--ok { background: var(--dt-state-ok); }
 .dt-state--warn { background: var(--dt-state-warn); }
 .dt-state--error { background: var(--dt-state-error); }

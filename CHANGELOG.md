@@ -164,6 +164,16 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
     members, shard distribution and membership history (pass
     `withCluster(cluster)` — a system cannot hand out its own).  Both
     sampling streams idle until a panel subscribes.  #204
+  - The **actors panel** keeps up with a live system.  Cell states used
+    to freeze at whatever they were when the actor started, because
+    lifecycle events announce births, deaths and restarts and nothing
+    else — an actor that later suspended went on claiming to be a
+    healthy `running` for the rest of the session.  The tap now
+    re-inspects on its sampling interval and sends the new
+    `actor-changed` delta for the cells that moved.  A **stopped actor
+    stays on screen for 30 seconds**, greyed out and red, before it is
+    swept: the actor worth looking at is usually the one that just died,
+    and removing its row on the spot meant you never saw it.
   - The **overview** is three sections — *Common* (identity, uptime,
     runtime, cluster), *Numbers* and *Charts* — and no longer duplicates
     the nav rail as a grid of tool cards.  Alongside the actor figures it

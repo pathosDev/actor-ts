@@ -70,9 +70,20 @@ Der lebende Supervision-Baum, vom Root-Guardian abwärts.
 - **Badges** zeigen das Ungewöhnliche: wartende Nachrichten, gestashte
   Nachrichten, eine suspendierte Mailbox. Ein untätiger Actor trägt
   keine.
+- **Der Status-Punkt ist live.** Grün läuft, Amber suspendiert oder
+  terminierend, Rot beendet. Lifecycle-Events melden nur Geburt, Tod und
+  Neustart — eine Suspendierung meldet niemand —, deshalb inspiziert der
+  Tap den Baum sekündlich neu und schickt die Zellen, die sich bewegt
+  haben.
 - **Ein Restart lässt die Zeile aufblitzen.** Der Pfad überlebt einen
   Neustart, im Baum bewegt sich also nichts — ohne das Aufblitzen wäre er
   unsichtbar.
+- **Ein gestoppter Actor bleibt 30 Sekunden stehen**, ausgegraut, mit
+  durchgestrichenem Namen und einem „stopped 12s ago"-Badge, und
+  verschwindet dann. Der Actor, den man sehen will, ist meistens genau
+  der, der gerade gestorben ist; seine Zeile im Moment des Stopps zu
+  entfernen hieß, dass man ihn nie zu Gesicht bekam. *Keep stopped*
+  abschalten, wenn du nur die Lebenden sehen willst.
 - **Hide DevTools actors** ist standardmäßig an. DevTools betreibt Hub
   und Taps als gewöhnliche Actors; sie existieren wirklich und werden
   deshalb gelistet, sind aber nicht das, wofür du gekommen bist.
@@ -87,6 +98,15 @@ Jede WebSocket-Verbindung zu DevTools erzeugt einen Connection-Actor, und
 auch die Framework-Maschinerie (Sharding, Singletons, Pub-Sub) erzeugt
 Actors. Verborgen wird nichts außer DevTools' eigenen — und das ist eine
 Checkbox.
+</Aside>
+
+<Aside type="note" title="Warum /system leer ist">
+`ActorSystem` legt unter der Wurzel zwei Guardians an, `/user` und
+`/system`, aber **jeder** `spawn` läuft über den User-Guardian — der
+System-Guardian existiert als Supervisions-Platzhalter und bekommt nie
+Kinder. Ein kinderloses `/system` ist also die Wahrheit und kein
+fehlender Ast; DevTools' eigene Actors liegen wie alle anderen unter
+`/user`.
 </Aside>
 
 ## Cluster
