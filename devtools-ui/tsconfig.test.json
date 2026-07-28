@@ -1,0 +1,12 @@
+{
+  "//": "Type-checks the panels' own tests. They run under `bun test`, which does not type-check, and the bundle config next door cannot cover them because it deliberately has no Bun types — browser code must not see `Bun`. Without this a changed signature reached the tests unnoticed and they went on passing against a shape that could no longer occur.",
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "rootDir": "..",
+    "types": ["bun"],
+    "lib": ["ES2022", "DOM"]
+  },
+  "include": ["tests/**/*.ts", "src/**/*.ts", "../src/devtools/protocol/**/*.ts"],
+  "exclude": ["node_modules", ".build", ".dev"]
+}

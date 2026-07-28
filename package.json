@@ -45,7 +45,7 @@
     "dev:devtools": "bun scripts/devtools-dev.ts",
     "watch": "bunx tsc --watch",
     "clean": "rm -rf dist",
-    "typecheck": "bunx tsc --noEmit && bunx tsc -p devtools-ui --noEmit",
+    "typecheck": "bunx tsc --noEmit && bunx tsc -p devtools-ui --noEmit && bunx tsc -p devtools-ui/tsconfig.test.json --noEmit",
     "typecheck:dev": "bunx tsc -p tsconfig.dev.json --noEmit",
     "test": "bun test",
     "test:coverage": "bun test --coverage",
