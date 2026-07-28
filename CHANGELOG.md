@@ -164,6 +164,11 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
     members, shard distribution and membership history (pass
     `withCluster(cluster)` — a system cannot hand out its own).  Both
     sampling streams idle until a panel subscribes.  #204
+  - A cluster member that leaves is **kept in the panel for an hour**,
+    struck through and red, with how long ago it was last seen.  The
+    node that drops out is the one worth looking at, and it used to
+    disappear at that exact moment; the record is held on the server so
+    a page reload does not erase it.
   - The **actors panel** keeps up with a live system.  Cell states used
     to freeze at whatever they were when the actor started, because
     lifecycle events announce births, deaths and restarts and nothing

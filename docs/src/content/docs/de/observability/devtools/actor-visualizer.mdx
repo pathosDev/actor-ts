@@ -135,7 +135,12 @@ ist, statt zu verschwinden.
   Graph ist also vollständig, und eine Simulation würde nur einen langsam
   einschwingenden Kreis erzeugen — während ein Ring dieselbe Membership
   jedes Mal gleich zeichnet.
-- **Members** — Adresse, Status, Rollen und wer führt.
+- **Members** — Adresse, Status, Rollen und wer führt. Ein Knoten, der
+  die Membership verlässt, bleibt **eine Stunde stehen**, durchgestrichen
+  und rot, mit der Angabe, wann er zuletzt gesehen wurde. Genau der
+  ausgefallene Knoten ist der interessante — und der verschwand bisher
+  in dem Moment, in dem er es wurde. Der Eintrag liegt auf dem Server,
+  ein Reload der Seite löscht ihn also nicht.
 - **Shard-Verteilung** — Shards pro Region, pro geshardetem Typ. Typen
   erscheinen, sobald ihr Coordinator sie republiziert (das Framework
   führt kein zentrales Register geshardeter Typen), ein frisch geöffnetes
