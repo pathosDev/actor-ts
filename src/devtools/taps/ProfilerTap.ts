@@ -278,7 +278,7 @@ export class ProfilerTap implements DevToolsTap {
 
 /** Fold one observation into its bucket.  Called on the hot path. */
 function record(session: WallclockSession, observation: DispatchObservation): void {
-  const key = `${observation.actorPath} ${observation.messageType}`;
+  const key = `${observation.actorPath}\0${observation.messageType}`;
   let bucket = session.buckets.get(key);
   if (bucket === undefined) {
     bucket = {
