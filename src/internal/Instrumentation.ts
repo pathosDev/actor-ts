@@ -11,6 +11,76 @@
 /** Lifecycle state of an actor cell. */
 export type CellState = 'creating' | 'running' | 'suspended' | 'terminating' | 'terminated';
 
+/** Longest JSON a captured message may occupy, in characters. */
+const MESSAGE_JSON_LIMIT = 2_000;
+/** How deep {@link describeMessagePayload} walks before giving up. */
+const MESSAGE_JSON_DEPTH = 6;
+
+/**
+ * A name for a message, for tooling that lists what an actor handled.
+ *
+ * `constructor.name` alone answers `'Object'` for every plain object,
+ * which is most messages in this codebase — the house convention is a
+ * `kind`-discriminated union of object literals, so the discriminant is
+ * the name a developer would give it.  Classes keep their own name.
+ */
+export function describeMessageType(message: unknown): string {
+  if (message === null || message === undefined) return typeof message;
+  // A primitive keeps its wrapper's name (`String`, `Number`), which is
+  // what this reported before and reads like the type names around it.
+  if (typeof message !== 'object') {
+    return (message as { constructor?: { name?: string } }).constructor?.name ?? typeof message;
+  }
+  const kind = (message as { kind?: unknown }).kind;
+  const constructorName = (message as { constructor?: { name?: string } }).constructor?.name;
+  if (typeof kind === 'string' && kind.length > 0) {
+    // A tagged class carries both; showing them together beats choosing.
+    return constructorName === undefined || constructorName === 'Object'
+      ? kind
+      : `${constructorName}.${kind}`;
+  }
+  return constructorName ?? 'object';
+}
+
+/**
+ * A message as JSON, safe to put on a wire and into a table cell.
+ *
+ * Bounded on three axes because the input is arbitrary user data: depth,
+ * total length, and anything `JSON.stringify` refuses (a cycle, a
+ * BigInt).  Returns `null` rather than throwing — a message nobody can
+ * serialise must not break the dispatch it is describing.
+ */
+export function describeMessagePayload(message: unknown): string | null {
+  try {
+    const json = JSON.stringify(message, replacer(MESSAGE_JSON_DEPTH));
+    if (json === undefined) return null;
+    return json.length > MESSAGE_JSON_LIMIT
+      ? `${json.slice(0, MESSAGE_JSON_LIMIT)}… (truncated)`
+      : json;
+  } catch {
+    return null;
+  }
+}
+
+/** Replaces what JSON cannot carry, and stops runaway nesting. */
+function replacer(maxDepth: number): (this: unknown, key: string, value: unknown) => unknown {
+  const seen = new WeakSet<object>();
+  const depths = new WeakMap<object, number>();
+  return function replace(this: unknown, key: string, value: unknown): unknown {
+    if (typeof value === 'bigint') return `${value}n`;
+    if (typeof value === 'function') return `[Function ${value.name || 'anonymous'}]`;
+    if (typeof value !== 'object' || value === null) return value;
+    if (seen.has(value)) return '[Circular]';
+    seen.add(value);
+
+    const parentDepth = typeof this === 'object' && this !== null ? depths.get(this) ?? 0 : 0;
+    const depth = key === '' ? 0 : parentDepth + 1;
+    if (depth > maxDepth) return '[…]';
+    depths.set(value, depth);
+    return value;
+  };
+}
+
 /** How one message handling finished. */
 export type MessageOutcome = 'ok' | 'error' | 'stashed';
 
@@ -106,4 +176,6 @@ export interface CellInspection {
   /** Dispatcher id, or `null` when the cell uses the system default. */
   readonly dispatcher: string | null;
   readonly childCount: number;
+  /** Tooling actor — see `PropsConfig.internal`.  Inherited from the parent. */
+  readonly internal: boolean;
 }
