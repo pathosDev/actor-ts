@@ -1,6 +1,6 @@
 ---
 title: Actor & cluster panels
-description: The live supervision tree with mailbox depths, the cluster topology with shard distribution, and a dashboard whose every figure carries the recent past so spikes are visible.
+description: The live supervision tree with mailbox depths, the cluster topology with shard distribution, and an overview whose every figure carries the recent past so spikes are visible.
 ---
 
 import { Aside } from '@astrojs/starlight/components';
@@ -8,30 +8,51 @@ import { Aside } from '@astrojs/starlight/components';
 Three views land together because they answer the same question from
 different distances: **is this system healthy, and if not, where?**
 
-## Dashboard
+## Overview
 
-The page DevTools opens on. Each tile carries a sparkline, and the chart
-below plots the same series over the last few minutes — because a single
-number cannot tell you whether 40 queued messages is the steady state or
-the start of a pile-up.
+The page DevTools opens on. Each tile carries a sparkline, and the
+charts below plot the same series over the last few minutes — because a
+single number cannot tell you whether 40 queued messages is the steady
+state or the start of a pile-up.
+
+**Common** answers *what am I looking at*: actor system, uptime,
+runtime, cluster status. Uptime is the system's own, measured from
+`ActorSystem.startedAtMs` and sent by the server, so reloading the page
+or losing the socket does not make the system look younger than it is.
+
+**Numbers** is the figures themselves:
 
 | Tile | Reads |
 | --- | --- |
 | **Actors** | Live actors, including the guardians |
-| **Mailbox backlog** | Every pending message in the system, summed |
+| **Messages / s**, **Processed messages** | Throughput, from `actor_messages_delivered_total` |
 | **Spawns / s**, **Stops / s** | Actor churn |
 | **Restarts** | Supervisor-driven restarts since attach |
+| **Mailbox backlog** | Every pending message in the system, summed |
+| **Stashed** | Every stashed message, summed |
+| **Suspended actors** | Actors halted by supervision — nonzero means trouble |
 | **Dead letters** | Undeliverable messages since attach |
-| **Cluster** | Members up, when a cluster is attached |
+| **Mailbox drops** | Messages a bounded mailbox threw away on overflow |
+| **Handler p99** | Time in `onReceive`, interpolated from histogram buckets |
 
-Counters are **cumulative since attach** on the wire; the UI derives the
-per-second rates itself. That means a browser that reconnects, throttles
-in a background tab, or misses a tick still shows correct figures rather
-than a phantom spike.
+Counters are **cumulative** on the wire; the UI derives the per-second
+rates itself. That means a browser that reconnects, throttles in a
+background tab, or misses a tick still shows correct figures rather than
+a phantom spike.
 
-Below the chart, **Busiest mailboxes** lists the deepest queues right
-now — the fastest way from "something is backing up" to "this actor is
-backing up".
+**Charts** plots those series over the recent past, split across three
+so that a level (queued messages) and a rate (messages per second) never
+share a y-axis — on one scale a backlog of 400 flattens a 2/s line to
+nothing. Below them, **Busiest mailboxes** lists the deepest queues
+right now: the fastest way from "something is backing up" to "*this*
+actor is backing up".
+
+<Aside type="note" title="Throughput needs metrics">
+Message counts, mailbox drops and handler latency come from the
+framework's own counters, which are inert until the metrics registry is
+enabled. DevTools enables it at attach if you have not, and restores the
+noop on detach — see [Cost](/observability/devtools/overview/#cost).
+</Aside>
 
 ## Actors
 
@@ -92,8 +113,8 @@ rather than disappearing.
 
 ## Cost
 
-Both sampling streams idle until a panel subscribes, so a dashboard left
-open on another tab costs the system nothing. The tree tap listens to
+Both sampling streams idle until a panel subscribes, so a browser tab
+left open in the background costs the system nothing. The tree tap listens to
 actor lifecycle events, which the runtime publishes whether or not
 anyone is watching — the same events that already drive the
 `actor_created_total` / `actor_terminated_total` metrics.

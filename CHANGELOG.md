@@ -146,23 +146,35 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   - The UI is vanilla TypeScript bundled at build time and embedded in the
     package — no UI framework in the dependency tree, no CDN loads, no
     filesystem access at runtime.
-  - **Every example is wired for it**, opt-in via `DEVTOOLS=1` (see
-    `examples/devtools.ts`).  Short-lived example scripts park just before
+  - **Every example is wired for it**, opt-in via `--devtools` (see
+    `examples/devtools.ts`).  An argument rather than only `DEVTOOLS=1`,
+    because `VAR=value command` is a parser error in PowerShell — the flag
+    works in every shell.  Short-lived example scripts park just before
     shutdown so there is time to open a browser; multi-system examples give
-    each system its own port counting up from `DEVTOOLS_PORT`.  Without the
-    flag their timing and output are unchanged.
+    each system its own port counting up from `--devtools-port`.  Without the
+    flag their timing and output are unchanged.  The chat and voice backends
+    pass their `Cluster` through, so the cluster panel is live there.
   - A DevTools attachment now ends with the system it debugs:
     `system.terminate()` releases the port even though it does not run
     `CoordinatedShutdown`.  Previously a terminated system left the server
     bound, keeping the process alive.
-  - **Actor and cluster panels**, plus a dashboard with live figures.  The
+  - **Actor and cluster panels**, plus an overview with live figures.  The
     actor panel shows the live supervision tree with mailbox depths,
     filtering and restart highlighting; the cluster panel shows topology,
     members, shard distribution and membership history (pass
-    `withCluster(cluster)` — a system cannot hand out its own).  Every
-    dashboard tile carries a sparkline and feeds a shared chart, so a
-    figure is readable as a trend rather than a snapshot.  Both sampling
-    streams idle until a panel subscribes.  #204
+    `withCluster(cluster)` — a system cannot hand out its own).  Both
+    sampling streams idle until a panel subscribes.  #204
+  - The **overview** is three sections — *Common* (identity, uptime,
+    runtime, cluster), *Numbers* and *Charts* — and no longer duplicates
+    the nav rail as a grid of tool cards.  Alongside the actor figures it
+    reads the framework's own instrumentation for **messages per second,
+    processed messages, mailbox drops and handler p99**, and derives
+    **stashed messages** and **suspended actors** from the tree walk it
+    already does.  Trends are split across three charts so a level and a
+    rate never share a y-axis.  To make those counters real, DevTools
+    enables the metrics registry at attach if the application had not,
+    and restores the noop on detach; a registry you enabled yourself is
+    left alone.
   - **Tracing panel** — flame graph and waterfall over recorded message
     spans, with microsecond timings, self time and per-span attributes.
     Attaching DevTools no longer costs you your tracer: if one is already
@@ -191,6 +203,13 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
     session at a time, auto-stoppable, and the hook is removed when the
     session ends or DevTools detaches.  #226
     With this the DevTools suite (#445) has all five panels.
+- **`ActorSystem.startedAtMs`** — wall-clock time the system was created,
+  stamped first in the constructor.  `Date.now() - system.startedAtMs` is
+  the system's uptime, and unlike a monitoring tool's own clock it does
+  not restart when that tool attaches, detaches or reconnects.
+- **`MetricsExtension.disable()`** — back to the noop registry, mirroring
+  `TracingExtension.disable()`, so a tool that switched metrics on for its
+  own use can leave the system as it found it.
 - **`replayState()`** (`actor-ts` → `src/persistence/Replay.ts`) — the
   journal fold behind `PersistentActor` recovery, now callable on its own
   against a journal and snapshot store with no `ActorSystem` involved.

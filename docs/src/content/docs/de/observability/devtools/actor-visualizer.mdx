@@ -1,6 +1,6 @@
 ---
 title: Actor- & Cluster-Panel
-description: Der lebende Supervision-Baum mit Mailbox-Tiefen, die Cluster-Topologie mit Shard-Verteilung und ein Dashboard, dessen Zahlen jeweils die jüngste Vergangenheit mitführen — damit Spitzen sichtbar werden.
+description: Der lebende Supervision-Baum mit Mailbox-Tiefen, die Cluster-Topologie mit Shard-Verteilung und eine Übersicht, deren Zahlen jeweils die jüngste Vergangenheit mitführen — damit Spitzen sichtbar werden.
 ---
 
 import { Aside } from '@astrojs/starlight/components';
@@ -9,30 +9,55 @@ Drei Ansichten landen gemeinsam, weil sie dieselbe Frage aus
 unterschiedlicher Entfernung beantworten: **Ist dieses System gesund —
 und wenn nicht, wo?**
 
-## Dashboard
+## Übersicht
 
 Die Seite, mit der DevTools öffnet. Jede Kachel trägt eine Sparkline,
-und der Chart darunter zeichnet dieselben Reihen über die letzten
+und die Charts darunter zeichnen dieselben Reihen über die letzten
 Minuten — denn eine einzelne Zahl sagt dir nicht, ob 40 wartende
 Nachrichten der Normalzustand sind oder der Anfang eines Staus.
+
+**Common** beantwortet *was schaue ich hier eigentlich an*:
+Actor-System, Uptime, Runtime, Cluster-Status. Die Uptime ist die des
+Systems selbst, gemessen ab `ActorSystem.startedAtMs` und vom Server
+geschickt — ein Reload der Seite oder eine abgerissene Verbindung lässt
+das System also nicht jünger wirken, als es ist.
+
+**Numbers** sind die Zahlen selbst:
 
 | Kachel | Liest sich als |
 | --- | --- |
 | **Actors** | Lebende Actors, inklusive Guardians |
-| **Mailbox backlog** | Alle wartenden Nachrichten im System, summiert |
+| **Messages / s**, **Processed messages** | Durchsatz, aus `actor_messages_delivered_total` |
 | **Spawns / s**, **Stops / s** | Actor-Fluktuation |
 | **Restarts** | Supervisor-getriebene Neustarts seit dem Attach |
+| **Mailbox backlog** | Alle wartenden Nachrichten im System, summiert |
+| **Stashed** | Alle gestashten Nachrichten, summiert |
+| **Suspended actors** | Von der Supervision angehaltene Actors — alles über 0 ist ein Warnzeichen |
 | **Dead letters** | Unzustellbare Nachrichten seit dem Attach |
-| **Cluster** | Members up, sofern ein Cluster angehängt ist |
+| **Mailbox drops** | Nachrichten, die eine begrenzte Mailbox beim Überlauf verworfen hat |
+| **Handler p99** | Zeit in `onReceive`, aus Histogramm-Buckets interpoliert |
 
-Zähler sind auf dem Draht **kumulativ seit dem Attach**; die Raten pro
-Sekunde leitet die UI selbst ab. Ein Browser, der sich neu verbindet, im
-Hintergrund gedrosselt wird oder einen Tick verpasst, zeigt damit
-weiterhin korrekte Zahlen statt einer Phantom-Spitze.
+Zähler sind auf dem Draht **kumulativ**; die Raten pro Sekunde leitet
+die UI selbst ab. Ein Browser, der sich neu verbindet, im Hintergrund
+gedrosselt wird oder einen Tick verpasst, zeigt damit weiterhin
+korrekte Zahlen statt einer Phantom-Spitze.
 
-Unter dem Chart listet **Busiest mailboxes** die tiefsten Queues von
-jetzt — der schnellste Weg von „irgendwo staut es sich" zu „dieser Actor
-staut sich".
+**Charts** zeichnet diese Reihen über die jüngste Vergangenheit, verteilt
+auf drei Diagramme — damit sich ein Füllstand (wartende Nachrichten) und
+eine Rate (Nachrichten pro Sekunde) nie eine y-Achse teilen: Auf einer
+gemeinsamen Skala drückt ein Rückstau von 400 eine 2/s-Linie auf null.
+Darunter listet **Busiest mailboxes** die tiefsten Queues von jetzt —
+der schnellste Weg von „irgendwo staut es sich" zu „*dieser* Actor staut
+sich".
+
+<Aside type="note" title="Durchsatz braucht Metriken">
+Nachrichtenzahlen, Mailbox-Drops und Handler-Latenz stammen aus den
+Zählern des Frameworks selbst, und die liegen brach, solange die
+Metrics-Registry nicht eingeschaltet ist. DevTools schaltet sie beim
+Attach ein, falls du es nicht getan hast, und stellt beim Detach die
+Noop-Registry zurück — siehe
+[Kosten](/de/observability/devtools/overview/#kosten).
+</Aside>
 
 ## Actors
 
@@ -98,7 +123,7 @@ ist, statt zu verschwinden.
 ## Kosten
 
 Beide Sampling-Streams laufen im Leerlauf, bis ein Panel sie abonniert —
-ein Dashboard, das in einem anderen Tab offen liegt, kostet das System
+ein Browser-Tab, der im Hintergrund offen liegt, kostet das System
 nichts. Der Tree-Tap hört auf Actor-Lifecycle-Events, die die Runtime
 ohnehin publiziert: dieselben Events, die schon die Metriken
 `actor_created_total` / `actor_terminated_total` speisen.
