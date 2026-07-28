@@ -47,9 +47,12 @@ Hands back a standard V8 `.cpuprofile`. The panel does not render it:
 Chrome DevTools does that better than a bundled UI would, so download
 it and open it there.
 
-It needs `node:inspector`, which is not present on every runtime. Where
-it is missing the panel says so plainly rather than failing at the
-point you press start.
+It needs `node:inspector`, which is not present on every runtime. The
+panel asks before it offers the mode, so where the inspector is missing
+the option is greyed out with the reason in its label rather than
+failing when you press start. On Bun today that reads *"CPU —
+unavailable (node:inspector is not yet implemented in Bun)"*; wallclock
+works everywhere.
 
 ## Downloading
 

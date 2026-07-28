@@ -213,9 +213,13 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
     own per-message timings (the ones behind
     `actor_message_handler_seconds`) and exports speedscope JSON; CPU
     mode hands back a V8 `.cpuprofile` for Chrome DevTools where
-    `node:inspector` exists, and says so plainly where it does not.  One
-    session at a time, auto-stoppable, and the hook is removed when the
-    session ends or DevTools detaches.  #226
+    `node:inspector` exists, and says so plainly where it does not — via
+    the new `profiler.capabilities` request, so the mode is greyed out
+    with its reason before you press Start.  It used to fail at Start
+    with the runtime's own error, because importing `node:inspector`
+    *succeeds* on Bun (it even exports `Session`) and only constructing
+    a session throws.  One session at a time, auto-stoppable, and the
+    hook is removed when the session ends or DevTools detaches.  #226
     With this the DevTools suite (#445) has all five panels.
 - **`ActorSystem.startedAtMs`** — wall-clock time the system was created,
   stamped first in the constructor.  `Date.now() - system.startedAtMs` is
