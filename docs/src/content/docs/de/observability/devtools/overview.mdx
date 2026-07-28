@@ -220,6 +220,14 @@ läuft also auf `9333`, `9334`, `9335`:
 bun run examples/cluster/singleton-hello.ts --devtools
 ```
 
+Ein Cluster aus *getrennten Terminals* funktioniert genauso, obwohl jeder
+Prozess seine eigene Kopie dieses Zählers hat: Genommen wird der erste
+freie Port im Bereich. Drei Mal `bun run examples/voice/backend/main.ts
+--devtools` ergeben also `9333`, `9334` und `9335`, ganz ohne Flags. Ist
+keiner frei — oder scheitert an DevTools sonst etwas —, protokolliert das
+Example eine Warnung und startet trotzdem. Ein Debugger, der nicht binden
+kann, ist kein Grund, das zu debuggende Programm sterben zu lassen.
+
 Langlaufende Examples (die Chat- und Voice-Backends, die HTTP-Services)
 halten nicht an — sie laufen ohnehin, bis du sie stoppst. Die Verdrahtung
 liegt in `examples/devtools.ts`, rund dreißig Zeilen, falls du das Muster
