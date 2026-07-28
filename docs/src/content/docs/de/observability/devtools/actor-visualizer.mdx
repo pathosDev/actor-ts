@@ -42,6 +42,14 @@ die UI selbst ab. Ein Browser, der sich neu verbindet, im Hintergrund
 gedrosselt wird oder einen Tick verpasst, zeigt damit weiterhin
 korrekte Zahlen statt einer Phantom-Spitze.
 
+Im Cluster sind die Zahlen die des **gesamten Clusters**: Auf jedem
+Knoten läuft ein DevTools-Agent, der mit seinen eigenen Werten
+antwortet, und die Summen oben sind deren Summe. Ein Abschnitt **Per
+node** schlüsselt dieselben Zahlen pro Knoten auf. Ein Knoten, der
+aufhört zu antworten, behält seine letzte Messung mit dem Vermerk *not
+answering*, statt zu verschwinden — und wird eine Stunde später
+vergessen, dasselbe Fenster wie im Cluster-Panel.
+
 **Charts** zeichnet diese Reihen über die jüngste Vergangenheit, verteilt
 auf drei Diagramme — damit sich ein Füllstand (wartende Nachrichten) und
 eine Rate (Nachrichten pro Sekunde) nie eine y-Achse teilen: Auf einer

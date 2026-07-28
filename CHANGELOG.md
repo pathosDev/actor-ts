@@ -179,6 +179,14 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
     stays on screen for 30 seconds**, greyed out and red, before it is
     swept: the actor worth looking at is usually the one that just died,
     and removing its row on the spot meant you never saw it.
+  - **The overview covers the whole cluster.**  Every clustered node with
+    DevTools attached runs an agent that answers for itself; the node
+    serving the UI polls them on its sampling tick and reports both the
+    total and a **Per node** breakdown.  The totals are the sum of the
+    breakdown rather than a second count, so the two cannot drift apart.
+    Polling is fire-and-forget — a slow node delays its own row, not the
+    dashboard — and a node that stops answering keeps its last reading,
+    marked *not answering*, until an hour has passed.
   - The **overview** is three sections — *Common* (identity, uptime,
     runtime, cluster), *Numbers* and *Charts* — and no longer duplicates
     the nav rail as a grid of tool cards.  Alongside the actor figures it

@@ -18,7 +18,11 @@ import { peakOf, StatsHistory, type SeriesPoint } from '../../core/history.js';
 import { drawChart, drawSparkline, themeColor, type ChartSeries } from '../../render/timeseries.js';
 import { currentTheme } from '../../core/theme.js';
 import type { PanelContext, PanelInstance } from '../../shell/PanelRegistry.js';
-import type { StatsSamplePayload, WelcomeFrame } from '../../../../src/devtools/protocol/index.js';
+import type {
+  NodeSample,
+  StatsSamplePayload,
+  WelcomeFrame,
+} from '../../../../src/devtools/protocol/index.js';
 
 /** Roughly fifteen minutes at the server's default one-second tick. */
 const HISTORY_CAPACITY = 900;
@@ -48,6 +52,11 @@ export function mount(host: HTMLElement, context: PanelContext): PanelInstance {
   const population = chartBlock('Actors');
   const backlog = chartBlock('Backlog');
   const hotList = h('div', { class: 'dt-hotlist' });
+  const nodeTable = h('div', { class: 'dt-nodetable' });
+  const nodeSection = h('section', {},
+    h('h2', { class: 'dt-section' }, 'Per node'),
+    nodeTable,
+  );
 
   replaceChildren(host,
     h('h1', { class: 'dt-panel__title' }, 'Overview'),
@@ -60,6 +69,7 @@ export function mount(host: HTMLElement, context: PanelContext): PanelInstance {
       h('h2', { class: 'dt-section' }, 'Numbers'),
       numberTiles,
     ),
+    nodeSection,
     h('section', {},
       h('h2', { class: 'dt-section' }, 'Charts'),
       h('div', { class: 'dt-charts' }, throughput.node, population.node, backlog.node),
@@ -72,6 +82,7 @@ export function mount(host: HTMLElement, context: PanelContext): PanelInstance {
     const welcome = context.tap.welcome.get();
     renderCommon(commonTiles, welcome, history, uptimeMillis(uptime, welcome));
     renderNumbers(numberTiles, history);
+    renderNodes(nodeSection, nodeTable, history.latest());
   };
   const render = (): void => {
     renderTiles();
@@ -336,6 +347,65 @@ function renderChart(block: ChartBlock, history: StatsHistory, lines: ReadonlyAr
     h('span', { class: 'dt-legend__peak' }, `peak ${formatCount(peak)}`),
   );
   drawChart(block.canvas, lines, peak);
+}
+
+/* -------------------------------- per node ------------------------------- */
+
+/**
+ * The same figures again, one row per node.
+ *
+ * Hidden on a system with a single node: a breakdown of one is the
+ * totals with extra steps.  It appears the moment a cluster has a second
+ * member, which is also the moment the totals stop telling you where
+ * something is happening.
+ */
+function renderNodes(
+  section: HTMLElement,
+  host: HTMLElement,
+  latest: StatsSamplePayload | null,
+): void {
+  const nodes = latest?.nodes ?? [];
+  section.hidden = nodes.length < 2;
+  if (section.hidden) return;
+
+  const ordered = [...nodes].sort((a, b) =>
+    Number(b.isSelf) - Number(a.isSelf) || a.figures.address.localeCompare(b.figures.address));
+  replaceChildren(host,
+    h('div', { class: 'dt-nodetable__head' },
+      h('span', {}, 'Node'),
+      h('span', {}, 'Actors'),
+      h('span', {}, 'Messages'),
+      h('span', {}, 'Backlog'),
+      h('span', {}, 'Restarts'),
+      h('span', {}, 'Dead letters'),
+      h('span', {}, 'Uptime'),
+    ),
+    ...ordered.map((node) => nodeRow(node)),
+  );
+}
+
+function nodeRow(node: NodeSample): HTMLElement {
+  const figures = node.figures;
+  const classes = ['dt-nodetable__row'];
+  if (node.stale) classes.push('dt-nodetable__row--stale');
+  return h('div', {
+    class: classes.join(' '),
+    title: node.stale
+      ? `Last answered ${formatDuration(Date.now() - node.receivedAtMs)} ago`
+      : figures.address,
+  },
+    h('span', { class: 'dt-nodetable__address' },
+      figures.address,
+      node.isSelf ? h('span', { class: 'dt-badge' }, 'self') : null,
+      node.stale ? h('span', { class: 'dt-badge dt-badge--error' }, 'not answering') : null,
+    ),
+    h('span', { class: 'dt-nodetable__figure' }, formatCount(figures.actorCount)),
+    h('span', { class: 'dt-nodetable__figure' }, formatCount(figures.messagesProcessed)),
+    h('span', { class: 'dt-nodetable__figure' }, formatCount(figures.mailboxBacklog)),
+    h('span', { class: 'dt-nodetable__figure' }, formatCount(figures.actorsRestarted)),
+    h('span', { class: 'dt-nodetable__figure' }, formatCount(figures.deadLetters)),
+    h('span', { class: 'dt-nodetable__figure' }, formatDuration(figures.uptimeMs)),
+  );
 }
 
 /* ------------------------------- hot list -------------------------------- */

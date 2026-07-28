@@ -1,6 +1,11 @@
 import { describe, expect, test } from 'bun:test';
 import { DefaultMetricsRegistry, type MetricSample } from '../../../src/metrics/Metrics.js';
 import { counterTotal, handlerLatency } from '../../../src/devtools/internal/MetricsDigest.js';
+import { NodeSampler } from '../../../src/devtools/internal/NodeSampler.js';
+import { ActorSystem } from '../../../src/ActorSystem.js';
+import { ActorSystemOptions } from '../../../src/ActorSystemOptions.js';
+import { LogLevel, NoopLogger } from '../../../src/Logger.js';
+import { MetricsExtensionId } from '../../../src/metrics/MetricsExtension.js';
 
 /** Real registry rather than hand-built samples — the shape stays honest. */
 function snapshot(build: (registry: DefaultMetricsRegistry) => void): ReadonlyArray<MetricSample> {
@@ -71,5 +76,37 @@ describe('handlerLatency', () => {
       registry.histogram('h', { path: '/user/b' }, { buckets: [0.01] }).observe(0.005);
     });
     expect(handlerLatency(samples, 'h')!.count).toBe(2);
+  });
+});
+
+describe('NodeSampler — metrics ownership', () => {
+  test('switches metrics on while sampling and hands them back on stop', () => {
+    const options = ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off);
+    const system = ActorSystem.create('sampler-metrics', options);
+    const metrics = system.extension(MetricsExtensionId);
+    expect(metrics.isEnabled()).toBe(false);
+
+    const sampler = new NodeSampler(system);
+    sampler.start();
+    expect(metrics.isEnabled()).toBe(true);
+
+    sampler.stop();
+    expect(metrics.isEnabled()).toBe(false);
+    void system.terminate();
+  });
+
+  test('leaves a registry the application enabled itself alone', () => {
+    const options = ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off);
+    const system = ActorSystem.create('sampler-metrics-preowned', options);
+    const metrics = system.extension(MetricsExtensionId);
+    const registry = metrics.enable();
+
+    const sampler = new NodeSampler(system);
+    sampler.start();
+    sampler.stop();
+
+    expect(metrics.isEnabled()).toBe(true);
+    expect(metrics.get()).toBe(registry);
+    void system.terminate();
   });
 });

@@ -41,6 +41,48 @@ export interface HandlerLatencySummary {
   readonly count: number;
 }
 
+/**
+ * One node's figures.
+ *
+ * The same shape whether the node is the one serving DevTools or a peer
+ * reporting over the cluster, so the overview can total them without
+ * caring which is which.
+ */
+export interface NodeFigures {
+  /** Cluster address, or `'local'` on a system with no cluster. */
+  readonly address: string;
+  readonly systemName: string;
+  /** Milliseconds since that node's `ActorSystem` was created. */
+  readonly uptimeMs: number;
+  readonly actorCount: number;
+  readonly actorsStarted: number;
+  readonly actorsStopped: number;
+  readonly actorsRestarted: number;
+  readonly deadLetters: number;
+  readonly messagesProcessed: number;
+  readonly mailboxDrops: number;
+  readonly mailboxBacklog: number;
+  readonly stashedTotal: number;
+  readonly suspendedActors: number;
+  readonly handlerLatency?: HandlerLatencySummary;
+  readonly topMailboxes: ReadonlyArray<MailboxDepthEntry>;
+}
+
+/** A node's figures as the serving node last heard them. */
+export interface NodeSample {
+  readonly figures: NodeFigures;
+  /**
+   * When this reached the serving node.  A peer that has stopped
+   * answering keeps its last figures with an ageing timestamp, which is
+   * more use than a row that disappears.
+   */
+  readonly receivedAtMs: number;
+  /** The node has not answered within the staleness window. */
+  readonly stale: boolean;
+  /** True for the node serving these DevTools. */
+  readonly isSelf: boolean;
+}
+
 /** One dashboard sample, emitted on the sampler interval. */
 export interface StatsSamplePayload {
   readonly kind: 'stats-sample';
@@ -78,6 +120,14 @@ export interface StatsSamplePayload {
   /** Deepest mailboxes, for the dashboard's hot-actor tile. */
   readonly topMailboxes: ReadonlyArray<MailboxDepthEntry>;
   readonly cluster?: ClusterStatsSummary;
+  /**
+   * Per-node breakdown, newest reading each.
+   *
+   * Always at least the serving node, so the overview can render "total
+   * and per node" the same way whether or not a cluster is involved.
+   * The figures above are the sum of these.
+   */
+  readonly nodes: ReadonlyArray<NodeSample>;
 }
 
 /** Payloads carried by the `stats` stream. */
