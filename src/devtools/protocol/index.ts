@@ -94,6 +94,8 @@ export type {
 export { spanBatchPayload } from './TracingStreamFrames.js';
 export type {
   SpanBatchPayload,
+  TracingRecordParameters,
+  TracingRecordResult,
   TracingStreamPayload,
   WireSpan,
   WireSpanKind,

@@ -27,7 +27,7 @@ import {
   type TraceLayout,
 } from '../../render/flamegraph.js';
 import type { PanelContext, PanelInstance } from '../../shell/PanelRegistry.js';
-import type { WireSpan } from '../../../../src/devtools/protocol/index.js';
+import type { TracingRecordResult, WireSpan } from '../../../../src/devtools/protocol/index.js';
 
 /** Spans kept in the browser; well beyond what one screen can show. */
 const SPAN_CAPACITY = 5_000;
@@ -44,6 +44,7 @@ export function mount(host: HTMLElement, context: PanelContext): PanelInstance {
   const mode = signal<ViewMode>('flame');
   const selectedTraceId = signal<string | null>(null);
   const hovered = signal<LayoutSpan | null>(null);
+  const recording = signal(false);
 
   const traceList = h('div', { class: 'dt-tracelist' });
   const canvas = h('canvas', { class: 'dt-flame' }) as HTMLCanvasElement;
@@ -58,6 +59,35 @@ export function mount(host: HTMLElement, context: PanelContext): PanelInstance {
       draw();
     },
   }, 'Waterfall');
+
+  const recordButton = h('button', {
+    class: 'dt-iconbutton',
+    type: 'button',
+    onclick: () => { void toggleRecording(); },
+  }, 'Record all messages');
+
+  /**
+   * Ask the system to open a root span for every message.
+   *
+   * Without this the panel is empty on a system that is plainly busy:
+   * actors trace a message only when it already belongs to a trace, and
+   * a plain `tell` never starts one.
+   */
+  async function toggleRecording(): Promise<void> {
+    const wanted = !recording.get();
+    try {
+      const result = await context.tap.request<TracingRecordResult>(
+        'tracing.record', { enabled: wanted },
+      );
+      recording.set(result.recording);
+    } catch {
+      // The server refused (no tracer, panel disabled) — reflect what is
+      // actually true rather than what was asked for.
+      recording.set(false);
+    }
+    renderTraceList();
+    draw();
+  }
 
   const clearButton = h('button', {
     class: 'dt-iconbutton',
@@ -75,7 +105,7 @@ export function mount(host: HTMLElement, context: PanelContext): PanelInstance {
     h('p', { class: 'dt-panel__subtitle' },
       'Spans recorded while this panel is open. Flame stacks by call depth; '
       + 'waterfall keeps one row per span.'),
-    h('div', { class: 'dt-toolbar' }, modeButton, clearButton, summary),
+    h('div', { class: 'dt-toolbar' }, recordButton, modeButton, clearButton, summary),
     h('div', { class: 'dt-trace' },
       traceList,
       h('div', { class: 'dt-trace__detail' }, canvas, details),
@@ -105,21 +135,9 @@ export function mount(host: HTMLElement, context: PanelContext): PanelInstance {
       : `${formatCount(spans.length)} spans · ${formatCount(traces.length)} traces`;
 
     if (traces.length === 0) {
-      // An empty panel here is almost always the seeding rule, not a
-      // broken tap: a cell only opens a span when the message already
-      // belongs to a trace, and nothing in the framework starts one.
-      replaceChildren(traceList,
-        h('p', { class: 'dt-empty' }, 'No spans recorded yet.'),
-        h('p', { class: 'dt-empty' },
-          'Actors trace a message only when it already belongs to a trace. '
-          + 'Start one at your entry point:'),
-        h('pre', { class: 'dt-code' }, [
-          'const tracer = tracerOf(system);',
-          "const span = tracer.startSpan('handle-request');",
-          'tracer.withActiveSpan(span, () => ref.tell(message));',
-          'span.end();',
-        ].join('\n')),
-      );
+      // The explanation lives in the detail area — this column is about
+      // 220px wide, which a four-line code sample does not survive.
+      replaceChildren(traceList, h('p', { class: 'dt-empty' }, 'No traces yet.'));
       return;
     }
     replaceChildren(traceList, ...traces.slice(0, 60).map((trace) => {
@@ -145,11 +163,16 @@ export function mount(host: HTMLElement, context: PanelContext): PanelInstance {
 
   function draw(): void {
     modeButton.textContent = mode.get() === 'flame' ? 'Waterfall' : 'Flame graph';
+    recordButton.textContent = recording.get() ? 'Stop recording' : 'Record all messages';
+    recordButton.className = recording.get()
+      ? 'dt-iconbutton dt-iconbutton--active'
+      : 'dt-iconbutton';
+
     const trace = selectedTrace();
     if (trace === null) {
       rectangles = [];
       clearCanvas(canvas);
-      replaceChildren(details, h('p', { class: 'dt-empty' }, 'Select a trace to inspect its spans.'));
+      replaceChildren(details, emptyExplanation(recording.get()));
       return;
     }
 
@@ -198,6 +221,14 @@ export function mount(host: HTMLElement, context: PanelContext): PanelInstance {
 
   return {
     dispose(): void {
+      // The server also stops recording when the last subscriber goes,
+      // but saying so explicitly means leaving the panel never depends
+      // on unsubscribe ordering.
+      if (recording.get()) {
+        void context.tap.request('tracing.record', { enabled: false }).catch(() => {
+          /* the socket is going away anyway */
+        });
+      }
       stop();
       disposeTheme();
       window.removeEventListener('resize', onResize);
@@ -220,6 +251,38 @@ function preparedContext(canvas: HTMLCanvasElement): CanvasRenderingContext2D | 
   context.setTransform(ratio, 0, 0, ratio, 0, 0);
   context.clearRect(0, 0, width, height);
   return context;
+}
+
+/**
+ * What to say when there is nothing to draw.
+ *
+ * Almost always the seeding rule rather than a broken tap: an actor
+ * opens a span only for a message that already belongs to a trace, and
+ * nothing in the framework starts one on its own.  So the empty state
+ * has to name the button that fixes it, not just report emptiness.
+ */
+function emptyExplanation(recording: boolean): HTMLElement {
+  if (recording) {
+    return h('div', { class: 'dt-emptystate' },
+      h('p', { class: 'dt-empty' }, 'Recording every message. Waiting for traffic…'),
+    );
+  }
+  return h('div', { class: 'dt-emptystate' },
+    h('p', { class: 'dt-empty' },
+      'No spans yet. Actors trace a message only when it already belongs to '
+      + 'a trace, so an ordinary tell records nothing.'),
+    h('p', { class: 'dt-empty' },
+      'Press ', h('strong', {}, 'Record all messages'),
+      ' to make every message a root span for as long as this panel is open.'),
+    h('p', { class: 'dt-empty' },
+      'In production you would start the trace yourself, at the entry point:'),
+    h('pre', { class: 'dt-code' }, [
+      'const tracer = tracerOf(system);',
+      "const span = tracer.startSpan('handle-request');",
+      'tracer.withActiveSpan(span, () => ref.tell(message));',
+      'span.end();',
+    ].join('\n')),
+  );
 }
 
 function clearCanvas(canvas: HTMLCanvasElement): void {

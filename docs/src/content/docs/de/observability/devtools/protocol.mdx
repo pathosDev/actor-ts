@@ -147,6 +147,7 @@ Pull-Operationen, benannt nach dem Panel, dem sie gehören:
 | `journal.ids` / `journal.read` | Ein Persistence-Journal durchsehen |
 | `replay.capabilities` / `replay.state` / `replay.diff` | Vergangenen Zustand rekonstruieren |
 | `profiler.start` / `profiler.stop` | Eine Profiling-Session steuern |
+| `tracing.record` | Für jede Nachricht einen Root-Span öffnen — oder aufhören |
 
 Eine Methode ohne Handler auf diesem System antwortet mit `error` und
 Code `unavailable` — dasselbe Signal, das der Panel-Deskriptor schon

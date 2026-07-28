@@ -6,6 +6,9 @@ import { RecordingTracer } from '../../../src/tracing/RecordingTracer.js';
 import { TracingExtensionId } from '../../../src/tracing/TracingExtension.js';
 import { tracerOf } from '../../../src/tracing/TracingExtension.js';
 import { SpanTap } from '../../../src/devtools/taps/SpanTap.js';
+import type { DevToolsRequestHandler, DevToolsServer } from '../../../src/devtools/DevToolsServer.js';
+import { Actor } from '../../../src/Actor.js';
+import { Props } from '../../../src/Props.js';
 import type { DevToolsStreamPayload, SpanBatchPayload } from '../../../src/devtools/protocol/index.js';
 
 const systems: ActorSystem[] = [];
@@ -227,3 +230,93 @@ describe('SpanTap — streaming', () => {
     }
   });
 });
+
+describe('SpanTap — recording every message', () => {
+  test('an ordinary tell records nothing until recording is switched on', async () => {
+    const system = newSystem('span-record');
+    const tap = new SpanTap(system, 100, 20);
+    const payloads: DevToolsStreamPayload[] = [];
+    tap.install((payload) => payloads.push(payload));
+    tap.subscribersChanged(1);
+    try {
+      const ref = system.spawn(Props.create(() => new EchoActor()), 'echo');
+
+      // The framework is propagate-only: no active span, no trace.
+      ref.tell('quiet');
+      await settle(80);
+      expect(spansOf(payloads)).toHaveLength(0);
+
+      await recordMethod(tap)({ enabled: true });
+      ref.tell('loud');
+      await settle(80);
+
+      const spans = spansOf(payloads);
+      expect(spans.length).toBeGreaterThan(0);
+      expect(spans.some((span) => span.actorPath?.endsWith('/echo') === true)).toBe(true);
+      // A root span, because nothing upstream had one.
+      expect(spans[0]!.parentSpanId).toBeNull();
+    } finally {
+      tap.uninstall();
+    }
+  });
+
+  test('closing the panel stops recording — a walked-away tab must not trace forever', async () => {
+    const system = newSystem('span-record-stop');
+    const tap = new SpanTap(system, 100, 20);
+    tap.install(() => {});
+    tap.subscribersChanged(1);
+    try {
+      await recordMethod(tap)({ enabled: true });
+      expect(system.extension(TracingExtensionId).isRecordingRootSpans()).toBe(true);
+
+      tap.subscribersChanged(0);
+      expect(system.extension(TracingExtensionId).isRecordingRootSpans()).toBe(false);
+    } finally {
+      tap.uninstall();
+    }
+  });
+
+  test('detaching leaves the system as it was found', async () => {
+    const system = newSystem('span-record-detach');
+    const tap = new SpanTap(system, 100, 20);
+    tap.install(() => {});
+    tap.subscribersChanged(1);
+    await recordMethod(tap)({ enabled: true });
+
+    tap.uninstall();
+    expect(system.extension(TracingExtensionId).isRecordingRootSpans()).toBe(false);
+    expect(system.extension(TracingExtensionId).isEnabled()).toBe(false);
+  });
+
+  test('rejects a request that is not a boolean', async () => {
+    const system = newSystem('span-record-bad');
+    const tap = new SpanTap(system, 100, 20);
+    tap.install(() => {});
+    try {
+      await expect(recordMethod(tap)({ enabled: 'yes' })).rejects.toThrow('must be a boolean');
+    } finally {
+      tap.uninstall();
+    }
+  });
+});
+
+class EchoActor extends Actor<string> {
+  override onReceive(): void {}
+}
+
+/**
+ * The handler `installMethods` registers, without standing up a server.
+ * Only `registerMethod` is exercised, so a stub of that one call is a
+ * truer test subject than a whole `DevToolsServer`.
+ */
+function recordMethod(tap: SpanTap): DevToolsRequestHandler {
+  const registered = new Map<string, DevToolsRequestHandler>();
+  tap.installMethods({
+    registerMethod(method: string, handler: DevToolsRequestHandler) {
+      registered.set(method, handler);
+    },
+  } as unknown as DevToolsServer);
+  const handler = registered.get('tracing.record');
+  if (handler === undefined) throw new Error('SpanTap did not register tracing.record');
+  return handler;
+}

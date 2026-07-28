@@ -192,11 +192,13 @@ export class DevToolsServer implements DevToolsHubContext {
     }
 
     if (this.isPanelEnabled('tracing')) {
-      this.registerTap(new SpanTap(
+      const spans = new SpanTap(
         this.system,
         settings.spanBufferCapacity ?? 2_000,
         settings.spanFlushIntervalMs ?? 250,
-      ));
+      );
+      this.registerTap(spans);
+      spans.installMethods(this);
       this.registerPanel({ id: 'tracing', status: 'active' });
     }
 

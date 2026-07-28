@@ -187,6 +187,10 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
     left alone.
   - **Tracing panel** — flame graph and waterfall over recorded message
     spans, with microsecond timings, self time and per-span attributes.
+    A **Record all messages** switch makes every message a root span for
+    as long as the panel is open, so the panel has something to show on
+    a system nobody has instrumented yet; leaving the panel, switching
+    it off or detaching all stop it.
     Attaching DevTools no longer costs you your tracer: if one is already
     installed it is wrapped in the new `TeeTracer` so an OTel exporter and
     the local panel both see every span, and detaching restores the
@@ -217,6 +221,15 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   stamped first in the constructor.  `Date.now() - system.startedAtMs` is
   the system's uptime, and unlike a monitoring tool's own clock it does
   not restart when that tool attaches, detaches or reconnects.
+- **`TracingExtension.recordRootSpans(enabled)` /
+  `isRecordingRootSpans()`** — trace **every** message, not only the ones
+  that already belong to a trace.  The framework is propagate-only by
+  design: an actor opens a span when the message arrived with a trace
+  context or one was active at the call site, so a plain `ref.tell(…)`
+  from outside any span records nothing.  Correct for production, and
+  the reason a tracing UI could show an empty screen on a busy system.
+  Off by default, refuses without a tracer installed, and cleared by
+  `disable()`.  Costs one boolean read per message when off.
 - **`MetricsExtension.disable()`** — back to the noop registry, mirroring
   `TracingExtension.disable()`, so a tool that switched metrics on for its
   own use can leave the system as it found it.

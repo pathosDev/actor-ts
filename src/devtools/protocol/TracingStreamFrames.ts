@@ -49,6 +49,22 @@ export interface SpanBatchPayload {
 /** Payloads carried by the `spans` stream. */
 export type TracingStreamPayload = SpanBatchPayload;
 
+/**
+ * `tracing.record` — turn root-span recording on or off.
+ *
+ * The framework only traces a message that already belongs to a trace,
+ * so a panel opened on a busy system shows nothing until somebody asks
+ * for it.  This is that ask, and it lives for as long as the panel does.
+ */
+export interface TracingRecordParameters {
+  readonly enabled: boolean;
+}
+
+export interface TracingRecordResult {
+  /** What the system is doing now — not necessarily what was asked. */
+  readonly recording: boolean;
+}
+
 /** @internal */
 export function spanBatchPayload(
   atMs: number,

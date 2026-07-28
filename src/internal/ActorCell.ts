@@ -840,7 +840,11 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
     // for system-message-shaped envelopes are still useful — the path
     // is what matters).  `null` parent → root span; envelope-supplied
     // SpanContext → child of the originating tell.
-    if (env.trace || tracerOf(this.system).activeSpan()) {
+    //
+    // The flag is read before the extension lookup because it is a plain
+    // field: on the ordinary path (no trace, no root recording) this
+    // costs one boolean instead of walking the extension chain.
+    if (env.trace || this.system._traceRootSpans || tracerOf(this.system).activeSpan()) {
       span = tracer.startSpan('actor.receive', {
         parent: env.trace ?? undefined,
         kind: 'consumer',

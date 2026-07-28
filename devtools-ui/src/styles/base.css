@@ -136,6 +136,16 @@ a:hover { text-decoration: underline; }
   font-size: 13px;
 }
 .dt-iconbutton:hover { background: var(--dt-accent-low); border-color: var(--dt-accent); }
+/* A toggle that is currently doing something to the running system. */
+.dt-iconbutton--active {
+  background: var(--dt-state-error);
+  border-color: var(--dt-state-error);
+  color: var(--dt-bg);
+}
+.dt-iconbutton--active:hover { background: var(--dt-state-error); border-color: var(--dt-state-error); }
+
+/* Room to explain an empty panel, rather than one grey line. */
+.dt-emptystate { display: flex; flex-direction: column; gap: 10px; max-width: 62ch; }
 
 .dt-body { display: grid; grid-template-columns: 208px 1fr; min-height: 0; }
 

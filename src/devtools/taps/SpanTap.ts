@@ -20,9 +20,11 @@ import {
   spanBatchPayload,
   type DevToolsStreamId,
   type DevToolsStreamPayload,
+  type TracingRecordParameters,
+  type TracingRecordResult,
   type WireSpan,
 } from '../protocol/index.js';
-import type { DevToolsTap } from '../DevToolsServer.js';
+import type { DevToolsServer, DevToolsTap } from '../DevToolsServer.js';
 
 /** Attributes the panel promotes out of the bag, for grouping. */
 const ACTOR_PATH_ATTRIBUTE = 'actor.path';
@@ -65,10 +67,18 @@ export class SpanTap implements DevToolsTap {
     this.installed = true;
   }
 
+  /** Register the recording switch on `server`. */
+  installMethods(server: DevToolsServer): void {
+    // `async` so a rejected parameter becomes a rejected promise rather
+    // than a synchronous throw past the hub's error handling.
+    server.registerMethod('tracing.record', async (p) => this.onRecord(p));
+  }
+
   uninstall(): void {
     if (!this.installed) return;
     this.installed = false;
     this.stopTicking();
+    this.setRecording(false);
 
     const tracing = this.system.extension(TracingExtensionId);
     // Put back exactly what we found, so a system that was exporting
@@ -92,8 +102,39 @@ export class SpanTap implements DevToolsTap {
   }
 
   subscribersChanged(count: number): void {
-    if (count > 0) this.startTicking();
-    else this.stopTicking();
+    if (count > 0) {
+      this.startTicking();
+      return;
+    }
+    this.stopTicking();
+    // Closing the panel must switch recording off.  A system that keeps
+    // tracing every message because somebody once opened a tab and
+    // walked away is a performance bug we handed the user.
+    this.setRecording(false);
+  }
+
+  /**
+   * Turn root-span recording on or off.
+   *
+   * Without it the panel is empty on a busy system: the framework only
+   * traces a message that already belongs to a trace, so nothing a
+   * plain `tell` does is ever recorded.
+   */
+  private onRecord(parameters: unknown): TracingRecordResult {
+    const request = (parameters ?? {}) as Partial<TracingRecordParameters>;
+    if (typeof request.enabled !== 'boolean') {
+      throw new Error('`enabled` must be a boolean');
+    }
+    this.setRecording(request.enabled);
+    return { recording: this.system.extension(TracingExtensionId).isRecordingRootSpans() };
+  }
+
+  private setRecording(enabled: boolean): void {
+    const tracing = this.system.extension(TracingExtensionId);
+    // `recordRootSpans(true)` refuses without a tracer; ours is only
+    // installed between `install` and `uninstall`.
+    if (enabled && !this.installed) return;
+    tracing.recordRootSpans(enabled);
   }
 
   private onSpanEnd(span: RecordedSpan): void {

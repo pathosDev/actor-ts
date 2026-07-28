@@ -57,7 +57,8 @@ export type DevToolsRequestMethod =
   | 'replay.state'
   | 'replay.diff'
   | 'profiler.start'
-  | 'profiler.stop';
+  | 'profiler.stop'
+  | 'tracing.record';
 
 /** Every request method, for validation and iteration. */
 export const DEVTOOLS_REQUEST_METHODS: ReadonlyArray<DevToolsRequestMethod> = [
@@ -71,6 +72,7 @@ export const DEVTOOLS_REQUEST_METHODS: ReadonlyArray<DevToolsRequestMethod> = [
   'replay.diff',
   'profiler.start',
   'profiler.stop',
+  'tracing.record',
 ];
 
 /** Panels of the UI shell — the cards on the dashboard. */
