@@ -165,6 +165,7 @@ export class HttpExtension implements Extension {
         // from the first.  On unbind we also close then hard-terminate
         // live WebSocket sockets so the backend's close() can complete.
         let unbindOnce: Promise<void> | null = null;
+        const shutdownTaskName = `http-unbind-${raw.host}:${raw.port}`;
         const binding: ServerBinding = {
           host: raw.host,
           port: raw.port,
@@ -175,6 +176,12 @@ export class HttpExtension implements Extension {
                 tracker.closeAll(1001, 'server shutting down');
                 tracker.terminateAll();
                 await backendUnbind;
+                // The task is named after the address, so leaving it
+                // behind made re-binding that address impossible: the
+                // next `bind()` collided with a task for a server that
+                // no longer exists.
+                system.extension(CoordinatedShutdownId)
+                  .removeTask(Phases.ServiceUnbind, shutdownTaskName);
               })();
             }
             return unbindOnce;
@@ -185,7 +192,7 @@ export class HttpExtension implements Extension {
         // the server before the rest of the pipeline tears down the system.
         system.extension(CoordinatedShutdownId).addTask(
           Phases.ServiceUnbind,
-          `http-unbind-${binding.host}:${binding.port}`,
+          shutdownTaskName,
           () => binding.unbind(),
         );
         system.log.info(`HTTP server bound on ${binding.host}:${binding.port} (${active.name})`);
