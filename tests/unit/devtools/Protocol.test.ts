@@ -120,7 +120,7 @@ describe('DevTools protocol — vocabulary guards', () => {
 
   test('every declared method is namespaced by its owning panel', () => {
     for (const method of DEVTOOLS_REQUEST_METHODS) {
-      expect(method).toMatch(/^(explain|journal|replay|profiler)\.[a-z]+$/);
+      expect(method).toMatch(/^(explain|journal|replay|profiler|tracing)\.[a-z]+$/);
     }
   });
 });
