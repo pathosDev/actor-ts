@@ -153,7 +153,7 @@ export class DevToolsServer implements DevToolsHubContext {
   start(): void {
     if (this.hubRef !== null) return;
     this.hubRef = this.system.spawn(
-      Props.create<DevToolsHubCommand>(() => new DevToolsHubActor(this) as never),
+      Props.create<DevToolsHubCommand>(() => new DevToolsHubActor(this) as never).asInternal(),
       'devtools-hub',
     );
     this.installDefaultTaps();

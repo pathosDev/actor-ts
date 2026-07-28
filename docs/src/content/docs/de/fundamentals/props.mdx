@@ -74,7 +74,7 @@ const props = Props.create(() => new Worker(db, config));
 `db` und `config` werden vom Closure gefangen; jeder Restart sieht
 dieselbe Verdrahtung.
 
-## Die vier Builder
+## Die Builder
 
 ```ts
 class Props<TMessage> {
@@ -84,6 +84,7 @@ class Props<TMessage> {
   withDispatcher(dispatcher: Dispatcher): Props<TMessage>;
   withMailboxCapacity(capacity: number): Props<TMessage>;
   withMailbox(factory: () => Mailbox<TMessage>): Props<TMessage>;
+  asInternal(): Props<TMessage>;
 }
 ```
 
@@ -190,6 +191,23 @@ Nachrichten noch da sind.
 
 Siehe [Mailboxes](/de/fundamentals/mailboxes/) für die
 Overflow-Policies und Priority-Semantik.
+
+### `asInternal`
+
+Markiert einen Actor als **Werkzeug** statt als Anwendungslogik — und
+seine Kinder gleich mit. Systemweite Instrumentierung überspringt ihn:
+Ohne diese Markierung tract sich der DevTools-Hub selbst, der ja gerade
+die aufgezeichneten Spans publiziert, und jeder Batch käme als Payload
+des nächsten zurück.
+
+```ts
+system.spawn(Props.create(() => new MyProbe()).asInternal(), 'my-probe');
+```
+
+Du brauchst das nur, wenn du ein Werkzeug schreibst, das das System
+beobachtet, in dem es selbst läuft. Anwendungs-Actors gehören nicht
+markiert: Echte Arbeit vor dem Profiler zu verstecken ist der Weg, auf
+dem ein Performance-Problem unsichtbar bleibt.
 
 ## Naming beim Spawn
 

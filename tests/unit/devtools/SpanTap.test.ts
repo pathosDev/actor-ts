@@ -304,6 +304,11 @@ class EchoActor extends Actor<string> {
   override onReceive(): void {}
 }
 
+/** Takes the house-style tagged object, so the labels are realistic. */
+class OrderActor extends Actor<{ kind: string; id: number }> {
+  override onReceive(): void {}
+}
+
 /**
  * The handler `installMethods` registers, without standing up a server.
  * Only `registerMethod` is exercised, so a stub of that one call is a
@@ -320,3 +325,46 @@ function recordMethod(tap: SpanTap): DevToolsRequestHandler {
   if (handler === undefined) throw new Error('SpanTap did not register tracing.record');
   return handler;
 }
+
+describe('SpanTap — sender and payload', () => {
+  test('carries who sent it, what it was, and the message itself', async () => {
+    const system = newSystem('span-payload');
+    const tap = new SpanTap(system, 100, 20);
+    const payloads: DevToolsStreamPayload[] = [];
+    tap.install((payload) => payloads.push(payload));
+    tap.subscribersChanged(1);          // also switches payload capture on
+    try {
+      await recordMethod(tap)({ enabled: true });
+      const ref = system.spawn(Props.create(() => new OrderActor()), 'orders');
+      ref.tell({ kind: 'place', id: 7 });
+      await settle(80);
+
+      const span = spansOf(payloads).find((s) => s.actorPath?.endsWith('/orders') === true);
+      expect(span).toBeDefined();
+      // Not "Object" — the discriminant is the name a developer uses.
+      expect(span!.messageType).toBe('place');
+      expect(span!.messagePayload).toBe('{"kind":"place","id":7}');
+      // A bare `tell` has no sender, and the wire says so rather than ''.
+      expect(span!.senderPath).toBeNull();
+    } finally {
+      tap.uninstall();
+    }
+  });
+
+  test('stops capturing payloads when nobody is watching', async () => {
+    const system = newSystem('span-payload-off');
+    const tap = new SpanTap(system, 100, 20);
+    tap.install(() => {});
+    const tracing = system.extension(TracingExtensionId);
+
+    tap.subscribersChanged(1);
+    expect(tracing.isCapturingMessagePayloads()).toBe(true);
+
+    tap.subscribersChanged(0);
+    expect(tracing.isCapturingMessagePayloads()).toBe(false);
+
+    tap.subscribersChanged(1);
+    tap.uninstall();
+    expect(tracing.isCapturingMessagePayloads()).toBe(false);
+  });
+});

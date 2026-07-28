@@ -10,6 +10,24 @@ that setup is overkill for the question "why did this request take
 80 ms?". The tracing panel answers it in the browser, from the spans the
 framework already produces.
 
+## The list
+
+The panel opens on one row per trace, wide enough to read:
+
+| Column | Shows |
+| --- | --- |
+| **Route** | `sender → actor → actor` — the hops the message actually made, consecutive repeats collapsed |
+| **Message** | The message's name, plus a span count and an error badge |
+| **Payload** | The message itself, as JSON |
+| **Duration** | Wall time from the first span's start to the last one's end |
+
+A message's *name* is its `kind` when it has one, which is how this
+codebase tags its unions — `constructor.name` alone answers `Object` for
+every object literal and tells you nothing.
+
+Opening a row switches to the graph for that trace, with the payload
+pretty-printed above it and a **← All traces** button back.
+
 ## Two views, one trace
 
 | View | Vertical axis | Answers |
@@ -17,9 +35,14 @@ framework already produces.
 | **Flame graph** | Stack depth — children on their parent | Where did the time go? |
 | **Waterfall** | One row per span, in time order | What happened, and when? |
 
-Pick a trace on the left, hover a span for its detail. Duration, **self
-time** (its own work, with children subtracted), offset within the
-trace, status and attributes are all in the panel below the graph.
+The two coincide for a straight chain — a parent and its single child
+are one row apart either way. They separate when an actor sends to
+several others: the flame graph puts the siblings on one row, the
+waterfall gives each its own.
+
+Hover a span for its detail. Duration, **self time** (its own work, with
+children subtracted), offset within the trace, sender, message, payload,
+status and attributes are all in the panel below the graph.
 
 Timings come from a monotonic clock and are shown in microseconds where
 that is the honest unit — actor message handling routinely completes
@@ -46,6 +69,14 @@ every message a root span for as long as the panel is open:
   sampling policy — spans are capped by `spanBufferCapacity` (default
   2000) and the panel reports what it had to drop.
 - It needs a tracer, which DevTools installs while attached.
+- DevTools' own actors are excluded. They are marked with
+  [`Props.asInternal()`](/fundamentals/props/#asinternal), without which
+  the hub publishing the spans it just recorded would feed every batch
+  back in as the payload of the next one.
+
+Message payloads are captured only while the panel is subscribed, and
+are bounded in depth and length before they reach the wire — production
+tracing does not pay for a `JSON.stringify` per message.
 
 From code the same switch is
 `system.extension(TracingExtensionId).recordRootSpans(true)`.

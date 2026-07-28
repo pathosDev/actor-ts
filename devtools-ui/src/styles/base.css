@@ -461,20 +461,25 @@ a:hover { text-decoration: underline; }
 
 /* -------------------------------- tracing ------------------------------- */
 
-.dt-trace { display: grid; grid-template-columns: minmax(220px, 300px) 1fr; gap: var(--dt-gap); }
-.dt-tracelist {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-  max-height: 62vh;
-  overflow: auto;
-}
-.dt-tracelist__row {
+/* The list is the panel, so it gets the full width: a route plus a
+   payload does not fit in a sidebar. */
+.dt-tracetable { display: flex; flex-direction: column; gap: 3px; }
+.dt-tracetable__head,
+.dt-tracetable__row {
   display: grid;
-  grid-template-columns: 66px 1fr auto;
-  gap: 8px;
+  grid-template-columns: 74px minmax(140px, 1.4fr) minmax(110px, 0.9fr) minmax(120px, 2fr) 76px;
+  gap: 12px;
   align-items: center;
-  padding: 5px 9px;
+}
+.dt-tracetable__head {
+  padding: 0 10px 4px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--dt-text-muted);
+}
+.dt-tracetable__row {
+  padding: 6px 10px;
   border: 1px solid var(--dt-border);
   border-radius: 8px;
   background: var(--dt-bg-elevated);
@@ -484,13 +489,26 @@ a:hover { text-decoration: underline; }
   text-align: left;
   cursor: pointer;
 }
-.dt-tracelist__row:hover { border-color: var(--dt-accent); }
-.dt-tracelist__row--current { border-color: var(--dt-accent); background: var(--dt-accent-low); }
-.dt-tracelist__time { font-family: var(--dt-font-mono); color: var(--dt-text-muted); }
-.dt-tracelist__name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.dt-tracelist__duration { font-family: var(--dt-font-mono); color: var(--dt-text-strong); }
+.dt-tracetable__row:hover { border-color: var(--dt-accent); }
+.dt-tracetable__row--error { border-left: 3px solid var(--dt-state-error); }
+.dt-tracetable__time { font-family: var(--dt-font-mono); color: var(--dt-text-muted); }
+.dt-tracetable__route,
+.dt-tracetable__message,
+.dt-tracetable__payload {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dt-tracetable__route { font-family: var(--dt-font-mono); color: var(--dt-text-strong); }
+.dt-tracetable__message { display: flex; gap: 6px; align-items: center; }
+.dt-tracetable__payload { font-family: var(--dt-font-mono); color: var(--dt-text-muted); }
+.dt-tracetable__duration { font-family: var(--dt-font-mono); text-align: right; }
 
-.dt-trace__detail { min-width: 0; display: flex; flex-direction: column; gap: 12px; }
+.dt-traceheader { margin-bottom: 12px; }
+.dt-traceheader__route { font-family: var(--dt-font-mono); color: var(--dt-text-strong); font-size: 14px; }
+.dt-traceheader__meta { color: var(--dt-text-muted); font-size: 12.5px; margin-top: 2px; }
+.dt-traceheader .dt-code { margin-top: 8px; max-height: 180px; overflow: auto; }
+
 .dt-flame {
   display: block;
   width: 100%;
@@ -499,7 +517,7 @@ a:hover { text-decoration: underline; }
   border-radius: var(--dt-radius);
 }
 
-.dt-spandetails { display: flex; flex-direction: column; gap: 10px; }
+.dt-spandetails { min-width: 0; display: flex; flex-direction: column; gap: 10px; margin-top: 12px; }
 .dt-kv {
   display: grid;
   grid-template-columns: minmax(96px, auto) 1fr;

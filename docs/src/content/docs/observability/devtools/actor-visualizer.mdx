@@ -77,7 +77,10 @@ The live supervision tree, from the root guardian down.
   stopped* if you would rather see only the living.
 - **Hide DevTools actors** is on by default. DevTools runs its own hub
   and taps as ordinary actors; they are real, so they are listed, but
-  they are not what you came to look at.
+  they are not what you came to look at. They are marked at spawn with
+  [`Props.asInternal()`](/fundamentals/props/#asinternal) rather than
+  matched by name, so their children — a DevTools websocket connection
+  is a child of its hub — are hidden too.
 
 The tree arrives as one snapshot followed by deltas, so a system that
 spawns constantly does not re-send its whole tree every time. Mailbox

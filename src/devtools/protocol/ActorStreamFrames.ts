@@ -33,6 +33,12 @@ export interface ActorNode {
   /** Dispatcher id, or `null` when the cell uses the system default. */
   readonly dispatcher: string | null;
   readonly childCount: number;
+  /**
+   * DevTools' own actors, so the panel can hide them without guessing
+   * from names — a guess that missed their children, and a DevTools
+   * websocket connection is a child of the DevTools hub.
+   */
+  readonly internal: boolean;
 }
 
 /** Mailbox depth of one actor at sample time. */

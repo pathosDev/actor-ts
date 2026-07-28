@@ -237,13 +237,9 @@ export function mount(host: HTMLElement, context: PanelContext): PanelInstance {
   };
 }
 
-/**
- * DevTools' own actors, matched on the actor NAME rather than anywhere
- * in the path — a system called `devtools-anything` would otherwise
- * hide every actor it has.
- */
+/** DevTools' own actors, marked as such by the server. */
 function isInternal(actor: ActorNode): boolean {
-  return actor.name.startsWith('devtools-');
+  return actor.internal;
 }
 
 /** Handling times are usually sub-millisecond, so show enough digits. */

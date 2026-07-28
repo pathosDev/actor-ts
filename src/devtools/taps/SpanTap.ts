@@ -29,6 +29,8 @@ import type { DevToolsServer, DevToolsTap } from '../DevToolsServer.js';
 /** Attributes the panel promotes out of the bag, for grouping. */
 const ACTOR_PATH_ATTRIBUTE = 'actor.path';
 const MESSAGE_TYPE_ATTRIBUTE = 'actor.message.type';
+const SENDER_ATTRIBUTE = 'actor.sender';
+const MESSAGE_PAYLOAD_ATTRIBUTE = 'actor.message.payload';
 
 export class SpanTap implements DevToolsTap {
   readonly stream: DevToolsStreamId = 'spans';
@@ -79,6 +81,7 @@ export class SpanTap implements DevToolsTap {
     this.installed = false;
     this.stopTicking();
     this.setRecording(false);
+    this.system.extension(TracingExtensionId).captureMessagePayloads(false);
 
     const tracing = this.system.extension(TracingExtensionId);
     // Put back exactly what we found, so a system that was exporting
@@ -104,9 +107,14 @@ export class SpanTap implements DevToolsTap {
   subscribersChanged(count: number): void {
     if (count > 0) {
       this.startTicking();
+      // Payloads are what make the trace list readable, so they are on
+      // whenever the panel is watching — including for traces the
+      // application seeded itself.
+      this.system.extension(TracingExtensionId).captureMessagePayloads(true);
       return;
     }
     this.stopTicking();
+    this.system.extension(TracingExtensionId).captureMessagePayloads(false);
     // Closing the panel must switch recording off.  A system that keeps
     // tracing every message because somebody once opened a tab and
     // walked away is a performance bug we handed the user.
@@ -196,7 +204,9 @@ function toWireSpan(span: RecordedSpan): WireSpan {
     statusMessage: span.statusMessage ?? null,
     attributes,
     actorPath: stringAttribute(span, ACTOR_PATH_ATTRIBUTE),
+    senderPath: emptyToNull(stringAttribute(span, SENDER_ATTRIBUTE)),
     messageType: stringAttribute(span, MESSAGE_TYPE_ATTRIBUTE),
+    messagePayload: stringAttribute(span, MESSAGE_PAYLOAD_ATTRIBUTE),
     exceptions: span.exceptions.map((error) => error.message),
   };
 }
@@ -204,4 +214,9 @@ function toWireSpan(span: RecordedSpan): WireSpan {
 function stringAttribute(span: RecordedSpan, key: string): string | null {
   const value = span.attributes[key];
   return typeof value === 'string' ? value : null;
+}
+
+/** `''` is how the cell writes "no sender"; the wire says `null`. */
+function emptyToNull(value: string | null): string | null {
+  return value === null || value.length === 0 ? null : value;
 }

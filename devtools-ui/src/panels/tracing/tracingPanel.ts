@@ -1,15 +1,16 @@
 /**
- * The tracing panel (#217) — flame graph and waterfall over recorded
- * message spans.
+ * The tracing panel (#217) — the route a message took, and where the
+ * time went.
  *
- * Spans arrive live and are grouped into traces; the trace list on the
- * left is the index, the canvas on the right is the detail.  Selection
- * is sticky: a trace you are reading must not be swapped out from under
- * you because a newer one arrived.
+ * Two screens rather than a sidebar.  The list is the panel: one row per
+ * trace, wide enough to carry the whole route and the payload, which is
+ * what you scan when you are looking for *which* message misbehaved.
+ * Clicking one opens the graph, which answers the different question of
+ * where its time went.
  *
- * Canvas, not SVG: a busy trace is hundreds of rectangles that repaint
- * on every hover and resize, and rectangles are all this needs — no
- * text selection, no per-node CSS.
+ * Canvas for the graph, not SVG: a busy trace is hundreds of rectangles
+ * that repaint on every hover and resize, and rectangles are all it
+ * needs — no text selection, no per-node CSS.
  */
 import { h, replaceChildren } from '../../core/dom.js';
 import { formatCount, formatTime, shortActorPath } from '../../core/format.js';
@@ -32,6 +33,9 @@ import type { TracingRecordResult, WireSpan } from '../../../../src/devtools/pro
 /** Spans kept in the browser; well beyond what one screen can show. */
 const SPAN_CAPACITY = 5_000;
 
+/** Traces listed at once — older ones are still counted, not drawn. */
+const TRACE_ROWS = 200;
+
 /** How the vertical axis is arranged. */
 type ViewMode = 'flame' | 'waterfall';
 
@@ -42,23 +46,44 @@ export function mount(host: HTMLElement, context: PanelContext): PanelInstance {
   let dropped = 0;
 
   const mode = signal<ViewMode>('flame');
-  const selectedTraceId = signal<string | null>(null);
+  const openTraceId = signal<string | null>(null);
   const hovered = signal<LayoutSpan | null>(null);
   const recording = signal(false);
 
-  const traceList = h('div', { class: 'dt-tracelist' });
+  const traceList = h('div', { class: 'dt-tracetable' });
+  const listView = h('section', {}, traceList);
   const canvas = h('canvas', { class: 'dt-flame' }) as HTMLCanvasElement;
   const details = h('div', { class: 'dt-spandetails' });
+  const detailHeading = h('div', { class: 'dt-traceheader' });
   const summary = h('span', { class: 'dt-toolbar__summary' });
 
-  const modeButton = h('button', {
+  const backButton = h('button', {
     class: 'dt-iconbutton',
     type: 'button',
     onclick: () => {
-      mode.set(mode.get() === 'flame' ? 'waterfall' : 'flame');
-      draw();
+      openTraceId.set(null);
+      render();
     },
+  }, '← All traces');
+
+  const flameButton = h('button', {
+    class: 'dt-iconbutton',
+    type: 'button',
+    onclick: () => { mode.set('flame'); draw(); },
+  }, 'Flame graph');
+
+  const waterfallButton = h('button', {
+    class: 'dt-iconbutton',
+    type: 'button',
+    onclick: () => { mode.set('waterfall'); draw(); },
   }, 'Waterfall');
+
+  const detailView = h('section', {},
+    h('div', { class: 'dt-toolbar' }, backButton, flameButton, waterfallButton),
+    detailHeading,
+    canvas,
+    details,
+  );
 
   const recordButton = h('button', {
     class: 'dt-iconbutton',
@@ -85,8 +110,7 @@ export function mount(host: HTMLElement, context: PanelContext): PanelInstance {
       // actually true rather than what was asked for.
       recording.set(false);
     }
-    renderTraceList();
-    draw();
+    render();
   }
 
   const clearButton = h('button', {
@@ -95,7 +119,7 @@ export function mount(host: HTMLElement, context: PanelContext): PanelInstance {
     onclick: () => {
       spans = [];
       dropped = 0;
-      selectedTraceId.set(null);
+      openTraceId.set(null);
       regroup();
     },
   }, 'Clear');
@@ -103,78 +127,108 @@ export function mount(host: HTMLElement, context: PanelContext): PanelInstance {
   replaceChildren(host,
     h('h1', { class: 'dt-panel__title' }, 'Tracing'),
     h('p', { class: 'dt-panel__subtitle' },
-      'Spans recorded while this panel is open. Flame stacks by call depth; '
-      + 'waterfall keeps one row per span.'),
-    h('div', { class: 'dt-toolbar' }, recordButton, modeButton, clearButton, summary),
-    h('div', { class: 'dt-trace' },
-      traceList,
-      h('div', { class: 'dt-trace__detail' }, canvas, details),
-    ),
+      'Every message recorded while this panel is open, with the route it took. '
+      + 'Open one to see where its time went.'),
+    h('div', { class: 'dt-toolbar' }, recordButton, clearButton, summary),
+    listView,
+    detailView,
   );
 
-  function regroup(): void {
-    traces = groupByTrace(spans);
-    // Keep the selection if it still exists; otherwise fall back to the
-    // newest trace so the panel is never blank while data is arriving.
-    const selected = selectedTraceId.get();
-    if (selected === null || !traces.some((trace) => trace.traceId === selected)) {
-      selectedTraceId.set(traces[0]?.traceId ?? null);
-    }
-    renderTraceList();
-    draw();
-  }
-
-  function selectedTrace(): TraceLayout | null {
-    const id = selectedTraceId.get();
+  function openTrace(): TraceLayout | null {
+    const id = openTraceId.get();
+    if (id === null) return null;
     return traces.find((trace) => trace.traceId === id) ?? null;
   }
 
-  function renderTraceList(): void {
-    summary.textContent = dropped > 0
-      ? `${formatCount(spans.length)} spans · ${formatCount(traces.length)} traces · ${formatCount(dropped)} dropped`
-      : `${formatCount(spans.length)} spans · ${formatCount(traces.length)} traces`;
-
-    if (traces.length === 0) {
-      // The explanation lives in the detail area — this column is about
-      // 220px wide, which a four-line code sample does not survive.
-      replaceChildren(traceList, h('p', { class: 'dt-empty' }, 'No traces yet.'));
-      return;
-    }
-    replaceChildren(traceList, ...traces.slice(0, 60).map((trace) => {
-      const failed = trace.spans.some((entry) => entry.span.status === 'error');
-      const classes = ['dt-tracelist__row'];
-      if (trace.traceId === selectedTraceId.get()) classes.push('dt-tracelist__row--current');
-      return h('button', {
-        class: classes.join(' '),
-        type: 'button',
-        onclick: () => {
-          selectedTraceId.set(trace.traceId);
-          renderTraceList();
-          draw();
-        },
-      },
-        h('span', { class: 'dt-tracelist__time' }, formatTime(trace.startedAtMs)),
-        h('span', { class: 'dt-tracelist__name' }, rootNameOf(trace)),
-        failed ? h('span', { class: 'dt-badge dt-badge--error' }, 'error') : null,
-        h('span', { class: 'dt-tracelist__duration' }, formatMilliseconds(trace.totalMs)),
-      );
-    }));
+  function regroup(): void {
+    traces = groupByTrace(spans);
+    // An open trace that aged out of the buffer drops you back to the
+    // list rather than to a blank graph.
+    if (openTraceId.get() !== null && openTrace() === null) openTraceId.set(null);
+    render();
   }
 
-  function draw(): void {
-    modeButton.textContent = mode.get() === 'flame' ? 'Waterfall' : 'Flame graph';
+  function render(): void {
     recordButton.textContent = recording.get() ? 'Stop recording' : 'Record all messages';
     recordButton.className = recording.get()
       ? 'dt-iconbutton dt-iconbutton--active'
       : 'dt-iconbutton';
+    summary.textContent = dropped > 0
+      ? `${formatCount(spans.length)} spans · ${formatCount(traces.length)} traces · ${formatCount(dropped)} dropped`
+      : `${formatCount(spans.length)} spans · ${formatCount(traces.length)} traces`;
 
-    const trace = selectedTrace();
-    if (trace === null) {
-      rectangles = [];
-      clearCanvas(canvas);
-      replaceChildren(details, emptyExplanation(recording.get()));
+    const open = openTrace();
+    listView.hidden = open !== null;
+    detailView.hidden = open === null;
+    if (open === null) renderTraceList();
+    else draw();
+  }
+
+  function renderTraceList(): void {
+    if (traces.length === 0) {
+      replaceChildren(traceList, emptyExplanation(recording.get()));
       return;
     }
+    replaceChildren(traceList,
+      h('div', { class: 'dt-tracetable__head' },
+        h('span', {}, 'Time'),
+        h('span', {}, 'Route'),
+        h('span', {}, 'Message'),
+        h('span', {}, 'Payload'),
+        h('span', {}, 'Duration'),
+      ),
+      ...traces.slice(0, TRACE_ROWS).map((trace) => {
+        const summarised = summarise(trace);
+        const failed = trace.spans.some((entry) => entry.span.status === 'error');
+        const classes = ['dt-tracetable__row'];
+        if (failed) classes.push('dt-tracetable__row--error');
+        return h('button', {
+          class: classes.join(' '),
+          type: 'button',
+          title: summarised.payload ?? summarised.route,
+          onclick: () => {
+            openTraceId.set(trace.traceId);
+            hovered.set(null);
+            render();
+          },
+        },
+          h('span', { class: 'dt-tracetable__time' }, formatTime(trace.startedAtMs)),
+          h('span', { class: 'dt-tracetable__route' }, summarised.route),
+          h('span', { class: 'dt-tracetable__message' },
+            summarised.messageType,
+            trace.spans.length > 1
+              ? h('span', { class: 'dt-badge' }, `${formatCount(trace.spans.length)} spans`)
+              : null,
+            failed ? h('span', { class: 'dt-badge dt-badge--error' }, 'error') : null,
+          ),
+          h('span', { class: 'dt-tracetable__payload' }, summarised.payload ?? '—'),
+          h('span', { class: 'dt-tracetable__duration' }, formatMilliseconds(trace.totalMs)),
+        );
+      }),
+    );
+  }
+
+  function draw(): void {
+    flameButton.className = mode.get() === 'flame'
+      ? 'dt-iconbutton dt-iconbutton--active'
+      : 'dt-iconbutton';
+    waterfallButton.className = mode.get() === 'waterfall'
+      ? 'dt-iconbutton dt-iconbutton--active'
+      : 'dt-iconbutton';
+
+    const trace = openTrace();
+    if (trace === null) return;
+
+    const summarised = summarise(trace);
+    replaceChildren(detailHeading,
+      h('div', { class: 'dt-traceheader__route' }, summarised.route),
+      h('div', { class: 'dt-traceheader__meta' },
+        `${formatTime(trace.startedAtMs)} · ${summarised.messageType}`
+        + ` · ${formatCount(trace.spans.length)} spans · ${formatMilliseconds(trace.totalMs)}`),
+      summarised.payload === null
+        ? null
+        : h('pre', { class: 'dt-code' }, prettyJson(summarised.payload)),
+    );
 
     const rows = mode.get() === 'flame' ? trace.maxDepth + 1 : trace.spans.length;
     const width = canvas.clientWidth || 600;
@@ -196,7 +250,7 @@ export function mount(host: HTMLElement, context: PanelContext): PanelInstance {
     if (next === hovered.get()) return;
     hovered.set(next);
     paint(canvas, rectangles, next);
-    const trace = selectedTrace();
+    const trace = openTrace();
     if (trace !== null) renderDetails(details, next ?? rectangles[0]?.span ?? null, trace);
   });
   canvas.addEventListener('mouseleave', () => {
@@ -209,13 +263,13 @@ export function mount(host: HTMLElement, context: PanelContext): PanelInstance {
     dropped += payload.dropped;
     spans.push(...payload.spans);
     // Drop the distant past rather than grow without bound; the recent
-    // past is what a live flame graph is for.
+    // past is what a live trace list is for.
     if (spans.length > SPAN_CAPACITY) spans = spans.slice(spans.length - SPAN_CAPACITY);
     regroup();
   });
 
-  const disposeTheme = effect(draw, [currentTheme]);
-  const onResize = (): void => draw();
+  const disposeTheme = effect(render, [currentTheme]);
+  const onResize = (): void => { if (openTrace() !== null) draw(); };
   window.addEventListener('resize', onResize);
   regroup();
 
@@ -234,6 +288,51 @@ export function mount(host: HTMLElement, context: PanelContext): PanelInstance {
       window.removeEventListener('resize', onResize);
     },
   };
+}
+
+/* ------------------------------- summarising ------------------------------ */
+
+/** One trace, reduced to the line a list can show. */
+interface TraceSummary {
+  /** `sender → actor → actor`, the hops the message actually made. */
+  readonly route: string;
+  readonly messageType: string;
+  readonly payload: string | null;
+}
+
+/**
+ * Reduce a trace to sender, route and payload.
+ *
+ * The route is the actor paths in time order with consecutive repeats
+ * collapsed: an actor that handles two messages in one trace is one hop,
+ * not two, which is what "where did this go?" means.
+ */
+function summarise(trace: TraceLayout): TraceSummary {
+  const root = trace.spans.find((entry) => entry.depth === 0) ?? trace.spans[0];
+  const hops: string[] = [];
+  const sender = root?.span.senderPath ?? null;
+  if (sender !== null) hops.push(shortActorPath(sender));
+  for (const entry of trace.spans) {
+    const path = entry.span.actorPath;
+    if (path === null) continue;
+    const short = shortActorPath(path);
+    if (hops[hops.length - 1] !== short) hops.push(short);
+  }
+  return {
+    route: hops.length === 0 ? (root?.span.name ?? '(empty trace)') : hops.join(' → '),
+    messageType: root?.span.messageType ?? root?.span.name ?? '—',
+    payload: root?.span.messagePayload ?? null,
+  };
+}
+
+/** Re-indent captured JSON; it arrives compact to keep the wire small. */
+function prettyJson(payload: string): string {
+  try {
+    return JSON.stringify(JSON.parse(payload), null, 2);
+  } catch {
+    // Truncated, so no longer parseable — showing it raw beats hiding it.
+    return payload;
+  }
 }
 
 /* -------------------------------- drawing -------------------------------- */
@@ -285,10 +384,6 @@ function emptyExplanation(recording: boolean): HTMLElement {
   );
 }
 
-function clearCanvas(canvas: HTMLCanvasElement): void {
-  preparedContext(canvas);
-}
-
 function paint(
   canvas: HTMLCanvasElement,
   rectangles: ReadonlyArray<SpanRectangle>,
@@ -322,13 +417,24 @@ function paint(
       context.clip();
       context.fillStyle = label;
       context.fillText(
-        rectangle.span.span.name,
+        barLabel(rectangle.span.span),
         rectangle.x + 5,
         rectangle.y + rectangle.height / 2,
       );
       context.restore();
     }
   }
+}
+
+/**
+ * Every actor span is called `actor.receive`, so the span name alone
+ * labels every bar identically.  The actor and the message are what
+ * tell them apart.
+ */
+function barLabel(span: WireSpan): string {
+  if (span.actorPath === null) return span.name;
+  const actor = shortActorPath(span.actorPath);
+  return span.messageType === null ? actor : `${actor} · ${span.messageType}`;
 }
 
 /* -------------------------------- details -------------------------------- */
@@ -348,28 +454,27 @@ function renderDetails(host: HTMLElement, entry: LayoutSpan | null, trace: Trace
     ['Depth', String(entry.depth)],
     ['Status', span.statusMessage === null ? span.status : `${span.status} — ${span.statusMessage}`],
   ];
-  if (span.actorPath !== null) rows.push(['Actor', shortActorPath(span.actorPath)]);
+  if (span.senderPath !== null) rows.push(['From', shortActorPath(span.senderPath)]);
+  if (span.actorPath !== null) rows.push(['To', shortActorPath(span.actorPath)]);
   if (span.messageType !== null) rows.push(['Message', span.messageType]);
   if (span.exceptions.length > 0) rows.push(['Exceptions', span.exceptions.join('; ')]);
   rows.push(['Trace', `${trace.traceId.slice(0, 16)}… (${formatCount(trace.spans.length)} spans)`]);
 
-  const attributes = Object.entries(span.attributes)
-    .filter(([key]) => key !== 'actor.path' && key !== 'actor.message.type');
+  const lifted = new Set(['actor.path', 'actor.message.type', 'actor.sender', 'actor.message.payload']);
+  const attributes = Object.entries(span.attributes).filter(([key]) => !lifted.has(key));
 
   replaceChildren(host,
     h('dl', { class: 'dt-kv' }, ...rows.flatMap(([key, value]) => [
       h('dt', {}, key),
       h('dd', { title: value }, value),
     ])),
+    span.messagePayload === null
+      ? null
+      : h('pre', { class: 'dt-code' }, prettyJson(span.messagePayload)),
     attributes.length === 0 ? null : h('dl', { class: 'dt-kv dt-kv--muted' },
       ...attributes.flatMap(([key, value]) => [h('dt', {}, key), h('dd', {}, String(value))]),
     ),
   );
-}
-
-function rootNameOf(trace: TraceLayout): string {
-  const root = trace.spans.find((entry) => entry.depth === 0) ?? trace.spans[0];
-  return root?.span.name ?? '(empty trace)';
 }
 
 /** Sub-millisecond spans are the common case, so show enough digits. */

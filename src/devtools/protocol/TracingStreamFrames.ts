@@ -32,8 +32,18 @@ export interface WireSpan {
   readonly attributes: Readonly<Record<string, string | number | boolean>>;
   /** Lifted from the `actor.path` attribute — the flame graph groups by it. */
   readonly actorPath: string | null;
+  /** Who sent the message, from `actor.sender`; `null` for a `tell` with no sender. */
+  readonly senderPath: string | null;
   /** Lifted from the `actor.message.type` attribute. */
   readonly messageType: string | null;
+  /**
+   * The message itself as JSON, from `actor.message.payload`.
+   *
+   * Present only while a tracing panel is subscribed — serialising every
+   * traced message is not something production tracing should pay for.
+   * Bounded in depth and length by the runtime before it gets here.
+   */
+  readonly messagePayload: string | null;
   readonly exceptions: ReadonlyArray<string>;
 }
 

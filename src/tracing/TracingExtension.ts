@@ -57,11 +57,28 @@ export class TracingExtension implements Extension {
 
   isRecordingRootSpans(): boolean { return this._system._traceRootSpans; }
 
+  /**
+   * Attach the message itself, as JSON, to every `actor.receive` span.
+   *
+   * A span otherwise records only the message's *type*, which answers
+   * "what happened" but not "to what" — and for a `kind`-tagged object
+   * literal the type alone is thin.  The cost is a `JSON.stringify` per
+   * traced message, bounded in depth and length, which is why it is a
+   * separate switch from {@link recordRootSpans} rather than implied by
+   * it.
+   */
+  captureMessagePayloads(enabled: boolean): void {
+    this._system._traceMessagePayloads = enabled;
+  }
+
+  isCapturingMessagePayloads(): boolean { return this._system._traceMessagePayloads; }
+
   /** Reset back to the noop — primarily for tests. */
   disable(): void {
     this.tracer = NOOP_TRACER;
-    // Root spans without a tracer are pure cost, so they go with it.
+    // Both are pure cost without a tracer, so they go with it.
     this._system._traceRootSpans = false;
+    this._system._traceMessagePayloads = false;
   }
 }
 

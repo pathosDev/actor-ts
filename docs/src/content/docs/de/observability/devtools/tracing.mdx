@@ -10,6 +10,24 @@ einem Laptop ist dieses Setup überzogen für die Frage „warum hat dieser
 Request 80 ms gebraucht?". Das Tracing-Panel beantwortet sie im Browser,
 aus den Spans, die das Framework ohnehin erzeugt.
 
+## Die Liste
+
+Das Panel öffnet mit einer Zeile pro Trace, breit genug zum Lesen:
+
+| Spalte | Zeigt |
+| --- | --- |
+| **Route** | `Sender → Actor → Actor` — die Stationen, die die Nachricht wirklich durchlaufen hat, aufeinanderfolgende Wiederholungen zusammengefasst |
+| **Message** | Der Name der Nachricht, dazu Span-Anzahl und ein Error-Badge |
+| **Payload** | Die Nachricht selbst, als JSON |
+| **Duration** | Wall-Zeit vom Start des ersten bis zum Ende des letzten Spans |
+
+Der *Name* einer Nachricht ist ihr `kind`, sofern vorhanden — so
+markiert dieses Projekt seine Unions. `constructor.name` allein
+antwortet bei jedem Objekt-Literal „Object" und sagt damit nichts.
+
+Ein Klick auf eine Zeile wechselt zum Graphen dieses Traces, mit
+formatiertem Payload darüber und einem **← All traces**-Knopf zurück.
+
 ## Zwei Ansichten, ein Trace
 
 | Ansicht | Vertikale Achse | Beantwortet |
@@ -17,9 +35,14 @@ aus den Spans, die das Framework ohnehin erzeugt.
 | **Flame-Graph** | Stack-Tiefe — Kinder auf ihrem Elternteil | Wo ist die Zeit geblieben? |
 | **Waterfall** | Eine Zeile pro Span, zeitlich sortiert | Was ist wann passiert? |
 
-Links einen Trace wählen, einen Span überfahren für die Details.
-Dauer, **Self time** (die eigene Arbeit, Kinder abgezogen), Offset im
-Trace, Status und Attribute stehen im Panel unter dem Graphen.
+Bei einer geraden Kette fallen beide zusammen — ein Elternteil und sein
+einziges Kind liegen so oder so eine Zeile auseinander. Sie trennen
+sich, sobald ein Actor an mehrere andere sendet: Der Flame-Graph legt
+die Geschwister auf eine Zeile, der Waterfall gibt jedem eine eigene.
+
+Einen Span überfahren für die Details. Dauer, **Self time** (die eigene
+Arbeit, Kinder abgezogen), Offset im Trace, Sender, Nachricht, Payload,
+Status und Attribute stehen im Panel unter dem Graphen.
 
 Die Zeiten kommen von einer monotonen Uhr und werden in Mikrosekunden
 gezeigt, wo das die ehrliche Einheit ist — Actor-Message-Handling ist
@@ -47,6 +70,14 @@ macht jede Nachricht zu einem Root-Span, solange das Panel offen ist:
   begrenzt (Default 2000), und das Panel meldet, was es verwerfen musste.
 - Es braucht einen Tracer; den installiert DevTools, solange es attached
   ist.
+- DevTools' eigene Actors sind ausgenommen. Sie sind mit
+  [`Props.asInternal()`](/de/fundamentals/props/#asinternal) markiert —
+  ohne das würde der Hub, der die eben aufgezeichneten Spans publiziert,
+  jeden Batch als Payload des nächsten zurückspeisen.
+
+Nachrichten-Payloads werden nur erfasst, solange das Panel abonniert
+ist, und sind in Tiefe und Länge begrenzt, bevor sie auf die Leitung
+gehen — Produktions-Tracing zahlt kein `JSON.stringify` pro Nachricht.
 
 Aus Code heißt derselbe Schalter
 `system.extension(TracingExtensionId).recordRootSpans(true)`.

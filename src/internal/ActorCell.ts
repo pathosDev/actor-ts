@@ -38,6 +38,8 @@ import {
 } from '../SystemMessages.js';
 import { Envelope, Mailbox } from './Mailbox.js';
 import {
+  describeMessagePayload,
+  describeMessageType,
   ExplainRecorder,
   type CellInspection,
   type CellState,
@@ -112,6 +114,13 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
    */
   private _explain: ExplainRecorder | null = null;
 
+  /**
+   * Tooling actor — see `PropsConfig.internal`.  Inherited, so a
+   * DevTools websocket connection spawned under the DevTools hub counts
+   * as tooling without anyone having to say so twice.
+   */
+  readonly _internal: boolean;
+
   /** Per-actor timer scheduler. */
   readonly timers: TimerScheduler<TMessage> = new CellTimerScheduler<TMessage>(this);
 
@@ -122,6 +131,7 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
     public readonly name: string,
   ) {
     this._parent = parent;
+    this._internal = props.config.internal === true || parent?._internal === true;
     const uid = parent ? parent._nextChildUid() : 0;
     this.path = parent
       ? parent.path.child(name, uid)
@@ -214,6 +224,7 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
       suspended: this.mailbox.suspended,
       dispatcher: this.props.config.dispatcher?.id ?? null,
       childCount: this._children.size,
+      internal: this._internal,
     };
   }
 
@@ -260,11 +271,10 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
     handleTimeMs: number,
     failure: Error | null,
   ): void {
-    const message = env.message as { constructor?: { name?: string } } | null;
     observer.onMessageProcessed({
       actorPath: this.path.toString(),
       className: this.actor?.constructor.name ?? '?',
-      messageType: message?.constructor?.name ?? typeof env.message,
+      messageType: describeMessageType(env.message),
       handleTimeMs,
       outcome: failure !== null
         ? 'error'
@@ -286,10 +296,9 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
     const outcome: MessageOutcome = failure !== null
       ? 'error'
       : this._currentEnvelope === null ? 'stashed' : 'ok';
-    const message = env.message as { constructor?: { name?: string } } | null;
     this._explain?.record({
       atMs: startedAtMs,
-      messageType: message?.constructor?.name ?? typeof env.message,
+      messageType: describeMessageType(env.message),
       senderPath: env.sender?.path.toString() ?? null,
       mailboxWaitMs: env.enqueuedAtMs === undefined ? null : startedAtMs - env.enqueuedAtMs,
       handleTimeMs,
@@ -844,14 +853,28 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
     // The flag is read before the extension lookup because it is a plain
     // field: on the ordinary path (no trace, no root recording) this
     // costs one boolean instead of walking the extension chain.
-    if (env.trace || this.system._traceRootSpans || tracerOf(this.system).activeSpan()) {
+    // `_internal` keeps the debugger out of its own trace: DevTools'
+    // hub publishes the spans just recorded, so tracing it would feed
+    // every batch back in as the payload of the next one.
+    if (env.trace
+      || (this.system._traceRootSpans && !this._internal)
+      || tracerOf(this.system).activeSpan()) {
+      // The sender and the payload are what turn a flame graph into a
+      // readable message trail; the payload only when something is
+      // watching, since serialising every message is not free.
+      const attributes: Record<string, string> = {
+        'actor.path': this.path.toString(),
+        'actor.message.type': describeMessageType(message),
+        'actor.sender': env.sender?.path.toString() ?? '',
+      };
+      if (this.system._traceMessagePayloads) {
+        const payload = describeMessagePayload(message);
+        if (payload !== null) attributes['actor.message.payload'] = payload;
+      }
       span = tracer.startSpan('actor.receive', {
         parent: env.trace ?? undefined,
         kind: 'consumer',
-        attributes: {
-          'actor.path': this.path.toString(),
-          'actor.message.type': (message as { constructor?: { name?: string } })?.constructor?.name ?? typeof message,
-        },
+        attributes,
       });
     }
 
