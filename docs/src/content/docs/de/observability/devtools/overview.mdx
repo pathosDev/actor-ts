@@ -233,6 +233,19 @@ halten nicht an — sie laufen ohnehin, bis du sie stoppst. Die Verdrahtung
 liegt in `examples/devtools.ts`, rund dreißig Zeilen, falls du das Muster
 in deine eigene App übernehmen willst.
 
+## Wenn nichts mehr antwortet
+
+Jedes Panel zeigt weiter, was ihm zuletzt gesagt wurde — die letzte
+Messung vor dem Ausfall eines Knotens ist meist die interessante —, und
+genau deshalb sähe eine abgerissene Verbindung sonst aus wie ein
+gesundes System. Nach ein paar Sekunden ohne Antwort meldet die UI oben
+**No node reachable**, dimmt das Panel, um die Zahlen als eingefroren zu
+markieren, und versucht es weiter. Meldet sich wieder etwas, verschwindet
+die Meldung von selbst.
+
+Jeder Knoten liefert seine eigenen DevTools aus — der Port eines anderen
+Knotens kann also noch antworten, während der geöffnete es nicht tut.
+
 ## Kosten
 
 **Ungenutzt: keine.** Die Extension zu erzeugen tut nichts: kein Port,

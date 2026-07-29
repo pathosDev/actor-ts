@@ -7,6 +7,7 @@
  * panels without touching this file.
  */
 import { h, replaceChildren } from '../core/dom.js';
+import { formatDuration } from '../core/format.js';
 import { effect } from '../core/signal.js';
 import { currentRoute, panelHref } from '../core/router.js';
 import { currentTheme, toggleTheme } from '../core/theme.js';
@@ -22,6 +23,19 @@ const STATUS_LABELS: Readonly<Record<ConnectionStatus, string>> = {
   incompatible: 'version mismatch',
 };
 
+/**
+ * How long a lost connection is tolerated before it is announced.
+ *
+ * Long enough to cover the flicker of an ordinary reconnect — the
+ * status goes `connecting` → `closed` → `connecting` while it retries —
+ * and short enough that a real outage is named while you are still
+ * looking at the screen.
+ */
+const OFFLINE_GRACE_MS = 2_000;
+
+/** Keeps the "last contact" reading moving while there is none. */
+const OFFLINE_CLOCK_MS = 1_000;
+
 /** Build the shell and mount it into `root`. */
 export function mountAppShell(root: HTMLElement, tap: TapClient): void {
   const navigation = h('nav', { class: 'dt-nav' });
@@ -35,7 +49,8 @@ export function mountAppShell(root: HTMLElement, tap: TapClient): void {
   const logo = h('span', { class: 'dt-header__logo', role: 'img', 'aria-label': 'actor-ts' });
   logo.innerHTML = ACTOR_TS_LOGO_SVG;
 
-  root.appendChild(h('div', { class: 'dt-app' },
+  const banner = h('div', { class: 'dt-offline', hidden: true });
+  const app = h('div', { class: 'dt-app' },
     h('header', { class: 'dt-header' },
       logo,
       systemName,
@@ -43,8 +58,53 @@ export function mountAppShell(root: HTMLElement, tap: TapClient): void {
       statusBadge,
       themeButton,
     ),
+    banner,
     h('div', { class: 'dt-body' }, navigation, host),
-  ));
+  );
+  root.appendChild(app);
+
+  /**
+   * Say so when there is nothing on the other end.
+   *
+   * Every panel keeps rendering the last thing it was told, which is the
+   * right behaviour — the final reading before a node died is usually
+   * the interesting one — but without saying so it reads as a live
+   * dashboard of a system that is fine.  The badge alone was too quiet
+   * for that: it is eight pixels in a corner.
+   */
+  let offlineSince: number | null = Date.now();
+  function renderConnection(): void {
+    const status = tap.status.get();
+    if (status === 'open') offlineSince = null;
+    else if (offlineSince === null) offlineSince = Date.now();
+
+    const down = offlineSince !== null && Date.now() - offlineSince >= OFFLINE_GRACE_MS;
+    banner.hidden = !down;
+    app.classList.toggle('dt-app--offline', down);
+    if (!down) return;
+
+    replaceChildren(banner, ...(status === 'incompatible'
+      ? [
+        h('strong', {}, 'This UI does not match the server'),
+        h('span', {},
+          'The bundled panels and the tap protocol disagree on their version, '
+          + 'so the connection was refused rather than half-understood. '
+          + 'Rebuild the UI bundle.'),
+      ]
+      : [
+        h('strong', {}, 'No node reachable'),
+        h('span', {},
+          `Nothing has answered for ${formatDuration(Date.now() - offlineSince!)}. `
+          + 'Everything below is the last thing this node said, frozen at that '
+          + 'moment — it is not live. Still retrying.'),
+        h('span', { class: 'dt-offline__hint' },
+          'Each node serves its own DevTools, so another node\'s port may still '
+          + 'answer while this one does not.'),
+      ]));
+  }
+
+  effect(renderConnection, [tap.status]);
+  setInterval(renderConnection, OFFLINE_CLOCK_MS);
 
   effect(() => {
     themeButton.textContent = currentTheme.get() === 'dark' ? 'Light mode' : 'Dark mode';
