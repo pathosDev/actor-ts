@@ -13,7 +13,21 @@ export type OmitReplyTo<TMessage> = TMessage extends { replyTo: ActorRef<unknown
   ? Omit<TMessage, 'replyTo'>
   : TMessage;
 
-let askCounter = 0;
+/**
+ * Names the one-shot reply ref that `ask` creates.
+ *
+ * Was a module-global `++askCounter`.  Two problems with that: the name is
+ * predictable, so anything that can address a ref by path could aim a forged
+ * reply at an in-flight ask; and the counter is per *module*, not per system,
+ * so two systems in one process hand out the same names — and after a long
+ * enough run it wraps into collisions with names still in flight.
+ *
+ * A random suffix fixes both, and `crypto.randomUUID` is the same primitive
+ * `ClusterClient` was moved to for its ask ids (#120).  Twelve hex characters
+ * is ~48 bits: far beyond the number of asks that can be in flight at once,
+ * which is what has to be unique here.
+ */
+const nextAskName = (): string => `askResp-${crypto.randomUUID().replace(/-/g, '').slice(0, 12)}`;
 
 /**
  * Handle to an actor.  The only way to interact with an actor — you never
@@ -41,7 +55,7 @@ export abstract class ActorRef<TMessage = unknown> {
    *     const value = await counter.ask<number>({ kind: 'get' });
    */
   ask<TResponse = unknown>(message: OmitReplyTo<TMessage>, timeoutMs: number = 5_000): Promise<TResponse> {
-    const name = `askResp-${++askCounter}`;
+    const name = nextAskName();
     const systemName = this.path.systemName;
     const ref = new AskResponseRef<TResponse>(systemName, name, timeoutMs, this.path.toString());
     // Inject `replyTo: ref` into the message so recipients that read

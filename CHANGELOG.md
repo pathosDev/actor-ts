@@ -741,6 +741,29 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Security
 
+- **A TCP socket's nested framing caps are validated** (#372).
+  `TcpSocketOptionsValidator` checked `host` and `port` but never looked inside
+  `framing`, where both inbound size limits live — and those are DoS caps: a
+  frame past the cap drops the connection instead of buffering without bound.
+  The failure mode is worse than a merely wrong number.  Both are applied as
+  `length > cap`, and *every* comparison against `NaN` is `false`, so a
+  non-numeric value read from HOCON did not clamp anything — it **removed the
+  cap** and restored the unbounded buffering the limit exists to prevent.  Zero
+  or negative failed the other way, dropping every connection immediately.
+  `framing.maxLineLen` and `framing.maxFrameLen` must now be positive integers;
+  unset still falls through to the defaults (1 MiB / 16 MiB).  The rule is
+  spelled out with `fail` because the typed check helpers only reach top-level
+  fields.
+
+- **`ask` reply refs get unpredictable names** (#119).  The one-shot reply ref
+  was named from a module-global `++askCounter`, which is predictable — anything
+  able to address a ref by path could aim a forged reply at an in-flight ask —
+  *and* shared across every `ActorSystem` in the process, so the Nth ask in two
+  independent systems drew the same name.  Over a long run the counter also
+  wrapped into collisions with names still in flight.  Names are now
+  `askResp-` plus 12 hex characters from `crypto.randomUUID`, the same primitive
+  `ClusterClient` moved to for its ask ids (#120).
+
 - **Numeric gossip and heartbeat fields are checked for plausibility**
   (#113, #115).  Two peer-supplied numbers were used without a look:
   - **`removedAt` on a tombstone** (#113) decides whether the entry ages out, and
