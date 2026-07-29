@@ -35,6 +35,30 @@ export function isSubstitution(value: unknown): value is Substitution {
   return typeof value === 'object' && value !== null && (value as Substitution).__substitution === true;
 }
 
+/**
+ * Keys a config source may never read or write.
+ *
+ * `__proto__` is the dangerous one.  `object[key] = value` invokes the
+ * inherited `__proto__` setter instead of creating an own property, so the
+ * key path `__proto__.polluted = true` descends into `Object.prototype` and
+ * pollutes every object in the process — while the parsed config still looks
+ * empty, which is what makes it easy to miss.  A single-segment
+ * `"__proto__" { … }` is the milder variant: it replaces the prototype of the
+ * config object itself.
+ *
+ * `constructor` and `prototype` are not exploitable through this parser today
+ * — `isPlainObject` rejects the function they resolve to, so a path
+ * expression builds a fresh object rather than reaching the real prototype —
+ * but they are refused too.  The check costs nothing, and that accident is
+ * not a property worth depending on across future refactors.
+ */
+const FORBIDDEN_KEYS: ReadonlySet<string> = new Set(['__proto__', 'constructor', 'prototype']);
+
+/** True when `key` must never reach a config object, as either a read or a write. */
+export function isForbiddenConfigKey(key: string): boolean {
+  return FORBIDDEN_KEYS.has(key);
+}
+
 export function parseHocon(source: string): ConfigObject {
   const parser = new HoconParser(source);
   return parser.parseRoot();
@@ -182,6 +206,12 @@ class HoconParser {
     this.expect('}');
     path = path.trim();
     if (path === '') throw this.error('Empty substitution path');
+    // A substitution is a read, but `${__proto__}` would still splice the
+    // prototype object into the resolved config, so it is refused here as
+    // well.  `lookup` repeats the check for paths built programmatically.
+    if (path.split('.').some(isForbiddenConfigKey)) {
+      throw this.error(`Refusing the substitution \${${path}} — it would read through the object prototype`);
+    }
     return { __substitution: true, path, optional };
   }
 
@@ -220,23 +250,39 @@ class HoconParser {
     return segments;
   }
 
+  /**
+   * The single chokepoint for every field key, quoted or bare, at every
+   * position in a path expression — which is why the prototype guard lives
+   * here rather than at the assignment in `mergeKeyPath`.
+   */
   private parseKeySegment(): string {
     this.skipInsignificantInline();
-    const char = this.peekChar();
-    if (char === '"') return this.parseQuotedString();
+    const segment = this.peekChar() === '"' ? this.parseQuotedString() : this.parseBareKeySegment();
+    if (isForbiddenConfigKey(segment)) {
+      throw this.error(`Refusing "${segment}" as a config key — it would reach the object prototype`);
+    }
+    return segment;
+  }
+
+  private parseBareKeySegment(): string {
     const start = this.pos;
     while (!this.isAtEnd()) {
       const ch = this.src[this.pos]!;
       if (/[A-Za-z0-9_\-]/.test(ch)) { this.pos++; continue; }
       break;
     }
-    const seg = this.src.slice(start, this.pos);
-    if (seg.length === 0) throw this.error('Expected a key');
-    return seg;
+    const segment = this.src.slice(start, this.pos);
+    if (segment.length === 0) throw this.error('Expected a key');
+    return segment;
   }
 
   /* -------------------------------- Helpers ------------------------------- */
 
+  /**
+   * Writes `value` at `path`, creating intermediate objects as it descends.
+   * Every segment reaching here has passed `parseKeySegment`'s prototype
+   * guard, which is why the plain `into[key] = …` assignments below are safe.
+   */
   private mergeKeyPath(into: ConfigObject, path: string[], value: ConfigValue): void {
     if (path.length === 1) {
       const key = path[0]!;
@@ -353,7 +399,10 @@ function walk(
     .when((value): value is ConfigValue[] => Array.isArray(value), (arr) => arr.map(value => walk(value, root, env)))
     .when(isPlainObject, (obj) => {
       const out: ConfigObject = {};
-      for (const [key, value] of Object.entries(obj)) out[key] = walk(value, root, env);
+      for (const [key, value] of Object.entries(obj)) {
+        if (isForbiddenConfigKey(key)) continue;
+        out[key] = walk(value, root, env);
+      }
       return out;
     })
     .otherwise((primitive) => primitive);
@@ -389,6 +438,10 @@ function lookup(obj: ConfigObject, path: string): ConfigValue | undefined {
   const parts = path.split('.');
   let cur: ConfigValue | undefined = obj;
   for (const part of parts) {
+    // Treated as "not found" rather than an error: `parseSubstitution` already
+    // rejects these with a source position, so reaching here means the path was
+    // built in code, where an optional substitution should just miss.
+    if (isForbiddenConfigKey(part)) return undefined;
     if (!isPlainObject(cur)) return undefined;
     cur = (cur as ConfigObject)[part];
     if (cur === undefined) return undefined;
@@ -403,10 +456,25 @@ export function isPlainObject(value: unknown): value is ConfigObject {
   return typeof value === 'object' && value !== null && !Array.isArray(value) && !isSubstitution(value);
 }
 
-/** Deep merge — values in `overlay` win, objects merge recursively, arrays overwrite. */
+/**
+ * Deep merge — values in `overlay` win, objects merge recursively, arrays
+ * overwrite.
+ *
+ * Both sides are filtered through `isForbiddenConfigKey`.  The parser already
+ * refuses those keys, so for HOCON input this is redundant — but `deepMerge`
+ * is exported and merges layers that come from plain JavaScript objects too,
+ * where `JSON.parse('{"__proto__":{…}}')` yields an *own* `__proto__` property
+ * that `Object.entries` happily reports.  Note the base is copied key by key
+ * rather than with `{ ...base }`: a spread would carry such an own property
+ * straight through.
+ */
 export function deepMerge(base: ConfigObject, overlay: ConfigObject): ConfigObject {
-  const out: ConfigObject = { ...base };
+  const out: ConfigObject = {};
+  for (const [key, value] of Object.entries(base)) {
+    if (!isForbiddenConfigKey(key)) out[key] = value;
+  }
   for (const [key, value] of Object.entries(overlay)) {
+    if (isForbiddenConfigKey(key)) continue;
     if (isPlainObject(value) && isPlainObject(out[key])) {
       out[key] = deepMerge(out[key] as ConfigObject, value as ConfigObject);
     } else {
@@ -420,7 +488,7 @@ export function deepMerge(base: ConfigObject, overlay: ConfigObject): ConfigObje
 export function stripUndefined(obj: ConfigObject): ConfigObject {
   const out: ConfigObject = {};
   for (const [key, value] of Object.entries(obj)) {
-    if (value === undefined) continue;
+    if (value === undefined || isForbiddenConfigKey(key)) continue;
     if (isPlainObject(value)) out[key] = stripUndefined(value as ConfigObject);
     else if (Array.isArray(value)) out[key] = value.filter(x => x !== undefined) as ConfigValue[];
     else out[key] = value;
