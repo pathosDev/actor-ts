@@ -308,6 +308,11 @@ export class FastifyBackend implements HttpServerBackend {
       reply.send({ error: err.message, ...err.extra });
       return;
     }
-    reply.status(500).send({ error: 'Internal Server Error', message: (err as Error)?.message });
+    // No `message` field: an unhandled throw is not a client's business, and
+    // its text routinely carries file paths, SQL fragments or driver internals.
+    // Matches `defaultErrorResponse` in Route.ts, which the WebSocket-reject
+    // and `fallback()` paths already use.  To surface or log the detail,
+    // install `withErrorHandler` on the server builder.
+    reply.status(500).send({ error: 'Internal Server Error' });
   }
 }

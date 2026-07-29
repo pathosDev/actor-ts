@@ -18,7 +18,8 @@ import { Cluster } from '../../src/cluster/Cluster.js';
 import { ClusterOptions } from '../../src/cluster/ClusterOptions.js';
 import { InMemoryTransport } from '../../src/cluster/Transport.js';
 import { NodeAddress } from '../../src/cluster/NodeAddress.js';
-import type { GossipMessage, MemberData } from '../../src/cluster/Protocol.js';
+import { Member } from '../../src/cluster/Member.js';
+import type { GossipMessage, MemberData, WireMessage } from '../../src/cluster/Protocol.js';
 import { LogLevel, NoopLogger } from '../../src/Logger.js';
 
 interface NodeHandle {
@@ -377,4 +378,137 @@ describe('Transport — hello-handshake hijack defense', () => {
     expect(rawTransport.byPeer.has(peer.toString())).toBe(true);
     expect(sock2.ended).toBe(false);
   });
+});
+
+/* ----- injection for any wire frame, not just gossip ----- */
+
+interface ClusterWirePrivate {
+  handleWire(from: NodeAddress, message: WireMessage): void;
+  members: Map<string, Member>;
+}
+
+/**
+ * The raw member map, not `getMembers()` — that filters `removed` entries out,
+ * so a tombstone assertion made against it would pass whether or not the
+ * tombstone was actually stored.
+ */
+function rawMember(cluster: Cluster, address: NodeAddress): Member | undefined {
+  return (cluster as unknown as ClusterWirePrivate).members.get(address.toString());
+}
+
+function injectWire(cluster: Cluster, from: NodeAddress, message: WireMessage): void {
+  (cluster as unknown as ClusterWirePrivate).handleWire(from, message);
+}
+
+/** Start a node whose outbound frames are recorded, so replies can be asserted. */
+async function startRecordingNode(
+  systemName: string,
+  port: number,
+): Promise<{ node: NodeHandle; sent: WireMessage[] }> {
+  const sysOptions = ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off);
+  const system = ActorSystem.create(systemName, sysOptions);
+  const address = new NodeAddress(systemName, 'h', port);
+  const transport = new InMemoryTransport(address);
+  const sent: WireMessage[] = [];
+  const realSend = transport.send.bind(transport);
+  transport.send = (to: NodeAddress, message: WireMessage): void => {
+    sent.push(message);
+    realSend(to, message);
+  };
+  const clusterOptions = ClusterOptions.create()
+    .withHost('h')
+    .withPort(port)
+    .withTransport(transport)
+    .withFailureDetector({ heartbeatIntervalMs: 50, unreachableAfterMs: 200, downAfterMs: 400 })
+    .withGossipIntervalMs(80);
+  const cluster = await Cluster.join(system, clusterOptions);
+  return { node: { system, cluster, address }, sent };
+}
+
+describe('Cluster — numeric wire-field defenses', () => {
+  test('exploit: a tombstone with a non-finite removedAt does not become immortal (#113)', async () => {
+    // `removedAt` decides whether a tombstone ages out, and the age comparison
+    // fails *open*: with removedAt at Infinity, `Date.now() - removedAt` is
+    // -Infinity, which is not `>= ttl`, so the entry looked fresh on every
+    // merge and never expired.  A tombstone suppresses its address, so an
+    // immortal one keeps that node from ever rejoining.
+    const portA = 53_600 + Math.floor(Math.random() * 300);
+    const nodeA = await startNode('csec', portA);
+    nodes = [nodeA];
+
+    const attacker = new NodeAddress('csec', 'h', 65_533);
+    const victim = new NodeAddress('csec', 'h', 64_000);
+    const forge = (removedAt: number): GossipMessage => ({
+      t: 'gossip',
+      from: attacker.toJSON(),
+      members: [{
+        address: victim.toJSON(),
+        status: 'removed',
+        version: Date.now(),
+        removedAt,
+      } as MemberData],
+    });
+
+    for (const removedAt of [Number.POSITIVE_INFINITY, Number.NaN, Date.now() + 400 * 24 * 3_600_000]) {
+      inject(nodeA.cluster, attacker, forge(removedAt));
+      expect(rawMember(nodeA.cluster, victim), `removedAt=${removedAt} was accepted`).toBeUndefined();
+    }
+  }, 10_000);
+
+  test('a tombstone with a plausible removedAt is still accepted (#113)', async () => {
+    // The guard must reject implausible values without breaking the mechanism.
+    const portA = 53_900 + Math.floor(Math.random() * 90);
+    const nodeA = await startNode('csec', portA);
+    nodes = [nodeA];
+
+    const peer = new NodeAddress('csec', 'h', 64_001);
+    inject(nodeA.cluster, peer, {
+      t: 'gossip',
+      from: peer.toJSON(),
+      members: [{
+        address: peer.toJSON(),
+        status: 'removed',
+        version: Date.now(),
+        removedAt: Date.now(),
+      } as MemberData],
+    });
+
+    expect(rawMember(nodeA.cluster, peer)?.status).toBe('removed');
+  }, 10_000);
+
+  test('exploit: a heartbeat with a non-numeric seq is not echoed back (#115)', async () => {
+    // `seq` came off the wire and went straight back out in the acknowledgment
+    // without a look.  Nothing consumes it yet, so this is a boundary guard —
+    // but a NaN reaching future RTT or skew tracking would be silent nonsense.
+    const { node, sent } = await startRecordingNode('csechb', 53_990 + Math.floor(Math.random() * 9));
+    nodes = [node];
+    const peer = new NodeAddress('csechb', 'h', 64_002);
+
+    for (const [seq, ts] of [
+      [Number.NaN, Date.now()],
+      [Number.POSITIVE_INFINITY, Date.now()],
+      [-1, Date.now()],
+      [1.5, Date.now()],
+      [1, Number.POSITIVE_INFINITY],
+      [1, Date.now() + 400 * 24 * 3_600_000],
+    ]) {
+      sent.length = 0;
+      injectWire(node.cluster, peer, { t: 'heartbeat', from: peer.toJSON(), seq: seq!, ts: ts! });
+      const acks = sent.filter(m => m.t === 'heartbeat-ack');
+      expect(acks, `seq=${seq} ts=${ts} produced an ack`).toEqual([]);
+    }
+  }, 10_000);
+
+  test('a well-formed heartbeat is still acknowledged (#115)', async () => {
+    const { node, sent } = await startRecordingNode('csechb2', 53_970 + Math.floor(Math.random() * 9));
+    nodes = [node];
+    const peer = new NodeAddress('csechb2', 'h', 64_003);
+
+    sent.length = 0;
+    injectWire(node.cluster, peer, { t: 'heartbeat', from: peer.toJSON(), seq: 7, ts: Date.now() });
+
+    const acks = sent.filter(m => m.t === 'heartbeat-ack');
+    expect(acks).toHaveLength(1);
+    expect((acks[0] as { seq: number }).seq).toBe(7);
+  }, 10_000);
 });

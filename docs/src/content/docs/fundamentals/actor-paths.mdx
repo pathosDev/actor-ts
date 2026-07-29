@@ -89,12 +89,20 @@ If you omit the name, the framework synthesizes one (`'$1'`,
 1. **Names must be unique among siblings.**  `context.spawn(props, 'bar')`
    followed by another `context.spawn(props, 'bar')` on the same
    parent throws — that path is already in use.
-2. **The name should "look like a path segment."**  No slashes, no
-   leading dots, no whitespace.  The framework does **not** enforce
-   this — it only checks sibling uniqueness (rule 1) and that the
-   parent isn't already stopped — so a name with a slash silently
-   breaks path parsing and `ActorSelection`.  Validate segments
-   yourself (see the caution below).
+2. **The name must be a single path segment.**  The framework enforces
+   this and throws on a name that would corrupt the path: a `/` or `\`
+   separator, the traversal segments `.` and `..`, an empty name, or any
+   control character.  A path is rendered by joining segments with `/`
+   and taken apart again by splitting on it, so `spawn(props, 'a/b')`
+   would otherwise produce a path indistinguishable from a child `b` of
+   an actor `a` — colliding with, or impersonating, a different actor,
+   including across the cluster wire where the remote side re-splits the
+   string.  Control characters are refused because paths are written to
+   logs and trace spans.
+
+   Anything else is accepted, including spaces, dots inside the name and
+   non-ASCII characters — `'Order.Placed'`, `'entity#3'` and `'日本語'`
+   are all valid.
 
 The `uid` field on `ActorPath` distinguishes successive incarnations
 of the same path — if `my-foo` stops and is then re-spawned at the

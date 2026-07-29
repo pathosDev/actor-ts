@@ -27,6 +27,8 @@ import { ObjectStorageSnapshotStore } from '../../../../../src/persistence/snaps
 import { ObjectStorageSnapshotStoreOptions } from '../../../../../src/persistence/snapshot-stores/ObjectStorageSnapshotStoreOptions.js';
 import { reEncryptObjectStorage } from '../../../../../src/persistence/object-storage/reEncryptionSweep.js';
 import type { EncryptionConfig } from '../../../../../src/persistence/PersistenceOptions.js';
+import type { ObjectStorageBackend, ObjectFetched } from '../../../../../src/persistence/object-storage/ObjectStorageBackend.js';
+import { some, type Option } from '../../../../../src/util/Option.js';
 
 let dir: string;
 beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'actor-ts-reencrypt-')); });
@@ -327,5 +329,79 @@ describe('reEncryptObjectStorage — #109 resume + completeness', () => {
       keyring: ringV1NoRetired,
       verifyKeyringCompleteness: false,
     })).rejects.toThrow(/no master key registered for version 0/);
+  });
+});
+
+/**
+ * Backend whose `list()` reports keys the framework would never write.
+ *
+ * The real backends validate on `put`, so a malformed key can only enter the
+ * corpus out-of-band — which is exactly the threat model: keys come from the
+ * bucket, not from us.  A fake is the only way to present one.
+ */
+class MalformedKeyBackend implements ObjectStorageBackend {
+  readonly fetched: string[] = [];
+  readonly written: string[] = [];
+  constructor(private readonly keys: string[]) {}
+
+  async list(): Promise<Array<{ key: string; size: number }>> {
+    return this.keys.map(key => ({ key, size: 1 }));
+  }
+  async get(key: string): Promise<Option<ObjectFetched>> {
+    this.fetched.push(key);
+    // A deliberately un-framed body.  The sweep reaches its `skipped-non-ats1`
+    // branch, which is enough to show the *key* passed validation without
+    // needing a real encrypted body — these tests are about the key check.
+    const body = new Uint8Array([1, 2, 3, 4, 5]);
+    return some({ body, etag: 'e', contentType: 'application/json' } as unknown as ObjectFetched);
+  }
+  async put(key: string): Promise<{ etag: string }> {
+    this.written.push(key);
+    return { etag: 'e2' };
+  }
+  async delete(): Promise<void> {}
+}
+
+describe('reEncryptObjectStorage — malformed keys from list() (#123)', () => {
+  const keyring = { active: { version: 1, key: v1 }, retired: [{ version: 0, key: v0 }] };
+
+  test('a key that yields no persistence id is skipped and counted, not swept', async () => {
+    // The extracted persistence id is the HKDF salt, and the sweep *rewrites*
+    // the body — so a wrong salt is not a failed read, it is data the owning
+    // store can never decrypt again.  These keys all yield an empty id under
+    // the default extractor.
+    const backend = new MalformedKeyBackend(['', '/', 'prefix/']);
+    const result = await reEncryptObjectStorage(backend, {
+      keyPrefix: 'prefix/', keyring, verifyKeyringCompleteness: false,
+    });
+
+    expect(result.skippedMalformedKey).toBe(3);
+    expect(result.rewrote).toBe(0);
+    // Skipped before the fetch: a key we will not sweep is a key we do not read.
+    expect(backend.fetched).toEqual([]);
+    expect(backend.written).toEqual([]);
+  });
+
+  test('a key carrying control characters is skipped', async () => {
+    const backend = new MalformedKeyBackend([`pid${String.fromCharCode(0)}x/snap`, `pid${String.fromCharCode(10)}y/snap`]);
+    const result = await reEncryptObjectStorage(backend, {
+      keyPrefix: '', keyring, verifyKeyringCompleteness: false,
+    });
+
+    expect(result.skippedMalformedKey).toBe(2);
+    expect(backend.written).toEqual([]);
+  });
+
+  test('well-formed keys are still swept', async () => {
+    // The guard must not turn into a blanket refusal.
+    const backend = new MalformedKeyBackend(['user-1/snap-1', 'user-2/snap-1']);
+    const result = await reEncryptObjectStorage(backend, {
+      keyPrefix: '', keyring, verifyKeyringCompleteness: false,
+    });
+
+    expect(result.skippedMalformedKey).toBe(0);
+    expect(backend.fetched).toHaveLength(2);
+    // Reached the framing check, i.e. got past the key check.
+    expect(result.skippedNonAts1).toBe(2);
   });
 });

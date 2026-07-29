@@ -97,3 +97,42 @@ describe('withErrorHandler — bind guard', () => {
       .rejects.toThrow(/does not support withErrorHandler/);
   });
 });
+
+describe.each(backends)('default 500 does not echo the thrown message — %s backend (#356)', (_name, mk) => {
+  test('an unhandled throw yields a generic body with no message field', async () => {
+    // All three backends used to put `message: err.message` in the default 500
+    // body.  A thrown Error's text routinely carries filesystem paths, SQL
+    // fragments or driver internals, and none of it is a client's business.
+    // `defaultErrorResponse` in Route.ts was always correct — the backends
+    // simply did not route through it.
+    const secret = '/srv/app/src/db/credentials.ts: ECONNREFUSED postgres://user:hunter2@10.0.0.5:5432';
+    const url = await start(mk, get(() => { throw new Error(secret); }));
+
+    const response = await fetch(`${url}/`);
+    expect(response.status).toBe(Status.InternalServerError);
+
+    const body = await response.text();
+    expect(JSON.parse(body)).toEqual({ error: 'Internal Server Error' });
+    expect(body).not.toContain('hunter2');
+    expect(body).not.toContain('/srv/app');
+    expect(body).not.toContain('ECONNREFUSED');
+  });
+
+  test('an HttpError still reports its own message, which is deliberate', async () => {
+    // The distinction that matters: an HttpError message is authored by the
+    // application for the client, so suppressing it would break every 404 and
+    // 409 message.  Only the generic 500 path is sanitised.
+    const url = await start(mk, get(() => { throw new HttpError(Status.Conflict, 'version conflict') ; }));
+    const response = await fetch(`${url}/`);
+    expect(response.status).toBe(Status.Conflict);
+    expect(await response.json()).toEqual({ error: 'version conflict' });
+  });
+
+  test('withErrorHandler remains the way to surface the detail', async () => {
+    // Sanitising the default must not remove the ability to see the error —
+    // an operator who wants it installs a handler.
+    const url = await start(mk, get(() => { throw new Error('boom-detail'); }),
+      (err) => completeJson(Status.InternalServerError, { detail: (err as Error).message }));
+    expect(await (await fetch(`${url}/`)).json()).toEqual({ detail: 'boom-detail' });
+  });
+});

@@ -750,6 +750,119 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Security
 
+- **A rejected CAS no longer wedges an object-storage durable-state entry**
+  (#117).  When the backend refused a `put` on a stale `If-Match`, the store
+  threw the concurrency error but **kept the rejected etag cached** — and that
+  cache is what the next `If-Match` is built from.  So every retry re-sent the
+  etag the backend had just rejected and failed identically, and worse, the
+  up-front revision check answered from the same stale cache, reporting a
+  revision that was no longer the truth.  The entry stayed stuck until
+  something happened to call `load` or `delete`.  The etag is now dropped on
+  rejection, which routes the retry into the refresh-and-recover path that
+  already existed for a cache wiped by a restart.
+
+- **The re-encryption sweep validates keys it gets from `list()`** (#123).  Keys
+  come from the bucket, not from the framework, and the sweep derives its HKDF
+  salt from the key — then **rewrites the body**.  A key that yielded no usable
+  persistence id (empty, or one carrying control characters) therefore did not
+  merely fail to decrypt: it would re-encrypt data under a salt the owning store
+  never reproduces, leaving it permanently undecryptable.  Such keys are now
+  skipped before being fetched and reported in the new
+  `ReEncryptResult.skippedMalformedKey` — a non-zero count is worth
+  investigating, because nothing the framework writes produces one.  The
+  key-shape rules are the shared `makeKeyValidator` ones, so the sweep cannot
+  drift from the storage backends.
+
+- **`safeStringify` for error paths** (#146).  `ClusterClient.handleReply` built
+  its rejection message with a bare `JSON.stringify` on a body received from the
+  cluster.  Worth stating precisely, because the issue title overstates it:
+  wire bodies arrive as parsed JSON and so **cannot** be circular, and
+  `JSON.stringify` throws rather than hangs.  The real defects were that
+  `handleReply` was not wrapped, so any throw escaped into the socket decoder
+  loop and abandoned **every remaining frame in the same batch** — leaving those
+  asks to time out — and that the guarantee rested on the frame codec staying
+  JSON-only.  A new `src/util/SafeStringify.ts` renders cycles, `BigInt`,
+  functions, symbols and throwing getters without ever throwing, and caps its
+  output so a large body cannot become a large message; the reply handler is now
+  wrapped so one bad frame cannot take its batch with it.
+
+- **A TCP socket's nested framing caps are validated** (#372).
+  `TcpSocketOptionsValidator` checked `host` and `port` but never looked inside
+  `framing`, where both inbound size limits live — and those are DoS caps: a
+  frame past the cap drops the connection instead of buffering without bound.
+  The failure mode is worse than a merely wrong number.  Both are applied as
+  `length > cap`, and *every* comparison against `NaN` is `false`, so a
+  non-numeric value read from HOCON did not clamp anything — it **removed the
+  cap** and restored the unbounded buffering the limit exists to prevent.  Zero
+  or negative failed the other way, dropping every connection immediately.
+  `framing.maxLineLen` and `framing.maxFrameLen` must now be positive integers;
+  unset still falls through to the defaults (1 MiB / 16 MiB).  The rule is
+  spelled out with `fail` because the typed check helpers only reach top-level
+  fields.
+
+- **`ask` reply refs get unpredictable names** (#119).  The one-shot reply ref
+  was named from a module-global `++askCounter`, which is predictable — anything
+  able to address a ref by path could aim a forged reply at an in-flight ask —
+  *and* shared across every `ActorSystem` in the process, so the Nth ask in two
+  independent systems drew the same name.  Over a long run the counter also
+  wrapped into collisions with names still in flight.  Names are now
+  `askResp-` plus 12 hex characters from `crypto.randomUUID`, the same primitive
+  `ClusterClient` moved to for its ask ids (#120).
+
+- **Numeric gossip and heartbeat fields are checked for plausibility**
+  (#113, #115).  Two peer-supplied numbers were used without a look:
+  - **`removedAt` on a tombstone** (#113) decides whether the entry ages out, and
+    the comparison failed **open**: at `Infinity` or `NaN`,
+    `Date.now() - removedAt` is `-Infinity` or `NaN`, neither of which is
+    `>= ttl`, so the tombstone looked fresh on *every* merge and never expired.
+    A far-future value did the same through a negative age.  Since a tombstone
+    suppresses its address, one forged frame kept a node from ever rejoining —
+    the same shape as the `version` DoS fixed earlier, whose guard sat directly
+    above this code.  `removedAt` now gets that same finite-and-not-far-future
+    check.
+  - **`seq` and `ts` on a heartbeat** (#115) were unvalidated, and `seq` was
+    echoed straight back in the acknowledgment.  Nothing consumes either field
+    today (`onHeartbeatAcknowledgment` is a no-op, `ts` is unread), so this is a
+    boundary guard rather than a live exploit — recorded plainly because the
+    honest reason to fix it is that a `NaN` reaching future RTT or clock-skew
+    tracking would be silent nonsense.  An implausible frame is now dropped;
+    that is safe because `handleWire` has already recorded liveness from the
+    socket-level address, so refusing the frame cannot make a live peer look
+    unreachable.
+
+- **Actor names are validated, closing a path-forging and a log-injection hole**
+  (#126, #134).  `ActorPath` accepted any string, and a path is rendered by
+  joining segments with `/` and taken apart again by splitting on it
+  (`RefCodec.parsePathSegments`) — so `spawn(props, 'a/b')` did not merely look
+  wrong, it changed the path *structure*, producing something indistinguishable
+  from a child `b` of an actor `a`.  That collides with, or impersonates, a
+  different actor, and it crosses the cluster wire, where the remote side
+  re-splits the string.  `.` and `..` carried the same risk through traversal
+  meaning.  Separately, a name containing a newline let a caller forge log lines,
+  since paths are written to logs and trace spans.
+  A name is now rejected if it contains `/`, `\` or a control character, if it is
+  `.` or `..`, or if it is empty below a parent — empty stays legal for a root,
+  which `deadLetters`, `nobody` and the test probe rely on.  Everything else
+  still works, including spaces, interior dots and non-ASCII
+  (`'Order.Placed'`, `'entity#3'`, `'日本語'`).
+  *Behaviour change:* previously silent corruption, now a throw at spawn time.
+  The docs used to tell readers to *"validate segments yourself"*; that guidance
+  is replaced by the rule the framework now enforces.
+
+- **The default 500 response no longer echoes the thrown message** (#356).  All
+  three backends put `message: err.message` in the body of an unhandled error,
+  and a thrown `Error`'s text routinely carries filesystem paths, SQL fragments,
+  connection strings or driver internals — none of which is a client's business.
+  `defaultErrorResponse` in `Route.ts` was always correct and says so in its
+  JSDoc (*"deliberately does NOT echo the thrown message"*); the backends simply
+  did not route through it, so the WebSocket-reject and `fallback()` paths were
+  safe while every ordinary route was not.  The generic 500 is now
+  `{ error: 'Internal Server Error' }` on Fastify, Express and Hono alike.
+  An `HttpError`'s own message is still returned — it is authored by the
+  application *for* the client — and `withErrorHandler` remains the way to
+  surface or log the detail. There was no test either way; there are now three
+  per backend.
+
 - **HOCON config parsing can no longer reach the object prototype** (#406).
   A key path is expanded segment by segment onto a plain object, and
   `object[key] = value` invokes the inherited `__proto__` *setter* rather than

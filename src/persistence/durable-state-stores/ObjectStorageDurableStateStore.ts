@@ -219,6 +219,13 @@ export class ObjectStorageDurableStateStore implements DurableStateStore {
       etag = result.etag;
     } catch (e) {
       if (e instanceof ObjectStorageConcurrencyError) {
+        // Drop the cached etag: the backend just told us it is stale, and the
+        // `If-Match` above is built from this cache.  Keeping it meant every
+        // retry re-sent the same stale etag and was rejected again, so an
+        // entry stayed wedged until something happened to call `load` (which
+        // refreshes the cache) or `delete`.  Forgetting it makes the next
+        // attempt fetch the real etag instead.
+        this.etagCache.delete(persistenceId);
         // -1 communicates "the backend rejected us, but didn't tell us the
         // current revision; load() will fetch the truth".
         throw new DurableStateConcurrencyError(persistenceId, expectedRevision, -1);

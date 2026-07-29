@@ -91,13 +91,21 @@ Wenn du den Namen weglässt, synthetisiert das Framework einen
 1. **Namen müssen unter Geschwistern eindeutig sein.**  Zweimal
    `context.spawn(props, 'bar')` auf demselben Parent wirft einen
    Fehler — der Pfad ist bereits in Verwendung.
-2. **Der Name sollte "wie ein Pfadsegment aussehen."**  Keine
-   Slashes, keine führenden Punkte, keine Leerzeichen.  Das Framework
-   erzwingt das **nicht** — es prüft nur die Eindeutigkeit unter
-   Geschwistern (Regel 1) und dass der Parent nicht bereits gestoppt
-   ist —, sodass ein Name mit einem Slash stillschweigend das
-   Pfad-Parsing und `ActorSelection` bricht.  Validiere Segmente
-   selbst (siehe den Warnhinweis unten).
+2. **Der Name muss ein einzelnes Pfadsegment sein.**  Das Framework
+   erzwingt das und wirft bei einem Namen, der den Pfad beschädigen
+   würde: ein Trennzeichen `/` oder `\`, die Traversal-Segmente `.` und
+   `..`, ein leerer Name oder ein beliebiges Steuerzeichen.  Ein Pfad
+   wird durch Verbinden der Segmente mit `/` gerendert und durch Splitten
+   daran wieder zerlegt — `spawn(props, 'a/b')` würde also einen Pfad
+   erzeugen, der von einem Kind `b` eines Aktors `a` nicht zu
+   unterscheiden ist, und damit mit einem anderen Aktor kollidieren oder
+   ihn imitieren, auch über die Cluster-Verbindung, wo die Gegenseite den
+   String erneut splittet.  Steuerzeichen werden abgelehnt, weil Pfade in
+   Logs und Trace-Spans geschrieben werden.
+
+   Alles andere ist erlaubt, inklusive Leerzeichen, Punkte innerhalb des
+   Namens und Nicht-ASCII-Zeichen — `'Order.Placed'`, `'entity#3'` und
+   `'日本語'` sind alle gültig.
 
 Das `uid`-Feld auf `ActorPath` unterscheidet aufeinanderfolgende
 Inkarnationen desselben Pfads — wenn `my-foo` stoppt und dann am
