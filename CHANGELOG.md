@@ -473,6 +473,21 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Fixed
 
+- **`FailureDetector` thresholds: the documentation now matches the code, and a
+  contradictory pair is rejected** (#452).  `downAfterMs` was documented as
+  *"additional time after which an unreachable peer is declared down"*, and the
+  validator's own comment said the two thresholds were therefore "not ordered
+  against each other".  `decide` never worked that way: it compares both against
+  the time since the last heartbeat and tests `down` **first**.  So with
+  `downAfterMs <= unreachableAfterMs` the `unreachable` branch became dead code
+  — a peer went straight from healthy to down, skipping the state whose whole
+  purpose is to let a transient network blip recover — and nothing rejected the
+  configuration.  The JSDoc now describes the absolute measurement (which is
+  what the defaults, the docs' ~2.5× ratio guidance and `tombstoneMinRetentionMs
+  = 6 × downAfterMs` all already assumed), and `FailureDetectorOptionsValidator`
+  fails such a pair with both values in the message.  *Behaviour change:* a
+  config that was silently degraded now throws `OptionsError` at construction.
+
 - **A bounded mailbox now honours its bound while the actor is suspended**
   (#407).  The `drop-head` overflow policy called `dequeueUser`, which refuses
   while the mailbox is suspended — so the arm removed nothing, appended the

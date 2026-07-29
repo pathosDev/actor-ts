@@ -7,7 +7,13 @@ export interface FailureDetectorOptionsType {
   readonly heartbeatIntervalMs: number;
   /** Time without heartbeat after which a peer is marked unreachable. */
   readonly unreachableAfterMs: number;
-  /** Additional time after which an unreachable peer is declared down. */
+  /**
+   * Time without heartbeat after which a peer is declared down.  Measured
+   * from the last heartbeat like {@link unreachableAfterMs}, *not* added on
+   * top of it — so it must be the larger of the two, and the peer spends
+   * `downAfterMs - unreachableAfterMs` in the `unreachable` state before
+   * being declared down.
+   */
   readonly downAfterMs: number;
 }
 
@@ -36,7 +42,10 @@ export class FailureDetectorOptionsBuilder extends OptionsBuilder<FailureDetecto
     return this.set('unreachableAfterMs', ms);
   }
 
-  /** Additional time after which an unreachable peer is declared down. */
+  /**
+   * Time without heartbeat after which a peer is declared down — measured
+   * from the last heartbeat, so it must exceed `unreachableAfterMs`.
+   */
   withDownAfterMs(ms: number): this {
     return this.set('downAfterMs', ms);
   }
@@ -44,18 +53,38 @@ export class FailureDetectorOptionsBuilder extends OptionsBuilder<FailureDetecto
 
 /**
  * Validates resolved {@link FailureDetectorOptionsType} settings — every
- * threshold is a positive duration.  (`downAfterMs` is additive time on top
- * of `unreachableAfterMs`, not an absolute deadline, so the two are not
- * ordered against each other.)
+ * threshold is a positive duration, and `downAfterMs` must exceed
+ * `unreachableAfterMs`.
+ *
+ * The ordering rule is not cosmetic.  `FailureDetector.decide` tests `down`
+ * before `unreachable`, both against the time since the last heartbeat, so
+ * `downAfterMs <= unreachableAfterMs` makes the `unreachable` branch
+ * unreachable code: the peer jumps straight from healthy to down, skipping
+ * the state that exists to let a transient network blip recover. Nothing
+ * used to reject that configuration.
  */
 export class FailureDetectorOptionsValidator extends OptionsValidator<FailureDetectorOptionsType> {
   constructor() {
     super('FailureDetectorOptions');
   }
-  protected rules(_s: Partial<FailureDetectorOptionsType>): void {
+  protected rules(s: Partial<FailureDetectorOptionsType>): void {
     this.positiveNumber('heartbeatIntervalMs');
     this.positiveNumber('unreachableAfterMs');
     this.positiveNumber('downAfterMs');
+    // Cross-field, so it is spelled out rather than delegated to a helper —
+    // and only checked when both are present, since an unset optional must
+    // still pass and fall through to the defaults.
+    if (
+      typeof s.unreachableAfterMs === 'number' &&
+      typeof s.downAfterMs === 'number' &&
+      s.downAfterMs <= s.unreachableAfterMs
+    ) {
+      this.fail(
+        'downAfterMs',
+        `must be greater than unreachableAfterMs (${s.unreachableAfterMs}) — it is measured from the last heartbeat, not added to it, so an equal or smaller value would never let a peer be reported unreachable`,
+        s.downAfterMs,
+      );
+    }
   }
 }
 
