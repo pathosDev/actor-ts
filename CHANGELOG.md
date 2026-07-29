@@ -741,6 +741,20 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Security
 
+- **The default 500 response no longer echoes the thrown message** (#356).  All
+  three backends put `message: err.message` in the body of an unhandled error,
+  and a thrown `Error`'s text routinely carries filesystem paths, SQL fragments,
+  connection strings or driver internals — none of which is a client's business.
+  `defaultErrorResponse` in `Route.ts` was always correct and says so in its
+  JSDoc (*"deliberately does NOT echo the thrown message"*); the backends simply
+  did not route through it, so the WebSocket-reject and `fallback()` paths were
+  safe while every ordinary route was not.  The generic 500 is now
+  `{ error: 'Internal Server Error' }` on Fastify, Express and Hono alike.
+  An `HttpError`'s own message is still returned — it is authored by the
+  application *for* the client — and `withErrorHandler` remains the way to
+  surface or log the detail. There was no test either way; there are now three
+  per backend.
+
 - **HOCON config parsing can no longer reach the object prototype** (#406).
   A key path is expanded segment by segment onto a plain object, and
   `object[key] = value` invokes the inherited `__proto__` *setter* rather than

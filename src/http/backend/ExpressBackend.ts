@@ -389,7 +389,8 @@ export class ExpressBackend implements HttpServerBackend {
         return;
       }
       res.status(500).setHeader('content-type', 'application/json; charset=utf-8');
-      res.end(JSON.stringify({ error: 'Internal Server Error', message: (err as Error)?.message ?? String(err) }));
+      // No `message` field — see the note on FastifyBackend.writeError.
+      res.end(JSON.stringify({ error: 'Internal Server Error' }));
     };
   }
 

@@ -208,8 +208,9 @@ export class HonoBackend implements HttpServerBackend {
           headers: { 'content-type': 'application/json; charset=utf-8', ...(err.headers ?? {}) },
         });
       }
+      // No `message` field — see the note on FastifyBackend.writeError.
       return new Response(
-        JSON.stringify({ error: 'Internal Server Error', message: (err as Error)?.message ?? String(err) }),
+        JSON.stringify({ error: 'Internal Server Error' }),
         { status: 500, headers: { 'content-type': 'application/json; charset=utf-8' } },
       );
     });
