@@ -17,6 +17,7 @@ import { formatCount, formatDuration, shortActorPath } from '../../core/format.j
 import { peakOf, StatsHistory, type SeriesPoint } from '../../core/history.js';
 import { drawChart, drawSparkline, themeColor, type ChartSeries } from '../../render/timeseries.js';
 import { currentTheme } from '../../core/theme.js';
+import { uptimeMillis, type UptimeAnchor } from './uptime.js';
 import type { PanelContext, PanelInstance } from '../../shell/PanelRegistry.js';
 import {
   STATS_HISTORY_DEFAULT_SPAN_MS,
@@ -67,22 +68,22 @@ function rememberSpanMs(spanMs: number): void {
 /** Uptime has to advance on its own; nothing pushes a frame for it. */
 const CLOCK_INTERVAL_MS = 1000;
 
-/**
- * Server uptime plus the local time since we were told it.
- *
- * Reading the server's own figure rather than differencing wall clocks
- * keeps the tile right across a reload, a reconnect, and a browser whose
- * clock disagrees with the host's.
- */
-interface UptimeAnchor {
-  readonly uptimeMs: number;
-  readonly receivedAtMs: number;
-}
-
 export function mount(host: HTMLElement, context: PanelContext): PanelInstance {
   let spanMs = storedSpanMs();
   const history = new StatsHistory(HISTORY_CAPACITY, spanMs);
   let uptime: UptimeAnchor | null = null;
+  /**
+   * When the connection went away, or `null` while something answers.
+   *
+   * Every other figure on the page stops of its own accord when the
+   * samples stop, because it is a number somebody sent us.  Uptime is
+   * the exception: it is interpolated locally between samples, so left
+   * alone it keeps counting past the death of the system it measures —
+   * the one figure here that would invent data.  Freezing the clock at
+   * the moment contact was lost stops it at the last thing we were
+   * actually told, and the first sample after a reconnect corrects it.
+   */
+  let frozenAtMs: number | null = null;
   let resolutionMs = 0;
 
   const commonTiles = h('div', { class: 'dt-tiles' });
@@ -157,7 +158,8 @@ export function mount(host: HTMLElement, context: PanelContext): PanelInstance {
 
   const renderTiles = (): void => {
     const welcome = context.tap.welcome.get();
-    renderCommon(commonTiles, welcome, history, uptimeMillis(uptime, welcome));
+    const nowMs = frozenAtMs ?? Date.now();
+    renderCommon(commonTiles, welcome, history, uptimeMillis(uptime, welcome, nowMs), frozenAtMs);
     renderNumbers(numberTiles, history);
     renderNodes(nodeSection, nodeTable, history.latest());
   };
@@ -182,6 +184,14 @@ export function mount(host: HTMLElement, context: PanelContext): PanelInstance {
 
   const disposeWelcome = effect(renderTiles, [context.tap.welcome]);
 
+  // Stamped on the way down and only cleared by a real `open`, so a
+  // reconnect that flickers `closed` → `connecting` → `closed` cannot
+  // walk the clock forward one transition at a time.
+  const disposeStatus = effect(() => {
+    frozenAtMs = context.tap.status.get() === 'open' ? null : frozenAtMs ?? Date.now();
+    renderTiles();
+  }, [context.tap.status]);
+
   // Canvas colours are read from CSS variables, so a theme flip needs a
   // repaint — nothing re-renders on its own.
   const disposeTheme = effect(render, [currentTheme]);
@@ -197,6 +207,7 @@ export function mount(host: HTMLElement, context: PanelContext): PanelInstance {
       window.removeEventListener('resize', onResize);
       stopListening();
       disposeWelcome();
+      disposeStatus();
       disposeTheme();
     },
   };
@@ -209,16 +220,6 @@ function spanLabel(ms: number): string {
   return `${Math.round(ms / 3_600_000)} h`;
 }
 
-/* -------------------------------- uptime -------------------------------- */
-
-function uptimeMillis(anchor: UptimeAnchor | null, welcome: WelcomeFrame | null): number | null {
-  if (anchor !== null) return anchor.uptimeMs + (Date.now() - anchor.receivedAtMs);
-  // Before the first sample the handshake is all we have.  It reports
-  // the system's start, so this is right too — just clock-skewed on a
-  // remote host.
-  return welcome === null ? null : Date.now() - welcome.startedAtMs;
-}
-
 /* ----------------------------- common section ---------------------------- */
 
 function renderCommon(
@@ -226,6 +227,7 @@ function renderCommon(
   welcome: WelcomeFrame | null,
   history: StatsHistory,
   uptimeMs: number | null,
+  frozenAtMs: number | null,
 ): void {
   if (welcome === null) {
     replaceChildren(host, tile('Connection', 'connecting…'));
@@ -234,7 +236,11 @@ function renderCommon(
   const latest = history.latest();
   replaceChildren(host,
     tile('Actor system', welcome.systemName, { accent: true }),
-    tile('Uptime', uptimeMs === null ? '—' : formatDuration(uptimeMs)),
+    tile('Uptime', uptimeMs === null ? '—' : formatDuration(uptimeMs), frozenAtMs === null
+      ? {}
+      // The one tile whose stillness needs explaining: the others plainly
+      // stopped being updated, this one plainly stopped counting.
+      : { title: 'Stopped — nothing has answered since this reading' }),
     tile('Runtime', latest?.runtime ?? '—'),
     clusterTile(latest),
   );
