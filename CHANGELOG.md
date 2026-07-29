@@ -473,6 +473,19 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Fixed
 
+- **A bounded mailbox now honours its bound while the actor is suspended**
+  (#407).  The `drop-head` overflow policy called `dequeueUser`, which refuses
+  while the mailbox is suspended — so the arm removed nothing, appended the
+  incoming message anyway, and still counted a drop.  The queue therefore grew
+  **past capacity without limit**, and `actor_mailbox_dropped_total` reported
+  evictions that never happened.  Suspension is not an obscure state: it is the
+  supervision window, entered whenever an actor throws and waits for its
+  parent's decision while messages keep arriving — so the bound went missing at
+  the moment it was most needed, and since v0.10.0 made the bounded mailbox the
+  **default** (10 000 / `drop-head`), this was the default path.  Overflow now
+  evicts through a suspension-independent `removeOldest`, and the counter and
+  `onDrop` callback only fire when a message was really removed.
+
 - **Stopping a `ProducerController` no longer leaves in-flight callers hanging
   forever** (#451).  `postStop` settled the *queued* sends — every waiting
   caller got `Error('producer stopped')` — but for in-flight sends it cancelled
