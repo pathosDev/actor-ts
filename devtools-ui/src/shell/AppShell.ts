@@ -49,7 +49,17 @@ export function mountAppShell(root: HTMLElement, tap: TapClient): void {
   const logo = h('span', { class: 'dt-header__logo', role: 'img', 'aria-label': 'actor-ts' });
   logo.innerHTML = ACTOR_TS_LOGO_SVG;
 
-  const banner = h('div', { class: 'dt-offline', hidden: true });
+  const dialogBody = h('div', { class: 'dt-dialog__body' });
+  const dismissButton = h('button', {
+    class: 'dt-iconbutton',
+    type: 'button',
+    onclick: () => closeOffline(true),
+  }, 'Look at the last data anyway');
+  const offlineDialog = h('dialog', { class: 'dt-dialog' },
+    dialogBody,
+    h('div', { class: 'dt-dialog__actions' }, dismissButton),
+  ) as HTMLDialogElement;
+
   const app = h('div', { class: 'dt-app' },
     h('header', { class: 'dt-header' },
       logo,
@@ -58,49 +68,74 @@ export function mountAppShell(root: HTMLElement, tap: TapClient): void {
       statusBadge,
       themeButton,
     ),
-    banner,
     h('div', { class: 'dt-body' }, navigation, host),
+    offlineDialog,
   );
   root.appendChild(app);
 
   /**
-   * Say so when there is nothing on the other end.
+   * Say so, in the way that is hard to miss, when nothing answers.
    *
    * Every panel keeps rendering the last thing it was told, which is the
    * right behaviour — the final reading before a node died is usually
    * the interesting one — but without saying so it reads as a live
-   * dashboard of a system that is fine.  The badge alone was too quiet
-   * for that: it is eight pixels in a corner.
+   * dashboard of a healthy system.  The status badge was too quiet for
+   * that; it is eight pixels in a corner.
    */
   let offlineSince: number | null = Date.now();
+  /** Set when the reader chooses to look past it; cleared on recovery. */
+  let dismissed = false;
+
+  // Escape counts as dismissing rather than as a close that reopens on
+  // the next tick — a dialog that comes straight back is a trap.
+  offlineDialog.addEventListener('cancel', (event) => {
+    event.preventDefault();
+    closeOffline(true);
+  });
+
+  function closeOffline(byReader: boolean): void {
+    if (byReader) dismissed = true;
+    if (offlineDialog.open) offlineDialog.close();
+  }
+
   function renderConnection(): void {
     const status = tap.status.get();
-    if (status === 'open') offlineSince = null;
-    else if (offlineSince === null) offlineSince = Date.now();
+    if (status === 'open') {
+      offlineSince = null;
+      // Back on its feet: the dialog goes, and a later outage is allowed
+      // to raise it again.
+      dismissed = false;
+      app.classList.remove('dt-app--offline');
+      closeOffline(false);
+      return;
+    }
+    if (offlineSince === null) offlineSince = Date.now();
 
-    const down = offlineSince !== null && Date.now() - offlineSince >= OFFLINE_GRACE_MS;
-    banner.hidden = !down;
+    const down = Date.now() - offlineSince >= OFFLINE_GRACE_MS;
     app.classList.toggle('dt-app--offline', down);
     if (!down) return;
 
-    replaceChildren(banner, ...(status === 'incompatible'
+    replaceChildren(dialogBody, ...(status === 'incompatible'
       ? [
-        h('strong', {}, 'This UI does not match the server'),
-        h('span', {},
+        h('h2', { class: 'dt-dialog__title' }, 'This UI does not match the server'),
+        h('p', {},
           'The bundled panels and the tap protocol disagree on their version, '
           + 'so the connection was refused rather than half-understood. '
           + 'Rebuild the UI bundle.'),
       ]
       : [
-        h('strong', {}, 'No node reachable'),
-        h('span', {},
-          `Nothing has answered for ${formatDuration(Date.now() - offlineSince!)}. `
-          + 'Everything below is the last thing this node said, frozen at that '
-          + 'moment — it is not live. Still retrying.'),
-        h('span', { class: 'dt-offline__hint' },
+        h('h2', { class: 'dt-dialog__title' }, 'No node reachable'),
+        h('p', {},
+          `Nothing has answered for ${formatDuration(Date.now() - offlineSince)}. `
+          + 'Everything behind this is the last thing the node said, frozen at '
+          + 'that moment — it is not live. Still retrying, and this closes by '
+          + 'itself the moment something answers.'),
+        h('p', { class: 'dt-dialog__hint' },
           'Each node serves its own DevTools, so another node\'s port may still '
           + 'answer while this one does not.'),
       ]));
+
+    if (!dismissed && !offlineDialog.open) offlineDialog.showModal();
   }
 
   effect(renderConnection, [tap.status]);
