@@ -741,6 +741,27 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Security
 
+- **Numeric gossip and heartbeat fields are checked for plausibility**
+  (#113, #115).  Two peer-supplied numbers were used without a look:
+  - **`removedAt` on a tombstone** (#113) decides whether the entry ages out, and
+    the comparison failed **open**: at `Infinity` or `NaN`,
+    `Date.now() - removedAt` is `-Infinity` or `NaN`, neither of which is
+    `>= ttl`, so the tombstone looked fresh on *every* merge and never expired.
+    A far-future value did the same through a negative age.  Since a tombstone
+    suppresses its address, one forged frame kept a node from ever rejoining —
+    the same shape as the `version` DoS fixed earlier, whose guard sat directly
+    above this code.  `removedAt` now gets that same finite-and-not-far-future
+    check.
+  - **`seq` and `ts` on a heartbeat** (#115) were unvalidated, and `seq` was
+    echoed straight back in the acknowledgment.  Nothing consumes either field
+    today (`onHeartbeatAcknowledgment` is a no-op, `ts` is unread), so this is a
+    boundary guard rather than a live exploit — recorded plainly because the
+    honest reason to fix it is that a `NaN` reaching future RTT or clock-skew
+    tracking would be silent nonsense.  An implausible frame is now dropped;
+    that is safe because `handleWire` has already recorded liveness from the
+    socket-level address, so refusing the frame cannot make a live peer look
+    unreachable.
+
 - **Actor names are validated, closing a path-forging and a log-injection hole**
   (#126, #134).  `ActorPath` accepted any string, and a path is rendered by
   joining segments with `/` and taken apart again by splitting on it

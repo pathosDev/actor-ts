@@ -470,7 +470,35 @@ export class Cluster {
     if (custom) custom(message, from);
   }
 
-  private onHeartbeat(_from: NodeAddress, message: HeartbeatMessage): void {
+  /**
+   * A heartbeat's `seq` and `ts` arrive off the wire, and `seq` is echoed
+   * straight back in the acknowledgment.  Our own sender only ever emits an
+   * incrementing counter and `Date.now()`, so an implausible value means a
+   * corrupted or forged frame — dropped rather than normalised, matching how
+   * `mergeMember` treats an implausible gossip version.
+   *
+   * Dropping is safe: `handleWire` has already bumped the failure detector from
+   * the socket-level address by the time this runs, so refusing the frame
+   * cannot make a live peer look unreachable.
+   *
+   * Nothing consumes these fields yet — `onHeartbeatAcknowledgment` is a no-op
+   * and `ts` is unread — so this is a boundary guard rather than a fix for a
+   * live exploit.  It is here so the property still holds if RTT or clock-skew
+   * tracking is added later, instead of a `NaN` quietly reaching that code.
+   */
+  private isPlausibleHeartbeat(from: NodeAddress, message: HeartbeatMessage): boolean {
+    const sequenceOk = Number.isSafeInteger(message.seq) && message.seq >= 0;
+    const timestampOk = Number.isFinite(message.ts) && message.ts <= Date.now() + MAX_VERSION_SKEW_MS;
+    if (sequenceOk && timestampOk) return true;
+    this.log.warn(
+      `heartbeat: rejecting implausible frame from ${from} ` +
+      `(seq=${message.seq}, ts=${message.ts}) — possible corruption or forgery`,
+    );
+    return false;
+  }
+
+  private onHeartbeat(from: NodeAddress, message: HeartbeatMessage): void {
+    if (!this.isPlausibleHeartbeat(from, message)) return;
     const peer = NodeAddress.fromJSON(message.from);
     this.failureDetector.heartbeat(peer);
     // Reply isn't strictly needed because send() also bumps the detector,
@@ -782,14 +810,31 @@ export class Cluster {
     // `removedAt` field gossip without it; we treat such tombstones
     // as fresh (no age info ⇒ assume they need normal TTL) so a
     // mixed-version cluster still converges.
-    if (incoming.status === 'removed'
-        && incoming.removedAt !== undefined
-        && Date.now() - incoming.removedAt >= this.tombstoneTtlMs) {
-      this.log.debug(
-        `merge: dropping expired tombstone for ${incoming.address} ` +
-        `(age ${Date.now() - incoming.removedAt}ms ≥ ttl ${this.tombstoneTtlMs}ms)`,
-      );
-      return;
+    // `removedAt` gets the same plausibility check as `version` above, and for
+    // the same reason: it is a peer-supplied number that decides whether an
+    // entry ages out.  Without it the age comparison fails *open* — with
+    // `removedAt` at `Infinity` or `NaN`, `Date.now() - removedAt` is
+    // `-Infinity` or `NaN`, neither of which is `>= ttl`, so the tombstone is
+    // treated as fresh on every merge and never expires.  A far-future value
+    // does the same via a negative age.  Since a tombstone suppresses its
+    // address, an immortal one keeps that node from ever rejoining.
+    if (incoming.status === 'removed' && incoming.removedAt !== undefined) {
+      const maxAcceptableRemovedAt = Date.now() + MAX_VERSION_SKEW_MS;
+      if (!Number.isFinite(incoming.removedAt) || incoming.removedAt > maxAcceptableRemovedAt) {
+        this.log.warn(
+          `merge: rejecting gossip from ${incoming.address} with implausible removedAt ` +
+          `${incoming.removedAt} (max acceptable ${maxAcceptableRemovedAt}) — possible exploit`,
+        );
+        return;
+      }
+      const age = Date.now() - incoming.removedAt;
+      if (age >= this.tombstoneTtlMs) {
+        this.log.debug(
+          `merge: dropping expired tombstone for ${incoming.address} ` +
+          `(age ${age}ms ≥ ttl ${this.tombstoneTtlMs}ms)`,
+        );
+        return;
+      }
     }
     const existing = this.members.get(incoming.address.toString());
     if (!existing) {
