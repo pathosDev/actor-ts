@@ -162,8 +162,52 @@ doesn't matter.
 Bun and Deno need nothing: `bun:sqlite` and `node:sqlite` are built in.
 
 For a **remote** SQLite database, see
-[libSQL / Turso](/persistence/journals/libsql/) — same schema, reached
-over HTTP, and it adds a durable-state store.
+[libSQL / Turso](/persistence/journals/libsql/) — the same schema,
+reached over HTTP.
+
+## Durable state
+
+Alongside the journal and snapshot store, SQLite has a
+`DurableStateStore` — the "keep only the current value" model, with no
+event log and no replay:
+
+```ts
+import { SqliteDurableStateStore, SqliteDurableStateStoreOptions } from 'actor-ts';
+
+const stateOptions = SqliteDurableStateStoreOptions.create()
+  .withPath('./state.db');
+const store = new SqliteDurableStateStore(stateOptions);
+```
+
+To share one database handle across the journal, the snapshot store and
+the durable-state store, open it yourself and pass it in — the store
+then leaves closing it to you:
+
+```ts
+import { getSqliteDriver } from 'actor-ts';
+
+const driver = await getSqliteDriver();
+const database = driver.open('./app.db');
+
+const sharedOptions = SqliteDurableStateStoreOptions.create()
+  .withDatabase(database);
+```
+
+The schema is the SQLite dialect's, identical to
+[libSQL / Turso](/persistence/journals/libsql/) and
+[Cloudflare D1](/persistence/journals/cloudflare-d1/), so a database can
+move between a local file and either of those without a migration.
+
+One difference worth knowing in the other direction: because this talks
+to a local file rather than over HTTP, its transactions are a real
+`BEGIN IMMEDIATE … COMMIT`.  The HTTP-fronted SQLite backends can only
+offer an atomic batch, which is why `SqlPool` specifies isolation as
+adapter-defined — this backend gives more than the contract asks for.
+
+A remote URL is rejected at construction: `withPath('libsql://…')`
+throws and points you at `LibSqlDurableStateStore`, because the local
+driver cannot open one and silently creating a *file* with that name is
+the confusing outcome.
 
 ## How it performs
 

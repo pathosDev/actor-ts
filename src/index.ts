@@ -391,6 +391,7 @@ export {
   offsetOfEvent,
   normalizeTagFilter,
   eventMatchesTagFilter,
+  tagFilterCursorKey,
   ProjectionActor,
   InMemoryOffsetStore,
   DurableStateOffsetStore,

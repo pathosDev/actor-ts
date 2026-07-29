@@ -1,6 +1,6 @@
 import { OptionsBuilder } from '../../util/OptionsBuilder.js';
 import type { PersistentEvent } from '../JournalTypes.js';
-import type { LiveQueryOptions, PersistenceQuery } from '../query/PersistenceQuery.js';
+import type { LiveQueryOptions, PersistenceQuery, TagFilter } from '../query/PersistenceQuery.js';
 import type { OffsetStore } from './OffsetStore.js';
 
 /** Plain options-object shape shared by every projection. */
@@ -22,9 +22,17 @@ export interface ByPersistenceIdProjectionOptionsType<E> extends ProjectionOptio
   readonly persistenceId: string;
 }
 
-/** Options for a per-tag projection.  One cursor per tag. */
+/**
+ * Options for a per-tag projection.  One cursor per filter.
+ *
+ * `tag` takes the full {@link TagFilter}, not just a single tag string — the
+ * query layer has supported `all` / `any` / `not` since it was written, and a
+ * projection was the one consumer still restricted to one tag, which meant
+ * "every order that is not cancelled" needed a hand-rolled projection instead
+ * of a filter.  A bare string still works and keeps its existing cursor.
+ */
 export interface ByTagProjectionOptionsType<E> extends ProjectionOptionsType<E> {
-  readonly tag: string;
+  readonly tag: TagFilter;
 }
 
 /**
@@ -158,8 +166,14 @@ export class ByTagProjectionOptionsBuilder<E> extends OptionsBuilder<ByTagProjec
     return this.set('liveOptions', liveOptions);
   }
 
-  /** The tag this projection follows across the whole journal.  One cursor per tag. */
-  withTag(tag: string): this {
+  /**
+   * The tag — or {@link TagFilter} — this projection follows across the whole
+   * journal.  One cursor per filter.
+   *
+   *     .withTag('orders')
+   *     .withTag({ all: ['orders'], not: ['cancelled'] })
+   */
+  withTag(tag: TagFilter): this {
     return this.set('tag', tag);
   }
 }

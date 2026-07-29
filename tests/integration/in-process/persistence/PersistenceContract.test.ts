@@ -21,6 +21,8 @@ import {
   InMemorySnapshotStore,
   LibSqlDurableStateStore,
   LibSqlDurableStateStoreOptions,
+  SqliteDurableStateStore,
+  SqliteDurableStateStoreOptions,
   LibSqlJournal,
   LibSqlJournalOptions,
   LibSqlSnapshotStore,
@@ -291,6 +293,18 @@ const durableStateHarnesses: ReadonlyArray<DurableStateHarness> = [
       const storeOptions = PostgresDurableStateStoreOptions.create()
         .withPool(new FakePgPool());
       return new PostgresDurableStateStore(storeOptions);
+    },
+  },
+  {
+    // The only durable-state harness running against a real SQL engine rather
+    // than a fake: a local SQLite database needs no container and no network,
+    // so `:memory:` exercises the actual statements the dialect emits.  A fresh
+    // database per `make()` keeps scenarios isolated.
+    label: 'SqliteDurableStateStore',
+    pid: namespacer('sqlite'),
+    make: async () => {
+      const storeOptions = SqliteDurableStateStoreOptions.create().withPath(':memory:');
+      return new SqliteDurableStateStore(storeOptions);
     },
   },
   {

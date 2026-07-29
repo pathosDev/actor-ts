@@ -6,6 +6,7 @@ import {
   type PersistenceQuery,
   type TaggedEvent,
   offsetStart,
+  tagFilterCursorKey,
 } from '../query/PersistenceQuery.js';
 import { InMemoryOffsetStore, type OffsetStore } from './OffsetStore.js';
 import type {
@@ -101,10 +102,21 @@ class ByPersistenceIdProjectionActor<E> extends BaseProjectionActor<E> {
 
 class ByTagProjectionActor<E> extends BaseProjectionActor<E> {
   private cursor: Offset = offsetStart;
-  constructor(private readonly config: ByTagProjectionOptionsType<E>) { super(config); }
+  /**
+   * `OffsetStore` is keyed by string, while `tag` may now be a filter object.
+   * Derived once: it must be identical on every load and save, or the
+   * projection would reload a cursor it never wrote.  For a bare string this
+   * *is* the string, so cursors persisted before filters were accepted keep
+   * resolving.
+   */
+  private readonly cursorKey: string;
+  constructor(private readonly config: ByTagProjectionOptionsType<E>) {
+    super(config);
+    this.cursorKey = tagFilterCursorKey(config.tag);
+  }
 
   protected async loadCursor(): Promise<void> {
-    this.cursor = await this.offsetStore.loadOffset(this.config.name, this.config.tag);
+    this.cursor = await this.offsetStore.loadOffset(this.config.name, this.cursorKey);
   }
 
   protected async runOnce(): Promise<void> {
@@ -121,7 +133,7 @@ class ByTagProjectionActor<E> extends BaseProjectionActor<E> {
       this.currentHandle = Promise.resolve(this.config.handle(te.event));
       await this.currentHandle;
       this.cursor = te.offset;
-      await this.offsetStore.saveOffset(this.config.name, this.config.tag, this.cursor);
+      await this.offsetStore.saveOffset(this.config.name, this.cursorKey, this.cursor);
       if (this.stopped) return;
     }
   }
@@ -185,7 +197,7 @@ export class ProjectionActor {
     const resolvedOptions = options as ByTagProjectionOptionsType<E>;
     return system.spawn(
       Props.create(() => new ByTagProjectionActor<E>(resolvedOptions) as unknown as Actor<unknown>),
-      `projection-${resolvedOptions.name}-tag-${sanitize(resolvedOptions.tag)}`,
+      `projection-${resolvedOptions.name}-tag-${sanitize(tagFilterCursorKey(resolvedOptions.tag))}`,
     );
   }
 }

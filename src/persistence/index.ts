@@ -29,6 +29,16 @@ export { InMemorySnapshotStore } from './snapshot-stores/InMemorySnapshotStore.j
 export { SqliteSnapshotStore } from './snapshot-stores/SqliteSnapshotStore.js';
 export { SqliteSnapshotStoreOptions, SqliteSnapshotStoreOptionsBuilder } from './snapshot-stores/SqliteSnapshotStoreOptions.js';
 export type { SqliteSnapshotStoreOptionsType } from './snapshot-stores/SqliteSnapshotStoreOptions.js';
+
+export { SqliteDurableStateStore } from './durable-state-stores/SqliteDurableStateStore.js';
+export {
+  SqliteDurableStateStoreOptions,
+  SqliteDurableStateStoreOptionsBuilder,
+  SqliteDurableStateStoreOptionsValidator,
+} from './durable-state-stores/SqliteDurableStateStoreOptions.js';
+export type { SqliteDurableStateStoreOptionsType } from './durable-state-stores/SqliteDurableStateStoreOptions.js';
+export { adaptSqliteDatabase, buildSqliteDatabase } from './journals/SqliteClient.js';
+export type { SqliteConnection } from './journals/SqliteClient.js';
 export { CachedSnapshotStore } from './snapshot-stores/CachedSnapshotStore.js';
 export { CachedSnapshotStoreOptions, CachedSnapshotStoreOptionsBuilder, CachedSnapshotStoreOptionsValidator } from './snapshot-stores/CachedSnapshotStoreOptions.js';
 export type { CachedSnapshotStoreOptionsType } from './snapshot-stores/CachedSnapshotStoreOptions.js';
@@ -459,6 +469,7 @@ export {
   offsetOfEvent,
   normalizeTagFilter,
   eventMatchesTagFilter,
+  tagFilterCursorKey,
 } from './query/PersistenceQuery.js';
 export { InMemoryQuery } from './query/InMemoryQuery.js';
 export { SqliteQuery } from './query/SqliteQuery.js';

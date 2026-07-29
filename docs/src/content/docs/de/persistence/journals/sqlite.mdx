@@ -163,7 +163,54 @@ eingebaut.
 
 Für eine **entfernte** SQLite-Datenbank siehe
 [libSQL / Turso](/de/persistence/journals/libsql/) — gleiches Schema,
-über HTTP erreichbar, und mit einem Durable-State-Store obendrauf.
+über HTTP erreichbar.
+
+## Durable State
+
+Neben Journal und Snapshot-Store gibt es für SQLite einen
+`DurableStateStore` — das Modell „nur den aktuellen Wert halten", ohne
+Event-Log und ohne Replay:
+
+```ts
+import { SqliteDurableStateStore, SqliteDurableStateStoreOptions } from 'actor-ts';
+
+const stateOptions = SqliteDurableStateStoreOptions.create()
+  .withPath('./state.db');
+const store = new SqliteDurableStateStore(stateOptions);
+```
+
+Um ein Datenbank-Handle über Journal, Snapshot-Store und
+Durable-State-Store zu teilen, öffne es selbst und übergib es — der
+Store überlässt das Schließen dann dir:
+
+```ts
+import { getSqliteDriver } from 'actor-ts';
+
+const driver = await getSqliteDriver();
+const database = driver.open('./app.db');
+
+const sharedOptions = SqliteDurableStateStoreOptions.create()
+  .withDatabase(database);
+```
+
+Das Schema ist das des SQLite-Dialekts und damit identisch zu
+[libSQL / Turso](/de/persistence/journals/libsql/) und
+[Cloudflare D1](/de/persistence/journals/cloudflare-d1/) — eine
+Datenbank kann also ohne Migration zwischen einer lokalen Datei und
+einem der beiden wandern.
+
+Ein Unterschied in die andere Richtung ist erwähnenswert: weil hier eine
+lokale Datei statt HTTP im Spiel ist, sind die Transaktionen ein echtes
+`BEGIN IMMEDIATE … COMMIT`.  Die HTTP-basierten SQLite-Backends können
+nur einen atomaren Batch anbieten — genau deshalb legt `SqlPool` die
+Isolation als adapterdefiniert fest.  Dieses Backend liefert mehr, als
+der Vertrag verlangt.
+
+Eine entfernte URL wird bei der Konstruktion abgelehnt:
+`withPath('libsql://…')` wirft und verweist auf
+`LibSqlDurableStateStore` — der lokale Treiber kann sie nicht öffnen,
+und stillschweigend eine *Datei* mit diesem Namen anzulegen wäre das
+verwirrende Ergebnis.
 
 Die Auto-Detection importiert `better-sqlite3` lazy — nur wenn das
 Framework tatsächlich eine SQLite-Datenbank öffnen muss.  Wenn du
