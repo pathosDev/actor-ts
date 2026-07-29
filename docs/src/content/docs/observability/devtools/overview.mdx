@@ -233,7 +233,9 @@ couple of seconds without an answer a dialog opens saying **No node
 reachable**, counting how long that has been true, and it closes itself
 the moment something answers.  Dismiss it to read the last figures
 anyway — the panel stays dimmed while the connection is down, so they
-cannot be mistaken for live ones.
+cannot be mistaken for live ones, and the uptime counter freezes at its
+last reading rather than counting up past the death of the system it
+measures.
 
 Each node serves its own DevTools, so another node's port may still
 answer while the one you have open does not.

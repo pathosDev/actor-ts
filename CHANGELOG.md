@@ -473,6 +473,12 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Fixed
 
+- **The DevTools uptime counter stops when nothing answers.**  Every
+  other figure on the overview stands still of its own accord once the
+  samples stop, because it is a number somebody sent us — uptime was the
+  exception, interpolated locally between samples and so still counting
+  up minutes after the system it measures had died.  It now freezes at
+  the last reading, and the first sample after a reconnect corrects it.
 - **DevTools no longer stops a clustered example from starting.** Three
   nodes started from three terminals are three processes, each claiming
   port 9333, and the second and third died outright: *"voice backend
