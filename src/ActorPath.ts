@@ -111,8 +111,29 @@ export class ActorPath {
     return this.toString() === other.toString();
   }
 
-  /** Canonical URI form: actor-ts://system/user/foo/bar */
+  /**
+   * Canonical URI form: `actor-ts://system/user/foo/bar`.
+   *
+   * Memoized, because this is a hot read on an immutable value.  Every field is
+   * `readonly` and the parent chain is fixed at construction, so the rendering
+   * cannot change once computed.  It is called far more often than it looks:
+   * `equals` renders *both* sides, ref comparison goes through `equals`, and
+   * dead-letter routing, the receptionist and the DevTools taps all key on the
+   * string — so a deep path was re-walking its ancestors and re-joining an array
+   * on each one.
+   */
   toString(): string {
+    return this.rendered ??= this.render();
+  }
+
+  /**
+   * Not `readonly`, and set through `??=` rather than in the constructor: paths
+   * are created on every spawn, including for actors whose path is never
+   * rendered, so the walk is deferred until something asks.
+   */
+  private rendered: string | undefined;
+
+  private render(): string {
     const segments = this.elements();
     // First element is the system root name; render as actor-ts://<sys>/remainder
     if (segments.length <= 1) return `actor-ts://${this.systemName}/`;

@@ -20,6 +20,46 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   written for applications; the free-port probe binds the same interface it is
   asking about, and a wildcard bind (`0.0.0.0`, `::`) is reported as a loopback
   URL because `http://0.0.0.0:9333` is not an address a browser can open.
+- **Package-health CI: publint, arethetypeswrong and knip** (#416).  Three
+  failure modes the test suite structurally cannot see, because they are
+  properties of the published tarball rather than of the code: a broken `exports`
+  map or a `files` list missing the built output (publint); declarations that
+  resolve for the author but not for a consumer under their module resolution
+  (attw); and a module reachable from no entry point, or an import with no
+  manifest entry behind it — which works locally and breaks on a fresh install
+  (knip).  All three pass today, so this locks in the current state rather than
+  fixing a defect.
+  Two configuration notes, since both were judgement calls.  attw runs with
+  `--profile esm-only`: this package ships no CJS, so the "ESM (dynamic import
+  only)" note for a CJS consumer describes the design and has no fix short of
+  shipping CJS.  And knip is unusable here unconfigured — it reports ~341
+  "unused files" and several hundred duplicate exports, because its defaults
+  assume an *application*, where anything unreachable from one entry is dead and
+  two names for one value is a mistake.  Neither holds for a library whose whole
+  surface is its exports, and one of them is a documented convention: AGENTS.md
+  *requires* every options family to export `XOptions` as both a type union and a
+  value alias for the builder, in ~60 files.  `knip.jsonc` therefore turns off the
+  rules that fight the project and keeps the ones that catch real problems, with
+  the reasoning recorded against each.
+
+- **`"sideEffects": false`** (#415) — nothing in this package does work at import
+  time, so a consumer's bundler may drop whatever it does not reference.  Backed
+  by a test rather than asserted: it bundles a narrow import and measures what
+  survives.  `import { Actor }` comes out at **~1.5 KB** against **~2.3 MB** for
+  the whole barrel, and the embedded DevTools UI — the largest single artefact in
+  the tree — is absent.  A companion test proves that canary is a real one by
+  showing the UI *does* appear when the DevTools entry point is imported;
+  without it the assertion would keep passing even if tree-shaking broke.
+
+- **`ActorPath.toString()` is memoized** (#412).  Every field is `readonly` and
+  the parent chain is fixed at construction, so the rendering cannot change once
+  computed — and it is called far more often than it looks: `equals` renders
+  *both* sides, ref comparison goes through `equals`, and dead-letter routing,
+  the receptionist and the DevTools taps all key on the string.  A deep path was
+  re-walking its ancestors and re-joining an array on every one of those.
+  Computed lazily rather than in the constructor, since a path is created on every
+  spawn, including for actors whose path is never rendered.
+
 - **`SqliteDurableStateStore`** (#392) — the last gap in the backend matrix.
   SQLite shipped a journal and a snapshot store but no durable state, so it was
   the only family whose three-component set was incomplete;

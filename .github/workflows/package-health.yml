@@ -1,0 +1,70 @@
+name: package-health
+
+# Checks the *shape* of what gets published, which the test suite cannot see
+# (#416).  All three failure modes here are invisible locally — they only bite a
+# consumer after `npm publish`:
+#
+#   - publint  — a broken `exports` map, a `files` list missing the built output,
+#                a `types` path that points at nothing.
+#   - attw     — declarations that resolve for the author but not for a consumer
+#                under their module resolution.
+#   - knip     — a module reachable from no entry point (dead weight in the
+#                tarball), or an import with no manifest entry behind it, which
+#                works locally and breaks on a fresh install.
+#
+# Same path filter discipline as build.yml: this can only change when the
+# manifest, the source, the tsconfig or this workflow changes.
+
+on:
+  push:
+    branches: ['**']
+    paths:
+      - 'src/**'
+      - 'package.json'
+      - 'bun.lock'
+      - 'tsconfig.json'
+      - 'knip.jsonc'
+      - '.github/workflows/package-health.yml'
+  pull_request:
+    branches: [main, develop]
+    paths:
+      - 'src/**'
+      - 'package.json'
+      - 'bun.lock'
+      - 'tsconfig.json'
+      - 'knip.jsonc'
+      - '.github/workflows/package-health.yml'
+  workflow_dispatch:
+
+jobs:
+  package-health:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install
+        run: bun install
+
+      # publint and attw both inspect the built package, so `dist/` has to exist
+      # first.  Built once here rather than by each script, so the job does not
+      # pay for three builds.
+      - name: Build (tsc → dist/)
+        run: bun run build
+
+      - name: publint — manifest and exports map
+        run: bunx publint
+
+      # `esm-only` is the honest profile: this package ships no CJS, so the
+      # "ESM (dynamic import only)" note for a CJS consumer describes the design
+      # rather than a defect.  Without it the job would fail on a warning that
+      # has no fix short of shipping CJS.
+      - name: arethetypeswrong — declarations resolve for consumers
+        run: bunx attw --pack --profile esm-only
+
+      - name: knip — dead modules and undeclared imports
+        run: bunx knip --no-progress

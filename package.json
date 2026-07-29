@@ -15,6 +15,7 @@
   "types": "dist/index.d.ts",
   "module": "dist/index.js",
   "type": "module",
+  "sideEffects": false,
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
@@ -90,6 +91,10 @@
     "smoke:node": "bun run build && ACTOR_TS_SMOKE_USE_DIST=1 node tests/smoke/run-cases.mjs",
     "smoke:deno": "bun run build && ACTOR_TS_SMOKE_USE_DIST=1 deno run --allow-read --allow-env --allow-write --allow-net tests/smoke/run-cases.mjs",
     "smoke": "bun run smoke:bun && bun run smoke:node && bun run smoke:deno",
+    "lint:publint": "bun run build && bunx publint",
+    "lint:types-exports": "bun run build && bunx attw --pack --profile esm-only",
+    "lint:knip": "bunx knip --no-progress",
+    "lint:package": "bun run lint:publint && bun run lint:types-exports && bun run lint:knip",
     "bench": "bun run benchmarks/run-all.ts",
     "prepublishOnly": "bun run clean && bun run build && bun run typecheck && bun test"
   },
@@ -105,6 +110,7 @@
   ],
   "license": "Apache-2.0",
   "devDependencies": {
+    "@arethetypeswrong/cli": "^0.18.2",
     "@fastify/static": "^10.1.0",
     "@fastify/websocket": "^11.3.0",
     "@hono/node-server": "^2.0.9",
@@ -116,6 +122,8 @@
     "better-sqlite3": "^13.0.1",
     "express": "^5.2.1",
     "fast-check": "^4.9.0",
+    "knip": "^6.29.0",
+    "publint": "^0.3.22",
     "hono": "^4.12.30",
     "typescript": "^7.0.2"
   },
