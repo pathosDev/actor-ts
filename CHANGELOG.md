@@ -11,6 +11,15 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Added
 
+- **`--devtools-host` for the examples** (#492) — the shared `--devtools` wiring
+  bound `127.0.0.1` and only let you move the port, which is unreachable when the
+  browser is not on the machine running the example (a container, a VM, a WSL or
+  remote dev box).  `--devtools-host=<host>` / `DEVTOOLS_HOST` now sets the
+  interface.  A non-loopback host there implies `allowRemote`, so DevTools binds
+  and logs its "reachable without auth" warning rather than refusing on a rule
+  written for applications; the free-port probe binds the same interface it is
+  asking about, and a wildcard bind (`0.0.0.0`, `::`) is reported as a loopback
+  URL because `http://0.0.0.0:9333` is not an address a browser can open.
 - **Cloudflare D1 persistence backend** (#438) — `D1Journal`, `D1SnapshotStore`
   and `D1DurableStateStore`, completing the umbrella's five backends.  Spoken over
   D1's REST API with the framework's own `HttpClient`, so it adds **no dependency

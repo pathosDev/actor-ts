@@ -26,14 +26,25 @@
  * range is taken instead, the same way the cluster transport scans for
  * its own port.
  *
+ * The bind interface is `127.0.0.1` unless `--devtools-host` says
+ * otherwise — the flag for when the browser is not on the machine
+ * running the example: a container, a VM, a WSL or remote dev box.
+ * Naming a non-loopback host there *is* the deliberate act
+ * `DevToolsOptions` asks for, so the harness pairs it with
+ * `allowRemote`; DevTools then binds and warns that it is reachable
+ * without auth, instead of refusing and leaving you to guess why.
+ * Nothing beyond an example should be exposed that cheaply.
+ *
  *   --devtools          enable (any shell)
  *   DEVTOOLS=1          enable (POSIX shells)
  *   --devtools-port=N   first port to use (default 9333)
  *   DEVTOOLS_PORT=N     same, via the environment
+ *   --devtools-host=H   interface to bind (default 127.0.0.1)
+ *   DEVTOOLS_HOST=H     same, via the environment
  */
 import { concat, type ActorSystem } from '../src/index.js';
 import type { Cluster } from '../src/cluster/Cluster.js';
-import { DevTools, DevToolsOptions, type DevToolsBinding } from '../src/devtools/index.js';
+import { DevTools, DevToolsOptions, isLoopbackHost, type DevToolsBinding } from '../src/devtools/index.js';
 
 /** Handle returned by {@link attachDevTools}; inert when DevTools is off. */
 export interface ExampleDevTools {
@@ -97,12 +108,13 @@ export async function attachDevTools(
   // An explicit port is an instruction, not a hint: honour it exactly so
   // a script that publishes "DevTools is on 9400" stays true.
   const slots = options.port === undefined ? PORT_SCAN_SLOTS : 1;
-  const devtools = await attachScanning(system, options, first, slots);
+  const devtools = await attachScanning(system, options, readHost(), first, slots);
   if (devtools === null) return DISABLED;
 
+  const url = browsableUrl(devtools.host, devtools.port);
   return {
-    url: devtools.url,
-    holdOpen: () => waitForInterrupt(devtools.url),
+    url,
+    holdOpen: () => waitForInterrupt(url),
     detach: () => devtools.detach(),
   };
 }
@@ -128,13 +140,19 @@ export async function attachDevTools(
 async function attachScanning(
   system: ActorSystem,
   options: AttachDevToolsOptions,
+  host: string,
   first: number,
   slots: number,
 ): Promise<DevToolsBinding | null> {
   for (let offset = 0; offset < slots; offset++) {
     const port = first + offset;
-    if (slots > 1 && !(await isPortFree(system, port))) continue;
-    const devtoolsOptions = DevToolsOptions.create().withPort(port);
+    if (slots > 1 && !(await isPortFree(system, host, port))) continue;
+    const devtoolsOptions = DevToolsOptions.create()
+      .withHost(host)
+      .withPort(port);
+    // Asking for a non-loopback host on the command line is the opt-in
+    // the validator wants; DevTools still logs what it exposes.
+    if (!isLoopbackHost(host)) devtoolsOptions.withAllowRemote();
     if (options.cluster !== undefined) devtoolsOptions.withCluster(options.cluster);
     try {
       // No banner here: `DevTools.attach` already logs the URL it bound.
@@ -150,7 +168,8 @@ async function attachScanning(
     }
   }
   system.log.warn(
-    `DevTools not attached — continuing without it: ports ${first}-${first + slots - 1} are all in use`,
+    `DevTools not attached — continuing without it: ports ${first}-${first + slots - 1} `
+    + `on ${host} are all in use`,
   );
   return null;
 }
@@ -162,10 +181,13 @@ async function attachScanning(
  * letting go again, so the check works the same on Bun, Node and Deno
  * instead of guessing at each runtime's `EADDRINUSE` wording.  An empty
  * route matches nothing, which is all a probe needs.
+ *
+ * The probe takes the same interface DevTools will: "free" is a property
+ * of the pair, and a port taken on one interface can be free on another.
  */
-async function isPortFree(system: ActorSystem, port: number): Promise<boolean> {
+async function isPortFree(system: ActorSystem, host: string, port: number): Promise<boolean> {
   try {
-    const probe = await system.http(port, { host: '127.0.0.1' }).bind(concat());
+    const probe = await system.http(port, { host }).bind(concat());
     await probe.unbind();
     return true;
   } catch {
@@ -184,6 +206,19 @@ function readPort(): number {
   const raw = argumentValue('--devtools-port') ?? readEnvironment('DEVTOOLS_PORT');
   const parsed = raw === undefined ? Number.NaN : Number.parseInt(raw, 10);
   return Number.isInteger(parsed) && parsed >= 0 && parsed <= 65535 ? parsed : 9333;
+}
+
+/**
+ * Interface to bind — loopback unless asked otherwise.
+ *
+ * Unlike the port there is nothing to validate here beyond emptiness:
+ * what a host string may say is the runtime's business, and a bind that
+ * cannot happen is already handled — the example starts without
+ * DevTools rather than dying.
+ */
+function readHost(): string {
+  const raw = argumentValue('--devtools-host') ?? readEnvironment('DEVTOOLS_HOST');
+  return raw === undefined || raw.trim() === '' ? '127.0.0.1' : raw.trim();
 }
 
 /** `--devtools-port=9400` or `--devtools-port 9400`. */
@@ -211,6 +246,22 @@ function readEnvironment(name: string): string | undefined {
     Deno?: { env?: { get(key: string): string | undefined } };
   };
   return scope.process?.env?.[name] ?? scope.Deno?.env?.get(name);
+}
+
+/**
+ * A URL that can be pasted into a browser.
+ *
+ * The binding reports the interface DevTools bound, which is the right
+ * answer and the wrong link: a wildcard bind (`0.0.0.0`, `::`) is not an
+ * address anything can open, and an IPv6 literal is not a URL until it
+ * is bracketed.  Both are reachable over loopback from the machine that
+ * ran the example, so that is what the example prints.
+ */
+function browsableUrl(host: string, port: number): string {
+  if (host === '0.0.0.0') return `http://127.0.0.1:${port}`;
+  if (host === '::' || host === '[::]') return `http://[::1]:${port}`;
+  const authority = host.includes(':') && !host.startsWith('[') ? `[${host}]` : host;
+  return `http://${authority}:${port}`;
 }
 
 /**

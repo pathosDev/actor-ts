@@ -228,6 +228,25 @@ keiner frei — oder scheitert an DevTools sonst etwas —, protokolliert das
 Example eine Warnung und startet trotzdem. Ein Debugger, der nicht binden
 kann, ist kein Grund, das zu debuggende Programm sterben zu lassen.
 
+Gebunden wird auf `127.0.0.1`. `--devtools-host` / `DEVTOOLS_HOST` ändert
+das — das Flag für den Fall, dass der Browser nicht auf der Maschine
+läuft, auf der das Example läuft: ein Container, eine VM, eine WSL- oder
+Remote-Dev-Box.
+
+```bash
+bun run examples/hello-world.ts --devtools --devtools-host 0.0.0.0
+```
+
+Einen Nicht-Loopback-Host dort hinzuschreiben ist genau die bewusste
+Entscheidung, nach der [Sicherheit](#sicherheit) fragt. Das Example
+ergänzt deshalb `allowRemote`, und DevTools bindet — mit der Warnung,
+dass es ohne Auth erreichbar ist — statt sich zu verweigern und dich
+rätseln zu lassen, warum. Dieser Handel taugt für ein Example und sonst
+nichts: Alles mit echtem State gehört hinter `auth` oder eine
+`ipAllowlist`. Ein Wildcard-Bind meldet sich als Loopback-URL zurück,
+denn `http://0.0.0.0:9333` ist keine Adresse, die ein Browser öffnen
+kann.
+
 Langlaufende Examples (die Chat- und Voice-Backends, die HTTP-Services)
 halten nicht an — sie laufen ohnehin, bis du sie stoppst. Die Verdrahtung
 liegt in `examples/devtools.ts`, rund dreißig Zeilen, falls du das Muster
