@@ -7,11 +7,31 @@ This document tracks the planned direction.  Nothing here is committed work — 
 - Post-v0.11.0, preparing the next minor (`[Unreleased]` window): the naming
   sweep extended to every identifier (locals, generic parameters, the `kind`
   discriminant) + TypeScript 7 native compiler (#361) + raised runtime floors
-  (Node ≥ 24, Bun ≥ 1.3) + dependency bumps.
-- ~2 665 tests green (unit + multi-node + in-process integration) + 15 real-network multi-node integration scenarios green; open bugs are tracked as `[Bug]` issues in the tracker.
+  (Node ≥ 24, Bun ≥ 1.3) + dependency bumps.  The window's headline additions
+  are the **DevTools suite** (#445) and **five more persistence backends**
+  (#438) on the new relational base layer (#389), plus a **core-correctness
+  pass** over the 2026 audit's findings — see *Done*, below.
+- ~3 395 tests green (unit + multi-node + in-process integration) + 15 real-network multi-node integration scenarios green; open bugs are tracked as `[Bug]` issues in the tracker.
 - A full audit-catalog of follow-up items is tracked in the issue tracker — security findings, framework features, code-quality refactors.  Filter by label `security` + `severity: <tier>` or by title prefix `[Security] ` / `[Feature] `.
 
 ## Done since the last roadmap update
+
+- **Current `[Unreleased]` window:**
+  - **DevTools suite (#445)** — embeddable web UI for a running system, seven
+    panels on one versioned tap protocol behind a `./devtools` export.  Absorbed
+    the separately-listed live cluster visualizer (#204)
+  - **Five more persistence backends (#438)** — MongoDB, DynamoDB, MS SQL,
+    libSQL/Turso, Cloudflare D1, each with journal + snapshot + durable-state,
+    on the new relational base layer (#389); CockroachDB + YugabyteDB certified
+    on the Postgres stores (#401)
+  - **Documentation site (#26)** — Starlight, with a 1:1 German mirror and a
+    generated TypeDoc API reference at `actor-ts.dev/api/`
+  - **Core correctness pass from the 2026 audit** — the `terminated` signal is
+    delivered (#448), routers prune dead routees (#449) and reject an unusable
+    pool size (#455), reliable-delivery settles in-flight sends on shutdown
+    (#451), a bounded mailbox keeps its bound while suspended (#407),
+    `FailureDetector` thresholds are consistent and validated (#452), and HOCON
+    parsing cannot reach the object prototype (#406)
 
 - **v0.11.0 window — consistency + validation sweep:**
   - Repo-wide naming conventions, hard cuts: `Websocket` casing (no `Ws`),
@@ -64,21 +84,23 @@ This document tracks the planned direction.  Nothing here is committed work — 
 ## Novel differentiators (each own plan-slot)
 
 - Deterministic-simulation-testing (FoundationDB-style seeded virtual-time replay) — #200
-- LLM-tool-call-as-actor primitive — #202
-- Live cluster visualizer (ships in package) — #204
+- LLM agents as supervised, durable actors — epic #421 (absorbed the earlier
+  LLM-tool-call-as-actor sketch; tool dispatch is #423)
 - Per-entity chaos injection — #206
 
 ## Bigger threads (L / XL — own design phase)
 
-- Streams DSL subset (`SourceQueue`, `MergeHub`, `BroadcastHub`) — #147 (legacy #54)
+- Streams DSL subset (`SourceQueue`, `MergeHub`, `BroadcastHub`) — #147
+- Full `Source` / `Flow` / `Sink` composition DSL — #54 (the long-horizon track;
+  #147 is a deliberate ~5 % subset, not a replacement for it)
 - WASM / edge-runtime subpackage — #209
 - Distributed transactions (Orleans-style ACID 2PC across grains) — #171
 - Multi-DC clustering with DC-local failure detection — #149
 
 ## Documentation
 
-- Documentation site with TypeDoc + custom layout (#26)
-- Performance benchmarks vs JVM actor frameworks (#27)
+- Performance benchmarks vs JVM actor frameworks (#27) — `benchmarks/` has the
+  micro-benches; what is missing is the side-by-side comparison run
 
 ## Explicitly out of scope
 
