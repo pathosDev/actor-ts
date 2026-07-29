@@ -78,3 +78,67 @@ describe('ActorPath', () => {
     expect(pathA.equals(pathB)).toBe(false);
   });
 });
+
+describe('ActorPath — name validation (#126, #134)', () => {
+  const root = (): ActorPath => new ActorPath('', null, 'demo');
+  // Built from its code point so no source-level escaping is involved:
+  // a literal backslash here is exactly the kind of thing a rewriting
+  // tool turns into a backspace, which would test the wrong rule.
+  const BACKSLASH = String.fromCharCode(92);
+
+  test('rejects a path separator, which would forge path structure', () => {
+    // A path is rendered by joining segments with "/" and taken apart again by
+    // splitting on "/" (RefCodec.parsePathSegments).  So `child('a/b')` used to
+    // produce a path indistinguishable from a child `b` of an actor `a` —
+    // a collision, and across the cluster wire an impersonation, since the
+    // remote side re-splits the string.
+    expect(() => root().child('a/b')).toThrow(/path separator/);
+    expect(() => root().child(`a${BACKSLASH}b`)).toThrow(/path separator/);
+    expect(() => root().child('/etc/passwd')).toThrow(/path separator/);
+  });
+
+  test('rejects traversal segments', () => {
+    expect(() => root().child('..')).toThrow(/must not be "\." or "\.\."/);
+    expect(() => root().child('.')).toThrow(/must not be "\." or "\.\."/);
+    // The separator check fires first for a compound traversal, which is fine —
+    // what matters is that it is refused at all.
+    expect(() => root().child('../../etc')).toThrow();
+  });
+
+  test('rejects control characters, which allow log injection', () => {
+    // Paths are written to logs and trace spans, so a newline in a name lets a
+    // caller forge log lines.
+    expect(() => root().child('a\nb')).toThrow(/control characters/);
+    expect(() => root().child('a\rb')).toThrow(/control characters/);
+    expect(() => root().child('a\tb')).toThrow(/control characters/);
+    expect(() => root().child('a\u0000b')).toThrow(/control characters/);
+    expect(() => root().child('a\u007fb')).toThrow(/control characters/);
+  });
+
+  test('rejects an empty child, which would render an ambiguous segment', () => {
+    // parsePathSegments filters empty segments out, so `a//b` would round-trip
+    // as `a/b` — the local and remote renderings of one actor disagreeing.
+    expect(() => root().child('')).toThrow(/must not be empty/);
+  });
+
+  test('the error names the offending name and where it sat', () => {
+    expect(() => root().child('a/b')).toThrow(/"a\/b"/);
+    expect(() => root().child('a/b')).toThrow(/child of actor-ts:\/\/demo\//);
+  });
+
+  test('an empty name is still legal for a root', () => {
+    // Relied upon by deadLetters, nobody, ClusterSingletonProxy and TestProbe.
+    expect(() => new ActorPath('', null, 'demo')).not.toThrow();
+    expect(new ActorPath('', null, 'demo').toString()).toBe('actor-ts://demo/');
+  });
+
+  test('ordinary names the framework and users rely on still work', () => {
+    for (const name of [
+      'user', 'deadLetters', 'nobody', 'routee-1', 'ws-conn-7',
+      'singleton-proxy-Counter', 'shard-reply-region-42', 'my_actor',
+      'Order.Placed', 'entity#3', 'a b', 'ünïcode', '日本語',
+    ]) {
+      expect(() => root().child(name), `rejected ${name}`).not.toThrow();
+    }
+  });
+});

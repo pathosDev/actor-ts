@@ -741,6 +741,25 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Security
 
+- **Actor names are validated, closing a path-forging and a log-injection hole**
+  (#126, #134).  `ActorPath` accepted any string, and a path is rendered by
+  joining segments with `/` and taken apart again by splitting on it
+  (`RefCodec.parsePathSegments`) — so `spawn(props, 'a/b')` did not merely look
+  wrong, it changed the path *structure*, producing something indistinguishable
+  from a child `b` of an actor `a`.  That collides with, or impersonates, a
+  different actor, and it crosses the cluster wire, where the remote side
+  re-splits the string.  `.` and `..` carried the same risk through traversal
+  meaning.  Separately, a name containing a newline let a caller forge log lines,
+  since paths are written to logs and trace spans.
+  A name is now rejected if it contains `/`, `\` or a control character, if it is
+  `.` or `..`, or if it is empty below a parent — empty stays legal for a root,
+  which `deadLetters`, `nobody` and the test probe rely on.  Everything else
+  still works, including spaces, interior dots and non-ASCII
+  (`'Order.Placed'`, `'entity#3'`, `'日本語'`).
+  *Behaviour change:* previously silent corruption, now a throw at spawn time.
+  The docs used to tell readers to *"validate segments yourself"*; that guidance
+  is replaced by the rule the framework now enforces.
+
 - **The default 500 response no longer echoes the thrown message** (#356).  All
   three backends put `message: err.message` in the body of an unhandled error,
   and a thrown `Error`'s text routinely carries filesystem paths, SQL fragments,
