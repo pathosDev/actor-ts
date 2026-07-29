@@ -241,6 +241,26 @@ actor-ts.cluster.failure-detector.heartbeat-interval = 250ms
 
 Loads `shared-cluster.conf` and overlays your local section on top.
 
+### Reserved keys
+
+Three keys are refused anywhere in a config source — as a key, as any segment
+of a path expression, and inside a substitution:
+
+```hocon
+__proto__.anything = 1   # error: refused
+constructor.x      = 1   # error: refused
+prototype          = 1   # error: refused
+value              = ${__proto__}   # error: refused
+```
+
+A key path is expanded onto a plain object, and assigning `__proto__` writes
+through to the object prototype rather than creating a normal key — so allowing
+it would let a config file change the behaviour of every object in the process.
+The parser rejects these with the usual line and column instead.
+
+The check is exact-match, so keys that merely resemble them are fine:
+`_proto_`, `constructorName` and `prototypes` all work normally.
+
 ## Reading config in code
 
 ```ts

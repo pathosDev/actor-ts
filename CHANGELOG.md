@@ -669,6 +669,29 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Security
 
+- **HOCON config parsing can no longer reach the object prototype** (#406).
+  A key path is expanded segment by segment onto a plain object, and
+  `object[key] = value` invokes the inherited `__proto__` *setter* rather than
+  creating an own property — so `__proto__.polluted = true` in any config
+  source descended into `Object.prototype` and polluted **every object in the
+  process**, while the parsed config still came back as `{}`.  That silence is
+  what made it dangerous: nothing in the result hinted at what had happened.
+  Three further vectors went with it — a single-segment `"__proto__" { … }`
+  replaced the config object's own prototype, `${__proto__}` spliced the
+  prototype object into a resolved value, and `deepMerge` carried an *own*
+  `__proto__` property (which `JSON.parse` produces and `Object.entries`
+  reports) through into the merged result, `{ ...base }` included.
+  `__proto__`, `constructor` and `prototype` are now refused as config keys and
+  as substitution paths, with a source position like any other parse error, and
+  the exported `deepMerge` / `stripUndefined` / substitution walk filter them as
+  defence in depth for objects that arrive from plain JavaScript rather than
+  from HOCON.  The guard is exact-match, so `_proto_`, `constructorName` and
+  `prototypes` keep working.  Note the earlier `__proto__` fix (#9) hardened the
+  **JSON serializer** — the config parser was a separate, unguarded path.
+  Verified by 11 unit tests plus a cross-runtime smoke case, since how a plain
+  assignment meets the prototype setter is engine behaviour rather than library
+  behaviour.
+
 - **Cassandra journal: concurrent appends no longer silently lose events**
   (#475).  `CassandraJournal.append` did a plain read-modify-write — read the
   head from `metadata`, compare it to `expectedSeq`, then `INSERT` the events.

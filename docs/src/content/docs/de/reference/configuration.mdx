@@ -243,6 +243,30 @@ actor-ts.cluster.failure-detector.heartbeat-interval = 250ms
 Lädt `shared-cluster.conf` und legt Deinen lokalen Abschnitt
 darüber.
 
+### Reservierte Schlüssel
+
+Drei Schlüssel werden in einer Config-Quelle überall abgelehnt — als
+Schlüssel, als jedes Segment eines Pfadausdrucks und innerhalb einer
+Substitution:
+
+```hocon
+__proto__.anything = 1   # Fehler: abgelehnt
+constructor.x      = 1   # Fehler: abgelehnt
+prototype          = 1   # Fehler: abgelehnt
+value              = ${__proto__}   # Fehler: abgelehnt
+```
+
+Ein Schlüsselpfad wird auf ein einfaches Objekt expandiert, und eine
+Zuweisung an `__proto__` schreibt in den Objekt-Prototypen statt einen
+normalen Schlüssel anzulegen — würde man das zulassen, könnte eine
+Config-Datei das Verhalten *jedes* Objekts im Prozess verändern. Der
+Parser lehnt sie stattdessen mit der gewohnten Zeilen- und
+Spaltenangabe ab.
+
+Die Prüfung vergleicht exakt, ähnlich aussehende Schlüssel sind also
+unproblematisch: `_proto_`, `constructorName` und `prototypes`
+funktionieren normal.
+
 ## Config im Code lesen
 
 ```ts
