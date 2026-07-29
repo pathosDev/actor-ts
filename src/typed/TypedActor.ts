@@ -3,6 +3,7 @@ import { Actor } from '../Actor.js';
 import type { ActorRef } from '../ActorRef.js';
 import { Props } from '../Props.js';
 import { Directive } from '../Supervision.js';
+import { Terminated } from '../SystemMessages.js';
 import {
   StashOverflowError,
   type TimerScheduler,
@@ -63,6 +64,13 @@ export class TypedActor<T> extends Actor<T> {
   }
 
   override onReceive(message: T): void {
+    // A watched actor's death arrives as a user message, but it is a lifecycle
+    // signal — route it to `onSignal` before the behavior sees it.
+    if (message instanceof Terminated && this.signalHandler) {
+      this.onTerminatedSignal(message);
+      return;
+    }
+
     // Sentinels that short-circuit without running a handler:
     const shortCircuit = match(this.current)
       .with({ kind: 'ignore' }, () => true as const)
@@ -112,6 +120,43 @@ export class TypedActor<T> extends Actor<T> {
   }
 
   /* ---------------- internal ---------------- */
+
+  /**
+   * Deliver a watched actor's termination to `onSignal` as
+   * `{ kind: 'terminated', ref }`.
+   *
+   * The signal kind was declared and documented from the start but never
+   * constructed anywhere, so `onSignal` was simply never called for it: the
+   * `Terminated` that `ActorCell` enqueues went to the *receive* handler
+   * instead, typed as `T`, where a handler written against the declared
+   * protocol had no reason to look for it.
+   *
+   * Unlike `post-stop` and `pre-restart`, the returned behavior matters here —
+   * the actor keeps running afterwards, so a handler answering
+   * `Behaviors.stopped()` to a child's death has to be honoured.  Hence the
+   * same resolve-and-transition tail as `onReceive`.
+   *
+   * Only reached when a signal handler is registered; without one the message
+   * keeps flowing to the receive handler exactly as before, which keeps this
+   * change additive for existing code.  `ActorCell` delivers a `Terminated`
+   * only to an actor that is actually watching the subject, so this cannot
+   * fire for an unrelated actor's death.
+   */
+  private onTerminatedSignal(message: Terminated): void {
+    let next: Behavior<T>;
+    try {
+      next = this.signalHandler!(this.typedContext, { kind: 'terminated', ref: message.actor });
+    } catch (err) {
+      if (this.handleSupervise(err as Error)) return;
+      throw err;
+    }
+
+    if (next.kind === 'same' || next.kind === 'unhandled') return;
+    const resolved = this.resolve(next);
+    if (resolved.kind === 'same') return;
+    this.current = resolved;
+    this.maybeHandleTerminalSentinel();
+  }
 
   private handleSupervise(err: Error): boolean {
     if (!this.activeSupervise) return false;

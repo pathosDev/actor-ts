@@ -10,6 +10,8 @@ import {
 import { TestKit } from '../../../src/testkit/TestKit.js';
 import { TestKitOptions } from '../../../src/testkit/TestKitOptions.js';
 import { Directive, OneForOneStrategy } from '../../../src/Supervision.js';
+import { Terminated } from '../../../src/SystemMessages.js';
+import type { ActorRef } from '../../../src/ActorRef.js';
 
 const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
 const newSys = (name = 'typed-unit'): ActorSystem => {
@@ -389,6 +391,133 @@ describe('system.spawnTyped + ctx.spawnTyped', () => {
     // Both children received the same message — order across children is
     // not deterministic, so sort.
     expect(seen.sort()).toEqual(['hi', 'hi']);
+    await sys.terminate();
+  });
+});
+
+describe('Behaviors.receiveWithSignal — terminated signal (#448)', () => {
+  test('a watched actor stopping arrives at onSignal, not at the receive handler', async () => {
+    // The `terminated` signal kind was declared and documented from the start
+    // but constructed nowhere, so onSignal was never called for it — the
+    // Terminated went to the receive handler instead, typed as T.
+    const sys = newSys('typed-terminated');
+    const seen: string[] = [];
+    let child: ActorRef<string> | null = null;
+
+    const parent: Behavior<string> = Behaviors.setup<string>((context) => {
+      child = context.spawn(Behaviors.receiveMessage<string>(() => Behaviors.same), 'kid');
+      context.watch(child);
+      return Behaviors.receiveWithSignal<string>(
+        (_context, message) => { seen.push(`message:${message}`); return Behaviors.same; },
+        (_context, signal) => {
+          seen.push(signal.kind === 'terminated' ? `terminated:${signal.ref.path.name}` : signal.kind);
+          return Behaviors.same;
+        },
+      );
+    });
+
+    sys.spawn(typedProps(parent), 'parent');
+    await sleep(40);
+    child!.stop();
+    await sleep(60);
+
+    expect(seen).toEqual(['terminated:kid']);
+    await sys.terminate();
+  });
+
+  test('signal.ref identifies which watched actor stopped', async () => {
+    const sys = newSys('typed-terminated-which');
+    const stopped: string[] = [];
+    let first: ActorRef<string> | null = null;
+    let second: ActorRef<string> | null = null;
+
+    const parent: Behavior<string> = Behaviors.setup<string>((context) => {
+      first = context.spawn(Behaviors.receiveMessage<string>(() => Behaviors.same), 'first');
+      second = context.spawn(Behaviors.receiveMessage<string>(() => Behaviors.same), 'second');
+      context.watch(first);
+      context.watch(second);
+      return Behaviors.receiveWithSignal<string>(
+        () => Behaviors.same,
+        (_context, signal) => {
+          if (signal.kind === 'terminated') stopped.push(signal.ref.path.name);
+          return Behaviors.same;
+        },
+      );
+    });
+
+    sys.spawn(typedProps(parent), 'parent');
+    await sleep(40);
+    second!.stop();
+    await sleep(60);
+    expect(stopped).toEqual(['second']);
+
+    first!.stop();
+    await sleep(60);
+    expect(stopped).toEqual(['second', 'first']);
+
+    await sys.terminate();
+  });
+
+  test('the behavior returned from a terminated signal is honoured', async () => {
+    // Unlike post-stop and pre-restart, the actor keeps running after this
+    // signal — so answering Behaviors.stopped must actually stop it.  The docs
+    // promise the return value "works the same as the receive handler".
+    const sys = newSys('typed-terminated-transition');
+    const seen: string[] = [];
+    let child: ActorRef<string> | null = null;
+
+    const parent: Behavior<string> = Behaviors.setup<string>((context) => {
+      child = context.spawn(Behaviors.receiveMessage<string>(() => Behaviors.same), 'kid');
+      context.watch(child);
+      return Behaviors.receiveWithSignal<string>(
+        (_context, message) => { seen.push(message); return Behaviors.same; },
+        (_context, signal) => {
+          if (signal.kind === 'terminated') { seen.push('watched-child-died'); return Behaviors.stopped; }
+          if (signal.kind === 'post-stop') seen.push('post-stop');
+          return Behaviors.same;
+        },
+      );
+    });
+
+    const ref = sys.spawn(typedProps(parent), 'parent');
+    await sleep(40);
+    child!.stop();
+    await sleep(80);
+
+    // Stopping in response to the signal also fires post-stop, which shows the
+    // transition really happened rather than the signal merely being observed.
+    expect(seen).toEqual(['watched-child-died', 'post-stop']);
+
+    ref.tell('ignored — the parent stopped itself');
+    await sleep(40);
+    expect(seen).toEqual(['watched-child-died', 'post-stop']);
+
+    await sys.terminate();
+  });
+
+  test('without an onSignal handler the message still flows to the receive handler', async () => {
+    // Keeps the change additive: code written before the signal worked, which
+    // watched an actor and inspected the Terminated in its receive handler,
+    // behaves exactly as it did.
+    const sys = newSys('typed-terminated-nosignal');
+    const seen: string[] = [];
+    let child: ActorRef<string> | null = null;
+
+    const parent: Behavior<unknown> = Behaviors.setup<unknown>((context) => {
+      child = context.spawn(Behaviors.receiveMessage<string>(() => Behaviors.same), 'kid');
+      context.watch(child);
+      return Behaviors.receiveMessage<unknown>((message) => {
+        seen.push(message instanceof Terminated ? `terminated-as-message:${message.actor.path.name}` : 'other');
+        return Behaviors.same;
+      });
+    });
+
+    sys.spawn(typedProps(parent), 'parent');
+    await sleep(40);
+    child!.stop();
+    await sleep(60);
+
+    expect(seen).toEqual(['terminated-as-message:kid']);
     await sys.terminate();
   });
 });

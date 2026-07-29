@@ -473,6 +473,37 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Fixed
 
+- **A `TypedActor`'s `terminated` signal is actually delivered** (#448).
+  `Signal` declared `{ kind: 'terminated'; ref }`, the docs tabulated it
+  alongside `post-stop` and `pre-restart`, and `context.watch`'s own JSDoc
+  promised *"you'll receive a Signal when it terminates"* — but that kind was
+  **constructed nowhere in the codebase**, so `onSignal` was never called for
+  it.  The `Terminated` the runtime enqueues went to the *receive* handler
+  instead, typed as `T`, where a handler written against the documented
+  protocol had no reason to look for it.  A watched actor's death was therefore
+  invisible to every `receiveWithSignal` behavior.  It is now routed to
+  `onSignal`, and — unlike `post-stop` and `pre-restart`, where the actor is
+  going away regardless — the returned behavior is honoured, so answering
+  `Behaviors.stopped` to a child's death stops the parent as the docs promise.
+  Gated on a registered `onSignal`, so code that watched an actor and inspected
+  the `Terminated` in its receive handler is unaffected.  The path had **no test
+  coverage at all** (`receiveWithSignal` appeared in no test), which is how it
+  stayed broken; it now has four.
+
+- **A router prunes a routee that has stopped** (#449).  `Router` watched every
+  routee it spawned and then ignored the notification, so a dead routee stayed
+  in the pool and the strategy kept choosing it: under round-robin **1/N of all
+  traffic** went silently to dead letters, and every `Broadcast` lost one
+  message.  Nothing surfaced it — the router reported no error and the pool
+  still looked the right size.
+
+- **A router rejects a pool size that cannot work** (#455).  `size <= 0` (and a
+  fractional or non-finite size) produced a router whose spawn loop never ran:
+  an empty pool, every strategy returning nothing, and 100% of messages dropped
+  to dead letters with no error anywhere.  All four factories now throw
+  `OptionsError` at construction, where the stack still points at the call.
+  *Behaviour change:* previously silent, now a throw.
+
 - **`FailureDetector` thresholds: the documentation now matches the code, and a
   contradictory pair is rejected** (#452).  `downAfterMs` was documented as
   *"additional time after which an unreachable peer is declared down"*, and the
