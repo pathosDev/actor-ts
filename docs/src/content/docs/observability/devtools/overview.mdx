@@ -229,9 +229,11 @@ copy the pattern into your own app.
 Every panel keeps showing the last thing it was told — the final reading
 before a node died is usually the one worth having — so a lost
 connection would otherwise look exactly like a healthy system.  After a
-couple of seconds without an answer the UI says **No node reachable**
-across the top, dims the panel to mark the figures as frozen rather than
-live, and keeps retrying.  It clears itself when something answers again.
+couple of seconds without an answer a dialog opens saying **No node
+reachable**, counting how long that has been true, and it closes itself
+the moment something answers.  Dismiss it to read the last figures
+anyway — the panel stays dimmed while the connection is down, so they
+cannot be mistaken for live ones.
 
 Each node serves its own DevTools, so another node's port may still
 answer while the one you have open does not.

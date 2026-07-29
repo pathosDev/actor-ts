@@ -183,9 +183,10 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
     the last thing it heard — the final reading before a node died is
     usually the one worth having — which meant a dead cluster looked
     exactly like a healthy one, with only an eight-pixel badge to say
-    otherwise.  A banner now names it, the panel dims so frozen figures
-    do not read as live ones, and both clear themselves when something
-    answers again.
+    otherwise.  A dialog now interrupts and names it, counting how long
+    nothing has answered; the panel dims so frozen figures do not read as
+    live ones.  It closes itself the moment something answers, and can be
+    dismissed to read the last figures anyway.
   - The panel reads as one thing rather than three.  Corners are square
     throughout — rounded boxes made a developer tool look like a landing
     page — the per-node columns line up with their headings, uptimes

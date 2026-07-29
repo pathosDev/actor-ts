@@ -99,8 +99,7 @@ a:hover { text-decoration: underline; }
 
 /* ------------------------------- shell -------------------------------- */
 
-/* Header, the offline banner (usually absent), then the body. */
-.dt-app { display: grid; grid-template-rows: auto auto 1fr; min-height: 100vh; }
+.dt-app { display: grid; grid-template-rows: auto 1fr; min-height: 100vh; }
 
 .dt-header {
   display: flex;
@@ -148,22 +147,25 @@ a:hover { text-decoration: underline; }
 /* Room to explain an empty panel, rather than one grey line. */
 .dt-emptystate { display: flex; flex-direction: column; gap: 10px; max-width: 62ch; }
 
-/* Nothing on the other end.  Loud on purpose: every panel below is
-   still drawing the last thing it heard, which looks exactly like a
-   healthy system until something says otherwise. */
-.dt-offline {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-  padding: 12px 18px;
-  background: color-mix(in srgb, var(--dt-state-error) 16%, var(--dt-bg));
-  border-bottom: 2px solid var(--dt-state-error);
-  color: var(--dt-text-strong);
-  font-size: 13px;
+/* Nothing on the other end.  A modal rather than a strip along the top:
+   every panel behind it is still drawing the last thing it heard, which
+   looks exactly like a healthy system, and that is worth interrupting
+   for. */
+.dt-dialog {
+  border: 2px solid var(--dt-state-error);
+  background: var(--dt-bg-elevated);
+  color: var(--dt-text);
+  padding: 0;
+  max-width: 60ch;
+  box-shadow: 0 8px 32px rgb(0 0 0 / 45%);
 }
-.dt-offline strong { color: var(--dt-state-error); }
-.dt-offline__hint { color: var(--dt-text-muted); }
-/* Frozen figures should not read as live ones. */
+.dt-dialog::backdrop { background: rgb(0 0 0 / 55%); }
+.dt-dialog__body { padding: 20px 22px 4px; display: flex; flex-direction: column; gap: 10px; }
+.dt-dialog__body p { margin: 0; font-size: 13.5px; }
+.dt-dialog__title { margin: 0; font-size: 17px; color: var(--dt-state-error); }
+.dt-dialog__hint { color: var(--dt-text-muted); }
+.dt-dialog__actions { display: flex; justify-content: flex-end; padding: 14px 22px 18px; }
+/* Frozen figures should not read as live ones once the dialog is gone. */
 .dt-app--offline .dt-panel { opacity: 0.55; }
 
 .dt-body { display: grid; grid-template-columns: 208px 1fr; min-height: 0; }
