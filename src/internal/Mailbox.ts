@@ -59,6 +59,23 @@ export class Mailbox<T = unknown> {
     return this.userQueue.shift();
   }
 
+  /**
+   * Remove the oldest user message, regardless of suspension.
+   *
+   * `dequeueUser` refuses while suspended, and rightly so — a suspended actor
+   * must not be handed work.  Making room in a full queue is a different
+   * question: it is not delivery, and a bounded mailbox that quietly stops
+   * enforcing its bound while the actor is suspended is unbounded exactly when
+   * the bound matters most, since suspension means the actor has failed and is
+   * awaiting its parent's supervision decision while messages keep arriving.
+   *
+   * Returns `undefined` only when the queue is already empty, which lets the
+   * caller distinguish a real drop from a no-op.
+   */
+  protected removeOldest(): Envelope<T> | undefined {
+    return this.userQueue.shift();
+  }
+
   dequeueSystem(): Envelope<unknown> | undefined {
     return this.systemQueue.shift();
   }

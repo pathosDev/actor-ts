@@ -13,7 +13,7 @@ stateDiagram-v2
   [*] --> healthy
   healthy --> unreachable: kein Heartbeat für unreachableAfterMs
   unreachable --> healthy: Heartbeat empfangen
-  unreachable --> down: kein Heartbeat für weitere downAfterMs
+  unreachable --> down: Stille erreicht insgesamt downAfterMs
   down --> [*]: entfernt (empfohlen)
   classDef ok   fill:#312e81,stroke:#818cf8,color:#f1f5f9;
   classDef warn fill:#7c2d12,stroke:#fb923c,color:#fed7aa;

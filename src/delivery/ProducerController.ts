@@ -48,8 +48,17 @@ export class ProducerController<T> extends Actor<ProducerSend<T> | Acknowledgmen
     this.windowSize = resolvedOptions.windowSize ?? 16;
   }
 
+  /**
+   * Both queues owe their caller a settlement.  In-flight sends used to get
+   * only their resend timer cancelled — so a caller awaiting `confirm` was
+   * never told the producer had stopped and simply hung, which is the one
+   * outcome a confirmation callback exists to prevent.
+   */
   override postStop(): void {
-    for (const inflight of this.inflight.values()) inflight.timer?.cancel();
+    for (const inflight of this.inflight.values()) {
+      inflight.timer?.cancel();
+      inflight.confirm?.(new Error('producer stopped'));
+    }
     for (const pending of this.pending) pending.confirm?.(new Error('producer stopped'));
     this.pending.length = 0;
     this.inflight.clear();

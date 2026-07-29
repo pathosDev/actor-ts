@@ -25,6 +25,44 @@ describe('BoundedMailbox — overflow policies', () => {
     expect(mbox.droppedCount).toBe(2);
   });
 
+  test('drop-head still enforces the bound while suspended — #407', () => {
+    const mbox = new BoundedMailbox<string>({ capacity: 3, overflow: 'drop-head' });
+    for (const s of ['a', 'b', 'c']) mbox.enqueue({ message: s, sender: null });
+    expect(mbox.size).toBe(3);
+
+    // Suspension is the supervision window — the actor has failed and is
+    // waiting on its parent's decision while messages keep arriving, which is
+    // when a bound matters most.  `dequeueUser` refuses while suspended, so
+    // the drop-head arm used to remove nothing, grow the queue past capacity,
+    // and count the phantom drop anyway.
+    mbox.suspend();
+    for (const s of ['d', 'e', 'f']) mbox.enqueue({ message: s, sender: null });
+    expect(mbox.size).toBe(3);
+
+    mbox.resume();
+    expect(mbox.drainUser().map(e => e.message)).toEqual(['d', 'e', 'f']);
+  });
+
+  test('drop-head counts only drops that really happened — #407', () => {
+    // droppedCount and onDrop feed actor_mailbox_dropped_total, so they have to
+    // match the number of messages actually evicted, suspended or not.
+    const drops: string[] = [];
+    const mbox = new BoundedMailbox<string>({
+      capacity: 2,
+      overflow: 'drop-head',
+      onDrop: (reason) => drops.push(reason),
+    });
+    for (const s of ['a', 'b']) mbox.enqueue({ message: s, sender: null });
+    mbox.suspend();
+    for (const s of ['c', 'd', 'e']) mbox.enqueue({ message: s, sender: null });
+    mbox.resume();
+
+    const survivors = mbox.drainUser().map(e => e.message);
+    expect(survivors).toEqual(['d', 'e']);
+    expect(mbox.droppedCount).toBe(3);
+    expect(drops).toEqual(['drop-head', 'drop-head', 'drop-head']);
+  });
+
   test('drop-new discards the incoming message when full', () => {
     const mbox = new BoundedMailbox<string>({ capacity: 2, overflow: 'drop-new' });
     for (const s of ['a', 'b', 'c', 'd']) mbox.enqueue({ message: s, sender: null });
