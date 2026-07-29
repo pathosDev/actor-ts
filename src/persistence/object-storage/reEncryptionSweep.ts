@@ -33,6 +33,7 @@ import {
 } from './BodyCodec.js';
 import { deriveSubkey } from './Encryption.js';
 import type { ObjectStorageBackend } from './ObjectStorageBackend.js';
+import { makeKeyValidator } from '../storage/KeyValidator.js';
 
 const ATS1_MAGIC_PREFIX = new Uint8Array([0x41, 0x54, 0x53, 0x31]); // "ATS1"
 
@@ -157,7 +158,7 @@ export interface ReEncryptProgress {
   readonly key: string;
   readonly index: number;
   readonly total: number;
-  readonly action: 'rewrote' | 'skipped-current' | 'skipped-unencrypted' | 'skipped-non-ats1';
+  readonly action: 'rewrote' | 'skipped-current' | 'skipped-unencrypted' | 'skipped-non-ats1' | 'skipped-malformed-key';
 }
 
 export interface ReEncryptResult {
@@ -174,6 +175,18 @@ export interface ReEncryptResult {
   readonly skippedUnencrypted: number;
   /** Objects skipped because they aren't `ATS1`-framed (e.g. raw user blobs). */
   readonly skippedNonAts1: number;
+  /**
+   * Objects skipped because their key could not yield a usable persistence id.
+   *
+   * Keys come from the store's `list()`, i.e. from the bucket rather than from
+   * us, and the sweep derives its HKDF salt from the key.  Since it then
+   * *rewrites* the body, a key that yields the wrong salt would not merely fail
+   * — it would re-encrypt data under a salt the owning store never reproduces,
+   * leaving it permanently undecryptable.  Such keys are skipped instead, and
+   * a non-zero count here is worth investigating: nothing the framework writes
+   * produces one.
+   */
+  readonly skippedMalformedKey: number;
 }
 
 /**
@@ -213,6 +226,7 @@ export async function reEncryptObjectStorage(
     skippedCurrent: 0,
     skippedUnencrypted: 0,
     skippedNonAts1: 0,
+    skippedMalformedKey: 0,
   };
   const activeVersion = options.keyring.active.version;
   if (!Number.isInteger(activeVersion) || activeVersion < 0 || activeVersion > 255) {
@@ -277,6 +291,14 @@ export async function reEncryptObjectStorage(
     const item = items[index]!;
     if (options.skip?.(item.key)) continue;
     result.scanned += 1;
+
+    // Validate before fetching: the key decides the HKDF salt, and a rewrite
+    // under the wrong salt is unrecoverable.  See `skippedMalformedKey`.
+    if (!isUsableSweepKey(item.key, options.keyPrefix, persistenceIdFromKey)) {
+      result.skippedMalformedKey += 1;
+      options.onProgress?.({ key: item.key, index, total, action: 'skipped-malformed-key' });
+      continue;
+    }
 
     const fetched = await backend.get(item.key);
     if (fetched.isNone()) {
@@ -379,6 +401,43 @@ function startsWithAts1(buffer: Uint8Array): boolean {
  * decrypt + re-encrypt time, so it MUST match what the original
  * write site used.
  */
+/**
+ * Key-level rules shared with the storage backends.  Reused rather than
+ * re-stated so the sweep cannot drift from the front-line validator; control
+ * characters and NUL in a key that came out of a bucket mean the key was not
+ * written by this framework.
+ */
+const assertSweepKeyShape = makeKeyValidator({
+  errorClass: Error,
+  errorPrefix: 'reEncryptObjectStorage: key',
+  rejectControlChars: true,
+});
+
+/**
+ * True when `key` can be swept safely.
+ *
+ * Two independent checks.  The shared validator covers the key's own shape.
+ * The second is specific to what the sweep *does* with the key: the extracted
+ * persistence id becomes the HKDF salt, so an empty or whitespace-only id
+ * would derive a subkey that the owning store never uses — and because the
+ * sweep rewrites the body afterwards, that is silent, permanent data loss
+ * rather than a failed read.  A custom `pidFromKey` is covered too, since the
+ * check runs on its output.
+ */
+function isUsableSweepKey(
+  key: string,
+  keyPrefix: string,
+  pidFromKey: (key: string, keyPrefix: string) => string,
+): boolean {
+  try {
+    assertSweepKeyShape(key);
+  } catch {
+    return false;
+  }
+  const persistenceId = pidFromKey(key, keyPrefix);
+  return typeof persistenceId === 'string' && persistenceId.trim().length > 0;
+}
+
 function defaultPidFromKey(key: string, keyPrefix: string): string {
   let start = 0;
   if (key.startsWith(keyPrefix)) start = keyPrefix.length;

@@ -741,6 +741,42 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Security
 
+- **A rejected CAS no longer wedges an object-storage durable-state entry**
+  (#117).  When the backend refused a `put` on a stale `If-Match`, the store
+  threw the concurrency error but **kept the rejected etag cached** — and that
+  cache is what the next `If-Match` is built from.  So every retry re-sent the
+  etag the backend had just rejected and failed identically, and worse, the
+  up-front revision check answered from the same stale cache, reporting a
+  revision that was no longer the truth.  The entry stayed stuck until
+  something happened to call `load` or `delete`.  The etag is now dropped on
+  rejection, which routes the retry into the refresh-and-recover path that
+  already existed for a cache wiped by a restart.
+
+- **The re-encryption sweep validates keys it gets from `list()`** (#123).  Keys
+  come from the bucket, not from the framework, and the sweep derives its HKDF
+  salt from the key — then **rewrites the body**.  A key that yielded no usable
+  persistence id (empty, or one carrying control characters) therefore did not
+  merely fail to decrypt: it would re-encrypt data under a salt the owning store
+  never reproduces, leaving it permanently undecryptable.  Such keys are now
+  skipped before being fetched and reported in the new
+  `ReEncryptResult.skippedMalformedKey` — a non-zero count is worth
+  investigating, because nothing the framework writes produces one.  The
+  key-shape rules are the shared `makeKeyValidator` ones, so the sweep cannot
+  drift from the storage backends.
+
+- **`safeStringify` for error paths** (#146).  `ClusterClient.handleReply` built
+  its rejection message with a bare `JSON.stringify` on a body received from the
+  cluster.  Worth stating precisely, because the issue title overstates it:
+  wire bodies arrive as parsed JSON and so **cannot** be circular, and
+  `JSON.stringify` throws rather than hangs.  The real defects were that
+  `handleReply` was not wrapped, so any throw escaped into the socket decoder
+  loop and abandoned **every remaining frame in the same batch** — leaving those
+  asks to time out — and that the guarantee rested on the frame codec staying
+  JSON-only.  A new `src/util/SafeStringify.ts` renders cycles, `BigInt`,
+  functions, symbols and throwing getters without ever throwing, and caps its
+  output so a large body cannot become a large message; the reply handler is now
+  wrapped so one bad frame cannot take its batch with it.
+
 - **A TCP socket's nested framing caps are validated** (#372).
   `TcpSocketOptionsValidator` checked `host` and `port` but never looked inside
   `framing`, where both inbound size limits live — and those are DoS caps: a

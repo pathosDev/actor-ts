@@ -40,6 +40,7 @@
 import { getTcpBackend, type TcpSocketLike, type TlsTransportOptionsType } from '../runtime/tcp/index.js';
 import { ConsoleLogger, LogLevel, type Logger } from '../Logger.js';
 import { DEFAULT_ASK_TIMEOUT_MS } from '../util/Constants.js';
+import { safeStringify } from '../util/SafeStringify.js';
 import { NodeAddress, type NodeAddressData } from './NodeAddress.js';
 import { encodeFrame, FrameDecoder, type WireMessage, type HelloMessage, type HelloAcknowledgmentMessage } from './Protocol.js';
 import type {
@@ -280,7 +281,16 @@ export class ClusterClient {
       }
       const frameType = (frame as { t: string }).t;
       if (frameType === 'cluster-client-reply') {
-        this.handleReply(frame as unknown as ClusterClientReplyMessage);
+        // Contained on purpose.  `push` returns a *batch* of frames, so a throw
+        // from one reply used to abandon the rest of the batch — every later
+        // frame in the same chunk was dropped, and the asks they would have
+        // settled were left to time out instead.  One malformed reply must not
+        // take the others with it.
+        try {
+          this.handleReply(frame as unknown as ClusterClientReplyMessage);
+        } catch (e) {
+          this.log.warn(`ClusterClient: failed to handle a reply frame: ${e instanceof Error ? e.message : String(e)}`);
+        }
         continue;
       }
       this.log.debug(`ClusterClient: ignoring unsolicited frame type "${frameType}"`);
@@ -296,8 +306,15 @@ export class ClusterClient {
     if (reply.ok) {
       pending.resolve(reply.body);
     } else {
+      // `safeStringify` rather than `JSON.stringify`: this builds the message
+      // for an error that already happened, and a throw from here would
+      // replace it with an unrelated one raised inside the reporting code.
+      // Wire bodies arrive as parsed JSON today, so they cannot be circular —
+      // but this is the one place the framework re-stringifies data it
+      // received rather than data it authored, and the guarantee should not
+      // depend on the frame codec staying JSON-only.
       pending.reject(new Error(
-        typeof reply.body === 'string' ? reply.body : JSON.stringify(reply.body),
+        typeof reply.body === 'string' ? reply.body : safeStringify(reply.body),
       ));
     }
   }
