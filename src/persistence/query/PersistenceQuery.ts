@@ -205,6 +205,34 @@ export function normalizeTagFilter(filter: TagFilter): TagFilterSpec {
 }
 
 /**
+ * A stable string key identifying a {@link TagFilter}, for use as a projection
+ * cursor key.
+ *
+ * A bare string maps to **itself**, unchanged — that matters more than it
+ * looks: the by-tag projection uses this as its `OffsetStore` key, so any other
+ * mapping would orphan every cursor already persisted and silently replay each
+ * deployed projection from the beginning.
+ *
+ * Object filters get a canonical form with each operator's tags sorted, so two
+ * filters that mean the same thing share one cursor however they were written.
+ * Not a hash: a readable key is worth more than a short one in an offset table
+ * an operator has to inspect.
+ */
+export function tagFilterCursorKey(filter: TagFilter): string {
+  if (typeof filter === 'string') return filter;
+  const operator = (name: string, tags: ReadonlyArray<string> | undefined): string =>
+    tags !== undefined && tags.length > 0 ? `${name}(${[...tags].sort().join(',')})` : '';
+  const parts = [
+    operator('all', filter.all),
+    operator('any', filter.any),
+    operator('not', filter.not),
+  ].filter(part => part.length > 0);
+  // `{}` matches everything; give it a name rather than an empty key, which
+  // would collide with a projection whose tag was the empty string.
+  return parts.length > 0 ? parts.join('+') : 'all-events';
+}
+
+/**
  * Test whether `eventTags` satisfies `filter`.  Used by every
  * `PersistenceQuery` implementation as the in-memory refinement step
  * after the storage layer's coarse pre-filter.  Empty `all` / `not`

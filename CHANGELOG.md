@@ -20,6 +20,57 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   written for applications; the free-port probe binds the same interface it is
   asking about, and a wildcard bind (`0.0.0.0`, `::`) is reported as a loopback
   URL because `http://0.0.0.0:9333` is not an address a browser can open.
+- **`SqliteDurableStateStore`** (#392) — the last gap in the backend matrix.
+  SQLite shipped a journal and a snapshot store but no durable state, so it was
+  the only family whose three-component set was incomplete;
+  `LibSqlDurableStateStore` covered the remote case and said so in its own
+  JSDoc.  The schema is the SQLite dialect's, identical to libSQL/Turso and
+  Cloudflare D1, so a database moves between a local file and either without a
+  migration.
+  The enabling piece is a new **`SqliteClient`** — a `SqlPool` adapter over the
+  local driver.  Local SQLite was the one family without one, because
+  `SqliteJournal` predates the relational base layer and drives `SqliteDb`
+  directly while every other backend has an `XClient.ts`.  Two things made it
+  more than a wrapper.  The driver is **synchronous and split** — `.all()`
+  returns rows, `.run()` returns `changes`, and asking for the wrong one throws
+  on `better-sqlite3` — so statements are classified before they run.  And its
+  transactions are **real**, which means they need serializing: one `SqliteDb`
+  is one connection, so without a queue a second `withTransaction` could issue
+  its `BEGIN` while the first was still awaiting, collapsing the two into one
+  transaction that commits early.
+  Because it talks to a file rather than over HTTP, `withTransaction` is a
+  genuine `BEGIN IMMEDIATE … COMMIT`.  `SqlPool` specifies isolation as
+  adapter-defined so the HTTP-fronted stores can offer *less*; this one offers
+  more than the contract requires.  `IMMEDIATE` rather than the default
+  deferred, so a read-then-write sequence cannot fail to upgrade its lock
+  partway through.  A remote URL is refused at construction with a pointer to
+  `LibSqlDurableStateStore`, since the local driver cannot open one and
+  silently creating a *file* by that name is the confusing outcome.
+  It is also the first durable-state harness in the shared contract suite to run
+  against a **real SQL engine** rather than a fake — an in-memory database needs
+  no container.
+  Follow-ons filed rather than left implicit: **#491** (collapse `SqliteJournal`
+  onto `RelationalJournal`, now possible) and **#490** (the Cassandra-LWT half of
+  #392).
+
+- **A by-tag projection accepts a full `TagFilter`** (#393).  The query layer has
+  supported `all` / `any` / `not` since it was written, but a projection was the
+  one consumer still limited to a single tag string — so "every order that is not
+  cancelled" needed a hand-rolled projection instead of a filter.
+  `ByTagProjectionOptions.withTag` now takes either.  A bare string keeps working
+  *and keeps its exact cursor*: `OffsetStore` is keyed by string, so the new
+  `tagFilterCursorKey` maps a plain string to itself — any other mapping would
+  have orphaned every persisted cursor and silently replayed each deployed
+  projection from the beginning.  Object filters get a canonical key with each
+  operator's tags sorted, so two filters that mean the same thing share one
+  cursor however they were written.
+
+- **`close?()` on `DurableStateStore`** (#393).  `Journal` and `SnapshotStore`
+  have carried a teardown hook since they were written; durable state was the one
+  contract of the three without it, even though its implementations hold the same
+  kind of resource — a connection pool, an HTTP client, a file handle.  The
+  remaining #393 items are tracked as **#493**.
+
 - **Cloudflare D1 persistence backend** (#438) — `D1Journal`, `D1SnapshotStore`
   and `D1DurableStateStore`, completing the umbrella's five backends.  Spoken over
   D1's REST API with the framework's own `HttpClient`, so it adds **no dependency

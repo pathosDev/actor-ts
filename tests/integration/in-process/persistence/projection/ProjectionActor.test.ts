@@ -25,6 +25,7 @@ import {
   InMemoryOffsetStore,
 } from '../../../../../src/persistence/projection/OffsetStore.js';
 import { InMemoryQuery } from '../../../../../src/persistence/query/InMemoryQuery.js';
+import { tagFilterCursorKey } from '../../../../../src/persistence/query/PersistenceQuery.js';
 import { offsetStart } from '../../../../../src/persistence/query/PersistenceQuery.js';
 import { InMemoryDurableStateStore } from '../../../../../src/persistence/durable-state-stores/InMemoryDurableStateStore.js';
 
@@ -288,6 +289,71 @@ describe('ProjectionActor — concurrent writers', () => {
         expect(set.has(`${persistenceId}:${i}`)).toBe(true);
       }
     }
+
+    ref.stop();
+    await sys.terminate();
+  });
+});
+
+describe('byTag projection — TagFilter support (#393)', () => {
+  test('a filter object selects events, not just a single tag', () => {
+    // The query layer has supported all/any/not since it was written; a
+    // projection was the one consumer still limited to one tag string, so
+    // "every order that is not cancelled" needed a hand-rolled projection.
+    expect(tagFilterCursorKey({ all: ['orders'], not: ['cancelled'] })).toBe('all(orders)+not(cancelled)');
+  });
+
+  test('a bare string keeps its exact cursor key', async () => {
+    // The load-bearing property.  The by-tag projection uses this as its
+    // OffsetStore key, so any other mapping for a plain string would orphan
+    // every cursor already persisted and silently replay each deployed
+    // projection from the beginning.
+    expect(tagFilterCursorKey('orders')).toBe('orders');
+    expect(tagFilterCursorKey('')).toBe('');
+  });
+
+  test('equivalent filters share one cursor key regardless of how they are written', () => {
+    expect(tagFilterCursorKey({ all: ['b', 'a'] })).toBe(tagFilterCursorKey({ all: ['a', 'b'] }));
+    expect(tagFilterCursorKey({ any: ['x'], all: ['y'] })).toBe(tagFilterCursorKey({ all: ['y'], any: ['x'] }));
+  });
+
+  test('distinct filters get distinct cursor keys', () => {
+    const keys = new Set([
+      tagFilterCursorKey('orders'),
+      tagFilterCursorKey({ all: ['orders'] }),
+      tagFilterCursorKey({ any: ['orders'] }),
+      tagFilterCursorKey({ all: ['orders'], not: ['cancelled'] }),
+      tagFilterCursorKey({}),
+    ]);
+    expect(keys.size).toBe(5);
+  });
+
+  test('the match-everything filter gets a name rather than an empty key', () => {
+    // An empty key would collide with a projection whose tag is the empty string.
+    expect(tagFilterCursorKey({})).toBe('all-events');
+    expect(tagFilterCursorKey({})).not.toBe(tagFilterCursorKey(''));
+  });
+
+  test('a not-filter projection skips the excluded events end to end', async () => {
+    const journal = new InMemoryJournal();
+    await journal.append('a', [{ s: 'kept' }], 0, ['orders']);
+    await sleep(2);
+    await journal.append('b', [{ s: 'dropped' }], 0, ['orders', 'cancelled']);
+    await sleep(2);
+    await journal.append('c', [{ s: 'kept-2' }], 0, ['orders']);
+
+    const sys = newSystem('proj-tag-filter');
+    const seen: string[] = [];
+    const projectionOptions = ByTagProjectionOptions.create<{ s: string }>()
+      .withName('tag-filter')
+      .withQuery(new InMemoryQuery(journal))
+      .withTag({ all: ['orders'], not: ['cancelled'] })
+      .withHandle((ev) => { seen.push(ev.event.s); })
+      .withLiveOptions({ pollIntervalMs: 30 });
+    const ref = ProjectionActor.byTag<{ s: string }>(sys, projectionOptions);
+
+    await waitFor(() => seen.length === 2);
+    expect(seen).toEqual(['kept', 'kept-2']);
 
     ref.stop();
     await sys.terminate();
