@@ -473,6 +473,19 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Fixed
 
+- **Stopping a `ProducerController` no longer leaves in-flight callers hanging
+  forever** (#451).  `postStop` settled the *queued* sends — every waiting
+  caller got `Error('producer stopped')` — but for in-flight sends it cancelled
+  the resend timer and dropped the confirmation callback on the floor.  So a
+  caller whose message had already gone out to the consumer and was awaiting an
+  acknowledgment was never called back at all: not with success, not with
+  failure. Since a confirmation callback exists precisely to guarantee an
+  eventual answer, that is the one outcome it must never produce.  Both
+  collections are now drained the same way.  Note the window makes this the
+  *common* case rather than the rare one: with the default `windowSize` of 16,
+  the first 16 unacknowledged sends are all in-flight, and only the 17th
+  onwards would have been settled correctly.
+
 - **The DevTools uptime counter stops when nothing answers.**  Every
   other figure on the overview stands still of its own accord once the
   samples stop, because it is a number somebody sent us — uptime was the
