@@ -179,6 +179,13 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
     stays on screen for 30 seconds**, greyed out and red, before it is
     swept: the actor worth looking at is usually the one that just died,
     and removing its row on the spot meant you never saw it.
+  - **The UI says when nothing is answering.**  Every panel keeps drawing
+    the last thing it heard — the final reading before a node died is
+    usually the one worth having — which meant a dead cluster looked
+    exactly like a healthy one, with only an eight-pixel badge to say
+    otherwise.  A banner now names it, the panel dims so frozen figures
+    do not read as live ones, and both clear themselves when something
+    answers again.
   - The panel reads as one thing rather than three.  Corners are square
     throughout — rounded boxes made a developer tool look like a landing
     page — the per-node columns line up with their headings, uptimes

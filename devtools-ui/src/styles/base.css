@@ -99,7 +99,8 @@ a:hover { text-decoration: underline; }
 
 /* ------------------------------- shell -------------------------------- */
 
-.dt-app { display: grid; grid-template-rows: auto 1fr; min-height: 100vh; }
+/* Header, the offline banner (usually absent), then the body. */
+.dt-app { display: grid; grid-template-rows: auto auto 1fr; min-height: 100vh; }
 
 .dt-header {
   display: flex;
@@ -146,6 +147,24 @@ a:hover { text-decoration: underline; }
 
 /* Room to explain an empty panel, rather than one grey line. */
 .dt-emptystate { display: flex; flex-direction: column; gap: 10px; max-width: 62ch; }
+
+/* Nothing on the other end.  Loud on purpose: every panel below is
+   still drawing the last thing it heard, which looks exactly like a
+   healthy system until something says otherwise. */
+.dt-offline {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 12px 18px;
+  background: color-mix(in srgb, var(--dt-state-error) 16%, var(--dt-bg));
+  border-bottom: 2px solid var(--dt-state-error);
+  color: var(--dt-text-strong);
+  font-size: 13px;
+}
+.dt-offline strong { color: var(--dt-state-error); }
+.dt-offline__hint { color: var(--dt-text-muted); }
+/* Frozen figures should not read as live ones. */
+.dt-app--offline .dt-panel { opacity: 0.55; }
 
 .dt-body { display: grid; grid-template-columns: 208px 1fr; min-height: 0; }
 
