@@ -134,16 +134,16 @@ function refineAndSort<E>(
   });
 }
 
-interface TagIndexRow {
+type TagIndexRow = {
   persistence_id: string;
   sequence_nr: string | number;
   timestamp: string | number;
   payload: string;
   tags: string[] | null;
-}
+};
 
 /** Type-only escape hatch matching the layout of `CassandraJournal`'s privates. */
-interface CassandraInternalAccess {
+type CassandraInternalAccess = {
   readonly client: CassandraClientLike;
   readonly options: { readonly keyspace: string };
-}
+};

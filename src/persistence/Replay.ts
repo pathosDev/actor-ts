@@ -16,7 +16,7 @@ import type { EventAdapter, SnapshotAdapter } from './migration/Adapter.js';
 import { decodeEvent, decodeState } from './migration/Envelope.js';
 
 /** Everything a replay needs.  No `ActorSystem` and no actor instance. */
-export interface ReplayRequest<Event, State> {
+export type ReplayRequest<Event, State> = {
   readonly journal: Journal;
   /** Omit to fold from sequence 1 without a snapshot fast-path. */
   readonly snapshotStore?: SnapshotStore;
@@ -33,17 +33,17 @@ export interface ReplayRequest<Event, State> {
   readonly eventAdapter?: EventAdapter<Event>;
   readonly snapshotAdapter?: SnapshotAdapter<State>;
   readonly persistenceOptions?: PersistenceOptions;
-}
+};
 
 /** Outcome of a replay. */
-export interface ReplayResult<State> {
+export type ReplayResult<State> = {
   readonly state: State;
   /** Sequence number the state corresponds to; `0` when nothing applied. */
   readonly sequenceNr: number;
   /** Snapshot the fold started from, or `null` for a full replay. */
   readonly fromSnapshotSequenceNr: number | null;
   readonly eventsApplied: number;
-}
+};
 
 /**
  * Rejected because a snapshot's claimed sequence number cannot be

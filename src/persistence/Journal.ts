@@ -7,7 +7,7 @@ import type { PersistentEvent } from './JournalTypes.js';
  * interface is deliberately narrow so third-party plug-ins (Cassandra,
  * ScyllaDB, Postgres, …) only have to implement four methods.
  */
-export interface Journal {
+export type Journal = {
   /**
    * Append `events` to the stream of `persistenceId`, enforcing optimistic
    * concurrency: the current highest sequence number MUST equal `expectedSeq`
@@ -52,4 +52,4 @@ export interface Journal {
 
   /** Best-effort teardown; idempotent. */
   close?(): Promise<void>;
-}
+};

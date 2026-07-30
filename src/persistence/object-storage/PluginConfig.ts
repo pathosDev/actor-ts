@@ -48,9 +48,9 @@ export type IntegrityResolver = (persistenceId: string) => IntegrityConfig | und
  */
 const KNOWN_CONFIGS = Symbol.for('actor-ts.persistence.resolverKnownConfigs');
 
-export interface ResolverWithKnownConfigs<T> {
+export type ResolverWithKnownConfigs<T> = {
   readonly [KNOWN_CONFIGS]?: ReadonlyArray<T>;
-}
+};
 
 export const RESOLVER_KNOWN_CONFIGS_SYMBOL = KNOWN_CONFIGS;
 

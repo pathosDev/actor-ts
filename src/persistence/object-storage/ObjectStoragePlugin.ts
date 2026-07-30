@@ -41,7 +41,7 @@ export type ObjectStorageBackendSpec =
     }
   | { readonly kind: 'custom'; readonly backend: ObjectStorageBackend };
 
-export interface ObjectStoragePluginHandles {
+export type ObjectStoragePluginHandles = {
   /** The shared backend — both stores write through this. */
   readonly backend: ObjectStorageBackend;
   /**
@@ -57,7 +57,7 @@ export interface ObjectStoragePluginHandles {
    * `close()` — the caller invokes this on shutdown instead (idempotent).
    */
   close(): Promise<void>;
-}
+};
 
 /**
  * Register the object-storage SnapshotStore against `PersistenceExtension`

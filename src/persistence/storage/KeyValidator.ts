@@ -25,7 +25,7 @@
  * caught.  Adversarial test cases live alongside each backend.
  */
 
-export interface KeyValidationRules {
+export type KeyValidationRules = {
   /** Error constructor used for every thrown rejection. */
   readonly errorClass: new (message: string) => Error;
   /**
@@ -67,7 +67,7 @@ export interface KeyValidationRules {
    * the tree on `path.resolve()`.  Default: false.
    */
   readonly rejectRelativeTraversal?: boolean;
-}
+};
 
 /**
  * Build a key-validator function from a rule set.  Returns

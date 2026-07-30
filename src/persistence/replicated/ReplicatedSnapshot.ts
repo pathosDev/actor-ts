@@ -29,7 +29,7 @@ import type { VectorClockData } from './VectorClock.js';
  *     last event accounted for by `events`.  Recovery reads from
  *     `journalSeqAtSnapshot + 1` — that's where the I/O win comes from.
  */
-export interface ReplicatedSnapshot<E, S> {
+export type ReplicatedSnapshot<E, S> = {
   readonly state: S;
   readonly vc: VectorClockData;
   readonly seenIds: ReadonlyArray<string>;
@@ -40,4 +40,4 @@ export interface ReplicatedSnapshot<E, S> {
   readonly takenBy: ReplicaId;
   /** Wall-clock time the snapshot was written — informational. */
   readonly takenAt: number;
-}
+};
