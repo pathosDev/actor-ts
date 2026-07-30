@@ -14,12 +14,12 @@
 
 export type RuntimeKind = 'bun' | 'node' | 'deno';
 
-interface GlobalShape {
+type GlobalShape = {
   readonly Bun?: { nanoseconds?: () => number } & Record<string, unknown>;
   readonly Deno?: Record<string, unknown>;
   readonly process?: { versions?: { node?: string; bun?: string; deno?: string } };
   readonly performance?: { now(): number };
-}
+};
 
 const globalScope: GlobalShape = globalThis as unknown as GlobalShape;
 

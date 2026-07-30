@@ -48,6 +48,11 @@ export class NodeWorkerBackend implements WorkerBackend {
 
 /* ----------------------------- internals --------------------------------- */
 
+/**
+ * Stays an `interface` against the project-wide `type` rule: the `on` / `off`
+ * overloads mirror Node's `EventEmitter` and return the polymorphic `this`,
+ * which TS allows only in a class or interface body (TS2526).
+ */
 interface NodeWorkerThread {
   postMessage(v: unknown, transfer?: unknown[]): void;
   on(event: 'message', listener: (data: unknown) => void): this;

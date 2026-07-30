@@ -5,7 +5,7 @@ import type { LogLevel } from '../Logger.js';
 type AddressMap = Readonly<Record<string, { host: string; port: number }>>;
 
 /** Plain options-object shape accepted by a {@link ParallelMultiNodeSpec}. */
-export interface ParallelMultiNodeSpecOptionsType {
+export type ParallelMultiNodeSpecOptionsType = {
   readonly roles: ReadonlyArray<string>;
   readonly seedRoles?: ReadonlyArray<string>;
   /** URL of the scenario module loaded in each worker.  Optional. */
@@ -19,7 +19,7 @@ export interface ParallelMultiNodeSpecOptionsType {
   readonly logLevel?: LogLevel;
   /** URL of the bootstrap script.  Defaults to the bundled one. */
   readonly bootstrapModule?: URL;
-}
+};
 
 /** Fluent builder for {@link ParallelMultiNodeSpecOptionsType}. */
 export class ParallelMultiNodeSpecOptionsBuilder extends OptionsBuilder<ParallelMultiNodeSpecOptionsType> {

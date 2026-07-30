@@ -146,23 +146,23 @@ function isClosedListener(err: unknown): boolean {
   return /closed|Bad resource/i.test(message);
 }
 
-interface DenoConnection {
+type DenoConnection = {
   readonly readable: ReadableStream<Uint8Array>;
   readonly writable: WritableStream<Uint8Array>;
   readonly remoteAddr?: { hostname?: string; port?: number };
   close(): void;
-}
+};
 
-interface DenoListener extends AsyncIterable<DenoConnection> {
+type DenoListener = AsyncIterable<DenoConnection> & {
   readonly addr: { port?: number };
   close(): void;
-}
+};
 
-interface DenoGlobal {
+type DenoGlobal = {
   listen(options: { hostname: string; port: number; transport: 'tcp' }): DenoListener;
   listenTls(options: { hostname: string; port: number; cert: string; key: string }): DenoListener;
   connect(options: { hostname: string; port: number; transport: 'tcp' }): Promise<DenoConnection>;
   connectTls(options: {
     hostname: string; port: number; caCerts?: string[]; hostname_?: string;
   }): Promise<DenoConnection>;
-}
+};

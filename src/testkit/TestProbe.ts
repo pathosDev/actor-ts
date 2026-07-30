@@ -4,10 +4,10 @@ import type { ActorSystem } from '../ActorSystem.js';
 import { TestProbeOptionsValidator } from './TestProbeOptions.js';
 import type { TestProbeOptions, TestProbeOptionsType } from './TestProbeOptions.js';
 
-interface Pending {
+type Pending = {
   readonly message: unknown;
   readonly sender: ActorRef | null;
-}
+};
 
 let probeCounter = 0;
 

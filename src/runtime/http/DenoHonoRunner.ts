@@ -54,14 +54,14 @@ export class DenoHonoRunner implements HonoServerRunner {
   }
 }
 
-interface DenoHttpServer {
+type DenoHttpServer = {
   readonly finished: Promise<void>;
   shutdown?(): Promise<void>;
-}
+};
 
-interface DenoGlobal {
+type DenoGlobal = {
   serve(
     options: { hostname: string; port: number; signal?: AbortSignal },
     handler: FetchHandler,
   ): DenoHttpServer;
-}
+};

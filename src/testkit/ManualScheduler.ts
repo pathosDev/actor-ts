@@ -1,14 +1,14 @@
 import type { ActorRef } from '../ActorRef.js';
 import { Scheduler, type Cancellable } from '../Scheduler.js';
 
-interface Task {
+type Task = {
   id: number;
   fireAt: number;
   fn: () => void;
   cancelled: boolean;
   /** If set, the task re-enqueues itself after firing. */
   repeat?: { intervalMs: number };
-}
+};
 
 /**
  * Scheduler implementation driven entirely by `advance(ms)` — the wall
