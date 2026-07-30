@@ -3,12 +3,12 @@
  * NATS-Core (no JetStream) delivers each published message to
  * every connected client that has subscribed to the subject.
  *
- * Note on the framework's NatsActor: each actor instance allows
- * at most one subscription per subject (subsequent subscribes on
- * the same subject are silently de-duped — same semantics as
- * "one client, one subscription").  To get fan-out we spawn
- * three separate NatsActor instances, each with its own NATS
- * connection.
+ * Note on the framework's NatsActor: each actor instance holds at
+ * most one subscription per subject — a second subscribe on the
+ * same subject *replaces* the first one's target rather than
+ * adding to it (same semantics as "one client, one
+ * subscription").  To get fan-out we spawn three separate
+ * NatsActor instances, each with its own NATS connection.
  */
 import type { NatsMessage } from '../../../../../src/io/broker/NatsActor.js';
 import { spawnInbox, spawnNats, type NatsContext } from '../runner.js';

@@ -15,13 +15,15 @@ Subscriber-Fan-out, Publishen von Lifecycle-Events.
 - **Outbound-Buffer** — Nachrichten, die vor stehender Verbindung gesendet werden.
 - **Reconnect-Schleife** — exponentielles Backoff bei Verbindungsverlust.
 - **Subscriber-Tracking** — Fan-out für eingehende Events.
+- **Gewünschte Subscriptions** — Protokoll-Subscriptions, die jede einzelne
+  Verbindung überleben und bei jedem Reconnect neu aufgebaut werden.
 
 Subklassen implementieren drei Protokoll-Hooks:
 
 | Hook | Wann aufgerufen |
 | --- | --- |
 | `connectImplementation` | Die protokollspezifische Verbindung öffnen. |
-| `disconnectImplementation` | Sie sauber schließen. |
+| `disconnectImplementation` | Sie schließen — beim Stoppen **und vor jedem Re-Connect-Versuch**. |
 | `dispatchOutgoing(envelope)` | Eine einzelne gepufferte Nachricht auf die Leitung senden. |
 
 Subklassen implementieren die drei Protokoll-Hooks; den Rest macht
@@ -59,10 +61,19 @@ Ein `disconnected` → `connecting` → Fehler löst eine
 **Reconnect-Schleife** aus: Backoff + Retry bis Erfolg oder bis
 `maxAttempts` erschöpft sind.
 
+Jeder Re-Connect-Versuch startet auf sauberem Grund: die Basisklasse ruft
+zuerst `disconnectImplementation` auf, wenn ein früherer Versuch
+irgendetwas geöffnet hat — eine Subklasse baut also nie eine neue
+Verbindung auf den Handles der toten auf.  Damit ist
+`disconnectImplementation` ein **idempotenter** Kontrakt: er darf auf
+einer bereits toten Verbindung aufgerufen werden und muss ausschließlich
+die lebenden Handles verwerfen, niemals die gewünschten Subscriptions
+(siehe unten).
+
 ## Subklassen-Kontrakt
 
 ```ts
-abstract class BrokerActor<S, Command, P> extends Actor<Command> {
+abstract class BrokerActor<S, Command, P, Subscription = never> extends Actor<Command> {
   // Subklassen implementieren:
   protected abstract configKey(): string;
   protected abstract builtInDefaultOptions(): Partial<S>;
@@ -141,6 +152,66 @@ this.fanOutToTopic(topic, inboundMessage);
 
 Die Basisklasse stellt sie an jeden Subscriber für dieses Topic
 zu.
+
+### Desired Subscriptions
+
+Das Subscriber-Tracking oben spielt *innerhalb* des Actor-Systems — welche
+lokalen Refs welches Topic wollen.  Eine **gewünschte Subscription** ist
+die andere Hälfte: die Subscription, die der Actor *auf dem Broker* hält
+und die bei jedem Verbindungsaufbau neu gesetzt werden muss.
+
+Die Basisklasse hält diese Menge getrennt von den lebenden Handles,
+damit sie jede einzelne Verbindung überlebt:
+
+```ts
+// Vormerken (und sofort setzen, falls verbunden).
+await this.rememberSubscription('orders.new', target);
+// Entfernen — auf dem Broker und aus der gewünschten Menge.
+await this.forgetSubscription('orders.new');
+```
+
+Subklassen liefern drei Hooks:
+
+| Hook | Zweck |
+| --- | --- |
+| `initialSubscriptions()` | In den Options deklarierte Subscriptions.  **Einmalig** vor dem ersten Connect in die gewünschte Menge übernommen. |
+| `applySubscription(key, subscription)` | Eine Subscription auf der lebenden Verbindung setzen.  Muss einen bereits lebenden Key tolerieren. |
+| `revokeSubscription(key)` | Eine abbauen.  Optional — mehrere Protokolle können eine einzelne Subscription nur mitsamt dem ganzen Consumer aufgeben. |
+
+und spielen die ganze Menge aus `connectImplementation` heraus erneut ein:
+
+```ts
+protected async connectImplementation(): Promise<void> {
+  this.connection = await MyClient.connect(this.options.url);
+  await this.applyDesiredSubscriptions();   // konfiguriert + zur Laufzeit
+}
+```
+
+Getrieben wird das Wiedereinspielen von der Subklasse und nicht von der
+Basisklasse, weil der richtige Punkt im Handshake protokollspezifisch ist
+— kafkajs etwa will jedes `subscribe` vor `consumer.run` haben.
+
+Was das bringt:
+
+- Eine zur Laufzeit hinzugefügte Subscription **überlebt einen
+  Reconnect** — sie ist nicht bloß ein Aufruf auf einer Verbindung, die
+  gerade stirbt.
+- Ein `subscribe`, das **während einer Trennung** eintrifft, wird
+  vorgemerkt und beim nächsten Connect gesetzt, statt verworfen zu werden.
+- Das Übernehmen aus den Options passiert **nur einmal**, ein
+  `unsubscribe` zur Laufzeit wird also nicht vom nächsten Reconnect
+  wiederbelebt.
+- Ein erneutes `rememberSubscription` auf einem lebenden Key baut ihn
+  zuerst ab, damit eine geänderte Nutzlast (etwa ein anderer
+  Ziel-Actor) tatsächlich greift.
+- Eine Subscription, die **nicht** gesetzt werden kann, wird als Warnung
+  geloggt, und der Rest der Menge geht trotzdem durch.  Ein schlechtes
+  Subject reißt die Verbindung nicht mit — hinterlässt den Actor aber
+  auch nicht stillschweigend verbunden-und-taub.
+
+`MqttActor` ist älter als dieser Mechanismus und behält seine eigene,
+reichhaltigere Registry (QoS pro Topic, mehrere Targets pro Pattern,
+Deathwatch auf jedem) — mit den gleichen Reconnect-Garantien.
 
 ### Reconnect-mit-Backoff
 
@@ -224,6 +295,8 @@ class MyProtocolActor extends BrokerActor<MyProtocolOptionsType, Command, MyPayl
     this.connection.onMessage((m) => this.fanOutToTopic(m.topic, m));
   }
 
+  // Wird beim Stoppen UND vor jedem Re-Connect-Versuch aufgerufen —
+  // idempotent und auch auf einer bereits toten Verbindung sicher.
   protected async disconnectImplementation(): Promise<void> {
     await this.connection?.close();
     this.connection = null;

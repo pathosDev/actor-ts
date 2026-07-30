@@ -50,6 +50,36 @@ interface NatsOptionsType extends BrokerCommonOptionsType {
 }
 ```
 
+## Subscriptions and reconnects
+
+`subscriptions` and the runtime `subscribe` command feed the **same**
+desired set, held by the
+[BrokerActor base](/io/broker-actor-base/#desired-subscriptions) rather
+than by the connection.  Practical consequences:
+
+- Every subscription — configured or added at runtime — is
+  **re-established on the new connection** after a reconnect.
+- A `subscribe` sent while the actor is **disconnected** is applied on
+  the next connect instead of being dropped.
+- `{ kind: 'unsubscribe', subject }` removes the subject for good: it
+  does not come back on the next reconnect, even if it came from
+  `subscriptions`.
+- Re-subscribing a live subject **swaps its target** — the previous
+  subscription is dropped first, so exactly one actor receives it.
+
+```ts
+// Added at runtime; still there after the broker restarts.
+nats.tell({ kind: 'subscribe', subject: 'audit.>', target: auditor });
+// Point the same subject at a different actor.
+nats.tell({ kind: 'subscribe', subject: 'audit.>', target: newAuditor });
+// Gone for good.
+nats.tell({ kind: 'unsubscribe', subject: 'audit.>' });
+```
+
+Note that this is about the *subscription*, not the messages: core NATS
+has no durability, so anything published during the outage is still gone
+(see the caution below).
+
 ## Subjects (NATS topics)
 
 NATS uses `.`-delimited subjects:
