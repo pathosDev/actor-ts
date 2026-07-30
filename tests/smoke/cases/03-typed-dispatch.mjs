@@ -9,16 +9,20 @@ export const description = 'discriminated-union message dispatch via ts-pattern'
 
 export async function run({ actorTs }) {
   const { Actor, ActorSystem, ActorSystemOptions, LogLevel, NoopLogger, Props } = actorTs;
+  const { match } = await import('ts-pattern');
 
   class Greeter extends Actor {
     constructor() { super(); this.last = null; }
     onReceive(m) {
-      switch (m.kind) {
-        case 'greet': this.last = `Hello, ${m.name}!`; break;
-        case 'farewell': this.last = `Goodbye, ${m.name}.`; break;
-        case 'ask': this.sender.forEach((s) => s.tell(this.last)); break;
-      }
+      match(m)
+        .with({ kind: 'greet' }, (g) => this.onGreet(g))
+        .with({ kind: 'farewell' }, (f) => this.onFarewell(f))
+        .with({ kind: 'ask' }, () => this.onAsk())
+        .exhaustive();
     }
+    onGreet(m) { this.last = `Hello, ${m.name}!`; }
+    onFarewell(m) { this.last = `Goodbye, ${m.name}.`; }
+    onAsk() { this.sender.forEach((s) => s.tell(this.last)); }
   }
 
   const sysOptions = ActorSystemOptions.create()
