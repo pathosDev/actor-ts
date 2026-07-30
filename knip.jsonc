@@ -9,13 +9,13 @@
 {
   "$schema": "https://unpkg.com/knip@6/schema.json",
 
-  // Every published entry point, plus the things that legitimately reach into
-  // the tree without being imported by it: the test suites, the smoke cases
-  // (discovered at runtime by their own harness), and the build scripts.
+  // The things that legitimately reach into the tree without being imported by
+  // it: the test suites, the smoke cases (discovered at runtime by their own
+  // harness), the build scripts and the benchmarks. The three published entry
+  // points are NOT listed — knip derives `src/index.ts`, `src/testkit/index.ts`
+  // and `src/devtools/index.ts` from the `exports` map itself, and repeating
+  // them here is reported as a redundant pattern.
   "entry": [
-    "src/index.ts",
-    "src/testkit/index.ts",
-    "src/devtools/index.ts",
     "tests/**/*.test.ts",
     "tests/**/*.mjs",
     "tests/integration/**/*.ts",
