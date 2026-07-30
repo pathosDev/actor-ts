@@ -71,6 +71,37 @@ bun run benchmarks/single-node/tell-throughput.ts  # single file
 bun run benchmarks/run-all.ts --list               # preview what would run
 ```
 
+```bash
+bun run benchmarks/run-all.ts --exclude=worker     # skip group(s)
+```
+
+The driver **exits non-zero if any suite failed**, so it can gate CI. Every
+suite still runs — one broken benchmark does not hide the rest.
+
+**Smoke mode** — `ACTOR_TS_BENCH_SMOKE=1` collapses every case to a single
+unwarmed iteration, turning the whole suite into a ~30-second "does it still
+run" check:
+
+```bash
+bun run bench:smoke
+```
+
+The numbers it prints are meaningless (one unwarmed sample measures the JIT,
+not the framework). The point is to verify each suite still executes against
+the current `src/` API. This is what CI runs, together with a benchmarks-only
+typecheck:
+
+```bash
+bun run typecheck:bench
+```
+
+Both exist because `bun run typecheck` uses the build tsconfig, which
+deliberately **excludes** `benchmarks/` — so a `src/` change that orphans a
+benchmark used to be invisible. The typecheck is the stricter of the two for
+that failure class: a missing barrel export is a compile error even when the
+imported binding is never called, whereas Bun silently elides an unused named
+import at runtime.
+
 **Node.js 20+** — build `dist/` first, then run a file directly:
 
 ```bash

@@ -4,7 +4,7 @@
  *
  *   bun run benchmarks/single-node/ask-throughput.ts
  */
-import { Actor, ActorSystem, ActorSystemOptions, LogLevel, NoopLogger, Props, ask } from '../../src/index.js';
+import { Actor, ActorSystem, ActorSystemOptions, LogLevel, NoopLogger, Props } from '../../src/index.js';
 import { runGroup } from '../lib/harness.js';
 
 class Echo extends Actor<string> {
@@ -23,7 +23,7 @@ async function main(): Promise<void> {
       name: 'ask round-trip',
       unit: 'ask',
       iterations: 5_000,
-      run: async () => { await ask<string, string>(ref, 'hi', 1_000); },
+      run: async () => { await ref.ask<string>('hi', 1_000); },
     },
   ]);
 

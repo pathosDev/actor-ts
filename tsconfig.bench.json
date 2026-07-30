@@ -1,0 +1,24 @@
+{
+  // Benchmarks-only typecheck — the smoke-level gate that `bun run
+  // typecheck` cannot provide, because the build tsconfig deliberately
+  // EXCLUDES `benchmarks/` (they are never shipped).  Without this,
+  // nothing in CI notices when a `src/` API change orphans a benchmark:
+  // the whole suite sat broken on a removed `ask` export (#506) because
+  // a missing barrel export is a compile error nobody compiled for.
+  //
+  // Deliberately narrower than `tsconfig.dev.json` (which also pulls in
+  // `tests/` + `examples/`): a tight `src` + `benchmarks` scope is fast
+  // and, unlike the dev config, green — so it can actually gate.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    // Type-only run — nothing here is ever emitted.
+    "noEmit": true,
+    // Benchmarks are Bun scripts: they use `Bun.sleep`, `process`, and
+    // `node:*` imports, none of which the build config's empty `types`
+    // makes visible.
+    "types": ["bun", "node"],
+    "rootDir": "."
+  },
+  "include": ["src/**/*.ts", "benchmarks/**/*.ts"],
+  "exclude": ["node_modules", "dist"]
+}

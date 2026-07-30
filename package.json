@@ -48,6 +48,7 @@
     "clean": "rm -rf dist",
     "typecheck": "bunx tsc --noEmit && bunx tsc -p devtools-ui --noEmit && bunx tsc -p devtools-ui/tsconfig.test.json --noEmit",
     "typecheck:dev": "bunx tsc -p tsconfig.dev.json --noEmit",
+    "typecheck:bench": "bunx tsc -p tsconfig.bench.json",
     "test": "bun test",
     "test:coverage": "bun test --coverage",
     "test:coverage:gate": "bun scripts/coverage-gate.mjs",
@@ -96,6 +97,7 @@
     "lint:knip": "bunx knip --no-progress",
     "lint:package": "bun run lint:publint && bun run lint:types-exports && bun run lint:knip",
     "bench": "bun run benchmarks/run-all.ts",
+    "bench:smoke": "ACTOR_TS_BENCH_SMOKE=1 bun run benchmarks/run-all.ts",
     "prepublishOnly": "bun run clean && bun run build && bun run typecheck && bun test"
   },
   "keywords": [

@@ -14,7 +14,6 @@ import {
   Props,
   Router,
   Terminated,
-  ask,
 } from '../src/index.js';
 
 const sleep = (ms: number): Promise<void> => Bun.sleep(ms);

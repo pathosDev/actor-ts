@@ -117,12 +117,20 @@ conservative SemVer.) See `docs/.../reference/version-policy.mdx`.
 
 ## Verification gates (before every commit)
 
-- **`bun run typecheck`** (build tsconfig — excludes `examples/` and
-  `tests/`) passes. `bun run typecheck:dev` additionally checks those.
+- **`bun run typecheck`** (build tsconfig — excludes `examples/`,
+  `tests/` and `benchmarks/`) passes. `bun run typecheck:dev`
+  additionally checks those.
 - **`bun test`** is green. Line coverage floor is **≥ 80 %** —
   `bun run test:coverage:gate`.
 - **Cross-runtime:** `bun run smoke` runs `tests/smoke/cases/*.mjs` on
   Bun, Node, and Deno. Add a smoke case for anything runtime-sensitive.
+- **Benchmarks:** a change to a `src/` API that `benchmarks/` calls also
+  needs `bun run typecheck:bench` (benchmarks-only compile) and, for
+  anything that could break at runtime, `bun run bench:smoke` (~30 s —
+  every suite, one unwarmed iteration each). The build tsconfig excludes
+  `benchmarks/`, so nothing else catches an orphaned benchmark; the
+  `benchmarks` workflow gates both. The benchmarks are part of the
+  adoption sweep for a breaking change, exactly like tests and examples.
 - **Don't hand-edit** the README test/coverage badges — CI updates them
   on push to `develop`.
 

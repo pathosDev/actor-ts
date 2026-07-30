@@ -11,7 +11,6 @@ import {
   NoopLogger,
   PriorityMailbox,
   Props,
-  ask,
 } from '../../src/index.js';
 import { runGroup } from '../lib/harness.js';
 
@@ -41,7 +40,7 @@ async function main(): Promise<void> {
   const drain = async (props: typeof defaultProps): Promise<void> => {
     const ref = system.spawnAnonymous(props);
     for (let i = 0; i < batch; i++) ref.tell({ pri: (i * 7) % 5, id: i });
-    await ask<Message, number>(ref, { kind: 'count' }, 30_000);
+    await ref.ask<number>({ kind: 'count' }, 30_000);
     ref.stop();
   };
 

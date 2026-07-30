@@ -23,7 +23,6 @@ import {
   NodeAddress,
   Props,
   StartShardingOptions,
-  ask,
   type ActorRef,
 } from '../../src/index.js';
 import { runGroup } from '../lib/harness.js';
@@ -86,7 +85,7 @@ async function runSize(size: number): Promise<void> {
   // Warm every shard so the first measured ask does not race the shard
   // coordinator's initial allocation.
   for (let id = 0; id < 16; id++) {
-    await ask<Command, string>(entry.region, { id: `warm-${id}`, op: 'ping' }, 3_000);
+    await entry.region.ask<string>({ id: `warm-${id}`, op: 'ping' }, 3_000);
   }
 
   await runGroup(`cluster · ${size}-node sharded ask`, [
@@ -96,7 +95,7 @@ async function runSize(size: number): Promise<void> {
       iterations: 1_500,
       run: async () => {
         const id = `e-${Math.floor(Math.random() * 256)}`;
-        await ask<Command, string>(entry.region, { id, op: 'ping' }, 3_000);
+        await entry.region.ask<string>({ id, op: 'ping' }, 3_000);
       },
     },
   ]);
