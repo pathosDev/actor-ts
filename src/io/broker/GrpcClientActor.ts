@@ -31,9 +31,9 @@ export type GrpcClientCommand =
   | { readonly kind: 'bidiSend'; readonly streamId: number; readonly chunk: unknown }
   | { readonly kind: 'bidiClose'; readonly streamId: number };
 
-interface OutboundOp {
+type OutboundOp = {
   readonly op: GrpcClientCommand;
-}
+};
 
 /**
  * gRPC client actor.  One client instance per service, supports unary,
@@ -219,45 +219,45 @@ export class GrpcClientActor
 
 /* --------------------------- shared internals -------------------------- */
 
-interface GrpcServiceConstructor {
+type GrpcServiceConstructor = {
   new (endpoint: string, credentials: GrpcCredentialsLike): GrpcServiceClient;
-}
+};
 
-interface GrpcServiceClient {
+type GrpcServiceClient = {
   close?(): void;
   [method: string]: unknown;
-}
+};
 
-interface GrpcUnaryFunction {
+type GrpcUnaryFunction = {
   call(client: GrpcServiceClient, request: unknown,
        cb: (err: Error | null, response: unknown) => void): void;
-}
+};
 
-interface GrpcServerStreamCall {
+type GrpcServerStreamCall = {
   on(event: 'data', cb: (chunk: unknown) => void): void;
   on(event: 'end', cb: () => void): void;
   on(event: 'error', cb: (err: Error) => void): void;
-}
+};
 
-interface GrpcServerStreamFunction {
+type GrpcServerStreamFunction = {
   call(client: GrpcServiceClient, request: unknown): GrpcServerStreamCall;
-}
+};
 
-interface GrpcDuplexCall {
+type GrpcDuplexCall = {
   on(event: 'data', cb: (chunk: unknown) => void): void;
   on(event: 'end', cb: () => void): void;
   on(event: 'error', cb: (err: Error) => void): void;
   write(chunk: unknown): void;
   end(): void;
-}
+};
 
-interface GrpcBidiFunction {
+type GrpcBidiFunction = {
   call(client: GrpcServiceClient): GrpcDuplexCall;
-}
+};
 
-interface GrpcCredentialsLike { /* opaque token, set by grpc.credentials.* */ }
+type GrpcCredentialsLike = { /* opaque token, set by grpc.credentials.* */ };
 
-interface GrpcModule {
+type GrpcModule = {
   loadPackageDefinition(def: unknown): unknown;
   credentials: {
     createInsecure(): GrpcCredentialsLike;
@@ -265,11 +265,11 @@ interface GrpcModule {
       rootCerts: Buffer | null, privateKey: Buffer | null, certChain: Buffer | null,
     ): GrpcCredentialsLike;
   };
-}
+};
 
-interface ProtoLoaderModule {
+type ProtoLoaderModule = {
   loadSync(filename: string | string[], options?: object): unknown;
-}
+};
 
 const grpcLazy: Lazy<Promise<GrpcModule>> = Lazy.of(async () => {
   try {

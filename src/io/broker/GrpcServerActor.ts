@@ -17,7 +17,7 @@ export type GrpcHandler =
   | { readonly kind: 'bidi'; readonly target: ActorRef<GrpcBidiCall> };
 
 /** Inbound unary call — handler must reply via `respond`. */
-export interface GrpcUnaryCall {
+export type GrpcUnaryCall = {
   readonly method: string;
   readonly request: unknown;
   readonly metadata: Readonly<Record<string, string>>;
@@ -25,20 +25,20 @@ export interface GrpcUnaryCall {
   respond(response: unknown): void;
   /** Reply with an error.  `code` defaults to 13 (INTERNAL). */
   respondError(message: string, code?: number): void;
-}
+};
 
 /** Inbound server-stream call — handler emits via `send`, ends via `complete`. */
-export interface GrpcServerStreamCall {
+export type GrpcServerStreamCall = {
   readonly method: string;
   readonly request: unknown;
   readonly metadata: Readonly<Record<string, string>>;
   send(chunk: unknown): void;
   complete(): void;
   fail(message: string, code?: number): void;
-}
+};
 
 /** Bidi call — handler receives chunks via `data` callback, sends via `send`. */
-export interface GrpcBidiCall {
+export type GrpcBidiCall = {
   readonly method: string;
   readonly metadata: Readonly<Record<string, string>>;
   /** Subscribe an actor to receive every inbound chunk + the end signal. */
@@ -46,7 +46,7 @@ export interface GrpcBidiCall {
   send(chunk: unknown): void;
   complete(): void;
   fail(message: string, code?: number): void;
-}
+};
 
 /**
  * gRPC server actor.  Differs from the `BrokerActor` base shape — a
@@ -244,41 +244,41 @@ function extractMetadata(md: { get?: (key: string) => string[] } | undefined): R
   return {};
 }
 
-interface GrpcServerUnaryRequest {
+type GrpcServerUnaryRequest = {
   request: unknown;
   metadata?: { get?: (key: string) => string[] };
-}
+};
 
-interface GrpcUnaryCb {
+type GrpcUnaryCb = {
   (err: { code: number; message: string } | null, response?: unknown): void;
-}
+};
 
-interface GrpcServerStreamRequest {
+type GrpcServerStreamRequest = {
   request: unknown;
   metadata?: { get?: (key: string) => string[] };
   write(chunk: unknown): void;
   end(): void;
   emit(event: 'error', err: { code: number; message: string }): void;
-}
+};
 
-interface GrpcServerDuplexCall {
+type GrpcServerDuplexCall = {
   metadata?: { get?: (key: string) => string[] };
   on(event: 'data', cb: (chunk: unknown) => void): void;
   on(event: 'end', cb: () => void): void;
   write(chunk: unknown): void;
   end(): void;
   emit(event: 'error', err: { code: number; message: string }): void;
-}
+};
 
-interface GrpcServerLike {
+type GrpcServerLike = {
   addService(definition: unknown, impl: Record<string, unknown>): void;
   bindAsync(bind: string, creds: unknown, cb: (err: Error | null, port: number) => void): void;
   start(): void;
   tryShutdown(cb: (err?: Error) => void): void;
   forceShutdown(): void;
-}
+};
 
-interface GrpcModule {
+type GrpcModule = {
   Server: new () => GrpcServerLike;
   ServerCredentials: {
     createInsecure(): unknown;
@@ -289,11 +289,11 @@ interface GrpcModule {
     ): unknown;
   };
   loadPackageDefinition(def: unknown): unknown;
-}
+};
 
-interface ProtoLoaderModule {
+type ProtoLoaderModule = {
   loadSync(filename: string | string[], options?: object): unknown;
-}
+};
 
 const grpcLazy: Lazy<Promise<GrpcModule>> = Lazy.of(async () => {
   try {

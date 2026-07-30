@@ -30,13 +30,13 @@ import type { MqttCodec } from './MqttCodec.js';
 import type { MqttQos } from './MqttMessages.js';
 
 /** Username / password credentials. */
-export interface MqttCredentials {
+export type MqttCredentials = {
   readonly username?: string;
   readonly password?: string;
-}
+};
 
 /** Plain options-object shape accepted by an {@link MqttActor}. */
-export interface MqttOptionsType extends BrokerCommonOptionsType {
+export type MqttOptionsType = BrokerCommonOptionsType & {
   /** Broker URL — `mqtt://`, `mqtts://`, `ws://`, `wss://`. */
   readonly brokerUrl?: string;
   /** Stable client id.  When omitted the broker assigns one. */
@@ -63,7 +63,7 @@ export interface MqttOptionsType extends BrokerCommonOptionsType {
    * Default: {@link mqttJsonCodec}.  One codec per actor.
    */
   readonly codec?: MqttCodec<unknown>;
-}
+};
 
 /** Fluent builder for {@link MqttOptionsType}. */
 export class MqttOptionsBuilder extends BrokerOptionsBuilder<MqttOptionsType> {
