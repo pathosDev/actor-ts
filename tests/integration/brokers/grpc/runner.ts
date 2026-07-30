@@ -5,6 +5,7 @@
  * ActorSystem, both pointed at the same `echo.proto`.  Each
  * scenario exercises one call class.
  */
+import { match } from 'ts-pattern';
 import { Actor } from '../../../../src/Actor.js';
 import { ActorSystem } from '../../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../../src/ActorSystemOptions.js';
@@ -57,20 +58,29 @@ class ServerStreamHandler extends Actor<GrpcServerStreamCall> {
   }
 }
 
+type ChunkMessage = { kind: 'chunk'; chunk: unknown };
+type EndMessage = { kind: 'end' };
+type BidiSinkMessage = ChunkMessage | EndMessage;
+
 class BidiHandler extends Actor<GrpcBidiCall> {
   override onReceive(call: GrpcBidiCall): void {
     // Echo every chunk back, then complete when the client closes.
     let seq = 0;
-    const sink: ActorRef<{ kind: 'chunk'; chunk: unknown } | { kind: 'end' }> = {
-      tell: (m): void => {
-        if (m.kind === 'chunk') {
-          const chunk = m.chunk as { text?: string };
-          call.send({ text: chunk.text ?? '', sequence: seq++ });
-        } else if (m.kind === 'end') {
-          call.complete();
-        }
+    const onChunk = (m: ChunkMessage): void => {
+      const chunk = m.chunk as { text?: string };
+      call.send({ text: chunk.text ?? '', sequence: seq++ });
+    };
+    const onEnd = (): void => call.complete();
+    // `m` is annotated because the `as unknown as` below erases the
+    // contextual type that would otherwise infer it.
+    const sink: ActorRef<BidiSinkMessage> = {
+      tell: (m: BidiSinkMessage): void => {
+        match(m)
+          .with({ kind: 'chunk' }, (c) => onChunk(c))
+          .with({ kind: 'end' }, () => onEnd())
+          .exhaustive();
       },
-    } as unknown as ActorRef<{ kind: 'chunk'; chunk: unknown } | { kind: 'end' }>;
+    } as unknown as ActorRef<BidiSinkMessage>;
     call.onData(sink);
   }
 }

@@ -1,3 +1,4 @@
+import { match } from 'ts-pattern';
 import { expect, test } from 'bun:test';
 import {
   Actor,
@@ -135,7 +136,14 @@ test('LeaderChanged fires when the oldest member leaves', async () => {
   await c2.leave(); await sys2.terminate();
 });
 
-type CounterCommand = { id: string; op: 'increment' };
+type IncrementCommand = { id: string; kind: 'increment' };
+
+type CounterCommand = IncrementCommand;
+
+type WorkCommand = { id: string; kind: 'work' };
+type SleepCommand = { id: string; kind: 'sleep' };
+
+type PassivationCommand = WorkCommand | SleepCommand;
 
 test('Role filter: entities only land on members with the matching role', async () => {
   const seen = new Map<string, Map<string, number>>();
@@ -169,7 +177,7 @@ test('Role filter: entities only land on members with the matching role', async 
   await sleep(150);
 
   for (const id of ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h']) {
-    n1.region.tell({ id, op: 'increment' });
+    n1.region.tell({ id, kind: 'increment' });
   }
   await sleep(400);
 
@@ -219,8 +227,8 @@ test('Proxy region routes but never hosts entities', async () => {
   await sleep(150);
 
   // Send from proxy; must route to host.
-  proxy.region.tell({ id: 'x', op: 'increment' });
-  proxy.region.tell({ id: 'y', op: 'increment' });
+  proxy.region.tell({ id: 'x', kind: 'increment' });
+  proxy.region.tell({ id: 'y', kind: 'increment' });
   await sleep(300);
 
   expect(hosted.size).toBe(2); // both entities materialised on host
@@ -232,25 +240,35 @@ test('Passivation stops idle entity and buffers next message until re-create', a
   let created = 0;
   let stopped = 0;
 
-  class Entity extends Actor<{ id: string; op: 'work' | 'sleep' }> {
+  class Entity extends Actor<PassivationCommand> {
     override preStart(): void { created++; }
     override postStop(): void { stopped++; }
-    override onReceive(message: { id: string; op: 'work' | 'sleep' }): void {
-      if (message.op === 'sleep') {
-        // Ask the region to passivate us. We tell it to use PoisonPill
-        // as the stop message so that we terminate cleanly when it arrives.
-        this.context.parent.forEach((p) => p.tell(
-          new Passivate(PoisonPill.instance, this.self),
-          this.self,
-        ));
-      }
+    override onReceive(message: PassivationCommand): void {
+      match(message)
+        .with({ kind: 'work' }, () => this.onWork())
+        .with({ kind: 'sleep' }, () => this.onSleep())
+        .exhaustive();
+    }
+
+    /** Work is the "stay awake" message — receiving it resets the idle timer. */
+    private onWork(): void {}
+
+    /**
+     * Ask the region to passivate us.  We tell it to use PoisonPill as the
+     * stop message so that we terminate cleanly when it arrives.
+     */
+    private onSleep(): void {
+      this.context.parent.forEach((p) => p.tell(
+        new Passivate(PoisonPill.instance, this.self),
+        this.self,
+      ));
     }
   }
 
-  const node = await startNode<{ id: string; op: 'work' | 'sleep' }>({
+  const node = await startNode<PassivationCommand>({
     systemName: 'pas', host: '10.14.0.1', port: 35001,
     sharding: activeSet => {
-      const startShardingOptions = StartShardingOptions.create<{ id: string; op: 'work' | 'sleep' }>()
+      const startShardingOptions = StartShardingOptions.create<PassivationCommand>()
         .withTypeName('passiv')
         .withEntityProps(Props.create(() => new Entity()))
         .withExtractEntityId(m => m.id)
@@ -263,14 +281,14 @@ test('Passivation stops idle entity and buffers next message until re-create', a
   });
   await sleep(100);
 
-  node.region.tell({ id: '1', op: 'work' });
-  node.region.tell({ id: '1', op: 'sleep' });
+  node.region.tell({ id: '1', kind: 'work' });
+  node.region.tell({ id: '1', kind: 'sleep' });
   await sleep(200);
   expect(created).toBe(1);
   expect(stopped).toBe(1);
 
   // Next message should cause a fresh entity (created==2).
-  node.region.tell({ id: '1', op: 'work' });
+  node.region.tell({ id: '1', kind: 'work' });
   await sleep(200);
   expect(created).toBe(2);
 
@@ -306,7 +324,7 @@ test('LeastShardAllocationStrategy balances shards across nodes', async () => {
 
   // Materialize an entity per shard from n1.
   const ids = Array.from({ length: 12 }, (_, i) => `e${i}`);
-  for (const id of ids) n1.region.tell({ id, op: 'increment' });
+  for (const id of ids) n1.region.tell({ id, kind: 'increment' });
 
   // Allow initial allocation + a rebalance pass.
   await sleep(1_200);
@@ -353,7 +371,7 @@ test('rememberEntities re-creates entities on the new owner after node death', a
 
   // Create a handful of entities from n1 so the coordinator registers them.
   const ids = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'];
-  for (const id of ids) n1.region.tell({ id, op: 'increment' });
+  for (const id of ids) n1.region.tell({ id, kind: 'increment' });
   await sleep(500);
 
   // Identify one entity living on n2, then kill n2.

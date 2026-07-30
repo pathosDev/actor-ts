@@ -1,3 +1,4 @@
+import { match } from 'ts-pattern';
 import { describe, expect, test } from 'bun:test';
 import { ActorSystem } from '../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../src/ActorSystemOptions.js';
@@ -471,11 +472,16 @@ describe('Behaviors.receiveWithSignal — terminated signal (#448)', () => {
       context.watch(child);
       return Behaviors.receiveWithSignal<string>(
         (_context, message) => { seen.push(message); return Behaviors.same; },
-        (_context, signal) => {
-          if (signal.kind === 'terminated') { seen.push('watched-child-died'); return Behaviors.stopped; }
-          if (signal.kind === 'post-stop') seen.push('post-stop');
-          return Behaviors.same;
-        },
+        (_context, signal) => match(signal)
+          .with({ kind: 'terminated' }, () => {
+            seen.push('watched-child-died');
+            return Behaviors.stopped as Behavior<string>;
+          })
+          .with({ kind: 'post-stop' }, () => {
+            seen.push('post-stop');
+            return Behaviors.same as Behavior<string>;
+          })
+          .otherwise(() => Behaviors.same as Behavior<string>),
       );
     });
 

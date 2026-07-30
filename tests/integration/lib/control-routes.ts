@@ -17,6 +17,7 @@ import {
   Status,
   type Route,
 } from '../../../src/http/index.js';
+import { match } from 'ts-pattern';
 import { Actor } from '../../../src/Actor.js';
 import { Props } from '../../../src/Props.js';
 import type { ActorRef } from '../../../src/ActorRef.js';
@@ -229,17 +230,24 @@ class PubSubReceiver extends Actor<PubSubEvent | PubSubSnapshotQuery> {
   private lastSeq = -1;
   private lastText: string | null = null;
   override onReceive(m: PubSubEvent | PubSubSnapshotQuery): void {
-    if (m.kind === 'event') {
-      this.received += 1;
-      this.lastSeq = m.seq;
-      this.lastText = m.text;
-    } else if (m.kind === 'snapshot') {
-      m.replyTo.tell({
-        received: this.received,
-        lastSeq: this.lastSeq,
-        lastText: this.lastText,
-      });
-    }
+    match(m)
+      .with({ kind: 'event' }, (e) => this.onEvent(e))
+      .with({ kind: 'snapshot' }, (q) => this.onSnapshot(q))
+      .exhaustive();
+  }
+
+  private onEvent(event: PubSubEvent): void {
+    this.received += 1;
+    this.lastSeq = event.seq;
+    this.lastText = event.text;
+  }
+
+  private onSnapshot(query: PubSubSnapshotQuery): void {
+    query.replyTo.tell({
+      received: this.received,
+      lastSeq: this.lastSeq,
+      lastText: this.lastText,
+    });
   }
 }
 
@@ -689,8 +697,8 @@ export function makeControlRoutes(
     path('sharding', path('inc', post(async (req) => {
       const id = queryParam(req, 'id');
       if (!id) return complete(Status.BadRequest, 'missing ?id=');
-      deps.shardingRegion.tell({ entityId: id, op: 'increment' });
-      return completeJson(Status.OK, { sent: { id, op: 'increment' } });
+      deps.shardingRegion.tell({ entityId: id, kind: 'increment' });
+      return completeJson(Status.OK, { sent: { id, kind: 'increment' } });
     }))),
 
     // GET /test/sharding/who?id=X — query which node currently
@@ -711,7 +719,7 @@ export function makeControlRoutes(
           )) as ActorRef<ShardedWhoReply>;
           deps.shardingRegion.tell({
             entityId: id,
-            op: 'who',
+            kind: 'who',
             replyTo: collector,
           });
         });
@@ -735,7 +743,7 @@ export function makeControlRoutes(
       const id = queryParam(req, 'id');
       if (!id) return complete(Status.BadRequest, 'missing ?id=');
       ensurePersistentCounter(id).tell({ kind: 'increment' });
-      return completeJson(Status.OK, { sent: { id, op: 'increment' } });
+      return completeJson(Status.OK, { sent: { id, kind: 'increment' } });
     }))),
 
     // GET /test/persistence/state?id=X — sends `get-state` to the

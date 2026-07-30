@@ -1,3 +1,4 @@
+import { match } from 'ts-pattern';
 import { describe, expect, test } from 'bun:test';
 import { ActorSystem } from '../../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../../src/ActorSystemOptions.js';
@@ -14,8 +15,14 @@ import { Props } from '../../../../src/Props.js';
 const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
 
 /** Shared domain types for the tests. */
-type Command = { kind: 'deposit'; amount: number } | { kind: 'withdraw'; amount: number } | { kind: 'balance' };
-type Event = { kind: 'deposited'; amount: number } | { kind: 'withdrew'; amount: number };
+type DepositCommand = { kind: 'deposit'; amount: number };
+type WithdrawCommand = { kind: 'withdraw'; amount: number };
+type BalanceCommand = { kind: 'balance' };
+type Command = DepositCommand | WithdrawCommand | BalanceCommand;
+
+type DepositedEvent = { kind: 'deposited'; amount: number };
+type WithdrewEvent = { kind: 'withdrew'; amount: number };
+type Event = DepositedEvent | WithdrewEvent;
 type State = { balance: number };
 
 function makeSystem(): { system: ActorSystem; journal: InMemoryJournal; snapshots: InMemorySnapshotStore } {
@@ -39,20 +46,32 @@ class Account extends PersistentActor<Command, Event, State> {
   }
   initialState(): State { return { balance: 0 }; }
   onEvent(s: State, e: Event): State {
-    if (e.kind === 'deposited') return { balance: s.balance + e.amount };
-    if (e.kind === 'withdrew')  return { balance: s.balance - e.amount };
-    return s;
+    // A fold that computes a value — arms stay inline.
+    return match(e)
+      .with({ kind: 'deposited' }, (d) => ({ balance: s.balance + d.amount }))
+      .with({ kind: 'withdrew' }, (w) => ({ balance: s.balance - w.amount }))
+      .exhaustive();
   }
   override onRecoveryComplete(s: State): void { this.replyTo?.({ ready: s.balance }); }
   async onCommand(state: State, command: Command): Promise<void> {
-    if (command.kind === 'deposit') {
-      await this.persist({ kind: 'deposited', amount: command.amount }, s => this.replyTo?.({ balance: s.balance }));
-    } else if (command.kind === 'withdraw') {
-      if (command.amount > state.balance) { this.replyTo?.({ error: 'insufficient' }); return; }
-      await this.persist({ kind: 'withdrew', amount: command.amount }, s => this.replyTo?.({ balance: s.balance }));
-    } else if (command.kind === 'balance') {
-      this.replyTo?.({ balance: state.balance });
-    }
+    await match(command)
+      .with({ kind: 'deposit' }, (c) => this.onDeposit(c))
+      .with({ kind: 'withdraw' }, (c) => this.onWithdraw(state, c))
+      .with({ kind: 'balance' }, () => this.onBalance(state))
+      .exhaustive();
+  }
+
+  private async onDeposit(command: DepositCommand): Promise<void> {
+    await this.persist({ kind: 'deposited', amount: command.amount }, s => this.replyTo?.({ balance: s.balance }));
+  }
+
+  private async onWithdraw(state: State, command: WithdrawCommand): Promise<void> {
+    if (command.amount > state.balance) { this.replyTo?.({ error: 'insufficient' }); return; }
+    await this.persist({ kind: 'withdrew', amount: command.amount }, s => this.replyTo?.({ balance: s.balance }));
+  }
+
+  private onBalance(state: State): void {
+    this.replyTo?.({ balance: state.balance });
   }
 }
 

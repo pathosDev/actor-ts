@@ -4,27 +4,52 @@
  *
  *   bun run benchmarks/single-node/stash-unstash.ts
  */
+import { match } from 'ts-pattern';
 import { Actor, ActorSystem, ActorSystemOptions, LogLevel, NoopLogger, Props, ask } from '../../src/index.js';
 import { runGroup } from '../lib/harness.js';
 
-type Message = { kind: 'work' } | { kind: 'go' } | { kind: 'count' };
+type WorkMessage = { kind: 'work' };
+type GoMessage = { kind: 'go' };
+type CountMessage = { kind: 'count' };
+
+type Message = WorkMessage | GoMessage | CountMessage;
 
 class Staller extends Actor<Message> {
   private seen = 0;
+
   override onReceive(m: Message): void {
-    if (m.kind === 'work') {
-      this.context.stash();
-      return;
-    }
-    if (m.kind === 'go') {
-      this.context.unstashAll();
-      this.context.become((message) => {
-        if ((message as Message).kind === 'work') this.seen++;
-        if ((message as Message).kind === 'count') this.sender.forEach((s) => s.tell(this.seen));
-      });
-      return;
-    }
-    if (m.kind === 'count') this.sender.forEach((s) => s.tell(this.seen));
+    match(m)
+      .with({ kind: 'work' }, () => this.onWork())
+      .with({ kind: 'go' }, () => this.onGo())
+      .with({ kind: 'count' }, () => this.onCount())
+      .exhaustive();
+  }
+
+  private onWork(): void {
+    this.context.stash();
+  }
+
+  /** Drains the stash, then swaps to the behavior that counts what comes back. */
+  private onGo(): void {
+    this.context.unstashAll();
+    this.context.become((message) => {
+      match(message as Message)
+        .with({ kind: 'work' }, () => this.onDrainedWork())
+        .with({ kind: 'count' }, () => this.onCount())
+        .with({ kind: 'go' }, () => this.onGoIgnored())
+        .exhaustive();
+    });
+  }
+
+  private onDrainedWork(): void {
+    this.seen++;
+  }
+
+  /** A second 'go' after the swap has nothing left to unstash. */
+  private onGoIgnored(): void {}
+
+  private onCount(): void {
+    this.sender.forEach((s) => s.tell(this.seen));
   }
 }
 

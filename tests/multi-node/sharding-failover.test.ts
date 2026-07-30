@@ -20,6 +20,7 @@
  * different recovery path so that any regression in
  * ShardCoordinator/ShardRegion shows up here before it ships.
  */
+import { match } from 'ts-pattern';
 import { describe, expect, test } from 'bun:test';
 import { Actor } from '../../src/Actor.js';
 import { Props } from '../../src/Props.js';
@@ -31,12 +32,25 @@ import { MultiNodeSpec } from '../../src/testkit/MultiNodeSpec.js';
 import { MultiNodeTransport } from '../../src/testkit/internal/MultiNodeTransport.js';
 import type { ActorRef } from '../../src/ActorRef.js';
 
-type Command = { id: string; op: 'ping' | 'echo'; payload?: string };
+type PingCommand = { id: string; kind: 'ping'; payload?: string };
+type EchoCommand = { id: string; kind: 'echo'; payload?: string };
+
+type Command = PingCommand | EchoCommand;
 
 class Entity extends Actor<Command> {
   override onReceive(m: Command): void {
-    if (m.op === 'ping') this.sender.forEach((s) => s.tell('pong'));
-    else if (m.op === 'echo') this.sender.forEach((s) => s.tell(m.payload ?? ''));
+    match(m)
+      .with({ kind: 'ping' }, () => this.onPing())
+      .with({ kind: 'echo' }, (c) => this.onEcho(c))
+      .exhaustive();
+  }
+
+  private onPing(): void {
+    this.sender.forEach((s) => s.tell('pong'));
+  }
+
+  private onEcho(command: EchoCommand): void {
+    this.sender.forEach((s) => s.tell(command.payload ?? ''));
   }
 }
 
@@ -83,7 +97,7 @@ describe('multi-node sharding failover', () => {
       // Warm up: ensure every shard has a home before crashing the leader.
       await Bun.sleep(300);
       for (let i = 0; i < 16; i++) {
-        const result = await regions.b.ask<string>({ id: `pre-${i}`, op: 'ping' }, 3_000);
+        const result = await regions.b.ask<string>({ id: `pre-${i}`, kind: 'ping' }, 3_000);
         expect(result).toBe('pong');
       }
 
@@ -104,7 +118,7 @@ describe('multi-node sharding failover', () => {
       // may have been homed on the dead leader and need re-allocation —
       // that's the point of the test.
       for (let i = 0; i < 16; i++) {
-        const result = await regions.b.ask<string>({ id: `post-${i}`, op: 'ping' }, 5_000);
+        const result = await regions.b.ask<string>({ id: `post-${i}`, kind: 'ping' }, 5_000);
         expect(result).toBe('pong');
       }
     } finally {
@@ -138,7 +152,7 @@ describe('multi-node sharding failover', () => {
       // Start a batch of 32 asks against region 'a', then crash 'c' during
       // the batch.  Expectation: every ask eventually returns 'pong'.
       const inflight = Array.from({ length: 32 }, (_, i) =>
-        regions.a.ask<string>({ id: `mid-${i}`, op: 'ping' }, 8_000),
+        regions.a.ask<string>({ id: `mid-${i}`, kind: 'ping' }, 8_000),
       );
 
       // Crash 'c' shortly after issuing — some asks land on shards that
@@ -193,7 +207,7 @@ describe('multi-node sharding failover', () => {
 
       // Survivors continue to serve.
       for (let i = 0; i < 8; i++) {
-        const result = await regions.a.ask<string>({ id: `part-${i}`, op: 'ping' }, 5_000);
+        const result = await regions.a.ask<string>({ id: `part-${i}`, kind: 'ping' }, 5_000);
         expect(result).toBe('pong');
       }
 
@@ -243,7 +257,7 @@ describe('multi-node sharding failover', () => {
         let i = 0;
         while (Date.now() < stopAt) {
           try {
-            await regions.a.ask<string>({ id: `churn-${i++ % 16}`, op: 'ping' }, 4_000);
+            await regions.a.ask<string>({ id: `churn-${i++ % 16}`, kind: 'ping' }, 4_000);
             replies++;
           } catch { failures++; }
           await Bun.sleep(5);
@@ -263,7 +277,7 @@ describe('multi-node sharding failover', () => {
       expect(replies + failures).toBeGreaterThan(20);
       // …and after the churn settles, asks succeed again.
       await Bun.sleep(300);
-      const finalReply = await regions.a.ask<string>({ id: `final`, op: 'ping' }, 5_000);
+      const finalReply = await regions.a.ask<string>({ id: `final`, kind: 'ping' }, 5_000);
       expect(finalReply).toBe('pong');
     } finally {
       await spec.stop();

@@ -3,25 +3,34 @@
  *
  *   bun run benchmarks/single-node/become-unbecome.ts
  */
+import { match } from 'ts-pattern';
 import { Actor, ActorSystem, ActorSystemOptions, LogLevel, NoopLogger, Props, ask } from '../../src/index.js';
 import { runGroup } from '../lib/harness.js';
 
-type Message = 'swap' | { kind: 'ping' };
+type PingMessage = { kind: 'ping' };
+
+type Message = 'swap' | PingMessage;
 
 class Swapper extends Actor<Message> {
   override onReceive(m: Message): void {
-    if (m === 'swap') {
-      this.context.become((inner) => {
-        if (inner === 'swap') this.context.unbecome();
-        else if ((inner as { kind: string }).kind === 'ping') {
-          this.sender.forEach((s) => s.tell('pong'));
-        }
-      });
-      return;
-    }
-    if ((m as { kind: string }).kind === 'ping') {
-      this.sender.forEach((s) => s.tell('pong'));
-    }
+    match(m)
+      .with('swap', () => this.onSwap())
+      .with({ kind: 'ping' }, () => this.onPing())
+      .exhaustive();
+  }
+
+  /** Swap in the mirror behavior; there, 'swap' swaps back out again. */
+  private onSwap(): void {
+    this.context.become((inner) => {
+      match(inner as Message)
+        .with('swap', () => this.context.unbecome())
+        .with({ kind: 'ping' }, () => this.onPing())
+        .exhaustive();
+    });
+  }
+
+  private onPing(): void {
+    this.sender.forEach((s) => s.tell('pong'));
   }
 }
 

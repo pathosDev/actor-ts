@@ -6,6 +6,7 @@
  * drop-mode loss, system messages bypassing the gate, and
  * cancelThrottle restoring full speed.
  */
+import { match } from 'ts-pattern';
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { Actor } from '../../../src/Actor.js';
 import { ActorSystem } from '../../../src/ActorSystem.js';
@@ -24,24 +25,33 @@ beforeEach(() => {
 });
 afterEach(async () => { await sys.terminate(); });
 
-interface CountMessage { kind: 'tick' | 'configure-throttle' | 'cancel-throttle' }
+type TickMessage = { kind: 'tick' };
+type ConfigureThrottleMessage = { kind: 'configure-throttle' };
+type CancelThrottleMessage = { kind: 'cancel-throttle' };
+
+type CountMessage = TickMessage | ConfigureThrottleMessage | CancelThrottleMessage;
 
 class Counter extends Actor<CountMessage> {
   count = 0;
   override onReceive(m: CountMessage): void {
-    if (m.kind === 'tick') {
-      this.count += 1;
-      return;
-    }
-    if (m.kind === 'configure-throttle') {
-      // Wide burst, low qps — first 2 messages go through immediately,
-      // subsequent ones throttle.
-      this.context.throttle({ qps: 10, burst: 2 });
-      return;
-    }
-    if (m.kind === 'cancel-throttle') {
-      this.context.cancelThrottle();
-    }
+    match(m)
+      .with({ kind: 'tick' }, () => this.onTick())
+      .with({ kind: 'configure-throttle' }, () => this.onConfigureThrottle())
+      .with({ kind: 'cancel-throttle' }, () => this.onCancelThrottle())
+      .exhaustive();
+  }
+
+  private onTick(): void {
+    this.count += 1;
+  }
+
+  /** Wide burst, low qps — first 2 messages go through immediately, then throttle. */
+  private onConfigureThrottle(): void {
+    this.context.throttle({ qps: 10, burst: 2 });
+  }
+
+  private onCancelThrottle(): void {
+    this.context.cancelThrottle();
   }
 }
 

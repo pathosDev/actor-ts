@@ -9,6 +9,7 @@
  *
  *   bun run benchmarks/cluster/node-count-scaling.ts
  */
+import { match } from 'ts-pattern';
 import { spawnSync } from 'node:child_process';
 import {
   Actor,
@@ -28,11 +29,19 @@ import {
 } from '../../src/index.js';
 import { runGroup } from '../lib/harness.js';
 
-type Command = { id: string; op: 'ping' };
+type PingCommand = { id: string; kind: 'ping' };
+
+type Command = PingCommand;
 
 class Entity extends Actor<Command> {
   override onReceive(m: Command): void {
-    if (m.op === 'ping') this.sender.forEach((s) => s.tell('pong'));
+    match(m)
+      .with({ kind: 'ping' }, () => this.onPing())
+      .exhaustive();
+  }
+
+  private onPing(): void {
+    this.sender.forEach((s) => s.tell('pong'));
   }
 }
 
@@ -86,7 +95,7 @@ async function runSize(size: number): Promise<void> {
   // Warm every shard so the first measured ask does not race the shard
   // coordinator's initial allocation.
   for (let id = 0; id < 16; id++) {
-    await ask<Command, string>(entry.region, { id: `warm-${id}`, op: 'ping' }, 3_000);
+    await ask<Command, string>(entry.region, { id: `warm-${id}`, kind: 'ping' }, 3_000);
   }
 
   await runGroup(`cluster · ${size}-node sharded ask`, [
@@ -96,7 +105,7 @@ async function runSize(size: number): Promise<void> {
       iterations: 1_500,
       run: async () => {
         const id = `e-${Math.floor(Math.random() * 256)}`;
-        await ask<Command, string>(entry.region, { id, op: 'ping' }, 3_000);
+        await ask<Command, string>(entry.region, { id, kind: 'ping' }, 3_000);
       },
     },
   ]);

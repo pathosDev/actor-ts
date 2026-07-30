@@ -33,6 +33,7 @@
  *     - Assert: every entity's preStart fired in round 2 even
  *       though only one user message was sent.
  */
+import { match } from 'ts-pattern';
 import { describe, expect, test } from 'bun:test';
 import { Actor } from '../../src/Actor.js';
 import { ClusterSharding } from '../../src/cluster/sharding/ClusterSharding.js';
@@ -45,7 +46,9 @@ import { MultiNodeSpec } from '../../src/testkit/MultiNodeSpec.js';
 import { MultiNodeTransport } from '../../src/testkit/internal/MultiNodeTransport.js';
 import type { ActorRef } from '../../src/ActorRef.js';
 
-type Command = { id: string; op: 'ping' };
+type PingCommand = { id: string; kind: 'ping' };
+
+type Command = PingCommand;
 
 const TIGHT_FD = {
   heartbeatIntervalMs: 50,
@@ -65,7 +68,13 @@ class Entity extends Actor<Command> {
     else preStartedRound2.add(id);
   }
   override onReceive(m: Command): void {
-    if (m.op === 'ping') this.sender.forEach((s) => s.tell('pong'));
+    match(m)
+      .with({ kind: 'ping' }, () => this.onPing())
+      .exhaustive();
+  }
+
+  private onPing(): void {
+    this.sender.forEach((s) => s.tell('pong'));
   }
 }
 
@@ -129,7 +138,7 @@ describe('Sharding remember-entities — persistent registry', () => {
       // triggers an EntityStarted notification to the coordinator,
       // which appends to the registry journal.
       for (const id of ids) {
-        const reply = await regions.a.ask<string>({ id, op: 'ping' }, 3_000);
+        const reply = await regions.a.ask<string>({ id, kind: 'ping' }, 3_000);
         expect(reply).toBe('pong');
       }
       // Allow EntityStarted journal writes to settle (fire-and-forget
@@ -147,7 +156,7 @@ describe('Sharding remember-entities — persistent registry', () => {
       // Send ONE message to one entity → triggers the single shard's
       // allocation → coordinator ships RememberedEntities (loaded
       // from journal) → region pre-creates ALL five.
-      const reply = await regions2.a.ask<string>({ id: 'e-1', op: 'ping' }, 3_000);
+      const reply = await regions2.a.ask<string>({ id: 'e-1', kind: 'ping' }, 3_000);
       expect(reply).toBe('pong');
 
       // Allow the region to drain RememberedEntities + spawn the rest.
