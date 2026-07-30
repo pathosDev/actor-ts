@@ -44,6 +44,7 @@ Actors.
 ## `pipeTo` — sende das Ergebnis als Nachricht
 
 ```ts
+import { match, P } from 'ts-pattern';
 import { Actor, pipeTo, Success, Failure } from 'actor-ts';
 
 type Message =
@@ -53,15 +54,23 @@ type Message =
 
 class Fast extends Actor<Message> {
   override onReceive(message: Message): void {
-    if (message.kind === 'fetch') {
-      pipeTo(this.downstream.fetch(message.id), this.context.self);
-      return;   // blockiert nicht — onReceive kehrt sofort zurück
-    }
-    if (message instanceof Success) {
-      this.handle(message.value);
-    } else if (message instanceof Failure) {
-      this.log.warn(`fetch failed: ${message.cause.message}`);
-    }
+    match(message)
+      .with({ kind: 'fetch' }, (m) => this.onFetch(m))
+      .with(P.instanceOf(Success), (s) => this.onSuccess(s))
+      .with(P.instanceOf(Failure), (f) => this.onFailure(f))
+      .exhaustive();
+  }
+
+  private onFetch(message: FetchMessage): void {
+    pipeTo(this.downstream.fetch(message.id), this.context.self);   // blockiert nicht
+  }
+
+  private onSuccess(result: Success<Item>): void {
+    this.handle(result.value);
+  }
+
+  private onFailure(result: Failure): void {
+    this.log.warn(`fetch failed: ${result.cause.message}`);
   }
 }
 ```

@@ -28,17 +28,25 @@ actor system; the last two for **distributed scenarios**.
 
 ```ts
 import { describe, it, expect } from 'bun:test';
+import { match } from 'ts-pattern';
 import { Actor, Props, ActorRef } from 'actor-ts';
 import { TestKit } from 'actor-ts/testkit';
 
-type Command = { kind: 'increment' } | { kind: 'get'; replyTo: ActorRef<number> };
+type IncrementCommand = { kind: 'increment' };
+type GetCommand = { kind: 'get'; replyTo: ActorRef<number> };
+type Command = IncrementCommand | GetCommand;
 
 class Counter extends Actor<Command> {
   private count = 0;
   override onReceive(command: Command): void {
-    if (command.kind === 'increment') this.count++;
-    else command.replyTo.tell(this.count);
+    match(command)
+      .with({ kind: 'increment' }, () => this.onIncrement())
+      .with({ kind: 'get' }, (c) => this.onGet(c))
+      .exhaustive();
   }
+
+  private onIncrement(): void { this.count++; }
+  private onGet(command: GetCommand): void { command.replyTo.tell(this.count); }
 }
 
 describe('Counter', () => {

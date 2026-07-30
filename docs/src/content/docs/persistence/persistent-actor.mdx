@@ -19,13 +19,14 @@ this one resumes.
 ## A minimal example
 
 ```ts
-import { PersistentActor, ActorSystem, ActorSystemOptions, Props } from 'actor-ts';
+import { PersistentActor, ActorSystem, ActorSystemOptions, Props, type ActorRef } from 'actor-ts';
 import { InMemoryJournal, InMemorySnapshotStore } from 'actor-ts';
 import { match } from 'ts-pattern';
 
 type DepositCommand = { kind: 'deposit'; amount: number };
 type WithdrawCommand = { kind: 'withdraw'; amount: number };
-type Command = DepositCommand | WithdrawCommand;
+type GetBalanceCommand = { kind: 'get-balance'; replyTo: ActorRef<number> };
+type Command = DepositCommand | WithdrawCommand | GetBalanceCommand;
 
 type DepositedEvent = { kind: 'deposited'; amount: number; ts: number };
 type WithdrawnEvent = { kind: 'withdrawn'; amount: number; ts: number };
@@ -63,6 +64,7 @@ class Account extends PersistentActor<Command, Event, State> {
     match(command)
       .with({ kind: 'deposit' }, (c) => this.onDeposit(c))
       .with({ kind: 'withdraw' }, (c) => this.onWithdraw(state, c))
+      .with({ kind: 'get-balance' }, (c) => this.onGetBalance(state, c))
       .exhaustive();
   }
 
@@ -83,6 +85,10 @@ class Account extends PersistentActor<Command, Event, State> {
       { kind: 'withdrawn', amount: c.amount, ts: Date.now() },
       () => {},
     );
+  }
+
+  private onGetBalance(state: State, c: GetBalanceCommand): void {
+    c.replyTo.tell(state.balance);    // read-only — no persist
   }
 }
 
@@ -140,15 +146,20 @@ events to persist.  Three valid outcomes:
 
 ```ts
 onCommand(state: State, command: Command): void {
-  if (command.kind === 'get-balance') {
-    command.replyTo.tell(state.balance);    // read-only — no persist
-    return;
-  }
-  if (command.kind === 'withdraw') {
-    if (state.balance < command.amount) return;   // reject
-    this.persist({ kind: 'withdrawn', amount: command.amount, ts: Date.now() },
-      () => {});
-  }
+  match(command)
+    .with({ kind: 'get-balance' }, (c) => this.onGetBalance(state, c))
+    .with({ kind: 'withdraw' }, (c) => this.onWithdraw(state, c))
+    .exhaustive();
+}
+
+private onGetBalance(state: State, command: GetBalanceCommand): void {
+  command.replyTo.tell(state.balance);    // read-only — no persist
+}
+
+private onWithdraw(state: State, command: WithdrawCommand): void {
+  if (state.balance < command.amount) return;   // reject
+  this.persist({ kind: 'withdrawn', amount: command.amount, ts: Date.now() },
+    () => {});
 }
 ```
 
@@ -311,10 +322,12 @@ import { Aside } from '@astrojs/starlight/components';
 <Aside type="caution" title="Side effects in `onEvent`">
   ```ts
   override onEvent(state, event) {
-    if (event.kind === 'deposited') {
-      sendEmail(event.amount);   // ✗ runs on every recovery
-    }
-    return { balance: state.balance + event.amount };
+    return match(event)
+      .with({ kind: 'deposited' }, (e) => {
+        sendEmail(e.amount);   // ✗ runs on every recovery
+        return { balance: state.balance + e.amount };
+      })
+      .exhaustive();
   }
   ```
   `onEvent` runs once on persist *and* once per recovery.  An

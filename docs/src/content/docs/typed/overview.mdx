@@ -21,16 +21,24 @@ Same counter, two ways:
 **Untyped:**
 
 ```ts
+import { match } from 'ts-pattern';
 import { Actor, Props, ActorSystem } from 'actor-ts';
 
-type Command = { kind: 'increment' } | { kind: 'decrement' };
+type IncrementCommand = { kind: 'increment' };
+type DecrementCommand = { kind: 'decrement' };
+type Command = IncrementCommand | DecrementCommand;
 
 class Counter extends Actor<Command> {
   private count = 0;
   override onReceive(command: Command): void {
-    if (command.kind === 'increment') this.count++;
-    else this.count--;
+    match(command)
+      .with({ kind: 'increment' }, () => this.onIncrement())
+      .with({ kind: 'decrement' }, () => this.onDecrement())
+      .exhaustive();
   }
+
+  private onIncrement(): void { this.count++; }
+  private onDecrement(): void { this.count--; }
 }
 
 const system = ActorSystem.create('demo');
@@ -40,12 +48,18 @@ const counter = system.spawnAnonymous(Props.create(() => new Counter()));
 **Typed:**
 
 ```ts
+import { match } from 'ts-pattern';
 import { ActorSystem, Behaviors } from 'actor-ts';
 
-type Command = { kind: 'increment' } | { kind: 'decrement' };
+type IncrementCommand = { kind: 'increment' };
+type DecrementCommand = { kind: 'decrement' };
+type Command = IncrementCommand | DecrementCommand;
 
 const counter = (n: number) => Behaviors.receive<Command>((_context, command) =>
-  command.kind === 'increment' ? counter(n + 1) : counter(n - 1)
+  match(command)
+    .with({ kind: 'increment' }, () => counter(n + 1))
+    .with({ kind: 'decrement' }, () => counter(n - 1))
+    .exhaustive()
 );
 
 const system = ActorSystem.create('demo');

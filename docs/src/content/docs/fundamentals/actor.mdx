@@ -32,20 +32,26 @@ Three properties define an actor in actor-ts:
 ## Defining one
 
 ```ts
+import { match } from 'ts-pattern';
 import { Actor, ActorSystem, Props } from 'actor-ts';
 
-type Command =
-  | { kind: 'increment' }
-  | { kind: 'reset' };
+type IncrementCommand = { kind: 'increment' };
+type ResetCommand = { kind: 'reset' };
+type Command = IncrementCommand | ResetCommand;
 
 class Counter extends Actor<Command> {
   private count = 0;
 
   override onReceive(command: Command): void {
-    if (command.kind === 'increment')   this.count++;
-    else if (command.kind === 'reset') this.count = 0;
+    match(command)
+      .with({ kind: 'increment' }, () => this.onIncrement())
+      .with({ kind: 'reset' }, () => this.onReset())
+      .exhaustive();
     this.log.info(`count is now ${this.count}`);
   }
+
+  private onIncrement(): void { this.count++; }
+  private onReset(): void { this.count = 0; }
 }
 ```
 

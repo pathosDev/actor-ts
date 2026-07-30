@@ -10,6 +10,7 @@ its event(s).  On restart, the FSM replays those events through
 `applyEvent` and resumes in the exact state it was in.
 
 ```ts
+import { match } from 'ts-pattern';
 import { PersistentFSM } from 'actor-ts';
 import type { FsmStateData, FsmTransitionMap } from 'actor-ts';
 
@@ -53,9 +54,11 @@ class OrderApproval extends PersistentFSM<Command, Event, State, Data> {
   };
 
   applyEvent(state: State, data: Data, event: Event): FsmStateData<State, Data> {
-    if (event.kind === 'submitted') return { state: 'submitted', data };
-    if (event.kind === 'approved')  return { state: 'approved', data: { ...data, reviewer: event.reviewer } };
-    return { state: 'rejected', data: { ...data, reason: event.reason } };
+    return match(event)
+      .with({ kind: 'submitted' }, () => ({ state: 'submitted' as const, data }))
+      .with({ kind: 'approved' },  (e) => ({ state: 'approved' as const, data: { ...data, reviewer: e.reviewer } }))
+      .with({ kind: 'rejected' },  (e) => ({ state: 'rejected' as const, data: { ...data, reason: e.reason } }))
+      .exhaustive();
   }
 }
 ```

@@ -265,12 +265,19 @@ For binary protocols, `rawCodec()` gives you raw frames
 (`TOut = TIn = WebsocketFrame`):
 
 ```ts
+import { match } from 'ts-pattern';
 import { rawCodec, WebsocketRouteOptions, WebsocketServerActor, type WebsocketFrame } from 'actor-ts';
 
 const webSocketRouteOptions = WebsocketRouteOptions.create().withCodec(rawCodec());
 class BinaryHub extends WebsocketServerActor<WebsocketFrame, WebsocketFrame> {
   onMessage(frame: WebsocketFrame): void {
-    if (frame.kind === 'binary') this.reply({ kind: 'binary', data: process(frame.data) });
+    match(frame)
+      .with({ kind: 'binary' }, (f) => this.onBinary(f))
+      .otherwise(() => {});
+  }
+
+  private onBinary(frame: BinaryFrame): void {
+    this.reply({ kind: 'binary', data: process(frame.data) });
   }
 }
 

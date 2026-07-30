@@ -490,6 +490,10 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   their bodies inline.  The README's event-sourcing snippet, which dispatched
   on `cmd.kind` with a ternary forty lines below the section teaching the
   opposite, is fixed to match.
+  The samples themselves follow in a second pass: ~150 `if`-chains, one
+  `switch` and several ternaries across 33 EN/DE page pairs now use `match`,
+  with class-actor hooks delegating to `onXxx` handlers and inline
+  object-literal unions replaced by named variant types.
 
 - **Messages are named by their `kind`, not `Object`.** Every tool that
   lists what an actor handled — the profiler's heaviest handlers, the
