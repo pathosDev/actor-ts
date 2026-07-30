@@ -1,3 +1,4 @@
+import { match } from 'ts-pattern';
 import type { Config } from '../../config/Config.js';
 import { ConfigKeys } from '../../config/ConfigKeys.js';
 import type { ActorRef } from '../../ActorRef.js';
@@ -22,10 +23,15 @@ export interface NatsPublish {
   readonly replyTo?: string;
 }
 
-export type NatsCommand =
-  | { readonly kind: 'publish'; readonly publish: NatsPublish }
-  | { readonly kind: 'subscribe'; readonly subject: string; readonly target: ActorRef<NatsMessage> }
-  | { readonly kind: 'unsubscribe'; readonly subject: string };
+type PublishCommand = { readonly kind: 'publish'; readonly publish: NatsPublish };
+type SubscribeCommand = {
+  readonly kind: 'subscribe';
+  readonly subject: string;
+  readonly target: ActorRef<NatsMessage>;
+};
+type UnsubscribeCommand = { readonly kind: 'unsubscribe'; readonly subject: string };
+
+export type NatsCommand = PublishCommand | SubscribeCommand | UnsubscribeCommand;
 
 /**
  * NATS-Core (no JetStream) actor backed by the official `nats` peer-dep.
@@ -101,22 +107,37 @@ export class NatsActor extends BrokerActor<NatsOptionsType, NatsCommand, NatsPub
   }
 
   override onReceive(command: NatsCommand): void {
-    if (command.kind === 'publish') {
-      this.enqueueOutbound(command.publish);
-    } else if (command.kind === 'subscribe') {
-      if (this.connectionState === 'connected' && this.nc) {
-        this.subscribeOnConnection(command.subject, command.target);
-      }
-    } else {
-      const existing = this.subs.get(command.subject);
-      if (existing) {
-        try { existing.unsubscribe(); } catch { /* ignore */ }
-        this.subs.delete(command.subject);
-      }
-    }
+    match(command)
+      .with({ kind: 'publish' }, (c) => this.onPublish(c))
+      .with({ kind: 'subscribe' }, (c) => this.onSubscribe(c))
+      .with({ kind: 'unsubscribe' }, (c) => this.onUnsubscribe(c))
+      .exhaustive();
   }
 
   /* ----------------------------- internals ----------------------------- */
+
+  private onPublish(command: PublishCommand): void {
+    this.enqueueOutbound(command.publish);
+  }
+
+  /**
+   * Dropped while disconnected — subscription commands are not buffered.
+   * Note that `connectImplementation` restores only `options.subscriptions`,
+   * so a dynamic subscription does not survive a reconnect either.
+   */
+  private onSubscribe(command: SubscribeCommand): void {
+    if (this.connectionState === 'connected' && this.nc) {
+      this.subscribeOnConnection(command.subject, command.target);
+    }
+  }
+
+  private onUnsubscribe(command: UnsubscribeCommand): void {
+    const existing = this.subs.get(command.subject);
+    if (existing) {
+      try { existing.unsubscribe(); } catch { /* ignore */ }
+      this.subs.delete(command.subject);
+    }
+  }
 
   private subscribeOnConnection(subject: string, target: ActorRef<NatsMessage>): void {
     if (!this.nc) return;

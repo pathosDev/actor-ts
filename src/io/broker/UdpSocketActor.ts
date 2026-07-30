@@ -1,3 +1,4 @@
+import { match } from 'ts-pattern';
 import type { Config } from '../../config/Config.js';
 import { ConfigKeys } from '../../config/ConfigKeys.js';
 import { Lazy } from '../../util/Lazy.js';
@@ -19,7 +20,9 @@ export interface UdpOutbound {
   readonly port: number;
 }
 
-export type UdpSocketCommand = { readonly kind: 'send'; readonly datagram: UdpOutbound };
+type SendCommand = { readonly kind: 'send'; readonly datagram: UdpOutbound };
+
+export type UdpSocketCommand = SendCommand;
 
 /**
  * UDP-socket actor.  Uses `node:dgram` (built-in everywhere).  No
@@ -111,7 +114,13 @@ export class UdpSocketActor
   }
 
   override onReceive(command: UdpSocketCommand): void {
-    if (command.kind === 'send') this.enqueueOutbound(command.datagram);
+    match(command)
+      .with({ kind: 'send' }, (c) => this.onSend(c))
+      .exhaustive();
+  }
+
+  private onSend(command: SendCommand): void {
+    this.enqueueOutbound(command.datagram);
   }
 }
 
