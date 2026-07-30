@@ -10,12 +10,17 @@
 type Crunch = { kind: 'crunch'; iterations: number; id: number };
 type Done = { kind: 'done'; id: number };
 
-declare const self: {
+/**
+ * The dedicated-worker scope, reached through `globalThis` rather than a
+ * `declare const self` — the latter collides with the DOM lib's own `self`
+ * (TS2451) as soon as anything typechecks this file with `"lib": ["DOM"]`.
+ */
+const workerScope = globalThis as unknown as {
   onmessage: ((ev: { data: Crunch }) => void) | null;
   postMessage(v: unknown): void;
 };
 
-self.onmessage = (ev) => {
+workerScope.onmessage = (ev) => {
   const message = ev.data;
   if (message.kind !== 'crunch') return;
   let acc = 0;
@@ -26,5 +31,5 @@ self.onmessage = (ev) => {
     acc = ((acc << 5) | (acc >>> 27)) ^ i;
   }
   const reply: Done & { acc: number } = { kind: 'done', id: message.id, acc };
-  self.postMessage(reply);
+  workerScope.postMessage(reply);
 };
