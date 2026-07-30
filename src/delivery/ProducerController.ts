@@ -1,3 +1,4 @@
+import { match } from 'ts-pattern';
 import { Actor } from '../Actor.js';
 import type { ActorRef } from '../ActorRef.js';
 import type { Cancellable } from '../Scheduler.js';
@@ -65,11 +66,13 @@ export class ProducerController<T> extends Actor<ProducerSend<T> | Acknowledgmen
   }
 
   override onReceive(message: ProducerSend<T> | Acknowledgment): void {
-    if ((message as Acknowledgment).kind === 'reliable-delivery.ack') return this.handleAcknowledgment(message as Acknowledgment);
-    if ((message as ProducerSend<T>).kind === 'reliable-delivery.send') return this.handleSend(message as ProducerSend<T>);
+    match(message)
+      .with({ kind: 'reliable-delivery.ack' }, (m) => this.onAcknowledgment(m))
+      .with({ kind: 'reliable-delivery.send' }, (m) => this.onSend(m))
+      .exhaustive();
   }
 
-  private handleSend(message: ProducerSend<T>): void {
+  private onSend(message: ProducerSend<T>): void {
     if (this.inflight.size >= this.windowSize) {
       this.pending.push(message);
       return;
@@ -105,7 +108,7 @@ export class ProducerController<T> extends Actor<ProducerSend<T> | Acknowledgmen
     );
   }
 
-  private handleAcknowledgment(message: Acknowledgment): void {
+  private onAcknowledgment(message: Acknowledgment): void {
     if (message.producerId !== this.id) return;
     const inflight = this.inflight.get(message.seq);
     if (!inflight) return;
