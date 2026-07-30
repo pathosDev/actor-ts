@@ -5,7 +5,7 @@ import type {
 } from './PromClientAdapter.js';
 
 /** Plain options-object shape accepted by {@link promClientRegistry}. */
-export interface PromClientAdapterOptionsType {
+export type PromClientAdapterOptionsType = {
   /** The prom-client API namespace (`import client from 'prom-client'`). */
   readonly client: PromClientLike;
   /** The prom-client `Registry` to publish into.  Typically `client.register`. */
@@ -15,7 +15,7 @@ export interface PromClientAdapterOptionsType {
    * name registered through the adapter.  Default: empty.
    */
   readonly namePrefix?: string;
-}
+};
 
 /**
  * Fluent builder for {@link PromClientAdapterOptionsType}:
