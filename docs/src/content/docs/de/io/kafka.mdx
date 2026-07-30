@@ -108,6 +108,21 @@ Für Kafkas Consumer-Group-Work-Sharing nimm **mehrere
 Actor-Instanzen** mit derselben `groupId` — jede Instanz
 übernimmt eine Teilmenge der Partitionen.
 
+`topics` und das `subscribe`-Kommando zur Laufzeit speisen dieselbe
+gewünschte Menge, die von der
+[BrokerActor-Basisklasse](/de/io/broker-actor-base/#desired-subscriptions)
+gehalten wird und nicht vom Consumer: ein zur Laufzeit hinzugefügtes Topic
+wird nach einem Reconnect **neu subscribed**, und ein `subscribe`, das
+gesendet wird während der Actor getrennt ist, wird beim nächsten Connect
+angewandt statt verworfen.  Konfigurierte Topics erben
+`consumer.fromBeginning`; eine Ergänzung zur Laufzeit startet beim
+aktuellen Offset.
+
+Ein `unsubscribe` gibt es nicht — kafkajs kann einem laufenden Consumer
+kein einzelnes Topic entziehen.  Stoppe den Actor (oder starte einen
+zweiten mit einer anderen `groupId`), wenn ein Consumer wirklich eine
+andere Topic-Menge braucht.
+
 ## Commit-Modi
 
 ```ts

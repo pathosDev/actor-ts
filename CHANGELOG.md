@@ -631,6 +631,48 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   printed a red `[exit=N]` line for a failed suite and then exited **0**, which is
   how ten broken benchmarks stayed invisible.  It now exits non-zero, listing what
   failed; every suite still runs, so one break does not mask the rest.
+- **Broker subscriptions survive a reconnect, and a dropped connection is torn
+  down before the next one is built** (#504).  Two compounding defects in
+  `BrokerActor` and its subclasses, both of which failed *silently* — the actor
+  reported `BrokerConnected` and then received nothing.
+
+  `handleConnectionLost` scheduled a reconnect without ever calling
+  `disconnectImplementation`, so it ran **only** from `postStop` and every
+  reconnect re-entered `connectImplementation` on top of the previous attempt's
+  state.  For `NatsActor` that was fatal rather than merely leaky: its live-handle
+  map still held the dead connection's subscriptions, and its
+  `if (subs.has(subject)) return` guard therefore skipped re-subscribing — after
+  one reconnect **not even the configured `subscriptions` were re-established**.
+  `KafkaActor` overwrote its producer and consumer without disconnecting them
+  (leaking both on every cycle, and on any connect that failed after
+  `producer.connect()` succeeded), `JetStreamActor` abandoned its push
+  subscription and pending acks, and `RedisStreamsActor` left the previous
+  `XREADGROUP` loop running against the old client alongside the new one.
+  `postStop` had the mirror-image bug: it gated on `_state !== 'disconnected'`,
+  which is exactly the state a *dropped-but-open* connection sits in, so stopping
+  a mid-reconnect actor skipped teardown entirely.  `disconnectImplementation` is
+  now called before every re-connect attempt and whenever transport state is
+  open at stop, and is documented as idempotent.
+
+  Separately, only *configured* subscriptions were ever restored.  A subscription
+  added at runtime (`{ kind: 'subscribe', … }` on `NatsActor` / `KafkaActor`) was
+  recorded nowhere, so it vanished on the first drop; and one sent while the actor
+  was disconnected was dropped on the floor outright.  `BrokerActor` now owns a
+  **desired-subscription set** — `rememberSubscription` / `forgetSubscription`
+  plus the `initialSubscriptions` / `applySubscription` / `revokeSubscription`
+  hooks — which is connection-independent, seeded from the options exactly once
+  (so a runtime `unsubscribe` is not resurrected by the next reconnect), and
+  replayed by `applyDesiredSubscriptions()` on every connect.  A subscribe that
+  arrives during an outage now lands on the next connect instead of being lost,
+  re-subscribing a live subject swaps its target, and a subscription that cannot
+  be established is logged as a warning instead of leaving the actor connected
+  and deaf.  `MqttActor` already implemented this contract with its own richer
+  registry (QoS, multiple targets, deathwatch) and is unchanged.  `NatsActor`
+  additionally gains the `createNatsConnection()` test seam its two siblings
+  already had — it previously had **no unit test at all**, which is how this went
+  unnoticed — and its `onReceive` moves to a `ts-pattern` match over named
+  variant types (part of #496).
+
 - **A `TypedActor`'s `terminated` signal is actually delivered** (#448).
   `Signal` declared `{ kind: 'terminated'; ref }`, the docs tabulated it
   alongside `post-stop` and `pre-restart`, and `context.watch`'s own JSDoc
