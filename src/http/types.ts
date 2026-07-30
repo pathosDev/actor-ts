@@ -6,7 +6,7 @@
 
 export type HttpMethod = 'GET' | 'POST' | 'PUT' | 'DELETE' | 'PATCH' | 'HEAD' | 'OPTIONS';
 
-export interface HttpRequest {
+export type HttpRequest = {
   readonly method: HttpMethod;
   readonly path: string;
   readonly headers: Readonly<Record<string, string>>;
@@ -24,9 +24,9 @@ export interface HttpRequest {
    * `IpAllowlist`'s `getClientIp` option).
    */
   readonly remoteAddress?: string;
-}
+};
 
-export interface HttpResponse {
+export type HttpResponse = {
   readonly status: number;
   readonly headers?: Readonly<Record<string, string>>;
   /**
@@ -38,7 +38,7 @@ export interface HttpResponse {
   readonly body?: string | Uint8Array | ReadableStream<Uint8Array> | object | null;
   /** Forced content-type.  Overrides whatever the marshaller picks. */
   readonly contentType?: string;
-}
+};
 
 /** Named HTTP status codes for callers that don't want magic numbers. */
 export const Status = {

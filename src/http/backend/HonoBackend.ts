@@ -77,7 +77,7 @@ export function readBufferedAmount(raw: unknown): number {
  * Users that *do* install Hono get full, typed access via `getApp()`.
  */
 
-interface HonoContextLike {
+type HonoContextLike = {
   readonly req: {
     method: string;
     path: string;
@@ -97,14 +97,14 @@ interface HonoContextLike {
   };
   /** Runtime-specific environment bag — varies per Hono adapter. */
   readonly env?: unknown;
-}
+};
 
 type HonoHandler = (context: HonoContextLike) => Promise<Response> | Response;
 type HonoErrorHandler = (err: unknown, context: HonoContextLike) => Promise<Response> | Response;
 type HonoNotFoundHandler = (context: HonoContextLike) => Promise<Response> | Response;
 
 /** Structural subset of the Hono app we consume. */
-export interface HonoAppLike {
+export type HonoAppLike = {
   get(path: string, ...handlers: unknown[]): unknown;
   post(path: string, handler: HonoHandler): unknown;
   put(path: string, handler: HonoHandler): unknown;
@@ -115,7 +115,7 @@ export interface HonoAppLike {
   onError(handler: HonoErrorHandler): unknown;
   notFound(handler: HonoNotFoundHandler): unknown;
   fetch(request: Request): Promise<Response> | Response;
-}
+};
 
 /**
  * Hono-backed HTTP backend — a thin adapter that compiles the actor-ts

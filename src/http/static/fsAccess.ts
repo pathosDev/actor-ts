@@ -5,17 +5,17 @@
  * buffered (a future streaming path could add one behind this module).
  */
 
-export interface FileStat {
+export type FileStat = {
   readonly size: number;
   readonly mtimeMs: number;
   readonly isFile: boolean;
   readonly isDirectory: boolean;
-}
+};
 
-export interface DirectoryEntry {
+export type DirectoryEntry = {
   readonly name: string;
   readonly isDirectory: boolean;
-}
+};
 
 let fsPromises: typeof import('node:fs/promises') | undefined;
 async function fsp(): Promise<typeof import('node:fs/promises')> {

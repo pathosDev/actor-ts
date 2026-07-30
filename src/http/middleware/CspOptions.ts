@@ -10,7 +10,7 @@ import { OptionsBuilder } from '../../util/OptionsBuilder.js';
  * directive names.  A directive present with an empty array is dropped
  * (lets you remove a baseline directive by setting it to `[]`).
  */
-export interface CspDirectives {
+export type CspDirectives = {
   readonly defaultSrc?: readonly string[];
   readonly scriptSrc?: readonly string[];
   readonly scriptSrcAttr?: readonly string[];
@@ -30,17 +30,17 @@ export interface CspDirectives {
   readonly upgradeInsecureRequests?: boolean;
   readonly reportUri?: readonly string[];
   readonly reportTo?: string;
-}
+};
 
 /** Plain settings shape for CSP. */
-export interface CspOptionsType {
+export type CspOptionsType = {
   /** Directives to emit; merged over the baseline unless `useDefaults` is false. */
   readonly directives?: CspDirectives;
   /** Merge over a helmet-parity baseline.  Default true. */
   readonly useDefaults?: boolean;
   /** Emit `Content-Security-Policy-Report-Only` instead of enforcing.  Default false. */
   readonly reportOnly?: boolean;
-}
+};
 
 /** Fluent builder for {@link CspOptionsType}. */
 export class CspOptionsBuilder extends OptionsBuilder<CspOptionsType> {

@@ -9,22 +9,22 @@
 import { Lazy } from '../../util/Lazy.js';
 
 /** Minimal surface of a client WebSocket the client actor depends on. */
-export interface WebsocketLike {
+export type WebsocketLike = {
   addEventListener(event: 'open' | 'close', cb: () => void): void;
   addEventListener(event: 'error', cb: (ev: unknown) => void): void;
   addEventListener(event: 'message', cb: (ev: { data: unknown }) => void): void;
   send(data: string | Uint8Array): void;
   close(code?: number, reason?: string): void;
   ping?(): void;
-}
+};
 
-export interface WebsocketClientConstructorOptions {
+export type WebsocketClientConstructorOptions = {
   readonly protocols?: string | ReadonlyArray<string>;
-}
+};
 
-export interface WebsocketClientConstructor {
+export type WebsocketClientConstructor = {
   create(url: string, options?: WebsocketClientConstructorOptions): WebsocketLike;
-}
+};
 
 /** Lazy ctor — resolves once, caches the resolved factory. */
 export const websocketClientConstructor: Lazy<Promise<WebsocketClientConstructor>> = Lazy.of(async () => {

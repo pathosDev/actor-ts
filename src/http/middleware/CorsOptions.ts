@@ -13,7 +13,7 @@ import type { HttpMethod } from '../types.js';
 export type CorsOrigin = '*' | ReadonlyArray<string> | ((origin: string) => boolean);
 
 /** Plain settings shape for CORS. */
-export interface CorsOptionsType {
+export type CorsOptionsType = {
   /** Required — call withOrigins/withAnyOrigin/withOriginPredicate. */
   readonly origins?: CorsOrigin;
   /** `Access-Control-Allow-Methods`.  Default: the methods registered at the pattern. */
@@ -26,7 +26,7 @@ export interface CorsOptionsType {
   readonly credentials?: boolean;
   /** `Access-Control-Max-Age` in seconds.  Default: unset. */
   readonly maxAge?: number;
-}
+};
 
 /** Fluent builder for {@link CorsOptionsType}. */
 export class CorsOptionsBuilder extends OptionsBuilder<CorsOptionsType> {

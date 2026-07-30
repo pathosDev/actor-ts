@@ -41,12 +41,12 @@ export class WebsocketEncodeError extends Error {
 }
 
 /** Bidirectional wire codec.  `TOut` = what we send, `TIn` = what we receive. */
-export interface WebsocketCodec<TOut, TIn> {
+export type WebsocketCodec<TOut, TIn> = {
   /** Stable identifier — 'json' | 'raw' | custom.  Informational (logs). */
   readonly name: string;
   encode(message: TOut): WebsocketFrame;
   decode(frame: WebsocketFrame): TIn;
-}
+};
 
 const textDecoder = /* @__PURE__ */ new TextDecoder('utf-8', { fatal: false });
 

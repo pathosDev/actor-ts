@@ -1,15 +1,15 @@
 import type { HttpMethod } from './types.js';
 
-export interface HttpClientRequest {
+export type HttpClientRequest = {
   readonly method: HttpMethod;
   readonly url: string | URL;
   readonly headers?: Readonly<Record<string, string>>;
   readonly body?: string | Uint8Array | object | null;
   /** Abort the request after this many milliseconds. */
   readonly timeoutMs?: number;
-}
+};
 
-export interface HttpClientResponse {
+export type HttpClientResponse = {
   readonly status: number;
   readonly headers: Readonly<Record<string, string>>;
   readonly body: Uint8Array;
@@ -17,7 +17,7 @@ export interface HttpClientResponse {
   text(): string;
   /** Decode body as JSON. */
   json<T = unknown>(): T;
-}
+};
 
 /**
  * Thin HTTP client around the global `fetch`.  Returns a uniform response

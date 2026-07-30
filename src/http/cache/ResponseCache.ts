@@ -28,7 +28,7 @@ import type { HttpRequest, HttpResponse } from '../types.js';
  *   route(get('/users/:id', userCache(request => askUserActor(request.params.id))));
  */
 
-export interface ResponseCacheOptions {
+export type ResponseCacheOptions = {
   /** Backing cache. */
   readonly cache: Cache;
   /** TTL on stored responses (milliseconds).  Required — no TTL invites unbounded growth. */
@@ -46,15 +46,15 @@ export interface ResponseCacheOptions {
    * responses (saves repeat lookups when callers query unknown ids).
    */
   readonly cacheStatuses?: ReadonlyArray<number>;
-}
+};
 
-interface CachedResponse {
+type CachedResponse = {
   readonly status: number;
   readonly headers?: Record<string, string>;
   /** JSON-serialisable body.  Uint8Array is base64-tagged. */
   readonly body: unknown;
   readonly contentType?: string;
-}
+};
 
 export function cached(options: ResponseCacheOptions) {
   if (!Number.isFinite(options.ttlMs) || options.ttlMs <= 0) {

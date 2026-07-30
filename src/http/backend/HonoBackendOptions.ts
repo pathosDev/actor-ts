@@ -19,7 +19,7 @@ import { OptionsValidator } from '../../util/OptionsValidator.js';
 import type { HonoAppLike } from './HonoBackend.js';
 
 /** Plain options-object shape accepted by a {@link HonoBackend}. */
-export interface HonoBackendOptionsType {
+export type HonoBackendOptionsType = {
   /**
    * Bring-your-own Hono app — useful if you already registered middleware
    * (CORS, JWT, logger) before handing it off.  When omitted, we import
@@ -28,7 +28,7 @@ export interface HonoBackendOptionsType {
   readonly app?: HonoAppLike;
   /** Maximum allowed body size in bytes (default: 10 MiB).  Exceeding it returns 413. */
   readonly maxBodyBytes?: number;
-}
+};
 
 /** Fluent builder for {@link HonoBackendOptionsType}. */
 export class HonoBackendOptionsBuilder extends OptionsBuilder<HonoBackendOptionsType> {

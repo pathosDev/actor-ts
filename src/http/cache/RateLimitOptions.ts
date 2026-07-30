@@ -10,16 +10,16 @@ import type { Cache } from '../../cache/Cache.js';
 import type { HttpRequest, HttpResponse } from '../types.js';
 
 /** Context handed to a custom {@link RateLimitOptionsType.onLimit} builder. */
-export interface RateLimitContext {
+export type RateLimitContext = {
   readonly key: string;
   readonly count: number;
   readonly max: number;
   readonly windowMs: number;
   readonly retryAfterSeconds: number;
-}
+};
 
 /** Plain options-object shape accepted by {@link rateLimit}. */
-export interface RateLimitOptionsType {
+export type RateLimitOptionsType = {
   /** Backing cache.  Should be a shared/distributed one (Redis) in prod. */
   readonly cache: Cache;
   /** Length of the rolling window in milliseconds. */
@@ -39,7 +39,7 @@ export interface RateLimitOptionsType {
    * `Retry-After` (seconds-rounded-up).
    */
   readonly onLimit?: (context: RateLimitContext) => HttpResponse;
-}
+};
 
 /**
  * Fluent builder for {@link RateLimitOptionsType}:
