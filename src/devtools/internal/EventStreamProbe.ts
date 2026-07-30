@@ -24,9 +24,9 @@ import { freeActorName } from './ActorNames.js';
 type EventChannel<T> = abstract new (...args: any[]) => T;
 
 /** A live subscription; call {@link EventStreamProbe.stop} to end it. */
-export interface EventStreamProbe {
+export type EventStreamProbe = {
   stop(): void;
-}
+};
 
 /**
  * Subscribe `handle` to `channel` on the system event stream.

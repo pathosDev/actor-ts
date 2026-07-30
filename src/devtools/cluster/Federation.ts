@@ -29,11 +29,11 @@ import {
 const STALE_AFTER_MS = 5_000;
 
 /** What one peer last told us. */
-interface CachedReport {
+type CachedReport = {
   readonly figures: NodeFigures;
   readonly actors: ReadonlyArray<ActorNode> | null;
   readonly receivedAtMs: number;
-}
+};
 
 export class DevToolsFederation {
   private unregister: (() => void) | null = null;

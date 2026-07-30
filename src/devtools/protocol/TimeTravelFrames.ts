@@ -23,35 +23,35 @@ export type ReplayCapability = 'events-only' | 'state';
 export type ReplayFoldSource = 'registered' | 'auto-captured' | 'none';
 
 /** Summary of one persistence id. */
-export interface JournalIdentifierInfo {
+export type JournalIdentifierInfo = {
   readonly persistenceId: string;
   readonly highestSequenceNumber: number;
   readonly capability: ReplayCapability;
-}
+};
 
 /** Parameters of `journal.ids`. */
-export interface JournalIdentifiersParameters {
+export type JournalIdentifiersParameters = {
   readonly offset?: number;
   readonly limit?: number;
-}
+};
 
 /** Result of `journal.ids`. */
-export interface JournalIdentifiersResult {
+export type JournalIdentifiersResult = {
   readonly identifiers: ReadonlyArray<JournalIdentifierInfo>;
   readonly total: number;
   readonly offset: number;
-}
+};
 
 /** Parameters of `journal.read`. */
-export interface JournalReadParameters {
+export type JournalReadParameters = {
   readonly persistenceId: string;
   readonly fromSequenceNumber?: number;
   readonly toSequenceNumber?: number;
   readonly limit?: number;
-}
+};
 
 /** One journal entry as shown in the event log. */
-export interface JournalEventView {
+export type JournalEventView = {
   readonly sequenceNumber: number;
   readonly timestampMs: number;
   readonly tags: ReadonlyArray<string>;
@@ -63,35 +63,35 @@ export interface JournalEventView {
   readonly payload: unknown;
   /** True when the payload was truncated for transport. */
   readonly truncated: boolean;
-}
+};
 
 /** Result of `journal.read`. */
-export interface JournalReadResult {
+export type JournalReadResult = {
   readonly persistenceId: string;
   readonly events: ReadonlyArray<JournalEventView>;
   readonly highestSequenceNumber: number;
-}
+};
 
 /** Parameters of `replay.capabilities`. */
-export interface ReplayCapabilitiesParameters {
+export type ReplayCapabilitiesParameters = {
   readonly persistenceId: string;
-}
+};
 
 /** Result of `replay.capabilities`. */
-export interface ReplayCapabilitiesResult {
+export type ReplayCapabilitiesResult = {
   readonly persistenceId: string;
   readonly capability: ReplayCapability;
   readonly foldSource: ReplayFoldSource;
-}
+};
 
 /** Parameters of `replay.state`. */
-export interface ReplayStateParameters {
+export type ReplayStateParameters = {
   readonly persistenceId: string;
   readonly toSequenceNumber: number;
-}
+};
 
 /** Reconstructed state at one point in the journal. */
-export interface ReplayStateResult {
+export type ReplayStateResult = {
   readonly persistenceId: string;
   readonly sequenceNumber: number;
   readonly state: unknown;
@@ -99,21 +99,21 @@ export interface ReplayStateResult {
   readonly fromSnapshotSequenceNumber: number | null;
   readonly eventsApplied: number;
   readonly truncated: boolean;
-}
+};
 
 /** Parameters of `replay.diff`. */
-export interface ReplayDiffParameters {
+export type ReplayDiffParameters = {
   readonly persistenceId: string;
   readonly fromSequenceNumber: number;
   readonly toSequenceNumber: number;
-}
+};
 
 /**
  * Result of `replay.diff` — both endpoints, with the field-level diff
  * computed in the UI so the server stays a dumb, read-only data source.
  */
-export interface ReplayDiffResult {
+export type ReplayDiffResult = {
   readonly persistenceId: string;
   readonly from: ReplayStateResult;
   readonly to: ReplayStateResult;
-}
+};

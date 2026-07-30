@@ -12,7 +12,7 @@ import type { ReplayFoldRegistration } from './replay/ReplayRegistry.js';
 const LOOPBACK_HOSTS: ReadonlyArray<string> = ['127.0.0.1', '::1', 'localhost'];
 
 /** Per-panel switches.  The dashboard is the shell itself and always on. */
-export interface DevToolsPanelOptionsType {
+export type DevToolsPanelOptionsType = {
   /** Actor tree + mailbox depths (#204).  Default `true`. */
   readonly actors?: boolean;
   /** Cluster topology, shard maps, membership timeline (#204).  Default `true`. */
@@ -29,10 +29,10 @@ export interface DevToolsPanelOptionsType {
   readonly timeTravel?: boolean;
   /** Actor profiler (#226).  Default `true`. */
   readonly profiler?: boolean;
-}
+};
 
 /** Plain options-object shape accepted by `DevTools.attach`. */
-export interface DevToolsOptionsType {
+export type DevToolsOptionsType = {
   /** Interface to bind.  Default `'127.0.0.1'` — see {@link allowRemote}. */
   readonly host?: string;
   /**
@@ -111,7 +111,7 @@ export interface DevToolsOptionsType {
    * from an `onEvent` you have not vetted for purity.
    */
   readonly replayAutoCapture?: boolean;
-}
+};
 
 /** Fluent builder for {@link DevToolsOptionsType}. */
 export class DevToolsOptionsBuilder extends OptionsBuilder<DevToolsOptionsType> {

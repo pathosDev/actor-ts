@@ -80,7 +80,7 @@ const OPTIONAL_PANELS: ReadonlyArray<{
  * subscribed — an open DevTools tab on the dashboard should not cost
  * the system a span buffer or a profiler session.
  */
-export interface DevToolsTap {
+export type DevToolsTap = {
   readonly stream: DevToolsStreamId;
   /** Begin producing; `emit` is safe to call from any context. */
   install(emit: (payload: DevToolsStreamPayload) => void): void;
@@ -90,20 +90,20 @@ export interface DevToolsTap {
   snapshot(): ReadonlyArray<DevToolsStreamPayload>;
   /** Subscriber count changed — the hook for idling while unobserved. */
   subscribersChanged?(count: number): void;
-}
+};
 
 /** Handler behind one pull method. */
 export type DevToolsRequestHandler = (parameters: unknown) => Promise<unknown>;
 
 /** Handle returned by `DevTools.attach`. */
-export interface DevToolsBinding {
+export type DevToolsBinding = {
   readonly host: string;
   readonly port: number;
   /** Browser URL of the dashboard. */
   readonly url: string;
   /** Unbind the server and uninstall every tap. */
   detach(): Promise<void>;
-}
+};
 
 export class DevToolsServer implements DevToolsHubContext {
   private readonly taps = new Map<DevToolsStreamId, DevToolsTap>();

@@ -34,11 +34,11 @@ import type {
 } from '../protocol/index.js';
 
 /** Command told to the hub when a tap produces a payload. */
-export interface DevToolsPublishCommand {
+export type DevToolsPublishCommand = {
   readonly kind: 'devtools-publish';
   readonly stream: DevToolsStreamId;
   readonly payload: DevToolsStreamPayload;
-}
+};
 
 /** Everything other components may tell the hub. */
 export type DevToolsHubCommand = DevToolsPublishCommand;
@@ -56,7 +56,7 @@ export function devToolsPublishCommand(
  * side, so the hub does not import `DevToolsServer` — the server holds
  * a ref to the hub, and a type edge back would be a cycle.
  */
-export interface DevToolsHubContext {
+export type DevToolsHubContext = {
   /** Handshake answer, including panel availability. */
   welcome(): Omit<WelcomeFrame, 'kind' | 'protocolVersion'>;
   /** True when a tap is installed for `stream`. */
@@ -72,13 +72,13 @@ export interface DevToolsHubContext {
    * panel is looking at it.
    */
   streamSubscribersChanged(stream: DevToolsStreamId, count: number): void;
-}
+};
 
 /** Per-connection state. */
-interface DevToolsSession {
+type DevToolsSession = {
   greeted: boolean;
   readonly streams: Set<DevToolsStreamId>;
-}
+};
 
 export class DevToolsHubActor
   extends WebsocketServerActor<DevToolsServerFrame, unknown, DevToolsHubCommand> {
