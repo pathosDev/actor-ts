@@ -3,7 +3,7 @@ import { OptionsValidator } from '../util/OptionsValidator.js';
 import type { MemcachedClientLike } from './MemcachedCache.js';
 
 /** Plain options-object shape accepted by a {@link MemcachedCache}. */
-export interface MemcachedCacheOptionsType {
+export type MemcachedCacheOptionsType = {
   /** Comma-separated server list, e.g. `'localhost:11211'`.  Default: `'localhost:11211'`. */
   readonly servers?: string;
   /** Optional username/password for SASL auth. */
@@ -13,7 +13,7 @@ export interface MemcachedCacheOptionsType {
   readonly keyPrefix?: string;
   /** Pre-built memjs client — bypass internal construction. */
   readonly client?: MemcachedClientLike;
-}
+};
 
 /**
  * Fluent builder for {@link MemcachedCacheOptionsType}:

@@ -35,16 +35,16 @@ import { ORSet, type ORSetJson } from './ORSet.js';
  * `{ identity: k => ... }` for non-JSON-serialisable keys.
  */
 
-export interface ORMapOptions<K> {
+export type ORMapOptions<K> = {
   readonly identity?: (k: K) => string;
-}
+};
 
 const defaultIdentity = (k: unknown): string => JSON.stringify(k);
 
-interface Entry<K, V extends Crdt<V>> {
+type Entry<K, V extends Crdt<V>> = {
   readonly key: K;
   readonly value: V;
-}
+};
 
 export class ORMap<K, V extends Crdt<V>> implements Crdt<ORMap<K, V>> {
   /**
@@ -233,10 +233,10 @@ export class ORMap<K, V extends Crdt<V>> implements Crdt<ORMap<K, V>> {
   }
 }
 
-export interface ORMapJson {
+export type ORMapJson = {
   readonly kind: 'ORMap';
   readonly keyset: ORSetJson;
   /** Per-key inner-CRDT JSON.  Decoder supplied at fromJSON time. */
   readonly values: Record<string, unknown>;
   readonly keyValues?: Record<string, string>;
-}
+};

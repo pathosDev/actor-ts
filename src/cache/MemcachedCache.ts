@@ -28,14 +28,14 @@ import type { MemcachedCacheOptions, MemcachedCacheOptionsType } from './Memcach
  */
 
 /** Subset of `memjs.Client` we use.  memjs uses Buffer; we always pass strings. */
-export interface MemcachedClientLike {
+export type MemcachedClientLike = {
   get(key: string): Promise<{ value: Buffer | null; flags?: Buffer | null }>;
   set(key: string, value: string | Buffer, settings?: { expires?: number }): Promise<boolean>;
   add(key: string, value: string | Buffer, settings?: { expires?: number }): Promise<boolean>;
   delete(key: string): Promise<boolean>;
   increment(key: string, amount: number, settings?: { initial?: number; expires?: number }): Promise<{ value: number | null }>;
   quit(): Promise<void>;
-}
+};
 
 export class MemcachedCache implements Cache {
   private readonly clientLazy: Lazy<Promise<MemcachedClientLike>>;
@@ -259,9 +259,9 @@ function msToSeconds(ttlMs: number | undefined): number | undefined {
   return Math.max(1, Math.ceil(ttlMs / 1000));
 }
 
-interface MemjsClientStatic {
+type MemjsClientStatic = {
   create(servers: string, settings?: { username?: string; password?: string }): MemcachedClientLike;
-}
+};
 
 const memjsLazy: Lazy<Promise<unknown>> = Lazy.of(async () => {
   try {

@@ -19,16 +19,16 @@
  * — pass a seeded RNG to make the policy deterministic in tests.
  */
 
-export interface BackoffPolicy {
+export type BackoffPolicy = {
   /**
    * Delay in milliseconds before the next restart attempt.  `restartCount`
    * is 0-based: the **first** restart (after the very first failure)
    * passes `0`, the second restart passes `1`, etc.
    */
   delayFor(restartCount: number): number;
-}
+};
 
-export interface ExponentialBackoffOptions {
+export type ExponentialBackoffOptions = {
   /** Floor for the delay, in ms. The first restart delay is at least this. */
   readonly minMs: number;
   /** Ceiling for the delay, in ms. */
@@ -41,16 +41,16 @@ export interface ExponentialBackoffOptions {
   readonly randomFactor?: number;
   /** Override `Math.random` for deterministic tests. */
   readonly random?: () => number;
-}
+};
 
-export interface LinearBackoffOptions {
+export type LinearBackoffOptions = {
   readonly minMs: number;
   readonly maxMs: number;
   /** Linear step in ms — added once per restart. */
   readonly stepMs: number;
   readonly randomFactor?: number;
   readonly random?: () => number;
-}
+};
 
 /**
  * `min × 2^n` clamped to `max`, multiplied by `1 ± randomFactor`.

@@ -3,7 +3,7 @@ import { OptionsValidator } from '../util/OptionsValidator.js';
 import type { RestartPolicy } from './WorkerCluster.js';
 
 /** Plain options-object shape accepted by {@link WorkerCluster.spawn}. */
-export interface WorkerClusterOptionsType {
+export type WorkerClusterOptionsType = {
   readonly bootstrap: URL | string;
   readonly workers?: number | 'auto';
   readonly systemName?: string;
@@ -12,7 +12,7 @@ export interface WorkerClusterOptionsType {
   readonly initData?: unknown;
   readonly restartPolicy?: RestartPolicy;
   readonly readyTimeoutMs?: number;
-}
+};
 
 /**
  * Fluent builder for {@link WorkerClusterOptionsType}:

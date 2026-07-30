@@ -2,7 +2,7 @@ import { OptionsBuilder } from '../util/OptionsBuilder.js';
 import { OptionsValidator } from '../util/OptionsValidator.js';
 
 /** Plain options-object shape accepted by a {@link KubernetesApiSeedProvider}. */
-export interface KubernetesApiSeedProviderOptionsType {
+export type KubernetesApiSeedProviderOptionsType = {
   /** Target namespace to look up endpoints in. */
   readonly namespace: string;
   /** Service or Endpoints name whose backing pods provide the cluster. */
@@ -13,7 +13,7 @@ export interface KubernetesApiSeedProviderOptionsType {
   readonly port: number;
   /** Override the Endpoints-fetch function — defaults to the in-cluster API. */
   readonly fetchEndpoints?: () => Promise<string[]>;
-}
+};
 
 /**
  * Fluent builder for {@link KubernetesApiSeedProviderOptionsType}.
