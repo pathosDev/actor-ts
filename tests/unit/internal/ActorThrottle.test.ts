@@ -24,7 +24,7 @@ beforeEach(() => {
 });
 afterEach(async () => { await sys.terminate(); });
 
-interface CountMessage { kind: 'tick' | 'configure-throttle' | 'cancel-throttle' }
+type CountMessage = { kind: 'tick' | 'configure-throttle' | 'cancel-throttle' };
 
 class Counter extends Actor<CountMessage> {
   count = 0;

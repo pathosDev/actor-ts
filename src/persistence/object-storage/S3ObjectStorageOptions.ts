@@ -5,7 +5,7 @@ import type {
   S3Credentials,
 } from './S3ObjectStorageBackend.js';
 
-export interface S3ObjectStorageOptionsType {
+export type S3ObjectStorageOptionsType = {
   /** S3 bucket name. */
   readonly bucket: string;
   /** AWS region.  For Cloudflare R2 use `'auto'`. */
@@ -34,7 +34,7 @@ export interface S3ObjectStorageOptionsType {
    * provided, all other connection options are ignored.
    */
   readonly client?: S3ClientLike;
-}
+};
 
 /**
  * Fluent builder for {@link S3ObjectStorageOptionsType}.  `bucket` + `region`

@@ -21,11 +21,11 @@ import { clusterLiveNodes, sleep, waitFor, type Scenario } from './types.js';
 const NUM_ENTITIES = 30;
 const ENTITY_IDS = Array.from({ length: NUM_ENTITIES }, (_, i) => `e-${i + 1}`);
 
-interface WhoResponse {
+type WhoResponse = {
   readonly entityId: string;
   readonly host: string;
   readonly value: number;
-}
+};
 
 async function whoFromAny(
   liveHosts: ReadonlyArray<string>,

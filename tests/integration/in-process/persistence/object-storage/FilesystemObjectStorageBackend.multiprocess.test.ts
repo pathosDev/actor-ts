@@ -30,11 +30,11 @@ afterEach(() => {
 
 const fixturePath = join(import.meta.dir, '_writer-process.ts');
 
-interface ChildResult {
+type ChildResult = {
   readonly exitCode: number;
   readonly stdout: string;
   readonly stderr: string;
-}
+};
 
 async function runWriter(args: ReadonlyArray<string>): Promise<ChildResult> {
   // Bun.spawn takes the executable + args; we run the fixture under the

@@ -49,10 +49,10 @@ value and wastes CPU — use `none`.
 ```ts
 type CompressionAlgo = 'none' | 'gzip' | 'zstd';
 
-interface CompressionConfig {
+type CompressionConfig = {
   algorithm: CompressionAlgo;
   level?:    number;       // algorithm-specific; clamped; undefined = default
-}
+};
 ```
 
 **Levels** are algorithm-specific.  Out-of-range values are

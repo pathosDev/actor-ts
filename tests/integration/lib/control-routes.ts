@@ -202,22 +202,22 @@ class CounterStateCollector extends Actor<CounterStateReply> {
  * (kind: 'event', seq, text) so it survives wire-serialisation
  * to remote mediators without prototype loss.
  */
-interface PubSubEvent {
+type PubSubEvent = {
   readonly kind: 'event';
   readonly seq: number;
   readonly text: string;
-}
+};
 
-interface PubSubSnapshotQuery {
+type PubSubSnapshotQuery = {
   readonly kind: 'snapshot';
   readonly replyTo: ActorRef<PubSubSnapshot>;
-}
+};
 
-interface PubSubSnapshot {
+type PubSubSnapshot = {
   readonly received: number;
   readonly lastSeq: number;
   readonly lastText: string | null;
-}
+};
 
 /**
  * Long-lived PubSub subscriber for scenario 12.  Accumulates every
@@ -251,12 +251,12 @@ class PubSubSnapshotCollector extends Actor<PubSubSnapshot> {
   }
 }
 
-export interface ControlDeps {
+export type ControlDeps = {
   /** Singleton proxy from `ClusterSingletonId.start(...)`. */
   readonly singletonProxy: ActorRef<SingletonMessage>;
   /** Shard-region ref from `ClusterSharding.get(...).start(...)`. */
   readonly shardingRegion: ActorRef<ShardedCommand>;
-}
+};
 
 export function makeControlRoutes(
   system: ActorSystem,

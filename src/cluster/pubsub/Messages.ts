@@ -48,22 +48,22 @@ export class CurrentTopics { constructor(public readonly topics: ReadonlyArray<s
  * removed (#80) to keep gossip bytes proportional to the topic count
  * rather than to total subscriber count.
  */
-export interface PubSubGossipMessage {
+export type PubSubGossipMessage = {
   readonly t: 'pubsub-gossip';
   readonly from: NodeAddressData;
   /** Topic names hosted locally on the sender. */
   readonly entries: ReadonlyArray<string>;
   readonly version: number;
-}
+};
 
 /**
  * Payload envelope used to forward a Publish to a remote mediator.
  * Remote mediator decodes and fans out to its local subscribers.
  */
-export interface PubSubPublishMessage {
+export type PubSubPublishMessage = {
   readonly t: 'pubsub-publish';
   readonly topic: string;
   readonly body: unknown;
-}
+};
 
 export type PubSubWireMessage = PubSubGossipMessage | PubSubPublishMessage;

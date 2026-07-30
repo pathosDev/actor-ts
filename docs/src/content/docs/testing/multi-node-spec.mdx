@@ -52,7 +52,7 @@ cluster.
 ## Configuration
 
 ```ts
-interface MultiNodeSpecOptionsType {
+type MultiNodeSpecOptionsType = {
   roles:             ReadonlyArray<string>;   // one node per role; must be unique
   seedRoles?:        ReadonlyArray<string>;   // bootstrap seeds — defaults to [roles[0]]
   addresses?:        Record<string, { host: string; port: number }>;
@@ -61,7 +61,7 @@ interface MultiNodeSpecOptionsType {
   awaitTimeoutMs?:   number;                  // default 10_000 — how long await* helpers wait
   logLevel?:         LogLevel;                // defaults to a quiet NoopLogger
   downing?:          (role: string) => DowningProvider | undefined;
-}
+};
 ```
 
 | Field | Purpose |

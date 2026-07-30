@@ -15,7 +15,7 @@
 import type { StatsSamplePayload } from '../protocol/index.js';
 
 /** One point of the stored series. */
-export interface HistoryPoint {
+export type HistoryPoint = {
   /** End of the bucket this point summarises. */
   readonly atMs: number;
   /* Levels — kept as the bucket's MAXIMUM, so a spike survives being
@@ -33,17 +33,17 @@ export interface HistoryPoint {
   readonly deadLetters: number;
   readonly messagesProcessed: number;
   readonly mailboxDrops: number;
-}
+};
 
 /** One resolution of the store. */
-interface Tier {
+type Tier = {
   readonly resolutionMs: number;
   readonly capacity: number;
   points: HistoryPoint[];
   /** The bucket still being filled; not yet in `points`. */
   open: HistoryPoint | null;
   openStartMs: number;
-}
+};
 
 /**
  * Second-resolution for the recent past, coarsening with age.

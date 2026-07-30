@@ -2,7 +2,7 @@ import { OptionsBuilder } from '../../util/OptionsBuilder.js';
 import { OptionsValidator } from '../../util/OptionsValidator.js';
 
 /** Plain options-object shape accepted by {@link KeepReferee}. */
-export interface KeepRefereeOptionsType {
+export type KeepRefereeOptionsType = {
   /**
    * Fixed "referee" address; whichever partition contains it survives.
    * Must match the address format returned by `NodeAddress.toString()`.
@@ -10,7 +10,7 @@ export interface KeepRefereeOptionsType {
   readonly refereeAddress: string;
   /** Additional quorum a.k.a. down-all-if-referee-reachable-but-too-few. */
   readonly downAllIfBelowQuorum?: number;
-}
+};
 
 /**
  * Fluent builder for {@link KeepRefereeOptionsType}:

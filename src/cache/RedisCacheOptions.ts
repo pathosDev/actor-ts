@@ -3,7 +3,7 @@ import { OptionsValidator } from '../util/OptionsValidator.js';
 import type { RedisClientLike } from './RedisCache.js';
 
 /** Plain options-object shape accepted by a {@link RedisCache}. */
-export interface RedisCacheOptionsType {
+export type RedisCacheOptionsType = {
   /**
    * Redis URL (e.g. `redis://localhost:6379`) — passed straight to the
    * ioredis constructor.  Mutually exclusive with `host`/`port`.
@@ -23,7 +23,7 @@ export interface RedisCacheOptionsType {
    * usage: connection sharing, custom retry strategies, Redis Cluster).
    */
   readonly client?: RedisClientLike;
-}
+};
 
 /**
  * Fluent builder for {@link RedisCacheOptionsType}:

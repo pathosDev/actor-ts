@@ -12,13 +12,13 @@ import type { Cluster } from './Cluster.js';
  * no address fields.  All other refs carry the full owning-node address so
  * the receiver knows where to dial back.
  */
-export interface WireActorRef {
+export type WireActorRef = {
   readonly $ref: 'actor';
   readonly path: string;
   readonly host?: string;
   readonly port?: number;
   readonly system?: string;
-}
+};
 
 const WIRE_REF_TAG = 'actor' as const;
 

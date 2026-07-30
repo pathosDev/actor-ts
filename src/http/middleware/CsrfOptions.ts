@@ -8,16 +8,16 @@ import { OptionsBuilder } from '../../util/OptionsBuilder.js';
 import { OptionsValidator } from '../../util/OptionsValidator.js';
 
 /** Attributes for the CSRF cookie (a subset of the general cookie attributes). */
-export interface CsrfCookieOptions {
+export type CsrfCookieOptions = {
   readonly path?: string;
   readonly secure?: boolean;
   readonly sameSite?: 'strict' | 'lax' | 'none';
   readonly domain?: string;
   readonly maxAgeSeconds?: number;
-}
+};
 
 /** Plain settings shape for {@link csrfProtection}. */
-export interface CsrfOptionsType {
+export type CsrfOptionsType = {
   /** REQUIRED — HMAC key, at least 16 bytes (32 recommended). */
   readonly secret?: string | Uint8Array;
   /** Cookie name.  Default `'csrf-token'`. */
@@ -32,7 +32,7 @@ export interface CsrfOptionsType {
   readonly allowedOrigins?: ReadonlyArray<string>;
   /** Also read the token from this urlencoded body field (classic forms).  Default off. */
   readonly formFieldName?: string;
-}
+};
 
 /** Fluent builder for {@link CsrfOptionsType}. */
 export class CsrfOptionsBuilder extends OptionsBuilder<CsrfOptionsType> {
@@ -99,12 +99,12 @@ export class CsrfOptionsValidator extends OptionsValidator<CsrfOptionsType> {
 }
 
 /** Plain settings shape for {@link requireSameOrigin}. */
-export interface SameOriginOptionsType {
+export type SameOriginOptionsType = {
   /** Full origins accepted beyond the request's own host. */
   readonly allowedOrigins?: ReadonlyArray<string>;
   /** Allow unsafe methods that carry neither Origin nor Referer.  Default false. */
   readonly allowMissingOrigin?: boolean;
-}
+};
 
 /** Fluent builder for {@link SameOriginOptionsType}. */
 export class SameOriginOptionsBuilder extends OptionsBuilder<SameOriginOptionsType> {

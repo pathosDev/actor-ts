@@ -197,7 +197,7 @@ import { PersistentActor, ActorSystem, Props } from 'actor-ts';
 
 type Command   = { kind: 'increment' } | { kind: 'decrement' };
 type Event = { kind: 'incremented' } | { kind: 'decremented' };
-interface State { count: number }
+type State = { count: number };
 
 class Counter extends PersistentActor<Command, Event, State> {
   readonly persistenceId = 'counter-1';

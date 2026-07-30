@@ -52,21 +52,21 @@ import type { ClusterClientReceptionistOptions, ClusterClientReceptionistOptions
 /* ============================ wire shapes =========================== */
 
 /** Inbound: a client wants to deliver `body` to actor at `to`. */
-export interface ClusterClientEnvelopeMessage {
+export type ClusterClientEnvelopeMessage = {
   readonly t: 'cluster-client-envelope';
   readonly from: NodeAddressData;
   readonly to: string;
   readonly askId?: string;
   readonly body: unknown;
-}
+};
 
 /** Outbound: reply to a client ask. */
-export interface ClusterClientReplyMessage {
+export type ClusterClientReplyMessage = {
   readonly t: 'cluster-client-reply';
   readonly askId: string;
   readonly ok: boolean;
   readonly body: unknown;
-}
+};
 
 /* ============================= extension ============================ */
 

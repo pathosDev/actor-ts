@@ -4,7 +4,7 @@ import { OptionsBuilder } from '../../util/OptionsBuilder.js';
 import type { Cluster } from '../Cluster.js';
 
 /** Plain options-object shape consumed by a {@link ClusterSingletonManager}. */
-export interface ClusterSingletonManagerOptionsType<T> {
+export type ClusterSingletonManagerOptionsType<T> = {
   readonly cluster: Cluster;
   /** Logical name for this singleton; also used as the child-actor name. */
   readonly typeName: string;
@@ -16,7 +16,7 @@ export interface ClusterSingletonManagerOptionsType<T> {
   readonly lease?: Lease;
   /** Retry interval for `lease.acquire()` after a failed attempt.  Default: 5 s. */
   readonly acquireRetryIntervalMs?: number;
-}
+};
 
 /**
  * Fluent builder for {@link ClusterSingletonManagerOptionsType}.  The

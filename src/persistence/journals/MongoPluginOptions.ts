@@ -4,7 +4,7 @@ import type { MongoJournalOptions } from './MongoJournalOptions.js';
 import type { MongoSnapshotStoreOptions } from '../snapshot-stores/MongoSnapshotStoreOptions.js';
 import type { MongoDurableStateStoreOptions } from '../durable-state-stores/MongoDurableStateStoreOptions.js';
 
-export interface RegisterMongoPluginsOptionsType {
+export type RegisterMongoPluginsOptionsType = {
   /**
    * Shared client injected into all three stores — the usual case, since a
    * `MongoClient` is a connection pool in its own right and they target the same
@@ -23,7 +23,7 @@ export interface RegisterMongoPluginsOptionsType {
   readonly snapshotStore?: MongoSnapshotStoreOptions;
   /** Durable-state-store-specific options (collection name). */
   readonly durableStateStore?: MongoDurableStateStoreOptions;
-}
+};
 
 /**
  * Fluent builder for {@link RegisterMongoPluginsOptionsType}:

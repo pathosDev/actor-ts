@@ -119,26 +119,26 @@ Server).
 ## Konfiguration
 
 ```ts
-interface MsSqlConnection {
+type MsSqlConnection = {
   url?:        string;                    // Server=…;Database=… oder mssql://user:pass@host:1433/db
   poolConfig?: Record<string, unknown>;   // mssql-Config-Objekt; hat Vorrang vor url
   pool?:       MsSqlPoolLike;             // vorgebauter / geteilter Pool
-}
+};
 
-interface MsSqlJournalOptions extends MsSqlConnection {
+type MsSqlJournalOptions = MsSqlConnection & {
   eventsTable?:      string;   // Default 'events'
   tagsTable?:        string;   // Default '<eventsTable>_tags'
   autoCreateTables?: boolean;  // Default true
-}
-interface MsSqlSnapshotStoreOptions extends MsSqlConnection {
+};
+type MsSqlSnapshotStoreOptions = MsSqlConnection & {
   snapshotsTable?:   string;   // Default 'snapshots'
   keepN?:            number;   // neueste N pro pid; Default 3, <=0 behält alle
   autoCreateTables?: boolean;
-}
-interface MsSqlDurableStateStoreOptions extends MsSqlConnection {
+};
+type MsSqlDurableStateStoreOptions = MsSqlConnection & {
   table?:            string;   // Default 'durable_state'
   autoCreateTables?: boolean;
-}
+};
 ```
 
 Die Optionen werden bei der Konstruktion des Stores validiert.  Tabellennamen

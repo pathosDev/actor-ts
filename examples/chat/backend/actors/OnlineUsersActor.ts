@@ -55,12 +55,12 @@ function ddKey(room: RoomName): string {
 
 /* ------------------------------- internals ----------------------------- */
 
-interface RoomState {
+type RoomState = {
   readonly subscribers: Set<ActorRef<UsersChanged>>;
   ddUnsubscribe: (() => void) | null;
   /** Last fanned-out user list — reused for late `GetUsers` replies. */
   lastUsers: ReadonlyArray<string>;
-}
+};
 
 /* ------------------------------- actor --------------------------------- */
 

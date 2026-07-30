@@ -23,12 +23,12 @@ import { MigrationError } from './Envelope.js';
  * always wins, so existing fields are never overwritten by defaults.
  * Run repeatedly for every step on the path stored→currentVersion.
  */
-export interface DefaultsAdapterSpec<E> {
+export type DefaultsAdapterSpec<E> = {
   readonly manifest: string;
   readonly currentVersion: number;
   readonly defaults: { readonly [fromVersion: number]: Partial<E> };
   readonly writeVersion?: number;
-}
+};
 
 /**
  * Build an `EventAdapter` that handles **purely additive** evolution:

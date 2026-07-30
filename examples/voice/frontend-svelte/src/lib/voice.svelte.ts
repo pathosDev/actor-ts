@@ -25,7 +25,7 @@ const MAX_RECONNECT_ATTEMPTS = 8;
 
 type Phase = 'gate-mic' | 'gate-login' | 'app';
 
-interface IncomingEntry {
+type IncomingEntry = {
   mediaSource: MediaSource;
   sourceBuffer: SourceBuffer | null;
   audioEl: HTMLAudioElement;
@@ -37,7 +37,7 @@ interface IncomingEntry {
   mimeReady: boolean;
   source: IncomingSource;
   objectUrl: string;
-}
+};
 
 class VoiceStore {
   // Phase machine + auth state

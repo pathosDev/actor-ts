@@ -125,7 +125,7 @@ move is expensive (large state), keep them low.
 Implement the interface:
 
 ```ts
-interface AllocationStrategy {
+type AllocationStrategy = {
   allocate(
     shardId: number,
     candidates: ReadonlyArray<NodeAddress>,
@@ -137,7 +137,7 @@ interface AllocationStrategy {
     candidates: ReadonlyArray<NodeAddress>,
     rebalanceInProgress: ReadonlySet<number>,
   ): Set<number>;
-}
+};
 ```
 
 Useful for app-specific rules:

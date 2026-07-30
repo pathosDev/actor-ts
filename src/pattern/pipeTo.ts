@@ -1,7 +1,7 @@
 import type { ActorRef } from '../ActorRef.js';
 import { Failure, Success } from './Status.js';
 
-export interface PipeToOptions {
+export type PipeToOptions = {
   /** ActorRef attributed as the sender on the tell; optional. */
   readonly sender?: ActorRef | null;
   /**
@@ -10,7 +10,7 @@ export interface PipeToOptions {
    * success and drop errors.
    */
   readonly wrap?: boolean;
-}
+};
 
 /**
  * Route the eventual result of `promise` into an actor's mailbox.  On

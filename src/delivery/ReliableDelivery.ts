@@ -15,17 +15,17 @@ import type { ProducerControllerOptions } from './ProducerControllerOptions.js';
  * for reliable delivery; an optional `confirm` callback fires once the
  * consumer has Acked (or on producer shutdown with an Error).
  */
-export interface ProducerHandle<T> {
+export type ProducerHandle<T> = {
   tell(body: T, confirm?: ConfirmationCallback): void;
   /** Underlying actor ref — mostly for testing / inspection. */
   readonly ref: ActorRef<ProducerSend<T>>;
   stop(): void;
-}
+};
 
-export interface ConsumerHandle {
+export type ConsumerHandle = {
   readonly ref: ActorRef<Delivery<unknown>>;
   stop(): void;
-}
+};
 
 /**
  * Point-to-point at-least-once delivery between a Producer and a Consumer.

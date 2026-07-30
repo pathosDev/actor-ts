@@ -8,7 +8,7 @@ import type {
 } from '../object-storage/PluginConfig.js';
 import type { ObjectStorageBackend } from '../object-storage/ObjectStorageBackend.js';
 
-export interface ObjectStorageSnapshotStoreOptionsType {
+export type ObjectStorageSnapshotStoreOptionsType = {
   /** The underlying storage layer (S3 / Filesystem / …). */
   readonly backend: ObjectStorageBackend;
   /**
@@ -35,7 +35,7 @@ export interface ObjectStorageSnapshotStoreOptionsType {
    * restore a legitimately large snapshot, or lower it for a tighter bound.
    */
   readonly maxDecompressedBytes?: number;
-}
+};
 
 /**
  * Fluent builder for {@link ObjectStorageSnapshotStoreOptionsType}.  The

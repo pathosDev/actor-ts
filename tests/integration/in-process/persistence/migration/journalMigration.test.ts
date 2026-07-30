@@ -60,8 +60,8 @@ describe('migrateBetweenJournals', () => {
   });
 
   test('eventTransform applies a per-event payload migration during the copy', async () => {
-    interface Old { v: number }
-    interface New { version: number; migrated: true }
+    type Old = { v: number };
+    type New = { version: number; migrated: true };
     await source.append<Old>('pid-1', [{ v: 1 }, { v: 2 }], 0);
 
     const result = await migrateBetweenJournals<Old>(source, target, {

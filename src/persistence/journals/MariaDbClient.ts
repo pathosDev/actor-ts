@@ -15,31 +15,31 @@ import type { SqlPool, SqlResult } from '../relational/SqlPool.js';
  * coerced at the mapping boundary.
  */
 export type MariaDbRow = Record<string, unknown>;
-export interface MariaDbOkPacket {
+export type MariaDbOkPacket = {
   readonly affectedRows: number | bigint;
   readonly insertId?: number | bigint;
   readonly warningStatus?: number;
-}
+};
 export type MariaDbResult = MariaDbRow[] | MariaDbOkPacket;
 
-export interface MariaDbConnectionLike {
+export type MariaDbConnectionLike = {
   query(sql: string, values?: ReadonlyArray<unknown>): Promise<MariaDbResult>;
   beginTransaction(): Promise<void>;
   commit(): Promise<void>;
   rollback(): Promise<void>;
   release(): void;
-}
+};
 
-export interface MariaDbPoolLike {
+export type MariaDbPoolLike = {
   query(sql: string, values?: ReadonlyArray<unknown>): Promise<MariaDbResult>;
   /** Check out a dedicated connection for a multi-statement transaction. */
   getConnection(): Promise<MariaDbConnectionLike>;
   end(): Promise<void>;
-}
+};
 
-interface MariaDbModule {
+type MariaDbModule = {
   createPool(config: Record<string, unknown> | string): MariaDbPoolLike;
-}
+};
 
 const mariadbLazy: Lazy<Promise<MariaDbModule>> = Lazy.of(
   () => lazyImportModule<MariaDbModule>('mariadb', {
@@ -49,14 +49,14 @@ const mariadbLazy: Lazy<Promise<MariaDbModule>> = Lazy.of(
 );
 
 /** Connection options shared by the three MariaDB stores. */
-export interface MariaDbConnection {
+export type MariaDbConnection = {
   /** Connection URI passed straight to `createPool`, e.g. `mariadb://user:pass@host:3306/db`. */
   readonly url?: string;
   /** `createPool` config object (host/user/password/database/…); takes precedence over `url`. */
   readonly poolConfig?: Record<string, unknown>;
   /** Pre-built pool — shares one pool across the three stores, or injects a fake in tests. */
   readonly pool?: MariaDbPoolLike;
-}
+};
 
 /** Build (or pass through) the connection pool for a store. */
 export async function buildMariaDbPool(connection: MariaDbConnection): Promise<MariaDbPoolLike> {

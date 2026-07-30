@@ -15,10 +15,10 @@ class CollectActor extends Actor<UdpDatagram> {
   override onReceive(m: UdpDatagram): void { this.received.push(m); }
 }
 
-interface UdpEcho {
+type UdpEcho = {
   port: number;
   close(): Promise<void>;
-}
+};
 
 /** UDP echo server: sends every received datagram back to its sender. */
 async function startUdpEcho(): Promise<UdpEcho> {

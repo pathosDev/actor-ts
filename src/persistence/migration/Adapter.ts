@@ -22,53 +22,53 @@
  */
 
 /** Wire-format envelope written into the `event` / `state` JSON slot. */
-export interface JournalEnvelope<P = unknown> {
+export type JournalEnvelope<P = unknown> = {
   /** Schema version of the payload — monotonic, increments per breaking change. */
   readonly _v: number;
   /** Manifest — stable type identity, e.g. `'BankAccount.Deposited'`. */
   readonly _t: string;
   /** The (possibly-old) payload itself. */
   readonly _e: P;
-}
+};
 
 /** Stored shape that adapters see on the read path — the unwrapped envelope. */
-export interface StoredFrame {
+export type StoredFrame = {
   readonly manifest: string;
   readonly version: number;
   readonly payload: unknown;
-}
+};
 
 /** Triple emitted by adapters on the write path — the actor wraps this into an envelope. */
-export interface OutboundFrame<JournalShape = unknown> {
+export type OutboundFrame<JournalShape = unknown> = {
   readonly manifest: string;
   readonly version: number;
   readonly payload: JournalShape;
-}
+};
 
 /**
  * Adapter for `PersistentActor` events.  `DomainEvent` is the *current*
  * event union the actor knows; `JournalShape` defaults to the same type
  * but may diverge if the user wants to store a slimmer wire representation.
  */
-export interface EventAdapter<DomainEvent, JournalShape = DomainEvent> {
+export type EventAdapter<DomainEvent, JournalShape = DomainEvent> = {
   /** Stable identifier for the *current* event variant — used as `_t` on disk. */
   manifest(event: DomainEvent): string;
   /** Convert a domain event to the journal triple. */
   toJournal(event: DomainEvent): OutboundFrame<JournalShape>;
   /** Inverse: take any past version off disk, return a current-version domain event. */
   fromJournal(stored: StoredFrame): DomainEvent;
-}
+};
 
 /**
  * Adapter for `PersistentActor` snapshots.  Structurally identical to
  * `EventAdapter` but kept as a separate type so signatures read clearly
  * (a `snapshotAdapter()` returning an `EventAdapter` would be misleading).
  */
-export interface SnapshotAdapter<DomainState, StoredShape = DomainState> {
+export type SnapshotAdapter<DomainState, StoredShape = DomainState> = {
   manifest(state: DomainState): string;
   toJournal(state: DomainState): OutboundFrame<StoredShape>;
   fromJournal(stored: StoredFrame): DomainState;
-}
+};
 
 /**
  * Adapter for `DurableStateActor` — same shape as `SnapshotAdapter`, alias

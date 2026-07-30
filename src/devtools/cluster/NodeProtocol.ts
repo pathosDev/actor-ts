@@ -18,7 +18,7 @@ export const DEVTOOLS_AGENT_PATH = '/devtools/node-agent';
 export const DEVTOOLS_COLLECTOR_PATH = '/devtools/collector';
 
 /** The serving node asking a peer how it is doing. */
-export interface NodeQueryMessage {
+export type NodeQueryMessage = {
   readonly kind: 'devtools-node-query';
   /** Where to answer — the asker's cluster address. */
   readonly from: string;
@@ -26,16 +26,16 @@ export interface NodeQueryMessage {
   readonly round: number;
   /** Whether the actor tree is wanted; it is far larger than the figures. */
   readonly wantActors: boolean;
-}
+};
 
 /** A peer's answer. */
-export interface NodeReportMessage {
+export type NodeReportMessage = {
   readonly kind: 'devtools-node-report';
   readonly round: number;
   readonly figures: NodeFigures;
   /** Present only when the round asked for it. */
   readonly actors?: ReadonlyArray<ActorNode>;
-}
+};
 
 /** Anything a DevTools node may send another. */
 export type NodeMessage = NodeQueryMessage | NodeReportMessage;

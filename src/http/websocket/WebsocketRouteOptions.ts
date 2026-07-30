@@ -29,7 +29,7 @@ import type {
 } from './WebsocketPolicy.js';
 
 /** The options a `websocket()` route may carry — codec + per-connection policy. */
-export interface WebsocketRouteOptionsType<TOut, TIn> extends WebsocketPolicyOptions {
+export type WebsocketRouteOptionsType<TOut, TIn> = WebsocketPolicyOptions & {
   /** Wire codec.  Default: `jsonCodec<TOut, TIn>()`. */
   readonly codec?: WebsocketCodec<TOut, TIn>;
   /**
@@ -46,7 +46,7 @@ export interface WebsocketRouteOptionsType<TOut, TIn> extends WebsocketPolicyOpt
    * auth is ambient (cookie / `IpAllowlist`).
    */
   readonly allowedOrigins?: ReadonlyArray<string>;
-}
+};
 
 /** Fluent builder for {@link WebsocketRouteOptionsType}. */
 export class WebsocketRouteOptionsBuilder<TOut = unknown, TIn = unknown>

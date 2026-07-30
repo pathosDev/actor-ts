@@ -74,20 +74,20 @@ into your `DurableStateActor` settings.
 ## Configuration
 
 ```ts
-interface MariaDbConnection {
+type MariaDbConnection = {
   url?:        string;                    // mariadb://user:pass@host:3306/db
   poolConfig?: Record<string, unknown>;   // { host, port, user, password, database, … }
   pool?:       MariaDbPoolLike;           // pre-built / shared pool
-}
-interface MariaDbJournalOptions extends MariaDbConnection {
+};
+type MariaDbJournalOptions = MariaDbConnection & {
   eventsTable?: string; tagsTable?: string; autoCreateTables?: boolean;
-}
-interface MariaDbSnapshotStoreOptions extends MariaDbConnection {
+};
+type MariaDbSnapshotStoreOptions = MariaDbConnection & {
   snapshotsTable?: string; keepN?: number; autoCreateTables?: boolean;
-}
-interface MariaDbDurableStateStoreOptions extends MariaDbConnection {
+};
+type MariaDbDurableStateStoreOptions = MariaDbConnection & {
   table?: string; autoCreateTables?: boolean;
-}
+};
 ```
 
 Discrete `poolConfig` (host/user/password/database) is the most portable

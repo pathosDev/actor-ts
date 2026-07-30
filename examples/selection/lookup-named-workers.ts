@@ -9,7 +9,7 @@
 import { Actor, ActorSystem, Props } from '../../src/index.js';
 import { attachDevTools } from '../devtools.js';
 
-interface Job { readonly kind: string; readonly payload: unknown; }
+type Job = { readonly kind: string; readonly payload: unknown; };
 
 class ImageWorker extends Actor<Job> {
   override onReceive(job: Job): void { console.log(`[images] job kind=${job.kind}`, job.payload); }

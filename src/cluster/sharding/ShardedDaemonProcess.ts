@@ -13,13 +13,13 @@ import { ShardedDaemonProcessOptionsValidator } from './ShardedDaemonProcessOpti
 import type { ShardedDaemonProcessOptions, ShardedDaemonProcessOptionsType } from './ShardedDaemonProcessOptions.js';
 
 /** Envelope the sharded region routes to daemon #index. */
-interface DaemonEnvelope<T> { readonly index: number; readonly body: T | Wakeup; }
+type DaemonEnvelope<T> = { readonly index: number; readonly body: T | Wakeup; };
 
 /** Internal no-op message used to materialize a daemon on startup. */
-interface Wakeup { readonly t: 'sharded-daemon.wakeup'; }
+type Wakeup = { readonly t: 'sharded-daemon.wakeup'; };
 const WAKEUP: Wakeup = { t: 'sharded-daemon.wakeup' };
 
-export interface ShardedDaemonProcessHandle<T> {
+export type ShardedDaemonProcessHandle<T> = {
   /**
    * Sharded region ref.  Messages sent here must carry a `{index, body}`
    * envelope — use `tell(i, message)` on the handle instead.
@@ -35,7 +35,7 @@ export interface ShardedDaemonProcessHandle<T> {
    * cluster shuts down or the region itself is stopped.
    */
   stop(): void;
-}
+};
 
 /**
  * Starts exactly N named daemon actors spread across the cluster.  Built on

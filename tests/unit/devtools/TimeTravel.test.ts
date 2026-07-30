@@ -21,8 +21,8 @@ import type {
   ReplayStateResult,
 } from '../../../src/devtools/protocol/index.js';
 
-interface CounterEvent { readonly kind: 'added'; readonly amount: number }
-interface CounterState { readonly total: number }
+type CounterEvent = { readonly kind: 'added'; readonly amount: number };
+type CounterState = { readonly total: number };
 
 const foldCounter = (state: CounterState, event: CounterEvent): CounterState =>
   ({ total: state.total + event.amount });

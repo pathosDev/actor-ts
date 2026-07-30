@@ -4,7 +4,7 @@ import type { DynamoDbJournalOptions } from './DynamoDbJournalOptions.js';
 import type { DynamoDbSnapshotStoreOptions } from '../snapshot-stores/DynamoDbSnapshotStoreOptions.js';
 import type { DynamoDbDurableStateStoreOptions } from '../durable-state-stores/DynamoDbDurableStateStoreOptions.js';
 
-export interface RegisterDynamoDbPluginsOptionsType {
+export type RegisterDynamoDbPluginsOptionsType = {
   /**
    * Shared operations façade injected into all three stores — the usual case,
    * since one `DynamoDBClient` pools connections for every table.  When omitted,
@@ -23,7 +23,7 @@ export interface RegisterDynamoDbPluginsOptionsType {
   readonly snapshotStore?: DynamoDbSnapshotStoreOptions;
   /** Durable-state-store-specific options (table name). */
   readonly durableStateStore?: DynamoDbDurableStateStoreOptions;
-}
+};
 
 /**
  * Fluent builder for {@link RegisterDynamoDbPluginsOptionsType}:

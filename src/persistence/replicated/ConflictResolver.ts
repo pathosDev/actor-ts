@@ -20,7 +20,7 @@ import type { VectorClock } from './VectorClock.js';
  * default.  Domain-aware resolvers can do something smarter
  * (e.g. additive merge for counters, set union for tag sets).
  */
-export interface ConflictResolver<E> {
+export type ConflictResolver<E> = {
   /**
    * Pick a single event from a concurrent pair.  Implementations
    * MUST be commutative — `resolve(a, b)` must equal `resolve(b, a)`.
@@ -29,10 +29,10 @@ export interface ConflictResolver<E> {
    * replicas.
    */
   resolve(a: ConflictCandidate<E>, b: ConflictCandidate<E>): E;
-}
+};
 
 /** Event paired with the metadata a resolver needs to break ties. */
-export interface ConflictCandidate<E> {
+export type ConflictCandidate<E> = {
   /** The user-domain event payload. */
   readonly event: E;
   /** Wall-clock timestamp at the originating replica. */
@@ -41,7 +41,7 @@ export interface ConflictCandidate<E> {
   readonly replica: ReplicaId;
   /** Vector clock at persist time. */
   readonly vc: VectorClock;
-}
+};
 
 /* ============================== built-in: LWW ============================ */
 

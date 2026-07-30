@@ -110,26 +110,26 @@ einfacher (eine Datei, kein Server).
 ## Konfiguration
 
 ```ts
-interface PostgresConnection {
+type PostgresConnection = {
   url?:        string;                      // postgres://user:pass@host:5432/db
   poolConfig?: Record<string, unknown>;     // weitere pg.Pool-Optionen (ssl, max, …)
   pool?:       PgPoolLike;                   // vorgebauter / geteilter Pool
-}
+};
 
-interface PostgresJournalOptions extends PostgresConnection {
+type PostgresJournalOptions = PostgresConnection & {
   eventsTable?:      string;   // Default 'events'
   tagsTable?:        string;   // Default '<eventsTable>_tags'
   autoCreateTables?: boolean;  // Default true
-}
-interface PostgresSnapshotStoreOptions extends PostgresConnection {
+};
+type PostgresSnapshotStoreOptions = PostgresConnection & {
   snapshotsTable?:   string;   // Default 'snapshots'
   keepN?:            number;   // neueste N pro pid; Default 3, <=0 = alle behalten
   autoCreateTables?: boolean;
-}
-interface PostgresDurableStateStoreOptions extends PostgresConnection {
+};
+type PostgresDurableStateStoreOptions = PostgresConnection & {
   table?:            string;   // Default 'durable_state'
   autoCreateTables?: boolean;
-}
+};
 ```
 
 Tabellennamen stammen aus der Config (nicht aus User-Input) und werden

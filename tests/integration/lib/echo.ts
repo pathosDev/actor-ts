@@ -18,17 +18,17 @@
 import { Actor } from '../../../src/Actor.js';
 import type { ActorRef } from '../../../src/ActorRef.js';
 
-export interface PingMessage {
+export type PingMessage = {
   readonly kind: 'ping';
   /** Injected by the framework's ask(); ClusterClient sets this from the receiving side. */
   readonly replyTo?: ActorRef<PongMessage>;
-}
+};
 
-export interface PongMessage {
+export type PongMessage = {
   readonly kind: 'pong';
   readonly nodeName: string;
   readonly receivedAt: number;
-}
+};
 
 export class EchoActor extends Actor<PingMessage> {
   constructor(private readonly nodeName: string) { super(); }

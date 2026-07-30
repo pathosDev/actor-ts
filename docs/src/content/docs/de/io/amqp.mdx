@@ -41,19 +41,19 @@ amqp.tell({
 ## Settings
 
 ```ts
-interface AmqpOptionsType extends BrokerCommonOptionsType {
+type AmqpOptionsType = BrokerCommonOptionsType & {
   url:        string;                          // amqp:// oder amqps://
   prefetch?:  number;                          // ungeackte Nachrichten pro Consumer; Default 1
   autoAcknowledge?:      boolean;                         // ACK bei Auslieferung vs. nach Verarbeitung; Default true
   bindings?:  ReadonlyArray<AmqpQueueBinding>; // Queue ↔ Exchange ↔ Routing-Key ↔ Target
-}
+};
 
-interface AmqpQueueBinding {
+type AmqpQueueBinding = {
   queue:       string;
   exchange?:   string;                         // weglassen für den Default-Exchange
   routingKey?: string;
   target:      ActorRef<AmqpDelivery>;         // Consumer-Actor für diese Queue
-}
+};
 ```
 
 Bindings deklarieren die Queue, das Exchange-Binding UND den

@@ -35,7 +35,7 @@ import type { Cache } from '../../../src/cache/Cache.js';
 
 const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
 
-export interface CacheContractSpec {
+export type CacheContractSpec = {
   /** Display name for the backend.  Used as the test-name prefix. */
   readonly name: string;
   /** Fresh-cache factory.  Called once per test for isolation. */
@@ -47,7 +47,7 @@ export interface CacheContractSpec {
    * Default: true.
    */
   readonly supportsSubSecondTtl?: boolean;
-}
+};
 
 /**
  * Run the contract test suite against a backend factory.  Call from

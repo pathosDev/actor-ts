@@ -32,12 +32,12 @@ const system = ActorSystem.create('my-app', actorSystemOptions);
 ## Konfiguration
 
 ```ts
-interface SqliteSnapshotStoreOptions {
+type SqliteSnapshotStoreOptions = {
   path?:           string;     // Dateipfad oder ':memory:'
   snapshotsTable?: string;     // Default 'snapshots'
   keepN?:          number;     // max. Snapshots pro persistenceId, beim Speichern beschnitten (Default 3)
   driver?:         SqliteDriver;
-}
+};
 ```
 
 `path` und `driver` verhalten sich genau wie beim

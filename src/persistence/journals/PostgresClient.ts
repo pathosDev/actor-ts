@@ -13,28 +13,28 @@ import type { SqlPool, SqlResult } from '../relational/SqlPool.js';
  * precision loss), so every numeric column the backends read is coerced
  * with `Number(...)` at the mapping boundary.
  */
-export interface PgQueryResult {
+export type PgQueryResult = {
   readonly rows: ReadonlyArray<Record<string, unknown>>;
   /** Rows affected by INSERT/UPDATE/DELETE — `null` for some statements. */
   readonly rowCount: number | null;
-}
+};
 
 /** A single pooled connection — `query` + `release` back to the pool. */
-export interface PgClientLike {
+export type PgClientLike = {
   query(text: string, values?: ReadonlyArray<unknown>): Promise<PgQueryResult>;
   release(): void;
-}
+};
 
-export interface PgPoolLike {
+export type PgPoolLike = {
   query(text: string, values?: ReadonlyArray<unknown>): Promise<PgQueryResult>;
   /** Check out a dedicated connection — required for multi-statement transactions. */
   connect(): Promise<PgClientLike>;
   end(): Promise<void>;
-}
+};
 
-interface PgModule {
+type PgModule = {
   Pool: new (config: Record<string, unknown>) => PgPoolLike;
-}
+};
 
 const pgLazy: Lazy<Promise<PgModule>> = Lazy.of(
   () => lazyImportModule<PgModule>('pg', {
@@ -44,7 +44,7 @@ const pgLazy: Lazy<Promise<PgModule>> = Lazy.of(
 );
 
 /** Connection options shared by all three Postgres stores. */
-export interface PostgresConnection {
+export type PostgresConnection = {
   /** Connection string, e.g. `postgres://user:pass@host:5432/db`. */
   readonly url?: string;
   /**
@@ -58,7 +58,7 @@ export interface PostgresConnection {
    * (see `registerPostgresPlugins`), or to inject a fake in tests.
    */
   readonly pool?: PgPoolLike;
-}
+};
 
 /** Build (or pass through) the connection pool for a store. */
 export async function buildPgPool(connection: PostgresConnection): Promise<PgPoolLike> {

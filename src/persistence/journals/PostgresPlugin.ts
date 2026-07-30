@@ -14,7 +14,7 @@ export const POSTGRES_JOURNAL_PLUGIN_ID = 'actor-ts.persistence.journal.postgres
 export const POSTGRES_SNAPSHOT_PLUGIN_ID = 'actor-ts.persistence.snapshot-store.postgres';
 export const POSTGRES_DURABLE_STATE_PLUGIN_ID = 'actor-ts.persistence.durable-state.postgres';
 
-export interface PostgresPluginHandles {
+export type PostgresPluginHandles = {
   /**
    * The DurableState store instance.  `PersistenceExtension` carries no
    * DurableState registry (same as the object-storage plugin), so callers
@@ -22,7 +22,7 @@ export interface PostgresPluginHandles {
    * their `DurableStateActor` options.
    */
   readonly durableStateStore: PostgresDurableStateStore;
-}
+};
 
 /**
  * One-shot registration of the Postgres journal + snapshot store against

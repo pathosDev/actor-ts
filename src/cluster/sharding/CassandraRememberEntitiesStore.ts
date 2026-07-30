@@ -3,12 +3,12 @@ import { createCassandraClient, keyspaceDdl } from '../../persistence/journals/C
 import type { CassandraRememberEntitiesStoreOptions, CassandraRememberEntitiesStoreOptionsType } from './CassandraRememberEntitiesStoreOptions.js';
 import type { RememberEntitiesStore, RememberEvent } from './RememberEntitiesStore.js';
 
-interface RememberRow {
+type RememberRow = {
   type_name: string;
   shard_id: string | number;
   entity_id: string;
   started_at: string | number;
-}
+};
 
 /**
  * Cassandra-backed `RememberEntitiesStore` for `ClusterSharding` (#84)

@@ -4,7 +4,7 @@ import type { MariaDbJournalOptions } from './MariaDbJournalOptions.js';
 import type { MariaDbSnapshotStoreOptions } from '../snapshot-stores/MariaDbSnapshotStoreOptions.js';
 import type { MariaDbDurableStateStoreOptions } from '../durable-state-stores/MariaDbDurableStateStoreOptions.js';
 
-export interface RegisterMariaDbPluginsOptionsType {
+export type RegisterMariaDbPluginsOptionsType = {
   /**
    * Shared connection pool injected into all three stores.  When provided,
    * the journal + snapshot + durable-state stores reuse ONE pool.  When
@@ -17,7 +17,7 @@ export interface RegisterMariaDbPluginsOptionsType {
   readonly snapshotStore?: MariaDbSnapshotStoreOptions;
   /** Durable-state-store builder — its `pool` is overridden by the shared `pool` when set. */
   readonly durableStateStore?: MariaDbDurableStateStoreOptions;
-}
+};
 
 /**
  * Fluent builder for {@link RegisterMariaDbPluginsOptionsType}:

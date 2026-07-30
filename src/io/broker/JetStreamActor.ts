@@ -64,7 +64,7 @@ import type { JetStreamOptions, JetStreamOptionsType } from './JetStreamOptions.
  */
 
 /** Inbound JetStream message handed to subscribers. */
-export interface JetStreamMessage {
+export type JetStreamMessage = {
   readonly subject: string;
   readonly payload: Uint8Array;
   /** Reply subject (for request/reply patterns); empty when not set. */
@@ -79,10 +79,10 @@ export interface JetStreamMessage {
   readonly timestamp: number;
   /** Optional per-message headers (e.g. `Nats-Msg-Id`). */
   readonly headers: Readonly<Record<string, string>>;
-}
+};
 
 /** Outbound JetStream publish — payload + optional dedupe headers. */
-export interface JetStreamPublish {
+export type JetStreamPublish = {
   readonly subject: string;
   readonly payload: Uint8Array | string;
   /**
@@ -97,10 +97,10 @@ export interface JetStreamPublish {
   readonly expectedLastSeq?: number;
   /** Extra headers (free-form). */
   readonly headers?: Readonly<Record<string, string>>;
-}
+};
 
 /** Stream lifecycle policy at connect time. */
-export interface JetStreamStreamConfig {
+export type JetStreamStreamConfig = {
   readonly name: string;
   readonly subjects: ReadonlyArray<string>;
   readonly retention?: 'limits' | 'interest' | 'workqueue';
@@ -110,10 +110,10 @@ export interface JetStreamStreamConfig {
   readonly maxAge?: number;     // ns; pass through verbatim
   /** Auto-create or update at connect time.  Default true. */
   readonly create?: boolean;
-}
+};
 
 /** Push or pull consumer config (#62). */
-export interface JetStreamConsumerConfig {
+export type JetStreamConsumerConfig = {
   /** Durable name — required so the consumer survives restarts. */
   readonly durable: string;
   /**
@@ -141,7 +141,7 @@ export interface JetStreamConsumerConfig {
   readonly maxAcknowledgmentPending?: number;
   /** Auto-create or update at connect time.  Default true. */
   readonly create?: boolean;
-}
+};
 
 /** Publish a message via the actor's JetStream client. */
 type PublishCommand = { readonly kind: 'publish'; readonly publish: JetStreamPublish };
@@ -481,12 +481,12 @@ export class JetStreamActor extends BrokerActor<
 
 /* ----------------------------- internals -------------------------------- */
 
-interface PendingAcknowledgment {
+type PendingAcknowledgment = {
   readonly streamSeq: number;
   readonly handle: JetStreamMessageHandleLike;
   readonly done: () => void;
   readonly fail: (err: Error) => void;
-}
+};
 
 async function upsertStream(
   jsm: JetStreamManagerLike, config: JetStreamStreamConfig,
@@ -565,14 +565,14 @@ function extractHeaders(headers: HeadersLike | undefined): Record<string, string
  * `createNatsConnection`) can satisfy the same shape without pulling
  * the real `nats` peer-dep.
  */
-export interface NatsConnectionLike {
+export type NatsConnectionLike = {
   jetstream(): JetStreamClientLike;
   jetstreamManager(): Promise<JetStreamManagerLike>;
   drain(): Promise<void>;
   closed(): Promise<Error | undefined>;
-}
+};
 
-export interface JetStreamClientLike {
+export type JetStreamClientLike = {
   publish(subject: string, payload: Uint8Array, options?: {
     msgID?: string;
     expect?: { lastSequence?: number };
@@ -590,11 +590,11 @@ export interface JetStreamClientLike {
   readonly consumers: {
     get(stream: string, durable: string): Promise<PullConsumerLike>;
   };
-}
+};
 
-export interface JetStreamSubscriptionLike extends AsyncIterable<JetStreamMessageHandleLike> {
+export type JetStreamSubscriptionLike = AsyncIterable<JetStreamMessageHandleLike> & {
   destroy(): Promise<void>;
-}
+};
 
 /**
  * Pull-consumer handle returned by `JetStreamClient.consumers.get`.
@@ -603,26 +603,26 @@ export interface JetStreamSubscriptionLike extends AsyncIterable<JetStreamMessag
  * ms even if the batch isn't full).  Per-message ack semantics are
  * identical to push-mode.
  */
-export interface PullConsumerLike {
+export type PullConsumerLike = {
   fetch(options: {
     max_messages: number;
     expires: number;
   }): Promise<AsyncIterable<JetStreamMessageHandleLike>>;
-}
+};
 
-interface HeadersLike {
+type HeadersLike = {
   keys(): Iterable<string>;
   get(key: string): string | null;
-}
+};
 
-export interface JetStreamMessageInfoLike {
+export type JetStreamMessageInfoLike = {
   readonly streamSequence: number;
   readonly deliverySequence: number;
   readonly deliveryCount: number;
   readonly timestampNanos?: number;
-}
+};
 
-export interface JetStreamMessageHandleLike {
+export type JetStreamMessageHandleLike = {
   readonly subject: string;
   readonly data: Uint8Array;
   readonly reply?: string;
@@ -632,9 +632,9 @@ export interface JetStreamMessageHandleLike {
   nak(delayMs?: number): void;
   term(): void;
   working(): void;
-}
+};
 
-interface ConsumerAddConfig {
+type ConsumerAddConfig = {
   durable_name: string;
   ack_policy?: 'explicit' | 'none' | 'all';
   ack_wait?: number;
@@ -643,9 +643,9 @@ interface ConsumerAddConfig {
   deliver_policy?: 'all' | 'last' | 'new' | 'by_start_sequence' | 'by_start_time';
   opt_start_seq?: number;
   opt_start_time?: string;
-}
+};
 
-export interface JetStreamManagerLike {
+export type JetStreamManagerLike = {
   readonly streams: {
     add(config: {
       name: string; subjects: string[]; retention?: string;
@@ -660,13 +660,13 @@ export interface JetStreamManagerLike {
     add(stream: string, config: ConsumerAddConfig): Promise<unknown>;
     update(stream: string, durable: string, config: ConsumerAddConfig): Promise<unknown>;
   };
-}
+};
 
-interface NatsModuleLike {
+type NatsModuleLike = {
   connect(options: {
     servers: string[]; token?: string; user?: string; pass?: string; name?: string;
   }): Promise<NatsConnectionLike>;
-}
+};
 
 const natsLazy: Lazy<Promise<NatsModuleLike>> = Lazy.of(
   () => lazyImportModule<NatsModuleLike>('nats', { context: 'JetStreamActor' }),

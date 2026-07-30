@@ -2,14 +2,14 @@ import { OptionsBuilder } from '../../util/OptionsBuilder.js';
 import { OptionsValidator } from '../../util/OptionsValidator.js';
 import type { MsSqlConnection, MsSqlPoolLike } from './MsSqlClient.js';
 
-export interface MsSqlJournalOptionsType extends MsSqlConnection {
+export type MsSqlJournalOptionsType = MsSqlConnection & {
   /** Events table name.  Default: `events`. */
   readonly eventsTable?: string;
   /** Tags join table name.  Default: `${eventsTable}_tags`. */
   readonly tagsTable?: string;
   /** Run the guarded `CREATE TABLE` statements on first use.  Default: true. */
   readonly autoCreateTables?: boolean;
-}
+};
 
 /**
  * Fluent builder for {@link MsSqlJournalOptionsType}:

@@ -5,16 +5,16 @@ import { Actor } from '../Actor.js';
  * Tuple returned from an FSM state handler: the next state name and the
  * updated state-data value.  `stay()` / `goto()` helpers construct these.
  */
-export interface Transition<SName extends string, SData> {
+export type Transition<SName extends string, SData> = {
   readonly kind: 'transition';
   readonly next: SName;
   readonly data: SData;
-}
+};
 
-export interface StayTransition<SData> {
+export type StayTransition<SData> = {
   readonly kind: 'stay';
   readonly data: SData;
-}
+};
 
 export type FsmResult<SName extends string, SData> =
   | Transition<SName, SData>

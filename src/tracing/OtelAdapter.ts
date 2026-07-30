@@ -35,30 +35,30 @@ import type {
 /* Structural — keep in sync with @opentelemetry/api v1.x.  We use only the */
 /* surface needed to drive end-to-end span lifecycle + W3C propagation.     */
 
-export interface OtelSpanContextLike {
+export type OtelSpanContextLike = {
   readonly traceId: string;
   readonly spanId: string;
   readonly traceFlags: number;
   readonly traceState?: string;
   readonly isRemote?: boolean;
-}
+};
 
-export interface OtelSpanLike {
+export type OtelSpanLike = {
   spanContext(): OtelSpanContextLike;
   setAttribute(key: string, value: AttributeValue): OtelSpanLike;
   setStatus(status: { code: number; message?: string }): OtelSpanLike;
   recordException(err: Error | string, time?: number): void;
   end(time?: number): void;
   isRecording(): boolean;
-}
+};
 
-export interface OtelContextLike {
+export type OtelContextLike = {
   // Opaque — OTel's Context is a structural type with `getValue`/`setValue`
   // we don't need to call directly.  Treated as a black box here.
   readonly __opaque?: never;
-}
+};
 
-export interface OtelTracerLike {
+export type OtelTracerLike = {
   startSpan(
     name: string,
     options?: {
@@ -69,9 +69,9 @@ export interface OtelTracerLike {
     },
     context?: OtelContextLike,
   ): OtelSpanLike;
-}
+};
 
-export interface OtelTraceApi {
+export type OtelTraceApi = {
   getTracer(name: string, version?: string): OtelTracerLike;
   setSpan(context: OtelContextLike, span: OtelSpanLike): OtelContextLike;
   getSpan(context: OtelContextLike): OtelSpanLike | undefined;
@@ -79,21 +79,21 @@ export interface OtelTraceApi {
   getSpanContext(context: OtelContextLike): OtelSpanContextLike | undefined;
   setSpanContext(context: OtelContextLike, sc: OtelSpanContextLike): OtelContextLike;
   wrapSpanContext(sc: OtelSpanContextLike): OtelSpanLike;
-}
+};
 
-export interface OtelContextApi {
+export type OtelContextApi = {
   active(): OtelContextLike;
   with<F extends (...args: never[]) => unknown>(context: OtelContextLike, fn: F): ReturnType<F>;
   /** OTel exports `ROOT_CONTEXT` as a top-level constant; some shims also rehang it here. */
   readonly ROOT_CONTEXT?: OtelContextLike;
-}
+};
 
-export interface OtelPropagationApi {
+export type OtelPropagationApi = {
   inject(context: OtelContextLike, carrier: Record<string, string>): void;
   extract(context: OtelContextLike, carrier: Record<string, string | undefined>): OtelContextLike;
-}
+};
 
-export interface OtelApiLike {
+export type OtelApiLike = {
   readonly trace: OtelTraceApi;
   readonly context: OtelContextApi;
   readonly propagation: OtelPropagationApi;
@@ -104,7 +104,7 @@ export interface OtelApiLike {
   };
   /** Optional — re-export of the root context constant if the SDK exposes it on the namespace. */
   readonly ROOT_CONTEXT?: OtelContextLike;
-}
+};
 
 /* ------------------------------- adapter ------------------------------- */
 

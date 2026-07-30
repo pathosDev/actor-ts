@@ -19,7 +19,7 @@ import type {
 
 /* ============================ implementation ========================== */
 
-interface InternalTickMessage { readonly _: 'projection-tick' }
+type InternalTickMessage = { readonly _: 'projection-tick' };
 const TICK: InternalTickMessage = { _: 'projection-tick' };
 
 abstract class BaseProjectionActor<E> extends Actor<InternalTickMessage> {

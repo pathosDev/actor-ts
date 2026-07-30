@@ -200,7 +200,7 @@ export class TcpSocketActor extends BrokerActor<TcpSocketOptionsType, TcpSocketC
 
 /* ----------------------------- internals -------------------------------- */
 
-interface NetSocket {
+type NetSocket = {
   on(event: 'data', cb: (chunk: Uint8Array) => void): void;
   on(event: 'close', cb: () => void): void;
   on(event: 'error', cb: (err: Error) => void): void;
@@ -210,11 +210,11 @@ interface NetSocket {
   write(data: Uint8Array, cb?: (err?: Error) => void): boolean;
   end(cb?: () => void): void;
   destroy(): void;
-}
+};
 
-interface NetModule {
+type NetModule = {
   createConnection(options: { host: string; port: number }): NetSocket;
-}
+};
 
 const netLazy: Lazy<Promise<NetModule>> = Lazy.of(async () => {
   const name = 'node:net';

@@ -32,17 +32,17 @@ import type { Crdt, ReplicaId } from './Crdt.js';
  *   const cart = ORSet.empty<Item>({ identity: (i) => i.sku });
  */
 
-export interface ORSetOptions<E> {
+export type ORSetOptions<E> = {
   /** Custom identity function — see class doc. */
   readonly identity?: (e: E) => string;
-}
+};
 
 const defaultIdentity = (e: unknown): string => JSON.stringify(e);
 
-interface ElementEntry<E> {
+type ElementEntry<E> = {
   readonly element: E;
   readonly tags: ReadonlySet<string>;
-}
+};
 
 export class ORSet<E> implements Crdt<ORSet<E>> {
   /**
@@ -261,7 +261,7 @@ function objectToMapOfSets(
   return out;
 }
 
-export interface ORSetJson {
+export type ORSetJson = {
   readonly kind: 'ORSet';
   /** Per-element-key tag list. */
   readonly elements: Record<string, string[]>;
@@ -270,4 +270,4 @@ export interface ORSetJson {
   readonly elementValues?: Record<string, string>;
   readonly tombstones: Record<string, string[]>;
   readonly counters: Record<ReplicaId, number>;
-}
+};

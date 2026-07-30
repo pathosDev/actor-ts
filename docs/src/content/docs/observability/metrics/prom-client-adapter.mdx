@@ -68,11 +68,11 @@ no extra dependency.
 ## Configuration
 
 ```ts
-interface PromClientAdapterOptionsType {
+type PromClientAdapterOptionsType = {
   client:      PromClientLike;          // the prom-client namespace: import client from 'prom-client'
   registry:    PromClientRegistryLike;  // the Registry to publish into — typically client.register
   namePrefix?: string;                  // prefix applied to every metric name — default: ''
-}
+};
 ```
 
 `client` and `registry` are mandatory — the bridge has nothing to

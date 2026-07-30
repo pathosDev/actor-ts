@@ -25,11 +25,11 @@ import { scenario as unaryScenario } from './scenarios/01-unary.js';
 import { scenario as serverStreamScenario } from './scenarios/02-server-stream.js';
 import { scenario as bidiScenario } from './scenarios/03-bidi.js';
 
-export interface GrpcContext extends BrokerScenarioContext {
+export type GrpcContext = BrokerScenarioContext & {
   readonly endpoint: string;
   readonly system: ActorSystem;
   readonly client: ActorRef<unknown>;
-}
+};
 
 function requireEnv(name: string): string {
   const value = process.env[name];

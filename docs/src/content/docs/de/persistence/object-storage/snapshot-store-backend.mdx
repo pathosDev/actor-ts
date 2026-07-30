@@ -55,14 +55,14 @@ schneller + einfacher.
 ## Konfiguration
 
 ```ts
-interface ObjectStorageSnapshotStoreOptionsType {
+type ObjectStorageSnapshotStoreOptionsType = {
   backend:               ObjectStorageBackend;
   prefix?:               string;   // Default ''
   keepN?:                number;   // Default 3
   compression?:          CompressionConfig | CompressionResolver;
   encryption?:           EncryptionConfig | EncryptionResolver;
   maxDecompressedBytes?: number;   // Default 512 MiB
-}
+};
 ```
 
 | Feld | Zweck |

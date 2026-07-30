@@ -2,14 +2,14 @@
 import { OptionsBuilder } from '../../util/OptionsBuilder.js';
 
 /** Plain settings shape for request-id. */
-export interface RequestIdOptionsType {
+export type RequestIdOptionsType = {
   /** Header carrying the id, in + out.  Default `'x-request-id'`. */
   readonly headerName?: string;
   /** Accept a well-formed incoming id instead of always generating.  Default true. */
   readonly trustIncoming?: boolean;
   /** Id generator.  Default `crypto.randomUUID()`. */
   readonly generate?: () => string;
-}
+};
 
 /** Fluent builder for {@link RequestIdOptionsType}. */
 export class RequestIdOptionsBuilder extends OptionsBuilder<RequestIdOptionsType> {

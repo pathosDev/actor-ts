@@ -22,11 +22,11 @@ import { ClusterClientOptions } from '../../../src/cluster/ClusterClientOptions.
 import { NoopLogger } from '../../../src/Logger.js';
 import { clusterLiveNodes, sleep, type Scenario } from './types.js';
 
-interface PongReply {
+type PongReply = {
   readonly kind: 'pong';
   readonly nodeName: string;
   readonly receivedAt: number;
-}
+};
 
 
 export const scenario: Scenario = {

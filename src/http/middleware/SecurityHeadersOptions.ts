@@ -6,7 +6,7 @@ import { OptionsBuilder } from '../../util/OptionsBuilder.js';
 import type { HstsOptionsType } from './HstsOptions.js';
 
 /** Plain settings shape for the security-headers bundle. */
-export interface SecurityHeadersOptionsType {
+export type SecurityHeadersOptionsType = {
   /** `X-Content-Type-Options: nosniff`.  Default true. */
   readonly contentTypeOptions?: boolean;
   /** `X-Frame-Options`.  Default `'DENY'`; `false` omits it. */
@@ -25,7 +25,7 @@ export interface SecurityHeadersOptionsType {
   readonly xssProtection?: boolean;
   /** Also emit HSTS with these options.  Default `false` (opt-in — see {@link strictTransportSecurity}). */
   readonly hsts?: Partial<HstsOptionsType> | false;
-}
+};
 
 /** Fluent builder for {@link SecurityHeadersOptionsType}. */
 export class SecurityHeadersOptionsBuilder extends OptionsBuilder<SecurityHeadersOptionsType> {

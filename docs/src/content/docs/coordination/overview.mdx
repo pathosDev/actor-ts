@@ -20,12 +20,12 @@ single-holder constraint.
 ## The contract
 
 ```ts
-interface Lease {
+type Lease = {
   acquire(): Promise<boolean>;
   release(): Promise<void>;
   checkAlive(): boolean;
   onLost(handler: (reason: string) => void): () => void;
-}
+};
 ```
 
 Four methods:
@@ -102,14 +102,14 @@ contenders can then acquire.
 ## Settings
 
 ```ts
-interface LeaseOptionsType {
+type LeaseOptionsType = {
   name:                  string;       // unique lease identifier
   owner:                 string;       // this holder's identifier (pod name / UUID)
   ttlMs:                 number;       // auto-expire after this many ms of no-renewal
   renewalIntervalMs?:    number;       // typically ttl/3
   acquireRetries?:       number;       // max attempts per acquire()
   acquireRetryDelayMs?:  number;       // delay between attempts
-}
+};
 ```
 
 | Setting | Typical values |

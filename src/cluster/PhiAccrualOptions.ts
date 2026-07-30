@@ -2,7 +2,7 @@ import { OptionsBuilder } from '../util/OptionsBuilder.js';
 import { OptionsValidator } from '../util/OptionsValidator.js';
 
 /** Plain options-object shape accepted by a {@link PhiAccrualFailureDetector}. */
-export interface PhiAccrualOptionsType {
+export type PhiAccrualOptionsType = {
   /** Intended heartbeat cadence.  Used to keep `interval` compatible with FailureDetector. */
   readonly heartbeatIntervalMs: number;
   /** Phi value above which the peer is flagged unreachable.  Typical 8–12. */
@@ -18,7 +18,7 @@ export interface PhiAccrualOptionsType {
    * arrive up to `acceptableHeartbeatPauseMs` late do not raise phi.
    */
   readonly acceptableHeartbeatPauseMs: number;
-}
+};
 
 /**
  * Fluent builder for {@link PhiAccrualOptionsType}.  Unset fields fall

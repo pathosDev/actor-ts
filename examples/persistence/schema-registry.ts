@@ -34,9 +34,9 @@ import { attachDevTools } from '../devtools.js';
 
 /* ------------------- Domain types (three versions) ------------------- */
 
-interface DepositedV1 { kind: 'deposited'; amount: number }
-interface DepositedV2 extends DepositedV1 { currency: 'USD' | 'EUR' }
-interface DepositedV3 { kind: 'deposited'; cents: number; currency: 'USD' | 'EUR' }
+type DepositedV1 = { kind: 'deposited'; amount: number };
+type DepositedV2 = DepositedV1 & { currency: 'USD' | 'EUR' };
+type DepositedV3 = { kind: 'deposited'; cents: number; currency: 'USD' | 'EUR' };
 
 const v1Schema: ParserLike<DepositedV1> = {
   parse(input) {
@@ -88,7 +88,7 @@ registry.register('BankAccount.Deposited', 3, {
 
 /* --------------------------- Actor ----------------------------- */
 
-interface AccountState { cents: number; currency: 'USD' | 'EUR' | '' }
+type AccountState = { cents: number; currency: 'USD' | 'EUR' | '' };
 
 class Account extends PersistentActor<{ kind: 'deposit'; cents: number }, DepositedV3, AccountState> {
   readonly persistenceId = 'account-1';

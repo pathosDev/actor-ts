@@ -25,10 +25,10 @@
 import type { D1ClientLike, D1QueryResult } from '../../../../src/persistence/journals/D1Client.js';
 import { D1RequestError } from '../../../../src/persistence/journals/D1Client.js';
 
-interface EventRow { persistence_id: string; sequence_nr: number; payload: string; tags: string | null; timestamp: number; }
-interface TagRow { persistence_id: string; sequence_nr: number; tag: string; timestamp: number; }
-interface SnapshotRow { persistence_id: string; sequence_nr: number; payload: string; timestamp: number; }
-interface StateRow { persistence_id: string; revision: number; payload: string; timestamp: number; }
+type EventRow = { persistence_id: string; sequence_nr: number; payload: string; tags: string | null; timestamp: number; };
+type TagRow = { persistence_id: string; sequence_nr: number; tag: string; timestamp: number; };
+type SnapshotRow = { persistence_id: string; sequence_nr: number; payload: string; timestamp: number; };
+type StateRow = { persistence_id: string; revision: number; payload: string; timestamp: number; };
 
 const norm = (sql: string): string => sql.replace(/\s+/g, ' ').trim();
 const tableAfter = (sql: string, keyword: string): string => {

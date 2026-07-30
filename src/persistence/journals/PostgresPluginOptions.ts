@@ -4,7 +4,7 @@ import type { PostgresJournalOptions } from './PostgresJournalOptions.js';
 import type { PostgresSnapshotStoreOptions } from '../snapshot-stores/PostgresSnapshotStoreOptions.js';
 import type { PostgresDurableStateStoreOptions } from '../durable-state-stores/PostgresDurableStateStoreOptions.js';
 
-export interface RegisterPostgresPluginsOptionsType {
+export type RegisterPostgresPluginsOptionsType = {
   /**
    * Shared connection pool injected into all three stores.  When provided,
    * the journal + snapshot + durable-state stores reuse ONE pool (the
@@ -18,7 +18,7 @@ export interface RegisterPostgresPluginsOptionsType {
   readonly snapshotStore?: PostgresSnapshotStoreOptions;
   /** Durable-state-store-specific options.  Defaults to a fresh builder (uses the shared `pool`). */
   readonly durableStateStore?: PostgresDurableStateStoreOptions;
-}
+};
 
 /**
  * Fluent builder for {@link RegisterPostgresPluginsOptionsType}:

@@ -62,13 +62,13 @@ function ddKey(room: string): string {
 
 /* ------------------------------- internals ----------------------------- */
 
-interface RoomState {
+type RoomState = {
   readonly subscribers: Set<ActorRef<ReceiptsChanged>>;
   ddUnsubscribe: (() => void) | null;
   /** Last broadcast snapshot — reused on `Subscribe` to give late
    *  joiners the current view without waiting for the next change. */
   lastReceipts: Readonly<Record<string, number>>;
-}
+};
 
 /* ------------------------------- actor --------------------------------- */
 

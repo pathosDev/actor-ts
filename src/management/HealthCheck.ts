@@ -1,9 +1,9 @@
 /** Return value of a health check.  `status=true` means healthy. */
-export interface HealthCheckResult {
+export type HealthCheckResult = {
   readonly name: string;
   readonly status: boolean;
   readonly detail?: string;
-}
+};
 
 export type HealthCheckFunction = () => Promise<HealthCheckResult> | HealthCheckResult;
 

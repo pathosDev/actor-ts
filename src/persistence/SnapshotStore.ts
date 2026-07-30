@@ -7,7 +7,7 @@ import type { Option } from '../util/Option.js';
  * forwarding the state machine to a known point, so replay only needs
  * to apply events newer than the snapshot.
  */
-export interface SnapshotStore {
+export type SnapshotStore = {
   /**
    * Persist a snapshot at `seq` — typically the seq of the latest event
    * applied.  Optional `options` carry per-call preferences from the
@@ -37,4 +37,4 @@ export interface SnapshotStore {
 
   /** Best-effort teardown. */
   close?(): Promise<void>;
-}
+};

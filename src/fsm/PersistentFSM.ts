@@ -84,18 +84,18 @@ import { PersistentActor } from '../persistence/PersistentActor.js';
  */
 
 /** Combined state held by the underlying `PersistentActor`. */
-export interface FsmStateData<S extends string, D> {
+export type FsmStateData<S extends string, D> = {
   readonly state: S;
   readonly data: D;
-}
+};
 
 /** One entry in the transition table. */
-export interface FsmTransition<
+export type FsmTransition<
   SName extends string,
   Command,
   Event,
   Data,
-> {
+> = {
   /**
    * Event(s) to persist when this transition fires.  Three shapes:
    *
@@ -131,7 +131,7 @@ export interface FsmTransition<
    * at debug.
    */
   readonly guard?: (command: Command, data: Data) => boolean;
-}
+};
 
 /**
  * Time-based transition for a state (#65).  Declared under the magic
@@ -144,7 +144,7 @@ export interface FsmTransition<
  * declared `event` is persisted and `applyEvent` runs as if a real
  * command had triggered it.
  */
-export interface FsmStateTimeout<SName extends string, Event, Data> {
+export type FsmStateTimeout<SName extends string, Event, Data> = {
   /** How long to wait before auto-firing the event.  Required. */
   readonly afterMs: number;
   /**
@@ -158,7 +158,7 @@ export interface FsmStateTimeout<SName extends string, Event, Data> {
   readonly next: SName;
   /** Optional pre-fire guard — `false` cancels the timeout silently. */
   readonly guard?: (data: Data) => boolean;
-}
+};
 
 /** Reserved key under which {@link FsmStateTimeout} lives in a state's config. */
 export const FSM_TIMEOUT_KEY = '_timeout' as const;
@@ -191,10 +191,10 @@ export type FsmTransitionMap<
  * the same state — a command that snuck in between the timer firing
  * and the message being processed must cancel the timeout.
  */
-interface FsmTimeoutFire<SName extends string> {
+type FsmTimeoutFire<SName extends string> = {
   readonly kind: '__fsm_state_timeout__';
   readonly stateAtArm: SName;
-}
+};
 
 /* ============================== base class ============================== */
 

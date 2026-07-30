@@ -32,14 +32,14 @@ type Message =
   | Subscribe
   | Unsubscribe;
 
-interface KeyEntry {
+type KeyEntry = {
   /** Locally registered refs — treated as authoritative on this node. */
   readonly local: Map<string, ActorRef>; // pathString → ref
   /** Remote nodes that claim to host at least one ref under the key. */
   readonly remote: Map<string, string[]>; // nodeAddrString → pathStrings
   /** Subscribers wanting change notifications. */
   readonly subscribers: Set<ActorRef<Listing>>;
-}
+};
 
 /**
  * Cluster-wide service registry.  Each node hosts one Receptionist actor.

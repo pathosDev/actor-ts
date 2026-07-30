@@ -46,10 +46,10 @@ Drei Dinge, die auffallen:
 ## Die API
 
 ```ts
-interface ActorContext<TMessage> {
+type ActorContext<TMessage> = {
   setReceiveTimeout(ms: number): void;
   cancelReceiveTimeout(): void;
-}
+};
 ```
 
 Zwei Methoden.  `setReceiveTimeout(0)` entspricht

@@ -15,21 +15,21 @@
  * code never branches on runtime once it has a `WorkerLike` in hand.
  */
 
-export interface WorkerMessageEvent {
+export type WorkerMessageEvent = {
   readonly data?: unknown;
-}
+};
 
-export interface WorkerCloseEvent {
+export type WorkerCloseEvent = {
   /** Exit code — 0 for clean exit, non-zero for crash / abnormal termination. */
   readonly code?: number;
-}
+};
 
 export type WorkerEventMap = {
   message: WorkerMessageEvent;
   close: WorkerCloseEvent;
 };
 
-export interface WorkerLike {
+export type WorkerLike = {
   postMessage(value: unknown, transfer?: unknown[]): void;
   addEventListener<K extends keyof WorkerEventMap>(
     event: K,
@@ -40,17 +40,17 @@ export interface WorkerLike {
     handler: (ev: WorkerEventMap[K]) => void,
   ): void;
   terminate(): void | Promise<number>;
-}
+};
 
-export interface WorkerSpawnOptions {
+export type WorkerSpawnOptions = {
   readonly name?: string;
-}
+};
 
-export interface WorkerBackend {
+export type WorkerBackend = {
   /**
    * Spawn a worker from a module URL.  Must use module semantics (ES
    * modules with imports) — the equivalent of `{ type: 'module' }` in the
    * Web Worker spec.
    */
   spawn(bootstrap: URL, options?: WorkerSpawnOptions): WorkerLike;
-}
+};

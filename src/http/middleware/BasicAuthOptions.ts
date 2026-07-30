@@ -2,14 +2,14 @@
 import { OptionsBuilder } from '../../util/OptionsBuilder.js';
 
 /** Plain settings shape for HTTP Basic auth.  Provide `users` OR `validate`. */
-export interface BasicAuthOptionsType {
+export type BasicAuthOptionsType = {
   /** username→password map (constant-time compared). */
   readonly users?: Readonly<Record<string, string>>;
   /** Custom credential check (e.g. against a store). */
   readonly validate?: (user: string, pass: string) => boolean | Promise<boolean>;
   /** Realm advertised in `WWW-Authenticate` on 401.  Default `'actor-ts'`. */
   readonly realm?: string;
-}
+};
 
 /** Fluent builder for {@link BasicAuthOptionsType}. */
 export class BasicAuthOptionsBuilder extends OptionsBuilder<BasicAuthOptionsType> {

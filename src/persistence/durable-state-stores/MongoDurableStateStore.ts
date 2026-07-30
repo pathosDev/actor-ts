@@ -19,13 +19,13 @@ import {
   type MongoDurableStateStoreOptionsType,
 } from './MongoDurableStateStoreOptions.js';
 
-interface StateDocument {
+type StateDocument = {
   readonly _id: string;
   readonly revision: number;
   readonly payload: string;
   readonly timestamp: number;
   readonly [field: string]: unknown;
-}
+};
 
 /**
  * DurableStateStore backed by MongoDB — the "event-free" cousin of event

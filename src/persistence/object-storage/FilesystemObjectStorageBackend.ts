@@ -295,7 +295,7 @@ export class FilesystemObjectStorageBackend implements ObjectStorageBackend {
 
 /* ----------------------------- internals -------------------------------- */
 
-interface FsModule {
+type FsModule = {
   fs: {
     mkdir(p: string, opts?: { recursive?: boolean }): Promise<void>;
     writeFile(
@@ -318,9 +318,9 @@ interface FsModule {
     resolve(...parts: string[]): string;
     readonly sep: string;
   };
-}
+};
 
-interface Buffer extends Uint8Array {}
+type Buffer = Uint8Array;
 
 const fsLazy: Lazy<Promise<FsModule>> = Lazy.of(async () => {
   const fsName = 'node:fs/promises';

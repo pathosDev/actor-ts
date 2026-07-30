@@ -100,7 +100,7 @@ export class MqttPayload<T = unknown> {
  * Inbound MQTT message handed to `onMessage` / fan-out targets.  The
  * payload is a lazily-decoding {@link MqttPayload} wrapper.
  */
-export interface MqttMessage<T = unknown> {
+export type MqttMessage<T = unknown> = {
   readonly topic: string;
   readonly payload: MqttPayload<T>;
   readonly qos: MqttQos;
@@ -116,10 +116,10 @@ export interface MqttMessage<T = unknown> {
    * the broker emitted one.  `undefined` for MQTT 3.1.1.
    */
   readonly reasonCode?: number;
-}
+};
 
 /** Outbound publish envelope. */
-export interface MqttPublish {
+export type MqttPublish = {
   readonly topic: string;
   readonly payload: Uint8Array | string;
   readonly qos?: MqttQos;
@@ -130,7 +130,7 @@ export interface MqttPublish {
    * 3.1.1 wire format has no way to carry them.
    */
   readonly userProperties?: MqttUserProperties;
-}
+};
 
 /**
  * External control commands accepted via `ref.tell(...)`.  Deliberately
@@ -193,21 +193,21 @@ export type MqttCommand<T = unknown> =
  */
 
 /** A message arrived on a subscribed topic. */
-export interface MqttInboundSignal<T = unknown> {
+export type MqttInboundSignal<T = unknown> = {
   readonly kind: 'mqtt-inbound';
   readonly message: MqttMessage<T>;
-}
+};
 
 /** The connection (re)opened; the registry has been re-applied on the broker. */
-export interface MqttConnectedSignal {
+export type MqttConnectedSignal = {
   readonly kind: 'mqtt-connected';
-}
+};
 
 /** The connection dropped (a reconnect cycle may follow). */
-export interface MqttDisconnectedSignal {
+export type MqttDisconnectedSignal = {
   readonly kind: 'mqtt-disconnected';
   readonly cause?: Error;
-}
+};
 
 export type MqttSignal<T = unknown> =
   | MqttInboundSignal<T>

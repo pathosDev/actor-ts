@@ -2,7 +2,7 @@ import { OptionsBuilder } from '../util/OptionsBuilder.js';
 import { OptionsValidator } from '../util/OptionsValidator.js';
 
 /** Plain options-object shape accepted by a {@link CircuitBreaker}. */
-export interface CircuitBreakerOptionsType {
+export type CircuitBreakerOptionsType = {
   /** Consecutive failures before the breaker opens.  Must be >= 1. */
   readonly maxFailures: number;
   /** How long the breaker stays open before letting a probe through.  ms. */
@@ -11,7 +11,7 @@ export interface CircuitBreakerOptionsType {
   readonly callTimeoutMs?: number;
   /** Optional: classify errors as non-failures to bypass breaker counting. */
   readonly isFailure?: (err: Error) => boolean;
-}
+};
 
 /**
  * Fluent builder for {@link CircuitBreakerOptionsType}:

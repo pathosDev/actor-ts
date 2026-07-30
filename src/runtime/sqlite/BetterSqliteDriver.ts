@@ -45,18 +45,18 @@ export class BetterSqliteDriver implements SqliteDriver {
 
 /* ----------------------------- internals --------------------------------- */
 
-interface BetterSqliteStatement {
+type BetterSqliteStatement = {
   run(...params: unknown[]): { changes: number; lastInsertRowid: number | bigint };
   get(...params: unknown[]): unknown;
   all(...params: unknown[]): unknown[];
-}
+};
 
-interface BetterSqliteNative {
+type BetterSqliteNative = {
   exec(sql: string): void;
   prepare(sql: string): BetterSqliteStatement;
   transaction<F extends (...args: never[]) => unknown>(fn: F): F;
   close(): void;
-}
+};
 
 type BetterSqliteConstructor = new (path: string) => BetterSqliteNative;
 

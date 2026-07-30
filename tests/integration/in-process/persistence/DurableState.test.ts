@@ -13,7 +13,7 @@ import {
 
 const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
 
-interface KV { readonly map: Record<string, string>; }
+type KV = { readonly map: Record<string, string>; };
 type Command =
   | { kind: 'set'; key: string; value: string; replyTo: import('../../../../src/ActorRef.js').ActorRef }
   | { kind: 'get'; key: string; replyTo: import('../../../../src/ActorRef.js').ActorRef };

@@ -36,11 +36,11 @@ class Entity extends Actor<Command> {
   }
 }
 
-interface Node {
+type Node = {
   readonly sys: ActorSystem;
   readonly cluster: Cluster;
   readonly region: ActorRef<Command>;
-}
+};
 
 async function startNode(sysName: string, p: number, seeds: string[] = []): Promise<Node> {
   const sysOptions = ActorSystemOptions.create()

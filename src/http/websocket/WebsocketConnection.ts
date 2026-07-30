@@ -24,7 +24,7 @@ export type WebsocketOutboundCommand<TOut> =
   | { readonly kind: 'out-raw'; readonly frame: WebsocketFrame }
   | { readonly kind: 'close'; readonly code: number; readonly reason: string };
 
-export interface WebsocketConnection<TOut> extends ActorRef<TOut> {
+export type WebsocketConnection<TOut> = ActorRef<TOut> & {
   /** Stable id, unique within the process (e.g. `ws-7`). */
   readonly id: string;
   /** Remote peer address, if the backend reported one. */
@@ -37,7 +37,7 @@ export interface WebsocketConnection<TOut> extends ActorRef<TOut> {
   close(code?: number, reason?: string): void;
   /** `true` while the underlying socket is open. */
   readonly isOpen: boolean;
-}
+};
 
 export class WebsocketConnectionImplementation<TOut> extends ActorRef<TOut> implements WebsocketConnection<TOut> {
   readonly path: ActorPath;

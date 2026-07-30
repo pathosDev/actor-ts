@@ -17,7 +17,7 @@ import {
 } from '../../src/index.js';
 import { attachDevTools } from '../devtools.js';
 
-interface KV { readonly map: Record<string, string>; }
+type KV = { readonly map: Record<string, string>; };
 type SetCommand = { kind: 'set'; key: string; value: string };
 type GetCommand = { kind: 'get'; key: string };
 type DumpCommand = { kind: 'dump' };

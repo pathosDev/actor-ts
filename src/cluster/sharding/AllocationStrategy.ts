@@ -7,7 +7,7 @@ import { NodeAddress } from '../NodeAddress.js';
  * is first requested.  `rebalance` is called periodically so strategies can
  * move shards away from busy nodes.
  */
-export interface AllocationStrategy {
+export type AllocationStrategy = {
   /** Pick an owner for a newly-discovered shard. */
   allocate(shardId: number, candidates: ReadonlyArray<NodeAddress>, currentShards: ReadonlyMap<string, ReadonlySet<number>>): NodeAddress;
 
@@ -21,7 +21,7 @@ export interface AllocationStrategy {
     candidates: ReadonlyArray<NodeAddress>,
     rebalanceInProgress: ReadonlySet<number>,
   ): Set<number>;
-}
+};
 
 /* --------------------------- Built-in strategies --------------------------- */
 

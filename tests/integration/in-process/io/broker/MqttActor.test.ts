@@ -105,11 +105,11 @@ class FakeMqttModule {
 
 /* --------------------------- test actor ----------------------------- */
 
-interface TestActorOpts<T> {
+type TestActorOpts<T> = {
   options?: MqttOptions;
   module?: FakeMqttModule;
   ctorSubs?: Array<{ topic: string; qos?: MqttQos; target?: ActorRef<MqttMessage<T>> }>;
-}
+};
 
 class TestMqttActor<T = unknown, TSelf = never> extends MqttActor<T, TSelf> {
   readonly module: FakeMqttModule;

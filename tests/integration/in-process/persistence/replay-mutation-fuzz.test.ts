@@ -37,7 +37,7 @@ type CounterCommand =
   | { kind: 'decrement'; by: number }
   | { kind: 'reset' };
 
-interface CounterState { readonly value: number; readonly resets: number }
+type CounterState = { readonly value: number; readonly resets: number };
 
 const counterReducer = (third: CounterState, e: CounterCommand): CounterState => {
   switch (e.kind) {
@@ -63,7 +63,7 @@ type ListCommand =
   | { kind: 'append'; v: string }
   | { kind: 'remove'; index: number };
 
-interface ListState { readonly items: ReadonlyArray<string> }
+type ListState = { readonly items: ReadonlyArray<string> };
 
 const listReducer = (third: ListState, e: ListCommand): ListState => {
   switch (e.kind) {

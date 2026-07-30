@@ -8,7 +8,7 @@ import { compile, defaultErrorResponse, type Route } from './Route.js';
 import type { HttpRequest, HttpResponse } from './types.js';
 import { ConnectionTracker, trackSocket } from './websocket/ConnectionWiring.js';
 
-export interface ServerBuilder {
+export type ServerBuilder = {
   /** Override the default Fastify backend (or use Express / Hono). */
   useBackend(backend: HttpServerBackend): ServerBuilder;
   /**
@@ -21,7 +21,7 @@ export interface ServerBuilder {
   withErrorHandler(handler: (err: unknown, request: HttpRequest) => Promise<HttpResponse> | HttpResponse): ServerBuilder;
   /** Register the full route tree and bind.  Returns the ServerBinding. */
   bind(routes: Route): Promise<ServerBinding>;
-}
+};
 
 /**
  * System-wide HTTP extension — entry point for the routing DSL and the

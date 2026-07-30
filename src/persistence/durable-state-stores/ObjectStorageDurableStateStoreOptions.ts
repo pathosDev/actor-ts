@@ -10,7 +10,7 @@ import type {
   IntegrityResolver,
 } from '../object-storage/PluginConfig.js';
 
-export interface ObjectStorageDurableStateStoreOptionsType {
+export type ObjectStorageDurableStateStoreOptionsType = {
   readonly backend: ObjectStorageBackend;
   /**
    * Whether `close()` should also close the injected `backend`.  Default
@@ -49,7 +49,7 @@ export interface ObjectStorageDurableStateStoreOptionsType {
    * restore a legitimately large state blob, or lower it for a tighter bound.
    */
   readonly maxDecompressedBytes?: number;
-}
+};
 
 /**
  * Fluent builder for {@link ObjectStorageDurableStateStoreOptionsType}.  The

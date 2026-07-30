@@ -19,7 +19,7 @@ import type { Journal } from '../../../../../src/persistence/Journal.js';
 import type { SnapshotStore } from '../../../../../src/persistence/SnapshotStore.js';
 
 /** A single contract scenario, parameterized over its harness type. */
-export interface ContractScenario<Harness> {
+export type ContractScenario<Harness> = {
   readonly name: string;
   /**
    * Return a human-readable reason to skip, or `null` to run.  Used for
@@ -28,10 +28,10 @@ export interface ContractScenario<Harness> {
    */
   skip?(harness: Harness): string | null;
   run(harness: Harness): Promise<void>;
-}
+};
 
 /** Shared harness surface — every store family namespaces ids the same way. */
-interface HarnessBase {
+type HarnessBase = {
   /** Short label used in test names ("InMemory", "Postgres", …). */
   readonly label: string;
   /**
@@ -41,29 +41,29 @@ interface HarnessBase {
    * namespacing is simply inert.
    */
   pid(name: string): string;
-}
+};
 
-export interface JournalCapabilities {
+export type JournalCapabilities = {
   /** Journal round-trips `tags` on append/read.  Default `true`. */
   readonly tags?: boolean;
-}
+};
 
-export interface JournalHarness extends HarnessBase {
+export type JournalHarness = HarnessBase & {
   /** Build a fresh journal.  The scenario closes it. */
   make(): Promise<Journal>;
   readonly capabilities?: JournalCapabilities;
-}
+};
 
-export interface SnapshotCapabilities {
+export type SnapshotCapabilities = {
   /**
    * `'configurable'` — the store honours a `keepN` prune bound, so the
    * prune and keep-all scenarios run.  `'none'` — the store keeps every
    * snapshot (the in-memory reference store), and they are skipped.
    */
   readonly keepN?: 'configurable' | 'none';
-}
+};
 
-export interface SnapshotHarness extends HarnessBase {
+export type SnapshotHarness = HarnessBase & {
   /**
    * Build a fresh snapshot store.  `keepN` is honoured by stores whose
    * capabilities declare `keepN: 'configurable'`; when omitted the store's
@@ -71,12 +71,12 @@ export interface SnapshotHarness extends HarnessBase {
    */
   make(keepN?: number): Promise<SnapshotStore>;
   readonly capabilities?: SnapshotCapabilities;
-}
+};
 
-export interface DurableStateHarness extends HarnessBase {
+export type DurableStateHarness = HarnessBase & {
   /** Build a fresh durable-state store.  The scenario closes it if it can. */
   make(): Promise<DurableStateStore>;
-}
+};
 
 /** `close()` is optional across the three contracts — call it uniformly. */
 export async function closeQuietly(store: unknown): Promise<void> {

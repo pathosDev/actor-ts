@@ -31,7 +31,7 @@ Für Single-Pod ist [In-Memory](/de/cache/in-memory/) einfacher.
 ## Konfiguration
 
 ```ts
-interface RedisCacheOptionsType {
+type RedisCacheOptionsType = {
   url?:       string;                // 'redis://host:port'
   host?:      string;
   port?:      number;
@@ -39,7 +39,7 @@ interface RedisCacheOptionsType {
   db?:        number;
   keyPrefix?: string;
   client?:    RedisClientLike;       // vorgefertigter ioredis-Client
-}
+};
 ```
 
 URL-Form:

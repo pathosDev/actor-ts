@@ -24,7 +24,7 @@ import {
 const TOKEN_KEY = 'voice-token';
 const MAX_RECONNECT_ATTEMPTS = 8;
 
-interface IncomingEntry {
+type IncomingEntry = {
   mediaSource: MediaSource;
   sourceBuffer: SourceBuffer | null;
   audioEl: HTMLAudioElement;
@@ -37,7 +37,7 @@ interface IncomingEntry {
   mimeReady: boolean;
   source: IncomingSource;
   objectUrl: string;
-}
+};
 
 @Injectable({ providedIn: 'root' })
 export class VoiceService {

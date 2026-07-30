@@ -79,12 +79,12 @@ async function waitFor(pred: () => boolean, timeoutMs = 3_000): Promise<void> {
   if (!pred()) throw new Error(`waitFor timeout after ${timeoutMs}ms`);
 }
 
-interface Setup {
+type Setup = {
   sys: ActorSystem;
   cluster: Cluster;
   ref: import('../../../../../src/ActorRef.js').ActorRef<Command>;
   instance: CountingCounter;
-}
+};
 
 async function startActor(
   systemName: string, port: number,

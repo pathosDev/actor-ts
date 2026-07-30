@@ -53,12 +53,12 @@ export class MqttEncodeError extends Error {
  * `encode` deliberately takes `unknown` so a single codec instance can
  * serialise arbitrary outbound entity types passed to `publish`.
  */
-export interface MqttCodec<T = unknown> {
+export type MqttCodec<T = unknown> = {
   /** Stable identifier — 'json' | custom.  Informational (logs). */
   readonly name: string;
   encode(value: unknown): Uint8Array;
   decode(bytes: Uint8Array): T;
-}
+};
 
 const textEncoder = /* @__PURE__ */ new TextEncoder();
 const textDecoder = /* @__PURE__ */ new TextDecoder('utf-8', { fatal: false });

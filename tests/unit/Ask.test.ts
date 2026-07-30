@@ -96,7 +96,7 @@ describe('ref.ask()', () => {
 
   test('injects replyTo onto the message so explicit-replyTo recipients work', async () => {
     // Recipient reads `msg.replyTo` instead of `this.sender`.
-    interface ReplyCommand { readonly kind: 'reply'; readonly replyTo: import('../../src/ActorRef.js').ActorRef<string> }
+    type ReplyCommand = { readonly kind: 'reply'; readonly replyTo: import('../../src/ActorRef.js').ActorRef<string> };
     class ExplicitReplier extends Actor<ReplyCommand> {
       override onReceive(m: ReplyCommand): void {
         m.replyTo.tell('via-replyTo');

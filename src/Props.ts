@@ -6,7 +6,7 @@ import type { SupervisorStrategy } from './Supervision.js';
 export type ActorFactory<TMessage> = () => Actor<TMessage>;
 export type MailboxFactory<TMessage> = () => Mailbox<TMessage>;
 
-export interface PropsConfig<TMessage> {
+export type PropsConfig<TMessage> = {
   readonly factory: ActorFactory<TMessage>;
   readonly supervisorStrategy?: SupervisorStrategy;
   readonly dispatcher?: Dispatcher;
@@ -25,7 +25,7 @@ export interface PropsConfig<TMessage> {
    * Children inherit the mark — a tooling actor's children are tooling.
    */
   readonly internal?: boolean;
-}
+};
 
 /**
  * Immutable configuration describing how to create an actor.

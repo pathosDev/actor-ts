@@ -231,15 +231,15 @@ For a 5-node cluster that should never go below 3: **`StaticQuorum(3)`**.
 The provider interface is tiny:
 
 ```ts
-interface DowningProvider {
+type DowningProvider = {
   decide(view: ClusterPartitionView): DowningDecision;
-}
+};
 
-interface ClusterPartitionView {
+type ClusterPartitionView = {
   allMembers: ReadonlyArray<Member>;
   unreachable: ReadonlySet<string>;   // address strings
   self: NodeAddress;
-}
+};
 ```
 
 Implement `decide(view) => Set<string>` and return the address

@@ -7,7 +7,7 @@ import type { CoordinatorStateStore } from './CoordinatorState.js';
 import type { RememberEntitiesStore } from './RememberEntitiesStore.js';
 
 /** Plain options-object shape consumed by a {@link ShardCoordinator}. */
-export interface ShardCoordinatorOptionsType {
+export type ShardCoordinatorOptionsType = {
   readonly typeName: string;
   readonly cluster: Cluster;
   readonly allocationStrategy: AllocationStrategy;
@@ -61,7 +61,7 @@ export interface ShardCoordinatorOptionsType {
    * Register behaviour (backwards-compat).
    */
   readonly coordinatorStateStore?: CoordinatorStateStore;
-}
+};
 
 /**
  * Fluent builder for {@link ShardCoordinatorOptionsType}.  Consumed by

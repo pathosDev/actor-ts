@@ -8,10 +8,10 @@
 import type { HttpResponse } from '../types.js';
 
 /** The minimal raw-socket surface we write to (a `node:net` Socket). */
-export interface RawUpgradeSocket {
+export type RawUpgradeSocket = {
   write(data: string): unknown;
   destroy(): void;
-}
+};
 
 const STATUS_TEXT: Record<number, string> = {
   400: 'Bad Request',

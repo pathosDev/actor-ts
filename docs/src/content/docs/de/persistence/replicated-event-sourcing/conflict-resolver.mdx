@@ -31,16 +31,16 @@ ein Event zurück (einen Gewinner oder eine synthetisierte
 Zusammenführung der beiden):
 
 ```ts
-interface ConflictResolver<E> {
+type ConflictResolver<E> = {
   resolve(a: ConflictCandidate<E>, b: ConflictCandidate<E>): E;
-}
+};
 
-interface ConflictCandidate<E> {
+type ConflictCandidate<E> = {
   event:     E;             // die User-Domain-Event-Payload
   timestamp: number;        // Wall-Clock der ursprünglichen Replica
   replica:   ReplicaId;     // ID der ursprünglichen Replica
   vc:        VectorClock;   // Vector Clock zum Persist-Zeitpunkt
-}
+};
 ```
 
 Beachte den **einzelnen Typparameter** (das Event, *nicht* den

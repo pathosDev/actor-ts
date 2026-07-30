@@ -32,13 +32,13 @@ key-value caching with TTLs, it's plenty.
 ## Configuration
 
 ```ts
-interface MemcachedCacheOptionsType {
+type MemcachedCacheOptionsType = {
   servers?:   string;                // comma-separated, default 'localhost:11211'
   username?:  string;
   password?:  string;
   keyPrefix?: string;                // server-side, applied to every operation
   client?:    MemcachedClientLike;   // pre-built memjs client
-}
+};
 ```
 
 `memjs` (the underlying client) supports SASL auth via

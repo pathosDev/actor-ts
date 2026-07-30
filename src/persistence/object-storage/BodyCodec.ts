@@ -58,7 +58,7 @@ export const FLAG_INTEGRITY_HMAC = 0b10000;
  */
 export const DEFAULT_MAX_DECOMPRESSED_BYTES = 512 * 1024 * 1024;
 
-export interface EncodeOptions {
+export type EncodeOptions = {
   readonly compression?: CompressionAlgo;
   /**
    * Algorithm-specific compression level (gzip 0–9, zstd 1–22) passed
@@ -90,7 +90,7 @@ export interface EncodeOptions {
    * a manifest-flip attack.
    */
   readonly integrity?: { readonly integrityKey: Uint8Array };
-}
+};
 
 /**
  * Subkey resolver — given the version byte the manifest carries, return
@@ -101,7 +101,7 @@ export interface EncodeOptions {
  */
 export type SubKeyResolver = (keyVersion: number) => Promise<Uint8Array | null>;
 
-export interface DecodeOptions {
+export type DecodeOptions = {
   /**
    * Required when the body is encrypted — callers either supply a
    * single subkey (legacy single-key shape) or a resolver that
@@ -130,15 +130,15 @@ export interface DecodeOptions {
    * (security audit #3).
    */
   readonly maxOutputBytes?: number;
-}
+};
 
-export interface DecodedBody {
+export type DecodedBody = {
   readonly compression: CompressionAlgo;
   readonly encrypted: boolean;
   /** 0..255 when the body carried a key-version manifest, else `undefined`. */
   readonly keyVersion?: number;
   readonly payload: Uint8Array;     // plaintext, decompressed
-}
+};
 
 /**
  * Encode a JSON-stringified payload with the framing above.  Returns a

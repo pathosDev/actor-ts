@@ -35,7 +35,7 @@ const actorSystemOptions = ActorSystemOptions.create().withPersistence({
     journal:       new InMemoryJournal(),
     snapshotStore: new InMemorySnapshotStore(),
   });
-interface State { balance: number; }
+type State = { balance: number; };
 
 class Account extends PersistentActor<Command, Event, State> {
   readonly persistenceId = 'account-42';

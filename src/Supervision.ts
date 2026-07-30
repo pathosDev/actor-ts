@@ -13,19 +13,19 @@ export enum Directive {
 export type Decider = (error: Error) => Directive;
 
 /** Descriptor for a supervision strategy. */
-export interface SupervisorStrategy {
+export type SupervisorStrategy = {
   readonly scope: 'one-for-one' | 'all-for-one';
   readonly decider: Decider;
   /** Maximum number of restarts tolerated within the time window. -1 = unlimited. */
   readonly maxRetries: number;
   /** Sliding time window in ms. 0 = no window (counts are never reset). */
   readonly withinTimeRangeMs: number;
-}
+};
 
-export interface StrategyOptions {
+export type StrategyOptions = {
   maxRetries?: number;
   withinTimeRangeMs?: number;
-}
+};
 
 /** Applies the directive only to the failing child. */
 export class OneForOneStrategy implements SupervisorStrategy {

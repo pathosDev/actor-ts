@@ -9,10 +9,10 @@ import { ActorSystem, FSM, Props } from '../../src/index.js';
 import { attachDevTools } from '../devtools.js';
 
 type State = 'disconnected' | 'connecting' | 'connected' | 'reconnecting';
-interface Data {
+type Data = {
   readonly retries: number;
   readonly lastConnectedAt: number | null;
-}
+};
 type Command =
   | { kind: 'connect' }
   | { kind: 'connected' }

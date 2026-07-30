@@ -1,14 +1,14 @@
 import { OptionsBuilder } from '../util/OptionsBuilder.js';
 
 /** Plain options-object shape accepted by a {@link ConsumerController}. */
-export interface ConsumerControllerOptionsType<T> {
+export type ConsumerControllerOptionsType<T> = {
   /**
    * Invoked for every successfully delivered (un-duplicated) message.  The
    * controller Acks AFTER the handler returns — if the handler returns a
    * Promise, the Acknowledgment is delayed until it settles.
    */
   readonly handler: (body: T) => void | Promise<void>;
-}
+};
 
 /**
  * Fluent builder for {@link ConsumerControllerOptionsType}.  The `handler`

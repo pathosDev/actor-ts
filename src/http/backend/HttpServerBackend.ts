@@ -2,12 +2,12 @@ import type { HttpMethod, HttpRequest, HttpResponse } from '../types.js';
 import type { WebsocketSocketAdapter } from '../websocket/SocketAdapter.js';
 
 /** One route registration — supplied by the DSL after compilation. */
-export interface RouteRegistration {
+export type RouteRegistration = {
   readonly method: HttpMethod;
   /** Path pattern in the Fastify/Express style: `/users/:id` */
   readonly pattern: string;
   readonly handler: (request: HttpRequest) => Promise<HttpResponse> | HttpResponse;
-}
+};
 
 /**
  * One WebSocket route registration.  The backend accepts the HTTP
@@ -18,28 +18,28 @@ export interface RouteRegistration {
  * Everything actor-related lives behind `onConnection`; the backend
  * never sees the framework's actors.
  */
-export interface WebsocketRouteRegistration {
+export type WebsocketRouteRegistration = {
   /** ':param'-style pattern, same dialect as {@link RouteRegistration.pattern}. */
   readonly pattern: string;
   /** Pre-upgrade guard.  `null` → proceed; `HttpResponse` → reject with it. */
   readonly authorize: (request: HttpRequest) => Promise<HttpResponse | null>;
   /** Called once per accepted connection, synchronously in the upgrade callback. */
   readonly onConnection: (request: HttpRequest, socket: WebsocketSocketAdapter) => void;
-}
+};
 
-export interface ServerBinding {
+export type ServerBinding = {
   readonly host: string;
   readonly port: number;
   /** Stop the server; waits up to `gracePeriodMs` for in-flight requests. */
   unbind(gracePeriodMs?: number): Promise<void>;
-}
+};
 
 /**
  * Pluggable HTTP server abstraction.  Backends translate our generic
  * route registrations to their native framework (Fastify, Bun.serve,
  * Express, …).  The DSL only ever talks to this interface.
  */
-export interface HttpServerBackend {
+export type HttpServerBackend = {
   readonly name: string;
 
   /** Register all routes before `listen` is called.  Duplicate paths must be rejected. */
@@ -70,4 +70,4 @@ export interface HttpServerBackend {
    * `HttpExtension.bind` and reported as a clear error.
    */
   registerWebSocket?(reg: WebsocketRouteRegistration): void;
-}
+};

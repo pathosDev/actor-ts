@@ -40,11 +40,11 @@ type OrderEvent =
   | { kind: 'shipped'; carrier: string }
   | { kind: 'cancelled'; reason?: string };
 
-interface OrderData {
+type OrderData = {
   amountPaid: number;
   carrier: string | null;
   cancelReason: string | null;
-}
+};
 
 const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
 
@@ -304,7 +304,7 @@ type PayEvent =
   | { kind: 'authorized'; amount: number }
   | { kind: 'captured' }
   | { kind: 'expired' };
-interface PayData { amount: number }
+type PayData = { amount: number };
 
 class PaymentFsm extends PersistentFSM<PayCommand, PayEvent, PayState, PayData> {
   readonly persistenceId: string;
@@ -511,7 +511,7 @@ type AuditEvent =
   | { kind: 'paid'; amount: number }
   | { kind: 'audit-logged' }
   | { kind: 'cancelled'; reason?: string };
-interface AuditData { amountPaid: number; audited: boolean; cancelReason: string | null }
+type AuditData = { amountPaid: number; audited: boolean; cancelReason: string | null };
 
 class AuditingFsm extends PersistentFSM<AuditCommand, AuditEvent, AuditState, AuditData> {
   readonly persistenceId: string;

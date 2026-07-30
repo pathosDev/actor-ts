@@ -32,12 +32,12 @@ tcp.tell({ kind: 'send', payload: 'PING\n' });
 ## Settings
 
 ```ts
-interface TcpSocketOptionsType extends BrokerCommonOptionsType {
+type TcpSocketOptionsType = BrokerCommonOptionsType & {
   host?:    string;              // erforderlich
   port?:    number;              // erforderlich
   framing?: TcpFraming;          // Frame-Extraktion; Default { kind: 'bytes' }
   target?:  ActorRef<unknown>;   // erforderlich: wohin eingehende Frames gehen
-}
+};
 ```
 
 ## Eingehende Nachrichten

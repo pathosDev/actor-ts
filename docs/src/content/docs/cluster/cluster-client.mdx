@@ -65,14 +65,14 @@ The client:
 ## Configuration
 
 ```ts
-interface ClusterClientOptionsType {
+type ClusterClientOptionsType = {
   contactPoints: ReadonlyArray<string>;            // at least one node: host:port or <system>@host:port
   systemName?: string;                             // synthetic system name in the client's hello
   clientIdentity?: { host: string; port: number }; // identity used for reply routing
   askTimeoutMs?: number;                           // default ask timeout (ms; default 5000)
   tls?: TlsTransportOptionsType;                   // must match the cluster's
   logger?: Logger;                                 // default: ConsoleLogger at WARN
-}
+};
 ```
 
 `contactPoints` is the list of cluster nodes to dial — each a

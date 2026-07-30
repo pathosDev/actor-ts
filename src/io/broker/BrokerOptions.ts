@@ -24,7 +24,7 @@ import { OptionsValidator } from '../../util/OptionsValidator.js';
  * specific options.  Subclasses extend this interface with their own
  * required fields (e.g. `brokerUrl`, `topics`).
  */
-export interface BrokerCommonOptionsType {
+export type BrokerCommonOptionsType = {
   /**
    * Reconnect strategy applied when the underlying connection drops or
    * `connectImplementation` throws.  Default: exponential backoff starting at
@@ -58,7 +58,7 @@ export interface BrokerCommonOptionsType {
    * the message).
    */
   readonly outboundBuffer?: number;
-}
+};
 
 export const DEFAULT_RECONNECT = {
   initialDelayMs: 200,

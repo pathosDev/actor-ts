@@ -3,7 +3,7 @@ import type { CassandraClientLike } from './CassandraClient.js';
 import type { CassandraJournalOptions } from './CassandraJournalOptions.js';
 import type { CassandraSnapshotStoreOptions } from '../snapshot-stores/CassandraSnapshotStoreOptions.js';
 
-export interface RegisterCassandraPluginsOptionsType {
+export type RegisterCassandraPluginsOptionsType = {
   /**
    * Shared CQL client used by the journal AND the snapshot store.  When
    * provided, both plug-ins reuse the same connection pool (one TCP
@@ -15,7 +15,7 @@ export interface RegisterCassandraPluginsOptionsType {
   readonly journal: CassandraJournalOptions;
   /** Snapshot-store-specific overrides.  Usually shares keyspace with the journal. */
   readonly snapshotStore: CassandraSnapshotStoreOptions;
-}
+};
 
 /**
  * Fluent builder for {@link RegisterCassandraPluginsOptionsType}.  Each store

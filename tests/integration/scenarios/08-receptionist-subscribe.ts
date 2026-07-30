@@ -30,11 +30,11 @@
 
 import { clusterLiveNodes, waitFor, type Scenario } from './types.js';
 
-interface SubscribedResponse {
+type SubscribedResponse = {
   readonly refs: ReadonlyArray<string>;
   readonly count: number;
   readonly updates: number;
-}
+};
 
 async function subscribed(host: string, controlPort: number): Promise<SubscribedResponse> {
   const response = await fetch(`http://${host}:${controlPort}/test/receptionist/subscribed`);

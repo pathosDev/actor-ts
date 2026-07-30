@@ -123,7 +123,7 @@ export function adaptSqliteDatabase(db: SqliteDb, ownsDatabase: boolean = true):
 }
 
 /** Connection options shared by the local-SQLite relational stores. */
-export interface SqliteConnection {
+export type SqliteConnection = {
   /**
    * Database file, or `':memory:'`.  Required unless `database` is supplied.
    */
@@ -133,7 +133,7 @@ export interface SqliteConnection {
    * ONE handle across stores, or to inject a fake in tests.
    */
   readonly database?: SqliteDb;
-}
+};
 
 /** Open (or pass through) the database for a store. */
 export async function buildSqliteDatabase(connection: SqliteConnection): Promise<SqliteDb> {

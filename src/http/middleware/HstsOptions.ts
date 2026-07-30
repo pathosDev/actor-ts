@@ -14,14 +14,14 @@ import { OptionsValidator } from '../../util/OptionsValidator.js';
 export const HSTS_PRELOAD_MIN_MAX_AGE = 31_536_000;
 
 /** Plain settings shape for HSTS. */
-export interface HstsOptionsType {
+export type HstsOptionsType = {
   /** `max-age` in seconds.  Default 15552000 (180 days). */
   readonly maxAge?: number;
   /** Emit `includeSubDomains`.  Default true. */
   readonly includeSubDomains?: boolean;
   /** Emit `preload`.  Default false; requires `maxAge >= 1 year` + `includeSubDomains`. */
   readonly preload?: boolean;
-}
+};
 
 /** Fluent builder for {@link HstsOptionsType}. */
 export class HstsOptionsBuilder extends OptionsBuilder<HstsOptionsType> {

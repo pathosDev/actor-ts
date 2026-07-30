@@ -16,7 +16,7 @@ import { ClusterBootstrapOptionsValidator } from './ClusterBootstrapOptions.js';
 import type { ClusterBootstrapOptions, ClusterBootstrapOptionsType } from './ClusterBootstrapOptions.js';
 
 /** Return value of {@link Cluster.bootstrap}. */
-export interface BootstrappedCluster {
+export type BootstrappedCluster = {
   readonly system: ActorSystem;
   readonly cluster: Cluster;
   /** `null` when `receptionist: false` was passed. */
@@ -27,7 +27,7 @@ export interface BootstrappedCluster {
    * SIGTERM/SIGINT by default (see {@link ClusterBootstrapOptionsType.shutdownOnSignals}).
    */
   readonly shutdown: () => Promise<void>;
-}
+};
 
 const DEFAULT_AWAIT_READY_MS = 5_000;
 const DEFAULT_PORT = 2552;

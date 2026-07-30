@@ -12,7 +12,7 @@ export type Receive<T> = (message: T) => void | Promise<void>;
  * Runtime API given to every Actor.  Access through `this.context` inside
  * an Actor subclass.
  */
-export interface ActorContext<TMessage = unknown> {
+export type ActorContext<TMessage = unknown> = {
   /** A reference to this actor. */
   readonly self: ActorRef<TMessage>;
 
@@ -175,7 +175,7 @@ export interface ActorContext<TMessage = unknown> {
 
   /** Remove any active throttle, restoring unlimited dequeue rate. */
   cancelThrottle(): void;
-}
+};
 
 /**
  * What to do with a user message dequeued while the actor's
@@ -195,7 +195,7 @@ export type ThrottleOnExcess =
    */
   | 'drop';
 
-export interface ThrottleOptions {
+export type ThrottleOptions = {
   /** Token-refill rate, tokens per second.  Required; must be > 0. */
   readonly qps: number;
   /** Bucket capacity.  Default: `qps` (one second of refill). */
@@ -204,13 +204,13 @@ export interface ThrottleOptions {
   readonly onExcess?: ThrottleOnExcess;
   /** Time source — pass a deterministic clock for tests.  Default: `Date.now`. */
   readonly now?: () => number;
-}
+};
 
 /**
  * Actor-scoped scheduler.  A fresh `startSingleTimer`/`startTimerWithFixedDelay`
  * call with the same key replaces any existing timer under that key.
  */
-export interface TimerScheduler<TMessage = unknown> {
+export type TimerScheduler<TMessage = unknown> = {
   /** Fire `message` once after `delayMs`. */
   startSingleTimer(key: string, message: TMessage, delayMs: number): void;
 
@@ -233,7 +233,7 @@ export interface TimerScheduler<TMessage = unknown> {
 
   /** Names of active timers (diagnostics). */
   activeKeys(): string[];
-}
+};
 
 export class StashOverflowError extends Error {
   constructor(capacity: number) {
