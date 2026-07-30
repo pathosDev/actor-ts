@@ -26,8 +26,8 @@ import { ClusterClientReceptionistId } from '../../src/cluster/ClusterClientRece
 import { LogLevel, NoopLogger } from '../../src/Logger.js';
 import { Props } from '../../src/Props.js';
 
-interface CommandEcho { readonly kind: 'echo'; readonly payload: unknown }
-interface CommandRing { readonly kind: 'ring' }
+type CommandEcho = { readonly kind: 'echo'; readonly payload: unknown };
+type CommandRing = { readonly kind: 'ring' };
 type Command = CommandEcho | CommandRing;
 
 class EchoActor extends Actor<Command> {
@@ -44,14 +44,14 @@ class EchoActor extends Actor<Command> {
   }
 }
 
-interface NodeHandle {
+type NodeHandle = {
   readonly system: ActorSystem;
   readonly cluster: Cluster;
   readonly host: string;
   readonly port: number;
   readonly contactPoint: string;
   readonly echo: import('../../src/index.js').ActorRef<Command> & { actorImplementation: EchoActor };
-}
+};
 
 // Per-test-file jitter to avoid clashing with concurrent CI runs.
 const PORT_BASE = 41_000 + Math.floor(Math.random() * 8_000);

@@ -41,10 +41,10 @@ async function waitFor(pred: () => boolean, timeoutMs = 3_000, stepMs = 25): Pro
   if (!pred()) throw new Error(`waitFor timed out after ${timeoutMs}ms`);
 }
 
-interface Node {
+type Node = {
   sys: ActorSystem;
   cluster: Cluster;
-}
+};
 
 async function startNode(
   systemName: string, port: number, options: {

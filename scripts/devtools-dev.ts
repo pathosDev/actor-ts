@@ -27,15 +27,15 @@ import { PersistentActor } from '../src/persistence/PersistentActor.js';
 import { DevTools } from '../src/devtools/DevTools.js';
 import { DevToolsOptions } from '../src/devtools/DevToolsOptions.js';
 
-interface TickMessage {
+type TickMessage = {
   readonly kind: 'tick';
   readonly index: number;
-}
+};
 
-interface WorkMessage {
+type WorkMessage = {
   readonly kind: 'work';
   readonly payload: string;
-}
+};
 
 class WorkerActor extends Actor<WorkMessage> {
   override async onReceive(message: WorkMessage): Promise<void> {
@@ -45,15 +45,15 @@ class WorkerActor extends Actor<WorkMessage> {
   }
 }
 
-interface DepositEvent {
+type DepositEvent = {
   readonly kind: 'deposited';
   readonly amount: number;
-}
+};
 
-interface LedgerState {
+type LedgerState = {
   readonly balance: number;
   readonly deposits: number;
-}
+};
 
 /** Gives the time-travel panel a journal with a growing history. */
 class LedgerActor extends PersistentActor<WorkMessage, DepositEvent, LedgerState> {

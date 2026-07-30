@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import { OptionsError, OptionsValidator } from '../../../src/util/OptionsValidator.js';
 
-interface Sample {
+type Sample = {
   readonly pos?: number;
   readonly count?: number;
   readonly nnNum?: number;
@@ -15,7 +15,7 @@ interface Sample {
   readonly endpoint?: string;
   readonly low?: number;
   readonly high?: number;
-}
+};
 
 /** Exercises every helper; each field is validated only if the flag names it. */
 class SampleValidator extends OptionsValidator<Sample> {

@@ -31,10 +31,10 @@
 
 import { clusterLiveNodes, sleep, type Scenario } from './types.js';
 
-interface DroppedResponse {
+type DroppedResponse = {
   readonly total: number;
   readonly lines: ReadonlyArray<string>;
-}
+};
 
 async function getDropped(host: string, controlPort: number): Promise<DroppedResponse> {
   const response = await fetch(`http://${host}:${controlPort}/test/backpressure/dropped`);

@@ -78,12 +78,12 @@ async function waitStable<T>(
   throw new Error(`waitStable: did not settle within ${timeoutMs} ms (last value: ${JSON.stringify(prev)})`);
 }
 
-interface Node {
+type Node = {
   readonly role: string;
   readonly sys: ActorSystem;
   readonly cluster: Cluster;
   readonly received: string[];
-}
+};
 
 async function startNode(
   systemName: string, port: number, seeds: string[], roles: string[],

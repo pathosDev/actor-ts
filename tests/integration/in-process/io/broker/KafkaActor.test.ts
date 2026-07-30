@@ -29,11 +29,11 @@ const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
 
 /* --------------------------- Mocks ----------------------------- */
 
-interface MockMessage {
+type MockMessage = {
   readonly topic: string;
   readonly partition: number;
   readonly offset: string;
-}
+};
 
 class MockProducer implements KafkaProducerLike {
   async connect(): Promise<void> {}

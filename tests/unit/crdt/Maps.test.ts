@@ -55,7 +55,7 @@ describe('LWWMap — typical workload', () => {
   });
 
   test('non-string keys with custom identity', () => {
-    interface UserId { tenant: string; id: number }
+    type UserId = { tenant: string; id: number };
     const merged = LWWMap.empty<UserId, string>({ identity: (u) => `${u.tenant}:${u.id}` })
       .put('a', { tenant: 't1', id: 1 }, 'alice', 100)
       .put('a', { tenant: 't1', id: 2 }, 'bob', 100);

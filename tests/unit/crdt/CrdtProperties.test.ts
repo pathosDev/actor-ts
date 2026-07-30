@@ -237,7 +237,7 @@ describe('GSet — custom identity', () => {
   });
 
   test('custom identity dedupes by user-defined key', () => {
-    interface Item { sku: string; name: string }
+    type Item = { sku: string; name: string };
     const set = GSet.empty<Item>({ identity: (i) => i.sku })
       .add({ sku: 'BOOK', name: 'A' })
       .add({ sku: 'BOOK', name: 'A different name' }) // same sku → dropped
@@ -262,7 +262,7 @@ describe('GSet — custom identity', () => {
 
 describe('ORSet — custom identity', () => {
   test('custom identity dedupes by user-defined key', () => {
-    interface Item { sku: string; price: number }
+    type Item = { sku: string; price: number };
     const set = ORSet.empty<Item>({ identity: (i) => i.sku })
       .add('replica-a', { sku: 'BOOK', price: 10 })
       .add('replica-a', { sku: 'BOOK', price: 99 })   // same sku
@@ -271,7 +271,7 @@ describe('ORSet — custom identity', () => {
   });
 
   test('add-wins still works with custom identity', () => {
-    interface Item { sku: string }
+    type Item = { sku: string };
     const make = (): ORSet<Item> => ORSet.empty<Item>({ identity: (i) => i.sku });
     const a0 = make().add('A', { sku: 'apple' });
     const a1 = a0.remove({ sku: 'apple' });
@@ -280,7 +280,7 @@ describe('ORSet — custom identity', () => {
   });
 
   test('JSON round-trip with custom identity recovers element values', () => {
-    interface Item { sku: string; name: string }
+    type Item = { sku: string; name: string };
     const set = ORSet.empty<Item>({ identity: (i) => i.sku })
       .add('A', { sku: 'BOOK', name: 'Designing Data-Intensive Applications' });
     const back = ORSet.fromJSON<Item>(set.toJSON(), { identity: (i) => i.sku });
@@ -335,7 +335,7 @@ describe('GCounterMap — laws', () => {
   });
 
   test('custom identity dedupes by user-defined key', () => {
-    interface Tag { name: string; color: string }
+    type Tag = { name: string; color: string };
     const map = GCounterMap.empty<Tag>({ identity: (t) => t.name })
       .increment('a', { name: 'urgent', color: 'red' }, 2)
       .increment('b', { name: 'urgent', color: 'orange' }, 3);  // same name

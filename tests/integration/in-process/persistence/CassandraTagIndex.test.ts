@@ -16,7 +16,7 @@ import { FakeCassandraClient } from './FakeCassandraClient.js';
 
 const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
 
-interface CorpusEvent { id: number }
+type CorpusEvent = { id: number };
 
 /**
  * Seed both journals with the same fixture corpus so the oracle test

@@ -61,12 +61,12 @@ class MockSocket implements WebsocketSocketAdapter {
 type In = { kind: 'ping'; n: number } | { kind: 'shout'; text: string };
 type Out = { kind: 'pong'; n: number } | { kind: 'msg'; text: string };
 
-interface Rec {
+type Rec = {
   readonly events: string[];
   readonly connections: WebsocketConnection<Out>[];
   /** Number of child actors the hub had right after each connect/disconnect. */
   readonly childCounts: number[];
-}
+};
 
 class RecordingServer extends WebsocketServerActor<Out, In> {
   constructor(private readonly rec: Rec) {

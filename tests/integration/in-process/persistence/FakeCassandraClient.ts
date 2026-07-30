@@ -30,38 +30,38 @@ import type {
 
 type Row = Record<string, unknown>;
 
-interface TableState {
+type TableState = {
   readonly table: string;
   readonly rows: Row[];
-}
+};
 
-interface SelectPlan {
+type SelectPlan = {
   readonly table: string;
   readonly columns: string[] | '*';
   readonly filters: ReadonlyArray<{ column: string; op: '=' | '>=' | '<=' | '<'; index: number }>;
   /** `LIMIT N` → literal value; `LIMIT ?` → parameter index; absent → null. */
   readonly limit: { kind: 'literal'; value: number } | { kind: 'param'; index: number } | null;
-}
+};
 
-interface InsertPlan {
+type InsertPlan = {
   readonly table: string;
   readonly columns: string[];
   /** `INSERT ... IF NOT EXISTS` — apply only when no row shares the PK. */
   readonly ifNotExists: boolean;
-}
+};
 
-interface UpdatePlan {
+type UpdatePlan = {
   readonly table: string;
   readonly assignments: ReadonlyArray<{ column: string; index: number }>;
   readonly filters: ReadonlyArray<{ column: string; index: number }>;
   /** `IF col = ?` conditions — absent for an unconditional UPDATE. */
   readonly conditions: ReadonlyArray<{ column: string; index: number }>;
-}
+};
 
-interface DeletePlan {
+type DeletePlan = {
   readonly table: string;
   readonly filters: ReadonlyArray<{ column: string; op: '=' | '<=' | '<'; index: number }>;
-}
+};
 
 export class FakeCassandraClient implements CassandraClientLike {
   private readonly tables = new Map<string, TableState>();

@@ -14,10 +14,10 @@ import { scenario as pubsubScenario } from './scenarios/01-publish-subscribe.js'
 import { scenario as wildcardScenario } from './scenarios/02-wildcard.js';
 import { scenario as multiSubScenario } from './scenarios/03-multiple-subscribers.js';
 
-export interface NatsContext extends BrokerScenarioContext {
+export type NatsContext = BrokerScenarioContext & {
   readonly servers: ReadonlyArray<string>;
   readonly system: ActorSystem;
-}
+};
 
 function requireEnv(name: string): string {
   const value = process.env[name];

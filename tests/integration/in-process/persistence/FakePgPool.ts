@@ -20,10 +20,10 @@
  */
 import type { PgClientLike, PgPoolLike, PgQueryResult } from '../../../../src/persistence/journals/PostgresClient.js';
 
-interface EventRow { persistence_id: string; sequence_nr: number; payload: string; tags: string | null; timestamp: number; }
-interface TagRow { persistence_id: string; sequence_nr: number; tag: string; timestamp: number; }
-interface SnapRow { persistence_id: string; sequence_nr: number; payload: string; timestamp: number; }
-interface StateRow { persistence_id: string; revision: number; payload: string; timestamp: number; }
+type EventRow = { persistence_id: string; sequence_nr: number; payload: string; tags: string | null; timestamp: number; };
+type TagRow = { persistence_id: string; sequence_nr: number; tag: string; timestamp: number; };
+type SnapRow = { persistence_id: string; sequence_nr: number; payload: string; timestamp: number; };
+type StateRow = { persistence_id: string; revision: number; payload: string; timestamp: number; };
 
 class PgUniqueViolation extends Error {
   readonly code = '23505';

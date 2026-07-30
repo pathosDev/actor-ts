@@ -13,10 +13,10 @@
 
 import { sleep, waitFor, type Scenario } from './types.js';
 
-interface ListingResponse {
+type ListingResponse = {
   readonly count: number;
   readonly refs: ReadonlyArray<string>;
-}
+};
 
 async function listing(host: string, controlPort: number): Promise<ListingResponse> {
   const response = await fetch(`http://${host}:${controlPort}/test/receptionist/listing`);

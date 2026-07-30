@@ -198,7 +198,7 @@ describe('DurableStateActor — no adapter regression', () => {
 
 /* ------------------------- mini probe helper --------------------------- */
 
-interface Probe { ref: ActorRef; received: unknown[]; }
+type Probe = { ref: ActorRef; received: unknown[]; };
 function makeProbe(sys: ActorSystem): Probe {
   const received: unknown[] = [];
   // eslint-disable-next-line @typescript-eslint/no-require-imports

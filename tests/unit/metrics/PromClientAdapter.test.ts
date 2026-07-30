@@ -11,26 +11,26 @@ import { PromClientAdapterOptions } from '../../../src/metrics/PromClientAdapter
  * mirror does that).
  */
 
-interface RecordedCall {
+type RecordedCall = {
   readonly type: 'inc' | 'dec' | 'set' | 'observe';
   readonly labels: Record<string, string | number>;
   readonly value: number;
-}
+};
 
-interface FakePromMetric {
+type FakePromMetric = {
   readonly options: {
     name: string; help: string;
     labelNames?: string[]; buckets?: number[];
     registers?: unknown[];
   };
   readonly calls: RecordedCall[];
-}
+};
 
-interface FakePromRegistry {
+type FakePromRegistry = {
   registered: FakePromMetric[];
   registerMetric(m: FakePromMetric): void;
   getSingleMetric(name: string): FakePromMetric | undefined;
-}
+};
 
 function makeFakeClient(reg: FakePromRegistry): {
   Counter: new (options: FakePromMetric['options']) => Record<string, unknown>;

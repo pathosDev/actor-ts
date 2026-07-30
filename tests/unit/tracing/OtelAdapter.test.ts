@@ -12,7 +12,7 @@ import { decodeTraceparent, encodeTraceparent, newSpanId, newTraceId } from '../
  * adapter doesn't accidentally lean on private OTel-SDK behaviour.
  */
 
-interface FakeRecordedSpan {
+type FakeRecordedSpan = {
   name: string;
   kind?: number;
   attrs: Record<string, unknown>;
@@ -24,7 +24,7 @@ interface FakeRecordedSpan {
   parentSpanId?: string;
   context: OtelSpanContextLike;
   ended: boolean;
-}
+};
 
 class FakeContext implements OtelContextLike {
   constructor(public readonly map = new Map<symbol, unknown>()) {}
@@ -61,11 +61,11 @@ function makeFakeSpan(record: FakeRecordedSpan): OtelSpanLike {
   };
 }
 
-interface FakeOtelApi extends OtelApiLike {
+type FakeOtelApi = OtelApiLike & {
   recorded: FakeRecordedSpan[];
   // Cycle through fake `current` context for `with`-style propagation.
   current: FakeContext;
-}
+};
 
 function makeFakeOtelApi(): FakeOtelApi {
   const recorded: FakeRecordedSpan[] = [];

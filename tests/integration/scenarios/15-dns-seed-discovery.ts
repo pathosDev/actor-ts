@@ -25,14 +25,14 @@
 
 import { clusterLiveNodes, type Scenario } from './types.js';
 
-interface DnsLookupResponse {
+type DnsLookupResponse = {
   readonly hostname: string;
   readonly port: number;
   readonly systemName: string;
   readonly addresses: ReadonlyArray<string>;
   readonly ips: ReadonlyArray<string>;
   readonly elapsedMs: number;
-}
+};
 
 async function dnsLookup(
   via: string,
