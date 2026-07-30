@@ -17,6 +17,7 @@ import {
 import type { Config } from '../../../../../src/config/Config.js';
 import type { ActorRef } from '../../../../../src/ActorRef.js';
 import { Actor } from '../../../../../src/Actor.js';
+import { LogLevel, type Logger } from '../../../../../src/Logger.js';
 
 const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
 
@@ -36,12 +37,25 @@ interface FakeCommand {
  * Concrete subclass for tests — `connectImplementation` and `dispatchOutgoing`
  * are wired to mutable flags so the test can simulate failures.
  */
-class FakeBroker extends BrokerActor<FakeOptions, FakeCommand, string> {
+class FakeBroker extends BrokerActor<FakeOptions, FakeCommand, string, string> {
   connectAttempts = 0;
   disconnects = 0;
   dispatched: string[] = [];
   failNextConnects = 0;
   failNextDispatches = 0;
+
+  /* Desired-subscription test surface (#504).  The `Subscription`
+   * payload is just a label, so an assertion can tell a re-applied
+   * entry from a replaced one. */
+
+  /** Seeded once into the desired set — stands in for options-declared subscriptions. */
+  configuredSubscriptions: Array<readonly [string, string]> = [];
+  /** `key=label` per applySubscription on the CURRENT connection; cleared on disconnect. */
+  appliedSubscriptions: string[] = [];
+  /** Every revokeSubscription, across connections. */
+  revokedSubscriptions: string[] = [];
+  /** Keys whose applySubscription throws. */
+  readonly failSubscriptionKeys = new Set<string>();
 
   constructor(options: Partial<FakeOptions> = {}) { super(options); }
 
@@ -62,9 +76,24 @@ class FakeBroker extends BrokerActor<FakeOptions, FakeCommand, string> {
       this.failNextConnects--;
       throw new Error(`simulated connect failure (${this.connectAttempts})`);
     }
+    await this.applyDesiredSubscriptions();
   }
   protected async disconnectImplementation(): Promise<void> {
     this.disconnects++;
+    // Live handles die with the connection; the desired set does not.
+    this.appliedSubscriptions = [];
+  }
+
+  protected override initialSubscriptions(): Iterable<readonly [string, string]> {
+    return this.configuredSubscriptions;
+  }
+  protected override applySubscription(key: string, subscription: string): void {
+    if (this.failSubscriptionKeys.has(key)) throw new Error(`cannot subscribe '${key}'`);
+    this.appliedSubscriptions.push(`${key}=${subscription}`);
+  }
+  protected override revokeSubscription(key: string): void {
+    this.revokedSubscriptions.push(key);
+    this.appliedSubscriptions = this.appliedSubscriptions.filter((s) => !s.startsWith(`${key}=`));
   }
   protected async dispatchOutgoing(env: OutboundEnvelope<string>): Promise<void> {
     if (this.failNextDispatches > 0) {
@@ -83,6 +112,11 @@ class FakeBroker extends BrokerActor<FakeOptions, FakeCommand, string> {
   publicConnectionState(): string { return this.connectionState; }
   publicBufferSize(): number { return this.outboundBufferSize; }
   publicSubscriberCount(topic: string): number { return this.subscriberCountForTopic(topic); }
+  publicRemember(key: string, subscription: string): Promise<void> {
+    return this.rememberSubscription(key, subscription);
+  }
+  publicForget(key: string): Promise<void> { return this.forgetSubscription(key); }
+  publicDesiredCount(): number { return this.desiredSubscriptionCount; }
 
   override onReceive(_command: FakeCommand): void { /* no-op — direct manipulation in tests */ }
 }
@@ -90,6 +124,22 @@ class FakeBroker extends BrokerActor<FakeOptions, FakeCommand, string> {
 class ProbeActor extends Actor<unknown> {
   received: unknown[] = [];
   override onReceive(m: unknown): void { this.received.push(m); }
+}
+
+/**
+ * Collects warn records so a test can assert a failure was *reported*.
+ * `withSource` / `withFields` return `this`, so every derived logger
+ * appends to the same list.
+ */
+class CapturingLogger implements Logger {
+  readonly level = LogLevel.Warn;
+  readonly warnings: string[] = [];
+  debug(): void {}
+  info(): void {}
+  warn(message: string): void { this.warnings.push(message); }
+  error(): void {}
+  withSource(): Logger { return this; }
+  withFields(): Logger { return this; }
 }
 
 function makeSystem(name = 'broker-test', config?: Record<string, unknown>): ActorSystem {
@@ -100,15 +150,22 @@ function makeSystem(name = 'broker-test', config?: Record<string, unknown>): Act
   return createTestActorSystem({ name, config });
 }
 
-/** Bypass `Props` to keep direct access to a captured FakeBroker. */
+/**
+ * Bypass `Props` to keep direct access to a captured FakeBroker.
+ * `configure` runs on the fresh instance *before* `preStart`, which is
+ * the only window for anything the first connect must already see
+ * (`failNextConnects`, `configuredSubscriptions`).
+ */
 function spawnFake(
   sys: ActorSystem,
   options: Partial<FakeOptions> = {},
+  configure: (broker: FakeBroker) => void = () => {},
 ): { ref: ActorRef<FakeCommand>; brokerReady: Promise<FakeBroker> } {
   let resolve!: (broker: FakeBroker) => void;
   const brokerReady = new Promise<FakeBroker>((r) => { resolve = r; });
   const ref = sys.spawnAnonymous(Props.create(() => {
     const broker = new FakeBroker(options);
+    configure(broker);
     resolve(broker);
     return broker as unknown as Actor<FakeCommand>;
   }));
@@ -271,6 +328,192 @@ describe('BrokerActor — reconnect', () => {
     expect(broker.connectAttempts).toBeGreaterThanOrEqual(2);
     expect(broker.publicConnectionState()).toBe('connected');
     expect(reconnectAttempts).toBeGreaterThanOrEqual(1);
+    await sys.terminate();
+  });
+});
+
+/* ------------------------ Teardown before reconnect --------------------- */
+
+describe('BrokerActor — transport teardown (#504)', () => {
+  test('disconnectImplementation runs before each re-connect attempt', async () => {
+    const sys = makeSystem('td-1');
+    const { brokerReady } = spawnFake(sys, {
+      endpoint: 'host:1',
+      reconnect: { initialDelayMs: 10, maxDelayMs: 20, factor: 1 },
+    });
+    const broker = await brokerReady;
+    await sleep(20);
+    expect(broker.publicConnectionState()).toBe('connected');
+    // First connect had nothing to tear down.
+    expect(broker.disconnects).toBe(0);
+
+    broker.publicSimulateLoss();
+    await sleep(60);
+    expect(broker.publicConnectionState()).toBe('connected');
+    // The dead connection was closed before the new one was built.
+    expect(broker.disconnects).toBe(1);
+    expect(broker.connectAttempts).toBe(2);
+    await sys.terminate();
+  });
+
+  test('a connect that fails half-way is torn down before the retry', async () => {
+    const sys = makeSystem('td-2');
+    const { brokerReady } = spawnFake(
+      sys,
+      { endpoint: 'host:1', reconnect: { initialDelayMs: 10, maxDelayMs: 20, factor: 1 } },
+      (broker) => { broker.failNextConnects = 2; },
+    );
+    const broker = await brokerReady;
+    await sleep(120);
+    expect(broker.publicConnectionState()).toBe('connected');
+    expect(broker.connectAttempts).toBeGreaterThanOrEqual(3);
+    // Attempts 2 and 3 each cleaned up after the previous failure.
+    expect(broker.disconnects).toBeGreaterThanOrEqual(2);
+    await sys.terminate();
+  });
+
+  test('postStop tears down after a connection loss', async () => {
+    const sys = makeSystem('td-3');
+    // Long backoff: the actor stays `disconnected` with transport still
+    // open, which the old `_state !== 'disconnected'` guard skipped.
+    const { ref, brokerReady } = spawnFake(sys, {
+      endpoint: 'host:1',
+      reconnect: { initialDelayMs: 10_000 },
+    });
+    const broker = await brokerReady;
+    await sleep(20);
+    broker.publicSimulateLoss();
+    expect(broker.publicConnectionState()).toBe('disconnected');
+    expect(broker.disconnects).toBe(0);
+
+    ref.stop();
+    await sleep(40);
+    expect(broker.disconnects).toBe(1);
+    await sys.terminate();
+  });
+});
+
+/* ------------------------- Desired subscriptions ------------------------ */
+
+describe('BrokerActor — desired subscriptions (#504)', () => {
+  test('configured subscriptions are applied on connect and re-applied on reconnect', async () => {
+    const sys = makeSystem('ds-1');
+    const { brokerReady } = spawnFake(
+      sys,
+      { endpoint: 'host:1', reconnect: { initialDelayMs: 10, maxDelayMs: 20, factor: 1 } },
+      (broker) => { broker.configuredSubscriptions = [['orders', 'a'], ['audit', 'b']]; },
+    );
+    const broker = await brokerReady;
+    await sleep(20);
+    expect(broker.appliedSubscriptions).toEqual(['orders=a', 'audit=b']);
+    expect(broker.publicDesiredCount()).toBe(2);
+
+    broker.publicSimulateLoss();
+    await sleep(60);
+    expect(broker.appliedSubscriptions).toEqual(['orders=a', 'audit=b']);
+    await sys.terminate();
+  });
+
+  test('remember while connected applies immediately and survives a reconnect', async () => {
+    const sys = makeSystem('ds-2');
+    const { brokerReady } = spawnFake(sys, {
+      endpoint: 'host:1',
+      reconnect: { initialDelayMs: 10, maxDelayMs: 20, factor: 1 },
+    });
+    const broker = await brokerReady;
+    await sleep(20);
+    await broker.publicRemember('runtime', 'x');
+    expect(broker.appliedSubscriptions).toEqual(['runtime=x']);
+
+    broker.publicSimulateLoss();
+    await sleep(60);
+    expect(broker.appliedSubscriptions).toEqual(['runtime=x']);
+    await sys.terminate();
+  });
+
+  test('remember while disconnected is applied on the next connect', async () => {
+    const sys = makeSystem('ds-3');
+    const { brokerReady } = spawnFake(
+      sys,
+      { endpoint: 'host:1', reconnect: { initialDelayMs: 60, maxDelayMs: 60, factor: 1 } },
+      (broker) => { broker.failNextConnects = 1; },
+    );
+    const broker = await brokerReady;
+    await sleep(10);
+    expect(broker.publicConnectionState()).toBe('disconnected');
+    await broker.publicRemember('offline', 'y');
+    // Recorded, not dropped — nothing to apply it to yet.
+    expect(broker.publicDesiredCount()).toBe(1);
+    expect(broker.appliedSubscriptions).toEqual([]);
+
+    await sleep(120);
+    expect(broker.publicConnectionState()).toBe('connected');
+    expect(broker.appliedSubscriptions).toEqual(['offline=y']);
+    await sys.terminate();
+  });
+
+  test('re-remembering a live key revokes it first so the new payload takes effect', async () => {
+    const sys = makeSystem('ds-4');
+    const { brokerReady } = spawnFake(sys, { endpoint: 'host:1' });
+    const broker = await brokerReady;
+    await sleep(20);
+    await broker.publicRemember('topic', 'first');
+    await broker.publicRemember('topic', 'second');
+    expect(broker.revokedSubscriptions).toEqual(['topic']);
+    expect(broker.appliedSubscriptions).toEqual(['topic=second']);
+    expect(broker.publicDesiredCount()).toBe(1);
+    await sys.terminate();
+  });
+
+  test('forget drops the entry and is not resurrected by a reconnect', async () => {
+    const sys = makeSystem('ds-5');
+    const { brokerReady } = spawnFake(
+      sys,
+      { endpoint: 'host:1', reconnect: { initialDelayMs: 10, maxDelayMs: 20, factor: 1 } },
+      (broker) => { broker.configuredSubscriptions = [['orders', 'a']]; },
+    );
+    const broker = await brokerReady;
+    await sleep(20);
+    await broker.publicForget('orders');
+    expect(broker.revokedSubscriptions).toEqual(['orders']);
+    expect(broker.publicDesiredCount()).toBe(0);
+
+    broker.publicSimulateLoss();
+    await sleep(60);
+    // Seeding is once-only, so the options don't bring it back.
+    expect(broker.appliedSubscriptions).toEqual([]);
+    await sys.terminate();
+  });
+
+  test('forget of an unknown key is a no-op', async () => {
+    const sys = makeSystem('ds-6');
+    const { brokerReady } = spawnFake(sys, { endpoint: 'host:1' });
+    const broker = await brokerReady;
+    await sleep(20);
+    await broker.publicForget('never-subscribed');
+    expect(broker.revokedSubscriptions).toEqual([]);
+    await sys.terminate();
+  });
+
+  test('a failing subscription warns and leaves the connection + siblings intact', async () => {
+    const logger = new CapturingLogger();
+    const sys = createTestActorSystem({ name: 'ds-7', logger, logLevel: LogLevel.Warn });
+    const { brokerReady } = spawnFake(
+      sys,
+      { endpoint: 'host:1' },
+      (broker) => {
+        broker.configuredSubscriptions = [['good', 'a'], ['bad', 'b'], ['also-good', 'c']];
+        broker.failSubscriptionKeys.add('bad');
+      },
+    );
+    const broker = await brokerReady;
+    await sleep(30);
+    // One bad subject must not fail the connection or block its siblings.
+    expect(broker.publicConnectionState()).toBe('connected');
+    expect(broker.appliedSubscriptions).toEqual(['good=a', 'also-good=c']);
+    // But it must not be silent, either — that is the whole point (#504).
+    expect(logger.warnings.some((w) => w.includes("could not establish subscription 'bad'")))
+      .toBe(true);
     await sys.terminate();
   });
 });
