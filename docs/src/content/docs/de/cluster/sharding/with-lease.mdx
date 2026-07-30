@@ -65,11 +65,11 @@ von Gossip.
 ## Konfiguration
 
 ```ts
-interface StartShardingOptionsType<TMessage> {
+type StartShardingOptionsType<TMessage> = {
   // ... Basis-Sharding-Settings ...
   lease?:                   Lease;
   acquireRetryIntervalMs?:  number;     // Default 5000
-}
+};
 ```
 
 | Feld | Zweck |

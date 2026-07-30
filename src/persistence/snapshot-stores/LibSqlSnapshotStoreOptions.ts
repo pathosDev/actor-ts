@@ -3,14 +3,14 @@ import { OptionsValidator } from '../../util/OptionsValidator.js';
 import { assertRemoteLibSqlUrl } from '../journals/LibSqlJournalOptions.js';
 import type { LibSqlClientLike, LibSqlConnection } from '../journals/LibSqlClient.js';
 
-export interface LibSqlSnapshotStoreOptionsType extends LibSqlConnection {
+export type LibSqlSnapshotStoreOptionsType = LibSqlConnection & {
   /** Snapshots table name.  Default: `snapshots`. */
   readonly snapshotsTable?: string;
   /** How many snapshots to keep per persistence id.  Default: 3; `<= 0` keeps all. */
   readonly keepN?: number;
   /** Run `CREATE TABLE IF NOT EXISTS` on first use.  Default: true. */
   readonly autoCreateTables?: boolean;
-}
+};
 
 /**
  * Fluent builder for {@link LibSqlSnapshotStoreOptionsType}:

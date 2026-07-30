@@ -29,7 +29,7 @@ import {
 } from './persistence-contract/index.js';
 import type { BrokerScenario, BrokerScenarioContext } from './scenario.js';
 
-export interface SqlPersistenceContext extends BrokerScenarioContext {
+export type SqlPersistenceContext = BrokerScenarioContext & {
   /** Short label — used in scenario names and to namespace persistence ids ("pg", "mariadb"). */
   readonly label: string;
   /** Build a journal against the live database.  Each scenario gets its own. */
@@ -37,7 +37,7 @@ export interface SqlPersistenceContext extends BrokerScenarioContext {
   /** Build a snapshot store; `keepN` must be honoured so the prune scenarios are meaningful. */
   makeSnapshotStore(keepN?: number): Promise<SnapshotStore>;
   makeDurableStateStore(): Promise<DurableStateStore>;
-}
+};
 
 /**
  * Unique per process: two runs against the same container (a re-run without

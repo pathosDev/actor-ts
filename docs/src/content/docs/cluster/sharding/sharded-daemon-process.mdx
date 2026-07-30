@@ -77,11 +77,11 @@ constructor argument.
 ## What the handle gives you
 
 ```ts
-interface ShardedDaemonProcessHandle<T> {
+type ShardedDaemonProcessHandle<T> = {
   readonly region: ActorRef<DaemonEnvelope<T>>;
   tell(index: number, message: T): void;
   stop(): void;
-}
+};
 ```
 
 - **`region`** — the underlying sharding region ref.  Messages
@@ -142,13 +142,13 @@ cluster events deterministically.
 ## Configuration
 
 ```ts
-interface ShardedDaemonProcessOptionsType<T> {
+type ShardedDaemonProcessOptionsType<T> = {
   name:                 string;          // unique daemon-set identifier
   numDaemons:           number;          // total daemons across the cluster
   behaviorFor:          (i: number) => Props<T>;
   role?:                string;          // restrict to specific nodes
   livenessIntervalMs?:  number;          // safety-net ping cadence; default 30s
-}
+};
 ```
 
 | Field | What |

@@ -60,11 +60,11 @@ function migratingAdapter<E>(
 ): EventAdapter<E, unknown>;
 
 // Steps added to the chain:
-interface MigrationStep<From, To> {
+type MigrationStep<From, To> = {
   fromVersion: number;
   toVersion:   number;
   upcast(from: From): To;
-}
+};
 ```
 
 Baue die Chain mit

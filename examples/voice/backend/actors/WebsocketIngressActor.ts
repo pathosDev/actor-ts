@@ -21,12 +21,12 @@ import {
 import type { VoicePresenceCommand } from './VoicePresenceActor.js';
 import type { SessionStore } from '../auth/sessionStore.js';
 
-export interface VoiceWebsocketIngressDeps {
+export type VoiceWebsocketIngressDeps = {
   readonly receptionist: ActorRef<unknown>;
   readonly mediator: ActorRef<Subscribe | Unsubscribe | Publish<unknown>>;
   readonly voicePresence: ActorRef<VoicePresenceCommand>;
   readonly sessions: SessionStore;
-}
+};
 
 type SessionRef = ActorRef<InboundFrame | SocketClosed>;
 

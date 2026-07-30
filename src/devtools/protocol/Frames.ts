@@ -98,12 +98,12 @@ export type DevToolsPanelId =
 export type DevToolsPanelStatus = 'active' | 'unavailable' | 'disabled';
 
 /** One panel as advertised in the handshake. */
-export interface DevToolsPanelDescriptor {
+export type DevToolsPanelDescriptor = {
   readonly id: DevToolsPanelId;
   readonly status: DevToolsPanelStatus;
   /** Human-readable explanation, set when the status is not `'active'`. */
   readonly reason?: string;
-}
+};
 
 /** Why the server rejected a frame. */
 export type DevToolsErrorCode =
@@ -121,35 +121,35 @@ export const DEVTOOLS_CLOSE_VERSION_MISMATCH = 4400;
 /* --------------------------- client → server ---------------------------- */
 
 /** Opening frame; must be the first one a client sends. */
-export interface HelloFrame {
+export type HelloFrame = {
   readonly kind: 'hello';
   readonly protocolVersion: number;
   /** Free-form client identification, for the server log. */
   readonly client?: string;
-}
+};
 
 /** Start receiving `event` frames for one stream. */
-export interface SubscribeFrame {
+export type SubscribeFrame = {
   readonly kind: 'subscribe';
   readonly stream: DevToolsStreamId;
   /** Stream-specific options, e.g. the actor path for `explain`. */
   readonly parameters?: unknown;
-}
+};
 
 /** Stop receiving `event` frames for one stream. */
-export interface UnsubscribeFrame {
+export type UnsubscribeFrame = {
   readonly kind: 'unsubscribe';
   readonly stream: DevToolsStreamId;
-}
+};
 
 /** Invoke a pull operation; answered by exactly one `response` or `error`. */
-export interface RequestFrame {
+export type RequestFrame = {
   readonly kind: 'request';
   /** Client-chosen correlation id, echoed back. */
   readonly requestId: number;
   readonly method: DevToolsRequestMethod;
   readonly parameters?: unknown;
-}
+};
 
 /** Anything a client may send. */
 export type DevToolsClientFrame = HelloFrame | SubscribeFrame | UnsubscribeFrame | RequestFrame;
@@ -157,7 +157,7 @@ export type DevToolsClientFrame = HelloFrame | SubscribeFrame | UnsubscribeFrame
 /* --------------------------- server → client ---------------------------- */
 
 /** Answer to `hello` — the client renders its shell from this. */
-export interface WelcomeFrame {
+export type WelcomeFrame = {
   readonly kind: 'welcome';
   readonly protocolVersion: number;
   /** `package.json` version of the running framework. */
@@ -173,10 +173,10 @@ export interface WelcomeFrame {
   readonly streams: ReadonlyArray<DevToolsStreamId>;
   /** Panel availability, driving the dashboard cards. */
   readonly panels: ReadonlyArray<DevToolsPanelDescriptor>;
-}
+};
 
 /** One stream event. */
-export interface EventFrame {
+export type EventFrame = {
   readonly kind: 'event';
   readonly stream: DevToolsStreamId;
   /**
@@ -186,22 +186,22 @@ export interface EventFrame {
    */
   readonly sequenceNumber: number;
   readonly payload: DevToolsStreamPayload;
-}
+};
 
 /** Successful answer to a `request`. */
-export interface ResponseFrame {
+export type ResponseFrame = {
   readonly kind: 'response';
   readonly requestId: number;
   readonly result: unknown;
-}
+};
 
 /** Rejection — of a request (with `requestId`) or of the connection. */
-export interface ErrorFrame {
+export type ErrorFrame = {
   readonly kind: 'error';
   readonly requestId?: number;
   readonly code: DevToolsErrorCode;
   readonly message: string;
-}
+};
 
 /** Anything the server may send. */
 export type DevToolsServerFrame = WelcomeFrame | EventFrame | ResponseFrame | ErrorFrame;

@@ -11,7 +11,7 @@ import type { BrokerCommonOptionsType } from './BrokerOptions.js';
 import type { ActorRef } from '../../ActorRef.js';
 import type { KafkaCommitMode, KafkaRecord } from './KafkaActor.js';
 
-export interface KafkaOptionsType extends BrokerCommonOptionsType {
+export type KafkaOptionsType = BrokerCommonOptionsType & {
   /** Bootstrap servers (`'kafka-1:9092,kafka-2:9092'` or array). */
   readonly brokers?: ReadonlyArray<string> | string;
   /** Stable client id reported to the broker. */
@@ -52,7 +52,7 @@ export interface KafkaOptionsType extends BrokerCommonOptionsType {
   readonly target?: ActorRef<KafkaRecord>;
   /** Topics the consumer subscribes to at connect time. */
   readonly topics?: ReadonlyArray<string>;
-}
+};
 
 export class KafkaOptionsBuilder extends BrokerOptionsBuilder<KafkaOptionsType> {
   /** Start a fresh builder.  Equivalent to `new KafkaOptionsBuilder()`. */

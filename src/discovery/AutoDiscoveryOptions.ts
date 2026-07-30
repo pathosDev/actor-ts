@@ -29,7 +29,7 @@ import { OptionsValidator } from '../util/OptionsValidator.js';
  * resolves to `[]` — the cluster boots as the first node in a
  * single-node topology, which is exactly what local dev wants.
  */
-export interface AutoDiscoveryOptionsType {
+export type AutoDiscoveryOptionsType = {
   /** ActorSystem name to stamp on discovered NodeAddresses. */
   readonly systemName: string;
   /** Cluster remoting port to pair each discovered IP with. */
@@ -42,7 +42,7 @@ export interface AutoDiscoveryOptionsType {
   readonly env?: Record<string, string | undefined>;
   /** Logger for individual provider failures.  Default: no-op. */
   readonly log?: (message: string, err?: unknown) => void;
-}
+};
 
 /**
  * Fluent builder for {@link AutoDiscoveryOptionsType} — the input to

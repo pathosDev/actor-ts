@@ -6,18 +6,18 @@ import type { ActorSystem } from './ActorSystem.js';
  * extensions from arbitrary objects in the public API; implementations are
  * free to expose any shape.
  */
-export interface Extension {}
+export type Extension = {};
 
 /**
  * Identifier + factory pair that the ActorSystem uses to lazily create and
  * cache an extension singleton.  Conceptually: the `key` gives identity,
  * the `createExtension` function produces the instance on first access.
  */
-export interface ExtensionId<T extends Extension = Extension> {
+export type ExtensionId<T extends Extension = Extension> = {
   readonly key: symbol;
   readonly name: string;
   createExtension(system: ActorSystem): T;
-}
+};
 
 /**
  * Helper: build an ExtensionId with a global-symbol-registered key so that

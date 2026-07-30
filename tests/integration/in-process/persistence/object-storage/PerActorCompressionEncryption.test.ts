@@ -24,8 +24,7 @@ import { ObjectStorageDurableStateStore } from '../../../../../src/persistence/d
 import { ObjectStorageDurableStateStoreOptions } from '../../../../../src/persistence/durable-state-stores/ObjectStorageDurableStateStoreOptions.js';
 import type { ActorRef } from '../../../../../src/ActorRef.js';
 import type { Actor as ActorBase } from '../../../../../src/Actor.js';
-
-const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
+import { awaitCondition } from '../../../../util/AwaitCondition.js';
 
 let dir: string;
 let backend: FilesystemObjectStorageBackend;
@@ -83,9 +82,8 @@ describe('PersistentActor — actor-level compression hook', () => {
 
     const ref = sys.spawn(Props.create(() => new CountingActor('a', { algorithm: 'zstd' })), 'a');
     ref.tell({ kind: 'increment' });
-    await sleep(40);
+    await awaitCondition(() => seen.length > 0, { label: 'snapshot put observed' });
 
-    expect(seen.length).toBeGreaterThan(0);
     for (const enc of seen) expect(enc).toBe('zstd');
     await sys.terminate();
   });
@@ -107,9 +105,8 @@ describe('PersistentActor — actor-level compression hook', () => {
     // Actor without hooks → plugin default applies.
     const ref = sys.spawn(Props.create(() => new CountingActor('a')), 'a');
     ref.tell({ kind: 'increment' });
-    await sleep(40);
+    await awaitCondition(() => seen.length > 0, { label: 'snapshot put observed' });
 
-    expect(seen.length).toBeGreaterThan(0);
     for (const enc of seen) expect(enc).toBe('gzip');
     await sys.terminate();
   });
@@ -134,12 +131,17 @@ describe('PersistentActor — actor-level encryption hook', () => {
     const ref = sys.spawn(Props.create(() => new CountingActor('a', { algorithm: 'none' }, enc)), 'a');
     ref.tell({ kind: 'increment' });
     ref.tell({ kind: 'increment' });
-    await sleep(40);
+    // Wait for BOTH snapshots, not just the first: recovery below asserts
+    // count === 2, and `everyNEvents(1)` writes one object per sequence
+    // number.  Terminating after only one has landed would recover count 1.
+    await awaitCondition(
+      async () => (await backend.list({ prefix: 'a/' })).length >= 2,
+      { label: 'both encrypted snapshots stored' },
+    );
     await sys.terminate();
 
     // Inspect raw bytes — plaintext "incremented" must NOT appear.
     const items = await backend.list({ prefix: 'a/' });
-    expect(items.length).toBeGreaterThan(0);
     const fetched = await backend.get(items[items.length - 1]!.key);
     expect(fetched.isSome()).toBe(true);
     const raw = new TextDecoder('utf-8', { fatal: false }).decode(fetched.toNullable()!.body);
@@ -158,7 +160,7 @@ describe('PersistentActor — actor-level encryption hook', () => {
       override onRecoveryComplete(s: State): void { recoveredState = s; }
     }
     sys2.spawn(Props.create(() => new Recoverer('a', { algorithm: 'none' }, enc)), 'a');
-    await sleep(40);
+    await awaitCondition(() => recoveredState !== null, { label: 'recovery completed' });
     expect(recoveredState).toEqual({ count: 2 });
     await sys2.terminate();
   });
@@ -208,8 +210,7 @@ describe('DurableStateActor — actor-level compression / encryption hooks', () 
       ) as unknown as ActorBase<DsCommand>;
     }), 'a');
     ref.tell({ kind: 'set', v: 7, replyTo: probe.ref });
-    await sleep(40);
-    expect(seen.length).toBeGreaterThan(0);
+    await awaitCondition(() => seen.length > 0, { label: 'durable-state put observed' });
     for (const event of seen) expect(event).toBe('zstd');
     await sys.terminate();
   });
@@ -236,7 +237,9 @@ describe('DurableStateActor — actor-level compression / encryption hooks', () 
         { algorithm: 'none' }, enc) as unknown as ActorBase<DsCommand>;
     }), 'b');
     ref.tell({ kind: 'set', v: 12345, replyTo: probe.ref });
-    await sleep(40);
+    // The probe reply is sent only after `persist` resolves, so it is a
+    // stronger signal than the store write itself having started.
+    await awaitCondition(() => probe.received.length > 0, { label: 'persist acknowledged' });
     await sys.terminate();
 
     // The plaintext "12345" must not appear in the on-disk body.
@@ -261,7 +264,7 @@ describe('DurableStateActor — actor-level compression / encryption hooks', () 
         { algorithm: 'none' }, enc) as unknown as ActorBase<DsCommand>;
     }), 'b');
     ref2.tell({ kind: 'get', replyTo: probe2.ref });
-    await sleep(40);
+    await awaitCondition(() => probe2.received.length > 0, { label: 'recovered state replied' });
     expect(probe2.received).toContainEqual({ v: 12345 });
     await sys2.terminate();
   });

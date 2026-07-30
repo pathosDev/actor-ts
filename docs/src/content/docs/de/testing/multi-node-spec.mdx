@@ -52,7 +52,7 @@ Docker-Compose-Cluster.
 ## Konfiguration
 
 ```ts
-interface MultiNodeSpecOptionsType {
+type MultiNodeSpecOptionsType = {
   roles:             ReadonlyArray<string>;   // ein Node pro Rolle; müssen eindeutig sein
   seedRoles?:        ReadonlyArray<string>;   // Bootstrap-Seeds — Default [roles[0]]
   addresses?:        Record<string, { host: string; port: number }>;
@@ -61,7 +61,7 @@ interface MultiNodeSpecOptionsType {
   awaitTimeoutMs?:   number;                  // Default 10_000 — wie lange await*-Helfer warten
   logLevel?:         LogLevel;                // Default: ein leiser NoopLogger
   downing?:          (role: string) => DowningProvider | undefined;
-}
+};
 ```
 
 | Feld | Zweck |

@@ -15,10 +15,10 @@ import { scenario as groupScenario } from './scenarios/02-consumer-group.js';
 import { scenario as manualScenario } from './scenarios/03-manual-commit.js';
 import { scenario as headersScenario } from './scenarios/04-headers.js';
 
-export interface KafkaContext extends BrokerScenarioContext {
+export type KafkaContext = BrokerScenarioContext & {
   readonly brokers: ReadonlyArray<string>;
   readonly system: ActorSystem;
-}
+};
 
 function requireEnv(name: string): string {
   const value = process.env[name];
@@ -66,13 +66,13 @@ async function main(): Promise<void> {
   }
 }
 
-export interface KafkaSpawnOpts {
+export type KafkaSpawnOpts = {
   groupId?: string;
   topics?: ReadonlyArray<string>;
   target?: ReturnType<ActorSystem['spawnAnonymous']>;
   commitMode?: 'auto' | 'manual';
   fromBeginning?: boolean;
-}
+};
 
 /** Fresh KafkaActor per scenario.  groupId default ensures isolation. */
 export function spawnKafka(context: KafkaContext, options: KafkaSpawnOpts = {}): ReturnType<ActorSystem['spawnAnonymous']> {

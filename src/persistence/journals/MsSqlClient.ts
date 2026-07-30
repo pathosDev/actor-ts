@@ -16,37 +16,37 @@ import type { SqlPool, SqlResult } from '../relational/SqlPool.js';
  * be referenced more than once), and it reports `rowsAffected` as an **array**,
  * one entry per statement in the batch.
  */
-export interface MsSqlResult {
+export type MsSqlResult = {
   /** Rows of the first result set; absent for statements that return none. */
   readonly recordset?: ReadonlyArray<Record<string, unknown>>;
   /** One entry per statement — summed when normalizing. */
   readonly rowsAffected?: ReadonlyArray<number>;
-}
+};
 
-export interface MsSqlRequestLike {
+export type MsSqlRequestLike = {
   /** Bind a named parameter.  `@p1` in the SQL refers to `input('p1', …)`. */
   input(name: string, value: unknown): unknown;
   query(sql: string): Promise<MsSqlResult>;
-}
+};
 
-export interface MsSqlTransactionLike {
+export type MsSqlTransactionLike = {
   begin(): Promise<unknown>;
   commit(): Promise<unknown>;
   rollback(): Promise<unknown>;
   request(): MsSqlRequestLike;
-}
+};
 
-export interface MsSqlPoolLike {
+export type MsSqlPoolLike = {
   request(): MsSqlRequestLike;
   transaction(): MsSqlTransactionLike;
   close(): Promise<unknown>;
-}
+};
 
-interface MsSqlModule {
+type MsSqlModule = {
   ConnectionPool: new (config: Record<string, unknown> | string) => MsSqlPoolLike & {
     connect(): Promise<MsSqlPoolLike>;
   };
-}
+};
 
 const msSqlLazy: Lazy<Promise<MsSqlModule>> = Lazy.of(
   () => lazyImportModule<MsSqlModule>('mssql', {
@@ -56,7 +56,7 @@ const msSqlLazy: Lazy<Promise<MsSqlModule>> = Lazy.of(
 );
 
 /** Connection options shared by all three SQL Server stores. */
-export interface MsSqlConnection {
+export type MsSqlConnection = {
   /**
    * Connection string, e.g.
    * `Server=host,1433;Database=app;User Id=sa;Password=…;Encrypt=true`, or the
@@ -75,7 +75,7 @@ export interface MsSqlConnection {
    * `registerMsSqlPlugins`), or to inject a fake in tests.
    */
   readonly pool?: MsSqlPoolLike;
-}
+};
 
 /** Build (or pass through) the connection pool for a store. */
 export async function buildMsSqlPool(connection: MsSqlConnection): Promise<MsSqlPoolLike> {

@@ -25,11 +25,11 @@ export type ConfigPrimitive = string | number | boolean | null;
 export type ConfigValue = ConfigPrimitive | ConfigValue[] | ConfigObject | Substitution;
 export type ConfigObject = { [key: string]: ConfigValue };
 
-export interface Substitution {
+export type Substitution = {
   readonly __substitution: true;
   readonly path: string;
   readonly optional: boolean;
-}
+};
 
 export function isSubstitution(value: unknown): value is Substitution {
   return typeof value === 'object' && value !== null && (value as Substitution).__substitution === true;

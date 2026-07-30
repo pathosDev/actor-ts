@@ -34,7 +34,7 @@
  * domain handler sees the payload.  Errors thrown from either
  * surface as `PersistError` / `MigrationError` at the actor layer.
  */
-export interface Codec<T> {
+export type Codec<T> = {
   /**
    * Validate / serialise a domain value for the wire.  Returning
    * the input unchanged is fine — the codec's job is to throw on
@@ -45,7 +45,7 @@ export interface Codec<T> {
   decode(wire: unknown): T;
   /** Diagnostic name shown in error messages. */
   readonly name?: string;
-}
+};
 
 /**
  * Pass-through codec — no validation, identity transform.  Same
@@ -67,10 +67,10 @@ export function jsonCodec<T>(): Codec<T> {
  * `parse` via its standard helpers; any hand-rolled validator
  * with a single `parse` method that throws on invalid input works.
  */
-export interface ParserLike<T> {
+export type ParserLike<T> = {
   /** Validate `input` and return a typed value.  Throws on invalid. */
   parse(input: unknown): T;
-}
+};
 
 /**
  * Codec that validates with any `parse`-style schema (Zod, valibot,

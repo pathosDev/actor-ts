@@ -28,30 +28,30 @@ export type DynamoDbAttribute =
 /** One item: attribute name → attribute value. */
 export type DynamoDbItem = Record<string, DynamoDbAttribute>;
 
-export interface DynamoDbQueryResult {
+export type DynamoDbQueryResult = {
   readonly Items?: DynamoDbItem[];
   /** Present when the 1 MB page limit was hit — the caller must keep paging. */
   readonly LastEvaluatedKey?: DynamoDbItem;
-}
+};
 
-export interface DynamoDbGetResult {
+export type DynamoDbGetResult = {
   readonly Item?: DynamoDbItem;
-}
+};
 
-export interface DynamoDbBatchWriteResult {
+export type DynamoDbBatchWriteResult = {
   /** Throttled writes the caller must resubmit. */
   readonly UnprocessedItems?: Record<string, unknown[]>;
-}
+};
 
-export interface DynamoDbTableDescription {
+export type DynamoDbTableDescription = {
   readonly Table?: { readonly TableStatus?: string };
-}
+};
 
 /**
  * The operations the persistence stores need.  Deliberately not the whole API:
  * an operation absent here is one no store issues.
  */
-export interface DynamoDbOperations {
+export type DynamoDbOperations = {
   putItem(input: Record<string, unknown>): Promise<unknown>;
   getItem(input: Record<string, unknown>): Promise<DynamoDbGetResult>;
   query(input: Record<string, unknown>): Promise<DynamoDbQueryResult>;
@@ -64,15 +64,15 @@ export interface DynamoDbOperations {
   createTable(input: Record<string, unknown>): Promise<unknown>;
   describeTable(input: Record<string, unknown>): Promise<DynamoDbTableDescription>;
   close(): Promise<void>;
-}
+};
 
 /** The low-level client the adapter wraps. */
-export interface DynamoDbClientLike {
+export type DynamoDbClientLike = {
   send(command: unknown): Promise<Record<string, unknown>>;
   destroy?(): void;
-}
+};
 
-interface DynamoDbSdkModule {
+type DynamoDbSdkModule = {
   DynamoDBClient: new (config: Record<string, unknown>) => DynamoDbClientLike;
   PutItemCommand: new (input: Record<string, unknown>) => unknown;
   GetItemCommand: new (input: Record<string, unknown>) => unknown;
@@ -84,7 +84,7 @@ interface DynamoDbSdkModule {
   TransactWriteItemsCommand: new (input: Record<string, unknown>) => unknown;
   CreateTableCommand: new (input: Record<string, unknown>) => unknown;
   DescribeTableCommand: new (input: Record<string, unknown>) => unknown;
-}
+};
 
 const dynamoDbSdkLazy: Lazy<Promise<DynamoDbSdkModule>> = Lazy.of(async () => {
   try {
@@ -100,7 +100,7 @@ const dynamoDbSdkLazy: Lazy<Promise<DynamoDbSdkModule>> = Lazy.of(async () => {
 });
 
 /** Connection options shared by all three DynamoDB stores. */
-export interface DynamoDbConnection {
+export type DynamoDbConnection = {
   /** AWS region, e.g. `eu-central-1`.  Falls back to the SDK's own resolution. */
   readonly region?: string;
   /**
@@ -119,7 +119,7 @@ export interface DynamoDbConnection {
    * `registerDynamoDbPlugins`), or to inject a fake in tests.
    */
   readonly operations?: DynamoDbOperations;
-}
+};
 
 /** Build (or pass through) the operations façade for a store. */
 export async function buildDynamoDbOperations(

@@ -14,34 +14,34 @@ import type { SqlPool, SqlResult } from '../relational/SqlPool.js';
  * point deliberately cannot open `file:` or `:memory:` URLs — a local database
  * is `SqliteJournal`'s job (see `LibSqlJournalOptions`).
  */
-export interface LibSqlStatement {
+export type LibSqlStatement = {
   readonly sql: string;
   readonly args: ReadonlyArray<unknown>;
-}
+};
 
-export interface LibSqlResultSet {
+export type LibSqlResultSet = {
   readonly rows: ReadonlyArray<Record<string, unknown>>;
   readonly rowsAffected: number;
-}
+};
 
 /** An open interactive transaction (hrana baton over HTTP). */
-export interface LibSqlTransactionLike {
+export type LibSqlTransactionLike = {
   execute(statement: LibSqlStatement): Promise<LibSqlResultSet>;
   commit(): Promise<void>;
   rollback(): Promise<void>;
   close(): void;
-}
+};
 
-export interface LibSqlClientLike {
+export type LibSqlClientLike = {
   execute(statement: LibSqlStatement): Promise<LibSqlResultSet>;
   /** `'write'` takes the write lock for the life of the transaction. */
   transaction(mode?: 'write' | 'read' | 'deferred'): Promise<LibSqlTransactionLike>;
   close(): void;
-}
+};
 
-interface LibSqlModule {
+type LibSqlModule = {
   createClient(config: { url: string; authToken?: string }): LibSqlClientLike;
-}
+};
 
 const libSqlLazy: Lazy<Promise<LibSqlModule>> = Lazy.of(
   () => lazyImportModule<LibSqlModule>('@libsql/client/web', {
@@ -51,7 +51,7 @@ const libSqlLazy: Lazy<Promise<LibSqlModule>> = Lazy.of(
 );
 
 /** Connection options shared by all three libSQL stores. */
-export interface LibSqlConnection {
+export type LibSqlConnection = {
   /**
    * Database URL — `libsql://…` (Turso), or `http(s)://` / `ws(s)://` for a
    * self-hosted `sqld`.  Required unless `client` is supplied.
@@ -66,7 +66,7 @@ export interface LibSqlConnection {
    * supply a client built with options this connection shape does not model.
    */
   readonly client?: LibSqlClientLike;
-}
+};
 
 /** Build (or pass through) the client for a store. */
 export async function buildLibSqlClient(connection: LibSqlConnection): Promise<LibSqlClientLike> {

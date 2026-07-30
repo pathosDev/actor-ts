@@ -13,23 +13,23 @@ import type { TapClient } from '../core/tapClient.js';
 import type { UiRoute } from '../core/router.js';
 
 /** What a panel gets when it mounts. */
-export interface PanelContext {
+export type PanelContext = {
   readonly tap: TapClient;
   readonly route: ReadonlySignal<UiRoute>;
-}
+};
 
 /** A mounted panel; `dispose` detaches its effects and stream listeners. */
-export interface PanelInstance {
+export type PanelInstance = {
   dispose(): void;
-}
+};
 
 /** The module shape a panel's `index.ts` must default-export. */
-export interface PanelModule {
+export type PanelModule = {
   mount(host: HTMLElement, context: PanelContext): PanelInstance;
-}
+};
 
 /** Registration record. */
-export interface PanelDefinition {
+export type PanelDefinition = {
   readonly id: DevToolsPanelId;
   readonly title: string;
   /** One line, shown on the dashboard card. */
@@ -37,7 +37,7 @@ export interface PanelDefinition {
   /** Sort order in the nav rail and on the dashboard. */
   readonly order: number;
   load(): Promise<PanelModule>;
-}
+};
 
 const panels = new Map<DevToolsPanelId, PanelDefinition>();
 

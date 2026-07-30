@@ -12,7 +12,7 @@ import type { Behavior } from './Behavior.js';
  *   - there is no `become`/`unbecome` — behavior changes happen by returning
  *     a new Behavior from the message handler.
  */
-export interface TypedActorContext<T> {
+export type TypedActorContext<T> = {
   readonly self: ActorRef<T>;
   readonly path: ActorPath;
   readonly system: ActorSystem;
@@ -30,4 +30,4 @@ export interface TypedActorContext<T> {
 
   /** Per-actor timers. */
   readonly timers: TimerScheduler<T>;
-}
+};

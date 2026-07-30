@@ -12,7 +12,7 @@
 export type MessageOutcome = 'ok' | 'error' | 'stashed';
 
 /** One recorded message handling. */
-export interface ExplainEntry {
+export type ExplainEntry = {
   /** Monotonically increasing per actor, so gaps are visible. */
   readonly sequenceNumber: number;
   /** Wall clock at handler start. */
@@ -30,38 +30,38 @@ export interface ExplainEntry {
   readonly errorMessage: string | null;
   /** Span this handling produced, for cross-linking into the trace panel. */
   readonly spanId: string | null;
-}
+};
 
 /** The current ring contents of one actor — the `explain` stream. */
-export interface ExplainEntriesPayload {
+export type ExplainEntriesPayload = {
   readonly kind: 'explain-entries';
   readonly atMs: number;
   readonly path: string;
   readonly capacity: number;
   /** Oldest first. */
   readonly entries: ReadonlyArray<ExplainEntry>;
-}
+};
 
 /** Payloads carried by the `explain` stream. */
 export type ExplainStreamPayload = ExplainEntriesPayload;
 
 /** Parameters of `explain.enable`. */
-export interface ExplainEnableParameters {
+export type ExplainEnableParameters = {
   readonly path: string;
   readonly capacity?: number;
-}
+};
 
 /** Parameters of `explain.disable` and `explain.fetch`. */
-export interface ExplainPathParameters {
+export type ExplainPathParameters = {
   readonly path: string;
-}
+};
 
 /** Result of `explain.enable` / `explain.disable`. */
-export interface ExplainStatusResult {
+export type ExplainStatusResult = {
   readonly path: string;
   readonly enabled: boolean;
   readonly capacity: number;
-}
+};
 
 /** @internal */
 export function explainEntriesPayload(

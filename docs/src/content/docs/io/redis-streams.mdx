@@ -38,7 +38,7 @@ redis.tell({
 ## Settings
 
 ```ts
-interface RedisStreamsOptionsType extends BrokerCommonOptionsType {
+type RedisStreamsOptionsType = BrokerCommonOptionsType & {
   url:           string;                          // 'redis://host:6379'
   streams?:      ReadonlyArray<string>;           // streams to consume
   consumerGroup?: {
@@ -48,7 +48,7 @@ interface RedisStreamsOptionsType extends BrokerCommonOptionsType {
   };
   blockMs?:      number;                          // XREADGROUP block; default 5_000
   target?:       ActorRef<RedisStreamEntry>;      // consumer-actor for inbound entries
-}
+};
 ```
 
 ## Consuming with a consumer group
@@ -99,11 +99,11 @@ class OrderProcessor extends Actor<RedisStreamEntry> {
 The `entry`:
 
 ```ts
-interface RedisStreamEntry {
+type RedisStreamEntry = {
   stream:  string;
   id:      string;                          // e.g. "1684923847-0"
   fields:  Record<string, string>;          // your XADD payload
-}
+};
 ```
 
 Stream IDs are `<millis>-<seq>` strings.  Use the **`id` as a

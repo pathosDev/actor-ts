@@ -17,7 +17,7 @@ export const DYNAMODB_JOURNAL_PLUGIN_ID = 'actor-ts.persistence.journal.dynamodb
 export const DYNAMODB_SNAPSHOT_PLUGIN_ID = 'actor-ts.persistence.snapshot-store.dynamodb';
 export const DYNAMODB_DURABLE_STATE_PLUGIN_ID = 'actor-ts.persistence.durable-state.dynamodb';
 
-export interface DynamoDbPluginHandles {
+export type DynamoDbPluginHandles = {
   /**
    * The DurableState store instance.  `PersistenceExtension` carries no
    * DurableState registry (same as every other plugin), so callers who want
@@ -25,7 +25,7 @@ export interface DynamoDbPluginHandles {
    * `DurableStateActor` options.
    */
   readonly durableStateStore: DynamoDbDurableStateStore;
-}
+};
 
 /**
  * One-shot registration of the DynamoDB journal + snapshot store against the

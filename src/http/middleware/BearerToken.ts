@@ -12,7 +12,7 @@ import { timingSafeEqual } from 'node:crypto';
 import { HttpError, Status } from '../types.js';
 import type { Middleware } from '../Route.js';
 
-export interface BearerTokenAuthOptions {
+export type BearerTokenAuthOptions = {
   /**
    * Acceptable tokens — at least one must match the
    * `Authorization: Bearer <token>` header.  Multiple entries support
@@ -30,7 +30,7 @@ export interface BearerTokenAuthOptions {
    * Realm advertised in `WWW-Authenticate` on 401.  Default: `'actor-ts'`.
    */
   readonly realm?: string;
-}
+};
 
 /**
  * Build a `Middleware` that 401s every request unless the

@@ -31,7 +31,7 @@ scheduling, network partition between pods, etc.
 ## Configuration
 
 ```ts
-interface KubernetesLeaseOptionsType {
+type KubernetesLeaseOptionsType = {
   // From LeaseOptionsType:
   name:                  string;
   owner:                 string;
@@ -45,7 +45,7 @@ interface KubernetesLeaseOptionsType {
   apiServerUrl?:         string;     // override the in-cluster default
   authToken?:            string;     // override the in-cluster default
   caCert?:               string;     // override the in-cluster default
-}
+};
 ```
 
 | K8s field | Default | What |

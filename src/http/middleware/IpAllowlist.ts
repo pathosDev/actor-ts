@@ -27,7 +27,7 @@ import { HttpError, Status } from '../types.js';
 import type { HttpRequest } from '../types.js';
 import type { Middleware } from '../Route.js';
 
-export interface IpAllowlistOptions {
+export type IpAllowlistOptions = {
   /**
    * One or more CIDR strings.  At least one must match the resolved
    * client IP or the request gets a 403.
@@ -43,15 +43,15 @@ export interface IpAllowlistOptions {
    * (403) — no IP means no decision means deny.
    */
   readonly getClientIp?: (request: HttpRequest) => string | null | undefined;
-}
+};
 
 /** A single parsed CIDR — stored as a normalised bigint + prefix length. */
-interface ParsedCidr {
+type ParsedCidr = {
   readonly ipv6: boolean;          // true if the CIDR is an IPv6 net
   readonly network: bigint;        // address with host-bits zeroed
   readonly prefixBits: number;     // number of significant prefix bits
   readonly totalBits: number;      // 32 for v4, 128 for v6
-}
+};
 
 export function IpAllowlist(options: IpAllowlistOptions): Middleware {
   if (options.allow.length === 0) {

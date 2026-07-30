@@ -29,7 +29,7 @@ import { Lazy } from '../../util/Lazy.js';
 
 export type CompressionAlgo = 'none' | 'gzip' | 'zstd';
 
-export interface Compressor {
+export type Compressor = {
   /** `level` is algorithm-specific and clamped; `undefined` → impl default.  Ignored by `none`. */
   compress(input: Uint8Array, level?: number): Promise<Uint8Array>;
   /**
@@ -39,7 +39,7 @@ export interface Compressor {
    * other paths assert the size once decoded.  Exceeding it throws.
    */
   decompress(input: Uint8Array, maxOutputBytes?: number): Promise<Uint8Array>;
-}
+};
 
 /* ------------------------------- gzip ----------------------------------- */
 

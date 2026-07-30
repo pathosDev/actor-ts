@@ -5,7 +5,7 @@ import type { Transport } from './Transport.js';
 import type { DowningProvider } from './downing/DowningProvider.js';
 
 /** Plain options-object shape accepted by {@link Cluster.join}. */
-export interface ClusterOptionsType {
+export type ClusterOptionsType = {
   readonly host: string;
   readonly port: number;
   /** Other nodes this node should try to contact on startup. */
@@ -62,7 +62,7 @@ export interface ClusterOptionsType {
    * KeepOldest, KeepReferee, StaticQuorum, LeaseMajority).
    */
   readonly downing?: DowningProvider;
-}
+};
 
 /**
  * Fluent builder for {@link ClusterOptionsType} — the sole input to

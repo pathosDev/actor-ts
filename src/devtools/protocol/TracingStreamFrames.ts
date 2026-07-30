@@ -16,7 +16,7 @@ export type WireSpanKind = 'internal' | 'server' | 'client' | 'producer' | 'cons
 export type WireSpanStatus = 'unset' | 'ok' | 'error';
 
 /** One completed span. */
-export interface WireSpan {
+export type WireSpan = {
   readonly name: string;
   readonly spanKind: WireSpanKind;
   readonly traceId: string;
@@ -45,16 +45,16 @@ export interface WireSpan {
    */
   readonly messagePayload: string | null;
   readonly exceptions: ReadonlyArray<string>;
-}
+};
 
 /** A batch of completed spans, flushed on the stream tick. */
-export interface SpanBatchPayload {
+export type SpanBatchPayload = {
   readonly kind: 'span-batch';
   readonly atMs: number;
   readonly spans: ReadonlyArray<WireSpan>;
   /** Spans evicted from the ring before they could be sent. */
   readonly dropped: number;
-}
+};
 
 /** Payloads carried by the `spans` stream. */
 export type TracingStreamPayload = SpanBatchPayload;
@@ -73,15 +73,15 @@ export const TRACING_BUFFER_DEFAULT = 100;
  * the panel is opened.  What the client does choose is how far back
  * "recent" goes, because that is the part it pays for on the wire.
  */
-export interface TracingBufferParameters {
+export type TracingBufferParameters = {
   readonly capacity: number;
-}
+};
 
-export interface TracingBufferResult {
+export type TracingBufferResult = {
   /** What the server settled on, after clamping to its own ceiling. */
   readonly capacity: number;
   readonly retained: number;
-}
+};
 
 /** @internal */
 export function spanBatchPayload(

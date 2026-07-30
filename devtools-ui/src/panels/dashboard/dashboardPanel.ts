@@ -336,7 +336,7 @@ function formatMillis(value: number): string {
 
 /* --------------------------------- tiles --------------------------------- */
 
-interface TileOptions {
+type TileOptions = {
   readonly accent?: boolean;
   readonly alert?: boolean;
   readonly series?: ReadonlyArray<SeriesPoint>;
@@ -344,7 +344,7 @@ interface TileOptions {
   readonly color?: string;
   /** Hover text for the figures that need a sentence of context. */
   readonly title?: string;
-}
+};
 
 function tile(label: string, value: string, options: TileOptions = {}): HTMLElement {
   const classes = ['dt-tile__value'];
@@ -376,11 +376,11 @@ function tile(label: string, value: string, options: TileOptions = {}): HTMLElem
 
 /* --------------------------------- charts -------------------------------- */
 
-interface ChartBlock {
+type ChartBlock = {
   readonly node: HTMLElement;
   readonly canvas: HTMLCanvasElement;
   readonly legend: HTMLElement;
-}
+};
 
 function chartBlock(title: string): ChartBlock {
   const canvas = h('canvas', { class: 'dt-chart__canvas' }) as HTMLCanvasElement;

@@ -2,7 +2,7 @@ import type { ActorRef } from '../ActorRef.js';
 import type { LogContextData } from '../LogContext.js';
 import type { SpanContext } from '../tracing/Tracer.js';
 
-export interface Envelope<T = unknown> {
+export type Envelope<T = unknown> = {
   readonly message: T;
   readonly sender: ActorRef | null;
   /**
@@ -28,7 +28,7 @@ export interface Envelope<T = unknown> {
    * measures the whole time from arrival to handling.
    */
   readonly enqueuedAtMs?: number;
-}
+};
 
 /**
  * Per-actor message queue.  System messages (create, terminate, failure, …)

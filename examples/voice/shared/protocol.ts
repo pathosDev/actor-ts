@@ -109,10 +109,10 @@ export type ClientMessage =
 /* Server → Client                                                  */
 /* ============================================================== */
 
-export interface GroupSummary {
+export type GroupSummary = {
   readonly name: GroupName;
   readonly members: ReadonlyArray<Username>;
-}
+};
 
 export type IncomingSource =
   | { readonly kind: 'peer' }

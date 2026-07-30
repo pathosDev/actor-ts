@@ -54,14 +54,14 @@ hier ist die ursprüngliche Response."  Keine Doppelbuchung.
 ## Konfiguration
 
 ```ts
-interface IdempotencyOptions {
+type IdempotencyOptions = {
   cache:          Cache;
   ttlMs?:         number;                              // Default 24 h
   headerName?:    string;                              // Default 'idempotency-key'
   keyPrefix?:     string;                              // Default 'idem:'
   missingHeader?: 'reject' | 'pass-through';           // Default 'reject'
   identity?:      (req: HttpRequest) => string | Promise<string>;   // Scope pro Aufrufer; Default keiner
-}
+};
 ```
 
 | Feld | Zweck |

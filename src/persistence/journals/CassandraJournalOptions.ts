@@ -2,7 +2,7 @@ import { OptionsBuilder } from '../../util/OptionsBuilder.js';
 import { OptionsValidator } from '../../util/OptionsValidator.js';
 import type { CassandraClientLike, CassandraConnection } from './CassandraClient.js';
 
-export interface CassandraJournalOptionsType extends CassandraConnection {
+export type CassandraJournalOptionsType = CassandraConnection & {
   /** Table name for events.  Default: `events`. */
   readonly eventsTable?: string;
   /** Table tracking the highest sequence number per pid.  Default: `metadata`. */
@@ -84,7 +84,7 @@ export interface CassandraJournalOptionsType extends CassandraConnection {
    * owns the client lifecycle.
    */
   readonly client?: CassandraClientLike;
-}
+};
 
 /**
  * Fluent builder for {@link CassandraJournalOptionsType}:

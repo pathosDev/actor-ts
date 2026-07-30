@@ -60,7 +60,7 @@ Zwei zentrale Beobachtungen:
 Die vollständige Schnittstelle:
 
 ```ts
-interface TimerScheduler<TMessage = unknown> {
+type TimerScheduler<TMessage = unknown> = {
   startSingleTimer(key: string, message: TMessage, delayMs: number): void;
   startTimerWithFixedDelay(
     key: string, message: TMessage, intervalMs: number, initialDelayMs?: number,
@@ -69,7 +69,7 @@ interface TimerScheduler<TMessage = unknown> {
   cancelAll(): void;
   isTimerActive(key: string): boolean;
   activeKeys(): string[];
-}
+};
 ```
 
 `cancelAll` läuft automatisch bei `postStop` — du musst nie ans
@@ -110,10 +110,10 @@ Funktion aus":
 Jede Methode gibt ein `Cancellable` zurück:
 
 ```ts
-interface Cancellable {
+type Cancellable = {
   cancel(): boolean;
   readonly isCancelled: boolean;
-}
+};
 ```
 
 Der `cancel()` gibt `true` zurück, wenn es tatsächlich einen aktiven

@@ -18,7 +18,7 @@ import { writeRawHttpResponse } from '../websocket/rawResponse.js';
 import { DEFAULT_WEBSOCKET_MAX_FRAME_BYTES } from '../websocket/types.js';
 
 /** Minimal shape of the `ws` package's WebSocketServer (noServer mode). */
-interface WebsocketServerLike {
+type WebsocketServerLike = {
   handleUpgrade(
     req: IncomingMessage,
     socket: Duplex,
@@ -27,7 +27,7 @@ interface WebsocketServerLike {
   ): void;
   emit(event: 'connection', ws: WebsocketPackageSocket, req: IncomingMessage): boolean;
   readonly clients?: Iterable<{ terminate?: () => void; close?: () => void }>;
-}
+};
 
 // `ws` is an optional peer dep — lazy-import its WebSocketServer (cached).
 const wsServerConstructorLazy: Lazy<Promise<new (opts: { noServer: boolean; maxPayload?: number }) => WebsocketServerLike>> = Lazy.of(async () => {
@@ -56,7 +56,7 @@ const wsServerConstructorLazy: Lazy<Promise<new (opts: { noServer: boolean; maxP
  */
 
 /** Minimal shape of the Express Request we rely on. */
-interface ExpressRequestLike {
+type ExpressRequestLike = {
   method: string;
   url: string;
   path?: string;
@@ -74,14 +74,14 @@ interface ExpressRequestLike {
   ip?: string;
   /** Raw socket — fallback when `req.ip` isn't populated. */
   socket?: { remoteAddress?: string };
-}
+};
 
 /** Minimal shape of the Express Response we rely on. */
-interface ExpressResponseLike {
+type ExpressResponseLike = {
   status(code: number): ExpressResponseLike;
   setHeader(name: string, value: string): void;
   end(body?: string | Uint8Array): void;
-}
+};
 
 type ExpressNext = (err?: unknown) => void;
 type ExpressHandler = (req: ExpressRequestLike, res: ExpressResponseLike, next: ExpressNext) => void | Promise<void>;
@@ -98,7 +98,7 @@ function escapeRegExp(s: string): string {
  * a RegExp so it works identically on Express 4 and 5 (v5's path-to-regexp
  * rejects a bare string `*`).
  */
-export interface ExpressAppLike {
+export type ExpressAppLike = {
   get(path: string | RegExp, handler: ExpressHandler): void;
   post(path: string | RegExp, handler: ExpressHandler): void;
   put(path: string | RegExp, handler: ExpressHandler): void;
@@ -108,7 +108,7 @@ export interface ExpressAppLike {
   options(path: string | RegExp, handler: ExpressHandler): void;
   use(mw: ExpressHandler | ExpressErrorHandler): void;
   listen(port: number, hostname: string, cb: (err?: Error) => void): Server;
-}
+};
 
 /**
  * Express-backed HTTP backend — drop-in alternative to the Fastify

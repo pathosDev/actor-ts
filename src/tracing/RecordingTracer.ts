@@ -34,7 +34,7 @@ import {
  * adapter layer.
  */
 
-export interface RecordedSpan {
+export type RecordedSpan = {
   readonly name: string;
   readonly kind: SpanKind;
   readonly context: SpanContext;
@@ -58,9 +58,9 @@ export interface RecordedSpan {
   readonly status: SpanStatus;
   readonly statusMessage?: string;
   readonly exceptions: ReadonlyArray<Error>;
-}
+};
 
-export interface RecordingTracerOptions {
+export type RecordingTracerOptions = {
   /** Hook invoked when a span ends — wire to your exporter here. */
   readonly onSpanEnd?: (span: RecordedSpan) => void;
   /** Sampling decision per span.  Default `() => true` (sample all). */
@@ -75,7 +75,7 @@ export interface RecordingTracerOptions {
    * `recorded()` is never read.
    */
   readonly maxRecorded?: number;
-}
+};
 
 class RecordingSpan implements Span {
   private _ended = false;

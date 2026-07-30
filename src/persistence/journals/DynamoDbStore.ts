@@ -6,16 +6,16 @@ import {
 } from './DynamoDbClient.js';
 
 /** A table's key schema, in the shape `CreateTable` wants. */
-export interface DynamoDbTableSchema {
+export type DynamoDbTableSchema = {
   readonly tableName: string;
   /** Partition key — always the persistence id in these stores. */
   readonly partitionKey: string;
   /** Sort key, for the tables that hold many items per persistence id. */
   readonly sortKey?: { readonly name: string; readonly type: 'N' | 'S' };
-}
+};
 
 /** Wiring every DynamoDB store needs, independent of which contract it implements. */
-export interface DynamoDbStoreConfig extends Omit<LazyStoreConfig<DynamoDbOperations>, 'ownsResource' | 'openResource'> {
+export type DynamoDbStoreConfig = Omit<LazyStoreConfig<DynamoDbOperations>, 'ownsResource' | 'openResource'> & {
   /** Create the table on first use.  Default `true`. */
   readonly autoCreateTables?: boolean;
   /**
@@ -36,7 +36,7 @@ export interface DynamoDbStoreConfig extends Omit<LazyStoreConfig<DynamoDbOperat
   readonly ownsClient: boolean;
   /** Open the operations façade.  Called once, lazily, on first use. */
   openClient(): Promise<DynamoDbOperations>;
-}
+};
 
 /**
  * The DynamoDB half of the store lifecycle: `LazyStore` handles lazy connection,

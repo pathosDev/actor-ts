@@ -2,14 +2,14 @@ import type { Cache } from '../../cache/Cache.js';
 import { OptionsBuilder } from '../../util/OptionsBuilder.js';
 import { OptionsValidator } from '../../util/OptionsValidator.js';
 
-export interface CachedSnapshotStoreOptionsType {
+export type CachedSnapshotStoreOptionsType = {
   /** Backing cache — typically Redis in production. */
   readonly cache: Cache;
   /** Cache TTL in milliseconds.  Default: 5 minutes. */
   readonly ttlMs?: number;
   /** Key prefix (default: `'snap:'`) prevents collisions in shared caches. */
   readonly keyPrefix?: string;
-}
+};
 
 /**
  * Fluent builder for {@link CachedSnapshotStoreOptionsType}.  The `cache` is

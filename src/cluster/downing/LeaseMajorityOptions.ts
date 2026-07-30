@@ -3,7 +3,7 @@ import { OptionsBuilder } from '../../util/OptionsBuilder.js';
 import { OptionsValidator } from '../../util/OptionsValidator.js';
 
 /** Plain options-object shape accepted by {@link LeaseMajority}. */
-export interface LeaseMajorityOptionsType {
+export type LeaseMajorityOptionsType = {
   /**
    * External arbiter — typically a `KubernetesLease` so both sides
    * of a partition reach the same K8s API and only one acquires.
@@ -20,7 +20,7 @@ export interface LeaseMajorityOptionsType {
   readonly acquireTimeoutMs?: number;
   /** If set, only members carrying this role count toward the majority. */
   readonly role?: string;
-}
+};
 
 /**
  * Fluent builder for {@link LeaseMajorityOptionsType}:

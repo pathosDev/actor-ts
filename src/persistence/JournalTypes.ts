@@ -5,7 +5,7 @@
  */
 
 /** An event stored in the journal, paired with its positional metadata. */
-export interface PersistentEvent<E = unknown> {
+export type PersistentEvent<E = unknown> = {
   /** Entity id this event belongs to ("bank-account-42", "order-7", …). */
   readonly persistenceId: string;
   /** 1-based monotonic sequence number within the entity's stream. */
@@ -16,16 +16,16 @@ export interface PersistentEvent<E = unknown> {
   readonly timestamp: number;
   /** Optional tags that Projections / Persistence-Query can filter on. */
   readonly tags?: ReadonlyArray<string>;
-}
+};
 
 /** A snapshot of an entity's state at a given sequence number. */
-export interface Snapshot<S = unknown> {
+export type Snapshot<S = unknown> = {
   readonly persistenceId: string;
   /** Events up to and including this seq are reflected in `state`. */
   readonly sequenceNr: number;
   readonly state: S;
   readonly timestamp: number;
-}
+};
 
 /** Raised when the caller's `expectedSeq` does not match the journal. */
 export class JournalConcurrencyError extends Error {

@@ -24,7 +24,7 @@ export type { TlsTransportOptionsType };
  * implementation is the production one; tests use an in-memory transport
  * that loops frames through JS structures.
  */
-export interface Transport {
+export type Transport = {
   readonly self: NodeAddress;
   start(): Promise<void>;
   shutdown(): Promise<void>;
@@ -35,18 +35,18 @@ export interface Transport {
   disconnect(peer: NodeAddress): void;
   /** Peers currently connected (either inbound or outbound). */
   peers(): NodeAddress[];
-}
+};
 
 /* ============================== TCP Transport ============================= */
 
-interface Connection {
+type Connection = {
   socket: TcpSocketLike | null;     // populated on `onOpen`
   peer: NodeAddress | null;         // populated on hello / hello-ack
   decoder: FrameDecoder;
   /** Buffered frames written before the hello handshake completed. */
   pending: WireMessage[];
   outbound: boolean;
-}
+};
 
 /**
  * TCP-backed cluster transport.  Wire framing lives in `Protocol.ts`; the

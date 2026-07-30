@@ -4,14 +4,14 @@ import type { NodeAddress } from '../cluster/NodeAddress.js';
 import type { Option } from '../util/Option.js';
 
 /** Plain options-object shape accepted by a {@link MockCluster}. */
-export interface MockClusterOptionsType {
+export type MockClusterOptionsType = {
   /** Self address — what `selfAddress` returns. */
   readonly selfAddress: NodeAddress;
   /** Initial members.  Self is added automatically if not present. */
   readonly initialMembers?: ReadonlyArray<Member>;
   /** Initial leader.  Defaults to the lowest address. */
   readonly initialLeader?: Option<Member>;
-}
+};
 
 /** Fluent builder for {@link MockClusterOptionsType}. */
 export class MockClusterOptionsBuilder extends OptionsBuilder<MockClusterOptionsType> {

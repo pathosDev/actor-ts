@@ -10,7 +10,7 @@ import { Actor, ActorSystem, Cluster, ClusterOptions, InMemoryTransport, NodeAdd
 import { DistributedPubSubId, Publish, Subscribe } from '../../src/cluster/pubsub/index.js';
 import { attachDevTools } from '../devtools.js';
 
-interface ChatMessage { readonly from: string; readonly text: string; }
+type ChatMessage = { readonly from: string; readonly text: string; };
 
 class Subscriber extends Actor<ChatMessage> {
   constructor(private readonly name: string) { super(); }

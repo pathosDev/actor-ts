@@ -64,10 +64,10 @@ class UntypedParent extends Actor<...> {
 The signatures live on `ActorContext`:
 
 ```ts
-interface ActorContext {
+type ActorContext = {
   spawnTyped<T>(behavior: Behavior<T>, name: string): ActorRef<T>;
   spawnTypedAnonymous<T>(behavior: Behavior<T>): ActorRef<T>;
-}
+};
 ```
 
 Useful when you have an existing untyped supervisor that needs to

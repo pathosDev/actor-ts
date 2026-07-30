@@ -23,23 +23,23 @@ import type { ReplayRequest } from '../../persistence/Replay.js';
 import type { ReplayCapability, ReplayFoldSource } from '../protocol/index.js';
 
 /** A fold supplied by the application. */
-export interface ReplayFoldRegistration<Event = unknown, State = unknown> {
+export type ReplayFoldRegistration<Event = unknown, State = unknown> = {
   /** Which persistence ids this fold applies to. */
   match(persistenceId: string): boolean;
   initialState(): State;
   fold(state: State, event: Event): State;
   eventAdapter?: ReplayRequest<Event, State>['eventAdapter'];
   snapshotAdapter?: ReplayRequest<Event, State>['snapshotAdapter'];
-}
+};
 
 /** A fold the registry managed to find, with its provenance. */
-export interface ResolvedFold<Event = unknown, State = unknown> {
+export type ResolvedFold<Event = unknown, State = unknown> = {
   readonly source: ReplayFoldSource;
   initialState(): State;
   fold(state: State, event: Event): State;
   readonly eventAdapter?: ReplayRequest<Event, State>['eventAdapter'];
   readonly snapshotAdapter?: ReplayRequest<Event, State>['snapshotAdapter'];
-}
+};
 
 export class ReplayRegistry {
   constructor(

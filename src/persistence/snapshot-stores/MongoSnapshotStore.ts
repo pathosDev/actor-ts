@@ -14,13 +14,13 @@ import {
   type MongoSnapshotStoreOptionsType,
 } from './MongoSnapshotStoreOptions.js';
 
-interface SnapshotDocument {
+type SnapshotDocument = {
   readonly persistenceId: string;
   readonly sequenceNr: number;
   readonly payload: string;
   readonly timestamp: number;
   readonly [field: string]: unknown;
-}
+};
 
 /**
  * SnapshotStore backed by MongoDB.

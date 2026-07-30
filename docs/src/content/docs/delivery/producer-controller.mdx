@@ -33,12 +33,12 @@ Internally:
 ## Configuration
 
 ```ts
-interface ProducerControllerOptionsType<T> {
+type ProducerControllerOptionsType<T> = {
   consumer:          ActorRef<Delivery<T>>;
   resendTimeout?:  number;       // default 500
   windowSize?:       number;       // default 16
   producerId?:       string;       // auto-generated if omitted
-}
+};
 ```
 
 | Field | Purpose |

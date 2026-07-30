@@ -33,7 +33,7 @@ import type { OnlineUsersCommand } from './OnlineUsersActor.js';
 import type { ReadReceiptsCommand } from './ReadReceiptsActor.js';
 import type { SessionStore } from '../auth/sessionStore.js';
 
-export interface WebsocketIngressDeps {
+export type WebsocketIngressDeps = {
   readonly chatRoomRegion: ActorRef<ChatRoomCommand>;
   readonly directMessageChannelRegion: ActorRef<DirectMessageChannelCommand>;
   readonly onlineUsers: ActorRef<OnlineUsersCommand>;
@@ -41,7 +41,7 @@ export interface WebsocketIngressDeps {
   readonly sessions: SessionStore;
   readonly roomDirectory: ActorRef<ChatRoomDirectoryCommand>;
   readonly readReceipts: ActorRef<ReadReceiptsCommand>;
-}
+};
 
 type SessionRef = ActorRef<InboundFrame | SocketClosed>;
 

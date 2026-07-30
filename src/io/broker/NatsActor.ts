@@ -9,19 +9,19 @@ import { NatsOptionsValidator } from './NatsOptions.js';
 import type { NatsOptions, NatsOptionsType } from './NatsOptions.js';
 
 /** Inbound NATS message handed to subscribers. */
-export interface NatsMessage {
+export type NatsMessage = {
   readonly subject: string;
   readonly payload: Uint8Array;
   /** Reply subject (for request/reply patterns).  Empty when not set. */
   readonly replyTo: string;
-}
+};
 
 /** Outbound publish — one NATS message. */
-export interface NatsPublish {
+export type NatsPublish = {
   readonly subject: string;
   readonly payload: Uint8Array | string;
   readonly replyTo?: string;
-}
+};
 
 /** Publish one message on a subject. */
 type PublishCommand = { readonly kind: 'publish'; readonly publish: NatsPublish };
@@ -206,24 +206,24 @@ export class NatsActor
  * `createNatsConnection`) can satisfy the shape without the real
  * `nats` peer-dep.
  */
-export interface NatsSubscriptionLike {
+export type NatsSubscriptionLike = {
   unsubscribe(): void;
-}
+};
 
-export interface NatsRawMessage {
+export type NatsRawMessage = {
   subject: string;
   data: Uint8Array;
   reply?: string;
-}
+};
 
-export interface NatsConnectionLike {
+export type NatsConnectionLike = {
   publish(subject: string, payload: Uint8Array, options?: { reply?: string }): void;
   subscribe(subject: string, options: { callback: (err: Error | null, message: NatsRawMessage) => void }): NatsSubscriptionLike;
   drain(): Promise<void>;
   closed(): Promise<Error | undefined>;
-}
+};
 
-interface NatsModule {
+type NatsModule = {
   connect(options: {
     servers: string[];
     token?: string;
@@ -231,7 +231,7 @@ interface NatsModule {
     pass?: string;
     name?: string;
   }): Promise<NatsConnectionLike>;
-}
+};
 
 const natsLazy: Lazy<Promise<NatsModule>> = Lazy.of(
   () => lazyImportModule<NatsModule>('nats', { context: 'NatsActor' }),

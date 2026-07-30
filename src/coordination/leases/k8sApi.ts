@@ -16,7 +16,7 @@ import { Lazy } from '../../util/Lazy.js';
 
 const SERVICE_ACCOUNT_DIR = '/var/run/secrets/kubernetes.io/serviceaccount';
 
-export interface K8sCredentials {
+export type K8sCredentials = {
   /** API server URL (defaults to https://kubernetes.default.svc when running in-cluster). */
   readonly apiServerUrl: string;
   /** Bearer token for the ServiceAccount. */
@@ -25,7 +25,7 @@ export interface K8sCredentials {
   readonly caCert: string;
   /** Default namespace as read from the SA mount; user-supplied namespace wins where supplied. */
   readonly defaultNamespace?: string;
-}
+};
 
 /**
  * Load credentials from the standard ServiceAccount mount points.  Returns
@@ -65,23 +65,23 @@ export async function loadInClusterCredentials(): Promise<K8sCredentials | null>
 
 /* --------------------------- HTTPS request ---------------------------- */
 
-export interface K8sRequestOptions {
+export type K8sRequestOptions = {
   readonly method: 'GET' | 'POST' | 'PUT' | 'DELETE' | 'PATCH';
   readonly path: string;
   readonly body?: unknown;
   /** Provide a request-injected client (test override). */
   readonly client?: K8sFetchClient;
-}
+};
 
-export interface K8sResponse {
+export type K8sResponse = {
   readonly status: number;
   readonly body: unknown;
-}
+};
 
 /** Test seam — the real impl uses `node:https`; tests pass a mock. */
-export interface K8sFetchClient {
+export type K8sFetchClient = {
   request(creds: K8sCredentials, options: K8sRequestOptions): Promise<K8sResponse>;
-}
+};
 
 /**
  * Perform a request against the K8s API server.  Uses `node:https` with
@@ -161,7 +161,7 @@ const fsLazy: Lazy<Promise<typeof import('node:fs/promises')>> = Lazy.of(async (
  * we touch — Kubernetes returns more (managedFields, generateName, etc.)
  * but they round-trip through `unknown` if we send them back unchanged.
  */
-export interface K8sLeaseObject {
+export type K8sLeaseObject = {
   readonly apiVersion: 'coordination.k8s.io/v1';
   readonly kind: 'Lease';
   readonly metadata: {
@@ -177,7 +177,7 @@ export interface K8sLeaseObject {
     readonly renewTime?: string;
     readonly leaseTransitions?: number;
   };
-}
+};
 
 const leasePath = (ns: string, name?: string): string =>
   `/apis/coordination.k8s.io/v1/namespaces/${encodeURIComponent(ns)}/leases${name ? `/${encodeURIComponent(name)}` : ''}`;

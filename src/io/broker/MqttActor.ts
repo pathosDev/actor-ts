@@ -30,21 +30,21 @@ import {
 export type { MqttQos, MqttUserProperties, MqttMessage, MqttPublish, MqttCommand } from './MqttMessages.js';
 
 /** Per-publish overrides. */
-export interface MqttPublishOptions {
+export type MqttPublishOptions = {
   readonly qos?: MqttQos;
   readonly retain?: boolean;
   readonly userProperties?: MqttUserProperties;
-}
+};
 
 /** One subscription pattern's routing state. */
-interface SubscriptionEntry<T> {
+type SubscriptionEntry<T> = {
   /** Requested QoS, or undefined → resolve to `qos` at SUBSCRIBE time. */
   qos?: MqttQos;
   /** Deliver matching messages to this actor's own `onMessage`. */
   deliverToSelf: boolean;
   /** Foreign actors to fan matching messages out to. */
   readonly targets: Set<ActorRef<MqttMessage<T>>>;
-}
+};
 
 /**
  * Typed, subclass-first MQTT 3.1.1 / 5.0 actor backed by the `mqtt`
@@ -553,7 +553,7 @@ export function matchesMqttPattern(pattern: string, topic: string): boolean {
 
 /* ----------------------------- peer-dep shapes -------------------------- */
 
-interface MqttConnectOptions {
+type MqttConnectOptions = {
   clientId?: string;
   username?: string;
   password?: string;
@@ -562,35 +562,35 @@ interface MqttConnectOptions {
   /** mqtt.js: 4 (3.1.1), 5 (5.0).  We allow 4 and 5. */
   protocolVersion?: 4 | 5;
   will?: { topic: string; payload: Uint8Array | string; qos: MqttQos; retain: boolean };
-}
+};
 
-interface MqttPubOpts {
+type MqttPubOpts = {
   qos: MqttQos;
   retain: boolean;
   /** mqtt-packet v5 properties — attached only when protocolVersion=5. */
   properties?: { userProperties?: MqttUserProperties };
-}
+};
 
 /**
  * Inbound packet shape read off mqtt.js.  v5 nests user properties +
  * reason codes under `properties`; absent on 3.1.1.  Exported as a test
  * seam so a fake client can build the same shape.
  */
-export interface MqttInboundPacketLike {
+export type MqttInboundPacketLike = {
   qos?: number;
   retain?: boolean;
   properties?: {
     userProperties?: MqttUserProperties;
     reasonCode?: number;
   };
-}
+};
 
 /**
  * Minimal surface of the mqtt.js client we rely on.  Exported as a test
  * seam so subclasses overriding {@link MqttActor.mqttModule} can satisfy
  * the same shape without the real peer-dep.
  */
-export interface MqttClientLike {
+export type MqttClientLike = {
   on(event: 'message', cb: (topic: string, payload: Uint8Array, packet?: MqttInboundPacketLike) => void): void;
   on(event: 'error', cb: (err: Error) => void): void;
   on(event: 'close', cb: () => void): void;
@@ -601,12 +601,12 @@ export interface MqttClientLike {
   subscribe(topic: string, options: { qos: MqttQos }, cb?: (err?: Error) => void): void;
   unsubscribe(topic: string, options: undefined, cb?: (err?: Error) => void): void;
   end(force?: boolean, options?: object, cb?: () => void): void;
-}
+};
 
 /** The `mqtt` module surface we use.  Exported as a test seam. */
-export interface MqttModuleLike {
+export type MqttModuleLike = {
   connect(url: string, options?: MqttConnectOptions): MqttClientLike;
-}
+};
 
 const mqttLazy: Lazy<Promise<MqttModuleLike>> = Lazy.of(
   () => lazyImportModule<MqttModuleLike>('mqtt', { context: 'MqttActor' }),

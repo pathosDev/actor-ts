@@ -1,4 +1,4 @@
-export interface RetryOptions {
+export type RetryOptions = {
   /** Total attempts including the initial call.  Must be >= 1. */
   readonly attempts: number;
   /** Base delay between retries, in ms. */
@@ -23,7 +23,7 @@ export interface RetryOptions {
    * `BackoffPolicy`'s `random`.
    */
   readonly sleep?: (ms: number) => Promise<void>;
-}
+};
 
 const setTimeoutSleep = (ms: number): Promise<void> =>
   new Promise(resolve => setTimeout(resolve, ms));

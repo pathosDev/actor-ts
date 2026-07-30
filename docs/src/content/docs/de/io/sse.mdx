@@ -43,11 +43,11 @@ installieren.
 ## Settings
 
 ```ts
-interface SseOptionsType extends BrokerCommonOptionsType {
+type SseOptionsType = BrokerCommonOptionsType & {
   url?:      string;                          // required — the SSE endpoint
   headers?:  Readonly<Record<string, string>>; // optional custom request headers
   target?:   ActorRef<SseEvent>;             // required — subscriber for inbound events
-}
+};
 ```
 
 | Setting    | Erforderlich | Beschreibung                                                       |
@@ -64,11 +64,11 @@ sein, sonst schlägt der Actor beim Start sofort fehl.
 Jedes geparste Event wird als `SseEvent` zugestellt:
 
 ```ts
-interface SseEvent {
+type SseEvent = {
   event: string;   // the `event:` field, or 'message' by default
   data:  string;   // the `data:` payload
   id?:   string;   // the `id:` field, when present
-}
+};
 ```
 
 Der Client parst das SSE-Wire-Format — Events durch eine Leerzeile

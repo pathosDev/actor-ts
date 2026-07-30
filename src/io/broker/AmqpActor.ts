@@ -8,25 +8,25 @@ import { AmqpOptionsValidator } from './AmqpOptions.js';
 import type { AmqpOptions, AmqpOptionsType } from './AmqpOptions.js';
 
 /** Inbound AMQP delivery handed to subscribers. */
-export interface AmqpDelivery {
+export type AmqpDelivery = {
   readonly queue: string;
   readonly content: Uint8Array;
   readonly properties: Readonly<Record<string, unknown>>;
   /** Acknowledgement token — forward to the actor as `{ kind: 'acknowledgment', delivery }` to ack. */
   readonly ackToken: number;
-}
+};
 
 /** Outbound publish — routed through `exchange` with `routingKey`. */
-export interface AmqpPublish {
+export type AmqpPublish = {
   readonly exchange: string;
   readonly routingKey: string;
   readonly content: Uint8Array | string;
   readonly persistent?: boolean;
   readonly headers?: Readonly<Record<string, unknown>>;
   readonly contentType?: string;
-}
+};
 
-export interface AmqpQueueBinding {
+export type AmqpQueueBinding = {
   readonly queue: string;
   readonly exchange?: string;
   readonly routingKey?: string;
@@ -44,7 +44,7 @@ export interface AmqpQueueBinding {
     readonly autoDelete?: boolean;
     readonly exclusive?: boolean;
   };
-}
+};
 
 export type AmqpCommand =
   | { readonly kind: 'publish'; readonly publish: AmqpPublish }
@@ -180,12 +180,12 @@ export class AmqpActor extends BrokerActor<AmqpOptionsType, AmqpCommand, AmqpPub
 
 /* ----------------------------- internals -------------------------------- */
 
-interface AmqpRawMessage {
+type AmqpRawMessage = {
   content: Uint8Array;
   properties?: Record<string, unknown>;
-}
+};
 
-interface AmqpChannelLike {
+type AmqpChannelLike = {
   prefetch(count: number): Promise<void>;
   assertQueue(queue: string, options: { durable?: boolean; autoDelete?: boolean; exclusive?: boolean }): Promise<unknown>;
   bindQueue(queue: string, exchange: string, routingKey: string): Promise<unknown>;
@@ -201,18 +201,18 @@ interface AmqpChannelLike {
   nack(message: AmqpRawMessage, allUpTo: boolean, requeue: boolean): void;
   once(event: 'drain', cb: () => void): void;
   close(): Promise<void>;
-}
+};
 
-interface AmqpConnectionLike {
+type AmqpConnectionLike = {
   createChannel(): Promise<AmqpChannelLike>;
   on(event: 'error', cb: (err: Error) => void): void;
   on(event: 'close', cb: () => void): void;
   close(): Promise<void>;
-}
+};
 
-interface AmqpLibModule {
+type AmqpLibModule = {
   connect(url: string): Promise<AmqpConnectionLike>;
-}
+};
 
 const amqpLazy: Lazy<Promise<AmqpLibModule>> = Lazy.of(
   () => lazyImportModule<AmqpLibModule>('amqplib', { context: 'AmqpActor' }),

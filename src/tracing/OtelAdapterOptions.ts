@@ -2,7 +2,7 @@ import { OptionsBuilder } from '../util/OptionsBuilder.js';
 import type { OtelApiLike, OtelTracerLike } from './OtelAdapter.js';
 
 /** Plain options-object shape accepted by {@link otelTracer}. */
-export interface OtelAdapterOptionsType {
+export type OtelAdapterOptionsType = {
   /** The `@opentelemetry/api` namespace (`import * as otel from '@opentelemetry/api'`). */
   readonly api: OtelApiLike;
   /** Optional pre-built tracer; defaults to `api.trace.getTracer(tracerName, tracerVersion)`. */
@@ -11,7 +11,7 @@ export interface OtelAdapterOptionsType {
   readonly tracerName?: string;
   /** Tracer version passed to `getTracer`. */
   readonly tracerVersion?: string;
-}
+};
 
 /**
  * Fluent builder for {@link OtelAdapterOptionsType}:

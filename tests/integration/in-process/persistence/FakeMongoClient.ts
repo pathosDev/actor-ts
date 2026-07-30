@@ -111,10 +111,10 @@ class FakeCursor<TDocument extends MongoDocument> implements MongoCursorLike<TDo
   }
 }
 
-interface UniqueIndex {
+type UniqueIndex = {
   readonly fields: string[];
   readonly name: string;
-}
+};
 
 class FakeCollection<TDocument extends MongoDocument> implements MongoCollectionLike<TDocument> {
   private readonly documents: TDocument[] = [];

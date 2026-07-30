@@ -34,7 +34,7 @@ export type Labels = Readonly<Record<string, LabelValue>>;
  * A single point-in-time observation of one metric series.  Exporters
  * walk the registry and turn each sample into their wire format.
  */
-export interface MetricSample {
+export type MetricSample = {
   /** Family name — e.g. `actor_messages_delivered_total`. */
   readonly name: string;
   /** Free-form description for `# HELP`. */
@@ -56,15 +56,15 @@ export interface MetricSample {
   readonly count?: number;
   /** For histograms: total observation sum.  Series name `_sum`. */
   readonly sum?: number;
-}
+};
 
 /* ------------------------------- Counter ----------------------------- */
 
-export interface Counter {
+export type Counter = {
   inc(delta?: number): void;
   /** Read for testing — exporters use the registry's `collect()`. */
   readonly value: number;
-}
+};
 
 class CounterImplementation implements Counter {
   private _v = 0;
@@ -78,12 +78,12 @@ class CounterImplementation implements Counter {
 
 /* ------------------------------- Gauge ------------------------------- */
 
-export interface Gauge {
+export type Gauge = {
   set(value: number): void;
   inc(delta?: number): void;
   dec(delta?: number): void;
   readonly value: number;
-}
+};
 
 class GaugeImplementation implements Gauge {
   private _v = 0;
@@ -114,7 +114,7 @@ export const DEFAULT_HISTOGRAM_BUCKETS: ReadonlyArray<number> = Object.freeze([
   0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10,
 ]);
 
-export interface Histogram {
+export type Histogram = {
   /** Record an observation in seconds (or whatever unit your buckets use). */
   observe(value: number): void;
   /** Internal — exporters read via the registry. */
@@ -122,7 +122,7 @@ export interface Histogram {
   readonly counts: ReadonlyArray<number>;
   readonly sum: number;
   readonly count: number;
-}
+};
 
 class HistogramImplementation implements Histogram {
   private readonly _buckets: ReadonlyArray<number>;
@@ -169,32 +169,32 @@ class HistogramImplementation implements Histogram {
  * Metric family metadata.  One family produces N series indexed by
  * label-tuple; series are created lazily on first label access.
  */
-interface CounterFamily {
+type CounterFamily = {
   readonly kind: 'counter';
   readonly help: string;
   readonly children: Map<string, { labels: Labels; metric: CounterImplementation }>;
-}
-interface GaugeFamily {
+};
+type GaugeFamily = {
   readonly kind: 'gauge';
   readonly help: string;
   readonly children: Map<string, { labels: Labels; metric: GaugeImplementation }>;
-}
-interface HistogramFamily {
+};
+type HistogramFamily = {
   readonly kind: 'histogram';
   readonly help: string;
   readonly buckets: ReadonlyArray<number>;
   readonly children: Map<string, { labels: Labels; metric: HistogramImplementation }>;
-}
+};
 
 type Family = CounterFamily | GaugeFamily | HistogramFamily;
 
-export interface CounterOptions { readonly help?: string }
-export interface GaugeOptions { readonly help?: string }
-export interface HistogramOptions {
+export type CounterOptions = { readonly help?: string };
+export type GaugeOptions = { readonly help?: string };
+export type HistogramOptions = {
   readonly help?: string;
   /** Override the default bucket set.  Sorted automatically. */
   readonly buckets?: ReadonlyArray<number>;
-}
+};
 
 /**
  * Collection of metric families bound to one ActorSystem.  Pluggable
@@ -202,7 +202,7 @@ export interface HistogramOptions {
  * format; tests use the typed `counter` / `gauge` / `histogram`
  * accessors directly.
  */
-export interface MetricsRegistry {
+export type MetricsRegistry = {
   /**
    * Get-or-create a counter family.  Same `(name, help)` returns the
    * same family across calls; `labels` selects (or creates) a child
@@ -217,7 +217,7 @@ export interface MetricsRegistry {
 
   /** Wipe the registry — primarily for tests. */
   clear(): void;
-}
+};
 
 /**
  * Default in-memory implementation.  Thread-safe by virtue of being

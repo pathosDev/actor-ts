@@ -77,12 +77,12 @@ export type PresenceChanged = {
 
 /* ------------------------------- internals ----------------------------- */
 
-interface KeyState {
+type KeyState = {
   readonly subscribers: Set<ActorRef<PresenceChanged>>;
   ddUnsubscribe: (() => void) | null;
   /** Last fanned-out user list — reused for late `GetUsers` replies. */
   lastUsers: ReadonlyArray<string>;
-}
+};
 
 /* --------------------------------- actor ------------------------------- */
 

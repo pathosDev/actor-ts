@@ -19,21 +19,21 @@ import type { ActorRef } from '../../../src/ActorRef.js';
 import { PersistentActor, everyNEvents } from '../../../src/persistence/PersistentActor.js';
 import type { SnapshotPolicy } from '../../../src/persistence/PersistentActor.js';
 
-export interface CounterIncrement { readonly kind: 'increment' }
-export interface CounterGetState {
+export type CounterIncrement = { readonly kind: 'increment' };
+export type CounterGetState = {
   readonly kind: 'get-state';
   readonly replyTo: ActorRef<CounterStateReply>;
-}
+};
 export type CounterCommand = CounterIncrement | CounterGetState;
 
 export type CounterEvent = { readonly kind: 'incremented' };
 
-export interface CounterState { count: number }
+export type CounterState = { count: number };
 
-export interface CounterStateReply {
+export type CounterStateReply = {
   readonly kind: 'state';
   readonly count: number;
-}
+};
 
 /**
  * The persistent counter — one instance per `persistenceId`.  The

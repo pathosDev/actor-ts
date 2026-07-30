@@ -58,14 +58,14 @@ const scalar = (attribute: unknown): string | number => {
   return '';
 };
 
-interface FakeTable {
+type FakeTable = {
   readonly partitionKey: string;
   readonly sortKey?: string;
   /** Items keyed by their serialized primary key, so key equality is exact. */
   readonly items: Map<string, DynamoDbItem>;
-}
+};
 
-export interface FakeDynamoDbOptions {
+export type FakeDynamoDbOptions = {
   /**
    * Force `Query` / `Scan` to return at most this many items per call, with a
    * `LastEvaluatedKey` when more remain.
@@ -76,7 +76,7 @@ export interface FakeDynamoDbOptions {
    * to make the loops run.
    */
   readonly pageSize?: number;
-}
+};
 
 export class FakeDynamoDb implements DynamoDbOperations {
   private readonly tables = new Map<string, FakeTable>();

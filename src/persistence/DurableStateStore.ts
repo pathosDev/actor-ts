@@ -10,12 +10,12 @@ import type { PersistenceOptions } from './PersistenceOptions.js';
  * Revision is a monotonic counter used for optimistic concurrency: writes
  * must pass the expected previous revision or they fail.
  */
-export interface DurableStateRecord<S> {
+export type DurableStateRecord<S> = {
   readonly persistenceId: string;
   readonly revision: number;
   readonly state: S;
   readonly timestamp: number;
-}
+};
 
 export class DurableStateConcurrencyError extends Error {
   constructor(
@@ -28,7 +28,7 @@ export class DurableStateConcurrencyError extends Error {
   }
 }
 
-export interface DurableStateStore {
+export type DurableStateStore = {
   /**
    * Upsert the state for `persistenceId`.  `expectedRevision` must match the
    * current stored revision (0 when no record exists yet).  Throws
@@ -65,4 +65,4 @@ export interface DurableStateStore {
    * leaned on `closeQuietly` probing for the method.
    */
   close?(): Promise<void>;
-}
+};

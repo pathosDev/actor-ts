@@ -11,7 +11,7 @@ import { NodeAddress } from '../cluster/NodeAddress.js';
  *   - `AggregateSeedProvider` — chain multiple providers with fallback.
  *   - `KubernetesApiSeedProvider` — live Pod IPs from the K8s API.
  */
-export interface SeedProvider {
+export type SeedProvider = {
   /** Return candidate seed addresses. */
   lookup(): Promise<NodeAddress[]>;
-}
+};

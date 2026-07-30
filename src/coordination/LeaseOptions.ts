@@ -7,7 +7,7 @@ import { OptionsValidator } from '../util/OptionsValidator.js';
  * accepted alternative to the {@link LeaseOptionsBuilder}; concrete backends
  * extend it (e.g. `KubernetesLeaseOptionsType`).
  */
-export interface LeaseOptionsType {
+export type LeaseOptionsType = {
   /** Lease name — unique identifier within the namespace. */
   readonly name: string;
   /** Identifier of the holder (pod name / host name / uuid). */
@@ -20,7 +20,7 @@ export interface LeaseOptionsType {
   readonly acquireRetries?: number;
   /** Delay between acquire retries. */
   readonly acquireRetryDelayMs?: number;
-}
+};
 
 /**
  * Fluent builder for {@link LeaseOptionsType} — the common construction-time

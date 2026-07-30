@@ -32,7 +32,7 @@ export type MemberStatus =
   | 'down'
   | 'removed';
 
-export interface MemberData {
+export type MemberData = {
   readonly address: NodeAddressData;
   readonly status: MemberStatus;
   /** Monotonic version clock; higher value wins during gossip merges. */
@@ -48,7 +48,7 @@ export interface MemberData {
    * the back-compat handling.
    */
   readonly removedAt?: number;
-}
+};
 
 /**
  * Every wire message carries a discriminator `t`.  Payload types that contain
@@ -64,36 +64,36 @@ export type WireMessage =
   | ShardMapMessage
   | LeaveMessage;
 
-export interface HelloMessage {
+export type HelloMessage = {
   t: 'hello';
   self: NodeAddressData;
-}
+};
 
-export interface HelloAcknowledgmentMessage {
+export type HelloAcknowledgmentMessage = {
   t: 'hello-ack';
   self: NodeAddressData;
-}
+};
 
-export interface HeartbeatMessage {
+export type HeartbeatMessage = {
   t: 'heartbeat';
   from: NodeAddressData;
   seq: number;
   ts: number;
-}
+};
 
-export interface HeartbeatAcknowledgmentMessage {
+export type HeartbeatAcknowledgmentMessage = {
   t: 'heartbeat-ack';
   from: NodeAddressData;
   seq: number;
-}
+};
 
-export interface GossipMessage {
+export type GossipMessage = {
   t: 'gossip';
   from: NodeAddressData;
   members: MemberData[];
-}
+};
 
-export interface EnvelopeMessage {
+export type EnvelopeMessage = {
   t: 'envelope';
   /** Full actor path string of the recipient on the target node. */
   to: string;
@@ -117,19 +117,19 @@ export interface EnvelopeMessage {
    * (#10 — cross-node distributed tracing).
    */
   trace?: { readonly traceparent: string; readonly tracestate?: string };
-}
+};
 
-export interface ShardMapMessage {
+export type ShardMapMessage = {
   t: 'shard-map';
   type: string;
   shards: Record<number, NodeAddressData>;
   version: number;
-}
+};
 
-export interface LeaveMessage {
+export type LeaveMessage = {
   t: 'leave';
   node: NodeAddressData;
-}
+};
 
 /* -------------------------------- Framing -------------------------------- */
 

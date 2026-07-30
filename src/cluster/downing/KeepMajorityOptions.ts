@@ -1,10 +1,10 @@
 import { OptionsBuilder } from '../../util/OptionsBuilder.js';
 
 /** Plain options-object shape accepted by {@link KeepMajority}. */
-export interface KeepMajorityOptionsType {
+export type KeepMajorityOptionsType = {
   /** If set, only members carrying this role count toward the majority. */
   readonly role?: string;
-}
+};
 
 /**
  * Fluent builder for {@link KeepMajorityOptionsType}:

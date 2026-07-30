@@ -6,7 +6,7 @@ import { OptionsBuilder } from '../../util/OptionsBuilder.js';
  * — the shared {@link CassandraConnection} fields plus the store-specific
  * `table` / `autoCreateTables` / `client`.
  */
-export interface CassandraRememberEntitiesStoreOptionsType extends CassandraConnection {
+export type CassandraRememberEntitiesStoreOptionsType = CassandraConnection & {
   /** Table for the remember-entities state.  Default: `remember_entities`. */
   readonly table?: string;
   /** Auto-create the table on first use.  Default: `true`. */
@@ -19,7 +19,7 @@ export interface CassandraRememberEntitiesStoreOptionsType extends CassandraConn
    * recommended pattern.
    */
   readonly client?: CassandraClientLike;
-}
+};
 
 /**
  * Fluent builder for {@link CassandraRememberEntitiesStoreOptionsType}.

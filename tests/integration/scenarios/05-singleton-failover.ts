@@ -28,10 +28,10 @@
 
 import { clusterLiveNodes, sleep, waitFor, type Scenario } from './types.js';
 
-interface WhoResponse {
+type WhoResponse = {
   readonly host: string;
   readonly value: number;
-}
+};
 
 async function who(host: string, controlPort: number): Promise<WhoResponse> {
   const response = await fetch(`http://${host}:${controlPort}/test/singleton/who`);

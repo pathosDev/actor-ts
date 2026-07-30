@@ -14,12 +14,12 @@
  * in the same synchronous tick, or buffer until then) — this is what
  * closes the "first frame lost" race by construction.
  */
-export interface WebsocketListeners {
+export type WebsocketListeners = {
   /** One inbound frame, already normalised to text (`string`) or binary (`Uint8Array`). */
   onMessage(data: string | Uint8Array): void;
   onClose(code: number, reason: string): void;
   onError(err: Error): void;
-}
+};
 
 /** W3C-style readyState values. */
 export const WebsocketReadyState = {
@@ -29,7 +29,7 @@ export const WebsocketReadyState = {
   CLOSED: 3,
 } as const;
 
-export interface WebsocketSocketAdapter {
+export type WebsocketSocketAdapter = {
   send(data: string | Uint8Array): void;
   close(code?: number, reason?: string): void;
   /** Hard-kill without a close handshake (shutdown).  Falls back to `close()` if absent. */
@@ -42,14 +42,14 @@ export interface WebsocketSocketAdapter {
   readonly remoteAddress?: string;
   /** Negotiated `Sec-WebSocket-Protocol`, when known. */
   readonly protocol?: string;
-}
+};
 
 /**
  * The `ws` package socket surface (used by `@fastify/websocket`,
  * plain `ws.WebSocketServer`, and `@hono/node-ws`).  Only the members
  * we touch are declared — the peer dep is optional.
  */
-export interface WebsocketPackageSocket {
+export type WebsocketPackageSocket = {
   send(data: string | Uint8Array): void;
   close(code?: number, reason?: string): void;
   terminate?(): void;
@@ -59,7 +59,7 @@ export interface WebsocketPackageSocket {
   readonly bufferedAmount?: number;
   readonly readyState?: number;
   readonly protocol?: string;
-}
+};
 
 function coerceBinary(data: unknown): Uint8Array {
   if (data instanceof Uint8Array) return data; // Node Buffer is a Uint8Array

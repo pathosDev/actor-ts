@@ -7,8 +7,8 @@
  *
  * Ignored by the benchmark discovery harness — filename starts with "_".
  */
-interface Crunch { kind: 'crunch'; iterations: number; id: number }
-interface Done { kind: 'done'; id: number }
+type Crunch = { kind: 'crunch'; iterations: number; id: number };
+type Done = { kind: 'done'; id: number };
 
 declare const self: {
   onmessage: ((ev: { data: Crunch }) => void) | null;

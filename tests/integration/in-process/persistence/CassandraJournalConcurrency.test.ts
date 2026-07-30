@@ -36,10 +36,10 @@ function journalWith(
   return new CassandraJournal(options);
 }
 
-interface RaceOutcome<E> {
+type RaceOutcome<E> = {
   readonly winners: Array<{ index: number; events: ReadonlyArray<{ sequenceNr: number; event: E }> }>;
   readonly losers: Array<{ index: number; error: Error }>;
-}
+};
 
 /** Fire `count` appends at the same `expectedSeq` and split the outcomes. */
 async function race(

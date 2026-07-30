@@ -25,7 +25,7 @@ const MAX_RECONNECT_ATTEMPTS = 8;
 
 export type Phase = 'gate-mic' | 'gate-login' | 'app';
 
-interface State {
+type State = {
   readonly phase: Phase;
   readonly username: string | null;
   readonly loginError: string;
@@ -37,7 +37,7 @@ interface State {
   readonly activeKey: string | null;
   readonly incomingNames: ReadonlyArray<string>;
   readonly micPct: number;
-}
+};
 
 const INITIAL: State = {
   phase: 'gate-mic',
@@ -86,7 +86,7 @@ function reducer(state: State, action: Action): State {
   }
 }
 
-interface IncomingEntry {
+type IncomingEntry = {
   mediaSource: MediaSource;
   sourceBuffer: SourceBuffer | null;
   audioEl: HTMLAudioElement;
@@ -99,7 +99,7 @@ interface IncomingEntry {
   mimeReady: boolean;
   source: IncomingSource;
   objectUrl: string;
-}
+};
 
 export function useVoice(): {
   state: State;

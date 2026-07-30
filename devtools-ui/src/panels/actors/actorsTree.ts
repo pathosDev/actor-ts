@@ -10,7 +10,7 @@
 import type { ActorNode } from '../../../../src/devtools/protocol/index.js';
 
 /** One row of the flattened tree. */
-export interface TreeRow {
+export type TreeRow = {
   readonly node: ActorNode;
   /** Nesting level; the root guardian is 0. */
   readonly depth: number;
@@ -18,7 +18,7 @@ export interface TreeRow {
   readonly expanded: boolean;
   /** When this actor stopped, or `null` while it is alive. */
   readonly stoppedAtMs: number | null;
-}
+};
 
 /**
  * Live actor tree.

@@ -1,7 +1,7 @@
 import { OptionsBuilder } from '../../util/OptionsBuilder.js';
 import type { CassandraClientLike, CassandraConnection } from '../journals/CassandraClient.js';
 
-export interface CassandraSnapshotStoreOptionsType extends CassandraConnection {
+export type CassandraSnapshotStoreOptionsType = CassandraConnection & {
   /** Table name; default `snapshots`. */
   readonly snapshotsTable?: string;
   /** Maximum number of snapshots kept per pid.  `<= 0` = keep all.  Default: 3. */
@@ -10,7 +10,7 @@ export interface CassandraSnapshotStoreOptionsType extends CassandraConnection {
   readonly autoCreateTables?: boolean;
   /** Pre-built client — bypass internal construction (share with journal). */
   readonly client?: CassandraClientLike;
-}
+};
 
 /**
  * Fluent builder for {@link CassandraSnapshotStoreOptionsType}:

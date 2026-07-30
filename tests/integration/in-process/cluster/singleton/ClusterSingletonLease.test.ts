@@ -42,7 +42,7 @@ async function waitFor(pred: () => boolean, timeoutMs = 3_000, stepMs = 25): Pro
   if (!pred()) throw new Error(`waitFor timed out after ${timeoutMs}ms`);
 }
 
-interface NodeSetup { kit: TestKit; cluster: Cluster }
+type NodeSetup = { kit: TestKit; cluster: Cluster };
 
 async function startNode(
   systemName: string, host: string, port: number,

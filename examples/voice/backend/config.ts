@@ -14,14 +14,14 @@
  * discovery whenever `--port` / `--seeds` are absent.
  */
 
-export interface VoiceNodeConfig {
+export type VoiceNodeConfig = {
   readonly host: string;
   /** null = caller resolves via the SeedProvider. */
   readonly port: number | null;
   readonly httpPort: number;
   /** null = caller resolves via the SeedProvider. */
   readonly seeds: ReadonlyArray<string> | null;
-}
+};
 
 /** First port in the cluster's auto-discovery range — distinct from chat's 2551. */
 export const BASE_CLUSTER_PORT = 2651;

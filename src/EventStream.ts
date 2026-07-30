@@ -22,21 +22,21 @@ import type { ActorRef } from './ActorRef.js';
  */
 type Class<T> = abstract new (...args: any[]) => T;
 
-interface Subscription {
+type Subscription = {
   readonly subscriber: ActorRef;
   readonly channel: Class<unknown>;
   /** Optional filter — evaluated before delivery; throws → skip. */
   readonly predicate?: (event: unknown) => boolean;
-}
+};
 
 /**
  * Optional minimal-logger hook for the bus.  ActorSystem assigns its
  * own logger here after construction; if unset (e.g. ad-hoc test
  * use), predicate failures are silently swallowed.
  */
-export interface EventStreamLogger {
+export type EventStreamLogger = {
   warn(message: string, ...args: unknown[]): void;
-}
+};
 
 export class EventStream {
   private subs: Subscription[] = [];

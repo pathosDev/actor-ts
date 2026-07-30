@@ -57,12 +57,12 @@ import type { SessionStore } from '../auth/sessionStore.js';
  * (`mkcert localhost` for local dev, Caddy or nginx in front for
  * production).
  */
-export interface TlsMaterial {
+export type TlsMaterial = {
   readonly cert: Buffer | string;
   readonly key: Buffer | string;
-}
+};
 
-export interface HttpIngressDeps {
+export type HttpIngressDeps = {
   /** Bind interface — typically `127.0.0.1` for the local demo. */
   readonly host: string;
   /** Public port — single value shared cluster-wide. */
@@ -87,7 +87,7 @@ export interface HttpIngressDeps {
   readonly readReceipts: ActorRef<ReadReceiptsCommand>;
   /** Optional TLS — when set, the listener becomes HTTPS + WSS. */
   readonly tls?: TlsMaterial;
-}
+};
 
 /**
  * The singleton actor's mailbox is empty by design — it just holds

@@ -38,26 +38,26 @@ import { WorkerNode } from '../../worker/WorkerNode.js';
  * `context` parameter holds the worker's `ActorSystem` + `Cluster` plus
  * the role name + any role-specific init data.
  */
-export interface ScenarioContext {
+export type ScenarioContext = {
   readonly role: string;
   readonly system: ActorSystem;
   readonly cluster: Cluster;
   readonly initData: unknown;
   /** Per-role state the scenario wants to keep across commands. */
   readonly state: Record<string, unknown>;
-}
+};
 
-export interface ScenarioModule {
+export type ScenarioModule = {
   setup?: (context: ScenarioContext) => void | Promise<void>;
   commands?: Record<
     string,
     (args: unknown, context: ScenarioContext) => unknown | Promise<unknown>
   >;
-}
+};
 
 /* ----------------------------- wire protocol ------------------------- */
 
-interface InitData {
+type InitData = {
   readonly role: string;
   readonly seeds: ReadonlyArray<string>;
   readonly failureDetector?: Partial<FailureDetectorOptionsType>;
@@ -65,7 +65,7 @@ interface InitData {
   readonly logLevel?: LogLevel;
   readonly scenarioModule?: string;       // serialised URL string
   readonly scenarioInitData?: unknown;    // forwarded to setup()'s context
-}
+};
 
 type ControlRequest =
   | { kind: 'mns-test.query-members'; reqId: number }
@@ -83,16 +83,16 @@ type ControlResponse =
  *  themselves carry NodeAddress objects which postMessage flattens
  *  into plain data anyway, but defining the shape here makes the
  *  cross-process contract explicit. */
-export interface MemberSnapshot {
+export type MemberSnapshot = {
   readonly address: string;
   readonly status: Member['status'];
   readonly roles: ReadonlyArray<string>;
-}
+};
 
-interface WorkerScope {
+type WorkerScope = {
   addEventListener?(ev: string, h: (e: { data: unknown }) => void): void;
   postMessage?(v: unknown): void;
-}
+};
 
 /* ------------------------------- main loop --------------------------- */
 

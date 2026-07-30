@@ -20,7 +20,7 @@ Serializer.
 ```ts
 import { entity } from 'actor-ts/http';
 
-interface NewOrder { sku: string; quantity: number; }
+type NewOrder = { sku: string; quantity: number; };
 
 post(async (req) => {
   const order = entity<NewOrder>(req);
@@ -154,10 +154,10 @@ Nützlich, wenn:
 Das Serializer-Interface ist klein:
 
 ```ts
-interface Serializer {
+type Serializer = {
   toBinary(value: unknown): Uint8Array;
   fromBinary(bytes: Uint8Array, manifest: string): unknown;
-}
+};
 ```
 
 Du kannst deinen eigenen einklinken (Protobuf, MessagePack usw.),

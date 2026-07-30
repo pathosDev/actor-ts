@@ -9,7 +9,7 @@ import { KafkaOptionsValidator } from './KafkaOptions.js';
 import type { KafkaOptions, KafkaOptionsType } from './KafkaOptions.js';
 
 /** Inbound Kafka record delivered to subscribers. */
-export interface KafkaRecord {
+export type KafkaRecord = {
   readonly topic: string;
   readonly partition: number;
   readonly offset: string;
@@ -17,16 +17,16 @@ export interface KafkaRecord {
   readonly value: Uint8Array | null;
   readonly timestamp: string;
   readonly headers: Readonly<Record<string, Uint8Array | string | null>>;
-}
+};
 
 /** Outbound Kafka publish envelope.  `key` / `partition` optional. */
-export interface KafkaPublish {
+export type KafkaPublish = {
   readonly topic: string;
   readonly value: Uint8Array | string;
   readonly key?: Uint8Array | string;
   readonly partition?: number;
   readonly headers?: Readonly<Record<string, string | Uint8Array>>;
-}
+};
 
 /**
  * Offset-commit policy (#2):
@@ -59,9 +59,9 @@ type SubscribeCommand = { readonly kind: 'subscribe'; readonly topic: string };
  * `fromBeginning` differs per topic: configured topics inherit
  * `consumer.fromBeginning`, a runtime add starts at the current offset.
  */
-interface KafkaSubscription {
+type KafkaSubscription = {
   readonly fromBeginning: boolean;
-}
+};
 
 /**
  * Commit the offset for a message that was delivered in
@@ -462,39 +462,39 @@ export class KafkaActor
 
 /* ----------------------------- internals -------------------------------- */
 
-interface PendingCommit {
+type PendingCommit = {
   readonly topic: string;
   readonly partition: number;
   readonly offset: string;
   readonly done: () => void;
   readonly fail: (err: Error) => void;
   readonly heartbeat?: () => Promise<void>;
-}
+};
 
 function pendingKey(topic: string, partition: number, offset: string): string {
   return `${topic}|${partition}|${offset}`;
 }
 
-interface KafkaConstructor {
+type KafkaConstructor = {
   new (config: {
     clientId?: string;
     brokers: string[];
     ssl?: boolean;
     sasl?: { mechanism: string; username: string; password: string };
   }): KafkaInstanceLike;
-}
+};
 
 /**
  * Minimal Kafka surface the actor depends on.  Exported so test seams
  * (subclasses overriding `createKafkaInstance`) can satisfy the same
  * shape without pulling kafkajs.
  */
-export interface KafkaInstanceLike {
+export type KafkaInstanceLike = {
   producer(config?: { idempotent?: boolean; allowAutoTopicCreation?: boolean }): KafkaProducerLike;
   consumer(config: { groupId: string }): KafkaConsumerLike;
-}
+};
 
-export interface KafkaProducerLike {
+export type KafkaProducerLike = {
   connect(): Promise<void>;
   disconnect(): Promise<void>;
   send(args: {
@@ -504,9 +504,9 @@ export interface KafkaProducerLike {
       partition?: number; headers?: Record<string, string | Uint8Array>;
     }>;
   }): Promise<unknown>;
-}
+};
 
-interface KafkaConsumedMessage {
+type KafkaConsumedMessage = {
   topic: string;
   partition: number;
   message: {
@@ -518,9 +518,9 @@ interface KafkaConsumedMessage {
   };
   /** kafkajs callback for explicit heartbeats during long handler runs. */
   heartbeat?: () => Promise<void>;
-}
+};
 
-export interface KafkaConsumerLike {
+export type KafkaConsumerLike = {
   connect(): Promise<void>;
   disconnect(): Promise<void>;
   subscribe(args: { topic: string; fromBeginning?: boolean }): Promise<void>;
@@ -537,11 +537,11 @@ export interface KafkaConsumerLike {
   commitOffsets?(args: ReadonlyArray<{
     topic: string; partition: number; offset: string;
   }>): Promise<void>;
-}
+};
 
-interface KafkajsModule {
+type KafkajsModule = {
   Kafka?: KafkaConstructor;
-}
+};
 
 const kafkaLazy: Lazy<Promise<KafkajsModule>> = Lazy.of(
   () => lazyImportModule<KafkajsModule>('kafkajs', { context: 'KafkaActor' }),
@@ -555,11 +555,11 @@ const kafkaLazy: Lazy<Promise<KafkajsModule>> = Lazy.of(
  * command needs.  `KafkaRecord` itself satisfies this shape, so the
  * `eachMessage` payload from the consumer pump can be passed directly.
  */
-export interface KafkaRecordRef {
+export type KafkaRecordRef = {
   readonly topic: string;
   readonly partition: number;
   readonly offset: string;
-}
+};
 
 /**
  * Run `body` while periodically telling `kafka` to heartbeat the

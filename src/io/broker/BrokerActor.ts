@@ -37,11 +37,11 @@ export type ConnectionState = 'disconnected' | 'connecting' | 'connected' | 'dis
  * intentionally `unknown` — broker-specific outbound types are layered
  * on top by the subclass (e.g. MQTT publishes carry topic+QoS+retain).
  */
-export interface OutboundEnvelope<P = unknown> {
+export type OutboundEnvelope<P = unknown> = {
   readonly payload: P;
   /** Wall-clock when the message was enqueued.  Useful for TTL evictions. */
   readonly enqueuedAt: number;
-}
+};
 
 /**
  * Base class for actors that bridge external messaging systems

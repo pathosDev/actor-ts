@@ -85,7 +85,7 @@ function replacer(maxDepth: number): (this: unknown, key: string, value: unknown
 export type MessageOutcome = 'ok' | 'error' | 'stashed';
 
 /** One recorded message handling — see {@link ExplainRecorder}. */
-export interface MessageExplain {
+export type MessageExplain = {
   /** Monotonically increasing per actor, so a gap is visible. */
   readonly sequenceNumber: number;
   /** Wall clock at handler start. */
@@ -106,7 +106,7 @@ export interface MessageExplain {
   readonly errorMessage: string | null;
   /** Span produced by this handling, for cross-linking into a trace. */
   readonly spanId: string | null;
-}
+};
 
 /**
  * Per-actor ring of recent message handlings.
@@ -135,14 +135,14 @@ export class ExplainRecorder {
 }
 
 /** One completed message handling, as seen by a profiler. */
-export interface DispatchObservation {
+export type DispatchObservation = {
   readonly actorPath: string;
   /** Constructor name of the actor instance. */
   readonly className: string;
   readonly messageType: string;
   readonly handleTimeMs: number;
   readonly outcome: MessageOutcome;
-}
+};
 
 /**
  * Notified after every message an actor finishes handling.
@@ -154,12 +154,12 @@ export interface DispatchObservation {
  * slow belongs in an aggregation the observer feeds, not in the
  * observer itself.
  */
-export interface DispatchObserver {
+export type DispatchObserver = {
   onMessageProcessed(observation: DispatchObservation): void;
-}
+};
 
 /** A point-in-time description of one actor cell. */
-export interface CellInspection {
+export type CellInspection = {
   /** Full path, e.g. `actor-ts://system/user/orders/order-42`. */
   readonly path: string;
   /** Path of the parent, or `null` for the root guardian. */
@@ -178,4 +178,4 @@ export interface CellInspection {
   readonly childCount: number;
   /** Tooling actor — see `PropsConfig.internal`.  Inherited from the parent. */
   readonly internal: boolean;
-}
+};

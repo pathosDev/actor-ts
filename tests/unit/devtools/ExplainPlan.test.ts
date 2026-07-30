@@ -7,10 +7,10 @@ import { LogLevel, NoopLogger } from '../../../src/Logger.js';
 import type { ActorContext } from '../../../src/ActorContext.js';
 import type { MessageExplain } from '../../../src/internal/Instrumentation.js';
 
-interface Probe {
+type Probe = {
   readonly plan: () => ReadonlyArray<MessageExplain>;
   readonly context: () => ActorContext<string>;
-}
+};
 
 /** An actor that records its own plan and exposes it to the test. */
 class RecordedActor extends Actor<string> {

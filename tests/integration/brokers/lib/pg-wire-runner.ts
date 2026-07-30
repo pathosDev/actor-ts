@@ -27,14 +27,14 @@ import { waitForPort } from './wait-for-port.js';
 import { runScenarios } from './scenario.js';
 import { sqlPersistenceScenarios, type SqlPersistenceContext } from './persistence-contract.js';
 
-export interface PgWireSuiteOptions {
+export type PgWireSuiteOptions = {
   /** Display name for the readiness wait ("CockroachDB", "YugabyteDB"). */
   readonly description: string;
   /** Port to fall back to when the URL carries none. */
   readonly defaultPort: number;
   /** How long the server may take to accept connections — Yugabyte is slow. */
   readonly readinessDeadlineMs?: number;
-}
+};
 
 /**
  * Run the shared SQL persistence contract against a Postgres-wire server.

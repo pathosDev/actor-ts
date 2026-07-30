@@ -20,7 +20,7 @@ class Worker extends Actor<...> {
 Vier Methoden auf jedem Logger — `debug`, `info`, `warn`, `error`:
 
 ```ts
-interface Logger {
+type Logger = {
   readonly level: LogLevel;
   debug(message: string, ...args: unknown[]): void;
   info(message: string, ...args: unknown[]): void;
@@ -28,7 +28,7 @@ interface Logger {
   error(message: string, ...args: unknown[]): void;
   withSource(source: string): Logger;
   withFields(fields: LogContextData): Logger;
-}
+};
 ```
 
 Aufrufe unter dem konfigurierten `level` emittieren nichts —

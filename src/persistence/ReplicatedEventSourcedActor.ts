@@ -80,14 +80,14 @@ import { VectorClock, type VectorClockData } from './replicated/VectorClock.js';
  * identifies an event across the whole cluster, which is what we
  * dedupe on.
  */
-export interface ReplicatedEventEnvelope<E> {
+export type ReplicatedEventEnvelope<E> = {
   readonly persistenceId: string;
   readonly replica: ReplicaId;
   readonly seqAtReplica: number;
   readonly vc: VectorClockData;
   readonly timestamp: number;
   readonly event: E;
-}
+};
 
 const REPLICATED_TAG = 'replicated-es';
 

@@ -17,14 +17,14 @@ import { applyHeaders, appendVary } from './headers.js';
 import { CorsOptionsValidator, type CorsOptions, type CorsOptionsType, type CorsOrigin } from './CorsOptions.js';
 
 /** Resolved CORS policy stored on the `cors` Route node. */
-export interface CorsRouteOptions {
+export type CorsRouteOptions = {
   readonly origins: CorsOrigin;
   readonly methods?: ReadonlyArray<HttpMethod>;
   readonly allowedHeaders?: ReadonlyArray<string>;
   readonly exposedHeaders?: ReadonlyArray<string>;
   readonly credentials: boolean;
   readonly maxAge?: number;
-}
+};
 
 /**
  * Apply the CORS policy to `child`'s subtree.  Validates the options up

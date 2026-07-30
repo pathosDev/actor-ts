@@ -1,12 +1,12 @@
 import { OptionsBuilder } from '../util/OptionsBuilder.js';
 import type { DurableStateStore } from './DurableStateStore.js';
 
-export interface DurableStateOptionsType<S> {
+export type DurableStateOptionsType<S> = {
   readonly persistenceId: string;
   readonly store: DurableStateStore;
   /** Factory invoked when no record exists yet. */
   readonly emptyState: () => S;
-}
+};
 
 /**
  * Fluent builder for {@link DurableStateOptionsType}.  A concrete

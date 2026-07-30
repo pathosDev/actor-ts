@@ -28,16 +28,16 @@ import type { PersistentEvent } from '../JournalTypes.js';
  * after each pid finishes.  Implementations write to a small KV store
  * (file, Redis, SQLite single-row, …).
  */
-export interface MigrationProgressStore {
+export type MigrationProgressStore = {
   load(): Promise<MigrationProgress>;
   save(state: MigrationProgress): Promise<void>;
   clear(): Promise<void>;
-}
+};
 
-export interface MigrationProgress {
+export type MigrationProgress = {
   /** Pids the helper has already finished — used to skip them on resume. */
   readonly completed: ReadonlyArray<string>;
-}
+};
 
 /**
  * Simple in-process implementation, useful for tests and for short-
@@ -54,7 +54,7 @@ export class InMemoryMigrationProgressStore implements MigrationProgressStore {
 
 /* ============================== journal ============================== */
 
-export interface MigrateJournalsOptions<E = unknown> {
+export type MigrateJournalsOptions<E = unknown> = {
   /**
    * Per-event transform.  Default: pass through unchanged.  Use this
    * to piggyback a schema migration (envelope wrap, V1→V2 rename, …)
@@ -77,9 +77,9 @@ export interface MigrateJournalsOptions<E = unknown> {
    * onward, useful for resuming an interrupted copy mid-pid.
    */
   readonly skipExistingPersistenceIds?: boolean;
-}
+};
 
-export interface MigrateJournalsResult {
+export type MigrateJournalsResult = {
   /** Pids inspected (incl. skipped). */
   readonly persistenceIdsInspected: number;
   /** Pids the helper actually wrote events for. */
@@ -90,7 +90,7 @@ export interface MigrateJournalsResult {
   readonly persistenceIdsSkippedExistingTarget: number;
   /** Total events written to the target. */
   readonly eventsWritten: number;
-}
+};
 
 /**
  * Copy every event from `source` to `target`, in pid+seq order.
@@ -179,7 +179,7 @@ export async function migrateBetweenJournals<E = unknown>(
 
 /* =========================== snapshot store =========================== */
 
-export interface MigrateSnapshotStoresOptions<S = unknown> {
+export type MigrateSnapshotStoresOptions<S = unknown> = {
   /** Per-snapshot transform; default: pass through. */
   readonly stateTransform?: (s: S) => S;
   /** Set of pids to copy; default: caller must supply (no enumeration on snapshot stores). */
@@ -188,15 +188,15 @@ export interface MigrateSnapshotStoresOptions<S = unknown> {
   readonly onProgress?: (e: { persistenceId: string; index: number; total: number; copied: boolean }) => void;
   /** Skip pids whose target already has a latest snapshot. */
   readonly skipExistingPersistenceIds?: boolean;
-}
+};
 
-export interface MigrateSnapshotStoresResult {
+export type MigrateSnapshotStoresResult = {
   readonly persistenceIdsInspected: number;
   readonly persistenceIdsCopied: number;
   readonly persistenceIdsEmpty: number;
   readonly persistenceIdsSkippedAlreadyDone: number;
   readonly persistenceIdsSkippedExistingTarget: number;
-}
+};
 
 /**
  * Copy the LATEST snapshot for each `pid` from `source` to `target`.

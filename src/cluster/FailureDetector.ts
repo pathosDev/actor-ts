@@ -11,10 +11,10 @@ export const defaultFailureDetectorOptions: FailureDetectorOptionsType = {
 
 export type FailureDecision = 'healthy' | 'unreachable' | 'down';
 
-interface Sample {
+type Sample = {
   lastSeen: number;
   everSeen: boolean;
-}
+};
 
 /**
  * A simple, deterministic failure detector.  Every heartbeat bumps the

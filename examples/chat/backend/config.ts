@@ -26,7 +26,7 @@
 
 import * as path from 'node:path';
 
-export interface ChatNodeConfig {
+export type ChatNodeConfig = {
   readonly host: string;
   /** null = caller resolves via the SeedProvider. */
   readonly port: number | null;
@@ -43,7 +43,7 @@ export interface ChatNodeConfig {
    */
   readonly tlsCert: string | null;
   readonly tlsKey: string | null;
-}
+};
 
 /** First port in the cluster's auto-discovery range. */
 export const BASE_CLUSTER_PORT = 2551;

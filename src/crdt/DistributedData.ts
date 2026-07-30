@@ -121,12 +121,12 @@ export type CrdtFactory<C extends Crdt<C>> = () => C;
  * to one random peer per tick.  Cheap to implement and good enough
  * for the small-to-medium stores DistributedData is meant for.
  */
-interface DDataGossipMessage {
+type DDataGossipMessage = {
   readonly t: 'ddata-gossip';
   readonly from: ReturnType<NodeAddress['toJSON']>;
   /** Keyed by user-key; payload is the CRDT's own JSON discriminator. */
   readonly entries: Record<string, CrdtJson>;
-}
+};
 
 /* ====================== quorum write / read wire ======================= */
 
@@ -138,20 +138,20 @@ interface DDataGossipMessage {
  * `DDataWriteAcknowledgmentMessage` carrying the same `pendingId` so the originator
  * can match it to the pending write.
  */
-interface DDataWriteRequestMessage {
+type DDataWriteRequestMessage = {
   readonly t: 'ddata-write-request';
   readonly from: ReturnType<NodeAddress['toJSON']>;
   readonly pendingId: string;
   readonly key: string;
   readonly value: CrdtJson;
-}
+};
 
-interface DDataWriteAcknowledgmentMessage {
+type DDataWriteAcknowledgmentMessage = {
   readonly t: 'ddata-write-ack';
   readonly from: ReturnType<NodeAddress['toJSON']>;
   readonly pendingId: string;
   readonly key: string;
-}
+};
 
 /**
  * Quorum-read request — sent by the originator of a
@@ -160,20 +160,20 @@ interface DDataWriteAcknowledgmentMessage {
  * (or `null` if it has no entry) so the originator can merge the
  * responses and return the result.
  */
-interface DDataReadRequestMessage {
+type DDataReadRequestMessage = {
   readonly t: 'ddata-read-request';
   readonly from: ReturnType<NodeAddress['toJSON']>;
   readonly pendingId: string;
   readonly key: string;
-}
+};
 
-interface DDataReadResponseMessage {
+type DDataReadResponseMessage = {
   readonly t: 'ddata-read-response';
   readonly from: ReturnType<NodeAddress['toJSON']>;
   readonly pendingId: string;
   readonly key: string;
   readonly value: CrdtJson | null;
-}
+};
 
 /* ============================== consistency =========================== */
 
@@ -301,12 +301,12 @@ export const DistributedDataId: ExtensionId<DistributedData> = extensionId<Distr
 /* ============================== handle ============================== */
 
 /** Shared between actor + handle so reads stay synchronous. */
-interface SharedView {
+type SharedView = {
   state: Map<string, Crdt<any>>;
   listeners: Map<string, Set<(value: Crdt<any>) => void>>;
-}
+};
 
-interface UpdateMessage {
+type UpdateMessage = {
   readonly t: 'ddata-update';
   readonly key: string;
   readonly factory: CrdtFactory<Crdt<any>>;
@@ -325,10 +325,10 @@ interface UpdateMessage {
     readonly resolve: () => void;
     readonly reject: (err: Error) => void;
   };
-}
-interface DeleteMessage { readonly t: 'ddata-delete'; readonly key: string }
+};
+type DeleteMessage = { readonly t: 'ddata-delete'; readonly key: string };
 /** Out-of-mailbox: a quorum-read user call.  See {@link DistributedDataHandle.getAsync}. */
-interface ReadMessage {
+type ReadMessage = {
   readonly t: 'ddata-read';
   readonly key: string;
   readonly pendingId: string;
@@ -336,7 +336,7 @@ interface ReadMessage {
   readonly timeoutMs: number;
   readonly resolve: (value: Crdt<any> | undefined) => void;
   readonly reject: (err: Error) => void;
-}
+};
 type ActorMessage =
   | UpdateMessage
   | DeleteMessage
@@ -512,7 +512,7 @@ export class DistributedDataHandle {
  * set of `address.toString()` so duplicates from a flaky peer count
  * once; self always counts as the first ack.
  */
-interface PendingWrite {
+type PendingWrite = {
   readonly kind: 'write';
   readonly key: string;
   readonly required: number;
@@ -520,7 +520,7 @@ interface PendingWrite {
   readonly timer: Cancellable;
   readonly resolve: () => void;
   readonly reject: (err: Error) => void;
-}
+};
 
 /**
  * Pending quorum-read — produced by `getAsync`.  Collects local +
@@ -529,7 +529,7 @@ interface PendingWrite {
  * timeout path can still resolve with a partial answer (best-effort)
  * — we treat reads as "best-available" rather than strict.
  */
-interface PendingRead {
+type PendingRead = {
   readonly kind: 'read';
   readonly key: string;
   readonly required: number;
@@ -538,7 +538,7 @@ interface PendingRead {
   merged: Crdt<any> | undefined;
   readonly resolve: (value: Crdt<any> | undefined) => void;
   readonly reject: (err: Error) => void;
-}
+};
 
 class DistributedDataActor extends Actor<ActorMessage> {
   private readonly cluster: Cluster;

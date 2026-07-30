@@ -21,17 +21,17 @@ import { LogLevel, type Logger } from '../../../../../src/Logger.js';
 
 const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
 
-interface FakeOptions extends BrokerCommonOptionsType {
+type FakeOptions = BrokerCommonOptionsType & {
   readonly endpoint?: string;
   readonly tag?: string;
-}
+};
 
-interface FakeCommand {
+type FakeCommand = {
   kind: 'send' | 'subscribe' | 'unsubscribe' | 'fanOut' | 'simulate-loss';
   topic?: string;
   ref?: ActorRef<unknown>;
   payload?: string;
-}
+};
 
 /**
  * Concrete subclass for tests — `connectImplementation` and `dispatchOutgoing`

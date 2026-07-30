@@ -15,9 +15,9 @@ export type RoutingStrategy = (
   state: RouterState,
 ) => Iterable<ActorRef>;
 
-export interface RouterState {
+export type RouterState = {
   readonly messageIndex: number;
-}
+};
 
 /** Round-robin: one routee per message, cycling through the pool. */
 export function roundRobinStrategy(): RoutingStrategy {
@@ -40,11 +40,11 @@ export function broadcastStrategy(): RoutingStrategy {
   return (routees) => routees;
 }
 
-interface RouterConfig<TMessage> {
+type RouterConfig<TMessage> = {
   size: number;
   routeeProps: Props<TMessage>;
   strategy: RoutingStrategy;
-}
+};
 
 /**
  * The class contract stays the caller-facing union — nobody sends a router a

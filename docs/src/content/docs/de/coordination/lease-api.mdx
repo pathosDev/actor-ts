@@ -8,13 +8,13 @@ verteilte Locks.  Implementierungen unterscheiden sich im
 Backing Store (in-memory, K8s, etcd); der Vertrag ist identisch.
 
 ```ts
-interface Lease {
+type Lease = {
   acquire(): Promise<boolean>;
   acquireWithToken?(): Promise<{ readonly token: string } | null>;
   release(): Promise<void>;
   checkAlive(): boolean;
   onLost(handler: (reason: string) => void): () => void;
-}
+};
 ```
 
 Drei Methoden, die Arbeit verrichten + eine, die einen Callback

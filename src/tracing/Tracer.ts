@@ -24,7 +24,7 @@
 /** Allowed attribute primitive types — matches OTel's spec. */
 export type AttributeValue = string | number | boolean;
 
-export interface SpanContext {
+export type SpanContext = {
   /** 32 hex chars — the trace identifier shared across hops. */
   readonly traceId: string;
   /** 16 hex chars — the per-span identifier. */
@@ -33,12 +33,12 @@ export interface SpanContext {
   readonly traceFlags: number;
   /** Optional W3C tracestate — opaque vendor-specific. */
   readonly traceState?: string;
-}
+};
 
 export type SpanKind = 'internal' | 'server' | 'client' | 'producer' | 'consumer';
 export type SpanStatus = 'unset' | 'ok' | 'error';
 
-export interface SpanOptions {
+export type SpanOptions = {
   /**
    * Parent span context.  `undefined` means "use the active span".
    * `null` explicitly creates a root span.
@@ -48,8 +48,14 @@ export interface SpanOptions {
   readonly kind?: SpanKind;
   /** Override the span start time — defaults to `Date.now()`. */
   readonly startTimeMs?: number;
-}
+};
 
+/**
+ * Stays an `interface` against the project-wide `type` rule: the fluent
+ * setters return the polymorphic `this` type, so an adapter's own span class
+ * chains as its own type rather than widening to `Span`.  TS allows `this`
+ * only in a class or interface body (TS2526).
+ */
 export interface Span {
   /** The span's own context — what children would inherit. */
   context(): SpanContext;
@@ -62,7 +68,7 @@ export interface Span {
   readonly ended: boolean;
 }
 
-export interface Tracer {
+export type Tracer = {
   startSpan(name: string, options?: SpanOptions): Span;
 
   /** Run `fn` with `span` as the active span (read by `activeSpan()`). */
@@ -80,17 +86,17 @@ export interface Tracer {
 
   /** Inverse of `injectContext` — recover a `SpanContext` from a carrier. */
   extractContext(carrier: TraceCarrier | null | undefined): SpanContext | null;
-}
+};
 
 /**
  * Wire-shape for cross-process span propagation.  Mirrors the W3C
  * Trace Context working group's `traceparent` / `tracestate` headers
  * — see {@link encodeTraceparent} / {@link decodeTraceparent}.
  */
-export interface TraceCarrier {
+export type TraceCarrier = {
   readonly traceparent: string;
   readonly tracestate?: string;
-}
+};
 
 /* ----------------------- W3C traceparent codec ------------------------- */
 

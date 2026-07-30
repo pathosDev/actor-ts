@@ -58,11 +58,11 @@ underlying store has measurable read latency.**
 ## Configuration
 
 ```ts
-interface CachedSnapshotStoreOptionsType {
+type CachedSnapshotStoreOptionsType = {
   cache:      Cache;   // backing cache (required)
   ttlMs?:     number;  // cache TTL in ms, default 5 minutes
   keyPrefix?: string;  // key prefix, default 'snap:'
-}
+};
 ```
 
 | Field | What |

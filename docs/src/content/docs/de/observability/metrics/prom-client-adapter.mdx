@@ -70,11 +70,11 @@ des Frameworks — keine zusätzliche Dependency.
 ## Konfiguration
 
 ```ts
-interface PromClientAdapterOptionsType {
+type PromClientAdapterOptionsType = {
   client:      PromClientLike;          // der prom-client-Namespace: import client from 'prom-client'
   registry:    PromClientRegistryLike;  // die Registry, in die publiziert wird — typischerweise client.register
   namePrefix?: string;                  // Präfix für jeden Metriknamen — Default: ''
-}
+};
 ```
 
 `client` und `registry` sind Pflicht — ohne sie hat die Brücke

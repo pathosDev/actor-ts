@@ -31,16 +31,16 @@ import { LWWRegister, type LWWRegisterJson } from './LWWRegister.js';
  * for non-JSON keys.
  */
 
-export interface LWWMapOptions<K> {
+export type LWWMapOptions<K> = {
   readonly identity?: (k: K) => string;
-}
+};
 
 const defaultIdentity = (k: unknown): string => JSON.stringify(k);
 
-interface Entry<K, V> {
+type Entry<K, V> = {
   readonly key: K;
   readonly register: LWWRegister<V>;
-}
+};
 
 export class LWWMap<K, V> implements Crdt<LWWMap<K, V>> {
   /**
@@ -180,8 +180,8 @@ export class LWWMap<K, V> implements Crdt<LWWMap<K, V>> {
   }
 }
 
-export interface LWWMapJson<V> {
+export type LWWMapJson<V> = {
   readonly kind: 'LWWMap';
   readonly registers: Record<string, LWWRegisterJson<V>>;
   readonly keyValues?: Record<string, string>;
-}
+};

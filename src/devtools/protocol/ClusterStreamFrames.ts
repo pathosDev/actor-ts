@@ -19,7 +19,7 @@ export type ClusterMemberStatus =
   | 'removed';
 
 /** One cluster member. */
-export interface ClusterMemberInfo {
+export type ClusterMemberInfo = {
   /** `<systemName>@<host>:<port>`. */
   readonly address: string;
   readonly status: ClusterMemberStatus;
@@ -38,7 +38,7 @@ export interface ClusterMemberInfo {
    * Retained entries age out after {@link CLUSTER_MEMBER_RETENTION_MS}.
    */
   readonly gone: boolean;
-}
+};
 
 /**
  * How long a departed member stays listed.
@@ -50,28 +50,28 @@ export interface ClusterMemberInfo {
 export const CLUSTER_MEMBER_RETENTION_MS = 60 * 60 * 1000;
 
 /** Where one shard currently lives. */
-export interface ShardAssignment {
+export type ShardAssignment = {
   readonly shard: number;
   readonly regionKey: string;
-}
+};
 
 /** Shard distribution of one sharded entity type. */
-export interface ShardMapInfo {
+export type ShardMapInfo = {
   readonly typeName: string;
   readonly leader: string;
   readonly takenAtMs: number;
   readonly regions: ReadonlyArray<ShardRegionInfo>;
   readonly shardHome: ReadonlyArray<ShardAssignment>;
-}
+};
 
 /** One shard region participating in a sharded type. */
-export interface ShardRegionInfo {
+export type ShardRegionInfo = {
   readonly key: string;
   readonly address: string;
   readonly path: string;
   readonly proxy: boolean;
   readonly shardCount: number;
-}
+};
 
 /** Names of the runtime `ClusterEvent` classes, as sent over the wire. */
 export type ClusterEventName =
@@ -89,17 +89,17 @@ export type ClusterEventName =
   | 'shard-map-changed';
 
 /** Full topology, sent once per `cluster` subscription. */
-export interface ClusterSnapshotPayload {
+export type ClusterSnapshotPayload = {
   readonly kind: 'cluster-snapshot';
   readonly atMs: number;
   readonly selfAddress: string;
   readonly leader: string | null;
   readonly members: ReadonlyArray<ClusterMemberInfo>;
   readonly shardMaps: ReadonlyArray<ShardMapInfo>;
-}
+};
 
 /** A membership / leadership transition. */
-export interface ClusterEventPayload {
+export type ClusterEventPayload = {
   readonly kind: 'cluster-event';
   readonly atMs: number;
   readonly event: ClusterEventName;
@@ -107,14 +107,14 @@ export interface ClusterEventPayload {
   readonly member?: ClusterMemberInfo;
   /** New leader address — only for `leader-changed`. */
   readonly leader?: string | null;
-}
+};
 
 /** The coordinator republished a shard map. */
-export interface ShardMapChangedPayload {
+export type ShardMapChangedPayload = {
   readonly kind: 'shard-map-changed';
   readonly atMs: number;
   readonly shardMap: ShardMapInfo;
-}
+};
 
 /** Payloads carried by the `cluster` stream. */
 export type ClusterStreamPayload =

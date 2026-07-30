@@ -55,14 +55,14 @@ type EncryptionConfig =
   | { mode: 'client-aes256-gcm'; masterKey: Uint8Array; info?: string }
   | { mode: 'client-aes256-gcm'; masterKeys: MasterKeyRing; info?: string };
 
-interface MasterKeyRing {
+type MasterKeyRing = {
   active: MasterKeyRingEntry;                // new writes encrypt under this
   retired?: MasterKeyRingEntry[];            // older keys, kept for decryption
-}
-interface MasterKeyRingEntry {
+};
+type MasterKeyRingEntry = {
   version: number;                           // 0..255, embedded in the body manifest
   key: Uint8Array;                           // 32 bytes (AES-256)
-}
+};
 ```
 
 Client-side encryption uses `mode: 'client-aes256-gcm'` with

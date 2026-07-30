@@ -3,7 +3,7 @@ import type { SqlDialect } from './SqlDialect.js';
 import type { SqlPool } from './SqlPool.js';
 
 /** Wiring every relational store needs, independent of which contract it implements. */
-export interface RelationalStoreConfig extends Omit<LazyStoreConfig<SqlPool>, 'ownsResource' | 'openResource'> {
+export type RelationalStoreConfig = Omit<LazyStoreConfig<SqlPool>, 'ownsResource' | 'openResource'> & {
   readonly dialect: SqlDialect;
   /** Create tables on first use.  Default `true`. */
   readonly autoCreateTables?: boolean;
@@ -16,7 +16,7 @@ export interface RelationalStoreConfig extends Omit<LazyStoreConfig<SqlPool>, 'o
   readonly ownsPool: boolean;
   /** Open the pool.  Called once, lazily, on first use. */
   openPool(): Promise<SqlPool>;
-}
+};
 
 /**
  * The relational half of the store lifecycle: `LazyStore` handles lazy

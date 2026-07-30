@@ -10,13 +10,13 @@
 export type DiffKind = 'added' | 'removed' | 'changed' | 'unchanged';
 
 /** One leaf of the comparison. */
-export interface DiffEntry {
+export type DiffEntry = {
   /** Dotted path, e.g. `items.0.price`; `''` for a scalar root. */
   readonly path: string;
   readonly kind: DiffKind;
   readonly before: unknown;
   readonly after: unknown;
-}
+};
 
 /**
  * Compare two values leaf by leaf.

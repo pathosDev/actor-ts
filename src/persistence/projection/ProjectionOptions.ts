@@ -4,7 +4,7 @@ import type { LiveQueryOptions, PersistenceQuery, TagFilter } from '../query/Per
 import type { OffsetStore } from './OffsetStore.js';
 
 /** Plain options-object shape shared by every projection. */
-export interface ProjectionOptionsType<E> {
+export type ProjectionOptionsType<E> = {
   /** Logical name — used as the offset-store key prefix. */
   readonly name: string;
   /** The query layer (one of `InMemoryQuery`, `SqliteQuery`, …). */
@@ -15,12 +15,12 @@ export interface ProjectionOptionsType<E> {
   readonly handle: (event: PersistentEvent<E>) => void | Promise<void>;
   /** Tunables passed to the underlying live query. */
   readonly liveOptions?: LiveQueryOptions;
-}
+};
 
 /** Options for a per-persistenceId projection.  One cursor per pid. */
-export interface ByPersistenceIdProjectionOptionsType<E> extends ProjectionOptionsType<E> {
+export type ByPersistenceIdProjectionOptionsType<E> = ProjectionOptionsType<E> & {
   readonly persistenceId: string;
-}
+};
 
 /**
  * Options for a per-tag projection.  One cursor per filter.
@@ -31,9 +31,9 @@ export interface ByPersistenceIdProjectionOptionsType<E> extends ProjectionOptio
  * "every order that is not cancelled" needed a hand-rolled projection instead
  * of a filter.  A bare string still works and keeps its existing cursor.
  */
-export interface ByTagProjectionOptionsType<E> extends ProjectionOptionsType<E> {
+export type ByTagProjectionOptionsType<E> = ProjectionOptionsType<E> & {
   readonly tag: TagFilter;
-}
+};
 
 /**
  * Fluent builder for the fields shared by every projection.  The

@@ -44,11 +44,11 @@ async function waitFor(pred: () => boolean, timeoutMs = 3_000, stepMs = 25): Pro
   if (!pred()) throw new Error(`waitFor timed out after ${timeoutMs}ms`);
 }
 
-interface Node {
+type Node = {
   sys: ActorSystem;
   cluster: Cluster;
   region: ActorRef<Command>;
-}
+};
 
 async function startNodeWithLease(
   systemName: string, port: number, lease: InMemoryLease,

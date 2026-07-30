@@ -94,7 +94,7 @@ Spawns kollidieren.
 Die `BackoffOptions<T>`-Form:
 
 ```ts
-interface BackoffOptions<T> {
+type BackoffOptions<T> = {
   childProps:        Props<T>;
   childName?:        string;
   minBackoff:        number;
@@ -108,7 +108,7 @@ interface BackoffOptions<T> {
   drainGraceMs?:     number;  // Default min(50, minBackoff)
   forwardDuringGrace?: boolean;  // Default true
   clock?:            () => number;
-}
+};
 ```
 
 Die interessantesten Felder:

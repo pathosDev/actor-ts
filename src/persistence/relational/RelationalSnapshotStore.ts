@@ -6,14 +6,14 @@ import { assertSafeIdentifier } from '../storage/SqlIdentifier.js';
 import { expandPlaceholders } from './SqlDialect.js';
 import { RelationalStore, type RelationalStoreConfig } from './RelationalStore.js';
 
-interface SnapshotRow {
+type SnapshotRow = {
   persistence_id: string;
   sequence_nr: string | number | bigint;
   payload: string;
   timestamp: string | number | bigint;
-}
+};
 
-export interface RelationalSnapshotStoreConfig extends RelationalStoreConfig {
+export type RelationalSnapshotStoreConfig = RelationalStoreConfig & {
   /** Snapshots table.  Default `'snapshots'`. */
   readonly snapshotsTable?: string;
   /**
@@ -21,7 +21,7 @@ export interface RelationalSnapshotStoreConfig extends RelationalStoreConfig {
    * Default `3`; `<= 0` disables pruning and keeps every snapshot.
    */
   readonly keepN?: number;
-}
+};
 
 /**
  * SnapshotStore over any SQL database, parameterized by `SqlDialect`.

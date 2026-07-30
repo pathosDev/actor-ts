@@ -57,7 +57,7 @@ import { MigrationError } from './Envelope.js';
  */
 
 /** What a single registered version contributes to the registry. */
-export interface SchemaRegistration<Wire = unknown, Upcasted = unknown> {
+export type SchemaRegistration<Wire = unknown, Upcasted = unknown> = {
   /** Codec used to validate / shape payloads at this version. */
   readonly codec: Codec<Wire>;
   /**
@@ -74,15 +74,15 @@ export interface SchemaRegistration<Wire = unknown, Upcasted = unknown> {
    * version's encode round-trip.  Throws if any step fails.
    */
   readonly sample?: unknown;
-}
+};
 
-export interface SchemaDescriptor extends SchemaRegistration {
+export type SchemaDescriptor = SchemaRegistration & {
   readonly manifest: string;
   readonly version: number;
-}
+};
 
 /** Public API of any schema registry impl. */
-export interface SchemaRegistry {
+export type SchemaRegistry = {
   /**
    * Add or replace the registration for `(manifest, version)`.
    * Runs the configured compat check; throws on incompatibility.
@@ -113,7 +113,7 @@ export interface SchemaRegistry {
 
   /** Same as `eventAdapter` but typed for snapshot/state actors. */
   snapshotAdapter<S>(manifest: string): SnapshotAdapter<S, unknown>;
-}
+};
 
 /* ============================== impl ================================== */
 

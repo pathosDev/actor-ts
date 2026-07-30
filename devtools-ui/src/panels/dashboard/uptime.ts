@@ -14,10 +14,10 @@ import type { WelcomeFrame } from '../../../../src/devtools/protocol/index.js';
  * keeps the tile right across a reload, a reconnect, and a browser whose
  * clock disagrees with the host's.
  */
-export interface UptimeAnchor {
+export type UptimeAnchor = {
   readonly uptimeMs: number;
   readonly receivedAtMs: number;
-}
+};
 
 /**
  * `nowMs` is the caller's idea of now, which is the wall clock while the

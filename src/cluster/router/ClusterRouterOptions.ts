@@ -4,7 +4,7 @@ import type { Cluster } from '../Cluster.js';
 import type { ClusterRouterType } from './ClusterRouter.js';
 
 /** Plain options-object shape consumed by {@link ClusterRouter.props}. */
-export interface ClusterRouterOptionsType<TMessage> {
+export type ClusterRouterOptionsType<TMessage> = {
   /** The cluster the router lives in.  Used for membership + transport. */
   readonly cluster: Cluster;
   /** Restrict routees to up-members carrying this role.  Omit for "any node". */
@@ -25,7 +25,7 @@ export interface ClusterRouterOptionsType<TMessage> {
    * to the cluster topology not changing).
    */
   readonly extractKey?: (message: TMessage) => string;
-}
+};
 
 /**
  * Fluent builder for {@link ClusterRouterOptionsType}:

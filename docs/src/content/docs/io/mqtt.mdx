@@ -81,7 +81,7 @@ const options = MqttOptions.create()
 ```
 
 ```ts
-interface MqttOptionsType extends BrokerCommonOptionsType {
+type MqttOptionsType = BrokerCommonOptionsType & {
   brokerUrl?:  string;          // mqtt:// mqtts:// ws:// wss://
   clientId?:   string;
   credentials?: { username?: string; password?: string };
@@ -91,7 +91,7 @@ interface MqttOptionsType extends BrokerCommonOptionsType {
   protocolVersion?: 4 | 5;      // default 4 (= MQTT 3.1.1)
   codec?: MqttCodec<unknown>;   // default mqttJsonCodec()
   will?: { topic: string; payload: string | Uint8Array; qos?: 0 | 1 | 2; retain?: boolean };
-}
+};
 ```
 
 Common patterns:

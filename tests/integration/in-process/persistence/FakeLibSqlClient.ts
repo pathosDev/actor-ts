@@ -24,10 +24,10 @@ import type {
   LibSqlTransactionLike,
 } from '../../../../src/persistence/journals/LibSqlClient.js';
 
-interface EventRow { persistence_id: string; sequence_nr: number; payload: string; tags: string | null; timestamp: number; }
-interface TagRow { persistence_id: string; sequence_nr: number; tag: string; timestamp: number; }
-interface SnapshotRow { persistence_id: string; sequence_nr: number; payload: string; timestamp: number; }
-interface StateRow { persistence_id: string; revision: number; payload: string; timestamp: number; }
+type EventRow = { persistence_id: string; sequence_nr: number; payload: string; tags: string | null; timestamp: number; };
+type TagRow = { persistence_id: string; sequence_nr: number; tag: string; timestamp: number; };
+type SnapshotRow = { persistence_id: string; sequence_nr: number; payload: string; timestamp: number; };
+type StateRow = { persistence_id: string; revision: number; payload: string; timestamp: number; };
 
 class SqliteConstraintViolation extends Error {
   readonly code = 'SQLITE_CONSTRAINT_PRIMARYKEY';

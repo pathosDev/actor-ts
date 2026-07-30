@@ -39,14 +39,14 @@ other value falls back to the default serializer (JSON).
 ## The Serializer interface
 
 ```ts
-interface Serializer<T = unknown> {
+type Serializer<T = unknown> = {
   readonly id:                number;
   readonly name:              string;
   includesManifest:           boolean;
   manifest(obj: T):           string;
   toBinary(obj: T):           Uint8Array;
   fromBinary(bytes: Uint8Array, manifest: string): T;
-}
+};
 ```
 
 - **`id`** — unique number ≥ 100 (1-99 reserved for built-ins).

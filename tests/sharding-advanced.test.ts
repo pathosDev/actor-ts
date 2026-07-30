@@ -33,11 +33,11 @@ async function waitFor(pred: () => boolean, timeoutMs: number, stepMs = 25): Pro
   if (!pred()) throw new Error(`waitFor timed out after ${timeoutMs}ms`);
 }
 
-interface NodeContext<TMessage> {
+type NodeContext<TMessage> = {
   system: ActorSystem;
   cluster: Cluster;
   region: ActorRef<TMessage>;
-}
+};
 
 /** Minimal cluster node with a configured sharding region. */
 async function startNode<TMessage>(options: {

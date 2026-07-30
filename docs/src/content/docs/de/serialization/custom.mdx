@@ -40,14 +40,14 @@ jeder andere Wert fällt auf den Default-Serializer (JSON) zurück.
 ## Das Serializer-Interface
 
 ```ts
-interface Serializer<T = unknown> {
+type Serializer<T = unknown> = {
   readonly id:                number;
   readonly name:              string;
   includesManifest:           boolean;
   manifest(obj: T):           string;
   toBinary(obj: T):           Uint8Array;
   fromBinary(bytes: Uint8Array, manifest: string): T;
-}
+};
 ```
 
 - **`id`** — eindeutige Zahl ≥ 100 (1–99 für Built-ins reserviert).

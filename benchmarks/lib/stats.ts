@@ -39,7 +39,7 @@ export const ansi = {
  *  causes Windows Terminal to render the leading border chars correctly. */
 export const ansiResetLine: string = useColor ? '\x1b[0m' : '';
 
-export interface BenchStats {
+export type BenchStats = {
   readonly mean: number;
   readonly stddev: number;
   readonly min: number;
@@ -47,7 +47,7 @@ export interface BenchStats {
   readonly p50: number;
   readonly p95: number;
   readonly p99: number;
-}
+};
 
 export function statsOf(samples: ReadonlyArray<number>): BenchStats {
   if (samples.length === 0) {

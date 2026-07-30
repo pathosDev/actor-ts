@@ -22,7 +22,7 @@
  * `test:integration` from #313.
  */
 
-export interface BrokerScenarioContext {
+export type BrokerScenarioContext = {
   /**
    * Backend-specific connection info.  Each suite has its own shape
    * (S3 endpoint URL + credentials; MQTT broker URL + creds;
@@ -30,12 +30,12 @@ export interface BrokerScenarioContext {
    * narrows it locally.
    */
   readonly env: Readonly<Record<string, string | undefined>>;
-}
+};
 
-export interface BrokerScenario<Context extends BrokerScenarioContext = BrokerScenarioContext> {
+export type BrokerScenario<Context extends BrokerScenarioContext = BrokerScenarioContext> = {
   readonly name: string;
   run(context: Context): Promise<void>;
-}
+};
 
 /**
  * Run scenarios sequentially.  Exits the process (0/1) when done.

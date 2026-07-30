@@ -14,12 +14,12 @@
 import * as fs from 'node:fs';
 import type { FastifyBackend } from '../../../../src/http/backend/FastifyBackend.js';
 
-export interface StaticFilesOptions {
+export type StaticFilesOptions = {
   /** Absolute path to the static-files root (`examples/chat/static`). */
   readonly root: string;
   /** URL prefix.  Default `/static/`. */
   readonly prefix?: string;
-}
+};
 
 export async function registerStaticFiles(
   backend: FastifyBackend,

@@ -2,12 +2,12 @@ import { OptionsBuilder } from '../../util/OptionsBuilder.js';
 import { OptionsValidator } from '../../util/OptionsValidator.js';
 
 /** Plain options-object shape accepted by {@link StaticQuorum}. */
-export interface StaticQuorumOptionsType {
+export type StaticQuorumOptionsType = {
   /** Exact size of the quorum needed on the reachable side. */
   readonly quorumSize: number;
   /** If set, only members carrying this role count toward quorum. */
   readonly role?: string;
-}
+};
 
 /**
  * Fluent builder for {@link StaticQuorumOptionsType}:

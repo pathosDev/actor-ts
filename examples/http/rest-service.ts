@@ -30,7 +30,7 @@ import {
 } from '../../src/index.js';
 import { attachDevTools } from '../devtools.js';
 
-interface User { readonly id: string; readonly name: string; readonly email: string; }
+type User = { readonly id: string; readonly name: string; readonly email: string; };
 
 type SetCommand = { kind: 'set'; user: User };
 type GetCommand = { kind: 'get'; id: string };

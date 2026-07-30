@@ -38,14 +38,14 @@ settings**: they go to `system.http(port, { host })`, and the
 `cluster` is the second positional argument.
 
 ```ts
-interface ManagementRoutesOptionsType {
+type ManagementRoutesOptionsType = {
   enableLeaveEndpoint?:   boolean;    // POST /cluster/leave (default false)
   enableDownEndpoint?:    boolean;    // POST /cluster/down  (default false)
   enableMetricsEndpoint?: boolean;    // GET  /metrics       (default false)
   auth?:          Middleware;         // guards /cluster/* (+ /metrics)
   ipAllowlist?:   Middleware;         // guards EVERY endpoint, incl. /health + /ready
   authProtectHealth?: boolean;        // also require `auth` on /health + /ready (default false)
-}
+};
 ```
 
 A typical production wiring:

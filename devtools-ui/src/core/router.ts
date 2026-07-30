@@ -9,12 +9,12 @@
 import { signal, type ReadonlySignal } from './signal.js';
 
 /** A parsed location. */
-export interface UiRoute {
+export type UiRoute = {
   /** First hash segment — the panel id.  `'dashboard'` at the root. */
   readonly panel: string;
   /** Remaining segments, panel-specific (e.g. a selected actor path). */
   readonly rest: ReadonlyArray<string>;
-}
+};
 
 const route = signal<UiRoute>(parse(window.location.hash));
 window.addEventListener('hashchange', () => route.set(parse(window.location.hash)));

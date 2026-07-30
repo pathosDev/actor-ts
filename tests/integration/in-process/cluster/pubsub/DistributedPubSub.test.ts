@@ -25,12 +25,12 @@ async function waitFor(pred: () => boolean, timeoutMs = 2000, stepMs = 25): Prom
   if (!pred()) throw new Error(`waitFor timed out after ${timeoutMs}ms`);
 }
 
-interface Node {
+type Node = {
   system: ActorSystem;
   cluster: Cluster;
   mediator: import('../../../../../src/ActorRef.js').ActorRef<Subscribe | Unsubscribe | Publish>;
   kit: TestKit;
-}
+};
 
 async function startNode(systemName: string, host: string, port: number, seeds: string[] = []): Promise<Node> {
   const kitOptions = TestKitOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off);

@@ -21,7 +21,7 @@
  * frontends that bother.  Not part of authentication.
  */
 
-export interface TestUser {
+export type TestUser = {
   readonly username: string;
   /**
    * `<salt-hex>:<hash-hex>` — scrypt output.  Verified via
@@ -29,7 +29,7 @@ export interface TestUser {
    */
   readonly passwordHash: string;
   readonly displayName: string;
-}
+};
 
 export const TEST_USERS: ReadonlyArray<TestUser> = [
   {

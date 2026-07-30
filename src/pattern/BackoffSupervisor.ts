@@ -109,7 +109,7 @@ export type ForwardStrategy =
  */
 export type TerminationTrigger = 'any' | 'failure' | 'stop';
 
-export interface BackoffOptions<T> {
+export type BackoffOptions<T> = {
   /** How to construct the child. */
   readonly childProps: Props<T>;
   /** Name suffix for the child.  The actual child name is
@@ -169,17 +169,17 @@ export interface BackoffOptions<T> {
   readonly forwardDuringGrace?: boolean;
   /** Override `Date.now`/`Math.random` for deterministic tests. */
   readonly clock?: () => number;
-}
+};
 
 /** Default child name when the user doesn't supply one. */
 const DEFAULT_CHILD_NAME = 'child';
 /** Default cap so a stuck supervisor doesn't OOM the process. */
 const DEFAULT_STASH_LIMIT = 1000;
 
-interface StashedMessage {
+type StashedMessage = {
   readonly message: unknown;
   readonly sender: ActorRef | null;
-}
+};
 
 export class BackoffSupervisor<T> extends Actor<unknown> {
   /**

@@ -11,12 +11,12 @@ import {
 import { assertSafeIdentifier } from '../storage/SqlIdentifier.js';
 import type { CassandraSnapshotStoreOptions, CassandraSnapshotStoreOptionsType } from './CassandraSnapshotStoreOptions.js';
 
-interface SnapshotRow {
+type SnapshotRow = {
   persistence_id: string;
   sequence_nr: string | number;
   timestamp: string | number;
   payload: string;
-}
+};
 
 /**
  * SnapshotStore backed by Cassandra/Scylla.  Schema mirrors the journal:

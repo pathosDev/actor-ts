@@ -114,9 +114,9 @@ type ChatEvent = {
   readonly ts: number;
 };
 
-interface ChatState {
+type ChatState = {
   readonly history: ReadonlyArray<ChatMessage>;
-}
+};
 
 /* ------------------------------- actor -------------------------------- */
 

@@ -118,10 +118,10 @@ function spawnTarget(
   return { ref: ref as ActorRef<NatsMessage>, target };
 }
 
-interface Booted {
+type Booted = {
   readonly ref: ActorRef<NatsCommand>;
   readonly actor: MockNatsActor;
-}
+};
 
 /**
  * Spawn a MockNatsActor and wait for the first connect attempt to settle.

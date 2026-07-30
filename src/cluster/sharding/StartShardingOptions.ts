@@ -10,7 +10,7 @@ import type { ShardingOptionsType } from './ShardingOptions.js';
  * the region-side {@link ShardingOptionsType} plus the coordinator-side
  * fields (allocation, rebalance, lease, persistence backends).
  */
-export interface StartShardingOptionsType<TMessage> extends ShardingOptionsType<TMessage> {
+export type StartShardingOptionsType<TMessage> = ShardingOptionsType<TMessage> & {
   /** Strategy the coordinator uses to allocate and rebalance shards. */
   readonly allocationStrategy?: AllocationStrategy;
   /** Gap between coordinator-driven rebalance passes. */
@@ -55,7 +55,7 @@ export interface StartShardingOptionsType<TMessage> extends ShardingOptionsType<
    * Without it, the v1 rebuild-from-Register behaviour is preserved.
    */
   readonly coordinatorStateStore?: CoordinatorStateStore;
-}
+};
 
 /**
  * Fluent builder for {@link StartShardingOptionsType} — the argument to

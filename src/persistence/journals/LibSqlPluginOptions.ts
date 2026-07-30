@@ -4,7 +4,7 @@ import type { LibSqlJournalOptions } from './LibSqlJournalOptions.js';
 import type { LibSqlSnapshotStoreOptions } from '../snapshot-stores/LibSqlSnapshotStoreOptions.js';
 import type { LibSqlDurableStateStoreOptions } from '../durable-state-stores/LibSqlDurableStateStoreOptions.js';
 
-export interface RegisterLibSqlPluginsOptionsType {
+export type RegisterLibSqlPluginsOptionsType = {
   /**
    * Shared client injected into all three stores — the usual case, since they
    * target the same database and a libSQL client is a connection *pool* in its
@@ -25,7 +25,7 @@ export interface RegisterLibSqlPluginsOptionsType {
   readonly snapshotStore?: LibSqlSnapshotStoreOptions;
   /** Durable-state-store-specific options (table name). */
   readonly durableStateStore?: LibSqlDurableStateStoreOptions;
-}
+};
 
 /**
  * Fluent builder for {@link RegisterLibSqlPluginsOptionsType}:

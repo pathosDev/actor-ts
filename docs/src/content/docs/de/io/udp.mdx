@@ -55,12 +55,12 @@ gemeinsamen Felder für Reconnect / Circuit-Breaker / Outbound-Buffer
 mitbringt) und ergänzt:
 
 ```ts
-interface UdpSocketOptionsType extends BrokerCommonOptionsType {
+type UdpSocketOptionsType = BrokerCommonOptionsType & {
   bindHost?: string;                 // default '0.0.0.0'
   bindPort?: number;                 // default 0 = OS-assigned
   type?: 'udp4' | 'udp6';            // default 'udp4'
   target?: ActorRef<UdpDatagram>;    // required: inbound subscriber
-}
+};
 ```
 
 `target` ist das einzige Pflichtfeld — ohne es haben eingehende

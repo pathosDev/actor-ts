@@ -9,7 +9,7 @@ import type { ClusterOptionsType } from './ClusterOptions.js';
  * optional except `name`; sensible defaults turn the call into a
  * single-line hello-cluster.  Build one with {@link ClusterBootstrapOptions}.
  */
-export interface ClusterBootstrapOptionsType {
+export type ClusterBootstrapOptionsType = {
   /* ----------------------------- System -------------------------------- */
 
   /** ActorSystem name. */
@@ -99,7 +99,7 @@ export interface ClusterBootstrapOptionsType {
    * contact is slow (e.g. K8s pod start lag).
    */
   readonly awaitReady?: boolean | number;
-}
+};
 
 /**
  * Fluent builder for {@link ClusterBootstrapOptionsType} — the sole input

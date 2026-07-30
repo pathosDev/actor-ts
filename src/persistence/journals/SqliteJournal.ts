@@ -10,7 +10,7 @@ import { assertSafeIdentifier } from '../storage/SqlIdentifier.js';
 import { assertValidTags } from '../storage/TagValidator.js';
 import type { SqliteJournalOptions, SqliteJournalOptionsType } from './SqliteJournalOptions.js';
 
-interface Stmts {
+type Stmts = {
   insert: SqliteStatement;
   insertTag: SqliteStatement;
   readAll: SqliteStatement;
@@ -27,7 +27,7 @@ interface Stmts {
   countTags: SqliteStatement;
   /** Iterates events that still have CSV tags but no row in the tag table. */
   rowsWithCsvTags: SqliteStatement;
-}
+};
 
 /**
  * Journal backed by SQLite — zero-dependency, single-file persistence.

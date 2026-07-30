@@ -2,13 +2,13 @@ import { OptionsBuilder } from '../util/OptionsBuilder.js';
 import { OptionsValidator } from '../util/OptionsValidator.js';
 
 /** Plain options-object shape accepted by {@link ClusterClientReceptionist.start}. */
-export interface ClusterClientReceptionistOptionsType {
+export type ClusterClientReceptionistOptionsType = {
   /**
    * Default ask timeout (ms) when a client envelope carries an `askId`.
    * Default: 5_000.
    */
   readonly askTimeoutMs?: number;
-}
+};
 
 /**
  * Fluent builder for {@link ClusterClientReceptionistOptionsType}:

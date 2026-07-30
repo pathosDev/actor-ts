@@ -8,7 +8,7 @@ import { ActorSystem, FSM, Props } from '../../src/index.js';
 import { attachDevTools } from '../devtools.js';
 
 type Color = 'red' | 'green' | 'yellow';
-interface Data { readonly enteredAt: number; }
+type Data = { readonly enteredAt: number; };
 type Command = 'tick';
 
 class TrafficLight extends FSM<Color, Data, Command> {

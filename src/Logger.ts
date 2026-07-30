@@ -8,7 +8,7 @@ export enum LogLevel {
   Off = 100,
 }
 
-export interface Logger {
+export type Logger = {
   readonly level: LogLevel;
   debug(message: string, ...args: unknown[]): void;
   info(message: string, ...args: unknown[]): void;
@@ -24,7 +24,7 @@ export interface Logger {
    * or `{ shardId: 12 }` on a per-entity logger.
    */
   withFields(fields: LogContextData): Logger;
-}
+};
 
 export class ConsoleLogger implements Logger {
   constructor(
@@ -98,9 +98,9 @@ export class NoopLogger implements Logger {
  * out of the box.  Inject a custom sink in tests (capturing array) or
  * to route to `process.stderr` / a file descriptor.
  */
-export interface JsonLogSink {
+export type JsonLogSink = {
   write(line: string): void;
-}
+};
 
 const stdoutSink: JsonLogSink = {
   write(line) {

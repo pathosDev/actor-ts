@@ -2,7 +2,7 @@ import { OptionsBuilder } from '../util/OptionsBuilder.js';
 import { OptionsValidator } from '../util/OptionsValidator.js';
 
 /** Plain options-object shape accepted by a {@link DnsSeedProvider}. */
-export interface DnsSeedProviderOptionsType {
+export type DnsSeedProviderOptionsType = {
   /** Hostname to resolve (e.g. `my-cluster.default.svc.cluster.local`). */
   readonly hostname: string;
   /** System name to stamp on discovered NodeAddresses. */
@@ -23,7 +23,7 @@ export interface DnsSeedProviderOptionsType {
    * that throws will retry on the next call.
    */
   readonly cacheTtlMs?: number;
-}
+};
 
 /**
  * Fluent builder for {@link DnsSeedProviderOptionsType}.

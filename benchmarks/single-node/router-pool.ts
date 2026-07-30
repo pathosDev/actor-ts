@@ -28,7 +28,7 @@ const CPU_BURST_ITERS = 20_000;   // per-job tight arithmetic loop
 const JOBS_PER_ITERATION = 100;   // work items per benchmark iteration
 const MEASURED_ITERATIONS = 10;   // harness iterations — total walltime dominates here
 
-interface Counter { n: number; }
+type Counter = { n: number; };
 
 function makeWorker(counter: Counter): Actor<'work'> {
   class Worker extends Actor<'work'> {

@@ -1,12 +1,12 @@
 import { OptionsBuilder } from '../../util/OptionsBuilder.js';
 import type { MariaDbPoolLike, MariaDbConnection } from '../journals/MariaDbClient.js';
 
-export interface MariaDbDurableStateStoreOptionsType extends MariaDbConnection {
+export type MariaDbDurableStateStoreOptionsType = MariaDbConnection & {
   /** Table name.  Default: `durable_state`. */
   readonly table?: string;
   /** Run `CREATE TABLE IF NOT EXISTS` on first use.  Default: true. */
   readonly autoCreateTables?: boolean;
-}
+};
 
 /**
  * Fluent builder for {@link MariaDbDurableStateStoreOptionsType}:

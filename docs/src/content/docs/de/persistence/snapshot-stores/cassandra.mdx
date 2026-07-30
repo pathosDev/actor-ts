@@ -51,7 +51,7 @@ Snapshot-Store zum Journal passen.
 ## Konfiguration
 
 ```ts
-interface CassandraSnapshotStoreOptions {
+type CassandraSnapshotStoreOptions = {
   contactPoints?:      string[];   // Cluster-Contact-Points
   keyspace?:           string;     // Keyspace, das nach Connect ge-USEt wird
   snapshotsTable?:     string;     // Tabellenname, Default 'snapshots'
@@ -61,7 +61,7 @@ interface CassandraSnapshotStoreOptions {
   consistency?:        number;     // CQL-Consistency, Default LOCAL_QUORUM (6)
   client?:             CassandraClientLike; // vorgefertigten Driver-Client wiederverwenden
   /* ...plus die geteilten Connection-Felder: localDataCenter, credentials, port, replication */
-}
+};
 ```
 
 Die Connection-Felder (`contactPoints`, `keyspace`, `localDataCenter`,

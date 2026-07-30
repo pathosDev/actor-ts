@@ -3,7 +3,7 @@ import { OptionsBuilder } from '../../util/OptionsBuilder.js';
 import { OptionsValidator } from '../../util/OptionsValidator.js';
 
 /** Plain options-object shape consumed by {@link ShardedDaemonProcess.init}. */
-export interface ShardedDaemonProcessOptionsType<T> {
+export type ShardedDaemonProcessOptionsType<T> = {
   /** Logical name used for the shard type; must be unique per daemon set. */
   readonly name: string;
   /** Total number of daemons to keep running cluster-wide. */
@@ -22,7 +22,7 @@ export interface ShardedDaemonProcessOptionsType<T> {
    * Default: `30_000` (30 s).  Set to `0` to disable.
    */
   readonly livenessIntervalMs?: number;
-}
+};
 
 /**
  * Fluent builder for {@link ShardedDaemonProcessOptionsType}.  The

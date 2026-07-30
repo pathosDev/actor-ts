@@ -27,14 +27,14 @@ import { MigrationError } from './Envelope.js';
  */
 
 /** Shape of error reasons surfaced from this wrapper. */
-export interface ValidatedAdapterOptions {
+export type ValidatedAdapterOptions = {
   /**
    * Override how the wire payload is shown in the validation
    * error.  Defaults to `JSON.stringify(payload).slice(0, 200)` —
    * truncated so big payloads don't flood the error log.
    */
   readonly previewWire?: (wire: unknown) => string;
-}
+};
 
 /**
  * Wrap an `EventAdapter` to run the codec on every read/write.

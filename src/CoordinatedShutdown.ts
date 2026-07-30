@@ -37,19 +37,19 @@ export class ProcessTerminateReason extends Reason {
 /** A single task.  Returning a Promise makes the task async. */
 export type ShutdownTask = (reason: Reason) => Promise<void> | void;
 
-export interface PhaseDefinition {
+export type PhaseDefinition = {
   readonly name: string;
   readonly timeoutMs: number;
   /** Names of phases that must run before this one. */
   readonly dependsOn: ReadonlyArray<string>;
   /** If true, task failures are swallowed and the phase continues; if false, a failure halts the pipeline.  Required — no default. */
   readonly recover: boolean;
-}
+};
 
-interface RegisteredTask {
+type RegisteredTask = {
   readonly name: string;
   readonly task: ShutdownTask;
-}
+};
 
 /** Canonical phase names, run in order from top to bottom. */
 export const Phases = {

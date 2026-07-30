@@ -13,10 +13,10 @@ export type Username = string;
 export type GroupName = 'engineering' | 'ops' | 'product';
 export type VoiceRoomName = 'lobby' | 'standup' | 'all-hands';
 
-export interface GroupSummary {
+export type GroupSummary = {
   readonly name: GroupName;
   readonly members: ReadonlyArray<Username>;
-}
+};
 
 export type IncomingSource =
   | { readonly kind: 'peer' }

@@ -21,7 +21,7 @@ import { complete, concat, get, path, Status, type Route } from '../http/index.j
 import type { HttpRequest, HttpResponse } from '../http/types.js';
 
 /** One build-time-compressed UI file. */
-export interface UiAsset {
+export type UiAsset = {
   /** Path relative to the UI root, e.g. `index.html`, `assets/main.js`. */
   readonly path: string;
   readonly contentType: string;
@@ -31,7 +31,7 @@ export interface UiAsset {
   readonly etag: string;
   /** gzip-compressed content, base64-encoded. */
   readonly gzipBase64: string;
-}
+};
 
 /** Entry point the UI shell is served from. */
 const INDEX_PATH = 'index.html';

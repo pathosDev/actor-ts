@@ -65,14 +65,14 @@ export function wrapStateAsEnvelope<S>(
 
 /* -------------------------- migration result --------------------------- */
 
-export interface MigrationResult {
+export type MigrationResult = {
   /** Total entries inspected. */
   readonly inspected: number;
   /** Entries that were rewritten (raw → envelope). */
   readonly wrapped: number;
   /** Entries that were already enveloped and left untouched. */
   readonly skipped: number;
-}
+};
 
 /* ----------------------- in-memory bulk migrator ----------------------- */
 
@@ -82,7 +82,7 @@ export interface MigrationResult {
  * UPDATE, S3 PUT) — duck-typing is fine here, the helper just needs a
  * way to overwrite event payloads in place.
  */
-interface InternalMigratableJournal extends Journal {
+type InternalMigratableJournal = Journal & {
   /**
    * Apply `transform(event)` to every persisted event under `persistenceId`,
    * writing the new payload back in place.  Sequence numbers,
@@ -91,7 +91,7 @@ interface InternalMigratableJournal extends Journal {
    * skips this helper and writes a journal-specific migrator).
    */
   _remapForMigration<E, F>(persistenceId: string, transform: (e: E) => F): Promise<void>;
-}
+};
 
 /**
  * Bulk-rewrite every event in a {@link Journal} that exposes the

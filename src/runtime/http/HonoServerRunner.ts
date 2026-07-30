@@ -15,31 +15,31 @@
 
 export type FetchHandler = (request: Request) => Promise<Response> | Response;
 
-export interface HonoServerHandle {
+export type HonoServerHandle = {
   readonly host: string;
   readonly port: number;
   /** Underlying native server (e.g. the node:http Server on Node) — used by
    *  `@hono/node-ws`'s `injectWebSocket`.  Absent on Bun/Deno. */
   readonly raw?: unknown;
   stop(graceful: boolean): Promise<void>;
-}
+};
 
 /** Hono's per-runtime WSContext (the socket handed to the event callbacks). */
-export interface WSContextLike {
+export type WSContextLike = {
   send(data: string | ArrayBuffer | Uint8Array): void;
   close(code?: number, reason?: string): void;
   readonly readyState: number;
   readonly protocol?: string;
   readonly raw?: unknown;
-}
+};
 
 /** The events object a Hono `upgradeWebSocket` factory returns. */
-export interface WSEventsLike {
+export type WSEventsLike = {
   onOpen?(evt: unknown, ws: WSContextLike): void;
   onMessage?(evt: { data: unknown }, ws: WSContextLike): void;
   onClose?(evt: { code?: number; reason?: string }, ws: WSContextLike): void;
   onError?(evt: unknown, ws: WSContextLike): void;
-}
+};
 
 /** Hono `upgradeWebSocket` middleware factory. */
 export type UpgradeWebsocketFunction = (createEvents: (c: unknown) => WSEventsLike) => unknown;
@@ -50,14 +50,14 @@ export type UpgradeWebsocketFunction = (createEvents: (c: unknown) => WSEventsLi
  * needs `{ websocket }`); `attach` runs post-listen wiring (Node needs
  * `injectWebSocket(server)`).
  */
-export interface HonoWebsocketBridge {
+export type HonoWebsocketBridge = {
   readonly upgradeWebSocket: UpgradeWebsocketFunction;
   readonly serveOptions: object;
   readonly attach?: (handle: HonoServerHandle) => void;
-}
+};
 
-export interface HonoServerRunner {
+export type HonoServerRunner = {
   serve(options: { host: string; port: number; fetch: FetchHandler; serveOptions?: object }): Promise<HonoServerHandle>;
   /** Optional capability — all three built-in runners implement it. */
   webSocket?(app: unknown): Promise<HonoWebsocketBridge>;
-}
+};

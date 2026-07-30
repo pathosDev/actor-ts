@@ -50,7 +50,7 @@ to the journal.
 ## Configuration
 
 ```ts
-interface CassandraSnapshotStoreOptions {
+type CassandraSnapshotStoreOptions = {
   contactPoints?:      string[];   // cluster contact points
   keyspace?:           string;     // keyspace to USE after connect
   snapshotsTable?:     string;     // table name, default 'snapshots'
@@ -60,7 +60,7 @@ interface CassandraSnapshotStoreOptions {
   consistency?:        number;     // CQL consistency, default LOCAL_QUORUM (6)
   client?:             CassandraClientLike; // reuse a pre-built driver client
   /* ...plus the shared connection fields: localDataCenter, credentials, port, replication */
-}
+};
 ```
 
 The connection fields (`contactPoints`, `keyspace`, `localDataCenter`,

@@ -28,9 +28,9 @@ const IGNORE: IgnoreBehavior = { kind: 'ignore' };
  * Fluent builder returned by `Behaviors.supervise(...)` so users can write
  * `Behaviors.supervise(b).onFailure(strategy)`.
  */
-export interface SuperviseBuilder<T> {
+export type SuperviseBuilder<T> = {
   onFailure(strategy: SupervisorStrategy): Behavior<T>;
-}
+};
 
 /**
  * Factory for building Behaviors — the functional facade over the OO

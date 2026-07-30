@@ -3,7 +3,7 @@ import type { ActorRef } from '../ActorRef.js';
 import type { Acknowledgment, Delivery } from './Messages.js';
 import type { ConsumerControllerOptions, ConsumerControllerOptionsType } from './ConsumerControllerOptions.js';
 
-interface DeduplicationState {
+type DeduplicationState = {
   /**
    * Highest seq that has been delivered AND every seq below it has also
    * been delivered — everything <= this number is implicitly a duplicate.
@@ -11,7 +11,7 @@ interface DeduplicationState {
   contiguous: number;
   /** Out-of-order seqs already delivered but above `contiguous`. */
   readonly above: Set<number>;
-}
+};
 
 /**
  * Consumer side of the reliable-delivery protocol.  Accepts Delivery

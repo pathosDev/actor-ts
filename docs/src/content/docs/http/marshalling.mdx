@@ -19,7 +19,7 @@ extension point is open for custom serializers.
 ```ts
 import { entity } from 'actor-ts/http';
 
-interface NewOrder { sku: string; quantity: number; }
+type NewOrder = { sku: string; quantity: number; };
 
 post(async (req) => {
   const order = entity<NewOrder>(req);
@@ -151,10 +151,10 @@ Useful when:
 The serializer interface is small:
 
 ```ts
-interface Serializer {
+type Serializer = {
   toBinary(value: unknown): Uint8Array;
   fromBinary(bytes: Uint8Array, manifest: string): unknown;
-}
+};
 ```
 
 You can plug in your own (Protobuf, MessagePack, etc.) by

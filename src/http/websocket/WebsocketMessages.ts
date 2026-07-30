@@ -25,21 +25,21 @@ import type { WebsocketCloseInfo } from './types.js';
  * props, name)` so the connection actor is a genuine sub-actor of the
  * server.  A command ("do X"), not a lifecycle signal.
  */
-export interface WebsocketAcceptCommand {
+export type WebsocketAcceptCommand = {
   readonly kind: 'websocket-accept';
   readonly props: Props<unknown>;
   readonly name: string;
-}
+};
 /** @internal */
 export function websocketAcceptCommand(props: Props<unknown>, name: string): WebsocketAcceptCommand {
   return { kind: 'websocket-accept', props, name };
 }
 
 /** Signal — a connection opened. */
-export interface WebsocketConnectedSignal<TOut> {
+export type WebsocketConnectedSignal<TOut> = {
   readonly kind: 'websocket-connected';
   readonly connection: WebsocketConnection<TOut>;
-}
+};
 /** @internal */
 export function websocketConnectedSignal<TOut>(
   connection: WebsocketConnection<TOut>,
@@ -48,11 +48,11 @@ export function websocketConnectedSignal<TOut>(
 }
 
 /** Signal — a decoded message arrived on a connection. */
-export interface WebsocketDataSignal<TOut, TIn> {
+export type WebsocketDataSignal<TOut, TIn> = {
   readonly kind: 'websocket-data';
   readonly connection: WebsocketConnection<TOut>;
   readonly message: TIn;
-}
+};
 /** @internal */
 export function websocketDataSignal<TOut, TIn>(
   connection: WebsocketConnection<TOut>,
@@ -62,11 +62,11 @@ export function websocketDataSignal<TOut, TIn>(
 }
 
 /** Signal — a connection closed. */
-export interface WebsocketDisconnectedSignal<TOut> {
+export type WebsocketDisconnectedSignal<TOut> = {
   readonly kind: 'websocket-disconnected';
   readonly connection: WebsocketConnection<TOut>;
   readonly info: WebsocketCloseInfo;
-}
+};
 /** @internal */
 export function websocketDisconnectedSignal<TOut>(
   connection: WebsocketConnection<TOut>,
@@ -76,11 +76,11 @@ export function websocketDisconnectedSignal<TOut>(
 }
 
 /** Signal — an inbound frame that failed to decode. */
-export interface WebsocketInvalidSignal<TOut> {
+export type WebsocketInvalidSignal<TOut> = {
   readonly kind: 'websocket-invalid';
   readonly connection: WebsocketConnection<TOut>;
   readonly error: WebsocketDecodeError;
-}
+};
 /** @internal */
 export function websocketInvalidSignal<TOut>(
   connection: WebsocketConnection<TOut>,
@@ -113,29 +113,29 @@ export type WebsocketServerRef<TOut, TIn, TSelf = never> = ActorRef<WebsocketSer
 /* ------------------------------ client-side ------------------------------ */
 
 /** Command — push a typed outbound message through a client actor's ref. */
-export interface WebsocketClientSend<TOut> {
+export type WebsocketClientSend<TOut> = {
   readonly kind: 'websocket-client-send';
   readonly message: TOut;
-}
+};
 /** Signal — a decoded inbound message from the server. */
-export interface WebsocketClientInbound<TIn> {
+export type WebsocketClientInbound<TIn> = {
   readonly kind: 'websocket-client-inbound';
   readonly message: TIn;
-}
+};
 /** Signal — an inbound frame that failed to decode. */
-export interface WebsocketClientInvalid {
+export type WebsocketClientInvalid = {
   readonly kind: 'websocket-client-invalid';
   readonly error: WebsocketDecodeError;
-}
+};
 /** Signal — the connection (re)opened. */
-export interface WebsocketClientConnected {
+export type WebsocketClientConnected = {
   readonly kind: 'websocket-client-connected';
-}
+};
 /** Signal — the connection dropped (a reconnect cycle may follow). */
-export interface WebsocketClientDisconnected {
+export type WebsocketClientDisconnected = {
   readonly kind: 'websocket-client-disconnected';
   readonly cause?: Error;
-}
+};
 
 /** Lifecycle/data signals delivered to a client actor's mailbox. */
 export type WebsocketClientSignal<TIn> =

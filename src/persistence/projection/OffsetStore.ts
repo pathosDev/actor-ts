@@ -16,7 +16,7 @@ import { offsetStart, type Offset } from '../query/PersistenceQuery.js';
  * persists both as plain JSON so the underlying backend doesn't need
  * to know about the difference.
  */
-export interface OffsetStore {
+export type OffsetStore = {
   loadSequence(projectionName: string, persistenceId: string): Promise<number>;
   saveSequence(projectionName: string, persistenceId: string, seqNr: number): Promise<void>;
 
@@ -25,7 +25,7 @@ export interface OffsetStore {
 
   /** Forget every cursor for `projectionName`.  Used by tests + reset tooling. */
   clear(projectionName: string): Promise<void>;
-}
+};
 
 /* ============================ in-memory ============================== */
 

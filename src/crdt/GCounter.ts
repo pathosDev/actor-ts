@@ -73,7 +73,7 @@ export class GCounter implements Crdt<GCounter> {
   }
 }
 
-export interface GCounterJson {
+export type GCounterJson = {
   readonly kind: 'GCounter';
   readonly state: Record<ReplicaId, number>;
-}
+};

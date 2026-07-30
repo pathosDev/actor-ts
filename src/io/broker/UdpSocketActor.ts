@@ -6,18 +6,18 @@ import { UdpSocketOptionsValidator } from './UdpSocketOptions.js';
 import type { UdpSocketOptions, UdpSocketOptionsType } from './UdpSocketOptions.js';
 
 /** Inbound datagram delivered to the target actor. */
-export interface UdpDatagram {
+export type UdpDatagram = {
   readonly payload: Uint8Array;
   readonly remoteHost: string;
   readonly remotePort: number;
-}
+};
 
 /** Outbound datagram — explicit destination (UDP is not connection-oriented). */
-export interface UdpOutbound {
+export type UdpOutbound = {
   readonly payload: Uint8Array | string;
   readonly host: string;
   readonly port: number;
-}
+};
 
 export type UdpSocketCommand = { readonly kind: 'send'; readonly datagram: UdpOutbound };
 
@@ -117,7 +117,7 @@ export class UdpSocketActor
 
 /* ---------------------------- internals --------------------------------- */
 
-interface DgramSocket {
+type DgramSocket = {
   on(event: 'message', cb: (message: Uint8Array, rinfo: { address: string; port: number }) => void): void;
   on(event: 'error', cb: (err: Error) => void): void;
   once(event: 'listening', cb: () => void): void;
@@ -127,11 +127,11 @@ interface DgramSocket {
   send(message: Uint8Array, port: number, host: string, cb: (err?: Error) => void): void;
   close(cb?: () => void): void;
   address(): { port: number; address: string };
-}
+};
 
-interface DgramModule {
+type DgramModule = {
   createSocket(type: 'udp4' | 'udp6'): DgramSocket;
-}
+};
 
 const dgramLazy: Lazy<Promise<DgramModule>> = Lazy.of(async () => {
   const name = 'node:dgram';

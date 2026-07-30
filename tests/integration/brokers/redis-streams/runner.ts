@@ -14,10 +14,10 @@ import { scenario as produceScenario } from './scenarios/01-produce.js';
 import { scenario as consumeScenario } from './scenarios/02-consume-group.js';
 import { scenario as maxlenScenario } from './scenarios/03-maxlen.js';
 
-export interface RedisContext extends BrokerScenarioContext {
+export type RedisContext = BrokerScenarioContext & {
   readonly url: string;
   readonly system: ActorSystem;
-}
+};
 
 function requireEnv(name: string): string {
   const value = process.env[name];
@@ -55,11 +55,11 @@ async function main(): Promise<void> {
   }
 }
 
-export interface RedisSpawnOpts {
+export type RedisSpawnOpts = {
   streams?: ReadonlyArray<string>;
   consumerGroup?: { group: string; consumer: string };
   target?: ReturnType<ActorSystem['spawnAnonymous']>;
-}
+};
 
 export function spawnRedis(context: RedisContext, options: RedisSpawnOpts = {}): ReturnType<ActorSystem['spawnAnonymous']> {
   const builder = RedisStreamsOptions.create()

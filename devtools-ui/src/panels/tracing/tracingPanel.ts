@@ -299,12 +299,12 @@ export function mount(host: HTMLElement, context: PanelContext): PanelInstance {
 /* ------------------------------- summarising ------------------------------ */
 
 /** One trace, reduced to the line a list can show. */
-interface TraceSummary {
+type TraceSummary = {
   /** `sender → actor → actor`, the hops the message actually made. */
   readonly route: string;
   readonly messageType: string;
   readonly payload: string | null;
-}
+};
 
 /**
  * Reduce a trace to sender, route and payload.

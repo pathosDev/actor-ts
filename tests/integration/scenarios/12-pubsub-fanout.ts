@@ -21,11 +21,11 @@
 
 import { clusterLiveNodes, sleep, waitFor, type Scenario } from './types.js';
 
-interface PubSubSnapshot {
+type PubSubSnapshot = {
   readonly received: number;
   readonly lastSeq: number;
   readonly lastText: string | null;
-}
+};
 
 async function publish(
   host: string, controlPort: number,
