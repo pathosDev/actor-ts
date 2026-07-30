@@ -143,26 +143,26 @@ und zahlt keinen Netzwerk-Round-Trip pro Statement.
 ## Konfiguration
 
 ```ts
-interface LibSqlConnection {
+type LibSqlConnection = {
   url?:       string;           // libsql:// | http(s):// | ws(s)://
   authToken?: string;           // Turso-Token; bei lokalem sqld weglassen
   client?:    LibSqlClientLike; // vorgebauter / geteilter Client
-}
+};
 
-interface LibSqlJournalOptions extends LibSqlConnection {
+type LibSqlJournalOptions = LibSqlConnection & {
   eventsTable?:      string;   // Default 'events'
   tagsTable?:        string;   // Default '<eventsTable>_tags'
   autoCreateTables?: boolean;  // Default true
-}
-interface LibSqlSnapshotStoreOptions extends LibSqlConnection {
+};
+type LibSqlSnapshotStoreOptions = LibSqlConnection & {
   snapshotsTable?:   string;   // Default 'snapshots'
   keepN?:            number;   // neueste N pro pid; Default 3, <=0 behält alle
   autoCreateTables?: boolean;
-}
-interface LibSqlDurableStateStoreOptions extends LibSqlConnection {
+};
+type LibSqlDurableStateStoreOptions = LibSqlConnection & {
   table?:            string;   // Default 'durable_state'
   autoCreateTables?: boolean;
-}
+};
 ```
 
 Die Optionen werden bei der Konstruktion des Stores validiert — eine

@@ -138,26 +138,26 @@ network round-trip per statement.
 ## Configuration
 
 ```ts
-interface LibSqlConnection {
+type LibSqlConnection = {
   url?:       string;           // libsql:// | http(s):// | ws(s)://
   authToken?: string;           // Turso token; omit for a local sqld
   client?:    LibSqlClientLike; // pre-built / shared client
-}
+};
 
-interface LibSqlJournalOptions extends LibSqlConnection {
+type LibSqlJournalOptions = LibSqlConnection & {
   eventsTable?:      string;   // default 'events'
   tagsTable?:        string;   // default '<eventsTable>_tags'
   autoCreateTables?: boolean;  // default true
-}
-interface LibSqlSnapshotStoreOptions extends LibSqlConnection {
+};
+type LibSqlSnapshotStoreOptions = LibSqlConnection & {
   snapshotsTable?:   string;   // default 'snapshots'
   keepN?:            number;   // keep newest N per pid; default 3, <=0 keeps all
   autoCreateTables?: boolean;
-}
-interface LibSqlDurableStateStoreOptions extends LibSqlConnection {
+};
+type LibSqlDurableStateStoreOptions = LibSqlConnection & {
   table?:            string;   // default 'durable_state'
   autoCreateTables?: boolean;
-}
+};
 ```
 
 Options are validated when the store is constructed, so a bad URL or an

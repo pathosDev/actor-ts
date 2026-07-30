@@ -35,7 +35,7 @@ await Cluster.join(system, clusterOptions);
 ## Configuration
 
 ```ts
-interface DnsSeedProviderOptionsType {
+type DnsSeedProviderOptionsType = {
   hostname:    string;   // SRV record name (or A-record hostname)
   systemName:  string;   // stamped on discovered node addresses
   port:        number;   // paired with each IP in A-record mode
@@ -44,7 +44,7 @@ interface DnsSeedProviderOptionsType {
   // Override the DNS functions (default: node:dns/promises) — mainly for tests:
   resolve?:    (hostname: string) => Promise<string[]>;
   resolveSrv?: (hostname: string) => Promise<Array<{ name: string; port: number }>>;
-}
+};
 ```
 
 ### SRV mode (recommended)

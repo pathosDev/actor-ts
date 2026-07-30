@@ -43,9 +43,9 @@ flowchart LR
 ## Configuration
 
 ```ts
-interface ConsumerControllerOptionsType<T> {
+type ConsumerControllerOptionsType<T> = {
   handler: (body: T) => void | Promise<void>;
-}
+};
 ```
 
 The only setting is the handler.  Per-producer dedup state is

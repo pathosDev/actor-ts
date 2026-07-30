@@ -186,14 +186,14 @@ gegenüber Zahlen-Literalen — an der Call-Site leichter zu lesen.
 Der Handler bekommt eine `HttpRequest`:
 
 ```ts
-interface HttpRequest {
+type HttpRequest = {
   readonly method:  HttpMethod;
   readonly path:    string;
   readonly headers: Record<string, string>;
   readonly query:   Record<string, string>;
   readonly params:  Record<string, string>;
   readonly body:    Uint8Array | null;
-}
+};
 ```
 
 ### Pfadparameter
@@ -262,7 +262,7 @@ import {
   completeJson, complete, reject, Status, entity,
 } from 'actor-ts/http';
 
-interface Customer { id: string; name: string; }
+type Customer = { id: string; name: string; };
 
 const customers = path('customers',
   concat(

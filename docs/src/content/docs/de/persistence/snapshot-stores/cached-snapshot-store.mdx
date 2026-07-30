@@ -60,11 +60,11 @@ der zugrunde liegende Store messbare Read-Latenz hat.**
 ## Konfiguration
 
 ```ts
-interface CachedSnapshotStoreOptionsType {
+type CachedSnapshotStoreOptionsType = {
   cache:      Cache;   // Backing-Cache (erforderlich)
   ttlMs?:     number;  // Cache-TTL in ms, Default 5 Minuten
   keyPrefix?: string;  // Key-Prefix, Default 'snap:'
-}
+};
 ```
 
 | Feld | Was |

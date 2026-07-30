@@ -32,7 +32,7 @@ expected sequence.
 The journal contract:
 
 ```ts
-interface Journal {
+type Journal = {
   append<E>(persistenceId: string, events: E[], expectedSeq: number, tags?: string[]): Promise<PersistentEvent<E>[]>;
   read<E>(persistenceId: string, fromSeq: number, toSeq?: number): Promise<PersistentEvent<E>[]>;
   highestSeq(persistenceId: string): Promise<number>;
@@ -40,7 +40,7 @@ interface Journal {
   persistenceIds(): Promise<string[]>;
   readonly events?: JournalEventBus;
   close?(): Promise<void>;
-}
+};
 ```
 
 `InMemoryJournal` implements all of this with a `Map<string, PersistentEvent[]>`

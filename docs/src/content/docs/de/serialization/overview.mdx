@@ -51,14 +51,14 @@ auf dem Cluster-Wire.
 ## Das Serializer-Interface
 
 ```ts
-interface Serializer<T = unknown> {
+type Serializer<T = unknown> = {
   readonly id: number;            // pro Serializer eindeutig
   readonly name: string;          // menschenlesbar
   includesManifest: boolean;
   manifest(obj: T): string;       // Type-Tag
   toBinary(obj: T): Uint8Array;
   fromBinary(bytes: Uint8Array, manifest: string): T;
-}
+};
 ```
 
 Kleine Oberfläche — encoden, decoden, identifizieren.  Die

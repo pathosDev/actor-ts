@@ -55,7 +55,7 @@ type RemoveCommand = { kind: 'remove'; sku: string };
 type ViewCommand = { kind: 'view'; replyTo: ActorRef<State> };
 type CartCommand = AddCommand | RemoveCommand | ViewCommand;
 
-interface State { items: string[]; }
+type State = { items: string[]; };
 
 class Cart extends DurableStateActor<CartCommand, State> {
   constructor(options: DurableStateOptions<State>) { super(options); }
@@ -102,11 +102,11 @@ cart.tell({ kind: 'add', sku: 'book-2' });
 ## The settings
 
 ```ts
-interface DurableStateOptionsType<S> {
+type DurableStateOptionsType<S> = {
   persistenceId: string;
   store:         DurableStateStore;
   emptyState:    () => S;
-}
+};
 ```
 
 Three fields:

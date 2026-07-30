@@ -82,7 +82,7 @@ concat(
 ### Options
 
 ```ts
-interface WebsocketRouteOptions<TOut, TIn> {
+type WebsocketRouteOptions<TOut, TIn> = {
   codec?:            WebsocketCodec<TOut, TIn>;             // default jsonCodec()
   maxFrameBytes?:    number;                          // default 1 MiB
   onOversizeFrame?:  'close' | 'drop';                // default 'close' (1009)
@@ -91,7 +91,7 @@ interface WebsocketRouteOptions<TOut, TIn> {
   onBackpressure?:   'drop' | 'close';                // default 'drop'
   allowedOrigins?:   string[];                        // CSWSH defence — see below
   maxConnections?:   number;                          // concurrent-connection cap; default unlimited
-}
+};
 ```
 
 ```ts
@@ -214,7 +214,7 @@ Each connection is a `WebsocketConnection<TOut>`, which extends
 `ActorRef<TOut>`:
 
 ```ts
-interface WebsocketConnection<TOut> extends ActorRef<TOut> {
+type WebsocketConnection<TOut> = ActorRef<TOut> & {
   readonly id: string;
   readonly remoteAddress?: string;
   readonly upgrade: WebsocketUpgradeInfo;
@@ -222,7 +222,7 @@ interface WebsocketConnection<TOut> extends ActorRef<TOut> {
   tell(message: TOut): void;         // encode via codec + send
   sendRaw(frame: WebsocketFrame): void; // bypass the codec
   close(code?: number, reason?: string): void;
-}
+};
 ```
 
 `upgrade` carries the handshake context:

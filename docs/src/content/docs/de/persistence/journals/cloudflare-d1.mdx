@@ -99,29 +99,29 @@ interaktive Transaktionen und eine Live-Suite dahinter.
 ## Konfiguration
 
 ```ts
-interface D1Connection {
+type D1Connection = {
   accountId?:  string;        // Cloudflare-Account-ID
   databaseId?: string;        // die UUID der Datenbank, nicht ihr Name
   apiToken?:   string;        // Token mit D1:Edit
   baseUrl?:    string;        // Override für einen Proxy; Default api.cloudflare.com
   timeoutMs?:  number;        // Timeout pro Request, Default 30_000
   client?:     D1ClientLike;  // vorgebauter / geteilter Transport
-}
+};
 
-interface D1JournalOptions extends D1Connection {
+type D1JournalOptions = D1Connection & {
   eventsTable?:      string;   // Default 'events'
   tagsTable?:        string;   // Default '<eventsTable>_tags'
   autoCreateTables?: boolean;  // Default true
-}
-interface D1SnapshotStoreOptions extends D1Connection {
+};
+type D1SnapshotStoreOptions = D1Connection & {
   snapshotsTable?:   string;   // Default 'snapshots'
   keepN?:            number;   // neueste N pro pid; Default 3, <=0 behält alle
   autoCreateTables?: boolean;
-}
-interface D1DurableStateStoreOptions extends D1Connection {
+};
+type D1DurableStateStoreOptions = D1Connection & {
   table?:            string;   // Default 'durable_state'
   autoCreateTables?: boolean;
-}
+};
 ```
 
 ## Schema

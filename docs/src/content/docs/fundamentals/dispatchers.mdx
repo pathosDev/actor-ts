@@ -79,10 +79,10 @@ isn't:
 The `Dispatcher` interface is tiny:
 
 ```ts
-interface Dispatcher {
+type Dispatcher = {
   readonly id: string;
   execute(fn: () => void | Promise<void>): void;
-}
+};
 ```
 
 Implement these two and you have a custom dispatcher.  Common

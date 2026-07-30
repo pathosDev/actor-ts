@@ -138,11 +138,11 @@ function migrateSnapshotStore<S>(
   manifestFor: (s: S) => string, options?: { version?: number },
 ): Promise<MigrationResult>;
 
-interface MigrationResult {
+type MigrationResult = {
   inspected: number;   // entries examined
   wrapped:   number;   // raw → envelope
   skipped:   number;   // already enveloped, left untouched
-}
+};
 ```
 
 ## Fallstricke

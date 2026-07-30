@@ -33,22 +33,22 @@ Angreifer den Header pro Request und umgeht das Limit.
 ## Konfiguration
 
 ```ts
-interface RateLimitOptions {
+type RateLimitOptions = {
   cache:       Cache;
   windowMs:    number;
   max:         number;
   key:         (request: HttpRequest) => string | Promise<string>;
   keyPrefix?:  string;                    // Default 'rl:'
   onLimit?:    (context: RateLimitContext) => HttpResponse;
-}
+};
 
-interface RateLimitContext {
+type RateLimitContext = {
   key:               string;
   count:             number;
   max:               number;
   windowMs:          number;
   retryAfterSeconds: number;
-}
+};
 ```
 
 | Feld | Zweck |

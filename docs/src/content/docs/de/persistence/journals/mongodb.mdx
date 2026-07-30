@@ -122,25 +122,25 @@ seinen eigenen Client und schließt ihn bei `close()`.
 ## Konfiguration
 
 ```ts
-interface MongoConnection {
+type MongoConnection = {
   url?:           string;                    // mongodb:// oder mongodb+srv://
   databaseName?:  string;                    // Default 'actor_ts'
   clientOptions?: Record<string, unknown>;   // { tls, authSource, maxPoolSize, … }
   client?:        MongoClientLike;           // vorgebauter / geteilter Client
-}
+};
 
-interface MongoJournalOptions extends MongoConnection {
+type MongoJournalOptions = MongoConnection & {
   eventsCollection?:  string;   // Default 'events'; die Mark-Collection ist '<it>_meta'
   autoCreateIndexes?: boolean;  // Default true
-}
-interface MongoSnapshotStoreOptions extends MongoConnection {
+};
+type MongoSnapshotStoreOptions = MongoConnection & {
   snapshotsCollection?: string; // Default 'snapshots'
   keepN?:               number; // neueste N pro pid; Default 3, <=0 behält alle
   autoCreateIndexes?:   boolean;
-}
-interface MongoDurableStateStoreOptions extends MongoConnection {
+};
+type MongoDurableStateStoreOptions = MongoConnection & {
   collection?: string;          // Default 'durable_state'
-}
+};
 ```
 
 Die Optionen werden bei der Konstruktion des Stores validiert — ein falsches

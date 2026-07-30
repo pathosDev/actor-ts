@@ -78,11 +78,11 @@ mit seinem stabilen Index sichtbar via Konstruktor-Argument.
 ## Was der Handle dir gibt
 
 ```ts
-interface ShardedDaemonProcessHandle<T> {
+type ShardedDaemonProcessHandle<T> = {
   readonly region: ActorRef<DaemonEnvelope<T>>;
   tell(index: number, message: T): void;
   stop(): void;
-}
+};
 ```
 
 - **`region`** — der darunterliegende Sharding-Region-Ref.
@@ -146,13 +146,13 @@ Cluster-Events deterministisch kontrollierst.
 ## Konfiguration
 
 ```ts
-interface ShardedDaemonProcessOptionsType<T> {
+type ShardedDaemonProcessOptionsType<T> = {
   name:                 string;          // eindeutiger Daemon-Set-Identifier
   numDaemons:           number;          // Gesamtdaemons über den Cluster
   behaviorFor:          (i: number) => Props<T>;
   role?:                string;          // auf spezifische Nodes beschränken
   livenessIntervalMs?:  number;          // Sicherheitsnetz-Ping-Takt; Default 30s
-}
+};
 ```
 
 | Feld | Was |

@@ -31,7 +31,7 @@ simpler.
 ## Configuration
 
 ```ts
-interface RedisCacheOptionsType {
+type RedisCacheOptionsType = {
   url?:       string;                // 'redis://host:port'
   host?:      string;
   port?:      number;
@@ -39,7 +39,7 @@ interface RedisCacheOptionsType {
   db?:        number;
   keyPrefix?: string;
   client?:    RedisClientLike;       // pre-built ioredis client
-}
+};
 ```
 
 URL form:

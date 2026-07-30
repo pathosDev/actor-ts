@@ -88,12 +88,12 @@ manuell.
 ## Das Interface
 
 ```ts
-interface ObjectStorageBackend {
+type ObjectStorageBackend = {
   put(key: string, body: Uint8Array, options?: PutOptions): Promise<{ etag: string }>;
   get(key: string): Promise<Option<ObjectFetched>>;
   delete(key: string): Promise<void>;
   list(options: { prefix: string; limit?: number }): Promise<ObjectInfo[]>;
-}
+};
 ```
 
 Kleine Oberfläche — passt zu AWS S3, MinIO, Cloudflare R2,

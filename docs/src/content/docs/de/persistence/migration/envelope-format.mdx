@@ -62,25 +62,25 @@ erste Breaking Change kommt.
 ## Was der Adapter sieht
 
 ```ts
-interface EventAdapter<DomainEvent, JournalShape = DomainEvent> {
+type EventAdapter<DomainEvent, JournalShape = DomainEvent> = {
   manifest(event: DomainEvent): string;
   toJournal(event: DomainEvent): OutboundFrame<JournalShape>;
   fromJournal(stored: StoredFrame): DomainEvent;
-}
+};
 
 // was der Adapter auf dem Read-Pfad sieht
-interface StoredFrame {
+type StoredFrame = {
   manifest: string;
   version: number;
   payload: unknown;
-}
+};
 
 // was der Adapter auf dem Write-Pfad ausgibt (in einen Envelope verpackt)
-interface OutboundFrame<JournalShape = unknown> {
+type OutboundFrame<JournalShape = unknown> = {
   manifest: string;
   version: number;
   payload: JournalShape;
-}
+};
 ```
 
 Beim Lesen entpackt das Framework den Envelope in einen

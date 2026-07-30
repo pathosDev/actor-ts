@@ -50,10 +50,10 @@ CPU — nimm `none`.
 ```ts
 type CompressionAlgo = 'none' | 'gzip' | 'zstd';
 
-interface CompressionConfig {
+type CompressionConfig = {
   algorithm: CompressionAlgo;
   level?:    number;       // algorithmus-spezifisch; geclamped; undefined = Default
-}
+};
 ```
 
 **Level** sind algorithmus-spezifisch.  Out-of-range-Werte werden

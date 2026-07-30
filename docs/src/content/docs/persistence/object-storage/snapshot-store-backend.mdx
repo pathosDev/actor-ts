@@ -54,14 +54,14 @@ is faster + simpler.
 ## Configuration
 
 ```ts
-interface ObjectStorageSnapshotStoreOptionsType {
+type ObjectStorageSnapshotStoreOptionsType = {
   backend:               ObjectStorageBackend;
   prefix?:               string;   // default ''
   keepN?:                number;   // default 3
   compression?:          CompressionConfig | CompressionResolver;
   encryption?:           EncryptionConfig | EncryptionResolver;
   maxDecompressedBytes?: number;   // default 512 MiB
-}
+};
 ```
 
 | Field | Purpose |

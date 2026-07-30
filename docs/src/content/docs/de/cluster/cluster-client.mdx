@@ -69,14 +69,14 @@ Der Client:
 ## Konfiguration
 
 ```ts
-interface ClusterClientOptionsType {
+type ClusterClientOptionsType = {
   contactPoints: ReadonlyArray<string>;            // mindestens ein Node: host:port oder <system>@host:port
   systemName?: string;                             // synthetischer System-Name im Hello des Clients
   clientIdentity?: { host: string; port: number }; // Identität für das Reply-Routing
   askTimeoutMs?: number;                           // Standard-Ask-Timeout (ms; Standard 5000)
   tls?: TlsTransportOptionsType;                   // muss zum Cluster passen
   logger?: Logger;                                 // Standard: ConsoleLogger auf WARN
-}
+};
 ```
 
 `contactPoints` ist die Liste der zu wählenden Cluster-Nodes —

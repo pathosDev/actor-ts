@@ -94,7 +94,7 @@ bevor er die Upcaster nach vorne zur neuesten Form verkettet.
 ## Die API
 
 ```ts
-interface SchemaRegistry {
+type SchemaRegistry = {
   register<Wire, Upcasted>(
     manifest: string,
     version: number,
@@ -105,14 +105,14 @@ interface SchemaRegistry {
   list(): ReadonlyArray<SchemaDescriptor>;
   eventAdapter<E>(manifest: string): EventAdapter<E, unknown>;
   snapshotAdapter<S>(manifest: string): SnapshotAdapter<S, unknown>;
-}
+};
 
-interface SchemaRegistration<Wire, Upcasted> {
+type SchemaRegistration<Wire, Upcasted> = {
   readonly codec: Codec<Wire>;
   readonly upcastFromPrev?: (prev: unknown) => Upcasted;
   readonly compatibility?: 'none' | 'backward' | 'sample';
   readonly sample?: unknown;
-}
+};
 ```
 
 - **`register(manifest, version, { codec, upcastFromPrev?, compatibility?, sample? })`**

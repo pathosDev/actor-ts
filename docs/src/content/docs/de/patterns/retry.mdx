@@ -27,7 +27,7 @@ Fehler, wenn jeder Versuch fehlschlägt.
 ```ts
 function retry<T>(factory: () => Promise<T>, options: RetryOptions): Promise<T>;
 
-interface RetryOptions {
+type RetryOptions = {
   attempts:        number;     // gesamt inklusive initialer Call (>= 1)
   delayMs?:        number;     // Base-Delay zwischen Versuchen
   factor?:         number;     // Multiplikator für Exponential-Backoff (Default 1)
@@ -35,7 +35,7 @@ interface RetryOptions {
   shouldRetry?:    (err: Error, attempt: number) => boolean;
   onAttempt?:      (err: Error, attempt: number) => void;
   sleep?:          (ms: number) => Promise<void>;  // wie das Delay gewartet wird
-}
+};
 ```
 
 Das `attempts`-Feld ist **Gesamt-Versuche**, nicht Retries —

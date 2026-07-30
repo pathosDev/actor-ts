@@ -58,7 +58,7 @@ Two key observations:
 The full surface:
 
 ```ts
-interface TimerScheduler<TMessage = unknown> {
+type TimerScheduler<TMessage = unknown> = {
   startSingleTimer(key: string, message: TMessage, delayMs: number): void;
   startTimerWithFixedDelay(
     key: string, message: TMessage, intervalMs: number, initialDelayMs?: number,
@@ -67,7 +67,7 @@ interface TimerScheduler<TMessage = unknown> {
   cancelAll(): void;
   isTimerActive(key: string): boolean;
   activeKeys(): string[];
-}
+};
 ```
 
 `cancelAll` runs automatically on `postStop` — you never have to
@@ -107,10 +107,10 @@ The four methods are pairs of "send a message" / "run a function":
 Every method returns a `Cancellable`:
 
 ```ts
-interface Cancellable {
+type Cancellable = {
   cancel(): boolean;
   readonly isCancelled: boolean;
-}
+};
 ```
 
 The `cancel()` returns `true` if it actually cancelled an active

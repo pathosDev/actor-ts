@@ -31,7 +31,7 @@ Pod-Scheduling, Netzwerk-Partition zwischen Pods etc.
 ## Konfiguration
 
 ```ts
-interface KubernetesLeaseOptionsType {
+type KubernetesLeaseOptionsType = {
   // Aus LeaseOptionsType:
   name:                  string;
   owner:                 string;
@@ -45,7 +45,7 @@ interface KubernetesLeaseOptionsType {
   apiServerUrl?:         string;     // den In-Cluster-Default überschreiben
   authToken?:            string;     // den In-Cluster-Default überschreiben
   caCert?:               string;     // den In-Cluster-Default überschreiben
-}
+};
 ```
 
 | K8s-Feld | Default | Was |

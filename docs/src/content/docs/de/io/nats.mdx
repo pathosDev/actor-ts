@@ -40,14 +40,14 @@ nats.tell({
 ## Settings
 
 ```ts
-interface NatsOptionsType extends BrokerCommonOptionsType {
+type NatsOptionsType = BrokerCommonOptionsType & {
   servers:    string[] | string;
   name?:      string;            // Client-Identifier
   user?:      string;
   password?:  string;
   token?:     string;
   subscriptions?: { subject: string; target: ActorRef<NatsMessage> }[];  // beim Connect eingerichtet
-}
+};
 ```
 
 ## Subjects (NATS-Topics)

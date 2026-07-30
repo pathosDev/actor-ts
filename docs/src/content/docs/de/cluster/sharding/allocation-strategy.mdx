@@ -130,7 +130,7 @@ jeder Shard-Move teuer ist (großer State), beide niedrig halten.
 Implementiere die Schnittstelle:
 
 ```ts
-interface AllocationStrategy {
+type AllocationStrategy = {
   allocate(
     shardId: number,
     candidates: ReadonlyArray<NodeAddress>,
@@ -142,7 +142,7 @@ interface AllocationStrategy {
     candidates: ReadonlyArray<NodeAddress>,
     rebalanceInProgress: ReadonlySet<number>,
   ): Set<number>;
-}
+};
 ```
 
 Nützlich für app-spezifische Regeln:

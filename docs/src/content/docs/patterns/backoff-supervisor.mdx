@@ -93,7 +93,7 @@ The framework names successive children `child-1`, `child-2`,
 The `BackoffOptions<T>` shape:
 
 ```ts
-interface BackoffOptions<T> {
+type BackoffOptions<T> = {
   childProps:        Props<T>;
   childName?:        string;
   minBackoff:        number;
@@ -107,7 +107,7 @@ interface BackoffOptions<T> {
   drainGraceMs?:     number;  // default min(50, minBackoff)
   forwardDuringGrace?: boolean;  // default true
   clock?:            () => number;
-}
+};
 ```
 
 The most interesting fields:

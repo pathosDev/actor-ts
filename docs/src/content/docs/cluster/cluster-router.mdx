@@ -85,13 +85,13 @@ router's strategy decides which node's worker handles each message.
 ## Configuration
 
 ```ts
-interface ClusterRouterOptions<TMessage> {
+type ClusterRouterOptions<TMessage> = {
   cluster:     Cluster;
   routerType:  'round-robin' | 'random' | 'consistent-hashing' | 'broadcast';
   routeePath:  string;
   role?:       string;
   extractKey?: (message: TMessage) => string;
-}
+};
 ```
 
 | Field | Required | What |
