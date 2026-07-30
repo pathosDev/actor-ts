@@ -1,0 +1,85 @@
+name: benchmarks
+
+# Smoke-level gate for `benchmarks/` — proves the suite still COMPILES and
+# still RUNS against the current `src/` API.  It does not measure anything:
+# benchmark numbers from a shared CI runner are noise, and regressions in
+# throughput are not what this catches.
+#
+# Why it exists: nothing used to look at `benchmarks/` at all.  `bun run
+# typecheck` uses the build tsconfig, which deliberately EXCLUDES the
+# benchmarks; `test.yml` does not even trigger on `benchmarks/**`.  So when
+# the free `ask()` helper was removed in favour of `ref.ask()`, ten suites
+# were left importing a non-existent export and `bun run bench` stayed dead
+# for months without a single red build (#506).
+#
+# Triggers on `src/**` too, not just `benchmarks/**` — the failure mode is
+# a *source* change orphaning a benchmark, which is invisible from the
+# benchmark side of the diff.
+
+on:
+  # Run on every branch push (feature work merges locally, so a branch push
+  # is often the only pre-merge signal), not just `develop`.
+  push:
+    branches: ['**']
+    paths:
+      - 'src/**'
+      - 'benchmarks/**'
+      - 'package.json'
+      - 'bun.lock'
+      - 'tsconfig.json'
+      - 'tsconfig.bench.json'
+      - '.github/workflows/benchmarks.yml'
+  pull_request:
+    branches: [main, develop]
+    paths:
+      - 'src/**'
+      - 'benchmarks/**'
+      - 'package.json'
+      - 'bun.lock'
+      - 'tsconfig.json'
+      - 'tsconfig.bench.json'
+      - '.github/workflows/benchmarks.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  benchmarks:
+    runs-on: ubuntu-latest
+    # Smoke mode runs the whole suite in well under a minute locally; the cap
+    # is here so a benchmark that HANGS (a cluster that never converges, a
+    # worker that never replies) fails the job instead of burning an hour.
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install
+        run: bun install
+
+      - name: Typecheck benchmarks
+        # The stricter of the two checks for this failure class: a missing
+        # barrel export is a TS2305 here even when the imported binding is
+        # never called, whereas Bun happily elides an unused named import at
+        # runtime.  Cheap — seconds — so it runs first and fails fast.
+        run: bun run typecheck:bench
+
+      - name: Run benchmarks (smoke mode)
+        # ACTOR_TS_BENCH_SMOKE=1 collapses every case to a single unwarmed
+        # iteration, so this is "does each suite still execute", not a
+        # measurement.  Catches what the typecheck cannot: wiring that is
+        # type-correct but wrong at runtime.
+        #
+        # `worker` is excluded on hosted runners for the same reason the
+        # worker-thread multi-node test suites are quarantined there (see
+        # test.yml + #325): Bun on GitHub's runners cannot respawn functional
+        # worker threads after the first, and worker-count-scaling.ts spawns
+        # 1 → 2 → 4 → 8 → auto in one process.  It runs locally via
+        # `bun run bench:smoke`.
+        run: bun run bench:smoke -- --exclude=worker
