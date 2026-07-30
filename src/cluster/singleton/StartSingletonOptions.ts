@@ -4,7 +4,7 @@ import { OptionsBuilder } from '../../util/OptionsBuilder.js';
 import { OptionsValidator } from '../../util/OptionsValidator.js';
 
 /** Plain options-object shape accepted by {@link ClusterSingleton.start}. */
-export interface StartSingletonOptionsType<T> {
+export type StartSingletonOptionsType<T> = {
   /** Logical name for this singleton — used in the manager/child actor path. */
   readonly typeName: string;
   /** Props used to construct the singleton on the leader. */
@@ -30,7 +30,7 @@ export interface StartSingletonOptionsType<T> {
    * Default: `5_000` ms.  Ignored if no lease is provided.
    */
   readonly acquireRetryIntervalMs?: number;
-}
+};
 
 /**
  * Fluent builder for {@link StartSingletonOptionsType}:

@@ -34,7 +34,7 @@ import {
   type EntityStopped,
 } from './ShardingProtocol.js';
 
-export interface ShardRegionConfig<TMessage> {
+export type ShardRegionConfig<TMessage> = {
   readonly typeName: string;
   readonly entityProps: Props<TMessage>;
   readonly extractEntityId: (message: TMessage) => string;
@@ -47,14 +47,14 @@ export interface ShardRegionConfig<TMessage> {
   readonly maxEntities: number;
   readonly cluster: Cluster;
   readonly localResolver: (path: string) => ActorRef | null;
-}
+};
 
-interface EntityState {
+type EntityState = {
   ref: ActorRef<unknown>;
   lastActivity: number;
   /** Non-null while the entity is passivating: buffered messages to flush on the next create. */
   passivating: unknown[] | null;
-}
+};
 
 type ShardState = 'owned' | 'handing-off';
 

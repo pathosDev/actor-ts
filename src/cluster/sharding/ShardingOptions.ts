@@ -8,7 +8,7 @@ import { OptionsValidator } from '../../util/OptionsValidator.js';
  * {@link StartShardingOptionsType} — the coordinator-side superset that
  * {@link ClusterSharding.start} accepts.
  */
-export interface ShardingOptionsType<TMessage> {
+export type ShardingOptionsType<TMessage> = {
   readonly typeName: string;
   readonly entityProps: Props<TMessage>;
   readonly extractEntityId: (message: TMessage) => string;
@@ -39,7 +39,7 @@ export interface ShardingOptionsType<TMessage> {
    * upper bound rather than a strict instantaneous one.
    */
   readonly maxEntities?: number;
-}
+};
 
 /**
  * Fluent builder for {@link ShardingOptionsType}.  Base of the builder

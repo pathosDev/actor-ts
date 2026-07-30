@@ -6,78 +6,78 @@ import type { NodeAddressData } from '../NodeAddress.js';
  * as EnvelopeMessage.body) so the discriminator is a string `$t` property.
  */
 
-export interface RegisterRegion {
+export type RegisterRegion = {
   readonly $t: 'sharding.Register';
   readonly region: string; // full path of the sender region
   readonly node: NodeAddressData;
   readonly proxy: boolean;
   readonly hostedShards: number[]; // shards this region already hosts
-}
+};
 
-export interface RegisterAcknowledgment {
+export type RegisterAcknowledgment = {
   readonly $t: 'sharding.RegisterAcknowledgment';
   readonly coordinator: string;
-}
+};
 
-export interface GetShardHome {
+export type GetShardHome = {
   readonly $t: 'sharding.GetShardHome';
   readonly shardId: number;
   readonly requester: string; // region path of the caller
   readonly requesterNode: NodeAddressData;
-}
+};
 
-export interface ShardHome {
+export type ShardHome = {
   readonly $t: 'sharding.ShardHome';
   readonly shardId: number;
   readonly region: string;
   readonly node: NodeAddressData;
-}
+};
 
-export interface BeginHandOff {
+export type BeginHandOff = {
   readonly $t: 'sharding.BeginHandOff';
   readonly shardId: number;
-}
+};
 
-export interface BeginHandOffAcknowledgment {
+export type BeginHandOffAcknowledgment = {
   readonly $t: 'sharding.BeginHandOffAcknowledgment';
   readonly shardId: number;
-}
+};
 
-export interface HandOff {
+export type HandOff = {
   readonly $t: 'sharding.HandOff';
   readonly shardId: number;
-}
+};
 
-export interface HandOffComplete {
+export type HandOffComplete = {
   readonly $t: 'sharding.HandOffComplete';
   readonly shardId: number;
   readonly region: string;
   readonly node: NodeAddressData;
-}
+};
 
-export interface RegionTerminated {
+export type RegionTerminated = {
   readonly $t: 'sharding.RegionTerminated';
   readonly region: string;
   readonly node: NodeAddressData;
-}
+};
 
-export interface EntityStarted {
+export type EntityStarted = {
   readonly $t: 'sharding.EntityStarted';
   readonly shardId: number;
   readonly entityId: string;
-}
+};
 
-export interface EntityStopped {
+export type EntityStopped = {
   readonly $t: 'sharding.EntityStopped';
   readonly shardId: number;
   readonly entityId: string;
-}
+};
 
-export interface RememberedEntities {
+export type RememberedEntities = {
   readonly $t: 'sharding.RememberedEntities';
   readonly shardId: number;
   readonly entityIds: string[];
-}
+};
 
 /**
  * Wraps a user message forwarded between ShardRegions, carrying the
@@ -88,20 +88,20 @@ export interface RememberedEntities {
  * materialises a synthetic sender ref bound to that correlationId so any
  * reply from the entity flows back as a `ShardReply`.
  */
-export interface ShardEnvelope {
+export type ShardEnvelope = {
   readonly $t: 'sharding.Envelope';
   readonly message: unknown;
   readonly originNode: NodeAddressData | null;
   readonly originRegion: string | null;
   readonly correlationId: number | null;
-}
+};
 
 /** Reply counterpart to {@link ShardEnvelope} — delivers a response to the asker. */
-export interface ShardReply {
+export type ShardReply = {
   readonly $t: 'sharding.Reply';
   readonly correlationId: number;
   readonly message: unknown;
-}
+};
 
 export type ShardingMessage =
   | RegisterRegion

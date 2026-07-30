@@ -32,12 +32,12 @@ export function mediatorPath(systemName: string): string {
   return `actor-ts://${systemName}/user/pubsub-mediator`;
 }
 
-interface SubscriberSet {
+type SubscriberSet = {
   /** Locally-registered subscribers — receive direct Publish deliveries. */
   readonly local: Map<string, ActorRef>;
   /** Remote node addresses with at least one subscriber for this topic. */
   readonly remoteNodes: Set<string>;
-}
+};
 
 /**
  * Cluster-wide publish/subscribe bus.  Every node hosts one mediator

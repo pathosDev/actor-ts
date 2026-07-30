@@ -16,10 +16,10 @@ export function singletonManagerPath(systemName: string, typeName: string): stri
 }
 
 /** Internal delivery wrapper — body is the user's typed message. */
-export interface SingletonDeliver {
+export type SingletonDeliver = {
   readonly t: 'singleton-deliver';
   readonly body: unknown;
-}
+};
 
 /* --------------------- internal mailbox events --------------------- */
 /**

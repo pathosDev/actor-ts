@@ -1,7 +1,7 @@
 import { OptionsBuilder } from '../../util/OptionsBuilder.js';
 
 /** Plain options-object shape accepted by {@link KeepOldest}. */
-export interface KeepOldestOptionsType {
+export type KeepOldestOptionsType = {
   /** If set, only members with this role are eligible "oldest". */
   readonly role?: string;
   /**
@@ -10,7 +10,7 @@ export interface KeepOldestOptionsType {
    * the one that failed).  Default: false.
    */
   readonly downIfAlone?: boolean;
-}
+};
 
 /**
  * Fluent builder for {@link KeepOldestOptionsType}:

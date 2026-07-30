@@ -45,12 +45,12 @@ function isCoordinatorEvent(message: CoordinatorInbox): message is CoordinatorEv
     || discriminator === 'lease-lost' || discriminator === 'acquire-retry';
 }
 
-interface RegionInfo {
+type RegionInfo = {
   readonly node: NodeAddress;
   readonly path: string;
   readonly proxy: boolean;
   readonly shards: Set<number>;
-}
+};
 
 function regionKey(node: NodeAddress, path: string): string {
   return `${node}|${path}`;

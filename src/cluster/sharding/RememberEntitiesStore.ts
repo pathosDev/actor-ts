@@ -24,7 +24,7 @@ export type RememberEvent =
  * (it chains writes via a promise-of-the-last-write), so impls don't
  * need to handle concurrent appends to the same `typeName`.
  */
-export interface RememberEntitiesStore {
+export type RememberEntitiesStore = {
   /** Persist a single entity-lifecycle event. */
   append(typeName: string, event: RememberEvent): Promise<void>;
 
@@ -37,7 +37,7 @@ export interface RememberEntitiesStore {
 
   /** Forget every event for `typeName`.  Used by tests + reset tooling. */
   clear(typeName: string): Promise<void>;
-}
+};
 
 /**
  * Default `RememberEntitiesStore` impl backed by any `Journal`.
