@@ -18,10 +18,18 @@
  * connection stops (and `postStop` still reports the disconnect) rather
  * than restarting into a dead socket.
  */
+import { match } from 'ts-pattern';
 import { Actor } from '../../Actor.js';
 import { WebsocketReadyState, type WebsocketSocketAdapter } from './SocketAdapter.js';
 import { WebsocketDecodeError, type WebsocketCodec } from './WebsocketCodec.js';
-import { WebsocketConnectionImplementation, type WebsocketConnection, type WebsocketOutboundCommand } from './WebsocketConnection.js';
+import {
+  WebsocketConnectionImplementation,
+  type CloseCommand,
+  type OutCommand,
+  type OutRawCommand,
+  type WebsocketConnection,
+  type WebsocketOutboundCommand,
+} from './WebsocketConnection.js';
 import {
   websocketConnectedSignal,
   websocketDataSignal,
@@ -79,25 +87,37 @@ export class WebsocketConnectionActor<TOut, TIn, TSelf = never>
       this.log.debug(`WebsocketConnectionActor ${this.d.id}: command after close — ignored`);
       return;
     }
-    switch (command.kind) {
-      case 'out': {
-        let frame: WebsocketFrame;
-        try {
-          frame = this.d.codec.encode(command.message);
-        } catch (err) {
-          this.log.error(`WebsocketConnectionActor ${this.d.id}: encode failed, dropping message: ${(err as Error).message}`);
-          return;
-        }
-        this.write(frame);
-        break;
-      }
-      case 'out-raw':
-        this.write(command.frame);
-        break;
-      case 'close':
-        this.closeSocket(command.code, command.reason);
-        break;
+    match(command)
+      .with({ kind: 'out' }, (c) => this.onOut(c))
+      .with({ kind: 'out-raw' }, (c) => this.onOutRaw(c))
+      .with({ kind: 'close' }, (c) => this.onClose(c))
+      .exhaustive();
+  }
+
+  /* --------------------- dispatch arm handlers -------------------- */
+
+  /**
+   * A failed encode drops the one message rather than crashing the
+   * connection: the socket is still healthy, and taking it down would
+   * punish every other message queued behind this one.
+   */
+  private onOut(command: OutCommand<TOut>): void {
+    let frame: WebsocketFrame;
+    try {
+      frame = this.d.codec.encode(command.message);
+    } catch (err) {
+      this.log.error(`WebsocketConnectionActor ${this.d.id}: encode failed, dropping message: ${(err as Error).message}`);
+      return;
     }
+    this.write(frame);
+  }
+
+  private onOutRaw(command: OutRawCommand): void {
+    this.write(command.frame);
+  }
+
+  private onClose(command: CloseCommand): void {
+    this.closeSocket(command.code, command.reason);
   }
 
   override postStop(): void {
