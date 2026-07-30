@@ -11,6 +11,25 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Added
 
+- **CI gate for the benchmarks: `typecheck:bench` + `bench:smoke`** (#506).
+  Nothing looked at `benchmarks/` at all — `bun run typecheck` uses the build
+  tsconfig, which deliberately excludes them, and `test.yml` does not even
+  trigger on `benchmarks/**` — so a `src/` change that orphaned a benchmark was
+  invisible from the benchmark side of the diff.  Two checks, in a new
+  `benchmarks` workflow that also triggers on `src/**`:
+  `bun run typecheck:bench` compiles `src` + `benchmarks` against the new
+  `tsconfig.bench.json` (deliberately narrower than `tsconfig.dev.json`, which
+  also pulls in `tests/` and `examples/` — a tight scope is fast and, unlike the
+  dev config, green, so it can actually gate), and `bun run bench:smoke` runs
+  every suite for real.  The new `ACTOR_TS_BENCH_SMOKE=1` collapses each case to
+  one unwarmed iteration, so the full suite finishes in ~30 s; the numbers it
+  prints are noise, the point is that each suite still executes.  The typecheck is
+  the stricter of the two for a missing export — that is a compile error even when
+  the imported binding is never called, whereas Bun silently elides an unused
+  named import at runtime.  `run-all.ts` gains `--exclude=<group>`, and the
+  workflow excludes `worker` for the same reason the worker-thread multi-node
+  suites are quarantined on hosted runners (Bun there cannot respawn functional
+  worker threads after the first).
 - **`--devtools-host` for the examples** (#492) — the shared `--devtools` wiring
   bound `127.0.0.1` and only let you move the port, which is unreachable when the
   browser is not on the machine running the example (a container, a VM, a WSL or
@@ -595,6 +614,23 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Fixed
 
+- **The whole benchmark suite starts again** (#506).  `bun run bench` was dead:
+  ten suites imported the free `ask` helper from the barrel, and that export was
+  removed when `ref.ask(…)` became the only ask form.  The removal's adoption
+  sweep covered tests, examples and docs but not `benchmarks/`, so every affected
+  file died at import with `SyntaxError: Export named 'ask' not found`.  Migrated
+  to the method form — `ask<TRequest, TResponse>(ref, message, timeout)` becomes
+  `ref.ask<TResponse>(message, timeout)`, the request generic dropping out because
+  the ref already carries it.  Three unrelated benchmark type errors that a
+  benchmarks-only compile surfaced are fixed in the same pass: a factory typed as
+  the *abstract* `typeof PersistentActor<…>` (so it was not newable), a pair of
+  mutually-recursive route type annotations, and a `declare const self` colliding
+  with the DOM lib.  Also removes a dangling `ask` import from `tests/actor.test.ts`
+  — unused, so Bun elided it and the suite stayed green.
+- **`bun run bench` reports failures in its exit code** (#506).  The driver
+  printed a red `[exit=N]` line for a failed suite and then exited **0**, which is
+  how ten broken benchmarks stayed invisible.  It now exits non-zero, listing what
+  failed; every suite still runs, so one break does not mask the rest.
 - **A `TypedActor`'s `terminated` signal is actually delivered** (#448).
   `Signal` declared `{ kind: 'terminated'; ref }`, the docs tabulated it
   alongside `post-stop` and `pre-restart`, and `context.watch`'s own JSDoc
