@@ -25,7 +25,7 @@ import {
 import { attachDevTools } from '../devtools.js';
 
 type CronCommand = { kind: 'subscribe'; sub: ActorRef<CronEvent> } | { kind: 'tick' };
-interface CronEvent { readonly tickNumber: number; readonly hostedOn: string; }
+type CronEvent = { readonly tickNumber: number; readonly hostedOn: string; };
 
 class Cron extends Actor<CronCommand> {
   private tickCount = 0;

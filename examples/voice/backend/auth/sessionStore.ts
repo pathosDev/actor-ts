@@ -31,10 +31,10 @@ const TOKENS_KEY = 'voice.sessions';
 const TOKEN_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
 const TOKEN_BYTES = 32;
 
-interface TokenEntry {
+type TokenEntry = {
   readonly username: string;
   readonly issuedAt: number;
-}
+};
 
 export class SessionStore {
   constructor(private readonly dd: DistributedDataHandle) {}

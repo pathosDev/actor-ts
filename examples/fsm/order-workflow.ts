@@ -41,11 +41,11 @@ type OrderEvent =
   | { kind: 'shipped'; carrier: string }
   | { kind: 'cancelled'; reason?: string };
 
-interface OrderData {
+type OrderData = {
   amountPaid: number;
   carrier: string | null;
   cancelReason: string | null;
-}
+};
 
 class OrderFsm extends PersistentFSM<OrderCommand, OrderEvent, OrderState, OrderData> {
   readonly persistenceId = 'order-42';

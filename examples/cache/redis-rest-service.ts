@@ -50,7 +50,7 @@ import {
 import type { Cache } from '../../src/index.js';
 import { attachDevTools } from '../devtools.js';
 
-interface User { readonly id: string; readonly name: string; }
+type User = { readonly id: string; readonly name: string; };
 
 type SetCommand = { kind: 'set'; user: User };
 type GetCommand = { kind: 'get'; id: string };

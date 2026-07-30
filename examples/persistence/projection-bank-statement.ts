@@ -45,7 +45,7 @@ type DepositedEvent = { kind: 'deposited'; amount: number };
 type WithdrewEvent = { kind: 'withdrew'; amount: number };
 type AccountEvent = DepositedEvent | WithdrewEvent;
 
-interface AccountState { balance: number }
+type AccountState = { balance: number };
 
 class Account extends PersistentActor<AccountCommand, AccountEvent, AccountState> {
   constructor(readonly persistenceId: string) { super(); }
@@ -103,7 +103,7 @@ class Account extends PersistentActor<AccountCommand, AccountEvent, AccountState
 
 /* --------------------------- read side -------------------------------- */
 
-interface StatementEntry { seq: number; kind: string; amount: number; runningBalance: number }
+type StatementEntry = { seq: number; kind: string; amount: number; runningBalance: number };
 
 class BankStatementLedger {
   /** Per-account ledger of every event the projection has consumed. */

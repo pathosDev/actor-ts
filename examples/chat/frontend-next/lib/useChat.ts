@@ -30,7 +30,7 @@ import {
  */
 export type Phase = 'login' | 'resuming' | 'chat';
 
-interface State {
+type State = {
   readonly phase: Phase;
   readonly username: string | null;
   readonly loginError: string;
@@ -44,7 +44,7 @@ interface State {
   readonly typingByRoom: Record<string, ReadonlyArray<string>>;
   /** RoomName → { [username]: read-up-to-ts }. */
   readonly receiptsByRoom: Record<string, Readonly<Record<string, number>>>;
-}
+};
 
 const INITIAL: State = {
   phase: 'login',

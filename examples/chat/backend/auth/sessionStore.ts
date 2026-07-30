@@ -45,14 +45,14 @@ const TOKEN_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
  *  only — the server logs a loud warning when it falls back. */
 const DEMO_FALLBACK_SECRET = 'chat-sample-demo-secret-do-not-use-in-production';
 
-interface TokenPayload {
+type TokenPayload = {
   /** Username. */
   readonly u: string;
   /** Issued-at, ms since epoch. */
   readonly i: number;
   /** Expires-at, ms since epoch. */
   readonly e: number;
-}
+};
 
 export class SessionStore {
   private readonly secret: Buffer;

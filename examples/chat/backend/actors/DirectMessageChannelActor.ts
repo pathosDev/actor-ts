@@ -86,9 +86,9 @@ type DirectMessageEvent = {
   readonly ts: number;
 };
 
-interface DirectMessageState {
+type DirectMessageState = {
   readonly history: ReadonlyArray<ChatMessage>;
-}
+};
 
 /* ------------------------------- actor -------------------------------- */
 

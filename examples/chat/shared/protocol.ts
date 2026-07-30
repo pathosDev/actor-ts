@@ -51,12 +51,12 @@ import type { RoomName } from './rooms.js';
 export const WS_PATH = '/ws';
 
 /** Single chat message — the read-model that goes over the wire. */
-export interface ChatMessage {
+export type ChatMessage = {
   readonly from: string;
   readonly text: string;
   /** ms since epoch — server-side timestamp. */
   readonly ts: number;
-}
+};
 
 /* --------------------------- Client → Server --------------------------- */
 

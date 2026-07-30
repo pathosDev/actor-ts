@@ -16,7 +16,7 @@ import { Actor, ActorSystem, Cluster, ClusterOptions, InMemoryTransport, NodeAdd
 import { DistributedPubSubId, DistributedPubSubOptions, Publish, Subscribe } from '../../src/cluster/pubsub/index.js';
 import { attachDevTools } from '../devtools.js';
 
-interface DomainEvent { readonly type: string; readonly payload: unknown; }
+type DomainEvent = { readonly type: string; readonly payload: unknown; };
 
 class TopicListener extends Actor<DomainEvent> {
   constructor(private readonly label: string) { super(); }

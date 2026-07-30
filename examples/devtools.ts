@@ -47,7 +47,7 @@ import type { Cluster } from '../src/cluster/Cluster.js';
 import { DevTools, DevToolsOptions, isLoopbackHost, type DevToolsBinding } from '../src/devtools/index.js';
 
 /** Handle returned by {@link attachDevTools}; inert when DevTools is off. */
-export interface ExampleDevTools {
+export type ExampleDevTools = {
   /** Browser URL, or `null` when DevTools was not enabled. */
   readonly url: string | null;
   /**
@@ -57,7 +57,7 @@ export interface ExampleDevTools {
   holdOpen(): Promise<void>;
   /** Release the port.  Safe when DevTools was never attached. */
   detach(): Promise<void>;
-}
+};
 
 const DISABLED: ExampleDevTools = {
   url: null,
@@ -77,7 +77,7 @@ let nextPort = 0;
 const PORT_SCAN_SLOTS = 16;
 
 /** Per-attachment overrides. */
-export interface AttachDevToolsOptions {
+export type AttachDevToolsOptions = {
   /**
    * Fixed port instead of the next one from the shared counter.  Pass
    * `0` to let the operating system pick — the only workable choice
@@ -91,7 +91,7 @@ export interface AttachDevToolsOptions {
    * clustered example has to pass it, and after `Cluster.join` at that.
    */
   readonly cluster?: Cluster;
-}
+};
 
 /**
  * Attach DevTools to `system` when the `DEVTOOLS` environment variable
