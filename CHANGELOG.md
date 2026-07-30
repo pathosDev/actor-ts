@@ -471,6 +471,13 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Changed
 
+- **BREAKING (examples) — `examples/cluster/counter-node.ts` discriminates on
+  `kind`** (#494).  Its `Command` union tagged entities with `op: 'increment' |
+  'get'`, the only place in the repo that used a third spelling for a
+  discriminant.  Migration: send `{ id, kind: 'increment' }` instead of
+  `{ id, op: 'increment' }`.  `examples/pubsub/event-bus-across-nodes.ts`
+  likewise renames `DomainEvent.type` to `kind`.
+
 - **Docs no longer recommend `if`-chains over `match`** (#494) — the pattern
   matching page carried a "When to prefer plain `if`" section whose rule of
   thumb was *use `match` from 4+ variants*, and the FAQ, design-decisions and

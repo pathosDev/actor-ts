@@ -15,6 +15,7 @@
  *
  * The .proto file lives next to this script (`sensor.proto`).
  */
+import { match, P } from 'ts-pattern';
 import { join } from 'node:path';
 import { writeFileSync, unlinkSync } from 'node:fs';
 import {
@@ -28,6 +29,10 @@ import {
   type GrpcInbound,
   type GrpcServerStreamCall,
   type GrpcUnaryCall,
+  type ReplyMessage,
+  type RpcErrorMessage,
+  type StreamDataMessage,
+  type StreamErrorMessage,
 } from '../../src/index.js';
 import { attachDevTools } from '../devtools.js';
 
@@ -75,15 +80,30 @@ class WatchSensorHandler extends Actor<GrpcServerStreamCall> {
 
 class ReplyCollector extends Actor<GrpcInbound> {
   override onReceive(message: GrpcInbound): void {
-    if (message.kind === 'reply') {
-      console.log('[client] unary reply:', message.response);
-    } else if (message.kind === 'stream-data') {
-      console.log('[client] stream chunk:', message.chunk);
-    } else if (message.kind === 'stream-end') {
-      console.log('[client] stream complete');
-    } else if (message.kind === 'rpc-error' || message.kind === 'stream-error') {
-      console.error('[client] error:', message.error.message);
-    }
+    match(message)
+      .with({ kind: 'reply' }, (m) => this.onReply(m))
+      .with({ kind: 'stream-data' }, (m) => this.onStreamData(m))
+      .with({ kind: 'stream-end' }, () => this.onStreamEnd())
+      // Unary and streaming failures read the same on the console, so one
+      // arm covers both rather than two identical handlers.
+      .with(P.union({ kind: 'rpc-error' }, { kind: 'stream-error' }), (m) => this.onError(m))
+      .exhaustive();
+  }
+
+  private onReply(message: ReplyMessage): void {
+    console.log('[client] unary reply:', message.response);
+  }
+
+  private onStreamData(message: StreamDataMessage): void {
+    console.log('[client] stream chunk:', message.chunk);
+  }
+
+  private onStreamEnd(): void {
+    console.log('[client] stream complete');
+  }
+
+  private onError(message: RpcErrorMessage | StreamErrorMessage): void {
+    console.error('[client] error:', message.error.message);
   }
 }
 

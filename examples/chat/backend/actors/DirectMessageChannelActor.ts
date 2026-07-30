@@ -49,19 +49,21 @@ export type DirectMessageHistoryReply = {
   readonly messages: ReadonlyArray<ChatMessage>;
 };
 
-export type DirectMessageChannelCommand =
-  | {
-      readonly kind: 'SendDirectMessage';
-      readonly pairId: string;
-      readonly from: string;
-      readonly text: string;
-    }
-  | {
-      readonly kind: 'GetDirectMessageHistory';
-      readonly pairId: string;
-      readonly limit: number;
-      readonly replyTo: ActorRef<DirectMessageHistoryReply>;
-    };
+export type SendDirectMessageCommand = {
+  readonly kind: 'SendDirectMessage';
+  readonly pairId: string;
+  readonly from: string;
+  readonly text: string;
+};
+
+export type GetDirectMessageHistoryCommand = {
+  readonly kind: 'GetDirectMessageHistory';
+  readonly pairId: string;
+  readonly limit: number;
+  readonly replyTo: ActorRef<DirectMessageHistoryReply>;
+};
+
+export type DirectMessageChannelCommand = SendDirectMessageCommand | GetDirectMessageHistoryCommand;
 
 /**
  * Body published on each participant's inbox topic.  Both sides of a
@@ -79,12 +81,14 @@ export type DirectMessageBroadcast = {
 
 /* ----------------------------- internals ------------------------------ */
 
-type DirectMessageEvent = {
+type DirectMessagePostedEvent = {
   readonly kind: 'DirectMessagePosted';
   readonly from: string;
   readonly text: string;
   readonly ts: number;
 };
+
+type DirectMessageEvent = DirectMessagePostedEvent;
 
 interface DirectMessageState {
   readonly history: ReadonlyArray<ChatMessage>;
@@ -134,7 +138,7 @@ export class DirectMessageChannelActor extends PersistentActor<
 
   private onDirectMessagePosted(
     state: DirectMessageState,
-    m: DirectMessageEvent,
+    m: DirectMessagePostedEvent,
   ): DirectMessageState {
     const next = [...state.history, { from: m.from, text: m.text, ts: m.ts }];
     const trimmed =
@@ -143,48 +147,54 @@ export class DirectMessageChannelActor extends PersistentActor<
   }
 
   async onCommand(state: DirectMessageState, command: DirectMessageChannelCommand): Promise<void> {
-    if (command.kind === 'SendDirectMessage') {
-      const event: DirectMessageEvent = {
-        kind: 'DirectMessagePosted',
-        from: command.from,
-        text: command.text,
-        ts: Date.now(),
-      };
-      await this.persist(event, () => {
-        // Both participants need a copy of the broadcast — one in
-        // each inbox topic.  Use `command.pairId` (the canonical form,
-        // carrying the original `|` separator) rather than the
-        // path-derived id which may have been sanitized by the
-        // actor system.  Defensive split: if the pair-id is
-        // malformed we drop the publish entirely (persist already
-        // succeeded, so the event is durable — just the live
-        // notification is lost).
-        const parts = splitPairId(command.pairId);
-        if (!parts) {
-          this.log.warn(`DirectMessageChannel: malformed pair-id '${command.pairId}'`);
-          return;
-        }
-        const [a, b] = parts;
-        const to = command.from === a ? b : a;
-        const broadcast: DirectMessageBroadcast = {
-          kind: 'DirectMessageBroadcast',
-          pairId: command.pairId,
-          from: command.from,
-          to,
-          text: event.text,
-          ts: event.ts,
-        };
-        const mediator = this.system.extension(DistributedPubSubId).mediator;
-        mediator.tell(new Publish(directMessageInboxTopic(a), broadcast));
-        mediator.tell(new Publish(directMessageInboxTopic(b), broadcast));
-      });
-      return;
-    }
+    await match(command)
+      .with({ kind: 'SendDirectMessage' }, (c) => this.onSendDirectMessage(c))
+      .with({ kind: 'GetDirectMessageHistory' }, (c) => this.onGetDirectMessageHistory(state, c))
+      .exhaustive();
+  }
 
-    if (command.kind === 'GetDirectMessageHistory') {
-      const messages = state.history.slice(-Math.max(1, command.limit));
-      command.replyTo.tell({ kind: 'DirectMessageHistoryReply', pairId: command.pairId, messages });
-      return;
-    }
+  private async onSendDirectMessage(command: SendDirectMessageCommand): Promise<void> {
+    const event: DirectMessageEvent = {
+      kind: 'DirectMessagePosted',
+      from: command.from,
+      text: command.text,
+      ts: Date.now(),
+    };
+    await this.persist(event, () => {
+      // Both participants need a copy of the broadcast — one in
+      // each inbox topic.  Use `command.pairId` (the canonical form,
+      // carrying the original `|` separator) rather than the
+      // path-derived id which may have been sanitized by the
+      // actor system.  Defensive split: if the pair-id is
+      // malformed we drop the publish entirely (persist already
+      // succeeded, so the event is durable — just the live
+      // notification is lost).
+      const parts = splitPairId(command.pairId);
+      if (!parts) {
+        this.log.warn(`DirectMessageChannel: malformed pair-id '${command.pairId}'`);
+        return;
+      }
+      const [a, b] = parts;
+      const to = command.from === a ? b : a;
+      const broadcast: DirectMessageBroadcast = {
+        kind: 'DirectMessageBroadcast',
+        pairId: command.pairId,
+        from: command.from,
+        to,
+        text: event.text,
+        ts: event.ts,
+      };
+      const mediator = this.system.extension(DistributedPubSubId).mediator;
+      mediator.tell(new Publish(directMessageInboxTopic(a), broadcast));
+      mediator.tell(new Publish(directMessageInboxTopic(b), broadcast));
+    });
+  }
+
+  private onGetDirectMessageHistory(
+    state: DirectMessageState,
+    command: GetDirectMessageHistoryCommand,
+  ): void {
+    const messages = state.history.slice(-Math.max(1, command.limit));
+    command.replyTo.tell({ kind: 'DirectMessageHistoryReply', pairId: command.pairId, messages });
   }
 }

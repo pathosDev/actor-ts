@@ -12,12 +12,28 @@ import type { GrpcClientOptions, GrpcClientOptionsType } from './GrpcClientOptio
  * `kind` discriminates between a unary completion, a stream chunk, the
  * stream-end signal, and a stream error.
  */
+export type ReplyMessage = { readonly kind: 'reply'; readonly target: ActorRef<unknown>; readonly response: unknown };
+export type StreamDataMessage = {
+  readonly kind: 'stream-data';
+  readonly target: ActorRef<unknown>;
+  readonly streamId: number;
+  readonly chunk: unknown;
+};
+export type StreamEndMessage = { readonly kind: 'stream-end'; readonly target: ActorRef<unknown>; readonly streamId: number };
+export type StreamErrorMessage = {
+  readonly kind: 'stream-error';
+  readonly target: ActorRef<unknown>;
+  readonly streamId: number;
+  readonly error: Error;
+};
+export type RpcErrorMessage = { readonly kind: 'rpc-error'; readonly target: ActorRef<unknown>; readonly error: Error };
+
 export type GrpcInbound =
-  | { readonly kind: 'reply'; readonly target: ActorRef<unknown>; readonly response: unknown }
-  | { readonly kind: 'stream-data'; readonly target: ActorRef<unknown>; readonly streamId: number; readonly chunk: unknown }
-  | { readonly kind: 'stream-end'; readonly target: ActorRef<unknown>; readonly streamId: number }
-  | { readonly kind: 'stream-error'; readonly target: ActorRef<unknown>; readonly streamId: number; readonly error: Error }
-  | { readonly kind: 'rpc-error'; readonly target: ActorRef<unknown>; readonly error: Error };
+  | ReplyMessage
+  | StreamDataMessage
+  | StreamEndMessage
+  | StreamErrorMessage
+  | RpcErrorMessage;
 
 /** TLS / mTLS credentials. */
 export type GrpcCredentials =
