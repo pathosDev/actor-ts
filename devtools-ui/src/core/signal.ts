@@ -9,17 +9,17 @@
  */
 
 /** A value others can observe. */
-export interface ReadonlySignal<T> {
+export type ReadonlySignal<T> = {
   get(): T;
   /** Observe changes.  Returns the unsubscribe function. */
   subscribe(listener: (value: T) => void): () => void;
-}
+};
 
 /** A value others can observe and anyone can write. */
-export interface Signal<T> extends ReadonlySignal<T> {
+export type Signal<T> = ReadonlySignal<T> & {
   set(value: T): void;
   update(change: (current: T) => T): void;
-}
+};
 
 /** Create a writable signal. */
 export function signal<T>(initial: T): Signal<T> {

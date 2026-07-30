@@ -14,7 +14,7 @@
 import type { WireSpan } from '../../../src/devtools/protocol/index.js';
 
 /** A span placed in the layout. */
-export interface LayoutSpan {
+export type LayoutSpan = {
   readonly span: WireSpan;
   /** Stack depth; a root is 0. */
   readonly depth: number;
@@ -23,17 +23,17 @@ export interface LayoutSpan {
   readonly durationMs: number;
   /** Duration minus time accounted for by children — the flame's point. */
   readonly selfMs: number;
-}
+};
 
 /** A whole trace, laid out. */
-export interface TraceLayout {
+export type TraceLayout = {
   readonly traceId: string;
   readonly spans: ReadonlyArray<LayoutSpan>;
   /** Wall time from the first span's start to the last one's end. */
   readonly totalMs: number;
   readonly startedAtMs: number;
   readonly maxDepth: number;
-}
+};
 
 /**
  * Duration of one span, preferring the monotonic clock.
@@ -136,13 +136,13 @@ export function layoutTrace(spans: ReadonlyArray<WireSpan>): TraceLayout {
 }
 
 /** A drawn rectangle, kept so a hit test can find what was clicked. */
-export interface SpanRectangle {
+export type SpanRectangle = {
   readonly span: LayoutSpan;
   readonly x: number;
   readonly y: number;
   readonly width: number;
   readonly height: number;
-}
+};
 
 /** Vertical space one row occupies, in CSS pixels. */
 export const ROW_HEIGHT = 20;

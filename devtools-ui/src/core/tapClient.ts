@@ -25,7 +25,7 @@ export type ConnectionStatus = 'connecting' | 'open' | 'closed' | 'incompatible'
 /** Listener for one stream's payloads. */
 export type StreamListener = (payload: DevToolsStreamPayload) => void;
 
-export interface TapClient {
+export type TapClient = {
   readonly status: ReadonlySignal<ConnectionStatus>;
   /** Handshake data, or `null` until the first `welcome` arrives. */
   readonly welcome: ReadonlySignal<WelcomeFrame | null>;
@@ -35,15 +35,15 @@ export interface TapClient {
   listen(stream: DevToolsStreamId, listener: StreamListener): () => void;
   /** Invoke a pull method. */
   request<T>(method: DevToolsRequestMethod, parameters?: unknown): Promise<T>;
-}
+};
 
 const RECONNECT_BASE_MS = 500;
 const RECONNECT_MAX_MS = 10_000;
 
-interface PendingRequest {
+type PendingRequest = {
   resolve(value: unknown): void;
   reject(error: Error): void;
-}
+};
 
 export function connectTap(url: string): TapClient {
   const status = signal<ConnectionStatus>('connecting');

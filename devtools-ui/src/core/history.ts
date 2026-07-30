@@ -13,10 +13,10 @@ import type {
 } from '../../../src/devtools/protocol/index.js';
 
 /** One point of a derived series. */
-export interface SeriesPoint {
+export type SeriesPoint = {
   readonly atMs: number;
   readonly value: number;
-}
+};
 
 /** Numeric fields of a sample that can be plotted directly. */
 export type LevelField =

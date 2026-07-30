@@ -47,7 +47,7 @@ function makeCounterClass(policy: SnapshotPolicy<number, Event>): typeof Persist
   } as unknown as typeof PersistentActor<Command, Event, number>;
 }
 
-interface Policy { label: string; unit: string; policy: SnapshotPolicy<number, Event>; }
+type Policy = { label: string; unit: string; policy: SnapshotPolicy<number, Event>; };
 
 const POLICIES: ReadonlyArray<Policy> = [
   { label: 'no snapshots',    unit: 'never',     policy: () => false },

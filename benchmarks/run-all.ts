@@ -15,10 +15,10 @@ import { readdirSync, statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { ansi } from './lib/stats.js';
 
-interface Suite {
+type Suite = {
   readonly group: string;
   readonly file: string;
-}
+};
 
 const root = resolve(import.meta.dirname ?? '.', '.');
 

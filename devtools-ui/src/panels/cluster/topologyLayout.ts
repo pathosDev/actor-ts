@@ -11,10 +11,10 @@
  */
 
 /** A placed node in SVG user units. */
-export interface PlacedNode {
+export type PlacedNode = {
   readonly x: number;
   readonly y: number;
-}
+};
 
 /**
  * Place `count` nodes evenly on a circle, starting at twelve o'clock

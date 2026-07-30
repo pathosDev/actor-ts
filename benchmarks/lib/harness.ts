@@ -2,7 +2,7 @@ import { highResNow } from '../../src/runtime/detect.js';
 import { ansi, ansiResetLine, formatMemoryDelta, formatNs, formatRate, statsOf, type BenchStats } from './stats.js';
 
 /** User-provided benchmark — runs a single "operation" per call to `run`. */
-export interface BenchmarkSpec {
+export type BenchmarkSpec = {
   readonly name: string;
   /** Short label printed in the summary — grouping, tags, etc. */
   readonly group?: string;
@@ -20,10 +20,10 @@ export interface BenchmarkSpec {
   readonly warmupIterations?: number;
   /** Target measured iteration count.  Default 1000. */
   readonly iterations?: number;
-}
+};
 
 /** Raw measurement + derived stats for a single benchmark. */
-export interface BenchmarkResult {
+export type BenchmarkResult = {
   readonly name: string;
   readonly group: string;
   readonly unit: string;
@@ -35,7 +35,7 @@ export interface BenchmarkResult {
   readonly perOpNs: number;
   readonly iterationStats: BenchStats;
   readonly rssDeltaBytes: number;
-}
+};
 
 /**
  * Run a single benchmark.  Returns timing stats and a rough memory delta
@@ -95,11 +95,11 @@ export async function runBenchmark(spec: BenchmarkSpec): Promise<BenchmarkResult
 
 /* =============================== Table helpers ============================= */
 
-interface TableColumn {
+type TableColumn = {
   readonly header: string;
   readonly width: number;
   readonly align?: 'left' | 'right';
-}
+};
 
 /**
  * Minimal unicode-box table renderer.  Prints top border + column headers +
@@ -268,16 +268,16 @@ const MEMORY_COLUMNS: ReadonlyArray<TableColumn> = [
   { header: 'heap',   width: 14, align: 'right' },
 ];
 
-export interface MemoryMeasurement {
+export type MemoryMeasurement = {
   readonly label: string;
   readonly deltaRss: number;
   readonly deltaHeap: number;
-}
+};
 
-export interface MemoryGroup {
+export type MemoryGroup = {
   measure(label: string, allocate: () => Promise<void> | void): Promise<MemoryMeasurement>;
   end(): void;
-}
+};
 
 /**
  * Pretty-print helper for memory-only benchmarks: a three-column table

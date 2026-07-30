@@ -50,12 +50,12 @@ function makeRoutes(users: UsersDb): Parameters<Awaited<ReturnType<typeof startS
   );
 }
 
-interface Harness {
+type Harness = {
   base: string;
   binding: ServerBinding;
   system: ActorSystem;
   rebind(routes: ReturnType<typeof makeRoutes>): Promise<void>;
-}
+};
 
 async function startServer(
   label: string,

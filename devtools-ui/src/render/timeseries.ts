@@ -12,18 +12,18 @@
 import type { SeriesPoint } from '../core/history.js';
 
 /** A projected point in canvas pixels. */
-export interface ProjectedPoint {
+export type ProjectedPoint = {
   readonly x: number;
   readonly y: number;
-}
+};
 
 /** Plot area in CSS pixels. */
-export interface PlotBox {
+export type PlotBox = {
   readonly width: number;
   readonly height: number;
   /** Space left below the line so a flat zero series is still visible. */
   readonly padding: number;
-}
+};
 
 /**
  * Map samples onto the plot box.
@@ -123,11 +123,11 @@ export function drawSparkline(
 }
 
 /** One named series in a chart. */
-export interface ChartSeries {
+export type ChartSeries = {
   readonly label: string;
   readonly color: string;
   readonly points: ReadonlyArray<SeriesPoint>;
-}
+};
 
 /**
  * A larger multi-series chart with a baseline and a peak label.
