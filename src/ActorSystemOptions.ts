@@ -21,7 +21,7 @@ import type { SnapshotStore } from './persistence/SnapshotStore.js';
 import { OptionsBuilder } from './util/OptionsBuilder.js';
 
 /** Plain options-object shape accepted by {@link ActorSystem.create}. */
-export interface ActorSystemOptionsType {
+export type ActorSystemOptionsType = {
   readonly logger?: Logger;
   readonly logLevel?: LogLevel;
   readonly dispatcher?: Dispatcher;
@@ -53,7 +53,7 @@ export interface ActorSystemOptionsType {
     readonly journal?: Journal;
     readonly snapshotStore?: SnapshotStore;
   };
-}
+};
 
 export class ActorSystemOptionsBuilder<T extends ActorSystemOptionsType = ActorSystemOptionsType> extends OptionsBuilder<T> {
   /** Start a fresh builder.  Equivalent to `new ActorSystemOptionsBuilder()`. */

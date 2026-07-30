@@ -3,11 +3,11 @@
  * In a single-threaded JS runtime we pick between the microtask queue and
  * setImmediate to balance throughput against fairness with I/O.
  */
-export interface Dispatcher {
+export type Dispatcher = {
   readonly id: string;
   /** Schedule a unit of work to be executed asynchronously. */
   execute(fn: () => void | Promise<void>): void;
-}
+};
 
 function runSafely(fn: () => void | Promise<void>): void {
   try {

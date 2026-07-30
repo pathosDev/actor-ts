@@ -3,7 +3,7 @@ import { OptionsValidator } from '../util/OptionsValidator.js';
 import type { BoundedMailboxOverflow } from './BoundedMailbox.js';
 
 /** Plain options-object shape accepted by a {@link BoundedMailbox}. */
-export interface BoundedMailboxOptionsType {
+export type BoundedMailboxOptionsType = {
   readonly capacity: number;
   readonly overflow?: BoundedMailboxOverflow;
   /**
@@ -12,7 +12,7 @@ export interface BoundedMailboxOptionsType {
    * can label metrics.  Never fires for `reject` — that throws instead.
    */
   readonly onDrop?: (reason: 'drop-head' | 'drop-new') => void;
-}
+};
 
 /**
  * Fluent builder for {@link BoundedMailboxOptionsType}:

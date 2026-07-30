@@ -2,9 +2,9 @@ import { OptionsBuilder } from '../util/OptionsBuilder.js';
 import type { PriorityFunction } from './PriorityMailbox.js';
 
 /** Plain options-object shape accepted by a {@link PriorityMailbox}. */
-export interface PriorityMailboxOptionsType<T> {
+export type PriorityMailboxOptionsType<T> = {
   readonly priorityFor: PriorityFunction<T>;
-}
+};
 
 /**
  * Fluent builder for {@link PriorityMailboxOptionsType}:
