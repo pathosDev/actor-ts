@@ -5,12 +5,12 @@ import {
 } from '../journals/D1OptionsBase.js';
 import { assertSafeIdentifier } from '../storage/SqlIdentifier.js';
 
-export interface D1DurableStateStoreOptionsType extends D1OptionsBaseType {
+export type D1DurableStateStoreOptionsType = D1OptionsBaseType & {
   /** Durable-state table name.  Default: `durable_state`. */
   readonly table?: string;
   /** Run `CREATE TABLE IF NOT EXISTS` on first use.  Default: true. */
   readonly autoCreateTables?: boolean;
-}
+};
 
 /**
  * Fluent builder for {@link D1DurableStateStoreOptionsType}:

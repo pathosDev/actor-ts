@@ -4,7 +4,7 @@ import type { D1JournalOptions } from './D1JournalOptions.js';
 import type { D1SnapshotStoreOptions } from '../snapshot-stores/D1SnapshotStoreOptions.js';
 import type { D1DurableStateStoreOptions } from '../durable-state-stores/D1DurableStateStoreOptions.js';
 
-export interface RegisterD1PluginsOptionsType {
+export type RegisterD1PluginsOptionsType = {
   /**
    * Shared transport injected into all three stores — the usual case, since they
    * address the same database and `fetch` pools connections underneath.
@@ -24,7 +24,7 @@ export interface RegisterD1PluginsOptionsType {
   readonly snapshotStore?: D1SnapshotStoreOptions;
   /** Durable-state-store-specific options (table name). */
   readonly durableStateStore?: D1DurableStateStoreOptions;
-}
+};
 
 /**
  * Fluent builder for {@link RegisterD1PluginsOptionsType}:

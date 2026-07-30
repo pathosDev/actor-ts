@@ -5,10 +5,10 @@ import {
   type DynamoDbOptionsBaseType,
 } from '../journals/DynamoDbOptionsBase.js';
 
-export interface DynamoDbDurableStateStoreOptionsType extends DynamoDbOptionsBaseType {
+export type DynamoDbDurableStateStoreOptionsType = DynamoDbOptionsBaseType & {
   /** Durable-state table name.  Default: `actor_ts_durable_state`. */
   readonly table?: string;
-}
+};
 
 /**
  * Fluent builder for {@link DynamoDbDurableStateStoreOptionsType}:

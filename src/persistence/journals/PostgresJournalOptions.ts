@@ -1,14 +1,14 @@
 import { OptionsBuilder } from '../../util/OptionsBuilder.js';
 import type { PgPoolLike, PostgresConnection } from './PostgresClient.js';
 
-export interface PostgresJournalOptionsType extends PostgresConnection {
+export type PostgresJournalOptionsType = PostgresConnection & {
   /** Events table name.  Default: `events`. */
   readonly eventsTable?: string;
   /** Tags join table name.  Default: `${eventsTable}_tags`. */
   readonly tagsTable?: string;
   /** Run `CREATE TABLE IF NOT EXISTS` on first use.  Default: true. */
   readonly autoCreateTables?: boolean;
-}
+};
 
 /**
  * Fluent builder for {@link PostgresJournalOptionsType}:

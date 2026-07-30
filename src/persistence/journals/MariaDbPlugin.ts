@@ -14,7 +14,7 @@ export const MARIADB_JOURNAL_PLUGIN_ID = 'actor-ts.persistence.journal.mariadb';
 export const MARIADB_SNAPSHOT_PLUGIN_ID = 'actor-ts.persistence.snapshot-store.mariadb';
 export const MARIADB_DURABLE_STATE_PLUGIN_ID = 'actor-ts.persistence.durable-state.mariadb';
 
-export interface MariaDbPluginHandles {
+export type MariaDbPluginHandles = {
   /**
    * The DurableState store instance.  `PersistenceExtension` carries no
    * DurableState registry (same as the object-storage / Postgres plugins),
@@ -22,7 +22,7 @@ export interface MariaDbPluginHandles {
    * pass it into their `DurableStateActor` options.
    */
   readonly durableStateStore: MariaDbDurableStateStore;
-}
+};
 
 /**
  * One-shot registration of the MariaDB journal + snapshot store against the

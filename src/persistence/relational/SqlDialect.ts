@@ -23,12 +23,12 @@
  */
 
 /** The three tables a relational journal owns. */
-export interface JournalTableNames {
+export type JournalTableNames = {
   readonly events: string;
   readonly tags: string;
   /** Holds the compaction high-water mark (`deleted_to`) per persistence id. */
   readonly meta: string;
-}
+};
 
 /** How a dialect signals that a conditional insert hit an existing row. */
 export type InsertConflictSignal =
@@ -37,7 +37,7 @@ export type InsertConflictSignal =
   /** The insert is unguarded; the driver throws a duplicate-key error. */
   | 'duplicate-key-error';
 
-export interface SqlDialect {
+export type SqlDialect = {
   /** Diagnostic label — `'postgres'`, `'mariadb'`, `'sqlite'`, … */
   readonly name: string;
 
@@ -117,7 +117,7 @@ export interface SqlDialect {
    * someone else's append.
    */
   isSerializationConflictError(error: unknown): boolean;
-}
+};
 
 /**
  * Rewrite canonical `?` placeholders into `dialect`'s syntax, in order.

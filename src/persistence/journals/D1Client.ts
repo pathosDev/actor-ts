@@ -15,17 +15,17 @@ import type { SqlPool, SqlResult } from '../relational/SqlPool.js';
  */
 
 /** One statement's result, as D1 reports it. */
-export interface D1QueryResult {
+export type D1QueryResult = {
   readonly rows: ReadonlyArray<Record<string, unknown>>;
   /** `meta.changes` — rows written by an INSERT / UPDATE / DELETE. */
   readonly changes: number;
-}
+};
 
 /** The minimal surface a D1 transport must offer. */
-export interface D1ClientLike {
+export type D1ClientLike = {
   query(sql: string, params: ReadonlyArray<unknown>): Promise<D1QueryResult>;
   close(): Promise<void>;
-}
+};
 
 /**
  * A failed D1 statement.
@@ -44,7 +44,7 @@ export class D1RequestError extends Error {
 }
 
 /** Connection options shared by all three D1 stores. */
-export interface D1Connection {
+export type D1Connection = {
   /** Cloudflare account id.  Required unless `client` is supplied. */
   readonly accountId?: string;
   /** D1 database id (the UUID, not the database name). */
@@ -65,7 +65,7 @@ export interface D1Connection {
    * `registerD1Plugins`), or to inject a fake in tests.
    */
   readonly client?: D1ClientLike;
-}
+};
 
 /** Cloudflare's API root. */
 export const DEFAULT_D1_BASE_URL = 'https://api.cloudflare.com/client/v4';
@@ -106,7 +106,7 @@ export function buildD1Client(connection: D1Connection): D1ClientLike {
 }
 
 /** D1's response envelope — a per-statement result array plus API-level errors. */
-interface D1Envelope {
+type D1Envelope = {
   readonly success?: boolean;
   readonly errors?: ReadonlyArray<{ code?: number; message?: string }>;
   readonly result?: ReadonlyArray<{
@@ -114,7 +114,7 @@ interface D1Envelope {
     readonly success?: boolean;
     readonly meta?: { readonly changes?: number };
   }>;
-}
+};
 
 /**
  * Unwrap D1's envelope.

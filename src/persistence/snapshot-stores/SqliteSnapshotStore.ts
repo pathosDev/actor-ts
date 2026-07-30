@@ -6,13 +6,13 @@ import { none, some, type Option } from '../../util/Option.js';
 import { assertSafeIdentifier } from '../storage/SqlIdentifier.js';
 import type { SqliteSnapshotStoreOptions, SqliteSnapshotStoreOptionsType } from './SqliteSnapshotStoreOptions.js';
 
-interface Stmts {
+type Stmts = {
   insert: SqliteStatement;
   latest: SqliteStatement;
   before: SqliteStatement;
   deleteUpTo: SqliteStatement;
   deleteOlderThan: SqliteStatement;
-}
+};
 
 /**
  * SQLite-backed SnapshotStore — JSON payloads, single table, prune-on-save.
