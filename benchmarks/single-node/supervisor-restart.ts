@@ -19,7 +19,6 @@ import {
   NoopLogger,
   OneForOneStrategy,
   Props,
-  ask,
   type ActorRef,
   type SupervisorStrategy,
 } from '../../src/index.js';
@@ -62,7 +61,7 @@ async function main(): Promise<void> {
       iterations: 1_000,
       run: async () => {
         ref.tell('boom');
-        await ask<Command, string>(ref, 'ping', 5_000);
+        await ref.ask<string>('ping', 5_000);
       },
     },
   ]);

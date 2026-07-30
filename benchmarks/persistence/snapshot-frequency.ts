@@ -21,7 +21,6 @@ import {
   PersistenceExtensionId,
   PersistentActor,
   Props,
-  ask,
   everyNEvents,
   type SnapshotPolicy,
 } from '../../src/index.js';
@@ -30,7 +29,14 @@ import { runGroup } from '../lib/harness.js';
 type Command = { kind: 'increment' } | { kind: 'get' };
 type Event = { delta: number };
 
-function makeCounterClass(policy: SnapshotPolicy<number, Event>): typeof PersistentActor<Command, Event, number> {
+/**
+ * Concrete constructor — deliberately NOT `typeof PersistentActor<…>`, which
+ * is abstract and therefore not newable (TS2511).  The factory closes over
+ * `policy`, so each policy gets its own class.
+ */
+type CounterConstructor = new (persistenceId: string) => PersistentActor<Command, Event, number>;
+
+function makeCounterClass(policy: SnapshotPolicy<number, Event>): CounterConstructor {
   return class Counter extends PersistentActor<Command, Event, number> {
     readonly persistenceId: string;
     constructor(persistenceId: string) { super(); this.persistenceId = persistenceId; }
@@ -44,7 +50,7 @@ function makeCounterClass(policy: SnapshotPolicy<number, Event>): typeof Persist
       }
       this.sender.forEach((r) => r.tell(s));
     }
-  } as unknown as typeof PersistentActor<Command, Event, number>;
+  };
 }
 
 type Policy = { label: string; unit: string; policy: SnapshotPolicy<number, Event>; };
@@ -91,7 +97,7 @@ async function main(): Promise<void> {
           for (let i = 0; i < EVENTS_PER_RUN; i++) ref.tell({ kind: 'increment' });
           // Drain by asking for the final state — returns once all persists
           // have been applied.
-          await ask<Command, number>(ref, { kind: 'get' }, 30_000);
+          await ref.ask<number>({ kind: 'get' }, 30_000);
         },
       },
     ]);
@@ -108,7 +114,7 @@ async function main(): Promise<void> {
         run: async () => {
           const fresh = system.spawnAnonymous(Props.create(() => new Counter(persistenceId)));
           // `get` returns the recovered state — blocks until replay finishes.
-          await ask<Command, number>(fresh, { kind: 'get' }, 30_000);
+          await fresh.ask<number>({ kind: 'get' }, 30_000);
           fresh.stop();
         },
       },

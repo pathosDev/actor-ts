@@ -3,7 +3,7 @@
  *
  *   bun run benchmarks/single-node/become-unbecome.ts
  */
-import { Actor, ActorSystem, ActorSystemOptions, LogLevel, NoopLogger, Props, ask } from '../../src/index.js';
+import { Actor, ActorSystem, ActorSystemOptions, LogLevel, NoopLogger, Props } from '../../src/index.js';
 import { runGroup } from '../lib/harness.js';
 
 type Message = 'swap' | { kind: 'ping' };
@@ -40,9 +40,9 @@ async function main(): Promise<void> {
       opsPerIteration: 2,
       run: async () => {
         ref.tell('swap');
-        await ask<Message, 'pong'>(ref, { kind: 'ping' }, 10_000);
+        await ref.ask<'pong'>({ kind: 'ping' }, 10_000);
         ref.tell('swap');
-        await ask<Message, 'pong'>(ref, { kind: 'ping' }, 10_000);
+        await ref.ask<'pong'>({ kind: 'ping' }, 10_000);
       },
     },
   ]);

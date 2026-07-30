@@ -4,7 +4,7 @@
  *
  *   bun run benchmarks/single-node/stash-unstash.ts
  */
-import { Actor, ActorSystem, ActorSystemOptions, LogLevel, NoopLogger, Props, ask } from '../../src/index.js';
+import { Actor, ActorSystem, ActorSystemOptions, LogLevel, NoopLogger, Props } from '../../src/index.js';
 import { runGroup } from '../lib/harness.js';
 
 type Message = { kind: 'work' } | { kind: 'go' } | { kind: 'count' };
@@ -38,7 +38,7 @@ async function main(): Promise<void> {
     const ref = system.spawnAnonymous(Props.create(() => new Staller()));
     for (let i = 0; i < batch; i++) ref.tell({ kind: 'work' });
     ref.tell({ kind: 'go' });
-    await ask<Message, number>(ref, { kind: 'count' }, 30_000);
+    await ref.ask<number>({ kind: 'count' }, 30_000);
     ref.stop();
   };
 

@@ -9,7 +9,7 @@
  *
  *   bun run benchmarks/single-node/payload-size.ts
  */
-import { Actor, ActorSystem, ActorSystemOptions, LogLevel, NoopLogger, Props, ask } from '../../src/index.js';
+import { Actor, ActorSystem, ActorSystemOptions, LogLevel, NoopLogger, Props } from '../../src/index.js';
 import { runGroup } from '../lib/harness.js';
 
 class Echo extends Actor<Uint8Array> {
@@ -49,7 +49,7 @@ async function main(): Promise<void> {
         name: `ask round-trip (${name})`,
         unit: 'ask',
         iterations,
-        run: async () => { await ask<Uint8Array, number>(ref, payload, 5_000); },
+        run: async () => { await ref.ask<number>(payload, 5_000); },
       },
     ]);
   }
