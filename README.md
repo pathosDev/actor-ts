@@ -194,24 +194,40 @@ the rest of the app sees, every mutation durable.
 
 ```ts
 import { PersistentActor, ActorSystem, Props } from 'actor-ts';
+import { match } from 'ts-pattern';
 
-type Command   = { kind: 'increment' } | { kind: 'decrement' };
-type Event = { kind: 'incremented' } | { kind: 'decremented' };
-interface State { count: number }
+type IncrementCommand = { kind: 'increment' };
+type DecrementCommand = { kind: 'decrement' };
+type Command = IncrementCommand | DecrementCommand;
+
+type IncrementedEvent = { kind: 'incremented' };
+type DecrementedEvent = { kind: 'decremented' };
+type Event = IncrementedEvent | DecrementedEvent;
+
+type State = { count: number };
 
 class Counter extends PersistentActor<Command, Event, State> {
   readonly persistenceId = 'counter-1';
   initialState(): State { return { count: 0 }; }
+
+  // A fold that computes a value — arms stay inline.
   onEvent(s: State, e: Event): State {
-    return e.kind === 'incremented'
-      ? { count: s.count + 1 }
-      : { count: s.count - 1 };
+    return match(e)
+      .with({ kind: 'incremented' }, () => ({ count: s.count + 1 }))
+      .with({ kind: 'decremented' }, () => ({ count: s.count - 1 }))
+      .exhaustive();
   }
+
+  // A command dispatch — every arm delegates to an `onXxx` handler.
   onCommand(_state: State, cmd: Command): void {
-    this.persist({
-      kind: cmd.kind === 'increment' ? 'incremented' : 'decremented',
-    });
+    match(cmd)
+      .with({ kind: 'increment' }, () => this.onIncrement())
+      .with({ kind: 'decrement' }, () => this.onDecrement())
+      .exhaustive();
   }
+
+  private onIncrement(): void { this.persist({ kind: 'incremented' }); }
+  private onDecrement(): void { this.persist({ kind: 'decremented' }); }
 }
 ```
 

@@ -471,6 +471,19 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Changed
 
+- **Docs no longer recommend `if`-chains over `match`** (#494) — the pattern
+  matching page carried a "When to prefer plain `if`" section whose rule of
+  thumb was *use `match` from 4+ variants*, and the FAQ, design-decisions and
+  event-dispatcher pages each repeated some form of "a plain `if/else` ladder
+  works fine".  That is the opposite of the convention the codebase actually
+  follows, so roughly 150 doc samples had grown up around the advice.  The
+  section is gone and the three echoes are rewritten: every dispatch on an
+  incoming message, event or command uses `match` with each arm delegating to
+  an `onXxx` handler; matches on internal state or that compute a value keep
+  their bodies inline.  The README's event-sourcing snippet, which dispatched
+  on `cmd.kind` with a ternary forty lines below the section teaching the
+  opposite, is fixed to match.
+
 - **Messages are named by their `kind`, not `Object`.** Every tool that
   lists what an actor handled — the profiler's heaviest handlers, the
   explain plan, the tracing panel — took the message's `constructor.name`,

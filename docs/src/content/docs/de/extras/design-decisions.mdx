@@ -27,8 +27,8 @@ einfach das primäre Ziel für Tests + Benchmarks.
 
 ```ts
 match(message)
-  .with({ kind: 'increment' }, () => state.count++)
-  .with({ kind: 'decrement' }, () => state.count--)
+  .with({ kind: 'increment' }, (m) => this.onIncrement(m))
+  .with({ kind: 'decrement' }, (m) => this.onDecrement(m))
   .exhaustive();
 ```
 
@@ -37,12 +37,16 @@ match(message)
   Kompilieren fehl.  Kein stilles Durchfallen.
 - **Type Narrowing innerhalb von Arms**.  Keine Casts, keine
   manuellen Guards.
-- **Lesbar im großen Maßstab**.  Switch + assertNever
-  funktioniert bei 2-3 Varianten; verliert bei 5+.
+- **Eine überfliegbare Dispatch-Tabelle**.  Jeder Arm ist eine
+  einzeilige Delegation an einen `onXxx`-Handler, damit der
+  Matcher eine Karte davon bleibt, *welche Nachricht wohin geht*,
+  und nie das *Wie* dazwischenmischt.
 
-Es ist eine **Opt-in-Konvention** — Du kannst Actors mit einfachem
-Switch schreiben.  Die Doku verwendet `match`, weil es das
-sicherere Pattern ist.
+Die Konvention ist einheitlich: jeder Dispatch auf eine eingehende
+Nachricht, ein Event oder ein Command nutzt `match`, und jeder Arm
+delegiert.  Matches auf internem State (ein Behavior- oder
+State-Machine-Reducer) oder solche, die einen Wert berechnen
+(Config, Codec, Route, Priority), behalten ihre Bodies inline.
 
 ## Warum ein Single-Threaded-Modell
 
