@@ -104,6 +104,19 @@ For Kafka's consumer-group work-sharing, use **multiple actor
 instances** with the same `groupId` — each instance owns a
 subset of partitions.
 
+`topics` and the runtime `subscribe` command feed the same desired set,
+held by the
+[BrokerActor base](/io/broker-actor-base/#desired-subscriptions) rather
+than by the consumer: a topic added at runtime is **re-subscribed after a
+reconnect**, and a `subscribe` sent while the actor is disconnected is
+applied on the next connect instead of being dropped.  Configured topics
+inherit `consumer.fromBeginning`; a runtime addition starts at the
+current offset.
+
+There is no `unsubscribe` — kafkajs cannot drop a single topic from a
+running consumer.  Stop the actor (or spawn a second one with a different
+`groupId`) if a consumer needs a genuinely different topic set.
+
 ## Commit modes
 
 ```ts
