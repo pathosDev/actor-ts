@@ -614,6 +614,31 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Fixed
 
+- **`bun run lint:package` is reproducible, and `lint:knip` exits 0 again**
+  (#507).  The three package-health scripts invoked their tools through `bunx`,
+  which — contrary to the first guess — does honour the manifest range and
+  resolved the pinned `knip@6.29.0` rather than `latest`; the real problem is
+  what `bunx` does when the tool is *absent* from `node_modules`: it silently
+  fetches it from the registry and runs anyway, so the check appeared to pass
+  judgement on a tree that was never installed.  With `publint` and
+  `@arethetypeswrong/cli` missing, knip could not map the `bunx publint` /
+  `bunx attw` script invocations back to their manifest entries and reported both
+  devDependencies as unused — exit 1 locally while CI, which runs `bun install`
+  first, stayed green.  All three scripts now call the installed binary directly
+  (`node_modules/.bin` is on `PATH` inside a script), so a missing install fails
+  loudly instead of being papered over.  `lint:knip` additionally switches to
+  knip's Bun-native `knip-bun` binary: with a *complete* install the Node one
+  exhausts its heap on this repo's module graph (`Zone Allocation failed`,
+  exit 134).  The `bun run build` prefix moves out of `lint:publint` /
+  `lint:types-exports` into `lint:package`, so the build happens once, and
+  `package-health.yml` now runs those scripts instead of repeating the
+  invocations — the flags live in exactly one place, and a local
+  `bun run lint:package` checks what CI checks.  No `ignoreDependencies` entries
+  were added: once the binaries resolve, knip attributes them correctly, and an
+  unnecessary ignore would hide a real finding later.  Also drops the three
+  redundant `entry` patterns from `knip.jsonc` — knip derives `src/index.ts`,
+  `src/testkit/index.ts` and `src/devtools/index.ts` from the `exports` map
+  itself, which it had been reporting as configuration hints.
 - **The whole benchmark suite starts again** (#506).  `bun run bench` was dead:
   ten suites imported the free `ask` helper from the barrel, and that export was
   removed when `ref.ask(…)` became the only ask form.  The removal's adoption

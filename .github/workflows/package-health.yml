@@ -51,20 +51,28 @@ jobs:
         run: bun install
 
       # publint and attw both inspect the built package, so `dist/` has to exist
-      # first.  Built once here rather than by each script, so the job does not
-      # pay for three builds.
+      # first.  Built once here rather than by `lint:package`, so the job does
+      # not pay for three builds.
       - name: Build (tsc → dist/)
         run: bun run build
 
+      # Each step runs the package.json script rather than repeating the tool
+      # invocation, so the flags live in exactly one place and a local
+      # `bun run lint:package` checks the same thing this job does.  The scripts
+      # call the installed binaries directly (not `bunx`): `node_modules/.bin` is
+      # on PATH inside a script, so a missing install fails loudly here instead
+      # of being papered over by a registry download.
       - name: publint — manifest and exports map
-        run: bunx publint
+        run: bun run lint:publint
 
-      # `esm-only` is the honest profile: this package ships no CJS, so the
-      # "ESM (dynamic import only)" note for a CJS consumer describes the design
-      # rather than a defect.  Without it the job would fail on a warning that
-      # has no fix short of shipping CJS.
+      # `esm-only` (set in the script) is the honest profile: this package ships
+      # no CJS, so the "ESM (dynamic import only)" note for a CJS consumer
+      # describes the design rather than a defect.  Without it the job would fail
+      # on a warning that has no fix short of shipping CJS.
       - name: arethetypeswrong — declarations resolve for consumers
-        run: bunx attw --pack --profile esm-only
+        run: bun run lint:types-exports
 
+      # `knip-bun`, not `knip`: the Node binary exhausts its heap on this repo's
+      # module graph, and Bun is the project's primary toolchain anyway.
       - name: knip — dead modules and undeclared imports
-        run: bunx knip --no-progress
+        run: bun run lint:knip
