@@ -1,5 +1,6 @@
 'use client';
 
+import { match } from 'ts-pattern';
 import { useCallback, useEffect, useReducer, useRef } from 'react';
 import {
   type ChatMessage,
@@ -60,36 +61,32 @@ const INITIAL: State = {
 };
 
 type Action =
-  | { type: 'login-error'; reason: string }
-  | { type: 'logged-in'; username: string }
-  | { type: 'start-resuming' }
-  | { type: 'reset' }
-  | { type: 'rooms'; rooms: ReadonlyArray<RoomName> }
-  | { type: 'room-added'; name: RoomName }
-  | { type: 'room-removed'; name: RoomName }
-  | { type: 'history'; room: RoomName; messages: ReadonlyArray<ChatMessage> }
-  | { type: 'message'; room: RoomName; from: string; text: string; ts: number }
-  | { type: 'users'; room: RoomName; users: ReadonlyArray<string> }
-  | { type: 'select-room'; room: RoomName }
-  | { type: 'open-dm'; otherUser: string }
-  | { type: 'typing-add'; room: RoomName; username: string }
-  | { type: 'typing-clear'; room: RoomName; username: string }
-  | { type: 'receipts'; room: RoomName; receipts: Readonly<Record<string, number>> };
+  | { kind: 'login-error'; reason: string }
+  | { kind: 'logged-in'; username: string }
+  | { kind: 'start-resuming' }
+  | { kind: 'reset' }
+  | { kind: 'rooms'; rooms: ReadonlyArray<RoomName> }
+  | { kind: 'room-added'; name: RoomName }
+  | { kind: 'room-removed'; name: RoomName }
+  | { kind: 'history'; room: RoomName; messages: ReadonlyArray<ChatMessage> }
+  | { kind: 'message'; room: RoomName; from: string; text: string; ts: number }
+  | { kind: 'users'; room: RoomName; users: ReadonlyArray<string> }
+  | { kind: 'select-room'; room: RoomName }
+  | { kind: 'open-dm'; otherUser: string }
+  | { kind: 'typing-add'; room: RoomName; username: string }
+  | { kind: 'typing-clear'; room: RoomName; username: string }
+  | { kind: 'receipts'; room: RoomName; receipts: Readonly<Record<string, number>> };
 
 const TOKEN_KEY = 'chat-token';
 const MAX_RECONNECT_ATTEMPTS = 8;
 
 function reducer(state: State, action: Action): State {
-  switch (action.type) {
-    case 'login-error':
-      return { ...state, loginError: action.reason };
-    case 'logged-in':
-      return { ...state, phase: 'chat', username: action.username, loginError: '' };
-    case 'start-resuming':
-      return { ...state, phase: 'resuming' };
-    case 'reset':
-      return INITIAL;
-    case 'rooms': {
+  return match(action)
+    .with({ kind: 'login-error' }, (action) => ({ ...state, loginError: action.reason }))
+    .with({ kind: 'logged-in' }, (action) => ({ ...state, phase: 'chat' as const, username: action.username, loginError: '' }))
+    .with({ kind: 'start-resuming' }, (action) => ({ ...state, phase: 'resuming' as const }))
+    .with({ kind: 'reset' }, (action) => INITIAL)
+    .with({ kind: 'rooms' }, (action) => {
       // Preserve open DMs across `rooms` broadcasts — they live only
       // in the client, not in the cluster-wide directory.
       const directMessages = state.rooms.filter(isDirectMessageRoom);
@@ -110,8 +107,8 @@ function reducer(state: State, action: Action): State {
         unreadByRoom,
         currentRoom: state.currentRoom ?? action.rooms[0] ?? null,
       };
-    }
-    case 'room-added': {
+    })
+    .with({ kind: 'room-added' }, (action) => {
       // `rooms` carries the full set; this action exists for the
       // per-name toast in the UI.  Idempotent.
       if (state.rooms.includes(action.name)) return state;
@@ -122,8 +119,8 @@ function reducer(state: State, action: Action): State {
         usersByRoom:    { ...state.usersByRoom,    [action.name]: [] },
         unreadByRoom:   { ...state.unreadByRoom,   [action.name]: 0  },
       };
-    }
-    case 'room-removed': {
+    })
+    .with({ kind: 'room-removed' }, (action) => {
       const { [action.name]: _m, ...messagesByRoom } = state.messagesByRoom;
       const { [action.name]: _u, ...usersByRoom } = state.usersByRoom;
       const { [action.name]: _r, ...unreadByRoom } = state.unreadByRoom;
@@ -137,13 +134,14 @@ function reducer(state: State, action: Action): State {
         usersByRoom,
         unreadByRoom,
       };
-    }
-    case 'history':
+    })
+    .with({ kind: 'history' }, (action) => {
       return {
         ...state,
         messagesByRoom: { ...state.messagesByRoom, [action.room]: action.messages.slice() },
       };
-    case 'message': {
+    })
+    .with({ kind: 'message' }, (action) => {
       const list = (state.messagesByRoom[action.room] ?? []).slice();
       list.push({ from: action.from, text: action.text, ts: action.ts });
       const isCurrent = action.room === state.currentRoom;
@@ -154,19 +152,21 @@ function reducer(state: State, action: Action): State {
           ? state.unreadByRoom
           : { ...state.unreadByRoom, [action.room]: (state.unreadByRoom[action.room] ?? 0) + 1 },
       };
-    }
-    case 'users':
+    })
+    .with({ kind: 'users' }, (action) => {
       return {
         ...state,
         usersByRoom: { ...state.usersByRoom, [action.room]: action.users.slice().sort() },
       };
-    case 'select-room':
+    })
+    .with({ kind: 'select-room' }, (action) => {
       return {
         ...state,
         currentRoom: action.room,
         unreadByRoom: { ...state.unreadByRoom, [action.room]: 0 },
       };
-    case 'open-dm': {
+    })
+    .with({ kind: 'open-dm' }, (action) => {
       const room = directMessageRoomFor(action.otherUser);
       if (state.rooms.includes(room)) return state;
       return {
@@ -176,29 +176,30 @@ function reducer(state: State, action: Action): State {
         usersByRoom:    { ...state.usersByRoom,    [room]: [] },
         unreadByRoom:   { ...state.unreadByRoom,   [room]: 0  },
       };
-    }
-    case 'typing-add': {
+    })
+    .with({ kind: 'typing-add' }, (action) => {
       const list = state.typingByRoom[action.room] ?? [];
       if (list.includes(action.username)) return state;
       return {
         ...state,
         typingByRoom: { ...state.typingByRoom, [action.room]: [...list, action.username] },
       };
-    }
-    case 'typing-clear': {
+    })
+    .with({ kind: 'typing-clear' }, (action) => {
       const list = state.typingByRoom[action.room] ?? [];
       const next = list.filter((u) => u !== action.username);
       const typingByRoom = { ...state.typingByRoom };
       if (next.length === 0) delete typingByRoom[action.room];
       else typingByRoom[action.room] = next;
       return { ...state, typingByRoom };
-    }
-    case 'receipts':
+    })
+    .with({ kind: 'receipts' }, (action) => {
       return {
         ...state,
         receiptsByRoom: { ...state.receiptsByRoom, [action.room]: action.receipts },
       };
-  }
+    })
+    .exhaustive();
 }
 
 export function useChat(): {
@@ -230,13 +231,13 @@ export function useChat(): {
   }, []);
 
   const handleServer = useCallback((m: ServerMessage) => {
-    switch (m.kind) {
-      case 'logged-in':
+    match(m)
+      .with({ kind: 'logged-in' }, (m) => {
         cancelReconnect();
         if (m.token) sessionStorage.setItem(TOKEN_KEY, m.token);
-        dispatch({ type: 'logged-in', username: m.username });
-        break;
-      case 'login-failed':
+        dispatch({ kind: 'logged-in', username: m.username });
+      })
+      .with({ kind: 'login-failed' }, (m) => {
         cancelReconnect();
         sessionStorage.removeItem(TOKEN_KEY);
         wsRef.current?.close();
@@ -245,33 +246,19 @@ export function useChat(): {
         // (which has empty loginError), so we'd lose the message
         // if we dispatched it first.  Order matters with React's
         // batched dispatches.
-        dispatch({ type: 'reset' });
-        dispatch({ type: 'login-error', reason: m.reason || 'Login failed.' });
-        break;
-      case 'rooms':
-        dispatch({ type: 'rooms', rooms: m.rooms });
-        break;
-      case 'room-added':
-        dispatch({ type: 'room-added', name: m.name });
-        break;
-      case 'room-removed':
-        dispatch({ type: 'room-removed', name: m.name });
-        break;
-      case 'history':
-        dispatch({ type: 'history', room: m.room, messages: m.messages });
-        break;
-      case 'message':
-        dispatch({ type: 'message', room: m.room, from: m.from, text: m.text, ts: m.ts });
-        break;
-      case 'users':
-        dispatch({ type: 'users', room: m.room, users: m.users });
-        break;
-      case 'read-receipts':
-        dispatch({ type: 'receipts', room: m.room, receipts: m.receipts });
-        break;
-      case 'user-typing': {
+        dispatch({ kind: 'reset' });
+        dispatch({ kind: 'login-error', reason: m.reason || 'Login failed.' });
+      })
+      .with({ kind: 'rooms' }, (m) => dispatch({ kind: 'rooms', rooms: m.rooms }))
+      .with({ kind: 'room-added' }, (m) => dispatch({ kind: 'room-added', name: m.name }))
+      .with({ kind: 'room-removed' }, (m) => dispatch({ kind: 'room-removed', name: m.name }))
+      .with({ kind: 'history' }, (m) => dispatch({ kind: 'history', room: m.room, messages: m.messages }))
+      .with({ kind: 'message' }, (m) => dispatch({ kind: 'message', room: m.room, from: m.from, text: m.text, ts: m.ts }))
+      .with({ kind: 'users' }, (m) => dispatch({ kind: 'users', room: m.room, users: m.users }))
+      .with({ kind: 'read-receipts' }, (m) => dispatch({ kind: 'receipts', room: m.room, receipts: m.receipts }))
+      .with({ kind: 'user-typing' }, (m) => {
         const { room, username } = m;
-        if (!username) break;
+        if (!username) return;
         let perRoom = typingTimersRef.current.get(room);
         if (!perRoom) {
           perRoom = new Map();
@@ -282,20 +269,19 @@ export function useChat(): {
         const timer = setTimeout(() => {
           perRoom!.delete(username);
           if (perRoom!.size === 0) typingTimersRef.current.delete(room);
-          dispatch({ type: 'typing-clear', room, username });
+          dispatch({ kind: 'typing-clear', room, username });
         }, 3000);
         perRoom.set(username, timer);
-        dispatch({ type: 'typing-add', room, username });
-        break;
-      }
-      case 'system':
-        break;
-    }
+        dispatch({ kind: 'typing-add', room, username });
+      })
+      // Ignored in this minimal frontend.
+      .with({ kind: 'system' }, () => {})
+      .exhaustive();
   }, [cancelReconnect]);
 
   const connectImplementation = useCallback(
     (firstFrame: ClientMessage) => {
-      dispatch({ type: 'login-error', reason: '' });
+      dispatch({ kind: 'login-error', reason: '' });
       const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
       const ws = new WebSocket(`${proto}//${location.host}${WS_PATH}`);
       wsRef.current = ws;
@@ -317,12 +303,12 @@ export function useChat(): {
             connectImplementation({ kind: 'resume', token });
           }, delay);
         } else {
-          dispatch({ type: 'reset' });
+          dispatch({ kind: 'reset' });
         }
       });
       ws.addEventListener('error', () => {
         if (!sessionStorage.getItem(TOKEN_KEY)) {
-          dispatch({ type: 'login-error', reason: 'Connection failed.' });
+          dispatch({ kind: 'login-error', reason: 'Connection failed.' });
         }
       });
     },
@@ -346,7 +332,7 @@ export function useChat(): {
       try { wsRef.current.close(1000, 'logout'); } catch { /* ignore */ }
       wsRef.current = null;
     }
-    dispatch({ type: 'reset' });
+    dispatch({ kind: 'reset' });
   }, [cancelReconnect]);
 
   const send = useCallback((room: RoomName, text: string) => {
@@ -372,7 +358,7 @@ export function useChat(): {
   }, []);
 
   const selectRoom = useCallback((room: RoomName) => {
-    dispatch({ type: 'select-room', room });
+    dispatch({ kind: 'select-room', room });
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
       // User-created rooms aren't auto-joined.  `join` is idempotent
       // server-side, so sending it for every selection is safe.
@@ -407,7 +393,7 @@ export function useChat(): {
       ? sessionStorage.getItem(TOKEN_KEY)
       : null;
     if (stored) {
-      dispatch({ type: 'start-resuming' });
+      dispatch({ kind: 'start-resuming' });
       connectImplementation({ kind: 'resume', token: stored });
     }
     return () => {
@@ -423,7 +409,7 @@ export function useChat(): {
    * `join` + `switch-active-room` for the resulting `@<other>` name.
    */
   const openDirectMessage = useCallback((otherUser: string): void => {
-    dispatch({ type: 'open-dm', otherUser });
+    dispatch({ kind: 'open-dm', otherUser });
     selectRoom(directMessageRoomFor(otherUser));
   }, [selectRoom]);
 

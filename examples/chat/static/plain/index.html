@@ -298,8 +298,11 @@
       </div>
     </section>
 
-    <script>
-      'use strict';
+    <script type="module">
+      // A module rather than a classic script, so ts-pattern can be imported
+      // from the CDN — there is no bundler on this page.  Modules are strict
+      // by default, hence no 'use strict'.
+      import { match } from 'https://esm.sh/ts-pattern@5';
 
       /* ============== state ============== */
       const TOKEN_KEY = 'chat-token';
@@ -448,20 +451,23 @@
 
       /* ============== inbound dispatch ============== */
       function handleServer(message) {
-        switch (message.kind) {
-          case 'logged-in':    return onLoggedIn(message.username, message.token);
-          case 'login-failed': return onLoginFailed(message.reason);
-          case 'rooms':        return onRooms(message.rooms);
-          case 'room-added':   return onRoomAdded(message.name);
-          case 'room-removed': return onRoomRemoved(message.name);
-          case 'history':      return onHistory(message.room, message.messages);
-          case 'message':      return onMessage(message.room, { from: message.from, text: message.text, ts: message.ts });
-          case 'users':        return onUsers(message.room, message.users);
-          case 'user-typing':  return onUserTyping(message.room, message.username);
-          case 'read-receipts': return onReadReceipts(message.room, message.receipts);
-          case 'system':       return onSystem(message.text);
-          default: console.warn('unknown server msg', message);
-        }
+        match(message)
+          .with({ kind: 'logged-in' },     (m) => onLoggedIn(m.username, m.token))
+          .with({ kind: 'login-failed' },  (m) => onLoginFailed(m.reason))
+          .with({ kind: 'rooms' },         (m) => onRooms(m.rooms))
+          .with({ kind: 'room-added' },    (m) => onRoomAdded(m.name))
+          .with({ kind: 'room-removed' },  (m) => onRoomRemoved(m.name))
+          .with({ kind: 'history' },       (m) => onHistory(m.room, m.messages))
+          .with({ kind: 'message' },       (m) => onMessage(m.room, { from: m.from, text: m.text, ts: m.ts }))
+          .with({ kind: 'users' },         (m) => onUsers(m.room, m.users))
+          .with({ kind: 'user-typing' },   (m) => onUserTyping(m.room, m.username))
+          .with({ kind: 'read-receipts' }, (m) => onReadReceipts(m.room, m.receipts))
+          .with({ kind: 'system' },        (m) => onSystem(m.text))
+          .otherwise((m) => onUnknownServerMessage(m));
+      }
+
+      function onUnknownServerMessage(message) {
+        console.warn('unknown server msg', message);
       }
 
       function onLoggedIn(username, token) {

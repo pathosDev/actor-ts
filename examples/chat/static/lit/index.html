@@ -26,6 +26,7 @@
     -->
     <script type="module">
       import { LitElement, html, css } from 'https://esm.sh/lit@3';
+      import { match } from 'https://esm.sh/ts-pattern@5';
 
       const WS_PATH = '/ws';
       const TOKEN_KEY = 'chat-token';
@@ -197,15 +198,15 @@
         }
 
         handleServer(m) {
-          switch (m.kind) {
-            case 'logged-in':
+          match(m)
+            .with({ kind: 'logged-in' }, (m) => {
               this.cancelReconnect();
               this.username = m.username;
               if (m.token) sessionStorage.setItem(TOKEN_KEY, m.token);
               this.loginError = '';
               this.phase = 'chat';
-              break;
-            case 'login-failed':
+            })
+            .with({ kind: 'login-failed' }, (m) => {
               this.cancelReconnect();
               sessionStorage.removeItem(TOKEN_KEY);
               try { this.ws?.close(); } catch { }
@@ -215,8 +216,8 @@
               // (token rejected during reload-resume).
               if (this.phase !== 'login') this.resetToLogin();
               this.loginError = m.reason || 'Login failed';
-              break;
-            case 'rooms': {
+            })
+            .with({ kind: 'rooms' }, (m) => {
               // Preserve open DMs across `rooms` broadcasts — they're
               // session-local, never published in the directory.
               const directMessages = this.rooms.filter(isDirectMessageRoom);
@@ -233,9 +234,8 @@
               this.usersByRoom = ub;
               this.unreadByRoom = ur;
               if (!this.currentRoom) this.currentRoom = m.rooms[0] ?? null;
-              break;
-            }
-            case 'room-added': {
+            })
+            .with({ kind: 'room-added' }, (m) => {
               // `rooms` already carries the full set; this is the
               // per-name notice used for the toast-style system line.
               if (!this.rooms.includes(m.name)) {
@@ -245,9 +245,8 @@
                 this.unreadByRoom   = { ...this.unreadByRoom,   [m.name]: 0  };
               }
               this.appendSystem(`New room "#${m.name}" available — click to join.`);
-              break;
-            }
-            case 'room-removed': {
+            })
+            .with({ kind: 'room-removed' }, (m) => {
               this.rooms = this.rooms.filter((r) => r !== m.name);
               const wasCurrent = this.currentRoom === m.name;
               const { [m.name]: _msgs, ...mb } = this.messagesByRoom;
@@ -260,12 +259,9 @@
                 this.currentRoom = this.rooms[0] ?? null;
                 this.appendSystem(`Room "#${m.name}" was removed.`);
               }
-              break;
-            }
-            case 'history':
-              this.messagesByRoom = { ...this.messagesByRoom, [m.room]: m.messages.slice() };
-              break;
-            case 'message': {
+            })
+            .with({ kind: 'history' }, (m) => this.messagesByRoom = { ...this.messagesByRoom, [m.room]: m.messages.slice() })
+            .with({ kind: 'message' }, (m) => {
               const list = (this.messagesByRoom[m.room] ?? []).slice();
               list.push({ from: m.from, text: m.text, ts: m.ts });
               this.messagesByRoom = { ...this.messagesByRoom, [m.room]: list };
@@ -279,18 +275,11 @@
                 // updates immediately.
                 this.markReadUpTo(m.room, m.ts);
               }
-              break;
-            }
-            case 'users':
-              this.usersByRoom = { ...this.usersByRoom, [m.room]: m.users.slice().sort() };
-              break;
-            case 'user-typing':
-              this.onUserTyping(m.room, m.username);
-              break;
-            case 'read-receipts':
-              this.receiptsByRoom = { ...this.receiptsByRoom, [m.room]: m.receipts };
-              break;
-          }
+            })
+            .with({ kind: 'users' }, (m) => this.usersByRoom = { ...this.usersByRoom, [m.room]: m.users.slice().sort() })
+            .with({ kind: 'user-typing' }, (m) => this.onUserTyping(m.room, m.username))
+            .with({ kind: 'read-receipts' }, (m) => this.receiptsByRoom = { ...this.receiptsByRoom, [m.room]: m.receipts })
+            .exhaustive();
         }
 
         onUserTyping(room, username) {

@@ -13,6 +13,7 @@
  * would render the runes inert.
  */
 
+import { match } from 'ts-pattern';
 import {
   WS_PATH, TIMESLICE_MS, MIME_OPUS,
   decodeIncomingFrame,
@@ -172,51 +173,43 @@ class VoiceStore {
   #onText(raw: string): void {
     let m: ServerMessage;
     try { m = JSON.parse(raw) as ServerMessage; } catch { return; }
-    switch (m.kind) {
-      case 'logged-in':
+    match(m)
+      .with({ kind: 'logged-in' }, (m) => {
         this.#cancelReconnect();
         this.username = m.username;
         sessionStorage.setItem(TOKEN_KEY, m.token);
         this.phase = 'app';
-        break;
-      case 'login-failed':
+      })
+      .with({ kind: 'login-failed' }, (m) => {
         this.#cancelReconnect();
         sessionStorage.removeItem(TOKEN_KEY);
         try { this.#ws?.close(); } catch { /* ignore */ }
         this.#ws = null;
         if (this.phase === 'app') this.#resetToGate();
         else this.loginError = m.reason || 'Login failed';
-        break;
-      case 'directory':
+      })
+      .with({ kind: 'directory' }, (m) => {
         this.directory = {
           users: [...m.users],
           groups: m.groups.map((g) => ({ name: g.name, members: [...g.members] })),
           rooms: [...m.rooms],
         };
-        break;
-      case 'online-users':
-        this.onlineUsers = new Set(m.users);
-        break;
-      case 'room-participants': {
+      })
+      .with({ kind: 'online-users' }, (m) => { this.onlineUsers = new Set(m.users); })
+      .with({ kind: 'room-participants' }, (m) => {
         const next = new Map(this.roomParticipants);
         next.set(m.room, [...m.users]);
         this.roomParticipants = next;
-        break;
-      }
-      case 'voice-target-ok': /* ack */ break;
-      case 'voice-target-failed':
+      })
+      .with({ kind: 'voice-target-ok' }, () => { /* ack */ })
+      .with({ kind: 'voice-target-failed' }, (m) => {
         // Press-down failed; clear active highlight.
         this.activeKey = null;
-        break;
-      case 'voice-incoming-start':
-        this.#startIncoming(m.from, m.source);
-        break;
-      case 'voice-incoming-end':
-        this.#endIncoming(m.from);
-        break;
-      case 'system':
-        break;
-    }
+      })
+      .with({ kind: 'voice-incoming-start' }, (m) => { this.#startIncoming(m.from, m.source); })
+      .with({ kind: 'voice-incoming-end' }, (m) => { this.#endIncoming(m.from); })
+      .with({ kind: 'system' }, () => {})
+      .exhaustive();
   }
 
   #onBinary(buffer: Uint8Array): void {

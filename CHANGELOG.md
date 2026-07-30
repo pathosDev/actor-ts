@@ -478,6 +478,17 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   `{ id, op: 'increment' }`.  `examples/pubsub/event-bus-across-nodes.ts`
   likewise renames `DomainEvent.type` to `kind`.
 
+- **Example frontends dispatch server frames with `match`** (#494) — all eight
+  chat/voice browser apps (React, Next, SvelteKit, Angular) and the four
+  no-build `static/{plain,lit}` pages switched on the WebSocket frame's `kind`
+  instead of matching on it, and the four React/Next reducers tagged their
+  action unions with `type:` rather than the project-wide `kind:`.  Both are
+  fixed; `ts-pattern` joins the eight app manifests and is imported from
+  esm.sh on the CDN pages.  `examples/chat/static/plain/index.html` becomes a
+  `<script type="module">` so it can import at all — it has no inline event
+  handlers, so nothing depended on the old global scope.  The committed
+  `static/**` bundles are regenerated.
+
 - **Docs no longer recommend `if`-chains over `match`** (#494) — the pattern
   matching page carried a "When to prefer plain `if`" section whose rule of
   thumb was *use `match` from 4+ variants*, and the FAQ, design-decisions and
