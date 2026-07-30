@@ -102,6 +102,12 @@ export abstract class BrokerActor<
    * not be resurrected by the next reconnect.
    */
   private _subscriptionsSeeded = false;
+  /**
+   * Whether {@link applyDesiredSubscriptions} has run for the *current*
+   * connection — i.e. whether the subclass has something to apply a new
+   * subscription to.  Reset on teardown.
+   */
+  private _subscriptionsApplied = false;
 
   /**
    * True between entering `connectImplementation` and completing
@@ -232,7 +238,7 @@ export abstract class BrokerActor<
   protected async rememberSubscription(key: string, subscription: Subscription): Promise<void> {
     const wasDesired = this._desiredSubscriptions.has(key);
     this._desiredSubscriptions.set(key, subscription);
-    if (this._state !== 'connected') return;
+    if (!this._canApplySubscriptionNow()) return;
     if (wasDesired) await this._revokeSubscriptionSafely(key);
     await this._applySubscriptionSafely(key, subscription);
   }
@@ -240,7 +246,26 @@ export abstract class BrokerActor<
   /** Drop `key` from the desired set and, when connected, from the connection. */
   protected async forgetSubscription(key: string): Promise<void> {
     if (!this._desiredSubscriptions.delete(key)) return;
-    if (this._state === 'connected') await this._revokeSubscriptionSafely(key);
+    if (this._canApplySubscriptionNow()) await this._revokeSubscriptionSafely(key);
+  }
+
+  /**
+   * Whether the subclass currently has a connection to act on.
+   *
+   * `connected` is the obvious case.  The `_subscriptionsApplied` half
+   * covers the sliver of `connecting` *after* the replay pass ran — the
+   * reconnect cycle runs on the scheduler, detached from the mailbox, so
+   * a `subscribe` can be processed between `applyDesiredSubscriptions()`
+   * returning and `_state` flipping to `connected`.  Without this the
+   * entry would sit in the desired set until the *next* reconnect, which
+   * is precisely the silent-loss class of bug this mechanism exists to
+   * kill.  Before the replay pass it stays false: the subclass may not
+   * have a connection yet, and the pass will pick the entry up anyway
+   * (a `Map` iteration sees entries added while it runs).
+   */
+  private _canApplySubscriptionNow(): boolean {
+    return this._state === 'connected'
+      || (this._state === 'connecting' && this._subscriptionsApplied);
   }
 
   /**
@@ -261,6 +286,7 @@ export abstract class BrokerActor<
     for (const [key, subscription] of this._desiredSubscriptions) {
       await this._applySubscriptionSafely(key, subscription);
     }
+    this._subscriptionsApplied = true;
   }
 
   /** Number of desired subscriptions — exposed for tests / health probes. */
@@ -521,6 +547,8 @@ export abstract class BrokerActor<
   private async _closeTransport(): Promise<void> {
     if (!this._transportOpened) return;
     this._transportOpened = false;
+    // The live handles go with the connection; the desired set stays.
+    this._subscriptionsApplied = false;
     try { await this.disconnectImplementation(); }
     catch (e) { this.log.warn(`broker disconnectImplementation threw: ${(e as Error).message}`); }
   }

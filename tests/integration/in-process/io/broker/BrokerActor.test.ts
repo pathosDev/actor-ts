@@ -56,6 +56,12 @@ class FakeBroker extends BrokerActor<FakeOptions, FakeCommand, string, string> {
   revokedSubscriptions: string[] = [];
   /** Keys whose applySubscription throws. */
   readonly failSubscriptionKeys = new Set<string>();
+  /**
+   * When set, `connectImplementation` parks on it *after* the replay pass —
+   * the window where the actor is `connecting` with a usable connection.
+   * Consumed by the connect that awaits it.
+   */
+  connectGate: Promise<void> | null = null;
 
   constructor(options: Partial<FakeOptions> = {}) { super(options); }
 
@@ -77,6 +83,11 @@ class FakeBroker extends BrokerActor<FakeOptions, FakeCommand, string, string> {
       throw new Error(`simulated connect failure (${this.connectAttempts})`);
     }
     await this.applyDesiredSubscriptions();
+    if (this.connectGate) {
+      const gate = this.connectGate;
+      this.connectGate = null;
+      await gate;
+    }
   }
   protected async disconnectImplementation(): Promise<void> {
     this.disconnects++;
@@ -482,6 +493,36 @@ describe('BrokerActor — desired subscriptions (#504)', () => {
     await sleep(60);
     // Seeding is once-only, so the options don't bring it back.
     expect(broker.appliedSubscriptions).toEqual([]);
+    await sys.terminate();
+  });
+
+  test('remember lands immediately once the connect replay pass has run', async () => {
+    const sys = makeSystem('ds-6b');
+    const { brokerReady } = spawnFake(sys, {
+      endpoint: 'host:1',
+      reconnect: { initialDelayMs: 10, maxDelayMs: 20, factor: 1 },
+    });
+    const broker = await brokerReady;
+    await sleep(20);
+
+    // Park the next connect *after* its replay pass, so the actor sits in
+    // `connecting` with a working connection.  The reconnect cycle runs on
+    // the scheduler, detached from the mailbox, so a real subscribe can
+    // land in exactly this window — it must apply now rather than wait for
+    // the next reconnect.
+    let releaseConnect!: () => void;
+    broker.connectGate = new Promise<void>((resolve) => { releaseConnect = resolve; });
+    broker.publicSimulateLoss();
+    for (let i = 0; i < 40 && broker.connectAttempts < 2; i++) await sleep(5);
+    await sleep(10);
+    expect(broker.publicConnectionState()).toBe('connecting');
+
+    await broker.publicRemember('in-the-gap', 'z');
+    expect(broker.appliedSubscriptions).toEqual(['in-the-gap=z']);
+
+    releaseConnect();
+    await sleep(20);
+    expect(broker.publicConnectionState()).toBe('connected');
     await sys.terminate();
   });
 
