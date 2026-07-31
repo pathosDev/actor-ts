@@ -118,7 +118,7 @@ async function run() {
     return;
   }
 
-  const assets = files.map((file) => {
+  const assets = rehashChunkNames(files).map((file) => {
     const gzipBytes = gzip(file.bytes);
     return {
       path: file.path,
@@ -133,6 +133,89 @@ async function run() {
   enforceBudgets(assets);
   report(assets);
   await emitModule(assets);
+}
+
+/**
+ * Re-derive every hashed chunk name from the bytes the chunk ships.
+ *
+ * Bun's `[hash]` is not a pure function of a chunk's content: it also
+ * varies with the path the module resolved from.  Bundling inside a git
+ * worktree — whose `node_modules` sits several directories above the
+ * project root — therefore emits byte-identical chunks under different
+ * names than a plain checkout does, and the committed bundle reads as
+ * stale for everyone whose layout differs from whoever last regenerated
+ * it.  Nothing catches that: only the names move, so the sizes, the
+ * typecheck and the tests all stay green.
+ *
+ * Hashing what we actually ship makes the bundle a pure function of the
+ * sources, on any layout and any platform — the same reasoning that
+ * already makes the ETags content-derived rather than mtime-derived.
+ *
+ * Names resolve dependency-first: renaming a chunk rewrites the
+ * importers that reference it, which changes their bytes and so their
+ * own names.  Dev builds are served off disk under Bun's names and are
+ * never embedded, so they are left alone.
+ */
+function rehashChunkNames(files) {
+  const hashedName = /^(assets\/.+)-[a-z0-9]{8}(\.[A-Za-z0-9]+)$/;
+  const nameParts = new Map();
+  for (const file of files) {
+    const match = hashedName.exec(file.path);
+    if (match !== null) nameParts.set(file.path, { stem: match[1], extension: match[2] });
+  }
+
+  const byPath = new Map(files.map((file) => [file.path, file]));
+  const decoder = new TextDecoder();
+  const encoder = new TextEncoder();
+  const textual = (path) => /\.(?:js|css|html)$/.test(path);
+  const baseNameOf = (path) => path.slice(path.lastIndexOf('/') + 1);
+
+  const renamed = new Map();
+
+  /** Substitute in ONE pass, so a rename can never be applied twice. */
+  const rewrite = (file) => {
+    if (!textual(file.path) || renamed.size === 0) return file.bytes;
+    const substitutions = new Map(
+      [...renamed].map(([from, to]) => [baseNameOf(from), baseNameOf(to)]),
+    );
+    const pattern = new RegExp(
+      [...substitutions.keys()].map((name) => name.replaceAll('.', '\\.')).join('|'),
+      'g',
+    );
+    const text = decoder.decode(file.bytes).replace(pattern, (name) => substitutions.get(name));
+    return encoder.encode(text);
+  };
+
+  const hashedChunksReferencedBy = (file) => {
+    if (!textual(file.path)) return [];
+    const text = decoder.decode(file.bytes);
+    return [...nameParts.keys()]
+      .filter((path) => path !== file.path && text.includes(baseNameOf(path)));
+  };
+
+  // A chunk can be named as soon as every hashed chunk it imports has
+  // its final name; the import graph is a DAG, so this always drains.
+  const pending = [...nameParts.keys()];
+  while (pending.length > 0) {
+    const ready = pending.filter((path) =>
+      hashedChunksReferencedBy(byPath.get(path)).every((dependency) => renamed.has(dependency)));
+    if (ready.length === 0) {
+      throw new Error('DevTools UI chunk graph is cyclic — cannot derive stable chunk names');
+    }
+    for (const path of ready) {
+      const file = byPath.get(path);
+      file.bytes = rewrite(file);
+      const { stem, extension } = nameParts.get(path);
+      const digest = createHash('sha256').update(file.bytes).digest('hex').slice(0, 8);
+      renamed.set(path, `${stem}-${digest}${extension}`);
+      pending.splice(pending.indexOf(path), 1);
+    }
+  }
+
+  return files.map((file) => ({
+    path: renamed.get(file.path) ?? file.path,
+    bytes: rewrite(file),
+  }));
 }
 
 /**
