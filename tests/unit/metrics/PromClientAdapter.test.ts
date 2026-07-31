@@ -26,11 +26,11 @@ type FakePromMetric = {
   readonly calls: RecordedCall[];
 };
 
-type FakePromRegistry = {
+interface FakePromRegistry {
   registered: FakePromMetric[];
   registerMetric(m: FakePromMetric): void;
   getSingleMetric(name: string): FakePromMetric | undefined;
-};
+}
 
 function makeFakeClient(reg: FakePromRegistry): {
   Counter: new (options: FakePromMetric['options']) => Record<string, unknown>;

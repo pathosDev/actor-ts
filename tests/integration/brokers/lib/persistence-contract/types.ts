@@ -19,7 +19,7 @@ import type { Journal } from '../../../../../src/persistence/Journal.js';
 import type { SnapshotStore } from '../../../../../src/persistence/SnapshotStore.js';
 
 /** A single contract scenario, parameterized over its harness type. */
-export type ContractScenario<Harness> = {
+export interface ContractScenario<Harness> {
   readonly name: string;
   /**
    * Return a human-readable reason to skip, or `null` to run.  Used for
@@ -28,10 +28,10 @@ export type ContractScenario<Harness> = {
    */
   skip?(harness: Harness): string | null;
   run(harness: Harness): Promise<void>;
-};
+}
 
 /** Shared harness surface — every store family namespaces ids the same way. */
-type HarnessBase = {
+interface HarnessBase {
   /** Short label used in test names ("InMemory", "Postgres", …). */
   readonly label: string;
   /**
@@ -41,18 +41,18 @@ type HarnessBase = {
    * namespacing is simply inert.
    */
   pid(name: string): string;
-};
+}
 
 export type JournalCapabilities = {
   /** Journal round-trips `tags` on append/read.  Default `true`. */
   readonly tags?: boolean;
 };
 
-export type JournalHarness = HarnessBase & {
+export interface JournalHarness extends HarnessBase {
   /** Build a fresh journal.  The scenario closes it. */
   make(): Promise<Journal>;
   readonly capabilities?: JournalCapabilities;
-};
+}
 
 export type SnapshotCapabilities = {
   /**
@@ -63,7 +63,7 @@ export type SnapshotCapabilities = {
   readonly keepN?: 'configurable' | 'none';
 };
 
-export type SnapshotHarness = HarnessBase & {
+export interface SnapshotHarness extends HarnessBase {
   /**
    * Build a fresh snapshot store.  `keepN` is honoured by stores whose
    * capabilities declare `keepN: 'configurable'`; when omitted the store's
@@ -71,12 +71,12 @@ export type SnapshotHarness = HarnessBase & {
    */
   make(keepN?: number): Promise<SnapshotStore>;
   readonly capabilities?: SnapshotCapabilities;
-};
+}
 
-export type DurableStateHarness = HarnessBase & {
+export interface DurableStateHarness extends HarnessBase {
   /** Build a fresh durable-state store.  The scenario closes it if it can. */
   make(): Promise<DurableStateStore>;
-};
+}
 
 /** `close()` is optional across the three contracts — call it uniformly. */
 export async function closeQuietly(store: unknown): Promise<void> {

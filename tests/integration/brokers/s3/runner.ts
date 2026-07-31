@@ -16,14 +16,14 @@ import { scenario as casScenario } from './scenarios/03-cas.js';
 import { scenario as deleteScenario } from './scenarios/04-delete.js';
 import { scenario as sseScenario } from './scenarios/05-sse.js';
 
-export type S3Context = BrokerScenarioContext & {
+export interface S3Context extends BrokerScenarioContext {
   readonly endpoint: string;
   readonly accessKeyId: string;
   readonly secretAccessKey: string;
   readonly bucket: string;
   readonly region: string;
   readonly forcePathStyle: boolean;
-};
+}
 
 function requireEnv(name: string): string {
   const value = process.env[name];

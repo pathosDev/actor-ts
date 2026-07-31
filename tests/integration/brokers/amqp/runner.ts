@@ -20,10 +20,10 @@ import { scenario as pubsubScenario } from './scenarios/01-publish-consume.js';
 import { scenario as ackScenario } from './scenarios/02-ack-nack.js';
 import { scenario as fanoutScenario } from './scenarios/03-fanout-exchange.js';
 
-export type AmqpContext = BrokerScenarioContext & {
+export interface AmqpContext extends BrokerScenarioContext {
   readonly url: string;
   readonly system: ActorSystem;
-};
+}
 
 function requireEnv(name: string): string {
   const value = process.env[name];

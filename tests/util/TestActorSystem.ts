@@ -27,10 +27,10 @@ import { ActorSystemOptions } from '../../src/ActorSystemOptions.js';
 import type { ActorSystemOptionsType } from '../../src/ActorSystemOptions.js';
 import { LogLevel, NoopLogger } from '../../src/Logger.js';
 
-export type TestActorSystemOptions = Partial<ActorSystemOptionsType> & {
+export interface TestActorSystemOptions extends Partial<ActorSystemOptionsType> {
   /** Override the default test-name.  Default: `'test-system'`. */
   readonly name?: string;
-};
+}
 
 /**
  * Create an `ActorSystem` for tests with quiet defaults (NoopLogger,

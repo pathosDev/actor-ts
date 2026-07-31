@@ -16,10 +16,10 @@ class CollectActor extends Actor<unknown> {
   override onReceive(m: unknown): void { this.received.push(m); }
 }
 
-type EchoServer = {
+interface EchoServer {
   port: number;
   close(): Promise<void>;
-};
+}
 
 /** Spin up a tiny TCP echo server on a random port. */
 async function startEchoServer(transform?: (chunk: Buffer) => Buffer): Promise<EchoServer> {

@@ -20,13 +20,13 @@ export type ShardedMessage = {
 };
 
 /** Increment the counter for `entityId`. */
-export type ShardedIncrement = ShardedMessage & { readonly op: 'increment' };
+export interface ShardedIncrement extends ShardedMessage { readonly op: 'increment' }
 
 /** Query "who hosts you?" — reply via `replyTo`. */
-export type ShardedWho = ShardedMessage & {
+export interface ShardedWho extends ShardedMessage {
   readonly op: 'who';
   readonly replyTo: ActorRef<ShardedWhoReply>;
-};
+}
 
 export type ShardedCommand = ShardedIncrement | ShardedWho;
 

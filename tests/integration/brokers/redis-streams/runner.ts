@@ -14,10 +14,10 @@ import { scenario as produceScenario } from './scenarios/01-produce.js';
 import { scenario as consumeScenario } from './scenarios/02-consume-group.js';
 import { scenario as maxlenScenario } from './scenarios/03-maxlen.js';
 
-export type RedisContext = BrokerScenarioContext & {
+export interface RedisContext extends BrokerScenarioContext {
   readonly url: string;
   readonly system: ActorSystem;
-};
+}
 
 function requireEnv(name: string): string {
   const value = process.env[name];

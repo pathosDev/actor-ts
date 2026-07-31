@@ -23,7 +23,7 @@ import { runScenarios, type BrokerScenario, type BrokerScenarioContext } from '.
 import { scenario as basicLookupScenario } from './scenarios/01-basic-lookup.js';
 import { scenario as emptyEndpointsScenario } from './scenarios/02-empty-endpoints.js';
 
-export type K8sContext = BrokerScenarioContext & {
+export interface K8sContext extends BrokerScenarioContext {
   readonly apiUrl: string;
   readonly ca: Buffer;
   readonly clientCert: Buffer;
@@ -31,7 +31,7 @@ export type K8sContext = BrokerScenarioContext & {
   readonly seedProvider: KubernetesApiSeedProvider;
   /** Direct API call helper — used by scenarios to set up fixtures. */
   api(method: string, path: string, body?: unknown): Promise<{ status: number; body: string }>;
-};
+}
 
 function requireEnv(name: string): string {
   const value = process.env[name];
