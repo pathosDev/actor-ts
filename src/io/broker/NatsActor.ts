@@ -206,9 +206,9 @@ export class NatsActor
  * `createNatsConnection`) can satisfy the shape without the real
  * `nats` peer-dep.
  */
-export type NatsSubscriptionLike = {
+export interface NatsSubscriptionLike {
   unsubscribe(): void;
-};
+}
 
 export type NatsRawMessage = {
   subject: string;
@@ -216,14 +216,14 @@ export type NatsRawMessage = {
   reply?: string;
 };
 
-export type NatsConnectionLike = {
+export interface NatsConnectionLike {
   publish(subject: string, payload: Uint8Array, options?: { reply?: string }): void;
   subscribe(subject: string, options: { callback: (err: Error | null, message: NatsRawMessage) => void }): NatsSubscriptionLike;
   drain(): Promise<void>;
   closed(): Promise<Error | undefined>;
-};
+}
 
-type NatsModule = {
+interface NatsModule {
   connect(options: {
     servers: string[];
     token?: string;
@@ -231,7 +231,7 @@ type NatsModule = {
     pass?: string;
     name?: string;
   }): Promise<NatsConnectionLike>;
-};
+}
 
 const natsLazy: Lazy<Promise<NatsModule>> = Lazy.of(
   () => lazyImportModule<NatsModule>('nats', { context: 'NatsActor' }),

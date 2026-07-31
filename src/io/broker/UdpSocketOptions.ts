@@ -11,7 +11,7 @@ import type { BrokerCommonOptionsType } from './BrokerOptions.js';
 import type { ActorRef } from '../../ActorRef.js';
 import type { UdpDatagram } from './UdpSocketActor.js';
 
-export type UdpSocketOptionsType = BrokerCommonOptionsType & {
+export interface UdpSocketOptionsType extends BrokerCommonOptionsType {
   /** Local bind address.  Default: `'0.0.0.0'`. */
   readonly bindHost?: string;
   /** Local port.  `0` (default) lets the OS pick. */
@@ -20,7 +20,7 @@ export type UdpSocketOptionsType = BrokerCommonOptionsType & {
   readonly type?: 'udp4' | 'udp6';
   /** Subscriber for inbound datagrams.  Required. */
   readonly target?: ActorRef<UdpDatagram>;
-};
+}
 
 export class UdpSocketOptionsBuilder extends BrokerOptionsBuilder<UdpSocketOptionsType> {
   /** Start a fresh builder.  Equivalent to `new UdpSocketOptionsBuilder()`. */

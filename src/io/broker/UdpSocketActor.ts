@@ -117,7 +117,7 @@ export class UdpSocketActor
 
 /* ---------------------------- internals --------------------------------- */
 
-type DgramSocket = {
+interface DgramSocket {
   on(event: 'message', cb: (message: Uint8Array, rinfo: { address: string; port: number }) => void): void;
   on(event: 'error', cb: (err: Error) => void): void;
   once(event: 'listening', cb: () => void): void;
@@ -127,11 +127,11 @@ type DgramSocket = {
   send(message: Uint8Array, port: number, host: string, cb: (err?: Error) => void): void;
   close(cb?: () => void): void;
   address(): { port: number; address: string };
-};
+}
 
-type DgramModule = {
+interface DgramModule {
   createSocket(type: 'udp4' | 'udp6'): DgramSocket;
-};
+}
 
 const dgramLazy: Lazy<Promise<DgramModule>> = Lazy.of(async () => {
   const name = 'node:dgram';

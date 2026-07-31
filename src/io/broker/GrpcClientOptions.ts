@@ -10,7 +10,7 @@ import { BrokerOptionsBuilder, BrokerOptionsValidator } from './BrokerOptions.js
 import type { BrokerCommonOptionsType } from './BrokerOptions.js';
 import type { GrpcCredentials } from './GrpcClientActor.js';
 
-export type GrpcClientOptionsType = BrokerCommonOptionsType & {
+export interface GrpcClientOptionsType extends BrokerCommonOptionsType {
   /** Path to the `.proto` file (or array of paths). */
   readonly protoPath?: string | ReadonlyArray<string>;
   /** gRPC package name (`'sensor.v1'`). */
@@ -22,7 +22,7 @@ export type GrpcClientOptionsType = BrokerCommonOptionsType & {
   readonly credentials?: GrpcCredentials;
   /** Per-call deadline in ms.  Default 30_000. */
   readonly deadlineMs?: number;
-};
+}
 
 export class GrpcClientOptionsBuilder extends BrokerOptionsBuilder<GrpcClientOptionsType> {
   /** Start a fresh builder.  Equivalent to `new GrpcClientOptionsBuilder()`. */

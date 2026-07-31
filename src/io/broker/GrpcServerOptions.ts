@@ -12,7 +12,7 @@ import { BrokerOptionsBuilder } from './BrokerOptions.js';
 import type { BrokerCommonOptionsType } from './BrokerOptions.js';
 import type { GrpcHandler } from './GrpcServerActor.js';
 
-export type GrpcServerOptionsType = BrokerCommonOptionsType & {
+export interface GrpcServerOptionsType extends BrokerCommonOptionsType {
   readonly protoPath?: string | ReadonlyArray<string>;
   readonly packageName?: string;
   readonly serviceName?: string;
@@ -27,7 +27,7 @@ export type GrpcServerOptionsType = BrokerCommonOptionsType & {
   readonly credentials?:
     | { readonly kind: 'insecure' }
     | { readonly kind: 'tls'; readonly cert: Uint8Array; readonly key: Uint8Array; readonly rootCerts?: Uint8Array };
-};
+}
 
 export class GrpcServerOptionsBuilder extends BrokerOptionsBuilder<GrpcServerOptionsType> {
   /** Start a fresh builder.  Equivalent to `new GrpcServerOptionsBuilder()`. */

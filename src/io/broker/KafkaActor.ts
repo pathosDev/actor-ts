@@ -475,26 +475,26 @@ function pendingKey(topic: string, partition: number, offset: string): string {
   return `${topic}|${partition}|${offset}`;
 }
 
-type KafkaConstructor = {
+interface KafkaConstructor {
   new (config: {
     clientId?: string;
     brokers: string[];
     ssl?: boolean;
     sasl?: { mechanism: string; username: string; password: string };
   }): KafkaInstanceLike;
-};
+}
 
 /**
  * Minimal Kafka surface the actor depends on.  Exported so test seams
  * (subclasses overriding `createKafkaInstance`) can satisfy the same
  * shape without pulling kafkajs.
  */
-export type KafkaInstanceLike = {
+export interface KafkaInstanceLike {
   producer(config?: { idempotent?: boolean; allowAutoTopicCreation?: boolean }): KafkaProducerLike;
   consumer(config: { groupId: string }): KafkaConsumerLike;
-};
+}
 
-export type KafkaProducerLike = {
+export interface KafkaProducerLike {
   connect(): Promise<void>;
   disconnect(): Promise<void>;
   send(args: {
@@ -504,7 +504,7 @@ export type KafkaProducerLike = {
       partition?: number; headers?: Record<string, string | Uint8Array>;
     }>;
   }): Promise<unknown>;
-};
+}
 
 type KafkaConsumedMessage = {
   topic: string;
@@ -520,7 +520,7 @@ type KafkaConsumedMessage = {
   heartbeat?: () => Promise<void>;
 };
 
-export type KafkaConsumerLike = {
+export interface KafkaConsumerLike {
   connect(): Promise<void>;
   disconnect(): Promise<void>;
   subscribe(args: { topic: string; fromBeginning?: boolean }): Promise<void>;
@@ -537,7 +537,7 @@ export type KafkaConsumerLike = {
   commitOffsets?(args: ReadonlyArray<{
     topic: string; partition: number; offset: string;
   }>): Promise<void>;
-};
+}
 
 type KafkajsModule = {
   Kafka?: KafkaConstructor;

@@ -10,7 +10,7 @@ import { BrokerOptionsBuilder, BrokerOptionsValidator } from './BrokerOptions.js
 import type { BrokerCommonOptionsType } from './BrokerOptions.js';
 import type { AmqpQueueBinding } from './AmqpActor.js';
 
-export type AmqpOptionsType = BrokerCommonOptionsType & {
+export interface AmqpOptionsType extends BrokerCommonOptionsType {
   /** AMQP URL (`amqp://user:pass@host:5672/vhost`). */
   readonly url?: string;
   /** Number of unacked messages a consumer holds at once.  Default: 1. */
@@ -19,7 +19,7 @@ export type AmqpOptionsType = BrokerCommonOptionsType & {
   readonly bindings?: ReadonlyArray<AmqpQueueBinding>;
   /** Whether to auto-ack consumed deliveries.  Default: true. */
   readonly autoAcknowledge?: boolean;
-};
+}
 
 export class AmqpOptionsBuilder extends BrokerOptionsBuilder<AmqpOptionsType> {
   /** Start a fresh builder.  Equivalent to `new AmqpOptionsBuilder()`. */

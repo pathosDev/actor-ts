@@ -17,7 +17,7 @@ export type GrpcHandler =
   | { readonly kind: 'bidi'; readonly target: ActorRef<GrpcBidiCall> };
 
 /** Inbound unary call — handler must reply via `respond`. */
-export type GrpcUnaryCall = {
+export interface GrpcUnaryCall {
   readonly method: string;
   readonly request: unknown;
   readonly metadata: Readonly<Record<string, string>>;
@@ -25,20 +25,20 @@ export type GrpcUnaryCall = {
   respond(response: unknown): void;
   /** Reply with an error.  `code` defaults to 13 (INTERNAL). */
   respondError(message: string, code?: number): void;
-};
+}
 
 /** Inbound server-stream call — handler emits via `send`, ends via `complete`. */
-export type GrpcServerStreamCall = {
+export interface GrpcServerStreamCall {
   readonly method: string;
   readonly request: unknown;
   readonly metadata: Readonly<Record<string, string>>;
   send(chunk: unknown): void;
   complete(): void;
   fail(message: string, code?: number): void;
-};
+}
 
 /** Bidi call — handler receives chunks via `data` callback, sends via `send`. */
-export type GrpcBidiCall = {
+export interface GrpcBidiCall {
   readonly method: string;
   readonly metadata: Readonly<Record<string, string>>;
   /** Subscribe an actor to receive every inbound chunk + the end signal. */
@@ -46,7 +46,7 @@ export type GrpcBidiCall = {
   send(chunk: unknown): void;
   complete(): void;
   fail(message: string, code?: number): void;
-};
+}
 
 /**
  * gRPC server actor.  Differs from the `BrokerActor` base shape — a
@@ -249,9 +249,9 @@ type GrpcServerUnaryRequest = {
   metadata?: { get?: (key: string) => string[] };
 };
 
-type GrpcUnaryCb = {
+interface GrpcUnaryCb {
   (err: { code: number; message: string } | null, response?: unknown): void;
-};
+}
 
 type GrpcServerStreamRequest = {
   request: unknown;
@@ -270,13 +270,13 @@ type GrpcServerDuplexCall = {
   emit(event: 'error', err: { code: number; message: string }): void;
 };
 
-type GrpcServerLike = {
+interface GrpcServerLike {
   addService(definition: unknown, impl: Record<string, unknown>): void;
   bindAsync(bind: string, creds: unknown, cb: (err: Error | null, port: number) => void): void;
   start(): void;
   tryShutdown(cb: (err?: Error) => void): void;
   forceShutdown(): void;
-};
+}
 
 type GrpcModule = {
   Server: new () => GrpcServerLike;
@@ -291,9 +291,9 @@ type GrpcModule = {
   loadPackageDefinition(def: unknown): unknown;
 };
 
-type ProtoLoaderModule = {
+interface ProtoLoaderModule {
   loadSync(filename: string | string[], options?: object): unknown;
-};
+}
 
 const grpcLazy: Lazy<Promise<GrpcModule>> = Lazy.of(async () => {
   try {
