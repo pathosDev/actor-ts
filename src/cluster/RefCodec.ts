@@ -1,3 +1,4 @@
+import { parsePathSegments } from '../ActorPath.js';
 import { ActorRef, Nobody, NobodyRef } from '../ActorRef.js';
 import { NodeAddress } from './NodeAddress.js';
 import { RemoteActorRef } from './RemoteActorRef.js';
@@ -92,14 +93,6 @@ function decodeSingleRef(wire: WireActorRef, cluster: Cluster): ActorRef {
   }
   const targetNode = new NodeAddress(wire.system, wire.host, wire.port);
   return new RemoteActorRef(targetNode, wire.path, cluster);
-}
-
-/** Extract the "user/foo/bar" segments from "actor-ts://system/user/foo/bar". */
-export function parsePathSegments(path: string): string[] {
-  const match = /^actor-ts:\/\/[^/]+\/?(.*)$/.exec(path);
-  if (!match) return [];
-  const rest = match[1] ?? '';
-  return rest.split('/').filter((s) => s.length > 0);
 }
 
 type RefEncoder = (ref: ActorRef) => WireActorRef;

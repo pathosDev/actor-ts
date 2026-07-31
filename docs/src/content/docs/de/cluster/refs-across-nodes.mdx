@@ -81,6 +81,34 @@ Das bedeutet, dass **Request/Response zwischen Actors auf
 verschiedenen Nodes** einfach funktioniert — die Antwort reist
 über den Cluster-Transport zurück zum ursprünglichen Anfrager.
 
+## Remote-Refs vergleichen
+
+Der `path` eines Remote-Refs ist der Pfad des Actors, auf den er
+zeigt — dadurch ist er in Logs aussagekräftig und als Map-Key
+verwendbar:
+
+```ts
+remoteWorker.path.toString();   // "actor-ts://my-app/user/worker"
+```
+
+`ActorRef.equals` vergleicht genau diese Darstellung — und ein Pfad
+trägt den **Systemnamen, nicht die Node-Adresse**. Da alle Mitglieder
+eines Clusters denselben Systemnamen teilen, sind zwei Refs auf
+*denselben Pfad auf verschiedenen Nodes* weiterhin gleich:
+
+```ts
+const onNodeA = /* Ref auf /user/worker auf 10.0.0.5 */;
+const onNodeB = /* Ref auf /user/worker auf 10.0.0.6 */;
+
+onNodeA.equals(onNodeB);   // true — gleicher Pfad, und mehr sieht equals() nicht
+```
+
+`equals` beantwortet also *„derselbe Actor-Pfad?"*, nicht *„derselbe
+Actor"*. Wenn du Node-Identität brauchst — Routees deduplizieren,
+nachhalten welches Mitglied einen Service registriert hat —
+vergleiche `toString()` der Refs (node-qualifiziert) oder halte die
+`NodeAddress` neben dem Ref.
+
 ## Der Cluster-Transport
 
 Der Transport (TCP per Default, In-Memory in Tests) trägt:
