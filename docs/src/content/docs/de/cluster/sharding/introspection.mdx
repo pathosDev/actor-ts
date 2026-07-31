@@ -1,0 +1,195 @@
+---
+title: Shard-Introspektion
+description: Die Shards eines Sharded Type clusterweit auflisten, eine Ref auf einen Shard oder eine Entity holen und der Allokationskarte bei Änderungen folgen.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+Eine Region zu starten gibt dir genau eine Ref — die der Region — und
+das war bisher die ganze Geschichte. Du konntest Nachrichten *durch*
+das Sharding schicken, aber es nichts fragen: nicht "welche Shards gibt
+es", nicht "wo liegt Shard 7", nicht "gib mir einen Handle auf Entity
+`user-42`".
+
+Drei APIs auf `ClusterSharding` schließen diese Lücke, dazu ein
+Cluster-Event für die Push-Seite.
+
+## Die Shards auflisten
+
+`shards(typeName)` antwortet clusterweit, von jedem Node aus:
+
+```ts
+const shards = await cluster.sharding.shards<CounterCommand>('counter');
+
+for (const shard of shards) {
+  console.log(
+    `shard ${shard.shardId} on ${shard.node}`,
+    `— ${shard.entityCount} entities`,
+    shard.local ? '(here)' : '',
+  );
+}
+```
+
+Jeder Eintrag ist ein `ShardInfo`:
+
+```ts
+type ShardInfo<TMessage = unknown> = {
+  readonly shardId: number;
+  readonly node: NodeAddress;      // node currently hosting the shard
+  readonly regionPath: string;     // region on that node
+  readonly entityCount: number;    // live entities when its region answered
+  readonly local: boolean;         // hosted by the node that asked
+  readonly ref: ActorRef<ShardMessage<TMessage>>;
+};
+```
+
+Der Eintrag trägt eine **lebende Ref**, nicht nur Platzierungsdaten —
+eine Abfrage beantwortet also sowohl "was gibt es da draußen" als auch
+"wie rede ich damit". Der Preis: `ShardInfo` ist nicht
+JSON-serialisierbar. Wenn du eine serialisierbare Sicht brauchst,
+liefert der Management-Endpunkt
+[`GET /cluster/shards`](/de/observability/management/http-endpoints/)
+stattdessen eine reine Datenform.
+
+Shards ohne Zuhause **fehlen** in der Liste. Niemand hat nach ihnen
+gefragt, also hatte der Koordinator keinen Anlass, sie zu platzieren:
+ein Typ mit 64 Shards, der drei Entity-IDs gesehen hat, meldet ein bis
+drei Shards, nicht 64.
+
+<Aside type="caution" title="Ein Schnappschuss, kein Abonnement">
+  `entityCount` stimmte in dem Moment, in dem die hostende Region
+  geantwortet hat, und `node` hält nur bis zum nächsten Rebalance. Halte
+  die `ref` fest, wenn du weiter mit einem Shard reden willst — die Ref
+  überlebt es, dass die Entity-Zahl veraltet, die Node-Adresse nicht.
+</Aside>
+
+### Was es kostet
+
+Der Koordinator besitzt die Shard-Karte, aber **nicht** die
+Entity-Zahlen — die kennt nur die Region, die den Shard hostet. Der
+Aufruf fächert deshalb an alle registrierten Regions aus und joint die
+Antworten gegen die Allokationskarte. Also ein zusätzlicher Round-Trip.
+
+Die Fan-out-Frist ist eine *Teilantwort*-Frist: eine Region, die zu
+langsam ist oder zwischen Karten-Schnappschuss und Fan-out gegangen ist,
+steuert `entityCount: 0` bei, statt den ganzen Aufruf scheitern zu
+lassen. Du bekommst eine vollständige Shard-Liste mit einer
+konservativen Zahl, keine Exception.
+
+## Eine Ref auf einen Shard
+
+```ts
+const shard = await cluster.sharding.shardRefFor<CounterCommand>('counter', 7);
+```
+
+Hat Shard 7 noch kein Zuhause, **platziert** dieser Aufruf ihn — genau
+das, was eine erste Nachricht an ihn auch getan hätte — und antwortet,
+sobald der Koordinator entschieden hat.
+
+Die Ref ist das echte Ding. Ein Shard ist ein Actor
+(`/user/sharding-counter/shard-7`), du bekommst also den lokalen
+Shard-Actor zurück, wenn dieser Node ihn hostet, und eine
+`RemoteActorRef` auf denselben Pfad, wenn nicht. `tell` funktioniert
+damit von überall:
+
+```ts
+// Bring an entity up without sending it a message.
+shard.tell({ $t: 'sharding.StartEntity', entityId: 'user-42' });
+
+// Address one entity through the shard.
+shard.tell({
+  $t: 'sharding.EntityEnvelope',
+  entityId: 'user-42',
+  message: { id: 'user-42', kind: 'increment' },
+});
+```
+
+Und um zu fragen, was ein Shard hält:
+
+```ts
+const stats = await shard.ask<ShardStats>({ $t: 'sharding.GetShardStats' });
+// { shardId: 7, entityCount: 2, entityIds: ['user-42', 'user-99'] }
+```
+
+<Aside type="caution" title="`ask` auf eine *entfernte* Shard-Ref läuft in den Timeout">
+  `ask` erzeugt eine Einweg-Antwort-Ref, und die ist von einem anderen
+  Node aus nicht adressierbar — sie hat keinen Platz im Actor-Baum,
+  gegen den die Antwort aufgelöst werden könnte. Zwei Auswege: schicke
+  `GetShardStats` mit dem `self` deines eigenen Actors als `replyTo`
+  (ein echter Actor-Pfad, von überall erreichbar), oder nimm `shards()`,
+  dessen Antwort die Region nach Hause routet. `ask` auf eine *lokale*
+  Shard-Ref ist unproblematisch.
+</Aside>
+
+## Eine Ref auf eine Entity
+
+`entityRefFor` ist das Gegenstück zur Region-Ref — ein Handle auf eine
+einzelne Entity, wo immer sie gerade liegt:
+
+```ts
+const entity = cluster.sharding.entityRefFor<CounterCommand>('counter', 'user-42');
+
+entity.tell({ kind: 'increment', by: 1 });
+const value = await entity.ask<number>({ kind: 'get' });
+```
+
+Zwei Dinge sind anders als beim Reden mit der Region:
+
+- **Die Nachricht trägt ihren Routing-Key nicht mehr selbst.** An eine
+  Region zu senden heißt, dass `extractEntityId` die ID wieder aus
+  deiner Nachricht herausgraben muss — jeder Nachrichtentyp braucht also
+  eine. Der Handle benennt seine Entity direkt, `extractEntityId` wird
+  nie befragt.
+- **Er ist synchron zu bekommen.** Der Shard ist
+  `hash(entityId) % numShards`, es muss also nichts nachgeschlagen
+  werden. Eine Nachricht für einen Shard, dessen Zuhause noch unbekannt
+  ist, puffert die Region — genau wie bisher.
+
+Location-transparent ist er, weil er über die lokale Region routet, und
+die weiß bereits, wie sie jeden Node erreicht. Eine Proxy-Region
+(`startProxy`) reicht aus, um einen auszugeben — der Node muss selbst
+nichts hosten.
+
+`ask` funktioniert auf einer Entity-Ref unabhängig davon, wo die Entity
+liegt: die Region reicht deinen Sender an die Entity durch, die Antwort
+kommt also direkt zu dir zurück.
+
+## Der Karte folgen
+
+Für die Push-Seite abonnierst du `ShardMapChanged`:
+
+```ts
+import { match, P } from 'ts-pattern';
+import { ShardMapChanged } from 'actor-ts';
+
+cluster.subscribe((event) =>
+  match(event)
+    .with(P.instanceOf(ShardMapChanged), (e) => onShardMapChanged(e))
+    .otherwise(() => onOtherEvent()));
+
+function onShardMapChanged(event: ShardMapChanged): void {
+  // event.type     — the sharded type name
+  // event.shards   — ReadonlyMap<shardId, regionKey>
+  // event.regions  — the region table, with per-region shard counts
+  // event.version  — increments once per broadcast
+}
+```
+
+Das Event feuert auf **jedem** Node, nicht nur auf dem Leader: der
+Koordinator broadcastet an jede Region, und die Region publiziert lokal.
+Genau das macht es für einen Anwendungs-Listener oder ein
+Per-Node-Dashboard überhaupt brauchbar.
+
+Broadcasts werden **zusammengefasst**. Allokationsänderungen kommen
+einzeln pro Shard, und ein frischer Cluster platziert alle Shards auf
+einmal — `version` zählt deshalb Broadcasts, nicht einzelne Zuweisungen.
+Lies sie nicht als "wie viele Shards sind umgezogen".
+
+## Wohin als Nächstes
+
+- **[Sharding — Überblick](/de/cluster/sharding/overview/)** — die
+  Region-, Shard- und Entity-Actors, auf die diese APIs dir Refs geben.
+- **[Rebalance](/de/cluster/sharding/rebalance/)** — warum Platzierung
+  sich bewegt und was dabei mit einer Shard-Ref passiert.
+- **[HTTP-Management-Endpunkte](/de/observability/management/http-endpoints/)** —
+  `GET /cluster/shards`, die serialisierbare Sicht auf dieselbe Karte.

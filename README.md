@@ -252,6 +252,17 @@ const cartRegion = cluster.sharding.start('cart', CartActor, {
 });
 
 cartRegion.tell({ entityId: 'user-42', kind: 'add', sku: 'book-1' });
+
+// A handle on one entity, wherever it lives — no routing key needed
+// in the message, because the handle names its entity.
+const cart = cluster.sharding.entityRefFor<CartCommand>('cart', 'user-42');
+cart.tell({ kind: 'add', sku: 'book-2' });
+
+// And the shards themselves are addressable: where they live, how
+// full they are, and a live ref to each.
+for (const shard of await cluster.sharding.shards('cart')) {
+  console.log(shard.shardId, `${shard.node}`, shard.entityCount);
+}
 ```
 
 ---

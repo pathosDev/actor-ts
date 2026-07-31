@@ -70,8 +70,13 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   entities underneath and only then delivers `Terminated`, so `HandOffComplete`
   finally means what it says.  Shards are created eagerly when the coordinator
   assigns one, not lazily on the first message, so an allocated-but-empty shard
-  still has a live ref.  Cost, accepted deliberately: one extra node-local hop
-  per message to a local entity.
+  still has a live ref.  The cost was accepted deliberately and is not small:
+  every message to a local entity now takes one extra node-local hop, and
+  `benchmarks/cluster/sharded-roundtrip.ts` measures it as **~40k → ~29k ask/s
+  on one node (−28 %, +9 µs per ask)** and **~42k → ~25k on two nodes (−41 %,
+  +16 µs)** — medians of three runs each, on the same machine.  If you are
+  routing hot-path traffic through a region and were relying on the old
+  numbers, this is the change that moved them.
 - **CI gate for the benchmarks: `typecheck:bench` + `bench:smoke`** (#506).
   Nothing looked at `benchmarks/` at all — `bun run typecheck` uses the build
   tsconfig, which deliberately excludes them, and `test.yml` does not even

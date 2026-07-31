@@ -465,6 +465,7 @@ export default defineConfig({
                   collapsed: true,
                   items: [
                     { label: 'Overview',            slug: 'cluster/sharding/overview',                translations: { de: 'Überblick', es: 'Visión general', fr: 'Vue d’ensemble', ja: '概要', ko: '개요', 'pt-BR': 'Visão geral', ru: 'Обзор', 'zh-CN': '概览' } },
+                    { label: 'Introspection',       slug: 'cluster/sharding/introspection',           translations: { de: 'Introspektion', es: 'Introspección', fr: 'Introspection', ja: 'イントロスペクション', ko: '인트로스펙션', 'pt-BR': 'Introspecção', ru: 'Интроспекция', 'zh-CN': '内省' } },
                     { label: 'Allocation strategy', slug: 'cluster/sharding/allocation-strategy',     translations: { de: 'Allocation-Strategie', es: 'Estrategia de asignación', fr: 'Stratégie d’allocation', ja: '配置戦略', ko: '할당 전략', 'pt-BR': 'Estratégia de alocação', ru: 'Стратегия размещения', 'zh-CN': '分配策略' } },
                     { label: 'Rebalance',           slug: 'cluster/sharding/rebalance',               translations: { de: 'Rebalance', es: 'Rebalance', fr: 'Rééquilibrage', ja: 'リバランス', ko: '리밸런스', 'pt-BR': 'Rebalanceamento', ru: 'Ребалансировка', 'zh-CN': '再平衡' } },
                     { label: 'Remember entities',   slug: 'cluster/sharding/remember-entities',       translations: { de: 'Entities merken', es: 'Remember entities', fr: 'Mémorisation des entités', ja: 'エンティティ記憶', ko: '엔티티 기억', 'pt-BR': 'Remember entities', ru: 'Запоминание сущностей', 'zh-CN': '记住实体' } },

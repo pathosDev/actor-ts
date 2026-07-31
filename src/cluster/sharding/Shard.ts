@@ -61,15 +61,20 @@ export class Shard extends Actor<ShardInbox> {
 
   constructor(public readonly config: ShardConfig) { super(); }
 
+  /**
+   * Arm order is deliberate: every message to an entity lands here, and the
+   * two `instanceOf` checks are the expensive ones — putting the envelope
+   * first keeps the hot path a single string comparison.
+   */
   override onReceive(message: ShardInbox): void {
     match(message)
-      .with(P.instanceOf(Terminated), (m) => this.onEntityTerminated(m))
-      .with(P.instanceOf(Passivate), (m) => this.onPassivate(m))
       .with({ $t: 'sharding.EntityEnvelope' }, (m) => this.onEntityEnvelope(m))
       .with({ $t: 'sharding.PassivateEntity' }, (m) => this.onPassivateEntity(m))
       .with({ $t: 'sharding.StartEntities' }, (m) => this.onStartEntities(m))
       .with({ $t: 'sharding.StartEntity' }, (m) => this.onStartEntity(m))
       .with({ $t: 'sharding.GetShardStats' }, (m) => this.onGetShardStats(m))
+      .with(P.instanceOf(Terminated), (m) => this.onEntityTerminated(m))
+      .with(P.instanceOf(Passivate), (m) => this.onPassivate(m))
       .otherwise(() => this.onUnhandled());
   }
 
