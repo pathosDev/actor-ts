@@ -79,6 +79,40 @@ export type RememberedEntities = {
   readonly entityIds: string[];
 };
 
+/* ----------------------- region ↔ shard (node-local) --------------------- */
+
+/**
+ * Addresses one entity by id instead of relying on `extractEntityId`.
+ *
+ * The region wraps every message bound for a local entity in this envelope
+ * before handing it to the owning `Shard` — the shard has no extractor of its
+ * own, and the id has already been computed one level up.  It is also the
+ * on-the-wire shape a remote region forwards, so an envelope that arrives
+ * inside a {@link ShardEnvelope} routes exactly like a locally created one.
+ */
+export type EntityEnvelope = {
+  readonly $t: 'sharding.EntityEnvelope';
+  readonly entityId: string;
+  readonly message: unknown;
+};
+
+/**
+ * Region-driven passivation.  Both passivation policies — the idle sweep and
+ * the `maxEntities` LRU — are decided by the region (it routes every message,
+ * so it is the only place that sees activity across all shards on this node)
+ * and executed by the shard that owns the entity.
+ */
+export type PassivateEntity = {
+  readonly $t: 'sharding.PassivateEntity';
+  readonly entityId: string;
+};
+
+/** Pre-create remembered entities in a shard after it has been allocated here. */
+export type StartEntities = {
+  readonly $t: 'sharding.StartEntities';
+  readonly entityIds: string[];
+};
+
 /**
  * Wraps a user message forwarded between ShardRegions, carrying the
  * information needed to route a reply back to the original asker.
@@ -117,7 +151,10 @@ export type ShardingMessage =
   | EntityStopped
   | RememberedEntities
   | ShardEnvelope
-  | ShardReply;
+  | ShardReply
+  | EntityEnvelope
+  | PassivateEntity
+  | StartEntities;
 
 export function isShardingMessage(message: unknown): message is ShardingMessage {
   return typeof message === 'object'

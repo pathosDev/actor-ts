@@ -11,6 +11,30 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Added
 
+- **BREAKING — a shard is a real actor now: `Region → Shard → Entity`** (#511).
+  A shard used to be nothing but a number key in `ShardRegion`'s maps, with the
+  entities spawned as direct children of the *region*.  That left "give me an
+  `ActorRef` for shard 7" with no referent at all, made handoff a
+  fire-and-forget loop that reported `HandOffComplete` *before* the entities had
+  actually stopped, and hid the shard dimension from the actor tree entirely.
+  Entities are now grandchildren of the region:
+  `/user/sharding-<type>/shard-<n>/entity-<id>` — **migration:** anything that
+  resolved an entity by path has to insert the `shard-<n>` segment (the shard id
+  is `hashShardId(entityId, numShards)`); `ActorPath.parent` of an entity is now
+  its shard.  The new `Shard` actor owns the entity lifecycle only — spawn,
+  watch, stop, and the buffer that holds traffic for an entity on its way out.
+  Routing, buffering, coordinator registration and the ask-correlation machinery
+  stay in the region, and so does the passivation *policy*: both the idle sweep
+  and the `maxEntities` LRU are decided there and executed by the owning shard
+  through a `PassivateEntity` command.  Keeping the policy one level up is what
+  lets `maxEntities` go on meaning "per node" instead of quietly becoming "per
+  shard" — a knob that would otherwise have changed meaning without changing
+  name.  Handoff is now simply "stop the shard": the runtime terminates the
+  entities underneath and only then delivers `Terminated`, so `HandOffComplete`
+  finally means what it says.  Shards are created eagerly when the coordinator
+  assigns one, not lazily on the first message, so an allocated-but-empty shard
+  still has a live ref.  Cost, accepted deliberately: one extra node-local hop
+  per message to a local entity.
 - **CI gate for the benchmarks: `typecheck:bench` + `bench:smoke`** (#506).
   Nothing looked at `benchmarks/` at all — `bun run typecheck` uses the build
   tsconfig, which deliberately excludes them, and `test.yml` does not even

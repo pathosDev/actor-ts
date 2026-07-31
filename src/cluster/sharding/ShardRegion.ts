@@ -2,7 +2,7 @@ import { match, P } from 'ts-pattern';
 import { Actor } from '../../Actor.js';
 import { ActorRef } from '../../ActorRef.js';
 import { ActorPath } from '../../ActorPath.js';
-import type { Props } from '../../Props.js';
+import { Props } from '../../Props.js';
 import type { ShardingOptionsType } from './ShardingOptions.js';
 import type { Cancellable } from '../../Scheduler.js';
 import { Terminated } from '../../SystemMessages.js';
@@ -16,6 +16,7 @@ import { NodeAddress } from '../NodeAddress.js';
 import { RemoteActorRef } from '../RemoteActorRef.js';
 import { hashShardId } from './ShardAllocator.js';
 import { Passivate } from './Passivate.js';
+import { Shard, type ShardConfig, type ShardInbox, type ShardMessage } from './Shard.js';
 import { ShardCoordinator } from './ShardCoordinator.js';
 import {
   isShardingMessage,
@@ -49,30 +50,41 @@ export type ShardRegionConfig<TMessage> = {
   readonly localResolver: (path: string) => ActorRef | null;
 };
 
-type EntityState = {
-  ref: ActorRef<unknown>;
+/** What the region knows about a local entity — enough to decide passivation. */
+type EntityActivity = {
+  readonly shardId: number;
   lastActivity: number;
-  /** Non-null while the entity is passivating: buffered messages to flush on the next create. */
-  passivating: unknown[] | null;
 };
 
 type ShardState = 'owned' | 'handing-off';
 
 /**
  * ShardRegion is the node-local router for a sharded type.  It talks to
- * the ShardCoordinator to discover the home of each shard, hosts entities
- * whose shards live locally, and forwards everything else to the remote
- * region that owns the target shard.  Messages whose shard home is unknown
- * or in handoff are buffered until the coordinator answers.
+ * the ShardCoordinator to discover the home of each shard, hosts a
+ * {@link Shard} actor for every shard that lives locally, and forwards
+ * everything else to the remote region that owns the target shard.  Messages
+ * whose shard home is unknown or in handoff are buffered until the
+ * coordinator answers.
+ *
+ * Entities are grandchildren, not children: the region routes to a shard and
+ * the shard owns the entity actors.  What the region deliberately keeps is
+ * the *passivation policy* — both the idle sweep and the `maxEntities` LRU.
+ * It sees every message on this node, so it is the only place where a
+ * node-wide entity cap can be enforced; a shard only ever sees its own slice.
  */
 export class ShardRegion<TMessage = unknown> extends Actor<TMessage | ShardingMessage | Terminated | Passivate> {
   private readonly shardHomes = new Map<number, string>(); // shardId → region path
   private readonly shardHomeNodes = new Map<number, NodeAddress>();
   private readonly localShards = new Set<number>();
   private readonly shardState = new Map<number, ShardState>();
-  private readonly entities = new Map<string, EntityState>(); // entityId → state
-  private readonly entityShard = new Map<string, number>(); // entityId → shardId
+  /** Shard actors hosted here, keyed by shard id. */
+  private readonly shards = new Map<number, ActorRef<ShardInbox>>();
+  /** Shards stopped on purpose for a handoff — tells an expected stop from a crash. */
+  private readonly handingOff = new Set<number>();
   private readonly shardEntities = new Map<number, Set<string>>(); // shardId → entityIds
+  private readonly entityActivity = new Map<string, EntityActivity>(); // entityId → activity
+  /** Entities we have already asked a shard to passivate — excluded from the LRU count. */
+  private readonly passivating = new Set<string>();
   /** Messages buffered while their shard home is unknown or in transition. */
   private readonly buffer = new Map<number, Array<{ message: TMessage; sender: ActorRef | null }>>();
 
@@ -153,7 +165,7 @@ export class ShardRegion<TMessage = unknown> extends Actor<TMessage | ShardingMe
       return;
     }
     if (message instanceof Terminated) {
-      this.handleEntityTerminated(message);
+      this.handleShardTerminated(message);
       return;
     }
     if (message instanceof Passivate) {
@@ -198,32 +210,43 @@ export class ShardRegion<TMessage = unknown> extends Actor<TMessage | ShardingMe
       this.log.warn(`proxy region got shard ${shardId} unexpectedly`);
       return;
     }
-    let state = this.entities.get(entityId);
-    if (!state || state.passivating) {
-      if (state?.passivating) {
-        state.passivating.push(message);
-        return;
-      }
-      this.evictLruIfAtCapacity();
-      state = this.createEntity(shardId, entityId);
-    }
-    state.lastActivity = Date.now();
-    // Forward the original sender so that ask-pattern replies bypass the
-    // region and reach the caller directly.
-    state.ref.tell(message as never, sender);
+    this.recordActivity(shardId, entityId);
+    // Forward the original sender so that ask-pattern replies bypass region
+    // and shard and reach the caller directly.
+    this.ensureShard(shardId).tell({ $t: 'sharding.EntityEnvelope', entityId, message }, sender);
   }
 
   /**
-   * If `maxEntities` is set and the region is at capacity, passivate
-   * the entity with the oldest `lastActivity` to make room for a new
-   * one (#82).  Already-passivating entities don't count toward
-   * capacity (they'll be removed once Terminated arrives), and the
-   * eviction itself uses the same `passivating: []` + `ref.stop()`
-   * dance as `passivationSweep` so the journal-aware shutdown path is
-   * identical for idle-timeout and capacity-driven evictions.
+   * Stamp an entity as active — and, when this is the first message for a
+   * not-yet-existing entity, make room for it first.  A message for an entity
+   * that is already passivating changes nothing: the shard buffers it, and
+   * the entity's slot is accounted for until `EntityStopped` arrives.
+   */
+  private recordActivity(shardId: number, entityId: string): void {
+    if (this.passivating.has(entityId)) return;
+    const existing = this.entityActivity.get(entityId);
+    if (!existing) {
+      this.evictLruIfAtCapacity();
+      this.entityActivity.set(entityId, { shardId, lastActivity: Date.now() });
+      return;
+    }
+    existing.lastActivity = Date.now();
+  }
+
+  /**
+   * If `maxEntities` is set and the node is at capacity, passivate the entity
+   * with the oldest `lastActivity` to make room for a new one (#82).  The cap
+   * is deliberately **region-wide, not per shard** — it is a node-level
+   * memory bound, and dividing it across a shard set that changes on every
+   * rebalance would make the effective limit unpredictable.
    *
-   * The cap is a steady-state upper bound: between stopping the LRU
-   * and the Terminated message landing, the region briefly holds
+   * Already-passivating entities don't count toward capacity (they'll be
+   * removed once `EntityStopped` arrives), and the eviction goes through the
+   * same `PassivateEntity` command as `passivationSweep`, so the journal-aware
+   * shutdown path is identical for idle-timeout and capacity-driven evictions.
+   *
+   * The cap is a steady-state upper bound: between asking the shard to stop
+   * the LRU entity and `EntityStopped` landing, the node briefly holds
    * `maxEntities + 1` entities.  Acceptable trade-off vs blocking the
    * incoming message until passivation actually completes.
    */
@@ -231,24 +254,32 @@ export class ShardRegion<TMessage = unknown> extends Actor<TMessage | ShardingMe
     if (this.config.maxEntities <= 0) return;
     let liveCount = 0;
     let oldestId: string | null = null;
+    let oldestShard = -1;
     let oldestActivity = Number.POSITIVE_INFINITY;
-    for (const [id, s] of this.entities) {
-      if (s.passivating) continue;
+    for (const [entityId, activity] of this.entityActivity) {
+      if (this.passivating.has(entityId)) continue;
       liveCount++;
-      if (s.lastActivity < oldestActivity) {
-        oldestActivity = s.lastActivity;
-        oldestId = id;
+      if (activity.lastActivity < oldestActivity) {
+        oldestActivity = activity.lastActivity;
+        oldestId = entityId;
+        oldestShard = activity.shardId;
       }
     }
     if (liveCount < this.config.maxEntities) return;
     if (oldestId === null) return;
-    const victim = this.entities.get(oldestId)!;
     this.log.debug(
       `[sharding] LRU passivation: evicting '${oldestId}' (idle for ${Date.now() - oldestActivity}ms, `
       + `cap ${this.config.maxEntities} reached)`,
     );
-    victim.passivating = [];
-    victim.ref.stop();
+    this.requestPassivation(oldestId, oldestShard);
+  }
+
+  /** Ask the shard that owns `entityId` to stop it gracefully. */
+  private requestPassivation(entityId: string, shardId: number): void {
+    const shard = this.shards.get(shardId);
+    if (!shard) return;
+    this.passivating.add(entityId);
+    shard.tell({ $t: 'sharding.PassivateEntity', entityId });
   }
 
   private deliverRemote(node: NodeAddress, path: string, message: TMessage, sender: ActorRef | null): void {
@@ -298,20 +329,27 @@ export class ShardRegion<TMessage = unknown> extends Actor<TMessage | ShardingMe
     }
   }
 
-  private createEntity(shardId: number, entityId: string): EntityState {
-    this.log.debug(`[sharding] spawning entity '${entityId}' in shard ${shardId} of '${this.config.typeName}'`);
-    const ref = this.context.spawn(this.config.entityProps, `entity-${sanitizeName(entityId)}`);
+  /**
+   * The shard actor for `shardId`, spawning it if this is the first time we
+   * own it.  Shards are created **eagerly on ownership** rather than on the
+   * first message, so an allocated-but-empty shard still has a live ref for
+   * anyone asking the region to locate it.
+   */
+  private ensureShard(shardId: number): ActorRef<ShardInbox> {
+    const existing = this.shards.get(shardId);
+    if (existing) return existing;
+    const shardConfig: ShardConfig = {
+      typeName: this.config.typeName,
+      shardId,
+      entityProps: this.config.entityProps as Props<unknown>,
+    };
+    const ref = this.context.spawn(
+      Props.create<ShardInbox>(() => new Shard(shardConfig)),
+      `shard-${shardId}`,
+    );
     this.context.watch(ref);
-    const state: EntityState = { ref: ref as ActorRef<unknown>, lastActivity: Date.now(), passivating: null };
-    this.entities.set(entityId, state);
-    this.entityShard.set(entityId, shardId);
-    let set = this.shardEntities.get(shardId);
-    if (!set) { set = new Set(); this.shardEntities.set(shardId, set); }
-    set.add(entityId);
-    if (this.config.rememberEntities) {
-      this.tellCoordinator({ $t: 'sharding.EntityStarted', shardId, entityId });
-    }
-    return state;
+    this.shards.set(shardId, ref);
+    return ref;
   }
 
   /* ----------------------------- Coordinator ---------------------------- */
@@ -377,6 +415,9 @@ export class ShardRegion<TMessage = unknown> extends Actor<TMessage | ShardingMe
       .with({ $t: 'sharding.RememberedEntities' }, (m) => this.onRememberedEntities(m))
       .with({ $t: 'sharding.Envelope' }, (m) => this.onShardEnvelope(m))
       .with({ $t: 'sharding.Reply' }, (m) => this.onShardReply(m))
+      // Lifecycle reports coming up from our own shards.
+      .with({ $t: 'sharding.EntityStarted' }, (m) => this.onEntityStarted(m))
+      .with({ $t: 'sharding.EntityStopped' }, (m) => this.onEntityStopped(m))
       // Coordinator-only messages; regions ignore them.
       .otherwise(() => this.onUnhandled());
   }
@@ -424,6 +465,7 @@ export class ShardRegion<TMessage = unknown> extends Actor<TMessage | ShardingMe
     if (local) {
       this.localShards.add(message.shardId);
       this.shardState.set(message.shardId, 'owned');
+      if (!this.config.proxy) this.ensureShard(message.shardId);
     } else {
       this.localShards.delete(message.shardId);
       this.shardState.delete(message.shardId);
@@ -431,91 +473,147 @@ export class ShardRegion<TMessage = unknown> extends Actor<TMessage | ShardingMe
     this.flushBuffer(message.shardId);
   }
 
+  /* --------------------------- Entity lifecycle ------------------------- */
+
+  /**
+   * A shard reports a spawn.  The region mirrors the per-shard entity index
+   * because it owns the passivation policies and answers stats queries, and
+   * relays the event to the coordinator when entities are remembered.
+   */
+  private onEntityStarted(message: EntityStarted): void {
+    let entityIds = this.shardEntities.get(message.shardId);
+    if (!entityIds) { entityIds = new Set(); this.shardEntities.set(message.shardId, entityIds); }
+    entityIds.add(message.entityId);
+    if (!this.entityActivity.has(message.entityId)) {
+      // Remembered entities are pre-created without ever being routed to.
+      this.entityActivity.set(message.entityId, { shardId: message.shardId, lastActivity: Date.now() });
+    }
+    if (this.config.rememberEntities) this.tellCoordinator(message);
+  }
+
+  private onEntityStopped(message: EntityStopped): void {
+    this.shardEntities.get(message.shardId)?.delete(message.entityId);
+    this.entityActivity.delete(message.entityId);
+    this.passivating.delete(message.entityId);
+    if (this.config.rememberEntities) this.tellCoordinator(message);
+  }
+
+  /**
+   * Give a shard up.  Stopping the shard actor terminates its entities
+   * underneath it, and the runtime only reports `Terminated` once they are
+   * all gone — so `HandOffComplete` now genuinely means "nothing of this
+   * shard is running here any more", which the previous fire-and-forget
+   * entity stop could not promise.
+   */
   private onHandOff(message: HandOff): void {
+    const shardId = message.shardId;
+    const entityIds = Array.from(this.shardEntities.get(shardId) ?? []);
     this.log.debug(
-      `[sharding] handing off shard ${message.shardId} of '${this.config.typeName}' (stopping ${this.shardEntities.get(message.shardId)?.size ?? 0} entit(ies))`,
+      `[sharding] handing off shard ${shardId} of '${this.config.typeName}' (stopping ${entityIds.length} entit(ies))`,
     );
-    this.shardState.set(message.shardId, 'handing-off');
-    const ack: BeginHandOffAcknowledgment = { $t: 'sharding.BeginHandOffAcknowledgment', shardId: message.shardId };
+    this.shardState.set(shardId, 'handing-off');
+    const ack: BeginHandOffAcknowledgment = { $t: 'sharding.BeginHandOffAcknowledgment', shardId };
     this.tellCoordinator(ack);
 
-    const entityIds = Array.from(this.shardEntities.get(message.shardId) ?? []);
-    for (const entityId of entityIds) {
-      const entity = this.entities.get(entityId);
-      if (!entity) continue;
-      entity.ref.stop();
-      this.entities.delete(entityId);
-      this.entityShard.delete(entityId);
-      if (this.config.rememberEntities) {
-        this.tellCoordinator({ $t: 'sharding.EntityStopped', shardId: message.shardId, entityId });
+    if (this.config.rememberEntities) {
+      for (const entityId of entityIds) {
+        this.tellCoordinator({ $t: 'sharding.EntityStopped', shardId, entityId });
       }
     }
-    this.shardEntities.delete(message.shardId);
-    this.localShards.delete(message.shardId);
-    this.shardHomes.delete(message.shardId);
-    this.shardHomeNodes.delete(message.shardId);
-    this.shardState.delete(message.shardId);
+    this.forgetShardEntities(shardId);
+
+    const shard = this.shards.get(shardId);
+    if (!shard) { this.completeHandOff(shardId); return; }
+    this.handingOff.add(shardId);
+    shard.stop();
+  }
+
+  private completeHandOff(shardId: number): void {
+    this.handingOff.delete(shardId);
+    this.shards.delete(shardId);
+    this.localShards.delete(shardId);
+    this.shardHomes.delete(shardId);
+    this.shardHomeNodes.delete(shardId);
+    this.shardState.delete(shardId);
 
     const complete: HandOffComplete = {
       $t: 'sharding.HandOffComplete',
-      shardId: message.shardId,
+      shardId,
       region: this.self.path.toString(),
       node: this.config.cluster.selfAddress.toJSON(),
     };
     this.tellCoordinator(complete);
   }
 
+  /** Drop every entity bookkeeping entry belonging to `shardId`. */
+  private forgetShardEntities(shardId: number): void {
+    for (const entityId of this.shardEntities.get(shardId) ?? []) {
+      this.entityActivity.delete(entityId);
+      this.passivating.delete(entityId);
+    }
+    this.shardEntities.delete(shardId);
+  }
+
   private onRememberedEntities(message: RememberedEntities): void {
     // Pre-create entities we've been told about but haven't materialised yet.
     if (!this.localShards.has(message.shardId)) return;
-    for (const entityId of message.entityIds) {
-      if (this.entities.has(entityId)) continue;
-      this.createEntity(message.shardId, entityId);
-    }
+    if (this.config.proxy) return;
+    const startEntities: ShardMessage = {
+      $t: 'sharding.StartEntities',
+      entityIds: message.entityIds,
+    };
+    this.ensureShard(message.shardId).tell(startEntities);
   }
 
   /* ----------------------------- Passivation --------------------------- */
 
+  /**
+   * An entity's parent is its shard, so `Passivate` normally never reaches
+   * the region.  Code that kept a region ref from before the shard level
+   * existed can still send one here — forward it to the shard that hosts the
+   * entity, derived from the entity ref's own path.
+   */
   private handlePassivate(message: Passivate): void {
     const candidate = message.entity ?? this.sender.toNullable();
     if (!candidate) return;
-    let foundId: string | null = null;
-    for (const [id, s] of this.entities) {
-      if (s.ref.equals(candidate)) { foundId = id; break; }
+    const shardId = shardIdFromEntityPath(candidate.path.toString());
+    const shard = shardId === null ? undefined : this.shards.get(shardId);
+    if (!shard) {
+      this.log.warn(
+        `[sharding] Passivate for '${candidate.path}' reached the region but no local shard owns it`,
+      );
+      return;
     }
-    if (!foundId) return;
-    const state = this.entities.get(foundId)!;
-    state.passivating = [];
-    candidate.tell(message.stopMessage as never);
-    // The entity will terminate; we clean up in handleEntityTerminated.
+    shard.tell(message as never, candidate);
   }
 
-  private handleEntityTerminated(t: Terminated): void {
-    for (const [id, s] of this.entities) {
-      if (s.ref.equals(t.actor)) {
-        const buffered = s.passivating ?? [];
-        const shardId = this.entityShard.get(id) ?? -1;
-        this.entities.delete(id);
-        this.entityShard.delete(id);
-        this.shardEntities.get(shardId)?.delete(id);
-        if (this.config.rememberEntities) {
-          this.tellCoordinator({ $t: 'sharding.EntityStopped', shardId, entityId: id });
-        }
-        // Flush buffered messages by replaying through the normal route.
-        for (const message of buffered) this.routeUserMessage(message as TMessage, null);
-        return;
-      }
+  /**
+   * A shard actor stopped.  Expected during handoff — that is how we learn
+   * the entities are really gone.  Otherwise the shard died past its
+   * supervisor's budget; drop it so the next message respawns it, and keep
+   * the ownership so buffered work is not thrown away.
+   */
+  private handleShardTerminated(t: Terminated): void {
+    for (const [shardId, ref] of this.shards) {
+      if (!ref.equals(t.actor)) continue;
+      if (this.handingOff.has(shardId)) { this.completeHandOff(shardId); return; }
+      this.log.warn(
+        `[sharding] shard ${shardId} of '${this.config.typeName}' stopped unexpectedly; `
+        + `it will be recreated on the next message`,
+      );
+      this.shards.delete(shardId);
+      this.forgetShardEntities(shardId);
+      return;
     }
   }
 
   private passivationSweep(): void {
     if (this.config.passivationIdleMs <= 0) return;
     const now = Date.now();
-    for (const [id, s] of this.entities) {
-      if (s.passivating) continue;
-      if (now - s.lastActivity < this.config.passivationIdleMs) continue;
-      s.passivating = [];
-      s.ref.stop();
+    for (const [entityId, activity] of this.entityActivity) {
+      if (this.passivating.has(entityId)) continue;
+      if (now - activity.lastActivity < this.config.passivationIdleMs) continue;
+      this.requestPassivation(entityId, activity.shardId);
     }
   }
 
@@ -576,8 +674,26 @@ export function coordinatorPath(systemName: string, typeName: string): string {
   return `actor-ts://${systemName}/user/sharding-coordinator-${typeName}`;
 }
 
-function sanitizeName(id: string): string {
-  return id.replace(/[^A-Za-z0-9_\-]/g, '_');
+/** Child name of the shard actor for `shardId` under its region. */
+export function shardName(shardId: number): string {
+  return `shard-${shardId}`;
+}
+
+/** Full path of a shard actor, given the path of the region that hosts it. */
+export function shardPath(regionPath: string, shardId: number): string {
+  return `${regionPath}/${shardName(shardId)}`;
+}
+
+/**
+ * Recover the shard id from the path of an entity (or of the shard itself).
+ * `null` when the path does not run through a shard — which, since entities
+ * became grandchildren of the region, only happens for foreign refs.
+ */
+function shardIdFromEntityPath(path: string): number | null {
+  const matched = path.match(/\/shard-(\d+)(?:\/|$)/);
+  if (!matched) return null;
+  const shardId = Number(matched[1]);
+  return Number.isFinite(shardId) ? shardId : null;
 }
 
 /**
