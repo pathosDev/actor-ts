@@ -9,7 +9,9 @@ import {
   JournalRememberEntitiesStore,
   type RememberEntitiesStore,
 } from './RememberEntitiesStore.js';
+import { EntityRef } from './EntityRef.js';
 import {
+  DEFAULT_NUM_SHARDS,
   ShardRegion,
   coordinatorPath,
 } from './ShardRegion.js';
@@ -28,6 +30,8 @@ import { isShardingMessage } from './ShardingProtocol.js';
 export class ClusterSharding {
   private readonly regionsByPath = new Map<string, ActorRef<unknown>>();
   private readonly coordinators = new Map<string, ActorRef<unknown>>();
+  /** Shard count per started type — the entity→shard hash needs it. */
+  private readonly numShardsByType = new Map<string, number>();
 
   private constructor(
     public readonly system: ActorSystem,
@@ -93,6 +97,7 @@ export class ClusterSharding {
       this.cluster,
       (path: string) => this.regionsByPath.get(path) ?? null,
     );
+    this.numShardsByType.set(options.typeName, config.numShards);
     const ref = this.system.spawn(
       // ShardRegion internally handles extra envelope types; cast to Actor<TMessage>
       // so the returned ref presents the user-facing signature.
@@ -140,6 +145,46 @@ export class ClusterSharding {
     // handled uniformly (a `Partial<StartShardingOptionsType>` has no `.withProxy`).
     const resolvedOptions: Partial<StartShardingOptionsType<TMessage>> = { ...(options as Partial<StartShardingOptionsType<TMessage>>), proxy: true };
     return this.start(resolvedOptions);
+  }
+
+  /**
+   * A handle to one entity, addressed by id.  Location-transparent: the
+   * entity may live on this node or any other, and it may move between them —
+   * the handle keeps working, because it routes through the local region
+   * exactly like a normal message does.
+   *
+   * ```ts
+   * const entity = cluster.sharding.entityRefFor<Command>('counter', 'user-42');
+   * entity.tell({ kind: 'increment', by: 1 });     // no id inside the message
+   * const value = await entity.ask<number>({ kind: 'get' });
+   * ```
+   *
+   * Synchronous by design — the shard id is `hash(entityId) % numShards`, so
+   * nothing has to be looked up, and a message for a shard whose home is not
+   * known yet is buffered by the region just as it always was.
+   *
+   * Unlike the region ref, messages sent through the handle do **not** go
+   * through `extractEntityId`: the envelope names its entity, so the message
+   * type no longer has to carry a routing key of its own.
+   *
+   * @throws if no region for `typeName` has been started on this node — a
+   *   proxy region (`startProxy`) is enough.
+   */
+  entityRefFor<TMessage>(typeName: string, entityId: string): ActorRef<TMessage> {
+    const region = this.findRegionByType(typeName);
+    if (!region) {
+      throw new Error(
+        `[sharding] no region for type '${typeName}' on this node — `
+        + `call sharding.start(...) or sharding.startProxy(...) first`,
+      );
+    }
+    return new EntityRef<TMessage>(
+      region,
+      typeName,
+      entityId,
+      this.numShardsByType.get(typeName) ?? DEFAULT_NUM_SHARDS,
+      this.system.name,
+    );
   }
 
   /* ------------------------------- Internal -------------------------------- */

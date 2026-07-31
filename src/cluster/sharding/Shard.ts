@@ -133,7 +133,7 @@ export class Shard extends Actor<ShardInbox> {
     this.log.debug(
       `[sharding] spawning entity '${entityId}' in shard ${this.config.shardId} of '${this.config.typeName}'`,
     );
-    const ref = this.context.spawn(this.config.entityProps, `entity-${sanitizeName(entityId)}`);
+    const ref = this.context.spawn(this.config.entityProps, entityName(entityId));
     this.context.watch(ref);
     const state: EntityState = { ref: ref as ActorRef<unknown>, passivating: null };
     this.entities.set(entityId, state);
@@ -151,7 +151,11 @@ export class Shard extends Actor<ShardInbox> {
   }
 }
 
-/** Entity ids are user-supplied; actor names are not allowed to be. */
-function sanitizeName(id: string): string {
-  return id.replace(/[^A-Za-z0-9_\-]/g, '_');
+/**
+ * Child name of the entity actor for `entityId` under its shard.  Entity ids
+ * are user-supplied and actor names are not allowed to be, so anything outside
+ * `[A-Za-z0-9_-]` is folded to `_`.
+ */
+export function entityName(entityId: string): string {
+  return `entity-${entityId.replace(/[^A-Za-z0-9_\-]/g, '_')}`;
 }

@@ -11,6 +11,19 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Added
 
+- **`ClusterSharding.entityRefFor(typeName, entityId)`** (#512) — a
+  location-transparent handle to a single entity, the counterpart to the region
+  ref that sharding has handed out until now.  With only a region ref, every
+  message has to embed its own entity id so `extractEntityId` can dig it back
+  out; the identity of the entity is implicit and there is nothing you can pass
+  to another component that means "this one entity".  `entityRefFor` returns an
+  ordinary `ActorRef`, so `tell` and `ask` work as usual, and it wraps each
+  message in an id-addressed envelope that the region routes without consulting
+  `extractEntityId` at all — the message type no longer has to know how it is
+  routed.  Synchronous, because the shard is `hash(entityId) % numShards` and
+  needs no lookup; location-transparent, because it routes through the local
+  region, which already knows how to buffer for an unplaced shard and how to
+  forward across nodes.  A proxy region is enough to hand one out.
 - **BREAKING — a shard is a real actor now: `Region → Shard → Entity`** (#511).
   A shard used to be nothing but a number key in `ShardRegion`'s maps, with the
   entities spawned as direct children of the *region*.  That left "give me an

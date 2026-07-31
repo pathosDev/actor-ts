@@ -31,9 +31,13 @@ import {
   type BeginHandOffAcknowledgment,
   type RememberedEntities,
   type RegisterAcknowledgment,
+  type EntityEnvelope,
   type EntityStarted,
   type EntityStopped,
 } from './ShardingProtocol.js';
+
+/** Shard count used when a sharded type doesn't pick one. */
+export const DEFAULT_NUM_SHARDS = 64;
 
 export type ShardRegionConfig<TMessage> = {
   readonly typeName: string;
@@ -57,6 +61,15 @@ type EntityActivity = {
 };
 
 type ShardState = 'owned' | 'handing-off';
+
+/** Anything the region can route to an entity: a user message, or an id-addressed envelope. */
+type RoutableMessage<TMessage> = TMessage | EntityEnvelope;
+
+function isEntityEnvelope(message: unknown): message is EntityEnvelope {
+  return typeof message === 'object'
+    && message !== null
+    && (message as { $t?: unknown }).$t === 'sharding.EntityEnvelope';
+}
 
 /**
  * ShardRegion is the node-local router for a sharded type.  It talks to
@@ -86,7 +99,10 @@ export class ShardRegion<TMessage = unknown> extends Actor<TMessage | ShardingMe
   /** Entities we have already asked a shard to passivate — excluded from the LRU count. */
   private readonly passivating = new Set<string>();
   /** Messages buffered while their shard home is unknown or in transition. */
-  private readonly buffer = new Map<number, Array<{ message: TMessage; sender: ActorRef | null }>>();
+  private readonly buffer = new Map<
+    number,
+    Array<{ message: RoutableMessage<TMessage>; sender: ActorRef | null }>
+  >();
 
   private coordinatorRef: ActorRef<ShardingMessage> | null = null;
   private unsubscribe: (() => void) | null = null;
@@ -117,7 +133,7 @@ export class ShardRegion<TMessage = unknown> extends Actor<TMessage | ShardingMe
       entityProps: s.entityProps,
       extractEntityId: s.extractEntityId,
       extractEntityMessage: s.extractEntityMessage ?? ((m: TMessage) => m as unknown),
-      numShards: s.numShards ?? 64,
+      numShards: s.numShards ?? DEFAULT_NUM_SHARDS,
       role: s.role,
       proxy: s.proxy ?? false,
       rememberEntities: s.rememberEntities ?? false,
@@ -172,25 +188,51 @@ export class ShardRegion<TMessage = unknown> extends Actor<TMessage | ShardingMe
       this.handlePassivate(message);
       return;
     }
-    this.routeUserMessage(message as TMessage, this.sender.toNullable());
+    this.routeMessage(message as TMessage, this.sender.toNullable());
   }
 
   /* ----------------------------- Routing -------------------------------- */
 
-  private routeUserMessage(message: TMessage, sender: ActorRef | null): void {
+  /**
+   * The single entry point for anything bound for an entity.  Two shapes get
+   * here: a plain user message, whose entity id comes out of
+   * `extractEntityId`, and an {@link EntityEnvelope} from an
+   * {@link EntityRef}, which names its entity outright.  Everything after the
+   * id is resolved is identical, so both go through {@link route}.
+   */
+  private routeMessage(message: RoutableMessage<TMessage>, sender: ActorRef | null): void {
+    if (isEntityEnvelope(message)) {
+      this.route(message.entityId, message.message as TMessage, message, sender);
+      return;
+    }
     const entityId = this.config.extractEntityId(message);
-    const shardId = hashShardId(entityId, this.config.numShards);
     const entityMessage = this.config.extractEntityMessage(message) as TMessage;
+    this.route(entityId, entityMessage, message, sender);
+  }
+
+  /**
+   * @param entityMessage what the entity itself receives when the shard is local
+   * @param forwardMessage what gets buffered or handed to a remote region — the
+   *   *un*-extracted form, so a replay or a second hop re-derives the id the
+   *   same way this one did
+   */
+  private route(
+    entityId: string,
+    entityMessage: TMessage,
+    forwardMessage: RoutableMessage<TMessage>,
+    sender: ActorRef | null,
+  ): void {
+    const shardId = hashShardId(entityId, this.config.numShards);
 
     const state = this.shardState.get(shardId);
     if (state === 'handing-off') {
-      this.bufferShard(shardId, message, sender);
+      this.bufferShard(shardId, forwardMessage, sender);
       return;
     }
 
     const ownerPath = this.shardHomes.get(shardId);
     if (!ownerPath) {
-      this.bufferShard(shardId, message, sender);
+      this.bufferShard(shardId, forwardMessage, sender);
       this.askCoordinator(shardId);
       return;
     }
@@ -199,8 +241,8 @@ export class ShardRegion<TMessage = unknown> extends Actor<TMessage | ShardingMe
       this.deliverLocal(shardId, entityId, entityMessage, sender);
     } else {
       const node = this.shardHomeNodes.get(shardId);
-      if (!node) { this.bufferShard(shardId, message, sender); this.askCoordinator(shardId); return; }
-      this.deliverRemote(node, ownerPath, message, sender);
+      if (!node) { this.bufferShard(shardId, forwardMessage, sender); this.askCoordinator(shardId); return; }
+      this.deliverRemote(node, ownerPath, forwardMessage, sender);
     }
   }
 
@@ -282,10 +324,15 @@ export class ShardRegion<TMessage = unknown> extends Actor<TMessage | ShardingMe
     shard.tell({ $t: 'sharding.PassivateEntity', entityId });
   }
 
-  private deliverRemote(node: NodeAddress, path: string, message: TMessage, sender: ActorRef | null): void {
+  private deliverRemote(
+    node: NodeAddress,
+    path: string,
+    message: RoutableMessage<TMessage>,
+    sender: ActorRef | null,
+  ): void {
     if (sender === null) {
       // Nothing to reply to — skip the envelope wrapping.
-      new RemoteActorRef<TMessage>(node, path, this.config.cluster).tell(message);
+      new RemoteActorRef<RoutableMessage<TMessage>>(node, path, this.config.cluster).tell(message);
       return;
     }
 
@@ -415,6 +462,8 @@ export class ShardRegion<TMessage = unknown> extends Actor<TMessage | ShardingMe
       .with({ $t: 'sharding.RememberedEntities' }, (m) => this.onRememberedEntities(m))
       .with({ $t: 'sharding.Envelope' }, (m) => this.onShardEnvelope(m))
       .with({ $t: 'sharding.Reply' }, (m) => this.onShardReply(m))
+      // An EntityRef addressed one of our entities by id.
+      .with({ $t: 'sharding.EntityEnvelope' }, (m) => this.onEntityEnvelope(m))
       // Lifecycle reports coming up from our own shards.
       .with({ $t: 'sharding.EntityStarted' }, (m) => this.onEntityStarted(m))
       .with({ $t: 'sharding.EntityStopped' }, (m) => this.onEntityStopped(m))
@@ -437,7 +486,13 @@ export class ShardRegion<TMessage = unknown> extends Actor<TMessage | ShardingMe
             (path) => this.config.localResolver(path),
           )
         : null;
-    this.routeUserMessage(message.message as TMessage, senderRef);
+    // The payload may itself be an EntityEnvelope — an EntityRef whose entity
+    // turned out to live on this node.  routeMessage sorts that out.
+    this.routeMessage(message.message as RoutableMessage<TMessage>, senderRef);
+  }
+
+  private onEntityEnvelope(message: EntityEnvelope): void {
+    this.routeMessage(message, this.sender.toNullable());
   }
 
   private onShardReply(message: ShardReply): void {
@@ -619,7 +674,7 @@ export class ShardRegion<TMessage = unknown> extends Actor<TMessage | ShardingMe
 
   /* -------------------------------- Buffer ----------------------------- */
 
-  private bufferShard(shardId: number, message: TMessage, sender: ActorRef | null): void {
+  private bufferShard(shardId: number, message: RoutableMessage<TMessage>, sender: ActorRef | null): void {
     let queue = this.buffer.get(shardId);
     if (!queue) { queue = []; this.buffer.set(shardId, queue); }
     queue.push({ message, sender });
@@ -629,7 +684,7 @@ export class ShardRegion<TMessage = unknown> extends Actor<TMessage | ShardingMe
     const queue = this.buffer.get(shardId);
     if (!queue || queue.length === 0) return;
     this.buffer.delete(shardId);
-    for (const { message, sender } of queue) this.routeUserMessage(message, sender);
+    for (const { message, sender } of queue) this.routeMessage(message, sender);
   }
 
   /* -------------------------------- Misc ------------------------------ */
