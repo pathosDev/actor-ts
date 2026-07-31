@@ -13,6 +13,7 @@
  */
 import { describe, expect, test } from 'bun:test';
 import { Actor } from '../../../src/Actor.js';
+import type { ActorRef } from '../../../src/ActorRef.js';
 import { ActorSystem } from '../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../src/ActorSystemOptions.js';
 import { LogLevel, NoopLogger } from '../../../src/Logger.js';
@@ -20,6 +21,7 @@ import { Props } from '../../../src/Props.js';
 import { ActorLifecycleEvent, ActorStopped } from '../../../src/SystemMessages.js';
 import { awaitCondition } from '../../util/AwaitCondition.js';
 import { PersistenceExtensionId } from '../../../src/persistence/PersistenceExtension.js';
+import type { Journal } from '../../../src/persistence/Journal.js';
 import { InMemoryJournal } from '../../../src/persistence/journals/InMemoryJournal.js';
 import { InMemorySnapshotStore } from '../../../src/persistence/snapshot-stores/InMemorySnapshotStore.js';
 import {
@@ -719,6 +721,86 @@ describe('PersistentFSM — recovery failure', () => {
         () => stopped.some((e) => e instanceof ActorStopped && e.actor.equals(ref)),
         { label: 'the FSM whose recovery failed stopped itself' },
       );
+    } finally {
+      await sys.terminate();
+    }
+  });
+});
+
+/**
+ * `onReceive` intercepts the state-timeout fire *before* delegating to
+ * the base class, so that branch bypasses the `_recovering` guard every
+ * ordinary command goes through — and `this.state` is unassigned until
+ * replay succeeds (#519).
+ */
+describe('PersistentFSM — a state-timeout fire during recovery', () => {
+  /**
+   * Parks `read` until the test opens it, so recovery is provably still
+   * in flight while the fire is delivered.  Without this the fire and the
+   * end of recovery race, and the test would pass for the wrong reason.
+   */
+  class GatedJournal implements Journal {
+    private release!: () => void;
+    private readonly gate = new Promise<void>((resolve) => { this.release = resolve; });
+    /** True once replay has actually parked — the point of no ambiguity. */
+    reading = false;
+    constructor(private readonly inner: InMemoryJournal) {}
+    open(): void { this.release(); }
+    append<E>(persistenceId: string, events: ReadonlyArray<E>, expectedSeq: number, tags?: ReadonlyArray<string>) {
+      return this.inner.append<E>(persistenceId, events, expectedSeq, tags);
+    }
+    async read<E>(persistenceId: string, fromSeq: number, toSeq?: number) {
+      this.reading = true;
+      await this.gate;
+      return this.inner.read<E>(persistenceId, fromSeq, toSeq);
+    }
+    highestSeq(persistenceId: string): Promise<number> { return this.inner.highestSeq(persistenceId); }
+    delete(persistenceId: string, toSeq: number): Promise<void> { return this.inner.delete(persistenceId, toSeq); }
+    persistenceIds(): Promise<string[]> { return this.inner.persistenceIds(); }
+  }
+
+  test('is dropped instead of dereferencing an unassigned state', async () => {
+    const sysOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off);
+    const sys = ActorSystem.create('fsm-timeout-during-recovery', sysOptions);
+    const gated = new GatedJournal(new InMemoryJournal());
+    sys.extension(PersistenceExtensionId).setJournal(gated);
+    sys.extension(PersistenceExtensionId).setSnapshotStore(new InMemorySnapshotStore());
+
+    const delivered: unknown[] = [];
+    let incarnations = 0;
+    try {
+      // Starting recovery without awaiting it is the one way user code can
+      // reach `onReceive` while `_recovering` is still true — and it is
+      // exactly the trap the next intercept added here would fall into.
+      class RacyFsm extends OrderFsm {
+        override async preStart(): Promise<void> { void super.preStart(); }
+        override async onReceive(message: OrderCommand): Promise<void> {
+          delivered.push(message);
+          await super.onReceive(message);
+        }
+      }
+      const ref = sys.spawn(
+        Props.create(() => { incarnations++; return new RacyFsm('order-racy'); }),
+        'order',
+      );
+      await awaitCondition(() => gated.reading, { label: 'replay parked inside journal.read' });
+
+      // The internal self-tell an armed timer would have produced.
+      (ref as ActorRef<unknown>).tell({ kind: '__fsm_state_timeout__', stateAtArm: 'pending' });
+      await awaitCondition(() => delivered.length === 1, {
+        label: 'the timeout fire was dequeued while recovery was still parked',
+      });
+
+      // Pre-fix, dereferencing the unassigned state threw a TypeError from
+      // inside the handler, which supervision turns into a restart — so the
+      // incarnation count is what separates "dropped" from "blew up".  The
+      // FSM must also still answer once recovery lands.
+      gated.open();
+      const state = await ref.ask<FsmStateData<OrderState, OrderData>>({ kind: 'getState' }, 2_000);
+      expect(state.state).toBe('pending');
+      expect(incarnations).toBe(1);
     } finally {
       await sys.terminate();
     }

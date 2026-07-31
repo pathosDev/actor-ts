@@ -773,6 +773,17 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Fixed
 
+- **A `PersistentFSM` state-timeout that fires during recovery is dropped
+  instead of crashing the FSM** (#519).  `onReceive` intercepts the internal
+  `__fsm_state_timeout__` self-tell *before* delegating to the base class, so
+  that branch bypassed the `_recovering` guard every ordinary command goes
+  through — and `PersistentActor`'s state is unassigned until replay succeeds,
+  making the dereference in `fireTimeoutTransition` a `TypeError` rather than a
+  stash.  Supervision turned that into a restart, so the symptom was an FSM
+  restarting for no visible reason.  Dropping the fire is also right on its own
+  terms: `onRecoveryComplete` arms a fresh timer for the recovered state, so a
+  pre-restart fire has nothing left to say.  Found while fixing #516, whose fix
+  closed the then-reachable path from outside; this closes it at the site.
 - **`/user` is drained before `/system` starts stopping** (#509).
   `terminate()` enqueued one `terminate` on the root cell, and a cell stops
   every child at once — so both guardians came down concurrently, while
