@@ -163,19 +163,19 @@ conservative SemVer.) See `docs/.../reference/version-policy.mdx`.
   a scannable dispatch table. **Exempt:** matches on *internal state* (a state
   machine / behavior / directive reducer) or that *compute a value* in a helper
   (config, codec, route, priority) stay inline.
-- **`type` aliases, never `interface`.** Every object shape, contract and
-  variant type is a `type X = { … }`; heritage becomes an intersection
-  (`type X = Base & { … }`), never `extends`. One declaration form means no
-  accidental declaration merging into an exported name, uniform behaviour
-  under `keyof` / `Partial` / mapped types (`OptionsValidator` relies on it),
-  and consistency with the union aliases the project already uses
-  (`type XOptions`, `type Command`). `implements` works against a type alias,
-  so behavioural contracts convert too. **One exception:** a shape that needs
-  a polymorphic `this` return type stays an `interface` — TS allows `this`
-  only in a class or interface body (TS2526). Today that is exactly `Span`
-  (`src/tracing/Tracer.ts`) and the Node `EventEmitter` shims
-  `NodeSocketLike` / `NodeWorkerThread`; each carries an inline comment
-  saying so.
+- **`interface` for contracts and heritage, `type` for everything else.** A
+  declaration is an `interface` when it prescribes **function heads** — any
+  method, call or construct signature — or when it **`extends`** another
+  shape. Everything else is a `type X = { … }`: plain data shapes, unions,
+  mapped and conditional types. The split follows what the declaration is
+  *for*. An interface states a contract someone implements, and `extends`
+  reads as a hierarchy where an intersection only reads as conjunction; a
+  data shape states a value's layout, and there `type` composes with the
+  union aliases the project already uses (`type XOptions`, `type Command`).
+  A function-typed **property** (`onLost?: () => void`) is not a function
+  head — that shape stays a `type`. An interface may extend a type alias, so
+  a contract built on a plain data base is written `interface X extends
+  XBase { … }` with `XBase` staying a `type`; the mixture is intended.
 - **Discriminated unions are defined as named variant types.** Declare each
   tagged union as a union of **named** members
   (`type Command = DepositCommand | WithdrawCommand | BalanceCommand`), never an
@@ -248,7 +248,7 @@ conservative SemVer.) See `docs/.../reference/version-policy.mdx`.
     helper — the merge stays a plain spread; validation is a separate void
     assertion. `OptionsBuilder` has no set-time validation.
 - **All option-relevant types are co-located in `XOptions.ts`** — including the
-  `XOptionsType` type alias (the config contract read by `readOptionsFromConfig`)
+  `XOptionsType` declaration (the config contract read by `readOptionsFromConfig`)
   and, when present, the `XOptionsValidator` class. The functional file
   (actor/store/factory) imports the type contracts (`XOptions` + `XOptionsType`)
   **type-only** from `./XOptions.js`, and — when it validates — additionally
