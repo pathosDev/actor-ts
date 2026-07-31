@@ -43,11 +43,11 @@ installieren.
 ## Settings
 
 ```ts
-type SseOptionsType = BrokerCommonOptionsType & {
+interface SseOptionsType extends BrokerCommonOptionsType {
   url?:      string;                          // required — the SSE endpoint
   headers?:  Readonly<Record<string, string>>; // optional custom request headers
   target?:   ActorRef<SseEvent>;             // required — subscriber for inbound events
-};
+}
 ```
 
 | Setting    | Erforderlich | Beschreibung                                                       |

@@ -82,10 +82,10 @@ Situationen, in denen er es nicht ist:
 Das `Dispatcher`-Interface ist winzig:
 
 ```ts
-type Dispatcher = {
+interface Dispatcher {
   readonly id: string;
   execute(fn: () => void | Promise<void>): void;
-};
+}
 ```
 
 Implementiere diese zwei, und du hast einen eigenen Dispatcher.

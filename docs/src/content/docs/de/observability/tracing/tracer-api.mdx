@@ -44,22 +44,22 @@ try {
 ## Das Interface
 
 ```ts
-type Tracer = {
+interface Tracer {
   startSpan(name: string, options?: SpanOptions): Span;
   withActiveSpan<T>(span: Span, fn: () => T): T;
   activeSpan(): Span | null;
   injectContext(): TraceCarrier | null;
   extractContext(carrier: TraceCarrier | null): SpanContext | null;
-};
+}
 
-type Span = {
+interface Span {
   context(): SpanContext;
   setAttribute(key: string, value: string | number | boolean): this;
   setStatus(status: 'ok' | 'error', message?: string): this;
   recordException(err: Error): this;
   end(endTimeMs?: number): void;
   readonly ended: boolean;
-};
+}
 ```
 
 Minimale Oberfläche — nahe an der API von OpenTelemetry, aber

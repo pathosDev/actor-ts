@@ -41,12 +41,12 @@ amqp.tell({
 ## Settings
 
 ```ts
-type AmqpOptionsType = BrokerCommonOptionsType & {
+interface AmqpOptionsType extends BrokerCommonOptionsType {
   url:        string;                          // amqp:// or amqps://
   prefetch?:  number;                          // unacked messages per consumer; default 1
   autoAcknowledge?:      boolean;                         // ack on delivery vs after processing; default true
   bindings?:  ReadonlyArray<AmqpQueueBinding>; // queue ↔ exchange ↔ routingKey ↔ target
-};
+}
 
 type AmqpQueueBinding = {
   queue:       string;

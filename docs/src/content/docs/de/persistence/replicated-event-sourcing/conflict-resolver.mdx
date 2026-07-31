@@ -31,9 +31,9 @@ ein Event zurück (einen Gewinner oder eine synthetisierte
 Zusammenführung der beiden):
 
 ```ts
-type ConflictResolver<E> = {
+interface ConflictResolver<E> {
   resolve(a: ConflictCandidate<E>, b: ConflictCandidate<E>): E;
-};
+}
 
 type ConflictCandidate<E> = {
   event:     E;             // die User-Domain-Event-Payload

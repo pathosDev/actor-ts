@@ -29,9 +29,9 @@ The resolver reconciles a **concurrent pair** — it returns one
 event (a winner, or a synthesised merge of the two):
 
 ```ts
-type ConflictResolver<E> = {
+interface ConflictResolver<E> {
   resolve(a: ConflictCandidate<E>, b: ConflictCandidate<E>): E;
-};
+}
 
 type ConflictCandidate<E> = {
   event:     E;             // the user-domain event payload

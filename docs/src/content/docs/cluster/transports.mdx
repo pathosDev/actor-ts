@@ -19,7 +19,7 @@ is identical regardless of which is plugged in.
 ## The interface
 
 ```ts
-type Transport = {
+interface Transport {
   readonly self: NodeAddress;
   start(): Promise<void>;
   shutdown(): Promise<void>;
@@ -27,7 +27,7 @@ type Transport = {
   send(to: NodeAddress, message: WireMessage): void;
   disconnect(peer: NodeAddress): void;
   peers(): NodeAddress[];
-};
+}
 ```
 
 Small surface — bootstrap, send, receive, disconnect.  The cluster

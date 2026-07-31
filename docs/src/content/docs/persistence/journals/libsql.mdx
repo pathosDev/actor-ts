@@ -144,20 +144,20 @@ type LibSqlConnection = {
   client?:    LibSqlClientLike; // pre-built / shared client
 };
 
-type LibSqlJournalOptions = LibSqlConnection & {
+interface LibSqlJournalOptions extends LibSqlConnection {
   eventsTable?:      string;   // default 'events'
   tagsTable?:        string;   // default '<eventsTable>_tags'
   autoCreateTables?: boolean;  // default true
-};
-type LibSqlSnapshotStoreOptions = LibSqlConnection & {
+}
+interface LibSqlSnapshotStoreOptions extends LibSqlConnection {
   snapshotsTable?:   string;   // default 'snapshots'
   keepN?:            number;   // keep newest N per pid; default 3, <=0 keeps all
   autoCreateTables?: boolean;
-};
-type LibSqlDurableStateStoreOptions = LibSqlConnection & {
+}
+interface LibSqlDurableStateStoreOptions extends LibSqlConnection {
   table?:            string;   // default 'durable_state'
   autoCreateTables?: boolean;
-};
+}
 ```
 
 Options are validated when the store is constructed, so a bad URL or an

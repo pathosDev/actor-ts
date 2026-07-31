@@ -231,9 +231,9 @@ For a 5-node cluster that should never go below 3: **`StaticQuorum(3)`**.
 The provider interface is tiny:
 
 ```ts
-type DowningProvider = {
+interface DowningProvider {
   decide(view: ClusterPartitionView): DowningDecision;
-};
+}
 
 type ClusterPartitionView = {
   allMembers: ReadonlyArray<Member>;

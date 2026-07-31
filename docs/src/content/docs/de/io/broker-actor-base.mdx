@@ -277,9 +277,9 @@ bevor er überhaupt versucht, sich zu verbinden.
 ```ts
 import { BrokerActor, type OutboundEnvelope, type BrokerCommonOptionsType } from 'actor-ts';
 
-type MyProtocolOptionsType = BrokerCommonOptionsType & {
+interface MyProtocolOptionsType extends BrokerCommonOptionsType {
   readonly url: string;
-};
+}
 
 class MyProtocolActor extends BrokerActor<MyProtocolOptionsType, Command, MyPayload> {
   private connection: MyClient | null = null;

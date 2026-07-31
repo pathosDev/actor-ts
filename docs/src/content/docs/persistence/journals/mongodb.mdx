@@ -126,18 +126,18 @@ type MongoConnection = {
   client?:        MongoClientLike;           // pre-built / shared client
 };
 
-type MongoJournalOptions = MongoConnection & {
+interface MongoJournalOptions extends MongoConnection {
   eventsCollection?:  string;   // default 'events'; its mark collection is '<it>_meta'
   autoCreateIndexes?: boolean;  // default true
-};
-type MongoSnapshotStoreOptions = MongoConnection & {
+}
+interface MongoSnapshotStoreOptions extends MongoConnection {
   snapshotsCollection?: string; // default 'snapshots'
   keepN?:               number; // keep newest N per pid; default 3, <=0 keeps all
   autoCreateIndexes?:   boolean;
-};
-type MongoDurableStateStoreOptions = MongoConnection & {
+}
+interface MongoDurableStateStoreOptions extends MongoConnection {
   collection?: string;          // default 'durable_state'
-};
+}
 ```
 
 Options are validated when the store is constructed, so a bad URL scheme or a

@@ -108,20 +108,20 @@ type D1Connection = {
   client?:     D1ClientLike;  // vorgebauter / geteilter Transport
 };
 
-type D1JournalOptions = D1Connection & {
+interface D1JournalOptions extends D1Connection {
   eventsTable?:      string;   // Default 'events'
   tagsTable?:        string;   // Default '<eventsTable>_tags'
   autoCreateTables?: boolean;  // Default true
-};
-type D1SnapshotStoreOptions = D1Connection & {
+}
+interface D1SnapshotStoreOptions extends D1Connection {
   snapshotsTable?:   string;   // Default 'snapshots'
   keepN?:            number;   // neueste N pro pid; Default 3, <=0 behält alle
   autoCreateTables?: boolean;
-};
-type D1DurableStateStoreOptions = D1Connection & {
+}
+interface D1DurableStateStoreOptions extends D1Connection {
   table?:            string;   // Default 'durable_state'
   autoCreateTables?: boolean;
-};
+}
 ```
 
 ## Schema

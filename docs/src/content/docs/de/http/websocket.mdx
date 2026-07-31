@@ -223,7 +223,7 @@ Jede Verbindung ist eine `WebsocketConnection<TOut>`, die
 `ActorRef<TOut>` erweitert:
 
 ```ts
-type WebsocketConnection<TOut> = ActorRef<TOut> & {
+interface WebsocketConnection<TOut> extends ActorRef<TOut> {
   readonly id: string;
   readonly remoteAddress?: string;
   readonly upgrade: WebsocketUpgradeInfo;
@@ -231,7 +231,7 @@ type WebsocketConnection<TOut> = ActorRef<TOut> & {
   tell(message: TOut): void;         // encode via codec + send
   sendRaw(frame: WebsocketFrame): void; // bypass the codec
   close(code?: number, reason?: string): void;
-};
+}
 ```
 
 `upgrade` trägt den Handshake-Kontext:

@@ -113,20 +113,20 @@ type PostgresConnection = {
   pool?:       PgPoolLike;                   // pre-built / shared pool
 };
 
-type PostgresJournalOptions = PostgresConnection & {
+interface PostgresJournalOptions extends PostgresConnection {
   eventsTable?:      string;   // default 'events'
   tagsTable?:        string;   // default '<eventsTable>_tags'
   autoCreateTables?: boolean;  // default true
-};
-type PostgresSnapshotStoreOptions = PostgresConnection & {
+}
+interface PostgresSnapshotStoreOptions extends PostgresConnection {
   snapshotsTable?:   string;   // default 'snapshots'
   keepN?:            number;   // keep newest N per pid; default 3, <=0 keeps all
   autoCreateTables?: boolean;
-};
-type PostgresDurableStateStoreOptions = PostgresConnection & {
+}
+interface PostgresDurableStateStoreOptions extends PostgresConnection {
   table?:            string;   // default 'durable_state'
   autoCreateTables?: boolean;
-};
+}
 ```
 
 Table names come from config (not user input) and are validated against a

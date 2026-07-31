@@ -36,7 +36,7 @@ kafka.tell({ kind: 'publish', publish: { topic: 'audit', value: 'something' } })
 ## Settings
 
 ```ts
-type KafkaOptionsType = BrokerCommonOptionsType & {
+interface KafkaOptionsType extends BrokerCommonOptionsType {
   brokers:    string[] | string;           // bootstrap servers
   clientId?:  string;
   sasl?:      {
@@ -57,7 +57,7 @@ type KafkaOptionsType = BrokerCommonOptionsType & {
   };
   target?:  ActorRef<KafkaRecord>;     // consumer-actor for inbound records
   topics?:  ReadonlyArray<string>;
-};
+}
 ```
 
 The `BrokerCommonOptionsType` parent gives you reconnect, buffer,
