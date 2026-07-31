@@ -56,12 +56,12 @@ function makeRoutes(users: UsersDb): Routes {
   );
 }
 
-type Harness = {
+interface Harness {
   base: string;
   binding: ServerBinding;
   system: ActorSystem;
   rebind(routes: Routes): Promise<void>;
-};
+}
 
 async function startServer(
   label: string,
