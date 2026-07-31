@@ -1,4 +1,7 @@
 import { describe, expect, test } from 'bun:test';
+import { Actor } from '../../src/Actor.js';
+import { Props } from '../../src/Props.js';
+import { ActorRestarted, ActorStopped } from '../../src/SystemMessages.js';
 import {
   ActorInitializationError,
   AllForOneStrategy,
@@ -9,7 +12,10 @@ import {
   escalatingStrategy,
   OneForOneStrategy,
   stoppingStrategy,
+  type SupervisorStrategy,
 } from '../../src/Supervision.js';
+import { awaitCondition } from '../util/AwaitCondition.js';
+import { systemFixture } from './__shared__/system-fixture.js';
 
 class FooError extends Error { constructor() { super('foo'); this.name = 'FooError'; } }
 class BarError extends Error { constructor() { super('bar'); this.name = 'BarError'; } }
@@ -118,5 +124,95 @@ describe('DeathPactError', () => {
     expect(error.name).toBe('DeathPactError');
     expect(error.actorPath).toBe('actor-ts://sys/user/foo');
     expect(error.message).toContain('actor-ts://sys/user/foo');
+  });
+});
+
+/**
+ * `ActorStopped` and `ActorRestarted` are the discriminators these tests
+ * need: the cell publishes the first only from `finalizeTermination` and the
+ * second only from `onRecreate`, so exactly one of them follows a failure.
+ * Waiting for the one that should arrive is a positive signal — no test has
+ * to assert the absence of a restart that simply had not happened yet.
+ */
+class Boom extends Actor<string> {
+  override onReceive(_message: string): void { throw new Error('boom'); }
+}
+
+/** Records lifecycle events as `EventName:actorName` for easy assertions. */
+class LifecycleCollector extends Actor<ActorStopped | ActorRestarted> {
+  constructor(private readonly seen: string[]) { super(); }
+  override onReceive(event: ActorStopped | ActorRestarted): void {
+    this.seen.push(`${event.constructor.name}:${event.actor.path.name}`);
+  }
+}
+
+describe('supervisor strategy on Props', () => {
+  const sys = systemFixture('supervision-props');
+
+  /** Subscribe a fresh collector to both outcomes and hand back its log. */
+  function collectOutcomes(probeName: string): string[] {
+    const seen: string[] = [];
+    const probe = sys().spawn(Props.create(() => new LifecycleCollector(seen)), probeName);
+    sys().eventStream.subscribe(probe, ActorStopped);
+    sys().eventStream.subscribe(probe, ActorRestarted);
+    return seen;
+  }
+
+  test('overrides the guardian that would otherwise restart the child', async () => {
+    const seen = collectOutcomes('collector-stop');
+    const ref = sys().spawn(
+      Props.create(() => new Boom()).withSupervisorStrategy(stoppingStrategy),
+      'stops-by-props',
+    );
+
+    ref.tell('fail');
+
+    await awaitCondition(() => seen.includes('ActorStopped:stops-by-props'), {
+      label: 'the Props strategy stopped the actor',
+    });
+    // The user guardian restarts by default.  Since exactly one outcome
+    // follows a failure, seeing the stop proves the restart never happened.
+    expect(seen).not.toContain('ActorRestarted:stops-by-props');
+  });
+
+  test('falls through to the guardian when the Props carry no strategy', async () => {
+    const seen = collectOutcomes('collector-restart');
+    const ref = sys().spawn(Props.create(() => new Boom()), 'restarts-by-guardian');
+
+    ref.tell('fail');
+
+    await awaitCondition(() => seen.includes('ActorRestarted:restarts-by-guardian'), {
+      label: 'the user guardian restarted the actor',
+    });
+  });
+
+  test('beats an explicit parent strategy, and leaves siblings alone', async () => {
+    const seen = collectOutcomes('collector-siblings');
+
+    class Parent extends Actor<string> {
+      override preStart(): void {
+        this.context.spawn(
+          Props.create(() => new Boom()).withSupervisorStrategy(stoppingStrategy),
+          'fragile',
+        );
+        this.context.spawn(Props.create(() => new Boom()), 'resilient');
+      }
+      override supervisorStrategy(): SupervisorStrategy {
+        return new OneForOneStrategy(() => Directive.Restart, { maxRetries: -1 });
+      }
+      override onReceive(childName: string): void {
+        this.context.child(childName).forEach((child) => child.tell('fail' as never));
+      }
+    }
+
+    const parent = sys().spawn(Props.create(() => new Parent()), 'sibling-parent');
+    parent.tell('fragile');
+    parent.tell('resilient');
+
+    await awaitCondition(
+      () => seen.includes('ActorStopped:fragile') && seen.includes('ActorRestarted:resilient'),
+      { label: 'the fragile child stopped while its sibling restarted' },
+    );
+    expect(seen).not.toContain('ActorRestarted:fragile');
   });
 });

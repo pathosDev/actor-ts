@@ -909,7 +909,19 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
     const child = this.findChildByRef(childRef);
     if (!child) return;
 
-    const strategy: SupervisorStrategy = this.actor?.supervisorStrategy() ?? defaultStrategy;
+    // The failing child's own Props win, then this actor's strategy, then the
+    // framework default.  `Props.withSupervisorStrategy` states how *that*
+    // actor is supervised, so it has to be read here, on the parent — the
+    // child never gets to answer for its own failure.
+    //
+    // Two consequences of expressing a per-child override through
+    // parent-side machinery, both deliberate: an `all-for-one` strategy in a
+    // child's Props still widens to every sibling, and the restart budget in
+    // `registerRestart` stays per-parent, so siblings share one allowance.
+    const strategy: SupervisorStrategy =
+      child.props.config.supervisorStrategy
+      ?? this.actor?.supervisorStrategy()
+      ?? defaultStrategy;
     const directive = strategy.decider(cause);
 
     const affected = strategy.scope === 'all-for-one'

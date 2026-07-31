@@ -618,6 +618,28 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Fixed
 
+- **`Props.withSupervisorStrategy()` actually supervises now** (#509).  It was a
+  no-op: `ActorCell.onFailure` resolved the strategy as
+  `this.actor?.supervisorStrategy() ?? defaultStrategy` and never read
+  `props.config.supervisorStrategy`, so the setter built a new `Props` whose
+  strategy field nothing consumed.  The API is not obscure — `fundamentals/props.mdx`
+  documents it with its own section in both languages, and the routing and
+  supervision pages use it in samples — so every caller following the docs got
+  the guardian's default instead of the policy they asked for, silently.
+  Resolution order is now the failing child's Props, then the parent actor's
+  `supervisorStrategy()`, then `defaultStrategy`.
+  The repo described the semantics two contradictory ways, so this also settles
+  which one is real: the strategy on an actor's `Props` says how **that actor**
+  is supervised (`props.mdx`), not how it supervises its own children (the note
+  in `benchmarks/single-node/supervisor-restart.ts`, now corrected).  That is
+  why the parent reads it — a child never gets to answer for its own failure —
+  and it is the reading that adds something, since the parent-side one is
+  already covered by `override supervisorStrategy()`.
+  Two consequences of expressing a per-child override through parent-side
+  machinery are deliberate, and now documented at the call site: an
+  `all-for-one` strategy in a child's `Props` still widens to every sibling, and
+  the restart budget in `registerRestart` stays per-parent, so siblings share one
+  allowance.
 - **`bun run lint:package` is reproducible, and `lint:knip` exits 0 again**
   (#507).  The three package-health scripts invoked their tools through `bunx`,
   which — contrary to the first guess — does honour the manifest range and
