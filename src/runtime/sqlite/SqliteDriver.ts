@@ -14,13 +14,13 @@
  * run on the relational base with a SQLite `SqlDialect` instead.
  */
 
-export type SqliteStatement = {
+export interface SqliteStatement {
   run(...params: unknown[]): { changes: number; lastInsertRowid: number | bigint };
   get<T = unknown>(...params: unknown[]): T | undefined;
   all<T = unknown>(...params: unknown[]): T[];
-};
+}
 
-export type SqliteDb = {
+export interface SqliteDb {
   exec(sql: string): void;
   prepare(sql: string): SqliteStatement;
   /**
@@ -33,8 +33,8 @@ export type SqliteDb = {
    */
   transaction<F extends (...args: never[]) => unknown>(fn: F): F;
   close(): void;
-};
+}
 
-export type SqliteDriver = {
+export interface SqliteDriver {
   open(path: string): SqliteDb;
-};
+}

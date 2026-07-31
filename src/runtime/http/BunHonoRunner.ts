@@ -55,12 +55,12 @@ export class BunHonoRunner implements HonoServerRunner {
   }
 }
 
-type BunServer = {
+interface BunServer {
   readonly port: number;
   readonly hostname: string;
   stop(forceCloseConnections?: boolean): void;
-};
+}
 
-type BunServeGlobal = {
+interface BunServeGlobal {
   serve(options: { hostname: string; port: number; fetch: FetchHandler; websocket?: unknown }): BunServer;
-};
+}

@@ -76,13 +76,8 @@ export class NodeTcpBackend implements TcpBackend {
 
 /* ----------------------------- internals --------------------------------- */
 
-type Buffer = Uint8Array;
+interface Buffer extends Uint8Array {}
 
-/**
- * Stays an `interface` against the project-wide `type` rule: the `on`
- * overloads mirror Node's `EventEmitter` and return the polymorphic `this`,
- * which TS allows only in a class or interface body (TS2526).
- */
 interface NodeSocketLike {
   write(data: Uint8Array | string, cb?: () => void): boolean;
   end(): void;
@@ -92,22 +87,22 @@ interface NodeSocketLike {
   readonly remoteAddress?: string;
 }
 
-type NodeServerLike = {
+interface NodeServerLike {
   listen(port: number, host: string, cb?: () => void): void;
   close(cb?: () => void): void;
   address(): { port: number; address: string } | string | null;
   once(event: 'error', l: (err: Error) => void): void;
-};
+}
 
-type NodeNetModule = {
+interface NodeNetModule {
   createServer(handler?: (sock: NodeSocketLike) => void): NodeServerLike;
   connect(options: { host: string; port: number }): NodeSocketLike;
-};
+}
 
-type NodeTlsModule = {
+interface NodeTlsModule {
   createServer(options: unknown, handler?: (sock: NodeSocketLike) => void): NodeServerLike;
   connect(options: unknown): NodeSocketLike;
-};
+}
 
 // `Lazy<Promise<…>>` — the thunk returns a Promise, so the Promise itself
 // is memoised.  Concurrent callers all await the same in-flight import.

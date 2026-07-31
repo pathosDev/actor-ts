@@ -78,13 +78,13 @@ export class BunTcpBackend implements TcpBackend {
 
 /* ----------------------------- internals --------------------------------- */
 
-type BunSocketNative = {
+interface BunSocketNative {
   write(data: Uint8Array | string): number;
   end(): void;
   remoteAddress?: string;
-};
+}
 
-type BunGlobal = {
+interface BunGlobal {
   listen(options: unknown): { stop(): void; port?: number };
   connect(options: unknown): Promise<BunSocketNative> | BunSocketNative;
-};
+}

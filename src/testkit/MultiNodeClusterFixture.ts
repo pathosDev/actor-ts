@@ -32,12 +32,12 @@ import type { MultiNodeSpecOptionsType } from './MultiNodeSpecOptions.js';
  * Vitest and Jest export `beforeAll` / `afterAll` with compatible
  * signatures, so the same shape works there.
  */
-export type TestRunnerHooks = {
+export interface TestRunnerHooks {
   beforeAll(fn: () => void | Promise<void>): void;
   afterAll(fn: () => void | Promise<void>): void;
-};
+}
 
-export type MultiNodeClusterFixture = {
+export interface MultiNodeClusterFixture {
   /** The underlying MultiNodeSpec — available inside any `test()` in the describe block. */
   spec(): MultiNodeSpec;
   /**
@@ -46,7 +46,7 @@ export type MultiNodeClusterFixture = {
    * call `spec()` and it throws helpfully if not started).
    */
   isStarted(): boolean;
-};
+}
 
 export const MultiNodeClusterFixture = {
   /**

@@ -2,10 +2,10 @@ import { ActorSystemOptionsBuilder } from '../ActorSystemOptions.js';
 import type { ActorSystemOptionsType } from '../ActorSystemOptions.js';
 
 /** Plain options-object shape accepted by {@link TestKit.create}. */
-export type TestKitOptionsType = ActorSystemOptionsType & {
+export interface TestKitOptionsType extends ActorSystemOptionsType {
   /** When true, install a NoopLogger if the caller didn't provide one. */
   readonly quiet?: boolean;
-};
+}
 
 /**
  * Fluent builder for {@link TestKitOptionsType}, passed to {@link TestKit.create}.

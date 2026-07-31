@@ -29,7 +29,7 @@ export type WorkerEventMap = {
   close: WorkerCloseEvent;
 };
 
-export type WorkerLike = {
+export interface WorkerLike {
   postMessage(value: unknown, transfer?: unknown[]): void;
   addEventListener<K extends keyof WorkerEventMap>(
     event: K,
@@ -40,17 +40,17 @@ export type WorkerLike = {
     handler: (ev: WorkerEventMap[K]) => void,
   ): void;
   terminate(): void | Promise<number>;
-};
+}
 
 export type WorkerSpawnOptions = {
   readonly name?: string;
 };
 
-export type WorkerBackend = {
+export interface WorkerBackend {
   /**
    * Spawn a worker from a module URL.  Must use module semantics (ES
    * modules with imports) — the equivalent of `{ type: 'module' }` in the
    * Web Worker spec.
    */
   spawn(bootstrap: URL, options?: WorkerSpawnOptions): WorkerLike;
-};
+}
