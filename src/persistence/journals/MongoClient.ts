@@ -29,15 +29,15 @@ export interface MongoCursorLike<TDocument> {
   toArray(): Promise<TDocument[]>;
 }
 
-export interface MongoUpdateResult {
+export type MongoUpdateResult = {
   readonly matchedCount: number;
   readonly modifiedCount: number;
   readonly upsertedCount: number;
-}
+};
 
-export interface MongoDeleteResult {
+export type MongoDeleteResult = {
   readonly deletedCount: number;
-}
+};
 
 export interface MongoCollectionLike<TDocument extends MongoDocument = MongoDocument> {
   /** With `ordered: true` the driver stops at the first failing document. */
@@ -69,14 +69,14 @@ export interface MongoClientLike {
 }
 
 /** What a MongoDB store holds open: the database handle plus the client that owns it. */
-export interface MongoResource {
+export type MongoResource = {
   readonly database: MongoDatabaseLike;
   readonly client: MongoClientLike;
-}
+};
 
-interface MongoModule {
+type MongoModule = {
   MongoClient: new (url: string, options?: Record<string, unknown>) => MongoClientLike;
-}
+};
 
 const mongoLazy: Lazy<Promise<MongoModule>> = Lazy.of(
   () => lazyImportModule<MongoModule>('mongodb', {
@@ -86,7 +86,7 @@ const mongoLazy: Lazy<Promise<MongoModule>> = Lazy.of(
 );
 
 /** Connection options shared by all three MongoDB stores. */
-export interface MongoConnection {
+export type MongoConnection = {
   /**
    * Connection string, e.g. `mongodb://user:pass@host:27017` or
    * `mongodb+srv://cluster.example.mongodb.net`.  Required unless `client` is
@@ -107,7 +107,7 @@ export interface MongoConnection {
    * itself a connection pool, so sharing it is the normal case.
    */
   readonly client?: MongoClientLike;
-}
+};
 
 /** Default database name when none is configured. */
 export const DEFAULT_MONGO_DATABASE = 'actor_ts';

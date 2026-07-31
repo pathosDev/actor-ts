@@ -2,12 +2,12 @@ import { OptionsBuilder } from '../util/OptionsBuilder.js';
 import { OptionsValidator } from '../util/OptionsValidator.js';
 
 /** Plain options-object shape accepted by a {@link TestProbe}. */
-export interface TestProbeOptionsType {
+export type TestProbeOptionsType = {
   /** Default timeout used when a caller doesn't specify one. */
   readonly defaultTimeoutMs?: number;
   /** Visible name of the probe (default: auto-generated). */
   readonly name?: string;
-}
+};
 
 /** Fluent builder for {@link TestProbeOptionsType}. */
 export class TestProbeOptionsBuilder extends OptionsBuilder<TestProbeOptionsType> {

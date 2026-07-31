@@ -34,11 +34,11 @@ import type {
 } from '../protocol/index.js';
 
 /** Command told to the hub when a tap produces a payload. */
-export interface DevToolsPublishCommand {
+export type DevToolsPublishCommand = {
   readonly kind: 'devtools-publish';
   readonly stream: DevToolsStreamId;
   readonly payload: DevToolsStreamPayload;
-}
+};
 
 /** Everything other components may tell the hub. */
 export type DevToolsHubCommand = DevToolsPublishCommand;
@@ -75,10 +75,10 @@ export interface DevToolsHubContext {
 }
 
 /** Per-connection state. */
-interface DevToolsSession {
+type DevToolsSession = {
   greeted: boolean;
   readonly streams: Set<DevToolsStreamId>;
-}
+};
 
 export class DevToolsHubActor
   extends WebsocketServerActor<DevToolsServerFrame, unknown, DevToolsHubCommand> {

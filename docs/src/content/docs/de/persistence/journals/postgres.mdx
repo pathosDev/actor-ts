@@ -110,11 +110,11 @@ einfacher (eine Datei, kein Server).
 ## Konfiguration
 
 ```ts
-interface PostgresConnection {
+type PostgresConnection = {
   url?:        string;                      // postgres://user:pass@host:5432/db
   poolConfig?: Record<string, unknown>;     // weitere pg.Pool-Optionen (ssl, max, …)
   pool?:       PgPoolLike;                   // vorgebauter / geteilter Pool
-}
+};
 
 interface PostgresJournalOptions extends PostgresConnection {
   eventsTable?:      string;   // Default 'events'

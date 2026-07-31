@@ -11,33 +11,33 @@ import { WorkerBroker } from './WorkerBroker.js';
 
 export type RestartPolicy = 'always' | 'on-failure' | 'never';
 
-export interface WorkerHandle {
+export type WorkerHandle = {
   readonly id: number;
   readonly address: NodeAddress;
   readonly worker: WorkerLike;
-}
+};
 
-export interface WorkerHelloMessage {
+export type WorkerHelloMessage = {
   readonly kind: 'worker-hello';
-}
+};
 
-export interface WorkerInitMessage {
+export type WorkerInitMessage = {
   readonly kind: 'worker-init';
   readonly self: ReturnType<NodeAddress['toJSON']>;
   readonly systemName: string;
   readonly data: unknown;
-}
+};
 
-export interface WorkerReadyMessage {
+export type WorkerReadyMessage = {
   readonly kind: 'worker-ready';
   readonly self: ReturnType<NodeAddress['toJSON']>;
-}
+};
 
 /** Wire frame flowing in both directions on every worker↔main channel. */
-export interface WorkerTransportMessage {
+export type WorkerTransportMessage = {
   readonly kind: 'worker-transport';
   readonly envelope: BrokeredMessage;
-}
+};
 
 /**
  * Spawn a pool of workers and wire them into a shared broker via their

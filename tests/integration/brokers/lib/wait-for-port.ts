@@ -20,14 +20,14 @@
  */
 import { connect } from 'node:net';
 
-export interface WaitForPortOptions {
+export type WaitForPortOptions = {
   /** Total time allowed to wait (default 30s — covers Kafka boot). */
   readonly deadlineMs?: number;
   /** Sleep between connection attempts (default 250ms). */
   readonly intervalMs?: number;
   /** Friendly description for the error message ("MinIO API", "Kafka broker"). */
   readonly description?: string;
-}
+};
 
 /**
  * Resolve once `host:port` accepts a TCP connection.  Rejects with a

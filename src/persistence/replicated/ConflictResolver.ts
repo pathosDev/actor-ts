@@ -32,7 +32,7 @@ export interface ConflictResolver<E> {
 }
 
 /** Event paired with the metadata a resolver needs to break ties. */
-export interface ConflictCandidate<E> {
+export type ConflictCandidate<E> = {
   /** The user-domain event payload. */
   readonly event: E;
   /** Wall-clock timestamp at the originating replica. */
@@ -41,7 +41,7 @@ export interface ConflictCandidate<E> {
   readonly replica: ReplicaId;
   /** Vector clock at persist time. */
   readonly vc: VectorClock;
-}
+};
 
 /* ============================== built-in: LWW ============================ */
 

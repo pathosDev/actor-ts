@@ -15,7 +15,7 @@ import type { Option } from '../../util/Option.js';
  * their CAS expectation was lost.
  */
 
-export interface PutOptions {
+export type PutOptions = {
   readonly contentType?: string;
   /** Set when the body is compressed; matches the HTTP `Content-Encoding` header. */
   readonly contentEncoding?: string;
@@ -35,21 +35,21 @@ export interface PutOptions {
    * filesystem backends ignore it.
    */
   readonly sse?: 'AES256' | { readonly kmsKeyId: string };
-}
+};
 
-export interface ObjectInfo {
+export type ObjectInfo = {
   readonly key: string;
   readonly size: number;
   readonly lastModified: Date;
-}
+};
 
-export interface ObjectFetched {
+export type ObjectFetched = {
   readonly body: Uint8Array;
   readonly etag: string;
   readonly lastModified: Date;
   readonly contentEncoding?: string;
   readonly contentType?: string;
-}
+};
 
 export interface ObjectStorageBackend {
   /** PUT — returns the new ETag.  Throws on CAS failure. */

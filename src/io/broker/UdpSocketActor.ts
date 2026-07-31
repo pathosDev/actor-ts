@@ -7,18 +7,18 @@ import { UdpSocketOptionsValidator } from './UdpSocketOptions.js';
 import type { UdpSocketOptions, UdpSocketOptionsType } from './UdpSocketOptions.js';
 
 /** Inbound datagram delivered to the target actor. */
-export interface UdpDatagram {
+export type UdpDatagram = {
   readonly payload: Uint8Array;
   readonly remoteHost: string;
   readonly remotePort: number;
-}
+};
 
 /** Outbound datagram — explicit destination (UDP is not connection-oriented). */
-export interface UdpOutbound {
+export type UdpOutbound = {
   readonly payload: Uint8Array | string;
   readonly host: string;
   readonly port: number;
-}
+};
 
 type SendCommand = { readonly kind: 'send'; readonly datagram: UdpOutbound };
 

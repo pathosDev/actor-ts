@@ -36,12 +36,12 @@ SQLite in den OS-Page-Cache, der beim Commit auf Disk flusht.
 ## Konfiguration
 
 ```ts
-interface SqliteJournalOptions {
+type SqliteJournalOptions = {
   path?:        string;     // Dateipfad, oder ":memory:" für ephemer
   eventsTable?: string;     // Default "events"
   wal?:         boolean;    // WAL-Modus aktivieren (empfohlen)
   driver?:      SqliteDriver;   // expliziter Treiber-Override
-}
+};
 ```
 
 ### `path`

@@ -90,10 +90,10 @@ function pipeTo<T>(
   options?:  PipeToOptions,
 ): Promise<T>;
 
-interface PipeToOptions {
+type PipeToOptions = {
   sender?: ActorRef | null;
   wrap?:   boolean;   // default true — wrap in Success/Failure
-}
+};
 ```
 
 ### Unwrapped pipe

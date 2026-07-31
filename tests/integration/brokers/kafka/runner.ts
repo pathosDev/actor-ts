@@ -66,13 +66,13 @@ async function main(): Promise<void> {
   }
 }
 
-export interface KafkaSpawnOpts {
+export type KafkaSpawnOpts = {
   groupId?: string;
   topics?: ReadonlyArray<string>;
   target?: ReturnType<ActorSystem['spawnAnonymous']>;
   commitMode?: 'auto' | 'manual';
   fromBeginning?: boolean;
-}
+};
 
 /** Fresh KafkaActor per scenario.  groupId default ensures isolation. */
 export function spawnKafka(context: KafkaContext, options: KafkaSpawnOpts = {}): ReturnType<ActorSystem['spawnAnonymous']> {

@@ -40,11 +40,11 @@ import type { S3ObjectStorageOptions, S3ObjectStorageOptionsType } from './S3Obj
  * R2 the canonical region is `'auto'`.
  */
 
-export interface S3Credentials {
+export type S3Credentials = {
   readonly accessKeyId: string;
   readonly secretAccessKey: string;
   readonly sessionToken?: string;
-}
+};
 
 export class S3ObjectStorageBackend implements ObjectStorageBackend {
   private readonly clientLazy: Lazy<Promise<S3ClientLike>>;
@@ -179,7 +179,7 @@ export class S3ObjectStorageBackend implements ObjectStorageBackend {
 
 /* ----------------------------- internals -------------------------------- */
 
-interface S3SdkModule {
+type S3SdkModule = {
   S3Client: new (config: {
     region: string;
     endpoint?: string;
@@ -190,9 +190,9 @@ interface S3SdkModule {
   GetObjectCommand: new (input: { Bucket: string; Key: string }) => unknown;
   DeleteObjectCommand: new (input: { Bucket: string; Key: string }) => unknown;
   ListObjectsV2Command: new (input: ListObjectsV2CommandInput) => unknown;
-}
+};
 
-interface PutObjectCommandInput {
+type PutObjectCommandInput = {
   Bucket: string;
   Key: string;
   Body: Uint8Array;
@@ -202,28 +202,28 @@ interface PutObjectCommandInput {
   IfNoneMatch?: string;
   ServerSideEncryption?: 'AES256' | 'aws:kms';
   SSEKMSKeyId?: string;
-}
+};
 
-interface ListObjectsV2CommandInput {
+type ListObjectsV2CommandInput = {
   Bucket: string;
   Prefix: string;
   MaxKeys?: number;
   ContinuationToken?: string;
-}
+};
 
-interface S3PutResult { ETag?: string; }
-interface S3GetResult {
+type S3PutResult = { ETag?: string; };
+type S3GetResult = {
   Body?: unknown;
   ETag?: string;
   LastModified?: Date;
   ContentEncoding?: string;
   ContentType?: string;
-}
-interface S3ListResult {
+};
+type S3ListResult = {
   Contents?: Array<{ Key?: string; Size?: number; LastModified?: Date }>;
   IsTruncated?: boolean;
   NextContinuationToken?: string;
-}
+};
 
 export interface S3ClientLike {
   send(command: unknown): Promise<S3PutResult & S3GetResult & S3ListResult>;

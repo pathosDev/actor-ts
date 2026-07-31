@@ -75,11 +75,11 @@ ihn in die Settings deines `DurableStateActor` reichst.
 ## Konfiguration
 
 ```ts
-interface MariaDbConnection {
+type MariaDbConnection = {
   url?:        string;                    // mariadb://user:pass@host:3306/db
   poolConfig?: Record<string, unknown>;   // { host, port, user, password, database, … }
   pool?:       MariaDbPoolLike;           // vorgebauter / geteilter Pool
-}
+};
 interface MariaDbJournalOptions extends MariaDbConnection {
   eventsTable?: string; tagsTable?: string; autoCreateTables?: boolean;
 }

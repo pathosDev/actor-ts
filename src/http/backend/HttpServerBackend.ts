@@ -2,12 +2,12 @@ import type { HttpMethod, HttpRequest, HttpResponse } from '../types.js';
 import type { WebsocketSocketAdapter } from '../websocket/SocketAdapter.js';
 
 /** One route registration — supplied by the DSL after compilation. */
-export interface RouteRegistration {
+export type RouteRegistration = {
   readonly method: HttpMethod;
   /** Path pattern in the Fastify/Express style: `/users/:id` */
   readonly pattern: string;
   readonly handler: (request: HttpRequest) => Promise<HttpResponse> | HttpResponse;
-}
+};
 
 /**
  * One WebSocket route registration.  The backend accepts the HTTP
@@ -18,14 +18,14 @@ export interface RouteRegistration {
  * Everything actor-related lives behind `onConnection`; the backend
  * never sees the framework's actors.
  */
-export interface WebsocketRouteRegistration {
+export type WebsocketRouteRegistration = {
   /** ':param'-style pattern, same dialect as {@link RouteRegistration.pattern}. */
   readonly pattern: string;
   /** Pre-upgrade guard.  `null` → proceed; `HttpResponse` → reject with it. */
   readonly authorize: (request: HttpRequest) => Promise<HttpResponse | null>;
   /** Called once per accepted connection, synchronously in the upgrade callback. */
   readonly onConnection: (request: HttpRequest, socket: WebsocketSocketAdapter) => void;
-}
+};
 
 export interface ServerBinding {
   readonly host: string;

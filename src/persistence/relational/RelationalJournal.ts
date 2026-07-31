@@ -9,13 +9,13 @@ import { expandPlaceholders, type JournalTableNames } from './SqlDialect.js';
 import { RelationalStore, type RelationalStoreConfig } from './RelationalStore.js';
 import type { SqlExecutor } from './SqlPool.js';
 
-interface EventRow {
+type EventRow = {
   persistence_id: string;
   sequence_nr: string | number | bigint;
   payload: string;
   tags: string | null;
   timestamp: string | number | bigint;
-}
+};
 
 export interface RelationalJournalConfig extends RelationalStoreConfig {
   /** Events table.  Default `'events'`. */

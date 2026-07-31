@@ -19,14 +19,14 @@
  * second's worth of capacity), the typical "smooth out small
  * variations" setting.
  */
-export interface TokenBucketOptions {
+export type TokenBucketOptions = {
   /** Token-refill rate, tokens per second.  Required; must be > 0. */
   readonly qps: number;
   /** Bucket capacity.  Default: `qps` (one second of refill). */
   readonly burst?: number;
   /** Time source.  Default: `Date.now`. */
   readonly now?: () => number;
-}
+};
 
 export class TokenBucket {
   private readonly qps: number;

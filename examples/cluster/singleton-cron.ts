@@ -29,7 +29,7 @@ type SubscribeCommand = { kind: 'subscribe'; sub: ActorRef<CronEvent> };
 type TickCommand = { kind: 'tick' };
 
 type CronCommand = SubscribeCommand | TickCommand;
-interface CronEvent { readonly tickNumber: number; readonly hostedOn: string; }
+type CronEvent = { readonly tickNumber: number; readonly hostedOn: string; };
 
 class Cron extends Actor<CronCommand> {
   private tickCount = 0;

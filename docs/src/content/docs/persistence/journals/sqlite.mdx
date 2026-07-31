@@ -36,12 +36,12 @@ to the OS page cache, which flushes to disk on commit.
 ## Configuration
 
 ```ts
-interface SqliteJournalOptions {
+type SqliteJournalOptions = {
   path?:        string;     // file path, or ":memory:" for ephemeral
   eventsTable?: string;     // default "events"
   wal?:         boolean;    // enable WAL mode (recommended)
   driver?:      SqliteDriver;   // explicit driver override
-}
+};
 ```
 
 ### `path`

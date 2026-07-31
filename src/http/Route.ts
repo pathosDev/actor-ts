@@ -9,12 +9,12 @@ import { expandCors, type CorsRouteOptions } from './middleware/Cors.js';
  * (plus {@link CompiledWebsocketRoute}s), which the HTTP backend
  * registers in its native routing table.
  */
-export interface CompiledRoute {
+export type CompiledRoute = {
   readonly kind: 'http';
   readonly method: HttpMethod;
   readonly pattern: string;
   readonly handler: (request: HttpRequest) => Promise<HttpResponse> | HttpResponse;
-}
+};
 
 /**
  * Framework-owned entry point for one accepted WebSocket connection.
@@ -35,23 +35,23 @@ export type WebsocketConnectHandler = (
  * request, and returns `null` to accept or an {@link HttpResponse} to
  * reject the upgrade with a plain HTTP response.
  */
-export interface CompiledWebsocketRoute {
+export type CompiledWebsocketRoute = {
   readonly kind: 'websocket';
   readonly method: 'GET';
   readonly pattern: string;
   readonly connect: WebsocketConnectHandler;
   readonly authorize: (request: HttpRequest) => Promise<HttpResponse | null>;
-}
+};
 
 /**
  * A compiled fallback — answers any request that matched no other route.
  * Wired to the backend's not-found hook at bind time (exactly one per
  * server), so unlike {@link CompiledRoute} it carries no method or pattern.
  */
-export interface CompiledFallback {
+export type CompiledFallback = {
   readonly kind: 'fallback';
   readonly handler: (request: HttpRequest) => Promise<HttpResponse> | HttpResponse;
-}
+};
 
 /** A compiled endpoint: a plain HTTP route, a WebSocket route, or the fallback. */
 export type CompiledEndpoint = CompiledRoute | CompiledWebsocketRoute | CompiledFallback;

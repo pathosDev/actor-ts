@@ -38,7 +38,7 @@ type DepositedEvent = { kind: 'deposited'; amount: number };
 type WithdrawnEvent = { kind: 'withdrawn'; amount: number };
 type Event = DepositedEvent | WithdrawnEvent;
 
-interface State { readonly balance: number; }
+type State = { readonly balance: number; };
 
 class Account extends PersistentActor<Command, Event, State> {
   override readonly persistenceId: string;

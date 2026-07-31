@@ -39,11 +39,11 @@ export interface Serializer<T = unknown> {
  * Marker payload emitted whenever a serializer round-trips a value through
  * the wire — exposed for debugging tools and wire-level tests.
  */
-export interface SerializedValue {
+export type SerializedValue = {
   readonly serializerId: number;
   readonly manifest: string;
   readonly bytes: Uint8Array;
-}
+};
 
 export class SerializationError extends Error {
   constructor(message: string) {

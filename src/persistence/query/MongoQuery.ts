@@ -12,13 +12,13 @@ import {
 } from './PersistenceQuery.js';
 
 /** The subset of an event document this query reads back. */
-interface TaggedEventDocument {
+type TaggedEventDocument = {
   persistenceId: string;
   sequenceNr: number;
   payload: string;
   tags?: ReadonlyArray<string>;
   timestamp: number;
-}
+};
 
 /**
  * MongoDB query.  Inherits the per-persistence-id read path from

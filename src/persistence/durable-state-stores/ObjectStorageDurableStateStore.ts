@@ -51,10 +51,10 @@ import type { ObjectStorageDurableStateStoreOptions, ObjectStorageDurableStateSt
 const utf8 = new TextEncoder();
 const utf8Decoder = new TextDecoder();
 
-interface CachedEntry {
+type CachedEntry = {
   readonly etag: string;
   readonly revision: number;
-}
+};
 
 export class ObjectStorageDurableStateStore implements DurableStateStore {
   private readonly backend: ObjectStorageBackend;

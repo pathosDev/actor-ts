@@ -67,18 +67,18 @@ interface EventAdapter<DomainEvent, JournalShape = DomainEvent> {
 }
 
 // what the adapter sees on the read path
-interface StoredFrame {
+type StoredFrame = {
   manifest: string;
   version: number;
   payload: unknown;
-}
+};
 
 // what the adapter emits on the write path (wrapped into an envelope)
-interface OutboundFrame<JournalShape = unknown> {
+type OutboundFrame<JournalShape = unknown> = {
   manifest: string;
   version: number;
   payload: JournalShape;
-}
+};
 ```
 
 On read, the framework unwraps the envelope into a `StoredFrame`

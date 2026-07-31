@@ -14,7 +14,7 @@
  * everything in its `Deno.listenTls` / `Deno.connectTls` shape.
  */
 
-export interface TlsTransportOptionsType {
+export type TlsTransportOptionsType = {
   /** Server cert (PEM string or DER bytes).  If omitted, TLS is disabled on the listener. */
   readonly cert?: string | Uint8Array;
   /** Private key matching `cert`. */
@@ -27,7 +27,7 @@ export interface TlsTransportOptionsType {
   readonly rejectUnauthorized?: boolean;
   /** Override SNI hostname sent on outbound connects. */
   readonly serverName?: string;
-}
+};
 
 /**
  * Minimal socket shape the transport needs.  Adapters wrap their native

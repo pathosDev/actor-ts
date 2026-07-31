@@ -31,13 +31,13 @@ response.
 ## Configuration
 
 ```ts
-interface ResponseCacheOptions {
+type ResponseCacheOptions = {
   cache:          Cache;
   ttlMs:          number;
   key:            (req: HttpRequest) => string | Promise<string>;
   keyPrefix?:     string;                            // default 'rsp:'
   cacheStatuses?: ReadonlyArray<number>;             // default [200]
-}
+};
 ```
 
 | Field | Purpose |

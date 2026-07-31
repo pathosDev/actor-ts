@@ -195,7 +195,7 @@ export type ThrottleOnExcess =
    */
   | 'drop';
 
-export interface ThrottleOptions {
+export type ThrottleOptions = {
   /** Token-refill rate, tokens per second.  Required; must be > 0. */
   readonly qps: number;
   /** Bucket capacity.  Default: `qps` (one second of refill). */
@@ -204,7 +204,7 @@ export interface ThrottleOptions {
   readonly onExcess?: ThrottleOnExcess;
   /** Time source — pass a deterministic clock for tests.  Default: `Date.now`. */
   readonly now?: () => number;
-}
+};
 
 /**
  * Actor-scoped scheduler.  A fresh `startSingleTimer`/`startTimerWithFixedDelay`

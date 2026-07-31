@@ -55,11 +55,11 @@ async function main(): Promise<void> {
   }
 }
 
-export interface RedisSpawnOpts {
+export type RedisSpawnOpts = {
   streams?: ReadonlyArray<string>;
   consumerGroup?: { group: string; consumer: string };
   target?: ReturnType<ActorSystem['spawnAnonymous']>;
-}
+};
 
 export function spawnRedis(context: RedisContext, options: RedisSpawnOpts = {}): ReturnType<ActorSystem['spawnAnonymous']> {
   const builder = RedisStreamsOptions.create()

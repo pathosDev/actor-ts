@@ -19,7 +19,7 @@ extension point is open for custom serializers.
 ```ts
 import { entity } from 'actor-ts/http';
 
-interface NewOrder { sku: string; quantity: number; }
+type NewOrder = { sku: string; quantity: number; };
 
 post(async (req) => {
   const order = entity<NewOrder>(req);

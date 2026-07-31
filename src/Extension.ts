@@ -6,7 +6,7 @@ import type { ActorSystem } from './ActorSystem.js';
  * extensions from arbitrary objects in the public API; implementations are
  * free to expose any shape.
  */
-export interface Extension {}
+export type Extension = {};
 
 /**
  * Identifier + factory pair that the ActorSystem uses to lazily create and

@@ -191,22 +191,22 @@ function refineAndSort<E>(
   });
 }
 
-interface TagStmts {
+type TagStmts = {
   fetchByTag: { all(tag: string, fromTimestamp: number): TagRow[] };
-}
+};
 
-interface AnyStmts {
+type AnyStmts = {
   fetchByAny: { all(...args: unknown[]): TagRow[] };
-}
+};
 
 interface PreparedDb {
   prepare(sql: string): { all(...args: unknown[]): unknown[] };
 }
 
-interface TagRow {
+type TagRow = {
   persistence_id: string;
   sequence_nr: number;
   payload: string;
   tags: string | null;
   timestamp: number;
-}
+};

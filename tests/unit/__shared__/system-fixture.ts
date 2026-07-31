@@ -28,10 +28,10 @@ import { LogLevel, NoopLogger, type Logger } from '../../../src/Logger.js';
 import { TestKit } from '../../../src/testkit/TestKit.js';
 import { TestKitOptions } from '../../../src/testkit/TestKitOptions.js';
 
-export interface SystemFixtureOptions {
+export type SystemFixtureOptions = {
   readonly logger?: Logger;
   readonly logLevel?: LogLevel;
-}
+};
 
 /**
  * Boot one {@link ActorSystem} per describe block.  Returns an

@@ -43,10 +43,10 @@ interface HarnessBase {
   pid(name: string): string;
 }
 
-export interface JournalCapabilities {
+export type JournalCapabilities = {
   /** Journal round-trips `tags` on append/read.  Default `true`. */
   readonly tags?: boolean;
-}
+};
 
 export interface JournalHarness extends HarnessBase {
   /** Build a fresh journal.  The scenario closes it. */
@@ -54,14 +54,14 @@ export interface JournalHarness extends HarnessBase {
   readonly capabilities?: JournalCapabilities;
 }
 
-export interface SnapshotCapabilities {
+export type SnapshotCapabilities = {
   /**
    * `'configurable'` — the store honours a `keepN` prune bound, so the
    * prune and keep-all scenarios run.  `'none'` — the store keeps every
    * snapshot (the in-memory reference store), and they are skipped.
    */
   readonly keepN?: 'configurable' | 'none';
-}
+};
 
 export interface SnapshotHarness extends HarnessBase {
   /**

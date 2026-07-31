@@ -19,7 +19,6 @@ import {
   NodeAddress,
   Props,
   StartShardingOptions,
-  ask,
   type ActorRef,
 } from '../../src/index.js';
 import { runGroup } from '../lib/harness.js';
@@ -73,7 +72,7 @@ async function main(): Promise<void> {
       name: 'ask entity via region',
       unit: 'ask',
       iterations: 2_000,
-      run: async () => { await ask<Command, string>(a.region, { id: 'same', kind: 'ping' }, 1_000); },
+      run: async () => { await a.region.ask<string>({ id: 'same', kind: 'ping' }, 1_000); },
     },
   ]);
 
@@ -94,7 +93,7 @@ async function main(): Promise<void> {
       iterations: 1_000,
       run: async () => {
         const id = `e-${Math.floor(Math.random() * 64)}`;
-        await ask<Command, string>(a2.region, { id, kind: 'ping' }, 1_000);
+        await a2.region.ask<string>({ id, kind: 'ping' }, 1_000);
       },
     },
   ]);

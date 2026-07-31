@@ -46,11 +46,11 @@ async function waitFor(pred: () => boolean, timeoutMs = 5_000, stepMs = 20): Pro
   if (!pred()) throw new Error(`waitFor timed out after ${timeoutMs}ms`);
 }
 
-interface Node {
+type Node = {
   sys: ActorSystem;
   cluster: Cluster;
   region: ActorRef<Command>;
-}
+};
 
 async function startNode(sysName: string, p: number, seeds: string[] = []): Promise<Node> {
   const sysOptions = ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off);

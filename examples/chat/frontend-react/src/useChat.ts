@@ -33,7 +33,7 @@ import {
  */
 export type Phase = 'login' | 'resuming' | 'chat';
 
-interface State {
+type State = {
   readonly phase: Phase;
   readonly username: string | null;
   readonly loginError: string;
@@ -49,7 +49,7 @@ interface State {
   /** RoomName → { [username]: read-up-to-ts }.  Synced from server's
    *  `read-receipts` broadcasts (DD-LWWMap-backed). */
   readonly receiptsByRoom: Record<string, Readonly<Record<string, number>>>;
-}
+};
 
 const INITIAL: State = {
   phase: 'login',

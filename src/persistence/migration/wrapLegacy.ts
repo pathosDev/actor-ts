@@ -65,14 +65,14 @@ export function wrapStateAsEnvelope<S>(
 
 /* -------------------------- migration result --------------------------- */
 
-export interface MigrationResult {
+export type MigrationResult = {
   /** Total entries inspected. */
   readonly inspected: number;
   /** Entries that were rewritten (raw → envelope). */
   readonly wrapped: number;
   /** Entries that were already enveloped and left untouched. */
   readonly skipped: number;
-}
+};
 
 /* ----------------------- in-memory bulk migrator ----------------------- */
 

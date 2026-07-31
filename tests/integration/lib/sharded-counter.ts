@@ -15,10 +15,10 @@ import { match } from 'ts-pattern';
 import { Actor } from '../../../src/Actor.js';
 import type { ActorRef } from '../../../src/ActorRef.js';
 
-export interface ShardedMessage {
+export type ShardedMessage = {
   /** The entity ID — required by the shard region's `extractEntityId`. */
   readonly entityId: string;
-}
+};
 
 /** Increment the counter for `entityId`. */
 export interface ShardedIncrement extends ShardedMessage { readonly kind: 'increment' }

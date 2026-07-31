@@ -6,14 +6,14 @@ import { SseOptionsValidator } from './SseOptions.js';
 import type { SseOptions, SseOptionsType } from './SseOptions.js';
 
 /** Inbound SSE event delivered to subscribers. */
-export interface SseEvent {
+export type SseEvent = {
   /** The `event:` field value, or `'message'` (default per SSE spec). */
   readonly event: string;
   /** The `data:` field value (newline-joined when split across lines). */
   readonly data: string;
   /** Last-event-id, when the server sent one. */
   readonly id?: string;
-}
+};
 
 export type SseCommand = never;  // SSE is read-only
 

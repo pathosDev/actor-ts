@@ -107,14 +107,14 @@ Bewerber können dann acquiren.
 ## Einstellungen
 
 ```ts
-interface LeaseOptionsType {
+type LeaseOptionsType = {
   name:                  string;       // eindeutiger Lease-Identifier
   owner:                 string;       // Identifier dieses Halters (Pod-Name / UUID)
   ttlMs:                 number;       // automatisches Ablaufen nach so vielen ms ohne Renewal
   renewalIntervalMs?:    number;       // typischerweise ttl/3
   acquireRetries?:       number;       // max Versuche pro acquire()
   acquireRetryDelayMs?:  number;       // Verzögerung zwischen Versuchen
-}
+};
 ```
 
 | Setting | Typische Werte |

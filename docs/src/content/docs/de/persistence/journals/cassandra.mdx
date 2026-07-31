@@ -41,7 +41,7 @@ Cluster, Repair, Tuning), die du nicht brauchst.
 ## Konfiguration
 
 ```ts
-interface CassandraJournalOptions {
+type CassandraJournalOptions = {
   contactPoints:    string[];      // Cluster-Contact-Points
   keyspace:         string;        // Keyspace (extern erstellt)
   eventsTable?:      string;        // Name der Events-Tabelle, Default 'events'
@@ -55,7 +55,7 @@ interface CassandraJournalOptions {
   lightweightTransactions?: boolean; // LWT-serialisierte Appends, Default true
   serialConsistency?: number;        // Paxos-Consistency für den LWT-Anspruch
   /* ... plus Treiber-Level-Verbindungsoptionen ... */
-}
+};
 ```
 
 | Feld | Was |

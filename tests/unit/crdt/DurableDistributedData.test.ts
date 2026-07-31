@@ -44,10 +44,10 @@ async function waitFor(pred: () => boolean, timeoutMs = 3_000): Promise<void> {
   if (!pred()) throw new Error(`waitFor timeout after ${timeoutMs}ms`);
 }
 
-interface NodeSetup {
+type NodeSetup = {
   sys: ActorSystem;
   cluster: Cluster;
-}
+};
 
 async function startNode(
   systemName: string, port: number, options: {

@@ -8,11 +8,11 @@ import {
   type InMemoryCacheOptionsType,
 } from './InMemoryCacheOptions.js';
 
-interface Entry {
+type Entry = {
   value: unknown;
   /** Absolute timestamp in ms.  `Infinity` means "no TTL". */
   expiresAt: number;
-}
+};
 
 /**
  * In-process `Cache` backed by a `Map` with **LRU eviction** and per-entry

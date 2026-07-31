@@ -13,14 +13,14 @@ export const defaultPhiAccrualOptions: PhiAccrualOptionsType = {
   acceptableHeartbeatPauseMs: 0,
 };
 
-interface PeerState {
+type PeerState = {
   lastHeartbeat: number;
   everSeen: boolean;
   /** Ring-buffer of recent inter-arrival times (ms). */
   readonly intervals: number[];
   intervalsHead: number;
   intervalsCount: number;
-}
+};
 
 /**
  * Phi-accrual failure detector (Hayashibara et al, "The Phi Accrual Failure

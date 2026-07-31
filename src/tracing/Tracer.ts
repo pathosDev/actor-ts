@@ -24,7 +24,7 @@
 /** Allowed attribute primitive types — matches OTel's spec. */
 export type AttributeValue = string | number | boolean;
 
-export interface SpanContext {
+export type SpanContext = {
   /** 32 hex chars — the trace identifier shared across hops. */
   readonly traceId: string;
   /** 16 hex chars — the per-span identifier. */
@@ -33,12 +33,12 @@ export interface SpanContext {
   readonly traceFlags: number;
   /** Optional W3C tracestate — opaque vendor-specific. */
   readonly traceState?: string;
-}
+};
 
 export type SpanKind = 'internal' | 'server' | 'client' | 'producer' | 'consumer';
 export type SpanStatus = 'unset' | 'ok' | 'error';
 
-export interface SpanOptions {
+export type SpanOptions = {
   /**
    * Parent span context.  `undefined` means "use the active span".
    * `null` explicitly creates a root span.
@@ -48,7 +48,7 @@ export interface SpanOptions {
   readonly kind?: SpanKind;
   /** Override the span start time — defaults to `Date.now()`. */
   readonly startTimeMs?: number;
-}
+};
 
 export interface Span {
   /** The span's own context — what children would inherit. */
@@ -87,10 +87,10 @@ export interface Tracer {
  * Trace Context working group's `traceparent` / `tracestate` headers
  * — see {@link encodeTraceparent} / {@link decodeTraceparent}.
  */
-export interface TraceCarrier {
+export type TraceCarrier = {
   readonly traceparent: string;
   readonly tracestate?: string;
-}
+};
 
 /* ----------------------- W3C traceparent codec ------------------------- */
 

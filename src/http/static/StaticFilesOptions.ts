@@ -6,7 +6,7 @@ import { OptionsBuilder } from '../../util/OptionsBuilder.js';
 import { OptionsValidator } from '../../util/OptionsValidator.js';
 
 /** Plain settings shape for the static-file directives. */
-export interface StaticFilesOptionsType {
+export type StaticFilesOptionsType = {
   /** Index files tried for a directory request.  Default `['index.html']`; `[]` disables. */
   readonly indexFiles?: readonly string[];
   /** Render an HTML listing when a directory has no usable index.  Default false. */
@@ -29,7 +29,7 @@ export interface StaticFilesOptionsType {
   readonly contentType?: string;
   /** Max file size buffered into memory.  Default 50 MiB; larger → 413. */
   readonly maxFileSize?: number;
-}
+};
 
 /** Fluent builder for {@link StaticFilesOptionsType}. */
 export class StaticFilesOptionsBuilder extends OptionsBuilder<StaticFilesOptionsType> {
@@ -93,7 +93,7 @@ export class StaticFilesOptionsValidator extends OptionsValidator<StaticFilesOpt
 }
 
 /** Fully-applied settings after defaults. */
-export interface ResolvedStaticOptions {
+export type ResolvedStaticOptions = {
   readonly indexFiles: readonly string[];
   readonly browse: boolean;
   readonly cacheControl: string | undefined;
@@ -105,7 +105,7 @@ export interface ResolvedStaticOptions {
   readonly contentTypes: Readonly<Record<string, string>> | undefined;
   readonly contentType: string | undefined;
   readonly maxFileSize: number;
-}
+};
 
 /** Apply defaults to an options bag (builder or plain object), then validate. */
 export function resolveStaticOptions(options?: StaticFilesOptions): ResolvedStaticOptions {

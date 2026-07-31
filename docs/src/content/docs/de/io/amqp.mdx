@@ -48,12 +48,12 @@ interface AmqpOptionsType extends BrokerCommonOptionsType {
   bindings?:  ReadonlyArray<AmqpQueueBinding>; // Queue ↔ Exchange ↔ Routing-Key ↔ Target
 }
 
-interface AmqpQueueBinding {
+type AmqpQueueBinding = {
   queue:       string;
   exchange?:   string;                         // weglassen für den Default-Exchange
   routingKey?: string;
   target:      ActorRef<AmqpDelivery>;         // Consumer-Actor für diese Queue
-}
+};
 ```
 
 Bindings deklarieren die Queue, das Exchange-Binding UND den

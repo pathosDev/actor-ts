@@ -7,7 +7,7 @@ export const DEFAULT_MAX_ENTRIES = 10_000;
 export const DEFAULT_CLEANUP_MS = 60_000;
 
 /** Plain options-object shape accepted by an {@link InMemoryCache}. */
-export interface InMemoryCacheOptionsType {
+export type InMemoryCacheOptionsType = {
   /** LRU cap on stored entries.  Default 10 000.  `Infinity` = unbounded. */
   readonly maxEntries?: number;
   /**
@@ -16,7 +16,7 @@ export interface InMemoryCacheOptionsType {
    * on access).
    */
   readonly cleanupMs?: number;
-}
+};
 
 /**
  * Fluent builder for {@link InMemoryCacheOptionsType}:

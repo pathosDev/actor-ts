@@ -50,12 +50,12 @@ passt, greif zu
 Das Argument ist ein `DefaultsAdapterSpec<E>`:
 
 ```ts
-interface DefaultsAdapterSpec<E> {
+type DefaultsAdapterSpec<E> = {
   manifest:       string;                                 // stable type identity, e.g. 'BankAccount.Deposited'
   currentVersion: number;                                 // version this code revision emits
   defaults:       { [fromVersion: number]: Partial<E> };  // fields added at each step
   writeVersion?:  number;                                 // emit an older version (rolling deploys)
-}
+};
 ```
 
 | Feld | Was |

@@ -36,7 +36,7 @@
 
 const URL_ARG = process.argv[2] ?? 'ws://127.0.0.1:8080/ws';
 
-interface ServerMessage { kind: string; [k: string]: unknown }
+type ServerMessage = { kind: string; [k: string]: unknown };
 
 class ChatClient {
   readonly ws: WebSocket;

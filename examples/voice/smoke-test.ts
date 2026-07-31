@@ -28,12 +28,12 @@ const HTTP_PORT = 8091;     // distinct from the default 8081 so this
                             // can be run while a real cluster is up
 const CLUSTER_PORT = 2691;
 
-interface Connection {
+type Connection = {
   ws: WebSocket;
   username: string;
   events: Array<{ kind: 'text'; data: unknown } | { kind: 'binary'; data: Uint8Array }>;
   ready: Promise<void>;
-}
+};
 
 async function openConnection(username: string, password: string): Promise<Connection> {
   const ws = new WebSocket(`ws://127.0.0.1:${HTTP_PORT}/ws`);

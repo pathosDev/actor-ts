@@ -35,13 +35,13 @@ import type {
 /* Structural — keep in sync with @opentelemetry/api v1.x.  We use only the */
 /* surface needed to drive end-to-end span lifecycle + W3C propagation.     */
 
-export interface OtelSpanContextLike {
+export type OtelSpanContextLike = {
   readonly traceId: string;
   readonly spanId: string;
   readonly traceFlags: number;
   readonly traceState?: string;
   readonly isRemote?: boolean;
-}
+};
 
 export interface OtelSpanLike {
   spanContext(): OtelSpanContextLike;
@@ -52,11 +52,11 @@ export interface OtelSpanLike {
   isRecording(): boolean;
 }
 
-export interface OtelContextLike {
+export type OtelContextLike = {
   // Opaque — OTel's Context is a structural type with `getValue`/`setValue`
   // we don't need to call directly.  Treated as a black box here.
   readonly __opaque?: never;
-}
+};
 
 export interface OtelTracerLike {
   startSpan(
@@ -93,7 +93,7 @@ export interface OtelPropagationApi {
   extract(context: OtelContextLike, carrier: Record<string, string | undefined>): OtelContextLike;
 }
 
-export interface OtelApiLike {
+export type OtelApiLike = {
   readonly trace: OtelTraceApi;
   readonly context: OtelContextApi;
   readonly propagation: OtelPropagationApi;
@@ -104,7 +104,7 @@ export interface OtelApiLike {
   };
   /** Optional — re-export of the root context constant if the SDK exposes it on the namespace. */
   readonly ROOT_CONTEXT?: OtelContextLike;
-}
+};
 
 /* ------------------------------- adapter ------------------------------- */
 

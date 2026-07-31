@@ -119,11 +119,11 @@ Server).
 ## Konfiguration
 
 ```ts
-interface MsSqlConnection {
+type MsSqlConnection = {
   url?:        string;                    // Server=…;Database=… oder mssql://user:pass@host:1433/db
   poolConfig?: Record<string, unknown>;   // mssql-Config-Objekt; hat Vorrang vor url
   pool?:       MsSqlPoolLike;             // vorgebauter / geteilter Pool
-}
+};
 
 interface MsSqlJournalOptions extends MsSqlConnection {
   eventsTable?:      string;   // Default 'events'

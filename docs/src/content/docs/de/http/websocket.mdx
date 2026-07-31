@@ -82,7 +82,7 @@ concat(
 ### Optionen
 
 ```ts
-interface WebsocketRouteOptions<TOut, TIn> {
+type WebsocketRouteOptions<TOut, TIn> = {
   codec?:            WebsocketCodec<TOut, TIn>;             // default jsonCodec()
   maxFrameBytes?:    number;                          // default 1 MiB
   onOversizeFrame?:  'close' | 'drop';                // default 'close' (1009)
@@ -91,7 +91,7 @@ interface WebsocketRouteOptions<TOut, TIn> {
   onBackpressure?:   'drop' | 'close';                // default 'drop'
   allowedOrigins?:   string[];                        // CSWSH-Schutz — siehe unten
   maxConnections?:   number;                          // Limit gleichzeitiger Verbindungen; Default unbegrenzt
-}
+};
 ```
 
 ```ts

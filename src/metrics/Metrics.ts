@@ -34,7 +34,7 @@ export type Labels = Readonly<Record<string, LabelValue>>;
  * A single point-in-time observation of one metric series.  Exporters
  * walk the registry and turn each sample into their wire format.
  */
-export interface MetricSample {
+export type MetricSample = {
   /** Family name — e.g. `actor_messages_delivered_total`. */
   readonly name: string;
   /** Free-form description for `# HELP`. */
@@ -56,7 +56,7 @@ export interface MetricSample {
   readonly count?: number;
   /** For histograms: total observation sum.  Series name `_sum`. */
   readonly sum?: number;
-}
+};
 
 /* ------------------------------- Counter ----------------------------- */
 
@@ -169,32 +169,32 @@ class HistogramImplementation implements Histogram {
  * Metric family metadata.  One family produces N series indexed by
  * label-tuple; series are created lazily on first label access.
  */
-interface CounterFamily {
+type CounterFamily = {
   readonly kind: 'counter';
   readonly help: string;
   readonly children: Map<string, { labels: Labels; metric: CounterImplementation }>;
-}
-interface GaugeFamily {
+};
+type GaugeFamily = {
   readonly kind: 'gauge';
   readonly help: string;
   readonly children: Map<string, { labels: Labels; metric: GaugeImplementation }>;
-}
-interface HistogramFamily {
+};
+type HistogramFamily = {
   readonly kind: 'histogram';
   readonly help: string;
   readonly buckets: ReadonlyArray<number>;
   readonly children: Map<string, { labels: Labels; metric: HistogramImplementation }>;
-}
+};
 
 type Family = CounterFamily | GaugeFamily | HistogramFamily;
 
-export interface CounterOptions { readonly help?: string }
-export interface GaugeOptions { readonly help?: string }
-export interface HistogramOptions {
+export type CounterOptions = { readonly help?: string };
+export type GaugeOptions = { readonly help?: string };
+export type HistogramOptions = {
   readonly help?: string;
   /** Override the default bucket set.  Sorted automatically. */
   readonly buckets?: ReadonlyArray<number>;
-}
+};
 
 /**
  * Collection of metric families bound to one ActorSystem.  Pluggable

@@ -37,13 +37,13 @@ namespace, the provider returns `<pod-ip>:2552`.
 ## Configuration
 
 ```ts
-interface KubernetesApiSeedProviderOptionsType {
+type KubernetesApiSeedProviderOptionsType = {
   namespace:       string;
   serviceName:     string;
   systemName:      string;
   port:            number;
   fetchEndpoints?: () => Promise<string[]>;  // override the in-cluster API
-}
+};
 ```
 
 | Field | What |

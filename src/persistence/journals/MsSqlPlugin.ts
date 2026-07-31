@@ -14,7 +14,7 @@ export const MSSQL_JOURNAL_PLUGIN_ID = 'actor-ts.persistence.journal.mssql';
 export const MSSQL_SNAPSHOT_PLUGIN_ID = 'actor-ts.persistence.snapshot-store.mssql';
 export const MSSQL_DURABLE_STATE_PLUGIN_ID = 'actor-ts.persistence.durable-state.mssql';
 
-export interface MsSqlPluginHandles {
+export type MsSqlPluginHandles = {
   /**
    * The DurableState store instance.  `PersistenceExtension` carries no
    * DurableState registry (same as the Postgres, MariaDB, libSQL and
@@ -22,7 +22,7 @@ export interface MsSqlPluginHandles {
    * return value and pass it into their `DurableStateActor` options.
    */
   readonly durableStateStore: MsSqlDurableStateStore;
-}
+};
 
 /**
  * One-shot registration of the SQL Server journal + snapshot store against the

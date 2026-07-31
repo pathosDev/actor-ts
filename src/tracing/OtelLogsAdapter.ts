@@ -42,16 +42,16 @@ import { LogContext, type LogContextData } from '../LogContext.js';
  * — we never call these constants directly; the namespace exposes them
  * via `api.SeverityNumber.INFO` etc.
  */
-export interface OtelSeverityNumber {
+export type OtelSeverityNumber = {
   readonly TRACE: number;
   readonly DEBUG: number;
   readonly INFO: number;
   readonly WARN: number;
   readonly ERROR: number;
   readonly FATAL: number;
-}
+};
 
-export interface OtelLogRecord {
+export type OtelLogRecord = {
   readonly timestamp?: number;          // unix nanos OR ms (SDK normalises)
   readonly observedTimestamp?: number;
   readonly severityNumber?: number;
@@ -59,7 +59,7 @@ export interface OtelLogRecord {
   readonly body?: unknown;              // typically the log message string
   readonly attributes?: Record<string, unknown>;
   readonly context?: unknown;           // OTel Context (optional — SDK extracts active span)
-}
+};
 
 export interface OtelLoggerLike {
   emit(record: OtelLogRecord): void;
@@ -69,16 +69,16 @@ export interface OtelLoggerProviderLike {
   getLogger(name: string, version?: string): OtelLoggerLike;
 }
 
-export interface OtelLogsApiLike {
+export type OtelLogsApiLike = {
   /** Top-level severity-number constants (`api.SeverityNumber.INFO` etc.). */
   readonly SeverityNumber: OtelSeverityNumber;
   /** Returns the globally-registered LoggerProvider — what the SDK setup calls. */
   logs: { getLoggerProvider(): OtelLoggerProviderLike };
-}
+};
 
 /* ------------------------------ public API ------------------------------ */
 
-export interface OtelLoggerAdapterOptions {
+export type OtelLoggerAdapterOptions = {
   /** The `@opentelemetry/api-logs` namespace
    *  (`import * as logsApi from '@opentelemetry/api-logs'`). */
   readonly api: OtelLogsApiLike;
@@ -98,7 +98,7 @@ export interface OtelLoggerAdapterOptions {
    * round-trip entirely.  Default: `LogLevel.Info`.
    */
   readonly level?: LogLevel;
-}
+};
 
 /**
  * Build a `Logger` whose calls translate to OTel `LogRecord.emit({...})`.

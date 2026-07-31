@@ -45,7 +45,7 @@ import { MultiNodeTransport } from './internal/MultiNodeTransport.js';
  *   await spec.stop();
  */
 
-interface NodeRecord {
+type NodeRecord = {
   readonly role: string;
   readonly address: NodeAddress;
   readonly transport: MultiNodeTransport;
@@ -53,7 +53,7 @@ interface NodeRecord {
   cluster: Cluster;
   /** True after the node was crashed or removed.  Idempotent guard. */
   removed: boolean;
-}
+};
 
 let nextPortBase = 30_000;
 
@@ -61,7 +61,7 @@ let nextPortBase = 30_000;
  * Per-barrier state — every distinct barrier name gets one of these.
  * Once `entered.size === expectedRoles`, every parked waiter resolves.
  */
-interface BarrierEntry {
+type BarrierEntry = {
   readonly expectedRoles: number;
   readonly entered: Set<string>;
   readonly waiters: Array<{
@@ -69,7 +69,7 @@ interface BarrierEntry {
     reject(err: Error): void;
     timer: ReturnType<typeof setTimeout> | null;
   }>;
-}
+};
 
 export class MultiNodeSpec {
   private readonly options: Required<Omit<MultiNodeSpecOptionsType, 'addresses' | 'failureDetector' | 'downing'>>

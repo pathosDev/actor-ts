@@ -51,12 +51,12 @@ Typisierung importiert das Framework `@opentelemetry/api` nie
 selbst.
 
 ```ts
-interface OtelAdapterOptionsType {
+type OtelAdapterOptionsType = {
   api:            OtelApiLike;      // the @opentelemetry/api namespace (required)
   tracer?:        OtelTracerLike;   // pre-built tracer; else api.trace.getTracer(...)
   tracerName?:    string;           // passed to getTracer; default 'actor-ts'
   tracerVersion?: string;           // passed to getTracer
-}
+};
 ```
 
 Das OTel-SDK erledigt die Schwerarbeit (Export, Sampling,

@@ -18,14 +18,14 @@ import type {
 import { TestProbe } from '../../../src/testkit/TestProbe.js';
 import { TestProbeOptions } from '../../../src/testkit/TestProbeOptions.js';
 
-interface SubscribeArguments { readonly topic: string }
-interface PublishArguments { readonly topic: string; readonly message: unknown }
-interface DrainArguments { readonly topic: string }
+type SubscribeArguments = { readonly topic: string };
+type PublishArguments = { readonly topic: string; readonly message: unknown };
+type DrainArguments = { readonly topic: string };
 
-interface ScenarioState {
+type ScenarioState = {
   readonly mediator: ActorRef<unknown>;
   readonly probesByTopic: Map<string, TestProbe>;
-}
+};
 
 function getState(context: ScenarioContext): ScenarioState {
   return context.state.scenario as ScenarioState;

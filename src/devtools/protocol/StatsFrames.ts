@@ -20,13 +20,13 @@ export type StatsRuntime = 'bun' | 'node' | 'deno';
  * a guess or a lie.  The cluster panel reports shard maps as the
  * coordinator republishes them.
  */
-export interface ClusterStatsSummary {
+export type ClusterStatsSummary = {
   readonly members: number;
   readonly up: number;
   readonly unreachable: number;
   readonly leader: string | null;
   readonly selfAddress: string;
-}
+};
 
 /**
  * Handler-latency percentiles, interpolated from the framework's
@@ -35,11 +35,11 @@ export interface ClusterStatsSummary {
  * a regression, not a substitute for a real latency profile.  Absent
  * until the histogram has an observation.
  */
-export interface HandlerLatencySummary {
+export type HandlerLatencySummary = {
   readonly p50Ms: number;
   readonly p99Ms: number;
   readonly count: number;
-}
+};
 
 /**
  * One node's figures.
@@ -48,7 +48,7 @@ export interface HandlerLatencySummary {
  * reporting over the cluster, so the overview can total them without
  * caring which is which.
  */
-export interface NodeFigures {
+export type NodeFigures = {
   /** Cluster address, or `'local'` on a system with no cluster. */
   readonly address: string;
   readonly systemName: string;
@@ -66,10 +66,10 @@ export interface NodeFigures {
   readonly suspendedActors: number;
   readonly handlerLatency?: HandlerLatencySummary;
   readonly topMailboxes: ReadonlyArray<MailboxDepthEntry>;
-}
+};
 
 /** A node's figures as the serving node last heard them. */
-export interface NodeSample {
+export type NodeSample = {
   readonly figures: NodeFigures;
   /**
    * When this reached the serving node.  A peer that has stopped
@@ -81,10 +81,10 @@ export interface NodeSample {
   readonly stale: boolean;
   /** True for the node serving these DevTools. */
   readonly isSelf: boolean;
-}
+};
 
 /** One dashboard sample, emitted on the sampler interval. */
-export interface StatsSamplePayload {
+export type StatsSamplePayload = {
   readonly kind: 'stats-sample';
   readonly atMs: number;
   /**
@@ -128,7 +128,7 @@ export interface StatsSamplePayload {
    * The figures above are the sum of these.
    */
   readonly nodes: ReadonlyArray<NodeSample>;
-}
+};
 
 /** Spans the overview offers, shortest first. */
 export const STATS_HISTORY_SPANS_MS: ReadonlyArray<number> = [
@@ -150,9 +150,9 @@ export const STATS_HISTORY_SPANS_MS: ReadonlyArray<number> = [
 export const STATS_HISTORY_DEFAULT_SPAN_MS = 300_000;
 
 /** Parameters of `stats.history`. */
-export interface StatsHistoryParameters {
+export type StatsHistoryParameters = {
   readonly spanMs: number;
-}
+};
 
 /**
  * Result of `stats.history` — the charted series, already summarised.
@@ -161,14 +161,14 @@ export interface StatsHistoryParameters {
  * not what was requested: a day is answered in two-minute buckets, and
  * saying so lets the panel label the chart honestly.
  */
-export interface StatsHistoryResult {
+export type StatsHistoryResult = {
   readonly spanMs: number;
   readonly resolutionMs: number;
   readonly points: ReadonlyArray<StatsHistoryPoint>;
-}
+};
 
 /** One summarised interval of the overview's series. */
-export interface StatsHistoryPoint {
+export type StatsHistoryPoint = {
   readonly atMs: number;
   /** Levels, as the interval's peak — so a spike survives summarising. */
   readonly actorCount: number;
@@ -182,7 +182,7 @@ export interface StatsHistoryPoint {
   readonly deadLetters: number;
   readonly messagesProcessed: number;
   readonly mailboxDrops: number;
-}
+};
 
 /** Payloads carried by the `stats` stream. */
 export type StatsStreamPayload = StatsSamplePayload;

@@ -3,10 +3,10 @@ import { OptionsValidator } from '../../util/OptionsValidator.js';
 import type { Cluster } from '../Cluster.js';
 
 /** Plain options-object shape consumed by a {@link DistributedPubSubMediator}. */
-export interface DistributedPubSubOptionsType {
+export type DistributedPubSubOptionsType = {
   readonly cluster: Cluster;
   readonly gossipIntervalMs?: number;
-}
+};
 
 /**
  * Fluent builder for {@link DistributedPubSubOptionsType}.  The mediator is

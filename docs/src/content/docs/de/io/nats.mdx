@@ -50,6 +50,37 @@ interface NatsOptionsType extends BrokerCommonOptionsType {
 }
 ```
 
+## Subscriptions und Reconnects
+
+`subscriptions` und das `subscribe`-Kommando zur Laufzeit speisen **dieselbe**
+gewünschte Menge, die von der
+[BrokerActor-Basisklasse](/de/io/broker-actor-base/#desired-subscriptions)
+gehalten wird und nicht von der Verbindung.  Praktische Folgen:
+
+- Jede Subscription — konfiguriert oder zur Laufzeit hinzugefügt — wird
+  nach einem Reconnect **auf der neuen Verbindung neu gesetzt**.
+- Ein `subscribe`, das gesendet wird während der Actor **getrennt** ist,
+  wird beim nächsten Connect angewandt statt verworfen.
+- `{ kind: 'unsubscribe', subject }` entfernt das Subject endgültig: es
+  kommt beim nächsten Reconnect nicht zurück, auch nicht wenn es aus
+  `subscriptions` stammte.
+- Ein erneutes `subscribe` auf einem lebenden Subject **tauscht dessen
+  Target** — die vorherige Subscription wird zuerst abgebaut, es empfängt
+  also genau ein Actor.
+
+```ts
+// Zur Laufzeit hinzugefügt; nach einem Broker-Neustart weiterhin da.
+nats.tell({ kind: 'subscribe', subject: 'audit.>', target: auditor });
+// Dasselbe Subject auf einen anderen Actor lenken.
+nats.tell({ kind: 'subscribe', subject: 'audit.>', target: newAuditor });
+// Endgültig weg.
+nats.tell({ kind: 'unsubscribe', subject: 'audit.>' });
+```
+
+Das betrifft die *Subscription*, nicht die Nachrichten: Core-NATS hat
+keine Durability, alles was während der Trennung publiziert wurde ist
+weiterhin verloren (siehe den Warnhinweis unten).
+
 ## Subjects (NATS-Topics)
 
 NATS nutzt mit `.` getrennte Subjects:

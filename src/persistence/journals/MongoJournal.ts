@@ -18,21 +18,21 @@ import {
 } from './MongoJournalOptions.js';
 
 /** One event document.  `payload` is JSON text — see the class docblock. */
-interface EventDocument {
+type EventDocument = {
   readonly persistenceId: string;
   readonly sequenceNr: number;
   readonly payload: string;
   readonly tags?: ReadonlyArray<string>;
   readonly timestamp: number;
   readonly [field: string]: unknown;
-}
+};
 
 /** Compaction high-water mark, one document per persistence id. */
-interface MetaDocument {
+type MetaDocument = {
   readonly _id: string;
   readonly deletedTo: number;
   readonly [field: string]: unknown;
-}
+};
 
 /**
  * Journal backed by MongoDB via the `mongodb` driver.

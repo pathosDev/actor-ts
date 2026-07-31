@@ -15,10 +15,10 @@
  */
 import { ORSet } from '../../src/crdt/index.js';
 
-interface Item {
+type Item = {
   readonly sku: string;
   readonly name: string;
-}
+};
 
 function show(label: string, cart: ORSet<Item>): void {
   const items = cart.value();

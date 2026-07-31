@@ -19,7 +19,7 @@ import { OptionsValidator } from '../../util/OptionsValidator.js';
 import type { ExpressAppLike } from './ExpressBackend.js';
 
 /** Plain options-object shape accepted by an {@link ExpressBackend}. */
-export interface ExpressBackendOptionsType {
+export type ExpressBackendOptionsType = {
   /**
    * Bring-your-own app — useful when you already attach custom middleware
    * (CORS, sessions, metrics, …) outside the DSL.  When omitted, a fresh
@@ -28,7 +28,7 @@ export interface ExpressBackendOptionsType {
   readonly app?: ExpressAppLike;
   /** Maximum allowed body size in bytes (default: 10 MiB).  Exceeding it returns 413. */
   readonly maxBodyBytes?: number;
-}
+};
 
 /** Fluent builder for {@link ExpressBackendOptionsType}. */
 export class ExpressBackendOptionsBuilder extends OptionsBuilder<ExpressBackendOptionsType> {

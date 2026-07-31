@@ -29,7 +29,7 @@ import {
  *   route(post('/payments', deduplication(handler)));
  */
 
-interface CachedResponse {
+type CachedResponse = {
   readonly status: number;
   readonly headers?: Record<string, string>;
   /** JSON-serialisable shape — Uint8Array bodies are base64-encoded as `{__bin: '...'}`. */
@@ -46,7 +46,7 @@ interface CachedResponse {
    * cache to receive someone else's response.
    */
   readonly requestFingerprint: string;
-}
+};
 
 const IN_FLIGHT_MARKER: { readonly inFlight: true } = { inFlight: true } as const;
 

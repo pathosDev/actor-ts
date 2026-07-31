@@ -32,12 +32,12 @@ async function waitFor(pred: () => boolean, timeoutMs: number, stepMs = 25): Pro
   if (!pred()) throw new Error(`waitFor timed out after ${timeoutMs}ms`);
 }
 
-interface NodeHandle {
+type NodeHandle = {
   system: ActorSystem;
   cluster: Cluster;
   counts: Map<string, number>;
   region: import('../src/index.js').ActorRef<Command>;
-}
+};
 
 type IncrementCommand = { id: string; kind: 'increment' };
 

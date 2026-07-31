@@ -23,12 +23,12 @@
  */
 
 /** The three tables a relational journal owns. */
-export interface JournalTableNames {
+export type JournalTableNames = {
   readonly events: string;
   readonly tags: string;
   /** Holds the compaction high-water mark (`deleted_to`) per persistence id. */
   readonly meta: string;
-}
+};
 
 /** How a dialect signals that a conditional insert hit an existing row. */
 export type InsertConflictSignal =

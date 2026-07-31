@@ -126,7 +126,7 @@ describe('Receptionist — local', () => {
 });
 
 describe('Receptionist — cluster-wide', () => {
-  interface NodeContext { system: ActorSystem; cluster: Cluster; kit: TestKit; receptionist: ActorRef<unknown>; }
+  type NodeContext = { system: ActorSystem; cluster: Cluster; kit: TestKit; receptionist: ActorRef<unknown>; };
 
   async function startNode(sys: string, host: string, port: number, seeds: string[] = []): Promise<NodeContext> {
     const kitOptions = TestKitOptions.create()

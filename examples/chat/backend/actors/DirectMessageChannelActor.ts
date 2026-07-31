@@ -90,9 +90,9 @@ type DirectMessagePostedEvent = {
 
 type DirectMessageEvent = DirectMessagePostedEvent;
 
-interface DirectMessageState {
+type DirectMessageState = {
   readonly history: ReadonlyArray<ChatMessage>;
-}
+};
 
 /* ------------------------------- actor -------------------------------- */
 

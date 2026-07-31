@@ -5,20 +5,20 @@
  */
 import { escapeHtml } from '../Html.js';
 
-export interface ListingEntry {
+export type ListingEntry = {
   readonly name: string;
   readonly isDirectory: boolean;
   readonly size: number;
   readonly mtime: Date;
-}
+};
 
-export interface ListingInput {
+export type ListingInput = {
   /** Request path, for the heading (escaped). */
   readonly urlPath: string;
   /** Omit the `../` parent link at the mount root. */
   readonly atMountRoot: boolean;
   readonly entries: readonly ListingEntry[];
-}
+};
 
 function formatMtime(d: Date): string {
   // YYYY-MM-DD HH:mm (UTC) — deterministic across runtimes.

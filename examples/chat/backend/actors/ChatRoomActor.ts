@@ -118,9 +118,9 @@ type MessagePostedEvent = {
 
 type ChatEvent = MessagePostedEvent;
 
-interface ChatState {
+type ChatState = {
   readonly history: ReadonlyArray<ChatMessage>;
-}
+};
 
 /* ------------------------------- actor -------------------------------- */
 

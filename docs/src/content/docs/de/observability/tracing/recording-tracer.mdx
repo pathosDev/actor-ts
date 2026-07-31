@@ -31,7 +31,7 @@ expect(spans[0].attributes['actor.path']).toContain('worker');
 Jeder `RecordedSpan`:
 
 ```ts
-interface RecordedSpan {
+type RecordedSpan = {
   name:           string;
   kind:           SpanKind;
   context:        SpanContext;
@@ -42,7 +42,7 @@ interface RecordedSpan {
   status:         SpanStatus;              // 'unset' | 'ok' | 'error'
   statusMessage?: string;
   exceptions:     ReadonlyArray<Error>;
-}
+};
 ```
 
 Du siehst, welche Attribute gesetzt wurden, wann der Span

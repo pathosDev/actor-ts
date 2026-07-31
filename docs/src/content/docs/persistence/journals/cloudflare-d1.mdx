@@ -94,14 +94,14 @@ live integration suite behind it.
 ## Configuration
 
 ```ts
-interface D1Connection {
+type D1Connection = {
   accountId?:  string;        // Cloudflare account id
   databaseId?: string;        // the database UUID, not its name
   apiToken?:   string;        // token with D1:Edit
   baseUrl?:    string;        // override for a proxy; default api.cloudflare.com
   timeoutMs?:  number;        // per-request timeout, default 30_000
   client?:     D1ClientLike;  // pre-built / shared transport
-}
+};
 
 interface D1JournalOptions extends D1Connection {
   eventsTable?:      string;   // default 'events'

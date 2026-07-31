@@ -21,12 +21,12 @@ import { getSqliteDriver, type SqliteDriver } from '../../../../../src/runtime/s
 import { SqliteJournal } from '../../../../../src/persistence/journals/SqliteJournal.js';
 import { SqliteJournalOptions } from '../../../../../src/persistence/journals/SqliteJournalOptions.js';
 
-interface TagRow {
+type TagRow = {
   persistence_id: string;
   sequence_nr: number;
   tag: string;
   timestamp: number;
-}
+};
 
 describe('SqliteJournal — event_tags migration', () => {
   test('1. append populates event_tags alongside events', async () => {

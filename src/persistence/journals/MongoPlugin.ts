@@ -14,7 +14,7 @@ export const MONGO_JOURNAL_PLUGIN_ID = 'actor-ts.persistence.journal.mongodb';
 export const MONGO_SNAPSHOT_PLUGIN_ID = 'actor-ts.persistence.snapshot-store.mongodb';
 export const MONGO_DURABLE_STATE_PLUGIN_ID = 'actor-ts.persistence.durable-state.mongodb';
 
-export interface MongoPluginHandles {
+export type MongoPluginHandles = {
   /**
    * The DurableState store instance.  `PersistenceExtension` carries no
    * DurableState registry (same as every other plugin), so callers who want
@@ -22,7 +22,7 @@ export interface MongoPluginHandles {
    * `DurableStateActor` options.
    */
   readonly durableStateStore: MongoDurableStateStore;
-}
+};
 
 /**
  * One-shot registration of the MongoDB journal + snapshot store against the

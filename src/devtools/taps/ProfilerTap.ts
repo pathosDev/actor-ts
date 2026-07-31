@@ -39,17 +39,17 @@ const PROGRESS_INTERVAL_MS = 500;
 const MAXIMUM_DURATION_MS = 10 * 60 * 1000;
 
 /** One aggregated `(actor, message)` pair. */
-interface Bucket {
+type Bucket = {
   readonly actorPath: string;
   readonly className: string;
   readonly messageType: string;
   count: number;
   totalMs: number;
   errors: number;
-}
+};
 
 /** A running wallclock session. */
-interface WallclockSession {
+type WallclockSession = {
   readonly mode: 'wallclock';
   readonly sessionId: string;
   readonly startedAtMs: number;
@@ -58,7 +58,7 @@ interface WallclockSession {
   /** The observer we installed, so `stop` can put back what was there. */
   readonly previousObserver: DispatchObserver | null;
   autoStop: Cancellable | null;
-}
+};
 
 /** A running CPU session; the inspector holds the samples. */
 interface CpuSession {

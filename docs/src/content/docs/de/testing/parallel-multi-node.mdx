@@ -50,7 +50,7 @@ externen Docker-Compose-Cluster.
 ## Konfiguration
 
 ```ts
-interface ParallelMultiNodeSpecOptionsType {
+type ParallelMultiNodeSpecOptionsType = {
   roles:                ReadonlyArray<string>;   // ein Worker pro Rolle; müssen eindeutig sein
   seedRoles?:           ReadonlyArray<string>;   // Bootstrap-Seeds — Default [roles[0]]
   scenarioModule?:      URL;                      // Modul, das jeder Worker lädt (setup + commands)
@@ -61,7 +61,7 @@ interface ParallelMultiNodeSpecOptionsType {
   awaitTimeoutMs?:      number;                   // Default 30_000 (Worker-Bootstrap ist langsamer)
   logLevel?:            LogLevel;
   bootstrapModule?:     URL;                      // überschreibt den gebündelten Worker-Bootstrap
-}
+};
 ```
 
 | Feld | Zweck |

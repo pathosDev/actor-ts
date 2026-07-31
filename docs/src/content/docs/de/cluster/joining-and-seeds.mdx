@@ -52,7 +52,7 @@ Seeds müssen nach dem Join nicht mehr besonders sein.
 ## Konfiguration
 
 ```ts
-interface ClusterOptionsType {
+type ClusterOptionsType = {
   host:                       string;       // Adresse dieses Nodes
   port:                       number;       // TCP-Port dieses Nodes
   seeds?:                     string[];     // Peer-Adressen fürs Bootstrap
@@ -62,7 +62,7 @@ interface ClusterOptionsType {
   gossipIntervalMs?:          number;
   seedRetryIntervalMs?:       number;       // Retry-Intervall, falls kein Seed antwortet
   // ...
-}
+};
 ```
 
 Die seed-bezogenen Knöpfe:

@@ -119,12 +119,12 @@ closes it on `close()`.
 ## Configuration
 
 ```ts
-interface MongoConnection {
+type MongoConnection = {
   url?:           string;                    // mongodb:// or mongodb+srv://
   databaseName?:  string;                    // default 'actor_ts'
   clientOptions?: Record<string, unknown>;   // { tls, authSource, maxPoolSize, … }
   client?:        MongoClientLike;           // pre-built / shared client
-}
+};
 
 interface MongoJournalOptions extends MongoConnection {
   eventsCollection?:  string;   // default 'events'; its mark collection is '<it>_meta'

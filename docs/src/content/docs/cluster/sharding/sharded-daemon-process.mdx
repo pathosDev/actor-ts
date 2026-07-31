@@ -142,13 +142,13 @@ cluster events deterministically.
 ## Configuration
 
 ```ts
-interface ShardedDaemonProcessOptionsType<T> {
+type ShardedDaemonProcessOptionsType<T> = {
   name:                 string;          // unique daemon-set identifier
   numDaemons:           number;          // total daemons across the cluster
   behaviorFor:          (i: number) => Props<T>;
   role?:                string;          // restrict to specific nodes
   livenessIntervalMs?:  number;          // safety-net ping cadence; default 30s
-}
+};
 ```
 
 | Field | What |

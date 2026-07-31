@@ -6,14 +6,14 @@
  */
 import { lazyImportModule } from '../../util/LazyImport.js';
 
-export interface CassandraRowResult {
+export type CassandraRowResult = {
   readonly rows: Array<Record<string, unknown>>;
-}
+};
 
-export interface CassandraBatchQuery {
+export type CassandraBatchQuery = {
   readonly query: string;
   readonly params?: ReadonlyArray<unknown>;
-}
+};
 
 export interface CassandraClientLike {
   connect(): Promise<void>;
@@ -29,7 +29,7 @@ export interface CassandraClientLike {
   ): Promise<void>;
 }
 
-export interface CassandraConnection {
+export type CassandraConnection = {
   /** Node(s) to seed the cluster topology from. */
   readonly contactPoints: ReadonlyArray<string>;
   /** Local DC — required for DCAwareRoundRobinPolicy.  Defaults to `datacenter1`. */
@@ -55,7 +55,7 @@ export interface CassandraConnection {
    * `cassandra-driver`'s `types.consistencies`.
    */
   readonly consistency?: number;
-}
+};
 
 /**
  * DDL for the `events_by_tag` side table populated by `CassandraJournal`

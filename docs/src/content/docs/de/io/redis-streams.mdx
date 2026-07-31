@@ -99,11 +99,11 @@ class OrderProcessor extends Actor<RedisStreamEntry> {
 Der `entry`:
 
 ```ts
-interface RedisStreamEntry {
+type RedisStreamEntry = {
   stream:  string;
   id:      string;                          // z. B. "1684923847-0"
   fields:  Record<string, string>;          // dein XADD-Payload
-}
+};
 ```
 
 Stream-IDs sind `<millis>-<seq>`-Strings.  Nimm die **`id` als

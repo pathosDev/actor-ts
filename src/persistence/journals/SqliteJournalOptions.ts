@@ -1,7 +1,7 @@
 import type { SqliteDriver } from '../../runtime/sqlite/index.js';
 import { OptionsBuilder } from '../../util/OptionsBuilder.js';
 
-export interface SqliteJournalOptionsType {
+export type SqliteJournalOptionsType = {
   /** File path (absolute or relative) or ":memory:" for an ephemeral DB. */
   readonly path?: string;
   /** Table name for events.  Default: `events`. */
@@ -15,7 +15,7 @@ export interface SqliteJournalOptionsType {
    * Deno → `node:sqlite`).
    */
   readonly driver?: SqliteDriver;
-}
+};
 
 /**
  * Fluent builder for {@link SqliteJournalOptionsType}:

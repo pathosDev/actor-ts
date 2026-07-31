@@ -54,14 +54,14 @@ here's the original response."  No double charge.
 ## Configuration
 
 ```ts
-interface IdempotencyOptions {
+type IdempotencyOptions = {
   cache:          Cache;
   ttlMs?:         number;                              // default 24h
   headerName?:    string;                              // default 'idempotency-key'
   keyPrefix?:     string;                              // default 'idem:'
   missingHeader?: 'reject' | 'pass-through';           // default 'reject'
   identity?:      (req: HttpRequest) => string | Promise<string>;   // per-caller scope; default none
-}
+};
 ```
 
 | Field | Purpose |

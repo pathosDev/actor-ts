@@ -14,7 +14,7 @@ export const D1_JOURNAL_PLUGIN_ID = 'actor-ts.persistence.journal.cloudflare-d1'
 export const D1_SNAPSHOT_PLUGIN_ID = 'actor-ts.persistence.snapshot-store.cloudflare-d1';
 export const D1_DURABLE_STATE_PLUGIN_ID = 'actor-ts.persistence.durable-state.cloudflare-d1';
 
-export interface D1PluginHandles {
+export type D1PluginHandles = {
   /**
    * The DurableState store instance.  `PersistenceExtension` carries no
    * DurableState registry (same as every other plugin), so callers who want
@@ -22,7 +22,7 @@ export interface D1PluginHandles {
    * `DurableStateActor` options.
    */
   readonly durableStateStore: D1DurableStateStore;
-}
+};
 
 /**
  * One-shot registration of the Cloudflare D1 journal + snapshot store against the

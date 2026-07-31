@@ -11,7 +11,7 @@
  */
 
 /** Attributes for a `Set-Cookie` value. */
-export interface CookieAttributes {
+export type CookieAttributes = {
   readonly maxAgeSeconds?: number;
   readonly expires?: Date;
   readonly domain?: string;
@@ -19,7 +19,7 @@ export interface CookieAttributes {
   readonly secure?: boolean;
   readonly httpOnly?: boolean;
   readonly sameSite?: 'strict' | 'lax' | 'none';
-}
+};
 
 /** Hard cap on parsed pairs — a client cannot make us build an unbounded map. */
 const MAX_COOKIE_PAIRS = 128;

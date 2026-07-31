@@ -34,7 +34,7 @@ import type {
 } from '../../../../src/devtools/protocol/index.js';
 
 /** Shape the wallclock profile carries alongside the speedscope document. */
-interface ActorTsProfileExtras {
+type ActorTsProfileExtras = {
   readonly buckets: ReadonlyArray<{
     readonly actorPath: string;
     readonly className: string;
@@ -43,7 +43,7 @@ interface ActorTsProfileExtras {
     readonly totalMs: number;
     readonly errors: number;
   }>;
-}
+};
 
 /** Rows in the "heaviest handlers" table. */
 const HOTTEST_LIMIT = 15;

@@ -11,11 +11,11 @@ import type { Middleware } from '../Route.js';
 import { applyHeaders } from './headers.js';
 import { HstsOptionsValidator, type HstsOptions, type HstsOptionsType } from './HstsOptions.js';
 
-export interface ResolvedHsts {
+export type ResolvedHsts = {
   readonly maxAge: number;
   readonly includeSubDomains: boolean;
   readonly preload: boolean;
-}
+};
 
 /** Apply defaults + validate an HSTS options bag (shared with securityHeaders). */
 export function resolveHsts(options: Partial<HstsOptionsType>): ResolvedHsts {

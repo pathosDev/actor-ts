@@ -14,10 +14,10 @@ import { MqttOptions } from '../../../../../src/io/broker/MqttOptions.js';
 import { spawnInbox, spawnMqtt, type MqttContext } from '../runner.js';
 import { waitFor, type BrokerScenario } from '../../lib/scenario.js';
 
-interface Reading {
+type Reading = {
   readonly sensor: string;
   readonly celsius: number;
-}
+};
 
 type ReadingSelf =
   | { readonly kind: 'send'; readonly topic: string; readonly reading: Reading }

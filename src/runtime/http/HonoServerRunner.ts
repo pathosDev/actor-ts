@@ -50,11 +50,11 @@ export type UpgradeWebsocketFunction = (createEvents: (c: unknown) => WSEventsLi
  * needs `{ websocket }`); `attach` runs post-listen wiring (Node needs
  * `injectWebSocket(server)`).
  */
-export interface HonoWebsocketBridge {
+export type HonoWebsocketBridge = {
   readonly upgradeWebSocket: UpgradeWebsocketFunction;
   readonly serveOptions: object;
   readonly attach?: (handle: HonoServerHandle) => void;
-}
+};
 
 export interface HonoServerRunner {
   serve(options: { host: string; port: number; fetch: FetchHandler; serveOptions?: object }): Promise<HonoServerHandle>;

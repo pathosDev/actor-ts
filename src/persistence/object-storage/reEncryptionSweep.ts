@@ -49,12 +49,12 @@ const ATS1_MAGIC_PREFIX = new Uint8Array([0x41, 0x54, 0x53, 0x31]); // "ATS1"
  * `ReEncryptProgress` shape used by the per-event `onProgress` hook —
  * that one is event-data, this one is durable state.)
  */
-export interface ReEncryptResumeState {
+export type ReEncryptResumeState = {
   /** Key of the last object the sweep successfully wrote.  `null` = fresh start. */
   readonly lastKey: string | null;
   /** Cumulative count of objects rewritten across runs of the same sweep. */
   readonly processedCount: number;
-}
+};
 
 /**
  * Crash-resume hook for the re-encryption sweep.  Same shape pattern
@@ -84,7 +84,7 @@ export class InMemoryReEncryptProgressStore implements ReEncryptProgressStore {
   async clear(): Promise<void> { this.state = { lastKey: null, processedCount: 0 }; }
 }
 
-export interface ReEncryptOptions {
+export type ReEncryptOptions = {
   /** Common key prefix to sweep (e.g. `'snapshots/'` or `'state/'`). */
   readonly keyPrefix: string;
   /**
@@ -152,16 +152,16 @@ export interface ReEncryptOptions {
   readonly verifyKeyringCompleteness?: boolean;
   /** Sample size for the completeness check.  Default: min(100, total). */
   readonly sampleSize?: number;
-}
+};
 
-export interface ReEncryptProgress {
+export type ReEncryptProgress = {
   readonly key: string;
   readonly index: number;
   readonly total: number;
   readonly action: 'rewrote' | 'skipped-current' | 'skipped-unencrypted' | 'skipped-non-ats1' | 'skipped-malformed-key';
-}
+};
 
-export interface ReEncryptResult {
+export type ReEncryptResult = {
   /** Total objects examined. */
   readonly scanned: number;
   /** Objects that were re-encrypted to the active key. */
@@ -187,7 +187,7 @@ export interface ReEncryptResult {
    * produces one.
    */
   readonly skippedMalformedKey: number;
-}
+};
 
 /**
  * Re-encrypt every body under `keyPrefix` to the active key in `keyring`.

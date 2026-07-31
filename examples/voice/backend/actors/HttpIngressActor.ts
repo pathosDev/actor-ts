@@ -34,7 +34,7 @@ import { buildRoutes } from '../routes.js';
 import type { VoicePresenceCommand } from './VoicePresenceActor.js';
 import type { SessionStore } from '../auth/sessionStore.js';
 
-export interface HttpIngressDeps {
+export type HttpIngressDeps = {
   readonly host: string;
   readonly httpPort: number;
   readonly staticDir: string;
@@ -43,7 +43,7 @@ export interface HttpIngressDeps {
   readonly mediator: ActorRef<Subscribe | Unsubscribe | Publish<unknown>>;
   readonly voicePresence: ActorRef<VoicePresenceCommand>;
   readonly sessions: SessionStore;
-}
+};
 
 export class HttpIngressActor extends Actor<never> {
   private binding: ServerBinding | null = null;

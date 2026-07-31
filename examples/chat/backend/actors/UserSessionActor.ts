@@ -125,7 +125,7 @@ type SessionMessage =
 
 /* --------------------------- public deps ---------------------------- */
 
-export interface UserSessionDeps {
+export type UserSessionDeps = {
   readonly connection: SessionConnection;
   readonly chatRoomRegion: ActorRef<ChatRoomCommand>;
   readonly directMessageChannelRegion: ActorRef<DirectMessageChannelCommand>;
@@ -134,7 +134,7 @@ export interface UserSessionDeps {
   readonly sessions: SessionStore;
   readonly roomDirectory: ActorRef<ChatRoomDirectoryCommand>;
   readonly readReceipts: ActorRef<ReadReceiptsCommand>;
-}
+};
 
 /* ------------------------------ actor ------------------------------- */
 

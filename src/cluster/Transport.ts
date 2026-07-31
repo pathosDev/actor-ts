@@ -39,14 +39,14 @@ export interface Transport {
 
 /* ============================== TCP Transport ============================= */
 
-interface Connection {
+type Connection = {
   socket: TcpSocketLike | null;     // populated on `onOpen`
   peer: NodeAddress | null;         // populated on hello / hello-ack
   decoder: FrameDecoder;
   /** Buffered frames written before the hello handshake completed. */
   pending: WireMessage[];
   outbound: boolean;
-}
+};
 
 /**
  * TCP-backed cluster transport.  Wire framing lives in `Protocol.ts`; the

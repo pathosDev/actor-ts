@@ -1,13 +1,13 @@
 import type { HttpMethod } from './types.js';
 
-export interface HttpClientRequest {
+export type HttpClientRequest = {
   readonly method: HttpMethod;
   readonly url: string | URL;
   readonly headers?: Readonly<Record<string, string>>;
   readonly body?: string | Uint8Array | object | null;
   /** Abort the request after this many milliseconds. */
   readonly timeoutMs?: number;
-}
+};
 
 export interface HttpClientResponse {
   readonly status: number;

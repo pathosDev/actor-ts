@@ -42,21 +42,21 @@ import { migratingSnapshotAdapter } from '../persistence/migration/migratingAdap
  * without depending on any of them.
  */
 
-export interface ExpectUpcastSpec<E> {
+export type ExpectUpcastSpec<E> = {
   readonly storedVersion: number;
   readonly payload: unknown;
   /** Optional manifest override; defaults to the chain's manifest. */
   readonly storedManifest?: string;
   readonly expected: E;
-}
+};
 
-export interface ExpectRoundTripSpec<E> {
+export type ExpectRoundTripSpec<E> = {
   readonly state: E;
   /** Version to write at — `chain.currentVersion` for "no rolling deploy". */
   readonly writeVersion?: number;
   /** Expected state after writer→reader round-trip.  Often equals `state`. */
   readonly expectedAfterRoundTrip: E;
-}
+};
 
 export class SnapshotMigrationTest<E> {
   private readonly defaultAdapter: SnapshotAdapter<E, unknown>;

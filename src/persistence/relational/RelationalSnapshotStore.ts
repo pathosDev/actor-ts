@@ -6,12 +6,12 @@ import { assertSafeIdentifier } from '../storage/SqlIdentifier.js';
 import { expandPlaceholders } from './SqlDialect.js';
 import { RelationalStore, type RelationalStoreConfig } from './RelationalStore.js';
 
-interface SnapshotRow {
+type SnapshotRow = {
   persistence_id: string;
   sequence_nr: string | number | bigint;
   payload: string;
   timestamp: string | number | bigint;
-}
+};
 
 export interface RelationalSnapshotStoreConfig extends RelationalStoreConfig {
   /** Snapshots table.  Default `'snapshots'`. */

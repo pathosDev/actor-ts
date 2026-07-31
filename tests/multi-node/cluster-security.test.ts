@@ -22,11 +22,11 @@ import { Member } from '../../src/cluster/Member.js';
 import type { GossipMessage, MemberData, WireMessage } from '../../src/cluster/Protocol.js';
 import { LogLevel, NoopLogger } from '../../src/Logger.js';
 
-interface NodeHandle {
+type NodeHandle = {
   readonly system: ActorSystem;
   readonly cluster: Cluster;
   readonly address: NodeAddress;
-}
+};
 
 async function startNode(systemName: string, port: number, seeds: string[] = []): Promise<NodeHandle> {
   const sysOptions = ActorSystemOptions.create()

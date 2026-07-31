@@ -138,11 +138,11 @@ network round-trip per statement.
 ## Configuration
 
 ```ts
-interface LibSqlConnection {
+type LibSqlConnection = {
   url?:       string;           // libsql:// | http(s):// | ws(s)://
   authToken?: string;           // Turso token; omit for a local sqld
   client?:    LibSqlClientLike; // pre-built / shared client
-}
+};
 
 interface LibSqlJournalOptions extends LibSqlConnection {
   eventsTable?:      string;   // default 'events'

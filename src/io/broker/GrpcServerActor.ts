@@ -244,31 +244,31 @@ function extractMetadata(md: { get?: (key: string) => string[] } | undefined): R
   return {};
 }
 
-interface GrpcServerUnaryRequest {
+type GrpcServerUnaryRequest = {
   request: unknown;
   metadata?: { get?: (key: string) => string[] };
-}
+};
 
 interface GrpcUnaryCb {
   (err: { code: number; message: string } | null, response?: unknown): void;
 }
 
-interface GrpcServerStreamRequest {
+type GrpcServerStreamRequest = {
   request: unknown;
   metadata?: { get?: (key: string) => string[] };
   write(chunk: unknown): void;
   end(): void;
   emit(event: 'error', err: { code: number; message: string }): void;
-}
+};
 
-interface GrpcServerDuplexCall {
+type GrpcServerDuplexCall = {
   metadata?: { get?: (key: string) => string[] };
   on(event: 'data', cb: (chunk: unknown) => void): void;
   on(event: 'end', cb: () => void): void;
   write(chunk: unknown): void;
   end(): void;
   emit(event: 'error', err: { code: number; message: string }): void;
-}
+};
 
 interface GrpcServerLike {
   addService(definition: unknown, impl: Record<string, unknown>): void;
@@ -278,7 +278,7 @@ interface GrpcServerLike {
   forceShutdown(): void;
 }
 
-interface GrpcModule {
+type GrpcModule = {
   Server: new () => GrpcServerLike;
   ServerCredentials: {
     createInsecure(): unknown;
@@ -289,7 +289,7 @@ interface GrpcModule {
     ): unknown;
   };
   loadPackageDefinition(def: unknown): unknown;
-}
+};
 
 interface ProtoLoaderModule {
   loadSync(filename: string | string[], options?: object): unknown;

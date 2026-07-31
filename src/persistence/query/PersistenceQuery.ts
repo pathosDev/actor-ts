@@ -88,10 +88,10 @@ export interface PersistenceQuery {
  * Tunables for a live query.  The defaults are deliberately
  * conservative — projections are I/O-bound, not latency-critical.
  */
-export interface LiveQueryOptions {
+export type LiveQueryOptions = {
   /** Poll interval in ms.  Default: `1_000` (1 second). */
   readonly pollIntervalMs?: number;
-}
+};
 
 /**
  * Cursor used by tag queries.  Composite by design so two events that
@@ -102,7 +102,7 @@ export interface LiveQueryOptions {
  * Compare via {@link offsetGreaterOrEqual} / {@link offsetCompare} —
  * the tuple structure makes naive `>=` comparison wrong.
  */
-export interface Offset {
+export type Offset = {
   /** Wall-clock time of the event's persist call. */
   readonly timestamp: number;
   /**
@@ -113,7 +113,7 @@ export interface Offset {
   readonly persistenceId: string;
   /** Tiebreaker within a persistence id when timestamps collide. */
   readonly sequenceNr: number;
-}
+};
 
 /** Sentinel: read every event from the start of recorded history. */
 export const offsetStart: Offset = {
@@ -151,10 +151,10 @@ export function offsetOfEvent<E>(ev: PersistentEvent<E>): Offset {
  * Event paired with the {@link Offset} a consumer must persist to
  * resume after a crash.  See `eventsByTag`.
  */
-export interface TaggedEvent<E = unknown> {
+export type TaggedEvent<E = unknown> = {
   readonly event: PersistentEvent<E>;
   readonly offset: Offset;
-}
+};
 
 /**
  * Tag-filter spec for `eventsByTag` / `currentEventsByTag`.  A bare
@@ -184,11 +184,11 @@ export type TagFilter = string | TagFilterSpec;
  * empty `{}` matches every event.  See `TagFilter` for the empty-list
  * semantics.
  */
-export interface TagFilterSpec {
+export type TagFilterSpec = {
   readonly all?: ReadonlyArray<string>;
   readonly any?: ReadonlyArray<string>;
   readonly not?: ReadonlyArray<string>;
-}
+};
 
 /**
  * Normalise a {@link TagFilter} into the canonical {@link TagFilterSpec}

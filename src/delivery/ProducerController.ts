@@ -10,19 +10,19 @@ let producerSeed = 0;
 const nextProducerId = (): string => `producer-${++producerSeed}`;
 
 /** Message sent to the ProducerController by the publishing user code. */
-export interface ProducerSend<T> {
+export type ProducerSend<T> = {
   readonly kind: 'reliable-delivery.send';
   readonly body: T;
   readonly confirm?: ConfirmationCallback;
-}
+};
 
-interface InFlight<T> {
+type InFlight<T> = {
   readonly seq: number;
   readonly body: T;
   readonly confirm?: ConfirmationCallback;
   attempts: number;
   timer: Cancellable | null;
-}
+};
 
 /**
  * Producer side of the reliable-delivery protocol.  Messages sent to this

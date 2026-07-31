@@ -12,7 +12,7 @@ import { decodeTraceparent, encodeTraceparent, newSpanId, newTraceId } from '../
  * adapter doesn't accidentally lean on private OTel-SDK behaviour.
  */
 
-interface FakeRecordedSpan {
+type FakeRecordedSpan = {
   name: string;
   kind?: number;
   attrs: Record<string, unknown>;
@@ -24,7 +24,7 @@ interface FakeRecordedSpan {
   parentSpanId?: string;
   context: OtelSpanContextLike;
   ended: boolean;
-}
+};
 
 class FakeContext implements OtelContextLike {
   constructor(public readonly map = new Map<symbol, unknown>()) {}

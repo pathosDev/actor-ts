@@ -64,11 +64,11 @@ sein, sonst schlägt der Actor beim Start sofort fehl.
 Jedes geparste Event wird als `SseEvent` zugestellt:
 
 ```ts
-interface SseEvent {
+type SseEvent = {
   event: string;   // the `event:` field, or 'message' by default
   data:  string;   // the `data:` payload
   id?:   string;   // the `id:` field, when present
-}
+};
 ```
 
 Der Client parst das SSE-Wire-Format — Events durch eine Leerzeile

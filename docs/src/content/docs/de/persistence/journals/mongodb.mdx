@@ -122,12 +122,12 @@ seinen eigenen Client und schließt ihn bei `close()`.
 ## Konfiguration
 
 ```ts
-interface MongoConnection {
+type MongoConnection = {
   url?:           string;                    // mongodb:// oder mongodb+srv://
   databaseName?:  string;                    // Default 'actor_ts'
   clientOptions?: Record<string, unknown>;   // { tls, authSource, maxPoolSize, … }
   client?:        MongoClientLike;           // vorgebauter / geteilter Client
-}
+};
 
 interface MongoJournalOptions extends MongoConnection {
   eventsCollection?:  string;   // Default 'events'; die Mark-Collection ist '<it>_meta'

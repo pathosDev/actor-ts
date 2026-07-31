@@ -36,14 +36,14 @@ export interface ReplayRequest<Event, State> {
 }
 
 /** Outcome of a replay. */
-export interface ReplayResult<State> {
+export type ReplayResult<State> = {
   readonly state: State;
   /** Sequence number the state corresponds to; `0` when nothing applied. */
   readonly sequenceNr: number;
   /** Snapshot the fold started from, or `null` for a full replay. */
   readonly fromSnapshotSequenceNr: number | null;
   readonly eventsApplied: number;
-}
+};
 
 /**
  * Rejected because a snapshot's claimed sequence number cannot be

@@ -108,7 +108,7 @@ describe('migrateInMemoryJournal — bulk rewrite', () => {
 
   test('after migration, an actor with a defaultsAdapter can replay the journal', async () => {
     type DepositedV1 = { kind: 'deposited'; amount: number };
-    type DepositedV2 = DepositedV1 & { currency: 'USD' | 'EUR' };
+    interface DepositedV2 extends DepositedV1 { currency: 'USD' | 'EUR' }
 
     const journal = new InMemoryJournal();
     await journal.append('account-1', [

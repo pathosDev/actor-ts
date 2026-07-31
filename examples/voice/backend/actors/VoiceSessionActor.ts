@@ -148,13 +148,13 @@ type SessionMessage =
 
 /* ------------------------------ deps + helpers ----------------------------- */
 
-export interface VoiceSessionDeps {
+export type VoiceSessionDeps = {
   readonly connection: VoiceConnection;
   readonly receptionist: ActorRef<unknown>;
   readonly mediator: ActorRef<Subscribe | Unsubscribe | Publish<unknown>>;
   readonly voicePresence: ActorRef<VoicePresenceCommand>;
   readonly sessions: SessionStore;
-}
+};
 
 type Phase = 'Unauthenticated' | 'Authenticated';
 

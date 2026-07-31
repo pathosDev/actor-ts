@@ -60,28 +60,28 @@ import type { MemberSnapshot } from './internal/parallel-multi-node-bootstrap.js
  * `ScenarioModule` interface.
  */
 
-interface NodeRecord {
+type NodeRecord = {
   readonly role: string;
   readonly address: NodeAddress;
   worker: WorkerLike | null;       // null after crash/leave
   port: PortLike | null;           // broker-side port
   removed: boolean;
-}
+};
 
 let nextPortBase = 30_500;          // disjoint from MultiNodeSpec's 30_000
 
 /* ---------- Control channel: same wire as the bootstrap expects ---------- */
 
-interface QueryMembersResponse {
+type QueryMembersResponse = {
   kind: 'mns-test.query-members-response'; reqId: number; members: MemberSnapshot[];
-}
-interface QueryLeaderResponse {
+};
+type QueryLeaderResponse = {
   kind: 'mns-test.query-leader-response'; reqId: number; leader: string | null;
-}
-interface LeaveResponse { kind: 'mns-test.leave-response'; reqId: number; error?: string }
-interface RunCommandResponse {
+};
+type LeaveResponse = { kind: 'mns-test.leave-response'; reqId: number; error?: string };
+type RunCommandResponse = {
   kind: 'mns-test.run-command-response'; reqId: number; result: unknown; error?: string;
-}
+};
 type ControlResponse =
   | QueryMembersResponse | QueryLeaderResponse
   | LeaveResponse | RunCommandResponse;

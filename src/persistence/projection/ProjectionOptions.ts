@@ -4,7 +4,7 @@ import type { LiveQueryOptions, PersistenceQuery, TagFilter } from '../query/Per
 import type { OffsetStore } from './OffsetStore.js';
 
 /** Plain options-object shape shared by every projection. */
-export interface ProjectionOptionsType<E> {
+export type ProjectionOptionsType<E> = {
   /** Logical name — used as the offset-store key prefix. */
   readonly name: string;
   /** The query layer (one of `InMemoryQuery`, `SqliteQuery`, …). */
@@ -15,7 +15,7 @@ export interface ProjectionOptionsType<E> {
   readonly handle: (event: PersistentEvent<E>) => void | Promise<void>;
   /** Tunables passed to the underlying live query. */
   readonly liveOptions?: LiveQueryOptions;
-}
+};
 
 /** Options for a per-persistenceId projection.  One cursor per pid. */
 export interface ByPersistenceIdProjectionOptionsType<E> extends ProjectionOptionsType<E> {

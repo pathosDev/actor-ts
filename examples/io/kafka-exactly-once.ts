@@ -34,7 +34,7 @@ import {
 import type { ActorRef } from '../../src/index.js';
 import { attachDevTools } from '../devtools.js';
 
-interface Order { orderId: string; userId: string; amount: number }
+type Order = { orderId: string; userId: string; amount: number };
 
 class OrderProcessor extends Actor<KafkaRecord> {
   constructor(private readonly kafka: ActorRef<KafkaCommand>) { super(); }

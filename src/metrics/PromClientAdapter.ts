@@ -37,9 +37,9 @@ import { DEFAULT_HISTOGRAM_BUCKETS } from './Metrics.js';
 /* construct-and-mutate path; readback goes through prom-client's    */
 /* own `register.metrics()`, which the user already calls.            */
 
-export interface PromClientLabelValues {
+export type PromClientLabelValues = {
   [k: string]: string | number;
-}
+};
 
 export interface PromClientCounter {
   inc(value?: number): void;
@@ -74,41 +74,41 @@ export interface PromClientRegistryLike {
   resetMetrics?(): void;
 }
 
-export interface PromClientLike {
+export type PromClientLike = {
   Counter:   new (options: PromConstructorOpts) => PromClientCounter;
   Gauge:     new (options: PromConstructorOpts) => PromClientGauge;
   Histogram: new (options: PromConstructorOpts & { buckets?: number[] }) => PromClientHistogram;
-}
+};
 
-interface PromConstructorOpts {
+type PromConstructorOpts = {
   name: string;
   help: string;
   labelNames?: string[];
   registers?: PromClientRegistryLike[];
   buckets?: number[];
-}
+};
 
 /* --------------------------- adapter --------------------------- */
 
-interface CounterEntry {
+type CounterEntry = {
   readonly kind: 'counter';
   readonly help: string;
   readonly labelNames: ReadonlyArray<string>;
   readonly impl: PromClientCounter;
-}
-interface GaugeEntry {
+};
+type GaugeEntry = {
   readonly kind: 'gauge';
   readonly help: string;
   readonly labelNames: ReadonlyArray<string>;
   readonly impl: PromClientGauge;
-}
-interface HistogramEntry {
+};
+type HistogramEntry = {
   readonly kind: 'histogram';
   readonly help: string;
   readonly labelNames: ReadonlyArray<string>;
   readonly buckets: ReadonlyArray<number>;
   readonly impl: PromClientHistogram;
-}
+};
 
 type Entry = CounterEntry | GaugeEntry | HistogramEntry;
 

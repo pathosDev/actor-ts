@@ -11,11 +11,11 @@ import { expandPlaceholders } from './SqlDialect.js';
 import { RelationalStore, type RelationalStoreConfig } from './RelationalStore.js';
 import type { SqlExecutor } from './SqlPool.js';
 
-interface StateRow {
+type StateRow = {
   revision: string | number | bigint;
   payload: string;
   timestamp: string | number | bigint;
-}
+};
 
 export interface RelationalDurableStateStoreConfig extends RelationalStoreConfig {
   /** Durable-state table.  Default `'durable_state'`. */

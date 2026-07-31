@@ -34,7 +34,7 @@ import {
 import type { ActorRef } from '../../src/index.js';
 import { attachDevTools } from '../devtools.js';
 
-interface Order { orderId: string; amount: number }
+type Order = { orderId: string; amount: number };
 
 class OrderProcessor extends Actor<JetStreamMessage> {
   constructor(private readonly js: ActorRef<JetStreamCommand>) { super(); }

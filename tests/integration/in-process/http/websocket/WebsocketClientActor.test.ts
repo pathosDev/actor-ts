@@ -21,7 +21,7 @@ class PingServer extends WebsocketServerActor<SMessage, CMessage> {
   onMessage(m: CMessage): void { this.reply({ kind: 'pong', n: m.n }); }
 }
 
-interface Rec { events: string[]; messages: SMessage[] }
+type Rec = { events: string[]; messages: SMessage[] };
 
 class RecordingClient extends WebsocketClientActor<CMessage, SMessage> {
   constructor(url: string, private readonly rec: Rec) {

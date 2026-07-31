@@ -18,9 +18,9 @@ export interface WebsocketLike {
   ping?(): void;
 }
 
-export interface WebsocketClientConstructorOptions {
+export type WebsocketClientConstructorOptions = {
   readonly protocols?: string | ReadonlyArray<string>;
-}
+};
 
 export interface WebsocketClientConstructor {
   create(url: string, options?: WebsocketClientConstructorOptions): WebsocketLike;

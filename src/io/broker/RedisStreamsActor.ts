@@ -8,19 +8,19 @@ import { RedisStreamsOptionsValidator } from './RedisStreamsOptions.js';
 import type { RedisStreamsOptions, RedisStreamsOptionsType } from './RedisStreamsOptions.js';
 
 /** Inbound entry from a Redis stream. */
-export interface RedisStreamEntry {
+export type RedisStreamEntry = {
   readonly stream: string;
   readonly id: string;          // e.g. '1689000000000-0'
   readonly fields: Readonly<Record<string, string>>;
-}
+};
 
 /** Outbound publish — adds an entry to a Redis stream via XADD. */
-export interface RedisStreamPublish {
+export type RedisStreamPublish = {
   readonly stream: string;
   readonly fields: Readonly<Record<string, string>>;
   /** Optional `MAXLEN ~ N` cap.  Drops oldest when set. */
   readonly maxLenApprox?: number;
-}
+};
 
 type PublishCommand = { readonly kind: 'publish'; readonly publish: RedisStreamPublish };
 type AcknowledgmentCommand = {
@@ -186,7 +186,7 @@ interface IoredisConstructor {
   new (url: string): IoredisClientLike;
 }
 
-interface IoredisModule { default?: IoredisConstructor; }
+type IoredisModule = { default?: IoredisConstructor; };
 
 const ioredisLazy: Lazy<Promise<IoredisModule>> = Lazy.of(
   () => lazyImportModule<IoredisModule>('ioredis', { context: 'RedisStreamsActor' }),

@@ -37,11 +37,11 @@ export const directMessageRoomFor = (otherUser: string): RoomName => `@${otherUs
 
 export const WS_PATH = '/ws';
 
-export interface ChatMessage {
+export type ChatMessage = {
   readonly from: string;
   readonly text: string;
   readonly ts: number;
-}
+};
 
 export type ClientMessage =
   | { readonly kind: 'login';                readonly username: string; readonly password: string }

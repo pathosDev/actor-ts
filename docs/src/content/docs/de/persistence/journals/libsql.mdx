@@ -143,11 +143,11 @@ und zahlt keinen Netzwerk-Round-Trip pro Statement.
 ## Konfiguration
 
 ```ts
-interface LibSqlConnection {
+type LibSqlConnection = {
   url?:       string;           // libsql:// | http(s):// | ws(s)://
   authToken?: string;           // Turso-Token; bei lokalem sqld weglassen
   client?:    LibSqlClientLike; // vorgebauter / geteilter Client
-}
+};
 
 interface LibSqlJournalOptions extends LibSqlConnection {
   eventsTable?:      string;   // Default 'events'

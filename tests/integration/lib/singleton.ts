@@ -18,25 +18,25 @@ import { Actor } from '../../../src/Actor.js';
 import type { ActorRef } from '../../../src/ActorRef.js';
 
 /** Increment the singleton's counter by 1.  Fire-and-forget. */
-export interface SingletonIncrement {
+export type SingletonIncrement = {
   readonly kind: 'increment';
-}
+};
 
 /**
  * "Who are you?" — the singleton replies with its host node name +
  * current counter value.  `replyTo` is a one-shot collector spawned
  * per HTTP request in `control-routes.ts`.
  */
-export interface SingletonWho {
+export type SingletonWho = {
   readonly kind: 'who';
   readonly replyTo: ActorRef<SingletonWhoReply>;
-}
+};
 
-export interface SingletonWhoReply {
+export type SingletonWhoReply = {
   readonly kind: 'who-reply';
   readonly nodeName: string;
   readonly value: number;
-}
+};
 
 export type SingletonMessage = SingletonIncrement | SingletonWho;
 

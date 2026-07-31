@@ -11,17 +11,17 @@
  */
 
 /** One `(stack, weight)` pair, as speedscope models a sampled profile. */
-export interface WeightedStack {
+export type WeightedStack = {
   /** Frame names, outermost first. */
   readonly frames: ReadonlyArray<string>;
   readonly weightMs: number;
   /** How many messages this stack represents. */
   readonly count: number;
   readonly errors: number;
-}
+};
 
 /** A node of the aggregated tree. */
-export interface ProfileNode {
+export type ProfileNode = {
   readonly name: string;
   /** Full path from the root, for a stable identity across redraws. */
   readonly key: string;
@@ -33,7 +33,7 @@ export interface ProfileNode {
   count: number;
   errors: number;
   readonly children: Map<string, ProfileNode>;
-}
+};
 
 /**
  * Build the tree from weighted stacks.
@@ -88,13 +88,13 @@ export function buildProfileTree(stacks: ReadonlyArray<WeightedStack>): ProfileN
 }
 
 /** A laid-out node ready to draw. */
-export interface ProfileRectangle {
+export type ProfileRectangle = {
   readonly node: ProfileNode;
   readonly x: number;
   readonly y: number;
   readonly width: number;
   readonly height: number;
-}
+};
 
 /** Vertical space one row occupies, in CSS pixels. */
 export const PROFILE_ROW_HEIGHT = 20;

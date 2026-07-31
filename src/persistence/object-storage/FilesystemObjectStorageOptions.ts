@@ -1,7 +1,7 @@
 import { OptionsBuilder } from '../../util/OptionsBuilder.js';
 import { OptionsValidator } from '../../util/OptionsValidator.js';
 
-export interface FilesystemObjectStorageOptionsType {
+export type FilesystemObjectStorageOptionsType = {
   /** Root directory.  Will be created (recursively) if it doesn't exist. */
   readonly dir: string;
   /**
@@ -18,7 +18,7 @@ export interface FilesystemObjectStorageOptionsType {
    * writers never get their lock yanked.
    */
   readonly staleLockMs?: number;
-}
+};
 
 /**
  * Fluent builder for {@link FilesystemObjectStorageOptionsType}.  `dir` is

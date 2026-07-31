@@ -8,11 +8,11 @@ import type { Transport, WireHandler } from '../Transport.js';
  * address (so the receiver can put it in `WireHandler`) and the intended
  * recipient (so the broker can route it).
  */
-export interface BrokeredMessage {
+export type BrokeredMessage = {
   readonly from: ReturnType<NodeAddress['toJSON']>;
   readonly to: ReturnType<NodeAddress['toJSON']>;
   readonly payload: WireMessage;
-}
+};
 
 /**
  * MessagePort-like minimal surface — we only use these three members so

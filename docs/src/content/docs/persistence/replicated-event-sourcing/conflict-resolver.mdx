@@ -33,12 +33,12 @@ interface ConflictResolver<E> {
   resolve(a: ConflictCandidate<E>, b: ConflictCandidate<E>): E;
 }
 
-interface ConflictCandidate<E> {
+type ConflictCandidate<E> = {
   event:     E;             // the user-domain event payload
   timestamp: number;        // wall-clock at the originating replica
   replica:   ReplicaId;     // originating replica id
   vc:        VectorClock;   // vector clock at persist time
-}
+};
 ```
 
 Note the **single type parameter** (the event, *not* the state).

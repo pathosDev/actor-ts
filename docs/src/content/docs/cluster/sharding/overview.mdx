@@ -147,7 +147,7 @@ mechanics.
 `ShardingOptionsType<TMessage>` — the fields you'll most often touch:
 
 ```ts
-interface ShardingOptionsType<TMessage> {
+type ShardingOptionsType<TMessage> = {
   typeName:               string;
   entityProps:            Props<TMessage>;
   extractEntityId:        (message: TMessage) => string;
@@ -158,7 +158,7 @@ interface ShardingOptionsType<TMessage> {
   rememberEntities?:      boolean;            // re-spawn entities on failover (#)
   passivationIdleMs?:     number;             // auto-stop idle entities
   maxEntities?:           number;             // LRU cap per node
-}
+};
 ```
 
 | Field | What it controls |

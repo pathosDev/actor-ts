@@ -15,14 +15,14 @@
  * code never branches on runtime once it has a `WorkerLike` in hand.
  */
 
-export interface WorkerMessageEvent {
+export type WorkerMessageEvent = {
   readonly data?: unknown;
-}
+};
 
-export interface WorkerCloseEvent {
+export type WorkerCloseEvent = {
   /** Exit code — 0 for clean exit, non-zero for crash / abnormal termination. */
   readonly code?: number;
-}
+};
 
 export type WorkerEventMap = {
   message: WorkerMessageEvent;
@@ -42,9 +42,9 @@ export interface WorkerLike {
   terminate(): void | Promise<number>;
 }
 
-export interface WorkerSpawnOptions {
+export type WorkerSpawnOptions = {
   readonly name?: string;
-}
+};
 
 export interface WorkerBackend {
   /**

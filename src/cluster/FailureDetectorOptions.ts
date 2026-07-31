@@ -2,7 +2,7 @@ import { OptionsBuilder } from '../util/OptionsBuilder.js';
 import { OptionsValidator } from '../util/OptionsValidator.js';
 
 /** Plain options-object shape accepted by a {@link FailureDetector}. */
-export interface FailureDetectorOptionsType {
+export type FailureDetectorOptionsType = {
   /** How often the detector samples and decides membership health. */
   readonly heartbeatIntervalMs: number;
   /** Time without heartbeat after which a peer is marked unreachable. */
@@ -15,7 +15,7 @@ export interface FailureDetectorOptionsType {
    * being declared down.
    */
   readonly downAfterMs: number;
-}
+};
 
 /**
  * Fluent builder for {@link FailureDetectorOptionsType}.  Unset fields fall

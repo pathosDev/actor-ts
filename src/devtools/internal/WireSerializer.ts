@@ -13,14 +13,14 @@
  */
 
 /** Limits applied while sanitising. */
-export interface WireLimits {
+export type WireLimits = {
   /** Nesting beyond this is replaced by a marker. */
   readonly maxDepth: number;
   /** Array entries / object keys beyond this are dropped. */
   readonly maxEntries: number;
   /** Strings longer than this are cut. */
   readonly maxStringLength: number;
-}
+};
 
 export const DEFAULT_WIRE_LIMITS: WireLimits = {
   maxDepth: 12,
@@ -29,10 +29,10 @@ export const DEFAULT_WIRE_LIMITS: WireLimits = {
 };
 
 /** A sanitised value plus whether anything was left out. */
-export interface WireValue {
+export type WireValue = {
   readonly value: unknown;
   readonly truncated: boolean;
-}
+};
 
 /**
  * Convert `input` into something `JSON.stringify` can handle.

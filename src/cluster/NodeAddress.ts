@@ -43,8 +43,8 @@ export class NodeAddress {
   }
 }
 
-export interface NodeAddressData {
+export type NodeAddressData = {
   readonly systemName: string;
   readonly host: string;
   readonly port: number;
-}
+};

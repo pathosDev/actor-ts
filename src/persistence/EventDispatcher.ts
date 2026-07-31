@@ -44,9 +44,9 @@
  * 'EventDispatcherIncomplete<\"c\">' has no call signatures."`
  * The `unhandled` field-name surfaces which kind is missing.
  */
-export interface EventDispatcherIncomplete<Unhandled extends string> {
+export type EventDispatcherIncomplete<Unhandled extends string> = {
   readonly __unhandled: Unhandled;
-}
+};
 
 /**
  * Builder state, parameterised by the kinds that have already been

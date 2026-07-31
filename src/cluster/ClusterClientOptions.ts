@@ -4,7 +4,7 @@ import { OptionsBuilder } from '../util/OptionsBuilder.js';
 import { OptionsValidator } from '../util/OptionsValidator.js';
 
 /** Plain options-object shape accepted by a {@link ClusterClient}. */
-export interface ClusterClientOptionsType {
+export type ClusterClientOptionsType = {
   /**
    * Cluster nodes to dial.  Each is a `host:port` or `<system>@host:port`
    * string — the same shape `Cluster.join` accepts for seeds.  Tried in
@@ -27,7 +27,7 @@ export interface ClusterClientOptionsType {
   readonly tls?: TlsTransportOptionsType;
   /** Custom logger; default: ConsoleLogger at WARN. */
   readonly logger?: Logger;
-}
+};
 
 /**
  * Fluent builder for {@link ClusterClientOptionsType}:

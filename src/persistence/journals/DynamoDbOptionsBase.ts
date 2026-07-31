@@ -3,7 +3,7 @@ import { OptionsError, OptionsValidator } from '../../util/OptionsValidator.js';
 import type { DynamoDbConnection, DynamoDbOperations } from './DynamoDbClient.js';
 
 /** Table provisioning, shared by all three DynamoDB stores. */
-export interface DynamoDbTableProvisioning {
+export type DynamoDbTableProvisioning = {
   /** Create the table on first use.  Default: true. */
   readonly autoCreateTables?: boolean;
   /**
@@ -18,7 +18,7 @@ export interface DynamoDbTableProvisioning {
   };
   /** How long to wait for a new table to become ACTIVE.  Default: 30 000 ms. */
   readonly tableReadyTimeoutMs?: number;
-}
+};
 
 /** Everything the three DynamoDB option families have in common. */
 export type DynamoDbOptionsBaseType = DynamoDbConnection & DynamoDbTableProvisioning;

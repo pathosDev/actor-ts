@@ -100,7 +100,7 @@ type DepositedEvent = { kind: 'deposited'; amount: number; ts: number };
 type WithdrawnEvent = { kind: 'withdrawn'; amount: number; ts: number };
 type Event = DepositedEvent | WithdrawnEvent;
 
-interface State { balance: number; }
+type State = { balance: number; };
 
 class Account extends PersistentActor<Command, Event, State> {
   readonly persistenceId = 'account-42';
@@ -164,7 +164,7 @@ die vollständige Oberfläche.
 import { match } from 'ts-pattern';
 import { DurableStateActor, DurableStateOptions, type ActorRef } from 'actor-ts';
 
-interface State { items: string[]; }
+type State = { items: string[]; };
 
 type AddCommand = { kind: 'add'; sku: string };
 type ViewCommand = { kind: 'view'; replyTo: ActorRef<State> };
@@ -309,17 +309,17 @@ vollständige Muster.
 Das Framework definiert drei Interfaces:
 
 ```ts
-interface Journal {
+type Journal = {
   // Events anhängen, Events lesen, nach Tag abfragen
-}
+};
 
-interface DurableStateStore {
+type DurableStateStore = {
   // Laden, mit Revision persistieren, löschen
-}
+};
 
-interface SnapshotStore {
+type SnapshotStore = {
   // Snapshot speichern, neuesten laden, ältere löschen
-}
+};
 ```
 
 Eingebaute Implementierungen leben unter

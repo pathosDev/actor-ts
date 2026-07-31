@@ -43,12 +43,12 @@ import type { CachedSnapshotStoreOptions, CachedSnapshotStoreOptionsType } from 
 
 const DEFAULT_TTL_MS = 5 * 60_000;
 
-interface CachedSnapshot<S> {
+type CachedSnapshot<S> = {
   readonly persistenceId: string;
   readonly sequenceNr: number;
   readonly state: S;
   readonly timestamp: number;
-}
+};
 
 export class CachedSnapshotStore implements SnapshotStore {
   private readonly cache: Cache;

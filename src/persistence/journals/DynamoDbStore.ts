@@ -6,13 +6,13 @@ import {
 } from './DynamoDbClient.js';
 
 /** A table's key schema, in the shape `CreateTable` wants. */
-export interface DynamoDbTableSchema {
+export type DynamoDbTableSchema = {
   readonly tableName: string;
   /** Partition key — always the persistence id in these stores. */
   readonly partitionKey: string;
   /** Sort key, for the tables that hold many items per persistence id. */
   readonly sortKey?: { readonly name: string; readonly type: 'N' | 'S' };
-}
+};
 
 /** Wiring every DynamoDB store needs, independent of which contract it implements. */
 export interface DynamoDbStoreConfig extends Omit<LazyStoreConfig<DynamoDbOperations>, 'ownsResource' | 'openResource'> {

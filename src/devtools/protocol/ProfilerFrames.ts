@@ -23,12 +23,12 @@ export type ProfilerMode = 'wallclock' | 'cpu';
 export type ProfilerFormat = 'speedscope' | 'cpuprofile';
 
 /** One mode, and whether this host can actually run it. */
-export interface ProfilerModeCapability {
+export type ProfilerModeCapability = {
   readonly mode: ProfilerMode;
   readonly available: boolean;
   /** Why not, when `available` is false — shown next to the option. */
   readonly reason?: string;
-}
+};
 
 /**
  * Result of `profiler.capabilities`.
@@ -36,27 +36,27 @@ export interface ProfilerModeCapability {
  * Asked before the panel offers a mode, so an unsupported one is greyed
  * out with its reason rather than failing when Start is pressed.
  */
-export interface ProfilerCapabilitiesResult {
+export type ProfilerCapabilitiesResult = {
   readonly modes: ReadonlyArray<ProfilerModeCapability>;
-}
+};
 
 /** Parameters of `profiler.start`. */
-export interface ProfilerStartParameters {
+export type ProfilerStartParameters = {
   /** Default `'wallclock'`. */
   readonly mode?: ProfilerMode;
   /** Auto-stop after this long; omit to stop manually. */
   readonly durationMs?: number;
-}
+};
 
 /** Result of `profiler.start`. */
-export interface ProfilerStartResult {
+export type ProfilerStartResult = {
   readonly sessionId: string;
   readonly mode: ProfilerMode;
   readonly startedAtMs: number;
-}
+};
 
 /** Result of `profiler.stop`. */
-export interface ProfilerStopResult {
+export type ProfilerStopResult = {
   readonly sessionId: string;
   readonly mode: ProfilerMode;
   readonly startedAtMs: number;
@@ -65,23 +65,23 @@ export interface ProfilerStopResult {
   readonly sampleCount: number;
   /** Profile document in `format` — rendered by the panel, opaque here. */
   readonly profile: unknown;
-}
+};
 
 /** Live progress of a running session. */
-export interface ProfilerProgressPayload {
+export type ProfilerProgressPayload = {
   readonly kind: 'profiler-progress';
   readonly atMs: number;
   readonly sessionId: string;
   readonly sampleCount: number;
   readonly elapsedMs: number;
-}
+};
 
 /** A session ended on its own (`durationMs` elapsed). */
-export interface ProfilerCompletedPayload {
+export type ProfilerCompletedPayload = {
   readonly kind: 'profiler-completed';
   readonly atMs: number;
   readonly sessionId: string;
-}
+};
 
 /** Payloads carried by the `profiler` stream. */
 export type ProfilerStreamPayload = ProfilerProgressPayload | ProfilerCompletedPayload;

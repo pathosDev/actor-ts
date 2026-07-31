@@ -43,7 +43,7 @@
  * boundary.
  */
 
-export interface LazyImportOptions {
+export type LazyImportOptions = {
   /**
    * User-facing context that gets prefixed to the error message.
    * Typically the actor / extension that needs the module — gives
@@ -56,7 +56,7 @@ export interface LazyImportOptions {
    * Default: `npm install <name>`.
    */
   readonly installHint?: string;
-}
+};
 
 /**
  * Dynamic-import wrapper that produces a uniform "missing peer-dep"

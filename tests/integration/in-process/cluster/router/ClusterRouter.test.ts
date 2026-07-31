@@ -28,7 +28,7 @@ import { Broadcast } from '../../../../../src/Router.js';
 
 const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
 
-interface ReceivedMessage { kind: 'work'; id: string }
+type ReceivedMessage = { kind: 'work'; id: string };
 
 let received: string[] = [];
 

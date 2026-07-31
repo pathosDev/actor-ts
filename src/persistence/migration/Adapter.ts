@@ -22,28 +22,28 @@
  */
 
 /** Wire-format envelope written into the `event` / `state` JSON slot. */
-export interface JournalEnvelope<P = unknown> {
+export type JournalEnvelope<P = unknown> = {
   /** Schema version of the payload — monotonic, increments per breaking change. */
   readonly _v: number;
   /** Manifest — stable type identity, e.g. `'BankAccount.Deposited'`. */
   readonly _t: string;
   /** The (possibly-old) payload itself. */
   readonly _e: P;
-}
+};
 
 /** Stored shape that adapters see on the read path — the unwrapped envelope. */
-export interface StoredFrame {
+export type StoredFrame = {
   readonly manifest: string;
   readonly version: number;
   readonly payload: unknown;
-}
+};
 
 /** Triple emitted by adapters on the write path — the actor wraps this into an envelope. */
-export interface OutboundFrame<JournalShape = unknown> {
+export type OutboundFrame<JournalShape = unknown> = {
   readonly manifest: string;
   readonly version: number;
   readonly payload: JournalShape;
-}
+};
 
 /**
  * Adapter for `PersistentActor` events.  `DomainEvent` is the *current*

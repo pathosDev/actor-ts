@@ -27,7 +27,7 @@ import { clusterLiveNodes, sleep, type Scenario } from './types.js';
 
 const ID = 'integration-persistent-counter';
 
-interface StateResponse { readonly id: string; readonly count: number }
+type StateResponse = { readonly id: string; readonly count: number };
 
 async function inc(host: string, controlPort: number, id: string): Promise<void> {
   const response = await fetch(`http://${host}:${controlPort}/test/persistence/inc?id=${encodeURIComponent(id)}`, {

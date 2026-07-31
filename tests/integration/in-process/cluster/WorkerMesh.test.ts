@@ -30,11 +30,11 @@ async function waitFor(pred: () => boolean, timeoutMs = 2000, stepMs = 25): Prom
   if (!pred()) throw new Error(`waitFor timed out after ${timeoutMs}ms`);
 }
 
-interface Node {
+type Node = {
   system: ActorSystem;
   cluster: Cluster;
   address: NodeAddress;
-}
+};
 
 async function startNode(
   systemName: string,

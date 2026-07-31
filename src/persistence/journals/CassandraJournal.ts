@@ -15,14 +15,14 @@ import { assertSafeIdentifier } from '../storage/SqlIdentifier.js';
 import { assertValidTags } from '../storage/TagValidator.js';
 import type { CassandraJournalOptions, CassandraJournalOptionsType } from './CassandraJournalOptions.js';
 
-interface EventRow {
+type EventRow = {
   persistence_id: string;
   partition_nr: string | number; // bigint comes back as driver type
   sequence_nr: string | number;
   timestamp: string | number;
   payload: string;
   tags: string[] | null;
-}
+};
 
 /**
  * Journal backed by Apache Cassandra or ScyllaDB — same CQL protocol, one

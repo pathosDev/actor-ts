@@ -73,7 +73,7 @@ das war's.
 ```ts
 import { defaultsAdapter, PersistentActor } from 'actor-ts';
 
-interface DepositedV1 { kind: 'deposited'; amount: number }
+type DepositedV1 = { kind: 'deposited'; amount: number };
 interface DepositedV2 extends DepositedV1 { currency: string }
 
 class Account extends PersistentActor<Command, Deposited, State> {
@@ -114,9 +114,9 @@ type-checkt, dass Start- und End-Formen passen.
 ```ts
 import { MigrationChain, migratingAdapter } from 'actor-ts';
 
-interface DepositedV1 { kind: 'deposited'; amount: number }
-interface DepositedV2 { kind: 'deposited'; amount: number; currency: string }
-interface DepositedV3 { kind: 'deposited'; cents: number;  currency: string } // float→int
+type DepositedV1 = { kind: 'deposited'; amount: number };
+type DepositedV2 = { kind: 'deposited'; amount: number; currency: string };
+type DepositedV3 = { kind: 'deposited'; cents: number;  currency: string }; // float→int
 
 const chain = MigrationChain
   .start<DepositedV1>('BankAccount.Deposited', 1)

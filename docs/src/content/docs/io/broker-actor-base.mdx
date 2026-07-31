@@ -15,13 +15,15 @@ lifecycle event publishing.
 - **Outbound buffer** — messages sent before the connection is up.
 - **Reconnect loop** — exponential backoff on connection loss.
 - **Subscriber tracking** — fan-out for incoming events.
+- **Desired subscriptions** — protocol subscriptions that outlive any one
+  connection and are re-established on every reconnect.
 
 Subclasses implement three protocol hooks:
 
 | Hook | When called |
 | --- | --- |
 | `connectImplementation` | Open the protocol-specific connection. |
-| `disconnectImplementation` | Close it cleanly. |
+| `disconnectImplementation` | Close it — on stop **and before every re-connect attempt**. |
 | `dispatchOutgoing(envelope)` | Send a single buffered message on the wire. |
 
 Subclasses implement the three protocol hooks; the base handles
@@ -59,10 +61,17 @@ A `disconnected` → `connecting` → failure triggers a **reconnect
 loop**: backoff + retry until success or `maxAttempts`
 exhausted.
 
+Every re-connect attempt starts from a clean slate: the base calls
+`disconnectImplementation` first whenever a previous attempt opened
+anything, so a subclass never builds a new connection on top of the dead
+one's handles.  That makes `disconnectImplementation` an **idempotent**
+contract — it may be called on an already-dead connection, and it must
+drop only the live handles, never the desired subscriptions below.
+
 ## Subclass contract
 
 ```ts
-abstract class BrokerActor<S, Command, P> extends Actor<Command> {
+abstract class BrokerActor<S, Command, P, Subscription = never> extends Actor<Command> {
   // Subclasses implement:
   protected abstract configKey(): string;
   protected abstract builtInDefaultOptions(): Partial<S>;
@@ -146,6 +155,63 @@ this.fanOutToTopic(topic, inboundMessage);
 
 The base delivers to every subscriber for that topic.
 
+### Desired subscriptions
+
+Subscriber tracking above is *inside* the actor system — which local
+refs want which topic.  A **desired subscription** is the other half:
+the subscription the actor holds *on the broker*, which has to be
+re-established every time the connection is rebuilt.
+
+The base keeps that set separate from the live handles, so it outlives
+any one connection:
+
+```ts
+// Record it (and establish it now, if connected).
+await this.rememberSubscription('orders.new', target);
+// Drop it, from the broker and from the desired set.
+await this.forgetSubscription('orders.new');
+```
+
+Subclasses provide three hooks:
+
+| Hook | Purpose |
+| --- | --- |
+| `initialSubscriptions()` | Subscriptions declared in the options.  Folded into the desired set **once**, before the first connect. |
+| `applySubscription(key, subscription)` | Establish one subscription on the live connection.  Must tolerate a key that is already live. |
+| `revokeSubscription(key)` | Tear one down.  Optional — several protocols can only drop a subscription by dropping the whole consumer. |
+
+and replay the whole set from inside `connectImplementation`:
+
+```ts
+protected async connectImplementation(): Promise<void> {
+  this.connection = await MyClient.connect(this.options.url);
+  await this.applyDesiredSubscriptions();   // configured + runtime
+}
+```
+
+The replay is driven by the subclass rather than by the base class
+because the right point in the handshake is protocol-specific —
+kafkajs, for one, wants every `subscribe` in before `consumer.run`.
+
+What this buys you:
+
+- A subscription added at runtime **survives a reconnect** — it is not
+  just a call on a connection that is about to die.
+- A `subscribe` that arrives **while the actor is disconnected** is
+  remembered and applied on the next connect, instead of being dropped.
+- Seeding from the options is **once-only**, so a runtime `unsubscribe`
+  is not resurrected by the next reconnect.
+- Re-remembering a live key revokes it first, so a changed payload (a
+  different target actor, say) actually takes effect.
+- A subscription that **cannot** be established is logged as a warning
+  and the rest of the set still goes through.  One bad subject does not
+  take the connection down — and it does not silently leave you
+  connected-but-deaf either.
+
+`MqttActor` predates this mechanism and keeps its own richer registry
+(per-topic QoS, several targets per pattern, deathwatch on each), with
+the same reconnect guarantees.
+
 ### Reconnect-with-backoff
 
 ```ts
@@ -228,6 +294,8 @@ class MyProtocolActor extends BrokerActor<MyProtocolOptionsType, Command, MyPayl
     this.connection.onMessage((m) => this.fanOutToTopic(m.topic, m));
   }
 
+  // Called on stop AND before every re-connect attempt — idempotent,
+  // and safe on a connection that is already dead.
   protected async disconnectImplementation(): Promise<void> {
     await this.connection?.close();
     this.connection = null;

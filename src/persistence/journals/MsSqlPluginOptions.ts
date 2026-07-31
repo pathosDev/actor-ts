@@ -4,7 +4,7 @@ import type { MsSqlJournalOptions } from './MsSqlJournalOptions.js';
 import type { MsSqlSnapshotStoreOptions } from '../snapshot-stores/MsSqlSnapshotStoreOptions.js';
 import type { MsSqlDurableStateStoreOptions } from '../durable-state-stores/MsSqlDurableStateStoreOptions.js';
 
-export interface RegisterMsSqlPluginsOptionsType {
+export type RegisterMsSqlPluginsOptionsType = {
   /**
    * Shared connection pool injected into all three stores.  When provided, the
    * journal + snapshot + durable-state stores reuse ONE pool (the usual case —
@@ -22,7 +22,7 @@ export interface RegisterMsSqlPluginsOptionsType {
   readonly snapshotStore?: MsSqlSnapshotStoreOptions;
   /** Durable-state-store-specific options (table name). */
   readonly durableStateStore?: MsSqlDurableStateStoreOptions;
-}
+};
 
 /**
  * Fluent builder for {@link RegisterMsSqlPluginsOptionsType}:

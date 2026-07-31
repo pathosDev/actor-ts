@@ -13,10 +13,10 @@ import type { TapClient } from '../core/tapClient.js';
 import type { UiRoute } from '../core/router.js';
 
 /** What a panel gets when it mounts. */
-export interface PanelContext {
+export type PanelContext = {
   readonly tap: TapClient;
   readonly route: ReadonlySignal<UiRoute>;
-}
+};
 
 /** A mounted panel; `dispose` detaches its effects and stream listeners. */
 export interface PanelInstance {

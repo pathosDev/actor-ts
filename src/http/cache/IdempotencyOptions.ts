@@ -10,7 +10,7 @@ import type { Cache } from '../../cache/Cache.js';
 import type { HttpRequest } from '../types.js';
 
 /** Plain options-object shape accepted by {@link idempotent}. */
-export interface IdempotencyOptionsType {
+export type IdempotencyOptionsType = {
   readonly cache: Cache;
   /** How long to remember responses.  Default: 24 hours. */
   readonly ttlMs?: number;
@@ -42,7 +42,7 @@ export interface IdempotencyOptionsType {
    * `identity: (request) => request.headers['x-account-id'] ?? 'anon'`.
    */
   readonly identity?: (request: HttpRequest) => string | Promise<string>;
-}
+};
 
 /**
  * Fluent builder for {@link IdempotencyOptionsType}:

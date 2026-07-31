@@ -78,9 +78,9 @@ export class DurableDistributedDataStore {
 }
 
 /** What goes into the durable record. */
-interface DurableDDataPayload {
+type DurableDDataPayload = {
   readonly entries: Record<string, CrdtJson>;
-}
+};
 
 // (decodeCrdt is now imported from DistributedData.ts — single source
 // of truth for the CRDT-kind dispatcher.  Adding a new CRDT type means

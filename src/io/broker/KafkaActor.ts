@@ -9,7 +9,7 @@ import { KafkaOptionsValidator } from './KafkaOptions.js';
 import type { KafkaOptions, KafkaOptionsType } from './KafkaOptions.js';
 
 /** Inbound Kafka record delivered to subscribers. */
-export interface KafkaRecord {
+export type KafkaRecord = {
   readonly topic: string;
   readonly partition: number;
   readonly offset: string;
@@ -17,16 +17,16 @@ export interface KafkaRecord {
   readonly value: Uint8Array | null;
   readonly timestamp: string;
   readonly headers: Readonly<Record<string, Uint8Array | string | null>>;
-}
+};
 
 /** Outbound Kafka publish envelope.  `key` / `partition` optional. */
-export interface KafkaPublish {
+export type KafkaPublish = {
   readonly topic: string;
   readonly value: Uint8Array | string;
   readonly key?: Uint8Array | string;
   readonly partition?: number;
   readonly headers?: Readonly<Record<string, string | Uint8Array>>;
-}
+};
 
 /**
  * Offset-commit policy (#2):
@@ -46,8 +46,22 @@ export type KafkaCommitMode = 'auto' | 'manual';
 /** Publish a record via the actor's producer. */
 type PublishCommand = { readonly kind: 'publish'; readonly publish: KafkaPublish };
 
-/** Add a topic to the running consumer at runtime. */
+/**
+ * Add a topic to the running consumer at runtime.  The topic becomes
+ * *desired* state: it is re-subscribed on every reconnect, and one sent
+ * while the actor is disconnected lands on the next connect instead of
+ * being dropped.
+ */
 type SubscribeCommand = { readonly kind: 'subscribe'; readonly topic: string };
+
+/**
+ * Per-topic restore payload for the desired-subscription set.  Only
+ * `fromBeginning` differs per topic: configured topics inherit
+ * `consumer.fromBeginning`, a runtime add starts at the current offset.
+ */
+type KafkaSubscription = {
+  readonly fromBeginning: boolean;
+};
 
 /**
  * Commit the offset for a message that was delivered in
@@ -134,7 +148,8 @@ export type KafkaCommand =
  *     }
  *   }
  */
-export class KafkaActor extends BrokerActor<KafkaOptionsType, KafkaCommand, KafkaPublish> {
+export class KafkaActor
+  extends BrokerActor<KafkaOptionsType, KafkaCommand, KafkaPublish, KafkaSubscription> {
   private kafka: KafkaInstanceLike | null = null;
   private producer: KafkaProducerLike | null = null;
   private consumer: KafkaConsumerLike | null = null;
@@ -219,11 +234,12 @@ export class KafkaActor extends BrokerActor<KafkaOptionsType, KafkaCommand, Kafk
     if (this.options.consumer?.groupId) {
       this.consumer = this.kafka.consumer({ groupId: this.options.consumer.groupId });
       await this.consumer.connect();
-      for (const topic of this.options.topics ?? []) {
-        await this.consumer.subscribe({
-          topic, fromBeginning: this.options.consumer.fromBeginning ?? false,
-        });
-      }
+      // Every subscribe must be in before `run` — kafkajs starts the
+      // fetch loop from the subscription set it has at that moment.
+      // This restores the whole desired set (configured `topics` plus
+      // any runtime additions), which is what makes a runtime topic
+      // survive a reconnect.
+      await this.applyDesiredSubscriptions();
       const target = this.options.target;
       const manualCommit = this.options.consumer.commitMode === 'manual';
       const commitTimeoutMs = this.options.consumer.commitTimeoutMs ?? 30_000;
@@ -296,6 +312,31 @@ export class KafkaActor extends BrokerActor<KafkaOptionsType, KafkaCommand, Kafk
     }
   }
 
+  protected override initialSubscriptions(): Iterable<readonly [string, KafkaSubscription]> {
+    const fromBeginning = this.options.consumer?.fromBeginning ?? false;
+    return (this.options.topics ?? []).map((topic) => [topic, { fromBeginning }] as const);
+  }
+
+  /**
+   * Subscribe one topic on the live consumer.  Re-subscribing a topic
+   * kafkajs already holds is harmless (its subscription set is keyed by
+   * topic), which is what lets the whole desired set be replayed on
+   * every connect.  There is no counterpart `revokeSubscription`:
+   * kafkajs cannot drop a single topic from a running consumer.
+   */
+  protected override async applySubscription(
+    topic: string, subscription: KafkaSubscription,
+  ): Promise<void> {
+    if (!this.consumer) {
+      this.log.warn(
+        `KafkaActor: cannot subscribe to '${topic}' — no consumer configured `
+        + `(set consumer.groupId)`,
+      );
+      return;
+    }
+    await this.consumer.subscribe({ topic, fromBeginning: subscription.fromBeginning });
+  }
+
   protected async dispatchOutgoing(env: OutboundEnvelope<KafkaPublish>): Promise<void> {
     if (!this.producer) throw new Error('KafkaActor: producer not connected');
     const publish = env.payload;
@@ -339,10 +380,11 @@ export class KafkaActor extends BrokerActor<KafkaOptionsType, KafkaCommand, Kafk
   }
 
   private onSubscribe(command: SubscribeCommand): void {
-    // Runtime topic-add — kafkajs requires the consumer already be running.
-    if (this.consumer && this.connectionState === 'connected') {
-      void this.consumer.subscribe({ topic: command.topic, fromBeginning: false });
-    }
+    // Recorded as desired first: applied now when the consumer is up,
+    // and on the next connect otherwise — a topic added during an outage
+    // is no longer dropped, and one added while connected is no longer
+    // lost on the next reconnect.
+    void this.rememberSubscription(command.topic, { fromBeginning: false });
   }
 
   private async onCommit(command: CommitCommand): Promise<void> {
@@ -420,14 +462,14 @@ export class KafkaActor extends BrokerActor<KafkaOptionsType, KafkaCommand, Kafk
 
 /* ----------------------------- internals -------------------------------- */
 
-interface PendingCommit {
+type PendingCommit = {
   readonly topic: string;
   readonly partition: number;
   readonly offset: string;
   readonly done: () => void;
   readonly fail: (err: Error) => void;
   readonly heartbeat?: () => Promise<void>;
-}
+};
 
 function pendingKey(topic: string, partition: number, offset: string): string {
   return `${topic}|${partition}|${offset}`;
@@ -464,7 +506,7 @@ export interface KafkaProducerLike {
   }): Promise<unknown>;
 }
 
-interface KafkaConsumedMessage {
+type KafkaConsumedMessage = {
   topic: string;
   partition: number;
   message: {
@@ -476,7 +518,7 @@ interface KafkaConsumedMessage {
   };
   /** kafkajs callback for explicit heartbeats during long handler runs. */
   heartbeat?: () => Promise<void>;
-}
+};
 
 export interface KafkaConsumerLike {
   connect(): Promise<void>;
@@ -497,9 +539,9 @@ export interface KafkaConsumerLike {
   }>): Promise<void>;
 }
 
-interface KafkajsModule {
+type KafkajsModule = {
   Kafka?: KafkaConstructor;
-}
+};
 
 const kafkaLazy: Lazy<Promise<KafkajsModule>> = Lazy.of(
   () => lazyImportModule<KafkajsModule>('kafkajs', { context: 'KafkaActor' }),
@@ -513,11 +555,11 @@ const kafkaLazy: Lazy<Promise<KafkajsModule>> = Lazy.of(
  * command needs.  `KafkaRecord` itself satisfies this shape, so the
  * `eachMessage` payload from the consumer pump can be passed directly.
  */
-export interface KafkaRecordRef {
+export type KafkaRecordRef = {
   readonly topic: string;
   readonly partition: number;
   readonly offset: string;
-}
+};
 
 /**
  * Run `body` while periodically telling `kafka` to heartbeat the

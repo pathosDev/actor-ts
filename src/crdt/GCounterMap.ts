@@ -20,10 +20,10 @@ import { GCounter, type GCounterJson } from './GCounter.js';
  * `JSON.stringify`.  See `GSet` for the failure modes.
  */
 
-export interface GCounterMapOptions<K> {
+export type GCounterMapOptions<K> = {
   /** Custom identity for non-JSON-serialisable keys.  See class doc. */
   readonly identity?: (k: K) => string;
-}
+};
 
 const defaultIdentity = (k: unknown): string => JSON.stringify(k);
 
@@ -133,11 +133,11 @@ export class GCounterMap<K> implements Crdt<GCounterMap<K>> {
   }
 }
 
-export interface GCounterMapJson {
+export type GCounterMapJson = {
   readonly kind: 'GCounterMap';
   /** Per-key counter state, keyed by identity-fn output. */
   readonly counters: Record<string, GCounterJson>;
   /** Per-key JSON-stringified original key.  Optional for backwards
    *  compat — when missing, `JSON.parse(identity-string)` is used. */
   readonly keyValues?: Record<string, string>;
-}
+};

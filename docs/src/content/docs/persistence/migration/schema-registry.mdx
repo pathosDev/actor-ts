@@ -104,12 +104,12 @@ interface SchemaRegistry {
   snapshotAdapter<S>(manifest: string): SnapshotAdapter<S, unknown>;
 }
 
-interface SchemaRegistration<Wire, Upcasted> {
+type SchemaRegistration<Wire, Upcasted> = {
   readonly codec: Codec<Wire>;
   readonly upcastFromPrev?: (prev: unknown) => Upcasted;
   readonly compatibility?: 'none' | 'backward' | 'sample';
   readonly sample?: unknown;
-}
+};
 ```
 
 - **`register(manifest, version, { codec, upcastFromPrev?, compatibility?, sample? })`**

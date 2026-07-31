@@ -32,7 +32,7 @@ import { createServer, type AddressInfo } from 'node:net';
 import { NodeAddress } from '../../../../src/cluster/NodeAddress.js';
 import type { SeedProvider } from '../../../../src/discovery/SeedProvider.js';
 
-export interface SameHostScanSettings {
+export type SameHostScanSettings = {
   /** Cluster system name — needed to format `system@host:port`. */
   readonly systemName: string;
   /** Host to bind / scan.  Same value `Cluster.join` will use. */
@@ -41,7 +41,7 @@ export interface SameHostScanSettings {
   readonly basePort: number;
   /** Hard cap on how far the scan walks beyond `basePort`. */
   readonly maxSlots: number;
-}
+};
 
 export class SameHostScanSeedProvider implements SeedProvider {
   constructor(private readonly settings: SameHostScanSettings) {}

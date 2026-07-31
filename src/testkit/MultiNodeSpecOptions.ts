@@ -6,7 +6,7 @@ import type { LogLevel } from '../Logger.js';
 type AddressMap = Readonly<Record<string, { host: string; port: number }>>;
 
 /** Plain options-object shape accepted by a {@link MultiNodeSpec}. */
-export interface MultiNodeSpecOptionsType {
+export type MultiNodeSpecOptionsType = {
   /** Role names — also act as system names; must be unique within the spec. */
   readonly roles: ReadonlyArray<string>;
   /** Roles that act as bootstrap seeds.  Defaults to `[roles[0]]`. */
@@ -23,7 +23,7 @@ export interface MultiNodeSpecOptionsType {
   readonly logLevel?: LogLevel;
   /** Per-role split-brain resolver factory. */
   readonly downing?: (role: string) => DowningProvider | undefined;
-}
+};
 
 /** Fluent builder for {@link MultiNodeSpecOptionsType}. */
 export class MultiNodeSpecOptionsBuilder extends OptionsBuilder<MultiNodeSpecOptionsType> {

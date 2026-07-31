@@ -64,9 +64,9 @@ export type GrpcClientCommand =
   | BidiSendCommand
   | BidiCloseCommand;
 
-interface OutboundOp {
+type OutboundOp = {
   readonly op: GrpcClientCommand;
-}
+};
 
 /**
  * gRPC client actor.  One client instance per service, supports unary,
@@ -299,7 +299,7 @@ interface GrpcBidiFunction {
   call(client: GrpcServiceClient): GrpcDuplexCall;
 }
 
-interface GrpcCredentialsLike { /* opaque token, set by grpc.credentials.* */ }
+type GrpcCredentialsLike = { /* opaque token, set by grpc.credentials.* */ };
 
 interface GrpcModule {
   loadPackageDefinition(def: unknown): unknown;

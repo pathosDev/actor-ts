@@ -97,19 +97,19 @@ const dynamoDbJournalOptions = DynamoDbJournalOptions.create()
 ## Konfiguration
 
 ```ts
-interface DynamoDbConnection {
+type DynamoDbConnection = {
   region?:       string;                    // eu-central-1, …
   endpoint?:     string;                    // http(s)-URL — dynamodb-local, LocalStack
   clientConfig?: Record<string, unknown>;   // { credentials, maxAttempts, … }
   operations?:   DynamoDbOperations;        // vorgebaute / geteilte Fassade
-}
+};
 
-interface DynamoDbTableProvisioning {
+type DynamoDbTableProvisioning = {
   autoCreateTables?:      boolean;   // Default true
   billingMode?:           'PAY_PER_REQUEST' | 'PROVISIONED';   // Default On-Demand
   provisionedThroughput?: { readCapacityUnits: number; writeCapacityUnits: number };
   tableReadyTimeoutMs?:   number;    // Default 30_000
-}
+};
 
 interface DynamoDbJournalOptions extends DynamoDbConnection, DynamoDbTableProvisioning {
   eventsTable?: string;   // Default 'actor_ts_events'

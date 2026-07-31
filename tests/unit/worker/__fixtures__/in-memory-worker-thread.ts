@@ -90,10 +90,10 @@ export class FakeWorker implements WorkerLike {
 
 /* ----------------------------- FakeBackend ----------------------------- */
 
-export interface FakeBackendHooks {
+export type FakeBackendHooks = {
   /** Optional: called when a worker is spawned, before the handshake. */
   onSpawn?: (worker: FakeWorker, url: URL, options: WorkerSpawnOptions | undefined) => void;
-}
+};
 
 export class FakeWorkerBackend implements WorkerBackend {
   readonly spawned: FakeWorker[] = [];

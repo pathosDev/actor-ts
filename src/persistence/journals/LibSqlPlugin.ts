@@ -14,7 +14,7 @@ export const LIBSQL_JOURNAL_PLUGIN_ID = 'actor-ts.persistence.journal.libsql';
 export const LIBSQL_SNAPSHOT_PLUGIN_ID = 'actor-ts.persistence.snapshot-store.libsql';
 export const LIBSQL_DURABLE_STATE_PLUGIN_ID = 'actor-ts.persistence.durable-state.libsql';
 
-export interface LibSqlPluginHandles {
+export type LibSqlPluginHandles = {
   /**
    * The DurableState store instance.  `PersistenceExtension` carries no
    * DurableState registry (same as the Postgres, MariaDB and object-storage
@@ -22,7 +22,7 @@ export interface LibSqlPluginHandles {
    * and pass it into their `DurableStateActor` options.
    */
   readonly durableStateStore: LibSqlDurableStateStore;
-}
+};
 
 /**
  * One-shot registration of the libSQL journal + snapshot store against the

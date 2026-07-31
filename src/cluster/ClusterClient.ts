@@ -50,11 +50,11 @@ import type {
 import { ClusterClientOptionsValidator } from './ClusterClientOptions.js';
 import type { ClusterClientOptions, ClusterClientOptionsType } from './ClusterClientOptions.js';
 
-interface PendingAsk {
+type PendingAsk = {
   readonly resolve: (value: unknown) => void;
   readonly reject: (err: Error) => void;
   readonly timer: ReturnType<typeof setTimeout>;
-}
+};
 
 const HELLO_TIMEOUT_MS = 5_000;
 

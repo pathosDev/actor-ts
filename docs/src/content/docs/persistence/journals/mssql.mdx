@@ -115,11 +115,11 @@ is simpler (one file, no server).
 ## Configuration
 
 ```ts
-interface MsSqlConnection {
+type MsSqlConnection = {
   url?:        string;                    // Server=…;Database=… or mssql://user:pass@host:1433/db
   poolConfig?: Record<string, unknown>;   // mssql config object; takes precedence over url
   pool?:       MsSqlPoolLike;             // pre-built / shared pool
-}
+};
 
 interface MsSqlJournalOptions extends MsSqlConnection {
   eventsTable?:      string;   // default 'events'

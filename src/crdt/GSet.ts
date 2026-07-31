@@ -29,10 +29,10 @@ import type { Crdt } from './Crdt.js';
  * fixes dedup, not persistence.
  */
 
-export interface GSetOptions<E> {
+export type GSetOptions<E> = {
   /** Custom identity function — see class doc. */
   readonly identity?: (e: E) => string;
-}
+};
 
 const defaultIdentity = (e: unknown): string => JSON.stringify(e);
 
@@ -110,7 +110,7 @@ export class GSet<E> implements Crdt<GSet<E>> {
   }
 }
 
-export interface GSetJson {
+export type GSetJson = {
   readonly kind: 'GSet';
   readonly elements: ReadonlyArray<string>;
-}
+};

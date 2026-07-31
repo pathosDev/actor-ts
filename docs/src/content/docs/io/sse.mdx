@@ -63,11 +63,11 @@ the actor fails fast at startup.
 Each parsed event is delivered as an `SseEvent`:
 
 ```ts
-interface SseEvent {
+type SseEvent = {
   event: string;   // the `event:` field, or 'message' by default
   data:  string;   // the `data:` payload
   id?:   string;   // the `id:` field, when present
-}
+};
 ```
 
 The client parses the SSE wire format — events separated by a blank

@@ -22,12 +22,12 @@ import type { ActorRef } from './ActorRef.js';
  */
 type Class<T> = abstract new (...args: any[]) => T;
 
-interface Subscription {
+type Subscription = {
   readonly subscriber: ActorRef;
   readonly channel: Class<unknown>;
   /** Optional filter — evaluated before delivery; throws → skip. */
   readonly predicate?: (event: unknown) => boolean;
-}
+};
 
 /**
  * Optional minimal-logger hook for the bus.  ActorSystem assigns its

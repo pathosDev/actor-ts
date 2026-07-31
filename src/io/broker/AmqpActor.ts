@@ -9,25 +9,25 @@ import { AmqpOptionsValidator } from './AmqpOptions.js';
 import type { AmqpOptions, AmqpOptionsType } from './AmqpOptions.js';
 
 /** Inbound AMQP delivery handed to subscribers. */
-export interface AmqpDelivery {
+export type AmqpDelivery = {
   readonly queue: string;
   readonly content: Uint8Array;
   readonly properties: Readonly<Record<string, unknown>>;
   /** Acknowledgement token — forward to the actor as `{ kind: 'acknowledgment', delivery }` to ack. */
   readonly ackToken: number;
-}
+};
 
 /** Outbound publish — routed through `exchange` with `routingKey`. */
-export interface AmqpPublish {
+export type AmqpPublish = {
   readonly exchange: string;
   readonly routingKey: string;
   readonly content: Uint8Array | string;
   readonly persistent?: boolean;
   readonly headers?: Readonly<Record<string, unknown>>;
   readonly contentType?: string;
-}
+};
 
-export interface AmqpQueueBinding {
+export type AmqpQueueBinding = {
   readonly queue: string;
   readonly exchange?: string;
   readonly routingKey?: string;
@@ -45,7 +45,7 @@ export interface AmqpQueueBinding {
     readonly autoDelete?: boolean;
     readonly exclusive?: boolean;
   };
-}
+};
 
 type PublishCommand = { readonly kind: 'publish'; readonly publish: AmqpPublish };
 type AcknowledgmentCommand = { readonly kind: 'acknowledgment'; readonly delivery: AmqpDelivery };
@@ -203,10 +203,10 @@ export class AmqpActor extends BrokerActor<AmqpOptionsType, AmqpCommand, AmqpPub
 
 /* ----------------------------- internals -------------------------------- */
 
-interface AmqpRawMessage {
+type AmqpRawMessage = {
   content: Uint8Array;
   properties?: Record<string, unknown>;
-}
+};
 
 interface AmqpChannelLike {
   prefetch(count: number): Promise<void>;

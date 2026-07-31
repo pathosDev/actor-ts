@@ -15,7 +15,7 @@
  */
 
 /** Normalized result of one statement. */
-export interface SqlResult {
+export type SqlResult = {
   readonly rows: ReadonlyArray<Record<string, unknown>>;
   /**
    * Rows affected by an INSERT / UPDATE / DELETE, normalized to a number
@@ -23,7 +23,7 @@ export interface SqlResult {
    * an OK-packet).  `0` for statements that return rows.
    */
   readonly affectedRows: number;
-}
+};
 
 /** Anything that can run a statement — a pool, or a transaction's connection. */
 export interface SqlExecutor {

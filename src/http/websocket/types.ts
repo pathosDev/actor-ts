@@ -17,7 +17,7 @@ export type WebsocketFrame =
  * handlers can read the path, params, query, headers and negotiated
  * subprotocol without holding a backend-specific request object.
  */
-export interface WebsocketUpgradeInfo {
+export type WebsocketUpgradeInfo = {
   readonly path: string;
   /** Path parameters extracted from `/room/:id`-style patterns. */
   readonly params: Readonly<Record<string, string>>;
@@ -27,14 +27,14 @@ export interface WebsocketUpgradeInfo {
   readonly remoteAddress?: string;
   /** Negotiated `Sec-WebSocket-Protocol`, if any. */
   readonly subprotocol?: string;
-}
+};
 
 /** Why/how a connection closed — delivered to disconnect hooks. */
-export interface WebsocketCloseInfo {
+export type WebsocketCloseInfo = {
   readonly code: number;
   readonly reason: string;
   readonly initiatedBy: 'client' | 'server' | 'error';
-}
+};
 
 /**
  * Default cap on a single inbound WebSocket frame — 1 MiB.

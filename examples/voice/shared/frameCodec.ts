@@ -35,10 +35,10 @@ export function encodeIncoming(senderUsername: string, opus: Uint8Array): Uint8A
   return out;
 }
 
-export interface DecodedFrame {
+export type DecodedFrame = {
   readonly sender: string;
   readonly opus: Uint8Array;
-}
+};
 
 export function decodeIncoming(buffer: Uint8Array): DecodedFrame | null {
   if (buffer.byteLength < 1) return null;

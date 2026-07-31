@@ -32,7 +32,13 @@ const ITERATIONS = 2_000;
 
 type UsersDb = Map<string, { id: string; name: string }>;
 
-function makeRoutes(users: UsersDb): Parameters<Awaited<ReturnType<typeof startServer>>['rebind']>[0] {
+// `Route` is not part of the public barrel, so borrow it off `concat`.  Naming
+// the type here also breaks the cycle the previous annotation had: `makeRoutes`
+// derived its return type from `startServer`, whose `Harness.rebind` derived its
+// parameter type right back from `makeRoutes` (TS2577 / TS2502).
+type Routes = ReturnType<typeof concat>;
+
+function makeRoutes(users: UsersDb): Routes {
   return concat(
     path('ok',   get(() => complete(Status.OK, 'ok'))),
     path('json', get(() => completeJson(Status.OK, { ok: true }))),
@@ -54,7 +60,7 @@ interface Harness {
   base: string;
   binding: ServerBinding;
   system: ActorSystem;
-  rebind(routes: ReturnType<typeof makeRoutes>): Promise<void>;
+  rebind(routes: Routes): Promise<void>;
 }
 
 async function startServer(

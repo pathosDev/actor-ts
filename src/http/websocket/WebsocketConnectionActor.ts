@@ -46,14 +46,14 @@ import {
   type WebsocketUpgradeInfo,
 } from './types.js';
 
-export interface WebsocketConnectionDeps<TOut, TIn, TSelf> {
+export type WebsocketConnectionDeps<TOut, TIn, TSelf> = {
   readonly socket: WebsocketSocketAdapter;
   readonly codec: WebsocketCodec<TOut, TIn>;
   readonly policy: ResolvedWebsocketPolicy;
   readonly hub: WebsocketServerRef<TOut, TIn, TSelf>;
   readonly id: string;
   readonly upgrade: WebsocketUpgradeInfo;
-}
+};
 
 export class WebsocketConnectionActor<TOut, TIn, TSelf = never>
   extends Actor<WebsocketOutboundCommand<TOut>> {

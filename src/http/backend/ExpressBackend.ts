@@ -56,7 +56,7 @@ const wsServerConstructorLazy: Lazy<Promise<new (opts: { noServer: boolean; maxP
  */
 
 /** Minimal shape of the Express Request we rely on. */
-interface ExpressRequestLike {
+type ExpressRequestLike = {
   method: string;
   url: string;
   path?: string;
@@ -74,7 +74,7 @@ interface ExpressRequestLike {
   ip?: string;
   /** Raw socket — fallback when `req.ip` isn't populated. */
   socket?: { remoteAddress?: string };
-}
+};
 
 /** Minimal shape of the Express Response we rely on. */
 interface ExpressResponseLike {

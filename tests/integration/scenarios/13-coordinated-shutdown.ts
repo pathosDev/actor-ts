@@ -27,9 +27,9 @@
 
 import { clusterLiveNodes, waitFor, type Scenario } from './types.js';
 
-interface TraceResponse {
+type TraceResponse = {
   readonly markers: ReadonlyArray<{ from: string; phase: string; ts: number }>;
-}
+};
 
 async function fetchTrace(host: string, controlPort: number): Promise<TraceResponse> {
   const response = await fetch(`http://${host}:${controlPort}/test/shutdown-trace`);

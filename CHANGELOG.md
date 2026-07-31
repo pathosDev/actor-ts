@@ -11,6 +11,25 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Added
 
+- **CI gate for the benchmarks: `typecheck:bench` + `bench:smoke`** (#506).
+  Nothing looked at `benchmarks/` at all — `bun run typecheck` uses the build
+  tsconfig, which deliberately excludes them, and `test.yml` does not even
+  trigger on `benchmarks/**` — so a `src/` change that orphaned a benchmark was
+  invisible from the benchmark side of the diff.  Two checks, in a new
+  `benchmarks` workflow that also triggers on `src/**`:
+  `bun run typecheck:bench` compiles `src` + `benchmarks` against the new
+  `tsconfig.bench.json` (deliberately narrower than `tsconfig.dev.json`, which
+  also pulls in `tests/` and `examples/` — a tight scope is fast and, unlike the
+  dev config, green, so it can actually gate), and `bun run bench:smoke` runs
+  every suite for real.  The new `ACTOR_TS_BENCH_SMOKE=1` collapses each case to
+  one unwarmed iteration, so the full suite finishes in ~30 s; the numbers it
+  prints are noise, the point is that each suite still executes.  The typecheck is
+  the stricter of the two for a missing export — that is a compile error even when
+  the imported binding is never called, whereas Bun silently elides an unused
+  named import at runtime.  `run-all.ts` gains `--exclude=<group>`, and the
+  workflow excludes `worker` for the same reason the worker-thread multi-node
+  suites are quarantined on hosted runners (Bun there cannot respawn functional
+  worker threads after the first).
 - **`--devtools-host` for the examples** (#492) — the shared `--devtools` wiring
   bound `127.0.0.1` and only let you move the port, which is unreachable when the
   browser is not on the machine running the example (a container, a VM, a WSL or
@@ -505,6 +524,31 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   `switch` and several ternaries across 33 EN/DE page pairs now use `match`,
   with class-actor hooks delegating to `onXxx` handlers and inline
   object-literal unions replaced by named variant types.
+- **One declaration form per job: `interface` for contracts and heritage,
+  `type` for data** (#503, #508).  The codebase used to mix the two with no
+  stated rule.  It now has one: a declaration is an `interface` when it
+  prescribes function heads — any method, call or construct signature — or
+  when it `extends` another shape; everything else is a `type`, including
+  plain data shapes, unions, and mapped and conditional types.  A
+  function-typed *property* (`onLost?: () => void`) is not a function head.
+  Across `src/`, the test suites, examples, benchmarks, the DevTools UI and
+  the documentation's code samples that comes to 423 interfaces and 1690 type
+  aliases.  In practice: the contracts you implement — `Journal`,
+  `SnapshotStore`, `Lease`, `Transport`, `Serializer`, `Cache`, `Tracer`,
+  `Span`, `DowningProvider`, `AllocationStrategy` — are interfaces, as are
+  the option shapes that extend a backend connection; the records they carry
+  are aliases.
+  Nothing in the published type surface changes shape, and no signature
+  moved.  The one consequence for consumers is that a name declared as a
+  `type` can no longer be extended by declaration merging
+  (`declare module 'actor-ts' { interface X { … } }`) — write an intersection
+  in your own code instead.  That was already true of nothing in this repo:
+  there is not a single `declare module` or `declare global` in the tree.
+  One shape declares a function head and stays a `type` on purpose:
+  `NativeWorker` in the web-worker backend intersects the DOM `Worker` with
+  deliberately narrower listener signatures, which an intersection accepts as
+  overloads and `extends` rejects as incompatible.  It carries a comment
+  saying so.  The rule itself is written down in AGENTS.md.
 
 - **Messages are named by their `kind`, not `Object`.** Every tool that
   lists what an actor handled — the profiler's heaviest handlers, the
@@ -607,6 +651,90 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   exact peer).  Site-only — no runtime or public-API impact.
 
 ### Fixed
+
+- **`bun run lint:package` is reproducible, and `lint:knip` exits 0 again**
+  (#507).  The three package-health scripts invoked their tools through `bunx`,
+  which — contrary to the first guess — does honour the manifest range and
+  resolved the pinned `knip@6.29.0` rather than `latest`; the real problem is
+  what `bunx` does when the tool is *absent* from `node_modules`: it silently
+  fetches it from the registry and runs anyway, so the check appeared to pass
+  judgement on a tree that was never installed.  With `publint` and
+  `@arethetypeswrong/cli` missing, knip could not map the `bunx publint` /
+  `bunx attw` script invocations back to their manifest entries and reported both
+  devDependencies as unused — exit 1 locally while CI, which runs `bun install`
+  first, stayed green.  All three scripts now call the installed binary directly
+  (`node_modules/.bin` is on `PATH` inside a script), so a missing install fails
+  loudly instead of being papered over.  `lint:knip` additionally switches to
+  knip's Bun-native `knip-bun` binary: with a *complete* install the Node one
+  exhausts its heap on this repo's module graph (`Zone Allocation failed`,
+  exit 134).  The `bun run build` prefix moves out of `lint:publint` /
+  `lint:types-exports` into `lint:package`, so the build happens once, and
+  `package-health.yml` now runs those scripts instead of repeating the
+  invocations — the flags live in exactly one place, and a local
+  `bun run lint:package` checks what CI checks.  No `ignoreDependencies` entries
+  were added: once the binaries resolve, knip attributes them correctly, and an
+  unnecessary ignore would hide a real finding later.  Also drops the three
+  redundant `entry` patterns from `knip.jsonc` — knip derives `src/index.ts`,
+  `src/testkit/index.ts` and `src/devtools/index.ts` from the `exports` map
+  itself, which it had been reporting as configuration hints.
+- **The whole benchmark suite starts again** (#506).  `bun run bench` was dead:
+  ten suites imported the free `ask` helper from the barrel, and that export was
+  removed when `ref.ask(…)` became the only ask form.  The removal's adoption
+  sweep covered tests, examples and docs but not `benchmarks/`, so every affected
+  file died at import with `SyntaxError: Export named 'ask' not found`.  Migrated
+  to the method form — `ask<TRequest, TResponse>(ref, message, timeout)` becomes
+  `ref.ask<TResponse>(message, timeout)`, the request generic dropping out because
+  the ref already carries it.  Three unrelated benchmark type errors that a
+  benchmarks-only compile surfaced are fixed in the same pass: a factory typed as
+  the *abstract* `typeof PersistentActor<…>` (so it was not newable), a pair of
+  mutually-recursive route type annotations, and a `declare const self` colliding
+  with the DOM lib.  Also removes a dangling `ask` import from `tests/actor.test.ts`
+  — unused, so Bun elided it and the suite stayed green.
+- **`bun run bench` reports failures in its exit code** (#506).  The driver
+  printed a red `[exit=N]` line for a failed suite and then exited **0**, which is
+  how ten broken benchmarks stayed invisible.  It now exits non-zero, listing what
+  failed; every suite still runs, so one break does not mask the rest.
+- **Broker subscriptions survive a reconnect, and a dropped connection is torn
+  down before the next one is built** (#504).  Two compounding defects in
+  `BrokerActor` and its subclasses, both of which failed *silently* — the actor
+  reported `BrokerConnected` and then received nothing.
+
+  `handleConnectionLost` scheduled a reconnect without ever calling
+  `disconnectImplementation`, so it ran **only** from `postStop` and every
+  reconnect re-entered `connectImplementation` on top of the previous attempt's
+  state.  For `NatsActor` that was fatal rather than merely leaky: its live-handle
+  map still held the dead connection's subscriptions, and its
+  `if (subs.has(subject)) return` guard therefore skipped re-subscribing — after
+  one reconnect **not even the configured `subscriptions` were re-established**.
+  `KafkaActor` overwrote its producer and consumer without disconnecting them
+  (leaking both on every cycle, and on any connect that failed after
+  `producer.connect()` succeeded), `JetStreamActor` abandoned its push
+  subscription and pending acks, and `RedisStreamsActor` left the previous
+  `XREADGROUP` loop running against the old client alongside the new one.
+  `postStop` had the mirror-image bug: it gated on `_state !== 'disconnected'`,
+  which is exactly the state a *dropped-but-open* connection sits in, so stopping
+  a mid-reconnect actor skipped teardown entirely.  `disconnectImplementation` is
+  now called before every re-connect attempt and whenever transport state is
+  open at stop, and is documented as idempotent.
+
+  Separately, only *configured* subscriptions were ever restored.  A subscription
+  added at runtime (`{ kind: 'subscribe', … }` on `NatsActor` / `KafkaActor`) was
+  recorded nowhere, so it vanished on the first drop; and one sent while the actor
+  was disconnected was dropped on the floor outright.  `BrokerActor` now owns a
+  **desired-subscription set** — `rememberSubscription` / `forgetSubscription`
+  plus the `initialSubscriptions` / `applySubscription` / `revokeSubscription`
+  hooks — which is connection-independent, seeded from the options exactly once
+  (so a runtime `unsubscribe` is not resurrected by the next reconnect), and
+  replayed by `applyDesiredSubscriptions()` on every connect.  A subscribe that
+  arrives during an outage now lands on the next connect instead of being lost,
+  re-subscribing a live subject swaps its target, and a subscription that cannot
+  be established is logged as a warning instead of leaving the actor connected
+  and deaf.  `MqttActor` already implemented this contract with its own richer
+  registry (QoS, multiple targets, deathwatch) and is unchanged.  `NatsActor`
+  additionally gains the `createNatsConnection()` test seam its two siblings
+  already had — it previously had **no unit test at all**, which is how this went
+  unnoticed — and its `onReceive` moves to a `ts-pattern` match over named
+  variant types (part of #496).
 
 - **A `TypedActor`'s `terminated` signal is actually delivered** (#448).
   `Signal` declared `{ kind: 'terminated'; ref }`, the docs tabulated it
