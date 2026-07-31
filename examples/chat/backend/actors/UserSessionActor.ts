@@ -104,10 +104,10 @@ export type SocketClosed = { readonly kind: 'socket-closed' };
  * a close.  The WebSocket ingress hub supplies one backed by the
  * connection's `WebsocketConnection` (see `WebsocketIngressActor`).
  */
-export type SessionConnection = {
+export interface SessionConnection {
   sendText(text: string): void;
   close(): void;
-};
+}
 
 type SessionMessage =
   | InboundFrame

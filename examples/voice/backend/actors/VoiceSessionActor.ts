@@ -132,11 +132,11 @@ export type SocketClosed = { readonly kind: 'socket-closed' };
  * and binary (length-prefixed Opus envelopes), plus close.  The voice
  * WebSocket ingress hub supplies one backed by the connection ref.
  */
-export type VoiceConnection = {
+export interface VoiceConnection {
   sendText(text: string): void;
   sendBinary(data: Uint8Array): void;
   close(): void;
-};
+}
 
 type SessionMessage =
   | InboundFrame
