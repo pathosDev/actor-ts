@@ -171,9 +171,12 @@ auch event-sourced Varianten existieren.  Siehe
 Mitglieder tauschen ihre Sichten periodisch aus, bis Konvergenz.
 Siehe [Cluster Overview](/de/cluster/overview/).
 
-**Guardian.**  Top-Level-System-Actors: `/user`, `/system`,
-`/deadLetters`.  Siehe
-[ActorSystem](/de/fundamentals/actor-system/).
+**Guardian.**  Top-Level-System-Actors: `/user` für alles, was dein Code
+erzeugt, `/system` für alles, was das Framework für sich selbst erzeugt,
+plus das synthetische `/deadLetters`.  Unter `/system` liegen
+Gruppen-Guardians, einer pro Subsystem.  Siehe
+[ActorSystem](/de/fundamentals/actor-system/) und
+[Actor-Pfade](/de/fundamentals/actor-paths/).
 
 ## H
 

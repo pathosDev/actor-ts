@@ -3,6 +3,7 @@ import { Actor } from '../../Actor.js';
 import type { ActorRef } from '../../ActorRef.js';
 import type { Cancellable } from '../../Scheduler.js';
 import { Terminated } from '../../SystemMessages.js';
+import { SystemGroups, singletonManagerName, systemActorPath } from '../../internal/SystemPaths.js';
 import type { ClusterSingletonManagerOptions, ClusterSingletonManagerOptionsType } from './ClusterSingletonManagerOptions.js';
 import { LeaderChanged, MemberRemoved, SelfUp } from '../ClusterEvents.js';
 
@@ -12,7 +13,11 @@ import { LeaderChanged, MemberRemoved, SelfUp } from '../ClusterEvents.js';
  * manager on whichever node is currently the leader.
  */
 export function singletonManagerPath(systemName: string, typeName: string): string {
-  return `actor-ts://${systemName}/user/singleton-manager-${typeName}`;
+  return systemActorPath(
+    systemName,
+    SystemGroups.clusterSingleton,
+    singletonManagerName(typeName),
+  );
 }
 
 /** Internal delivery wrapper — body is the user's typed message. */

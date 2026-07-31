@@ -10,6 +10,8 @@ import { NodeAddress } from '../../../../../src/cluster/NodeAddress.js';
 import { ShardMapChanged } from '../../../../../src/cluster/ClusterEvents.js';
 import { StartShardingOptions } from '../../../../../src/cluster/sharding/StartShardingOptions.js';
 import { hashShardId } from '../../../../../src/cluster/sharding/ShardAllocator.js';
+import { shardRegionName } from '../../../../../src/internal/SystemPaths.js';
+import { regionSegments } from '../../../../util/systemPaths.js';
 import { LogLevel, NoopLogger } from '../../../../../src/Logger.js';
 import { Props } from '../../../../../src/Props.js';
 import type { ActorRef } from '../../../../../src/ActorRef.js';
@@ -81,13 +83,11 @@ async function stopAll(nodes: Node[]): Promise<void> {
 
 /** Which of the given nodes currently hosts `entityId` as a live actor. */
 function nodesHosting(nodes: Node[], entityId: string): Node[] {
-  const segments = [
-    'user',
-    `sharding-${TYPE_NAME}`,
+  return nodes.filter((node) => node.system._resolvePath([
+    ...regionSegments(node.system.name, TYPE_NAME),
     `shard-${hashShardId(entityId, NUM_SHARDS)}`,
     `entity-${entityId}`,
-  ];
-  return nodes.filter((node) => node.system._resolvePath(segments).isSome());
+  ]).isSome());
 }
 
 describe('Shard actors', () => {
@@ -150,7 +150,7 @@ describe('ShardMapChanged', () => {
       // have to read the coordinator's DistributedData snapshot.
       expect(last.regions.length).toBeGreaterThan(0);
       for (const region of last.regions) {
-        expect(region.path).toContain(`sharding-${TYPE_NAME}`);
+        expect(region.path).toContain(shardRegionName(TYPE_NAME));
         expect(region.proxy).toBe(false);
       }
     }
@@ -193,7 +193,7 @@ describe('ClusterSharding.shards', () => {
       // Holds for a remote ref too since #515 — a RemoteActorRef's path now
       // round-trips back to the path it points at.
       expect(shard.ref.path.toString()).toContain(`shard-${shard.shardId}`);
-      expect(shard.regionPath).toContain(`sharding-${TYPE_NAME}`);
+      expect(shard.regionPath).toContain(shardRegionName(TYPE_NAME));
     }
 
     // The same query from the other node sees the same placement.
@@ -229,7 +229,7 @@ describe('ClusterSharding.shardRefFor', () => {
     expect(before.map((shard) => shard.shardId)).not.toContain(3);
 
     const shard = await seed.cluster.sharding.shardRefFor<Command>(TYPE_NAME, 3);
-    expect(shard.path.toString()).toContain(`sharding-${TYPE_NAME}/shard-3`);
+    expect(shard.path.toString()).toContain(`${shardRegionName(TYPE_NAME)}/shard-3`);
 
     const after = await seed.cluster.sharding.shards<Command>(TYPE_NAME);
     expect(after.map((s) => s.shardId)).toContain(3);
@@ -283,7 +283,7 @@ describe('ClusterSharding.shardRefFor', () => {
       TYPE_NAME, hashShardId(remoteId, NUM_SHARDS),
     );
     expect(shard.path.toString()).toContain(
-      `sharding-${TYPE_NAME}/shard-${hashShardId(remoteId, NUM_SHARDS)}`,
+      `${shardRegionName(TYPE_NAME)}/shard-${hashShardId(remoteId, NUM_SHARDS)}`,
     );
 
     shard.tell({

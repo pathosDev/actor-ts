@@ -23,7 +23,8 @@ import type { EntityEnvelope } from './ShardingProtocol.js';
  * the entity, so a reply goes straight back without a detour.
  *
  * The `path` is the entity's path **as it would be under this node's region**
- * (`/user/sharding-<type>/shard-<n>/entity-<id>`).  It identifies the entity —
+ * (`/system/cluster/sharding/region-<type>/shard-<n>/entity-<id>`).  It
+ * identifies the entity —
  * two refs for the same `(typeName, entityId)` are `equals()` — but it does
  * not say which node currently hosts it; that can change on every rebalance,
  * which is the entire point of holding the handle instead of a path.

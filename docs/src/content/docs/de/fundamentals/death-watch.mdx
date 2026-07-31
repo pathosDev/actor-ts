@@ -182,7 +182,7 @@ formalisiert dieses Pattern auf System-Ebene.
 
 ```ts
 const remoteEntity = await this.system.actorSelection(
-  'actor-ts://my-app@10.0.0.5:2552/user/sharding/Entity/12345',
+  'actor-ts://my-app@10.0.0.5:2552/system/cluster/sharding/region-Entity/entity-12345',
 ).resolveOne(1_000);
 
 this.context.watch(remoteEntity);

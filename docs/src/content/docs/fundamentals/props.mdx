@@ -119,6 +119,19 @@ Restart + 10/minute cap.  Reach for `withSupervisorStrategy` when
 that's not right — e.g. a worker that should be stopped on failure
 rather than restarted because its parent will spawn a replacement.
 
+The parent resolves the strategy in this order, first match wins:
+
+1. The failing child's own `Props`.
+2. The parent actor's `supervisorStrategy()` override.
+3. `defaultStrategy`.
+
+So a single child can opt out of its parent's policy without affecting
+its siblings.  Two details fall out of the strategy being applied by the
+parent: an `all-for-one` strategy set on a child's `Props` still widens
+to every sibling, and the restart budget (`maxRetries` /
+`withinTimeRangeMs`) is counted per parent, so siblings share one
+allowance.
+
 See [Supervision](/fundamentals/supervision/) for the
 full strategy semantics.
 

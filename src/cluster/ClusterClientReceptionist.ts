@@ -176,12 +176,16 @@ export const ClusterClientReceptionistId: ExtensionId<ClusterClientReceptionist>
 
 /* ----------------------- path-segment parser ---------------------- */
 
+/** Guardian names a path may start with; anything else is relative to `/user`. */
+const GUARDIAN_SEGMENTS = ['user', 'system'] as const;
+
 /**
  * Parse a path string into segments suitable for `_resolvePath`.
  * Accepts:
  *   - 'actor-ts://<sys>/user/foo/bar' — full URI
  *   - '/user/foo/bar'                  — absolute with leading slash
  *   - 'user/foo/bar'                   — absolute without leading slash
+ *   - 'system/cluster/receptionist'    — likewise, for framework actors
  *   - 'foo/bar'                        — relative to `/user`
  *
  * Returns `null` if the URI's system name doesn't match — the helper
@@ -197,11 +201,16 @@ function parsePathSegments(path: string): string[] | null {
   } else if (remaining.startsWith('/')) {
     remaining = remaining.slice(1);
   }
-  // Convention: paths under `/user` can be addressed bare.  Map both
-  // `user/foo/bar` and `foo/bar` to the segments `['user', 'foo', 'bar']`.
-  if (!remaining.startsWith('user/') && remaining !== 'user') {
-    if (remaining !== '') remaining = `user/${remaining}`;
-    else remaining = 'user';
+  // Convention: paths under `/user` can be addressed bare, so `foo/bar` and
+  // `user/foo/bar` both mean `['user', 'foo', 'bar']`.  `system` has to be
+  // recognised as a guardian too, or a framework actor would be unreachable
+  // by name — `'system/cluster/receptionist'` would resolve as a *user* actor
+  // literally called `system`.
+  const isAbsolute = GUARDIAN_SEGMENTS.some(
+    (guardian) => remaining === guardian || remaining.startsWith(`${guardian}/`),
+  );
+  if (!isAbsolute) {
+    remaining = remaining === '' ? 'user' : `user/${remaining}`;
   }
   const segs = remaining.split('/').filter((s) => s.length > 0);
   return segs.length === 0 ? null : segs;

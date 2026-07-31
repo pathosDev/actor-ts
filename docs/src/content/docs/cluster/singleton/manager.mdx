@@ -72,7 +72,7 @@ system.spawn(
 The manager **must** be spawned at a path matching:
 
 ```
-actor-ts://<system>/user/singleton-manager-<typeName>
+actor-ts://<system>/system/cluster/singleton/manager-<typeName>
 ```
 
 Hence the actor name `'singleton-manager-job-scheduler'` above
@@ -87,7 +87,7 @@ If you misname, the proxy can't route — silent breakage.  Always:
 import { singletonManagerPath } from 'actor-ts';
 
 const path = singletonManagerPath(system.name, 'job-scheduler');
-// "actor-ts://<sysName>/user/singleton-manager-job-scheduler"
+// "actor-ts://<sysName>/system/cluster/singleton/manager-job-scheduler"
 ```
 
 You can use this helper if you want to assert the path matches.
@@ -253,7 +253,7 @@ import { Aside } from '@astrojs/starlight/components';
 <Aside type="caution" title="Manager name must match the convention">
   ```ts
   system.spawn(Props.create(() => new ClusterSingletonManager(ClusterSingletonManagerOptions.create()/* ... */)), 'whatever');
-  // ✗ proxy looks for `/user/singleton-manager-<typeName>`, not /user/whatever
+  // ✗ proxy looks for `/system/cluster/singleton/manager-<typeName>`
   ```
   Use `singletonManagerPath(...)` or just spell out the
   convention.  The framework doesn't enforce; misnamed managers

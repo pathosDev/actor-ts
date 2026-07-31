@@ -556,6 +556,61 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Changed
 
+- **BREAKING — framework actors moved from `/user` to grouped `/system`
+  paths** (#509).  `ActorSystem` has always built a `/system` guardian and
+  then never used it: the field was assigned in the constructor and read
+  nowhere, `spawn` hardwired the user guardian, and so every actor the
+  framework spawns for itself — the DevTools hub, shard regions and
+  coordinators, the singleton manager, the pub-sub mediator, the
+  receptionist, DistributedData, reliable-delivery controllers,
+  projections — sat flat under `/user` among the application's own actors.
+  DevTools documented the empty `/system` branch as intended behaviour.
+  They now live under `/system`, one group per subsystem, and drop the name
+  prefix that only existed to keep a dozen unrelated actors from colliding
+  as flat siblings:
+
+  | Before | After |
+  | --- | --- |
+  | `/user/devtools-hub` | `/system/devtools/hub` |
+  | `/user/devtools-actor-tree` | `/system/devtools/actor-tree` |
+  | `/user/devtools-stats` | `/system/devtools/stats` |
+  | `/user/devtools-stats-dead-letters` | `/system/devtools/stats-dead-letters` |
+  | `/user/receptionist` | `/system/cluster/receptionist` |
+  | `/user/pubsub-mediator` | `/system/cluster/pubsub/mediator` |
+  | `/user/distributed-data` | `/system/cluster/crdt/data` |
+  | `/user/sharding-<typeName>` | `/system/cluster/sharding/region-<typeName>` |
+  | `/user/sharding-coordinator-<typeName>` | `/system/cluster/sharding/coordinator-<typeName>` |
+  | `/user/singleton-manager-<typeName>` | `/system/cluster/singleton/manager-<typeName>` |
+  | `/user/reliable-consumer-<n>` / `-producer-<n>` | `/system/delivery/consumer-<n>` / `producer-<n>` |
+  | `/user/projection-<name>…` | `/system/persistence/projection/<name>…` |
+
+  **Migration.**  These paths travel on the wire and are embedded in the
+  ShardCoordinator's persisted DistributedData state, so a mixed-version
+  cluster will not interoperate and a coordinator recovering pre-upgrade
+  state will not match its regions: restart the cluster cold, or discard
+  the persisted coordinator state.  Application code is unaffected unless
+  it matched on a framework path by string — `/user` now contains only
+  what the application spawned, which is the point.  There is no public
+  API for spawning into `/system`; the seam is internal.
+  Group levels are actors (empty supervisors holding the grouping and a
+  supervision policy) and are created on first use, so a system that never
+  starts clustering or DevTools keeps the same three-cell tree it had
+  before.  Groups restart their children by default — the behaviour these
+  actors had under `/user` — with DevTools the deliberate exception: a
+  probe that failed on what it observed would fail again on the restart.
+  DevTools' `internal` mark moved from its two spawn sites to the
+  `/system/devtools` group, since `ActorCell` inherits the flag; no other
+  group is marked, as that would silently strip tracing from cluster
+  internals.
+  Seven places used to build these paths as hand-written `/user/…`
+  literals, three of which doubled as `Cluster._registerEnvelopeHandler`
+  keys.  They now derive from one internal module, and each registration
+  site asserts that the actor really landed where the helper says. That
+  drift was worth a guard: it did not throw, it *mis-delivered* —
+  `dispatchEnvelope` misses the per-path handler, falls back to resolving
+  the path itself, and tells the raw envelope body, so a singleton manager
+  would receive an unwrapped payload instead of a `singleton-deliver`.
+
 - **BREAKING (examples) — `examples/cluster/counter-node.ts` discriminates on
   `kind`** (#494).  Its `Command` union tagged entities with `op: 'increment' |
   'get'`, the only place in the repo that used a third spelling for a
@@ -718,6 +773,43 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Fixed
 
+- **`/user` is drained before `/system` starts stopping** (#509).
+  `terminate()` enqueued one `terminate` on the root cell, and a cell stops
+  every child at once — so both guardians came down concurrently, while
+  `fundamentals/actor-system.mdx` had always promised "stop `/user`
+  recursively … then stop `/system`".  Harmless while every actor lived
+  under `/user`; not harmless once the framework's own actors moved to
+  `/system`, because the application talks to the framework and not the
+  other way round.  A user actor's `postStop` — unsubscribing from the
+  pub-sub mediator, handing a shard back, writing a last event — needs that
+  framework actor still alive, and racing the guardians turned those into
+  dead letters non-deterministically: the failure mode that reproduces on a
+  loaded CI box and not on the machine you debug on.  The root cell now
+  stops its children in sequence, each fully drained before the next is
+  asked; ordinary actors keep the concurrent fan-out, since siblings are
+  peers and nothing about being a child implies an order.
+- **`Props.withSupervisorStrategy()` actually supervises now** (#509).  It was a
+  no-op: `ActorCell.onFailure` resolved the strategy as
+  `this.actor?.supervisorStrategy() ?? defaultStrategy` and never read
+  `props.config.supervisorStrategy`, so the setter built a new `Props` whose
+  strategy field nothing consumed.  The API is not obscure — `fundamentals/props.mdx`
+  documents it with its own section in both languages, and the routing and
+  supervision pages use it in samples — so every caller following the docs got
+  the guardian's default instead of the policy they asked for, silently.
+  Resolution order is now the failing child's Props, then the parent actor's
+  `supervisorStrategy()`, then `defaultStrategy`.
+  The repo described the semantics two contradictory ways, so this also settles
+  which one is real: the strategy on an actor's `Props` says how **that actor**
+  is supervised (`props.mdx`), not how it supervises its own children (the note
+  in `benchmarks/single-node/supervisor-restart.ts`, now corrected).  That is
+  why the parent reads it — a child never gets to answer for its own failure —
+  and it is the reading that adds something, since the parent-side one is
+  already covered by `override supervisorStrategy()`.
+  Two consequences of expressing a per-child override through parent-side
+  machinery are deliberate, and now documented at the call site: an
+  `all-for-one` strategy in a child's `Props` still widens to every sibling, and
+  the restart budget in `registerRestart` stays per-parent, so siblings share one
+  allowance.
 - **`ShardMapChanged` is actually published now** (#513).  The event was
   declared, exported, unit-tested for its shape, and consumed in two places —
   the DevTools shard panel (`ClusterTap`) and

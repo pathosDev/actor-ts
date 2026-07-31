@@ -120,6 +120,21 @@ Fehler mit einem Restart + 10/Minute-Cap.  Greife zu
 bei Fehler gestoppt statt neu gestartet werden soll, weil sein Parent
 einen Ersatz spawnen wird.
 
+Der Parent löst die Strategie in dieser Reihenfolge auf, der erste
+Treffer gewinnt:
+
+1. Die `Props` des fehlschlagenden Kindes.
+2. Der `supervisorStrategy()`-Override des Parent-Actors.
+3. `defaultStrategy`.
+
+Ein einzelnes Kind kann sich also aus der Policy seines Parents
+ausnehmen, ohne seine Geschwister zu beeinflussen.  Zwei Details folgen
+daraus, dass die Strategie vom Parent angewendet wird: eine
+`all-for-one`-Strategie auf den `Props` eines Kindes greift trotzdem auf
+alle Geschwister, und das Restart-Budget (`maxRetries` /
+`withinTimeRangeMs`) wird pro Parent gezählt — Geschwister teilen sich
+also ein Kontingent.
+
 Siehe [Supervision](/de/fundamentals/supervision/) für die volle
 Strategie-Semantik.
 

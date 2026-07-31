@@ -32,6 +32,7 @@ import { ClusterSharding } from '../../src/cluster/sharding/ClusterSharding.js';
 import { StartShardingOptions } from '../../src/cluster/sharding/StartShardingOptions.js';
 import { DistributedDataCoordinatorStateStore } from '../../src/cluster/sharding/CoordinatorState.js';
 import { ShardCoordinator } from '../../src/cluster/sharding/ShardCoordinator.js';
+import { coordinatorSegments } from '../util/systemPaths.js';
 import { DistributedDataId } from '../../src/crdt/DistributedData.js';
 import { DistributedDataOptions } from '../../src/crdt/DistributedDataOptions.js';
 import { Props } from '../../src/Props.js';
@@ -80,7 +81,7 @@ function findCoordinator(
   spec: MultiNodeSpec, role: string, typeName: string,
 ): ShardCoordinator | null {
   const sys = spec.systemFor(role);
-  const refOption = sys._resolvePath(['user', `sharding-coordinator-${typeName}`]);
+  const refOption = sys._resolvePath(coordinatorSegments(sys.name, typeName));
   if (refOption.isNone()) return null;
   const internal = refOption.value as unknown as { getCell?: () => { actor?: ShardCoordinator } };
   return internal.getCell?.().actor ?? null;

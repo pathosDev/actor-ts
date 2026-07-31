@@ -16,7 +16,7 @@ Reading left to right:
 | --- | --- |
 | `actor-ts://` | The scheme — same for every actor-ts path. |
 | `my-app` | The system name from `ActorSystem.create('my-app')`. |
-| `user` | The user-guardian — every actor you spawn lives under `/user`. |
+| `user` | The user-guardian — every actor *you* spawn lives under `/user`. |
 | `api` | A great-grandparent (e.g. an `Api` manager). |
 | `sessions` | The immediate parent (e.g. a `SessionManager`). |
 | `user-42` | The leaf actor's own name. |
@@ -175,8 +175,9 @@ returns `unknown`-typed refs that you lose typing on.
 Reach for an `ActorSelection` in three situations:
 
 1. **Cross-tree lookup** by convention — the actor you want lives
-   at a well-known path (`/user/sharding/region`, `/system/pubsub`),
-   and there's no clean way to thread the ref through.
+   at a well-known path (`/user/api/sessions`,
+   `/system/cluster/pubsub/mediator`), and there's no clean way to
+   thread the ref through.
 2. **Spawn-race resolution** — caller doesn't know exactly when
    the target spawns; `resolveOne(timeout)` waits.
 3. **Looking up actors received as strings** — e.g. an HTTP
@@ -212,19 +213,54 @@ path-naming conventions, and survives renames trivially.
 
 ## Special top-level paths
 
-Three top-level guardian paths exist in every system:
+Three top-level paths exist in every system:
 
 | Path | What lives there |
 | --- | --- |
-| `/user` | Your application's top-level actors (everything `system.spawnAnonymous(...)` creates). |
-| `/system` | Framework internals (event-stream listeners, cluster gossipers, the dead-letter actor itself, …). |
+| `/user` | Your application's top-level actors — everything `system.spawn(...)` creates. |
+| `/system` | Framework internals, grouped by subsystem. |
 | `/deadLetters` | The synthetic recipient for messages with no live target. |
 
-You rarely interact with `/system` paths directly — the extensions
-(cluster, pubsub, sharding) expose their own typed APIs that
-shield you from the path scheme.  But knowing the paths exist is
-useful when reading log output or debugging "where did this
-message go?"
+### Inside `/system`
+
+Anything the framework spawns for itself goes here, one group per
+subsystem, so the tree tells you which part of the framework an actor
+belongs to:
+
+| Path | Actor |
+| --- | --- |
+| `/system/cluster/receptionist` | The receptionist. |
+| `/system/cluster/pubsub/mediator` | The distributed pub-sub mediator. |
+| `/system/cluster/crdt/data` | The DistributedData replica. |
+| `/system/cluster/sharding/region-<typeName>` | A shard region. |
+| `/system/cluster/sharding/coordinator-<typeName>` | A shard coordinator. |
+| `/system/cluster/singleton/manager-<typeName>` | A cluster-singleton manager (the singleton itself is its child). |
+| `/system/persistence/projection/<name>` | A projection. |
+| `/system/delivery/consumer-<n>`, `producer-<n>` | Reliable-delivery controllers. |
+| `/system/devtools/hub` | The DevTools WebSocket hub, with its probes alongside it. |
+
+Two things follow from this that are worth knowing when you read a tree:
+
+- **The group levels are actors.** `/system/cluster/sharding` is an empty
+  supervisor whose whole job is to hold the grouping and the supervision
+  policy for what is under it.  It has children and never handles a
+  message.
+- **Groups are created on first use.** A system that never starts
+  clustering or DevTools has an empty `/system` — that is the normal
+  state, not a missing branch.
+
+You rarely address `/system` paths directly: the extensions (cluster,
+pubsub, sharding) expose typed APIs that hand you refs. But knowing the
+layout pays off when reading log output — every actor's logger is bound
+to its path — or answering "where did this message go?"
+
+<Aside type="caution" title="/system is the framework's, not yours">
+  There is no public API for spawning into `/system`, and the paths above
+  are not a stable contract — they moved once already (before this
+  release, framework actors sat flat under `/user`) and a pre-1.0 release
+  may move them again.  Match on them in a log query if it helps you
+  debug; don't build application routing on them.
+</Aside>
 
 <Aside type="caution" title="Don't construct paths from string concat">
   ```ts

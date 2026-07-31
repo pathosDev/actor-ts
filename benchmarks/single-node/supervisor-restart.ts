@@ -2,11 +2,13 @@
  * Supervisor restart overhead — how expensive is a one-for-one restart?
  * Each op = one failed command + resumed processing.
  *
- * Note: `withSupervisorStrategy` on Props sets the strategy an actor uses to
- * supervise its OWN children.  How a child is supervised is decided by its
- * *parent*, so we spawn `Shaky` inside a `Supervisor` actor whose
- * `supervisorStrategy()` permits unlimited restarts.  Without this, the
- * user-guardian's default strategy (maxRetries=10) would abort the run.
+ * Note: how a child is supervised is decided by its *parent* — either by the
+ * parent actor's `supervisorStrategy()` or, per child, by
+ * `Props.withSupervisorStrategy` on that child's own Props.  Either way the
+ * user guardian's default (maxRetries=10) would abort a 1 000-restart run, so
+ * `Shaky` runs inside a `Supervisor` whose strategy permits unlimited
+ * restarts.  The extra hop through `Supervisor` is part of the measured
+ * round-trip — keep it so numbers stay comparable with earlier runs.
  *
  *   bun run benchmarks/single-node/supervisor-restart.ts
  */

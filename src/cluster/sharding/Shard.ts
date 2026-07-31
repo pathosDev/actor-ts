@@ -51,7 +51,8 @@ type EntityState = {
  * "per shard".
  *
  * Being a real actor is the point: a shard now has a path
- * (`/user/sharding-<type>/shard-<n>`), so it is addressable from anywhere in
+ * (`/system/cluster/sharding/region-<type>/shard-<n>`), so it is addressable
+ * from anywhere in
  * the cluster, it shows up in the actor tree, and handoff is simply "stop the
  * shard" — the runtime terminates the entities underneath and only then
  * reports back.

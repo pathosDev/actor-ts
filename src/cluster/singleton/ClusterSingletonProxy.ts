@@ -4,6 +4,7 @@ import { ActorRef } from '../../ActorRef.js';
 import type { Cluster } from '../Cluster.js';
 import { LeaderChanged } from '../ClusterEvents.js';
 import { NodeAddress } from '../NodeAddress.js';
+import { singletonProxyName } from '../../internal/SystemPaths.js';
 import { singletonManagerPath, type SingletonDeliver } from './ClusterSingletonManager.js';
 
 /**
@@ -29,8 +30,12 @@ export class ClusterSingletonProxy<T> extends ActorRef<T> {
     private readonly localManagerRef: ActorRef,
   ) {
     super();
+    // Synthetic — no actor is spawned here.  The path exists so logs and dead
+    // letters name the proxy somewhere plausible, alongside the manager it
+    // fronts.
     this.path = new ActorPath('', null, cluster.system.name)
-      .child('user').child(`singleton-proxy-${typeName}`);
+      .child('system').child('cluster').child('singleton')
+      .child(singletonProxyName(typeName));
     this.unsubscribe = cluster.subscribe((evt) =>
       match(evt)
         .with(P.instanceOf(LeaderChanged), () => this.onLeaderChanged())

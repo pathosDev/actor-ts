@@ -138,7 +138,8 @@ perspective.  Behind the scenes:
 | **Coordinator** | One per cluster (singleton, on the leader).  Decides which node owns each shard.  Handles rebalancing on membership changes. |
 | **Entity** | One per `entityId`.  A child of its shard, on whichever node currently owns the shard the ID hashes to. |
 
-That gives entities a real path — `/user/sharding-counter/shard-7/entity-user-42`
+That gives entities a real path —
+`/system/cluster/sharding/region-counter/shard-7/entity-user-42`
 — which is what makes a shard addressable at all.  See
 [introspection](/cluster/sharding/introspection/) for listing shards and
 getting refs to them.

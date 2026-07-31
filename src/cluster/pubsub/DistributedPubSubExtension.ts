@@ -1,5 +1,6 @@
 import type { ActorRef } from '../../ActorRef.js';
 import type { ActorSystem } from '../../ActorSystem.js';
+import { SystemActorNames, SystemGroups, assertSpawnedAt } from '../../internal/SystemPaths.js';
 import { extensionId, type Extension, type ExtensionId } from '../../Extension.js';
 import { Props } from '../../Props.js';
 import type { Cluster } from '../Cluster.js';
@@ -42,15 +43,20 @@ export class DistributedPubSub implements Extension {
 
     // Cluster comes from the positional arg and is authoritative — inject it
     // into the options (builder or plain object) before constructing the mediator.
-    const mediator = this.system.spawn(
+    const mediator = this.system._spawnSystemActor(
       Props.create(() => new DistributedPubSubMediator({ ...(options as Partial<DistributedPubSubOptionsType>), cluster })),
-      'pubsub-mediator',
+      SystemGroups.clusterPubSub,
+      SystemActorNames.pubSubMediator,
     );
     this._mediator = mediator as ActorRef<MediatorMessage>;
 
     // Route inbound publishes (remote → local) to the mediator's mailbox.
+    // The handler key is the well-known path, so it has to be the path the
+    // mediator actually occupies — see `assertSpawnedAt`.
+    const wellKnownPath = mediatorPath(cluster.system.name);
+    assertSpawnedAt(wellKnownPath, mediator);
     cluster._registerEnvelopeHandler(
-      mediatorPath(cluster.system.name),
+      wellKnownPath,
       (env: EnvelopeMessage) => mediator.tell(env.body as never),
     );
 

@@ -128,7 +128,9 @@ export class ClusterClient {
   /**
    * Fire-and-forget tell to the actor at `targetPath` on the cluster.
    * `targetPath` accepts the same shapes as `ActorSystem.actorSelection`:
-   * full URI, absolute path, or relative-to-`/user`.
+   * full URI, absolute path, or relative-to-`/user`.  A path starting with
+   * `system/` addresses a framework actor — e.g.
+   * `'system/cluster/receptionist'`.
    */
   async send(targetPath: string, message: unknown): Promise<void> {
     await this.ensureConnected();

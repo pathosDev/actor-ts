@@ -83,7 +83,7 @@ message for it would have done — and answers once the coordinator has
 decided.
 
 The ref is the real thing.  A shard is an actor
-(`/user/sharding-counter/shard-7`), so what you get back is the local
+(`/system/cluster/sharding/region-counter/shard-7`), so what you get back is the local
 shard actor when this node hosts it and a `RemoteActorRef` at that path
 when it does not.  `tell` therefore works from anywhere:
 

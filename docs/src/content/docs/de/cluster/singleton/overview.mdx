@@ -95,7 +95,7 @@ handle.proxy.tell({ kind: 'schedule', jobId: '42' });
 
 Der Proxy sieht aus wie ein einzelner `ActorRef`. Hinter den
 Kulissen findet er den Manager des aktuellen Leaders über den
-bekannten Pfad `/user/singleton-manager-<typeName>` und leitet
+bekannten Pfad `/system/cluster/singleton/manager-<typeName>` und leitet
 Nachrichten dorthin. Bei Leader-Wechseln verschiebt sich das Ziel
 des Proxys automatisch innerhalb einer Gossip-Runde.
 

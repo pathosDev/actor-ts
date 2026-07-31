@@ -1,6 +1,7 @@
 import { Actor } from '../../Actor.js';
 import type { ActorRef } from '../../ActorRef.js';
 import type { Cancellable } from '../../Scheduler.js';
+import { SystemGroups } from '../../internal/SystemPaths.js';
 import {
   type Offset,
   type PersistenceQuery,
@@ -183,9 +184,10 @@ export class ProjectionActor {
     options: ByPersistenceIdProjectionOptions<E>,
   ): ActorRef<unknown> {
     const resolvedOptions = options as ByPersistenceIdProjectionOptionsType<E>;
-    return system.spawn(
+    return system._spawnSystemActor(
       Props.create(() => new ByPersistenceIdProjectionActor<E>(resolvedOptions) as unknown as Actor<unknown>),
-      `projection-${resolvedOptions.name}-${sanitize(resolvedOptions.persistenceId)}`,
+      SystemGroups.persistenceProjection,
+      `${resolvedOptions.name}-${sanitize(resolvedOptions.persistenceId)}`,
     );
   }
 
@@ -195,9 +197,10 @@ export class ProjectionActor {
     options: ByTagProjectionOptions<E>,
   ): ActorRef<unknown> {
     const resolvedOptions = options as ByTagProjectionOptionsType<E>;
-    return system.spawn(
+    return system._spawnSystemActor(
       Props.create(() => new ByTagProjectionActor<E>(resolvedOptions) as unknown as Actor<unknown>),
-      `projection-${resolvedOptions.name}-tag-${sanitize(tagFilterCursorKey(resolvedOptions.tag))}`,
+      SystemGroups.persistenceProjection,
+      `${resolvedOptions.name}-tag-${sanitize(tagFilterCursorKey(resolvedOptions.tag))}`,
     );
   }
 }

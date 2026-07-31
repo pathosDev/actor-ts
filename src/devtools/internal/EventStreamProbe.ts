@@ -14,6 +14,7 @@ import { Actor } from '../../Actor.js';
 import type { ActorRef } from '../../ActorRef.js';
 import type { ActorSystem } from '../../ActorSystem.js';
 import { Props } from '../../Props.js';
+import { SystemGroups } from '../../internal/SystemPaths.js';
 import { freeActorName } from './ActorNames.js';
 
 /**
@@ -51,9 +52,12 @@ export function subscribeToEventStream<T extends object>(
     }
   }
 
-  const ref: ActorRef<T> = system.spawn(
-    Props.create(() => new ProbeActor()).asInternal(),
-    freeActorName(system, name),
+  // The `/system/devtools` group is marked tooling and `ActorCell` inherits
+  // the mark, so the probe needs no `.asInternal()` of its own.
+  const ref: ActorRef<T> = system._spawnSystemActor(
+    Props.create(() => new ProbeActor()),
+    SystemGroups.devtools,
+    freeActorName(system, SystemGroups.devtools, name),
   );
   system.eventStream.subscribe(ref as ActorRef, channel);
 
