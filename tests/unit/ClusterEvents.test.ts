@@ -60,10 +60,11 @@ describe('Cluster event classes', () => {
   });
 
   test('ShardMapChanged carries the region table when the producer has it', () => {
+    const regionPath = '/system/cluster/sharding/region-counter';
     const regions = [
-      { key: 'a@h:1|/user/sharding-counter', address: 'a@h:1', path: '/user/sharding-counter', proxy: false, shardCount: 2 },
+      { key: `a@h:1|${regionPath}`, address: 'a@h:1', path: regionPath, proxy: false, shardCount: 2 },
     ];
-    const event = new ShardMapChanged('counter', new Map([[0, 'a@h:1|/user/sharding-counter']]), 8, regions);
+    const event = new ShardMapChanged('counter', new Map([[0, `a@h:1|${regionPath}`]]), 8, regions);
     expect(event.regions).toBe(regions);
   });
 });
