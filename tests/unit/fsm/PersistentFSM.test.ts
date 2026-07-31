@@ -12,10 +12,13 @@
  *     right state + data.
  */
 import { describe, expect, test } from 'bun:test';
+import { Actor } from '../../../src/Actor.js';
 import { ActorSystem } from '../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../src/ActorSystemOptions.js';
 import { LogLevel, NoopLogger } from '../../../src/Logger.js';
 import { Props } from '../../../src/Props.js';
+import { ActorLifecycleEvent, ActorStopped } from '../../../src/SystemMessages.js';
+import { awaitCondition } from '../../util/AwaitCondition.js';
 import { PersistenceExtensionId } from '../../../src/persistence/PersistenceExtension.js';
 import { InMemoryJournal } from '../../../src/persistence/journals/InMemoryJournal.js';
 import { InMemorySnapshotStore } from '../../../src/persistence/snapshot-stores/InMemorySnapshotStore.js';
@@ -672,6 +675,52 @@ describe('PersistentFSM — multiple events per command (#66)', () => {
       expect(recovered.data.audited).toBe(true);
     } finally {
       await sys2.terminate();
+    }
+  });
+});
+
+describe('PersistentFSM — recovery failure', () => {
+  test('a swallowed recovery failure stops the FSM instead of leaving it stuck', async () => {
+    const { sys, journal, snaps } = buildSystem('fsm-recovery-failure');
+    try {
+      // A snapshot claiming a sequence number ahead of the journal is
+      // refused by assertTrustworthySnapshot, so replay throws before
+      // the base class assigns its state.
+      await journal.append<OrderEvent>('order-broken', [{ kind: 'paid', amount: 100 }], 0);
+      await snaps.save('order-broken', Number.MAX_SAFE_INTEGER, {
+        state: 'shipped', data: { amountPaid: 0, carrier: null, cancelReason: null },
+      });
+
+      const failures: Error[] = [];
+      const stopped: ActorLifecycleEvent[] = [];
+      const ready = { value: false };
+      class Listener extends Actor<ActorLifecycleEvent> {
+        override preStart(): void {
+          this.system.eventStream.subscribe(this.self, ActorLifecycleEvent);
+          ready.value = true;
+        }
+        override onReceive(event: ActorLifecycleEvent): void { stopped.push(event); }
+      }
+      sys.spawn(Props.create(() => new Listener()), 'lifecycle');
+      await awaitCondition(() => ready.value, { label: 'the lifecycle listener subscribed' });
+
+      class SwallowingOrderFsm extends OrderFsm {
+        override onRecoveryFailure(reason: Error): void { failures.push(reason); }
+      }
+      const ref = sys.spawn(Props.create(() => new SwallowingOrderFsm('order-broken')), 'order');
+
+      await awaitCondition(() => failures.length === 1, {
+        label: 'the swallowing hook observed the recovery failure',
+      });
+      // Without the stop, the FSM would sit on an undefined state while
+      // its own onReceive routes __fsm_state_timeout__ around the
+      // recovering guard straight into an unguarded this.state read.
+      await awaitCondition(
+        () => stopped.some((e) => e instanceof ActorStopped && e.actor.equals(ref)),
+        { label: 'the FSM whose recovery failed stopped itself' },
+      );
+    } finally {
+      await sys.terminate();
     }
   });
 });

@@ -71,7 +71,17 @@ export abstract class PersistentActor<Command, Event, State> extends Actor<Comma
   /** Called once recovery finishes, with the final replayed state. */
   onRecoveryComplete(_state: State): void | Promise<void> {}
 
-  /** Called when recovery itself throws.  Default = propagate to supervision. */
+  /**
+   * Called when recovery itself throws.
+   *
+   * A notification, not a decision — recovery failure is terminal either
+   * way.  The default rethrows, so the failure reaches supervision as an
+   * `ActorInitializationError`.  An override that returns normally takes
+   * the failure as handled, and the actor is then stopped: `state` was
+   * never assigned and `lastSequenceNr` is unknown, so there is no state
+   * in which it could answer a command.  Pending commands go to dead
+   * letters rather than disappearing.
+   */
   onRecoveryFailure(reason: Error): void { throw reason; }
 
   /** Snapshot policy — return true to snapshot the current state. */
@@ -143,7 +153,28 @@ export abstract class PersistentActor<Command, Event, State> extends Actor<Comma
     try {
       await this.recover();
     } catch (e) {
-      this.onRecoveryFailure(e instanceof Error ? e : new Error(String(e)));
+      const reason = e instanceof Error ? e : new Error(String(e));
+      // Rethrows by default, and then this is the last line that runs:
+      // ActorCell.onCreate turns it into an ActorInitializationError and
+      // supervision decides.
+      this.onRecoveryFailure(reason);
+      // The hook returned, so it owns the failure — but it cannot own the
+      // actor.  `_state` was never assigned and `_recovering` is still
+      // true, so every command would be stashed, silently, until #1025
+      // overflows the 1024-entry stash and throws from inside the handler
+      // — a supervision restart 1024 messages away from its cause, whose
+      // recovery fails and gets swallowed again.  Stop instead.
+      //
+      // `stopSelf` enqueues a system message, and the cell drains those
+      // ahead of every user message, so nothing reaches `onReceive`
+      // without a state and whatever is already queued becomes dead
+      // letters.
+      this.log.error(
+        `[persistence] '${this.persistenceId}' recovery failed and onRecoveryFailure `
+        + 'returned without rethrowing — stopping the actor',
+        reason,
+      );
+      this.context.stopSelf();
     }
   }
 
