@@ -20,12 +20,12 @@ export type BrokeredMessage = {
  * Node/Bun `worker_threads.MessagePort`, or any in-process shim used by
  * tests.
  */
-export type PortLike = {
+export interface PortLike {
   postMessage(value: unknown, transfer?: unknown[]): void;
   onmessage: ((e: { data: unknown }) => void) | null;
   close?(): void;
   start?(): void;
-};
+}
 
 /**
  * Transport that talks to the rest of the cluster through a single pair of

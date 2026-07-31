@@ -48,13 +48,13 @@ export type RegionInfoData = {
  * the new leader sees a recent snapshot from the previous leader.
  * Custom impls could front a SQLite table or any other backend.
  */
-export type CoordinatorStateStore = {
+export interface CoordinatorStateStore {
   /** Load the most recent snapshot, or `null` if none stored. */
   load(typeName: string): Promise<CoordinatorStateData | null>;
 
   /** Persist a fresh snapshot.  Overwrites any prior. */
   save(typeName: string, state: CoordinatorStateData): Promise<void>;
-};
+}
 
 /* ============== DistributedData-backed default impl =================== */
 

@@ -24,7 +24,7 @@ export type { TlsTransportOptionsType };
  * implementation is the production one; tests use an in-memory transport
  * that loops frames through JS structures.
  */
-export type Transport = {
+export interface Transport {
   readonly self: NodeAddress;
   start(): Promise<void>;
   shutdown(): Promise<void>;
@@ -35,7 +35,7 @@ export type Transport = {
   disconnect(peer: NodeAddress): void;
   /** Peers currently connected (either inbound or outbound). */
   peers(): NodeAddress[];
-};
+}
 
 /* ============================== TCP Transport ============================= */
 
