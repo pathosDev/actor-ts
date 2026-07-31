@@ -303,13 +303,15 @@ Initialisierungs-Fensters kein Traffic verloren geht.
   geworden" und entweder eskalieren oder fehlschlagen kann.
 </Aside>
 
-<Aside type="caution" title="Stash + Restart = Zustand verloren">
-  Bei `Restart` wird die Actor-Instanz weggeworfen — inklusive des
-  Stash-Buffers.  Gestashed Nachrichten werden stillschweigend
-  verworfen, nicht zu Dead Letters geroutet.  Wenn die Nachrichten
-  über den Fehler hinweg wichtig sind, persistiere sie
-  (PersistentActor) oder lass einen Parent sie nach Abschluss des
-  Restarts erneut senden.
+<Aside type="caution" title="Stash + Restart = Stash verloren">
+  Bei `Restart` — und bei `Stop` — wird die Actor-Instanz weggeworfen,
+  inklusive des Stash-Buffers.  Der Stash kann nicht übernommen werden:
+  der neuen Instanz fehlt genau der Zustand, der diese Nachrichten
+  überhaupt erst unbehandelbar gemacht hat.  Sie werden zu **Dead
+  Letters** geroutet, damit der Verlust wenigstens sichtbar ist; wenn
+  die Nachrichten über den Fehler hinweg wichtig sind, persistiere sie
+  (`PersistentActor`) oder lass einen Parent sie erneut senden, sobald
+  der Restart durch ist.
 </Aside>
 
 ## Wann zu welchem greifen

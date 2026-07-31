@@ -295,12 +295,14 @@ dropped during the initialization window.
   and either escalate or fail.
 </Aside>
 
-<Aside type="caution" title="Stash + restart = state lost">
-  On `Restart`, the actor instance is thrown away — including the
-  stash buffer.  Stashed messages are silently dropped, not routed
-  to dead letters.  If the messages matter across failure, persist
-  them (PersistentActor) or have a parent re-send them after the
-  restart settles.
+<Aside type="caution" title="Stash + restart = stash lost">
+  On `Restart` — and on `Stop` — the actor instance is thrown away,
+  including the stash buffer.  The stash cannot carry over: the new
+  instance has none of the state that made those messages
+  un-handleable in the first place.  They are routed to
+  **dead letters**, so the loss is at least visible; if the messages
+  matter across failure, persist them (`PersistentActor`) or have a
+  parent re-send them once the restart settles.
 </Aside>
 
 ## When to reach for which

@@ -8,6 +8,8 @@ import { ActorSystem } from '../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../src/ActorSystemOptions.js';
 import { LogLevel, NoopLogger } from '../../src/Logger.js';
 import { Props } from '../../src/Props.js';
+import { DeadLetter } from '../../src/SystemMessages.js';
+import { awaitCondition } from '../util/AwaitCondition.js';
 
 const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
 const newSystem = (name = 'stash-unit'): ActorSystem => {
@@ -136,5 +138,82 @@ describe('Stash', () => {
     expect(envelope).toBeInstanceOf(Error);
     expect(envelope.name).toBe('StashOverflowError');
     expect(envelope.message).toContain('16');
+  });
+});
+
+/**
+ * The stash is a buffer separate from the mailbox, so the drain in
+ * `finalizeTermination` never saw it and a restart cleared it outright.
+ * A stashed message arrived *earlier* than anything still queued, which
+ * makes it the one a sender is most likely blocked on (#518).
+ */
+describe('Stash — messages that never get unstashed', () => {
+  /** Parks everything; `boom` throws, so supervision restarts the instance. */
+  class Parking extends Actor<string> {
+    constructor(private readonly stashed: string[]) { super(); }
+    override onReceive(message: string): void {
+      if (message === 'boom') throw new Error('boom');
+      this.stashed.push(message);
+      this.context.stash();
+    }
+  }
+
+  class DeadLetterListener extends Actor<DeadLetter> {
+    constructor(private readonly seen: DeadLetter[], private readonly ready: { value: boolean }) { super(); }
+    override preStart(): void {
+      this.system.eventStream.subscribe(this.self, DeadLetter);
+      this.ready.value = true;
+    }
+    override onReceive(letter: DeadLetter): void { this.seen.push(letter); }
+  }
+
+  /** Subscribing happens in preStart, so wait for it before provoking anything. */
+  async function listenForDeadLetters(sys: ActorSystem): Promise<DeadLetter[]> {
+    const letters: DeadLetter[] = [];
+    const ready = { value: false };
+    sys.spawn(Props.create(() => new DeadLetterListener(letters, ready)), 'dead-letters');
+    await awaitCondition(() => ready.value, { label: 'the dead-letter listener subscribed' });
+    return letters;
+  }
+
+  test('a stopped actor sends its stash to dead letters', async () => {
+    const sys = newSystem('stash-stop');
+    const letters = await listenForDeadLetters(sys);
+    const stashed: string[] = [];
+
+    const ref = sys.spawn(Props.create(() => new Parking(stashed)), 'a');
+    ref.tell('a'); ref.tell('b'); ref.tell('c');
+    await awaitCondition(() => stashed.length === 3, { label: 'all three messages were stashed' });
+
+    ref.stop();
+
+    const mine = (): DeadLetter[] => letters.filter((l) => l.recipient.equals(ref));
+    await awaitCondition(() => mine().length === 3, {
+      label: 'the stash reached dead letters on stop',
+    });
+    // Arrival order preserved — the stash drains ahead of the mailbox.
+    expect(mine().map((l) => l.message)).toEqual(['a', 'b', 'c']);
+    await sys.terminate();
+  });
+
+  test('a restarted actor sends its stash to dead letters', async () => {
+    const sys = newSystem('stash-restart');
+    const letters = await listenForDeadLetters(sys);
+    const stashed: string[] = [];
+
+    const ref = sys.spawn(Props.create(() => new Parking(stashed)), 'a');
+    ref.tell('a'); ref.tell('b');
+    await awaitCondition(() => stashed.length === 2, { label: 'both messages were stashed' });
+
+    // Supervision restarts the instance.  The stash belongs to the outgoing
+    // one and cannot carry over — but it must not vanish either.
+    ref.tell('boom');
+
+    const mine = (): DeadLetter[] => letters.filter((l) => l.recipient.equals(ref));
+    await awaitCondition(() => mine().length === 2, {
+      label: 'the stash reached dead letters on restart',
+    });
+    expect(mine().map((l) => l.message)).toEqual(['a', 'b']);
+    await sys.terminate();
   });
 });

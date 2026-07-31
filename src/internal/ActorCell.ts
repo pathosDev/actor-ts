@@ -409,6 +409,29 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
 
   get stashSize(): number { return this._stashBuffer.length; }
 
+  /**
+   * Send whatever the stash still holds to dead letters.
+   *
+   * The mailbox is drained on termination, but the stash is a separate
+   * buffer, so anything parked there used to vanish without a trace on
+   * both the stop and the restart path.  That is the worst shape a lost
+   * message can take: a stashed message arrived *earlier* than everything
+   * still queued — it is the one the sender is most likely waiting on —
+   * and "I told an actor and nothing happened, anywhere" is unfalsifiable
+   * from the outside.  Dead-lettering costs nothing and makes it visible.
+   *
+   * Drained before the mailbox on the stop path, so the dead-letter
+   * stream keeps arrival order.
+   */
+  private deadLetterStash(): void {
+    if (this._stashBuffer.length === 0) return;
+    const drained = this._stashBuffer;
+    this._stashBuffer = [];
+    for (const env of drained) {
+      this.system.deadLetters.tell(new DeadLetter(env.message, env.sender, this.self));
+    }
+  }
+
   /* ------------------------- Rate limiting (#83) ------------------------ */
 
   throttle(options: ThrottleOptions): void {
@@ -670,6 +693,10 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
       this.log.error('postStop threw', e);
     }
 
+    // Drain the stash first — those messages arrived before anything still
+    // queued, so this keeps the dead-letter stream in arrival order.
+    this.deadLetterStash();
+
     // Drain any remaining user messages to dead letters
     for (const env of this.mailbox.drainUser()) {
       this.system.deadLetters.tell(new DeadLetter(env.message, env.sender, this.self));
@@ -707,9 +734,12 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
     const cause = signal.cause;
     if (!this.actor) return;
 
-    // Timers and stash belong to the outgoing instance.
+    // Timers and stash belong to the outgoing instance.  The stash cannot
+    // carry over — the new instance has none of the state that made those
+    // messages un-handleable — but it goes to dead letters rather than
+    // being dropped, so a restart does not swallow them silently.
     this.timers.cancelAll();
-    this._stashBuffer = [];
+    this.deadLetterStash();
 
     // Let the old instance clean up (stopping children is the default).
     try {

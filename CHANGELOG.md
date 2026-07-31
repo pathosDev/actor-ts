@@ -718,6 +718,19 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Fixed
 
+- **A stopped or restarted actor's stash goes to dead letters instead of
+  vanishing** (#518).  `finalizeTermination` drained the mailbox to dead letters,
+  but the stash is a separate buffer on the cell and was never drained; `Restart`
+  cleared it outright (`this._stashBuffer = []`).  That is the worst shape a lost
+  message can take — a stashed message arrived *earlier* than everything still
+  queued, so it is the one a sender is most likely blocked on, and "I told an
+  actor and nothing happened, anywhere" cannot be diagnosed from the outside.
+  Both paths now route the buffer through `DeadLetter`, the stop path draining
+  the stash ahead of the mailbox so the dead-letter stream keeps arrival order.
+  The stash still cannot survive a restart — the new instance has none of the
+  state that made those messages un-handleable — but the loss is now visible.
+  Found while fixing #516, where the stash is provably empty and this was
+  therefore out of scope.
 - **`ShardMapChanged` is actually published now** (#513).  The event was
   declared, exported, unit-tested for its shape, and consumed in two places —
   the DevTools shard panel (`ClusterTap`) and
