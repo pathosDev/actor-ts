@@ -264,14 +264,20 @@ See [Runtime — Compatibility matrix](/runtime/compatibility-matrix/).
 ## Debugging
 
 <Aside type="caution" title="Why isn't my actor receiving messages?">
-  Three common causes:
+  Four common causes:
   - **The ref points at a stopped actor** — messages route to
     `/deadLetters` (check the system log).
   - **The mailbox is full** with `reject` overflow — `tell` throws
     `MailboxFullError` at the sender.  Catch it where you tell.
   - **Recovery hasn't finished** for a `PersistentActor` — messages
-    sent before `onRecoveryComplete` are stashed.  Slow recovery
-    causes apparent delays.
+    sent before `onRecoveryComplete` wait in the mailbox.  Slow
+    recovery causes apparent delays.
+  - **Recovery *failed*** for a `PersistentActor` — a corrupt event
+    or a refused snapshot.  The actor stops, so its messages go to
+    `/deadLetters`.  If an `onRecoveryFailure` override swallowed
+    the error, the log line to look for is "recovery failed and
+    onRecoveryFailure returned without rethrowing".  See
+    [When recovery fails](/persistence/persistent-actor/#when-recovery-fails).
 </Aside>
 
 <Aside type="caution" title="Why does my actor keep restarting?">

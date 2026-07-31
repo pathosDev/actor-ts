@@ -114,6 +114,10 @@ domain `Event` values.  On each command the base class:
 3. **`onRecoveryComplete`** fires with the final replayed state, after
    which the FSM starts processing live commands.
 
+If recovery fails, the FSM stops before any transition runs or any
+state timeout is armed — see [When recovery
+fails](/persistence/persistent-actor/#when-recovery-fails).
+
 Same idiom as
 [PersistentActor](/persistence/persistent-actor/) —
 replay deterministically rebuilds the state machine's exact position.

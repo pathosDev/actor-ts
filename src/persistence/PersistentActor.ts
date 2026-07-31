@@ -62,7 +62,23 @@ export abstract class PersistentActor<Command, Event, State> extends Actor<Comma
   /** Default initial state when no snapshot and no events exist. */
   abstract initialState(): State;
 
-  /** Pure state-update function — MUST be deterministic. */
+  /**
+   * Pure state-update function — MUST be deterministic, and is
+   * deliberately synchronous where `onCommand` is async.
+   *
+   * A command decides and therefore does I/O (`persist` writes to the
+   * journal); an event is already a fact, and folding a fact into state
+   * is arithmetic.  Anything you would want to `await` here — a read, a
+   * notification — is precisely what must NOT run again on recovery.
+   * Put it in the `persist` callback or `onRecoveryComplete`, neither of
+   * which replay.
+   *
+   * Read `state` from the parameter, never `this.state`: during replay
+   * this runs detached inside `replayState`, before `this.state` has
+   * been assigned, and the DevTools time-travel panel borrows it as a
+   * free fold.  A handler that reads `this.state` works on the persist
+   * path and fails only after a restart.
+   */
   abstract onEvent(state: State, event: Event): State;
 
   /** Handle an incoming command — typically calls `persist(event, cb)`. */
@@ -71,7 +87,17 @@ export abstract class PersistentActor<Command, Event, State> extends Actor<Comma
   /** Called once recovery finishes, with the final replayed state. */
   onRecoveryComplete(_state: State): void | Promise<void> {}
 
-  /** Called when recovery itself throws.  Default = propagate to supervision. */
+  /**
+   * Called when recovery itself throws.
+   *
+   * A notification, not a decision — recovery failure is terminal either
+   * way.  The default rethrows, so the failure reaches supervision as an
+   * `ActorInitializationError`.  An override that returns normally takes
+   * the failure as handled, and the actor is then stopped: `state` was
+   * never assigned and `lastSequenceNr` is unknown, so there is no state
+   * in which it could answer a command.  Pending commands go to dead
+   * letters rather than disappearing.
+   */
   onRecoveryFailure(reason: Error): void { throw reason; }
 
   /** Snapshot policy — return true to snapshot the current state. */
@@ -143,10 +169,48 @@ export abstract class PersistentActor<Command, Event, State> extends Actor<Comma
     try {
       await this.recover();
     } catch (e) {
-      this.onRecoveryFailure(e instanceof Error ? e : new Error(String(e)));
+      const reason = e instanceof Error ? e : new Error(String(e));
+      // Rethrows by default, and then this is the last line that runs:
+      // ActorCell.onCreate turns it into an ActorInitializationError and
+      // supervision decides.
+      this.onRecoveryFailure(reason);
+      // The hook returned, so it owns the failure — but it cannot own the
+      // actor.  `_state` was never assigned and `_recovering` is still
+      // true, so every command would be stashed, silently, until #1025
+      // overflows the 1024-entry stash and throws from inside the handler
+      // — a supervision restart 1024 messages away from its cause, whose
+      // recovery fails and gets swallowed again.  Stop instead.
+      //
+      // `stopSelf` enqueues a system message, and the cell drains those
+      // ahead of every user message, so nothing reaches `onReceive`
+      // without a state and whatever is already queued becomes dead
+      // letters.
+      this.log.error(
+        `[persistence] '${this.persistenceId}' recovery failed and onRecoveryFailure `
+        + 'returned without rethrowing — stopping the actor',
+        reason,
+      );
+      this.context.stopSelf();
+      return;
+    }
+    // Post-recovery user code, deliberately OUTSIDE the guard above.  A
+    // throw in `onRecoveryComplete` is an ordinary actor failure, not a
+    // recovery failure: routing it through `onRecoveryFailure` blamed the
+    // journal for a bug in the hook, and — with an override that swallows
+    // — stranded an actor whose state had recovered perfectly.
+    this._recovering = false;
+    try {
+      await this.onRecoveryComplete(this._state);
+    } finally {
+      // Only reachable when a subclass starts recovery without awaiting
+      // it — on every normal path the commands are still in the mailbox,
+      // never the stash.  Draining in `finally` keeps them across a
+      // failing hook instead of letting them die with the instance.
+      this.context.unstashAll();
     }
   }
 
+  /** Replay snapshot + journal into `_state` / `_seq`.  Runs no user callbacks. */
   private async recover(): Promise<void> {
     this.log.debug(`[persistence] '${this.persistenceId}' recovery starting`);
     // The fold, the snapshot fast-path and the snapshot-integrity
@@ -172,11 +236,6 @@ export abstract class PersistentActor<Command, Event, State> extends Actor<Comma
     this.log.debug(
       `[persistence] '${this.persistenceId}' recovery complete: replayed ${result.eventsApplied} event(s), seq=${this._seq}`,
     );
-    this._recovering = false;
-    await this.onRecoveryComplete(this._state);
-    // Any commands that arrived during recovery are already stashed by the
-    // ActorCell — release them now so the actor processes them in order.
-    this.context.unstashAll();
   }
 
   override async onReceive(message: Command): Promise<void> {
