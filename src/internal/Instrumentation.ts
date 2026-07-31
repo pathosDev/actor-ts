@@ -154,9 +154,9 @@ export type DispatchObservation = {
  * slow belongs in an aggregation the observer feeds, not in the
  * observer itself.
  */
-export type DispatchObserver = {
+export interface DispatchObserver {
   onMessageProcessed(observation: DispatchObservation): void;
-};
+}
 
 /** A point-in-time description of one actor cell. */
 export type CellInspection = {

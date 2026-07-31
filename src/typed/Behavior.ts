@@ -67,7 +67,7 @@ export type IgnoreBehavior = { readonly kind: 'ignore'; };
  * Thin wrapper over the OO `context.stash()` API so the typed DSL keeps
  * the same guarantees (FIFO, capacity, overflow error).
  */
-export type StashBuffer<T> = {
+export interface StashBuffer<T> {
   /** Stash the current message; must be called during a user message. */
   stash(message: T): void;
   /** Replay the buffered messages back onto the mailbox. */
@@ -78,4 +78,4 @@ export type StashBuffer<T> = {
   readonly isFull: boolean;
   /** Current number of stashed messages. */
   readonly size: number;
-};
+}

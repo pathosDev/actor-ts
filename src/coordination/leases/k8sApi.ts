@@ -79,9 +79,9 @@ export type K8sResponse = {
 };
 
 /** Test seam — the real impl uses `node:https`; tests pass a mock. */
-export type K8sFetchClient = {
+export interface K8sFetchClient {
   request(creds: K8sCredentials, options: K8sRequestOptions): Promise<K8sResponse>;
-};
+}
 
 /**
  * Perform a request against the K8s API server.  Uses `node:https` with

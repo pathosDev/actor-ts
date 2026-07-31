@@ -6,9 +6,9 @@
  * `factory` is called once after the delay; if you need to re-evaluate on
  * each retry, pass a function that returns a fresh Promise each time.
  */
-export type CancellablePromise<T> = Promise<T> & {
+export interface CancellablePromise<T> extends Promise<T> {
   cancel(): void;
-};
+}
 
 export function after<T>(delayMs: number, factory: () => Promise<T>): CancellablePromise<T> {
   let timer: ReturnType<typeof setTimeout> | null = null;

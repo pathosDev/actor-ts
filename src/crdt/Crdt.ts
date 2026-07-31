@@ -25,7 +25,7 @@
  *   `merge` keeps the right return type without casting at every call
  *   site.
  */
-export type Crdt<Self extends Crdt<Self>> = {
+export interface Crdt<Self extends Crdt<Self>> {
   /**
    * Join two replicas.  Must be a join-semilattice operation: total,
    * idempotent, commutative, associative.
@@ -39,7 +39,7 @@ export type Crdt<Self extends Crdt<Self>> = {
    * factory each impl exposes.
    */
   toJSON(): unknown;
-};
+}
 
 /**
  * Identifier of the replica producing an update.  In a cluster, this is

@@ -19,14 +19,14 @@
  * — pass a seeded RNG to make the policy deterministic in tests.
  */
 
-export type BackoffPolicy = {
+export interface BackoffPolicy {
   /**
    * Delay in milliseconds before the next restart attempt.  `restartCount`
    * is 0-based: the **first** restart (after the very first failure)
    * passes `0`, the second restart passes `1`, etc.
    */
   delayFor(restartCount: number): number;
-};
+}
 
 export type ExponentialBackoffOptions = {
   /** Floor for the delay, in ms. The first restart delay is at least this. */

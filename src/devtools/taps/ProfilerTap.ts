@@ -61,13 +61,13 @@ type WallclockSession = {
 };
 
 /** A running CPU session; the inspector holds the samples. */
-type CpuSession = {
+interface CpuSession {
   readonly mode: 'cpu';
   readonly sessionId: string;
   readonly startedAtMs: number;
   stop(): Promise<unknown>;
   autoStop: Cancellable | null;
-};
+}
 
 type Session = WallclockSession | CpuSession;
 
