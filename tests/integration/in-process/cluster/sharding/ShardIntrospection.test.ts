@@ -115,6 +115,148 @@ describe('Shard actors', () => {
   }, 20_000);
 });
 
+describe('ClusterSharding.shards', () => {
+  test('lists every placed shard cluster-wide, with entity counts and refs', async () => {
+    const systemName = 'shard-list';
+    const base = 46_400;
+    const seed = await startNode(systemName, base);
+    const other = await startNode(systemName, base + 1, [`${systemName}@h:${base}`]);
+    const nodes = [seed, other];
+
+    await waitFor(() => nodes.every((node) => node.cluster.upMembers().length === 2));
+    await sleep(200);
+
+    const entityIds = ['s-1', 's-2', 's-3', 's-4', 's-5', 's-6'];
+    for (const entityId of entityIds) seed.region.tell({ id: entityId, kind: 'increment' });
+    await waitFor(() => entityIds.every((id) => nodesHosting(nodes, id).length === 1));
+
+    const shards = await seed.cluster.sharding.shards<Command>(TYPE_NAME);
+
+    // Every id we touched shows up in exactly one shard's count.
+    const totalEntities = shards.reduce((sum, shard) => sum + shard.entityCount, 0);
+    expect(totalEntities).toBe(entityIds.length);
+
+    // Shard ids are unique, in range, and each carries a usable ref.
+    const shardIds = shards.map((shard) => shard.shardId);
+    expect(new Set(shardIds).size).toBe(shardIds.length);
+    for (const shard of shards) {
+      expect(shard.shardId).toBeGreaterThanOrEqual(0);
+      expect(shard.shardId).toBeLessThan(NUM_SHARDS);
+      // `toString()`, not `path` — a RemoteActorRef's ActorPath keeps only a
+      // degenerate stub, its real address is in toString().
+      expect(shard.ref.toString()).toContain(`shard-${shard.shardId}`);
+      expect(shard.regionPath).toContain(`sharding-${TYPE_NAME}`);
+    }
+
+    // The same query from the other node sees the same placement.
+    const fromOther = await other.cluster.sharding.shards<Command>(TYPE_NAME);
+    expect(new Set(fromOther.map((s) => s.shardId))).toEqual(new Set(shardIds));
+    expect(fromOther.filter((s) => s.local).length).toBe(shards.filter((s) => !s.local).length);
+
+    await stopAll(nodes);
+  }, 20_000);
+
+  test('rejects a type that was never started on this node', async () => {
+    const systemName = 'shard-list-unknown';
+    const base = 46_500;
+    const seed = await startNode(systemName, base);
+
+    await expect(seed.cluster.sharding.shards('never-started'))
+      .rejects.toThrow(/no region for type 'never-started'/);
+
+    await stopAll([seed]);
+  }, 20_000);
+});
+
+describe('ClusterSharding.shardRefFor', () => {
+  test('places an untouched shard and answers with its ref', async () => {
+    const systemName = 'shard-ref';
+    const base = 46_600;
+    const seed = await startNode(systemName, base);
+
+    await waitFor(() => seed.cluster.upMembers().length === 1);
+    await sleep(100);
+
+    const before = await seed.cluster.sharding.shards<Command>(TYPE_NAME);
+    expect(before.map((shard) => shard.shardId)).not.toContain(3);
+
+    const shard = await seed.cluster.sharding.shardRefFor<Command>(TYPE_NAME, 3);
+    expect(shard.path.toString()).toContain(`sharding-${TYPE_NAME}/shard-3`);
+
+    const after = await seed.cluster.sharding.shards<Command>(TYPE_NAME);
+    expect(after.map((s) => s.shardId)).toContain(3);
+
+    await stopAll([seed]);
+  }, 20_000);
+
+  test('a local shard ref answers GetShardStats and starts entities', async () => {
+    const systemName = 'shard-stats';
+    const base = 46_700;
+    const seed = await startNode(systemName, base);
+
+    await waitFor(() => seed.cluster.upMembers().length === 1);
+    await sleep(100);
+
+    const entityId = 'stats-1';
+    const shardId = hashShardId(entityId, NUM_SHARDS);
+    const shard = await seed.cluster.sharding.shardRefFor<Command>(TYPE_NAME, shardId);
+
+    const empty = await shard.ask<{ entityCount: number }>({ $t: 'sharding.GetShardStats' }, 3_000);
+    expect(empty.entityCount).toBe(0);
+
+    shard.tell({ $t: 'sharding.StartEntity', entityId });
+    await waitFor(() => nodesHosting([seed], entityId).length === 1);
+
+    const filled = await shard.ask<{ entityCount: number; entityIds: ReadonlyArray<string> }>(
+      { $t: 'sharding.GetShardStats' }, 3_000,
+    );
+    expect(filled.entityCount).toBe(1);
+    expect(filled.entityIds).toEqual([entityId]);
+
+    await stopAll([seed]);
+  }, 20_000);
+
+  test('a remote shard ref routes an entity envelope to its entity', async () => {
+    const systemName = 'shard-ref-remote';
+    const base = 46_800;
+    const seed = await startNode(systemName, base);
+    const other = await startNode(systemName, base + 1, [`${systemName}@h:${base}`]);
+    const nodes = [seed, other];
+
+    await waitFor(() => nodes.every((node) => node.cluster.upMembers().length === 2));
+    await sleep(200);
+
+    const candidates = ['r-1', 'r-2', 'r-3', 'r-4', 'r-5', 'r-6', 'r-7', 'r-8'];
+    for (const entityId of candidates) seed.region.tell({ id: entityId, kind: 'increment' });
+    await waitFor(() => candidates.some((id) => nodesHosting([other], id).length === 1));
+
+    const remoteId = candidates.find((id) => nodesHosting([other], id).length === 1)!;
+    const shard = await seed.cluster.sharding.shardRefFor<Command>(
+      TYPE_NAME, hashShardId(remoteId, NUM_SHARDS),
+    );
+    expect(shard.toString()).toContain(`shard-${hashShardId(remoteId, NUM_SHARDS)}`);
+
+    shard.tell({
+      $t: 'sharding.EntityEnvelope',
+      entityId: remoteId,
+      message: { id: remoteId, kind: 'increment' },
+    });
+
+    // The envelope and the query travel through different refs, so poll for
+    // the increment rather than assuming they arrive in order.
+    const entity = seed.cluster.sharding.entityRefFor<Command>(TYPE_NAME, remoteId);
+    let value = 0;
+    const deadline = Date.now() + 5_000;
+    while (Date.now() < deadline && value !== 2) {
+      value = await entity.ask<number>({ kind: 'get' } as Command, 3_000);
+      if (value !== 2) await sleep(25);
+    }
+    expect(value).toBe(2);
+
+    await stopAll(nodes);
+  }, 20_000);
+});
+
 describe('ClusterSharding.entityRefFor', () => {
   test('addresses an entity by id, without a routing key in the message', async () => {
     const systemName = 'entity-ref-local';

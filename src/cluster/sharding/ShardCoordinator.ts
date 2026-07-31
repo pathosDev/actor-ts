@@ -13,14 +13,18 @@ import type {
 } from './CoordinatorState.js';
 import type {
   BeginHandOffAcknowledgment,
+  ClusterShardingStats,
   EntityStarted,
   EntityStopped,
+  GetClusterShardingStats,
   GetShardHome,
   HandOffComplete,
   RegionTerminated,
   RegisterAcknowledgment,
   RegisterRegion,
   ShardingMessage,
+  ShardLocation,
+  ShardRegionStats,
 } from './ShardingProtocol.js';
 
 /* ----------------------- internal mailbox events ----------------------- */
@@ -52,6 +56,21 @@ type RegionInfo = {
   readonly shards: Set<number>;
 };
 
+/**
+ * One in-flight `GetClusterShardingStats`.  The coordinator owns the shard map
+ * but not the entity counts — only the region hosting a shard knows those — so
+ * a cluster-wide answer is a fan-out that has to be collected back together.
+ */
+type StatsQuery = {
+  readonly requester: string;
+  readonly requesterNode: NodeAddressData;
+  readonly correlationId: number;
+  /** Region keys we are still waiting on. */
+  readonly awaiting: Set<string>;
+  readonly entityCounts: Map<number, number>;
+  timer: Cancellable | null;
+};
+
 function regionKey(node: NodeAddress, path: string): string {
   return `${node}|${path}`;
 }
@@ -74,6 +93,8 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
   private readonly pending = new Map<number, Array<GetShardHome>>(); // waiting queries
   private readonly rebalanceInProgress = new Map<number, { from: string; timer: Cancellable }>();
   private readonly entitiesPerShard = new Map<number, Set<string>>();
+  private readonly statsQueries = new Map<number, StatsQuery>();
+  private nextStatsQuery = 0;
 
   private rebalanceTimer: Cancellable | null = null;
   private unsubscribeCluster: (() => void) | null = null;
@@ -200,6 +221,8 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
     this.rebalanceTimer?.cancel();
     this.acquireRetryTimer?.cancel();
     for (const rebalance of this.rebalanceInProgress.values()) rebalance.timer.cancel();
+    for (const query of this.statsQueries.values()) query.timer?.cancel();
+    this.statsQueries.clear();
     if (this.options.lease && this.leaseState === 'held') {
       try { await this.options.lease.release(); } catch { /* best-effort */ }
       this.leaseState = 'none';
@@ -235,6 +258,8 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
       .with({ $t: 'sharding.RegionTerminated' }, (m) => this.onRegionTerminated(m))
       .with({ $t: 'sharding.EntityStarted' }, (m) => this.onEntityStarted(m))
       .with({ $t: 'sharding.EntityStopped' }, (m) => this.onEntityStopped(m))
+      .with({ $t: 'sharding.GetClusterShardingStats' }, (m) => this.onGetClusterShardingStats(m))
+      .with({ $t: 'sharding.ShardRegionStats' }, (m) => this.onShardRegionStats(m))
       .otherwise(() => this.onUnhandled());
   }
 
@@ -547,6 +572,86 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
       });
   }
 
+  /* ------------------------------ Statistics ----------------------------- */
+
+  /**
+   * Answer "what shards exist, where, and how full are they?" (#151).
+   *
+   * The coordinator owns the shard map, but a shard's entity count is only
+   * known to the region hosting it, so this fans `GetShardRegionStats` out to
+   * every non-proxy region and joins the answers against `shardHome`.  The
+   * timeout is a *partial-answer* deadline, not a failure: a region that is
+   * slow or already gone contributes zero rather than turning the whole query
+   * into a timeout at the caller.
+   */
+  private onGetClusterShardingStats(message: GetClusterShardingStats): void {
+    const targets = Array.from(this.regions.entries()).filter(([, info]) => !info.proxy);
+    const query: StatsQuery = {
+      requester: message.requester,
+      requesterNode: message.requesterNode,
+      correlationId: message.correlationId,
+      awaiting: new Set(targets.map(([key]) => key)),
+      entityCounts: new Map(),
+      timer: null,
+    };
+    if (query.awaiting.size === 0) { this.answerStatsQuery(query); return; }
+
+    const queryId = ++this.nextStatsQuery;
+    this.statsQueries.set(queryId, query);
+    query.timer = this.system.scheduler.scheduleOnceFunction(message.timeoutMs, () => {
+      const pending = this.statsQueries.get(queryId);
+      if (!pending) return;
+      this.statsQueries.delete(queryId);
+      this.answerStatsQuery(pending);
+    });
+    for (const [key] of targets) {
+      this.sendToRegion(key, {
+        $t: 'sharding.GetShardRegionStats',
+        queryId,
+        requester: this.self.path.toString(),
+        requesterNode: this.options.cluster.selfAddress.toJSON(),
+      });
+    }
+  }
+
+  private onShardRegionStats(message: ShardRegionStats): void {
+    const query = this.statsQueries.get(message.queryId);
+    if (!query) return;
+    const key = regionKey(NodeAddress.fromJSON(message.node), message.region);
+    if (!query.awaiting.delete(key)) return;
+    for (const entry of message.shards) {
+      query.entityCounts.set(
+        entry.shardId,
+        (query.entityCounts.get(entry.shardId) ?? 0) + entry.entityCount,
+      );
+    }
+    if (query.awaiting.size > 0) return;
+    query.timer?.cancel();
+    this.statsQueries.delete(message.queryId);
+    this.answerStatsQuery(query);
+  }
+
+  private answerStatsQuery(query: StatsQuery): void {
+    const shards: ShardLocation[] = [];
+    for (const [shardId, key] of this.shardHome) {
+      const info = this.regions.get(key);
+      if (!info) continue;
+      shards.push({
+        shardId,
+        node: info.node.toJSON(),
+        regionPath: info.path,
+        entityCount: query.entityCounts.get(shardId) ?? 0,
+      });
+    }
+    shards.sort((a, b) => a.shardId - b.shardId);
+    const reply: ClusterShardingStats = {
+      $t: 'sharding.ClusterShardingStats',
+      correlationId: query.correlationId,
+      shards,
+    };
+    this.replyTo(query.requester, query.requesterNode, reply);
+  }
+
   private onRegionTerminated(message: RegionTerminated): void {
     const addr = NodeAddress.fromJSON(message.node);
     const key = regionKey(addr, message.region);
@@ -588,6 +693,10 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
       this.acquireBuffer = [];
       for (const rebalance of this.rebalanceInProgress.values()) rebalance.timer.cancel();
       this.rebalanceInProgress.clear();
+      // In-flight stats queries answered from a view we no longer own would
+      // be worse than the caller's own timeout — drop them.
+      for (const query of this.statsQueries.values()) query.timer?.cancel();
+      this.statsQueries.clear();
     } else {
       // Just became leader (or re-elected).  If a state store is
       // configured, try to seed `regions` + `shardHome` from the

@@ -8,8 +8,10 @@ import type {
   EntityEnvelope,
   EntityStarted,
   EntityStopped,
+  GetShardStats,
   PassivateEntity,
   StartEntities,
+  StartEntity,
 } from './ShardingProtocol.js';
 
 export type ShardConfig = {
@@ -19,7 +21,12 @@ export type ShardConfig = {
 };
 
 /** What a shard accepts from the outside — its region, or a holder of its ref. */
-export type ShardMessage = EntityEnvelope | PassivateEntity | StartEntities;
+export type ShardMessage<TMessage = unknown> =
+  | EntityEnvelope<TMessage>
+  | PassivateEntity
+  | StartEntities
+  | StartEntity
+  | GetShardStats;
 
 /** Everything a shard can find in its mailbox, including system traffic. */
 export type ShardInbox = ShardMessage | Terminated | Passivate;
@@ -61,6 +68,8 @@ export class Shard extends Actor<ShardInbox> {
       .with({ $t: 'sharding.EntityEnvelope' }, (m) => this.onEntityEnvelope(m))
       .with({ $t: 'sharding.PassivateEntity' }, (m) => this.onPassivateEntity(m))
       .with({ $t: 'sharding.StartEntities' }, (m) => this.onStartEntities(m))
+      .with({ $t: 'sharding.StartEntity' }, (m) => this.onStartEntity(m))
+      .with({ $t: 'sharding.GetShardStats' }, (m) => this.onGetShardStats(m))
       .otherwise(() => this.onUnhandled());
   }
 
@@ -87,6 +96,20 @@ export class Shard extends Actor<ShardInbox> {
       if (this.entities.has(entityId)) continue;
       this.createEntity(entityId);
     }
+  }
+
+  private onStartEntity(message: StartEntity): void {
+    if (this.entities.has(message.entityId)) return;
+    this.createEntity(message.entityId);
+  }
+
+  private onGetShardStats(message: GetShardStats): void {
+    message.replyTo.tell({
+      $t: 'sharding.ShardStats',
+      shardId: this.config.shardId,
+      entityCount: this.entities.size,
+      entityIds: Array.from(this.entities.keys()),
+    });
   }
 
   /** An entity asking to be stopped — `this.context.parent.tell(new Passivate(...))`. */

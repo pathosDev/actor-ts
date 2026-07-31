@@ -11,6 +11,30 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Added
 
+- **Shard introspection: `ClusterSharding.shards()`, `shardRefFor()`, and the
+  `StartEntity` / `GetShardStats` shard commands** (#151).  The sharding
+  protocol had no query message of any kind — `ShardCoordinator` handled seven
+  variants, none of them a `Get*` — so "which shards exist, and where?" had no
+  answer short of the `/cluster/shards` management endpoint, which reads a
+  DistributedData snapshot and only works if you opted into a
+  `coordinatorStateStore`.  The multi-node tests went as far as reaching into
+  the coordinator's private fields.  `shards(typeName)` now answers
+  cluster-wide with a `ShardInfo` per placed shard: shard id, hosting node,
+  region path, live entity count, whether it is local, **and a usable `ref`**.
+  The coordinator owns the shard map but not the entity counts — only the
+  hosting region knows those — so it fans `GetShardRegionStats` out to the
+  registered regions and joins the answers against `shardHome`; a region that
+  misses the deadline contributes `0` rather than failing the call.  Refs are
+  materialised on the *asking* node, so the wire payload stays plain data and
+  no ref has to survive serialisation.  `shardRefFor(typeName, shardId)` hands
+  back one shard's ref and allocates the shard if it had no home yet, exactly
+  as a first message for it would have.  Because a shard is a real actor now,
+  that ref is the real thing — the local actor, or a `RemoteActorRef` at
+  `/user/sharding-<type>/shard-<n>` — so `tell` works from anywhere; `ask` on
+  it works when the shard is local, and cross-node queries pass their own
+  actor's `self` as `GetShardStats.replyTo` (a one-shot ask ref is not
+  addressable from another node, which is why the sharding protocol correlates
+  replies by path in the first place).
 - **`ClusterSharding.entityRefFor(typeName, entityId)`** (#512) — a
   location-transparent handle to a single entity, the counterpart to the region
   ref that sharding has handed out until now.  With only a region ref, every

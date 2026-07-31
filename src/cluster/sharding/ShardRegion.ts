@@ -12,11 +12,12 @@ import {
   MemberRemoved,
   MemberUp,
 } from '../ClusterEvents.js';
-import { NodeAddress } from '../NodeAddress.js';
+import { NodeAddress, type NodeAddressData } from '../NodeAddress.js';
 import { RemoteActorRef } from '../RemoteActorRef.js';
 import { hashShardId } from './ShardAllocator.js';
 import { Passivate } from './Passivate.js';
 import { Shard, type ShardConfig, type ShardInbox, type ShardMessage } from './Shard.js';
+import type { ShardInfo } from './ShardInfo.js';
 import { ShardCoordinator } from './ShardCoordinator.js';
 import {
   isShardingMessage,
@@ -24,8 +25,14 @@ import {
   type ShardEnvelope,
   type ShardReply,
   type ShardingMessage,
+  type ClusterShardingStats,
   type GetShardHome,
+  type GetShardLocation,
+  type GetShardRegionStats,
+  type GetShards,
   type ShardHome,
+  type ShardLocation,
+  type ShardRegionStats,
   type HandOff,
   type HandOffComplete,
   type BeginHandOffAcknowledgment,
@@ -117,6 +124,12 @@ export class ShardRegion<TMessage = unknown> extends Actor<TMessage | ShardingMe
    */
   private readonly pendingAsks = new Map<number, { sender: ActorRef; expireAt: number }>();
   private nextCorrelation = 0;
+
+  /** Local callers of `ClusterSharding.shards()`, keyed by their correlation. */
+  private readonly pendingStatsAsks = new Map<number, ActorRef>();
+  private nextStatsCorrelation = 0;
+  /** Local callers of `ClusterSharding.shardRefFor()`, keyed by shard. */
+  private readonly pendingLocationAsks = new Map<number, ActorRef[]>();
   private asksSweepTimer: Cancellable | null = null;
   /** How long an unsettled ask entry is kept before being GC'd. */
   private readonly asksTtlMs = 60_000;
@@ -467,6 +480,11 @@ export class ShardRegion<TMessage = unknown> extends Actor<TMessage | ShardingMe
       // Lifecycle reports coming up from our own shards.
       .with({ $t: 'sharding.EntityStarted' }, (m) => this.onEntityStarted(m))
       .with({ $t: 'sharding.EntityStopped' }, (m) => this.onEntityStopped(m))
+      // Introspection — node-local queries plus the coordinator's fan-out.
+      .with({ $t: 'sharding.GetShards' }, (m) => this.onGetShards(m))
+      .with({ $t: 'sharding.GetShardLocation' }, (m) => this.onGetShardLocation(m))
+      .with({ $t: 'sharding.GetShardRegionStats' }, (m) => this.onGetShardRegionStats(m))
+      .with({ $t: 'sharding.ClusterShardingStats' }, (m) => this.onClusterShardingStats(m))
       // Coordinator-only messages; regions ignore them.
       .otherwise(() => this.onUnhandled());
   }
@@ -525,7 +543,125 @@ export class ShardRegion<TMessage = unknown> extends Actor<TMessage | ShardingMe
       this.localShards.delete(message.shardId);
       this.shardState.delete(message.shardId);
     }
+    // Order matters: the shard actor has to exist before anyone is handed a
+    // ref to it, and the ref answers before the buffered traffic replays.
+    this.flushLocationAsks(message.shardId);
     this.flushBuffer(message.shardId);
+  }
+
+  /* ---------------------------- Introspection --------------------------- */
+
+  /**
+   * `ClusterSharding.shards()` asking its own region.  The region is an actor
+   * with a resolvable path, so it can do the cross-node half through the
+   * coordinator and hand the answer back to the in-process asker — which is
+   * why the public API is a method on a plain object and still works from
+   * any node.
+   */
+  private onGetShards(message: GetShards): void {
+    const asker = this.sender.toNullable();
+    if (!asker) return;
+    const correlationId = ++this.nextStatsCorrelation;
+    this.pendingStatsAsks.set(correlationId, asker);
+    this.tellCoordinator({
+      $t: 'sharding.GetClusterShardingStats',
+      correlationId,
+      requester: this.self.path.toString(),
+      requesterNode: this.config.cluster.selfAddress.toJSON(),
+      timeoutMs: message.timeoutMs,
+    });
+  }
+
+  private onClusterShardingStats(message: ClusterShardingStats): void {
+    const asker = this.pendingStatsAsks.get(message.correlationId);
+    if (!asker) return;
+    this.pendingStatsAsks.delete(message.correlationId);
+    asker.tell(message.shards.map((location) => this.toShardInfo(location)) as never);
+  }
+
+  /**
+   * `ClusterSharding.shardRefFor()`.  An unplaced shard is not an error — ask
+   * the coordinator, which allocates it exactly as a normal message would,
+   * and answer once its home is known.
+   */
+  private onGetShardLocation(message: GetShardLocation): void {
+    const asker = this.sender.toNullable();
+    if (!asker) return;
+    const ref = this.knownShardRef(message.shardId);
+    if (ref) { asker.tell(ref as never); return; }
+    let waiting = this.pendingLocationAsks.get(message.shardId);
+    if (!waiting) { waiting = []; this.pendingLocationAsks.set(message.shardId, waiting); }
+    waiting.push(asker);
+    this.askCoordinator(message.shardId);
+  }
+
+  private flushLocationAsks(shardId: number): void {
+    const waiting = this.pendingLocationAsks.get(shardId);
+    if (!waiting) return;
+    const ref = this.knownShardRef(shardId);
+    if (!ref) return;
+    this.pendingLocationAsks.delete(shardId);
+    for (const asker of waiting) asker.tell(ref as never);
+  }
+
+  /** The coordinator's fan-out leg: what this node hosts, and how full. */
+  private onGetShardRegionStats(message: GetShardRegionStats): void {
+    const shards = Array.from(this.localShards).map((shardId) => ({
+      shardId,
+      entityCount: this.shardEntities.get(shardId)?.size ?? 0,
+    }));
+    const reply: ShardRegionStats = {
+      $t: 'sharding.ShardRegionStats',
+      queryId: message.queryId,
+      region: this.self.path.toString(),
+      node: this.config.cluster.selfAddress.toJSON(),
+      shards,
+    };
+    this.replyToPath(message.requester, message.requesterNode, reply);
+  }
+
+  private toShardInfo(location: ShardLocation): ShardInfo {
+    const node = NodeAddress.fromJSON(location.node);
+    return {
+      shardId: location.shardId,
+      node,
+      regionPath: location.regionPath,
+      entityCount: location.entityCount,
+      local: node.equals(this.config.cluster.selfAddress),
+      ref: this.shardRef(location.shardId, node, location.regionPath),
+    };
+  }
+
+  /** A ref for a shard whose home we already know; `null` if we don't. */
+  private knownShardRef(shardId: number): ActorRef<ShardMessage> | null {
+    const regionPath = this.shardHomes.get(shardId);
+    const node = this.shardHomeNodes.get(shardId);
+    if (!regionPath || !node) return null;
+    return this.shardRef(shardId, node, regionPath);
+  }
+
+  /**
+   * The real shard actor when we host it, a `RemoteActorRef` at its real path
+   * otherwise — the shard being an actor is what makes the second half work
+   * without any resolution step.
+   */
+  private shardRef(shardId: number, node: NodeAddress, regionPath: string): ActorRef<ShardMessage> {
+    if (node.equals(this.config.cluster.selfAddress)) {
+      const local = this.shards.get(shardId);
+      if (local) return local as unknown as ActorRef<ShardMessage>;
+    }
+    return new RemoteActorRef<ShardMessage>(node, shardPath(regionPath, shardId), this.config.cluster);
+  }
+
+  /** Send a sharding message to an arbitrary region/coordinator path. */
+  private replyToPath(path: string, nodeData: NodeAddressData, message: ShardingMessage): void {
+    const node = NodeAddress.fromJSON(nodeData);
+    if (node.equals(this.config.cluster.selfAddress)) {
+      const local = this.config.localResolver(path) as ActorRef<ShardingMessage> | null;
+      local?.tell(message);
+      return;
+    }
+    new RemoteActorRef<ShardingMessage>(node, path, this.config.cluster).tell(message);
   }
 
   /* --------------------------- Entity lifecycle ------------------------- */
