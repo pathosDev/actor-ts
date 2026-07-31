@@ -32,7 +32,7 @@ import { Props } from '../../src/Props.js';
 import { ClusterSharding } from '../../src/cluster/sharding/ClusterSharding.js';
 import { StartShardingOptions } from '../../src/cluster/sharding/StartShardingOptions.js';
 import { ShardCoordinator } from '../../src/cluster/sharding/ShardCoordinator.js';
-import { coordinatorSegments } from './internal/systemPaths.js';
+import { coordinatorSegments } from '../util/systemPaths.js';
 import {
   InMemoryLease,
   inMemoryLeaseStore,

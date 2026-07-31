@@ -11,7 +11,8 @@ per-order coordinators, per-game-room actors.
 The user gives the framework a way to extract an **entity ID**
 from each message; the framework hashes that ID to a **shard**;
 the **coordinator** decides which node hosts that shard; the
-node's local **region** spawns the entity actor on demand.  When
+node's local **region** routes to that **shard**, which spawns the
+entity actor on demand.  When
 nodes come and go, the coordinator rebalances shards across the
 new topology.
 
@@ -128,13 +129,20 @@ perspective.  Behind the scenes:
 4. If the owner is *another* node, it forwards over the cluster
    transport to that node's region, which does the same.
 
-## The three actors at play
+## The four actors at play
 
 | Actor | Role |
 | --- | --- |
-| **Region** | One per node.  Routes messages to the right shard's owner, hosts local entities. |
+| **Region** | One per node.  Routes messages to the right shard's owner, and decides when local entities passivate. |
+| **Shard** | One per shard hosted here, a child of the region.  Owns the entity actors: spawns them, stops them, buffers for one on its way out. |
 | **Coordinator** | One per cluster (singleton, on the leader).  Decides which node owns each shard.  Handles rebalancing on membership changes. |
-| **Entity** | One per `entityId`.  Hosted on whichever node currently owns the shard the ID hashes to. |
+| **Entity** | One per `entityId`.  A child of its shard, on whichever node currently owns the shard the ID hashes to. |
+
+That gives entities a real path —
+`/system/cluster/sharding/region-counter/shard-7/entity-user-42`
+— which is what makes a shard addressable at all.  See
+[introspection](/cluster/sharding/introspection/) for listing shards and
+getting refs to them.
 
 The region is the subject of this page; the coordinator's decisions
 have pages of their own — see the
@@ -186,16 +194,18 @@ replays them to the fresh incarnation, so nothing is lost.
 
 **Automatic** — when `passivationIdleMs` elapses with no traffic, or
 `maxEntities` is exceeded (the least-recently-used entity is
-evicted), the region stops the entity directly.  Nothing is sent to
-the entity and no acknowledgment is involved.
+evicted), the entity is stopped.  Nothing is sent to the entity and no
+acknowledgment is involved.  The *decision* is the region's, because
+only it sees traffic across every shard on this node — which is why
+`maxEntities` is a per-node cap, not a per-shard one — and the shard
+that owns the entity carries it out.
 
-**Manual (graceful)** — an entity asks its region to passivate it by
-sending a `Passivate` to its parent.  `Passivate` carries a
-*stop-message* that the region forwards back to the entity, so the
-entity decides exactly when and how it shuts down (finish in-flight
-work, flush state, then terminate).  Using `PoisonPill` as the
-stop-message terminates the entity as soon as the region forwards it
-back:
+**Manual (graceful)** — an entity asks to be passivated by sending a
+`Passivate` to its parent, which is its shard.  `Passivate` carries a
+*stop-message* that gets forwarded back to the entity, so the entity
+decides exactly when and how it shuts down (finish in-flight work,
+flush state, then terminate).  Using `PoisonPill` as the stop-message
+terminates the entity as soon as it comes back:
 
 ```ts
 import { match } from 'ts-pattern';
@@ -314,6 +324,8 @@ import { Aside } from '@astrojs/starlight/components';
 
 ## Where to next
 
+- **[Introspection](/cluster/sharding/introspection/)** — list the
+  shards, get a ref to one shard or one entity, follow the map.
 - **[Allocation strategy](/cluster/sharding/allocation-strategy/)** —
   default hash-mod-regions, custom strategies.
 - **[Rebalance](/cluster/sharding/rebalance/)** — the

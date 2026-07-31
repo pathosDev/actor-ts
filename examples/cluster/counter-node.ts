@@ -92,9 +92,18 @@ async function main(): Promise<void> {
     if (evt instanceof MemberDown) system.log.warn(`[x] ${evt.member.address} marked DOWN`);
     if (evt instanceof MemberRemoved) system.log.warn(`[-] ${evt.member.address} removed`);
     if (evt instanceof ShardMapChanged) {
+      // `shards` maps shard id → *region key*, which is `<node>|<path>` — not
+      // something you want in a log line.  `regions` carries the node address
+      // for each key, so use it to summarise per node.
+      const addressOf = new Map(evt.regions.map((region) => [region.key, region.address]));
       const owners = new Map<string, number>();
-      for (const addr of evt.shards.values()) owners.set(addr, (owners.get(addr) ?? 0) + 1);
-      const summary = Array.from(owners).map(([k, v]) => `${k}=${v}`).join(', ');
+      for (const key of evt.shards.values()) {
+        const address = addressOf.get(key) ?? key;
+        owners.set(address, (owners.get(address) ?? 0) + 1);
+      }
+      const summary = owners.size > 0
+        ? Array.from(owners).map(([address, count]) => `${address}=${count}`).join(', ')
+        : 'no shards placed yet';
       system.log.info(`[~] shard map v${evt.version}: ${summary}`);
     }
   });
