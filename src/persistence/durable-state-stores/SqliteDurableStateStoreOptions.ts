@@ -3,12 +3,12 @@ import { OptionsValidator } from '../../util/OptionsValidator.js';
 import type { SqliteConnection } from '../journals/SqliteClient.js';
 import type { SqliteDb } from '../../runtime/sqlite/index.js';
 
-export type SqliteDurableStateStoreOptionsType = SqliteConnection & {
+export interface SqliteDurableStateStoreOptionsType extends SqliteConnection {
   /** Durable-state table name.  Default: `durable_state`. */
   readonly table?: string;
   /** Run `CREATE TABLE IF NOT EXISTS` on first use.  Default: true. */
   readonly autoCreateTables?: boolean;
-};
+}
 
 /**
  * Fluent builder for {@link SqliteDurableStateStoreOptionsType}:

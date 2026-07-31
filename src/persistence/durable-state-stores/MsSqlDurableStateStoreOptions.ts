@@ -2,12 +2,12 @@ import { OptionsBuilder } from '../../util/OptionsBuilder.js';
 import { OptionsValidator } from '../../util/OptionsValidator.js';
 import type { MsSqlConnection, MsSqlPoolLike } from '../journals/MsSqlClient.js';
 
-export type MsSqlDurableStateStoreOptionsType = MsSqlConnection & {
+export interface MsSqlDurableStateStoreOptionsType extends MsSqlConnection {
   /** Durable-state table name.  Default: `durable_state`. */
   readonly table?: string;
   /** Run the guarded `CREATE TABLE` statement on first use.  Default: true. */
   readonly autoCreateTables?: boolean;
-};
+}
 
 /**
  * Fluent builder for {@link MsSqlDurableStateStoreOptionsType}:

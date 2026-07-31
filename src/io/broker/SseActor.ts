@@ -147,13 +147,13 @@ function parseEventBlock(block: string): SseEvent | null {
   return { event, data: dataLines.join('\n'), id };
 }
 
-type FetchModule = {
+interface FetchModule {
   (url: string, options: { method: string; headers: Record<string, string>; signal?: AbortSignal }): Promise<{
     ok: boolean;
     status: number;
     body: ReadableStream<Uint8Array> | null;
   }>;
-};
+}
 
 const fetchLazy: Lazy<Promise<FetchModule>> = Lazy.of(async () => {
   const fetchImpl = (globalThis as { fetch?: FetchModule }).fetch;

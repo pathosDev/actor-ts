@@ -1,14 +1,14 @@
 import { OptionsBuilder } from '../../util/OptionsBuilder.js';
 import type { MariaDbPoolLike, MariaDbConnection } from './MariaDbClient.js';
 
-export type MariaDbJournalOptionsType = MariaDbConnection & {
+export interface MariaDbJournalOptionsType extends MariaDbConnection {
   /** Events table name.  Default: `events`. */
   readonly eventsTable?: string;
   /** Tags join table name.  Default: `${eventsTable}_tags`. */
   readonly tagsTable?: string;
   /** Run `CREATE TABLE IF NOT EXISTS` on first use.  Default: true. */
   readonly autoCreateTables?: boolean;
-};
+}
 
 /**
  * Fluent builder for {@link MariaDbJournalOptionsType}:

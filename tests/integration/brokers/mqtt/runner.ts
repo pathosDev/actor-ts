@@ -23,10 +23,10 @@ import { scenario as retainedScenario } from './scenarios/04-retained.js';
 import { scenario as wildcardScenario } from './scenarios/05-wildcard.js';
 import { scenario as typedScenario } from './scenarios/06-typed-entities.js';
 
-export type MqttContext = BrokerScenarioContext & {
+export interface MqttContext extends BrokerScenarioContext {
   readonly brokerUrl: string;
   readonly system: ActorSystem;
-};
+}
 
 function requireEnv(name: string): string {
   const value = process.env[name];

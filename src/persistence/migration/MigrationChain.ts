@@ -7,11 +7,11 @@ import type { OutboundFrame, StoredFrame } from './Adapter.js';
  * normally consecutive (`fromVersion + 1 === toVersion`); larger jumps
  * are allowed but rare.
  */
-export type MigrationStep<From = unknown, To = unknown> = {
+export interface MigrationStep<From = unknown, To = unknown> {
   readonly fromVersion: number;
   readonly toVersion: number;
   upcast(from: From): To;
-};
+}
 
 /**
  * Inverse of {@link MigrationStep} — maps a current-shape payload back
@@ -20,11 +20,11 @@ export type MigrationStep<From = unknown, To = unknown> = {
  * long as v1 readers are still in the cluster.  Steps move backward:
  * `fromVersion > toVersion`, typically `toVersion = fromVersion - 1`.
  */
-export type DowncastStep<From = unknown, To = unknown> = {
+export interface DowncastStep<From = unknown, To = unknown> {
   readonly fromVersion: number;
   readonly toVersion: number;
   downcast(from: From): To;
-};
+}
 
 /**
  * Linear chain of `MigrationStep`s for a single manifest, terminating at

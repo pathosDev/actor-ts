@@ -91,18 +91,18 @@ export class NodeHonoRunner implements HonoServerRunner {
 
 /* ----------------------------- internals --------------------------------- */
 
-type NodeHttpServer = {
+interface NodeHttpServer {
   close(cb?: () => void): void;
   closeAllConnections?(): void;
   address?(): { port: number; address: string } | string | null;
-};
+}
 
-type HonoNodeServerModule = {
+interface HonoNodeServerModule {
   serve(
     options: { hostname: string; port: number; fetch: FetchHandler },
     onReady?: (info: { address: string; port: number }) => void,
   ): NodeHttpServer;
-};
+}
 
 // The Lazy caches the Promise itself — concurrent callers share the
 // in-flight import.  A failure is cached too, so the "install the peer

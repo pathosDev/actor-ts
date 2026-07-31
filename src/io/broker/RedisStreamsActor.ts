@@ -156,17 +156,17 @@ export class RedisStreamsActor
 
 type XReadResult = Array<[string, Array<[string, string[]]>]>;
 
-type IoredisClientLike = {
+interface IoredisClientLike {
   xadd(...args: string[]): Promise<string>;
   xack(stream: string, group: string, id: string): Promise<number>;
   xgroup(...args: string[]): Promise<unknown>;
   xreadgroup(...args: string[]): Promise<unknown>;
   quit(): Promise<unknown>;
-};
+}
 
-type IoredisConstructor = {
+interface IoredisConstructor {
   new (url: string): IoredisClientLike;
-};
+}
 
 type IoredisModule = { default?: IoredisConstructor; };
 

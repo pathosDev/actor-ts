@@ -18,7 +18,7 @@
  * fencing (e.g. `LeaseMajority` split-brain protection) feature-detect
  * the method and fall back to plain `acquire()` when it's absent.
  */
-export type Lease = {
+export interface Lease {
   /** Try to acquire the lease.  Resolves true on success, false on contention. */
   acquire(): Promise<boolean>;
 
@@ -56,4 +56,4 @@ export type Lease = {
 
   /** Register a handler fired when ownership is lost unexpectedly. */
   onLost(handler: (reason: string) => void): () => void;
-};
+}

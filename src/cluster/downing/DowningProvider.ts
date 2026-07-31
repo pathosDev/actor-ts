@@ -23,13 +23,13 @@ export type DowningDecision = ReadonlySet<string>;
  * (keep the majority, keep the oldest member, require an admin-defined
  * quorum, …).
  */
-export type DowningProvider = {
+export interface DowningProvider {
   /**
    * Return addresses to forcibly down.  The empty set means "not yet —
    * wait for stability or more heartbeats".
    */
   decide(view: ClusterPartitionView): DowningDecision;
-};
+}
 
 /** Helper — `address.toString()` used as map keys consistently. */
 export function addrKey(member: Member): string {

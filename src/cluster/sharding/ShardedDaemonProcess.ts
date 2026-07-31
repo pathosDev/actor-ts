@@ -19,7 +19,7 @@ type DaemonEnvelope<T> = { readonly index: number; readonly body: T | Wakeup; };
 type Wakeup = { readonly t: 'sharded-daemon.wakeup'; };
 const WAKEUP: Wakeup = { t: 'sharded-daemon.wakeup' };
 
-export type ShardedDaemonProcessHandle<T> = {
+export interface ShardedDaemonProcessHandle<T> {
   /**
    * Sharded region ref.  Messages sent here must carry a `{index, body}`
    * envelope — use `tell(i, message)` on the handle instead.
@@ -35,7 +35,7 @@ export type ShardedDaemonProcessHandle<T> = {
    * cluster shuts down or the region itself is stopped.
    */
   stop(): void;
-};
+}
 
 /**
  * Starts exactly N named daemon actors spread across the cluster.  Built on

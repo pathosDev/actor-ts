@@ -47,13 +47,13 @@ export type ScenarioContext = {
   readonly state: Record<string, unknown>;
 };
 
-export type ScenarioModule = {
+export interface ScenarioModule {
   setup?: (context: ScenarioContext) => void | Promise<void>;
   commands?: Record<
     string,
     (args: unknown, context: ScenarioContext) => unknown | Promise<unknown>
   >;
-};
+}
 
 /* ----------------------------- wire protocol ------------------------- */
 
@@ -89,10 +89,10 @@ export type MemberSnapshot = {
   readonly roles: ReadonlyArray<string>;
 };
 
-type WorkerScope = {
+interface WorkerScope {
   addEventListener?(ev: string, h: (e: { data: unknown }) => void): void;
   postMessage?(v: unknown): void;
-};
+}
 
 /* ------------------------------- main loop --------------------------- */
 

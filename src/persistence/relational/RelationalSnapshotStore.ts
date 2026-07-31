@@ -13,7 +13,7 @@ type SnapshotRow = {
   timestamp: string | number | bigint;
 };
 
-export type RelationalSnapshotStoreConfig = RelationalStoreConfig & {
+export interface RelationalSnapshotStoreConfig extends RelationalStoreConfig {
   /** Snapshots table.  Default `'snapshots'`. */
   readonly snapshotsTable?: string;
   /**
@@ -21,7 +21,7 @@ export type RelationalSnapshotStoreConfig = RelationalStoreConfig & {
    * Default `3`; `<= 0` disables pruning and keeps every snapshot.
    */
   readonly keepN?: number;
-};
+}
 
 /**
  * SnapshotStore over any SQL database, parameterized by `SqlDialect`.

@@ -77,11 +77,11 @@ constructor argument.
 ## What the handle gives you
 
 ```ts
-type ShardedDaemonProcessHandle<T> = {
+interface ShardedDaemonProcessHandle<T> {
   readonly region: ActorRef<DaemonEnvelope<T>>;
   tell(index: number, message: T): void;
   stop(): void;
-};
+}
 ```
 
 - **`region`** — the underlying sharding region ref.  Messages

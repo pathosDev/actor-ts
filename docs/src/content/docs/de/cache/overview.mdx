@@ -22,7 +22,7 @@ Genutzt von:
 ## Das Interface
 
 ```ts
-type Cache = {
+interface Cache {
   get<V>(key: string): Promise<Option<V>>;
   set<V>(key: string, value: V, ttlMs?: number): Promise<void>;
   incr(key: string, ttlMs?: number): Promise<number>;
@@ -30,7 +30,7 @@ type Cache = {
   delete(...keys: string[]): Promise<void>;
   mget<V>(keys: string[]): Promise<Map<string, V>>;
   mset<V>(entries: ReadonlyMap<string, V>, ttlMs?: number): Promise<void>;
-};
+}
 ```
 
 Kleine Oberfläche — keine Pattern-Scans, kein Pub/Sub (der

@@ -11,7 +11,7 @@ import type { BrokerCommonOptionsType } from './BrokerOptions.js';
 import type { ActorRef } from '../../ActorRef.js';
 import type { TcpFraming } from './TcpSocketActor.js';
 
-export type TcpSocketOptionsType = BrokerCommonOptionsType & {
+export interface TcpSocketOptionsType extends BrokerCommonOptionsType {
   /** Remote host. */
   readonly host?: string;
   /** Remote port. */
@@ -24,7 +24,7 @@ export type TcpSocketOptionsType = BrokerCommonOptionsType & {
    * `bytes` / `length-prefixed`, `string` for `lines`.
    */
   readonly target?: ActorRef<unknown>;
-};
+}
 
 export class TcpSocketOptionsBuilder extends BrokerOptionsBuilder<TcpSocketOptionsType> {
   /** Start a fresh builder.  Equivalent to `new TcpSocketOptionsBuilder()`. */

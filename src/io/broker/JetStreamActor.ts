@@ -565,14 +565,14 @@ function extractHeaders(headers: HeadersLike | undefined): Record<string, string
  * `createNatsConnection`) can satisfy the same shape without pulling
  * the real `nats` peer-dep.
  */
-export type NatsConnectionLike = {
+export interface NatsConnectionLike {
   jetstream(): JetStreamClientLike;
   jetstreamManager(): Promise<JetStreamManagerLike>;
   drain(): Promise<void>;
   closed(): Promise<Error | undefined>;
-};
+}
 
-export type JetStreamClientLike = {
+export interface JetStreamClientLike {
   publish(subject: string, payload: Uint8Array, options?: {
     msgID?: string;
     expect?: { lastSequence?: number };
@@ -590,11 +590,11 @@ export type JetStreamClientLike = {
   readonly consumers: {
     get(stream: string, durable: string): Promise<PullConsumerLike>;
   };
-};
+}
 
-export type JetStreamSubscriptionLike = AsyncIterable<JetStreamMessageHandleLike> & {
+export interface JetStreamSubscriptionLike extends AsyncIterable<JetStreamMessageHandleLike> {
   destroy(): Promise<void>;
-};
+}
 
 /**
  * Pull-consumer handle returned by `JetStreamClient.consumers.get`.
@@ -603,17 +603,17 @@ export type JetStreamSubscriptionLike = AsyncIterable<JetStreamMessageHandleLike
  * ms even if the batch isn't full).  Per-message ack semantics are
  * identical to push-mode.
  */
-export type PullConsumerLike = {
+export interface PullConsumerLike {
   fetch(options: {
     max_messages: number;
     expires: number;
   }): Promise<AsyncIterable<JetStreamMessageHandleLike>>;
-};
+}
 
-type HeadersLike = {
+interface HeadersLike {
   keys(): Iterable<string>;
   get(key: string): string | null;
-};
+}
 
 export type JetStreamMessageInfoLike = {
   readonly streamSequence: number;
@@ -622,7 +622,7 @@ export type JetStreamMessageInfoLike = {
   readonly timestampNanos?: number;
 };
 
-export type JetStreamMessageHandleLike = {
+export interface JetStreamMessageHandleLike {
   readonly subject: string;
   readonly data: Uint8Array;
   readonly reply?: string;
@@ -632,7 +632,7 @@ export type JetStreamMessageHandleLike = {
   nak(delayMs?: number): void;
   term(): void;
   working(): void;
-};
+}
 
 type ConsumerAddConfig = {
   durable_name: string;
@@ -662,11 +662,11 @@ export type JetStreamManagerLike = {
   };
 };
 
-type NatsModuleLike = {
+interface NatsModuleLike {
   connect(options: {
     servers: string[]; token?: string; user?: string; pass?: string; name?: string;
   }): Promise<NatsConnectionLike>;
-};
+}
 
 const natsLazy: Lazy<Promise<NatsModuleLike>> = Lazy.of(
   () => lazyImportModule<NatsModuleLike>('nats', { context: 'JetStreamActor' }),

@@ -11,7 +11,7 @@ import type { BrokerCommonOptionsType } from './BrokerOptions.js';
 import type { ActorRef } from '../../ActorRef.js';
 import type { RedisStreamEntry } from './RedisStreamsActor.js';
 
-export type RedisStreamsOptionsType = BrokerCommonOptionsType & {
+export interface RedisStreamsOptionsType extends BrokerCommonOptionsType {
   /** Redis URL (`'redis://host:6379'`). */
   readonly url?: string;
   /** Streams to consume. */
@@ -27,7 +27,7 @@ export type RedisStreamsOptionsType = BrokerCommonOptionsType & {
   readonly blockMs?: number;
   /** Subscriber for inbound entries.  Required to consume. */
   readonly target?: ActorRef<RedisStreamEntry>;
-};
+}
 
 export class RedisStreamsOptionsBuilder extends BrokerOptionsBuilder<RedisStreamsOptionsType> {
   /** Start a fresh builder.  Equivalent to `new RedisStreamsOptionsBuilder()`. */

@@ -12,7 +12,7 @@ export type Receive<T> = (message: T) => void | Promise<void>;
  * Runtime API given to every Actor.  Access through `this.context` inside
  * an Actor subclass.
  */
-export type ActorContext<TMessage = unknown> = {
+export interface ActorContext<TMessage = unknown> {
   /** A reference to this actor. */
   readonly self: ActorRef<TMessage>;
 
@@ -175,7 +175,7 @@ export type ActorContext<TMessage = unknown> = {
 
   /** Remove any active throttle, restoring unlimited dequeue rate. */
   cancelThrottle(): void;
-};
+}
 
 /**
  * What to do with a user message dequeued while the actor's
@@ -210,7 +210,7 @@ export type ThrottleOptions = {
  * Actor-scoped scheduler.  A fresh `startSingleTimer`/`startTimerWithFixedDelay`
  * call with the same key replaces any existing timer under that key.
  */
-export type TimerScheduler<TMessage = unknown> = {
+export interface TimerScheduler<TMessage = unknown> {
   /** Fire `message` once after `delayMs`. */
   startSingleTimer(key: string, message: TMessage, delayMs: number): void;
 
@@ -233,7 +233,7 @@ export type TimerScheduler<TMessage = unknown> = {
 
   /** Names of active timers (diagnostics). */
   activeKeys(): string[];
-};
+}
 
 export class StashOverflowError extends Error {
   constructor(capacity: number) {

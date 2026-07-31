@@ -13,10 +13,10 @@ export type ControllerContext = {
   readonly controlPort: number;
 };
 
-export type Scenario = {
+export interface Scenario {
   readonly name: string;
   run(context: ControllerContext): Promise<void>;
-};
+}
 
 /** Sleep N ms — `Bun.sleep` is bun-only, this works on Node too. */
 export const sleep = (ms: number): Promise<void> =>

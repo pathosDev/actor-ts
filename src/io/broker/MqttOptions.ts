@@ -36,7 +36,7 @@ export type MqttCredentials = {
 };
 
 /** Plain options-object shape accepted by an {@link MqttActor}. */
-export type MqttOptionsType = BrokerCommonOptionsType & {
+export interface MqttOptionsType extends BrokerCommonOptionsType {
   /** Broker URL — `mqtt://`, `mqtts://`, `ws://`, `wss://`. */
   readonly brokerUrl?: string;
   /** Stable client id.  When omitted the broker assigns one. */
@@ -63,7 +63,7 @@ export type MqttOptionsType = BrokerCommonOptionsType & {
    * Default: {@link mqttJsonCodec}.  One codec per actor.
    */
   readonly codec?: MqttCodec<unknown>;
-};
+}
 
 /** Fluent builder for {@link MqttOptionsType}. */
 export class MqttOptionsBuilder extends BrokerOptionsBuilder<MqttOptionsType> {

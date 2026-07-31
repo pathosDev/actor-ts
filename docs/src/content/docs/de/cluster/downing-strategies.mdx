@@ -243,9 +243,9 @@ fallen soll: **`StaticQuorum(3)`**.
 Das Provider-Interface ist winzig:
 
 ```ts
-type DowningProvider = {
+interface DowningProvider {
   decide(view: ClusterPartitionView): DowningDecision;
-};
+}
 
 type ClusterPartitionView = {
   allMembers: ReadonlyArray<Member>;

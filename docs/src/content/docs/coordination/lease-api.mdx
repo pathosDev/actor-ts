@@ -8,13 +8,13 @@ abstraction.  Implementations differ in backing store (in-memory,
 K8s, etcd); the contract is identical.
 
 ```ts
-type Lease = {
+interface Lease {
   acquire(): Promise<boolean>;
   acquireWithToken?(): Promise<{ readonly token: string } | null>;
   release(): Promise<void>;
   checkAlive(): boolean;
   onLost(handler: (reason: string) => void): () => void;
-};
+}
 ```
 
 Three methods that do work + one that registers a callback.

@@ -64,17 +64,17 @@ export class NodeSqliteDriver implements SqliteDriver {
 
 /* ----------------------------- internals --------------------------------- */
 
-type NodeSqliteStatement = {
+interface NodeSqliteStatement {
   run(...params: unknown[]): { changes: number | bigint; lastInsertRowid: number | bigint };
   get(...params: unknown[]): unknown;
   all(...params: unknown[]): unknown[];
-};
+}
 
-type NodeSqliteNative = {
+interface NodeSqliteNative {
   exec(sql: string): void;
   prepare(sql: string): NodeSqliteStatement;
   close(): void;
-};
+}
 
 type NodeSqliteConstructor = new (path: string) => NodeSqliteNative;
 

@@ -60,11 +60,11 @@ arrives.
 ## What the adapter sees
 
 ```ts
-type EventAdapter<DomainEvent, JournalShape = DomainEvent> = {
+interface EventAdapter<DomainEvent, JournalShape = DomainEvent> {
   manifest(event: DomainEvent): string;
   toJournal(event: DomainEvent): OutboundFrame<JournalShape>;
   fromJournal(stored: StoredFrame): DomainEvent;
-};
+}
 
 // what the adapter sees on the read path
 type StoredFrame = {

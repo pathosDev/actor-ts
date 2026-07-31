@@ -15,7 +15,7 @@ export type DynamoDbTableSchema = {
 };
 
 /** Wiring every DynamoDB store needs, independent of which contract it implements. */
-export type DynamoDbStoreConfig = Omit<LazyStoreConfig<DynamoDbOperations>, 'ownsResource' | 'openResource'> & {
+export interface DynamoDbStoreConfig extends Omit<LazyStoreConfig<DynamoDbOperations>, 'ownsResource' | 'openResource'> {
   /** Create the table on first use.  Default `true`. */
   readonly autoCreateTables?: boolean;
   /**
@@ -36,7 +36,7 @@ export type DynamoDbStoreConfig = Omit<LazyStoreConfig<DynamoDbOperations>, 'own
   readonly ownsClient: boolean;
   /** Open the operations façade.  Called once, lazily, on first use. */
   openClient(): Promise<DynamoDbOperations>;
-};
+}
 
 /**
  * The DynamoDB half of the store lifecycle: `LazyStore` handles lazy connection,

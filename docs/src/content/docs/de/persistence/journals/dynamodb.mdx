@@ -111,16 +111,16 @@ type DynamoDbTableProvisioning = {
   tableReadyTimeoutMs?:   number;    // Default 30_000
 };
 
-type DynamoDbJournalOptions = DynamoDbConnection & DynamoDbTableProvisioning & {
+interface DynamoDbJournalOptions extends DynamoDbConnection, DynamoDbTableProvisioning {
   eventsTable?: string;   // Default 'actor_ts_events'
-};
-type DynamoDbSnapshotStoreOptions = DynamoDbConnection & DynamoDbTableProvisioning & {
+}
+interface DynamoDbSnapshotStoreOptions extends DynamoDbConnection, DynamoDbTableProvisioning {
   snapshotsTable?: string;   // Default 'actor_ts_snapshots'
   keepN?:          number;   // neueste N pro pid; Default 3, <=0 behält alle
-};
-type DynamoDbDurableStateStoreOptions = DynamoDbConnection & DynamoDbTableProvisioning & {
+}
+interface DynamoDbDurableStateStoreOptions extends DynamoDbConnection, DynamoDbTableProvisioning {
   table?: string;   // Default 'actor_ts_durable_state'
-};
+}
 ```
 
 Die Optionen werden bei der Konstruktion des Stores validiert. Zwei Regeln

@@ -154,10 +154,10 @@ Nützlich, wenn:
 Das Serializer-Interface ist klein:
 
 ```ts
-type Serializer = {
+interface Serializer {
   toBinary(value: unknown): Uint8Array;
   fromBinary(bytes: Uint8Array, manifest: string): unknown;
-};
+}
 ```
 
 Du kannst deinen eigenen einklinken (Protobuf, MessagePack usw.),

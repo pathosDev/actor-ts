@@ -35,25 +35,25 @@ export type TlsTransportOptionsType = {
  * the socket (Bun's `.data` trick is not portable) — the caller keeps its
  * own `WeakMap<TcpSocketLike, State>`.
  */
-export type TcpSocketLike = {
+export interface TcpSocketLike {
   write(data: Uint8Array): void;
   end(): void;
   readonly remoteAddress?: string;
-};
+}
 
-export type TcpSocketHandlers = {
+export interface TcpSocketHandlers {
   onOpen(sock: TcpSocketLike): void;
   onData(sock: TcpSocketLike, chunk: Uint8Array): void;
   onClose(sock: TcpSocketLike): void;
   onError(sock: TcpSocketLike, err: Error): void;
-};
+}
 
-export type TcpListener = {
+export interface TcpListener {
   readonly port: number;
   close(): Promise<void> | void;
-};
+}
 
-export type TcpBackend = {
+export interface TcpBackend {
   listen(options: {
     host: string;
     port: number;
@@ -67,4 +67,4 @@ export type TcpBackend = {
     tls?: TlsTransportOptionsType;
     handlers: TcpSocketHandlers;
   }): Promise<TcpSocketLike>;
-};
+}

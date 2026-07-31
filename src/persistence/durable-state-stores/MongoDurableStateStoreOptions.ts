@@ -3,10 +3,10 @@ import { OptionsValidator } from '../../util/OptionsValidator.js';
 import { assertMongoName, assertMongoUrl } from '../journals/MongoJournalOptions.js';
 import type { MongoClientLike, MongoConnection } from '../journals/MongoClient.js';
 
-export type MongoDurableStateStoreOptionsType = MongoConnection & {
+export interface MongoDurableStateStoreOptionsType extends MongoConnection {
   /** Durable-state collection name.  Default: `durable_state`. */
   readonly collection?: string;
-};
+}
 
 /**
  * Fluent builder for {@link MongoDurableStateStoreOptionsType}:

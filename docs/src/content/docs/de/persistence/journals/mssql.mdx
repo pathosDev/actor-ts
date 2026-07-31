@@ -125,20 +125,20 @@ type MsSqlConnection = {
   pool?:       MsSqlPoolLike;             // vorgebauter / geteilter Pool
 };
 
-type MsSqlJournalOptions = MsSqlConnection & {
+interface MsSqlJournalOptions extends MsSqlConnection {
   eventsTable?:      string;   // Default 'events'
   tagsTable?:        string;   // Default '<eventsTable>_tags'
   autoCreateTables?: boolean;  // Default true
-};
-type MsSqlSnapshotStoreOptions = MsSqlConnection & {
+}
+interface MsSqlSnapshotStoreOptions extends MsSqlConnection {
   snapshotsTable?:   string;   // Default 'snapshots'
   keepN?:            number;   // neueste N pro pid; Default 3, <=0 behält alle
   autoCreateTables?: boolean;
-};
-type MsSqlDurableStateStoreOptions = MsSqlConnection & {
+}
+interface MsSqlDurableStateStoreOptions extends MsSqlConnection {
   table?:            string;   // Default 'durable_state'
   autoCreateTables?: boolean;
-};
+}
 ```
 
 Die Optionen werden bei der Konstruktion des Stores validiert.  Tabellennamen

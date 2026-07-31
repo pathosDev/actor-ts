@@ -91,7 +91,7 @@ latest shape.
 ## The API
 
 ```ts
-type SchemaRegistry = {
+interface SchemaRegistry {
   register<Wire, Upcasted>(
     manifest: string,
     version: number,
@@ -102,7 +102,7 @@ type SchemaRegistry = {
   list(): ReadonlyArray<SchemaDescriptor>;
   eventAdapter<E>(manifest: string): EventAdapter<E, unknown>;
   snapshotAdapter<S>(manifest: string): SnapshotAdapter<S, unknown>;
-};
+}
 
 type SchemaRegistration<Wire, Upcasted> = {
   readonly codec: Codec<Wire>;

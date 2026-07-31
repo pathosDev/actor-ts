@@ -61,9 +61,9 @@ async function waitFor(pred: () => boolean, timeoutMs = 2000): Promise<void> {
 
 /* ----- access helper: invoke the private handleWire via type cast ----- */
 
-type ClusterPrivate = {
+interface ClusterPrivate {
   handleWire(from: NodeAddress, message: { t: 'gossip'; from: ReturnType<NodeAddress['toJSON']>; members: MemberData[] }): void;
-};
+}
 
 function inject(cluster: Cluster, from: NodeAddress, message: GossipMessage): void {
   (cluster as unknown as ClusterPrivate).handleWire(from, message);
@@ -286,12 +286,12 @@ describe('Transport — hello-handshake hijack defense', () => {
     const transport = new TcpTransport(self, log);
 
     // Mock TcpSocketLike shape.
-    type MockSock = {
+    interface MockSock {
       ended: boolean;
       writes: Uint8Array[];
       write(d: Uint8Array): void;
       end(): void;
-    };
+    }
     const mkSock = (): MockSock => ({
       ended: false, writes: [],
       write(d) { this.writes.push(d); },
@@ -339,7 +339,7 @@ describe('Transport — hello-handshake hijack defense', () => {
     const self = new NodeAddress('hijack', '127.0.0.1', 1);
     const transport = new TcpTransport(self, new NoopLogger());
 
-    type MockSock = { writes: Uint8Array[]; write(d: Uint8Array): void; end(): void; ended: boolean };
+    interface MockSock { writes: Uint8Array[]; write(d: Uint8Array): void; end(): void; ended: boolean }
     const mkSock = (): MockSock => ({
       writes: [], ended: false,
       write(d) { this.writes.push(d); },
@@ -382,10 +382,10 @@ describe('Transport — hello-handshake hijack defense', () => {
 
 /* ----- injection for any wire frame, not just gossip ----- */
 
-type ClusterWirePrivate = {
+interface ClusterWirePrivate {
   handleWire(from: NodeAddress, message: WireMessage): void;
   members: Map<string, Member>;
-};
+}
 
 /**
  * The raw member map, not `getMembers()` — that filters `removed` entries out,

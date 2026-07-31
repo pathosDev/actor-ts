@@ -2,7 +2,7 @@ import { LazyStore, type LazyStoreConfig } from '../LazyStore.js';
 import type { MongoDatabaseLike, MongoResource } from './MongoClient.js';
 
 /** Wiring every MongoDB store needs, independent of which contract it implements. */
-export type MongoStoreConfig = Omit<LazyStoreConfig<MongoResource>, 'ownsResource' | 'openResource'> & {
+export interface MongoStoreConfig extends Omit<LazyStoreConfig<MongoResource>, 'ownsResource' | 'openResource'> {
   /** Create this store's indexes on first use.  Default `true`. */
   readonly autoCreateIndexes?: boolean;
   /**
@@ -14,7 +14,7 @@ export type MongoStoreConfig = Omit<LazyStoreConfig<MongoResource>, 'ownsResourc
   readonly ownsClient: boolean;
   /** Open the client and database handle.  Called once, lazily, on first use. */
   openClient(): Promise<MongoResource>;
-};
+}
 
 /**
  * The MongoDB half of the store lifecycle: `LazyStore` handles lazy connection,

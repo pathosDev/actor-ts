@@ -153,10 +153,10 @@ describe('DistributedPubSub — cluster-wide', () => {
  * mutate either — strictly read-only introspection to assert the
  * boundedness contract.
  */
-type MediatorInternals = {
+interface MediatorInternals {
   readonly topics: Map<string, { local: Map<string, unknown>; remoteNodes: Set<string> }>;
   buildGossip(): { entries: ReadonlyArray<string> };
-};
+}
 
 describe('DistributedPubSub — gossip-payload audit (#80)', () => {
   test('100 sub/unsub cycles leave the topics map empty and the gossip frame minimal', async () => {

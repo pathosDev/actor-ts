@@ -38,7 +38,7 @@ redis.tell({
 ## Settings
 
 ```ts
-type RedisStreamsOptionsType = BrokerCommonOptionsType & {
+interface RedisStreamsOptionsType extends BrokerCommonOptionsType {
   url:           string;                          // 'redis://host:6379'
   streams?:      ReadonlyArray<string>;           // streams to consume
   consumerGroup?: {
@@ -48,7 +48,7 @@ type RedisStreamsOptionsType = BrokerCommonOptionsType & {
   };
   blockMs?:      number;                          // XREADGROUP block; default 5_000
   target?:       ActorRef<RedisStreamEntry>;      // consumer-actor for inbound entries
-};
+}
 ```
 
 ## Consuming with a consumer group

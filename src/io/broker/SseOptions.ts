@@ -11,14 +11,14 @@ import type { BrokerCommonOptionsType } from './BrokerOptions.js';
 import type { ActorRef } from '../../ActorRef.js';
 import type { SseEvent } from './SseActor.js';
 
-export type SseOptionsType = BrokerCommonOptionsType & {
+export interface SseOptionsType extends BrokerCommonOptionsType {
   /** SSE endpoint URL. */
   readonly url?: string;
   /** Custom request headers. */
   readonly headers?: Readonly<Record<string, string>>;
   /** Subscriber for inbound events.  Required. */
   readonly target?: ActorRef<SseEvent>;
-};
+}
 
 export class SseOptionsBuilder extends BrokerOptionsBuilder<SseOptionsType> {
   /** Start a fresh builder.  Equivalent to `new SseOptionsBuilder()`. */

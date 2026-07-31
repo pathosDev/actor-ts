@@ -11,7 +11,7 @@ import type { BrokerCommonOptionsType } from './BrokerOptions.js';
 import type { ActorRef } from '../../ActorRef.js';
 import type { NatsMessage } from './NatsActor.js';
 
-export type NatsOptionsType = BrokerCommonOptionsType & {
+export interface NatsOptionsType extends BrokerCommonOptionsType {
   /** NATS server URLs (`'nats://localhost:4222'`). */
   readonly servers?: ReadonlyArray<string> | string;
   /** Optional credentials (token / user-password). */
@@ -22,7 +22,7 @@ export type NatsOptionsType = BrokerCommonOptionsType & {
   readonly subscriptions?: ReadonlyArray<{ readonly subject: string; readonly target: ActorRef<NatsMessage> }>;
   /** Optional client name reported to the server. */
   readonly name?: string;
-};
+}
 
 export class NatsOptionsBuilder extends BrokerOptionsBuilder<NatsOptionsType> {
   /** Start a fresh builder.  Equivalent to `new NatsOptionsBuilder()`. */

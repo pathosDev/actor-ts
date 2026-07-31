@@ -13,11 +13,11 @@ export type Extension = {};
  * cache an extension singleton.  Conceptually: the `key` gives identity,
  * the `createExtension` function produces the instance on first access.
  */
-export type ExtensionId<T extends Extension = Extension> = {
+export interface ExtensionId<T extends Extension = Extension> {
   readonly key: symbol;
   readonly name: string;
   createExtension(system: ActorSystem): T;
-};
+}
 
 /**
  * Helper: build an ExtensionId with a global-symbol-registered key so that

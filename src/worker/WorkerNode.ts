@@ -12,20 +12,20 @@ import type {
   WorkerTransportMessage,
 } from './WorkerCluster.js';
 
-export type WorkerNodeContext<TInit = unknown> = {
+export interface WorkerNodeContext<TInit = unknown> {
   readonly self: NodeAddress;
   readonly systemName: string;
   readonly transport: Transport;
   readonly initData: TInit;
   ready(): void;
-};
+}
 
-type WorkerScope = {
+interface WorkerScope {
   addEventListener?(ev: string, h: (e: { data: unknown }) => void): void;
   removeEventListener?(ev: string, h: (e: { data: unknown }) => void): void;
   postMessage?(v: unknown): void;
   onmessage?: ((e: { data: unknown }) => void) | null;
-};
+}
 
 /**
  * Worker-side helper.  Call `await WorkerNode.join()` from **inside an

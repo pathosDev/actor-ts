@@ -76,13 +76,13 @@ export type SchemaRegistration<Wire = unknown, Upcasted = unknown> = {
   readonly sample?: unknown;
 };
 
-export type SchemaDescriptor = SchemaRegistration & {
+export interface SchemaDescriptor extends SchemaRegistration {
   readonly manifest: string;
   readonly version: number;
-};
+}
 
 /** Public API of any schema registry impl. */
-export type SchemaRegistry = {
+export interface SchemaRegistry {
   /**
    * Add or replace the registration for `(manifest, version)`.
    * Runs the configured compat check; throws on incompatibility.
@@ -113,7 +113,7 @@ export type SchemaRegistry = {
 
   /** Same as `eventAdapter` but typed for snapshot/state actors. */
   snapshotAdapter<S>(manifest: string): SnapshotAdapter<S, unknown>;
-};
+}
 
 /* ============================== impl ================================== */
 

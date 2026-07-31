@@ -15,10 +15,10 @@ import { scenario as groupScenario } from './scenarios/02-consumer-group.js';
 import { scenario as manualScenario } from './scenarios/03-manual-commit.js';
 import { scenario as headersScenario } from './scenarios/04-headers.js';
 
-export type KafkaContext = BrokerScenarioContext & {
+export interface KafkaContext extends BrokerScenarioContext {
   readonly brokers: ReadonlyArray<string>;
   readonly system: ActorSystem;
-};
+}
 
 function requireEnv(name: string): string {
   const value = process.env[name];

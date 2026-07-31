@@ -590,7 +590,7 @@ export type MqttInboundPacketLike = {
  * seam so subclasses overriding {@link MqttActor.mqttModule} can satisfy
  * the same shape without the real peer-dep.
  */
-export type MqttClientLike = {
+export interface MqttClientLike {
   on(event: 'message', cb: (topic: string, payload: Uint8Array, packet?: MqttInboundPacketLike) => void): void;
   on(event: 'error', cb: (err: Error) => void): void;
   on(event: 'close', cb: () => void): void;
@@ -601,12 +601,12 @@ export type MqttClientLike = {
   subscribe(topic: string, options: { qos: MqttQos }, cb?: (err?: Error) => void): void;
   unsubscribe(topic: string, options: undefined, cb?: (err?: Error) => void): void;
   end(force?: boolean, options?: object, cb?: () => void): void;
-};
+}
 
 /** The `mqtt` module surface we use.  Exported as a test seam. */
-export type MqttModuleLike = {
+export interface MqttModuleLike {
   connect(url: string, options?: MqttConnectOptions): MqttClientLike;
-};
+}
 
 const mqttLazy: Lazy<Promise<MqttModuleLike>> = Lazy.of(
   () => lazyImportModule<MqttModuleLike>('mqtt', { context: 'MqttActor' }),

@@ -1,7 +1,7 @@
 import { JournalError } from './JournalTypes.js';
 
 /** Wiring every lazily-opened persistence store needs, whatever it connects to. */
-export type LazyStoreConfig<TResource> = {
+export interface LazyStoreConfig<TResource> {
   /**
    * Concrete store name (`'PostgresJournal'`, `'MongoJournal'`), used to prefix
    * every error message.  Errors name the store the caller actually constructed
@@ -18,7 +18,7 @@ export type LazyStoreConfig<TResource> = {
   readonly ownsResource: boolean;
   /** Open the pool / client / connection.  Called once, lazily, on first use. */
   openResource(): Promise<TResource>;
-};
+}
 
 /**
  * Lifecycle shared by every store that talks to an external system: lazy

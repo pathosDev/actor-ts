@@ -2,7 +2,7 @@ import { highResNow } from '../../src/runtime/detect.js';
 import { ansi, ansiResetLine, formatMemoryDelta, formatNs, formatRate, statsOf, type BenchStats } from './stats.js';
 
 /** User-provided benchmark — runs a single "operation" per call to `run`. */
-export type BenchmarkSpec = {
+export interface BenchmarkSpec {
   readonly name: string;
   /** Short label printed in the summary — grouping, tags, etc. */
   readonly group?: string;
@@ -20,7 +20,7 @@ export type BenchmarkSpec = {
   readonly warmupIterations?: number;
   /** Target measured iteration count.  Default 1000. */
   readonly iterations?: number;
-};
+}
 
 /** Raw measurement + derived stats for a single benchmark. */
 export type BenchmarkResult = {
@@ -291,10 +291,10 @@ export type MemoryMeasurement = {
   readonly deltaHeap: number;
 };
 
-export type MemoryGroup = {
+export interface MemoryGroup {
   measure(label: string, allocate: () => Promise<void> | void): Promise<MemoryMeasurement>;
   end(): void;
-};
+}
 
 /**
  * Pretty-print helper for memory-only benchmarks: a three-column table

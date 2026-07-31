@@ -5,14 +5,14 @@ import {
 } from '../journals/D1OptionsBase.js';
 import { assertSafeIdentifier } from '../storage/SqlIdentifier.js';
 
-export type D1SnapshotStoreOptionsType = D1OptionsBaseType & {
+export interface D1SnapshotStoreOptionsType extends D1OptionsBaseType {
   /** Snapshots table name.  Default: `snapshots`. */
   readonly snapshotsTable?: string;
   /** How many snapshots to keep per persistence id.  Default: 3; `<= 0` keeps all. */
   readonly keepN?: number;
   /** Run `CREATE TABLE IF NOT EXISTS` on first use.  Default: true. */
   readonly autoCreateTables?: boolean;
-};
+}
 
 /**
  * Fluent builder for {@link D1SnapshotStoreOptionsType}:

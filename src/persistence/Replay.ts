@@ -16,7 +16,7 @@ import type { EventAdapter, SnapshotAdapter } from './migration/Adapter.js';
 import { decodeEvent, decodeState } from './migration/Envelope.js';
 
 /** Everything a replay needs.  No `ActorSystem` and no actor instance. */
-export type ReplayRequest<Event, State> = {
+export interface ReplayRequest<Event, State> {
   readonly journal: Journal;
   /** Omit to fold from sequence 1 without a snapshot fast-path. */
   readonly snapshotStore?: SnapshotStore;
@@ -33,7 +33,7 @@ export type ReplayRequest<Event, State> = {
   readonly eventAdapter?: EventAdapter<Event>;
   readonly snapshotAdapter?: SnapshotAdapter<State>;
   readonly persistenceOptions?: PersistenceOptions;
-};
+}
 
 /** Outcome of a replay. */
 export type ReplayResult<State> = {

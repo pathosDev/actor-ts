@@ -21,7 +21,7 @@ import type { Option } from '../util/Option.js';
  * is fine, since the caller's job is to fall back to the source of
  * truth anyway.  Exceptions are reserved for misuse (invalid TTL, etc).
  */
-export type Cache = {
+export interface Cache {
   /** Get a value; returns None on miss, expiry, or transient backend failure. */
   get<V = unknown>(key: string): Promise<Option<V>>;
 
@@ -74,7 +74,7 @@ export type Cache = {
 
   /** Best-effort teardown.  Idempotent. */
   close?(): Promise<void>;
-};
+}
 
 /** Generic cache failure — backends may extend this. */
 export class CacheError extends Error {

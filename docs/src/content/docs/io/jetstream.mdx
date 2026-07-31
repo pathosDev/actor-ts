@@ -64,7 +64,7 @@ class OrderProcessor extends Actor<JetStreamMessage> {
 ## Settings
 
 ```ts
-type JetStreamOptionsType = BrokerCommonOptionsType & {
+interface JetStreamOptionsType extends BrokerCommonOptionsType {
   servers?:  string[] | string;       // NATS server URLs
   token?:    string;
   user?:     string;
@@ -74,7 +74,7 @@ type JetStreamOptionsType = BrokerCommonOptionsType & {
   consumer?: JetStreamConsumerConfig; // required to start a subscription
   target?:   ActorRef<JetStreamMessage>; // receives every consumed message
   acknowledgmentTimeout?: number;     // ack-wait ceiling; default consumer.ackWaitMs ?? 30_000
-};
+}
 ```
 
 The builder is the primary style; a plain object works too.  Common

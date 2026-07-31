@@ -35,7 +35,7 @@ import { attachDevTools } from '../devtools.js';
 /* ------------------- Domain types (three versions) ------------------- */
 
 type DepositedV1 = { kind: 'deposited'; amount: number };
-type DepositedV2 = DepositedV1 & { currency: 'USD' | 'EUR' };
+interface DepositedV2 extends DepositedV1 { currency: 'USD' | 'EUR' }
 type DepositedV3 = { kind: 'deposited'; cents: number; currency: 'USD' | 'EUR' };
 
 const v1Schema: ParserLike<DepositedV1> = {

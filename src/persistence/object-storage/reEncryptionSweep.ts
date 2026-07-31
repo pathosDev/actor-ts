@@ -66,11 +66,11 @@ export type ReEncryptResumeState = {
  * operator runbook, a single Redis key, an object in the same bucket
  * under a sentinel prefix, etc.
  */
-export type ReEncryptProgressStore = {
+export interface ReEncryptProgressStore {
   load(): Promise<ReEncryptResumeState>;
   save(state: ReEncryptResumeState): Promise<void>;
   clear(): Promise<void>;
-};
+}
 
 /**
  * In-process default.  Useful for tests and short-lived runs.  For

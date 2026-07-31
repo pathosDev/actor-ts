@@ -34,9 +34,9 @@ type Subscription = {
  * own logger here after construction; if unset (e.g. ad-hoc test
  * use), predicate failures are silently swallowed.
  */
-export type EventStreamLogger = {
+export interface EventStreamLogger {
   warn(message: string, ...args: unknown[]): void;
-};
+}
 
 export class EventStream {
   private subs: Subscription[] = [];

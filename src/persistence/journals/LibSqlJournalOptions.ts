@@ -5,14 +5,14 @@ import type { LibSqlClientLike, LibSqlConnection } from './LibSqlClient.js';
 /** URL schemes a remote libSQL database can be reached on. */
 export const LIBSQL_URL_PROTOCOLS = ['libsql', 'http', 'https', 'ws', 'wss'] as const;
 
-export type LibSqlJournalOptionsType = LibSqlConnection & {
+export interface LibSqlJournalOptionsType extends LibSqlConnection {
   /** Events table name.  Default: `events`. */
   readonly eventsTable?: string;
   /** Tags join table name.  Default: `${eventsTable}_tags`. */
   readonly tagsTable?: string;
   /** Run `CREATE TABLE IF NOT EXISTS` on first use.  Default: true. */
   readonly autoCreateTables?: boolean;
-};
+}
 
 /**
  * Fluent builder for {@link LibSqlJournalOptionsType}:

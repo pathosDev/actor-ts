@@ -41,13 +41,13 @@ export type PromClientLabelValues = {
   [k: string]: string | number;
 };
 
-export type PromClientCounter = {
+export interface PromClientCounter {
   inc(value?: number): void;
   inc(labels: PromClientLabelValues, value?: number): void;
   labels(values: PromClientLabelValues): { inc(value?: number): void };
-};
+}
 
-export type PromClientGauge = {
+export interface PromClientGauge {
   set(value: number): void;
   set(labels: PromClientLabelValues, value: number): void;
   inc(value?: number): void;
@@ -59,20 +59,20 @@ export type PromClientGauge = {
     inc(v?: number): void;
     dec(v?: number): void;
   };
-};
+}
 
-export type PromClientHistogram = {
+export interface PromClientHistogram {
   observe(value: number): void;
   observe(labels: PromClientLabelValues, value: number): void;
   labels(values: PromClientLabelValues): { observe(v: number): void };
-};
+}
 
-export type PromClientRegistryLike = {
+export interface PromClientRegistryLike {
   registerMetric(metric: unknown): void;
   removeSingleMetric?(name: string): void;
   getSingleMetric(name: string): unknown;
   resetMetrics?(): void;
-};
+}
 
 export type PromClientLike = {
   Counter:   new (options: PromConstructorOpts) => PromClientCounter;

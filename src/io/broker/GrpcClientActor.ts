@@ -219,45 +219,45 @@ export class GrpcClientActor
 
 /* --------------------------- shared internals -------------------------- */
 
-type GrpcServiceConstructor = {
+interface GrpcServiceConstructor {
   new (endpoint: string, credentials: GrpcCredentialsLike): GrpcServiceClient;
-};
+}
 
-type GrpcServiceClient = {
+interface GrpcServiceClient {
   close?(): void;
   [method: string]: unknown;
-};
+}
 
-type GrpcUnaryFunction = {
+interface GrpcUnaryFunction {
   call(client: GrpcServiceClient, request: unknown,
        cb: (err: Error | null, response: unknown) => void): void;
-};
+}
 
-type GrpcServerStreamCall = {
+interface GrpcServerStreamCall {
   on(event: 'data', cb: (chunk: unknown) => void): void;
   on(event: 'end', cb: () => void): void;
   on(event: 'error', cb: (err: Error) => void): void;
-};
+}
 
-type GrpcServerStreamFunction = {
+interface GrpcServerStreamFunction {
   call(client: GrpcServiceClient, request: unknown): GrpcServerStreamCall;
-};
+}
 
-type GrpcDuplexCall = {
+interface GrpcDuplexCall {
   on(event: 'data', cb: (chunk: unknown) => void): void;
   on(event: 'end', cb: () => void): void;
   on(event: 'error', cb: (err: Error) => void): void;
   write(chunk: unknown): void;
   end(): void;
-};
+}
 
-type GrpcBidiFunction = {
+interface GrpcBidiFunction {
   call(client: GrpcServiceClient): GrpcDuplexCall;
-};
+}
 
 type GrpcCredentialsLike = { /* opaque token, set by grpc.credentials.* */ };
 
-type GrpcModule = {
+interface GrpcModule {
   loadPackageDefinition(def: unknown): unknown;
   credentials: {
     createInsecure(): GrpcCredentialsLike;
@@ -265,11 +265,11 @@ type GrpcModule = {
       rootCerts: Buffer | null, privateKey: Buffer | null, certChain: Buffer | null,
     ): GrpcCredentialsLike;
   };
-};
+}
 
-type ProtoLoaderModule = {
+interface ProtoLoaderModule {
   loadSync(filename: string | string[], options?: object): unknown;
-};
+}
 
 const grpcLazy: Lazy<Promise<GrpcModule>> = Lazy.of(async () => {
   try {

@@ -32,10 +32,10 @@ export type BrokerScenarioContext = {
   readonly env: Readonly<Record<string, string | undefined>>;
 };
 
-export type BrokerScenario<Context extends BrokerScenarioContext = BrokerScenarioContext> = {
+export interface BrokerScenario<Context extends BrokerScenarioContext = BrokerScenarioContext> {
   readonly name: string;
   run(context: Context): Promise<void>;
-};
+}
 
 /**
  * Run scenarios sequentially.  Exits the process (0/1) when done.

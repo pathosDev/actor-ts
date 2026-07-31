@@ -3,12 +3,12 @@ import { OptionsValidator } from '../../util/OptionsValidator.js';
 import { assertRemoteLibSqlUrl } from '../journals/LibSqlJournalOptions.js';
 import type { LibSqlClientLike, LibSqlConnection } from '../journals/LibSqlClient.js';
 
-export type LibSqlDurableStateStoreOptionsType = LibSqlConnection & {
+export interface LibSqlDurableStateStoreOptionsType extends LibSqlConnection {
   /** Durable-state table name.  Default: `durable_state`. */
   readonly table?: string;
   /** Run `CREATE TABLE IF NOT EXISTS` on first use.  Default: true. */
   readonly autoCreateTables?: boolean;
-};
+}
 
 /**
  * Fluent builder for {@link LibSqlDurableStateStoreOptionsType}:

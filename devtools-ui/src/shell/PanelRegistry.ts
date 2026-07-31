@@ -19,17 +19,17 @@ export type PanelContext = {
 };
 
 /** A mounted panel; `dispose` detaches its effects and stream listeners. */
-export type PanelInstance = {
+export interface PanelInstance {
   dispose(): void;
-};
+}
 
 /** The module shape a panel's `index.ts` must default-export. */
-export type PanelModule = {
+export interface PanelModule {
   mount(host: HTMLElement, context: PanelContext): PanelInstance;
-};
+}
 
 /** Registration record. */
-export type PanelDefinition = {
+export interface PanelDefinition {
   readonly id: DevToolsPanelId;
   readonly title: string;
   /** One line, shown on the dashboard card. */
@@ -37,7 +37,7 @@ export type PanelDefinition = {
   /** Sort order in the nav rail and on the dashboard. */
   readonly order: number;
   load(): Promise<PanelModule>;
-};
+}
 
 const panels = new Map<DevToolsPanelId, PanelDefinition>();
 

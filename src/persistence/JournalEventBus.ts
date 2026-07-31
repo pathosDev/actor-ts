@@ -13,7 +13,7 @@ import type { PersistentEvent } from './JournalTypes.js';
  * that need cross-process push would layer their own protocol on
  * top (Postgres LISTEN/NOTIFY, Redis pub/sub, …).
  */
-export type JournalEventBus = {
+export interface JournalEventBus {
   /**
    * Notify every subscriber that an event has been appended.  The
    * journal calls this AFTER the underlying write has succeeded;
@@ -34,7 +34,7 @@ export type JournalEventBus = {
    *  cancellation actually detaches.  Not part of the contract that
    *  custom journals have to honour. */
   subscriberCount?(): number;
-};
+}
 
 /**
  * Reference implementation.  Plain `Set<listener>`; one

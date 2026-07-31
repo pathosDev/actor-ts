@@ -47,7 +47,7 @@ import type { Cluster } from '../src/cluster/Cluster.js';
 import { DevTools, DevToolsOptions, isLoopbackHost, type DevToolsBinding } from '../src/devtools/index.js';
 
 /** Handle returned by {@link attachDevTools}; inert when DevTools is off. */
-export type ExampleDevTools = {
+export interface ExampleDevTools {
   /** Browser URL, or `null` when DevTools was not enabled. */
   readonly url: string | null;
   /**
@@ -57,7 +57,7 @@ export type ExampleDevTools = {
   holdOpen(): Promise<void>;
   /** Release the port.  Safe when DevTools was never attached. */
   detach(): Promise<void>;
-};
+}
 
 const DISABLED: ExampleDevTools = {
   url: null,

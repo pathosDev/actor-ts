@@ -53,7 +53,7 @@ final status.
 
 ```ts
 class RecordingTracer implements Tracer {
-  // ... full Tracer type ...
+  // ... full Tracer interface ...
 
   recorded(): ReadonlyArray<RecordedSpan>;  // snapshot of every ended span
   reset(): void;                            // clear recorded state

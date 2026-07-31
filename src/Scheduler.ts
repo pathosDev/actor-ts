@@ -1,10 +1,10 @@
 import type { ActorRef } from './ActorRef.js';
 
 /** A handle that lets callers cancel a scheduled task. */
-export type Cancellable = {
+export interface Cancellable {
   cancel(): boolean;
   readonly isCancelled: boolean;
-};
+}
 
 class SimpleCancellable implements Cancellable {
   private _cancelled = false;

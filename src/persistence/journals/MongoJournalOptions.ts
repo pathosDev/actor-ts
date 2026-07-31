@@ -5,12 +5,12 @@ import type { MongoClientLike, MongoConnection } from './MongoClient.js';
 /** URL schemes a MongoDB deployment can be reached on. */
 export const MONGO_URL_PROTOCOLS = ['mongodb', 'mongodb+srv'] as const;
 
-export type MongoJournalOptionsType = MongoConnection & {
+export interface MongoJournalOptionsType extends MongoConnection {
   /** Events collection name.  Default: `events`.  Its meta collection is `${it}_meta`. */
   readonly eventsCollection?: string;
   /** Create the indexes on first use.  Default: true. */
   readonly autoCreateIndexes?: boolean;
-};
+}
 
 /**
  * Fluent builder for {@link MongoJournalOptionsType}:

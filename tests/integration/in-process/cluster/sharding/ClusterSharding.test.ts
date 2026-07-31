@@ -216,9 +216,9 @@ class TaggedEntity extends Actor<{ id: string; op: 'ping' }> {
   }
 }
 
-type LruNode = Node & {
+interface LruNode extends Node {
   region: ActorRef<{ id: string; op: 'ping' }>;
-};
+}
 
 async function startLruNode(
   sysName: string, p: number, maxEntities: number,

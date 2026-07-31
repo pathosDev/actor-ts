@@ -61,11 +61,11 @@ function makeFakeSpan(record: FakeRecordedSpan): OtelSpanLike {
   };
 }
 
-type FakeOtelApi = OtelApiLike & {
+interface FakeOtelApi extends OtelApiLike {
   recorded: FakeRecordedSpan[];
   // Cycle through fake `current` context for `with`-style propagation.
   current: FakeContext;
-};
+}
 
 function makeFakeOtelApi(): FakeOtelApi {
   const recorded: FakeRecordedSpan[] = [];

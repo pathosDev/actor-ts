@@ -49,14 +49,14 @@ no `serializerId` / `manifest` framing on the cluster wire.
 ## The Serializer interface
 
 ```ts
-type Serializer<T = unknown> = {
+interface Serializer<T = unknown> {
   readonly id: number;            // unique per serializer
   readonly name: string;          // human-readable
   includesManifest: boolean;
   manifest(obj: T): string;       // type tag
   toBinary(obj: T): Uint8Array;
   fromBinary(bytes: Uint8Array, manifest: string): T;
-};
+}
 ```
 
 Small surface — encode, decode, identify.  The framework's

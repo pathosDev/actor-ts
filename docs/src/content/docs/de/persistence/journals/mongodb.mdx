@@ -129,18 +129,18 @@ type MongoConnection = {
   client?:        MongoClientLike;           // vorgebauter / geteilter Client
 };
 
-type MongoJournalOptions = MongoConnection & {
+interface MongoJournalOptions extends MongoConnection {
   eventsCollection?:  string;   // Default 'events'; die Mark-Collection ist '<it>_meta'
   autoCreateIndexes?: boolean;  // Default true
-};
-type MongoSnapshotStoreOptions = MongoConnection & {
+}
+interface MongoSnapshotStoreOptions extends MongoConnection {
   snapshotsCollection?: string; // Default 'snapshots'
   keepN?:               number; // neueste N pro pid; Default 3, <=0 behält alle
   autoCreateIndexes?:   boolean;
-};
-type MongoDurableStateStoreOptions = MongoConnection & {
+}
+interface MongoDurableStateStoreOptions extends MongoConnection {
   collection?: string;          // Default 'durable_state'
-};
+}
 ```
 
 Die Optionen werden bei der Konstruktion des Stores validiert — ein falsches

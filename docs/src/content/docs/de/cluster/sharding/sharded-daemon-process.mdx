@@ -78,11 +78,11 @@ mit seinem stabilen Index sichtbar via Konstruktor-Argument.
 ## Was der Handle dir gibt
 
 ```ts
-type ShardedDaemonProcessHandle<T> = {
+interface ShardedDaemonProcessHandle<T> {
   readonly region: ActorRef<DaemonEnvelope<T>>;
   tell(index: number, message: T): void;
   stop(): void;
-};
+}
 ```
 
 - **`region`** — der darunterliegende Sharding-Region-Ref.

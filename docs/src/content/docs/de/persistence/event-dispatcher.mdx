@@ -48,7 +48,7 @@ fehlt."
 ## Wie es funktioniert
 
 ```ts
-type EventDispatcherBuilder<S, E, Handled extends string> = {
+interface EventDispatcherBuilder<S, E, Handled extends string> {
   on<K extends Exclude<E['kind'], Handled>>(
     kind: K,
     fn: (state: S, event: Extract<E, { kind: K }>) => S,
@@ -57,7 +57,7 @@ type EventDispatcherBuilder<S, E, Handled extends string> = {
   build(): Handled extends E['kind']
     ? (state: S, event: E) => S
     : EventDispatcherIncomplete<...>;
-};
+}
 ```
 
 Der Typ-Parameter `Handled` verfolgt, welche Arten du hinzugefügt

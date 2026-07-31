@@ -58,11 +58,11 @@ function migratingAdapter<E>(
 ): EventAdapter<E, unknown>;
 
 // Steps added to the chain:
-type MigrationStep<From, To> = {
+interface MigrationStep<From, To> {
   fromVersion: number;
   toVersion:   number;
   upcast(from: From): To;
-};
+}
 ```
 
 Build the chain with `MigrationChain.for<E>(manifest, currentVersion)`

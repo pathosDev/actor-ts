@@ -18,9 +18,9 @@ export type ProjectionOptionsType<E> = {
 };
 
 /** Options for a per-persistenceId projection.  One cursor per pid. */
-export type ByPersistenceIdProjectionOptionsType<E> = ProjectionOptionsType<E> & {
+export interface ByPersistenceIdProjectionOptionsType<E> extends ProjectionOptionsType<E> {
   readonly persistenceId: string;
-};
+}
 
 /**
  * Options for a per-tag projection.  One cursor per filter.
@@ -31,9 +31,9 @@ export type ByPersistenceIdProjectionOptionsType<E> = ProjectionOptionsType<E> &
  * "every order that is not cancelled" needed a hand-rolled projection instead
  * of a filter.  A bare string still works and keeps its existing cursor.
  */
-export type ByTagProjectionOptionsType<E> = ProjectionOptionsType<E> & {
+export interface ByTagProjectionOptionsType<E> extends ProjectionOptionsType<E> {
   readonly tag: TagFilter;
-};
+}
 
 /**
  * Fluent builder for the fields shared by every projection.  The

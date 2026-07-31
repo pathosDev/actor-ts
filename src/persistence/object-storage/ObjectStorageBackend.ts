@@ -51,7 +51,7 @@ export type ObjectFetched = {
   readonly contentType?: string;
 };
 
-export type ObjectStorageBackend = {
+export interface ObjectStorageBackend {
   /** PUT — returns the new ETag.  Throws on CAS failure. */
   put(key: string, body: Uint8Array, options?: PutOptions): Promise<{ etag: string }>;
   /** GET — None if the object doesn't exist. */
@@ -65,7 +65,7 @@ export type ObjectStorageBackend = {
   list(options: { readonly prefix: string; readonly limit?: number }): Promise<ObjectInfo[]>;
   /** Optional: shut down any underlying client / file handle. */
   close?(): Promise<void>;
-};
+}
 
 /**
  * CAS conflict — thrown by `put` when `ifMatch` / `ifNoneMatch` rejects.

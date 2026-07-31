@@ -26,11 +26,11 @@ export type SqlResult = {
 };
 
 /** Anything that can run a statement — a pool, or a transaction's connection. */
-export type SqlExecutor = {
+export interface SqlExecutor {
   query(sql: string, params?: ReadonlyArray<unknown>): Promise<SqlResult>;
-};
+}
 
-export type SqlPool = SqlExecutor & {
+export interface SqlPool extends SqlExecutor {
   /**
    * Run `body` against a dedicated connection, committing on return and
    * rolling back on throw.  The rollback is best-effort: a driver that has
@@ -45,4 +45,4 @@ export type SqlPool = SqlExecutor & {
    */
   withTransaction<T>(body: (transaction: SqlExecutor) => Promise<T>): Promise<T>;
   end(): Promise<void>;
-};
+}

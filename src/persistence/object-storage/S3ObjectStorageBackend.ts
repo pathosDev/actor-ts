@@ -225,10 +225,10 @@ type S3ListResult = {
   NextContinuationToken?: string;
 };
 
-export type S3ClientLike = {
+export interface S3ClientLike {
   send(command: unknown): Promise<S3PutResult & S3GetResult & S3ListResult>;
   destroy?(): void;
-};
+}
 
 const s3SdkLazy: Lazy<Promise<S3SdkModule>> = Lazy.of(async () => {
   try {

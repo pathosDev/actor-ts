@@ -10,7 +10,7 @@ import type { K8sFetchClient } from './k8sApi.js';
  * `client` is a test seam — pass a fake `K8sFetchClient` to drive the
  * lease without a real API server.
  */
-export type KubernetesLeaseOptionsType = LeaseOptionsType & {
+export interface KubernetesLeaseOptionsType extends LeaseOptionsType {
   /** Kubernetes namespace that owns the `coordination.k8s.io/v1/Lease` object. */
   readonly namespace: string;
   /** API-server URL.  Defaults to the in-cluster service or `https://kubernetes.default.svc`. */
@@ -21,7 +21,7 @@ export type KubernetesLeaseOptionsType = LeaseOptionsType & {
   readonly caCert?: string;
   /** Test seam — inject a fake fetch client. */
   readonly client?: K8sFetchClient;
-};
+}
 
 /**
  * Fluent builder for {@link KubernetesLeaseOptionsType}.  Extends

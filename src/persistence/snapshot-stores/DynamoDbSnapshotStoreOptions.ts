@@ -5,12 +5,12 @@ import {
   type DynamoDbOptionsBaseType,
 } from '../journals/DynamoDbOptionsBase.js';
 
-export type DynamoDbSnapshotStoreOptionsType = DynamoDbOptionsBaseType & {
+export interface DynamoDbSnapshotStoreOptionsType extends DynamoDbOptionsBaseType {
   /** Snapshots table name.  Default: `actor_ts_snapshots`. */
   readonly snapshotsTable?: string;
   /** How many snapshots to keep per persistence id.  Default: 3; `<= 0` keeps all. */
   readonly keepN?: number;
-};
+}
 
 /**
  * Fluent builder for {@link DynamoDbSnapshotStoreOptionsType}:

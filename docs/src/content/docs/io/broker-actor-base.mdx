@@ -270,9 +270,9 @@ path before it ever attempts to connect.
 ```ts
 import { BrokerActor, type OutboundEnvelope, type BrokerCommonOptionsType } from 'actor-ts';
 
-type MyProtocolOptionsType = BrokerCommonOptionsType & {
+interface MyProtocolOptionsType extends BrokerCommonOptionsType {
   readonly url: string;
-};
+}
 
 class MyProtocolActor extends BrokerActor<MyProtocolOptionsType, Command, MyPayload> {
   private connection: MyClient | null = null;

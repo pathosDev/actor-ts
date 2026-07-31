@@ -56,7 +56,7 @@ export function devToolsPublishCommand(
  * side, so the hub does not import `DevToolsServer` — the server holds
  * a ref to the hub, and a type edge back would be a cycle.
  */
-export type DevToolsHubContext = {
+export interface DevToolsHubContext {
   /** Handshake answer, including panel availability. */
   welcome(): Omit<WelcomeFrame, 'kind' | 'protocolVersion'>;
   /** True when a tap is installed for `stream`. */
@@ -72,7 +72,7 @@ export type DevToolsHubContext = {
    * panel is looking at it.
    */
   streamSubscribersChanged(stream: DevToolsStreamId, count: number): void;
-};
+}
 
 /** Per-connection state. */
 type DevToolsSession = {

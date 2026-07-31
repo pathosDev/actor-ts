@@ -15,7 +15,7 @@ import type {
   JetStreamStreamConfig,
 } from './JetStreamActor.js';
 
-export type JetStreamOptionsType = BrokerCommonOptionsType & {
+export interface JetStreamOptionsType extends BrokerCommonOptionsType {
   /** NATS server URLs. */
   readonly servers?: ReadonlyArray<string> | string;
   /** Optional credentials. */
@@ -36,7 +36,7 @@ export type JetStreamOptionsType = BrokerCommonOptionsType & {
    * (kafkajs-style failure).  Default = `consumer.ackWaitMs ?? 30s`.
    */
   readonly acknowledgmentTimeout?: number;
-};
+}
 
 export class JetStreamOptionsBuilder extends BrokerOptionsBuilder<JetStreamOptionsType> {
   /** Start a fresh builder.  Equivalent to `new JetStreamOptionsBuilder()`. */

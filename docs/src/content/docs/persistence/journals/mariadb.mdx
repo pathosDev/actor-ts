@@ -79,15 +79,15 @@ type MariaDbConnection = {
   poolConfig?: Record<string, unknown>;   // { host, port, user, password, database, … }
   pool?:       MariaDbPoolLike;           // pre-built / shared pool
 };
-type MariaDbJournalOptions = MariaDbConnection & {
+interface MariaDbJournalOptions extends MariaDbConnection {
   eventsTable?: string; tagsTable?: string; autoCreateTables?: boolean;
-};
-type MariaDbSnapshotStoreOptions = MariaDbConnection & {
+}
+interface MariaDbSnapshotStoreOptions extends MariaDbConnection {
   snapshotsTable?: string; keepN?: number; autoCreateTables?: boolean;
-};
-type MariaDbDurableStateStoreOptions = MariaDbConnection & {
+}
+interface MariaDbDurableStateStoreOptions extends MariaDbConnection {
   table?: string; autoCreateTables?: boolean;
-};
+}
 ```
 
 Discrete `poolConfig` (host/user/password/database) is the most portable

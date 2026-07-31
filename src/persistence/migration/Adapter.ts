@@ -50,25 +50,25 @@ export type OutboundFrame<JournalShape = unknown> = {
  * event union the actor knows; `JournalShape` defaults to the same type
  * but may diverge if the user wants to store a slimmer wire representation.
  */
-export type EventAdapter<DomainEvent, JournalShape = DomainEvent> = {
+export interface EventAdapter<DomainEvent, JournalShape = DomainEvent> {
   /** Stable identifier for the *current* event variant — used as `_t` on disk. */
   manifest(event: DomainEvent): string;
   /** Convert a domain event to the journal triple. */
   toJournal(event: DomainEvent): OutboundFrame<JournalShape>;
   /** Inverse: take any past version off disk, return a current-version domain event. */
   fromJournal(stored: StoredFrame): DomainEvent;
-};
+}
 
 /**
  * Adapter for `PersistentActor` snapshots.  Structurally identical to
  * `EventAdapter` but kept as a separate type so signatures read clearly
  * (a `snapshotAdapter()` returning an `EventAdapter` would be misleading).
  */
-export type SnapshotAdapter<DomainState, StoredShape = DomainState> = {
+export interface SnapshotAdapter<DomainState, StoredShape = DomainState> {
   manifest(state: DomainState): string;
   toJournal(state: DomainState): OutboundFrame<StoredShape>;
   fromJournal(stored: StoredFrame): DomainState;
-};
+}
 
 /**
  * Adapter for `DurableStateActor` — same shape as `SnapshotAdapter`, alias

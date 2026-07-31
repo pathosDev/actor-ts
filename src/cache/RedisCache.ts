@@ -32,7 +32,7 @@ import type { RedisCacheOptions, RedisCacheOptionsType } from './RedisCacheOptio
  * here so a custom client (mock, wrapper, Cluster) can satisfy the
  * contract without pulling in the full ioredis types.
  */
-export type RedisClientLike = {
+export interface RedisClientLike {
   get(key: string): Promise<string | null>;
   set(key: string, value: string): Promise<unknown>;
   set(key: string, value: string, mode: 'PX', ttlMs: number): Promise<unknown>;
@@ -46,7 +46,7 @@ export type RedisClientLike = {
   /** Bulk set — variadic `key1, value1, key2, value2, …`.  No per-key TTL. */
   mset(...keyValuePairs: string[]): Promise<unknown>;
   quit(): Promise<unknown>;
-};
+}
 
 export class RedisCache implements Cache {
   private readonly clientLazy: Lazy<Promise<RedisClientLike>>;
@@ -216,10 +216,10 @@ export class RedisCache implements Cache {
 
 /* ---------------------------- internals --------------------------------- */
 
-type RedisConstructor = {
+interface RedisConstructor {
   new (url: string): RedisClientLike;
   new (settings: { host?: string; port?: number; password?: string; db?: number }): RedisClientLike;
-};
+}
 
 const ioredisLazy: Lazy<Promise<unknown>> = Lazy.of(async () => {
   try {

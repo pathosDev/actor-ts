@@ -490,27 +490,31 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Changed
 
-- **Every `interface` is now a `type` alias** (#503) — 1060 declarations across
-  `src/`, the test suites, examples, benchmarks and the DevTools UI, plus all
-  267 declarations in the documentation's code samples.  Heritage clauses
-  became intersections (`type X = Base & { … }`).
-  Structurally identical for consumers: no signature changed, and `implements`
-  works against a type alias exactly as it did against an interface.  The one
-  behavioural difference is a capability removal — an exported name can no
-  longer be extended by declaration merging
-  (`declare module 'actor-ts' { interface X { … } }`); write an intersection in
-  your own code instead.  Nothing in the repo relied on it, and nothing could
-  have: there was not a single `declare module` or `declare global` in the tree.
-  Why bother, given it is invisible at runtime: one declaration form means no
-  accidental merging into a public name, and uniform behaviour under `keyof` /
-  `Partial` / mapped types — which `OptionsValidator` depends on to typo-check
-  option field names against `keyof XOptionsType`.
-  Three shapes stay interfaces, each with a comment saying why: `Span`,
-  `NodeSocketLike` and `NodeWorkerThread` return the polymorphic `this` type,
-  which TS allows only in a class or interface body (TS2526).  For `Span` that
-  is deliberate API design — an adapter's own span class keeps chaining as its
-  own type instead of widening.  The rule and its exceptions are now written
-  down in AGENTS.md, which previously only implied it.
+- **One declaration form per job: `interface` for contracts and heritage,
+  `type` for data** (#503, #508).  The codebase used to mix the two with no
+  stated rule.  It now has one: a declaration is an `interface` when it
+  prescribes function heads — any method, call or construct signature — or
+  when it `extends` another shape; everything else is a `type`, including
+  plain data shapes, unions, and mapped and conditional types.  A
+  function-typed *property* (`onLost?: () => void`) is not a function head.
+  Across `src/`, the test suites, examples, benchmarks, the DevTools UI and
+  the documentation's code samples that comes to 423 interfaces and 1690 type
+  aliases.  In practice: the contracts you implement — `Journal`,
+  `SnapshotStore`, `Lease`, `Transport`, `Serializer`, `Cache`, `Tracer`,
+  `Span`, `DowningProvider`, `AllocationStrategy` — are interfaces, as are
+  the option shapes that extend a backend connection; the records they carry
+  are aliases.
+  Nothing in the published type surface changes shape, and no signature
+  moved.  The one consequence for consumers is that a name declared as a
+  `type` can no longer be extended by declaration merging
+  (`declare module 'actor-ts' { interface X { … } }`) — write an intersection
+  in your own code instead.  That was already true of nothing in this repo:
+  there is not a single `declare module` or `declare global` in the tree.
+  One shape declares a function head and stays a `type` on purpose:
+  `NativeWorker` in the web-worker backend intersects the DOM `Worker` with
+  deliberately narrower listener signatures, which an intersection accepts as
+  overloads and `extends` rejects as incompatible.  It carries a comment
+  saying so.  The rule itself is written down in AGENTS.md.
 
 - **Messages are named by their `kind`, not `Object`.** Every tool that
   lists what an actor handled — the profiler's heaviest handlers, the

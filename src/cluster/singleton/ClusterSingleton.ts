@@ -14,14 +14,14 @@ import { StartSingletonOptionsValidator } from './StartSingletonOptions.js';
 import type { StartSingletonOptions, StartSingletonOptionsType } from './StartSingletonOptions.js';
 import { ClusterSingletonProxy } from './ClusterSingletonProxy.js';
 
-export type SingletonHandle<T> = {
+export interface SingletonHandle<T> {
   /** Location-transparent ActorRef — tell here, the leader's instance receives. */
   readonly proxy: ClusterSingletonProxy<T>;
   /** Local manager — stopping it takes this node out of rotation. */
   readonly manager: ActorRef;
   /** Stop both proxy and local manager. */
   stop(): void;
-};
+}
 
 /**
  * Extension registered on the ActorSystem that manages all

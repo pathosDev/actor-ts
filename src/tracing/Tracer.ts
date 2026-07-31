@@ -50,12 +50,6 @@ export type SpanOptions = {
   readonly startTimeMs?: number;
 };
 
-/**
- * Stays an `interface` against the project-wide `type` rule: the fluent
- * setters return the polymorphic `this` type, so an adapter's own span class
- * chains as its own type rather than widening to `Span`.  TS allows `this`
- * only in a class or interface body (TS2526).
- */
 export interface Span {
   /** The span's own context — what children would inherit. */
   context(): SpanContext;
@@ -68,7 +62,7 @@ export interface Span {
   readonly ended: boolean;
 }
 
-export type Tracer = {
+export interface Tracer {
   startSpan(name: string, options?: SpanOptions): Span;
 
   /** Run `fn` with `span` as the active span (read by `activeSpan()`). */
@@ -86,7 +80,7 @@ export type Tracer = {
 
   /** Inverse of `injectContext` — recover a `SpanContext` from a carrier. */
   extractContext(carrier: TraceCarrier | null | undefined): SpanContext | null;
-};
+}
 
 /**
  * Wire-shape for cross-process span propagation.  Mirrors the W3C

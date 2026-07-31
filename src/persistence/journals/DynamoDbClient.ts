@@ -51,7 +51,7 @@ export type DynamoDbTableDescription = {
  * The operations the persistence stores need.  Deliberately not the whole API:
  * an operation absent here is one no store issues.
  */
-export type DynamoDbOperations = {
+export interface DynamoDbOperations {
   putItem(input: Record<string, unknown>): Promise<unknown>;
   getItem(input: Record<string, unknown>): Promise<DynamoDbGetResult>;
   query(input: Record<string, unknown>): Promise<DynamoDbQueryResult>;
@@ -64,13 +64,13 @@ export type DynamoDbOperations = {
   createTable(input: Record<string, unknown>): Promise<unknown>;
   describeTable(input: Record<string, unknown>): Promise<DynamoDbTableDescription>;
   close(): Promise<void>;
-};
+}
 
 /** The low-level client the adapter wraps. */
-export type DynamoDbClientLike = {
+export interface DynamoDbClientLike {
   send(command: unknown): Promise<Record<string, unknown>>;
   destroy?(): void;
-};
+}
 
 type DynamoDbSdkModule = {
   DynamoDBClient: new (config: Record<string, unknown>) => DynamoDbClientLike;

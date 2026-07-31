@@ -185,7 +185,7 @@ type AmqpRawMessage = {
   properties?: Record<string, unknown>;
 };
 
-type AmqpChannelLike = {
+interface AmqpChannelLike {
   prefetch(count: number): Promise<void>;
   assertQueue(queue: string, options: { durable?: boolean; autoDelete?: boolean; exclusive?: boolean }): Promise<unknown>;
   bindQueue(queue: string, exchange: string, routingKey: string): Promise<unknown>;
@@ -201,18 +201,18 @@ type AmqpChannelLike = {
   nack(message: AmqpRawMessage, allUpTo: boolean, requeue: boolean): void;
   once(event: 'drain', cb: () => void): void;
   close(): Promise<void>;
-};
+}
 
-type AmqpConnectionLike = {
+interface AmqpConnectionLike {
   createChannel(): Promise<AmqpChannelLike>;
   on(event: 'error', cb: (err: Error) => void): void;
   on(event: 'close', cb: () => void): void;
   close(): Promise<void>;
-};
+}
 
-type AmqpLibModule = {
+interface AmqpLibModule {
   connect(url: string): Promise<AmqpConnectionLike>;
-};
+}
 
 const amqpLazy: Lazy<Promise<AmqpLibModule>> = Lazy.of(
   () => lazyImportModule<AmqpLibModule>('amqplib', { context: 'AmqpActor' }),

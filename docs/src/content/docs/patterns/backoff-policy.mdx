@@ -9,9 +9,9 @@ from any specific retry or supervisor, so the calculation is
 trivially testable and reusable.
 
 ```ts
-type BackoffPolicy = {
+interface BackoffPolicy {
   delayFor(restartCount: number): number;
-};
+}
 ```
 
 `restartCount` is 0-based — the *first* retry passes `0`, the

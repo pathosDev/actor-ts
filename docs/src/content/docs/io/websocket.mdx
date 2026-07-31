@@ -50,14 +50,14 @@ The constructor takes `Partial<WebsocketClientOptionsType<TOut, TIn>>`.
 Only `url` is required; everything else has a default.
 
 ```ts
-type WebsocketClientOptionsType<TOut, TIn> = BrokerCommonOptionsType & {
+interface WebsocketClientOptionsType<TOut, TIn> extends BrokerCommonOptionsType {
   url:              string;                        // required — ws:// or wss://
   protocols?:       string | string[];             // subprotocols
   codec?:           WebsocketCodec<TOut, TIn>;             // default jsonCodec()
   maxFrameBytes?:   number;                         // default 1 MiB; oversize inbound dropped with a warning
   onInvalidMessage?: 'drop' | 'hook' | 'disconnect'; // default 'drop'
   pingIntervalMs?:  number;                         // application-level ping; default off
-};
+}
 ```
 
 Because the settings extend `BrokerCommonOptionsType`, the

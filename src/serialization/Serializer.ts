@@ -3,7 +3,7 @@
  * persistence.  The contract is intentionally small so that custom formats
  * (Protobuf, Avro, msgpack, …) slot in as plug-ins without touching core.
  */
-export type Serializer<T = unknown> = {
+export interface Serializer<T = unknown> {
   /**
    * Stable identifier that is embedded in every frame.  Numbers 1..99 are
    * reserved for the actor-ts built-ins (JSON=1, CBOR=2).  User-defined
@@ -33,7 +33,7 @@ export type Serializer<T = unknown> = {
    * side (or '' when the serializer does not use one).
    */
   fromBinary(bytes: Uint8Array, manifest: string): T;
-};
+}
 
 /**
  * Marker payload emitted whenever a serializer round-trips a value through

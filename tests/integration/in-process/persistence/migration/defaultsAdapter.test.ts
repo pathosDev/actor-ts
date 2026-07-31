@@ -6,7 +6,7 @@ import {
 import { MigrationError } from '../../../../../src/persistence/migration/Envelope.js';
 
 type DepositedV2 = { kind: 'deposited'; amount: number; currency: 'USD' | 'EUR' };
-type DepositedV3 = DepositedV2 & { channel: 'web' | 'mobile' };
+interface DepositedV3 extends DepositedV2 { channel: 'web' | 'mobile' }
 
 describe('defaultsAdapter — additive evolution', () => {
   test('single-step: v1 stored → v2 fills currency', () => {
