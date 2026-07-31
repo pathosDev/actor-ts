@@ -62,7 +62,23 @@ export abstract class PersistentActor<Command, Event, State> extends Actor<Comma
   /** Default initial state when no snapshot and no events exist. */
   abstract initialState(): State;
 
-  /** Pure state-update function — MUST be deterministic. */
+  /**
+   * Pure state-update function — MUST be deterministic, and is
+   * deliberately synchronous where `onCommand` is async.
+   *
+   * A command decides and therefore does I/O (`persist` writes to the
+   * journal); an event is already a fact, and folding a fact into state
+   * is arithmetic.  Anything you would want to `await` here — a read, a
+   * notification — is precisely what must NOT run again on recovery.
+   * Put it in the `persist` callback or `onRecoveryComplete`, neither of
+   * which replay.
+   *
+   * Read `state` from the parameter, never `this.state`: during replay
+   * this runs detached inside `replayState`, before `this.state` has
+   * been assigned, and the DevTools time-travel panel borrows it as a
+   * free fold.  A handler that reads `this.state` works on the persist
+   * path and fails only after a restart.
+   */
   abstract onEvent(state: State, event: Event): State;
 
   /** Handle an incoming command — typically calls `persist(event, cb)`. */

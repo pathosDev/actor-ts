@@ -130,6 +130,21 @@ over the actor's lifetime.  A side effect inside `onEvent` runs
 during every recovery, which means duplicate emails / duplicate
 HTTP calls / duplicated everything.
 
+That is also why `onEvent` is **synchronous while `onCommand` is
+async** — the asymmetry is the point, not an oversight.  A command
+decides, and deciding does I/O: `persist` writes to the journal.
+An event is already a fact, and folding a fact into state is
+arithmetic.  Anything you would want to `await` here is precisely
+what must not run again on recovery; put it in the `persist`
+callback or `onRecoveryComplete`, neither of which replay.
+
+Read `state` from the **parameter, never `this.state`**.  During
+replay `onEvent` runs detached, before `this.state` has been
+assigned — and the DevTools time-travel panel borrows it the same
+way, as a free fold over any point in history.  A handler that
+reaches for `this.state` works on the persist path and fails only
+after a restart, which is the most expensive way to find out.
+
 ### `onCommand(state, command) → void | Promise<void>`
 
 Validates the command against the current state and decides what
@@ -209,6 +224,37 @@ in order against the recovered state.
 last event is replayed.  Use it for one-time post-recovery setup
 (register watchers, fetch related actors, etc.) — but not for
 side effects per event, which would duplicate on every restart.
+A throw from this hook is an ordinary actor failure and goes to
+supervision; it is not a recovery failure, because the state
+recovered fine.
+
+### When recovery fails
+
+A corrupt event, a missing upcaster, a snapshot the integrity
+check refuses — recovery can throw, and then `onRecoveryFailure`
+is called.
+
+**It is a notification, not a decision.** Recovery failure is
+terminal either way; the hook only chooses who hears about it:
+
+```ts
+// Default — rethrows, so the failure reaches supervision as an
+// ActorInitializationError and the strategy decides.
+onRecoveryFailure(reason: Error): void { throw reason; }
+
+// Override that returns — you have taken the failure as handled,
+// and the actor is then stopped.
+override onRecoveryFailure(reason: Error): void {
+  this.metrics.recoveryFailed.inc();
+}
+```
+
+The actor cannot carry on either way: `state` was never assigned
+and `lastSequenceNr` is unknown, so there is no state in which it
+could answer a command.  Stopping is what keeps that visible —
+commands already queued become **dead letters** instead of
+disappearing into the stash, and the stop is published on the
+event stream.
 
 ## Persistence ID
 
@@ -342,11 +388,15 @@ import { Aside } from '@astrojs/starlight/components';
   actor.tell({ kind: 'deposit', amount: 100 });
   // ↑ this `tell` arrives before recovery completes
   ```
-  Commands sent before recovery finishes are stashed and processed
-  once `onRecoveryComplete` runs.  This is usually transparent
-  but it means a slow recovery (10 000 events through a slow
-  journal) delays the first response.  Monitor recovery latency
+  Commands sent before recovery finishes wait in the mailbox and are
+  processed once `onRecoveryComplete` runs.  This is usually
+  transparent but it means a slow recovery (10 000 events through a
+  slow journal) delays the first response.  Monitor recovery latency
   in production.
+
+  If they never arrive at all, check whether recovery *failed*
+  rather than merely being slow — see [When recovery
+  fails](#when-recovery-fails).
 </Aside>
 
 <Aside type="caution" title="Mutating state from `onCommand`">

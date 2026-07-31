@@ -161,8 +161,11 @@ writeVersion` haben — sonst wirft `toJournal`.
 ```
 
 Wenn ein Schritt wirft, schlägt die Recovery fehl, und der Fehler
-kommt über das `onRecoveryFailure` des Actors zum Vorschein.  Eine
-**Chain-Lücke** — kein Upcaster für den Cursor registriert, bevor
+kommt über das `onRecoveryFailure` des Actors zum Vorschein — und der
+Actor stoppt anschließend, sofern dieser Hook nicht in die Supervision
+rethrowt (siehe [Wenn die Recovery
+fehlschlägt](/de/persistence/persistent-actor/#wenn-die-recovery-fehlschlägt)).
+Eine **Chain-Lücke** — kein Upcaster für den Cursor registriert, bevor
 `currentVersion` erreicht ist — wirft ein `MigrationError`, das die
 fehlende `fromVersion` nennt.
 

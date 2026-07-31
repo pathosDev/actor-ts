@@ -281,15 +281,23 @@ Siehe [Runtime — Compatibility Matrix](/de/runtime/compatibility-matrix/).
 ## Debugging
 
 <Aside type="caution" title="Warum empfängt mein Actor keine Nachrichten?">
-  Drei häufige Ursachen:
+  Vier häufige Ursachen:
   - **Der Ref zeigt auf einen gestoppten Actor** — Nachrichten
     werden an `/deadLetters` geroutet (prüfe das System-Log).
   - **Die Mailbox ist voll** mit `reject`-Overflow — `tell` wirft
     `MailboxFullError` am Sender.  Fang es dort, wo Du tellst.
   - **Recovery ist noch nicht abgeschlossen** für einen
     `PersistentActor` — Nachrichten, die vor `onRecoveryComplete`
-    gesendet werden, werden gestasht.  Langsame Recovery
+    gesendet werden, warten in der Mailbox.  Langsame Recovery
     verursacht scheinbare Verzögerungen.
+  - **Die Recovery ist *fehlgeschlagen*** bei einem
+    `PersistentActor` — ein korruptes Event oder ein abgelehnter
+    Snapshot.  Der Actor stoppt, seine Nachrichten gehen also an
+    `/deadLetters`.  Hat ein `onRecoveryFailure`-Override den Fehler
+    verschluckt, ist die Log-Zeile, nach der Du suchst, "recovery
+    failed and onRecoveryFailure returned without rethrowing".
+    Siehe [Wenn die Recovery
+    fehlschlägt](/de/persistence/persistent-actor/#wenn-die-recovery-fehlschlägt).
 </Aside>
 
 <Aside type="caution" title="Warum startet mein Actor ständig neu?">

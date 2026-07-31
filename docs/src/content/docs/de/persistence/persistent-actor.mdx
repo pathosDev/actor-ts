@@ -133,6 +133,22 @@ Actors viele Male abgespielt werden.  Ein Seiteneffekt in `onEvent`
 läuft bei jeder Recovery, was duplizierte E-Mails / duplizierte
 HTTP-Calls / alles dupliziert bedeutet.
 
+Genau deshalb ist `onEvent` **synchron, während `onCommand` async
+ist** — die Asymmetrie ist der Punkt, kein Versehen.  Ein Command
+entscheidet, und Entscheiden macht I/O: `persist` schreibt ins
+Journal.  Ein Event ist bereits eine Tatsache, und eine Tatsache in
+den State zu falten ist Rechnen.  Alles, was du hier `await`en
+wolltest, ist genau das, was bei der Recovery nicht erneut laufen
+darf; es gehört in den `persist`-Callback oder nach
+`onRecoveryComplete` — beide werden nicht abgespielt.
+
+Lies `state` aus dem **Parameter, niemals aus `this.state`**.  Beim
+Replay läuft `onEvent` losgelöst, bevor `this.state` zugewiesen ist
+— und das DevTools-Time-Travel-Panel leiht es sich genauso, als
+freien Fold über jeden Punkt der Historie.  Ein Handler, der nach
+`this.state` greift, funktioniert auf dem Persist-Pfad und fällt
+erst nach einem Neustart um — die teuerste Art, das herauszufinden.
+
 ### `onCommand(state, command) → void | Promise<void>`
 
 Validiert das Command gegen den aktuellen State und entscheidet,
@@ -213,7 +229,38 @@ Actor sie der Reihe nach gegen den wiederhergestellten State ab.
 Abspielen des letzten Events feuert.  Verwende ihn für einmaliges
 Post-Recovery-Setup (Watchers registrieren, verwandte Actors
 beschaffen, etc.) — aber nicht für Seiteneffekte pro Event, die bei
-jedem Neustart duplizieren würden.
+jedem Neustart duplizieren würden.  Wirft dieser Hook, ist das ein
+gewöhnlicher Actor-Fehler und geht an die Supervision; es ist kein
+Recovery-Fehler, denn der State wurde einwandfrei wiederhergestellt.
+
+### Wenn die Recovery fehlschlägt
+
+Ein korruptes Event, ein fehlender Upcaster, ein Snapshot, den die
+Integritätsprüfung ablehnt — die Recovery kann werfen, und dann wird
+`onRecoveryFailure` aufgerufen.
+
+**Das ist eine Benachrichtigung, keine Entscheidung.** Ein
+Recovery-Fehler ist so oder so endgültig; der Hook wählt nur, wer
+davon erfährt:
+
+```ts
+// Default — rethrowt, der Fehler erreicht die Supervision als
+// ActorInitializationError, und die Strategie entscheidet.
+onRecoveryFailure(reason: Error): void { throw reason; }
+
+// Override, das zurückkehrt — du hast den Fehler als behandelt
+// übernommen, und der Actor wird daraufhin gestoppt.
+override onRecoveryFailure(reason: Error): void {
+  this.metrics.recoveryFailed.inc();
+}
+```
+
+Weitermachen kann der Actor in keinem der beiden Fälle: `state`
+wurde nie zugewiesen und `lastSequenceNr` ist unbekannt, es gibt
+also keinen Zustand, in dem er ein Command beantworten könnte.  Das
+Stoppen ist es, was das sichtbar hält — bereits wartende Commands
+werden zu **Dead Letters**, statt im Stash zu verschwinden, und der
+Stopp wird auf dem Event-Stream veröffentlicht.
 
 ## Persistenz-ID
 
@@ -349,11 +396,16 @@ import { Aside } from '@astrojs/starlight/components';
   actor.tell({ kind: 'deposit', amount: 100 });
   // ↑ dieses `tell` kommt an, bevor die Recovery abgeschlossen ist
   ```
-  Commands, die vor Abschluss der Recovery gesendet werden, werden
-  gestasht und verarbeitet, sobald `onRecoveryComplete` läuft.  Das
-  ist normalerweise transparent, bedeutet aber, dass eine langsame
-  Recovery (10 000 Events durch ein langsames Journal) die erste
-  Antwort verzögert.  Überwache die Recovery-Latenz in Produktion.
+  Commands, die vor Abschluss der Recovery gesendet werden, warten in
+  der Mailbox und werden verarbeitet, sobald `onRecoveryComplete`
+  läuft.  Das ist normalerweise transparent, bedeutet aber, dass eine
+  langsame Recovery (10 000 Events durch ein langsames Journal) die
+  erste Antwort verzögert.  Überwache die Recovery-Latenz in
+  Produktion.
+
+  Kommen sie gar nicht an, prüfe, ob die Recovery *fehlgeschlagen*
+  ist statt nur langsam zu sein — siehe [Wenn die Recovery
+  fehlschlägt](#wenn-die-recovery-fehlschlägt).
 </Aside>
 
 <Aside type="caution" title="State aus `onCommand` mutieren">
