@@ -73,12 +73,32 @@ export class MemberLeft { constructor(public readonly member: Member) {} }
  */
 export class MemberRemoved { constructor(public readonly member: Member) {} }
 
-/** Shard ownership map recomputed. */
+/** One region participating in a sharded type, as carried by {@link ShardMapChanged}. */
+export type ShardMapRegion = {
+  /** `<node>|<path>` — the same key the coordinator uses in the shard map. */
+  readonly key: string;
+  readonly address: string;
+  readonly path: string;
+  readonly proxy: boolean;
+  readonly shardCount: number;
+};
+
+/**
+ * Shard ownership map recomputed.  Published by every node's region whenever
+ * the coordinator reallocates, so a listener sees the same map wherever it
+ * subscribes — the coordinator itself only runs on the leader.
+ *
+ * Bursty by nature (a fresh cluster places every shard at once), so the
+ * coordinator coalesces a burst into one broadcast; `version` counts
+ * broadcasts, not individual assignments.
+ */
 export class ShardMapChanged {
   constructor(
     public readonly type: string,
+    /** shardId → region key. */
     public readonly shards: ReadonlyMap<number, string>,
     public readonly version: number,
+    public readonly regions: ReadonlyArray<ShardMapRegion> = [],
   ) {}
 }
 

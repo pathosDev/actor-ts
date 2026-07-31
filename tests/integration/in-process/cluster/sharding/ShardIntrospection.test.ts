@@ -7,6 +7,7 @@ import { Cluster } from '../../../../../src/cluster/Cluster.js';
 import { ClusterOptions } from '../../../../../src/cluster/ClusterOptions.js';
 import { InMemoryTransport } from '../../../../../src/cluster/Transport.js';
 import { NodeAddress } from '../../../../../src/cluster/NodeAddress.js';
+import { ShardMapChanged } from '../../../../../src/cluster/ClusterEvents.js';
 import { StartShardingOptions } from '../../../../../src/cluster/sharding/StartShardingOptions.js';
 import { hashShardId } from '../../../../../src/cluster/sharding/ShardAllocator.js';
 import { LogLevel, NoopLogger } from '../../../../../src/Logger.js';
@@ -102,14 +103,61 @@ describe('Shard actors', () => {
 
     // Two ids that hash into different shards, so at least one of them very
     // likely lands on the non-seed node.
-    for (const entityId of ['alpha', 'beta', 'gamma', 'delta']) {
-      seed.region.tell({ id: entityId, kind: 'increment' });
-    }
-    await waitFor(() => nodesHosting(nodes, 'alpha').length === 1);
+    const entityIds = ['alpha', 'beta', 'gamma', 'delta'];
+    for (const entityId of entityIds) seed.region.tell({ id: entityId, kind: 'increment' });
+    // Each id waits on its own shard being placed, so they land independently.
+    await waitFor(() => entityIds.every((id) => nodesHosting(nodes, id).length > 0));
 
-    for (const entityId of ['alpha', 'beta', 'gamma', 'delta']) {
+    for (const entityId of entityIds) {
       expect(nodesHosting(nodes, entityId)).toHaveLength(1);
     }
+
+    await stopAll(nodes);
+  }, 20_000);
+});
+
+describe('ShardMapChanged', () => {
+  test('fires on every node, carrying the assignment map and the regions', async () => {
+    const systemName = 'shard-map';
+    const base = 46_900;
+    const seed = await startNode(systemName, base);
+    const other = await startNode(systemName, base + 1, [`${systemName}@h:${base}`]);
+    const nodes = [seed, other];
+
+    const seen = new Map<Node, ShardMapChanged[]>([[seed, []], [other, []]]);
+    for (const node of nodes) {
+      node.cluster.subscribe((event) => {
+        if (event instanceof ShardMapChanged) seen.get(node)!.push(event);
+      });
+    }
+
+    await waitFor(() => nodes.every((node) => node.cluster.upMembers().length === 2));
+    await sleep(200);
+
+    for (const entityId of ['m-1', 'm-2', 'm-3', 'm-4']) {
+      seed.region.tell({ id: entityId, kind: 'increment' });
+    }
+    // The first broadcast goes out when the regions register, before any
+    // shard has a home — wait for one that actually carries an assignment.
+    await waitFor(() => nodes.every((node) => seen.get(node)!.some((e) => e.shards.size > 0)));
+
+    for (const node of nodes) {
+      const last = seen.get(node)!.filter((e) => e.shards.size > 0).at(-1)!;
+      expect(last.type).toBe(TYPE_NAME);
+      expect(last.version).toBeGreaterThan(0);
+      expect(last.shards.size).toBeGreaterThan(0);
+      // Region detail travels with the event, so the DevTools panel does not
+      // have to read the coordinator's DistributedData snapshot.
+      expect(last.regions.length).toBeGreaterThan(0);
+      for (const region of last.regions) {
+        expect(region.path).toContain(`sharding-${TYPE_NAME}`);
+        expect(region.proxy).toBe(false);
+      }
+    }
+
+    // A burst of placements is coalesced — four entities do not mean four
+    // broadcasts per shard.
+    expect(seen.get(seed)!.length).toBeLessThan(NUM_SHARDS);
 
     await stopAll(nodes);
   }, 20_000);

@@ -713,6 +713,22 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Fixed
 
+- **`ShardMapChanged` is actually published now** (#513).  The event was
+  declared, exported, unit-tested for its shape, and consumed in two places —
+  the DevTools shard panel (`ClusterTap`) and
+  `examples/cluster/counter-node.ts`, which logs `shard map v<n>: n1=6, n2=5,
+  …`.  Nothing ever constructed it.  `ShardCoordinator` mutated `shardHome` in
+  four places and published nothing, so the panel stayed empty forever and the
+  example's listener never fired; both looked wired up until you ran them.  The
+  coordinator now broadcasts a `ShardMapUpdate` on every allocation change and
+  each region turns it into a local `ShardMapChanged` — via the region, because
+  the coordinator only runs on the leader and an event that fires on one node
+  out of N is no use to a per-node panel.  Broadcasts are coalesced (allocation
+  changes arrive one shard at a time, and a fresh cluster places every shard at
+  once), so `version` counts broadcasts rather than individual assignments.
+  `ShardMapChanged` also gained an optional fourth constructor argument
+  `regions`, which lets `ClusterTap` drop the hard-coded `regions: []` it had
+  been rendering; existing three-argument construction is unaffected.
 - **`bun run lint:package` is reproducible, and `lint:knip` exits 0 again**
   (#507).  The three package-health scripts invoked their tools through `bunx`,
   which — contrary to the first guess — does honour the manifest range and

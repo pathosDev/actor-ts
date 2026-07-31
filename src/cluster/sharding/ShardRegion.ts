@@ -11,6 +11,7 @@ import {
   LeaderChanged,
   MemberRemoved,
   MemberUp,
+  ShardMapChanged,
 } from '../ClusterEvents.js';
 import { NodeAddress, type NodeAddressData } from '../NodeAddress.js';
 import { RemoteActorRef } from '../RemoteActorRef.js';
@@ -32,6 +33,7 @@ import {
   type GetShards,
   type ShardHome,
   type ShardLocation,
+  type ShardMapUpdate,
   type ShardRegionStats,
   type HandOff,
   type HandOffComplete,
@@ -485,6 +487,7 @@ export class ShardRegion<TMessage = unknown> extends Actor<TMessage | ShardingMe
       .with({ $t: 'sharding.GetShardLocation' }, (m) => this.onGetShardLocation(m))
       .with({ $t: 'sharding.GetShardRegionStats' }, (m) => this.onGetShardRegionStats(m))
       .with({ $t: 'sharding.ClusterShardingStats' }, (m) => this.onClusterShardingStats(m))
+      .with({ $t: 'sharding.ShardMapUpdate' }, (m) => this.onShardMapUpdate(m))
       // Coordinator-only messages; regions ignore them.
       .otherwise(() => this.onUnhandled());
   }
@@ -602,6 +605,23 @@ export class ShardRegion<TMessage = unknown> extends Actor<TMessage | ShardingMe
     if (!ref) return;
     this.pendingLocationAsks.delete(shardId);
     for (const asker of waiting) asker.tell(ref as never);
+  }
+
+  /**
+   * Republish the coordinator's allocation map as a local cluster event.
+   *
+   * The coordinator runs only on the leader, so it is the region — which
+   * exists on every node — that puts `ShardMapChanged` in front of local
+   * subscribers.  Without this leg the event would fire on one node out of N,
+   * which is no use to a per-node DevTools panel or an application listener.
+   */
+  private onShardMapUpdate(message: ShardMapUpdate): void {
+    this.config.cluster._publishClusterEvent(new ShardMapChanged(
+      message.typeName,
+      new Map(message.shards),
+      message.version,
+      message.regions,
+    ));
   }
 
   /** The coordinator's fan-out leg: what this node hosts, and how full. */

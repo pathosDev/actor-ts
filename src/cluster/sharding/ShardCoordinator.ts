@@ -24,6 +24,7 @@ import type {
   RegisterRegion,
   ShardingMessage,
   ShardLocation,
+  ShardMapUpdate,
   ShardRegionStats,
 } from './ShardingProtocol.js';
 
@@ -74,6 +75,13 @@ type StatsQuery = {
 function regionKey(node: NodeAddress, path: string): string {
   return `${node}|${path}`;
 }
+
+/**
+ * How long allocation changes are gathered before one `ShardMapUpdate` goes
+ * out.  Long enough to fold a whole-cluster placement into a single
+ * broadcast, short enough that a panel still feels live.
+ */
+const SHARD_MAP_PUBLISH_DELAY_MS = 50;
 
 /**
  * Cluster-wide authoritative source of shard-to-region assignments.  Runs on
@@ -143,6 +151,13 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
    */
   private coordinatorStateInFlight = false;
   private coordinatorStateDirty = false;
+
+  /**
+   * Broadcast counter for `ShardMapChanged` — it counts *broadcasts*, not
+   * individual assignments, because a burst is coalesced into one.
+   */
+  private shardMapVersion = 0;
+  private shardMapPublishTimer: Cancellable | null = null;
 
   public readonly options: ShardCoordinatorOptionsType;
 
@@ -220,6 +235,7 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
     this.unsubscribeLeaseLost?.();
     this.rebalanceTimer?.cancel();
     this.acquireRetryTimer?.cancel();
+    this.shardMapPublishTimer?.cancel();
     for (const rebalance of this.rebalanceInProgress.values()) rebalance.timer.cancel();
     for (const query of this.statsQueries.values()) query.timer?.cancel();
     this.statsQueries.clear();
@@ -462,7 +478,17 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
     if (this.options.rememberEntities) {
       for (const shardId of message.hostedShards) this.shipRememberedEntities(shardId);
     }
+    this.afterShardMapChange();
+  }
+
+  /**
+   * One meaningful change to `regions` / `shardHome`: persist the snapshot and
+   * tell every region.  Both are coalesced, so calling this per mutation
+   * during a rebalance burst is fine.
+   */
+  private afterShardMapChange(): void {
     this.scheduleCoordinatorStateSave();
+    this.scheduleShardMapPublish();
   }
 
   private onGetShardHome(message: GetShardHome): void {
@@ -507,7 +533,7 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
     });
     this.flushPending(shardId);
     if (this.options.rememberEntities) this.shipRememberedEntities(shardId);
-    this.scheduleCoordinatorStateSave();
+    this.afterShardMapChange();
   }
 
   private onHandOffComplete(message: HandOffComplete): void {
@@ -664,11 +690,11 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
       if (inProg) { inProg.timer.cancel(); this.rebalanceInProgress.delete(shardId); }
       this.tryAllocate(shardId);
     }
-    // tryAllocate already schedules saves for each re-allocation;
-    // an extra one here would be redundant.  But if `info.shards`
-    // was empty (region had no shards) we still removed it from the
-    // regions map and need to record that.
-    if (info.shards.size === 0) this.scheduleCoordinatorStateSave();
+    // Losing the region is itself a change to the map even when it hosted
+    // nothing, and `tryAllocate` bails out early when there is nowhere left
+    // to put the shards — so record it unconditionally.  Both the save and
+    // the broadcast coalesce, so the overlap with tryAllocate costs nothing.
+    this.afterShardMapChange();
   }
 
   private onMemberRemoved(addr: NodeAddress): void {
@@ -806,6 +832,42 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
           this.scheduleCoordinatorStateSave();
         }
       });
+  }
+
+  /* ------------------------- Shard-map broadcast ---------------------- */
+
+  /**
+   * Tell every region that the allocation map moved.  Coalesced, because
+   * allocation changes arrive one shard at a time and a fresh cluster places
+   * every shard at once — one broadcast per shard would be pure noise for the
+   * DevTools panel and for any application listener.
+   */
+  private scheduleShardMapPublish(): void {
+    if (this.shardMapPublishTimer) return;
+    this.shardMapPublishTimer = this.system.scheduler.scheduleOnceFunction(
+      SHARD_MAP_PUBLISH_DELAY_MS,
+      () => { this.shardMapPublishTimer = null; this.publishShardMap(); },
+    );
+  }
+
+  private publishShardMap(): void {
+    if (!this.isActive()) return;
+    const update: ShardMapUpdate = {
+      $t: 'sharding.ShardMapUpdate',
+      typeName: this.options.typeName,
+      version: ++this.shardMapVersion,
+      shards: Array.from(this.shardHome.entries()),
+      regions: Array.from(this.regions.entries()).map(([key, info]) => ({
+        key,
+        address: info.node.toString(),
+        path: info.path,
+        proxy: info.proxy,
+        shardCount: info.shards.size,
+      })),
+    };
+    // Proxies included: they route for this type and a panel on a proxy-only
+    // node has as much reason to render the map as one anywhere else.
+    for (const key of this.regions.keys()) this.sendToRegion(key, update);
   }
 
   private snapshotCoordinatorState(): CoordinatorStateData {

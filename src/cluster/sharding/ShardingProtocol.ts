@@ -211,6 +211,28 @@ export type GetShardLocation = {
 };
 
 /**
+ * Coordinator → every registered region: the allocation map changed.
+ *
+ * Each region turns this into a local `ShardMapChanged` cluster event, which
+ * is what gets the event onto *every* node — the coordinator only runs on the
+ * leader, and a listener that only fires there is no use to a per-node panel.
+ */
+export type ShardMapUpdate = {
+  readonly $t: 'sharding.ShardMapUpdate';
+  readonly typeName: string;
+  readonly version: number;
+  /** `[shardId, regionKey][]` — a Map's wire shape. */
+  readonly shards: ReadonlyArray<readonly [number, string]>;
+  readonly regions: ReadonlyArray<{
+    readonly key: string;
+    readonly address: string;
+    readonly path: string;
+    readonly proxy: boolean;
+    readonly shardCount: number;
+  }>;
+};
+
+/**
  * Wraps a user message forwarded between ShardRegions, carrying the
  * information needed to route a reply back to the original asker.
  *
@@ -259,7 +281,8 @@ export type ShardingMessage =
   | GetClusterShardingStats
   | ClusterShardingStats
   | GetShards
-  | GetShardLocation;
+  | GetShardLocation
+  | ShardMapUpdate;
 
 export function isShardingMessage(message: unknown): message is ShardingMessage {
   return typeof message === 'object'

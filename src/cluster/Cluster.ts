@@ -273,6 +273,19 @@ export class Cluster {
     this.envelopeHandler = handler;
   }
 
+  /**
+   * Publish a cluster event that this Cluster did not produce itself.
+   *
+   * Membership events all originate here, but `ShardMapChanged` is derived
+   * from state only the sharding coordinator has, and it has to surface on
+   * every node rather than just the leader's.  Rather than let sharding reach
+   * into `emit`, it goes through this door — same listeners, same event
+   * stream.
+   */
+  _publishClusterEvent(event: ClusterEvent): void {
+    this.emit(event);
+  }
+
   /** Route envelopes addressed to `path` to `handler`.  Returns unsubscribe. */
   _registerEnvelopeHandler(path: string, handler: EnvelopeHandler): () => void {
     this._envelopeHandlersByPath.set(path, handler);
