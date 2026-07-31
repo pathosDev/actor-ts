@@ -9,6 +9,7 @@
  *
  * Kill terminal 2 and watch terminals 1 and 3 pick up the stranded shards.
  */
+import { match } from 'ts-pattern';
 import {
   Actor,
   Cluster,
@@ -23,9 +24,10 @@ import {
 } from '../../src/index.js';
 import { attachDevTools } from '../devtools.js';
 
-type Command =
-  | { id: string; op: 'increment' }
-  | { id: string; op: 'get' };
+type IncrementCommand = { id: string; kind: 'increment' };
+type GetCommand = { id: string; kind: 'get' };
+
+type Command = IncrementCommand | GetCommand;
 
 class CounterEntity extends Actor<Command> {
   private count = 0;
@@ -39,15 +41,19 @@ class CounterEntity extends Actor<Command> {
   }
 
   override onReceive(command: Command): void {
-    switch (command.op) {
-      case 'increment':
-        this.count++;
-        this.log.info(`${this.self.path.name} = ${this.count}`);
-        break;
-      case 'get':
-        this.log.info(`${this.self.path.name} = ${this.count}`);
-        break;
-    }
+    match(command)
+      .with({ kind: 'increment' }, () => this.onIncrement())
+      .with({ kind: 'get' }, () => this.onGet())
+      .exhaustive();
+  }
+
+  private onIncrement(): void {
+    this.count++;
+    this.log.info(`${this.self.path.name} = ${this.count}`);
+  }
+
+  private onGet(): void {
+    this.log.info(`${this.self.path.name} = ${this.count}`);
   }
 }
 
@@ -105,7 +111,7 @@ async function main(): Promise<void> {
   const entities = ['alpha', 'beta', 'gamma', 'delta', 'epsilon', 'zeta', 'eta', 'theta'];
   const interval = setInterval(() => {
     const id = entities[tick % entities.length]!;
-    region.tell({ id, op: 'increment' });
+    region.tell({ id, kind: 'increment' });
     tick++;
   }, 400);
 

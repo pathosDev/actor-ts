@@ -9,12 +9,16 @@
  * A DOM table, not a canvas — the rows are text, and the paths want to
  * be selectable and copyable.
  */
+import { match } from 'ts-pattern';
 import { h, replaceChildren } from '../../core/dom.js';
 import { formatCount, formatTime, shortActorPath } from '../../core/format.js';
 import { signal } from '../../core/signal.js';
 import type { PanelContext, PanelInstance } from '../../shell/PanelRegistry.js';
 import type {
   ActorNode,
+  ActorStartedPayload,
+  ActorStoppedPayload,
+  ActorTreeSnapshotPayload,
   ExplainEntriesPayload,
   ExplainStatusResult,
   MessageOutcome,
@@ -201,22 +205,34 @@ export function mount(host: HTMLElement, context: PanelContext): PanelInstance {
     );
   }
 
+  function onActorTreeSnapshot(payload: ActorTreeSnapshotPayload): boolean {
+    actors.clear();
+    for (const actor of payload.actors) actors.set(actor.path, actor);
+    return true;
+  }
+
+  function onActorStarted(payload: ActorStartedPayload): boolean {
+    actors.set(payload.actor.path, payload.actor);
+    return true;
+  }
+
+  function onActorStopped(payload: ActorStoppedPayload): boolean {
+    actors.delete(payload.path);
+    return true;
+  }
+
+  /** Only the chooser's actor list matters here — other frames change nothing. */
+  function onOtherActorPayload(): boolean {
+    return false;
+  }
+
   const stopActors = context.tap.listen('actors', (payload) => {
-    switch (payload.kind) {
-      case 'actor-tree-snapshot':
-        actors.clear();
-        for (const actor of payload.actors) actors.set(actor.path, actor);
-        break;
-      case 'actor-started':
-        actors.set(payload.actor.path, payload.actor);
-        break;
-      case 'actor-stopped':
-        actors.delete(payload.path);
-        break;
-      default:
-        return;
-    }
-    renderChooser();
+    const changed = match(payload)
+      .with({ kind: 'actor-tree-snapshot' }, (p) => onActorTreeSnapshot(p))
+      .with({ kind: 'actor-started' }, (p) => onActorStarted(p))
+      .with({ kind: 'actor-stopped' }, (p) => onActorStopped(p))
+      .otherwise(() => onOtherActorPayload());
+    if (changed) renderChooser();
   });
 
   renderChooser();

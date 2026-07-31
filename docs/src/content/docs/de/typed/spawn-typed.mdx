@@ -21,15 +21,18 @@ Die Methoden-Form spiegelt die Standard-OO-API — `spawn` vs.
 ## `system.spawnTyped` — Top-Level
 
 ```ts
+import { match } from 'ts-pattern';
 import { ActorSystem, Behaviors, type Behavior, type ActorRef } from 'actor-ts';
 
-type Command = { kind: 'increment' } | { kind: 'get'; replyTo: ActorRef<number> };
+type IncrementCommand = { kind: 'increment' };
+type GetCommand = { kind: 'get'; replyTo: ActorRef<number> };
+type Command = IncrementCommand | GetCommand;
 
-const counter = (n: number): Behavior<Command> => Behaviors.receive((context, command) => {
-  if (command.kind === 'increment') return counter(n + 1);
-  if (command.kind === 'get') { command.replyTo.tell(n); return Behaviors.same; }
-  return Behaviors.same;
-});
+const counter = (n: number): Behavior<Command> => Behaviors.receive((context, command) =>
+  match(command)
+    .with({ kind: 'increment' }, () => counter(n + 1))
+    .with({ kind: 'get' }, (c) => { c.replyTo.tell(n); return Behaviors.same; })
+    .exhaustive());
 
 const system = ActorSystem.create('demo');
 const ref = system.spawnTyped(counter(0), 'counter');

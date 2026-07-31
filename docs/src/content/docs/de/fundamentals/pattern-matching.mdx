@@ -169,27 +169,6 @@ ignoriert, die er noch nicht behandeln kann.
 Exhaustiveness-Prüfung; greife bewusst dazu, wenn "ignoriere den
 Rest" die richtige Semantik ist.
 
-## Wann ein einfaches `if` zu bevorzugen ist
-
-Für Unions mit zwei oder drei Varianten liest sich eine einfache
-`if`-Kette sauberer:
-
-```ts
-override onReceive(command: Command): void {
-  if (command.kind === 'increment') this.count++;
-  else if (command.kind === 'decrement') this.count--;
-  else command.replyTo.tell(this.count);
-}
-```
-
-TypeScript verengt innerhalb jedes Branchs — der `else`-Arm sieht
-automatisch `{ kind: 'get'; replyTo: ... }`.  Du verlierst den
-`.exhaustive()`-Check, aber bei 2-3 Varianten sind die Kosten
-niedrig.
-
-Die Faustregel: **verwende `match` ab 4+ Varianten**, besonders
-wenn Arms Destructuring brauchen (`(m) => m.amount`).
-
 import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="`.exhaustive()` motzt und der Fehler ist undurchsichtig">
@@ -222,10 +201,11 @@ ts-pattern ist eine reguläre Runtime-Abhängigkeit des
 Frameworks — es wird automatisch zusammen mit actor-ts
 installiert, du musst also nichts zusätzlich hinzufügen.
 
-Das Framework verlangt nicht, dass du es verwendest; du kannst
-`onReceive` als einfaches Switch schreiben.  Aber jedes
-Codebeispiel in den Docs nimmt an, dass `import { match } from 'ts-pattern'`
-verfügbar ist, weil das die Konvention ist, der die Codebasis folgt.
+Jedes Codebeispiel in den Docs nimmt an, dass
+`import { match } from 'ts-pattern'` verfügbar ist, weil das die
+Konvention ist, der die Codebasis folgt: jeder Dispatch auf eine
+eingehende Nachricht, ein Event oder ein Command läuft über
+`match`, und jeder Arm delegiert an einen `onXxx`-Handler.
 
 ## Wie es weitergeht
 

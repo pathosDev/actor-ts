@@ -1,3 +1,4 @@
+import { match } from 'ts-pattern';
 import type { Config } from '../../config/Config.js';
 import { ConfigKeys } from '../../config/ConfigKeys.js';
 import { Lazy } from '../../util/Lazy.js';
@@ -32,8 +33,9 @@ export type TcpOutbound = Uint8Array | string;
  * via the standard `enqueueOutbound` path — the actor exposes a small
  * command surface (`send`) so user code can `tell({ kind: 'send', payload })`.
  */
-export type TcpSocketCommand =
-  | { readonly kind: 'send'; readonly payload: TcpOutbound };
+type SendCommand = { readonly kind: 'send'; readonly payload: TcpOutbound };
+
+export type TcpSocketCommand = SendCommand;
 
 export class TcpSocketActor extends BrokerActor<TcpSocketOptionsType, TcpSocketCommand, TcpOutbound> {
   private socket: NetSocket | null = null;
@@ -120,7 +122,13 @@ export class TcpSocketActor extends BrokerActor<TcpSocketOptionsType, TcpSocketC
   }
 
   override onReceive(command: TcpSocketCommand): void {
-    if (command.kind === 'send') this.enqueueOutbound(command.payload);
+    match(command)
+      .with({ kind: 'send' }, (c) => this.onSend(c))
+      .exhaustive();
+  }
+
+  private onSend(command: SendCommand): void {
+    this.enqueueOutbound(command.payload);
   }
 
   /* ---------------------------- framing ----------------------------- */

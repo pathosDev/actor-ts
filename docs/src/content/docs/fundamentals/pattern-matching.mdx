@@ -162,25 +162,6 @@ yet handle.
 exhaustiveness check; reach for it deliberately when "ignore the
 rest" is the right semantic.
 
-## When to prefer plain `if`
-
-For two- or three-variant unions, a plain `if`-chain reads cleaner:
-
-```ts
-override onReceive(command: Command): void {
-  if (command.kind === 'increment') this.count++;
-  else if (command.kind === 'decrement') this.count--;
-  else command.replyTo.tell(this.count);
-}
-```
-
-TypeScript narrows inside each branch — the `else` arm sees
-`{ kind: 'get'; replyTo: ... }` automatically.  You lose the
-`.exhaustive()` check, but at 2-3 variants the cost is low.
-
-The rule of thumb: **use `match` from 4+ variants**, especially
-when arms need destructuring (`(m) => m.amount`).
-
 import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="`.exhaustive()` complains and the error is opaque">
@@ -212,10 +193,11 @@ ts-pattern is a regular runtime dependency of the framework —
 it's installed automatically alongside actor-ts, so there's
 nothing extra to add.
 
-The framework doesn't require you to use it; you can write
-`onReceive` as a plain switch.  But every code example in the
-docs assumes `import { match } from 'ts-pattern'` is available,
-because that's the convention the codebase follows.
+Every code example in the docs assumes
+`import { match } from 'ts-pattern'` is available, because that's
+the convention the codebase follows: every dispatch on an incoming
+message, event or command goes through `match`, and every arm
+delegates to an `onXxx` handler.
 
 ## Where to next
 

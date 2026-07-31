@@ -11,6 +11,7 @@ reconnect).  For accepting **incoming** WS connections (server
 side), see [server WebSocket](/http/websocket/).
 
 ```ts
+import { match } from 'ts-pattern';
 import { WebsocketClientActor, WebsocketClientOptions, websocketSend } from 'actor-ts';
 
 type ClientMessage = { kind: 'ping'; n: number };
@@ -28,7 +29,13 @@ class Feed extends WebsocketClientActor<ClientMessage, ServerMessage> {
 
   onMessage(message: ServerMessage): void {
     // decoded server message
-    if (message.kind === 'pong') this.log.info(`pong ${message.n}`);
+    match(message)
+      .with({ kind: 'pong' }, (m) => this.onPong(m))
+      .exhaustive();
+  }
+
+  private onPong(message: PongMessage): void {
+    this.log.info(`pong ${message.n}`);
   }
 }
 
@@ -148,6 +155,7 @@ For binary protocols, `rawCodec()` is the escape hatch —
 yourself:
 
 ```ts
+import { match } from 'ts-pattern';
 import { rawCodec, type WebsocketFrame } from 'actor-ts';
 
 class Binary extends WebsocketClientActor<WebsocketFrame, WebsocketFrame> {
@@ -158,7 +166,13 @@ class Binary extends WebsocketClientActor<WebsocketFrame, WebsocketFrame> {
     super(webSocketClientOptions);
   }
   onMessage(frame: WebsocketFrame): void {
-    if (frame.kind === 'binary') this.handleBytes(frame.data);   // Uint8Array
+    match(frame)
+      .with({ kind: 'binary' }, (f) => this.onBinary(f))
+      .otherwise(() => {});
+  }
+
+  private onBinary(frame: BinaryFrame): void {
+    this.handleBytes(frame.data);   // Uint8Array
   }
 }
 ```

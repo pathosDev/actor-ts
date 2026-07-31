@@ -190,6 +190,8 @@ trennt das Framework **Commands** (was zu tun ist) von **Events** (was
 bereits passiert ist):
 
 ```ts
+import { match } from 'ts-pattern';
+
 type DepositCommand = { readonly kind: 'deposit'; readonly amount: number };
 
 type Deposited = { readonly kind: 'deposited'; readonly amount: number; readonly timestamp: number };
@@ -197,16 +199,22 @@ type Deposited = { readonly kind: 'deposited'; readonly amount: number; readonly
 class Account extends PersistentActor<DepositCommand, Deposited, { balance: number }> {
   // Command-Handler: validieren + Event persistieren
   async onCommand(state, command: DepositCommand): Promise<void> {
-    if (command.kind === 'deposit') {
-      const event: Deposited = { kind: 'deposited', amount: command.amount, timestamp: Date.now() };
-      await this.persist(event, () => { /* Seiteneffekte nach dem Persistieren */ });
-    }
+    await match(command)
+      .with({ kind: 'deposit' }, (c) => this.onDeposit(c))
+      .exhaustive();
+  }
+
+  private async onDeposit(command: DepositCommand): Promise<void> {
+    const event: Deposited = { kind: 'deposited', amount: command.amount, timestamp: Date.now() };
+    await this.persist(event, () => { /* Seiteneffekte nach dem Persistieren */ });
   }
 
   // Event-Handler: nur Zustands-Update — läuft sowohl beim Schreiben als auch bei Recovery
   onEvent(state, event: Deposited): { balance: number } {
-    if (event.kind === 'deposited') return { balance: state.balance + event.amount };
-    return state;
+    // Ein Fold, der einen Wert berechnet — Arme bleiben inline.
+    return match(event)
+      .with({ kind: 'deposited' }, (e) => ({ balance: state.balance + e.amount }))
+      .exhaustive();
   }
 }
 ```

@@ -12,6 +12,7 @@
  * only the wrapping (refs + dispatch) is React-shaped.
  */
 
+import { match } from 'ts-pattern';
 import { useCallback, useEffect, useReducer, useRef } from 'react';
 import {
   WS_PATH, TIMESLICE_MS, MIME_OPUS,
@@ -54,36 +55,36 @@ const INITIAL: State = {
 };
 
 type Action =
-  | { type: 'phase'; phase: Phase }
-  | { type: 'login-error'; reason: string }
-  | { type: 'logged-in'; username: string }
-  | { type: 'directory'; payload: State['directory'] }
-  | { type: 'online'; users: ReadonlyArray<string> }
-  | { type: 'room-participants'; room: VoiceRoomName; users: ReadonlyArray<string> }
-  | { type: 'set-joined'; rooms: ReadonlyArray<VoiceRoomName> }
-  | { type: 'set-talking'; rooms: ReadonlyArray<VoiceRoomName> }
-  | { type: 'active-key'; key: string | null }
-  | { type: 'incoming-names'; names: ReadonlyArray<string> }
-  | { type: 'mic-pct'; pct: number };
+  | { kind: 'phase'; phase: Phase }
+  | { kind: 'login-error'; reason: string }
+  | { kind: 'logged-in'; username: string }
+  | { kind: 'directory'; payload: State['directory'] }
+  | { kind: 'online'; users: ReadonlyArray<string> }
+  | { kind: 'room-participants'; room: VoiceRoomName; users: ReadonlyArray<string> }
+  | { kind: 'set-joined'; rooms: ReadonlyArray<VoiceRoomName> }
+  | { kind: 'set-talking'; rooms: ReadonlyArray<VoiceRoomName> }
+  | { kind: 'active-key'; key: string | null }
+  | { kind: 'incoming-names'; names: ReadonlyArray<string> }
+  | { kind: 'mic-pct'; pct: number };
 
 function reducer(state: State, action: Action): State {
-  switch (action.type) {
-    case 'phase':              return { ...state, phase: action.phase };
-    case 'login-error':        return { ...state, loginError: action.reason };
-    case 'logged-in':          return { ...state, phase: 'app', username: action.username, loginError: '' };
-    case 'directory':          return { ...state, directory: action.payload };
-    case 'online':             return { ...state, onlineUsers: new Set(action.users) };
-    case 'room-participants': {
+  return match(action)
+    .with({ kind: 'phase' }, (action) => ({ ...state, phase: action.phase }))
+    .with({ kind: 'login-error' }, (action) => ({ ...state, loginError: action.reason }))
+    .with({ kind: 'logged-in' }, (action) => ({ ...state, phase: 'app' as const, username: action.username, loginError: '' }))
+    .with({ kind: 'directory' }, (action) => ({ ...state, directory: action.payload }))
+    .with({ kind: 'online' }, (action) => ({ ...state, onlineUsers: new Set(action.users) }))
+    .with({ kind: 'room-participants' }, (action) => {
       const next = new Map(state.roomParticipants);
       next.set(action.room, [...action.users]);
       return { ...state, roomParticipants: next };
-    }
-    case 'set-joined':         return { ...state, joinedRooms: new Set(action.rooms) };
-    case 'set-talking':        return { ...state, roomTalking: new Set(action.rooms) };
-    case 'active-key':         return { ...state, activeKey: action.key };
-    case 'incoming-names':     return { ...state, incomingNames: [...action.names] };
-    case 'mic-pct':            return { ...state, micPct: action.pct };
-  }
+    })
+    .with({ kind: 'set-joined' }, (action) => ({ ...state, joinedRooms: new Set(action.rooms) }))
+    .with({ kind: 'set-talking' }, (action) => ({ ...state, roomTalking: new Set(action.rooms) }))
+    .with({ kind: 'active-key' }, (action) => ({ ...state, activeKey: action.key }))
+    .with({ kind: 'incoming-names' }, (action) => ({ ...state, incomingNames: [...action.names] }))
+    .with({ kind: 'mic-pct' }, (action) => ({ ...state, micPct: action.pct }))
+    .exhaustive();
 }
 
 type IncomingEntry = {
@@ -129,45 +130,34 @@ export function useVoice(): {
   const handleText = useCallback((raw: string) => {
     let m: ServerMessage;
     try { m = JSON.parse(raw) as ServerMessage; } catch { return; }
-    switch (m.kind) {
-      case 'logged-in':
+    match(m)
+      .with({ kind: 'logged-in' }, (m) => {
         cancelReconnect();
         sessionStorage.setItem(TOKEN_KEY, m.token);
-        dispatch({ type: 'logged-in', username: m.username });
-        break;
-      case 'login-failed':
+        dispatch({ kind: 'logged-in', username: m.username });
+      })
+      .with({ kind: 'login-failed' }, (m) => {
         cancelReconnect();
         sessionStorage.removeItem(TOKEN_KEY);
         try { wsRef.current?.close(); } catch { /* ignore */ }
         wsRef.current = null;
-        dispatch({ type: 'login-error', reason: m.reason || 'Login failed' });
-        dispatch({ type: 'phase', phase: 'gate-login' });
-        break;
-      case 'directory':
-        dispatch({ type: 'directory', payload: {
+        dispatch({ kind: 'login-error', reason: m.reason || 'Login failed' });
+        dispatch({ kind: 'phase', phase: 'gate-login' });
+      })
+      .with({ kind: 'directory' }, (m) => {
+        dispatch({ kind: 'directory', payload: {
           users: [...m.users], groups: m.groups.map((g) => ({ name: g.name, members: [...g.members] })),
           rooms: [...m.rooms],
         }});
-        break;
-      case 'online-users':
-        dispatch({ type: 'online', users: m.users });
-        break;
-      case 'room-participants':
-        dispatch({ type: 'room-participants', room: m.room, users: m.users });
-        break;
-      case 'voice-target-failed':
-        dispatch({ type: 'active-key', key: null });
-        break;
-      case 'voice-incoming-start':
-        startIncoming(m.from, m.source);
-        break;
-      case 'voice-incoming-end':
-        endIncoming(m.from);
-        break;
-      case 'voice-target-ok':
-      case 'system':
-        break;
-    }
+      })
+      .with({ kind: 'online-users' }, (m) => dispatch({ kind: 'online', users: m.users }))
+      .with({ kind: 'room-participants' }, (m) => dispatch({ kind: 'room-participants', room: m.room, users: m.users }))
+      .with({ kind: 'voice-target-failed' }, () => dispatch({ kind: 'active-key', key: null }))
+      .with({ kind: 'voice-incoming-start' }, (m) => startIncoming(m.from, m.source))
+      .with({ kind: 'voice-incoming-end' }, (m) => endIncoming(m.from))
+      .with({ kind: 'voice-target-ok' }, () => {})
+      .with({ kind: 'system' }, () => {})
+      .exhaustive();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -213,7 +203,7 @@ export function useVoice(): {
     });
     ws.addEventListener('error', () => {
       if (state.phase === 'gate-login' && !sessionStorage.getItem(TOKEN_KEY)) {
-        dispatch({ type: 'login-error', reason: 'Connection failed.' });
+        dispatch({ kind: 'login-error', reason: 'Connection failed.' });
       }
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -242,21 +232,21 @@ export function useVoice(): {
         micAnalyser.current.getByteTimeDomainData(data);
         let peak = 0;
         for (const b of data) { const dev = Math.abs(b - 128); if (dev > peak) peak = dev; }
-        dispatch({ type: 'mic-pct', pct: Math.min(100, (peak / 64) * 100) });
+        dispatch({ kind: 'mic-pct', pct: Math.min(100, (peak / 64) * 100) });
         requestAnimationFrame(tick);
       };
       requestAnimationFrame(tick);
 
-      dispatch({ type: 'phase', phase: 'gate-login' });
+      dispatch({ kind: 'phase', phase: 'gate-login' });
       const stored = sessionStorage.getItem(TOKEN_KEY);
       if (stored) connect((ws) => ws.send(JSON.stringify({ kind: 'resume', token: stored } satisfies ClientMessage)));
     } catch (e) {
-      dispatch({ type: 'login-error', reason: `Microphone access denied (${(e as Error)?.message ?? e}).` });
+      dispatch({ kind: 'login-error', reason: `Microphone access denied (${(e as Error)?.message ?? e}).` });
     }
   }, [connect]);
 
   const login = useCallback((username: string, password: string) => {
-    dispatch({ type: 'login-error', reason: '' });
+    dispatch({ kind: 'login-error', reason: '' });
     connect((ws) => ws.send(JSON.stringify({ kind: 'login', username, password } satisfies ClientMessage)));
   }, [connect]);
 
@@ -295,13 +285,13 @@ export function useVoice(): {
     if (wsRef.current?.readyState === WebSocket.OPEN) {
       wsRef.current.send(JSON.stringify({ kind: 'voice-stop' } satisfies ClientMessage));
     }
-    dispatch({ type: 'active-key', key: null });
+    dispatch({ kind: 'active-key', key: null });
   }, [stopMicRecording]);
 
   const beginPress = useCallback((target: ClientMessage & { kind: 'voice-target' }, key: string) => {
     if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
     if (state.activeKey) endActive();
-    dispatch({ type: 'active-key', key });
+    dispatch({ kind: 'active-key', key });
     wsRef.current.send(JSON.stringify(target));
     startMicRecording();
   }, [state.activeKey, startMicRecording, endActive]);
@@ -318,17 +308,17 @@ export function useVoice(): {
       endActive();
     } else {
       rooms.add(room);
-      dispatch({ type: 'active-key', key: `room:${room}` });
+      dispatch({ kind: 'active-key', key: `room:${room}` });
       wsRef.current?.send(JSON.stringify({ kind: 'voice-target', mode: 'room', room } satisfies ClientMessage));
       startMicRecording();
     }
-    dispatch({ type: 'set-talking', rooms: [...rooms] });
+    dispatch({ kind: 'set-talking', rooms: [...rooms] });
   }, [state.roomTalking, endActive, startMicRecording]);
 
   const enterRoom = useCallback((room: VoiceRoomName) => {
     const rooms = new Set(state.joinedRooms);
     rooms.add(room);
-    dispatch({ type: 'set-joined', rooms: [...rooms] });
+    dispatch({ kind: 'set-joined', rooms: [...rooms] });
     wsRef.current?.send(JSON.stringify({ kind: 'room-enter', room } satisfies ClientMessage));
   }, [state.joinedRooms]);
 
@@ -336,7 +326,7 @@ export function useVoice(): {
     if (state.roomTalking.has(room)) toggleRoomTalk(room);
     const rooms = new Set(state.joinedRooms);
     rooms.delete(room);
-    dispatch({ type: 'set-joined', rooms: [...rooms] });
+    dispatch({ kind: 'set-joined', rooms: [...rooms] });
     wsRef.current?.send(JSON.stringify({ kind: 'room-leave', room } satisfies ClientMessage));
   }, [state.joinedRooms, state.roomTalking, toggleRoomTalk]);
 
@@ -350,7 +340,7 @@ export function useVoice(): {
       else if (src?.kind === 'room') names.push(`${name} (room: ${src.room})`);
       else names.push(name);
     }
-    dispatch({ type: 'incoming-names', names });
+    dispatch({ kind: 'incoming-names', names });
   }
 
   function startIncoming(from: string, source: IncomingSource): void {

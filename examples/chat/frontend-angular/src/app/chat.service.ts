@@ -1,3 +1,4 @@
+import { match } from 'ts-pattern';
 import { Injectable, signal, computed } from '@angular/core';
 import {
   type ChatMessage,
@@ -262,8 +263,8 @@ export class ChatService {
   }
 
   private handleServer(message: ServerMessage): void {
-    switch (message.kind) {
-      case 'logged-in':
+    match(message)
+      .with({ kind: 'logged-in' }, (message) => {
         this.cancelReconnect();
         this.username.set(message.username);
         if (message.token && typeof sessionStorage !== 'undefined') {
@@ -271,8 +272,8 @@ export class ChatService {
         }
         this.loginError.set('');
         this.phase.set('chat');
-        break;
-      case 'login-failed':
+      })
+      .with({ kind: 'login-failed' }, (message) => {
         this.cancelReconnect();
         if (typeof sessionStorage !== 'undefined') sessionStorage.removeItem(TOKEN_KEY);
         this.ws?.close();
@@ -282,8 +283,8 @@ export class ChatService {
         // way, fall back to the login screen.
         if (this.phase() !== 'login') this.reset();
         this.loginError.set(message.reason || 'Login failed.');
-        break;
-      case 'rooms': {
+      })
+      .with({ kind: 'rooms' }, (message) => {
         // Preserve open DMs — they live only on the client, never in
         // the directory.  Without this, every `RoomsChanged` would
         // wipe open conversations.
@@ -306,9 +307,8 @@ export class ChatService {
           return next;
         });
         if (!this.currentRoom()) this.currentRoom.set(message.rooms[0] ?? DEFAULT_ROOMS[0]);
-        break;
-      }
-      case 'room-added':
+      })
+      .with({ kind: 'room-added' }, (message) => {
         // `rooms` carries the full set; this is the per-name notice
         // used for toast-style UX.  Idempotent — if the name is
         // already known, only the toast fires.
@@ -318,8 +318,8 @@ export class ChatService {
           this.usersByRoom.update((cur) => ({ ...cur, [message.name]: [] }));
           this.unreadByRoom.update((cur) => ({ ...cur, [message.name]: 0 }));
         }
-        break;
-      case 'room-removed': {
+      })
+      .with({ kind: 'room-removed' }, (message) => {
         this.rooms.update((rs) => rs.filter((room) => room !== message.name));
         const wasCurrent = this.currentRoom() === message.name;
         const dropKey = (cur: Record<string, unknown>): Record<string, unknown> => {
@@ -330,12 +330,9 @@ export class ChatService {
         this.usersByRoom.update((cur) => dropKey(cur) as typeof cur);
         this.unreadByRoom.update((cur) => dropKey(cur) as typeof cur);
         if (wasCurrent) this.currentRoom.set(this.rooms()[0] ?? null);
-        break;
-      }
-      case 'history':
-        this.messagesByRoom.update((cur) => ({ ...cur, [message.room]: message.messages.slice() }));
-        break;
-      case 'message': {
+      })
+      .with({ kind: 'history' }, (message) => { this.messagesByRoom.update((cur) => ({ ...cur, [message.room]: message.messages.slice() })); })
+      .with({ kind: 'message' }, (message) => {
         this.messagesByRoom.update((cur) => {
           const list = (cur[message.room] ?? []).slice();
           list.push({ from: message.from, text: message.text, ts: message.ts });
@@ -350,23 +347,16 @@ export class ChatService {
           // Active view — mark read so the sender's ✓✓ updates.
           this.markReadUpTo(message.room, message.ts);
         }
-        break;
-      }
-      case 'users': {
+      })
+      .with({ kind: 'users' }, (message) => {
         const sorted = message.users.slice().sort();
         this.usersByRoom.update((cur) => ({ ...cur, [message.room]: sorted }));
-        break;
-      }
-      case 'user-typing':
-        this.onUserTyping(message.room, message.username);
-        break;
-      case 'read-receipts':
-        this.receiptsByRoom.update((cur) => ({ ...cur, [message.room]: message.receipts }));
-        break;
-      case 'system':
-        // Ignored in this minimal frontend; could be displayed inline.
-        break;
-    }
+      })
+      .with({ kind: 'user-typing' }, (message) => { this.onUserTyping(message.room, message.username); })
+      .with({ kind: 'read-receipts' }, (message) => { this.receiptsByRoom.update((cur) => ({ ...cur, [message.room]: message.receipts })); })
+      // Ignored in this minimal frontend; could be displayed inline.
+      .with({ kind: 'system' }, () => {})
+      .exhaustive();
   }
 
   /** Add or refresh a typing indicator with a 3 s auto-clear. */

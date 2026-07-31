@@ -53,19 +53,21 @@ export type HistoryReply = {
   readonly messages: ReadonlyArray<ChatMessage>;
 };
 
-export type ChatRoomCommand =
-  | {
-      readonly kind: 'SendMessage';
-      readonly room: RoomName;
-      readonly from: string;
-      readonly text: string;
-    }
-  | {
-      readonly kind: 'GetHistory';
-      readonly room: RoomName;
-      readonly limit: number;
-      readonly replyTo: ActorRef<HistoryReply>;
-    };
+export type SendMessageCommand = {
+  readonly kind: 'SendMessage';
+  readonly room: RoomName;
+  readonly from: string;
+  readonly text: string;
+};
+
+export type GetHistoryCommand = {
+  readonly kind: 'GetHistory';
+  readonly room: RoomName;
+  readonly limit: number;
+  readonly replyTo: ActorRef<HistoryReply>;
+};
+
+export type ChatRoomCommand = SendMessageCommand | GetHistoryCommand;
 
 /**
  * Body published on `chatRoomTopic(room)` after every persisted
@@ -107,12 +109,14 @@ export function chatRoomTopic(room: RoomName): string {
 
 /* ----------------------------- internals ------------------------------ */
 
-type ChatEvent = {
+type MessagePostedEvent = {
   readonly kind: 'MessagePosted';
   readonly from: string;
   readonly text: string;
   readonly ts: number;
 };
+
+type ChatEvent = MessagePostedEvent;
 
 type ChatState = {
   readonly history: ReadonlyArray<ChatMessage>;
@@ -169,7 +173,7 @@ export class ChatRoomActor extends PersistentActor<ChatRoomCommand, ChatEvent, C
       .exhaustive();
   }
 
-  private onMessagePosted(state: ChatState, m: ChatEvent): ChatState {
+  private onMessagePosted(state: ChatState, m: MessagePostedEvent): ChatState {
     const next = [...state.history, { from: m.from, text: m.text, ts: m.ts }];
     // Trim AFTER append so the most-recent N messages stay live —
     // older events live on in the journal but aren't kept resident.
@@ -179,37 +183,40 @@ export class ChatRoomActor extends PersistentActor<ChatRoomCommand, ChatEvent, C
   }
 
   async onCommand(state: ChatState, command: ChatRoomCommand): Promise<void> {
-    if (command.kind === 'SendMessage') {
-      const event: ChatEvent = {
-        kind: 'MessagePosted',
-        from: command.from,
-        text: command.text,
-        ts: Date.now(),
-      };
-      await this.persist(event, () => {
-        // After persistence: broadcast cluster-wide via PubSub.  Sender
-        // (originating UserSessionActor) doesn't get an explicit ack —
-        // it sees its own message arrive via the same pubsub fan-out
-        // that reaches every other connected client.  No special
-        // round-tripping, no echo handling on the client.
-        const broadcast: RoomBroadcast = {
-          kind: 'RoomBroadcast',
-          room: this.roomName,
-          from: event.from,
-          text: event.text,
-          ts: event.ts,
-        };
-        const topic = chatRoomTopic(this.roomName);
-        const mediator = this.system.extension(DistributedPubSubId).mediator;
-        mediator.tell(new Publish(topic, broadcast));
-      });
-      return;
-    }
+    await match(command)
+      .with({ kind: 'SendMessage' }, (c) => this.onSendMessage(c))
+      .with({ kind: 'GetHistory' }, (c) => this.onGetHistory(state, c))
+      .exhaustive();
+  }
 
-    if (command.kind === 'GetHistory') {
-      const messages = state.history.slice(-Math.max(1, command.limit));
-      command.replyTo.tell({ kind: 'HistoryReply', room: this.roomName, messages });
-      return;
-    }
+  private async onSendMessage(command: SendMessageCommand): Promise<void> {
+    const event: ChatEvent = {
+      kind: 'MessagePosted',
+      from: command.from,
+      text: command.text,
+      ts: Date.now(),
+    };
+    await this.persist(event, () => {
+      // After persistence: broadcast cluster-wide via PubSub.  Sender
+      // (originating UserSessionActor) doesn't get an explicit ack —
+      // it sees its own message arrive via the same pubsub fan-out
+      // that reaches every other connected client.  No special
+      // round-tripping, no echo handling on the client.
+      const broadcast: RoomBroadcast = {
+        kind: 'RoomBroadcast',
+        room: this.roomName,
+        from: event.from,
+        text: event.text,
+        ts: event.ts,
+      };
+      const topic = chatRoomTopic(this.roomName);
+      const mediator = this.system.extension(DistributedPubSubId).mediator;
+      mediator.tell(new Publish(topic, broadcast));
+    });
+  }
+
+  private onGetHistory(state: ChatState, command: GetHistoryCommand): void {
+    const messages = state.history.slice(-Math.max(1, command.limit));
+    command.replyTo.tell({ kind: 'HistoryReply', room: this.roomName, messages });
   }
 }

@@ -7,9 +7,10 @@ import type { Journal } from '../../persistence/Journal.js';
  * `rememberEntities: true`); replaying the full event log on
  * coordinator restart rebuilds the in-memory `entitiesPerShard` map.
  */
-export type RememberEvent =
-  | { readonly kind: 'started'; readonly shardId: number; readonly entityId: string }
-  | { readonly kind: 'stopped'; readonly shardId: number; readonly entityId: string };
+export type StartedEvent = { readonly kind: 'started'; readonly shardId: number; readonly entityId: string };
+export type StoppedEvent = { readonly kind: 'stopped'; readonly shardId: number; readonly entityId: string };
+
+export type RememberEvent = StartedEvent | StoppedEvent;
 
 /**
  * Pluggable persistence backend for the sharded-entity registry.  The

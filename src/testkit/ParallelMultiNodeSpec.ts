@@ -1,3 +1,4 @@
+import { match } from 'ts-pattern';
 import type { ParallelMultiNodeSpecOptions, ParallelMultiNodeSpecOptionsType } from './ParallelMultiNodeSpecOptions.js';
 import type {
   BrokeredMessage,
@@ -420,20 +421,25 @@ export class ParallelMultiNodeSpec {
         worker.removeEventListener('message', onMessage);
         reject(new Error(`Worker ${addr} did not become ready within 10s`));
       }, 10_000);
+      const onWorkerHello = (_hello: WorkerHelloMessage): void => {
+        worker.postMessage(init);
+      };
+      const onWorkerReady = (_ready: WorkerReadyMessage): void => {
+        clearTimeout(timeout);
+        worker.removeEventListener('message', onMessage);
+        resolve();
+      };
       const onMessage = (e: { data?: unknown }): void => {
         const message = (e.data ?? undefined) as { kind?: string } | undefined;
         if (!message) return;
-        if (message.kind === 'worker-hello') {
-          const hello: WorkerHelloMessage = message as WorkerHelloMessage;
-          void hello;
-          worker.postMessage(init);
-        } else if (message.kind === 'worker-ready') {
-          const ready: WorkerReadyMessage = message as WorkerReadyMessage;
-          void ready;
-          clearTimeout(timeout);
-          worker.removeEventListener('message', onMessage);
-          resolve();
-        }
+        // `.otherwise`, not `.exhaustive`: this is untrusted postMessage data
+        // from a worker that may not have started correctly, so the value is
+        // typed as an open `{ kind?: string }` and anything unrecognised is
+        // ignored rather than crashing the handshake.
+        match(message)
+          .with({ kind: 'worker-hello' }, (m) => onWorkerHello(m as WorkerHelloMessage))
+          .with({ kind: 'worker-ready' }, (m) => onWorkerReady(m as WorkerReadyMessage))
+          .otherwise(() => {});
       };
       worker.addEventListener('message', onMessage);
     });

@@ -141,10 +141,11 @@ import { Aside } from '@astrojs/starlight/components';
   ```ts
   // Zwei Event-Arten — Overkill?
   ```
-  Bei 2-3 einfachen Varianten, wo die If-Kette kürzer ist als der
-  Builder, liest sich eine plain Methode vielleicht sauberer.  Füge
-  den Dispatcher hinzu, wenn die Variantenzahl wächst oder die
-  Code-Formen sich wiederholen.
+  Bei 2-3 einfachen Varianten, wo ein `match(event).with(...)
+  .exhaustive()` kürzer ist als der Builder, liest sich eine
+  einfache `onEvent`-Methode vielleicht sauberer — Exhaustiveness
+  behältst Du so oder so.  Füge den Dispatcher hinzu, wenn die
+  Variantenzahl wächst oder die Code-Formen sich wiederholen.
 </Aside>
 
 <Aside type="caution" title="Events ohne `kind`-Diskriminator">

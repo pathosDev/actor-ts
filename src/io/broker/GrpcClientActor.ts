@@ -1,3 +1,4 @@
+import { match } from 'ts-pattern';
 import type { Config } from '../../config/Config.js';
 import { ConfigKeys } from '../../config/ConfigKeys.js';
 import type { ActorRef } from '../../ActorRef.js';
@@ -11,25 +12,57 @@ import type { GrpcClientOptions, GrpcClientOptionsType } from './GrpcClientOptio
  * `kind` discriminates between a unary completion, a stream chunk, the
  * stream-end signal, and a stream error.
  */
+export type ReplyMessage = { readonly kind: 'reply'; readonly target: ActorRef<unknown>; readonly response: unknown };
+export type StreamDataMessage = {
+  readonly kind: 'stream-data';
+  readonly target: ActorRef<unknown>;
+  readonly streamId: number;
+  readonly chunk: unknown;
+};
+export type StreamEndMessage = { readonly kind: 'stream-end'; readonly target: ActorRef<unknown>; readonly streamId: number };
+export type StreamErrorMessage = {
+  readonly kind: 'stream-error';
+  readonly target: ActorRef<unknown>;
+  readonly streamId: number;
+  readonly error: Error;
+};
+export type RpcErrorMessage = { readonly kind: 'rpc-error'; readonly target: ActorRef<unknown>; readonly error: Error };
+
 export type GrpcInbound =
-  | { readonly kind: 'reply'; readonly target: ActorRef<unknown>; readonly response: unknown }
-  | { readonly kind: 'stream-data'; readonly target: ActorRef<unknown>; readonly streamId: number; readonly chunk: unknown }
-  | { readonly kind: 'stream-end'; readonly target: ActorRef<unknown>; readonly streamId: number }
-  | { readonly kind: 'stream-error'; readonly target: ActorRef<unknown>; readonly streamId: number; readonly error: Error }
-  | { readonly kind: 'rpc-error'; readonly target: ActorRef<unknown>; readonly error: Error };
+  | ReplyMessage
+  | StreamDataMessage
+  | StreamEndMessage
+  | StreamErrorMessage
+  | RpcErrorMessage;
 
 /** TLS / mTLS credentials. */
 export type GrpcCredentials =
   | { readonly kind: 'insecure' }
   | { readonly kind: 'tls'; readonly rootCerts?: Uint8Array; readonly cert?: Uint8Array; readonly key?: Uint8Array };
 
+type UnaryCommand = {
+  readonly kind: 'unary';
+  readonly method: string;
+  readonly request: unknown;
+  readonly target: ActorRef<unknown>;
+};
+type ServerStreamCommand = {
+  readonly kind: 'serverStream';
+  readonly method: string;
+  readonly request: unknown;
+  readonly target: ActorRef<unknown>;
+};
+type BidiStartCommand = { readonly kind: 'bidiStart'; readonly method: string; readonly target: ActorRef<unknown> };
+type BidiSendCommand = { readonly kind: 'bidiSend'; readonly streamId: number; readonly chunk: unknown };
+type BidiCloseCommand = { readonly kind: 'bidiClose'; readonly streamId: number };
+
 /** Outbound command — what the actor accepts to fire RPC calls. */
 export type GrpcClientCommand =
-  | { readonly kind: 'unary'; readonly method: string; readonly request: unknown; readonly target: ActorRef<unknown> }
-  | { readonly kind: 'serverStream'; readonly method: string; readonly request: unknown; readonly target: ActorRef<unknown> }
-  | { readonly kind: 'bidiStart'; readonly method: string; readonly target: ActorRef<unknown> }
-  | { readonly kind: 'bidiSend'; readonly streamId: number; readonly chunk: unknown }
-  | { readonly kind: 'bidiClose'; readonly streamId: number };
+  | UnaryCommand
+  | ServerStreamCommand
+  | BidiStartCommand
+  | BidiSendCommand
+  | BidiCloseCommand;
 
 type OutboundOp = {
   readonly op: GrpcClientCommand;
@@ -120,22 +153,33 @@ export class GrpcClientActor
 
   protected async dispatchOutgoing(env: OutboundEnvelope<OutboundOp>): Promise<void> {
     if (!this.serviceClient) throw new Error('GrpcClientActor: not connected');
-    const op = env.payload.op;
-    if (op.kind === 'unary') {
-      this.invokeUnary(op);
-    } else if (op.kind === 'serverStream') {
-      this.invokeServerStream(op);
-    } else if (op.kind === 'bidiStart') {
-      this.invokeBidiStart(op);
-    } else if (op.kind === 'bidiSend') {
-      const stream = this.bidiStreams.get(op.streamId);
-      if (stream) stream.call.write(op.chunk);
-    } else if (op.kind === 'bidiClose') {
-      const stream = this.bidiStreams.get(op.streamId);
-      if (stream) {
-        try { stream.call.end(); } catch { /* ignore */ }
-        this.bidiStreams.delete(op.streamId);
-      }
+    // The real command dispatcher: `onReceive` only enqueues, so every
+    // GrpcClientCommand variant is handled here.
+    match(env.payload.op)
+      .with({ kind: 'unary' }, (c) => this.onUnary(c))
+      .with({ kind: 'serverStream' }, (c) => this.onServerStream(c))
+      .with({ kind: 'bidiStart' }, (c) => this.onBidiStart(c))
+      .with({ kind: 'bidiSend' }, (c) => this.onBidiSend(c))
+      .with({ kind: 'bidiClose' }, (c) => this.onBidiClose(c))
+      .exhaustive();
+  }
+
+  /*
+   * An unknown streamId is a no-op on both paths: the stream is already
+   * gone (server closed it, or the connection dropped and cleared the
+   * map), and the caller has been told via 'stream-end' / 'stream-error'.
+   */
+
+  private onBidiSend(command: BidiSendCommand): void {
+    const stream = this.bidiStreams.get(command.streamId);
+    if (stream) stream.call.write(command.chunk);
+  }
+
+  private onBidiClose(command: BidiCloseCommand): void {
+    const stream = this.bidiStreams.get(command.streamId);
+    if (stream) {
+      try { stream.call.end(); } catch { /* ignore */ }
+      this.bidiStreams.delete(command.streamId);
     }
   }
 
@@ -145,7 +189,7 @@ export class GrpcClientActor
 
   /* ----------------------------- internals ----------------------------- */
 
-  private invokeUnary(op: { method: string; request: unknown; target: ActorRef<unknown> }): void {
+  private onUnary(op: UnaryCommand): void {
     const client = this.serviceClient;
     if (!client) return;
     const fn = (client as unknown as Record<string, GrpcUnaryFunction>)[op.method];
@@ -159,7 +203,7 @@ export class GrpcClientActor
     });
   }
 
-  private invokeServerStream(op: { method: string; request: unknown; target: ActorRef<unknown> }): void {
+  private onServerStream(op: ServerStreamCommand): void {
     const client = this.serviceClient;
     if (!client) return;
     const fn = (client as unknown as Record<string, GrpcServerStreamFunction>)[op.method];
@@ -180,7 +224,7 @@ export class GrpcClientActor
     });
   }
 
-  private invokeBidiStart(op: { method: string; target: ActorRef<unknown> }): void {
+  private onBidiStart(op: BidiStartCommand): void {
     const client = this.serviceClient;
     if (!client) return;
     const fn = (client as unknown as Record<string, GrpcBidiFunction>)[op.method];

@@ -16,8 +16,7 @@ import {
 } from '../../../../../src/persistence/migration/index.js';
 import type { ActorRef } from '../../../../../src/ActorRef.js';
 import type { Actor } from '../../../../../src/Actor.js';
-
-const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
+import { awaitCondition } from '../../../../util/AwaitCondition.js';
 
 /* ----------------------------- Domain ----------------------------------- */
 
@@ -77,7 +76,9 @@ describe('DurableStateActor — adapter round-trip', () => {
     const probe = makeProbe(sys);
     const ref = sys.spawn(props(store, 'acct'), 'a');
     ref.tell({ kind: 'deposit', amount: 50, replyTo: probe.ref });
-    await sleep(30);
+    // The reply is sent *after* `persist` resolves, so it is the strongest
+    // observable proof that the store write has landed.
+    await awaitCondition(() => probe.received.length > 0, { label: 'deposit acknowledged after persist' });
 
     // Wire format: store should hold an envelope.
     const raw = await store.load<unknown>('acct');
@@ -99,7 +100,7 @@ describe('DurableStateActor — adapter round-trip', () => {
     const probe = makeProbe(sys);
     const ref = sys.spawn(props(store, 'acct'), 'a');
     ref.tell({ kind: 'deposit', amount: 100, replyTo: probe.ref });
-    await sleep(30);
+    await awaitCondition(() => probe.received.length > 0, { label: 'deposit acknowledged after persist' });
     await sys.terminate();
 
     const sys2Options = ActorSystemOptions.create()
@@ -109,7 +110,7 @@ describe('DurableStateActor — adapter round-trip', () => {
     const probe2 = makeProbe(sys2);
     const ref2 = sys2.spawn(props(store, 'acct'), 'a');
     ref2.tell({ kind: 'state', replyTo: probe2.ref });
-    await sleep(30);
+    await awaitCondition(() => probe2.received.length > 0, { label: 'recovered state replied' });
     expect(probe2.received).toContainEqual({ balance: 100, currency: 'EUR' });
     await sys2.terminate();
   });
@@ -129,7 +130,7 @@ describe('DurableStateActor — v1 → v2 upcast', () => {
     const probe = makeProbe(sys);
     const ref = sys.spawn(props(store, 'acct'), 'a');
     ref.tell({ kind: 'state', replyTo: probe.ref });
-    await sleep(30);
+    await awaitCondition(() => probe.received.length > 0, { label: 'up-cast state replied' });
     expect(probe.received).toContainEqual({ balance: 999, currency: 'USD' });
     await sys.terminate();
   });
@@ -156,7 +157,9 @@ describe('DurableStateActor — strict mode', () => {
       captured = actorRef;
       return actorRef as unknown as Actor<Command>;
     }), 'strict');
-    await sleep(30);
+    await awaitCondition(() => captured !== null && captured.recoveryError !== null, {
+      label: 'strict-mode preStart reported a failure',
+    });
     const actorRef = captured! as unknown as StrictAccount;
     expect(actorRef.recoveryError).toBeInstanceOf(MigrationError);
     expect(actorRef.recoveryError!.message).toContain('expected envelope');
@@ -189,7 +192,11 @@ describe('DurableStateActor — no adapter regression', () => {
       return new RawAccount(durableStateOptions) as unknown as Actor<Command>;
     }), 'raw');
     ref.tell({ kind: 'deposit', amount: 7, replyTo: probe.ref });
-    await sleep(30);
+    // `RawAccount` does not acknowledge a deposit, so the store is the only
+    // thing this test can observe.
+    await awaitCondition(async () => (await store.load<StateV1>('r')).isSome(), {
+      label: 'raw state written to the durable-state store',
+    });
     const raw = await store.load<StateV1>('r');
     expect(raw.toNullable()?.state).toEqual({ balance: 7 });  // no envelope
     await sys.terminate();

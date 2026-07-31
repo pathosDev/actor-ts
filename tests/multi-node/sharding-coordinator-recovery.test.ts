@@ -25,6 +25,7 @@
  *   8. Send messages to surviving entities — they succeed without
  *      a fresh allocation pass.
  */
+import { match } from 'ts-pattern';
 import { describe, expect, test } from 'bun:test';
 import { Actor } from '../../src/Actor.js';
 import { ClusterSharding } from '../../src/cluster/sharding/ClusterSharding.js';
@@ -39,11 +40,19 @@ import { MultiNodeSpec } from '../../src/testkit/MultiNodeSpec.js';
 import { MultiNodeTransport } from '../../src/testkit/internal/MultiNodeTransport.js';
 import type { ActorRef } from '../../src/ActorRef.js';
 
-type Command = { id: string; op: 'ping' };
+type PingCommand = { id: string; kind: 'ping' };
+
+type Command = PingCommand;
 
 class Entity extends Actor<Command> {
   override onReceive(m: Command): void {
-    if (m.op === 'ping') this.sender.forEach((s) => s.tell('pong'));
+    match(m)
+      .with({ kind: 'ping' }, () => this.onPing())
+      .exhaustive();
+  }
+
+  private onPing(): void {
+    this.sender.forEach((s) => s.tell('pong'));
   }
 }
 
@@ -120,7 +129,7 @@ describe('ShardCoordinator state persistence — leader failover', () => {
       // ask triggers a `GetShardHome` → `tryAllocate` → snapshot
       // save on the leader.
       for (let i = 0; i < 8; i++) {
-        const reply = await regions.a.ask<string>({ id: `e-${i}`, op: 'ping' }, 3_000);
+        const reply = await regions.a.ask<string>({ id: `e-${i}`, kind: 'ping' }, 3_000);
         expect(reply).toBe('pong');
       }
 
@@ -179,7 +188,7 @@ describe('ShardCoordinator state persistence — leader failover', () => {
       // the dead leader's region had ~3 of the 8 shards — those
       // entities re-allocate to survivors as messages arrive.
       const survivor = survivors.find((r) => r === newLeaderRole) ?? 'b';
-      const reply = await regions[survivor].ask<string>({ id: 'e-1', op: 'ping' }, 3_000);
+      const reply = await regions[survivor].ask<string>({ id: 'e-1', kind: 'ping' }, 3_000);
       expect(reply).toBe('pong');
     } finally {
       await spec.stop();

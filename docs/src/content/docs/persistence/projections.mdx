@@ -35,6 +35,7 @@ from read throughput (denormalized, query-optimized).
 ## A minimal example
 
 ```ts
+import { match } from 'ts-pattern';
 import { ProjectionActor, ByTagProjectionOptions } from 'actor-ts';
 import { SqliteJournal, SqliteJournalOptions, SqliteQuery, InMemoryOffsetStore } from 'actor-ts';
 
@@ -52,12 +53,12 @@ const byTagProjectionOptions = ByTagProjectionOptions.create<AccountEvent>()
   .withQuery(new SqliteQuery(eventsJournal))
   .withOffsetStore(new InMemoryOffsetStore())
   .withHandle(async (event) => {
-    if (event.event.kind === 'deposited') {
-      await viewDb.execute(
+    await match(event.event)
+      .with({ kind: 'deposited' }, (e) => viewDb.execute(
         'UPDATE balances SET balance = balance + ? WHERE pid = ?',
-        [event.event.amount, event.persistenceId],
-      );
-    }
+        [e.amount, event.persistenceId],
+      ))
+      .otherwise(() => Promise.resolve());
   });
 const projection = ProjectionActor.byTag<AccountEvent>(system, byTagProjectionOptions);
 ```

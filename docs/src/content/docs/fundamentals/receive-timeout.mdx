@@ -162,11 +162,15 @@ durations:
 
 ```ts
 private idle = (message) => {
-  if (message.kind === 'start') {
-    this.context.become(this.working);
-    this.context.setReceiveTimeout(60_000);   // 1 min idle in working mode
-  }
+  match(message)
+    .with({ kind: 'start' }, () => this.onStart())
+    .otherwise(() => {});
 };
+
+private onStart(): void {
+  this.context.become(this.working);
+  this.context.setReceiveTimeout(60_000);   // 1 min idle in working mode
+}
 
 private working = (message) => {
   if (message === ReceiveTimeout.instance) {

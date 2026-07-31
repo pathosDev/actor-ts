@@ -7,6 +7,7 @@
  * shard grid is many small cells that repaint on every coordinator
  * republish, so it is a canvas.
  */
+import { match } from 'ts-pattern';
 import { h, replaceChildren, svg } from '../../core/dom.js';
 import { formatCount, formatTime } from '../../core/format.js';
 import { themeColor } from '../../render/timeseries.js';
@@ -18,6 +19,8 @@ import type {
   ClusterEventPayload,
   ClusterMemberInfo,
   ClusterMemberStatus,
+  ClusterSnapshotPayload,
+  ShardMapChangedPayload,
   ShardMapInfo,
 } from '../../../../src/devtools/protocol/index.js';
 
@@ -68,38 +71,75 @@ export function mount(host: HTMLElement, context: PanelContext): PanelInstance {
     renderTimeline(history, timeline);
   }
 
+  function onClusterSnapshot(payload: ClusterSnapshotPayload): boolean {
+    members = payload.members;
+    leader = payload.leader;
+    selfAddress = payload.selfAddress;
+    for (const shardMap of payload.shardMaps) shardMaps.set(shardMap.typeName, shardMap);
+    return true;
+  }
+
+  function onClusterEvent(payload: ClusterEventPayload): boolean {
+    applyEvent(payload);
+    return true;
+  }
+
+  function onShardMapChanged(payload: ShardMapChangedPayload): boolean {
+    shardMaps.set(payload.shardMap.typeName, payload.shardMap);
+    return true;
+  }
+
+  function onUnknownClusterPayload(): boolean {
+    return false;
+  }
+
   const stop = context.tap.listen('cluster', (payload) => {
-    switch (payload.kind) {
-      case 'cluster-snapshot':
-        members = payload.members;
-        leader = payload.leader;
-        selfAddress = payload.selfAddress;
-        for (const shardMap of payload.shardMaps) shardMaps.set(shardMap.typeName, shardMap);
-        break;
-      case 'cluster-event':
-        applyEvent(payload);
-        break;
-      case 'shard-map-changed':
-        shardMaps.set(payload.shardMap.typeName, payload.shardMap);
-        break;
-      default:
-        return;
-    }
-    render();
+    const changed = match(payload)
+      .with({ kind: 'cluster-snapshot' }, (p) => onClusterSnapshot(p))
+      .with({ kind: 'cluster-event' }, (p) => onClusterEvent(p))
+      .with({ kind: 'shard-map-changed' }, (p) => onShardMapChanged(p))
+      .otherwise(() => onUnknownClusterPayload());
+    if (changed) render();
   });
 
-  /** Fold an event into the member list and record it for the timeline. */
+  /**
+   * Fold an event into the member list and record it for the timeline.
+   *
+   * Matched on `event` rather than `kind`: `kind` is already spent on
+   * `'cluster-event'`, which is what distinguishes this payload from the
+   * snapshot and shard-map ones, so the transition name lives one level in.
+   */
   function applyEvent(payload: ClusterEventPayload): void {
-    if (payload.event === 'leader-changed') {
-      leader = payload.leader ?? null;
-    } else if (payload.member !== undefined) {
-      const member = payload.member;
-      const without = members.filter((existing) => existing.address !== member.address);
-      // A removed member leaves the list; anything else updates in place.
-      members = payload.event === 'member-removed' ? without : [...without, member];
-    }
+    match(payload.event)
+      .with('leader-changed', () => onLeaderChanged(payload))
+      .with('member-removed', () => onMemberRemoved(payload))
+      .otherwise(() => onMemberUpserted(payload));
     timeline.unshift(payload);
     if (timeline.length > TIMELINE_CAPACITY) timeline.pop();
+  }
+
+  function onLeaderChanged(payload: ClusterEventPayload): void {
+    leader = payload.leader ?? null;
+  }
+
+  /** A removed member leaves the list. */
+  function onMemberRemoved(payload: ClusterEventPayload): void {
+    if (payload.member === undefined) return;
+    members = withoutMember(payload.member);
+  }
+
+  /**
+   * Every other transition updates the member in place.  Events that carry
+   * no member (`self-up`, `self-removed`, `shard-map-changed`) fall here too
+   * and are a no-op — they change no membership.
+   */
+  function onMemberUpserted(payload: ClusterEventPayload): void {
+    if (payload.member === undefined) return;
+    members = [...withoutMember(payload.member), payload.member];
+  }
+
+  function withoutMember(member: ClusterMemberInfo): ClusterMemberInfo[] {
+    return members.filter((existing) => existing.address !== member.address);
   }
 
   const disposeTheme = effect(render, [currentTheme]);

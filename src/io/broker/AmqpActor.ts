@@ -1,3 +1,4 @@
+import { match } from 'ts-pattern';
 import type { Config } from '../../config/Config.js';
 import { ConfigKeys } from '../../config/ConfigKeys.js';
 import type { ActorRef } from '../../ActorRef.js';
@@ -46,10 +47,16 @@ export type AmqpQueueBinding = {
   };
 };
 
-export type AmqpCommand =
-  | { readonly kind: 'publish'; readonly publish: AmqpPublish }
-  | { readonly kind: 'acknowledgment'; readonly delivery: AmqpDelivery }
-  | { readonly kind: 'negativeAcknowledgment'; readonly delivery: AmqpDelivery; readonly requeue?: boolean };
+type PublishCommand = { readonly kind: 'publish'; readonly publish: AmqpPublish };
+type AcknowledgmentCommand = { readonly kind: 'acknowledgment'; readonly delivery: AmqpDelivery };
+/** `requeue` defaults to `true` — redeliver rather than drop unless told otherwise. */
+type NegativeAcknowledgmentCommand = {
+  readonly kind: 'negativeAcknowledgment';
+  readonly delivery: AmqpDelivery;
+  readonly requeue?: boolean;
+};
+
+export type AmqpCommand = PublishCommand | AcknowledgmentCommand | NegativeAcknowledgmentCommand;
 
 /**
  * AMQP 0.9.1 actor backed by `amqplib`.  One connection, one channel
@@ -157,19 +164,35 @@ export class AmqpActor extends BrokerActor<AmqpOptionsType, AmqpCommand, AmqpPub
   }
 
   override onReceive(command: AmqpCommand): void {
-    if (command.kind === 'publish') {
-      this.enqueueOutbound(command.publish);
-      return;
+    match(command)
+      .with({ kind: 'publish' }, (c) => this.onPublish(c))
+      .with({ kind: 'acknowledgment' }, (c) => this.onAcknowledgment(c))
+      .with({ kind: 'negativeAcknowledgment' }, (c) => this.onNegativeAcknowledgment(c))
+      .exhaustive();
+  }
+
+  /* ----------------------------- internals ------------------------------ */
+
+  private onPublish(command: PublishCommand): void {
+    this.enqueueOutbound(command.publish);
+  }
+
+  /*
+   * Settling is best-effort on both paths: an unknown token (already
+   * settled, or delivered before a reconnect) and a channel that threw are
+   * both no-ops rather than errors — the broker redelivers what we never
+   * acknowledged, so a lost ack costs a redelivery, not correctness.
+   */
+
+  private onAcknowledgment(command: AcknowledgmentCommand): void {
+    const raw = this.pendingAcks.get(command.delivery.ackToken);
+    if (raw && this.channel) {
+      try { this.channel.ack(raw); } catch { /* ignore */ }
+      this.pendingAcks.delete(command.delivery.ackToken);
     }
-    if (command.kind === 'acknowledgment') {
-      const raw = this.pendingAcks.get(command.delivery.ackToken);
-      if (raw && this.channel) {
-        try { this.channel.ack(raw); } catch { /* ignore */ }
-        this.pendingAcks.delete(command.delivery.ackToken);
-      }
-      return;
-    }
-    // negativeAcknowledgment
+  }
+
+  private onNegativeAcknowledgment(command: NegativeAcknowledgmentCommand): void {
     const raw = this.pendingAcks.get(command.delivery.ackToken);
     if (raw && this.channel) {
       try { this.channel.nack(raw, false, command.requeue ?? true); } catch { /* ignore */ }

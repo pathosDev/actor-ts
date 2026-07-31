@@ -89,15 +89,16 @@ Plus einen Erweiterungspunkt — implementiere die Interfaces `Journal` /
 ## Event Sourcing in fünf Minuten
 
 ```ts
+import { match } from 'ts-pattern';
 import { Actor, PersistentActor, ActorSystem } from 'actor-ts';
 
-type Command =
-  | { kind: 'deposit'; amount: number }
-  | { kind: 'withdraw'; amount: number };
+type DepositCommand = { kind: 'deposit'; amount: number };
+type WithdrawCommand = { kind: 'withdraw'; amount: number };
+type Command = DepositCommand | WithdrawCommand;
 
-type Event =
-  | { kind: 'deposited'; amount: number; ts: number }
-  | { kind: 'withdrawn'; amount: number; ts: number };
+type DepositedEvent = { kind: 'deposited'; amount: number; ts: number };
+type WithdrawnEvent = { kind: 'withdrawn'; amount: number; ts: number };
+type Event = DepositedEvent | WithdrawnEvent;
 
 type State = { balance: number; };
 
@@ -108,24 +109,32 @@ class Account extends PersistentActor<Command, Event, State> {
 
   // Rein: state + event → neuer state. Wird während der Recovery abgespielt.
   onEvent(state: State, e: Event): State {
-    if (e.kind === 'deposited') return { balance: state.balance + e.amount };
-    if (e.kind === 'withdrawn') return { balance: state.balance - e.amount };
-    return state;
+    return match(e)
+      .with({ kind: 'deposited' }, (ev) => ({ balance: state.balance + ev.amount }))
+      .with({ kind: 'withdrawn' }, (ev) => ({ balance: state.balance - ev.amount }))
+      .exhaustive();
   }
 
   // Validiert das Command, persistiert das Event, führt Seiteneffekte nach dem Persist aus.
   onCommand(state: State, command: Command): void {
-    if (command.kind === 'deposit') {
-      this.persist({ kind: 'deposited', amount: command.amount, ts: Date.now() },
-        (next) => { /* Seiteneffekte mit dem persistierten-und-angewendeten State */ });
-    } else if (command.kind === 'withdraw') {
-      if (state.balance < command.amount) {
-        // Ablehnen — nichts persistieren.
-        return;
-      }
-      this.persist({ kind: 'withdrawn', amount: command.amount, ts: Date.now() },
-        () => {});
+    match(command)
+      .with({ kind: 'deposit' }, (c) => this.onDeposit(c))
+      .with({ kind: 'withdraw' }, (c) => this.onWithdraw(state, c))
+      .exhaustive();
+  }
+
+  private onDeposit(command: DepositCommand): void {
+    this.persist({ kind: 'deposited', amount: command.amount, ts: Date.now() },
+      (next) => { /* Seiteneffekte mit dem persistierten-und-angewendeten State */ });
+  }
+
+  private onWithdraw(state: State, command: WithdrawCommand): void {
+    if (state.balance < command.amount) {
+      // Ablehnen — nichts persistieren.
+      return;
     }
+    this.persist({ kind: 'withdrawn', amount: command.amount, ts: Date.now() },
+      () => {});
   }
 }
 ```
@@ -152,20 +161,32 @@ die vollständige Oberfläche.
 ## Durable State in fünf Minuten
 
 ```ts
-import { DurableStateActor, DurableStateOptions } from 'actor-ts';
+import { match } from 'ts-pattern';
+import { DurableStateActor, DurableStateOptions, type ActorRef } from 'actor-ts';
 
 type State = { items: string[]; };
+
+type AddCommand = { kind: 'add'; sku: string };
+type ViewCommand = { kind: 'view'; replyTo: ActorRef<State> };
+type CartCommand = AddCommand | ViewCommand;
 
 class Cart extends DurableStateActor<CartCommand, State> {
   constructor(options: DurableStateOptions<State>) { super(options); }
 
   override async onCommand(command: CartCommand): Promise<void> {
-    if (command.kind === 'add') {
-      const next: State = { items: [...this.state.items, command.sku] };
-      await this.persist(next);   // überschreibt den gespeicherten State
-    } else if (command.kind === 'view') {
-      command.replyTo.tell(this.state);
-    }
+    await match(command)
+      .with({ kind: 'add' }, (c) => this.onAdd(c))
+      .with({ kind: 'view' }, (c) => this.onView(c))
+      .exhaustive();
+  }
+
+  private async onAdd(command: AddCommand): Promise<void> {
+    const next: State = { items: [...this.state.items, command.sku] };
+    await this.persist(next);   // überschreibt den gespeicherten State
+  }
+
+  private onView(command: ViewCommand): void {
+    command.replyTo.tell(this.state);
   }
 }
 ```
@@ -256,6 +277,7 @@ konsumiert sie und baut eine abgeleitete View, die für Queries
 zugeschnitten ist:
 
 ```ts
+import { match } from 'ts-pattern';
 import { ProjectionActor, ByTagProjectionOptions } from 'actor-ts';
 
 const cartViewOptions = ByTagProjectionOptions.create<CartEvent>()
@@ -263,10 +285,10 @@ const cartViewOptions = ByTagProjectionOptions.create<CartEvent>()
   .withTag('cart')
   .withQuery(query)
   .withHandle(async (event) => {
-    if (event.event.kind === 'added') {
-      await db.execute('INSERT INTO cart_items ...');
-    }
-    // ...
+    await match(event.event)
+      .with({ kind: 'added' }, () => db.execute('INSERT INTO cart_items ...'))
+      // ...
+      .otherwise(() => Promise.resolve());
   });
 const cartView = ProjectionActor.byTag<CartEvent>(system, cartViewOptions);
 ```

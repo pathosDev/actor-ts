@@ -93,6 +93,11 @@ export type {
   GrpcClientCommand,
   GrpcInbound,
   GrpcCredentials,
+  ReplyMessage,
+  StreamDataMessage,
+  StreamEndMessage,
+  StreamErrorMessage,
+  RpcErrorMessage,
 } from './GrpcClientActor.js';
 export { GrpcClientOptions, GrpcClientOptionsBuilder, GrpcClientOptionsValidator } from './GrpcClientOptions.js';
 export type { GrpcClientOptionsType } from './GrpcClientOptions.js';
