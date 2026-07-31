@@ -124,6 +124,21 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
   /** Per-actor timer scheduler. */
   readonly timers: TimerScheduler<TMessage> = new CellTimerScheduler<TMessage>(this);
 
+  /**
+   * @internal Child names to stop one after another instead of all at once,
+   * each fully drained before the next is asked to stop.
+   *
+   * Set only on the root cell, to `GUARDIAN_SHUTDOWN_ORDER`.  `null`
+   * everywhere else: for an ordinary actor, stopping every child
+   * concurrently is both correct and faster — siblings are peers, and
+   * nothing about being a child implies an ordering.  The guardians are the
+   * exception because one of them exists to serve the other.
+   */
+  _terminationOrder: ReadonlyArray<string> | null = null;
+
+  /** Cursor into {@link _terminationOrder} while terminating. */
+  private _terminationGroupIndex = 0;
+
   constructor(
     readonly system: ActorSystem,
     readonly props: Props<TMessage>,
@@ -646,10 +661,43 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
     this.state = 'terminating';
     this._clearReceiveTimer();
 
+    if (this._terminationOrder) {
+      await this.terminateNextGroup();
+      return;
+    }
+
     // Stop all children and wait for them
     const childRefs = Array.from(this._children.values());
     for (const child of childRefs) child.enqueueSystem({ kind: 'terminate' });
     // Children notify us via 'childTerminated'; we finish in finalizeTermination.
+    if (this._children.size === 0) {
+      await this.finalizeTermination();
+    }
+  }
+
+  /**
+   * Ask the next named child in {@link _terminationOrder} to stop, or finish
+   * once every name is drained.
+   *
+   * Re-entered from `onChildTerminated`, which is what makes the teardown
+   * sequential: one `terminate` goes out per round trip.  Names that have no
+   * child are skipped rather than waited on, so an order listing a guardian
+   * that was never created still completes.
+   */
+  private async terminateNextGroup(): Promise<void> {
+    const order = this._terminationOrder ?? [];
+    while (this._terminationGroupIndex < order.length) {
+      const child = this._children.get(order[this._terminationGroupIndex]!);
+      this._terminationGroupIndex++;
+      if (child) {
+        child.enqueueSystem({ kind: 'terminate' });
+        return;
+      }
+    }
+    // Every named child is gone.  Anything left is unordered — stop it now.
+    for (const child of Array.from(this._children.values())) {
+      child.enqueueSystem({ kind: 'terminate' });
+    }
     if (this._children.size === 0) {
       await this.finalizeTermination();
     }
@@ -976,7 +1024,12 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
     // Any Terminated(childRef) owed to us was already delivered via the
     // child's watcher set in finalizeTermination — no double delivery here.
 
-    if (this.state === 'terminating' && this._children.size === 0) {
+    if (this.state !== 'terminating') return;
+    if (this._terminationOrder) {
+      await this.terminateNextGroup();
+      return;
+    }
+    if (this._children.size === 0) {
       await this.finalizeTermination();
     }
   }

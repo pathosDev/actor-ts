@@ -19,7 +19,14 @@ import type { ActorSystemOptions, ActorSystemOptionsType } from './ActorSystemOp
 import { ActorCell } from './internal/ActorCell.js';
 import type { CellInspection, DispatchObserver } from './internal/Instrumentation.js';
 import { DeadLetterRef } from './internal/DeadLetterRef.js';
-import { Guardian, systemGuardianStrategy, userGuardianStrategy } from './internal/Guardian.js';
+import {
+  GUARDIAN_SHUTDOWN_ORDER,
+  Guardian,
+  SYSTEM_GUARDIAN_NAME,
+  USER_GUARDIAN_NAME,
+  systemGuardianStrategy,
+  userGuardianStrategy,
+} from './internal/Guardian.js';
 import { LocalActorRef } from './internal/LocalActorRef.js';
 import { systemGroupPolicy, type SystemGroup } from './internal/SystemPaths.js';
 import { PersistenceExtensionId } from './persistence/PersistenceExtension.js';
@@ -121,15 +128,19 @@ export class ActorSystem {
 
     const userRef = this.rootCell.spawn(
       Props.create(() => new Guardian(userGuardianStrategy)),
-      'user',
+      USER_GUARDIAN_NAME,
     );
     this.userGuardianCell = (userRef as LocalActorRef<unknown>).getCell();
 
     const systemRef = this.rootCell.spawn(
       Props.create(() => new Guardian(systemGuardianStrategy)),
-      'system',
+      SYSTEM_GUARDIAN_NAME,
     );
     this.systemGuardianCell = (systemRef as LocalActorRef<unknown>).getCell();
+
+    // The root stops its two children in sequence, not together — see
+    // GUARDIAN_SHUTDOWN_ORDER for why `/user` has to drain first.
+    this.rootCell._terminationOrder = GUARDIAN_SHUTDOWN_ORDER;
 
     // Apply persistence overrides AFTER the guardians are wired up so the
     // extension registry exists.  Either field is independent — omitted
@@ -352,7 +363,12 @@ export class ActorSystem {
     ref.stop();
   }
 
-  /** Shut down: stops /user (children first) and resolves once everything is drained. */
+  /**
+   * Shut down: stops `/user` (children first), then `/system`, and resolves
+   * once everything is drained.  The two guardians go in sequence so a user
+   * actor's `postStop` can still reach the framework actors it depends on —
+   * see `GUARDIAN_SHUTDOWN_ORDER`.
+   */
   terminate(): Promise<void> {
     if (this._terminated) return Promise.resolve();
     if (this._terminating) return this.whenTerminated();
