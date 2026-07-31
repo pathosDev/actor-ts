@@ -21,6 +21,7 @@ import type { CellInspection, DispatchObserver } from './internal/Instrumentatio
 import { DeadLetterRef } from './internal/DeadLetterRef.js';
 import { Guardian, systemGuardianStrategy, userGuardianStrategy } from './internal/Guardian.js';
 import { LocalActorRef } from './internal/LocalActorRef.js';
+import { systemGroupPolicy, type SystemGroup } from './internal/SystemPaths.js';
 import { PersistenceExtensionId } from './persistence/PersistenceExtension.js';
 import type { HttpServerBackend } from './http/backend/HttpServerBackend.js';
 import { HttpExtensionId, type ServerBuilder } from './http/HttpExtension.js';
@@ -54,6 +55,12 @@ export class ActorSystem {
   private readonly rootCell: ActorCell<unknown>;
   private readonly userGuardianCell: ActorCell<unknown>;
   private readonly systemGuardianCell: ActorCell<unknown>;
+  /**
+   * Group guardians under `/system`, keyed by group path — populated on
+   * demand by {@link _systemGroupCell}.  Empty until something actually
+   * spawns a framework actor, so a plain system keeps its three-cell tree.
+   */
+  private readonly systemGroupCells = new Map<string, ActorCell<unknown>>();
 
   /**
    * @internal Profiling hook, `null` unless a profiler is running.
@@ -223,6 +230,60 @@ export class ActorSystem {
    */
   spawnTypedAnonymous<T>(behavior: Behavior<T>): ActorRef<T> {
     return this.spawnAnonymous(typedProps<T>(behavior));
+  }
+
+  /**
+   * @internal Spawn a framework-owned actor under `/system/<group>`.
+   *
+   * The framework's own actors — the DevTools hub, shard regions, the pub-sub
+   * mediator, projections — do not belong in `/user`, which is the
+   * application's namespace.  Keeping them apart is what lets a reader of the
+   * actor tree tell the two sides apart, and what gives shutdown a boundary
+   * to order against.
+   *
+   * Deliberately internal: this is not an extension point for applications,
+   * and `/user` stays the only place user code can spawn a top-level actor.
+   */
+  _spawnSystemActor<T>(props: Props<T>, group: SystemGroup, name: string): ActorRef<T> {
+    if (this._terminating || this._terminated) {
+      throw new Error(`Cannot create actors on a terminated ActorSystem '${this.name}'`);
+    }
+    return this._systemGroupCell(group).spawn(props, name);
+  }
+
+  /**
+   * @internal The guardian cell for `groupPath`, creating missing levels.
+   *
+   * Memoised rather than probe-and-create, because `ActorCell._createChild`
+   * throws on a duplicate name and several callers sharing one group is the
+   * normal case — the DevTools hub and its three probes, or every sharded
+   * type reaching for `cluster/sharding`.  Creation is lazy so that a system
+   * which never starts DevTools or clustering pays for no group at all.
+   *
+   * A cell exists synchronously even though its `create` message is queued,
+   * so a group can be spawned into immediately after it is made.
+   */
+  private _systemGroupCell(groupPath: string): ActorCell<unknown> {
+    const cached = this.systemGroupCells.get(groupPath);
+    if (cached) return cached;
+
+    let parent = this.systemGuardianCell;
+    let walked = '';
+    for (const segment of groupPath.split('/')) {
+      walked = walked === '' ? segment : `${walked}/${segment}`;
+      const existing = this.systemGroupCells.get(walked);
+      if (existing) {
+        parent = existing;
+        continue;
+      }
+      const policy = systemGroupPolicy(walked);
+      const base = Props.create(() => new Guardian(policy.strategy));
+      const groupRef = parent.spawn(policy.internal ? base.asInternal() : base, segment);
+      const groupCell = (groupRef as LocalActorRef<unknown>).getCell();
+      this.systemGroupCells.set(walked, groupCell);
+      parent = groupCell;
+    }
+    return parent;
   }
 
   /**
