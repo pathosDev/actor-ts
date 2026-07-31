@@ -1,5 +1,6 @@
 import { match, P } from 'ts-pattern';
 import { Actor } from '../Actor.js';
+import { SystemActorNames, SystemGroups } from '../internal/SystemPaths.js';
 import { DEFAULT_GOSSIP_INTERVAL_MS } from '../util/Constants.js';
 import { ReceptionistOptionsValidator } from './ReceptionistOptions.js';
 import type { ReceptionistOptions, ReceptionistOptionsType } from './ReceptionistOptions.js';
@@ -266,9 +267,10 @@ export class ReceptionistExtension {
       ...(options as Partial<ReceptionistOptionsType>),
       cluster: cluster ?? null,
     };
-    const ref = this.system.spawn(
+    const ref = this.system._spawnSystemActor(
       Props.create<Message>(() => new Receptionist(resolvedOptions)),
-      'receptionist',
+      SystemGroups.cluster,
+      SystemActorNames.receptionist,
     );
     this.started = ref;
     return ref;

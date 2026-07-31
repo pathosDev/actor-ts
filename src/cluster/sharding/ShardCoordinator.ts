@@ -130,11 +130,6 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
     this.options = options as ShardCoordinatorOptionsType;
   }
 
-  /** Path used by ClusterSharding to locate the coordinator on any node. */
-  static pathFor(typeName: string): string {
-    return `actor-ts://SYSTEM/user/sharding-coordinator-${typeName}`;
-  }
-
   override async preStart(): Promise<void> {
     // 1. Replay the persisted remembered-entities log so the
     //    in-memory map is populated BEFORE we accept any messages.

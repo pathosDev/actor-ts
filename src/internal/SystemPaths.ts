@@ -15,6 +15,7 @@
  * delivers the raw body past the handler that was supposed to wrap it.
  * Deriving both from here removes the possibility.
  */
+import type { ActorRef } from '../ActorRef.js';
 import {
   defaultStrategy,
   stoppingStrategy,
@@ -83,4 +84,80 @@ const GROUP_POLICIES: ReadonlyMap<string, SystemGroupPolicy> = new Map([
  */
 export function systemGroupPolicy(groupPath: string): SystemGroupPolicy {
   return GROUP_POLICIES.get(groupPath) ?? DEFAULT_POLICY;
+}
+
+/* ------------------------- well-known actor names ------------------------ */
+
+/**
+ * Names of the framework actors that are addressed by name rather than by a
+ * ref — either because a remote node has to reach them without ever having
+ * been handed one, or because an extension looks its own actor back up.
+ *
+ * The names are bare: `mediator`, not `pubsub-mediator`.  The prefixes only
+ * existed to keep a dozen unrelated actors from colliding as flat children of
+ * `/user`, and inside a group they say the same thing twice.
+ */
+export const SystemActorNames = {
+  devtoolsHub: 'hub',
+  receptionist: 'receptionist',
+  pubSubMediator: 'mediator',
+  distributedData: 'data',
+} as const;
+
+/** Shard region for `typeName`, under {@link SystemGroups.clusterSharding}. */
+export const shardRegionName = (typeName: string): string => `region-${typeName}`;
+
+/** Shard coordinator for `typeName`, under {@link SystemGroups.clusterSharding}. */
+export const shardCoordinatorName = (typeName: string): string => `coordinator-${typeName}`;
+
+/** Singleton manager for `typeName`, under {@link SystemGroups.clusterSingleton}. */
+export const singletonManagerName = (typeName: string): string => `manager-${typeName}`;
+
+/**
+ * Singleton proxy for `typeName`.  Synthetic — no actor is ever spawned here;
+ * `ClusterSingletonProxy` is a bare `ActorRef` that needs a plausible path to
+ * report in logs and dead letters.
+ */
+export const singletonProxyName = (typeName: string): string => `proxy-${typeName}`;
+
+/** Absolute path of a group guardian — the parent of that group's actors. */
+export function systemGroupPath(systemName: string, group: SystemGroup): string {
+  return `actor-ts://${systemName}/system/${group}`;
+}
+
+/**
+ * Absolute path of a framework actor, in the form that goes on the wire.
+ *
+ * The one place a `/system` path is rendered, so a group or name change moves
+ * the spawn location and every remote address for it together.
+ */
+export function systemActorPath(
+  systemName: string,
+  group: SystemGroup,
+  actorName: string,
+): string {
+  return `${systemGroupPath(systemName, group)}/${actorName}`;
+}
+
+/**
+ * Assert that a framework actor really landed where its well-known path
+ * helper claims.
+ *
+ * Worth a runtime check because the failure is silent *and* misleading. Every
+ * site spawns the actor and registers its envelope handler as two separate
+ * calls, keyed on the helper's output; if the two disagree,
+ * `Cluster.dispatchEnvelope` misses the per-path handler, falls through to
+ * resolving the path itself, and `tell`s the raw envelope body. So a
+ * singleton manager receives an unwrapped payload where it expected a
+ * `singleton-deliver`, and a coordinator a shape its matcher never handles —
+ * no exception, no dropped-message warning, just wrong behaviour later.
+ */
+export function assertSpawnedAt(expectedPath: string, ref: ActorRef): void {
+  const actualPath = ref.path.toString();
+  if (actualPath === expectedPath) return;
+  throw new Error(
+    `Framework actor path mismatch: spawned at '${actualPath}', but the `
+    + `well-known path helper says '${expectedPath}'. Remote nodes address it `
+    + `by the latter, and a mismatch mis-delivers silently.`,
+  );
 }

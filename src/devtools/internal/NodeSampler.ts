@@ -59,13 +59,13 @@ export class NodeSampler {
       this.system,
       ActorLifecycleEvent,
       (event) => this.onLifecycleEvent(event),
-      'devtools-stats',
+      'stats',
     );
     this.deadLetterProbe = subscribeToEventStream(
       this.system,
       DeadLetter,
       () => this.onDeadLetter(),
-      'devtools-stats-dead-letters',
+      'stats-dead-letters',
     );
   }
 

@@ -1,5 +1,6 @@
 import type { ActorRef } from '../../ActorRef.js';
 import type { ActorSystem } from '../../ActorSystem.js';
+import { SystemGroups, assertSpawnedAt, singletonManagerName } from '../../internal/SystemPaths.js';
 import { extensionId, type ExtensionId } from '../../Extension.js';
 import { Props } from '../../Props.js';
 import type { Cluster } from '../Cluster.js';
@@ -70,7 +71,15 @@ export class ClusterSingleton {
       mgr._envelopeUnsub = envelopeUnsubscribe;
       return mgr;
     });
-    managerRef = this.system.spawn(managerProps, `singleton-manager-${resolvedOptions.typeName}`);
+    managerRef = this.system._spawnSystemActor(
+      managerProps,
+      SystemGroups.clusterSingleton,
+      singletonManagerName(resolvedOptions.typeName),
+    );
+    // The handler above is keyed on the well-known path; a drift between it
+    // and where the manager actually landed would route inbound envelopes
+    // past the `singleton-deliver` wrapping instead of failing.
+    assertSpawnedAt(singletonManagerPath(this.system.name, resolvedOptions.typeName), managerRef);
     const proxy = new ClusterSingletonProxy<T>(cluster, resolvedOptions.typeName, managerRef);
     const handle: SingletonHandle<T> = {
       proxy, manager: managerRef,

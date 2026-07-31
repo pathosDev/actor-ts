@@ -12,6 +12,7 @@
 import type { ActorRef } from '../ActorRef.js';
 import type { ActorSystem } from '../ActorSystem.js';
 import { Props } from '../Props.js';
+import { SystemActorNames, SystemGroups } from '../internal/SystemPaths.js';
 import {
   concat,
   completeJson,
@@ -166,9 +167,13 @@ export class DevToolsServer implements DevToolsHubContext {
   /** Spawn the hub and install the taps.  Idempotent. */
   start(): void {
     if (this.hubRef !== null) return;
-    this.hubRef = this.system.spawn(
-      Props.create<DevToolsHubCommand>(() => new DevToolsHubActor(this) as never).asInternal(),
-      freeActorName(this.system, 'devtools-hub'),
+    // No `.asInternal()` here — the `/system/devtools` group carries the
+    // tooling mark and `ActorCell` inherits it, so the hub and every
+    // connection it spawns are covered without repeating it.
+    this.hubRef = this.system._spawnSystemActor(
+      Props.create<DevToolsHubCommand>(() => new DevToolsHubActor(this) as never),
+      SystemGroups.devtools,
+      freeActorName(this.system, SystemGroups.devtools, SystemActorNames.devtoolsHub),
     );
     this.installDefaultTaps();
   }

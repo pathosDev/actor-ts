@@ -2,6 +2,12 @@ import type { ActorRef } from '../../ActorRef.js';
 import type { ActorSystem } from '../../ActorSystem.js';
 import { PersistenceExtensionId } from '../../persistence/PersistenceExtension.js';
 import { Props } from '../../Props.js';
+import {
+  SystemGroups,
+  assertSpawnedAt,
+  shardCoordinatorName,
+  shardRegionName,
+} from '../../internal/SystemPaths.js';
 import type { Cluster } from '../Cluster.js';
 import type { EnvelopeMessage } from '../Protocol.js';
 import { HashAllocationStrategy } from './AllocationStrategy.js';
@@ -93,11 +99,12 @@ export class ClusterSharding {
       this.cluster,
       (path: string) => this.regionsByPath.get(path) ?? null,
     );
-    const ref = this.system.spawn(
+    const ref = this.system._spawnSystemActor(
       // ShardRegion internally handles extra envelope types; cast to Actor<TMessage>
       // so the returned ref presents the user-facing signature.
       Props.create<TMessage>(() => new ShardRegion<TMessage>(config) as unknown as import('../../Actor.js').Actor<TMessage>),
-      `sharding-${options.typeName}`,
+      SystemGroups.clusterSharding,
+      shardRegionName(options.typeName),
     );
     this.regionsByPath.set(ref.path.toString(), ref as ActorRef<unknown>);
     return ref;
@@ -163,15 +170,17 @@ export class ClusterSharding {
     if (options.coordinatorStateStore !== undefined) coordinatorOptions.withCoordinatorStateStore(options.coordinatorStateStore);
     if (options.lease !== undefined) coordinatorOptions.withLease(options.lease);
     if (options.acquireRetryIntervalMs !== undefined) coordinatorOptions.withAcquireRetryIntervalMs(options.acquireRetryIntervalMs);
-    const ref = this.system.spawn(
+    const ref = this.system._spawnSystemActor(
       Props.create(() => new ShardCoordinator(coordinatorOptions)),
-      `sharding-coordinator-${options.typeName}`,
+      SystemGroups.clusterSharding,
+      shardCoordinatorName(options.typeName),
     );
     this.coordinators.set(options.typeName, ref as ActorRef<unknown>);
-    this.regionsByPath.set(
-      coordinatorPath(this.system.name, options.typeName),
-      ref as ActorRef<unknown>,
-    );
+    const wellKnownPath = coordinatorPath(this.system.name, options.typeName);
+    // The registry is keyed on the well-known path, so a drift between it and
+    // the spawn location would silently route past this handler.
+    assertSpawnedAt(wellKnownPath, ref);
+    this.regionsByPath.set(wellKnownPath, ref as ActorRef<unknown>);
   }
 
   /**
@@ -195,13 +204,19 @@ export class ClusterSharding {
     return new JournalRememberEntitiesStore(journal);
   }
 
+  /**
+   * Recover a typeName from a coordinator path — the inverse of
+   * `coordinatorPath`, used by the local resolver to answer for a coordinator
+   * this node hosts.  Anchored on the group segment so a region path
+   * (`.../sharding/region-cart`) cannot match.
+   */
   private typeNameFromCoordinatorPath(path: string): string | null {
-    const match = path.match(/\/sharding-coordinator-([^/]+)$/);
+    const match = path.match(/\/sharding\/coordinator-([^/]+)$/);
     return match ? match[1]! : null;
   }
 
   private findRegionByType(typeName: string): ActorRef<unknown> | null {
-    const suffix = `/user/sharding-${typeName}`;
+    const suffix = `/${SystemGroups.clusterSharding}/${shardRegionName(typeName)}`;
     for (const [path, ref] of this.regionsByPath) {
       if (path.endsWith(suffix)) return ref;
     }

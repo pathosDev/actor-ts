@@ -31,6 +31,7 @@ import { Props } from '../../src/Props.js';
 import { ClusterSharding } from '../../src/cluster/sharding/ClusterSharding.js';
 import { StartShardingOptions } from '../../src/cluster/sharding/StartShardingOptions.js';
 import { ShardCoordinator } from '../../src/cluster/sharding/ShardCoordinator.js';
+import { coordinatorSegments } from './internal/systemPaths.js';
 import {
   InMemoryLease,
   inMemoryLeaseStore,
@@ -68,9 +69,7 @@ function findCoordinator(
   spec: MultiNodeSpec, role: string, typeName: string,
 ): ShardCoordinator | null {
   const sys = spec.systemFor(role);
-  // Coordinator lives at /user/sharding-coordinator-{typeName}
-  const seg = `sharding-coordinator-${typeName}`;
-  const refOption = sys._resolvePath(['user', seg]);
+  const refOption = sys._resolvePath(coordinatorSegments(sys.name, typeName));
   if (refOption.isNone()) return null;
   // Internal hop: the LocalActorRef's cell holds the actor instance.
   const ref = refOption.value as unknown as { getCell?: () => { actor?: ShardCoordinator } };
@@ -140,7 +139,7 @@ describe('multi-node sharding lease — split-brain protection', () => {
       const regions: Record<'a' | 'b' | 'c', ActorRef<Command>> = {
         a: spec.clusterFor('a').sharding.start<Command>(shardingOptionsA),
         b: spec.clusterFor('b').sharding.start<Command>(shardingOptionsB),
-        coordinator: spec.clusterFor('c').sharding.start<Command>(shardingOptionsC),
+        c: spec.clusterFor('c').sharding.start<Command>(shardingOptionsC),
       };
       void regions;
 

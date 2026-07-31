@@ -3,6 +3,7 @@ import { Actor } from '../../Actor.js';
 import { ActorRef } from '../../ActorRef.js';
 import type { Cancellable } from '../../Scheduler.js';
 import { DEFAULT_GOSSIP_INTERVAL_MS } from '../../util/Constants.js';
+import { SystemActorNames, SystemGroups, systemActorPath } from '../../internal/SystemPaths.js';
 import { DistributedPubSubOptionsValidator } from './DistributedPubSubOptions.js';
 import type { DistributedPubSubOptions, DistributedPubSubOptionsType } from './DistributedPubSubOptions.js';
 import { MemberRemoved, MemberUp } from '../ClusterEvents.js';
@@ -29,7 +30,7 @@ import {
  * to its local subscribers.
  */
 export function mediatorPath(systemName: string): string {
-  return `actor-ts://${systemName}/user/pubsub-mediator`;
+  return systemActorPath(systemName, SystemGroups.clusterPubSub, SystemActorNames.pubSubMediator);
 }
 
 type SubscriberSet = {

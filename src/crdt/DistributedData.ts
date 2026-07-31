@@ -1,6 +1,7 @@
 import { match, P } from 'ts-pattern';
 import { Actor } from '../Actor.js';
 import type { ActorRef } from '../ActorRef.js';
+import { SystemActorNames, SystemGroups } from '../internal/SystemPaths.js';
 import type { ActorSystem } from '../ActorSystem.js';
 import type { Cancellable } from '../Scheduler.js';
 import { extensionId, type Extension, type ExtensionId } from '../Extension.js';
@@ -201,9 +202,6 @@ export type ReadConsistency = WriteConsistency;
 
 /* ============================== extension ============================== */
 
-const dataActorPath = (systemName: string): string =>
-  `actor-ts://${systemName}/user/distributed-data`;
-
 /**
  * Cluster-wide replicated key-value store of CRDTs.  Each node hosts
  * one local replica.  `update(key, ...)` mutates the local replica
@@ -250,9 +248,10 @@ export class DistributedData implements Extension {
     // shared "view" the public handle reads, so callers don't have to
     // ask().
     const view: SharedView = { state: new Map(), listeners: new Map() };
-    const ref = this.system.spawn(
+    const ref = this.system._spawnSystemActor(
       Props.create(() => new DistributedDataActor({ cluster, options: resolvedOptions, view })),
-      'distributed-data',
+      SystemGroups.clusterCrdt,
+      SystemActorNames.distributedData,
     );
     // Register wire handlers SYNCHRONOUSLY here — `spawn` returns
     // before the actor's async `preStart` has run, but quorum
@@ -882,8 +881,6 @@ class DistributedDataActor extends Actor<ActorMessage> {
     this.cluster.transport.send(target.address, payload as unknown as WireMessage);
   }
 }
-
-void dataActorPath; // currently unused — reserved for envelope-routing variants
 
 /* ============================== helpers ============================== */
 

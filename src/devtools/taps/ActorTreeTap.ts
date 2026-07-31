@@ -54,7 +54,7 @@ export class ActorTreeTap implements DevToolsTap {
       this.system,
       ActorLifecycleEvent,
       (event) => this.onLifecycleEvent(event, emit),
-      'devtools-actor-tree',
+      'actor-tree',
     );
   }
 

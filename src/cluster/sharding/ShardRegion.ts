@@ -6,6 +6,7 @@ import type { Props } from '../../Props.js';
 import type { ShardingOptionsType } from './ShardingOptions.js';
 import type { Cancellable } from '../../Scheduler.js';
 import { Terminated } from '../../SystemMessages.js';
+import { SystemGroups, shardCoordinatorName, systemActorPath } from '../../internal/SystemPaths.js';
 import type { Cluster } from '../Cluster.js';
 import {
   LeaderChanged,
@@ -573,7 +574,11 @@ export class ShardRegion<TMessage = unknown> extends Actor<TMessage | ShardingMe
 
 export function coordinatorPath(systemName: string, typeName: string): string {
   // Resolvable both locally (via localResolver) and remotely by path.
-  return `actor-ts://${systemName}/user/sharding-coordinator-${typeName}`;
+  return systemActorPath(
+    systemName,
+    SystemGroups.clusterSharding,
+    shardCoordinatorName(typeName),
+  );
 }
 
 function sanitizeName(id: string): string {
