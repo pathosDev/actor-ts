@@ -11,7 +11,7 @@ cluster-internal actors via known **receptionist contacts**.
 ```ts
 import { ClusterClient, ClusterClientOptions } from 'actor-ts';
 
-const clusterClientOptions = ClusterClientOptions.create().withContactPoints(['actor-ts://my-app@10.0.0.5:2552/system/receptionist']);
+const clusterClientOptions = ClusterClientOptions.create().withContactPoints(['actor-ts://my-app@10.0.0.5:2552/system/cluster/receptionist']);
 const client = new ClusterClient(
   clusterClientOptions,
 );

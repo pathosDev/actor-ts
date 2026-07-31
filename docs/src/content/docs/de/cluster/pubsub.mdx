@@ -26,7 +26,7 @@ flowchart LR
 ```
 
 Jeder Node hostet einen **Mediator** an einem bekannten Pfad
-(`/user/pubsub-mediator`). Subscriber registrieren sich bei ihrem
+(`/system/cluster/pubsub/mediator`). Subscriber registrieren sich bei ihrem
 lokalen Mediator; Mediators verteilen die Topic→Node-Karte per
 Gossip. Beim Veröffentlichen geht die Nachricht an den lokalen
 Mediator, der an jeden Node ausfächert, der Subscriber für dieses

@@ -26,7 +26,7 @@ flowchart LR
 ```
 
 Each node hosts a **mediator** at a well-known path
-(`/user/pubsub-mediator`).  Subscribers register with their local
+(`/system/cluster/pubsub/mediator`).  Subscribers register with their local
 mediator; mediators gossip the topic→node map.  Publishing sends
 the message to the local mediator, which fans out to every node
 that has subscribers for that topic.

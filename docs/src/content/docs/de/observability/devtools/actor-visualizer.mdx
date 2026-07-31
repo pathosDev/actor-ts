@@ -138,13 +138,18 @@ Actors. Verborgen wird nichts außer DevTools' eigenen — und das ist eine
 Checkbox.
 </Aside>
 
-<Aside type="note" title="Warum /system leer ist">
-`ActorSystem` legt unter der Wurzel zwei Guardians an, `/user` und
-`/system`, aber **jeder** `spawn` läuft über den User-Guardian — der
-System-Guardian existiert als Supervisions-Platzhalter und bekommt nie
-Kinder. Ein kinderloses `/system` ist also die Wahrheit und kein
-fehlender Ast; DevTools' eigene Actors liegen wie alle anderen unter
-`/user`.
+<Aside type="tip" title="Die zwei Äste lesen">
+`/user` enthält, was dein Code erzeugt hat; `/system` enthält, was das
+Framework für sich selbst erzeugt hat — nach Subsystem gruppiert:
+`/system/cluster/sharding`, `/system/cluster/pubsub`,
+`/system/devtools` und so weiter. Wenn du deine eigenen Actors suchst,
+ist `/user` die ganze Geschichte.
+
+Die Gruppen-Ebenen sind selbst Actors (leere Supervisor, die nur die
+Gruppierung und eine Supervisions-Strategie halten), erscheinen also als
+Knoten mit Kindern und ohne Nachrichten. Gruppen entstehen erst, wenn sie
+gebraucht werden — ein System, das nie DevTools oder Clustering startet,
+hat unter `/system` nichts.
 </Aside>
 
 ## Cluster

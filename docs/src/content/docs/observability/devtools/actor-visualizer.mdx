@@ -122,12 +122,17 @@ actors too.  Nothing is hidden except DevTools' own, and that is a
 checkbox.
 </Aside>
 
-<Aside type="note" title="Why /system is empty">
-`ActorSystem` builds two guardians under the root, `/user` and
-`/system`, but **every** `spawn` goes through the user guardian — the
-system guardian exists as a supervision placeholder and never gets
-children. So a childless `/system` is the truth, not a missing branch,
-and DevTools' own actors live under `/user` like everyone else's.
+<Aside type="tip" title="Reading the two branches">
+`/user` holds what your code spawned; `/system` holds what the framework
+spawned for itself, grouped by subsystem — `/system/cluster/sharding`,
+`/system/cluster/pubsub`, `/system/devtools`, and so on.  If you are
+looking for your own actors, `/user` is the whole story.
+
+The group levels are actors too (empty supervisors that exist to hold the
+grouping and a supervision policy), so they show up as nodes with
+children and no messages.  Groups appear the first time something needs
+them, so a system that never starts DevTools or clustering has a
+`/system` with nothing under it.
 </Aside>
 
 ## Cluster

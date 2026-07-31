@@ -74,7 +74,7 @@ Der Manager **muss** an einem Pfad gespawnt werden, der
 folgendem entspricht:
 
 ```
-actor-ts://<system>/user/singleton-manager-<typeName>
+actor-ts://<system>/system/cluster/singleton/manager-<typeName>
 ```
 
 Daher der Actor-Name `'singleton-manager-job-scheduler'` oben,
@@ -90,7 +90,7 @@ Bruch. Immer:
 import { singletonManagerPath } from 'actor-ts';
 
 const path = singletonManagerPath(system.name, 'job-scheduler');
-// "actor-ts://<sysName>/user/singleton-manager-job-scheduler"
+// "actor-ts://<sysName>/system/cluster/singleton/manager-job-scheduler"
 ```
 
 Du kannst diesen Helper verwenden, wenn du sicherstellen willst,
@@ -262,7 +262,7 @@ import { Aside } from '@astrojs/starlight/components';
 <Aside type="caution" title="Manager-Name muss der Konvention folgen">
   ```ts
   system.spawn(Props.create(() => new ClusterSingletonManager(ClusterSingletonManagerOptions.create()/* ... */)), 'whatever');
-  // ✗ Proxy sucht `/user/singleton-manager-<typeName>`, nicht /user/whatever
+  // ✗ Proxy sucht `/system/cluster/singleton/manager-<typeName>`
   ```
   Nutze `singletonManagerPath(...)` oder buchstabier die
   Konvention aus. Das Framework erzwingt sie nicht; falsch

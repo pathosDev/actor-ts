@@ -166,9 +166,11 @@ event-sourced variants exist.  See
 members exchange views periodically until convergence.  See
 [Cluster overview](/cluster/overview/).
 
-**Guardian.**  Top-level system actors: `/user`, `/system`,
-`/deadLetters`.  See
-[ActorSystem](/fundamentals/actor-system/).
+**Guardian.**  Top-level system actors: `/user` for what your code
+spawns, `/system` for what the framework spawns for itself, plus the
+synthetic `/deadLetters`.  Group guardians nest under `/system`, one per
+subsystem.  See [ActorSystem](/fundamentals/actor-system/) and
+[Actor paths](/fundamentals/actor-paths/).
 
 ## H
 

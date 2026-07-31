@@ -128,23 +128,34 @@ flowchart LR
   USER["/user<br/><i>your application's actors</i>"]
   SYS["/system<br/><i>framework-internal actors</i>"]
   DEAD["/deadLetters<br/><i>messages to dead refs</i>"]
+  CLU["/system/cluster<br/><i>sharding, singleton, pubsub, …</i>"]
+  DT["/system/devtools<br/><i>hub + probes</i>"]
   ROOT --> USER
   ROOT --> SYS
   ROOT --> DEAD
+  SYS --> CLU
+  SYS --> DT
   classDef root  fill:#0f172a,stroke:#6366f1,stroke-width:2px,color:#f1f5f9;
   classDef user  fill:#312e81,stroke:#818cf8,stroke-width:1.5px,color:#f1f5f9;
   classDef sys   fill:#1e293b,stroke:#475569,color:#cbd5e1;
   classDef dead  fill:#1e293b,stroke:#475569,color:#94a3b8;
   class ROOT root
   class USER user
-  class SYS sys
+  class SYS,CLU,DT sys
   class DEAD dead
 ```
 
-When you call `system.spawnAnonymous(props)`, the actor is created under
-`/user`.  When the system terminates, the guardians cascade-stop in
-reverse order: user actors first (so they get to finish their work),
-then system internals.
+When you call `system.spawn(props, name)`, the actor is created under
+`/user`.  `/user` holds only what your code spawned; everything the
+framework spawns for itself lives under `/system`, one group per
+subsystem — see [Actor paths](/fundamentals/actor-paths/) for the full
+layout.  There is no public API for spawning into `/system`.
+
+On termination the two guardians go in sequence, not together: `/user`
+is fully drained first, then `/system`.  That order is what lets a user
+actor's `postStop` still reach the framework actors it depends on —
+unsubscribing from the pub-sub mediator, handing a shard back — instead
+of racing them into dead letters.
 
 The `/deadLetters` "actor" is special — messages to a `tell` on a
 stopped ref, or to a ref that never existed, route there.  By
@@ -213,7 +224,9 @@ await system.terminate();
 2. Stop `/user` recursively — your actors get `postStop`, children
    first.  Actors with in-flight async `onReceive`s finish their
    current message before stopping.
-3. Stop `/system` — framework internals unwind.
+3. Stop `/system` — framework internals unwind.  This starts only once
+   `/user` is fully drained, so a `postStop` in step 2 can still talk to
+   the sharding, pub-sub or delivery actors it depends on.
 4. Close the dispatcher and scheduler — no new messages, no new
    timers.
 5. Resolve the returned promise.
