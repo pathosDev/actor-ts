@@ -852,6 +852,39 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   package): it is the inverse of `ActorPath`'s own rendering, and `RefCodec`
   constructs `RemoteActorRef`s, so importing it from there would have closed a
   module cycle.
+- **A `PersistentActor` whose `onRecoveryFailure` does not rethrow now stops
+  instead of black-holing every command** (#516).  The hook is public and
+  overridable, and its default — rethrow, so `preStart` rejects and `ActorCell`
+  routes an `ActorInitializationError` to supervision — was the only path anyone
+  had tested.  An override that merely *records* the error let `preStart` resolve
+  normally, so the cell counted the actor as started while `_recovering` was
+  still `true` and `_state` had never been assigned: every command hit
+  `onReceive`, was stashed, and vanished.  At command #1025 the hard-coded
+  1024-entry stash overflowed, throwing `StashOverflowError` from inside the
+  handler — a supervision restart 1024 messages away from the actual cause, whose
+  recovery then failed and was swallowed again.  `onRecoveryFailure` is now
+  documented as what it is: a *notification*, not a decision.  Rethrow (the
+  default) and supervision decides; return, and the actor stops via
+  `context.stopSelf()`.  Because the cell drains system messages ahead of every
+  user message — with `onCreate` itself running inside that loop — nothing can
+  reach `onReceive` without a state, and the stash is provably still empty, so
+  commands already queued become dead letters instead of disappearing.
+  `PersistentFSM` inherits the fix, which also closes its unguarded `this.state`
+  read in `fireTimeoutTransition` — reachable when a state-timeout fire was
+  already in the mailbox.  Recovery-failure semantics are now documented on
+  `persistent-actor`, `persistent-fsm`, `migrating-adapter` and the FAQ's "Why
+  isn't my actor receiving messages?" aside (EN + DE), which previously blamed
+  slow recovery for exactly this symptom.
+- **A throwing `onRecoveryComplete` is no longer misreported as a recovery
+  failure** (#516).  It ran inside the same `try` as the replay, so a bug in the
+  user's post-recovery hook was handed to `onRecoveryFailure` — blaming the
+  journal for state that had recovered perfectly — and skipped the `unstashAll()`
+  that follows it.  Post-recovery user code now runs outside the guard, so it
+  reaches supervision as an ordinary actor failure, and the drain moved into a
+  `finally`.  `recover()` is reduced to pure replay with no user callbacks.  Its
+  old comment claimed commands were "already stashed by the ActorCell" during
+  recovery; they are not — nothing can be handled before `preStart` resolves, so
+  they wait in the mailbox and that drain is a no-op on every normal path.
 - **`bun run lint:package` is reproducible, and `lint:knip` exits 0 again**
   (#507).  The three package-health scripts invoked their tools through `bunx`,
   which — contrary to the first guess — does honour the manifest range and

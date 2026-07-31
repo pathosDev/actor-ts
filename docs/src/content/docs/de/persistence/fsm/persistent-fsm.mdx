@@ -118,6 +118,10 @@ Daten-Updates.
 3. **`onRecoveryComplete`** feuert mit dem finalen abgespielten Zustand,
    woraufhin die FSM beginnt, Live-Commands zu verarbeiten.
 
+Schlägt die Recovery fehl, stoppt die FSM, bevor ein Übergang läuft
+oder ein State-Timeout armiert wird — siehe [Wenn die Recovery
+fehlschlägt](/de/persistence/persistent-actor/#wenn-die-recovery-fehlschlägt).
+
 Dieselbe Idiomatik wie
 [PersistentActor](/de/persistence/persistent-actor/) — Replay baut
 deterministisch die exakte Position der Zustandsmaschine wieder auf.

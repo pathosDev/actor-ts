@@ -153,9 +153,12 @@ writeVersion` — otherwise `toJournal` throws.
 ```
 
 If a step throws, recovery fails with the error surfaced through
-the actor's `onRecoveryFailure`.  A **chain gap** — no upcaster
-registered for the cursor before `currentVersion` is reached —
-throws a `MigrationError` naming the missing `fromVersion`.
+the actor's `onRecoveryFailure` — and the actor then stops unless
+that hook rethrows into supervision (see [When recovery
+fails](/persistence/persistent-actor/#when-recovery-fails)).  A
+**chain gap** — no upcaster registered for the cursor before
+`currentVersion` is reached — throws a `MigrationError` naming the
+missing `fromVersion`.
 
 ## Adding a step
 
