@@ -1,4 +1,4 @@
-import { ActorPath } from '../ActorPath.js';
+import { ActorPath, parsePathSegments } from '../ActorPath.js';
 import { ActorRef } from '../ActorRef.js';
 import { LogContext } from '../LogContext.js';
 import { tracerOf } from '../tracing/TracingExtension.js';
@@ -23,12 +23,7 @@ export class RemoteActorRef<TMessage = unknown> extends ActorRef<TMessage> {
     private readonly cluster: Cluster,
   ) {
     super();
-    // Remote path doesn't have a local parent hierarchy; rebuild minimally.
-    this.path = new ActorPath(
-      targetPath.split('/').pop() ?? 'remote',
-      null,
-      targetNode.systemName,
-    );
+    this.path = rebuildPath(targetPath, targetNode.systemName);
   }
 
   tell(message: TMessage, sender: ActorRef | null = null): void {
@@ -53,4 +48,30 @@ export class RemoteActorRef<TMessage = unknown> extends ActorRef<TMessage> {
   override toString(): string {
     return `${this.targetNode}${this.targetPath}`;
   }
+}
+
+/**
+ * Rebuild the target's path as a real hierarchy instead of a single root node.
+ *
+ * The obvious shortcut — `new ActorPath(lastSegment, null, systemName)` — produces
+ * a *root* path, and `ActorPath` renders a root as `actor-ts://<system>/` without
+ * its name.  Every remote ref therefore stringified to the same address-less
+ * value, which made `.path` useless for logging and, because `ActorRef.equals`
+ * compares `path.toString()`, made any two remote refs compare equal (#515).
+ * Callers that key a map on `ref.path.toString()` — the receptionist and the
+ * pub-sub mediator both do — collapsed every remote entry onto one slot.
+ *
+ * Building it segment by segment (the shape `ClusterSingletonProxy` already uses)
+ * keeps the empty-named root that `render` skips and hangs the real segments off
+ * it, so the rendering round-trips back to `targetPath`.
+ *
+ * **`equals` still cannot separate two nodes.**  `ActorPath` carries only a
+ * system name, not the host and port, and in practice every member of a cluster
+ * shares one system name — so refs to the same path on different members remain
+ * equal.  Distinguishing those needs an authority on `ActorPath` itself; until
+ * then `toString()` (which prefixes `targetNode`) is the node-aware rendering.
+ */
+function rebuildPath(targetPath: string, systemName: string): ActorPath {
+  const root = new ActorPath('', null, systemName);
+  return parsePathSegments(targetPath).reduce<ActorPath>((path, segment) => path.child(segment), root);
 }
