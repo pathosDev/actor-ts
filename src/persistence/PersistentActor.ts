@@ -175,9 +175,26 @@ export abstract class PersistentActor<Command, Event, State> extends Actor<Comma
         reason,
       );
       this.context.stopSelf();
+      return;
+    }
+    // Post-recovery user code, deliberately OUTSIDE the guard above.  A
+    // throw in `onRecoveryComplete` is an ordinary actor failure, not a
+    // recovery failure: routing it through `onRecoveryFailure` blamed the
+    // journal for a bug in the hook, and — with an override that swallows
+    // — stranded an actor whose state had recovered perfectly.
+    this._recovering = false;
+    try {
+      await this.onRecoveryComplete(this._state);
+    } finally {
+      // Only reachable when a subclass starts recovery without awaiting
+      // it — on every normal path the commands are still in the mailbox,
+      // never the stash.  Draining in `finally` keeps them across a
+      // failing hook instead of letting them die with the instance.
+      this.context.unstashAll();
     }
   }
 
+  /** Replay snapshot + journal into `_state` / `_seq`.  Runs no user callbacks. */
   private async recover(): Promise<void> {
     this.log.debug(`[persistence] '${this.persistenceId}' recovery starting`);
     // The fold, the snapshot fast-path and the snapshot-integrity
@@ -203,11 +220,6 @@ export abstract class PersistentActor<Command, Event, State> extends Actor<Comma
     this.log.debug(
       `[persistence] '${this.persistenceId}' recovery complete: replayed ${result.eventsApplied} event(s), seq=${this._seq}`,
     );
-    this._recovering = false;
-    await this.onRecoveryComplete(this._state);
-    // Any commands that arrived during recovery are already stashed by the
-    // ActorCell — release them now so the actor processes them in order.
-    this.context.unstashAll();
   }
 
   override async onReceive(message: Command): Promise<void> {

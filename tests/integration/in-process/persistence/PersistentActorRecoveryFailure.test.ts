@@ -215,6 +215,43 @@ describe('PersistentActor — a swallowed recovery failure', () => {
   });
 });
 
+describe('PersistentActor — a throwing onRecoveryComplete', () => {
+  test('is not reported as a recovery failure', async () => {
+    const { system, journal } = makeSystem('recovery-complete-throws');
+    // A perfectly healthy journal — recovery itself must succeed, so any
+    // failure that surfaces belongs to the hook and nothing else.
+    await journal.append<Event>('acct-hook', [{ kind: 'deposited', amount: 10 }], 0);
+    await spawnListeners(system);
+
+    const observations = newObservations();
+    class ThrowingCompleteAccount extends Account {
+      override onRecoveryFailure(reason: Error): void { this.observations.failures.push(reason); }
+      override onRecoveryComplete(state: State): void {
+        this.observations.recovered.push(state);
+        // Only the first incarnation throws, so the restart converges and
+        // the test does not depend on the retry budget.
+        if (this.observations.recovered.length === 1) throw new Error('hook exploded');
+      }
+    }
+    system.spawn(
+      Props.create(() => {
+        observations.incarnations++;
+        return new ThrowingCompleteAccount('acct-hook', observations);
+      }),
+      'account',
+    );
+
+    await awaitCondition(() => observations.incarnations > 1, {
+      label: 'supervision restarted the actor after the hook threw',
+    });
+    // The state recovered fine both times — blaming onRecoveryFailure
+    // would have pointed at the journal for a bug in user code.
+    expect(observations.failures).toEqual([]);
+    expect(observations.recovered[0]).toEqual({ balance: 10 });
+    await system.terminate();
+  });
+});
+
 describe('PersistentActor — the default onRecoveryFailure', () => {
   test('still routes the failure to supervision', async () => {
     const { system, journal, snapshots } = makeSystem('recovery-failure-default');
