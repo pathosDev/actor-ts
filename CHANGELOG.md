@@ -11,6 +11,72 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Added
 
+- **Shard introspection: `ClusterSharding.shards()`, `shardRefFor()`, and the
+  `StartEntity` / `GetShardStats` shard commands** (#151).  The sharding
+  protocol had no query message of any kind — `ShardCoordinator` handled seven
+  variants, none of them a `Get*` — so "which shards exist, and where?" had no
+  answer short of the `/cluster/shards` management endpoint, which reads a
+  DistributedData snapshot and only works if you opted into a
+  `coordinatorStateStore`.  The multi-node tests went as far as reaching into
+  the coordinator's private fields.  `shards(typeName)` now answers
+  cluster-wide with a `ShardInfo` per placed shard: shard id, hosting node,
+  region path, live entity count, whether it is local, **and a usable `ref`**.
+  The coordinator owns the shard map but not the entity counts — only the
+  hosting region knows those — so it fans `GetShardRegionStats` out to the
+  registered regions and joins the answers against `shardHome`; a region that
+  misses the deadline contributes `0` rather than failing the call.  Refs are
+  materialised on the *asking* node, so the wire payload stays plain data and
+  no ref has to survive serialisation.  `shardRefFor(typeName, shardId)` hands
+  back one shard's ref and allocates the shard if it had no home yet, exactly
+  as a first message for it would have.  Because a shard is a real actor now,
+  that ref is the real thing — the local actor, or a `RemoteActorRef` at
+  `/user/sharding-<type>/shard-<n>` — so `tell` works from anywhere; `ask` on
+  it works when the shard is local, and cross-node queries pass their own
+  actor's `self` as `GetShardStats.replyTo` (a one-shot ask ref is not
+  addressable from another node, which is why the sharding protocol correlates
+  replies by path in the first place).
+- **`ClusterSharding.entityRefFor(typeName, entityId)`** (#512) — a
+  location-transparent handle to a single entity, the counterpart to the region
+  ref that sharding has handed out until now.  With only a region ref, every
+  message has to embed its own entity id so `extractEntityId` can dig it back
+  out; the identity of the entity is implicit and there is nothing you can pass
+  to another component that means "this one entity".  `entityRefFor` returns an
+  ordinary `ActorRef`, so `tell` and `ask` work as usual, and it wraps each
+  message in an id-addressed envelope that the region routes without consulting
+  `extractEntityId` at all — the message type no longer has to know how it is
+  routed.  Synchronous, because the shard is `hash(entityId) % numShards` and
+  needs no lookup; location-transparent, because it routes through the local
+  region, which already knows how to buffer for an unplaced shard and how to
+  forward across nodes.  A proxy region is enough to hand one out.
+- **BREAKING — a shard is a real actor now: `Region → Shard → Entity`** (#511).
+  A shard used to be nothing but a number key in `ShardRegion`'s maps, with the
+  entities spawned as direct children of the *region*.  That left "give me an
+  `ActorRef` for shard 7" with no referent at all, made handoff a
+  fire-and-forget loop that reported `HandOffComplete` *before* the entities had
+  actually stopped, and hid the shard dimension from the actor tree entirely.
+  Entities are now grandchildren of the region:
+  `/user/sharding-<type>/shard-<n>/entity-<id>` — **migration:** anything that
+  resolved an entity by path has to insert the `shard-<n>` segment (the shard id
+  is `hashShardId(entityId, numShards)`); `ActorPath.parent` of an entity is now
+  its shard.  The new `Shard` actor owns the entity lifecycle only — spawn,
+  watch, stop, and the buffer that holds traffic for an entity on its way out.
+  Routing, buffering, coordinator registration and the ask-correlation machinery
+  stay in the region, and so does the passivation *policy*: both the idle sweep
+  and the `maxEntities` LRU are decided there and executed by the owning shard
+  through a `PassivateEntity` command.  Keeping the policy one level up is what
+  lets `maxEntities` go on meaning "per node" instead of quietly becoming "per
+  shard" — a knob that would otherwise have changed meaning without changing
+  name.  Handoff is now simply "stop the shard": the runtime terminates the
+  entities underneath and only then delivers `Terminated`, so `HandOffComplete`
+  finally means what it says.  Shards are created eagerly when the coordinator
+  assigns one, not lazily on the first message, so an allocated-but-empty shard
+  still has a live ref.  The cost was accepted deliberately and is not small:
+  every message to a local entity now takes one extra node-local hop, and
+  `benchmarks/cluster/sharded-roundtrip.ts` measures it as **~40k → ~29k ask/s
+  on one node (−28 %, +9 µs per ask)** and **~42k → ~25k on two nodes (−41 %,
+  +16 µs)** — medians of three runs each, on the same machine.  If you are
+  routing hot-path traffic through a region and were relying on the old
+  numbers, this is the change that moved them.
 - **CI gate for the benchmarks: `typecheck:bench` + `bench:smoke`** (#506).
   Nothing looked at `benchmarks/` at all — `bun run typecheck` uses the build
   tsconfig, which deliberately excludes them, and `test.yml` does not even
@@ -652,6 +718,22 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Fixed
 
+- **`ShardMapChanged` is actually published now** (#513).  The event was
+  declared, exported, unit-tested for its shape, and consumed in two places —
+  the DevTools shard panel (`ClusterTap`) and
+  `examples/cluster/counter-node.ts`, which logs `shard map v<n>: n1=6, n2=5,
+  …`.  Nothing ever constructed it.  `ShardCoordinator` mutated `shardHome` in
+  four places and published nothing, so the panel stayed empty forever and the
+  example's listener never fired; both looked wired up until you ran them.  The
+  coordinator now broadcasts a `ShardMapUpdate` on every allocation change and
+  each region turns it into a local `ShardMapChanged` — via the region, because
+  the coordinator only runs on the leader and an event that fires on one node
+  out of N is no use to a per-node panel.  Broadcasts are coalesced (allocation
+  changes arrive one shard at a time, and a fresh cluster places every shard at
+  once), so `version` counts broadcasts rather than individual assignments.
+  `ShardMapChanged` also gained an optional fourth constructor argument
+  `regions`, which lets `ClusterTap` drop the hard-coded `regions: []` it had
+  been rendering; existing three-argument construction is unaffected.
 - **A `RemoteActorRef` renders the path it actually points at, and no longer
   compares equal to every other remote ref** (#515).  The path was built as
   `new ActorPath(lastSegment, null, systemName)` — a *root*, and `ActorPath`

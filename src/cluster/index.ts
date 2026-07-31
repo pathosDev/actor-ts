@@ -126,6 +126,17 @@ export { ShardedDaemonProcessOptions, ShardedDaemonProcessOptionsBuilder, Sharde
 export type { ShardedDaemonProcessOptionsType } from './sharding/ShardedDaemonProcessOptions.js';
 export type { ShardedDaemonProcessHandle } from './sharding/ShardedDaemonProcess.js';
 export { ShardRegion } from './sharding/ShardRegion.js';
+export { Shard } from './sharding/Shard.js';
+export type { ShardConfig, ShardMessage } from './sharding/Shard.js';
+export { EntityRef } from './sharding/EntityRef.js';
+export type { ShardInfo } from './sharding/ShardInfo.js';
+// The commands a shard ref accepts — ROADMAP #151.
+export type {
+  EntityEnvelope,
+  GetShardStats,
+  ShardStats,
+  StartEntity,
+} from './sharding/ShardingProtocol.js';
 export { ShardingOptions, ShardingOptionsBuilder, ShardingOptionsValidator } from './sharding/ShardingOptions.js';
 export type { ShardingOptionsType } from './sharding/ShardingOptions.js';
 export { ShardCoordinator } from './sharding/ShardCoordinator.js';

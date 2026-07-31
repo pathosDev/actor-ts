@@ -1,3 +1,4 @@
+import type { ActorRef } from '../../ActorRef.js';
 import type { NodeAddressData } from '../NodeAddress.js';
 
 /**
@@ -79,6 +80,158 @@ export type RememberedEntities = {
   readonly entityIds: string[];
 };
 
+/* ----------------------- region ↔ shard (node-local) --------------------- */
+
+/**
+ * Addresses one entity by id instead of relying on `extractEntityId`.
+ *
+ * The region wraps every message bound for a local entity in this envelope
+ * before handing it to the owning `Shard` — the shard has no extractor of its
+ * own, and the id has already been computed one level up.  It is also the
+ * on-the-wire shape a remote region forwards, so an envelope that arrives
+ * inside a {@link ShardEnvelope} routes exactly like a locally created one.
+ */
+export type EntityEnvelope<TMessage = unknown> = {
+  readonly $t: 'sharding.EntityEnvelope';
+  readonly entityId: string;
+  readonly message: TMessage;
+};
+
+/**
+ * Region-driven passivation.  Both passivation policies — the idle sweep and
+ * the `maxEntities` LRU — are decided by the region (it routes every message,
+ * so it is the only place that sees activity across all shards on this node)
+ * and executed by the shard that owns the entity.
+ */
+export type PassivateEntity = {
+  readonly $t: 'sharding.PassivateEntity';
+  readonly entityId: string;
+};
+
+/** Pre-create remembered entities in a shard after it has been allocated here. */
+export type StartEntities = {
+  readonly $t: 'sharding.StartEntities';
+  readonly entityIds: string[];
+};
+
+/* ----------------------------- introspection ---------------------------- */
+
+/**
+ * Bring an entity up without sending it anything (#151).  Useful to warm a
+ * known-hot entity, or to re-establish one whose state is rebuilt in
+ * `preStart`.
+ */
+export type StartEntity = {
+  readonly $t: 'sharding.StartEntity';
+  readonly entityId: string;
+};
+
+/**
+ * Ask a shard what it is holding.  `replyTo` must be a ref the shard can
+ * actually reach — an actor's own `self` works from any node; `ask()` works
+ * when the shard is on the caller's node.  For the cluster-wide picture use
+ * `ClusterSharding.shards()`, which routes its reply through the region.
+ */
+export type GetShardStats = {
+  readonly $t: 'sharding.GetShardStats';
+  readonly replyTo: ActorRef<ShardStats>;
+};
+
+export type ShardStats = {
+  readonly $t: 'sharding.ShardStats';
+  readonly shardId: number;
+  readonly entityCount: number;
+  readonly entityIds: ReadonlyArray<string>;
+};
+
+/** Coordinator → region leg of a cluster-wide stats query. */
+export type GetShardRegionStats = {
+  readonly $t: 'sharding.GetShardRegionStats';
+  readonly queryId: number;
+  readonly requester: string; // coordinator path
+  readonly requesterNode: NodeAddressData;
+};
+
+export type ShardRegionStats = {
+  readonly $t: 'sharding.ShardRegionStats';
+  readonly queryId: number;
+  readonly region: string;
+  readonly node: NodeAddressData;
+  readonly shards: ReadonlyArray<{ readonly shardId: number; readonly entityCount: number }>;
+};
+
+/**
+ * Region → coordinator: the whole shard map with entity counts.  Replies are
+ * addressed by path + node and correlated by id, like every other sharding
+ * reply — an `ask` ref is not resolvable from another node, which is exactly
+ * why the correlation machinery exists.
+ */
+export type GetClusterShardingStats = {
+  readonly $t: 'sharding.GetClusterShardingStats';
+  readonly correlationId: number;
+  readonly requester: string; // region path of the caller
+  readonly requesterNode: NodeAddressData;
+  /** How long the coordinator waits for the regions it fanned out to. */
+  readonly timeoutMs: number;
+};
+
+/** Where one shard lives, and how much it is holding.  Plain data — no refs. */
+export type ShardLocation = {
+  readonly shardId: number;
+  readonly node: NodeAddressData;
+  readonly regionPath: string;
+  readonly entityCount: number;
+};
+
+export type ClusterShardingStats = {
+  readonly $t: 'sharding.ClusterShardingStats';
+  readonly correlationId: number;
+  readonly shards: ReadonlyArray<ShardLocation>;
+};
+
+/* --------------------- node-local queries on the region ------------------ */
+/*
+ * These two never leave the node.  `ClusterSharding` is a plain object, not an
+ * actor, so it asks its own region — an in-process ask, whose reply ref works
+ * — and lets the region do the cross-node part with the correlation machinery
+ * it already owns.  That is also what lets the replies carry live `ActorRef`s:
+ * they are built on the asking node, so nothing has to survive serialisation.
+ */
+
+/** `ClusterSharding.shards()` — answered with `ReadonlyArray<ShardInfo>`. */
+export type GetShards = {
+  readonly $t: 'sharding.GetShards';
+  readonly timeoutMs: number;
+};
+
+/** `ClusterSharding.shardRefFor()` — answered with the shard's `ActorRef`. */
+export type GetShardLocation = {
+  readonly $t: 'sharding.GetShardLocation';
+  readonly shardId: number;
+};
+
+/**
+ * Coordinator → every registered region: the allocation map changed.
+ *
+ * Each region turns this into a local `ShardMapChanged` cluster event, which
+ * is what gets the event onto *every* node — the coordinator only runs on the
+ * leader, and a listener that only fires there is no use to a per-node panel.
+ */
+export type ShardMapUpdate = {
+  readonly $t: 'sharding.ShardMapUpdate';
+  readonly typeName: string;
+  readonly version: number;
+  /** `[shardId, regionKey][]` — a Map's wire shape. */
+  readonly shards: ReadonlyArray<readonly [number, string]>;
+  readonly regions: ReadonlyArray<{
+    readonly key: string;
+    readonly address: string;
+    readonly path: string;
+    readonly proxy: boolean;
+    readonly shardCount: number;
+  }>;
+};
+
 /**
  * Wraps a user message forwarded between ShardRegions, carrying the
  * information needed to route a reply back to the original asker.
@@ -117,7 +270,19 @@ export type ShardingMessage =
   | EntityStopped
   | RememberedEntities
   | ShardEnvelope
-  | ShardReply;
+  | ShardReply
+  | EntityEnvelope
+  | PassivateEntity
+  | StartEntities
+  | StartEntity
+  | GetShardStats
+  | GetShardRegionStats
+  | ShardRegionStats
+  | GetClusterShardingStats
+  | ClusterShardingStats
+  | GetShards
+  | GetShardLocation
+  | ShardMapUpdate;
 
 export function isShardingMessage(message: unknown): message is ShardingMessage {
   return typeof message === 'object'

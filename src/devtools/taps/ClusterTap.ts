@@ -11,7 +11,10 @@
  * centrally — so the tap learns each type the first time the
  * coordinator republishes it.  A freshly opened panel therefore shows
  * shards from the first republish onwards, which is at most one
- * coordinator tick away.
+ * coordinator tick away.  The event carries the region table alongside
+ * the assignment map, so the panel renders both without having to read
+ * the coordinator's DistributedData snapshot the way the management
+ * endpoint does.
  */
 import type { Cluster } from '../../cluster/Cluster.js';
 import type { Member } from '../../cluster/Member.js';
@@ -171,10 +174,13 @@ export class ClusterTap implements DevToolsTap {
       typeName: event.type,
       leader: this.cluster.leader().fold(() => '', (m) => m.address.toString()),
       takenAtMs: Date.now(),
-      // The event carries shard → region-key only; the region detail the
-      // management endpoint reads from DistributedData is not on this
-      // path, so the panel renders the assignment map alone.
-      regions: [],
+      regions: event.regions.map((region) => ({
+        key: region.key,
+        address: region.address,
+        path: region.path,
+        proxy: region.proxy,
+        shardCount: region.shardCount,
+      })),
       shardHome: [...event.shards].map(([shard, regionKey]) => ({ shard, regionKey })),
     };
     this.shardMaps.set(event.type, shardMap);
