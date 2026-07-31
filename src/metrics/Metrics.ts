@@ -60,11 +60,11 @@ export type MetricSample = {
 
 /* ------------------------------- Counter ----------------------------- */
 
-export type Counter = {
+export interface Counter {
   inc(delta?: number): void;
   /** Read for testing — exporters use the registry's `collect()`. */
   readonly value: number;
-};
+}
 
 class CounterImplementation implements Counter {
   private _v = 0;
@@ -78,12 +78,12 @@ class CounterImplementation implements Counter {
 
 /* ------------------------------- Gauge ------------------------------- */
 
-export type Gauge = {
+export interface Gauge {
   set(value: number): void;
   inc(delta?: number): void;
   dec(delta?: number): void;
   readonly value: number;
-};
+}
 
 class GaugeImplementation implements Gauge {
   private _v = 0;
@@ -114,7 +114,7 @@ export const DEFAULT_HISTOGRAM_BUCKETS: ReadonlyArray<number> = Object.freeze([
   0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10,
 ]);
 
-export type Histogram = {
+export interface Histogram {
   /** Record an observation in seconds (or whatever unit your buckets use). */
   observe(value: number): void;
   /** Internal — exporters read via the registry. */
@@ -122,7 +122,7 @@ export type Histogram = {
   readonly counts: ReadonlyArray<number>;
   readonly sum: number;
   readonly count: number;
-};
+}
 
 class HistogramImplementation implements Histogram {
   private readonly _buckets: ReadonlyArray<number>;
@@ -202,7 +202,7 @@ export type HistogramOptions = {
  * format; tests use the typed `counter` / `gauge` / `histogram`
  * accessors directly.
  */
-export type MetricsRegistry = {
+export interface MetricsRegistry {
   /**
    * Get-or-create a counter family.  Same `(name, help)` returns the
    * same family across calls; `labels` selects (or creates) a child
@@ -217,7 +217,7 @@ export type MetricsRegistry = {
 
   /** Wipe the registry — primarily for tests. */
   clear(): void;
-};
+}
 
 /**
  * Default in-memory implementation.  Thread-safe by virtue of being

@@ -61,13 +61,13 @@ export type OtelLogRecord = {
   readonly context?: unknown;           // OTel Context (optional — SDK extracts active span)
 };
 
-export type OtelLoggerLike = {
+export interface OtelLoggerLike {
   emit(record: OtelLogRecord): void;
-};
+}
 
-export type OtelLoggerProviderLike = {
+export interface OtelLoggerProviderLike {
   getLogger(name: string, version?: string): OtelLoggerLike;
-};
+}
 
 export type OtelLogsApiLike = {
   /** Top-level severity-number constants (`api.SeverityNumber.INFO` etc.). */

@@ -43,14 +43,14 @@ export type OtelSpanContextLike = {
   readonly isRemote?: boolean;
 };
 
-export type OtelSpanLike = {
+export interface OtelSpanLike {
   spanContext(): OtelSpanContextLike;
   setAttribute(key: string, value: AttributeValue): OtelSpanLike;
   setStatus(status: { code: number; message?: string }): OtelSpanLike;
   recordException(err: Error | string, time?: number): void;
   end(time?: number): void;
   isRecording(): boolean;
-};
+}
 
 export type OtelContextLike = {
   // Opaque — OTel's Context is a structural type with `getValue`/`setValue`
@@ -58,7 +58,7 @@ export type OtelContextLike = {
   readonly __opaque?: never;
 };
 
-export type OtelTracerLike = {
+export interface OtelTracerLike {
   startSpan(
     name: string,
     options?: {
@@ -69,9 +69,9 @@ export type OtelTracerLike = {
     },
     context?: OtelContextLike,
   ): OtelSpanLike;
-};
+}
 
-export type OtelTraceApi = {
+export interface OtelTraceApi {
   getTracer(name: string, version?: string): OtelTracerLike;
   setSpan(context: OtelContextLike, span: OtelSpanLike): OtelContextLike;
   getSpan(context: OtelContextLike): OtelSpanLike | undefined;
@@ -79,19 +79,19 @@ export type OtelTraceApi = {
   getSpanContext(context: OtelContextLike): OtelSpanContextLike | undefined;
   setSpanContext(context: OtelContextLike, sc: OtelSpanContextLike): OtelContextLike;
   wrapSpanContext(sc: OtelSpanContextLike): OtelSpanLike;
-};
+}
 
-export type OtelContextApi = {
+export interface OtelContextApi {
   active(): OtelContextLike;
   with<F extends (...args: never[]) => unknown>(context: OtelContextLike, fn: F): ReturnType<F>;
   /** OTel exports `ROOT_CONTEXT` as a top-level constant; some shims also rehang it here. */
   readonly ROOT_CONTEXT?: OtelContextLike;
-};
+}
 
-export type OtelPropagationApi = {
+export interface OtelPropagationApi {
   inject(context: OtelContextLike, carrier: Record<string, string>): void;
   extract(context: OtelContextLike, carrier: Record<string, string | undefined>): OtelContextLike;
-};
+}
 
 export type OtelApiLike = {
   readonly trace: OtelTraceApi;
