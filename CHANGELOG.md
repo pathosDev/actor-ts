@@ -784,6 +784,29 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   terms: `onRecoveryComplete` arms a fresh timer for the recovered state, so a
   pre-restart fire has nothing left to say.  Found while fixing #516, whose fix
   closed the then-reachable path from outside; this closes it at the site.
+- **The embedded DevTools UI bundle is byte-reproducible, and CI verifies it**
+  (#484).  Two places promised a freshness check for
+  `src/devtools/generated/uiAssets.ts` — the generated file's own header and
+  `.gitattributes` — and neither was true.  No workflow compared the committed
+  bundle against a rebuild, and `build.yml`'s path filters listed neither
+  `devtools-ui/**` nor `scripts/**`, so a UI-only change did not even trigger
+  the build job.  The module is committed deliberately, so a fresh clone can
+  typecheck, test and smoke without running the UI build; that is exactly what
+  made a stale one invisible, since it stays valid TypeScript either way.
+  The gate presupposes a byte-reproducible rebuild, and that did not hold:
+  Bun's `[hash]` in a chunk file name is not a pure function of the chunk's
+  bytes, it also varies with the path the module resolved through.  Bundling
+  inside a git worktree — whose `node_modules` sits several directories above
+  the project root — emitted byte-identical chunks under different names than
+  a plain checkout did, so the committed bundle read as stale for anyone whose
+  layout differed from whoever last regenerated it.  Nothing caught it: same
+  file size, same asset bodies, only the names moved.  Chunk names are now
+  derived from the bytes the bundle actually ships — the same reasoning that
+  already makes the ETags content-derived rather than mtime-derived — so every
+  layout and platform produces one identical file.  `build.yml` gained the
+  missing path filters, a `--frozen-lockfile` install (the bundled
+  dependencies have to be the ones the lockfile pins for the check to mean
+  anything), and a step that rebuilds and fails with the command to run.
 - **`/user` is drained before `/system` starts stopping** (#509).
   `terminate()` enqueued one `terminate` on the root cell, and a cell stops
   every child at once — so both guardians came down concurrently, while

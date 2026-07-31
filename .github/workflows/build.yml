@@ -1,9 +1,11 @@
 name: build
 
 # Verifies `bun run build` produces a usable `dist/` (entry point +
-# type declarations).  Only needs to run when something in the
-# build inputs changes — source, tsconfig, dependency manifest, or
-# the workflow itself.  Skips on docs-only / test-only / README
+# type declarations) and that the committed DevTools UI bundle matches
+# a rebuild.  Only needs to run when something in the build inputs
+# changes — source, the DevTools UI sources that get embedded into
+# `src/devtools/generated/uiAssets.ts`, tsconfig, dependency manifest,
+# or the workflow itself.  Skips on docs-only / test-only / README
 # changes so the actions queue stays focused.
 
 on:
@@ -13,6 +15,8 @@ on:
     branches: ['**']
     paths:
       - 'src/**'
+      - 'devtools-ui/**'
+      - 'scripts/**'
       - 'package.json'
       - 'bun.lock'
       - 'tsconfig.json'
@@ -21,6 +25,8 @@ on:
     branches: [main, develop]
     paths:
       - 'src/**'
+      - 'devtools-ui/**'
+      - 'scripts/**'
       - 'package.json'
       - 'bun.lock'
       - 'tsconfig.json'
@@ -38,11 +44,42 @@ jobs:
         with:
           bun-version: latest
 
+      # Frozen: the bundle-freshness check below only means anything if
+      # the dependencies that get bundled into it are the ones the
+      # lockfile pins.
       - name: Install
-        run: bun install
+        run: bun install --frozen-lockfile
 
       - name: Build (tsc → dist/)
         run: bun run build
+
+      # The generated bundle is committed on purpose, so a fresh clone
+      # can typecheck, test and smoke without running the UI build —
+      # which is exactly what made staleness invisible: the file is
+      # valid TypeScript whether or not its contents are current, so a
+      # stale one sailed through typecheck and the entire test suite.
+      # `bun run build` above already regenerates it, but this step
+      # rebuilds explicitly rather than relying on that: a check that
+      # silently degrades into diffing a pristine tree is worse than no
+      # check at all.
+      #
+      # A rebuild is byte-reproducible from the sources alone — chunk
+      # names are derived from the bytes shipped, not from the paths
+      # modules resolved through (see scripts/build-devtools-ui.mjs) —
+      # so a diff here means the committed bundle really is stale.  One
+      # caveat when it fires on a branch that never touched the UI:
+      # `bun-version: latest` above means a new Bun release can change
+      # the bundler's own output.  Regenerating and committing is the
+      # fix either way.
+      - name: Verify the embedded DevTools UI bundle is current
+        run: |
+          bun run build:ui
+          if ! git diff --quiet -- src/devtools/generated/; then
+            echo "::error file=src/devtools/generated/uiAssets.ts::Committed DevTools UI bundle does not match a rebuild — run 'bun run build:ui' and commit the result."
+            git diff --stat -- src/devtools/generated/
+            exit 1
+          fi
+          echo "embedded DevTools UI bundle is current"
 
       - name: Verify dist/ produced
         run: |
