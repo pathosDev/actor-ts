@@ -1,4 +1,5 @@
 import { match, P } from 'ts-pattern';
+import { parsePathSegments } from '../ActorPath.js';
 import type { ActorRef } from '../ActorRef.js';
 import type { ActorSystem } from '../ActorSystem.js';
 import { LogContext } from '../LogContext.js';
@@ -49,7 +50,7 @@ import type {
   MemberStatus,
   WireMessage,
 } from './Protocol.js';
-import { decodeRefs, encodeRefs, parsePathSegments } from './RefCodec.js';
+import { decodeRefs, encodeRefs } from './RefCodec.js';
 import { InMemoryTransport, TcpTransport, type Transport } from './Transport.js';
 import type {
   ClusterPartitionView,

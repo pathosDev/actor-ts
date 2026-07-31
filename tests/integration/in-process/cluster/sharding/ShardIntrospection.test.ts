@@ -190,9 +190,9 @@ describe('ClusterSharding.shards', () => {
     for (const shard of shards) {
       expect(shard.shardId).toBeGreaterThanOrEqual(0);
       expect(shard.shardId).toBeLessThan(NUM_SHARDS);
-      // `toString()`, not `path` — a RemoteActorRef's ActorPath keeps only a
-      // degenerate stub, its real address is in toString().
-      expect(shard.ref.toString()).toContain(`shard-${shard.shardId}`);
+      // Holds for a remote ref too since #515 — a RemoteActorRef's path now
+      // round-trips back to the path it points at.
+      expect(shard.ref.path.toString()).toContain(`shard-${shard.shardId}`);
       expect(shard.regionPath).toContain(`sharding-${TYPE_NAME}`);
     }
 
@@ -282,7 +282,9 @@ describe('ClusterSharding.shardRefFor', () => {
     const shard = await seed.cluster.sharding.shardRefFor<Command>(
       TYPE_NAME, hashShardId(remoteId, NUM_SHARDS),
     );
-    expect(shard.toString()).toContain(`shard-${hashShardId(remoteId, NUM_SHARDS)}`);
+    expect(shard.path.toString()).toContain(
+      `sharding-${TYPE_NAME}/shard-${hashShardId(remoteId, NUM_SHARDS)}`,
+    );
 
     shard.tell({
       $t: 'sharding.EntityEnvelope',

@@ -734,6 +734,32 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   `ShardMapChanged` also gained an optional fourth constructor argument
   `regions`, which lets `ClusterTap` drop the hard-coded `regions: []` it had
   been rendering; existing three-argument construction is unaffected.
+- **A `RemoteActorRef` renders the path it actually points at, and no longer
+  compares equal to every other remote ref** (#515).  The path was built as
+  `new ActorPath(lastSegment, null, systemName)` — a *root*, and `ActorPath`
+  renders a root as `actor-ts://<system>/` without its name, so the name was
+  discarded on the spot.  Every remote ref therefore stringified to the same
+  address-less value, and because `ActorRef.equals` compares `path.toString()`,
+  any two remote refs compared equal regardless of node or path.  The real
+  target only survived in `RemoteActorRef.toString()`, which is overridden.
+  Two silent consequences went with it: `Receptionist.onRegister` /
+  `onDeregister` and `DistributedPubSubMediator.onSubscribe` /
+  `onUnsubscribe` / `onUnsubscribeAll` key their local maps on
+  `ref.path.toString()`, so every remote registrant or subscriber collapsed
+  onto the single key `actor-ts://<system>/` and a second one silently
+  overwrote the first; and `ShardRegion`'s passivation and termination lookups,
+  which match a candidate against entity refs by `equals`, could never match a
+  remote candidate.  The path is now built segment by segment — the shape
+  `ClusterSingletonProxy` already used — so it round-trips back to
+  `targetPath`.  **Still open:** `ActorPath` carries a system name but no
+  host/port, and every member of a cluster shares one system name, so `equals`
+  distinguishes paths but not *nodes*; refs to the same path on two members
+  remain equal.  `toString()` stays the node-qualified rendering.  Found while
+  adding `ClusterSharding.shardRefFor()` (#151).  `parsePathSegments` moved
+  from `cluster/RefCodec.ts` to `ActorPath.ts` (internal, not exported from the
+  package): it is the inverse of `ActorPath`'s own rendering, and `RefCodec`
+  constructs `RemoteActorRef`s, so importing it from there would have closed a
+  module cycle.
 - **`bun run lint:package` is reproducible, and `lint:knip` exits 0 again**
   (#507).  The three package-health scripts invoked their tools through `bunx`,
   which — contrary to the first guess — does honour the manifest range and

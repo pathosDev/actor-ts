@@ -21,7 +21,7 @@ function hasControlCharacter(name: string): boolean {
  * Reject an actor name that would corrupt the path it becomes part of.
  *
  * A path is rendered as `actor-ts://<system>/<segment>/<segment>…` and taken
- * apart again by splitting on `/` (`RefCodec.parsePathSegments`).  A name
+ * apart again by splitting on `/` ({@link parsePathSegments}).  A name
  * containing a separator therefore does not merely look wrong — it changes the
  * *structure*: `spawn(props, 'a/b')` yields a path indistinguishable from a
  * child `b` of an actor `a`, so it collides with, or impersonates, a different
@@ -139,4 +139,25 @@ export class ActorPath {
     if (segments.length <= 1) return `actor-ts://${this.systemName}/`;
     return `actor-ts://${this.systemName}/${segments.slice(1).join('/')}`;
   }
+}
+
+/**
+ * Extract the `user/foo/bar` segments from `actor-ts://system/user/foo/bar` —
+ * the inverse of {@link ActorPath.toString}.
+ *
+ * Lives here rather than next to its callers because it is the counterpart of
+ * `render`, and because `ActorPath.ts` imports nothing: anything that needs to
+ * take a path string apart can reach it without risking a module cycle.  The
+ * cluster's `RefCodec` both consumes this and constructs `RemoteActorRef`s,
+ * which in turn have to rebuild a path from a string — importing it from there
+ * would close that loop.
+ *
+ * Empty segments are dropped, so a doubled or trailing separator collapses; a
+ * string that isn't a path at all yields `[]`.
+ */
+export function parsePathSegments(path: string): string[] {
+  const match = /^actor-ts:\/\/[^/]+\/?(.*)$/.exec(path);
+  if (!match) return [];
+  const rest = match[1] ?? '';
+  return rest.split('/').filter((s) => s.length > 0);
 }
