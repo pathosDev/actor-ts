@@ -1,3 +1,4 @@
+import { match } from 'ts-pattern';
 import type { Config } from '../../config/Config.js';
 import { ConfigKeys } from '../../config/ConfigKeys.js';
 import { Lazy } from '../../util/Lazy.js';
@@ -21,9 +22,14 @@ export type RedisStreamPublish = {
   readonly maxLenApprox?: number;
 };
 
-export type RedisStreamsCommand =
-  | { readonly kind: 'publish'; readonly publish: RedisStreamPublish }
-  | { readonly kind: 'acknowledgment'; readonly stream: string; readonly id: string };
+type PublishCommand = { readonly kind: 'publish'; readonly publish: RedisStreamPublish };
+type AcknowledgmentCommand = {
+  readonly kind: 'acknowledgment';
+  readonly stream: string;
+  readonly id: string;
+};
+
+export type RedisStreamsCommand = PublishCommand | AcknowledgmentCommand;
 
 /**
  * Redis-Streams actor.  Wraps `ioredis` (already a peer-dep used by
@@ -110,17 +116,29 @@ export class RedisStreamsActor
   }
 
   override onReceive(command: RedisStreamsCommand): void {
-    if (command.kind === 'publish') {
-      this.enqueueOutbound(command.publish);
-    } else if (command.kind === 'acknowledgment') {
-      if (this.redis && this.options.consumerGroup) {
-        void this.redis.xack(command.stream, this.options.consumerGroup.group, command.id)
-          .catch((e: Error) => this.log.warn(`xack failed: ${e.message}`));
-      }
-    }
+    match(command)
+      .with({ kind: 'publish' }, (c) => this.onPublish(c))
+      .with({ kind: 'acknowledgment' }, (c) => this.onAcknowledgment(c))
+      .exhaustive();
   }
 
   /* ----------------------------- internals ----------------------------- */
+
+  private onPublish(command: PublishCommand): void {
+    this.enqueueOutbound(command.publish);
+  }
+
+  /**
+   * Fire-and-forget — awaiting the `XACK` would stall the mailbox behind a
+   * broker round-trip.  A failure is logged and the entry stays in the
+   * group's pending list; nothing reclaims it yet (see #462).
+   */
+  private onAcknowledgment(command: AcknowledgmentCommand): void {
+    if (this.redis && this.options.consumerGroup) {
+      void this.redis.xack(command.stream, this.options.consumerGroup.group, command.id)
+        .catch((e: Error) => this.log.warn(`xack failed: ${e.message}`));
+    }
+  }
 
   private async consumerLoop(): Promise<void> {
     const cg = this.options.consumerGroup!;

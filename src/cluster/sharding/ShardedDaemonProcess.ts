@@ -84,14 +84,13 @@ export class ShardedDaemonProcess {
     // respawn of entities that lived on a departed node is a function of
     // ShardCoordinator's rebalance + rememberEntities path; this hook just
     // makes sure the SDP-owned messages keep flowing.
-    // static init has no instance to delegate to (closes over local wakeAll) — arms stay inline
     const unsubscribe = cluster.subscribe((evt) =>
       match(evt)
         .with(
           P.union(P.instanceOf(LeaderChanged), P.instanceOf(MemberRemoved)),
-          () => { setTimeout(wakeAll, 100); },
+          () => onTopologyChanged(wakeAll),
         )
-        .otherwise(() => { /* other events don't warrant a re-wake */ }),
+        .otherwise(() => onOtherClusterEvent()),
     );
 
     // Periodic liveness backstop — fires even when no cluster events do,
@@ -144,6 +143,22 @@ class DaemonHost<T> extends Actor<DaemonEnvelope<T>> {
     this.inner?.tell(message as T);
   }
 }
+
+/**
+ * A leader change or a departed member can leave shards without a home.
+ * The short delay lets the coordinator finish reallocating before we
+ * re-wake, so the wake-ups don't race the allocation they depend on.
+ *
+ * Module-level rather than a method: the subscription is set up in static
+ * `init`, where there is no instance, and the handler needs `wakeAll` from
+ * the enclosing scope.
+ */
+function onTopologyChanged(wakeAll: () => void): void {
+  setTimeout(wakeAll, 100);
+}
+
+/** Every other cluster event leaves shard homes intact — nothing to re-wake. */
+function onOtherClusterEvent(): void {}
 
 function indexFromEntityName(name: string): number {
   // Names are set by ShardRegion as `entity-<entityId>` where entityId is

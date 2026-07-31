@@ -21,6 +21,7 @@ import {
   type MqttUnsubscribeCommand,
   type MqttDisconnectedSignal,
   type MqttInboundSignal,
+  type MqttSignal,
   type MqttMessage,
   type MqttPublish,
   type MqttQos,
@@ -202,27 +203,32 @@ export abstract class MqttActor<T = unknown, TSelf = never>
       return;
     }
     // Uniform `kind` dispatch over internal signals + external commands.
-    const kind = (command as { readonly kind?: unknown }).kind;
-    switch (kind) {
-      case 'mqtt-inbound': return this.routeInbound((command as MqttInboundSignal<T>).message);
-      case 'mqtt-connected': return this.onConnected();
-      case 'mqtt-disconnected': return this.onDisconnected((command as MqttDisconnectedSignal).cause);
-      case 'publish':
-      case 'subscribe':
-      case 'unsubscribe':
-        return this.handleCommand(command as MqttCommand<T>);
-      default:
-        return this.onSelfMessage(command as TSelf);
-    }
+    //
+    // Matched against the envelope union rather than the mailbox type: `TSelf`
+    // is an open type parameter, and ts-pattern cannot build a `Pattern<>` for
+    // a union that still contains one.  `.otherwise` is reached exactly when
+    // none of our kinds hit, i.e. for an app-level `TSelf` message.
+    const envelope = command as MqttCommand<T> | MqttSignal<T>;
+    return match(envelope)
+      .with({ kind: 'mqtt-inbound' }, (m) => this.onMqttInbound(m))
+      .with({ kind: 'mqtt-connected' }, () => this.onMqttConnected())
+      .with({ kind: 'mqtt-disconnected' }, (m) => this.onMqttDisconnected(m))
+      .with({ kind: 'publish' }, (m) => this.onPublish(m))
+      .with({ kind: 'subscribe' }, (m) => this.onSubscribe(m))
+      .with({ kind: 'unsubscribe' }, (m) => this.onUnsubscribe(m))
+      .otherwise(() => this.onSelfMessage(command as TSelf));
   }
 
-  private handleCommand(command: MqttCommand<T>): void {
-    // Exhaustive over MqttCommand — a new command variant forces a handler here.
-    match(command)
-      .with({ kind: 'publish' },     (m) => this.onPublish(m))
-      .with({ kind: 'subscribe' },   (m) => this.onSubscribe(m))
-      .with({ kind: 'unsubscribe' }, (m) => this.onUnsubscribe(m))
-      .exhaustive();
+  private onMqttInbound(signal: MqttInboundSignal<T>): Promise<void> {
+    return this.routeInbound(signal.message);
+  }
+
+  private onMqttConnected(): void | Promise<void> {
+    return this.onConnected();
+  }
+
+  private onMqttDisconnected(signal: MqttDisconnectedSignal): void | Promise<void> {
+    return this.onDisconnected(signal.cause);
   }
 
   private onPublish(command: MqttPublishCommand<T>): void {

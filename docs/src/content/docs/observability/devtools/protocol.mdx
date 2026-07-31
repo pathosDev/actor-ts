@@ -158,6 +158,7 @@ cannot stall other connected tabs.
 The types and helpers are exported from the DevTools entry point:
 
 ```ts
+import { match } from 'ts-pattern';
 import {
   DEVTOOLS_PROTOCOL_VERSION,
   decodeClientFrame,
@@ -169,7 +170,9 @@ const socket = new WebSocket('ws://127.0.0.1:9333/api/ws');
 socket.addEventListener('open', () => socket.send(JSON.stringify(helloFrame('my-client'))));
 socket.addEventListener('message', (event) => {
   const frame = JSON.parse(String(event.data)) as DevToolsServerFrame;
-  if (frame.kind === 'welcome') socket.send(JSON.stringify({ kind: 'subscribe', stream: 'stats' }));
+  match(frame)
+    .with({ kind: 'welcome' }, () => socket.send(JSON.stringify({ kind: 'subscribe', stream: 'stats' })))
+    .otherwise(() => {});
 });
 ```
 

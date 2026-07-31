@@ -10,7 +10,8 @@
   },
   "dependencies": {
     "react": "^19.2.7",
-    "react-dom": "^19.2.7"
+    "react-dom": "^19.2.7",
+    "ts-pattern": "^5.9.0"
   },
   "devDependencies": {
     "@types/react": "^19.2.17",

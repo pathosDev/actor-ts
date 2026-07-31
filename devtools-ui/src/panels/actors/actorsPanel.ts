@@ -7,6 +7,7 @@
  * which at DevTools' scale is cheaper than diffing and keeps the code
  * honest about what is on screen.
  */
+import { match, P } from 'ts-pattern';
 import { h, replaceChildren } from '../../core/dom.js';
 import { formatCount, formatDuration } from '../../core/format.js';
 import { signal } from '../../core/signal.js';
@@ -14,7 +15,13 @@ import type { PanelContext, PanelInstance } from '../../shell/PanelRegistry.js';
 import { ActorTreeModel, type TreeRow } from './actorsTree.js';
 import type {
   ActorCellState,
+  ActorChangedPayload,
   ActorNode,
+  ActorNodeTreePayload,
+  ActorRestartedPayload,
+  ActorStartedPayload,
+  ActorStoppedPayload,
+  ActorTreeSnapshotPayload,
   MailboxDepthEntry,
 } from '../../../../src/devtools/protocol/index.js';
 
@@ -165,35 +172,54 @@ export function mount(host: HTMLElement, context: PanelContext): PanelInstance {
     replaceChildren(rowsHost, ...blocks);
   }
 
-  const stopActors = context.tap.listen('actors', (payload) => {
-    switch (payload.kind) {
-      case 'actor-tree-snapshot':
-        // One frame can carry several nodes; each replaces its own tree.
-        for (const [address, actors] of byNode(payload.actors)) {
-          modelFor(address).reset(actors);
-        }
-        break;
-      case 'actor-node-tree':
-        modelFor(payload.address).applyFullTree(payload.actors, payload.atMs);
-        if (payload.stale) staleNodes.set(payload.address, payload.receivedAtMs);
-        else staleNodes.delete(payload.address);
-        break;
-      case 'actor-started':
-      case 'actor-changed':
-        modelFor(payload.actor.nodeAddress).upsert(payload.actor);
-        break;
-      case 'actor-stopped':
-        modelFor(payload.nodeAddress).markStopped(payload.path, payload.atMs);
-        break;
-      case 'actor-restarted':
-        // The path survives a restart, so nothing structural changes —
-        // but the row should say so.
-        flashRestart(rowsHost, payload.path);
-        return;
-      default:
-        return;
+  /** One frame can carry several nodes; each replaces its own tree. */
+  function onActorTreeSnapshot(payload: ActorTreeSnapshotPayload): boolean {
+    for (const [address, actors] of byNode(payload.actors)) {
+      modelFor(address).reset(actors);
     }
-    render();
+    return true;
+  }
+
+  function onActorNodeTree(payload: ActorNodeTreePayload): boolean {
+    modelFor(payload.address).applyFullTree(payload.actors, payload.atMs);
+    if (payload.stale) staleNodes.set(payload.address, payload.receivedAtMs);
+    else staleNodes.delete(payload.address);
+    return true;
+  }
+
+  function onActorUpserted(payload: ActorStartedPayload | ActorChangedPayload): boolean {
+    modelFor(payload.actor.nodeAddress).upsert(payload.actor);
+    return true;
+  }
+
+  function onActorStopped(payload: ActorStoppedPayload): boolean {
+    modelFor(payload.nodeAddress).markStopped(payload.path, payload.atMs);
+    return true;
+  }
+
+  /**
+   * The path survives a restart, so nothing structural changes — the row
+   * only flashes, and re-rendering the tree would throw the flash away.
+   */
+  function onActorRestarted(payload: ActorRestartedPayload): boolean {
+    flashRestart(rowsHost, payload.path);
+    return false;
+  }
+
+  function onUnknownActorPayload(): boolean {
+    return false;
+  }
+
+  const stopActors = context.tap.listen('actors', (payload) => {
+    // Arms report whether the tree changed; only then is a re-render worth it.
+    const changed = match(payload)
+      .with({ kind: 'actor-tree-snapshot' }, (p) => onActorTreeSnapshot(p))
+      .with({ kind: 'actor-node-tree' }, (p) => onActorNodeTree(p))
+      .with(P.union({ kind: 'actor-started' }, { kind: 'actor-changed' }), (p) => onActorUpserted(p))
+      .with({ kind: 'actor-stopped' }, (p) => onActorStopped(p))
+      .with({ kind: 'actor-restarted' }, (p) => onActorRestarted(p))
+      .otherwise(() => onUnknownActorPayload());
+    if (changed) render();
   });
 
   // Mailbox depths arrive on their own stream so the tree does not have

@@ -23,6 +23,7 @@
  * exactly: `onClientConnected` → zero+ `onMessage` (in frame order) →
  * `onClientDisconnected`, all serialised through this one actor.
  */
+import { match } from 'ts-pattern';
 import { Actor } from '../../Actor.js';
 import { stoppingStrategy, type SupervisorStrategy } from '../../Supervision.js';
 import type { WebsocketDecodeError } from './WebsocketCodec.js';
@@ -34,6 +35,7 @@ import type {
   WebsocketDisconnectedSignal,
   WebsocketInvalidSignal,
   WebsocketServerMessage,
+  WebsocketServerSignal,
 } from './WebsocketMessages.js';
 import type { WebsocketCloseInfo } from './types.js';
 
@@ -109,58 +111,74 @@ export abstract class WebsocketServerActor<TOut, TIn, TSelf = never>
   /** @internal Sealed — do not override; override `onMessage` + hooks instead. */
   override async onReceive(message: WebsocketServerMessage<TOut, TIn, TSelf>): Promise<void> {
     // Uniform `kind` dispatch over the accept command + lifecycle signals.
-    switch ((message as { readonly kind?: unknown }).kind) {
-      case 'websocket-accept': {
-        // Spawn the per-connection actor as THIS actor's child, so the
-        // tree is server → conn-N and supervision/teardown are automatic.
-        const command = message as WebsocketAcceptCommand;
-        this.context.spawn(command.props, command.name);
-        return;
-      }
-      case 'websocket-connected': {
-        const signal = message as WebsocketConnectedSignal<TOut>;
-        this._clients.set(signal.connection.id, signal.connection);
-        this._current = signal.connection;
-        try {
-          await this.onClientConnected(signal.connection);
-        } finally {
-          this._current = null;
-        }
-        return;
-      }
-      case 'websocket-data': {
-        const signal = message as WebsocketDataSignal<TOut, TIn>;
-        this._current = signal.connection;
-        try {
-          await this.onMessage(signal.message);
-        } finally {
-          this._current = null;
-        }
-        return;
-      }
-      case 'websocket-disconnected': {
-        const signal = message as WebsocketDisconnectedSignal<TOut>;
-        this._current = signal.connection;
-        try {
-          await this.onClientDisconnected(signal.connection, signal.info);
-        } finally {
-          this._current = null;
-          this._clients.delete(signal.connection.id);
-        }
-        return;
-      }
-      case 'websocket-invalid': {
-        const signal = message as WebsocketInvalidSignal<TOut>;
-        this._current = signal.connection;
-        try {
-          await this.onInvalidMessage(signal.connection, signal.error);
-        } finally {
-          this._current = null;
-        }
-        return;
-      }
-      default:
-        await this.onSelfMessage(message as TSelf);
+    //
+    // Matched against the envelope union rather than the mailbox type: `TSelf`
+    // is an open type parameter, and ts-pattern cannot build a `Pattern<>` for
+    // a union that still contains one.  Narrowing here keeps every arm fully
+    // typed, and `.otherwise` — reached exactly when none of our kinds hit —
+    // hands the original message back as the app-level `TSelf`.
+    const envelope = message as WebsocketAcceptCommand | WebsocketServerSignal<TOut, TIn>;
+    await match(envelope)
+      .with({ kind: 'websocket-accept' }, (m) => this.onWebsocketAccept(m))
+      .with({ kind: 'websocket-connected' }, (m) => this.onWebsocketConnected(m))
+      .with({ kind: 'websocket-data' }, (m) => this.onWebsocketData(m))
+      .with({ kind: 'websocket-disconnected' }, (m) => this.onWebsocketDisconnected(m))
+      .with({ kind: 'websocket-invalid' }, (m) => this.onWebsocketInvalid(m))
+      .otherwise(() => this.onSelfMessage(message as TSelf));
+  }
+
+  /* --------------------- dispatch arm handlers -------------------- */
+
+  /**
+   * Spawn the per-connection actor as THIS actor's child, so the tree is
+   * server → conn-N and supervision/teardown are automatic.
+   */
+  private onWebsocketAccept(command: WebsocketAcceptCommand): void {
+    this.context.spawn(command.props, command.name);
+  }
+
+  /*
+   * The `_current` bracket around each user hook below is what backs
+   * `this.connection` / `this.reply()`.  It is `finally`, not a trailing
+   * assignment, because a hook that throws would otherwise strand the
+   * pointer and leak one connection's identity into the next event.
+   */
+
+  private async onWebsocketConnected(signal: WebsocketConnectedSignal<TOut>): Promise<void> {
+    this._clients.set(signal.connection.id, signal.connection);
+    this._current = signal.connection;
+    try {
+      await this.onClientConnected(signal.connection);
+    } finally {
+      this._current = null;
+    }
+  }
+
+  private async onWebsocketData(signal: WebsocketDataSignal<TOut, TIn>): Promise<void> {
+    this._current = signal.connection;
+    try {
+      await this.onMessage(signal.message);
+    } finally {
+      this._current = null;
+    }
+  }
+
+  private async onWebsocketDisconnected(signal: WebsocketDisconnectedSignal<TOut>): Promise<void> {
+    this._current = signal.connection;
+    try {
+      await this.onClientDisconnected(signal.connection, signal.info);
+    } finally {
+      this._current = null;
+      this._clients.delete(signal.connection.id);
+    }
+  }
+
+  private async onWebsocketInvalid(signal: WebsocketInvalidSignal<TOut>): Promise<void> {
+    this._current = signal.connection;
+    try {
+      await this.onInvalidMessage(signal.connection, signal.error);
+    } finally {
+      this._current = null;
     }
   }
 }

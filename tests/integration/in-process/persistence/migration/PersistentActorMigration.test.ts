@@ -1,3 +1,4 @@
+import { match } from 'ts-pattern';
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -29,9 +30,10 @@ import { awaitCondition } from '../../../../util/AwaitCondition.js';
 
 /* --------------------------- shared types -------------------------------- */
 
-type Command =
-  | { kind: 'deposit'; amount: number }
-  | { kind: 'balance' };
+type DepositCommand = { kind: 'deposit'; amount: number };
+type BalanceCommand = { kind: 'balance' };
+
+type Command = DepositCommand | BalanceCommand;
 
 // Current event = v2 (added `currency`).  v1 was `{ kind, amount }`.
 type DepositedV1 = { kind: 'deposited'; amount: number };
@@ -71,12 +73,19 @@ class Account extends PersistentActor<Command, Event, State> {
   }
   override snapshotPolicy() { return everyNEvents<State, Event>(2); }
   async onCommand(state: State, command: Command): Promise<void> {
-    if (command.kind === 'deposit') {
-      await this.persist({ kind: 'deposited', amount: command.amount, currency: 'EUR' },
-        (s) => this.seen.push({ balance: s.balance, currency: s.currency }));
-    } else if (command.kind === 'balance') {
-      this.seen.push({ balance: state.balance, currency: state.currency });
-    }
+    await match(command)
+      .with({ kind: 'deposit' }, (c) => this.onDeposit(c))
+      .with({ kind: 'balance' }, () => this.onBalance(state))
+      .exhaustive();
+  }
+
+  private async onDeposit(command: DepositCommand): Promise<void> {
+    await this.persist({ kind: 'deposited', amount: command.amount, currency: 'EUR' },
+      (s) => this.seen.push({ balance: s.balance, currency: s.currency }));
+  }
+
+  private onBalance(state: State): void {
+    this.seen.push({ balance: state.balance, currency: state.currency });
   }
 }
 

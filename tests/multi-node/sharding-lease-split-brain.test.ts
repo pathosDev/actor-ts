@@ -25,6 +25,7 @@
  *   that at most ONE coordinator is in `leaseState === 'held'`
  *   at any point during the experiment.
  */
+import { match } from 'ts-pattern';
 import { describe, expect, test } from 'bun:test';
 import { Actor } from '../../src/Actor.js';
 import { Props } from '../../src/Props.js';
@@ -40,11 +41,19 @@ import { MultiNodeSpec } from '../../src/testkit/MultiNodeSpec.js';
 import { MultiNodeTransport } from '../../src/testkit/internal/MultiNodeTransport.js';
 import type { ActorRef } from '../../src/ActorRef.js';
 
-type Command = { id: string; op: 'ping' };
+type PingCommand = { id: string; kind: 'ping' };
+
+type Command = PingCommand;
 
 class Entity extends Actor<Command> {
   override onReceive(m: Command): void {
-    if (m.op === 'ping') this.sender.forEach((s) => s.tell('pong'));
+    match(m)
+      .with({ kind: 'ping' }, () => this.onPing())
+      .exhaustive();
+  }
+
+  private onPing(): void {
+    this.sender.forEach((s) => s.tell('pong'));
   }
 }
 
@@ -156,7 +165,7 @@ describe('multi-node sharding lease — split-brain protection', () => {
       expect(heldCount).toBe(1);
 
       // Sanity: ask via any region — the system is functional.
-      const reply = await regions.a.ask<string>({ id: 'e-1', op: 'ping' }, 3_000);
+      const reply = await regions.a.ask<string>({ id: 'e-1', kind: 'ping' }, 3_000);
       expect(reply).toBe('pong');
 
       // Now partition.  Whichever role is currently active stays

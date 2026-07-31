@@ -129,12 +129,18 @@ verworfen und ein `BrokerNotConnected`-Event publisht.
 
 ```ts
 this.onReceive(message) {
-  if (message.kind === 'subscribe') {
-    this.subscribeRef(message.topic, message.subscriber);
-  }
-  if (message.kind === 'unsubscribe') {
-    this.unsubscribeRef(message.topic, message.subscriber);
-  }
+  match(message)
+    .with({ kind: 'subscribe' }, (m) => this.onSubscribe(m))
+    .with({ kind: 'unsubscribe' }, (m) => this.onUnsubscribe(m))
+    .exhaustive();
+}
+
+private onSubscribe(message: SubscribeCommand): void {
+  this.subscribeRef(message.topic, message.subscriber);
+}
+
+private onUnsubscribe(message: UnsubscribeCommand): void {
+  this.unsubscribeRef(message.topic, message.subscriber);
 }
 ```
 

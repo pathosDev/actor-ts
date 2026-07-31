@@ -53,6 +53,7 @@ class Counter extends Actor {
 }
 
 // actor-ts:
+import { match } from 'ts-pattern';
 import { Actor, type ActorRef } from 'actor-ts';
 
 type Command = { kind: 'increment' } | { kind: 'get'; replyTo: ActorRef<number> };
@@ -60,9 +61,14 @@ type Command = { kind: 'increment' } | { kind: 'get'; replyTo: ActorRef<number> 
 class Counter extends Actor<Command> {
   private count = 0;
   override onReceive(command: Command): void {
-    if (command.kind === 'increment') this.count++;
-    else command.replyTo.tell(this.count);
+    match(command)
+      .with({ kind: 'increment' }, () => this.onIncrement())
+      .with({ kind: 'get' }, (c) => this.onGet(c))
+      .exhaustive();
   }
+
+  private onIncrement(): void { this.count++; }
+  private onGet(command: GetCommand): void { command.replyTo.tell(this.count); }
 }
 ```
 
@@ -161,14 +167,19 @@ class Account extends PersistentActor<Command, Event, State> {
   initialState(): State { return { balance: 0 }; }
 
   onEvent(state: State, event: Event): State {
-    if (event.kind === 'deposited') return { balance: state.balance + event.amount };
-    return state;
+    return match(event)
+      .with({ kind: 'deposited' }, (e) => ({ balance: state.balance + e.amount }))
+      .exhaustive();
   }
 
   onCommand(state: State, command: Command): void {
-    if (command.kind === 'deposit') {
-      this.persist({ kind: 'deposited', amount: command.amount }, () => {});
-    }
+    match(command)
+      .with({ kind: 'deposit' }, (c) => this.onDeposit(c))
+      .exhaustive();
+  }
+
+  private onDeposit(command: DepositCommand): void {
+    this.persist({ kind: 'deposited', amount: command.amount }, () => {});
   }
 }
 ```

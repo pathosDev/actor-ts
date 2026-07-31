@@ -1,3 +1,4 @@
+import { match } from 'ts-pattern';
 import { NodeAddress } from '../cluster/NodeAddress.js';
 import type {
   BrokeredMessage,
@@ -166,16 +167,25 @@ export class WorkerCluster {
         worker.removeEventListener('message', onMessage);
         reject(new Error(`Worker ${addr} did not become ready within ${this.options.readyTimeoutMs}ms`));
       }, this.options.readyTimeoutMs);
+      const onWorkerHello = (): void => {
+        worker.postMessage(init);
+      };
+      const onWorkerReady = (): void => {
+        clearTimeout(timeout);
+        worker.removeEventListener('message', onMessage);
+        resolve();
+      };
       const onMessage = (e: { data?: unknown }): void => {
         const message = (e.data ?? undefined) as { kind?: string } | undefined;
         if (!message) return;
-        if (message.kind === 'worker-hello') {
-          worker.postMessage(init);
-        } else if (message.kind === 'worker-ready') {
-          clearTimeout(timeout);
-          worker.removeEventListener('message', onMessage);
-          resolve();
-        }
+        // `.otherwise`, not `.exhaustive`: this is untrusted postMessage data
+        // from a worker that may not have started correctly, so the value is
+        // typed as an open `{ kind?: string }` and anything unrecognised is
+        // ignored rather than crashing the handshake.
+        match(message)
+          .with({ kind: 'worker-hello' }, () => onWorkerHello())
+          .with({ kind: 'worker-ready' }, () => onWorkerReady())
+          .otherwise(() => {});
       };
       worker.addEventListener('message', onMessage);
     });

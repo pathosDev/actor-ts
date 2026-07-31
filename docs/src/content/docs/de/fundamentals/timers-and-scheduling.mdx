@@ -21,9 +21,12 @@ Fälle, in denen du wirklich willst, dass ein Timer den Actor
 ## `context.timers` — actor-gebundene Timer
 
 ```ts
+import { match } from 'ts-pattern';
 import { Actor, ActorSystem, Props } from 'actor-ts';
 
-type Message = { readonly kind: 'tick' } | { readonly kind: 'set'; readonly intervalMs: number };
+type TickMessage = { readonly kind: 'tick' };
+type SetMessage = { readonly kind: 'set'; readonly intervalMs: number };
+type Message = TickMessage | SetMessage;
 
 class Heartbeat extends Actor<Message> {
   override preStart(): void {
@@ -33,12 +36,19 @@ class Heartbeat extends Actor<Message> {
   }
 
   override onReceive(message: Message): void {
-    if (message.kind === 'tick') {
-      this.log.info('heartbeat');
-    } else if (message.kind === 'set') {
-      // Ersetze den Timer mit einem neuen Intervall.  Gleicher Key → alter wird gecancelt.
-      this.context.timers.startTimerWithFixedDelay('hb', { kind: 'tick' }, message.intervalMs);
-    }
+    match(message)
+      .with({ kind: 'tick' }, () => this.onTick())
+      .with({ kind: 'set' }, (m) => this.onSet(m))
+      .exhaustive();
+  }
+
+  private onTick(): void {
+    this.log.info('heartbeat');
+  }
+
+  // Ersetze den Timer mit einem neuen Intervall.  Gleicher Key → alter wird gecancelt.
+  private onSet(message: SetMessage): void {
+    this.context.timers.startTimerWithFixedDelay('hb', { kind: 'tick' }, message.intervalMs);
   }
 }
 

@@ -6,6 +6,7 @@
  * also downloadable: wallclock runs export speedscope JSON, CPU runs a
  * `.cpuprofile` that Chrome DevTools opens directly.
  */
+import { match } from 'ts-pattern';
 import { h, replaceChildren } from '../../core/dom.js';
 import { formatCount, formatDuration } from '../../core/format.js';
 import { signal } from '../../core/signal.js';
@@ -27,6 +28,7 @@ import type { PanelContext, PanelInstance } from '../../shell/PanelRegistry.js';
 import type {
   ProfilerCapabilitiesResult,
   ProfilerMode,
+  ProfilerProgressPayload,
   ProfilerStartResult,
   ProfilerStopResult,
 } from '../../../../src/devtools/protocol/index.js';
@@ -310,25 +312,35 @@ export function mount(host: HTMLElement, context: PanelContext): PanelInstance {
     renderDetails();
   });
 
-  const stop = context.tap.listen('profiler', (payload) => {
-    if (payload.kind === 'profiler-progress') {
-      progress.set(`${formatCount(payload.sampleCount)} messages · ${formatDuration(payload.elapsedMs)}`);
+  function onProfilerProgress(payload: ProfilerProgressPayload): void {
+    progress.set(`${formatCount(payload.sampleCount)} messages · ${formatDuration(payload.elapsedMs)}`);
+    render();
+  }
+
+  /**
+   * The session auto-stopped on its duration; collect the result.  Guarded on
+   * `running` because a user-initiated stop already collected it, and the
+   * second `profiler.stop` would fail.
+   */
+  function onProfilerCompleted(): void {
+    if (!running.get()) return;
+    void (async () => {
+      try {
+        result = await context.tap.request<ProfilerStopResult>('profiler.stop');
+      } catch {
+        /* already collected */
+      }
+      running.set(false);
+      rebuild();
       render();
-      return;
-    }
-    if (payload.kind === 'profiler-completed' && running.get()) {
-      // The session auto-stopped on its duration; collect the result.
-      void (async () => {
-        try {
-          result = await context.tap.request<ProfilerStopResult>('profiler.stop');
-        } catch {
-          /* already collected */
-        }
-        running.set(false);
-        rebuild();
-        render();
-      })();
-    }
+    })();
+  }
+
+  const stop = context.tap.listen('profiler', (payload) => {
+    match(payload)
+      .with({ kind: 'profiler-progress' }, (p) => onProfilerProgress(p))
+      .with({ kind: 'profiler-completed' }, () => onProfilerCompleted())
+      .otherwise(() => {});
   });
 
   const disposeTheme = effect(render, [currentTheme]);

@@ -1,3 +1,4 @@
+import { match } from 'ts-pattern';
 import {
   type ChatMessage,
   type ClientMessage,
@@ -229,8 +230,8 @@ class ChatStore {
   }
 
   #handleServer(message: ServerMessage): void {
-    switch (message.kind) {
-      case 'logged-in':
+    match(message)
+      .with({ kind: 'logged-in' }, (message) => {
         this.#cancelReconnect();
         this.username = message.username;
         if (message.token && typeof sessionStorage !== 'undefined') {
@@ -238,8 +239,8 @@ class ChatStore {
         }
         this.loginError = '';
         this.phase = 'chat';
-        break;
-      case 'login-failed':
+      })
+      .with({ kind: 'login-failed' }, (message) => {
         this.#cancelReconnect();
         if (typeof sessionStorage !== 'undefined') sessionStorage.removeItem(TOKEN_KEY);
         this.#ws?.close();
@@ -249,8 +250,8 @@ class ChatStore {
         // way, fall back to the login screen.
         if (this.phase !== 'login') this.#reset();
         this.loginError = message.reason || 'Login failed.';
-        break;
-      case 'rooms': {
+      })
+      .with({ kind: 'rooms' }, (message) => {
         // Preserve open DMs across `rooms` broadcasts — they live
         // only in the client, not in the cluster-wide directory.
         const directMessages = this.rooms.filter(isDirectMessageRoom);
@@ -261,9 +262,8 @@ class ChatStore {
           this.unreadByRoom[r] ??= 0;
         }
         if (!this.currentRoom) this.currentRoom = message.rooms[0] ?? null;
-        break;
-      }
-      case 'room-added':
+      })
+      .with({ kind: 'room-added' }, (message) => {
         // `rooms` carries the full set; this is the per-name notice
         // for toast UX.  Idempotent.
         if (!this.rooms.includes(message.name)) {
@@ -272,20 +272,17 @@ class ChatStore {
           this.usersByRoom[message.name] ??= [];
           this.unreadByRoom[message.name] ??= 0;
         }
-        break;
-      case 'room-removed': {
+      })
+      .with({ kind: 'room-removed' }, (message) => {
         this.rooms = this.rooms.filter((r) => r !== message.name);
         const wasCurrent = this.currentRoom === message.name;
         delete this.messagesByRoom[message.name];
         delete this.usersByRoom[message.name];
         delete this.unreadByRoom[message.name];
         if (wasCurrent) this.currentRoom = this.rooms[0] ?? null;
-        break;
-      }
-      case 'history':
-        this.messagesByRoom[message.room] = message.messages.slice();
-        break;
-      case 'message': {
+      })
+      .with({ kind: 'history' }, (message) => { this.messagesByRoom[message.room] = message.messages.slice(); })
+      .with({ kind: 'message' }, (message) => {
         const list = this.messagesByRoom[message.room] ?? [];
         list.push({ from: message.from, text: message.text, ts: message.ts });
         this.messagesByRoom[message.room] = list;
@@ -295,20 +292,13 @@ class ChatStore {
           // Active view — mark read so the sender's ✓✓ updates.
           this.markReadUpTo(message.room, message.ts);
         }
-        break;
-      }
-      case 'users':
-        this.usersByRoom[message.room] = message.users.slice().sort();
-        break;
-      case 'user-typing':
-        this.#onUserTyping(message.room, message.username);
-        break;
-      case 'read-receipts':
-        this.receiptsByRoom = { ...this.receiptsByRoom, [message.room]: message.receipts };
-        break;
-      case 'system':
-        break;
-    }
+      })
+      .with({ kind: 'users' }, (message) => { this.usersByRoom[message.room] = message.users.slice().sort(); })
+      .with({ kind: 'user-typing' }, (message) => { this.#onUserTyping(message.room, message.username); })
+      .with({ kind: 'read-receipts' }, (message) => { this.receiptsByRoom = { ...this.receiptsByRoom, [message.room]: message.receipts }; })
+      // Not surfaced by this frontend.
+      .with({ kind: 'system' }, () => {})
+      .exhaustive();
   }
 
   #onUserTyping(room: RoomName, username: string): void {

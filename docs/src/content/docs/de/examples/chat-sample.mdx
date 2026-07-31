@@ -148,8 +148,18 @@ class UserSessionActor extends Actor<SessionMessage> {
   private ws: WebSocket | null = null;
 
   override onReceive(message: SessionMessage): void {
-    if (message.kind === 'connect-ws') this.ws = message.socket;
-    if (message.kind === 'inbound')    this.ws?.send(JSON.stringify(message.payload));
+    match(message)
+      .with({ kind: 'connect-ws' }, (m) => this.onConnectWs(m))
+      .with({ kind: 'inbound' }, (m) => this.onInbound(m))
+      .exhaustive();
+  }
+
+  private onConnectWs(message: ConnectWsMessage): void {
+    this.ws = message.socket;
+  }
+
+  private onInbound(message: InboundMessage): void {
+    this.ws?.send(JSON.stringify(message.payload));
   }
 }
 ```

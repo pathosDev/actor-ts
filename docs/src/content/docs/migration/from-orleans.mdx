@@ -43,6 +43,7 @@ public class UserGrain : Grain, IUserGrain {
 
 ```ts
 // actor-ts:
+import { match } from 'ts-pattern';
 import { Actor, type ActorRef } from 'actor-ts';
 
 type Command =
@@ -53,8 +54,18 @@ class UserActor extends Actor<Command> {
   private profile: UserProfile = { name: '', email: '' };
 
   override onReceive(command: Command): void {
-    if (command.kind === 'get-profile') command.replyTo.tell(this.profile);
-    if (command.kind === 'update-name')  this.profile = { ...this.profile, name: command.name };
+    match(command)
+      .with({ kind: 'get-profile' }, (c) => this.onGetProfile(c))
+      .with({ kind: 'update-name' }, (c) => this.onUpdateName(c))
+      .exhaustive();
+  }
+
+  private onGetProfile(command: GetProfileCommand): void {
+    command.replyTo.tell(this.profile);
+  }
+
+  private onUpdateName(command: UpdateNameCommand): void {
+    this.profile = { ...this.profile, name: command.name };
   }
 }
 ```
@@ -159,14 +170,19 @@ class Account extends PersistentActor<Command, Event, State> {
   initialState(): State { return { balance: 0 }; }
 
   onEvent(state: State, event: Event): State {
-    if (event.kind === 'deposited') return { balance: state.balance + event.amount };
-    return state;
+    return match(event)
+      .with({ kind: 'deposited' }, (e) => ({ balance: state.balance + e.amount }))
+      .exhaustive();
   }
 
   onCommand(state: State, command: Command): void {
-    if (command.kind === 'deposit') {
-      this.persist({ kind: 'deposited', amount: command.amount }, () => {});
-    }
+    match(command)
+      .with({ kind: 'deposit' }, (c) => this.onDeposit(c))
+      .exhaustive();
+  }
+
+  private onDeposit(command: DepositCommand): void {
+    this.persist({ kind: 'deposited', amount: command.amount }, () => {});
   }
 }
 ```

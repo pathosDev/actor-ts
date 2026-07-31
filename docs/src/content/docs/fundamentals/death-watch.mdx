@@ -15,15 +15,26 @@ event that any other actor can subscribe to.
 ## A minimal example
 
 ```ts
+import { match, P } from 'ts-pattern';
 import { Actor, ActorSystem, Props, Terminated, type ActorRef } from 'actor-ts';
 
-class Watcher extends Actor<Terminated | { kind: 'watch'; ref: ActorRef }> {
-  override onReceive(message: Terminated | { kind: 'watch'; ref: ActorRef }): void {
-    if (message instanceof Terminated) {
-      this.log.info(`watched actor stopped: ${message.actor.path}`);
-    } else if (message.kind === 'watch') {
-      this.context.watch(message.ref);
-    }
+type WatchCommand = { kind: 'watch'; ref: ActorRef };
+type WatcherMessage = Terminated | WatchCommand;
+
+class Watcher extends Actor<WatcherMessage> {
+  override onReceive(message: WatcherMessage): void {
+    match(message)
+      .with(P.instanceOf(Terminated), (t) => this.onTerminated(t))
+      .with({ kind: 'watch' }, (c) => this.onWatch(c))
+      .exhaustive();
+  }
+
+  private onTerminated(signal: Terminated): void {
+    this.log.info(`watched actor stopped: ${signal.actor.path}`);
+  }
+
+  private onWatch(command: WatchCommand): void {
+    this.context.watch(command.ref);
   }
 }
 

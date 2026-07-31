@@ -8,6 +8,15 @@ import { runGroup } from '../lib/harness.js';
 
 type Message = 'swap' | { kind: 'ping' };
 
+/*
+ * The dispatch below deliberately stays a raw `if`-chain, against the
+ * project-wide `match()` rule (AGENTS.md).  This benchmark measures the
+ * per-message path itself, and ts-pattern's allocation per `match()` call
+ * shows up directly in the number: converting it cost ~10 % here
+ * (57k -> 51k swap/s), consistently across alternating runs.
+ * Measuring the framework's overhead through a matcher that production
+ * actor code would amortise differently makes the figure say less, not more.
+ */
 class Swapper extends Actor<Message> {
   override onReceive(m: Message): void {
     if (m === 'swap') {

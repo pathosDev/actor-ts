@@ -1,7 +1,8 @@
+import { match } from 'ts-pattern';
 import type { CassandraClientLike, CassandraConnection } from '../../persistence/journals/CassandraClient.js';
 import { createCassandraClient, keyspaceDdl } from '../../persistence/journals/CassandraClient.js';
 import type { CassandraRememberEntitiesStoreOptions, CassandraRememberEntitiesStoreOptionsType } from './CassandraRememberEntitiesStoreOptions.js';
-import type { RememberEntitiesStore, RememberEvent } from './RememberEntitiesStore.js';
+import type { RememberEntitiesStore, RememberEvent, StartedEvent, StoppedEvent } from './RememberEntitiesStore.js';
 
 type RememberRow = {
   type_name: string;
@@ -76,20 +77,29 @@ export class CassandraRememberEntitiesStore implements RememberEntitiesStore {
 
   async append(typeName: string, event: RememberEvent): Promise<void> {
     await this.ensureStarted();
-    if (event.kind === 'started') {
-      // Upsert — the same `(type, shard, entity)` re-starting overwrites
-      // the previous `started_at` with a fresh timestamp.  The coordinator
-      // only ever calls `'started'` once per entity per lifecycle, but
-      // re-runs after a coordinator crash MAY emit duplicates and the
-      // upsert handles them idempotently.
-      await this.client.execute(
-        `INSERT INTO ${this.qualified()} (type_name, shard_id, entity_id, started_at) VALUES (?, ?, ?, ?)`,
-        [typeName, event.shardId, event.entityId, Date.now()],
-        { prepare: true },
-      );
-      return;
-    }
-    // 'stopped' — point delete on the full primary key.
+    await match(event)
+      .with({ kind: 'started' }, (e) => this.onStarted(typeName, e))
+      .with({ kind: 'stopped' }, (e) => this.onStopped(typeName, e))
+      .exhaustive();
+  }
+
+  /**
+   * Upsert — the same `(type, shard, entity)` re-starting overwrites the
+   * previous `started_at` with a fresh timestamp.  The coordinator only ever
+   * calls `'started'` once per entity per lifecycle, but re-runs after a
+   * coordinator crash MAY emit duplicates and the upsert handles them
+   * idempotently.
+   */
+  private async onStarted(typeName: string, event: StartedEvent): Promise<void> {
+    await this.client.execute(
+      `INSERT INTO ${this.qualified()} (type_name, shard_id, entity_id, started_at) VALUES (?, ?, ?, ?)`,
+      [typeName, event.shardId, event.entityId, Date.now()],
+      { prepare: true },
+    );
+  }
+
+  /** Point delete on the full primary key. */
+  private async onStopped(typeName: string, event: StoppedEvent): Promise<void> {
     await this.client.execute(
       `DELETE FROM ${this.qualified()} WHERE type_name = ? AND shard_id = ? AND entity_id = ?`,
       [typeName, event.shardId, event.entityId],

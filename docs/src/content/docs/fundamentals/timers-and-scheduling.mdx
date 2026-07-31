@@ -20,9 +20,12 @@ timer to outlive the actor.
 ## `context.timers` — actor-bound timers
 
 ```ts
+import { match } from 'ts-pattern';
 import { Actor, ActorSystem, Props } from 'actor-ts';
 
-type Message = { readonly kind: 'tick' } | { readonly kind: 'set'; readonly intervalMs: number };
+type TickMessage = { readonly kind: 'tick' };
+type SetMessage = { readonly kind: 'set'; readonly intervalMs: number };
+type Message = TickMessage | SetMessage;
 
 class Heartbeat extends Actor<Message> {
   override preStart(): void {
@@ -32,12 +35,19 @@ class Heartbeat extends Actor<Message> {
   }
 
   override onReceive(message: Message): void {
-    if (message.kind === 'tick') {
-      this.log.info('heartbeat');
-    } else if (message.kind === 'set') {
-      // Replace the timer with a new interval.  Same key → old one cancels.
-      this.context.timers.startTimerWithFixedDelay('hb', { kind: 'tick' }, message.intervalMs);
-    }
+    match(message)
+      .with({ kind: 'tick' }, () => this.onTick())
+      .with({ kind: 'set' }, (m) => this.onSet(m))
+      .exhaustive();
+  }
+
+  private onTick(): void {
+    this.log.info('heartbeat');
+  }
+
+  // Replace the timer with a new interval.  Same key → old one cancels.
+  private onSet(message: SetMessage): void {
+    this.context.timers.startTimerWithFixedDelay('hb', { kind: 'tick' }, message.intervalMs);
   }
 }
 

@@ -20,6 +20,7 @@
  * on the actor thread.  Other actors can push a typed send with
  * `ref.tell(websocketSend(message))`.
  */
+import { match } from 'ts-pattern';
 import type { Config } from '../../config/Config.js';
 import { ConfigKeys } from '../../config/ConfigKeys.js';
 import { BrokerActor, type OutboundEnvelope } from '../../io/broker/BrokerActor.js';
@@ -36,6 +37,7 @@ import {
   type WebsocketClientInvalid,
   type WebsocketClientSend,
   type WebsocketClientMessage,
+  type WebsocketClientSignal,
 } from './WebsocketMessages.js';
 import { websocketClientConstructor, type WebsocketLike } from './websocketConstructor.js';
 import {
@@ -103,14 +105,41 @@ export abstract class WebsocketClientActor<TOut, TIn, TSelf = never>
 
   /** @internal Sealed — override onMessage + hooks instead. */
   override onReceive(command: WebsocketClientMessage<TOut, TIn, TSelf>): void | Promise<void> {
-    switch ((command as { readonly kind?: unknown }).kind) {
-      case 'websocket-client-send': return void this.send((command as WebsocketClientSend<TOut>).message);
-      case 'websocket-client-inbound': return this.onMessage((command as WebsocketClientInbound<TIn>).message);
-      case 'websocket-client-invalid': return this.onInvalidMessage((command as WebsocketClientInvalid).error);
-      case 'websocket-client-connected': return this.onConnected();
-      case 'websocket-client-disconnected': return this.onDisconnected((command as WebsocketClientDisconnected).cause);
-      default: return this.onSelfMessage(command as TSelf);
-    }
+    // Matched against the envelope union rather than the mailbox type: `TSelf`
+    // is an open type parameter, and ts-pattern cannot build a `Pattern<>` for
+    // a union that still contains one.  `.otherwise` is reached exactly when
+    // none of our kinds hit, i.e. for an app-level `TSelf` message.
+    const envelope = command as WebsocketClientSend<TOut> | WebsocketClientSignal<TIn>;
+    return match(envelope)
+      .with({ kind: 'websocket-client-send' }, (c) => this.onWebsocketClientSend(c))
+      .with({ kind: 'websocket-client-inbound' }, (c) => this.onWebsocketClientInbound(c))
+      .with({ kind: 'websocket-client-invalid' }, (c) => this.onWebsocketClientInvalid(c))
+      .with({ kind: 'websocket-client-connected' }, () => this.onWebsocketClientConnected())
+      .with({ kind: 'websocket-client-disconnected' }, (c) => this.onWebsocketClientDisconnected(c))
+      .otherwise(() => this.onSelfMessage(command as TSelf));
+  }
+
+  /* --------------------- dispatch arm handlers -------------------- */
+  /* Each unwraps one envelope onto the matching user-facing hook. */
+
+  private onWebsocketClientSend(command: WebsocketClientSend<TOut>): void {
+    this.send(command.message);
+  }
+
+  private onWebsocketClientInbound(signal: WebsocketClientInbound<TIn>): void | Promise<void> {
+    return this.onMessage(signal.message);
+  }
+
+  private onWebsocketClientInvalid(signal: WebsocketClientInvalid): void | Promise<void> {
+    return this.onInvalidMessage(signal.error);
+  }
+
+  private onWebsocketClientConnected(): void | Promise<void> {
+    return this.onConnected();
+  }
+
+  private onWebsocketClientDisconnected(signal: WebsocketClientDisconnected): void | Promise<void> {
+    return this.onDisconnected(signal.cause);
   }
 
   /* ----------------------- BrokerActor plumbing ------------------ */
