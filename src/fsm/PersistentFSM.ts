@@ -384,6 +384,14 @@ export abstract class PersistentFSM<
    * dance — keeps the post-apply state-name verification.
    */
   private async fireTimeoutTransition(stateAtArm: SName): Promise<void> {
+    // `onReceive` routes the timeout fire here *before* delegating to the
+    // base class, so it bypasses the `_recovering` guard that gates every
+    // ordinary command — and `this.state` is unassigned until replay
+    // succeeds, which would make this a TypeError rather than a stash.
+    // Dropping the fire is also the correct outcome on its own terms:
+    // `onRecoveryComplete` arms a fresh timer for the recovered state, so
+    // a pre-restart fire has nothing left to say.
+    if (this.recovering) return;
     const curr = this.state;
     if (curr.state !== stateAtArm) {
       // A command transitioned us out before the timer message landed
