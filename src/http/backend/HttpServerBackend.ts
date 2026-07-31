@@ -27,19 +27,19 @@ export type WebsocketRouteRegistration = {
   readonly onConnection: (request: HttpRequest, socket: WebsocketSocketAdapter) => void;
 };
 
-export type ServerBinding = {
+export interface ServerBinding {
   readonly host: string;
   readonly port: number;
   /** Stop the server; waits up to `gracePeriodMs` for in-flight requests. */
   unbind(gracePeriodMs?: number): Promise<void>;
-};
+}
 
 /**
  * Pluggable HTTP server abstraction.  Backends translate our generic
  * route registrations to their native framework (Fastify, Bun.serve,
  * Express, …).  The DSL only ever talks to this interface.
  */
-export type HttpServerBackend = {
+export interface HttpServerBackend {
   readonly name: string;
 
   /** Register all routes before `listen` is called.  Duplicate paths must be rejected. */
@@ -70,4 +70,4 @@ export type HttpServerBackend = {
    * `HttpExtension.bind` and reported as a clear error.
    */
   registerWebSocket?(reg: WebsocketRouteRegistration): void;
-};
+}

@@ -33,7 +33,7 @@ import type { BrokerCommonOptionsType } from '../../io/broker/BrokerOptions.js';
 import type { WebsocketCodec } from './WebsocketCodec.js';
 
 /** Plain options-object shape accepted by a {@link WebsocketClientActor}. */
-export type WebsocketClientOptionsType<TOut = unknown, TIn = unknown> = BrokerCommonOptionsType & {
+export interface WebsocketClientOptionsType<TOut = unknown, TIn = unknown> extends BrokerCommonOptionsType {
   /** WebSocket URL (`ws://…` or `wss://…`).  Required (ctor or HOCON). */
   readonly url?: string;
   readonly protocols?: string | ReadonlyArray<string>;
@@ -45,7 +45,7 @@ export type WebsocketClientOptionsType<TOut = unknown, TIn = unknown> = BrokerCo
   readonly onInvalidMessage?: 'drop' | 'hook' | 'disconnect';
   /** Send a ping every `pingIntervalMs` to keep the connection alive.  Default: disabled. */
   readonly pingIntervalMs?: number;
-};
+}
 
 /** Fluent builder for {@link WebsocketClientOptionsType}. */
 export class WebsocketClientOptionsBuilder<TOut = unknown, TIn = unknown>

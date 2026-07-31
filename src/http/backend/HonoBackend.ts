@@ -104,7 +104,7 @@ type HonoErrorHandler = (err: unknown, context: HonoContextLike) => Promise<Resp
 type HonoNotFoundHandler = (context: HonoContextLike) => Promise<Response> | Response;
 
 /** Structural subset of the Hono app we consume. */
-export type HonoAppLike = {
+export interface HonoAppLike {
   get(path: string, ...handlers: unknown[]): unknown;
   post(path: string, handler: HonoHandler): unknown;
   put(path: string, handler: HonoHandler): unknown;
@@ -115,7 +115,7 @@ export type HonoAppLike = {
   onError(handler: HonoErrorHandler): unknown;
   notFound(handler: HonoNotFoundHandler): unknown;
   fetch(request: Request): Promise<Response> | Response;
-};
+}
 
 /**
  * Hono-backed HTTP backend — a thin adapter that compiles the actor-ts

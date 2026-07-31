@@ -9,7 +9,7 @@ export type HttpClientRequest = {
   readonly timeoutMs?: number;
 };
 
-export type HttpClientResponse = {
+export interface HttpClientResponse {
   readonly status: number;
   readonly headers: Readonly<Record<string, string>>;
   readonly body: Uint8Array;
@@ -17,7 +17,7 @@ export type HttpClientResponse = {
   text(): string;
   /** Decode body as JSON. */
   json<T = unknown>(): T;
-};
+}
 
 /**
  * Thin HTTP client around the global `fetch`.  Returns a uniform response
