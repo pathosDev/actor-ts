@@ -237,6 +237,7 @@
     <!-- everything below is one inlined module — no imports          -->
     <!-- ============================================================ -->
     <script type="module">
+      import { match } from 'https://esm.sh/ts-pattern@5';
       'use strict';
 
       // ---------- constants kept in sync with shared/protocol.ts ----------
@@ -446,15 +447,15 @@
       function handleServerText(raw) {
         let m;
         try { m = JSON.parse(raw); } catch { return; }
-        switch (m.kind) {
-          case 'logged-in':
+        match(m)
+          .with({ kind: 'logged-in' }, (m) => {
             cancelReconnect();
             state.username = m.username;
             state.token = m.token;
             sessionStorage.setItem(TOKEN_KEY, m.token);
             enterApp();
-            break;
-          case 'login-failed':
+          })
+          .with({ kind: 'login-failed' }, (m) => {
             cancelReconnect();
             sessionStorage.removeItem(TOKEN_KEY);
             try { state.ws?.close(); } catch {}
@@ -465,41 +466,36 @@
             } else {
               resetToGate();
             }
-            break;
-          case 'directory':
+          })
+          .with({ kind: 'directory' }, (m) => {
             state.directory = {
               users: m.users,
               groups: m.groups,
               rooms: m.rooms,
             };
             renderUsers(); renderGroups(); renderRooms();
-            break;
-          case 'online-users':
+          })
+          .with({ kind: 'online-users' }, (m) => {
             state.onlineUsers = new Set(m.users);
             renderUsers();
-            break;
-          case 'room-participants':
+          })
+          .with({ kind: 'room-participants' }, (m) => {
             state.roomParticipants.set(m.room, m.users);
             renderRooms();
-            break;
-          case 'voice-target-ok':
-            // Nothing to do — UI already optimistically updated on press-down.
-            break;
-          case 'voice-target-failed':
+          })
+          // Nothing to do — UI already optimistically updated on press-down.
+          .with({ kind: 'voice-target-ok' }, () => {})
+          .with({ kind: 'voice-target-failed' }, (m) => {
             // Press-down failed: clear active state.
             console.warn('voice-target-failed', m);
             clearActiveButton();
-            break;
-          case 'voice-incoming-start':
-            startIncoming(m.from, m.source);
-            break;
-          case 'voice-incoming-end':
-            endIncoming(m.from);
-            break;
-          case 'system': /* informational */ break;
-          default:
+          })
+          .with({ kind: 'voice-incoming-start' }, (m) => startIncoming(m.from, m.source))
+          .with({ kind: 'voice-incoming-end' }, (m) => endIncoming(m.from))
+          .with({ kind: 'system' }, () => { /* informational */ })
+          .otherwise(() => {
             console.debug('unhandled server msg', m);
-        }
+          });
       }
 
       function handleServerBinary(buffer) {

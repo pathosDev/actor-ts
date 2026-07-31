@@ -179,6 +179,8 @@ the framework splits **commands** (what to do) from **events** (what
 already happened):
 
 ```ts
+import { match } from 'ts-pattern';
+
 type DepositCommand = { readonly kind: 'deposit'; readonly amount: number };
 
 type Deposited = { readonly kind: 'deposited'; readonly amount: number; readonly timestamp: number };
@@ -186,16 +188,22 @@ type Deposited = { readonly kind: 'deposited'; readonly amount: number; readonly
 class Account extends PersistentActor<DepositCommand, Deposited, { balance: number }> {
   // command handler: validate + persist event
   async onCommand(state, command: DepositCommand): Promise<void> {
-    if (command.kind === 'deposit') {
-      const event: Deposited = { kind: 'deposited', amount: command.amount, timestamp: Date.now() };
-      await this.persist(event, () => { /* post-persist side effects */ });
-    }
+    await match(command)
+      .with({ kind: 'deposit' }, (c) => this.onDeposit(c))
+      .exhaustive();
+  }
+
+  private async onDeposit(command: DepositCommand): Promise<void> {
+    const event: Deposited = { kind: 'deposited', amount: command.amount, timestamp: Date.now() };
+    await this.persist(event, () => { /* post-persist side effects */ });
   }
 
   // event handler: state update only — runs on both write and recovery
   onEvent(state, event: Deposited): { balance: number } {
-    if (event.kind === 'deposited') return { balance: state.balance + event.amount };
-    return state;
+    // A fold that computes a value — arms stay inline.
+    return match(event)
+      .with({ kind: 'deposited' }, (e) => ({ balance: state.balance + e.amount }))
+      .exhaustive();
   }
 }
 ```

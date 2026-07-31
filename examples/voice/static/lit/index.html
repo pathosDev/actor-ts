@@ -24,6 +24,7 @@
     <!-- No build.  Lit loaded from CDN; same approach as chat-lit. -->
     <script type="module">
       import { LitElement, html, css } from 'https://esm.sh/lit@3';
+      import { match } from 'https://esm.sh/ts-pattern@5';
 
       const WS_PATH = '/ws';
       const TOKEN_KEY = 'voice-token';
@@ -441,46 +442,36 @@
 
         _handleText(raw) {
           let m; try { m = JSON.parse(raw); } catch { return; }
-          switch (m.kind) {
-            case 'logged-in':
+          match(m)
+            .with({ kind: 'logged-in' }, (m) => {
               this._cancelReconnect();
               this.username = m.username;
               sessionStorage.setItem(TOKEN_KEY, m.token);
               this.phase = 'app';
-              break;
-            case 'login-failed':
+            })
+            .with({ kind: 'login-failed' }, (m) => {
               this._cancelReconnect();
               sessionStorage.removeItem(TOKEN_KEY);
               try { this._ws?.close(); } catch {}
               this._ws = null;
               if (this.phase === 'app') this._resetToGate();
               else { this.loginError = m.reason || 'Login failed'; this.requestUpdate(); }
-              break;
-            case 'directory':
-              this.directory = { users: [...m.users], groups: m.groups.map((g) => ({ ...g, members: [...g.members] })), rooms: [...m.rooms] };
-              break;
-            case 'online-users':
-              this.onlineUsers = new Set(m.users);
-              break;
-            case 'room-participants': {
+            })
+            .with({ kind: 'directory' }, (m) => this.directory = { users: [...m.users], groups: m.groups.map((g) => ({ ...g, members: [...g.members] })), rooms: [...m.rooms] })
+            .with({ kind: 'online-users' }, (m) => this.onlineUsers = new Set(m.users))
+            .with({ kind: 'room-participants' }, (m) => {
               const next = new Map(this.roomParticipants);
               next.set(m.room, [...m.users]);
               this.roomParticipants = next;
-              break;
-            }
-            case 'voice-target-ok': /* ack */ break;
-            case 'voice-target-failed':
+            })
+            .with({ kind: 'voice-target-ok' }, () => { /* ack */ })
+            .with({ kind: 'voice-target-failed' }, (m) => {
               console.warn('voice-target-failed', m);
               this.activeKey = null;
-              break;
-            case 'voice-incoming-start':
-              this._startIncoming(m.from, m.source);
-              break;
-            case 'voice-incoming-end':
-              this._endIncoming(m.from);
-              break;
-            default: break;
-          }
+            })
+            .with({ kind: 'voice-incoming-start' }, (m) => this._startIncoming(m.from, m.source))
+            .with({ kind: 'voice-incoming-end' }, (m) => this._endIncoming(m.from))
+            .otherwise(() => {});
         }
 
         _handleBinary(buffer) {

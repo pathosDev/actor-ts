@@ -5,6 +5,7 @@
  *
  *   bun run benchmarks/cluster/sharded-roundtrip.ts
  */
+import { match } from 'ts-pattern';
 import {
   Actor,
   ActorSystem,
@@ -22,11 +23,19 @@ import {
 } from '../../src/index.js';
 import { runGroup } from '../lib/harness.js';
 
-type Command = { id: string; op: 'ping' };
+type PingCommand = { id: string; kind: 'ping' };
+
+type Command = PingCommand;
 
 class Entity extends Actor<Command> {
   override onReceive(m: Command): void {
-    if (m.op === 'ping') this.sender.forEach((s) => s.tell('pong'));
+    match(m)
+      .with({ kind: 'ping' }, () => this.onPing())
+      .exhaustive();
+  }
+
+  private onPing(): void {
+    this.sender.forEach((s) => s.tell('pong'));
   }
 }
 
@@ -63,7 +72,7 @@ async function main(): Promise<void> {
       name: 'ask entity via region',
       unit: 'ask',
       iterations: 2_000,
-      run: async () => { await a.region.ask<string>({ id: 'same', op: 'ping' }, 1_000); },
+      run: async () => { await a.region.ask<string>({ id: 'same', kind: 'ping' }, 1_000); },
     },
   ]);
 
@@ -84,7 +93,7 @@ async function main(): Promise<void> {
       iterations: 1_000,
       run: async () => {
         const id = `e-${Math.floor(Math.random() * 64)}`;
-        await a2.region.ask<string>({ id, op: 'ping' }, 1_000);
+        await a2.region.ask<string>({ id, kind: 'ping' }, 1_000);
       },
     },
   ]);

@@ -9,6 +9,7 @@
  *
  *   bun run examples/persistence/event-migration-chain.ts
  */
+import { match } from 'ts-pattern';
 import {
   ActorSystem,
   ActorSystemOptions,
@@ -26,7 +27,10 @@ type DepositedV2 = { kind: 'deposited'; amount: number; currency: 'USD' | 'EUR' 
 type DepositedV3 = { kind: 'deposited'; cents: number; currency: 'USD' | 'EUR' };            // cents + currency
 type Event = DepositedV3;
 
-type Command = { kind: 'deposit'; cents: number } | { kind: 'balance' };
+type DepositCommand = { kind: 'deposit'; cents: number };
+type BalanceCommand = { kind: 'balance' };
+
+type Command = DepositCommand | BalanceCommand;
 type State = { balanceCents: number; currency: 'USD' | 'EUR' };
 
 class Account extends PersistentActor<Command, Event, State> {
@@ -50,14 +54,21 @@ class Account extends PersistentActor<Command, Event, State> {
     };
   }
   async onCommand(_s: State, command: Command): Promise<void> {
-    if (command.kind === 'deposit') {
-      await this.persist(
-        { kind: 'deposited', cents: command.cents, currency: 'EUR' },
-        (st) => this.sender.forEach((s) => s.tell({ ok: st })),
-      );
-    } else {
-      this.sender.forEach((s) => s.tell({ balanceCents: this.state.balanceCents, currency: this.state.currency }));
-    }
+    await match(command)
+      .with({ kind: 'deposit' }, (c) => this.onDeposit(c))
+      .with({ kind: 'balance' }, () => this.onBalance())
+      .exhaustive();
+  }
+
+  private async onDeposit(command: DepositCommand): Promise<void> {
+    await this.persist(
+      { kind: 'deposited', cents: command.cents, currency: 'EUR' },
+      (st) => this.sender.forEach((s) => s.tell({ ok: st })),
+    );
+  }
+
+  private onBalance(): void {
+    this.sender.forEach((s) => s.tell({ balanceCents: this.state.balanceCents, currency: this.state.currency }));
   }
 }
 

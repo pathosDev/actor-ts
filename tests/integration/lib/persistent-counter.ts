@@ -15,6 +15,7 @@
  * shortcut) and rebuilds the state — that's the integration test.
  */
 
+import { match } from 'ts-pattern';
 import type { ActorRef } from '../../../src/ActorRef.js';
 import { PersistentActor, everyNEvents } from '../../../src/persistence/PersistentActor.js';
 import type { SnapshotPolicy } from '../../../src/persistence/PersistentActor.js';
@@ -26,7 +27,9 @@ export type CounterGetState = {
 };
 export type CounterCommand = CounterIncrement | CounterGetState;
 
-export type CounterEvent = { readonly kind: 'incremented' };
+export type CounterIncremented = { readonly kind: 'incremented' };
+
+export type CounterEvent = CounterIncremented;
 
 export type CounterState = { count: number };
 
@@ -50,18 +53,27 @@ export class PersistentCounter extends PersistentActor<CounterCommand, CounterEv
   }
 
   override onEvent(state: CounterState, e: CounterEvent): CounterState {
-    if (e.kind === 'incremented') return { count: state.count + 1 };
-    return state;
+    // A fold that computes a value — arms stay inline.
+    return match(e)
+      .with({ kind: 'incremented' }, () => ({ count: state.count + 1 }))
+      .exhaustive();
   }
 
   override onCommand(state: CounterState, command: CounterCommand): void {
-    if (command.kind === 'increment') {
-      this.persist({ kind: 'incremented' }, () => {
-        // No reply on inc — fire-and-forget.
-      });
-    } else if (command.kind === 'get-state') {
-      command.replyTo.tell({ kind: 'state', count: state.count });
-    }
+    match(command)
+      .with({ kind: 'increment' }, () => this.onIncrement())
+      .with({ kind: 'get-state' }, (c) => this.onGetState(state, c))
+      .exhaustive();
+  }
+
+  private onIncrement(): void {
+    this.persist({ kind: 'incremented' }, () => {
+      // No reply on inc — fire-and-forget.
+    });
+  }
+
+  private onGetState(state: CounterState, command: CounterGetState): void {
+    command.replyTo.tell({ kind: 'state', count: state.count });
   }
 
   override snapshotPolicy(): SnapshotPolicy<CounterState, CounterEvent> {

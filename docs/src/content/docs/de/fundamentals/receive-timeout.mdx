@@ -165,11 +165,15 @@ wenn du phasen-spezifische Dauern willst:
 
 ```ts
 private idle = (message) => {
-  if (message.kind === 'start') {
-    this.context.become(this.working);
-    this.context.setReceiveTimeout(60_000);   // 1 min idle im Working-Mode
-  }
+  match(message)
+    .with({ kind: 'start' }, () => this.onStart())
+    .otherwise(() => {});
 };
+
+private onStart(): void {
+  this.context.become(this.working);
+  this.context.setReceiveTimeout(60_000);   // 1 min idle im Working-Mode
+}
 
 private working = (message) => {
   if (message === ReceiveTimeout.instance) {

@@ -10,6 +10,7 @@
  * after ~1s node A is shut down — you will see subsequent ticks labelled
  * with [b] or [c] as failover takes effect.
  */
+import { match } from 'ts-pattern';
 import {
   Actor,
   ActorSystem,
@@ -24,7 +25,10 @@ import {
 } from '../../src/index.js';
 import { attachDevTools } from '../devtools.js';
 
-type CronCommand = { kind: 'subscribe'; sub: ActorRef<CronEvent> } | { kind: 'tick' };
+type SubscribeCommand = { kind: 'subscribe'; sub: ActorRef<CronEvent> };
+type TickCommand = { kind: 'tick' };
+
+type CronCommand = SubscribeCommand | TickCommand;
 type CronEvent = { readonly tickNumber: number; readonly hostedOn: string; };
 
 class Cron extends Actor<CronCommand> {
@@ -37,7 +41,17 @@ class Cron extends Actor<CronCommand> {
     this.context.timers.startTimerWithFixedDelay('tick', { kind: 'tick' }, 250, 100);
   }
   override onReceive(command: CronCommand): void {
-    if (command.kind === 'subscribe') { this.subs.add(command.sub); return; }
+    match(command)
+      .with({ kind: 'subscribe' }, (c) => this.onSubscribe(c))
+      .with({ kind: 'tick' }, () => this.onTick())
+      .exhaustive();
+  }
+
+  private onSubscribe(command: SubscribeCommand): void {
+    this.subs.add(command.sub);
+  }
+
+  private onTick(): void {
     this.tickCount++;
     const evt: CronEvent = { tickNumber: this.tickCount, hostedOn: this.host };
     console.log(`[${this.host}] tick #${this.tickCount}`);

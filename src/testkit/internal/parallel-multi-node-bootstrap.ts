@@ -20,6 +20,7 @@
  * modules by URL is the cleanest way to thread test-specific code
  * into the worker without leaking it through `postMessage`.
  */
+import { match } from 'ts-pattern';
 import { ActorSystem } from '../../ActorSystem.js';
 import { ActorSystemOptions } from '../../ActorSystemOptions.js';
 import { Cluster } from '../../cluster/Cluster.js';
@@ -67,11 +68,12 @@ type InitData = {
   readonly scenarioInitData?: unknown;    // forwarded to setup()'s context
 };
 
-type ControlRequest =
-  | { kind: 'mns-test.query-members'; reqId: number }
-  | { kind: 'mns-test.query-leader'; reqId: number }
-  | { kind: 'mns-test.leave'; reqId: number }
-  | { kind: 'mns-test.run-command'; reqId: number; command: string; args: unknown };
+type QueryMembersRequest = { kind: 'mns-test.query-members'; reqId: number };
+type QueryLeaderRequest = { kind: 'mns-test.query-leader'; reqId: number };
+type LeaveRequest = { kind: 'mns-test.leave'; reqId: number };
+type RunCommandRequest = { kind: 'mns-test.run-command'; reqId: number; command: string; args: unknown };
+
+type ControlRequest = QueryMembersRequest | QueryLeaderRequest | LeaveRequest | RunCommandRequest;
 
 type ControlResponse =
   | { kind: 'mns-test.query-members-response'; reqId: number; members: MemberSnapshot[] }
@@ -155,68 +157,78 @@ async function main(): Promise<void> {
     post?.call(selfScope, message);
   };
 
+  const onQueryMembers = (request: QueryMembersRequest): void => {
+    const snap: MemberSnapshot[] = cluster.getMembers().map((mem) => ({
+      address: mem.address.toString(),
+      status: mem.status,
+      roles: Array.from(mem.roles),
+    }));
+    reply({ kind: 'mns-test.query-members-response', reqId: request.reqId, members: snap });
+  };
+
+  const onQueryLeader = (request: QueryLeaderRequest): void => {
+    const ldr = cluster.leader().toNullable();
+    reply({
+      kind: 'mns-test.query-leader-response',
+      reqId: request.reqId,
+      leader: ldr ? ldr.address.toString() : null,
+    });
+  };
+
+  // Every failure below is reported back rather than thrown: the requester is
+  // a test in another process awaiting this reply, and a rejected promise here
+  // would leave it hanging until its own timeout with no reason attached.
+  const onLeave = async (request: LeaveRequest): Promise<void> => {
+    try {
+      await cluster.leave();
+      reply({ kind: 'mns-test.leave-response', reqId: request.reqId });
+    } catch (err) {
+      reply({
+        kind: 'mns-test.leave-response', reqId: request.reqId,
+        error: (err as Error).message,
+      });
+    }
+  };
+
+  const onRunCommand = async (request: RunCommandRequest): Promise<void> => {
+    const handler = scenario.commands?.[request.command];
+    if (!handler) {
+      reply({
+        kind: 'mns-test.run-command-response', reqId: request.reqId, result: undefined,
+        error: `no handler for command '${request.command}'`,
+      });
+      return;
+    }
+    try {
+      const result = await handler(request.args, scenarioContext);
+      reply({ kind: 'mns-test.run-command-response', reqId: request.reqId, result });
+    } catch (err) {
+      reply({
+        kind: 'mns-test.run-command-response', reqId: request.reqId, result: undefined,
+        error: (err as Error).message,
+      });
+    }
+  };
+
+  const onUnknownControl = (request: { kind?: string }): void => {
+    // eslint-disable-next-line no-console
+    console.error(`parallel-multi-node-bootstrap: unknown control request '${request.kind}'`);
+  };
+
   const onControl = async (data: unknown): Promise<void> => {
     const message = data as Partial<ControlRequest> | undefined;
     if (!message || typeof message.kind !== 'string' || !message.kind.startsWith('mns-test.')) return;
 
-    switch (message.kind) {
-      case 'mns-test.query-members': {
-        const reqId = (message as ControlRequest & { kind: 'mns-test.query-members' }).reqId;
-        const snap: MemberSnapshot[] = cluster.getMembers().map((mem) => ({
-          address: mem.address.toString(),
-          status: mem.status,
-          roles: Array.from(mem.roles),
-        }));
-        reply({ kind: 'mns-test.query-members-response', reqId, members: snap });
-        return;
-      }
-      case 'mns-test.query-leader': {
-        const reqId = (message as { reqId: number }).reqId;
-        const ldr = cluster.leader().toNullable();
-        reply({
-          kind: 'mns-test.query-leader-response',
-          reqId,
-          leader: ldr ? ldr.address.toString() : null,
-        });
-        return;
-      }
-      case 'mns-test.leave': {
-        const reqId = (message as { reqId: number }).reqId;
-        try {
-          await cluster.leave();
-          reply({ kind: 'mns-test.leave-response', reqId });
-        } catch (err) {
-          reply({
-            kind: 'mns-test.leave-response', reqId,
-            error: (err as Error).message,
-          });
-        }
-        return;
-      }
-      case 'mns-test.run-command': {
-        const reqId = (message as { reqId: number }).reqId;
-        const command = (message as { command: string }).command;
-        const args = (message as { args: unknown }).args;
-        const handler = scenario.commands?.[command];
-        if (!handler) {
-          reply({
-            kind: 'mns-test.run-command-response', reqId, result: undefined,
-            error: `no handler for command '${command}'`,
-          });
-          return;
-        }
-        try {
-          const result = await handler(args, scenarioContext);
-          reply({ kind: 'mns-test.run-command-response', reqId, result });
-        } catch (err) {
-          reply({
-            kind: 'mns-test.run-command-response', reqId, result: undefined,
-            error: (err as Error).message,
-          });
-        }
-        return;
-      }
-    }
+    // `.otherwise`, not `.exhaustive`: the prefix guard above admits any
+    // `mns-test.*` kind, and this arrives as untrusted postMessage data from
+    // another process.  A throw here would take down the control channel and
+    // strand every subsequent request.
+    await match(message as ControlRequest)
+      .with({ kind: 'mns-test.query-members' }, (m) => onQueryMembers(m))
+      .with({ kind: 'mns-test.query-leader' }, (m) => onQueryLeader(m))
+      .with({ kind: 'mns-test.leave' }, (m) => onLeave(m))
+      .with({ kind: 'mns-test.run-command' }, (m) => onRunCommand(m))
+      .otherwise((m) => onUnknownControl(m));
   };
 
   if (typeof selfScope.addEventListener === 'function') {

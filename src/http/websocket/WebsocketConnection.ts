@@ -14,15 +14,19 @@ import { ActorRef } from '../../ActorRef.js';
 import { WebsocketReadyState, type WebsocketSocketAdapter } from './SocketAdapter.js';
 import type { WebsocketFrame, WebsocketUpgradeInfo } from './types.js';
 
+/** Send a typed message — encoded by the route codec before it hits the wire. */
+export type OutCommand<TOut> = { readonly kind: 'out'; readonly message: TOut };
+/** Send a frame verbatim, bypassing the codec. */
+export type OutRawCommand = { readonly kind: 'out-raw'; readonly frame: WebsocketFrame };
+/** Close the connection with a status code and reason. */
+export type CloseCommand = { readonly kind: 'close'; readonly code: number; readonly reason: string };
+
 /**
  * Outbound command a {@link WebsocketConnection} enqueues to its per-connection
  * actor.  Defined here (the producer) so the connection actor imports it
  * from the connection module, not the other way round.
  */
-export type WebsocketOutboundCommand<TOut> =
-  | { readonly kind: 'out'; readonly message: TOut }
-  | { readonly kind: 'out-raw'; readonly frame: WebsocketFrame }
-  | { readonly kind: 'close'; readonly code: number; readonly reason: string };
+export type WebsocketOutboundCommand<TOut> = OutCommand<TOut> | OutRawCommand | CloseCommand;
 
 export interface WebsocketConnection<TOut> extends ActorRef<TOut> {
   /** Stable id, unique within the process (e.g. `ws-7`). */

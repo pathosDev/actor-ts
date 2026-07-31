@@ -13,6 +13,7 @@
  * (scenario 09) hit and uses the same pattern.
  */
 
+import { match } from 'ts-pattern';
 import { Actor } from '../../../src/Actor.js';
 import type { ActorRef } from '../../../src/ActorRef.js';
 
@@ -51,14 +52,21 @@ export class CounterSingleton extends Actor<SingletonMessage> {
   private value = 0;
   constructor(private readonly nodeName: string) { super(); }
   override onReceive(message: SingletonMessage): void {
-    if (message.kind === 'increment') {
-      this.value++;
-    } else if (message.kind === 'who') {
-      message.replyTo.tell({
-        kind: 'who-reply',
-        nodeName: this.nodeName,
-        value: this.value,
-      });
-    }
+    match(message)
+      .with({ kind: 'increment' }, () => this.onIncrement())
+      .with({ kind: 'who' }, (m) => this.onWho(m))
+      .exhaustive();
+  }
+
+  private onIncrement(): void {
+    this.value++;
+  }
+
+  private onWho(message: SingletonWho): void {
+    message.replyTo.tell({
+      kind: 'who-reply',
+      nodeName: this.nodeName,
+      value: this.value,
+    });
   }
 }

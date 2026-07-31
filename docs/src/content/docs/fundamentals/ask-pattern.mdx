@@ -17,18 +17,24 @@ Promise that resolves with the first reply or rejects on timeout.
 ## A minimal example
 
 ```ts
+import { match } from 'ts-pattern';
 import { Actor, ActorSystem, Props, type ActorRef } from 'actor-ts';
 
-type Command =
-  | { readonly kind: 'increment' }
-  | { readonly kind: 'get'; readonly replyTo: ActorRef<number> };
+type IncrementCommand = { readonly kind: 'increment' };
+type GetCommand = { readonly kind: 'get'; readonly replyTo: ActorRef<number> };
+type Command = IncrementCommand | GetCommand;
 
 class Counter extends Actor<Command> {
   private count = 0;
   override onReceive(command: Command): void {
-    if (command.kind === 'increment') this.count++;
-    else if (command.kind === 'get') command.replyTo.tell(this.count);
+    match(command)
+      .with({ kind: 'increment' }, () => this.onIncrement())
+      .with({ kind: 'get' }, (c) => this.onGet(c))
+      .exhaustive();
   }
+
+  private onIncrement(): void { this.count++; }
+  private onGet(command: GetCommand): void { command.replyTo.tell(this.count); }
 }
 
 const system = ActorSystem.create('demo');
@@ -71,7 +77,7 @@ variant has `replyTo: ActorRef<number>`.
 For the recipient, it's just a regular `tell` on a regular ref:
 
 ```ts
-if (command.kind === 'get') {
+private onGet(command: GetCommand): void {
   command.replyTo.tell(this.count);
 }
 ```
@@ -81,7 +87,7 @@ Inside the recipient, you can also reach the same ref via
 temporary ref through that channel too:
 
 ```ts
-if (command.kind === 'get') {
+private onGet(command: GetCommand): void {
   this.sender.forEach((replyTo) => replyTo.tell(this.count));
 }
 ```
@@ -135,13 +141,17 @@ resolving with the message.
 ```ts
 class Service extends Actor<Command> {
   override onReceive(command: Command): void {
-    if (command.kind === 'fetch') {
-      if (this.unavailable) {
-        command.replyTo.tell(new Error('service unavailable'));
-        return;
-      }
-      command.replyTo.tell(this.data);
+    match(command)
+      .with({ kind: 'fetch' }, (c) => this.onFetch(c))
+      .exhaustive();
+  }
+
+  private onFetch(command: FetchCommand): void {
+    if (this.unavailable) {
+      command.replyTo.tell(new Error('service unavailable'));
+      return;
     }
+    command.replyTo.tell(this.data);
   }
 }
 

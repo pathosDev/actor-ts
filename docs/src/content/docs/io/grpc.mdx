@@ -103,12 +103,17 @@ defaults to `13` (INTERNAL).
 ## Client
 
 ```ts
+import { match, P } from 'ts-pattern';
 import {
   Actor,
   Props,
   GrpcClientActor,
   GrpcClientOptions,
   type GrpcInbound,
+  type ReplyMessage,
+  type RpcErrorMessage,
+  type StreamDataMessage,
+  type StreamErrorMessage,
 } from 'actor-ts';
 
 const grpcClientOptions = GrpcClientOptions.create()
@@ -126,15 +131,29 @@ const client = system.spawn(
 // A collector actor receives every reply / stream frame as `GrpcInbound`.
 class ReplyCollector extends Actor<GrpcInbound> {
   override onReceive(message: GrpcInbound): void {
-    if (message.kind === 'reply') {
-      console.log('unary reply:', message.response);
-    } else if (message.kind === 'stream-data') {
-      console.log('stream chunk:', message.chunk);
-    } else if (message.kind === 'stream-end') {
-      console.log('stream complete');
-    } else if (message.kind === 'rpc-error' || message.kind === 'stream-error') {
-      console.error('error:', message.error.message);
-    }
+    match(message)
+      .with({ kind: 'reply' }, (m) => this.onReply(m))
+      .with({ kind: 'stream-data' }, (m) => this.onStreamData(m))
+      .with({ kind: 'stream-end' }, () => this.onStreamEnd())
+      // Unary and streaming failures are reported the same way.
+      .with(P.union({ kind: 'rpc-error' }, { kind: 'stream-error' }), (m) => this.onError(m))
+      .exhaustive();
+  }
+
+  private onReply(message: ReplyMessage): void {
+    console.log('unary reply:', message.response);
+  }
+
+  private onStreamData(message: StreamDataMessage): void {
+    console.log('stream chunk:', message.chunk);
+  }
+
+  private onStreamEnd(): void {
+    console.log('stream complete');
+  }
+
+  private onError(message: RpcErrorMessage | StreamErrorMessage): void {
+    console.error('error:', message.error.message);
   }
 }
 

@@ -20,12 +20,13 @@ config load.
 ## `become` — swap the behavior
 
 ```ts
+import { match } from 'ts-pattern';
 import { Actor, ActorSystem, Props } from 'actor-ts';
 
-type Message =
-  | { readonly kind: 'on' }
-  | { readonly kind: 'off' }
-  | { readonly kind: 'press' };
+type OnMessage = { readonly kind: 'on' };
+type OffMessage = { readonly kind: 'off' };
+type PressMessage = { readonly kind: 'press' };
+type Message = OnMessage | OffMessage | PressMessage;
 
 class Switch extends Actor<Message> {
   override onReceive(message: Message): void {
@@ -33,18 +34,26 @@ class Switch extends Actor<Message> {
   }
 
   private offState = (message: Message): void => {
-    if (message.kind === 'press') {
-      this.log.info('turning on');
-      this.context.become(this.onState);
-    }
+    match(message)
+      .with({ kind: 'press' }, () => this.onPressWhileOff())
+      .otherwise(() => {});
   };
 
+  private onPressWhileOff(): void {
+    this.log.info('turning on');
+    this.context.become(this.onState);
+  }
+
   private onState = (message: Message): void => {
-    if (message.kind === 'press') {
-      this.log.info('turning off');
-      this.context.become(this.offState);
-    }
+    match(message)
+      .with({ kind: 'press' }, () => this.onPressWhileOn())
+      .otherwise(() => {});
   };
+
+  private onPressWhileOn(): void {
+    this.log.info('turning off');
+    this.context.become(this.offState);
+  }
 }
 
 const system = ActorSystem.create('demo');
@@ -77,17 +86,25 @@ class Loader extends Actor<Command> {
   override onReceive(message: Command): void { this.idle(message); }
 
   private idle = (message: Command): void => {
-    if (message.kind === 'load') {
-      this.context.become(this.loading, /* discardOld */ false);
-      this.startLoading();
-    }
+    match(message)
+      .with({ kind: 'load' }, () => this.onLoad())
+      .otherwise(() => {});
   };
 
+  private onLoad(): void {
+    this.context.become(this.loading, /* discardOld */ false);
+    this.startLoading();
+  }
+
   private loading = (message: Command): void => {
-    if (message.kind === 'done') {
-      this.context.unbecome();   // pops loading, idle returns
-    }
+    match(message)
+      .with({ kind: 'done' }, () => this.onDone())
+      .otherwise(() => {});
   };
+
+  private onDone(): void {
+    this.context.unbecome();   // pops loading, idle returns
+  }
 }
 ```
 
@@ -115,10 +132,14 @@ Without `become`, the same Switch would look like this:
 class Switch extends Actor<Message> {
   private isOn = false;
   override onReceive(message: Message): void {
-    if (message.kind === 'press') {
-      this.isOn = !this.isOn;
-      this.log.info(this.isOn ? 'turning on' : 'turning off');
-    }
+    match(message)
+      .with({ kind: 'press' }, () => this.onPress())
+      .otherwise(() => {});
+  }
+
+  private onPress(): void {
+    this.isOn = !this.isOn;
+    this.log.info(this.isOn ? 'turning on' : 'turning off');
   }
 }
 ```
@@ -213,21 +234,31 @@ class Worker extends Actor<Message> {
   }
 
   private loading = (message: Message): void => {
-    if (message.kind === 'configure') {
-      this.url = message.url;
-      this.context.become(this.ready);
-      this.context.unstashAll();
-    } else {
-      // Anything else arriving during load — stash it.
-      this.context.stash();
-    }
+    match(message)
+      .with({ kind: 'configure' }, (m) => this.onConfigure(m))
+      .otherwise(() => this.onDuringLoad());
   };
 
+  private onConfigure(message: ConfigureMessage): void {
+    this.url = message.url;
+    this.context.become(this.ready);
+    this.context.unstashAll();
+  }
+
+  // Anything else arriving during load — stash it.
+  private onDuringLoad(): void {
+    this.context.stash();
+  }
+
   private ready = (message: Message): void => {
-    if (message.kind === 'request') {
-      this.log.info(`POST ${this.url}: ${message.payload}`);
-    }
+    match(message)
+      .with({ kind: 'request' }, (m) => this.onRequest(m))
+      .otherwise(() => {});
   };
+
+  private onRequest(message: RequestMessage): void {
+    this.log.info(`POST ${this.url}: ${message.payload}`);
+  }
 
   override onReceive(message: Message): void {
     // Initial behavior — the preStart switches into 'loading' before

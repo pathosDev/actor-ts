@@ -33,13 +33,23 @@ the right semantic for your domain.
 ## A minimal example
 
 ```ts
+import { match } from 'ts-pattern';
 import { Actor, ActorSystem, Props, OneForOneStrategy, Directive } from 'actor-ts';
 
-class Worker extends Actor<{ kind: 'do-it' } | { kind: 'fail' }> {
-  override onReceive(message: { kind: 'do-it' } | { kind: 'fail' }): void {
-    if (message.kind === 'fail') throw new Error('boom');
-    this.log.info('did the work');
+type DoItCommand = { kind: 'do-it' };
+type FailCommand = { kind: 'fail' };
+type WorkerCommand = DoItCommand | FailCommand;
+
+class Worker extends Actor<WorkerCommand> {
+  override onReceive(command: WorkerCommand): void {
+    match(command)
+      .with({ kind: 'do-it' }, () => this.onDoIt())
+      .with({ kind: 'fail' }, () => this.onFail())
+      .exhaustive();
   }
+
+  private onDoIt(): void { this.log.info('did the work'); }
+  private onFail(): never { throw new Error('boom'); }
 }
 
 class Boss extends Actor<{ kind: 'spawn-worker' }> {

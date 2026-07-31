@@ -13,6 +13,7 @@
  * WebSocket) lives outside the signal graph because there's no
  * value in re-rendering when those objects swap.
  */
+import { match } from 'ts-pattern';
 import { Injectable, signal } from '@angular/core';
 import {
   WS_PATH, TIMESLICE_MS, MIME_OPUS,
@@ -169,14 +170,14 @@ export class VoiceService {
   private onText(raw: string): void {
     let m: ServerMessage;
     try { m = JSON.parse(raw) as ServerMessage; } catch { return; }
-    switch (m.kind) {
-      case 'logged-in':
+    match(m)
+      .with({ kind: 'logged-in' }, (m) => {
         this.cancelReconnect();
         this.username.set(m.username);
         sessionStorage.setItem(TOKEN_KEY, m.token);
         this.phase.set('app');
-        break;
-      case 'login-failed':
+      })
+      .with({ kind: 'login-failed' }, (m) => {
         this.cancelReconnect();
         sessionStorage.removeItem(TOKEN_KEY);
         try { this.ws?.close(); } catch { /* ignore */ }
@@ -184,34 +185,24 @@ export class VoiceService {
         this.loginError.set(m.reason || 'Login failed');
         if (this.phase() === 'app') this.resetToGate();
         else this.phase.set('gate-login');
-        break;
-      case 'directory':
+      })
+      .with({ kind: 'directory' }, (m) => {
         this.directory.set({
           users: [...m.users],
           groups: m.groups.map((g) => ({ name: g.name, members: [...g.members] })),
           rooms: [...m.rooms],
         });
-        break;
-      case 'online-users':
-        this.onlineUsers.set(new Set(m.users));
-        break;
-      case 'room-participants': {
+      })
+      .with({ kind: 'online-users' }, (m) => { this.onlineUsers.set(new Set(m.users)); })
+      .with({ kind: 'room-participants' }, (m) => {
         const next = new Map(this.roomParticipants());
         next.set(m.room, [...m.users]);
         this.roomParticipants.set(next);
-        break;
-      }
-      case 'voice-target-failed':
-        this.activeKey.set(null);
-        break;
-      case 'voice-incoming-start':
-        this.startIncoming(m.from, m.source);
-        break;
-      case 'voice-incoming-end':
-        this.endIncoming(m.from);
-        break;
-      default: break;
-    }
+      })
+      .with({ kind: 'voice-target-failed' }, () => { this.activeKey.set(null); })
+      .with({ kind: 'voice-incoming-start' }, (m) => { this.startIncoming(m.from, m.source); })
+      .with({ kind: 'voice-incoming-end' }, (m) => { this.endIncoming(m.from); })
+      .otherwise(() => {});
   }
 
   private onBinary(buffer: Uint8Array): void {

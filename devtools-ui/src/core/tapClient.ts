@@ -8,6 +8,7 @@
  * unsubscribes on the server as panels mount and unmount — so the
  * dashboard alone never makes the actor system produce span batches.
  */
+import { match } from 'ts-pattern';
 import { signal, type ReadonlySignal } from './signal.js';
 import {
   DEVTOOLS_PROTOCOL_VERSION,
@@ -16,6 +17,9 @@ import {
   type DevToolsServerFrame,
   type DevToolsStreamId,
   type DevToolsStreamPayload,
+  type ErrorFrame,
+  type EventFrame,
+  type ResponseFrame,
   type WelcomeFrame,
 } from '../../../src/devtools/protocol/index.js';
 
@@ -100,44 +104,56 @@ export function connectTap(url: string): TapClient {
   }
 
   function handle(frame: DevToolsServerFrame): void {
-    switch (frame.kind) {
-      case 'welcome':
-        reconnectAttempt = 0;
-        welcome.set(frame);
-        lastError.set(null);
-        status.set('open');
-        // Re-subscribe everything a panel had open before the drop, so
-        // a reconnect is invisible except for the badge blinking.
-        for (const stream of listeners.keys()) subscribeOnServer(stream);
-        return;
-      case 'event':
-        onEvent(frame.stream, frame.sequenceNumber, frame.payload);
-        return;
-      case 'response': {
-        const request = pending.get(frame.requestId);
-        pending.delete(frame.requestId);
-        request?.resolve(frame.result);
-        return;
-      }
-      case 'error': {
-        if (frame.requestId !== undefined) {
-          const request = pending.get(frame.requestId);
-          pending.delete(frame.requestId);
-          request?.reject(new Error(frame.message));
-          return;
-        }
-        lastError.set(frame.message);
-        if (frame.code === 'version-mismatch') status.set('incompatible');
-        return;
-      }
-      default:
-        // Unknown frame kinds are ignored by contract: that is what
-        // lets a newer server add frames without breaking this bundle.
-        return;
-    }
+    // `.otherwise`, not `.exhaustive`: ignoring unknown frame kinds is the
+    // contract that lets a newer server add frames without breaking this
+    // bundle, so the fallback is deliberate rather than a missing arm.
+    match(frame)
+      .with({ kind: 'welcome' }, (f) => onWelcome(f))
+      .with({ kind: 'event' }, (f) => onEvent(f))
+      .with({ kind: 'response' }, (f) => onResponse(f))
+      .with({ kind: 'error' }, (f) => onError(f))
+      .otherwise(() => onUnknownFrame());
   }
 
-  function onEvent(
+  function onWelcome(frame: WelcomeFrame): void {
+    reconnectAttempt = 0;
+    welcome.set(frame);
+    lastError.set(null);
+    status.set('open');
+    // Re-subscribe everything a panel had open before the drop, so
+    // a reconnect is invisible except for the badge blinking.
+    for (const stream of listeners.keys()) subscribeOnServer(stream);
+  }
+
+  function onEvent(frame: EventFrame): void {
+    deliverStreamEvent(frame.stream, frame.sequenceNumber, frame.payload);
+  }
+
+  function onResponse(frame: ResponseFrame): void {
+    const request = pending.get(frame.requestId);
+    pending.delete(frame.requestId);
+    request?.resolve(frame.result);
+  }
+
+  /**
+   * An error carrying a requestId belongs to one in-flight call and only
+   * rejects that promise; a bare error is connection-level and surfaces on
+   * the status badge instead.
+   */
+  function onError(frame: ErrorFrame): void {
+    if (frame.requestId !== undefined) {
+      const request = pending.get(frame.requestId);
+      pending.delete(frame.requestId);
+      request?.reject(new Error(frame.message));
+      return;
+    }
+    lastError.set(frame.message);
+    if (frame.code === 'version-mismatch') status.set('incompatible');
+  }
+
+  function onUnknownFrame(): void {}
+
+  function deliverStreamEvent(
     stream: DevToolsStreamId,
     sequenceNumber: number,
     payload: DevToolsStreamPayload,

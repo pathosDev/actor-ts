@@ -490,6 +490,40 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Changed
 
+- **BREAKING (examples) — `examples/cluster/counter-node.ts` discriminates on
+  `kind`** (#494).  Its `Command` union tagged entities with `op: 'increment' |
+  'get'`, the only place in the repo that used a third spelling for a
+  discriminant.  Migration: send `{ id, kind: 'increment' }` instead of
+  `{ id, op: 'increment' }`.  `examples/pubsub/event-bus-across-nodes.ts`
+  likewise renames `DomainEvent.type` to `kind`.
+
+- **Example frontends dispatch server frames with `match`** (#494) — all eight
+  chat/voice browser apps (React, Next, SvelteKit, Angular) and the four
+  no-build `static/{plain,lit}` pages switched on the WebSocket frame's `kind`
+  instead of matching on it, and the four React/Next reducers tagged their
+  action unions with `type:` rather than the project-wide `kind:`.  Both are
+  fixed; `ts-pattern` joins the eight app manifests and is imported from
+  esm.sh on the CDN pages.  `examples/chat/static/plain/index.html` becomes a
+  `<script type="module">` so it can import at all — it has no inline event
+  handlers, so nothing depended on the old global scope.  The committed
+  `static/**` bundles are regenerated.
+
+- **Docs no longer recommend `if`-chains over `match`** (#494) — the pattern
+  matching page carried a "When to prefer plain `if`" section whose rule of
+  thumb was *use `match` from 4+ variants*, and the FAQ, design-decisions and
+  event-dispatcher pages each repeated some form of "a plain `if/else` ladder
+  works fine".  That is the opposite of the convention the codebase actually
+  follows, so roughly 150 doc samples had grown up around the advice.  The
+  section is gone and the three echoes are rewritten: every dispatch on an
+  incoming message, event or command uses `match` with each arm delegating to
+  an `onXxx` handler; matches on internal state or that compute a value keep
+  their bodies inline.  The README's event-sourcing snippet, which dispatched
+  on `cmd.kind` with a ternary forty lines below the section teaching the
+  opposite, is fixed to match.
+  The samples themselves follow in a second pass: ~150 `if`-chains, one
+  `switch` and several ternaries across 33 EN/DE page pairs now use `match`,
+  with class-actor hooks delegating to `onXxx` handlers and inline
+  object-literal unions replaced by named variant types.
 - **One declaration form per job: `interface` for contracts and heritage,
   `type` for data** (#503, #508).  The codebase used to mix the two with no
   stated rule.  It now has one: a declaration is an `interface` when it

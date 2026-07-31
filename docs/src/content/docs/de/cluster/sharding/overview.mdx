@@ -52,19 +52,25 @@ woandershin und die Entities werden dort neu gespawnt.
 ## Ein minimales Beispiel
 
 ```ts
+import { match } from 'ts-pattern';
 import { Actor, Cluster, ClusterBootstrapOptions, StartShardingOptions } from 'actor-ts';
 
-type CartCommand =
-  | { entityId: string; kind: 'add';   sku: string }
-  | { entityId: string; kind: 'view';  replyTo: ActorRef<Cart> };
+type AddCommand = { entityId: string; kind: 'add'; sku: string };
+type ViewCommand = { entityId: string; kind: 'view'; replyTo: ActorRef<Cart> };
+type CartCommand = AddCommand | ViewCommand;
 
 class CartActor extends Actor<CartCommand> {
   private items: string[] = [];
 
   override onReceive(command: CartCommand): void {
-    if (command.kind === 'add')  this.items.push(command.sku);
-    if (command.kind === 'view') command.replyTo.tell({ items: this.items });
+    match(command)
+      .with({ kind: 'add' }, (c) => this.onAdd(c))
+      .with({ kind: 'view' }, (c) => this.onView(c))
+      .exhaustive();
   }
+
+  private onAdd(command: AddCommand): void { this.items.push(command.sku); }
+  private onView(command: ViewCommand): void { command.replyTo.tell({ items: this.items }); }
 }
 
 // Setup — einzeiliger Cluster- + Sharding-Einstieg:
@@ -194,22 +200,31 @@ terminieren). `PoisonPill` als Stop-Nachricht terminiert die Entity,
 sobald die Region sie zurückleitet:
 
 ```ts
+import { match } from 'ts-pattern';
 import { Passivate, PoisonPill, Actor } from 'actor-ts';
 
-type CartCommand =
-  | { entityId: string; kind: 'add'; sku: string }
-  | { entityId: string; kind: 'checkout' };
+type AddCommand = { entityId: string; kind: 'add'; sku: string };
+type CheckoutCommand = { entityId: string; kind: 'checkout' };
+type CartCommand = AddCommand | CheckoutCommand;
 
 class CartActor extends Actor<CartCommand> {
   private items: string[] = [];
 
   override onReceive(command: CartCommand): void {
-    if (command.kind === 'add') { this.items.push(command.sku); return; }
-    if (command.kind === 'checkout') {
-      // Mit dem Warenkorb fertig — die Region bitten, uns zu passivieren.
-      this.context.parent.forEach((parent) =>
-        parent.tell(new Passivate(PoisonPill.instance, this.self), this.self));
-    }
+    match(command)
+      .with({ kind: 'add' }, (c) => this.onAdd(c))
+      .with({ kind: 'checkout' }, () => this.onCheckout())
+      .exhaustive();
+  }
+
+  private onAdd(command: AddCommand): void {
+    this.items.push(command.sku);
+  }
+
+  // Mit dem Warenkorb fertig — die Region bitten, uns zu passivieren.
+  private onCheckout(): void {
+    this.context.parent.forEach((parent) =>
+      parent.tell(new Passivate(PoisonPill.instance, this.self), this.self));
   }
 }
 ```

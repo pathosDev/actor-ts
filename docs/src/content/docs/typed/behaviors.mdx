@@ -33,13 +33,12 @@ message.
 ### `receive` — handler with context + message
 
 ```ts
-const counter = (n: number): Behavior<Message> => Behaviors.receive<Message>((context, message) => {
-  switch (message.kind) {
-    case 'increment': return counter(n + 1);
-    case 'decrement': return counter(n - 1);
-    case 'get': message.replyTo.tell(n); return Behaviors.same;
-  }
-});
+const counter = (n: number): Behavior<Message> => Behaviors.receive<Message>((context, message) =>
+  match(message)
+    .with({ kind: 'increment' }, () => counter(n + 1))
+    .with({ kind: 'decrement' }, () => counter(n - 1))
+    .with({ kind: 'get' }, (m) => { m.replyTo.tell(n); return Behaviors.same; })
+    .exhaustive());
 ```
 
 The handler receives both a `TypedActorContext<T>` (for spawning
@@ -50,10 +49,10 @@ behavior — `Behaviors.same` keeps the closure; a fresh
 ### `receiveMessage` — handler without context
 
 ```ts
-const counter = (n: number): Behavior<Message> => Behaviors.receiveMessage<Message>((message) => {
-  if (message.kind === 'increment') return counter(n + 1);
-  return Behaviors.same;
-});
+const counter = (n: number): Behavior<Message> => Behaviors.receiveMessage<Message>((message) =>
+  match(message)
+    .with({ kind: 'increment' }, () => counter(n + 1))
+    .otherwise(() => Behaviors.same));
 ```
 
 Shortcut for the common case where you don't need the context.
@@ -67,12 +66,12 @@ const watcher = Behaviors.receiveWithSignal<Message>(
     // handle user message...
     return Behaviors.same;
   },
-  (context, signal) => {
-    if (signal.kind === 'terminated') {
-      context.log.info(`watched actor ${signal.ref.path} stopped`);
-    }
-    return Behaviors.same;
-  },
+  (context, signal) => match(signal)
+    .with({ kind: 'terminated' }, (s) => {
+      context.log.info(`watched actor ${s.ref.path} stopped`);
+      return Behaviors.same;
+    })
+    .otherwise(() => Behaviors.same),
 );
 ```
 
@@ -118,10 +117,10 @@ import { Behaviors, type TimerScheduler } from 'actor-ts';
 const heartbeat = Behaviors.withTimers<Message>((timers) => {
   timers.startTimerWithFixedDelay('hb', { kind: 'tick' }, 5_000);
 
-  return Behaviors.receiveMessage((message) => {
-    if (message.kind === 'tick') console.log('heartbeat');
-    return Behaviors.same;
-  });
+  return Behaviors.receiveMessage((message) =>
+    match(message)
+      .with({ kind: 'tick' }, () => { console.log('heartbeat'); return Behaviors.same; })
+      .otherwise(() => Behaviors.same));
 });
 ```
 
@@ -134,14 +133,16 @@ on every message.
 
 ```ts
 const init = Behaviors.withStash<Message>(100, (stash) => {
-  return Behaviors.receive((context, message) => {
-    if (message.kind === 'ready') {
-      stash.unstashAll();   // replay all buffered messages
-      return ready;
-    }
-    stash.stash(message);       // park everything else for later
-    return Behaviors.same;
-  });
+  return Behaviors.receive((context, message) =>
+    match(message)
+      .with({ kind: 'ready' }, () => {
+        stash.unstashAll();   // replay all buffered messages
+        return ready;
+      })
+      .otherwise((m) => {
+        stash.stash(m);       // park everything else for later
+        return Behaviors.same;
+      }));
 });
 
 const ready = Behaviors.receive<Message>((context, message) => {
@@ -195,31 +196,35 @@ silent for now" stub or a sink that should swallow traffic.
 ## A multi-behavior example
 
 ```ts
+import { match } from 'ts-pattern';
 import { ActorSystem, Behaviors, type Behavior } from 'actor-ts';
 
-type Message =
-  | { kind: 'configure'; url: string }
-  | { kind: 'request';   payload: string };
+type ConfigureMessage = { kind: 'configure'; url: string };
+type RequestMessage    = { kind: 'request';   payload: string };
+
+type Message = ConfigureMessage | RequestMessage;
 
 const initializing = Behaviors.withStash<Message>(100, (stash) =>
-  Behaviors.receive<Message>((context, message) => {
-    if (message.kind === 'configure') {
-      const url = message.url;
-      stash.unstashAll();
-      return ready(url);
-    }
-    stash.stash(message);
-    return Behaviors.same;
-  }),
+  Behaviors.receive<Message>((context, message) =>
+    match(message)
+      .with({ kind: 'configure' }, (m) => {
+        stash.unstashAll();
+        return ready(m.url);
+      })
+      .otherwise((m) => {
+        stash.stash(m);
+        return Behaviors.same;
+      })),
 );
 
 const ready = (url: string): Behavior<Message> =>
-  Behaviors.receive<Message>((context, message) => {
-    if (message.kind === 'request') {
-      context.log.info(`POST ${url}: ${message.payload}`);
-    }
-    return Behaviors.same;
-  });
+  Behaviors.receive<Message>((context, message) =>
+    match(message)
+      .with({ kind: 'request' }, (m) => {
+        context.log.info(`POST ${url}: ${m.payload}`);
+        return Behaviors.same;
+      })
+      .otherwise(() => Behaviors.same));
 
 const system = ActorSystem.create('demo');
 system.spawnTypedAnonymous(initializing);

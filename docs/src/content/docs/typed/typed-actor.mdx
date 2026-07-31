@@ -78,11 +78,11 @@ forever.
 ## Transitions
 
 ```ts
-Behaviors.receive<Message>((context, message) => {
-  if (message.kind === 'start') return runningBehavior;
-  if (message.kind === 'stop')  return Behaviors.stopped;
-  return Behaviors.same;
-});
+Behaviors.receive<Message>((context, message) =>
+  match(message)
+    .with({ kind: 'start' }, () => runningBehavior)
+    .with({ kind: 'stop' },  () => Behaviors.stopped)
+    .otherwise(() => Behaviors.same));
 ```
 
 Four outcomes:
@@ -103,12 +103,11 @@ Four outcomes:
 ```ts
 Behaviors.receiveWithSignal<Message>(
   (context, message) => Behaviors.same,
-  (context, signal) => {
-    if (signal.kind === 'post-stop') context.log.info('cleaning up');
-    if (signal.kind === 'pre-restart') context.log.warn(`restarting: ${signal.reason}`);
-    if (signal.kind === 'terminated') context.log.info(`${signal.ref.path} stopped`);
-    return Behaviors.same;
-  },
+  (context, signal) => match(signal)
+    .with({ kind: 'post-stop' },   () => { context.log.info('cleaning up'); return Behaviors.same; })
+    .with({ kind: 'pre-restart' }, (s) => { context.log.warn(`restarting: ${s.reason}`); return Behaviors.same; })
+    .with({ kind: 'terminated' },  (s) => { context.log.info(`${s.ref.path} stopped`); return Behaviors.same; })
+    .exhaustive(),
 );
 ```
 
