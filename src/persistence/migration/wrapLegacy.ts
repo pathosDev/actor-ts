@@ -82,7 +82,7 @@ export type MigrationResult = {
  * UPDATE, S3 PUT) — duck-typing is fine here, the helper just needs a
  * way to overwrite event payloads in place.
  */
-type InternalMigratableJournal = Journal & {
+interface InternalMigratableJournal extends Journal {
   /**
    * Apply `transform(event)` to every persisted event under `persistenceId`,
    * writing the new payload back in place.  Sequence numbers,
@@ -91,7 +91,7 @@ type InternalMigratableJournal = Journal & {
    * skips this helper and writes a journal-specific migrator).
    */
   _remapForMigration<E, F>(persistenceId: string, transform: (e: E) => F): Promise<void>;
-};
+}
 
 /**
  * Bulk-rewrite every event in a {@link Journal} that exposes the

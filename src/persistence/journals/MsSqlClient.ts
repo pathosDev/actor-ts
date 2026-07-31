@@ -23,24 +23,24 @@ export type MsSqlResult = {
   readonly rowsAffected?: ReadonlyArray<number>;
 };
 
-export type MsSqlRequestLike = {
+export interface MsSqlRequestLike {
   /** Bind a named parameter.  `@p1` in the SQL refers to `input('p1', …)`. */
   input(name: string, value: unknown): unknown;
   query(sql: string): Promise<MsSqlResult>;
-};
+}
 
-export type MsSqlTransactionLike = {
+export interface MsSqlTransactionLike {
   begin(): Promise<unknown>;
   commit(): Promise<unknown>;
   rollback(): Promise<unknown>;
   request(): MsSqlRequestLike;
-};
+}
 
-export type MsSqlPoolLike = {
+export interface MsSqlPoolLike {
   request(): MsSqlRequestLike;
   transaction(): MsSqlTransactionLike;
   close(): Promise<unknown>;
-};
+}
 
 type MsSqlModule = {
   ConnectionPool: new (config: Record<string, unknown> | string) => MsSqlPoolLike & {

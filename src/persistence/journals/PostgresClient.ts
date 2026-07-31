@@ -20,17 +20,17 @@ export type PgQueryResult = {
 };
 
 /** A single pooled connection — `query` + `release` back to the pool. */
-export type PgClientLike = {
+export interface PgClientLike {
   query(text: string, values?: ReadonlyArray<unknown>): Promise<PgQueryResult>;
   release(): void;
-};
+}
 
-export type PgPoolLike = {
+export interface PgPoolLike {
   query(text: string, values?: ReadonlyArray<unknown>): Promise<PgQueryResult>;
   /** Check out a dedicated connection — required for multi-statement transactions. */
   connect(): Promise<PgClientLike>;
   end(): Promise<void>;
-};
+}
 
 type PgModule = {
   Pool: new (config: Record<string, unknown>) => PgPoolLike;

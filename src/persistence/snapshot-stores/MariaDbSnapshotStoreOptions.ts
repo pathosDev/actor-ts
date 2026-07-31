@@ -1,14 +1,14 @@
 import { OptionsBuilder } from '../../util/OptionsBuilder.js';
 import type { MariaDbPoolLike, MariaDbConnection } from '../journals/MariaDbClient.js';
 
-export type MariaDbSnapshotStoreOptionsType = MariaDbConnection & {
+export interface MariaDbSnapshotStoreOptionsType extends MariaDbConnection {
   /** Snapshots table name.  Default: `snapshots`. */
   readonly snapshotsTable?: string;
   /** Keep this many snapshots per persistenceId; older ones pruned on save.  Default: 3.  `<=0` keeps all. */
   readonly keepN?: number;
   /** Run `CREATE TABLE IF NOT EXISTS` on first use.  Default: true. */
   readonly autoCreateTables?: boolean;
-};
+}
 
 /**
  * Fluent builder for {@link MariaDbSnapshotStoreOptionsType}:

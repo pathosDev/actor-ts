@@ -28,7 +28,7 @@ export class DurableStateConcurrencyError extends Error {
   }
 }
 
-export type DurableStateStore = {
+export interface DurableStateStore {
   /**
    * Upsert the state for `persistenceId`.  `expectedRevision` must match the
    * current stored revision (0 when no record exists yet).  Throws
@@ -65,4 +65,4 @@ export type DurableStateStore = {
    * leaned on `closeQuietly` probing for the method.
    */
   close?(): Promise<void>;
-};
+}

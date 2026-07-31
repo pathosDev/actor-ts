@@ -24,7 +24,7 @@ import type { PersistentEvent } from '../JournalTypes.js';
  * (via the system's `EventStream`) is intentionally deferred — see
  * issue #36 / the roadmap plan.
  */
-export type PersistenceQuery = {
+export interface PersistenceQuery {
   /**
    * Live stream of every event for `persistenceId` whose
    * `sequenceNr >= fromSeq`.  Past events are emitted first
@@ -82,7 +82,7 @@ export type PersistenceQuery = {
    * continuous read.
    */
   currentPersistenceIds(): Promise<string[]>;
-};
+}
 
 /**
  * Tunables for a live query.  The defaults are deliberately

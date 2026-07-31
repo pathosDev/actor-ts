@@ -56,11 +56,11 @@ export type EventDispatcherIncomplete<Unhandled extends string> = {
  * an `EventDispatcherIncomplete<missing>` that isn't callable, so the
  * user sees a type error at the call site.
  */
-export type EventDispatcherBuilder<
+export interface EventDispatcherBuilder<
   S,
   E extends { readonly kind: string },
   Handled extends E['kind'],
-> = {
+> {
   /**
    * Register a handler for `kind`.  Returns a new builder type with
    * `K` added to the handled set.  Re-registering the same kind is a
@@ -83,7 +83,7 @@ export type EventDispatcherBuilder<
   build(): [Exclude<E['kind'], Handled>] extends [never]
     ? (state: S, event: E) => S
     : EventDispatcherIncomplete<Exclude<E['kind'], Handled>>;
-};
+}
 
 class EventDispatcherBuilderImplementation<
   S,

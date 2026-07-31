@@ -5,10 +5,10 @@ import {
   type DynamoDbOptionsBaseType,
 } from './DynamoDbOptionsBase.js';
 
-export type DynamoDbJournalOptionsType = DynamoDbOptionsBaseType & {
+export interface DynamoDbJournalOptionsType extends DynamoDbOptionsBaseType {
   /** Events table name.  Default: `actor_ts_events`. */
   readonly eventsTable?: string;
-};
+}
 
 /**
  * Fluent builder for {@link DynamoDbJournalOptionsType}:

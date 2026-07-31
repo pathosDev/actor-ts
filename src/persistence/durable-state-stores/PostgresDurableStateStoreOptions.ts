@@ -1,12 +1,12 @@
 import { OptionsBuilder } from '../../util/OptionsBuilder.js';
 import type { PgPoolLike, PostgresConnection } from '../journals/PostgresClient.js';
 
-export type PostgresDurableStateStoreOptionsType = PostgresConnection & {
+export interface PostgresDurableStateStoreOptionsType extends PostgresConnection {
   /** Table name.  Default: `durable_state`. */
   readonly table?: string;
   /** Run `CREATE TABLE IF NOT EXISTS` on first use.  Default: true. */
   readonly autoCreateTables?: boolean;
-};
+}
 
 /**
  * Fluent builder for {@link PostgresDurableStateStoreOptionsType}:

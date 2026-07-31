@@ -25,23 +25,23 @@ export type LibSqlResultSet = {
 };
 
 /** An open interactive transaction (hrana baton over HTTP). */
-export type LibSqlTransactionLike = {
+export interface LibSqlTransactionLike {
   execute(statement: LibSqlStatement): Promise<LibSqlResultSet>;
   commit(): Promise<void>;
   rollback(): Promise<void>;
   close(): void;
-};
+}
 
-export type LibSqlClientLike = {
+export interface LibSqlClientLike {
   execute(statement: LibSqlStatement): Promise<LibSqlResultSet>;
   /** `'write'` takes the write lock for the life of the transaction. */
   transaction(mode?: 'write' | 'read' | 'deferred'): Promise<LibSqlTransactionLike>;
   close(): void;
-};
+}
 
-type LibSqlModule = {
+interface LibSqlModule {
   createClient(config: { url: string; authToken?: string }): LibSqlClientLike;
-};
+}
 
 const libSqlLazy: Lazy<Promise<LibSqlModule>> = Lazy.of(
   () => lazyImportModule<LibSqlModule>('@libsql/client/web', {

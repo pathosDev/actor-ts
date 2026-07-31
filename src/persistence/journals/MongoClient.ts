@@ -22,12 +22,12 @@ export type MongoDocument = Record<string, unknown>;
 /** Sort / index specification: field → ascending (1) or descending (-1). */
 export type MongoSortSpec = Record<string, 1 | -1>;
 
-export type MongoCursorLike<TDocument> = {
+export interface MongoCursorLike<TDocument> {
   sort(spec: MongoSortSpec): MongoCursorLike<TDocument>;
   limit(count: number): MongoCursorLike<TDocument>;
   skip(count: number): MongoCursorLike<TDocument>;
   toArray(): Promise<TDocument[]>;
-};
+}
 
 export type MongoUpdateResult = {
   readonly matchedCount: number;
@@ -39,7 +39,7 @@ export type MongoDeleteResult = {
   readonly deletedCount: number;
 };
 
-export type MongoCollectionLike<TDocument extends MongoDocument = MongoDocument> = {
+export interface MongoCollectionLike<TDocument extends MongoDocument = MongoDocument> {
   /** With `ordered: true` the driver stops at the first failing document. */
   insertMany(documents: ReadonlyArray<TDocument>, options?: { ordered?: boolean }): Promise<unknown>;
   insertOne(document: TDocument): Promise<unknown>;
@@ -54,19 +54,19 @@ export type MongoCollectionLike<TDocument extends MongoDocument = MongoDocument>
   deleteOne(filter: MongoDocument): Promise<MongoDeleteResult>;
   distinct(field: string): Promise<unknown[]>;
   createIndex(spec: MongoSortSpec, options?: { unique?: boolean; name?: string }): Promise<string>;
-};
+}
 
-export type MongoDatabaseLike = {
+export interface MongoDatabaseLike {
   collection<TDocument extends MongoDocument = MongoDocument>(
     name: string,
   ): MongoCollectionLike<TDocument>;
-};
+}
 
-export type MongoClientLike = {
+export interface MongoClientLike {
   connect(): Promise<unknown>;
   db(name?: string): MongoDatabaseLike;
   close(): Promise<void>;
-};
+}
 
 /** What a MongoDB store holds open: the database handle plus the client that owns it. */
 export type MongoResource = {

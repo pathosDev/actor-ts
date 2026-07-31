@@ -2,14 +2,14 @@ import { OptionsBuilder } from '../../util/OptionsBuilder.js';
 import { OptionsValidator } from '../../util/OptionsValidator.js';
 import type { MsSqlConnection, MsSqlPoolLike } from '../journals/MsSqlClient.js';
 
-export type MsSqlSnapshotStoreOptionsType = MsSqlConnection & {
+export interface MsSqlSnapshotStoreOptionsType extends MsSqlConnection {
   /** Snapshots table name.  Default: `snapshots`. */
   readonly snapshotsTable?: string;
   /** How many snapshots to keep per persistence id.  Default: 3; `<= 0` keeps all. */
   readonly keepN?: number;
   /** Run the guarded `CREATE TABLE` statement on first use.  Default: true. */
   readonly autoCreateTables?: boolean;
-};
+}
 
 /**
  * Fluent builder for {@link MsSqlSnapshotStoreOptionsType}:

@@ -22,24 +22,24 @@ export type MariaDbOkPacket = {
 };
 export type MariaDbResult = MariaDbRow[] | MariaDbOkPacket;
 
-export type MariaDbConnectionLike = {
+export interface MariaDbConnectionLike {
   query(sql: string, values?: ReadonlyArray<unknown>): Promise<MariaDbResult>;
   beginTransaction(): Promise<void>;
   commit(): Promise<void>;
   rollback(): Promise<void>;
   release(): void;
-};
+}
 
-export type MariaDbPoolLike = {
+export interface MariaDbPoolLike {
   query(sql: string, values?: ReadonlyArray<unknown>): Promise<MariaDbResult>;
   /** Check out a dedicated connection for a multi-statement transaction. */
   getConnection(): Promise<MariaDbConnectionLike>;
   end(): Promise<void>;
-};
+}
 
-type MariaDbModule = {
+interface MariaDbModule {
   createPool(config: Record<string, unknown> | string): MariaDbPoolLike;
-};
+}
 
 const mariadbLazy: Lazy<Promise<MariaDbModule>> = Lazy.of(
   () => lazyImportModule<MariaDbModule>('mariadb', {

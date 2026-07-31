@@ -199,9 +199,9 @@ type AnyStmts = {
   fetchByAny: { all(...args: unknown[]): TagRow[] };
 };
 
-type PreparedDb = {
+interface PreparedDb {
   prepare(sql: string): { all(...args: unknown[]): unknown[] };
-};
+}
 
 type TagRow = {
   persistence_id: string;

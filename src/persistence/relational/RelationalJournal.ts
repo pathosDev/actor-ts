@@ -17,12 +17,12 @@ type EventRow = {
   timestamp: string | number | bigint;
 };
 
-export type RelationalJournalConfig = RelationalStoreConfig & {
+export interface RelationalJournalConfig extends RelationalStoreConfig {
   /** Events table.  Default `'events'`. */
   readonly eventsTable?: string;
   /** Tags join table.  Default `` `${eventsTable}_tags` ``. */
   readonly tagsTable?: string;
-};
+}
 
 /**
  * Journal over any SQL database, parameterized by `SqlDialect`.

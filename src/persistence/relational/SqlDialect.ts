@@ -37,7 +37,7 @@ export type InsertConflictSignal =
   /** The insert is unguarded; the driver throws a duplicate-key error. */
   | 'duplicate-key-error';
 
-export type SqlDialect = {
+export interface SqlDialect {
   /** Diagnostic label — `'postgres'`, `'mariadb'`, `'sqlite'`, … */
   readonly name: string;
 
@@ -117,7 +117,7 @@ export type SqlDialect = {
    * someone else's append.
    */
   isSerializationConflictError(error: unknown): boolean;
-};
+}
 
 /**
  * Rewrite canonical `?` placeholders into `dialect`'s syntax, in order.

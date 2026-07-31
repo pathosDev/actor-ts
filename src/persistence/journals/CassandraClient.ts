@@ -15,7 +15,7 @@ export type CassandraBatchQuery = {
   readonly params?: ReadonlyArray<unknown>;
 };
 
-export type CassandraClientLike = {
+export interface CassandraClientLike {
   connect(): Promise<void>;
   shutdown(): Promise<void>;
   execute(
@@ -27,7 +27,7 @@ export type CassandraClientLike = {
     queries: ReadonlyArray<CassandraBatchQuery>,
     options?: { prepare?: boolean; logged?: boolean; consistency?: number },
   ): Promise<void>;
-};
+}
 
 export type CassandraConnection = {
   /** Node(s) to seed the cluster topology from. */

@@ -28,11 +28,11 @@ import type { PersistentEvent } from '../JournalTypes.js';
  * after each pid finishes.  Implementations write to a small KV store
  * (file, Redis, SQLite single-row, …).
  */
-export type MigrationProgressStore = {
+export interface MigrationProgressStore {
   load(): Promise<MigrationProgress>;
   save(state: MigrationProgress): Promise<void>;
   clear(): Promise<void>;
-};
+}
 
 export type MigrationProgress = {
   /** Pids the helper has already finished — used to skip them on resume. */

@@ -320,7 +320,7 @@ type FsModule = {
   };
 };
 
-type Buffer = Uint8Array;
+interface Buffer extends Uint8Array {}
 
 const fsLazy: Lazy<Promise<FsModule>> = Lazy.of(async () => {
   const fsName = 'node:fs/promises';

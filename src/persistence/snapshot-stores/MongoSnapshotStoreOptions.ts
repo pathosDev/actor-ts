@@ -3,14 +3,14 @@ import { OptionsValidator } from '../../util/OptionsValidator.js';
 import { assertMongoName, assertMongoUrl } from '../journals/MongoJournalOptions.js';
 import type { MongoClientLike, MongoConnection } from '../journals/MongoClient.js';
 
-export type MongoSnapshotStoreOptionsType = MongoConnection & {
+export interface MongoSnapshotStoreOptionsType extends MongoConnection {
   /** Snapshots collection name.  Default: `snapshots`. */
   readonly snapshotsCollection?: string;
   /** How many snapshots to keep per persistence id.  Default: 3; `<= 0` keeps all. */
   readonly keepN?: number;
   /** Create the indexes on first use.  Default: true. */
   readonly autoCreateIndexes?: boolean;
-};
+}
 
 /**
  * Fluent builder for {@link MongoSnapshotStoreOptionsType}:

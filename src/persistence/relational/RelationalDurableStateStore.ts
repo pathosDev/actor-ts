@@ -17,10 +17,10 @@ type StateRow = {
   timestamp: string | number | bigint;
 };
 
-export type RelationalDurableStateStoreConfig = RelationalStoreConfig & {
+export interface RelationalDurableStateStoreConfig extends RelationalStoreConfig {
   /** Durable-state table.  Default `'durable_state'`. */
   readonly table?: string;
-};
+}
 
 /**
  * DurableStateStore over any SQL database, parameterized by `SqlDialect` — the

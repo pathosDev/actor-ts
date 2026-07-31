@@ -22,10 +22,10 @@ export type D1QueryResult = {
 };
 
 /** The minimal surface a D1 transport must offer. */
-export type D1ClientLike = {
+export interface D1ClientLike {
   query(sql: string, params: ReadonlyArray<unknown>): Promise<D1QueryResult>;
   close(): Promise<void>;
-};
+}
 
 /**
  * A failed D1 statement.
