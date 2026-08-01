@@ -228,6 +228,29 @@ test('leader is the address-sorted first up-member', async () => {
   await stopNode(n2);
 });
 
+/**
+ * #525 — pins the half of the contract the test above cannot see.  There the
+ * lowest-addressed node is also the seed, so address order and join order agree
+ * and the assertion holds either way.  Leadership is decided by *address*: the
+ * node that joins second leads the moment it is up, if its address sorts first.
+ * Documented in `cluster/overview` — this is what keeps that honest.
+ */
+test('leadership follows address order, not join order', async () => {
+  // The seed joins first and has the HIGHER address.
+  const first = await startNode('cluster-d2', '10.0.4.2', 8002);
+  await waitFor(() => first.cluster.isLeader(), 2_000);
+
+  const later = await startNode('cluster-d2', '10.0.4.1', 8001, ['10.0.4.2:8002']);
+  await waitFor(() => later.cluster.upMembers().length === 2, 2_000);
+
+  // The newcomer takes leadership from the node that was there first.
+  await waitFor(() => later.cluster.isLeader(), 2_000);
+  expect(first.cluster.isLeader()).toBe(false);
+
+  await stopNode(later);
+  await stopNode(first);
+});
+
 test('a node that gracefully left can rejoin on the same address', async () => {
   // Regression: `cluster.leave()` tombstones the leaver via
   // `mergeMember`'s strict version monotonicity (incoming v1 from a

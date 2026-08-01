@@ -45,7 +45,7 @@ Produktion.**
 | Strategie | Gewinnt bei... | Trade-off |
 | --- | --- | --- |
 | **`KeepMajority`** | Der Seite mit `> N/2` Mitgliedern. | Einfach; Unentschieden (genau N/2-N/2-Split) bedeutet, beide Seiten gehen down. |
-| **`KeepOldest`** | Der Seite mit dem ältesten Mitglied. | Funktioniert für gerade Cluster-Größen, in denen Mehrheit undefiniert ist. |
+| **`KeepOldest`** | Der Seite mit dem niedrigst-adressierten Mitglied (siehe Einschränkung unten). | Funktioniert für gerade Cluster-Größen, in denen Mehrheit undefiniert ist. |
 | **`KeepReferee`** | Der Seite mit einem bestimmten *Schiedsrichter*-Node. | Vorhersagbar, schafft aber einen Single Point of Failure (den Schiedsrichter). |
 | **`StaticQuorum`** | Der Seite, die eine konfigurierte Quorum-Größe erreicht. | Strenger als Mehrheit; die Quorum-Größe ist die Wahl des Operators. |
 | **`LeaseMajority`** | Mehrheit + muss eine Koordinations-Lease halten. | Paranoide Sicherheit; erfordert einen Lease-Provider (K8s etc.). |
@@ -112,14 +112,29 @@ const keepOldestOptions = KeepOldestOptions.create().withDownIfAlone(true);
 new KeepOldest(keepOldestOptions);
 ```
 
-Die Seite mit dem **ältesten Mitglied** (am längsten im Cluster)
-gewinnt. Nützlich, wenn:
+Die Seite mit dem **„ältesten“ Mitglied** gewinnt.
+
+:::caution[„Ältestes“ heißt hier niedrigste Adresse, nicht längste Laufzeit]
+Dem Namen zum Trotz verfolgt diese Strategie keine Join-Reihenfolge —
+im Gossip-Payload reist keine monoton wachsende Join-Sequenz mit.
+„Ältestes“ ist das Mitglied, dessen `host:port` zuerst sortiert — nach
+derselben Regel wie `Cluster.leader()`.
+
+Die praktische Folge: eine Node, die vor einer Minute gejoint ist,
+gewinnt gegen eine, die seit einer Woche läuft, wenn ihre Adresse
+niedriger sortiert.  Wähle diese Strategie also **nicht** in der
+Erwartung, ein langlebiger Koordinator-Pod sei der Tiebreaker — wähle
+sie, wenn du einen *deterministischen, übereinstimmenden* Tiebreaker
+willst, und sorge dann dafür, dass die Node, die überleben soll, die
+mit der niedrigsten Adresse ist.
+:::
+
+Nützlich, wenn:
 
 - Du eine gerade Zahl an Nodes hast, bei denen `KeepMajority` bei
   50/50-Splits mehrdeutig wird.
-- Der Cluster einen langlebigen "stabilen" Node hat (einen
-  Koordinator-Pod), der fast immer der älteste ist und die
-  Strategie deterministisch macht.
+- Du die Adresse der Node festlegen kannst, die überleben soll — dann
+  ist die Strategie deterministisch und braucht keine Quorum-Arithmetik.
 
 `downIfAlone: true` bedeutet "wenn ich der älteste bin, aber alle
 anderen unreachable sind, fahre ich mich selbst herunter" —

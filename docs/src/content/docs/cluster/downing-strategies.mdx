@@ -43,7 +43,7 @@ automatic merge.  **Always configure a strategy for production.**
 | Strategy | Wins on... | Trade-off |
 | --- | --- | --- |
 | **`KeepMajority`** | The side with `> N/2` members. | Simple; ties (exactly N/2-N/2 split) means both sides down. |
-| **`KeepOldest`** | The side containing the oldest member. | Works for even-sized clusters where majority is undefined. |
+| **`KeepOldest`** | The side containing the lowest-addressed member (see the caveat below). | Works for even-sized clusters where majority is undefined. |
 | **`KeepReferee`** | The side containing a designated *referee* node. | Predictable but creates a single point of failure (the referee). |
 | **`StaticQuorum`** | The side that meets a configured quorum size. | Stricter than majority; the quorum-size config is the operator's choice. |
 | **`LeaseMajority`** | Majority + must hold a coordination lease. | Paranoid safety; requires a Lease provider (K8s, etc.). |
@@ -107,14 +107,28 @@ const keepOldestOptions = KeepOldestOptions.create().withDownIfAlone(true);
 new KeepOldest(keepOldestOptions);
 ```
 
-The side containing the **oldest member** (longest in the cluster)
-wins.  Useful when:
+The side containing the **"oldest" member** wins.
+
+:::caution["Oldest" here means lowest address, not longest-running]
+Despite the name, this strategy does not track join order — no
+monotonic join sequence travels in the gossip payload.  "Oldest" is
+the member whose `host:port` sorts first — the same rule
+`Cluster.leader()` uses.
+
+The practical consequence: a node that joined a minute ago wins over
+one that has been up for a week, if its address sorts lower.  So do
+**not** pick this strategy expecting a long-running coordinator pod to
+be the tiebreaker — pick it when you want a *deterministic, agreed*
+tiebreaker, and then make sure the node you want to survive is the one
+with the lowest address.
+:::
+
+Useful when:
 
 - You have an even number of nodes, where `KeepMajority` is
   ambiguous on 50/50 splits.
-- The cluster has a long-running "stable" node (a coordinator
-  pod) that's almost always the oldest, making the strategy
-  deterministic.
+- You can pin the address of the node that should survive — then the
+  strategy is deterministic and needs no quorum arithmetic.
 
 `downIfAlone: true` means "if I'm the oldest but everyone else is
 unreachable, I down myself" — prevents a one-node "winner"

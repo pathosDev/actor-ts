@@ -1634,6 +1634,26 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Documentation
 
+- **`Cluster.leader()` and `KeepOldest` say what they actually do** (#525).
+  Both were documented — in JSDoc, in `cluster/overview`, in
+  `cluster/downing-strategies` — as picking the **oldest** member.  Neither
+  does: `upMembers()` sorts by address and both take `[0]`, so the winner is
+  the **lowest-addressed** member.  Address order and join order are unrelated,
+  so a node that joined a minute ago outranks one that has been up for a week
+  whenever its address sorts lower.
+
+  The semantics stay — the one property leadership needs is that every node
+  names the same one, and address order delivers that without a monotonic join
+  sequence on the wire — and the descriptions are corrected instead, with the
+  rule stated once, canonically, under *The leader* in `cluster/overview`
+  (EN + DE).  `KeepOldest` is the sharper end of this: a split-brain resolver
+  is chosen *for* its tiebreak, and that page actively recommended relying on
+  "a long-running 'stable' node (a coordinator pod) that's almost always the
+  oldest" — which address ordering does not deliver.  It now says to pin the
+  address of the node that should survive.  A test pins the contract: a
+  later-joining, lower-addressed node takes leadership immediately, which the
+  existing leader test could not catch (its lowest-addressed node was also the
+  seed, so the two orderings agreed).
 - **Persistence doc snippets reconciled with the real API** (EN + DE, #384).
   `projections.mdx` / `persistence-query.mdx` / `push-based-query.mdx` used
   `new SqliteQuery({ path })` (the constructor takes a `SqliteJournal`
