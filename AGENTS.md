@@ -131,6 +131,14 @@ conservative SemVer.) See `docs/.../reference/version-policy.mdx`.
   `benchmarks/`, so nothing else catches an orphaned benchmark; the
   `benchmarks` workflow gates both. The benchmarks are part of the
   adoption sweep for a breaking change, exactly like tests and examples.
+- **DevTools UI:** a change under `devtools-ui/` needs **`bun run
+  build:ui`** in the same commit — `src/devtools/generated/uiAssets.ts`
+  is generated but committed, and a stale one is valid TypeScript, so
+  nothing else notices. **`bun run check:ui`** asserts it (and gates the
+  `build` workflow) by comparing a `source-hash` over the UI sources,
+  the build script and the bundled dependencies. It deliberately does
+  not compare the bundle's bytes: those vary with the OS and the Bun
+  release that produced them, so a byte diff is not a staleness signal.
 - **Don't hand-edit** the README test/coverage badges — CI updates them
   on push to `develop`.
 

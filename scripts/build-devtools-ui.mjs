@@ -15,12 +15,13 @@
  * change on every `npm install`, invalidating caches for no reason.
  *
  *   bun scripts/build-devtools-ui.mjs            build + regenerate the module
+ *   bun scripts/build-devtools-ui.mjs --check    assert the committed module is current
  *   bun scripts/build-devtools-ui.mjs --dev      plain files in devtools-ui/.dev
  *   bun scripts/build-devtools-ui.mjs --dev --watch
  */
 import { createHash } from 'node:crypto';
 import { gzipSync, constants as zlibConstants } from 'node:zlib';
-import { mkdir, readFile, rm, watch, writeFile } from 'node:fs/promises';
+import { mkdir, readdir, readFile, rm, watch, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -73,9 +74,14 @@ const MIME_TYPES = {
 
 const development = process.argv.includes('--dev');
 const watchMode = process.argv.includes('--watch');
+const checkOnly = process.argv.includes('--check');
 
-await run();
-if (watchMode) await watchForChanges();
+if (checkOnly) {
+  await checkFreshness();
+} else {
+  await run();
+  if (watchMode) await watchForChanges();
+}
 
 async function run() {
   const outputDirectory = development ? developmentDirectory : buildDirectory;
@@ -132,7 +138,100 @@ async function run() {
 
   enforceBudgets(assets);
   report(assets);
-  await emitModule(assets);
+  await emitModule(assets, await sourceHash());
+}
+
+/**
+ * Assert the committed module was generated from the sources present.
+ *
+ * Compares the `source-hash` in its header against a freshly computed
+ * one — it does NOT rebuild.  A rebuild-and-diff is the obvious way to
+ * write this check and the wrong one: the emitted bytes are not a
+ * function of the sources alone.  `gzipSync` stamps the compiling
+ * platform's OS code into byte 9 of every member (0x0a on Windows, 0x03
+ * on Linux), and `Bun.build`'s minifier output moves between Bun
+ * releases while CI tracks `latest`.  Either one makes a byte diff fire
+ * on a bundle that is perfectly current (#521).
+ *
+ * What this catches is the thing worth catching: sources changed and
+ * nobody ran `bun run build:ui`.  What it deliberately does not catch is
+ * bundler drift — a newer Bun emitting smaller output for unchanged
+ * sources is not staleness, and treating it as such is what made the
+ * previous gate unpassable.
+ */
+async function checkFreshness() {
+  const expected = await sourceHash();
+  const source = existsSync(generatedModule)
+    ? await readFile(generatedModule, 'utf8')
+    : null;
+  const committed = source === null
+    ? null
+    : /^ \* source-hash: ([0-9a-f]+)$/m.exec(source)?.[1] ?? null;
+
+  if (committed === expected) {
+    console.log(`embedded DevTools UI bundle is current (source-hash ${expected})`);
+    return;
+  }
+
+  const detail = committed === null
+    ? `${relative(repositoryRoot, generatedModule)} is missing or carries no source-hash`
+    : `it was generated from ${committed}, the sources hash to ${expected}`;
+  const message = `Committed DevTools UI bundle is stale — ${detail}. `
+    + "Run 'bun run build:ui' and commit the result.";
+  if (process.env.GITHUB_ACTIONS === 'true') {
+    console.error(`::error file=${posixPath(generatedModule)}::${message}`);
+  }
+  console.error(message);
+  process.exitCode = 1;
+}
+
+/**
+ * Hash of everything the bundle is built from.
+ *
+ * Embedded in the generated module so `--check` can tell a stale bundle
+ * from a current one without rebuilding — see {@link checkFreshness} for
+ * why rebuilding is not an option.  Line endings are normalised and
+ * paths are compared in POSIX form, so the same commit hashes the same
+ * on every platform.
+ *
+ * `package.json`'s `dependencies` are in there because `ts-pattern` gets
+ * bundled into the output: a version bump makes the committed bundle
+ * stale without touching one UI source file.
+ */
+async function sourceHash() {
+  const inputs = [
+    posixPath(indexHtml),
+    posixPath(join(uiRoot, 'tsconfig.json')),
+    posixPath(fileURLToPath(import.meta.url)),
+    ...(await filesUnder(join(uiRoot, 'src'))).map(posixPath),
+  ].sort();
+
+  const digest = createHash('sha256');
+  for (const path of inputs) {
+    digest.update(path);
+    digest.update('\0');
+    digest.update(await readNormalised(join(repositoryRoot, path)));
+    digest.update('\0');
+  }
+  const manifest = JSON.parse(await readFile(join(repositoryRoot, 'package.json'), 'utf8'));
+  digest.update(JSON.stringify(manifest.dependencies ?? {}));
+  return digest.digest('hex').slice(0, 16);
+}
+
+/** Every file under `directory`, recursively.  Absolute paths. */
+async function filesUnder(directory) {
+  const found = [];
+  for (const entry of await readdir(directory, { withFileTypes: true })) {
+    const path = join(directory, entry.name);
+    if (entry.isDirectory()) found.push(...await filesUnder(path));
+    else found.push(path);
+  }
+  return found;
+}
+
+/** Repository-relative path with forward slashes, on every platform. */
+function posixPath(path) {
+  return relative(repositoryRoot, path).replaceAll('\\', '/');
 }
 
 /**
@@ -287,12 +386,7 @@ function kilobytes(bytes) {
   return `${(bytes / 1024).toFixed(1)} KB`;
 }
 
-async function emitModule(assets) {
-  const inputHash = createHash('sha256')
-    .update(assets.map((asset) => `${asset.path}:${asset.etag}`).join('\n'))
-    .digest('hex')
-    .slice(0, 16);
-
+async function emitModule(assets, hash) {
   const entries = assets.map((asset) => `  {
     path: ${JSON.stringify(asset.path)},
     contentType: ${JSON.stringify(asset.contentType)},
@@ -310,7 +404,13 @@ async function emitModule(assets) {
  * access at runtime.  Regenerate after any change under \`devtools-ui/\`;
  * CI fails the build if this file is out of date.
  *
- * bundle-hash: ${inputHash}
+ * \`source-hash\` fingerprints what the bundle was built FROM — the UI
+ * sources, the build script and the bundled dependencies — which is what
+ * \`bun run build:ui --check\` compares against.  It says nothing about
+ * the bytes below: those also vary with the platform and the Bun release
+ * that produced them.
+ *
+ * source-hash: ${hash}
  */
 import type { UiAsset } from '../UiAssetRoutes.js';
 
@@ -329,7 +429,7 @@ ${entries}
     return;
   }
   await writeFile(generatedModule, source, 'utf8');
-  console.log(`\nembedded bundle → ${relative(repositoryRoot, generatedModule)} (${inputHash})`);
+  console.log(`\nembedded bundle → ${relative(repositoryRoot, generatedModule)} (${hash})`);
 }
 
 async function watchForChanges() {
