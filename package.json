@@ -43,6 +43,7 @@
   "scripts": {
     "build": "bun run build:ui && bunx tsc",
     "build:ui": "bun scripts/build-devtools-ui.mjs",
+    "check:ui": "bun scripts/build-devtools-ui.mjs --check",
     "dev:devtools": "bun scripts/devtools-dev.ts",
     "watch": "bunx tsc --watch",
     "clean": "rm -rf dist",

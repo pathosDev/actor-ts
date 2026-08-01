@@ -7,7 +7,13 @@
  * access at runtime.  Regenerate after any change under `devtools-ui/`;
  * CI fails the build if this file is out of date.
  *
- * bundle-hash: c470ac3fe2d7f16d
+ * `source-hash` fingerprints what the bundle was built FROM — the UI
+ * sources, the build script and the bundled dependencies — which is what
+ * `bun run build:ui --check` compares against.  It says nothing about
+ * the bytes below: those also vary with the platform and the Bun release
+ * that produced them.
+ *
+ * source-hash: e2258b2377a31ce7
  */
 import type { UiAsset } from '../UiAssetRoutes.js';
 

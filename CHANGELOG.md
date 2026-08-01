@@ -780,6 +780,27 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Fixed
 
+- **The DevTools UI freshness check compares a source fingerprint, not bytes**
+  (#521).  The gate added for #484 failed on its first run and kept `build` red:
+  it rebuilt the bundle and diffed the result, which presumes the emitted bytes
+  are a function of the sources alone.  They are not.  `gzipSync` stamps the
+  compiling platform's OS code into byte 9 of every member — `0x0a` on Windows,
+  `0x03` on Linux — so *every* asset differs between a Windows dev box and an
+  ubuntu runner no matter what changed; from Windows the gate could never pass.
+  On top of that `bun-version: latest` moves `Bun.build`'s minifier under the
+  check (1.3.1 → 1.3.14 changed two shared chunks, which cascaded into renaming
+  all seven panel chunks), and the asset array inherited `result.outputs`' order
+  unsorted, which the same upgrade reshuffled.  The generated header now carries
+  a `source-hash` over what the bundle is built *from* — the UI sources, the
+  build script, and `package.json`'s `dependencies`, since `ts-pattern` is
+  bundled in — and `bun run check:ui` recomputes and compares it without
+  building anything.  That catches the thing worth catching, a change under
+  `devtools-ui/` with no `bun run build:ui`, on any OS and any Bun.  It
+  deliberately does not catch bundler drift: a newer Bun emitting smaller output
+  for unchanged sources is not staleness, and treating it as such is what made
+  the previous gate fire on bundles that were perfectly current.  The step also
+  moved ahead of `bun run build` — that script *is* `build:ui && tsc`, so any
+  check after it inspects a file the job just regenerated.
 - **A module mock in the worker tests no longer hands a fake backend to the
   rest of the suite** (#520).  `tests/unit/worker/WorkerCluster.test.ts`
   installed its in-memory `FakeWorkerBackend` with `mock.module`, which in Bun
@@ -824,11 +845,13 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   layout differed from whoever last regenerated it.  Nothing caught it: same
   file size, same asset bodies, only the names moved.  Chunk names are now
   derived from the bytes the bundle actually ships — the same reasoning that
-  already makes the ETags content-derived rather than mtime-derived — so every
-  layout and platform produces one identical file.  `build.yml` gained the
-  missing path filters, a `--frozen-lockfile` install (the bundled
+  already makes the ETags content-derived rather than mtime-derived — so the
+  names no longer depend on the layout they were built in.  `build.yml` gained
+  the missing path filters, a `--frozen-lockfile` install (the bundled
   dependencies have to be the ones the lockfile pins for the check to mean
-  anything), and a step that rebuilds and fails with the command to run.
+  anything), and a freshness step.  That step first shipped as a
+  rebuild-and-diff, which turned out to be unpassable for reasons beyond the
+  chunk names; see #521 below for what replaced it.
 - **`/user` is drained before `/system` starts stopping** (#509).
   `terminate()` enqueued one `terminate` on the root cell, and a cell stops
   every child at once — so both guardians came down concurrently, while
