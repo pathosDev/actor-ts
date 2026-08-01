@@ -65,10 +65,19 @@ are what the manager acts on, not because you construct them:
 | --- | --- | --- |
 | `cluster` | Yes | The cluster the manager watches. |
 | `typeName` | Yes | Logical name for this singleton; the child actor's name. |
-| `singletonProps` | Yes | How to construct the singleton.  Only invoked on the leader. |
-| `role` | No | Restrict to nodes carrying this role.  Other nodes' managers stay passive. |
-| `lease` | No | If set, the leader must acquire this lease before spawning the singleton. |
+| `singletonProps` | Yes | How to construct the singleton.  Only invoked on the host. |
+| `role` | No | Restrict hosting to nodes carrying this role.  Other nodes' managers stay passive. |
+| `lease` | No | If set, the host must acquire this lease before spawning the singleton. |
 | `acquireRetryIntervalMs` | No (default 5s) | Retry cadence after a failed lease acquisition. |
+
+### Which node hosts
+
+Without a `role`, the host is the cluster leader.  With one, it is the
+**first up-member carrying that role** — not "the leader, if it happens
+to carry the role", which would leave the singleton hosted nowhere
+whenever the elected leader lacked it.  Both forms read the same
+address-ordered member list, so every node independently picks the same
+node, and the proxy resolves the host exactly the way the managers do.
 
 ## The naming convention
 
@@ -253,15 +262,18 @@ import { Aside } from '@astrojs/starlight/components';
   `start` everywhere, or role-restrict so only starting nodes can host.
 </Aside>
 
-<Aside type="caution" title="A role nobody carries hosts nowhere">
+<Aside type="caution" title="Declare a role on the key, not only in the options">
   ```ts
-  StartSingletonOptions.create<JobCommand>().withRole('control-plane');
+  class Ingress extends Actor<IngressCommand> {
+    static readonly singleton = SingletonKey.of<IngressCommand>('ingress', 'edge');
+  }
   ```
-  The manager hosts only when this node is **both** the cluster leader
-  **and** carries the role.  If the elected leader does not carry it,
-  no node hosts the singleton at all — unlike Akka, which picks the
-  oldest member *with* the role.  Give the role to the nodes that sort
-  earliest, or leave it unset, until that is fixed.
+  A node that only calls `ref` has no options object — it has the key,
+  and nothing else.  A role declared *only* through
+  `StartSingletonOptions.withRole` is therefore invisible to it, and
+  its proxy resolves a different host than the managers do.  Put the
+  role on the key and every node agrees by construction; `withRole`
+  still overrides it where you need a per-deployment answer.
 </Aside>
 
 <Aside type="caution" title="acquireRetryIntervalMs must be positive">

@@ -66,10 +66,20 @@ reagiert, nicht weil du sie konstruierst:
 | --- | --- | --- |
 | `cluster` | Ja | Der Cluster, den der Manager beobachtet. |
 | `typeName` | Ja | Logischer Name für diesen Singleton; Name des Kind-Actors. |
-| `singletonProps` | Ja | Wie der Singleton konstruiert wird. Wird nur auf dem Leader aufgerufen. |
-| `role` | Nein | Auf Nodes mit dieser Rolle beschränken. Manager anderer Nodes bleiben passiv. |
-| `lease` | Nein | Falls gesetzt, muss der Leader diese Lease erwerben, bevor er den Singleton spawnt. |
+| `singletonProps` | Ja | Wie der Singleton konstruiert wird. Wird nur auf dem Host aufgerufen. |
+| `role` | Nein | Das Hosten auf Nodes mit dieser Rolle beschränken. Manager anderer Nodes bleiben passiv. |
+| `lease` | Nein | Falls gesetzt, muss der Host diese Lease erwerben, bevor er den Singleton spawnt. |
 | `acquireRetryIntervalMs` | Nein (Default 5s) | Retry-Takt nach einer fehlgeschlagenen Lease-Akquisition. |
+
+### Welche Node hostet
+
+Ohne `role` ist der Host der Cluster-Leader.  Mit `role` ist es das
+**erste Up-Member, das diese Rolle trägt** — nicht „der Leader, sofern
+er die Rolle zufällig trägt“; das würde den Singleton immer dann
+nirgends hosten, wenn der gewählte Leader sie nicht trägt.  Beide
+Formen lesen dieselbe adressgeordnete Member-Liste, also wählt jede
+Node unabhängig dieselbe aus, und der Proxy löst den Host genau so auf
+wie die Manager.
 
 ## Die Namenskonvention
 
@@ -261,15 +271,19 @@ import { Aside } from '@astrojs/starlight/components';
   `start` also überall, oder schränke per Rolle auf die startenden Nodes ein.
 </Aside>
 
-<Aside type="caution" title="Eine Rolle, die niemand trägt, hostet nirgends">
+<Aside type="caution" title="Rolle auf dem Key deklarieren, nicht nur in den Options">
   ```ts
-  StartSingletonOptions.create<JobCommand>().withRole('control-plane');
+  class Ingress extends Actor<IngressCommand> {
+    static readonly singleton = SingletonKey.of<IngressCommand>('ingress', 'edge');
+  }
   ```
-  Der Manager hostet nur, wenn dieser Node **sowohl** Cluster-Leader ist
-  **als auch** die Rolle trägt. Trägt der gewählte Leader sie nicht,
-  hostet gar kein Node das Singleton — anders als Akka, das den ältesten
-  Member *mit* der Rolle wählt. Gib die Rolle den Nodes, die zuerst
-  sortieren, oder lass sie ungesetzt, bis das behoben ist.
+  Ein Node, der nur `ref` aufruft, hat kein Options-Objekt — er hat den
+  Key, und sonst nichts. Eine Rolle, die *ausschließlich* über
+  `StartSingletonOptions.withRole` gesetzt wird, ist für ihn also
+  unsichtbar, und sein Proxy löst einen anderen Host auf als die
+  Manager. Steht die Rolle auf dem Key, sind sich alle Nodes
+  konstruktionsbedingt einig; `withRole` überschreibt sie weiterhin,
+  wo du eine Antwort pro Deployment brauchst.
 </Aside>
 
 <Aside type="caution" title="acquireRetryIntervalMs muss positiv sein">

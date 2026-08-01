@@ -3,7 +3,7 @@ import { Actor } from '../../../../../src/Actor.js';
 import { ActorSystem } from '../../../../../src/ActorSystem.js';
 import { Cluster } from '../../../../../src/cluster/Cluster.js';
 import { ClusterOptions } from '../../../../../src/cluster/ClusterOptions.js';
-import { StartSingletonOptions } from '../../../../../src/cluster/singleton/index.js';
+import { SingletonKey, StartSingletonOptions } from '../../../../../src/cluster/singleton/index.js';
 import { InMemoryTransport } from '../../../../../src/cluster/Transport.js';
 import { NodeAddress } from '../../../../../src/cluster/NodeAddress.js';
 import { LogLevel, NoopLogger } from '../../../../../src/Logger.js';
@@ -369,6 +369,80 @@ describe('ClusterSingleton — role filter', () => {
 
     // The singleton must only exist on node A (the role-tagged one).
     expect(hosts).toEqual(['a']);
+
+    await stop(nodeA); await stop(nodeB);
+  });
+
+  /**
+   * #524 — hosting used to require leader **and** role, so a role the leader
+   * did not carry left the singleton hosted *nowhere*: the leader's manager
+   * declined on the role, every other manager declined on not being leader.
+   *
+   * The test above never caught it because its role sits on the lowest-
+   * addressed node, which is the leader anyway.  Here the roles are the other
+   * way round: node A sorts first and leads, node B carries the role.
+   */
+  test('the first member carrying the role hosts it, even when the leader does not', async () => {
+    const nodeA = await startNodeWithRole('sng-role-2', 'h', 52311, [], []);
+    const nodeB = await startNodeWithRole('sng-role-2', 'h', 52312, ['sng-role-2@h:52311'], ['worker']);
+    await waitFor(() => nodeA.cluster.upMembers().length === 2 && nodeB.cluster.upMembers().length === 2);
+    // The premise: the leader is the node *without* the role.
+    expect(nodeA.cluster.isLeader()).toBe(true);
+
+    const hosts: string[] = [];
+    const received: string[] = [];
+    class Marker extends Actor<string> {
+      constructor(private readonly where: string) { super(); }
+      override preStart(): void { hosts.push(this.where); }
+      override onReceive(m: string): void { received.push(`${this.where}:${m}`); }
+    }
+
+    const aSingletonOptions = StartSingletonOptions.create<string>()
+      .withTypeName('needs-worker')
+      .withRole('worker')
+      .withProps(Props.create(() => new Marker('a')));
+    const fromLeader = nodeA.cluster.singleton.start(aSingletonOptions);
+    const bSingletonOptions = StartSingletonOptions.create<string>()
+      .withTypeName('needs-worker')
+      .withRole('worker')
+      .withProps(Props.create(() => new Marker('b')));
+    nodeB.cluster.singleton.start(bSingletonOptions);
+
+    await waitFor(() => hosts.length > 0);
+    expect(hosts).toEqual(['b']);
+
+    // And the proxy has to agree with that election: a tell from the leader —
+    // which hosts nothing — must still cross to node B.
+    fromLeader.tell('ping');
+    await waitFor(() => received.length > 0);
+    expect(received).toEqual(['b:ping']);
+
+    await stop(nodeA); await stop(nodeB);
+  });
+
+  /**
+   * A node that only calls `ref()` has no options object to read the role
+   * from — it has the key.  So the key carries it, and both sides resolve the
+   * same host without the ref-only node being told anything extra.
+   */
+  test('a role declared on the key routes a ref()-only node to the same host', async () => {
+    const nodeA = await startNodeWithRole('sng-role-3', 'h', 52321, [], []);
+    const nodeB = await startNodeWithRole('sng-role-3', 'h', 52322, ['sng-role-3@h:52321'], ['worker']);
+    await waitFor(() => nodeA.cluster.upMembers().length === 2 && nodeB.cluster.upMembers().length === 2);
+
+    const received: string[] = [];
+    class Ingress extends Actor<string> {
+      static readonly singleton = SingletonKey.of<string>('keyed-ingress', 'worker');
+      override onReceive(m: string): void { received.push(m); }
+    }
+
+    // Only node B hosts.  Node A never starts it — it just takes a ref.
+    nodeB.cluster.singleton.start(Ingress);
+    const fromA = nodeA.cluster.singleton.ref(Ingress);
+
+    fromA.tell('hello');
+    await waitFor(() => received.length > 0);
+    expect(received).toEqual(['hello']);
 
     await stop(nodeA); await stop(nodeB);
   });
