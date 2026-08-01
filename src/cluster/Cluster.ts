@@ -270,7 +270,21 @@ export class Cluster {
     return this.upMembers().filter(member => member.hasRole(role));
   }
 
-  /** The oldest up-member is the cluster leader (deterministic across nodes). */
+  /**
+   * The cluster leader: the **lowest-addressed** up-member.
+   *
+   * Not the oldest member, which is what this used to claim and what Akka
+   * actually does (#525).  Address order and join order are unrelated, so a
+   * node that joins last leads immediately if its host/port sorts first — and
+   * it takes over whatever the leader hosts, including cluster singletons.
+   *
+   * The property the leader is *for* is that every node names the same one
+   * from gossip it already has, and address order gives that without a
+   * monotonic join sequence in the gossip payload.  Worth knowing when you
+   * reason about which node ends up leading: it is decided by addressing, not
+   * by uptime, so it is stable across restarts of the same pod and unstable
+   * across a re-address.
+   */
   leader(): Option<Member> {
     const ups = this.upMembers();
     return ups.length > 0 ? some(ups[0]!) : none;

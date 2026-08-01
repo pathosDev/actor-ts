@@ -11,6 +11,14 @@ import type { KeepOldestOptions, KeepOldestOptionsType } from './KeepOldestOptio
  * survives; the other side is downed.  "Oldest" is the lowest address when
  * addresses are compared lexicographically — consistent with the leader
  * election in this project.
+ *
+ * Which means the name promises something it does not deliver, and it is worth
+ * being blunt about it because an operator picks this strategy *for* its
+ * tiebreak: no join sequence travels in the gossip payload, so a member that
+ * joined a minute ago outranks one that has been up for a week whenever its
+ * address sorts lower.  Choose it for a deterministic, agreed tiebreak and pin
+ * the address of the node that should survive — not in the expectation that a
+ * long-running coordinator wins (#525).
  */
 export class KeepOldest implements DowningProvider {
   private readonly options: KeepOldestOptionsType;

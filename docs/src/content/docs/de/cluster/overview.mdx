@@ -124,6 +124,22 @@ Der Event-Stream des Clusters legt jeden Übergang offen — abonniere
 `MemberUp` / `MemberRemoved` / `MemberUnreachable` etc. und
 reagiere.
 
+### Der Leader
+
+`cluster.leader()` liefert das **niedrigst-adressierte** `up`-Member —
+dasjenige, dessen `host:port` zuerst sortiert.  Es ist ausdrücklich
+*nicht* das älteste Member: Adress- und Join-Reihenfolge haben nichts
+miteinander zu tun.  Eine Node, die zuletzt joint, führt sofort, wenn
+ihre Adresse am niedrigsten sortiert — und übernimmt alles, was der
+Leader hostet (einen Cluster-Singleton, die Shard-Allokation).
+
+Das ist Absicht.  Die eine Eigenschaft, die der Leader haben muss, ist,
+dass jede Node dieselbe benennt, und die Adress-Ordnung liefert das aus
+Gossip, den jede Node ohnehin hat — es muss keine monoton wachsende
+Join-Sequenz über die Leitung reisen.  Der Preis: „wer führt“ entscheidet
+die Adressierung, nicht die Laufzeit — stabil über den Neustart
+desselben Pods, nicht stabil über eine Neuadressierung.
+
 ## Was Gossip macht
 
 Gossip ist der Mechanismus, mit dem sich Mitglieder darauf einigen,
@@ -178,7 +194,7 @@ actor-ts liefert mehrere **Downing-Strategien** mit:
 | Strategie | Was sie tut |
 | --- | --- |
 | `KeepMajority` | Die Seite mit mehr Nodes gewinnt; die kleinere Seite fährt sich selbst herunter. |
-| `KeepOldest` | Die Seite mit dem ältesten Mitglied gewinnt. |
+| `KeepOldest` | Die Seite mit dem niedrigst-adressierten Mitglied gewinnt — „ältestes“ meint Adress-, nicht Join-Reihenfolge. |
 | `KeepReferee` | Die Sicht eines bestimmten Schiedsrichter-Nodes gewinnt. |
 | `StaticQuorum` | Die Seite, die eine konfigurierte Quorum-Größe erreicht, gewinnt; eine Seite darunter fährt sich selbst herunter. |
 | `LeaseMajority` | Die Mehrheitsseite gewinnt, aber nur solange sie eine Koordinations-Lease hält. |

@@ -118,6 +118,22 @@ The cluster's events stream surfaces every transition — subscribe
 to `MemberUp` / `MemberRemoved` / `MemberUnreachable` etc. and
 react.
 
+### The leader
+
+`cluster.leader()` returns the **lowest-addressed** `up` member —
+whichever member's `host:port` sorts first.  It is emphatically *not*
+the oldest member: address order and join order are unrelated, so a
+node that joins last leads immediately if its address sorts lowest, and
+it takes over whatever the leader hosts (a cluster singleton, shard
+allocation).
+
+That is deliberate.  The one property the leader has to have is that
+every node names the same one, and address order gives that from gossip
+every node already has — no monotonic join sequence has to travel on
+the wire.  The cost is that "who leads" is decided by addressing rather
+than uptime: stable across a restart of the same pod, not stable across
+a re-address.
+
 ## What gossip does
 
 Gossip is how members agree on who's in the cluster.  Every
@@ -169,7 +185,7 @@ actor-ts ships several **downing strategies**:
 | Strategy | What it does |
 | --- | --- |
 | `KeepMajority` | The side with more nodes wins; the smaller side downs itself. |
-| `KeepOldest` | The side containing the oldest member wins. |
+| `KeepOldest` | The side containing the lowest-addressed member wins — "oldest" is address order, not join order. |
 | `KeepReferee` | A designated referee node's view wins. |
 | `StaticQuorum` | The side that meets a configured quorum size wins; a side below it downs itself. |
 | `LeaseMajority` | The majority side wins, but only while it holds a coordination lease. |
