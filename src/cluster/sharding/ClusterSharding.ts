@@ -1,5 +1,7 @@
+import type { Actor } from '../../Actor.js';
 import type { ActorRef } from '../../ActorRef.js';
 import type { ActorSystem } from '../../ActorSystem.js';
+import { actorFactoryOf, type ActorClassOrFactory } from '../../internal/ActorConstruction.js';
 import { PersistenceExtensionId } from '../../persistence/PersistenceExtension.js';
 import { Props } from '../../Props.js';
 import {
@@ -84,12 +86,12 @@ export class ClusterSharding {
   start<TMessage>(options: StartShardingOptions<TMessage>): ActorRef<TMessage>;
   start<TMessage>(
     typeName: string,
-    entity: (new () => import('../../Actor.js').Actor<TMessage>) | (() => import('../../Actor.js').Actor<TMessage>),
+    entity: ActorClassOrFactory<TMessage>,
     options?: StartShardingOptions<TMessage>,
   ): ActorRef<TMessage>;
   start<TMessage>(
     arg1: string | StartShardingOptions<TMessage>,
-    arg2?: (new () => import('../../Actor.js').Actor<TMessage>) | (() => import('../../Actor.js').Actor<TMessage>),
+    arg2?: ActorClassOrFactory<TMessage>,
     arg3?: StartShardingOptions<TMessage>,
   ): ActorRef<TMessage> {
     const options = typeof arg1 === 'string'
@@ -110,7 +112,7 @@ export class ClusterSharding {
     const ref = this.system._spawnSystemActor(
       // ShardRegion internally handles extra envelope types; cast to Actor<TMessage>
       // so the returned ref presents the user-facing signature.
-      Props.create<TMessage>(() => new ShardRegion<TMessage>(config) as unknown as import('../../Actor.js').Actor<TMessage>),
+      Props.create<TMessage>(() => new ShardRegion<TMessage>(config) as unknown as Actor<TMessage>),
       SystemGroups.clusterSharding,
       shardRegionName(options.typeName),
     );
@@ -121,26 +123,14 @@ export class ClusterSharding {
   /** @internal — wrap the shorthand entity arg into a Props + assemble full options. */
   private buildOptionsFromShorthand<TMessage>(
     typeName: string,
-    entity: (new () => import('../../Actor.js').Actor<TMessage>) | (() => import('../../Actor.js').Actor<TMessage>),
+    entity: ActorClassOrFactory<TMessage>,
     options: StartShardingOptions<TMessage>,
   ): StartShardingOptionsType<TMessage> {
     const partialOptions = (options as Partial<StartShardingOptionsType<TMessage>>);
-    // Classes have a `.prototype` whose `constructor` === the class itself.
-    // Arrow functions don't have `prototype`; regular non-class functions do
-    // (with `.prototype.constructor === fn`), so we treat anything that's
-    // `new`-able the same way classes are.  The closure form (arrow `() =>
-    // new X()`) falls into the factory branch.
-    const isClass =
-      typeof entity === 'function' &&
-      typeof (entity as { prototype?: { constructor?: unknown } }).prototype === 'object' &&
-      (entity as { prototype?: { constructor?: unknown } }).prototype?.constructor === entity;
-    const factory: () => import('../../Actor.js').Actor<TMessage> = isClass
-      ? () => new (entity as new () => import('../../Actor.js').Actor<TMessage>)()
-      : (entity as () => import('../../Actor.js').Actor<TMessage>);
     return {
       ...partialOptions,
       typeName,
-      entityProps: Props.create<TMessage>(factory),
+      entityProps: Props.create<TMessage>(actorFactoryOf(entity)),
     } as StartShardingOptionsType<TMessage>;
   }
 
