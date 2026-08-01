@@ -5,14 +5,14 @@ import type { Cluster } from '../Cluster.js';
 import { LeaderChanged } from '../ClusterEvents.js';
 import { NodeAddress } from '../NodeAddress.js';
 import { singletonProxyName } from '../../internal/SystemPaths.js';
-import { singletonManagerPath, type SingletonDeliver } from './ClusterSingletonManager.js';
+import { singletonHost, singletonManagerPath, type SingletonDeliver } from './ClusterSingletonManager.js';
 import type { SingletonKey } from './SingletonKey.js';
 
 /**
  * Location-transparent handle to a cluster-wide singleton.  Every call to
- * `tell` looks up the current leader and forwards to that node's
+ * `tell` looks up the current host and forwards to that node's
  * ClusterSingletonManager (via direct `tell` if local, via envelope if
- * remote).  Messages sent before the cluster has elected a leader are
+ * remote).  Messages sent before the cluster has a host are
  * buffered and drained when the first `LeaderChanged` event fires.
  *
  * The proxy extends ActorRef<T> so it can be passed anywhere an ActorRef is
@@ -36,6 +36,12 @@ export class ClusterSingletonProxy<TCommand> extends ActorRef<TCommand> {
      * would either be impossible to obtain or permanently stale.
      */
     private readonly localManager: () => ActorRef | null,
+    /**
+     * Role restriction, if any — must be the same one the managers were
+     * started with, or this proxy and they disagree about who hosts.
+     * Defaults to the key's, which is why the key carries it.
+     */
+    private role: string | undefined = key.role,
   ) {
     super();
     // Synthetic — no actor is spawned here.  The path exists so logs and dead
@@ -55,12 +61,12 @@ export class ClusterSingletonProxy<TCommand> extends ActorRef<TCommand> {
 
   override tell(message: TCommand, _sender: ActorRef | null = null): void {
     if (!this.forwarding) return;
-    const leaderOpt = this.cluster.leader();
-    if (leaderOpt.isNone()) {
+    const hostOpt = singletonHost(this.cluster, this.role);
+    if (hostOpt.isNone()) {
       this.buffer.push(message);
       return;
     }
-    this.deliver(message, leaderOpt.value.address);
+    this.deliver(message, hostOpt.value.address);
   }
 
   /**
@@ -76,6 +82,28 @@ export class ClusterSingletonProxy<TCommand> extends ActorRef<TCommand> {
     );
   }
 
+  /**
+   * @internal Learn the role from a later, better-informed caller.
+   *
+   * A proxy is memoised per `typeName`, so the first caller wins the
+   * construction — and that may be a bare `ref('name')`, which knows no role,
+   * ahead of the `start()` that does.  Learning it late is the difference
+   * between routing at the right node and silently routing at the leader.
+   *
+   * `undefined` never *erases* a known role, for the mirror-image reason: a
+   * later bare `ref()` is uninformed, not authoritative.  Two different roles
+   * is a genuine misconfiguration — one singleton cannot be restricted two
+   * ways — so it warns and keeps the first.
+   */
+  _adoptRole(role: string | undefined): void {
+    if (role === undefined || role === this.role) return;
+    if (this.role === undefined) { this.role = role; return; }
+    this.cluster.system.log.warn(
+      `singleton '${this.key.typeName}': already addressed with role '${this.role}', `
+      + `ignoring conflicting role '${role}' — one singleton cannot be restricted to two roles`,
+    );
+  }
+
   /** @internal Stop forwarding and unsubscribe from cluster events. */
   _stopForwarding(): void {
     this.forwarding = false;
@@ -86,9 +114,9 @@ export class ClusterSingletonProxy<TCommand> extends ActorRef<TCommand> {
   /** True if at least one message is currently buffered. */
   hasPending(): boolean { return this.buffer.length > 0; }
 
-  private deliver(message: TCommand, leaderAddress: NodeAddress): void {
-    if (!leaderAddress.equals(this.cluster.selfAddress)) {
-      this.cluster._sendEnvelope(leaderAddress, {
+  private deliver(message: TCommand, hostAddress: NodeAddress): void {
+    if (!hostAddress.equals(this.cluster.selfAddress)) {
+      this.cluster._sendEnvelope(hostAddress, {
         t: 'envelope',
         to: singletonManagerPath(this.cluster.system.name, this.key.typeName),
         from: null,
@@ -107,8 +135,8 @@ export class ClusterSingletonProxy<TCommand> extends ActorRef<TCommand> {
   }
 
   /**
-   * This node is the leader but runs no manager, so nothing anywhere is hosting
-   * the singleton.  Dead-letter rather than buffer: unlike "no leader elected
+   * This node is the elected host but runs no manager, so nothing anywhere is
+   * hosting the singleton.  Dead-letter rather than buffer: unlike "no host
    * yet" — which the buffer above handles and `LeaderChanged` drains — this
    * state does not heal on its own, it heals when someone changes the
    * deployment, so a buffer would just grow.  The warning is latched so a hot
@@ -117,11 +145,13 @@ export class ClusterSingletonProxy<TCommand> extends ActorRef<TCommand> {
   private onMissingHost(message: TCommand): void {
     if (!this.warnedMissingHost) {
       this.warnedMissingHost = true;
+      const scope = this.role === undefined
+        ? 'every node that may become leader'
+        : `every node carrying role '${this.role}'`;
       this.cluster.system.log.warn(
-        `singleton '${this.key.typeName}': this node is the leader but never called `
+        `singleton '${this.key.typeName}': this node is the elected host but never called `
         + '`cluster.singleton.start(...)`, so no node is hosting the singleton and messages are '
-        + 'dead-lettering — a ref() proxy cannot host.  Call start() on every node that may '
-        + 'become leader, or restrict the singleton to a role only starting nodes carry.',
+        + `dead-lettering — a ref() proxy cannot host.  Call start() on ${scope}.`,
       );
     }
     this.cluster.system.deadLetters.tell(message as never);
@@ -136,10 +166,10 @@ export class ClusterSingletonProxy<TCommand> extends ActorRef<TCommand> {
   }
 
   private drainBuffer(): void {
-    const leaderOpt = this.cluster.leader();
-    if (leaderOpt.isNone() || this.buffer.length === 0) return;
-    const leaderAddress = leaderOpt.value.address;
+    const hostOpt = singletonHost(this.cluster, this.role);
+    if (hostOpt.isNone() || this.buffer.length === 0) return;
+    const hostAddress = hostOpt.value.address;
     const drained = this.buffer.splice(0, this.buffer.length);
-    for (const message of drained) this.deliver(message, leaderAddress);
+    for (const message of drained) this.deliver(message, hostAddress);
   }
 }

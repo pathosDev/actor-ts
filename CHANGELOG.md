@@ -846,6 +846,26 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Fixed
 
+- **A role-restricted singleton is hosted by a node that carries the role**
+  (#524).  `wantHosted()` required the node to be the cluster leader **and** to
+  carry the configured role, so `withRole('worker')` on a cluster whose elected
+  leader lacked `worker` left the singleton hosted **nowhere**: the leader's
+  manager declined on the role, every other manager declined on not being the
+  leader, and messages died at the leader with a `log.warn`.  Host election is
+  now "the first up-member carrying the role", falling back to the leader when
+  no role is set — one shared `singletonHost()` used by the manager *and* the
+  proxy, because the manager drops anything addressed to it that it is not
+  hosting, so any drift between the two is silent message loss.
+
+  A role now also rides along on `SingletonKey.of<T>(typeName, role?)`, the way
+  `ShardKey` carries its `extractEntityId`: it is not part of the identity
+  (`equals` ignores it) and a `role` in `StartSingletonOptions` still wins, but
+  a node that only calls `ref()` has no options object to read — it has the key
+  and nothing else — so without this its proxy would resolve a different host
+  than the managers.  Declaring it on the class makes both sides agree by
+  construction.  The existing role test never caught any of this: its
+  role-carrying node was also the lowest-addressed one, and so the leader
+  anyway.
 - **`ask()` across nodes gets its reply instead of timing out** (#517).  The
   one-shot reply ref `ask` synthesises was built as a *root* path
   (`new ActorPath(name, null, systemName)`), and `ActorPath` renders a root

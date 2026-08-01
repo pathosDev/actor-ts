@@ -4,6 +4,9 @@ import type { ActorRef } from '../../ActorRef.js';
 import type { Cancellable } from '../../Scheduler.js';
 import { Terminated } from '../../SystemMessages.js';
 import { SystemGroups, singletonManagerName, systemActorPath } from '../../internal/SystemPaths.js';
+import { fromNullable, type Option } from '../../util/Option.js';
+import type { Cluster } from '../Cluster.js';
+import type { Member } from '../Member.js';
 import type { ClusterSingletonManagerOptions, ClusterSingletonManagerOptionsType } from './ClusterSingletonManagerOptions.js';
 import { LeaderChanged, MemberRemoved, SelfUp } from '../ClusterEvents.js';
 
@@ -18,6 +21,27 @@ export function singletonManagerPath(systemName: string, typeName: string): stri
     SystemGroups.clusterSingleton,
     singletonManagerName(typeName),
   );
+}
+
+/**
+ * The node that hosts a singleton, given its role restriction — `none` while
+ * the cluster has no eligible member.
+ *
+ * One function rather than two matching conditions, because the manager and the
+ * proxy have to agree exactly: the manager decides whether *this* node hosts,
+ * the proxy decides where to send, and a manager drops anything addressed to it
+ * that it is not hosting.  Any drift between the two is silent message loss.
+ *
+ * Unrestricted, the host is the cluster leader.  Restricted, it is the first
+ * up-member *carrying that role* — deliberately not "the leader, but only if it
+ * happens to carry the role", which is what this used to be and which left the
+ * singleton hosted nowhere at all whenever the elected leader lacked the role
+ * (#524).  Both forms read the same address-ordered member list, so every node
+ * independently picks the same one.
+ */
+export function singletonHost(cluster: Cluster, role?: string): Option<Member> {
+  if (role === undefined) return cluster.leader();
+  return fromNullable(cluster.upMembersWithRole(role)[0]);
 }
 
 /** Internal delivery wrapper — body is the user's typed message. */
@@ -321,9 +345,8 @@ export class ClusterSingletonManager<T> extends Actor<Inbox> {
 
   private wantHosted(): boolean {
     const cluster = this.options.cluster;
-    const iAmLeader = cluster.leader().exists((l) => l.address.equals(cluster.selfAddress));
-    const roleOk = !this.options.role || cluster.selfRoles.has(this.options.role);
-    return iAmLeader && roleOk;
+    return singletonHost(cluster, this.options.role)
+      .exists((host) => host.address.equals(cluster.selfAddress));
   }
 
   private spawn(): void {

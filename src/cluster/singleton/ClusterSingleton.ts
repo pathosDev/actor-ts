@@ -126,7 +126,11 @@ export class ClusterSingleton implements Extension {
     const options = this.resolveStartOptions<TCommand>(arg1, arg2, arg3);
     new StartSingletonOptionsValidator<TCommand>().validate(options);
     this.ensureManager(options);
-    return this.proxyFor(SingletonKey.of<TCommand>(options.typeName));
+    // The role goes onto the key so the proxy resolves the same host the
+    // managers do.  Options win over a key-declared role, and the shorthand
+    // forms have already folded the class's key into `options` — so reading it
+    // back off `options` covers every calling shape with one line.
+    return this.proxyFor(SingletonKey.of<TCommand>(options.typeName, options.role));
   }
 
   /**
@@ -189,7 +193,7 @@ export class ClusterSingleton implements Extension {
   ): StartSingletonOptionsType<TCommand> {
     if (arg1 instanceof SingletonKey) {
       return this.shorthandOptions(
-        arg1.typeName,
+        arg1,
         arg2 as ActorClassOrFactory<TCommand>,
         arg3 as StartSingletonOptions<TCommand> | undefined,
       );
@@ -208,7 +212,7 @@ export class ClusterSingleton implements Extension {
       // is its own factory.
       const hasFactory = typeof arg2 === 'function';
       return this.shorthandOptions(
-        key.typeName,
+        key,
         (hasFactory ? arg2 : arg1) as ActorClassOrFactory<TCommand>,
         (hasFactory ? arg3 : arg2) as StartSingletonOptions<TCommand> | undefined,
       );
@@ -217,13 +221,19 @@ export class ClusterSingleton implements Extension {
   }
 
   private shorthandOptions<TCommand>(
-    typeName: string,
+    key: SingletonKey<TCommand>,
     actor: ActorClassOrFactory<TCommand>,
     options: StartSingletonOptions<TCommand> | undefined,
   ): StartSingletonOptionsType<TCommand> {
+    const explicit = options as Partial<StartSingletonOptionsType<TCommand>> | undefined;
     return {
-      ...(options as Partial<StartSingletonOptionsType<TCommand>> | undefined),
-      typeName,
+      // A key-declared role has to land in the options the manager is built
+      // from, or this node would host on plain leadership while a `ref()`-only
+      // node — which reads the role straight off the key — targets the
+      // role-restricted host.  Options still win, so `withRole` overrides it.
+      ...(key.role !== undefined ? { role: key.role } : {}),
+      ...explicit,
+      typeName: key.typeName,
       props: Props.create<TCommand>(actorFactoryOf(actor)),
     } as StartSingletonOptionsType<TCommand>;
   }
@@ -304,7 +314,14 @@ export class ClusterSingleton implements Extension {
    */
   private proxyFor<TCommand>(key: SingletonKey<TCommand>): ActorRef<TCommand> {
     const existing = this.proxies.get(key.typeName);
-    if (existing) return existing as unknown as ActorRef<TCommand>;
+    if (existing) {
+      // The memo is keyed on typeName alone, so a proxy taken earlier from a
+      // bare `ref('name')` — which carries no role — can predate the `start()`
+      // that knows the singleton is role-restricted.  Left alone it would keep
+      // routing at the plain leader while the managers host elsewhere.
+      existing._adoptRole(key.role);
+      return existing as unknown as ActorRef<TCommand>;
+    }
     const proxy = new ClusterSingletonProxy<TCommand>(
       this.clusterOrThrow(),
       key,

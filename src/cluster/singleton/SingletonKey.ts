@@ -15,6 +15,11 @@ import type { Actor } from '../../Actor.js';
  * class JobSchedulerActor extends Actor<SchedulerCommand> {
  *   static readonly singleton = SingletonKey.of<SchedulerCommand>('job-scheduler');
  * }
+ *
+ * // Restricted to nodes carrying a role — declared once, read by every node.
+ * class IngressActor extends Actor<IngressCommand> {
+ *   static readonly singleton = SingletonKey.of<IngressCommand>('http-ingress', 'edge');
+ * }
  * ```
  *
  * The explicit type argument is load-bearing: `SingletonKey.of('job-scheduler')`
@@ -25,10 +30,27 @@ export class SingletonKey<TCommand = unknown> {
   /** Phantom field — retains TCommand so inference round-trips through the key. */
   readonly _command!: TCommand;
 
-  constructor(public readonly typeName: string) {}
+  constructor(
+    public readonly typeName: string,
+    /**
+     * Restrict hosting to nodes carrying this role.
+     *
+     * It rides along on the key — like {@link ShardKey}'s `extractEntityId` —
+     * so the declaring class is the single source of truth, and it is NOT part
+     * of the identity: {@link equals} ignores it.  A `role` in
+     * `StartSingletonOptions` wins over this one.
+     *
+     * The key is where it has to live for a *proxy* to be right.  Both the
+     * hosting node and a node that only calls `ref()` have to resolve the same
+     * host, and a `ref()`-only node has no options object to read it from — it
+     * has the key, and nothing else.  Declared here, both sides agree by
+     * construction.
+     */
+    public readonly role?: string,
+  ) {}
 
-  static of<TCommand>(typeName: string): SingletonKey<TCommand> {
-    return new SingletonKey<TCommand>(typeName);
+  static of<TCommand>(typeName: string, role?: string): SingletonKey<TCommand> {
+    return new SingletonKey<TCommand>(typeName, role);
   }
 
   equals(other: SingletonKey): boolean { return this.typeName === other.typeName; }

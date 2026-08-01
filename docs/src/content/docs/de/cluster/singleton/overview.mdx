@@ -130,13 +130,28 @@ const users = cluster.sharding.start(UserActor);
 const repository = cluster.singleton.start(UserRepository, () => new UserRepository(users));
 ```
 
-Für `role` oder `lease` werden Options danebengelegt — oder die volle
-Builder-Form genutzt, wenn es keine Klasse gibt, an die ein Static
-passt:
+Eine **Rolle** gehört auf den Key, als zweites Argument:
+
+```ts
+class Ingress extends Actor<IngressCommand> {
+  static readonly singleton = SingletonKey.of<IngressCommand>('ingress', 'edge');
+}
+```
+
+Sie ist nicht Teil der Identität — zwei Keys sind genau dann gleich,
+wenn ihre Namen übereinstimmen — sie fährt nur mit, damit *jede* Node
+dieselbe liest.  Das zählt für eine Node, die nur `ref` aufruft: sie
+hat kein Options-Objekt, eine allein über `withRole` gesetzte Rolle ist
+für sie also unsichtbar, und ihr Proxy würde einen anderen Host
+auflösen als die Manager.
+
+Für `lease`, oder um die Rolle pro Deployment zu überschreiben, werden
+Options danebengelegt — oder die volle Builder-Form genutzt, wenn es
+keine Klasse gibt, an die ein Static passt:
 
 ```ts
 const singletonOptions = StartSingletonOptions.create<JobCommand>()
-  .withRole('control-plane');   // nur diese Nodes können hosten
+  .withRole('control-plane');   // schlägt eine auf dem Key deklarierte Rolle
 cluster.singleton.start(JobScheduler, singletonOptions);
 ```
 
