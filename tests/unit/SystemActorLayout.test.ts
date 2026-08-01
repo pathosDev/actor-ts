@@ -14,7 +14,6 @@ import { Cluster } from '../../src/cluster/Cluster.js';
 import { ClusterOptions } from '../../src/cluster/ClusterOptions.js';
 import { InMemoryTransport } from '../../src/cluster/Transport.js';
 import { NodeAddress } from '../../src/cluster/NodeAddress.js';
-import { ClusterSingletonId } from '../../src/cluster/singleton/ClusterSingleton.js';
 import { StartSingletonOptions } from '../../src/cluster/singleton/StartSingletonOptions.js';
 import { StartShardingOptions } from '../../src/cluster/sharding/StartShardingOptions.js';
 import { DistributedPubSubId } from '../../src/cluster/pubsub/DistributedPubSubExtension.js';
@@ -63,7 +62,7 @@ async function startEverything(): Promise<{ system: ActorSystem; cluster: Cluste
   const singletonOptions = StartSingletonOptions.create<string>()
     .withTypeName('cron')
     .withProps(Props.create(() => new Plain()));
-  system.extension(ClusterSingletonId).start(cluster, singletonOptions);
+  cluster.singleton.start(singletonOptions);
 
   // Named explicitly: the auto-generated `consumer-N` counter is module-global,
   // so it would differ between the two tests in this file.

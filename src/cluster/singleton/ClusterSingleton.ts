@@ -1,7 +1,10 @@
+import type { Actor } from '../../Actor.js';
 import type { ActorRef } from '../../ActorRef.js';
 import type { ActorSystem } from '../../ActorSystem.js';
+import { actorFactoryOf, type ActorClassOrFactory } from '../../internal/ActorConstruction.js';
 import { SystemGroups, assertSpawnedAt, singletonManagerName } from '../../internal/SystemPaths.js';
-import { extensionId, type ExtensionId } from '../../Extension.js';
+import { extensionId, type Extension, type ExtensionId } from '../../Extension.js';
+import type { Logger } from '../../Logger.js';
 import { Props } from '../../Props.js';
 import type { Cluster } from '../Cluster.js';
 import { fromNullable, type Option } from '../../util/Option.js';
@@ -14,34 +17,228 @@ import { ClusterSingletonManagerOptions } from './ClusterSingletonManagerOptions
 import { StartSingletonOptionsValidator } from './StartSingletonOptions.js';
 import type { StartSingletonOptions, StartSingletonOptionsType } from './StartSingletonOptions.js';
 import { ClusterSingletonProxy } from './ClusterSingletonProxy.js';
-
-export interface SingletonHandle<T> {
-  /** Location-transparent ActorRef — tell here, the leader's instance receives. */
-  readonly proxy: ClusterSingletonProxy<T>;
-  /** Local manager — stopping it takes this node out of rotation. */
-  readonly manager: ActorRef;
-  /** Stop both proxy and local manager. */
-  stop(): void;
-}
+import {
+  SingletonKey,
+  singletonKeyOf,
+  type SingletonActorClass,
+  type SingletonKeyedClass,
+  type SingletonReference,
+} from './SingletonKey.js';
 
 /**
- * Extension registered on the ActorSystem that manages all
- * ClusterSingletons declared in the process.  Use
- * `system.extension(ClusterSingletonId).start(cluster, ...)` to materialize
- * one; subsequent calls with the same typeName return the same handle.
+ * Extension that manages every cluster singleton declared in this process.
+ *
+ * Reach it through {@link Cluster.singleton}; `start` hands back the
+ * location-transparent `ActorRef` directly, so a singleton is addressed
+ * exactly like any other actor:
+ *
+ * ```ts
+ * class JobSchedulerActor extends Actor<SchedulerCommand> {
+ *   static readonly singleton = SingletonKey.of<SchedulerCommand>('job-scheduler');
+ *   onReceive(command: SchedulerCommand): void { … }
+ * }
+ *
+ * const scheduler = cluster.singleton.start(JobSchedulerActor);
+ * scheduler.tell({ kind: 'schedule', jobId: '42' });
+ * ```
+ *
+ * `start` is get-or-create per `typeName` on this node, so calling it from
+ * several modules is safe and no `getOrCreate` wrapper is needed.  Nodes that
+ * only need to *talk* to the singleton call {@link ref} instead and never host
+ * a manager.
  */
-export class ClusterSingleton {
-  private handles = new Map<string, SingletonHandle<unknown>>();
-  constructor(private readonly system: ActorSystem) {}
+export class ClusterSingleton implements Extension {
+  /** Local manager per typeName — only on nodes that called {@link start}. */
+  private readonly managers = new Map<string, ActorRef>();
+  /** Forwarding proxy per typeName — after {@link start} OR {@link ref}. */
+  private readonly proxies = new Map<string, ClusterSingletonProxy<never>>();
+  private cluster: Cluster | null = null;
+  private readonly log: Logger;
 
-  start<T>(
-    cluster: Cluster,
-    options: StartSingletonOptions<T>,
-  ): SingletonHandle<T> {
-    const resolvedOptions = options as StartSingletonOptionsType<T>;
-    new StartSingletonOptionsValidator<T>().validate(resolvedOptions);
-    const existing = this.handles.get(resolvedOptions.typeName);
-    if (existing) return existing as SingletonHandle<T>;
+  constructor(private readonly system: ActorSystem) {
+    this.log = system.log.withSource('cluster/singleton');
+  }
+
+  /**
+   * Explicit counterpart to `cluster.singleton`, mirroring
+   * `ClusterSharding.get(system, cluster)` — for callers that hold the system
+   * and the cluster separately.
+   */
+  static get(system: ActorSystem, cluster: Cluster): ClusterSingleton {
+    const extension = system.extension(ClusterSingletonId);
+    extension._bind(cluster);
+    return extension;
+  }
+
+  /**
+   * @internal Bind to a Cluster.  Idempotent for the same one; a second,
+   * different Cluster throws — the manager registry and every live proxy are
+   * keyed to this one's leader view, so silently re-pointing them would route
+   * messages at the wrong node.
+   */
+  _bind(cluster: Cluster): void {
+    if (this.cluster === cluster) return;
+    if (this.cluster) throw new Error('ClusterSingleton is already bound to a different cluster');
+    this.cluster = cluster;
+  }
+
+  /**
+   * Start (or look up) the singleton and return the ref to address it with.
+   *
+   * ```ts
+   * // The class declares its own key and takes no constructor arguments.
+   * const scheduler = cluster.singleton.start(JobSchedulerActor);
+   *
+   * // Same, but the actor needs dependencies.
+   * const users = cluster.singleton.start(UserRepositoryActor, () => new UserRepositoryActor(shard));
+   *
+   * // A bare key, for an actor that does not declare one.
+   * const cron = cluster.singleton.start(SingletonKey.of<CronCommand>('cron'), CronActor);
+   *
+   * // Full form — needed for `role` / `lease`, and combinable with the above.
+   * const ingress = cluster.singleton.start(
+   *   StartSingletonOptions.create<IngressCommand>()
+   *     .withTypeName('http-ingress')
+   *     .withProps(Props.create(() => new HttpIngressActor(port))),
+   * );
+   * ```
+   *
+   * Idempotent per `typeName` on this node: a repeat call returns the same ref
+   * and ignores the new props.  Every node that may host the singleton has to
+   * call this — {@link ref} alone never hosts.
+   */
+  start<TCommand>(
+    actorClass: SingletonActorClass<TCommand>,
+    options?: StartSingletonOptions<TCommand>,
+  ): ActorRef<TCommand>;
+  start<TCommand>(
+    actorClass: SingletonKeyedClass<TCommand>,
+    factory: () => Actor<TCommand>,
+    options?: StartSingletonOptions<TCommand>,
+  ): ActorRef<TCommand>;
+  start<TCommand>(
+    key: SingletonKey<TCommand>,
+    actor: ActorClassOrFactory<TCommand>,
+    options?: StartSingletonOptions<TCommand>,
+  ): ActorRef<TCommand>;
+  start<TCommand>(options: StartSingletonOptions<TCommand>): ActorRef<TCommand>;
+  start<TCommand>(arg1: unknown, arg2?: unknown, arg3?: unknown): ActorRef<TCommand> {
+    const options = this.resolveStartOptions<TCommand>(arg1, arg2, arg3);
+    new StartSingletonOptionsValidator<TCommand>().validate(options);
+    this.ensureManager(options);
+    return this.proxyFor(SingletonKey.of<TCommand>(options.typeName));
+  }
+
+  /**
+   * A ref to the singleton **without hosting it** — the counterpart to
+   * `ClusterSharding.startProxy`.
+   *
+   * Works on a node that never calls {@link start}: messages route to whichever
+   * node currently hosts the singleton.  If that node later calls `start`, the
+   * same ref begins delivering through the local mailbox instead of over the
+   * wire — the manager is resolved per delivery, not captured.
+   */
+  ref<TCommand>(key: SingletonKey<TCommand> | SingletonKeyedClass<TCommand>): ActorRef<TCommand>;
+  ref<TCommand>(typeName: string): ActorRef<TCommand>;
+  ref<TCommand>(reference: SingletonReference<TCommand>): ActorRef<TCommand> {
+    return this.proxyFor(singletonKeyOf(reference));
+  }
+
+  /**
+   * Take this node out of rotation: stop the local manager (and with it the
+   * singleton, if this node was hosting) and drop the local proxy.
+   *
+   * Stopping is asynchronous — the manager releases its lease and its envelope
+   * path in `postStop`.  Starting the same singleton again on this node has to
+   * wait for that to settle.
+   */
+  stop(reference: SingletonReference): void {
+    const { typeName } = singletonKeyOf(reference);
+    this.proxies.get(typeName)?._stopForwarding();
+    this.proxies.delete(typeName);
+    this.managers.get(typeName)?.stop();
+    this.managers.delete(typeName);
+  }
+
+  /**
+   * This node's manager, if it called {@link start}.  Diagnostics and tests —
+   * application code addresses the singleton through the ref, not the manager.
+   */
+  managerFor(reference: SingletonReference): Option<ActorRef> {
+    return fromNullable(this.managers.get(singletonKeyOf(reference).typeName));
+  }
+
+  /** True if this node runs a manager for `reference` — i.e. it can become the host. */
+  isStarted(reference: SingletonReference): boolean {
+    return this.managers.has(singletonKeyOf(reference).typeName);
+  }
+
+  /**
+   * Normalize the four calling shapes into one options object.
+   *
+   * The three runtime forms are mutually exclusive: a `SingletonKey` instance,
+   * a function (the actor class), or an object (a builder or a plain options
+   * object — both read identically, since a builder *is* its settings).  The
+   * shorthands assemble a COMPLETE options object before validation runs, so
+   * the validator sees the same shape whichever door the caller came through.
+   */
+  private resolveStartOptions<TCommand>(
+    arg1: unknown,
+    arg2: unknown,
+    arg3: unknown,
+  ): StartSingletonOptionsType<TCommand> {
+    if (arg1 instanceof SingletonKey) {
+      return this.shorthandOptions(
+        arg1.typeName,
+        arg2 as ActorClassOrFactory<TCommand>,
+        arg3 as StartSingletonOptions<TCommand> | undefined,
+      );
+    }
+    if (typeof arg1 === 'function') {
+      const key = (arg1 as Partial<SingletonKeyedClass<TCommand>>).singleton;
+      if (!(key instanceof SingletonKey)) {
+        throw new Error(
+          `${(arg1 as { name?: string }).name ?? 'The actor class'} does not declare a singleton key — `
+          + 'add `static readonly singleton = SingletonKey.of<Command>(\'type-name\')`, '
+          + 'or pass the key explicitly as the first argument',
+        );
+      }
+      // `start(TheClass, factory, options?)` vs `start(TheClass, options?)`: only
+      // the DI form puts a function in the second slot, and a zero-argument class
+      // is its own factory.
+      const hasFactory = typeof arg2 === 'function';
+      return this.shorthandOptions(
+        key.typeName,
+        (hasFactory ? arg2 : arg1) as ActorClassOrFactory<TCommand>,
+        (hasFactory ? arg3 : arg2) as StartSingletonOptions<TCommand> | undefined,
+      );
+    }
+    return arg1 as StartSingletonOptionsType<TCommand>;
+  }
+
+  private shorthandOptions<TCommand>(
+    typeName: string,
+    actor: ActorClassOrFactory<TCommand>,
+    options: StartSingletonOptions<TCommand> | undefined,
+  ): StartSingletonOptionsType<TCommand> {
+    return {
+      ...(options as Partial<StartSingletonOptionsType<TCommand>> | undefined),
+      typeName,
+      props: Props.create<TCommand>(actorFactoryOf(actor)),
+    } as StartSingletonOptionsType<TCommand>;
+  }
+
+  /** Spawn this node's manager for `options`, unless one is already running. */
+  private ensureManager<TCommand>(options: StartSingletonOptionsType<TCommand>): void {
+    const { typeName } = options;
+    if (this.managers.has(typeName)) {
+      // First call wins.  Worth saying out loud: with the key declared on the
+      // actor class it is easy for two modules to start the same singleton with
+      // different dependencies, and the second one's props are dropped.
+      this.log.debug(`singleton '${typeName}' is already started on this node — ignoring these props`);
+      return;
+    }
+    const cluster = this.clusterOrThrow();
 
     // Register the envelope handler *before* spawning the manager actor so
     // remote proxies that fire during the brief spawn window don't drop.
@@ -49,7 +246,7 @@ export class ClusterSingleton {
     // same variable and assign below.
     let managerRef: ActorRef = null as unknown as ActorRef;
     const envelopeUnsubscribe = cluster._registerEnvelopeHandler(
-      singletonManagerPath(this.system.name, resolvedOptions.typeName),
+      singletonManagerPath(this.system.name, typeName),
       (env) => {
         // Route inbound envelopes through the manager's own mailbox so the
         // manager processes them on its own dispatcher thread.
@@ -58,43 +255,62 @@ export class ClusterSingleton {
     );
 
     const managerProps = Props.create(() => {
-      const managerOptions = ClusterSingletonManagerOptions.create<T>()
+      const managerOptions = ClusterSingletonManagerOptions.create<TCommand>()
         .withCluster(cluster)
-        .withTypeName(resolvedOptions.typeName)
-        .withSingletonProps(resolvedOptions.props);
-      if (resolvedOptions.role !== undefined) managerOptions.withRole(resolvedOptions.role);
-      if (resolvedOptions.lease !== undefined) managerOptions.withLease(resolvedOptions.lease);
-      if (resolvedOptions.acquireRetryIntervalMs !== undefined) {
-        managerOptions.withAcquireRetryIntervalMs(resolvedOptions.acquireRetryIntervalMs);
+        .withTypeName(typeName)
+        .withSingletonProps(options.props);
+      if (options.role !== undefined) managerOptions.withRole(options.role);
+      if (options.lease !== undefined) managerOptions.withLease(options.lease);
+      if (options.acquireRetryIntervalMs !== undefined) {
+        managerOptions.withAcquireRetryIntervalMs(options.acquireRetryIntervalMs);
       }
-      const mgr = new ClusterSingletonManager<T>(managerOptions);
-      mgr._envelopeUnsub = envelopeUnsubscribe;
-      return mgr;
+      const manager = new ClusterSingletonManager<TCommand>(managerOptions);
+      manager._envelopeUnsub = envelopeUnsubscribe;
+      return manager;
     });
     managerRef = this.system._spawnSystemActor(
       managerProps,
       SystemGroups.clusterSingleton,
-      singletonManagerName(resolvedOptions.typeName),
+      singletonManagerName(typeName),
     );
     // The handler above is keyed on the well-known path; a drift between it
     // and where the manager actually landed would route inbound envelopes
     // past the `singleton-deliver` wrapping instead of failing.
-    assertSpawnedAt(singletonManagerPath(this.system.name, resolvedOptions.typeName), managerRef);
-    const proxy = new ClusterSingletonProxy<T>(cluster, resolvedOptions.typeName, managerRef);
-    const handle: SingletonHandle<T> = {
-      proxy, manager: managerRef,
-      stop(): void {
-        proxy.stop();
-        managerRef.stop();
-      },
-    };
-    this.handles.set(resolvedOptions.typeName, handle as SingletonHandle<unknown>);
-    return handle;
+    assertSpawnedAt(singletonManagerPath(this.system.name, typeName), managerRef);
+    this.managers.set(typeName, managerRef);
   }
 
-  /** Look up a previously-started singleton by typeName. */
-  get<T>(typeName: string): Option<SingletonHandle<T>> {
-    return fromNullable(this.handles.get(typeName) as SingletonHandle<T> | undefined);
+  /**
+   * The memoised proxy for `key`.
+   *
+   * Memoisation is not an optimisation: every proxy subscribes to cluster
+   * events for the lifetime of the process, and that subscription is released
+   * only through the unsubscribe closure it holds.  Handing out a fresh proxy
+   * per call would leak one listener — and one buffer — per call.
+   */
+  private proxyFor<TCommand>(key: SingletonKey<TCommand>): ActorRef<TCommand> {
+    const existing = this.proxies.get(key.typeName);
+    if (existing) return existing as unknown as ActorRef<TCommand>;
+    const proxy = new ClusterSingletonProxy<TCommand>(
+      this.clusterOrThrow(),
+      key,
+      // Resolved per delivery, not captured: a proxy handed out by `ref()`
+      // predates any local `start()`, and a `start()` may follow on this node
+      // later — a captured ref would be impossible to obtain or permanently stale.
+      () => this.managers.get(key.typeName) ?? null,
+    );
+    this.proxies.set(key.typeName, proxy as unknown as ClusterSingletonProxy<never>);
+    return proxy;
+  }
+
+  private clusterOrThrow(): Cluster {
+    if (!this.cluster) {
+      throw new Error(
+        'ClusterSingleton is not bound to a cluster — reach it through `cluster.singleton`, '
+        + 'or bind it explicitly with `ClusterSingleton.get(system, cluster)`',
+      );
+    }
+    return this.cluster;
   }
 }
 

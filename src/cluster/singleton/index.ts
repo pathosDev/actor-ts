@@ -10,7 +10,6 @@ export type {
   SingletonKeyedClass,
   SingletonReference,
 } from './SingletonKey.js';
-export type { SingletonHandle } from './ClusterSingleton.js';
 export {
   ClusterSingletonManager,
   singletonManagerPath,

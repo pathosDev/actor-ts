@@ -3,14 +3,13 @@ import { Actor } from '../../../../../src/Actor.js';
 import { ActorSystem } from '../../../../../src/ActorSystem.js';
 import { Cluster } from '../../../../../src/cluster/Cluster.js';
 import { ClusterOptions } from '../../../../../src/cluster/ClusterOptions.js';
-import { ClusterSingletonId, StartSingletonOptions } from '../../../../../src/cluster/singleton/index.js';
+import { StartSingletonOptions } from '../../../../../src/cluster/singleton/index.js';
 import { InMemoryTransport } from '../../../../../src/cluster/Transport.js';
 import { NodeAddress } from '../../../../../src/cluster/NodeAddress.js';
 import { LogLevel, NoopLogger } from '../../../../../src/Logger.js';
 import { Props } from '../../../../../src/Props.js';
 import { TestKit } from '../../../../../src/testkit/TestKit.js';
 import { TestKitOptions } from '../../../../../src/testkit/TestKitOptions.js';
-import type { ActorRef } from '../../../../../src/ActorRef.js';
 
 const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
 
@@ -61,14 +60,14 @@ describe('ClusterSingleton — single node', () => {
     const singletonOptions = StartSingletonOptions.create<string>()
       .withTypeName('echo')
       .withProps(Props.create(() => new Echo()));
-    const handle = kit.system.extension(ClusterSingletonId).start(nodeA.cluster, singletonOptions);
+    const singletonRef = nodeA.cluster.singleton.start(singletonOptions);
     // Wait until the proxy can locate the leader.
     await waitFor(() => nodeA.cluster.leader().nonEmpty);
 
-    handle.proxy.tell('ping');
+    singletonRef.tell('ping');
     expect(await probe.expectMessage('got:ping', 500)).toBe('got:ping');
 
-    handle.stop();
+    nodeA.cluster.singleton.stop('echo');
     await stop(nodeA);
   });
 
@@ -88,14 +87,14 @@ describe('ClusterSingleton — single node', () => {
     const singletonOptions = StartSingletonOptions.create<string>()
       .withTypeName('echo2')
       .withProps(Props.create(() => new Echo()));
-    const handle = kit.system.extension(ClusterSingletonId).start(nodeA.cluster, singletonOptions);
+    const singletonRef = nodeA.cluster.singleton.start(singletonOptions);
 
-    for (const message of ['a', 'b', 'c']) handle.proxy.tell(message);
+    for (const message of ['a', 'b', 'c']) singletonRef.tell(message);
     expect(await probe.expectMessage('a', 500)).toBe('a');
     expect(await probe.expectMessage('b', 500)).toBe('b');
     expect(await probe.expectMessage('c', 500)).toBe('c');
 
-    handle.stop();
+    nodeA.cluster.singleton.stop('echo2');
     await stop(nodeA);
   });
 });
@@ -118,11 +117,11 @@ describe('ClusterSingleton — two nodes', () => {
     const aSingletonOptions = StartSingletonOptions.create<string>()
       .withTypeName('echo')
       .withProps(Props.create(() => new Echo('a')));
-    const aHandle = nodeA.system.extension(ClusterSingletonId).start(nodeA.cluster, aSingletonOptions);
+    const aRef = nodeA.cluster.singleton.start(aSingletonOptions);
     const bSingletonOptions = StartSingletonOptions.create<string>()
       .withTypeName('echo')
       .withProps(Props.create(() => new Echo('b')));
-    const bHandle = nodeB.system.extension(ClusterSingletonId).start(nodeB.cluster, bSingletonOptions);
+    const bRef = nodeB.cluster.singleton.start(bSingletonOptions);
 
     await sleep(150);
 
@@ -133,11 +132,11 @@ describe('ClusterSingleton — two nodes', () => {
     const hostedOnA = leaderAddr.equals(nodeA.cluster.selfAddress);
 
     // Tell via the follower's proxy — it must arrive at the leader's child.
-    (hostedOnA ? bHandle.proxy : aHandle.proxy).tell('via-follower');
+    (hostedOnA ? bRef : aRef).tell('via-follower');
     await waitFor(() => received.some(r => r.message === 'via-follower'), 1_500);
 
     // Tell via the leader's proxy — arrives at the same child.
-    (hostedOnA ? aHandle.proxy : bHandle.proxy).tell('via-leader');
+    (hostedOnA ? aRef : bRef).tell('via-leader');
     await waitFor(() => received.some(r => r.message === 'via-leader'), 1_500);
 
     // Both messages must have been received by the same node (the leader).
@@ -145,7 +144,7 @@ describe('ClusterSingleton — two nodes', () => {
     expect(hosts.size).toBe(1);
     expect(hosts.has(hostedOnA ? 'a' : 'b')).toBe(true);
 
-    aHandle.stop(); bHandle.stop();
+    nodeA.cluster.singleton.stop('echo'); nodeB.cluster.singleton.stop('echo');
     await stop(nodeA); await stop(nodeB);
   });
 
@@ -164,11 +163,11 @@ describe('ClusterSingleton — two nodes', () => {
     const aSingletonOptions = StartSingletonOptions.create<string>()
       .withTypeName('marker')
       .withProps(Props.create(() => new Marker('a')));
-    nodeA.system.extension(ClusterSingletonId).start(nodeA.cluster, aSingletonOptions);
+    nodeA.cluster.singleton.start(aSingletonOptions);
     const bSingletonOptions = StartSingletonOptions.create<string>()
       .withTypeName('marker')
       .withProps(Props.create(() => new Marker('b')));
-    nodeB.system.extension(ClusterSingletonId).start(nodeB.cluster, bSingletonOptions);
+    nodeB.cluster.singleton.start(bSingletonOptions);
 
     // Wait for one of the nodes to host the marker child (preStart fires).
     await waitFor(() => hosts.length >= 1, 2_000);
@@ -234,7 +233,7 @@ describe('ClusterSingleton — two nodes', () => {
     const bSingletonOptions = StartSingletonOptions.create<string>()
       .withTypeName('marker')
       .withProps(Props.create(() => new Marker('b')));
-    nodeB.system.extension(ClusterSingletonId).start(nodeB.cluster, bSingletonOptions);
+    nodeB.cluster.singleton.start(bSingletonOptions);
     await waitFor(() => hosts.includes('b'), 1_500);
     expect(hosts).toEqual(['b']);
 
@@ -245,7 +244,7 @@ describe('ClusterSingleton — two nodes', () => {
     const aSingletonOptions = StartSingletonOptions.create<string>()
       .withTypeName('marker')
       .withProps(Props.create(() => new Marker('a')));
-    nodeA.system.extension(ClusterSingletonId).start(nodeA.cluster, aSingletonOptions);
+    nodeA.cluster.singleton.start(aSingletonOptions);
     await waitFor(() =>
       nodeA.cluster.upMembers().length === 2 && nodeB.cluster.upMembers().length === 2,
       2_000,
@@ -287,12 +286,12 @@ describe('ClusterSingleton — role filter', () => {
       .withTypeName('only-worker')
       .withRole('worker')
       .withProps(Props.create(() => new Marker('a')));
-    nodeA.system.extension(ClusterSingletonId).start(nodeA.cluster, aSingletonOptions);
+    nodeA.cluster.singleton.start(aSingletonOptions);
     const bSingletonOptions = StartSingletonOptions.create<string>()
       .withTypeName('only-worker')
       .withRole('worker')
       .withProps(Props.create(() => new Marker('b')));
-    nodeB.system.extension(ClusterSingletonId).start(nodeB.cluster, bSingletonOptions);
+    nodeB.cluster.singleton.start(bSingletonOptions);
 
     // Allow time: if the leader is B (no role), it shouldn't spawn; wait a
     // long beat to confirm no unwanted host appears.
@@ -301,7 +300,6 @@ describe('ClusterSingleton — role filter', () => {
     // The singleton must only exist on node A (the role-tagged one).
     expect(hosts).toEqual(['a']);
 
-    void _unusedRef;
     await stop(nodeA); await stop(nodeB);
   });
 });
@@ -320,5 +318,3 @@ async function startNodeWithRole(systemName: string, host: string, port: number,
   const cluster = await Cluster.join(kit.system, clusterOptions);
   return { system: kit.system, cluster, kit };
 }
-
-let _unusedRef: ActorRef | undefined;

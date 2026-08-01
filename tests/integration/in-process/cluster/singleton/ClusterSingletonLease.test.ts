@@ -18,7 +18,7 @@ import { describe, expect, test } from 'bun:test';
 import { Actor } from '../../../../../src/Actor.js';
 import { Cluster } from '../../../../../src/cluster/Cluster.js';
 import { ClusterOptions } from '../../../../../src/cluster/ClusterOptions.js';
-import { ClusterSingletonId, StartSingletonOptions } from '../../../../../src/cluster/singleton/index.js';
+import { StartSingletonOptions } from '../../../../../src/cluster/singleton/index.js';
 import { InMemoryTransport } from '../../../../../src/cluster/Transport.js';
 import { NodeAddress } from '../../../../../src/cluster/NodeAddress.js';
 import {
@@ -79,16 +79,16 @@ describe('ClusterSingleton + Lease', () => {
       .withTypeName('echo')
       .withProps(Props.create(() => new Echo()))
       .withLease(lease);
-    const handle = nodeA.kit.system.extension(ClusterSingletonId).start(nodeA.cluster, singletonOptions);
+    const singletonRef = nodeA.cluster.singleton.start(singletonOptions);
     await waitFor(() => nodeA.cluster.leader().nonEmpty);
     // Child preStart fires once acquire resolves — give the mailbox
     // a few ticks for the acquire-result event.
     await probe.expectMessage('started', 1_000);
 
-    handle.proxy.tell('hi');
+    singletonRef.tell('hi');
     expect(await probe.expectMessage('got:hi', 500)).toBe('got:hi');
 
-    handle.stop();
+    nodeA.cluster.singleton.stop('echo');
     await stop(nodeA);
   }, 10_000);
 
@@ -113,7 +113,7 @@ describe('ClusterSingleton + Lease', () => {
       .withProps(Props.create(() => new Echo()))
       .withLease(lease)
       .withAcquireRetryIntervalMs(100);   // tighter so the test isn't slow
-    const handle = nodeA.kit.system.extension(ClusterSingletonId).start(nodeA.cluster, singletonOptions);
+    const singletonRef = nodeA.cluster.singleton.start(singletonOptions);
     await waitFor(() => nodeA.cluster.leader().nonEmpty);
 
     // Other holder still owns it — manager should be in retry loop, no
@@ -125,7 +125,7 @@ describe('ClusterSingleton + Lease', () => {
     await otherHolder.release();
     await probe.expectMessage('started', 1_000);
 
-    handle.stop();
+    nodeA.cluster.singleton.stop('echo');
     await stop(nodeA);
   }, 10_000);
 
@@ -147,7 +147,7 @@ describe('ClusterSingleton + Lease', () => {
       .withProps(Props.create(() => new Echo()))
       .withLease(lease)
       .withAcquireRetryIntervalMs(100);
-    const handle = nodeA.kit.system.extension(ClusterSingletonId).start(nodeA.cluster, singletonOptions);
+    const singletonRef = nodeA.cluster.singleton.start(singletonOptions);
     await probe.expectMessage('started', 1_000);
 
     // Force a lost-lease scenario: another owner takes over from under us.
@@ -167,7 +167,7 @@ describe('ClusterSingleton + Lease', () => {
     // — the test is happy that the child stopped.
 
     await usurper.release();
-    handle.stop();
+    nodeA.cluster.singleton.stop('echo');
     await stop(nodeA);
   }, 10_000);
 
@@ -185,11 +185,11 @@ describe('ClusterSingleton + Lease', () => {
       .withTypeName('echo')
       .withProps(Props.create(() => new Echo()))
       .withLease(lease);
-    const handle = nodeA.kit.system.extension(ClusterSingletonId).start(nodeA.cluster, singletonOptions);
+    const singletonRef = nodeA.cluster.singleton.start(singletonOptions);
     await probe.expectMessage('started', 1_000);
     expect(lease.checkAlive()).toBe(true);
 
-    handle.stop();
+    nodeA.cluster.singleton.stop('echo');
     // Manager.postStop releases the lease; allow a tick for the async
     // release to settle.
     await waitFor(() => !lease.checkAlive(), 2_000);
@@ -212,17 +212,17 @@ describe('ClusterSingleton + Lease', () => {
     const singletonOptions = StartSingletonOptions.create<string>()
       .withTypeName('echo')
       .withProps(Props.create(() => new Echo()));
-    const handle = nodeA.kit.system.extension(ClusterSingletonId).start(nodeA.cluster, singletonOptions);
+    const singletonRef = nodeA.cluster.singleton.start(singletonOptions);
     await waitFor(() => nodeA.cluster.leader().nonEmpty);
     // No lease → child should be spawned synchronously the moment
     // SelfUp/LeaderChanged fires.  In single-node clusters that
     // happens during cluster.join.
     await probe.expectMessage('started', 500);
 
-    handle.proxy.tell('hi');
+    singletonRef.tell('hi');
     expect(await probe.expectMessage('got:hi', 500)).toBe('got:hi');
 
-    handle.stop();
+    nodeA.cluster.singleton.stop('echo');
     await stop(nodeA);
   }, 10_000);
 });

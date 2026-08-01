@@ -99,7 +99,6 @@ export type {
   SingletonActorClass,
   SingletonKeyedClass,
   SingletonReference,
-  SingletonHandle,
   ClusterSingletonManagerOptionsType,
   SingletonDeliver,
 } from './singleton/index.js';

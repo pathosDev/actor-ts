@@ -16,11 +16,10 @@ import {
   ActorSystem,
   Cluster,
   ClusterBootstrapOptions,
-  ClusterSingletonId,
   InMemoryTransport,
   NodeAddress,
   Props,
-  StartSingletonOptions,
+  SingletonKey,
   type ActorRef,
 } from '../../src/index.js';
 import { attachDevTools } from '../devtools.js';
@@ -32,6 +31,9 @@ type CronCommand = SubscribeCommand | TickCommand;
 type CronEvent = { readonly tickNumber: number; readonly hostedOn: string; };
 
 class Cron extends Actor<CronCommand> {
+  /** The singleton's identity, declared on the actor itself. */
+  static readonly singleton = SingletonKey.of<CronCommand>('cron');
+
   private tickCount = 0;
   private readonly subs = new Set<ActorRef<CronEvent>>();
   constructor(private readonly host: string) { super(); }
@@ -93,18 +95,14 @@ async function main(): Promise<void> {
 
   // Each node installs its own singleton manager — only the leader hosts
   // the Cron actor.
-  for (const { sys, cluster, name } of [nodeA, nodeB, nodeC]) {
-    sys.extension(ClusterSingletonId).start(cluster, StartSingletonOptions.create<CronCommand>()
-      .withTypeName('cron')
-      .withProps(Props.create(() => new Cron(name))));
+  for (const { cluster, name } of [nodeA, nodeB, nodeC]) {
+    cluster.singleton.start(Cron, () => new Cron(name));
   }
 
   // Spawn a client on each node and subscribe it via the proxy.
-  for (const { sys, name } of [nodeA, nodeB, nodeC]) {
+  for (const { sys, cluster, name } of [nodeA, nodeB, nodeC]) {
     const client = sys.spawnAnonymous(Props.create(() => new CronClient(name)));
-    sys.extension(ClusterSingletonId).get<CronCommand>('cron').forEach(h =>
-      h.proxy.tell({ kind: 'subscribe', sub: client }),
-    );
+    cluster.singleton.ref(Cron).tell({ kind: 'subscribe', sub: client });
   }
 
   // Let the cluster tick for a while.

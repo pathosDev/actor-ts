@@ -37,10 +37,11 @@ import {
 import { FailureDetectorOptions, type FailureDetectorOptionsType } from './FailureDetectorOptions.js';
 import { Member } from './Member.js';
 import { NodeAddress } from './NodeAddress.js';
-// `ClusterSharding` only imports `Cluster` as a type (erased at runtime),
-// so the value-import here doesn't create a runtime cycle — every
-// sharding file uses `import type { Cluster }`.
+// `ClusterSharding` and `ClusterSingleton` only import `Cluster` as a type
+// (erased at runtime), so the value-imports here don't create a runtime
+// cycle — every sharding and singleton file uses `import type { Cluster }`.
 import { ClusterSharding } from './sharding/ClusterSharding.js';
+import { ClusterSingleton } from './singleton/ClusterSingleton.js';
 import type {
   EnvelopeMessage,
   GossipMessage,
@@ -195,6 +196,22 @@ export class Cluster {
    */
   get sharding(): ClusterSharding {
     return ClusterSharding.get(this.system, this);
+  }
+
+  /**
+   * The cluster's singleton facade.  Binds the `ClusterSingleton` extension to
+   * this Cluster on first access, so starting one hands back the ref directly:
+   *
+   * ```ts
+   * const scheduler = cluster.singleton.start(JobSchedulerActor);
+   * scheduler.tell({ kind: 'schedule', jobId: '42' });
+   * ```
+   *
+   * Equivalent to `ClusterSingleton.get(cluster.system, cluster)` — which still
+   * works for callers that hold the two separately.
+   */
+  get singleton(): ClusterSingleton {
+    return ClusterSingleton.get(this.system, this);
   }
 
   /**
