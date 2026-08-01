@@ -25,7 +25,6 @@ import {
   ActorSystemOptions,
   Cluster,
   ClusterOptions,
-  ClusterSingletonId,
   MemberDown,
   MemberRemoved,
   MemberUnreachable,
@@ -266,7 +265,7 @@ async function main(): Promise<void> {
       readReceipts,
       ...(tls ? { tls } : {}),
     }));
-  system.extension(ClusterSingletonId).start(cluster, singletonOptions);
+  cluster.singleton.start(singletonOptions);
 
   // -------- 10. Graceful shutdown --------
   let shuttingDown = false;

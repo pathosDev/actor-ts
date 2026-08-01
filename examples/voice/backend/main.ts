@@ -28,7 +28,6 @@ import {
   ActorSystemOptions,
   Cluster,
   ClusterOptions,
-  ClusterSingletonId,
   MemberDown,
   MemberRemoved,
   MemberUnreachable,
@@ -146,7 +145,7 @@ async function main(): Promise<void> {
       voicePresence,
       sessions,
     }));
-  system.extension(ClusterSingletonId).start(cluster, singletonOptions);
+  cluster.singleton.start(singletonOptions);
 
   // -------- 7. Graceful shutdown --------
   let shuttingDown = false;

@@ -42,10 +42,15 @@ Drei Actors pro Node lassen das funktionieren:
   Cluster-Events; spawnt den Singleton, wenn dieser Node Leader
   wird, und stoppt ihn, wenn er aufhört, Leader zu sein.
 - **ClusterSingletonProxy** — auf jedem Node, der mit dem Singleton
-  *spricht*. Hält einen Forwarding-Ref, der immer auf den Manager
-  des aktuellen Leaders zeigt.
+  *spricht*. Genau das geben `start` und `ref` zurück: einen
+  weiterleitenden `ActorRef`, der immer auf den Manager des
+  aktuellen Leaders zeigt.
 - **Der Singleton-Actor selbst** — der Actor des Nutzers, immer nur
   auf dem Leader instanziiert.
+
+Ein Node, der nur einen Proxy betreibt, kann das Singleton
+adressieren, es aber nie hosten — siehe
+[Einen Ref bekommen, ohne zu hosten](#einen-ref-bekommen-ohne-zu-hosten).
 
 ## Wann einen Singleton verwenden
 
@@ -66,10 +71,10 @@ ein Singleton vermutlich das Richtige.
 ## Ein minimales Beispiel
 
 ```ts
-import { Actor, ActorSystem, Cluster, ClusterOptions, Props } from 'actor-ts';
-import { ClusterSingletonId, StartSingletonOptions } from 'actor-ts';
+import { Actor, ActorSystem, Cluster, ClusterOptions, SingletonKey } from 'actor-ts';
 
 class JobScheduler extends Actor<JobCommand> {
+  static readonly singleton = SingletonKey.of<JobCommand>('job-scheduler');
   override onReceive(message: JobCommand): void { /* ... */ }
 }
 
@@ -80,24 +85,112 @@ const clusterOptions = ClusterOptions.create()
   .withSeeds(seeds);
 const cluster = await Cluster.join(system, clusterOptions);
 
-// Auf jedem Node: starte das Singleton über die ClusterSingleton-Extension.
-// Ein Aufruf spawnt den Manager dieses Nodes und baut den Proxy; nur der
-// Manager des Leaders konstruiert tatsächlich den JobScheduler.
-const startSingletonOptions = StartSingletonOptions.create<JobCommand>()
-  .withTypeName('job-scheduler')
-  .withProps(Props.create(() => new JobScheduler()))
-  .withRole('control-plane');   // optional: nur diese Nodes können hosten
-const handle = system.extension(ClusterSingletonId).start(cluster, startSingletonOptions);
+// Auf jedem Node: ein Aufruf spawnt den Manager dieses Nodes und gibt den
+// Ref zurück. Nur der Manager des Leaders konstruiert tatsächlich den
+// JobScheduler.
+const scheduler = cluster.singleton.start(JobScheduler);
 
 // Irgendwo in der App — derselbe Aufruf auf jedem Node:
-handle.proxy.tell({ kind: 'schedule', jobId: '42' });
+scheduler.tell({ kind: 'schedule', jobId: '42' });
 ```
 
-Der Proxy sieht aus wie ein einzelner `ActorRef`. Hinter den
-Kulissen findet er den Manager des aktuellen Leaders über den
-bekannten Pfad `/system/cluster/singleton/manager-<typeName>` und leitet
-Nachrichten dorthin. Bei Leader-Wechseln verschiebt sich das Ziel
-des Proxys automatisch innerhalb einer Gossip-Runde.
+`start` gibt einen normalen `ActorRef<JobCommand>` zurück — ein
+Singleton wird also herumgereicht und gespeichert wie jeder andere
+Actor, und keine Consumer-Signatur muss wissen, dass es eines ist.
+Hinter den Kulissen findet der Ref den Manager des aktuellen Leaders
+über den bekannten Pfad `/system/cluster/singleton/manager-<typeName>`
+und leitet Nachrichten dorthin. Bei Leader-Wechseln verschiebt sich
+das Ziel automatisch innerhalb einer Gossip-Runde.
+
+## Den Key auf der Actor-Klasse deklarieren
+
+`SingletonKey.of<Command>('type-name')` verbindet den Namen eines
+Singletons mit seinem Message-Typ. Deklariert als
+`static readonly singleton` auf dem Actor wird beides am Aufrufort
+nicht wiederholt, und `start` / `ref` leiten den richtigen
+`ActorRef<Command>` allein aus der Klasse ab.
+
+:::caution[Das explizite Typargument ist tragend]
+`SingletonKey.of('job-scheduler')` — ohne `<JobCommand>` — inferiert
+`SingletonKey<unknown>`, und jeder daraus gewonnene Ref degradiert zu
+`ActorRef<unknown>`. Schreibe das Typargument, oder annotiere das Feld:
+`static readonly singleton: SingletonKey<JobCommand> = SingletonKey.of('job-scheduler')`.
+:::
+
+Ein Actor mit Constructor-Dependencies bekommt eine Factory als
+zweites Argument:
+
+```ts
+class UserRepository extends PersistentActor<UserRepositoryCommand, Event, State> {
+  static readonly singleton = SingletonKey.of<UserRepositoryCommand>('user-repository');
+  constructor(private readonly users: ActorRef<UserCommand>) { super(); }
+}
+
+const users = cluster.sharding.start(UserActor);
+const repository = cluster.singleton.start(UserRepository, () => new UserRepository(users));
+```
+
+Für `role` oder `lease` werden Options danebengelegt — oder die volle
+Builder-Form genutzt, wenn es keine Klasse gibt, an die ein Static
+passt:
+
+```ts
+const singletonOptions = StartSingletonOptions.create<JobCommand>()
+  .withRole('control-plane');   // nur diese Nodes können hosten
+cluster.singleton.start(JobScheduler, singletonOptions);
+```
+
+:::note[Es gibt bewusst kein `SingletonActor`-Interface]
+TypeScripts `implements`-Klausel prüft ausschließlich die
+**Instanzseite** einer Klasse — es gibt kein `static implements`, und
+`abstract static` ist ein Compile-Fehler. Ein `SingletonActor`-Marker
+wäre also strukturell leer: jede Klasse würde ihn erfüllen und geprüft
+würde nichts. Ein statisches Feld ist der Träger, der funktioniert, und
+es komponiert mit jeder Basisklasse — was zählt, weil ein Singleton
+häufig auch ein `PersistentActor` ist und TypeScript nur
+Einfachvererbung kennt. Erzwungen wird es am `start`-Aufrufort, der den
+Message-Typ gleichzeitig aus dem Key und aus der Props-Position
+ableitet und eine Abweichung zwischen beiden meldet.
+:::
+
+## Einen Ref bekommen, ohne zu hosten
+
+`start` nimmt den Node in die Rotation auf: er kann Host werden. Ein
+Node, der nur mit dem Singleton *sprechen* muss, ruft stattdessen
+`ref` — das Gegenstück zu `ClusterSharding.startProxy`:
+
+```ts
+// Kein Manager auf diesem Node — Nachrichten gehen an den, der hostet.
+const scheduler = cluster.singleton.ref(JobScheduler);
+scheduler.tell({ kind: 'schedule', jobId: '42' });
+```
+
+`ref` und `start` geben für denselben Key denselben memoisierten Ref
+zurück, und der lokale Manager wird pro Zustellung aufgelöst — ein Node,
+der erst `ref` und später `start` ruft, behält also denselben Ref, der
+dann einfach lokal statt über die Wire zustellt.
+
+:::caution[`ref` allein hostet nie]
+Rufe `start` auf **jedem** Node, der Leader werden kann. Hat der
+gewählte Leader nur `ref` gerufen, hostet kein Node das Singleton und
+Nachrichten landen mit einer Warnung, die den Typ nennt, in den Dead
+Letters.
+:::
+
+Zwei Dinge tut der zurückgegebene Ref außerdem nicht:
+
+- **`ref.stop()` ist ein warnender No-Op.** Überall sonst schickt
+  `ActorRef.stop()` eine `PoisonPill` an sein Ziel; hier würde das
+  töten, was der aktuelle Leader gerade hostet. Um *diesen Node* aus
+  der Rotation zu nehmen, rufe `cluster.singleton.stop(key)`.
+- **Stoppen ist asynchron.** Der Manager gibt Lease und Envelope-Pfad
+  in `postStop` frei, und der Actor-Name bleibt belegt, bis die
+  Terminierung abgeschlossen ist — dasselbe Singleton im selben Turn
+  erneut zu starten wirft daher mit einer Erklärung statt mit einem
+  Duplicate-Name-Fehler.
+
+`cluster.singleton` bietet zusätzlich `isStarted(key)` und
+`managerFor(key)` für Diagnose.
 
 ## Failover
 
@@ -154,14 +247,11 @@ Drei Verteidigungen, in der Reihenfolge der Komplexität:
    Verliererseite fährt sich selbst herunter; nur eine Hälfte
    bleibt aktiv. Siehe
    [Downing-Strategien](/de/cluster/downing-strategies/).
-2. **Eine Lease**, die an den Manager übergeben wird:
+2. **Eine Lease**, die mit den Start-Options übergeben wird:
    ```ts
-   const managerOptions = ClusterSingletonManagerOptions.create()
-     .withCluster(cluster)
-     .withTypeName('...')
-     .withSingletonProps(...)
+   const singletonOptions = StartSingletonOptions.create<JobCommand>()
      .withLease(someLeaseImpl);   // z. B. K8s-Lease oder In-Memory für Tests
-   ClusterSingletonManager.props(managerOptions);
+   cluster.singleton.start(JobScheduler, singletonOptions);
    ```
    Der Manager muss die Lease erfolgreich erwerben, bevor er den
    Singleton spawnen darf. Nur eine Seite einer Partition kann die

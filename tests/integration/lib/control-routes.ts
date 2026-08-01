@@ -260,7 +260,7 @@ class PubSubSnapshotCollector extends Actor<PubSubSnapshot> {
 }
 
 export type ControlDeps = {
-  /** Singleton proxy from `ClusterSingletonId.start(...)`. */
+  /** Singleton ref from `cluster.singleton.start(...)`. */
   readonly singletonProxy: ActorRef<SingletonMessage>;
   /** Shard-region ref from `ClusterSharding.get(...).start(...)`. */
   readonly shardingRegion: ActorRef<ShardedCommand>;

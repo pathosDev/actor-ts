@@ -30,7 +30,6 @@ import { managementRoutes } from '../../src/management/index.js';
 import { ReceptionistId, ReceptionistOptions } from '../../src/discovery/index.js';
 import { Register } from '../../src/discovery/ReceptionistMessages.js';
 import { DistributedDataId, DistributedDataOptions } from '../../src/crdt/index.js';
-import { ClusterSingletonId } from '../../src/cluster/singleton/ClusterSingleton.js';
 import { StartSingletonOptions } from '../../src/cluster/singleton/StartSingletonOptions.js';
 import { ClusterSharding } from '../../src/cluster/sharding/ClusterSharding.js';
 import { StartShardingOptions } from '../../src/cluster/sharding/StartShardingOptions.js';
@@ -139,8 +138,7 @@ async function main(): Promise<void> {
   // The host-node identity is baked into the singleton at construction
   // time, so `SingletonWho` replies tell us which node currently
   // hosts the instance (used by scenario 05 to verify failover).
-  const singleton = system.extension(ClusterSingletonId).start(
-    cluster,
+  const singleton = cluster.singleton.start(
     StartSingletonOptions.create()
       .withTypeName('counter-singleton')
       .withProps(Props.create(() => new CounterSingleton(NODE_NAME))),
@@ -240,7 +238,7 @@ async function main(): Promise<void> {
   // `system.extension(...)`; the singleton proxy goes through `deps`
   // because the proxy is an ActorRef the route module receives).
   const controlRoutes = makeControlRoutes(system, cluster, {
-    singletonProxy: singleton.proxy,
+    singletonProxy: singleton,
     shardingRegion,
   });
   const controlBinding = await http.newServerAt('0.0.0.0', CONTROL_PORT).bind(controlRoutes);

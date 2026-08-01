@@ -87,11 +87,37 @@ cartRegion.tell({ entityId: 'user-42', kind: 'view', replyTo: ... });
 // Same ID → same entity actor, every time, regardless of node.
 ```
 
-`cluster.sharding.start()` accepts three calling shapes — pick
-whichever fits the entity:
+`cluster.sharding.start()` accepts several calling shapes — pick
+whichever fits the entity.  The shortest is to let the entity declare
+its own identity, which means neither the type name nor the entity-id
+extractor is repeated at the call site:
 
 ```ts
-// 1. Class shorthand (most common):
+class CartActor extends Actor<CartCommand> {
+  static readonly shard = ShardKey.of<CartCommand>('cart', (command) => command.entityId);
+  // ...
+}
+
+const cartRegion = cluster.sharding.start(CartActor);
+const cart = cluster.sharding.entityRefFor(CartActor, 'user-42');
+```
+
+:::caution[The explicit type argument is load-bearing]
+`ShardKey.of('cart', ...)` — without `<CartCommand>` — infers
+`ShardKey<unknown>`, and every ref taken from it degrades to
+`ActorRef<unknown>`.
+:::
+
+A `ShardKey`'s identity is its `typeName` alone; the extractor rides
+along so the declaring class is the single source of truth, but a node
+that only looks entities up can name the same type with
+`ShardKey.of<CartCommand>('cart')` and no extractor.  An
+`extractEntityId` passed in options overrides the one on the key.
+
+The remaining shapes are unchanged:
+
+```ts
+// 1. Class shorthand:
 const startShardingOptions = StartShardingOptions.create<CartCommand>().withExtractEntityId((m) => m.entityId);
 cluster.sharding.start('cart', CartActor, startShardingOptions);
 

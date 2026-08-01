@@ -89,11 +89,16 @@ export {
   ClusterSingletonManagerOptionsBuilder,
   StartSingletonOptions,
   StartSingletonOptionsBuilder,
+  StartSingletonOptionsValidator,
+  SingletonKey,
+  singletonKeyOf,
   singletonManagerPath,
 } from './singleton/index.js';
 export type {
   StartSingletonOptionsType,
-  SingletonHandle,
+  SingletonActorClass,
+  SingletonKeyedClass,
+  SingletonReference,
   ClusterSingletonManagerOptionsType,
   SingletonDeliver,
 } from './singleton/index.js';
@@ -121,6 +126,8 @@ export type { DistributedPubSubOptionsType } from './pubsub/index.js';
 export { ClusterSharding } from './sharding/ClusterSharding.js';
 export { StartShardingOptions, StartShardingOptionsBuilder, StartShardingOptionsValidator } from './sharding/StartShardingOptions.js';
 export type { StartShardingOptionsType } from './sharding/StartShardingOptions.js';
+export { ShardKey, shardKeyOf } from './sharding/ShardKey.js';
+export type { ShardEntityClass, ShardKeyedClass, ShardReference } from './sharding/ShardKey.js';
 export { ShardedDaemonProcess } from './sharding/ShardedDaemonProcess.js';
 export { ShardedDaemonProcessOptions, ShardedDaemonProcessOptionsBuilder, ShardedDaemonProcessOptionsValidator } from './sharding/ShardedDaemonProcessOptions.js';
 export type { ShardedDaemonProcessOptionsType } from './sharding/ShardedDaemonProcessOptions.js';

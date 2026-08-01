@@ -1,4 +1,6 @@
 import { describe, expect, test } from 'bun:test';
+import { Actor } from '../../../src/Actor.js';
+import { Props } from '../../../src/Props.js';
 import { OptionsError } from '../../../src/util/OptionsValidator.js';
 import { FailureDetectorOptionsValidator, type FailureDetectorOptionsType } from '../../../src/cluster/FailureDetectorOptions.js';
 import {
@@ -215,17 +217,41 @@ describe('KubernetesLeaseOptionsValidator', () => {
   });
 });
 
+/** Stand-in for the required `entityProps` / `props` in the cluster validators. */
+class NoopEntity extends Actor<unknown> {
+  override onReceive(): void {}
+}
+
 describe('ShardingOptionsValidator', () => {
+  // The fields a region cannot work without; spread into every case that is
+  // only exercising a different rule.
+  const required = {
+    typeName: 'entity',
+    entityProps: Props.create(() => new NoopEntity()),
+    extractEntityId: () => 'e-1',
+  } satisfies Partial<ShardingOptionsType<unknown>>;
   const check = (s: Partial<ShardingOptionsType<unknown>>): void =>
     new ShardingOptionsValidator<unknown>().validate(s);
 
   test('rejects numShards < 1 and negative maxEntities', () => {
-    expect(() => check({ numShards: 0 })).toThrow(OptionsError);
-    expect(() => check({ maxEntities: -1 })).toThrow(OptionsError);
+    expect(() => check({ ...required, numShards: 0 })).toThrow(OptionsError);
+    expect(() => check({ ...required, maxEntities: -1 })).toThrow(OptionsError);
   });
 
   test('accepts sensible sharding values (0 maxEntities = no cap)', () => {
-    expect(() => check({ numShards: 64, maxEntities: 0, passivationIdleMs: 0 })).not.toThrow();
+    expect(() => check({ ...required, numShards: 64, maxEntities: 0, passivationIdleMs: 0 })).not.toThrow();
+  });
+
+  test('rejects a region missing typeName, entityProps or extractEntityId', () => {
+    expect(() => check({})).toThrow(/typeName is required/);
+    expect(() => check({ typeName: 'entity' })).toThrow(/entityProps is required/);
+    expect(() => check({ typeName: 'entity', entityProps: required.entityProps }))
+      .toThrow(/extractEntityId is required/);
+  });
+
+  test('a proxy region needs neither entityProps nor extractEntityId', () => {
+    // It routes but never hosts, so both are unreachable there.
+    expect(() => check({ typeName: 'entity', proxy: true })).not.toThrow();
   });
 });
 
@@ -246,15 +272,25 @@ describe('StartShardingOptionsValidator', () => {
   const check = (s: Partial<StartShardingOptionsType<unknown>>): void =>
     new StartShardingOptionsValidator<unknown>().validate(s);
 
+  const required = {
+    typeName: 'entity',
+    entityProps: Props.create(() => new NoopEntity()),
+    extractEntityId: () => 'e-1',
+  } satisfies Partial<StartShardingOptionsType<unknown>>;
+
   test('inherits the region rules (numShards) and adds coordinator intervals', () => {
-    expect(() => check({ numShards: 0 })).toThrow(/numShards/);
-    expect(() => check({ rebalanceIntervalMs: 0 })).toThrow(/rebalanceIntervalMs/);
-    expect(() => check({ handOffTimeoutMs: -1 })).toThrow(OptionsError);
-    expect(() => check({ acquireRetryIntervalMs: 0 })).toThrow(OptionsError);
+    expect(() => check({ ...required, numShards: 0 })).toThrow(/numShards/);
+    expect(() => check({ ...required, rebalanceIntervalMs: 0 })).toThrow(/rebalanceIntervalMs/);
+    expect(() => check({ ...required, handOffTimeoutMs: -1 })).toThrow(OptionsError);
+    expect(() => check({ ...required, acquireRetryIntervalMs: 0 })).toThrow(OptionsError);
+  });
+
+  test('inherits the required-field rules too', () => {
+    expect(() => check({ rebalanceIntervalMs: 10_000 })).toThrow(/typeName is required/);
   });
 
   test('accepts a valid coordinator config', () => {
-    expect(() => check({ numShards: 64, rebalanceIntervalMs: 10_000, handOffTimeoutMs: 5_000, acquireRetryIntervalMs: 5_000 }))
+    expect(() => check({ ...required, numShards: 64, rebalanceIntervalMs: 10_000, handOffTimeoutMs: 5_000, acquireRetryIntervalMs: 5_000 }))
       .not.toThrow();
   });
 });
@@ -263,13 +299,26 @@ describe('StartSingletonOptionsValidator', () => {
   const check = (s: Partial<StartSingletonOptionsType<unknown>>): void =>
     new StartSingletonOptionsValidator<unknown>().validate(s);
 
+  const required = {
+    typeName: 'counter',
+    props: Props.create(() => new NoopEntity()),
+  } satisfies Partial<StartSingletonOptionsType<unknown>>;
+
   test('rejects empty typeName and non-positive acquireRetryIntervalMs', () => {
-    expect(() => check({ typeName: '' })).toThrow(OptionsError);
-    expect(() => check({ acquireRetryIntervalMs: 0 })).toThrow(/acquireRetryIntervalMs/);
+    expect(() => check({ ...required, typeName: '' })).toThrow(OptionsError);
+    expect(() => check({ ...required, acquireRetryIntervalMs: 0 })).toThrow(/acquireRetryIntervalMs/);
+    expect(() => check({ ...required, role: '' })).toThrow(/role/);
+  });
+
+  test('rejects a singleton missing typeName or props', () => {
+    // Both used to pass: the check helpers no-op on `undefined`, so a
+    // singleton with no props validated cleanly and blew up in Props.create.
+    expect(() => check({})).toThrow(/typeName is required/);
+    expect(() => check({ typeName: 'counter' })).toThrow(/props is required/);
   });
 
   test('accepts a valid singleton config', () => {
-    expect(() => check({ typeName: 'counter', acquireRetryIntervalMs: 5_000 })).not.toThrow();
+    expect(() => check({ ...required, acquireRetryIntervalMs: 5_000 })).not.toThrow();
   });
 });
 
