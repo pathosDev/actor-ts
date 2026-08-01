@@ -89,10 +89,10 @@ type ControlResponse =
 export class ParallelMultiNodeSpec {
   private readonly options: Required<Omit<
     ParallelMultiNodeSpecOptionsType,
-    'addresses' | 'failureDetector' | 'scenarioModule' | 'scenarioInitDataFor' | 'bootstrapModule'
+    'addresses' | 'failureDetector' | 'scenarioModule' | 'scenarioInitDataFor' | 'bootstrapModule' | 'backend'
   >> & Pick<
     ParallelMultiNodeSpecOptionsType,
-    'addresses' | 'failureDetector' | 'scenarioModule' | 'scenarioInitDataFor' | 'bootstrapModule'
+    'addresses' | 'failureDetector' | 'scenarioModule' | 'scenarioInitDataFor' | 'bootstrapModule' | 'backend'
   >;
   private readonly nodes = new Map<string, NodeRecord>();
   private readonly broker = new MultiNodeBroker();
@@ -132,6 +132,7 @@ export class ParallelMultiNodeSpec {
       scenarioModule: options.scenarioModule,
       scenarioInitDataFor: options.scenarioInitDataFor,
       bootstrapModule: options.bootstrapModule,
+      backend: options.backend,
     };
   }
 
@@ -348,7 +349,7 @@ export class ParallelMultiNodeSpec {
   private async spawnRole(
     role: string, address: NodeAddress, seeds: string[],
   ): Promise<NodeRecord> {
-    const backend = await getWorkerBackend();
+    const backend = this.options.backend ?? await getWorkerBackend();
     const bootstrap = this.options.bootstrapModule
       ?? new URL('./internal/parallel-multi-node-bootstrap.js', import.meta.url);
     const worker = backend.spawn(bootstrap, { name: `parallel-mns-${role}` });

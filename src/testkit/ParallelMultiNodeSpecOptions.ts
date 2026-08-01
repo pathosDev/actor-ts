@@ -1,6 +1,7 @@
 import { OptionsBuilder } from '../util/OptionsBuilder.js';
 import type { FailureDetectorOptionsType } from '../cluster/FailureDetectorOptions.js';
 import type { LogLevel } from '../Logger.js';
+import type { WorkerBackend } from '../runtime/worker/index.js';
 
 type AddressMap = Readonly<Record<string, { host: string; port: number }>>;
 
@@ -19,6 +20,8 @@ export type ParallelMultiNodeSpecOptionsType = {
   readonly logLevel?: LogLevel;
   /** URL of the bootstrap script.  Defaults to the bundled one. */
   readonly bootstrapModule?: URL;
+  /** Backend the roles spawn through.  Defaults to the detected one. */
+  readonly backend?: WorkerBackend;
 };
 
 /** Fluent builder for {@link ParallelMultiNodeSpecOptionsType}. */
@@ -76,6 +79,16 @@ export class ParallelMultiNodeSpecOptionsBuilder extends OptionsBuilder<Parallel
   /** URL of the bootstrap script.  Defaults to the bundled one. */
   withBootstrapModule(bootstrapModule: URL): this {
     return this.set('bootstrapModule', bootstrapModule);
+  }
+
+  /**
+   * Spawn the roles through this backend instead of the one
+   * `getWorkerBackend()` picks for the current runtime — the same seam
+   * {@link WorkerClusterOptionsBuilder.withBackend} opens, kept here so
+   * a spec can drive fake workers without mocking a module (#520).
+   */
+  withBackend(backend: WorkerBackend): this {
+    return this.set('backend', backend);
   }
 }
 

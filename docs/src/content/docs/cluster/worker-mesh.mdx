@@ -107,6 +107,7 @@ void main();
 | `withInitData(data)` | Payload delivered to every worker's `join()` context (`initData`).  Default `null`. |
 | `withRestartPolicy(p)` | `'always'` / `'on-failure'` / `'never'`.  Default `'on-failure'`. |
 | `withReadyTimeoutMs(ms)` | Per-worker handshake timeout.  Default `10000`. |
+| `withBackend(backend)` | Spawn through this `WorkerBackend` instead of the detected one — a runtime auto-detection does not know, or an in-memory fake in a test.  Default: detected. |
 
 The returned `WorkerCluster` exposes `size`, `addresses`
 (the `NodeAddress` of each worker), the shared `broker`, and
