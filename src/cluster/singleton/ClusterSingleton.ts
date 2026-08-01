@@ -266,13 +266,27 @@ export class ClusterSingleton implements Extension {
       }
       const manager = new ClusterSingletonManager<TCommand>(managerOptions);
       manager._envelopeUnsub = envelopeUnsubscribe;
+      // Keep the registry derived from actor liveness: a manager that dies to
+      // supervision or system shutdown never goes through `stop()`, and
+      // without this the entry would outlive it and be handed to the next
+      // caller as if it were alive.  Guarded by identity — a manager's
+      // `postStop` can land after a replacement has already registered, and an
+      // unguarded delete would then evict the live one.
+      manager._onStopped = () => {
+        if (this.managers.get(typeName) === managerRef) this.managers.delete(typeName);
+      };
       return manager;
     });
-    managerRef = this.system._spawnSystemActor(
-      managerProps,
-      SystemGroups.clusterSingleton,
-      singletonManagerName(typeName),
-    );
+    try {
+      managerRef = this.system._spawnSystemActor(
+        managerProps,
+        SystemGroups.clusterSingleton,
+        singletonManagerName(typeName),
+      );
+    } catch (cause) {
+      envelopeUnsubscribe();
+      throw this.describeSpawnFailure(typeName, cause);
+    }
     // The handler above is keyed on the well-known path; a drift between it
     // and where the manager actually landed would route inbound envelopes
     // past the `singleton-deliver` wrapping instead of failing.
@@ -301,6 +315,26 @@ export class ClusterSingleton implements Extension {
     );
     this.proxies.set(key.typeName, proxy as unknown as ClusterSingletonProxy<never>);
     return proxy;
+  }
+
+  /**
+   * Turn a failed manager spawn into something actionable.
+   *
+   * The realistic cause is a re-`start()` that raced the previous manager's
+   * teardown: stopping is asynchronous, and the child slot stays taken in the
+   * parent's children map until termination settles — well after `postStop`.
+   * Renaming the way DevTools does is not available here, because the manager
+   * sits at a well-known path that remote proxies address by name and
+   * `assertSpawnedAt` checks.
+   */
+  private describeSpawnFailure(typeName: string, cause: unknown): Error {
+    const message = cause instanceof Error ? cause.message : String(cause);
+    if (!message.includes('is not unique')) return cause instanceof Error ? cause : new Error(message);
+    return new Error(
+      `singleton '${typeName}' is still stopping on this node — stopping a singleton is `
+      + 'asynchronous; await a turn before starting it again',
+      { cause },
+    );
   }
 
   private clusterOrThrow(): Cluster {

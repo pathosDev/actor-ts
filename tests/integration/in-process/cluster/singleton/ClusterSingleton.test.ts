@@ -71,6 +71,76 @@ describe('ClusterSingleton — single node', () => {
     await stop(nodeA);
   });
 
+  test('stop() prunes the registry so the singleton can be started again', async () => {
+    // Regression: the registry was populated on start and never emptied, so
+    // `stop()` left a dead entry behind and every later `start()` short-
+    // circuited to it — returning a proxy that silently dropped everything.
+    const nodeA = await startNode('sng-restart', 'h', 52003);
+    const kit = nodeA.kit;
+    const probe = kit.createTestProbe<string>();
+
+    class Echo extends Actor<string> {
+      override onReceive(m: string): void { probe.tell(`got:${m}`); }
+    }
+    const options = (): StartSingletonOptions<string> => StartSingletonOptions.create<string>()
+      .withTypeName('echo3')
+      .withProps(Props.create(() => new Echo()));
+
+    const first = nodeA.cluster.singleton.start(options());
+    await waitFor(() => nodeA.cluster.leader().nonEmpty);
+    first.tell('one');
+    expect(await probe.expectMessage('got:one', 500)).toBe('got:one');
+
+    nodeA.cluster.singleton.stop('echo3');
+    expect(nodeA.cluster.singleton.isStarted('echo3')).toBe(false);
+    expect(nodeA.cluster.singleton.managerFor('echo3').isNone()).toBe(true);
+
+    // Stopping is asynchronous — the manager's cell keeps its name until
+    // termination settles, so a restart in the same turn cannot succeed.  It
+    // has to say why rather than surfacing the raw "name is not unique".
+    expect(() => nodeA.cluster.singleton.start(options()))
+      .toThrow(/is still stopping on this node/);
+
+    await waitFor(() => {
+      try { nodeA.cluster.singleton.start(options()); return true; } catch { return false; }
+    }, 2_000);
+
+    const second = nodeA.cluster.singleton.start(options());
+    expect(nodeA.cluster.singleton.isStarted('echo3')).toBe(true);
+    second.tell('two');
+    expect(await probe.expectMessage('got:two', 1_000)).toBe('got:two');
+
+    nodeA.cluster.singleton.stop('echo3');
+    await stop(nodeA);
+  });
+
+  test('a manager that dies on its own drops out of the registry', async () => {
+    // `stop()` is not the only way a manager goes away — supervision and
+    // system shutdown do too, and neither routes through the facade.  The
+    // registry is pruned from the manager's own postStop so it cannot keep
+    // claiming a dead actor is started.
+    const nodeA = await startNode('sng-liveness', 'h', 52004);
+
+    class Idle extends Actor<string> {
+      override onReceive(): void {}
+    }
+    const singletonOptions = StartSingletonOptions.create<string>()
+      .withTypeName('idle')
+      .withProps(Props.create(() => new Idle()));
+    nodeA.cluster.singleton.start(singletonOptions);
+    expect(nodeA.cluster.singleton.isStarted('idle')).toBe(true);
+
+    // Kill the manager behind the facade's back.
+    const manager = nodeA.cluster.singleton.managerFor('idle');
+    expect(manager.nonEmpty).toBe(true);
+    manager.value.stop();
+
+    await waitFor(() => !nodeA.cluster.singleton.isStarted('idle'), 2_000);
+    expect(nodeA.cluster.singleton.managerFor('idle').isNone()).toBe(true);
+
+    await stop(nodeA);
+  });
+
   test('messages sent before a leader exists get buffered and delivered later', async () => {
     // We can't truly predate the leader on a single-node cluster (self goes
     // Up immediately when it is the only seed), so we simulate buffering by

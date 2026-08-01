@@ -85,6 +85,15 @@ export class ClusterSingletonManager<T> extends Actor<Inbox> {
   /** Callback the extension hands us so we can release the envelope path on stop. */
   _envelopeUnsub: (() => void) | null = null;
 
+  /**
+   * Callback the extension hands us so it can drop this manager from its
+   * registry.  Fired for *every* way a manager dies — an explicit
+   * `cluster.singleton.stop`, a supervision decision, or system shutdown — so
+   * the registry stays derived from actor liveness instead of being a second
+   * set of books that can drift out of sync with it.
+   */
+  _onStopped: (() => void) | null = null;
+
   readonly options: ClusterSingletonManagerOptionsType<T>;
 
   constructor(options: ClusterSingletonManagerOptions<T>) {
@@ -142,6 +151,7 @@ export class ClusterSingletonManager<T> extends Actor<Inbox> {
     this.unsubscribeCluster?.();
     this.unsubscribeLeaseLost?.();
     this._envelopeUnsub?.();
+    this._onStopped?.();
     this.retryTimer?.cancel();
     if (this.child) { this.child.stop(); this.child = null; }
     // Drop any in-flight stop — the parent termination cascade will
