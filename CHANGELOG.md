@@ -9,6 +9,8 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ## [Unreleased]
 
+## [0.12.0] — 2026-08-01
+
 ### Added
 
 - **`SingletonKey` and `ShardKey` — typed, class-declared identities** (#523).
