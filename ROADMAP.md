@@ -8,10 +8,13 @@ This document tracks the planned direction.  Nothing here is committed work — 
   sweep extended to every identifier (locals, generic parameters, the `kind`
   discriminant) + TypeScript 7 native compiler (#361) + raised runtime floors
   (Node ≥ 24, Bun ≥ 1.3) + dependency bumps.  The window's headline additions
-  are the **DevTools suite** (#445) and **five more persistence backends**
-  (#438) on the new relational base layer (#389), plus a **core-correctness
-  pass** over the 2026 audit's findings — see *Done*, below.
-- ~3 395 tests green (unit + multi-node + in-process integration) + 15 real-network multi-node integration scenarios green; open bugs are tracked as `[Bug]` issues in the tracker.
+  are the **DevTools suite** (#445), **five more persistence backends** (#438)
+  on the new relational base layer (#389), and a **cluster-addressing pass** —
+  a shard is a real actor with introspection (#511, #512, #151), singletons and
+  sharded types carry typed keys behind `cluster.singleton` / `cluster.sharding`
+  (#523), and framework actors moved to grouped `/system` paths (#509) — plus a
+  **core-correctness pass** over the 2026 audit's findings.  See *Done*, below.
+- ~3 586 tests green (unit + multi-node + in-process integration) + 15 real-network multi-node integration scenarios green; open bugs are tracked as `[Bug]` issues in the tracker.
 - A full audit-catalog of follow-up items is tracked in the issue tracker — security findings, framework features, code-quality refactors.  Filter by label `security` + `severity: <tier>` or by title prefix `[Security] ` / `[Feature] `.
 
 ## Done since the last roadmap update
@@ -26,6 +29,17 @@ This document tracks the planned direction.  Nothing here is committed work — 
     on the Postgres stores (#401)
   - **Documentation site (#26)** — Starlight, with a 1:1 German mirror and a
     generated TypeDoc API reference at `actor-ts.dev/api/`
+  - **Cluster addressing** — a shard is a real actor (`Region → Shard →
+    Entity`) with `shards()` / `shardRefFor()` / `entityRefFor()` introspection
+    (#511, #512, #151); `SingletonKey` / `ShardKey` declare identity on the
+    actor class, `cluster.singleton` mirrors `cluster.sharding` and `start()`
+    returns a plain `ActorRef` (#523); framework actors moved from `/user` to
+    grouped `/system` paths (#509)
+  - **Cluster-correctness follow-ups** — cross-node `ask()` gets its reply
+    instead of timing out (#517), a role-restricted singleton is hosted by a
+    node that carries the role rather than nowhere (#524), the singleton proxy
+    buffer is bounded (#526), and `leader()` / `KeepOldest` document the
+    address ordering they actually use (#525)
   - **Core correctness pass from the 2026 audit** — the `terminated` signal is
     delivered (#448), routers prune dead routees (#449) and reject an unusable
     pool size (#455), reliable-delivery settles in-flight sends on shutdown
