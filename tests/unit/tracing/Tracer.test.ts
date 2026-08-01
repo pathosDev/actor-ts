@@ -14,6 +14,8 @@ import {
   decodeTraceparent,
   encodeTraceparent,
 } from '../../../src/tracing/Tracer.js';
+import { ActorSystem } from '../../../src/ActorSystem.js';
+import { TracingExtensionId } from '../../../src/tracing/TracingExtension.js';
 
 describe('RecordingTracer — span hierarchy', () => {
   test('root span gets a fresh trace id, child shares it', () => {
@@ -103,15 +105,15 @@ describe('RecordingTracer — recording', () => {
 
 describe('W3C traceparent codec', () => {
   test('encode → decode round-trip', () => {
-    const ctx = {
+    const context = {
       traceId: '0123456789abcdef0123456789abcdef',
       spanId: '0123456789abcdef',
       traceFlags: 1,
     };
-    const tp = encodeTraceparent(ctx);
+    const tp = encodeTraceparent(context);
     expect(tp).toBe('00-0123456789abcdef0123456789abcdef-0123456789abcdef-01');
     const back = decodeTraceparent(tp);
-    expect(back).toEqual(ctx);
+    expect(back).toEqual(context);
   });
 
   test('decode rejects malformed inputs', () => {
@@ -135,5 +137,26 @@ describe('NoopTracer', () => {
     expect(tracer.injectContext()).toBeNull();
     expect(tracer.extractContext({ traceparent: '00-' + 'a'.repeat(32) + '-' + 'b'.repeat(16) + '-01' }))
       .toBeNull();
+  });
+});
+
+describe('TracingExtension — root-span recording', () => {
+  test('refuses without a tracer, because noop root spans are pure cost', () => {
+    const system = ActorSystem.create('root-spans-no-tracer');
+    const tracing = system.extension(TracingExtensionId);
+    expect(() => tracing.recordRootSpans(true)).toThrow('needs a tracer');
+    expect(tracing.isRecordingRootSpans()).toBe(false);
+    void system.terminate();
+  });
+
+  test('disabling the tracer takes root-span recording with it', () => {
+    const system = ActorSystem.create('root-spans-disable');
+    const tracing = system.extension(TracingExtensionId);
+    tracing.enable(new RecordingTracer());
+    tracing.recordRootSpans(true);
+    expect(tracing.isRecordingRootSpans()).toBe(true);
+
+    tracing.disable();
+    expect(tracing.isRecordingRootSpans()).toBe(false);
   });
 });

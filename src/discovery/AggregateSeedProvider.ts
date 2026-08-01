@@ -10,7 +10,7 @@ import type { SeedProvider } from './SeedProvider.js';
 export class AggregateSeedProvider implements SeedProvider {
   constructor(
     private readonly providers: ReadonlyArray<SeedProvider>,
-    private readonly log: (msg: string, err?: unknown) => void = () => {},
+    private readonly log: (message: string, err?: unknown) => void = () => {},
   ) {}
 
   async lookup(): Promise<NodeAddress[]> {

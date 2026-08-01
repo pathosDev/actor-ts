@@ -40,8 +40,14 @@ export class PersistenceExtension implements Extension {
   get journal(): Journal {
     if (!this._journal) {
       const pluginId = this.currentJournalPluginId();
-      const factory = this.journalFactories.get(pluginId)
-        ?? this.journalFactories.get('actor-ts.persistence.journal.in-memory')!;
+      const factory = this.journalFactories.get(pluginId);
+      if (!factory) {
+        throw new Error(
+          `Unknown journal plugin '${pluginId}': no factory is registered under that id. `
+            + `Register the backend (e.g. registerPostgresPlugins(ext, ...)) before the first `
+            + `PersistentActor is created, or correct actor-ts.persistence.journal.plugin.`,
+        );
+      }
       this._journal = factory(this.system);
     }
     return this._journal;
@@ -51,16 +57,33 @@ export class PersistenceExtension implements Extension {
   get snapshotStore(): SnapshotStore {
     if (!this._snapshotStore) {
       const pluginId = this.currentSnapshotPluginId();
-      const factory = this.snapshotFactories.get(pluginId)
-        ?? this.snapshotFactories.get('actor-ts.persistence.snapshot-store.in-memory')!;
+      const factory = this.snapshotFactories.get(pluginId);
+      if (!factory) {
+        throw new Error(
+          `Unknown snapshot-store plugin '${pluginId}': no factory is registered under that id. `
+            + `Register the backend (e.g. registerPostgresPlugins(ext, ...)) before the first `
+            + `PersistentActor is created, or correct actor-ts.persistence.snapshot-store.plugin.`,
+        );
+      }
       this._snapshotStore = factory(this.system);
     }
     return this._snapshotStore;
   }
 
   /** Replace the active journal in code — useful for tests that need a spy. */
-  setJournal(j: Journal): void { this._journal = j; }
-  setSnapshotStore(s: SnapshotStore): void { this._snapshotStore = s; }
+  setJournal(journal: Journal): void { this._journal = journal; }
+  setSnapshotStore(snapshotStore: SnapshotStore): void { this._snapshotStore = snapshotStore; }
+
+  /**
+   * Set the active journal and/or snapshot store in one call — a thin
+   * convenience over {@link setJournal} / {@link setSnapshotStore} for tests
+   * and simple, single-backend apps that wire persistence directly in code
+   * rather than through the config-selected `registerXxxPlugins` helpers.
+   */
+  configure(stores: { journal?: Journal; snapshotStore?: SnapshotStore }): void {
+    if (stores.journal !== undefined) this.setJournal(stores.journal);
+    if (stores.snapshotStore !== undefined) this.setSnapshotStore(stores.snapshotStore);
+  }
 
   private currentJournalPluginId(): string {
     return this.system.config.hasPath('actor-ts.persistence.journal.plugin')

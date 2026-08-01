@@ -25,10 +25,10 @@ const ITERATIONS_PER_TASK = 200_000;   // arithmetic ops per crunch message
 const TASKS_PER_ITERATION = 200;       // work items dispatched per harness iteration
 const MEASURED_ITERATIONS = 20;
 
-interface WorkerHandle {
+type WorkerHandle = {
   readonly worker: Worker;
   pending: Map<number, (acc: number) => void>;
-}
+};
 
 function spawnWorker(): WorkerHandle {
   const url = new URL('./_cpu-worker.ts', import.meta.url);

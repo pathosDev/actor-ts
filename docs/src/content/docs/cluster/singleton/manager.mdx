@@ -42,39 +42,49 @@ shift their target.
 
 ## Configuration
 
-```ts
-import { ClusterSingletonManager, ClusterSingletonManagerOptions, Props } from 'actor-ts';
+The manager is not spawned by hand — `cluster.singleton.start(...)`
+does it, at the well-known path proxies address, and the start options
+below are what it configures:
 
-const clusterSingletonManagerOptions = ClusterSingletonManagerOptions.create()
-  .withCluster(cluster)
-  .withTypeName('job-scheduler')
-  .withSingletonProps(Props.create(() => new JobScheduler()))
+```ts
+import { SingletonKey, StartSingletonOptions } from 'actor-ts';
+
+const singletonOptions = StartSingletonOptions.create<JobCommand>()
   .withRole('control-plane')            // optional
-  .withLease(leaseImpl)                  // optional split-brain protection
-  .withAcquireRetryIntervalMs(5_000);
-system.spawn(
-  ClusterSingletonManager.props(
-    clusterSingletonManagerOptions,    // when lease acquire fails
-  ),
-  'singleton-manager-job-scheduler',
-);
+  .withLease(leaseImpl)                 // optional split-brain protection
+  .withAcquireRetryIntervalMs(5_000);   // retry cadence when lease acquire fails
+cluster.singleton.start(JobScheduler, singletonOptions);
 ```
+
+The manager's own `ClusterSingletonManagerOptions` — `cluster`,
+`typeName`, `singletonProps` and the three above — are assembled from
+these by the extension.  The fields are documented here because they
+are what the manager acts on, not because you construct them:
 
 | Field | Required | What |
 | --- | --- | --- |
 | `cluster` | Yes | The cluster the manager watches. |
 | `typeName` | Yes | Logical name for this singleton; the child actor's name. |
-| `singletonProps` | Yes | How to construct the singleton.  Only invoked on the leader. |
-| `role` | No | Restrict to nodes carrying this role.  Other nodes' managers stay passive. |
-| `lease` | No | If set, the leader must acquire this lease before spawning the singleton. |
+| `singletonProps` | Yes | How to construct the singleton.  Only invoked on the host. |
+| `role` | No | Restrict hosting to nodes carrying this role.  Other nodes' managers stay passive. |
+| `lease` | No | If set, the host must acquire this lease before spawning the singleton. |
 | `acquireRetryIntervalMs` | No (default 5s) | Retry cadence after a failed lease acquisition. |
+
+### Which node hosts
+
+Without a `role`, the host is the cluster leader.  With one, it is the
+**first up-member carrying that role** — not "the leader, if it happens
+to carry the role", which would leave the singleton hosted nowhere
+whenever the elected leader lacked it.  Both forms read the same
+address-ordered member list, so every node independently picks the same
+node, and the proxy resolves the host exactly the way the managers do.
 
 ## The naming convention
 
 The manager **must** be spawned at a path matching:
 
 ```
-actor-ts://<system>/user/singleton-manager-<typeName>
+actor-ts://<system>/system/cluster/singleton/manager-<typeName>
 ```
 
 Hence the actor name `'singleton-manager-job-scheduler'` above
@@ -89,7 +99,7 @@ If you misname, the proxy can't route — silent breakage.  Always:
 import { singletonManagerPath } from 'actor-ts';
 
 const path = singletonManagerPath(system.name, 'job-scheduler');
-// "actor-ts://<sysName>/user/singleton-manager-job-scheduler"
+// "actor-ts://<sysName>/system/cluster/singleton/manager-job-scheduler"
 ```
 
 You can use this helper if you want to assert the path matches.
@@ -114,10 +124,9 @@ to prevent.
 ### With lease
 
 ```ts
-const managerOptions = ClusterSingletonManagerOptions.create()
-  // ...
+const singletonOptions = StartSingletonOptions.create<JobCommand>()
   .withLease(someLeaseImpl);
-ClusterSingletonManager.props(managerOptions);
+cluster.singleton.start(JobScheduler, singletonOptions);
 ```
 
 Adds an async gate on the lease.  The flow:
@@ -181,9 +190,11 @@ default, the child is restarted.  Manager doesn't intervene
 unless leadership also changed.
 
 If the child explicitly stops itself (`context.stopSelf()`), the
-manager sees the Terminated, releases the lease (if held), and
-**doesn't re-spawn**.  The singleton is gone until the next
-leader change.
+manager sees the Terminated but does nothing with it: it
+**doesn't re-spawn**, and it **doesn't release the lease** — a held
+lease stays held, and the manager's `child` reference is left
+pointing at the now-dead singleton.  The singleton is gone until the
+next leader change.
 
 If you want a self-stopping singleton to be re-spawned, the
 manager isn't the place — write a watchdog actor at a level
@@ -223,8 +234,10 @@ Direct manager contact is useful only for:
 ```ts
 import { MemberUp, LeaderChanged } from 'actor-ts';
 
-cluster.subscribe(LeaderChanged, (evt) => {
-  console.log(`leader is now ${evt.leader}`);
+cluster.subscribe((evt) => {
+  if (evt instanceof LeaderChanged) {
+    console.log(`leader is now ${evt.leader.map((m) => m.address).getOrElse('<none>')}`);
+  }
 });
 ```
 
@@ -237,35 +250,43 @@ manager logs these by default at debug level.
 
 import { Aside } from '@astrojs/starlight/components';
 
-<Aside type="caution" title="Manager must be spawned on every node">
+<Aside type="caution" title="Call start() on every node that may become leader">
   ```ts
-  // Some nodes spawn the manager, others don't
+  cluster.singleton.ref(JobScheduler);    // addresses it, never hosts it
+  cluster.singleton.start(JobScheduler);  // puts this node into rotation
   ```
-  The proxy expects the manager to exist at the well-known path
-  on whichever node is currently leader.  If the leader's node
-  didn't spawn the manager, the proxy can't route — messages
-  dead-letter.  Either always spawn the manager, or
-  role-restrict so only role-carrying nodes can be leader.
+  A proxy routes to whichever node is currently leader and expects a
+  manager there.  A node that only ever called `ref` runs no manager,
+  so if it becomes leader nothing anywhere is hosting the singleton and
+  messages dead-letter with a warning naming the type.  Either call
+  `start` everywhere, or role-restrict so only starting nodes can host.
 </Aside>
 
-<Aside type="caution" title="Manager name must match the convention">
+<Aside type="caution" title="Declare a role on the key, not only in the options">
   ```ts
-  system.spawn(ClusterSingletonManager.props(ClusterSingletonManagerOptions.create()/* ... */), 'whatever');
-  // ✗ proxy looks for `/user/singleton-manager-<typeName>`, not /user/whatever
+  class Ingress extends Actor<IngressCommand> {
+    static readonly singleton = SingletonKey.of<IngressCommand>('ingress', 'edge');
+  }
   ```
-  Use `singletonManagerPath(...)` or just spell out the
-  convention.  The framework doesn't enforce; misnamed managers
-  are invisible to proxies.
+  A node that only calls `ref` has no options object — it has the key,
+  and nothing else.  A role declared *only* through
+  `StartSingletonOptions.withRole` is therefore invisible to it, and
+  its proxy resolves a different host than the managers do.  Put the
+  role on the key and every node agrees by construction; `withRole`
+  still overrides it where you need a per-deployment answer.
 </Aside>
 
-<Aside type="caution" title="Lease failure with no retry">
+<Aside type="caution" title="acquireRetryIntervalMs must be positive">
   ```ts
-  acquireRetryIntervalMs: 0,
+  acquireRetryIntervalMs: 0,   // ✗ does not disable retries
   ```
-  Setting to 0 disables retries — a single failed acquire leaves
-  the singleton un-spawned until the next `LeaderChanged` event.
-  Use a sensible value (default 5s is reasonable for most lease
-  providers).
+  `0` does not disable retries — there is no disable switch.  The
+  value is validated as a positive number when you start the
+  singleton, so a non-positive value is rejected up front with an
+  `OptionsError`.  And `0` never means "stop retrying" internally: the
+  5s default applies only to an *unset* value, so `0` would just retry
+  immediately.  Use a positive interval; the 5s default suits most
+  lease providers.
 </Aside>
 
 ## Where to next

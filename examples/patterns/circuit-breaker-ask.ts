@@ -12,19 +12,21 @@ import {
   CircuitBreakerOpenError,
   Props,
 } from '../../src/index.js';
+import { attachDevTools } from '../devtools.js';
 
-type Cmd = { kind: 'ping'; id: number } | { kind: 'hang' };
+type Command = { kind: 'ping'; id: number } | { kind: 'hang' };
 
 // A service that responds to ping but silently hangs on 'hang'.
-class FlakyService extends Actor<Cmd> {
-  override onReceive(cmd: Cmd): void {
-    if (cmd.kind === 'ping') this.sender.forEach((__s) => __s.tell(`pong#${cmd.id}`));
+class FlakyService extends Actor<Command> {
+  override onReceive(command: Command): void {
+    if (command.kind === 'ping') this.sender.forEach((__s) => __s.tell(`pong#${command.id}`));
     // 'hang' intentionally drops the message — ask times out.
   }
 }
 
 async function main(): Promise<void> {
   const system = ActorSystem.create('cb-realistic');
+  const devtools = await attachDevTools(system);
   const svc = system.spawn(Props.create(() => new FlakyService()), 'svc');
 
   const breaker = new CircuitBreaker({
@@ -56,6 +58,7 @@ async function main(): Promise<void> {
   const result = await breaker.call(() => svc.ask<string>({ kind: 'ping', id: 99 }, 100));
   console.log(`probe succeeded → ${result}, state=${breaker.state}`);
 
+  await devtools.holdOpen();
   await system.terminate();
 }
 

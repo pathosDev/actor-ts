@@ -73,9 +73,9 @@ describe('Actor tracing — auto-instrumentation', () => {
     class B extends Actor<string> {
       override onReceive(_m: string): void { /* */ }
     }
-    class A extends Actor<{ msg: string; next: ActorRef<string> }> {
-      override onReceive(m: { msg: string; next: ActorRef<string> }): void {
-        m.next.tell(m.msg);
+    class A extends Actor<{ message: string; next: ActorRef<string> }> {
+      override onReceive(m: { message: string; next: ActorRef<string> }): void {
+        m.next.tell(m.message);
       }
     }
 
@@ -83,7 +83,7 @@ describe('Actor tracing — auto-instrumentation', () => {
       const actorB = sys.spawn(Props.create(() => new B()), 'b');
       const actorA = sys.spawn(Props.create(() => new A()), 'a');
       const client = tracer.startSpan('client');
-      tracer.withActiveSpan(client, () => actorA.tell({ msg: 'forward', next: actorB }));
+      tracer.withActiveSpan(client, () => actorA.tell({ message: 'forward', next: actorB }));
       await sleep(60);
       client.end();
 
@@ -151,5 +151,65 @@ describe('Actor tracing — auto-instrumentation', () => {
     } finally {
       await sys.terminate();
     }
+  });
+});
+
+describe('Actor tracing — tooling actors', () => {
+  test('an internal actor produces no span, even inside an active trace', async () => {
+    const options = ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off);
+    const system = ActorSystem.create('internal-spans', options);
+    const tracer = new RecordingTracer();
+    system.extension(TracingExtensionId).enable(tracer);
+
+    class Quiet extends Actor<string> {
+      override onReceive(): void {}
+    }
+    const application = system.spawn(Props.create(() => new Quiet()), 'application');
+    const tooling = system.spawn(Props.create(() => new Quiet()).asInternal(), 'tooling');
+
+    const span = tracer.startSpan('client');
+    await tracer.withActiveSpan(span, async () => {
+      application.tell('a');
+      tooling.tell('b');
+    });
+    span.end();
+    await sleep(60);
+
+    const paths = tracer.recorded()
+      .map((recorded) => recorded.attributes['actor.path'])
+      .filter((path): path is string => typeof path === 'string');
+    expect(paths.some((path) => path.endsWith('/application'))).toBe(true);
+    // Excluding tooling only from *roots* was not enough: a probe that
+    // receives an event-stream publish during an application message
+    // inherits its trace and reappears in the middle of the route.
+    expect(paths.some((path) => path.endsWith('/tooling'))).toBe(false);
+
+    await system.terminate();
+  });
+
+  test('children inherit the mark', async () => {
+    const options = ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off);
+    const system = ActorSystem.create('internal-children', options);
+
+    class Leaf extends Actor<string> {
+      override onReceive(): void {}
+    }
+    class Root extends Actor<string> {
+      child!: ActorRef<string>;
+      override preStart(): void {
+        this.child = this.context.spawn(Props.create(() => new Leaf()), 'leaf');
+      }
+      override onReceive(message: string): void { this.child.tell(message); }
+    }
+    system.spawn(Props.create(() => new Root()).asInternal(), 'root');
+    await sleep(60);
+
+    const marked = system._inspectTree()
+      .filter((cell) => cell.internal)
+      .map((cell) => cell.name)
+      .sort();
+    expect(marked).toEqual(['leaf', 'root']);
+
+    await system.terminate();
   });
 });

@@ -10,8 +10,15 @@ import type {
   IntegrityResolver,
 } from '../object-storage/PluginConfig.js';
 
-export interface ObjectStorageDurableStateStoreOptionsType {
+export type ObjectStorageDurableStateStoreOptionsType = {
   readonly backend: ObjectStorageBackend;
+  /**
+   * Whether `close()` should also close the injected `backend`.  Default
+   * true — a standalone store owns the backend it was given.  Set false
+   * when the backend is shared with another store (as
+   * `registerObjectStoragePlugins` does) so the owner closes it once.
+   */
+  readonly ownsBackend?: boolean;
   readonly prefix?: string;
   readonly compression?: CompressionConfig | CompressionResolver;
   readonly encryption?: EncryptionConfig | EncryptionResolver;
@@ -42,7 +49,7 @@ export interface ObjectStorageDurableStateStoreOptionsType {
    * restore a legitimately large state blob, or lower it for a tighter bound.
    */
   readonly maxDecompressedBytes?: number;
-}
+};
 
 /**
  * Fluent builder for {@link ObjectStorageDurableStateStoreOptionsType}.  The
@@ -61,6 +68,11 @@ export class ObjectStorageDurableStateStoreOptionsBuilder extends OptionsBuilder
   /** The underlying storage layer (S3 / Filesystem / …). */
   withBackend(backend: ObjectStorageBackend): this {
     return this.set('backend', backend);
+  }
+
+  /** Whether `close()` also closes the injected backend.  Default true; set false when the backend is shared/owned elsewhere. */
+  withOwnsBackend(ownsBackend: boolean): this {
+    return this.set('ownsBackend', ownsBackend);
   }
 
   /** Key prefix prepended before the persistenceId.  Default: ''. */

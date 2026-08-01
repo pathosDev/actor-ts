@@ -16,7 +16,7 @@ import { Lazy } from '../../util/Lazy.js';
 
 const SERVICE_ACCOUNT_DIR = '/var/run/secrets/kubernetes.io/serviceaccount';
 
-export interface K8sCredentials {
+export type K8sCredentials = {
   /** API server URL (defaults to https://kubernetes.default.svc when running in-cluster). */
   readonly apiServerUrl: string;
   /** Bearer token for the ServiceAccount. */
@@ -25,7 +25,7 @@ export interface K8sCredentials {
   readonly caCert: string;
   /** Default namespace as read from the SA mount; user-supplied namespace wins where supplied. */
   readonly defaultNamespace?: string;
-}
+};
 
 /**
  * Load credentials from the standard ServiceAccount mount points.  Returns
@@ -65,22 +65,22 @@ export async function loadInClusterCredentials(): Promise<K8sCredentials | null>
 
 /* --------------------------- HTTPS request ---------------------------- */
 
-export interface K8sRequestOptions {
+export type K8sRequestOptions = {
   readonly method: 'GET' | 'POST' | 'PUT' | 'DELETE' | 'PATCH';
   readonly path: string;
   readonly body?: unknown;
   /** Provide a request-injected client (test override). */
   readonly client?: K8sFetchClient;
-}
+};
 
-export interface K8sResponse {
+export type K8sResponse = {
   readonly status: number;
   readonly body: unknown;
-}
+};
 
 /** Test seam — the real impl uses `node:https`; tests pass a mock. */
 export interface K8sFetchClient {
-  request(creds: K8sCredentials, opts: K8sRequestOptions): Promise<K8sResponse>;
+  request(creds: K8sCredentials, options: K8sRequestOptions): Promise<K8sResponse>;
 }
 
 /**
@@ -92,10 +92,10 @@ export interface K8sFetchClient {
  */
 export async function k8sRequest(
   creds: K8sCredentials,
-  opts: K8sRequestOptions,
+  options: K8sRequestOptions,
 ): Promise<K8sResponse> {
-  const client = opts.client ?? (await defaultClient.get());
-  return client.request(creds, opts);
+  const client = options.client ?? (await defaultClient.get());
+  return client.request(creds, options);
 }
 
 /** Real `node:https` client — lazy-imported so test mocks can short-circuit. */
@@ -105,10 +105,10 @@ const defaultClient: Lazy<Promise<K8sFetchClient>> = Lazy.of(async () => {
   const https = await import(httpsModule) as typeof import('node:https');
   const { URL } = await import(urlModule) as typeof import('node:url');
   return {
-    async request(creds: K8sCredentials, opts: K8sRequestOptions): Promise<K8sResponse> {
+    async request(creds: K8sCredentials, options: K8sRequestOptions): Promise<K8sResponse> {
       return new Promise<K8sResponse>((resolve, reject) => {
-        const url = new URL(opts.path, creds.apiServerUrl);
-        const bodyString = opts.body === undefined ? null : JSON.stringify(opts.body);
+        const url = new URL(options.path, creds.apiServerUrl);
+        const bodyString = options.body === undefined ? null : JSON.stringify(options.body);
         const headers: Record<string, string> = {
           Authorization: `Bearer ${creds.authToken}`,
           Accept: 'application/json',
@@ -118,7 +118,7 @@ const defaultClient: Lazy<Promise<K8sFetchClient>> = Lazy.of(async () => {
           headers['Content-Length'] = String(Buffer.byteLength(bodyString));
         }
         const req = https.request({
-          method: opts.method,
+          method: options.method,
           hostname: url.hostname,
           port: url.port || 443,
           path: url.pathname + url.search,
@@ -161,7 +161,7 @@ const fsLazy: Lazy<Promise<typeof import('node:fs/promises')>> = Lazy.of(async (
  * we touch — Kubernetes returns more (managedFields, generateName, etc.)
  * but they round-trip through `unknown` if we send them back unchanged.
  */
-export interface K8sLeaseObject {
+export type K8sLeaseObject = {
   readonly apiVersion: 'coordination.k8s.io/v1';
   readonly kind: 'Lease';
   readonly metadata: {
@@ -177,7 +177,7 @@ export interface K8sLeaseObject {
     readonly renewTime?: string;
     readonly leaseTransitions?: number;
   };
-}
+};
 
 const leasePath = (ns: string, name?: string): string =>
   `/apis/coordination.k8s.io/v1/namespaces/${encodeURIComponent(ns)}/leases${name ? `/${encodeURIComponent(name)}` : ''}`;
@@ -189,12 +189,12 @@ export async function getLease(
   name: string,
   client?: K8sFetchClient,
 ): Promise<K8sLeaseObject | null> {
-  const res = await k8sRequest(creds, {
+  const response = await k8sRequest(creds, {
     method: 'GET', path: leasePath(namespace, name), client,
   });
-  if (res.status === 404) return null;
-  if (res.status !== 200) throw new K8sLeaseError(`GET lease ${namespace}/${name} → HTTP ${res.status}`, res);
-  return res.body as K8sLeaseObject;
+  if (response.status === 404) return null;
+  if (response.status !== 200) throw new K8sLeaseError(`GET lease ${namespace}/${name} → HTTP ${response.status}`, response);
+  return response.body as K8sLeaseObject;
 }
 
 /**
@@ -214,12 +214,12 @@ export async function createLease(
     metadata: { name, namespace },
     spec: { ...spec, leaseTransitions: 1 },
   };
-  const res = await k8sRequest(creds, {
+  const response = await k8sRequest(creds, {
     method: 'POST', path: leasePath(namespace), body, client,
   });
-  if (res.status === 201) return res.body as K8sLeaseObject;
-  if (res.status === 409) return null;
-  throw new K8sLeaseError(`CREATE lease ${namespace}/${name} → HTTP ${res.status}`, res);
+  if (response.status === 201) return response.body as K8sLeaseObject;
+  if (response.status === 409) return null;
+  throw new K8sLeaseError(`CREATE lease ${namespace}/${name} → HTTP ${response.status}`, response);
 }
 
 /**
@@ -233,17 +233,17 @@ export async function updateLease(
   lease: K8sLeaseObject,
   client?: K8sFetchClient,
 ): Promise<K8sLeaseObject | null> {
-  const res = await k8sRequest(creds, {
+  const response = await k8sRequest(creds, {
     method: 'PUT',
     path: leasePath(lease.metadata.namespace, lease.metadata.name),
     body: lease,
     client,
   });
-  if (res.status === 200) return res.body as K8sLeaseObject;
-  if (res.status === 409) return null;
-  if (res.status === 404) return null;  // someone deleted it between get + put
+  if (response.status === 200) return response.body as K8sLeaseObject;
+  if (response.status === 409) return null;
+  if (response.status === 404) return null;  // someone deleted it between get + put
   throw new K8sLeaseError(
-    `PUT lease ${lease.metadata.namespace}/${lease.metadata.name} → HTTP ${res.status}`, res,
+    `PUT lease ${lease.metadata.namespace}/${lease.metadata.name} → HTTP ${response.status}`, response,
   );
 }
 
@@ -254,11 +254,11 @@ export async function deleteLease(
   name: string,
   client?: K8sFetchClient,
 ): Promise<void> {
-  const res = await k8sRequest(creds, {
+  const response = await k8sRequest(creds, {
     method: 'DELETE', path: leasePath(namespace, name), client,
   });
-  if (res.status === 200 || res.status === 202 || res.status === 404) return;
-  throw new K8sLeaseError(`DELETE lease ${namespace}/${name} → HTTP ${res.status}`, res);
+  if (response.status === 200 || response.status === 202 || response.status === 404) return;
+  throw new K8sLeaseError(`DELETE lease ${namespace}/${name} → HTTP ${response.status}`, response);
 }
 
 /* ---------------------------- errors --------------------------------- */

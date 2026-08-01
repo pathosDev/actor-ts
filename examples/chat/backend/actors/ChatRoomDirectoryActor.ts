@@ -36,26 +36,31 @@ import { DEFAULT_ROOMS, isRoomName, type RoomName } from '../../shared/rooms.js'
 
 /* --------------------------- public messages --------------------------- */
 
-export type ChatRoomDirectoryCommand =
-  | { readonly kind: 'Create';      readonly name: string;                          readonly replyTo?: ActorRef<CreateResult> }
-  | { readonly kind: 'GetRooms';    readonly replyTo: ActorRef<RoomsChanged> }
-  | { readonly kind: 'Subscribe';   readonly ref: ActorRef<RoomsChanged | RoomAdded | RoomRemoved> }
-  | { readonly kind: 'Unsubscribe'; readonly ref: ActorRef<RoomsChanged | RoomAdded | RoomRemoved> };
+export type CreateCommand      = { readonly kind: 'Create';      readonly name: string;                          readonly replyTo?: ActorRef<CreateResult> };
+export type GetRoomsCommand    = { readonly kind: 'GetRooms';    readonly replyTo: ActorRef<RoomsChanged> };
+export type SubscribeCommand   = { readonly kind: 'Subscribe';   readonly ref: ActorRef<RoomsChanged | RoomAdded | RoomRemoved> };
+export type UnsubscribeCommand = { readonly kind: 'Unsubscribe'; readonly ref: ActorRef<RoomsChanged | RoomAdded | RoomRemoved> };
 
-export interface RoomsChanged {
+export type ChatRoomDirectoryCommand =
+  | CreateCommand
+  | GetRoomsCommand
+  | SubscribeCommand
+  | UnsubscribeCommand;
+
+export type RoomsChanged = {
   readonly kind: 'RoomsChanged';
   readonly rooms: ReadonlyArray<RoomName>;
-}
+};
 
-export interface RoomAdded {
+export type RoomAdded = {
   readonly kind: 'RoomAdded';
   readonly name: RoomName;
-}
+};
 
-export interface RoomRemoved {
+export type RoomRemoved = {
   readonly kind: 'RoomRemoved';
   readonly name: RoomName;
-}
+};
 
 export type CreateResult =
   | { readonly kind: 'CreateOk';      readonly name: RoomName }
@@ -114,18 +119,19 @@ export class ChatRoomDirectoryActor extends Actor<ChatRoomDirectoryCommand> {
     this.subscribers.clear();
   }
 
-  override onReceive(cmd: ChatRoomDirectoryCommand): void {
-    match(cmd)
-      .with({ kind: 'Create' },      (m) => this.create(m.name, m.replyTo))
-      .with({ kind: 'GetRooms' },    (m) => this.replyRooms(m.replyTo))
-      .with({ kind: 'Subscribe' },   (m) => this.subscribe(m.ref))
-      .with({ kind: 'Unsubscribe' }, (m) => this.unsubscribe(m.ref))
+  override onReceive(command: ChatRoomDirectoryCommand): void {
+    match(command)
+      .with({ kind: 'Create' },      (m) => this.onCreate(m))
+      .with({ kind: 'GetRooms' },    (m) => this.onGetRooms(m))
+      .with({ kind: 'Subscribe' },   (m) => this.onSubscribe(m))
+      .with({ kind: 'Unsubscribe' }, (m) => this.onUnsubscribe(m))
       .exhaustive();
   }
 
   /* ----------------------------- mutations ----------------------------- */
 
-  private create(name: string, replyTo?: ActorRef<CreateResult>): void {
+  private onCreate(m: CreateCommand): void {
+    const { name, replyTo } = m;
     if (!isRoomName(name)) {
       replyTo?.tell({ kind: 'CreateRejected', reason: 'invalid-name' });
       return;
@@ -146,18 +152,21 @@ export class ChatRoomDirectoryActor extends Actor<ChatRoomDirectoryCommand> {
 
   /* ----------------------------- subscription -------------------------- */
 
-  private subscribe(ref: ActorRef<RoomsChanged | RoomAdded | RoomRemoved>): void {
+  private onSubscribe(m: SubscribeCommand): void {
+    const { ref } = m;
     this.subscribers.add(ref);
     // Replay the current set so the new subscriber doesn't wait for
     // the next change to populate their UI.
     ref.tell({ kind: 'RoomsChanged', rooms: [...this.lastRooms] });
   }
 
-  private unsubscribe(ref: ActorRef<RoomsChanged | RoomAdded | RoomRemoved>): void {
+  private onUnsubscribe(m: UnsubscribeCommand): void {
+    const { ref } = m;
     this.subscribers.delete(ref);
   }
 
-  private replyRooms(replyTo: ActorRef<RoomsChanged>): void {
+  private onGetRooms(m: GetRoomsCommand): void {
+    const { replyTo } = m;
     replyTo.tell({ kind: 'RoomsChanged', rooms: [...this.lastRooms] });
   }
 

@@ -32,13 +32,13 @@ key-value caching with TTLs, it's plenty.
 ## Configuration
 
 ```ts
-interface MemcachedCacheOptionsType {
-  servers:      string[];               // 'host:port'
-  username?:    string;
-  password?:    string;
-  timeoutMs?:   number;
-  retries?:     number;
-}
+type MemcachedCacheOptionsType = {
+  servers?:   string;                // comma-separated, default 'localhost:11211'
+  username?:  string;
+  password?:  string;
+  keyPrefix?: string;                // server-side, applied to every operation
+  client?:    MemcachedClientLike;   // pre-built memjs client
+};
 ```
 
 `memjs` (the underlying client) supports SASL auth via
@@ -118,12 +118,13 @@ import { Aside } from '@astrojs/starlight/components';
   ```
   Memcached doesn't have transactions / atomic multi-key
   operations.  For "atomic counter + check" patterns, the
-  framework's `incr` is the only atomic primitive.
+  framework's `incr` and `setIfAbsent` are the only atomic
+  primitives.
 </Aside>
 
 <Aside type="caution" title="Memcached cluster scaling">
   ```ts
-  servers: ['m1:11211', 'm2:11211'];
+  servers: 'm1:11211,m2:11211';
   // Adding m3: keys rebalance via consistent-hashing — some cache misses during the rebalance
   ```
   Memcached scaling requires client-side consistent-hashing

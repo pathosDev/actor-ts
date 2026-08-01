@@ -33,12 +33,12 @@ Intern:
 ## Konfiguration
 
 ```ts
-interface ProducerControllerOptionsType<T> {
+type ProducerControllerOptionsType<T> = {
   consumer:          ActorRef<Delivery<T>>;
   resendTimeout?:  number;       // Default 500
   windowSize?:       number;       // Default 16
   producerId?:       string;       // wird auto-generiert, wenn weggelassen
-}
+};
 ```
 
 | Feld | Zweck |
@@ -60,15 +60,31 @@ Darüber hinaus werden eingehende
 **eingereiht** — das `tell` des Callers ist erfolgreich, aber das
 eigentliche Senden pausiert, bis ACKs den Slot freigeben.
 
-Für Sender, die wissen müssen, wann Druck herrscht:
+Es gibt kein Signal zurück an den Caller, wenn dieses Queuing passiert:
+ein `reliable-delivery.send` ist Fire-and-Forget — der Producer
+antwortet nie darauf, es gibt also kein `ask`-basiertes
+"Ich habe sie gesendet"-ACK, auf das man warten könnte.
+
+Für Sender, die wissen müssen, ob eine Nachricht durchgekommen ist,
+übergibst du einen `confirm`-Callback beim Send.  Er feuert, sobald der
+Consumer diese Nachricht per ACK bestätigt — mit `null` bei Erfolg oder
+einem `Error`, wenn der Producer stoppt, während die Nachricht noch in
+der Warteschlange liegt:
 
 ```ts
-const result = await producer.ask({ kind: 'reliable-delivery.send', body, replyTo: ... }, 30_000);
-//                                         ^ antwortet, nachdem die Nachricht mindestens gesendet wurde
+producer.tell({
+  kind: 'reliable-delivery.send',
+  body: { orderId: 'o-1' },
+  confirm: (err) => {
+    if (err) console.error('delivery failed', err);
+    else console.log('delivered and acked');
+  },
+});
 ```
 
-`ask`-Sends warten auf die "Ich habe sie gesendet"-Antwort des
-Producers und geben dir damit ein natürliches Backpressure-Signal.
+Um daraus echtes Backpressure zu machen, richte dein Sende-Tempo nach
+diesen Bestätigungen aus — halte die nächste Charge zurück, bis frühere
+Nachrichten bestätigt sind.
 
 ## Retransmission
 

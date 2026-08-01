@@ -40,7 +40,7 @@ function isUnsafeSegment(segment: string, allowDotfiles: boolean): boolean {
 export function resolveStaticPath(
   root: string,
   rawRest: string,
-  opts: { readonly dotfiles: 'deny' | 'allow' },
+  options: { readonly dotfiles: 'deny' | 'allow' },
 ): StaticPathResult {
   const decoded = fullyDecode(rawRest);
   if (decoded.includes('\0')) return REJECT;
@@ -49,7 +49,7 @@ export function resolveStaticPath(
 
   const trimmed = decoded.replace(/\/+$/, ''); // tolerate one trailing slash (directory marker)
   const segments = trimmed.length === 0 ? [] : trimmed.split(/[/\\]/);
-  const allowDotfiles = opts.dotfiles === 'allow';
+  const allowDotfiles = options.dotfiles === 'allow';
   for (const segment of segments) {
     if (isUnsafeSegment(segment, allowDotfiles)) return REJECT;
   }

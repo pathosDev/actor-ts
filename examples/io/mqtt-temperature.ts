@@ -32,6 +32,7 @@ import {
   Props,
   type MqttMessage,
 } from '../../src/index.js';
+import { attachDevTools } from '../devtools.js';
 
 type Reading = { sensor: string; celsius: number };
 
@@ -41,14 +42,14 @@ type Tick = { kind: 'tick'; i: number };
 class TemperatureHub extends MqttActor<Reading, Tick> {
   private readings: Record<string, number[]> = {};
 
-  constructor(opts: MqttOptionsBuilder) {
+  constructor(options: MqttOptionsBuilder) {
     // Builder-supplied clientId + QoS layer on top of the HOCON brokerUrl.
-    super(opts.withClientId('temperature-demo').withQos(1));
+    super(options.withClientId('temperature-demo').withQos(1));
     this.subscribe('sensors/+/temp');
   }
 
-  override onMessage(msg: MqttMessage<Reading>): void {
-    const { sensor, celsius } = msg.payload.entity();
+  override onMessage(message: MqttMessage<Reading>): void {
+    const { sensor, celsius } = message.payload.entity();
     const arr = (this.readings[sensor] ??= []);
     arr.push(celsius);
     if (arr.length > 5) arr.shift();
@@ -62,13 +63,13 @@ class TemperatureHub extends MqttActor<Reading, Tick> {
     this.self.tell({ kind: 'tick', i: 0 });
   }
 
-  protected override onSelfMessage(msg: Tick): void {
-    if (msg.i >= 10) return;
-    const sensor = ['kitchen', 'living-room', 'bedroom'][msg.i % 3]!;
-    const celsius = 20 + Math.sin(msg.i / 2) * 3 + Math.random();
+  protected override onSelfMessage(message: Tick): void {
+    if (message.i >= 10) return;
+    const sensor = ['kitchen', 'living-room', 'bedroom'][message.i % 3]!;
+    const celsius = 20 + Math.sin(message.i / 2) * 3 + Math.random();
     // Typed entity → encoded via the actor's codec (JSON by default).
     this.publish(`sensors/${sensor}/temp`, { sensor, celsius } satisfies Reading, { qos: 1 });
-    this.context.timers.startSingleTimer(`tick-${msg.i}`, { kind: 'tick', i: msg.i + 1 }, 200);
+    this.context.timers.startSingleTimer(`tick-${message.i}`, { kind: 'tick', i: message.i + 1 }, 200);
   }
 }
 
@@ -89,6 +90,7 @@ async function main(): Promise<void> {
       },
     });
   const system = ActorSystem.create('mqtt-demo', systemOptions);
+  const devtools = await attachDevTools(system);
 
   system.spawn(
     Props.create(() => new TemperatureHub(MqttOptions.create())),
@@ -96,6 +98,7 @@ async function main(): Promise<void> {
   );
 
   await Bun.sleep(3_000);
+  await devtools.holdOpen();
   await system.terminate();
 }
 

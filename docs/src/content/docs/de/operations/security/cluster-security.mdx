@@ -17,10 +17,10 @@ Cluster-Transport.
 | Anliegen | Wie adressieren |
 | --- | --- |
 | **Lauschangriff** — Peer-to-Peer-Traffic lesbar für jeden auf der Leitung. | TLS auf dem Cluster-Transport. |
-| **Unautorisierte Joins** — ein bösartiger Node verbindet sich + wird Cluster-Mitglied. | Shared-Secret-Auth am Handshake. |
+| **Unautorisierte Joins** — ein bösartiger Node verbindet sich + wird Cluster-Mitglied. | Mutual TLS (mTLS) — Peer-Zertifikatsprüfung. |
 
-Beide sollten zusammen aktiviert sein für jeden nach außen
-gerichteten Cluster.
+Aktiviere TLS mit gegenseitiger Authentifizierung (mTLS) für
+jeden nach außen gerichteten Cluster — das adressiert beide.
 
 ## TLS aktivieren
 
@@ -29,7 +29,7 @@ import { TcpTransport, NodeAddress, Cluster, ClusterOptions } from 'actor-ts';
 import fs from 'node:fs';
 
 const transport = new TcpTransport(
-  NodeAddress.parse('actor-ts://my-app@10.0.0.5:2552'),
+  NodeAddress.parse('my-app@10.0.0.5:2552'),
   system.log,
   {
     cert: fs.readFileSync('./tls/cluster.crt'),
@@ -112,26 +112,6 @@ spec:
 
 Der Pod mountet das Secret als Files; der Actor liest sie.
 
-## Shared-Secret-Auth (optionale Schicht)
-
-Über TLS hinaus kann das Framework ein **Shared Secret** im
-Cluster-Handshake verlangen:
-
-```ts
-new TcpTransport(self, log, tlsOpts, /* maxFrame */ undefined, {
-  sharedSecret: process.env.CLUSTER_SECRET,
-});
-```
-
-Jeder Node braucht dasselbe Secret. Falsche Secrets scheitern am
-Handshake; böse Akteure ohne Secret können nicht joinen.
-
-Mit **TLS + mTLS bereits aktiv** bringt das Shared Secret
-Hosenträger-und-Gürtel — fängt die **Insider-Bedrohung** einer
-kompromittierten privaten CA ab, bei der ein Angreifer mit
-gestohlenem Cert sonst nicht blockiert würde. Für die meisten
-Deployments reicht mTLS allein.
-
 ## Cluster-Port mit Firewall absichern
 
 ```
@@ -172,8 +152,8 @@ erreichen.
 | --- | --- |
 | Netzwerk-Lauschangriff | TLS |
 | Man-in-the-Middle | TLS + Zertifikatsprüfung |
-| Unautorisierter Cluster-Join | mTLS + Shared Secret |
-| Insider mit gestohlenem Cert | Shared Secret + Cert-Rotation |
+| Unautorisierter Cluster-Join | mTLS (CA-signierte Peer-Certs) |
+| Insider mit gestohlenem Cert | Cert-Rotation + Revocation |
 | Kompromittierter Pod im Cluster | Application-Level-Auth (hier nicht abgedeckt) |
 
 Der Cluster-Transport handhabt Transport-Level-Sicherheit.

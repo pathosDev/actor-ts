@@ -54,8 +54,8 @@ export class PNCounter implements Crdt<PNCounter> {
   }
 }
 
-export interface PNCounterJson {
+export type PNCounterJson = {
   readonly kind: 'PNCounter';
   readonly p: GCounterJson;
   readonly n: GCounterJson;
-}
+};

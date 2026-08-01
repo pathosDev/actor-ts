@@ -2,7 +2,7 @@ import { OptionsBuilder } from '../util/OptionsBuilder.js';
 import type { Middleware } from '../http/index.js';
 
 /** Plain options-object shape accepted by the management routes factory. */
-export interface ManagementRoutesOptionsType {
+export type ManagementRoutesOptionsType = {
   /** Allow POST /cluster/leave (requires cluster). */
   readonly enableLeaveEndpoint?: boolean;
   /** Allow POST /cluster/down — operator-initiated force-down.  Off by default. */
@@ -15,7 +15,7 @@ export interface ManagementRoutesOptionsType {
   readonly ipAllowlist?: Middleware;
   /** Also apply `auth` to `/health` and `/ready`.  Default: false. */
   readonly authProtectHealth?: boolean;
-}
+};
 
 /** Fluent builder for {@link ManagementRoutesOptionsType}. */
 export class ManagementRoutesOptionsBuilder extends OptionsBuilder<ManagementRoutesOptionsType> {

@@ -3,10 +3,10 @@ import { OptionsValidator } from '../util/OptionsValidator.js';
 import type { Cluster } from '../cluster/Cluster.js';
 
 /** Plain options-object shape accepted by a {@link Receptionist}. */
-export interface ReceptionistOptionsType {
+export type ReceptionistOptionsType = {
   readonly cluster?: Cluster | null;
   readonly gossipIntervalMs?: number;
-}
+};
 
 /**
  * Fluent builder for {@link ReceptionistOptionsType}.  Normally you don't

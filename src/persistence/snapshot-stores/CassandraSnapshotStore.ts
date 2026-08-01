@@ -8,14 +8,15 @@ import {
   type CassandraClientLike,
   type CassandraConnection,
 } from '../journals/CassandraClient.js';
+import { assertSafeIdentifier } from '../storage/SqlIdentifier.js';
 import type { CassandraSnapshotStoreOptions, CassandraSnapshotStoreOptionsType } from './CassandraSnapshotStoreOptions.js';
 
-interface SnapshotRow {
+type SnapshotRow = {
   persistence_id: string;
   sequence_nr: string | number;
   timestamp: string | number;
   payload: string;
-}
+};
 
 /**
  * SnapshotStore backed by Cassandra/Scylla.  Schema mirrors the journal:
@@ -26,6 +27,8 @@ export class CassandraSnapshotStore implements SnapshotStore {
   private readonly options: Partial<CassandraSnapshotStoreOptionsType>;
   private client: CassandraClientLike;
   private started = false;
+  /** Single-flight guard so two concurrent first calls don't both connect + run DDL. */
+  private startPromise: Promise<void> | null = null;
   private stopped = false;
   private readonly ownsClient: boolean;
   private readonly keepN: number;
@@ -39,6 +42,16 @@ export class CassandraSnapshotStore implements SnapshotStore {
 
   async start(): Promise<void> {
     if (this.started) return;
+    if (!this.startPromise) {
+      this.startPromise = this.doStart().catch((e) => {
+        this.startPromise = null;
+        throw e;
+      });
+    }
+    await this.startPromise;
+  }
+
+  private async doStart(): Promise<void> {
     if (this.ownsClient && !(this.client as unknown)) {
       this.client = await createCassandraClient(this.options as CassandraConnection);
     }
@@ -52,7 +65,14 @@ export class CassandraSnapshotStore implements SnapshotStore {
     this.started = true;
   }
 
-  async save<S>(pid: string, seq: number, state: S, _options?: PersistenceOptions): Promise<Snapshot<S>> {
+  /** CQL query options for data-path reads/writes, honouring the configured consistency level. */
+  private readOptions(): { prepare: boolean; consistency?: number } {
+    return this.options.consistency === undefined
+      ? { prepare: true }
+      : { prepare: true, consistency: this.options.consistency };
+  }
+
+  async save<S>(persistenceId: string, seq: number, state: S, _options?: PersistenceOptions): Promise<Snapshot<S>> {
     // Cassandra store has no compression / encryption — options ignored.
     await this.ensureStarted();
     const now = Date.now();
@@ -60,43 +80,43 @@ export class CassandraSnapshotStore implements SnapshotStore {
     try {
       await this.client.execute(
         `INSERT INTO ${this.qualified()} (persistence_id, sequence_nr, timestamp, payload) VALUES (?, ?, ?, ?)`,
-        [pid, seq, now, payload],
-        { prepare: true },
+        [persistenceId, seq, now, payload],
+        this.readOptions(),
       );
-      if (this.keepN > 0) await this.pruneKeepN(pid);
-      return { persistenceId: pid, sequenceNr: seq, state, timestamp: now };
+      if (this.keepN > 0) await this.pruneKeepN(persistenceId);
+      return { persistenceId: persistenceId, sequenceNr: seq, state, timestamp: now };
     } catch (e) {
       throw new JournalError(`CassandraSnapshotStore.save failed: ${(e as Error).message}`, e);
     }
   }
 
-  async loadLatest<S>(pid: string, _options?: PersistenceOptions): Promise<Option<Snapshot<S>>> {
+  async loadLatest<S>(persistenceId: string, _options?: PersistenceOptions): Promise<Option<Snapshot<S>>> {
     await this.ensureStarted();
-    const res = await this.client.execute(
+    const response = await this.client.execute(
       `SELECT persistence_id, sequence_nr, timestamp, payload FROM ${this.qualified()} WHERE persistence_id = ? LIMIT 1`,
-      [pid],
-      { prepare: true },
+      [persistenceId],
+      this.readOptions(),
     );
-    return this.rowToSnapshot<S>(res.rows[0] as unknown as SnapshotRow | undefined);
+    return this.rowToSnapshot<S>(response.rows[0] as unknown as SnapshotRow | undefined);
   }
 
-  async loadBefore<S>(pid: string, seq: number, _options?: PersistenceOptions): Promise<Option<Snapshot<S>>> {
+  async loadBefore<S>(persistenceId: string, seq: number, _options?: PersistenceOptions): Promise<Option<Snapshot<S>>> {
     await this.ensureStarted();
-    const res = await this.client.execute(
+    const response = await this.client.execute(
       `SELECT persistence_id, sequence_nr, timestamp, payload FROM ${this.qualified()} WHERE persistence_id = ? AND sequence_nr < ? LIMIT 1`,
-      [pid, seq],
-      { prepare: true },
+      [persistenceId, seq],
+      this.readOptions(),
     );
-    return this.rowToSnapshot<S>(res.rows[0] as unknown as SnapshotRow | undefined);
+    return this.rowToSnapshot<S>(response.rows[0] as unknown as SnapshotRow | undefined);
   }
 
-  async delete(pid: string, toSeq: number): Promise<void> {
+  async delete(persistenceId: string, toSeq: number): Promise<void> {
     await this.ensureStarted();
     try {
       await this.client.execute(
         `DELETE FROM ${this.qualified()} WHERE persistence_id = ? AND sequence_nr <= ?`,
-        [pid, toSeq],
-        { prepare: true },
+        [persistenceId, toSeq],
+        this.readOptions(),
       );
     } catch (e) {
       throw new JournalError(`CassandraSnapshotStore.delete failed: ${(e as Error).message}`, e);
@@ -114,7 +134,13 @@ export class CassandraSnapshotStore implements SnapshotStore {
   /* ========================== internal ========================== */
 
   private get table(): string { return this.options.snapshotsTable ?? 'snapshots'; }
-  private qualified(): string { return `${this.options.keyspace}.${this.table}`; }
+  private qualified(): string {
+    // keyspace + table are interpolated into CQL (identifiers can't be bound),
+    // so validate them against a safe charset (security audit #6 / #136).
+    const keyspace = this.options.keyspace;
+    if (keyspace !== undefined) assertSafeIdentifier(keyspace, 'keyspace');
+    return `${keyspace}.${assertSafeIdentifier(this.table, 'snapshots table')}`;
+  }
 
   private rowToSnapshot<S>(row: SnapshotRow | undefined): Option<Snapshot<S>> {
     if (!row) return none;
@@ -126,21 +152,21 @@ export class CassandraSnapshotStore implements SnapshotStore {
     });
   }
 
-  private async pruneKeepN(pid: string): Promise<void> {
+  private async pruneKeepN(persistenceId: string): Promise<void> {
     // Read the newest `keepN` sequence numbers and delete everything older.
-    const res = await this.client.execute(
+    const response = await this.client.execute(
       `SELECT sequence_nr FROM ${this.qualified()} WHERE persistence_id = ? LIMIT ?`,
-      [pid, this.keepN],
-      { prepare: true },
+      [persistenceId, this.keepN],
+      this.readOptions(),
     );
-    const rows = res.rows as unknown as Array<{ sequence_nr: string | number }>;
+    const rows = response.rows as unknown as Array<{ sequence_nr: string | number }>;
     if (rows.length < this.keepN) return; // not yet at the cap
     const cutoff = Number(rows[rows.length - 1]!.sequence_nr);
     if (cutoff <= 0) return;
     await this.client.execute(
       `DELETE FROM ${this.qualified()} WHERE persistence_id = ? AND sequence_nr < ?`,
-      [pid, cutoff],
-      { prepare: true },
+      [persistenceId, cutoff],
+      this.readOptions(),
     );
   }
 

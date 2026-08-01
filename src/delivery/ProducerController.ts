@@ -1,3 +1,4 @@
+import { match } from 'ts-pattern';
 import { Actor } from '../Actor.js';
 import type { ActorRef } from '../ActorRef.js';
 import type { Cancellable } from '../Scheduler.js';
@@ -9,19 +10,19 @@ let producerSeed = 0;
 const nextProducerId = (): string => `producer-${++producerSeed}`;
 
 /** Message sent to the ProducerController by the publishing user code. */
-export interface ProducerSend<T> {
+export type ProducerSend<T> = {
   readonly kind: 'reliable-delivery.send';
   readonly body: T;
   readonly confirm?: ConfirmationCallback;
-}
+};
 
-interface InFlight<T> {
+type InFlight<T> = {
   readonly seq: number;
   readonly body: T;
   readonly confirm?: ConfirmationCallback;
   attempts: number;
   timer: Cancellable | null;
-}
+};
 
 /**
  * Producer side of the reliable-delivery protocol.  Messages sent to this
@@ -48,29 +49,40 @@ export class ProducerController<T> extends Actor<ProducerSend<T> | Acknowledgmen
     this.windowSize = resolvedOptions.windowSize ?? 16;
   }
 
+  /**
+   * Both queues owe their caller a settlement.  In-flight sends used to get
+   * only their resend timer cancelled — so a caller awaiting `confirm` was
+   * never told the producer had stopped and simply hung, which is the one
+   * outcome a confirmation callback exists to prevent.
+   */
   override postStop(): void {
-    for (const inflight of this.inflight.values()) inflight.timer?.cancel();
+    for (const inflight of this.inflight.values()) {
+      inflight.timer?.cancel();
+      inflight.confirm?.(new Error('producer stopped'));
+    }
     for (const pending of this.pending) pending.confirm?.(new Error('producer stopped'));
     this.pending.length = 0;
     this.inflight.clear();
   }
 
-  override onReceive(msg: ProducerSend<T> | Acknowledgment): void {
-    if ((msg as Acknowledgment).kind === 'reliable-delivery.ack') return this.handleAcknowledgment(msg as Acknowledgment);
-    if ((msg as ProducerSend<T>).kind === 'reliable-delivery.send') return this.handleSend(msg as ProducerSend<T>);
+  override onReceive(message: ProducerSend<T> | Acknowledgment): void {
+    match(message)
+      .with({ kind: 'reliable-delivery.ack' }, (m) => this.onAcknowledgment(m))
+      .with({ kind: 'reliable-delivery.send' }, (m) => this.onSend(m))
+      .exhaustive();
   }
 
-  private handleSend(msg: ProducerSend<T>): void {
+  private onSend(message: ProducerSend<T>): void {
     if (this.inflight.size >= this.windowSize) {
-      this.pending.push(msg);
+      this.pending.push(message);
       return;
     }
-    this.dispatch(msg);
+    this.dispatch(message);
   }
 
-  private dispatch(msg: ProducerSend<T>): void {
+  private dispatch(message: ProducerSend<T>): void {
     const seq = this.nextSeq++;
-    const inflight: InFlight<T> = { seq, body: msg.body, confirm: msg.confirm, attempts: 0, timer: null };
+    const inflight: InFlight<T> = { seq, body: message.body, confirm: message.confirm, attempts: 0, timer: null };
     this.inflight.set(seq, inflight);
     this.send(inflight);
   }
@@ -85,7 +97,7 @@ export class ProducerController<T> extends Actor<ProducerSend<T> | Acknowledgmen
       replyTo: this.self as unknown as ActorRef<Acknowledgment>,
     };
     this.options.consumer.tell(delivery);
-    inflight.timer = this.system.scheduler.scheduleOnceFn(
+    inflight.timer = this.system.scheduler.scheduleOnceFunction(
       this.resendTimeoutMs,
       () => {
         // Only resend if still un-acked.
@@ -96,12 +108,12 @@ export class ProducerController<T> extends Actor<ProducerSend<T> | Acknowledgmen
     );
   }
 
-  private handleAcknowledgment(msg: Acknowledgment): void {
-    if (msg.producerId !== this.id) return;
-    const inflight = this.inflight.get(msg.seq);
+  private onAcknowledgment(message: Acknowledgment): void {
+    if (message.producerId !== this.id) return;
+    const inflight = this.inflight.get(message.seq);
     if (!inflight) return;
     inflight.timer?.cancel();
-    this.inflight.delete(msg.seq);
+    this.inflight.delete(message.seq);
     inflight.confirm?.(null);
     // Drain queued sends while the window is open.
     while (this.inflight.size < this.windowSize && this.pending.length > 0) {

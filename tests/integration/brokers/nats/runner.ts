@@ -9,12 +9,12 @@ import { Props } from '../../../../src/Props.js';
 import { NatsActor, type NatsMessage } from '../../../../src/io/broker/NatsActor.js';
 import { NatsOptions } from '../../../../src/io/broker/NatsOptions.js';
 import { waitForPort } from '../lib/wait-for-port.js';
-import { runScenarios, type BrokerScenario, type BrokerScenarioCtx } from '../lib/scenario.js';
+import { runScenarios, type BrokerScenario, type BrokerScenarioContext } from '../lib/scenario.js';
 import { scenario as pubsubScenario } from './scenarios/01-publish-subscribe.js';
 import { scenario as wildcardScenario } from './scenarios/02-wildcard.js';
 import { scenario as multiSubScenario } from './scenarios/03-multiple-subscribers.js';
 
-export interface NatsCtx extends BrokerScenarioCtx {
+export interface NatsContext extends BrokerScenarioContext {
   readonly servers: ReadonlyArray<string>;
   readonly system: ActorSystem;
 }
@@ -42,34 +42,34 @@ async function main(): Promise<void> {
     .withLogger(new JsonLogger()).withLogLevel(LogLevel.Info));
   process.on('SIGTERM', () => { void system.terminate(); });
 
-  const ctx: NatsCtx = { env: process.env, servers, system };
+  const context: NatsContext = { env: process.env, servers, system };
 
   try {
-    const scenarios: BrokerScenario<NatsCtx>[] = [
+    const scenarios: BrokerScenario<NatsContext>[] = [
       pubsubScenario,
       wildcardScenario,
       multiSubScenario,
     ];
-    await runScenarios(scenarios, ctx);
+    await runScenarios(scenarios, context);
   } finally {
     await system.terminate();
   }
 }
 
-export function spawnNats(ctx: NatsCtx): ReturnType<ActorSystem['spawnAnonymous']> {
+export function spawnNats(context: NatsContext): ReturnType<ActorSystem['spawnAnonymous']> {
   const actor = new NatsActor(
     NatsOptions.create()
-      .withServers([...ctx.servers])
+      .withServers([...context.servers])
       .withName(`actor-ts-${Date.now()}-${Math.random().toString(36).slice(2)}`),
   );
-  return ctx.system.spawnAnonymous(Props.create(() => actor));
+  return context.system.spawnAnonymous(Props.create(() => actor));
 }
 
-export function spawnInbox(ctx: NatsCtx): {
+export function spawnInbox(context: NatsContext): {
   ref: ReturnType<ActorSystem['spawnAnonymous']>; inbox: InboxActor;
 } {
   const inbox = new InboxActor();
-  const ref = ctx.system.spawnAnonymous(Props.create(() => inbox));
+  const ref = context.system.spawnAnonymous(Props.create(() => inbox));
   return { ref, inbox };
 }
 

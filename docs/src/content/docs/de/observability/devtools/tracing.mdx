@@ -1,0 +1,162 @@
+---
+title: Tracing-Panel
+description: Flame-Graph und Waterfall über aufgezeichnete Message-Spans, live im Browser — ohne Collector, ohne Jaeger, und ohne den Exporter aufzugeben, den du schon hast.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+In Produktion gehen Traces an Jaeger oder einen OTel-Collector. Auf
+einem Laptop ist dieses Setup überzogen für die Frage „warum hat dieser
+Request 80 ms gebraucht?". Das Tracing-Panel beantwortet sie im Browser,
+aus den Spans, die das Framework ohnehin erzeugt.
+
+## Die Liste
+
+Das Panel öffnet mit einer Zeile pro Trace, breit genug zum Lesen:
+
+| Spalte | Zeigt |
+| --- | --- |
+| **Route** | `Sender → Actor → Actor` — die Stationen, die die Nachricht wirklich durchlaufen hat, aufeinanderfolgende Wiederholungen zusammengefasst |
+| **Message** | Der Name der Nachricht, dazu Span-Anzahl und ein Error-Badge |
+| **Payload** | Die Nachricht selbst, als JSON |
+| **Duration** | Wall-Zeit vom Start des ersten bis zum Ende des letzten Spans |
+
+Der *Name* einer Nachricht ist ihr `kind`, sofern vorhanden — so
+markiert dieses Projekt seine Unions. `constructor.name` allein
+antwortet bei jedem Objekt-Literal „Object" und sagt damit nichts.
+
+Ein Klick auf eine Zeile wechselt zum Graphen dieses Traces, mit
+formatiertem Payload darüber und einem **← All traces**-Knopf zurück.
+
+## Zwei Ansichten, ein Trace
+
+| Ansicht | Vertikale Achse | Beantwortet |
+| --- | --- | --- |
+| **Flame-Graph** | Stack-Tiefe — Kinder auf ihrem Elternteil | Wo ist die Zeit geblieben? |
+| **Waterfall** | Eine Zeile pro Span, zeitlich sortiert | Was ist wann passiert? |
+
+Bei einer geraden Kette fallen beide zusammen — ein Elternteil und sein
+einziges Kind liegen so oder so eine Zeile auseinander. Sie trennen
+sich, sobald ein Actor an mehrere andere sendet: Der Flame-Graph legt
+die Geschwister auf eine Zeile, der Waterfall gibt jedem eine eigene.
+
+Einen Span überfahren für die Details. Dauer, **Self time** (die eigene
+Arbeit, Kinder abgezogen), Offset im Trace, Sender, Nachricht, Payload,
+Status und Attribute stehen im Panel unter dem Graphen.
+
+Die Zeiten kommen von einer monotonen Uhr und werden in Mikrosekunden
+gezeigt, wo das die ehrliche Einheit ist — Actor-Message-Handling ist
+regelmäßig in unter einer Millisekunde fertig, Wall-Clock-Zeitstempel
+würden jeden Balken mit Breite null zeichnen.
+
+<Aside type="caution" title="Actors tracen eine Nachricht nur, wenn sie schon zu einem Trace gehört">
+Das ist die eine Sache, die überrascht. Eine Cell öffnet einen
+`actor.receive`-Span, wenn die eingehende Nachricht einen Trace-Context
+trägt **oder** bereits ein Span aktiv ist — und den ersten startet
+nichts im Framework. Ein schlichtes `ref.tell(...)` zeichnet also nichts
+auf, und ein sichtbar beschäftigtes System kann das Panel leer lassen.
+</Aside>
+
+## Aufzeichnung
+
+Tracing läuft ab dem Moment, in dem DevTools attached — ohne Knopfdruck,
+denn die interessanten Nachrichten sind die, die schon vorbei sind. Panel
+öffnen, und die jüngste Historie ist da.
+
+- Standardmäßig hält das Panel die letzten **100 Nachrichten**; die
+  Auswahl in der Toolbar geht hoch bis **10 000**. Der Server hält
+  denselben Ring, ein spät verbundener Browser bekommt ihn also auch.
+  `withSpanBufferCapacity` ist die Obergrenze, die ein Client erfragen
+  darf.
+- Das Datenvolumen entspricht deinem Traffic. Das hier ist ein
+  Debug-Werkzeug: Es öffnet für jede Nachricht einen Root-Span und
+  serialisiert jeden Payload, und zwar solange DevTools attached ist. Das
+  ist der Handel, den `DevTools.attach` eingeht — ein System, das sich das
+  nicht leisten kann, sollte keinen Debugger angehängt haben.
+- DevTools' eigene Actors sind ausgenommen — weder als Root-Span noch
+  als Kind-Span, denn seine Probes empfangen Event-Stream-Publishes
+  *während* einer Anwendungsnachricht und tauchten sonst mitten in deren
+  Route wieder auf. Sie sind mit
+  [`Props.asInternal()`](/de/fundamentals/props/#asinternal) markiert —
+  ohne das würde der Hub, der die eben aufgezeichneten Spans publiziert,
+  jeden Batch als Payload des nächsten zurückspeisen.
+
+Auf einem ansonsten untätigen System heißt das: Die Übersicht kann eine
+Nachrichtenrate melden, während die Trace-Liste leer bleibt — dieser
+Verkehr ist DevTools im Gespräch mit deinem Browser, nicht deine Actors.
+
+Aus Code heißen dieselben Schalter
+`system.extension(TracingExtensionId).recordRootSpans(…)` und
+`captureMessagePayloads(…)`.
+
+## Einen Trace selbst starten
+
+In Produktion entscheidest du, was einen Trace wert ist. Setze am
+Einstiegspunkt einen Span — ein HTTP-Handler, ein Broker-Consumer, ein
+geplanter Job —, und jedes `tell` darin trägt den Context weiter:
+
+```ts
+import { tracerOf } from 'actor-ts';
+
+const tracer = tracerOf(system);
+const span = tracer.startSpan('handle-request', { kind: 'server' });
+tracer.withActiveSpan(span, () => {
+  orders.tell({ kind: 'place', id });
+});
+span.end();
+```
+
+Ab da baut sich der Baum von selbst: Jeder Actor, der eine getracete
+Nachricht empfängt, öffnet einen Kind-Span, und jedes `tell` von dort
+reicht den Context weiter.
+
+<Aside type="tip" title="Den Tracer nach dem Attach holen, nicht davor">
+`tracerOf(system)` liefert den Tracer, der *gerade jetzt* installiert
+ist. In einer Variablen von vor `DevTools.attach` gehalten, ist es
+weiterhin der Noop-Tracer — dessen `withActiveSpan` deinen Callback
+ausführt und stillschweigend nichts aufzeichnet. Rufe `tracerOf(system)`
+an der Stelle auf, an der du ihn brauchst.
+</Aside>
+
+## Mit einem vorhandenen Tracer leben
+
+DevTools anzuhängen nimmt dir deinen Tracer **nicht** weg. Ist keiner
+installiert, aktiviert es einen Recorder; ist schon einer da — etwa ein
+OTel-Adapter, der an einen Collector exportiert —, wird er in einen
+`TeeTracer` gewickelt, sodass beide Konsumenten jeden Span sehen. Beim
+Detachen steht der ursprüngliche exakt wie vorher wieder da.
+
+Damit läuft das Panel auch gegen einen Service, der echt exportiert —
+und genau dann willst du es meistens.
+
+```ts
+// Beides geht: Der Collector bekommt weiter alles, das Panel füllt sich.
+system.extension(TracingExtensionId).enable(otelTracer(...));
+await DevTools.attach(system);
+```
+
+## Kosten
+
+Aufgezeichnet wird nichts, bevor das Panel offen ist: Der Tap abonniert
+beim Mounten, und das Puffern endet, wenn der letzte Betrachter geht.
+Spans gehen gebündelt an den Browser (standardmäßig alle 250 ms) statt
+einzeln — eine einzelne Nachricht kann mehrere Spans erzeugen, und ein
+ausgelastetes System machte aus einer Debug-Hilfe sonst eine Sturzflut.
+
+Läuft der Puffer über, werden die **ältesten** Spans verworfen, und das
+Panel sagt wie viele. Ein Flame-Graph handelt von der jüngsten
+Vergangenheit — das ist die Hälfte, die es zu behalten lohnt.
+
+| Option | Default | Bedeutung |
+| --- | --- | --- |
+| `spanBufferCapacity` | `2000` | Spans zwischen zwei Flushes |
+| `spanFlushIntervalMs` | `250` | Wie oft ein Batch gesendet wird |
+| `panels: { tracing: false }` | — | Panel komplett abschalten |
+
+## Was heute getracet wird
+
+Das Framework öffnet Spans an zwei Stellen: `actor.receive` (pro
+Nachricht, mit `actor.path` und `actor.message.type`) und
+`cluster.envelope.received`. Alles Weitere in einem Trace kommt aus
+Spans, die dein eigener Code startet — das Panel rendert, was der Tracer
+sieht.

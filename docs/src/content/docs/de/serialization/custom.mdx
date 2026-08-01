@@ -29,11 +29,13 @@ class ProtoOrderSerializer implements Serializer<Order> {
 
 // Verdrahten:
 const ext = system.extension(SerializationExtensionId);
-ext.bind(Order, new ProtoOrderSerializer());
+const orderSerializer = new ProtoOrderSerializer();
+ext.register(orderSerializer);        // zur ID-Lookup-Tabelle hinzufügen
+ext.bind(Order, orderSerializer.id);  // Order darüber routen (id 100)
 ```
 
-Jetzt fließt jede `Order`-Instanz durch Protobuf; jeder andere
-Wert nutzt das Default-JSON/CBOR.
+Jetzt löst die Extension jede `Order`-Instanz zu Protobuf auf;
+jeder andere Wert fällt auf den Default-Serializer (JSON) zurück.
 
 ## Das Serializer-Interface
 
@@ -63,9 +65,13 @@ interface Serializer<T = unknown> {
 ## Binding nach Klasse
 
 ```ts
-ext.bind(Order, orderSerializer);
-ext.bind(Payment, paymentSerializer);
-ext.bind(Cancellation, cancelSerializer);
+ext.register(orderSerializer);
+ext.register(paymentSerializer);
+ext.register(cancelSerializer);
+
+ext.bind(Order, orderSerializer.id);
+ext.bind(Payment, paymentSerializer.id);
+ext.bind(Cancellation, cancelSerializer.id);
 ```
 
 Die Extension mappt Werte auf Serializer über den **Konstruktor**:
@@ -124,7 +130,9 @@ class OrderProtoSerializer implements Serializer<Order> {
   }
 }
 
-ext.bind(Order, new OrderProtoSerializer());
+const orderSerializer = new OrderProtoSerializer();
+ext.register(orderSerializer);
+ext.bind(Order, orderSerializer.id);
 ```
 
 Das Manifest trägt Versionsinfo; der Decoder verifiziert.  In
@@ -158,13 +166,14 @@ Format mit breiteren Cross-Language-Libraries willst.
 ## Pro Klasse vs. systemweit
 
 ```
-ext.bind(Class, serializer)    → nur diese Klasse
-ext.setDefault(serializer)      → jeder Wert (ersetzt JSON/CBOR)
+ext.register(s); ext.bind(Class, s.id)  → nur diese Klasse über s routen
+ext.setDefault(s)                        → der Default, den die Extension für ungebundene Werte nutzt
 ```
 
 Pro Klasse ist **sicherer** — behält den Default-Fallback für
 Dinge, die du nicht zu binden gedacht hast.  Systemweit ist
-**einheitlich** — jede Nachricht nutzt dasselbe Format.
+**einheitlich** — jeder ungebundene Wert geht durch denselben
+Serializer.
 
 Für die meisten Apps: **pro Klasse für spezifische Typen**
 (Protobuf'te Events), **JSON-Default** für alles andere.
@@ -196,21 +205,21 @@ Frameworks die Evolution von JSON-Formaten behandeln.
 ```ts
 const ext = system.extension(SerializationExtensionId);
 
-// Spezifische Klassen binden:
-ext.bind(Order, orderSerializer);
-ext.bind(Payment, paymentSerializer);
+// 1. Jeden Serializer registrieren (fügt ihn zur ID-Lookup-Tabelle hinzu):
+ext.register(orderSerializer);
+ext.register(paymentSerializer);
 
-// Einen Serializer der Lookup-Tabelle hinzufügen, ohne zu binden:
-ext.register(myCustomSerializer);
-// → über ID für `fromBinary`-Aufrufe verfügbar, kein Auto-Routing
+// 2. Klassen an die ID eines registrierten Serializers binden (Routing):
+ext.bind(Order, orderSerializer.id);
+ext.bind(Payment, paymentSerializer.id);
 ```
 
-`bind` fügt **Routing** hinzu (diese Klasse nutzt diesen
-Serializer).  `register` fügt nur der **Lookup-Tabelle** etwas
-hinzu (zum Dekodieren von Bytes, die mit der ID dieses Serializers
-gelabelt sind); nützlich, wenn der Serializer implizit (über
-Manifest-Dispatch) genutzt wird, aber nicht für eine bestimmte
-Klasse.
+`register` fügt einen Serializer der **ID-Lookup-Tabelle** hinzu
+(damit der Decoder ihn per ID findet und `bind` ihn referenzieren
+kann).  `bind` fügt dann **Routing** hinzu — mappt eine Klasse auf
+die ID eines bereits registrierten Serializers.  Du musst
+`register`n, bevor du `bind`st; das Binden einer nicht
+registrierten ID wirft.
 
 import { Aside } from '@astrojs/starlight/components';
 

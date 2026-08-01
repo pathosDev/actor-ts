@@ -1,4 +1,4 @@
-export interface RetryOptions {
+export type RetryOptions = {
   /** Total attempts including the initial call.  Must be >= 1. */
   readonly attempts: number;
   /** Base delay between retries, in ms. */
@@ -14,7 +14,19 @@ export interface RetryOptions {
   readonly shouldRetry?: (err: Error, attempt: number) => boolean;
   /** Called after each failed attempt; useful for logging/metrics. */
   readonly onAttempt?: (err: Error, attempt: number) => void;
-}
+  /**
+   * How the delay between attempts is awaited.  Defaults to `setTimeout`.
+   * Override to take the retry loop off the wall clock — a
+   * `ManualScheduler`-backed sleep makes the backoff schedule exact and
+   * instant in tests, where a real timer's ±quantum jitter makes a capped
+   * delay indistinguishable from an uncapped one.  Same escape hatch as
+   * `BackoffPolicy`'s `random`.
+   */
+  readonly sleep?: (ms: number) => Promise<void>;
+};
+
+const setTimeoutSleep = (ms: number): Promise<void> =>
+  new Promise(resolve => setTimeout(resolve, ms));
 
 /**
  * Invoke `factory` up to `options.attempts` times with configurable
@@ -28,6 +40,7 @@ export async function retry<T>(factory: () => Promise<T>, options: RetryOptions)
   const factor = options.factor ?? 1;
   const maxDelay = options.maxDelayMs ?? Number.POSITIVE_INFINITY;
   const shouldRetry = options.shouldRetry ?? ((): boolean => true);
+  const sleep = options.sleep ?? setTimeoutSleep;
 
   let lastError: unknown;
   for (let attempt = 1; attempt <= max; attempt++) {
@@ -42,7 +55,7 @@ export async function retry<T>(factory: () => Promise<T>, options: RetryOptions)
       }
       const delay = Math.min(base * Math.pow(factor, attempt - 1), maxDelay);
       if (delay > 0) {
-        await new Promise(r => setTimeout(r, delay));
+        await sleep(delay);
       }
     }
   }

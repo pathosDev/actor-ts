@@ -19,23 +19,24 @@ this one resumes.
 ## A minimal example
 
 ```ts
-import { PersistentActor, ActorSystem, ActorSystemOptions, Props } from 'actor-ts';
+import { PersistentActor, ActorSystem, ActorSystemOptions, Props, type ActorRef } from 'actor-ts';
 import { InMemoryJournal, InMemorySnapshotStore } from 'actor-ts';
 import { match } from 'ts-pattern';
 
-type Command =
-  | { kind: 'deposit'; amount: number }
-  | { kind: 'withdraw'; amount: number };
+type DepositCommand = { kind: 'deposit'; amount: number };
+type WithdrawCommand = { kind: 'withdraw'; amount: number };
+type GetBalanceCommand = { kind: 'get-balance'; replyTo: ActorRef<number> };
+type Command = DepositCommand | WithdrawCommand | GetBalanceCommand;
 
-type Event =
-  | { kind: 'deposited'; amount: number; ts: number }
-  | { kind: 'withdrawn'; amount: number; ts: number };
+type DepositedEvent = { kind: 'deposited'; amount: number; ts: number };
+type WithdrawnEvent = { kind: 'withdrawn'; amount: number; ts: number };
+type Event = DepositedEvent | WithdrawnEvent;
 
 const actorSystemOptions = ActorSystemOptions.create().withPersistence({
     journal:       new InMemoryJournal(),
     snapshotStore: new InMemorySnapshotStore(),
   });
-interface State { balance: number; }
+type State = { balance: number; };
 
 class Account extends PersistentActor<Command, Event, State> {
   readonly persistenceId = 'account-42';
@@ -45,32 +46,49 @@ class Account extends PersistentActor<Command, Event, State> {
   // Pure: state + event → new state.  Runs both on persist + recovery.
   onEvent(state: State, e: Event): State {
     return match(e)
-      .with({ kind: 'deposited' }, (ev) => ({ balance: state.balance + ev.amount }))
-      .with({ kind: 'withdrawn' }, (ev) => ({ balance: state.balance - ev.amount }))
+      .with({ kind: 'deposited' }, (ev) => this.onDeposited(state, ev))
+      .with({ kind: 'withdrawn' }, (ev) => this.onWithdrawn(state, ev))
       .exhaustive();
   }
 
+  private onDeposited(state: State, ev: DepositedEvent): State {
+    return { balance: state.balance + ev.amount };
+  }
+
+  private onWithdrawn(state: State, ev: WithdrawnEvent): State {
+    return { balance: state.balance - ev.amount };
+  }
+
   // Handle a command — validate, persist if valid.
-  onCommand(state: State, cmd: Command): void {
-    match(cmd)
-      .with({ kind: 'deposit' }, (c) => {
-        this.persist(
-          { kind: 'deposited', amount: c.amount, ts: Date.now() },
-          (next) => { /* side effects with the new state */ },
-        );
-      })
-      .with({ kind: 'withdraw' }, (c) => {
-        if (state.balance < c.amount) {
-          // Reject — don't persist anything.
-          this.log.warn(`insufficient funds`);
-          return;
-        }
-        this.persist(
-          { kind: 'withdrawn', amount: c.amount, ts: Date.now() },
-          () => {},
-        );
-      })
+  onCommand(state: State, command: Command): void {
+    match(command)
+      .with({ kind: 'deposit' }, (c) => this.onDeposit(c))
+      .with({ kind: 'withdraw' }, (c) => this.onWithdraw(state, c))
+      .with({ kind: 'get-balance' }, (c) => this.onGetBalance(state, c))
       .exhaustive();
+  }
+
+  private onDeposit(c: DepositCommand): void {
+    this.persist(
+      { kind: 'deposited', amount: c.amount, ts: Date.now() },
+      (next) => { /* side effects with the new state */ },
+    );
+  }
+
+  private onWithdraw(state: State, c: WithdrawCommand): void {
+    if (state.balance < c.amount) {
+      // Reject — don't persist anything.
+      this.log.warn(`insufficient funds`);
+      return;
+    }
+    this.persist(
+      { kind: 'withdrawn', amount: c.amount, ts: Date.now() },
+      () => {},
+    );
+  }
+
+  private onGetBalance(state: State, c: GetBalanceCommand): void {
+    c.replyTo.tell(state.balance);    // read-only — no persist
   }
 }
 
@@ -112,7 +130,22 @@ over the actor's lifetime.  A side effect inside `onEvent` runs
 during every recovery, which means duplicate emails / duplicate
 HTTP calls / duplicated everything.
 
-### `onCommand(state, cmd) → void | Promise<void>`
+That is also why `onEvent` is **synchronous while `onCommand` is
+async** — the asymmetry is the point, not an oversight.  A command
+decides, and deciding does I/O: `persist` writes to the journal.
+An event is already a fact, and folding a fact into state is
+arithmetic.  Anything you would want to `await` here is precisely
+what must not run again on recovery; put it in the `persist`
+callback or `onRecoveryComplete`, neither of which replay.
+
+Read `state` from the **parameter, never `this.state`**.  During
+replay `onEvent` runs detached, before `this.state` has been
+assigned — and the DevTools time-travel panel borrows it the same
+way, as a free fold over any point in history.  A handler that
+reaches for `this.state` works on the persist path and fails only
+after a restart, which is the most expensive way to find out.
+
+### `onCommand(state, command) → void | Promise<void>`
 
 Validates the command against the current state and decides what
 events to persist.  Three valid outcomes:
@@ -127,16 +160,21 @@ events to persist.  Three valid outcomes:
   written.
 
 ```ts
-onCommand(state: State, cmd: Command): void {
-  if (cmd.kind === 'get-balance') {
-    cmd.replyTo.tell(state.balance);    // read-only — no persist
-    return;
-  }
-  if (cmd.kind === 'withdraw') {
-    if (state.balance < cmd.amount) return;   // reject
-    this.persist({ kind: 'withdrawn', amount: cmd.amount, ts: Date.now() },
-      () => {});
-  }
+onCommand(state: State, command: Command): void {
+  match(command)
+    .with({ kind: 'get-balance' }, (c) => this.onGetBalance(state, c))
+    .with({ kind: 'withdraw' }, (c) => this.onWithdraw(state, c))
+    .exhaustive();
+}
+
+private onGetBalance(state: State, command: GetBalanceCommand): void {
+  command.replyTo.tell(state.balance);    // read-only — no persist
+}
+
+private onWithdraw(state: State, command: WithdrawCommand): void {
+  if (state.balance < command.amount) return;   // reject
+  this.persist({ kind: 'withdrawn', amount: command.amount, ts: Date.now() },
+    () => {});
 }
 ```
 
@@ -186,6 +224,37 @@ in order against the recovered state.
 last event is replayed.  Use it for one-time post-recovery setup
 (register watchers, fetch related actors, etc.) — but not for
 side effects per event, which would duplicate on every restart.
+A throw from this hook is an ordinary actor failure and goes to
+supervision; it is not a recovery failure, because the state
+recovered fine.
+
+### When recovery fails
+
+A corrupt event, a missing upcaster, a snapshot the integrity
+check refuses — recovery can throw, and then `onRecoveryFailure`
+is called.
+
+**It is a notification, not a decision.** Recovery failure is
+terminal either way; the hook only chooses who hears about it:
+
+```ts
+// Default — rethrows, so the failure reaches supervision as an
+// ActorInitializationError and the strategy decides.
+onRecoveryFailure(reason: Error): void { throw reason; }
+
+// Override that returns — you have taken the failure as handled,
+// and the actor is then stopped.
+override onRecoveryFailure(reason: Error): void {
+  this.metrics.recoveryFailed.inc();
+}
+```
+
+The actor cannot carry on either way: `state` was never assigned
+and `lastSequenceNr` is unknown, so there is no state in which it
+could answer a command.  Stopping is what keeps that visible —
+commands already queued become **dead letters** instead of
+disappearing into the stash, and the stop is published on the
+event stream.
 
 ## Persistence ID
 
@@ -271,21 +340,22 @@ The **event adapter** upgrades them on read:
 ```ts
 import { EventAdapter } from 'actor-ts';
 
-class V1ToV2Adapter implements EventAdapter<EventV2> {
-  upcast(stored: unknown, version: number): EventV2 {
-    if (version === 1) return migrate(stored as EventV1);
-    return stored as EventV2;
-  }
-}
+const v1ToV2Adapter: EventAdapter<EventV2> = {
+  manifest: () => 'deposited',
+  toJournal: (event) => ({ manifest: 'deposited', version: 2, payload: event }),
+  fromJournal: (stored) => stored.version === 1
+    ? migrate(stored.payload as EventV1)
+    : stored.payload as EventV2,
+};
 
 class Account extends PersistentActor<...> {
-  override eventAdapter() { return new V1ToV2Adapter(); }
+  override eventAdapter() { return v1ToV2Adapter; }
 }
 ```
 
 With an adapter configured, every event is wrapped in a `{ _v, _t, _e }`
 envelope (version + type + payload) at persist time, and unwrapped
-through `adapter.upcast(stored, version)` at read time.  Backward
+through `adapter.fromJournal(stored)` at read time.  Backward
 compatibility is the actor's responsibility.
 
 See [Migration overview](/persistence/migration/overview/)
@@ -298,10 +368,12 @@ import { Aside } from '@astrojs/starlight/components';
 <Aside type="caution" title="Side effects in `onEvent`">
   ```ts
   override onEvent(state, event) {
-    if (event.kind === 'deposited') {
-      sendEmail(event.amount);   // ✗ runs on every recovery
-    }
-    return { balance: state.balance + event.amount };
+    return match(event)
+      .with({ kind: 'deposited' }, (e) => {
+        sendEmail(e.amount);   // ✗ runs on every recovery
+        return { balance: state.balance + e.amount };
+      })
+      .exhaustive();
   }
   ```
   `onEvent` runs once on persist *and* once per recovery.  An
@@ -316,17 +388,21 @@ import { Aside } from '@astrojs/starlight/components';
   actor.tell({ kind: 'deposit', amount: 100 });
   // ↑ this `tell` arrives before recovery completes
   ```
-  Commands sent before recovery finishes are stashed and processed
-  once `onRecoveryComplete` runs.  This is usually transparent
-  but it means a slow recovery (10 000 events through a slow
-  journal) delays the first response.  Monitor recovery latency
+  Commands sent before recovery finishes wait in the mailbox and are
+  processed once `onRecoveryComplete` runs.  This is usually
+  transparent but it means a slow recovery (10 000 events through a
+  slow journal) delays the first response.  Monitor recovery latency
   in production.
+
+  If they never arrive at all, check whether recovery *failed*
+  rather than merely being slow — see [When recovery
+  fails](#when-recovery-fails).
 </Aside>
 
 <Aside type="caution" title="Mutating state from `onCommand`">
   ```ts
-  onCommand(state, cmd) {
-    state.balance += cmd.amount;   // ✗ mutating state directly
+  onCommand(state, command) {
+    state.balance += command.amount;   // ✗ mutating state directly
   }
   ```
   Don't write to `state` directly.  Every state change must go

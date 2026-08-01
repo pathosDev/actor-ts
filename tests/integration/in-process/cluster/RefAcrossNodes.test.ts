@@ -25,10 +25,10 @@ async function waitFor(pred: () => boolean, timeoutMs = 5_000): Promise<void> {
   if (!pred()) throw new Error(`waitFor timed out after ${timeoutMs}ms`);
 }
 
-interface Node {
+type Node = {
   readonly sys: ActorSystem;
   readonly cluster: Cluster;
-}
+};
 
 async function startNode(
   systemName: string,
@@ -67,10 +67,10 @@ async function stop(n: Node): Promise<void> {
  */
 describe('ActorRef serialisation across cluster nodes', () => {
   test('a LocalActorRef embedded in the body is reconstructed as a usable RemoteActorRef on the other side', async () => {
-    type Cmd = { id: string; replyTo: ActorRef<string> };
+    type Command = { id: string; replyTo: ActorRef<string> };
 
-    class Echo extends Actor<Cmd> {
-      override onReceive(m: Cmd): void {
+    class Echo extends Actor<Command> {
+      override onReceive(m: Command): void {
         m.replyTo.tell(`pong:${m.id}`);
       }
     }
@@ -89,20 +89,20 @@ describe('ActorRef serialisation across cluster nodes', () => {
 
     // Both nodes register the sharded type with `role: 'hoster'` so shards
     // can ONLY be allocated to node A (which carries that role).
-    const aShardingOptions = StartShardingOptions.create<Cmd>()
+    const aShardingOptions = StartShardingOptions.create<Command>()
       .withTypeName('echo')
       .withRole('hoster')
       .withEntityProps(Props.create(() => new Echo()))
       .withExtractEntityId((m) => m.id)
       .withNumShards(16);
-    nodeA.cluster.sharding.start<Cmd>(aShardingOptions);
-    const bShardingOptions = StartShardingOptions.create<Cmd>()
+    nodeA.cluster.sharding.start<Command>(aShardingOptions);
+    const bShardingOptions = StartShardingOptions.create<Command>()
       .withTypeName('echo')
       .withRole('hoster')
       .withEntityProps(Props.create(() => new Echo()))
       .withExtractEntityId((m) => m.id)
       .withNumShards(16);
-    const bRegion = nodeB.cluster.sharding.start<Cmd>(bShardingOptions);
+    const bRegion = nodeB.cluster.sharding.start<Command>(bShardingOptions);
 
     // Probe lives on node B — its LocalActorRef is therefore OWNED by B.
     const probeOnB = nodeB.sys.spawn(Props.create(() => new Probe()), 'probe');
@@ -133,12 +133,12 @@ describe('ActorRef serialisation across cluster nodes', () => {
   });
 
   test('already-remote refs in the body keep their original target on the other side', async () => {
-    type Cmd = { stashRef: ActorRef<string> };
+    type Command = { stashRef: ActorRef<string> };
 
     // This actor doesn't care about the ref — it just captures what it saw.
     const seen: Array<ActorRef<string>> = [];
-    class Capturer extends Actor<Cmd> {
-      override onReceive(m: Cmd): void { seen.push(m.stashRef); }
+    class Capturer extends Actor<Command> {
+      override onReceive(m: Command): void { seen.push(m.stashRef); }
     }
 
     const sysName = 'ref-remote';
@@ -147,20 +147,20 @@ describe('ActorRef serialisation across cluster nodes', () => {
 
     await waitFor(() => nodeA.cluster.upMembers().length === 2);
 
-    const aShardingOptions = StartShardingOptions.create<Cmd>()
+    const aShardingOptions = StartShardingOptions.create<Command>()
       .withTypeName('cap')
       .withRole('hoster')
       .withEntityProps(Props.create(() => new Capturer()))
       .withExtractEntityId(() => 'only')
       .withNumShards(4);
-    nodeA.cluster.sharding.start<Cmd>(aShardingOptions);
-    const bShardingOptions = StartShardingOptions.create<Cmd>()
+    nodeA.cluster.sharding.start<Command>(aShardingOptions);
+    const bShardingOptions = StartShardingOptions.create<Command>()
       .withTypeName('cap')
       .withRole('hoster')
       .withEntityProps(Props.create(() => new Capturer()))
       .withExtractEntityId(() => 'only')
       .withNumShards(4);
-    const bRegion = nodeB.cluster.sharding.start<Cmd>(bShardingOptions);
+    const bRegion = nodeB.cluster.sharding.start<Command>(bShardingOptions);
 
     await sleep(300);
 
@@ -187,11 +187,11 @@ describe('ActorRef serialisation across cluster nodes', () => {
   });
 
   test('Nobody in the body round-trips back to Nobody', async () => {
-    type Cmd = { attempt: ActorRef<string> };
+    type Command = { attempt: ActorRef<string> };
     const observed: { nobody: boolean } = { nobody: false };
 
-    class Checker extends Actor<Cmd> {
-      override onReceive(m: Cmd): void {
+    class Checker extends Actor<Command> {
+      override onReceive(m: Command): void {
         observed.nobody = m.attempt.path.systemName === '<nobody>';
       }
     }
@@ -202,20 +202,20 @@ describe('ActorRef serialisation across cluster nodes', () => {
 
     await waitFor(() => nodeA.cluster.upMembers().length === 2);
 
-    const aShardingOptions = StartShardingOptions.create<Cmd>()
+    const aShardingOptions = StartShardingOptions.create<Command>()
       .withTypeName('checker')
       .withRole('hoster')
       .withEntityProps(Props.create(() => new Checker()))
       .withExtractEntityId(() => 'only')
       .withNumShards(4);
-    nodeA.cluster.sharding.start<Cmd>(aShardingOptions);
-    const bShardingOptions = StartShardingOptions.create<Cmd>()
+    nodeA.cluster.sharding.start<Command>(aShardingOptions);
+    const bShardingOptions = StartShardingOptions.create<Command>()
       .withTypeName('checker')
       .withRole('hoster')
       .withEntityProps(Props.create(() => new Checker()))
       .withExtractEntityId(() => 'only')
       .withNumShards(4);
-    const bRegion = nodeB.cluster.sharding.start<Cmd>(bShardingOptions);
+    const bRegion = nodeB.cluster.sharding.start<Command>(bShardingOptions);
 
     await sleep(300);
     bRegion.tell({ attempt: Nobody });
@@ -225,5 +225,96 @@ describe('ActorRef serialisation across cluster nodes', () => {
 
     await stop(nodeA);
     await stop(nodeB);
+  });
+
+  /**
+   * #517 — every test above passes a *spawned* actor as `replyTo`, which has a
+   * real resolvable path.  The ref `ask` synthesises does not: it used to be a
+   * root path, and a root renders without its own name, so the reply travelled
+   * back addressed to the bare system root and was dropped.  `ask` is what the
+   * docs recommend for confirming a cross-node `tell`, so this is the shape a
+   * reader is most likely to write.
+   */
+  describe('ask() across nodes (#517)', () => {
+    type Command = { kind: 'ping'; id: string; replyTo: ActorRef<string> };
+
+    class Echo extends Actor<Command> {
+      override onReceive(m: Command): void { m.replyTo.tell(`pong:${m.id}`); }
+    }
+
+    test('resolves with the remote actor’s reply', async () => {
+      const sysName = 'ref-ask';
+      const nodeA = await startNode(sysName, 58_301, []);
+      const nodeB = await startNode(sysName, 58_302, [`${sysName}@h:58301`]);
+      try {
+        await waitFor(() => nodeB.cluster.upMembers().length === 2);
+
+        const echo = nodeA.sys.spawn(Props.create(() => new Echo()), 'echo');
+        const remote = new RemoteActorRef<Command>(
+          nodeA.cluster.selfAddress,
+          echo.path.toString(),
+          nodeB.cluster,
+        );
+
+        expect(await remote.ask<string>({ kind: 'ping', id: 'solo' }, 3_000)).toBe('pong:solo');
+      } finally {
+        await stop(nodeA);
+        await stop(nodeB);
+      }
+    });
+
+    /**
+     * The registration is keyed by the ref's path, so the path has to be
+     * unique per ask.  A root path is not: it renders as the bare system root
+     * for *every* ask, so two in flight at once share one key and the second
+     * silently evicts the first — which then never resolves.
+     */
+    test('two asks in flight at once each get their own reply', async () => {
+      const sysName = 'ref-ask-concurrent';
+      const nodeA = await startNode(sysName, 58_321, []);
+      const nodeB = await startNode(sysName, 58_322, [`${sysName}@h:58321`]);
+      try {
+        await waitFor(() => nodeB.cluster.upMembers().length === 2);
+
+        const echo = nodeA.sys.spawn(Props.create(() => new Echo()), 'echo');
+        const remote = new RemoteActorRef<Command>(
+          nodeA.cluster.selfAddress,
+          echo.path.toString(),
+          nodeB.cluster,
+        );
+
+        const replies = await Promise.all([
+          remote.ask<string>({ kind: 'ping', id: 'first' }, 3_000),
+          remote.ask<string>({ kind: 'ping', id: 'second' }, 3_000),
+        ]);
+
+        expect(replies).toEqual(['pong:first', 'pong:second']);
+      } finally {
+        await stop(nodeA);
+        await stop(nodeB);
+      }
+    });
+
+    test('still times out — and names the target — when nothing answers', async () => {
+      const sysName = 'ref-ask-timeout';
+      const nodeA = await startNode(sysName, 58_311, []);
+      const nodeB = await startNode(sysName, 58_312, [`${sysName}@h:58311`]);
+      try {
+        await waitFor(() => nodeB.cluster.upMembers().length === 2);
+
+        const remote = new RemoteActorRef<Command>(
+          nodeA.cluster.selfAddress,
+          `actor-ts://${sysName}/user/not-there`,
+          nodeB.cluster,
+        );
+
+        await expect(remote.ask<string>({ kind: 'ping', id: 'x' }, 150)).rejects.toThrow(
+          /Ask timed out after 150ms waiting for reply from actor-ts:\/\/ref-ask-timeout\/user\/not-there/,
+        );
+      } finally {
+        await stop(nodeA);
+        await stop(nodeB);
+      }
+    });
   });
 });

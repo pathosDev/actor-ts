@@ -7,24 +7,29 @@
  *
  * Ignored by the benchmark discovery harness — filename starts with "_".
  */
-interface Crunch { kind: 'crunch'; iterations: number; id: number }
-interface Done { kind: 'done'; id: number }
+type Crunch = { kind: 'crunch'; iterations: number; id: number };
+type Done = { kind: 'done'; id: number };
 
-declare const self: {
+/**
+ * The dedicated-worker scope, reached through `globalThis` rather than a
+ * `declare const self` — the latter collides with the DOM lib's own `self`
+ * (TS2451) as soon as anything typechecks this file with `"lib": ["DOM"]`.
+ */
+const workerScope = globalThis as unknown as {
   onmessage: ((ev: { data: Crunch }) => void) | null;
   postMessage(v: unknown): void;
 };
 
-self.onmessage = (ev) => {
-  const msg = ev.data;
-  if (msg.kind !== 'crunch') return;
+workerScope.onmessage = (ev) => {
+  const message = ev.data;
+  if (message.kind !== 'crunch') return;
   let acc = 0;
   // A tight, branch-heavy loop — meaningful CPU work that the JIT can't
   // fold away (acc keeps it live, the result is returned with the reply).
-  for (let i = 0; i < msg.iterations; i++) {
+  for (let i = 0; i < message.iterations; i++) {
     acc = (acc + (i * 2654435761)) | 0;
     acc = ((acc << 5) | (acc >>> 27)) ^ i;
   }
-  const reply: Done & { acc: number } = { kind: 'done', id: msg.id, acc };
-  self.postMessage(reply);
+  const reply: Done & { acc: number } = { kind: 'done', id: message.id, acc };
+  workerScope.postMessage(reply);
 };

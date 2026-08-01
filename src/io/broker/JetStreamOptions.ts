@@ -35,7 +35,7 @@ export interface JetStreamOptionsType extends BrokerCommonOptionsType {
    * before giving up on a message and rejecting internally
    * (kafkajs-style failure).  Default = `consumer.ackWaitMs ?? 30s`.
    */
-  readonly ackTimeout?: number;
+  readonly acknowledgmentTimeout?: number;
 }
 
 export class JetStreamOptionsBuilder extends BrokerOptionsBuilder<JetStreamOptionsType> {
@@ -85,8 +85,8 @@ export class JetStreamOptionsBuilder extends BrokerOptionsBuilder<JetStreamOptio
   }
 
   /** Max time the manual-ack pump waits for ack/nak/term before giving up. */
-  withAckTimeout(ms: number): this {
-    return this.set('ackTimeout', ms);
+  withAcknowledgmentTimeout(ms: number): this {
+    return this.set('acknowledgmentTimeout', ms);
   }
 }
 
@@ -98,7 +98,7 @@ export class JetStreamOptionsValidator extends BrokerOptionsValidator<JetStreamO
   protected rules(s: Partial<JetStreamOptionsType>): void {
     this.commonRules(s);
     this.nonEmptyStringOrArray('servers', s.servers);
-    this.positiveNumber('ackTimeout');
+    this.positiveNumber('acknowledgmentTimeout');
   }
 }
 

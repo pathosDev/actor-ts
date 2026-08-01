@@ -13,30 +13,30 @@ import {
 
 const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
 
-interface KV { readonly map: Record<string, string>; }
-type Cmd =
+type KV = { readonly map: Record<string, string>; };
+type Command =
   | { kind: 'set'; key: string; value: string; replyTo: import('../../../../src/ActorRef.js').ActorRef }
   | { kind: 'get'; key: string; replyTo: import('../../../../src/ActorRef.js').ActorRef };
 
-class KVActor extends DurableStateActor<Cmd, KV> {
-  override async onCommand(cmd: Cmd): Promise<void> {
-    if (cmd.kind === 'set') {
-      const next: KV = { map: { ...this.state.map, [cmd.key]: cmd.value } };
+class KVActor extends DurableStateActor<Command, KV> {
+  override async onCommand(command: Command): Promise<void> {
+    if (command.kind === 'set') {
+      const next: KV = { map: { ...this.state.map, [command.key]: command.value } };
       await this.persist(next);
-      cmd.replyTo.tell({ kind: 'ok', revision: this.revision } as never);
+      command.replyTo.tell({ kind: 'ok', revision: this.revision } as never);
       return;
     }
-    cmd.replyTo.tell({ kind: 'value', value: this.state.map[cmd.key] ?? null } as never);
+    command.replyTo.tell({ kind: 'value', value: this.state.map[command.key] ?? null } as never);
   }
 }
 
-const kvProps = (store: DurableStateStore, id: string): Props<Cmd> =>
+const kvProps = (store: DurableStateStore, id: string): Props<Command> =>
   Props.create(() => {
     const durableStateOptions = DurableStateOptions.create<KV>()
       .withPersistenceId(id)
       .withStore(store)
       .withEmptyState(() => ({ map: {} }));
-    return new KVActor(durableStateOptions) as unknown as import('../../../../src/Actor.js').Actor<Cmd>;
+    return new KVActor(durableStateOptions) as unknown as import('../../../../src/Actor.js').Actor<Command>;
   });
 
 describe('InMemoryDurableStateStore', () => {
@@ -64,6 +64,16 @@ describe('InMemoryDurableStateStore', () => {
     await store.upsert('c', 0, { n: 1 });
     await store.delete('c');
     expect((await store.load('c')).isNone()).toBe(true);
+  });
+
+  test('rejects a negative or non-integer expectedRevision as an argument error', async () => {
+    const store = new InMemoryDurableStateStore();
+    // A bogus revision is a caller bug, not a lost race — surfacing it as a
+    // concurrency conflict would invite an endless retry loop.  Same guard as
+    // the relational and object-storage stores.
+    await expect(store.upsert('d', -1, { n: 1 })).rejects.toThrow(/non-negative integer/);
+    await expect(store.upsert('d', 1.5, { n: 1 })).rejects.toThrow(/non-negative integer/);
+    expect((await store.load('d')).isNone()).toBe(true);
   });
 });
 

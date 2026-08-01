@@ -55,5 +55,16 @@ describe('Cluster event classes', () => {
     expect(event.type).toBe('counter');
     expect(event.shards).toBe(shards);
     expect(event.version).toBe(7);
+    // Regions are optional so a producer that only knows the map still fits.
+    expect(event.regions).toEqual([]);
+  });
+
+  test('ShardMapChanged carries the region table when the producer has it', () => {
+    const regionPath = '/system/cluster/sharding/region-counter';
+    const regions = [
+      { key: `a@h:1|${regionPath}`, address: 'a@h:1', path: regionPath, proxy: false, shardCount: 2 },
+    ];
+    const event = new ShardMapChanged('counter', new Map([[0, `a@h:1|${regionPath}`]]), 8, regions);
+    expect(event.regions).toBe(regions);
   });
 });

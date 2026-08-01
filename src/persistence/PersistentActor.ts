@@ -8,6 +8,7 @@ import type {
   PersistenceOptions,
 } from './PersistenceOptions.js';
 import type { SnapshotStore } from './SnapshotStore.js';
+import { replayState } from './Replay.js';
 import type { EventAdapter, SnapshotAdapter } from './migration/Adapter.js';
 import {
   decodeEvent,
@@ -39,38 +40,64 @@ export function everyNEvents<State, Event>(n: number): SnapshotPolicy<State, Eve
  * stashed while `persist(...)` is pending, so user code can assume the
  * state is caught up by the time its callback fires.
  *
- *   class AccountActor extends PersistentActor<Cmd, Event, State> {
+ *   class AccountActor extends PersistentActor<Command, Event, State> {
  *     readonly persistenceId = 'account-42';
  *     initialState(): State { return { balance: 0 }; }
  *     onEvent(state: State, e: Event): State {
  *       if (e.kind === 'deposited') return { balance: state.balance + e.amount };
  *       return state;
  *     }
- *     onCommand(state: State, cmd: Cmd): void {
- *       if (cmd.kind === 'deposit') {
- *         this.persist({ kind: 'deposited', amount: cmd.amount }, (s) => {
- *           this.sender?.tell({ ok: s.balance });
+ *     onCommand(state: State, command: Command): void {
+ *       if (command.kind === 'deposit') {
+ *         this.persist({ kind: 'deposited', amount: command.amount }, (s) => {
+ *           this.sender.forEach(replyTo => replyTo.tell({ ok: s.balance }));
  *         });
  *       }
  *     }
  *   }
  */
-export abstract class PersistentActor<Cmd, Event, State> extends Actor<Cmd> {
+export abstract class PersistentActor<Command, Event, State> extends Actor<Command> {
   abstract readonly persistenceId: string;
 
   /** Default initial state when no snapshot and no events exist. */
   abstract initialState(): State;
 
-  /** Pure state-update function — MUST be deterministic. */
+  /**
+   * Pure state-update function — MUST be deterministic, and is
+   * deliberately synchronous where `onCommand` is async.
+   *
+   * A command decides and therefore does I/O (`persist` writes to the
+   * journal); an event is already a fact, and folding a fact into state
+   * is arithmetic.  Anything you would want to `await` here — a read, a
+   * notification — is precisely what must NOT run again on recovery.
+   * Put it in the `persist` callback or `onRecoveryComplete`, neither of
+   * which replay.
+   *
+   * Read `state` from the parameter, never `this.state`: during replay
+   * this runs detached inside `replayState`, before `this.state` has
+   * been assigned, and the DevTools time-travel panel borrows it as a
+   * free fold.  A handler that reads `this.state` works on the persist
+   * path and fails only after a restart.
+   */
   abstract onEvent(state: State, event: Event): State;
 
   /** Handle an incoming command — typically calls `persist(event, cb)`. */
-  abstract onCommand(state: State, cmd: Cmd): void | Promise<void>;
+  abstract onCommand(state: State, command: Command): void | Promise<void>;
 
   /** Called once recovery finishes, with the final replayed state. */
   onRecoveryComplete(_state: State): void | Promise<void> {}
 
-  /** Called when recovery itself throws.  Default = propagate to supervision. */
+  /**
+   * Called when recovery itself throws.
+   *
+   * A notification, not a decision — recovery failure is terminal either
+   * way.  The default rethrows, so the failure reaches supervision as an
+   * `ActorInitializationError`.  An override that returns normally takes
+   * the failure as handled, and the actor is then stopped: `state` was
+   * never assigned and `lastSequenceNr` is unknown, so there is no state
+   * in which it could answer a command.  Pending commands go to dead
+   * letters rather than disappearing.
+   */
   onRecoveryFailure(reason: Error): void { throw reason; }
 
   /** Snapshot policy — return true to snapshot the current state. */
@@ -142,71 +169,76 @@ export abstract class PersistentActor<Cmd, Event, State> extends Actor<Cmd> {
     try {
       await this.recover();
     } catch (e) {
-      this.onRecoveryFailure(e instanceof Error ? e : new Error(String(e)));
+      const reason = e instanceof Error ? e : new Error(String(e));
+      // Rethrows by default, and then this is the last line that runs:
+      // ActorCell.onCreate turns it into an ActorInitializationError and
+      // supervision decides.
+      this.onRecoveryFailure(reason);
+      // The hook returned, so it owns the failure — but it cannot own the
+      // actor.  `_state` was never assigned and `_recovering` is still
+      // true, so every command would be stashed, silently, until #1025
+      // overflows the 1024-entry stash and throws from inside the handler
+      // — a supervision restart 1024 messages away from its cause, whose
+      // recovery fails and gets swallowed again.  Stop instead.
+      //
+      // `stopSelf` enqueues a system message, and the cell drains those
+      // ahead of every user message, so nothing reaches `onReceive`
+      // without a state and whatever is already queued becomes dead
+      // letters.
+      this.log.error(
+        `[persistence] '${this.persistenceId}' recovery failed and onRecoveryFailure `
+        + 'returned without rethrowing — stopping the actor',
+        reason,
+      );
+      this.context.stopSelf();
+      return;
+    }
+    // Post-recovery user code, deliberately OUTSIDE the guard above.  A
+    // throw in `onRecoveryComplete` is an ordinary actor failure, not a
+    // recovery failure: routing it through `onRecoveryFailure` blamed the
+    // journal for a bug in the hook, and — with an override that swallows
+    // — stranded an actor whose state had recovered perfectly.
+    this._recovering = false;
+    try {
+      await this.onRecoveryComplete(this._state);
+    } finally {
+      // Only reachable when a subclass starts recovery without awaiting
+      // it — on every normal path the commands are still in the mailbox,
+      // never the stash.  Draining in `finally` keeps them across a
+      // failing hook instead of letting them die with the instance.
+      this.context.unstashAll();
     }
   }
 
+  /** Replay snapshot + journal into `_state` / `_seq`.  Runs no user callbacks. */
   private async recover(): Promise<void> {
-    this._state = this.initialState();
-    this._seq = 0;
-    const snapAdapter = this.snapshotAdapter();
-    const evAdapter = this.eventAdapter();
-    const persistOpts = this.persistenceOptions();
     this.log.debug(`[persistence] '${this.persistenceId}' recovery starting`);
-    const snapshot = await this._snapshotStore.loadLatest<unknown>(this.persistenceId, persistOpts);
-    if (snapshot.isSome()) {
-      const snapSeq = snapshot.value.sequenceNr;
-      // Security: validate the snapshot's claimed seq number BEFORE
-      // trusting it for replay.  An attacker with write access to
-      // the snapshot store (shared bucket, co-tenant, insider) could
-      // craft a snapshot with `sequenceNr = MAX_SAFE_INTEGER` (or
-      // NaN, Infinity, -1, etc.); the old code accepted it and
-      // skipped event replay entirely, recovering with the
-      // attacker's chosen state.  Two-layer check:
-      //   1. seq must be a finite non-negative integer
-      //   2. seq must not exceed what the journal can corroborate
-      if (!Number.isInteger(snapSeq) || snapSeq < 0) {
-        throw new Error(
-          `[persistence] '${this.persistenceId}' snapshot has malformed sequenceNr=${snapSeq} ` +
-          `— refusing to recover from a corrupted or tampered snapshot`,
-        );
-      }
-      // Cross-check against the journal's highest seq: a snapshot that
-      // claims to be AHEAD of the journal but the journal *has*
-      // events for this pid is the classic attack vector — the
-      // attacker pumps the seq sky-high so all real events get
-      // skipped during replay.  An empty journal is fine (legitimate
-      // when state-only snapshots survive a journal compaction or
-      // migration).
-      const journalHigh = await this._journal.highestSeq(this.persistenceId);
-      if (journalHigh > 0 && snapSeq > journalHigh) {
-        throw new Error(
-          `[persistence] '${this.persistenceId}' snapshot claims sequenceNr=${snapSeq} ` +
-          `but journal's highest seq is ${journalHigh} — refusing to recover from a ` +
-          `corrupted or tampered snapshot (would silently skip event replay)`,
-        );
-      }
-      this._state = decodeState<State>(snapshot.value.state, snapAdapter);
-      this._seq = snapSeq;
-      this.log.debug(`[persistence] '${this.persistenceId}' loaded snapshot @seq=${this._seq}`);
-    }
-    const events = await this._journal.read<unknown>(this.persistenceId, this._seq + 1);
-    for (const ev of events) {
-      const decoded = decodeEvent<Event>(ev.event, evAdapter);
-      this._state = this.onEvent(this._state, decoded);
-      this._seq = ev.sequenceNr;
+    // The fold, the snapshot fast-path and the snapshot-integrity
+    // checks all live in `replayState`, shared with the DevTools
+    // time-travel panel (#201).  One implementation means a debugger
+    // reconstructing state cannot quietly disagree with what the actor
+    // itself recovers — which is the whole reason to look at it.
+    const result = await replayState<Event, State>({
+      journal: this._journal,
+      snapshotStore: this._snapshotStore,
+      persistenceId: this.persistenceId,
+      initialState: () => this.initialState(),
+      fold: (state, event) => this.onEvent(state, event),
+      ...(this.eventAdapter() === undefined ? {} : { eventAdapter: this.eventAdapter()! }),
+      ...(this.snapshotAdapter() === undefined ? {} : { snapshotAdapter: this.snapshotAdapter()! }),
+      ...(this.persistenceOptions() === undefined ? {} : { persistenceOptions: this.persistenceOptions()! }),
+    });
+    this._state = result.state;
+    this._seq = result.sequenceNr;
+    if (result.fromSnapshotSequenceNr !== null) {
+      this.log.debug(`[persistence] '${this.persistenceId}' loaded snapshot @seq=${result.fromSnapshotSequenceNr}`);
     }
     this.log.debug(
-      `[persistence] '${this.persistenceId}' recovery complete: replayed ${events.length} event(s), seq=${this._seq}`,
+      `[persistence] '${this.persistenceId}' recovery complete: replayed ${result.eventsApplied} event(s), seq=${this._seq}`,
     );
-    this._recovering = false;
-    await this.onRecoveryComplete(this._state);
-    // Any commands that arrived during recovery are already stashed by the
-    // ActorCell — release them now so the actor processes them in order.
-    this.context.unstashAll();
   }
 
-  override async onReceive(message: Cmd): Promise<void> {
+  override async onReceive(message: Command): Promise<void> {
     if (this._recovering || this._persisting) {
       this.context.stash();
       return;

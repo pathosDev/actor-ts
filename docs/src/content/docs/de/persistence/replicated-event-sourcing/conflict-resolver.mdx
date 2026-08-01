@@ -1,262 +1,197 @@
 ---
 title: Conflict Resolver
-description: Die vom User gelieferte Funktion, die entscheidet, wie nebenläufige Events in einen einzigen State gemergt werden. Rein, deterministisch, replica-agnostisch. Der app-spezifischste Teil von Replicated Event Sourcing.
+description: Die Strategie, die zwei nebenläufige Events zu einem zusammenführt — paarweise, kommutativ, deterministisch. Der app-spezifischste Teil von Replicated Event Sourcing. Bringt Last-Writer-Wins und einen Custom-Merge-Wrapper mit.
 ---
 
 Wenn zwei Replicas derselben Entity Events gleichzeitig schreiben
-(erkannt über
+(erkannt via
 [Vector Clocks](/de/persistence/replicated-event-sourcing/vector-clocks/)),
-muss das Framework wissen, **wie sie zu mergen sind**.  Das ist
-der **Conflict Resolver** — eine Funktion, die du lieferst.
+muss das Framework wissen, **welches Event gewinnt oder wie das
+Paar gemergt wird**.  Das ist der **Conflict Resolver** — eine
+Strategie, die du durch Überschreiben von `resolver()` am Actor
+bereitstellst.
 
 ```ts
+import { ReplicatedEventSourcedActor, LastWriterWinsResolver } from 'actor-ts';
 import type { ConflictResolver } from 'actor-ts';
 
-type State = { value: number };
-type Event = { kind: 'set'; value: number };
-
-const resolver: ConflictResolver<State, Event> = {
-  resolve(state, conflicts) {
-    // conflicts ist ein Array von Events, die nebenläufig zu state sind
-    // jedes trägt seine eigene Vector Clock + Replica-ID
-    const values = conflicts.map(c => (c.event as Event).value);
-    return { value: Math.max(...values) };
-  },
-};
+class Counter extends ReplicatedEventSourcedActor<Command, Event, State> {
+  // Der Default ist Last-Writer-Wins; zum Ändern überschreiben:
+  protected override resolver(): ConflictResolver<Event> {
+    return new LastWriterWinsResolver<Event>();
+  }
+  // ...
+}
 ```
 
 ## Das Interface
 
+Der Resolver versöhnt ein **nebenläufiges Paar** — er gibt genau
+ein Event zurück (einen Gewinner oder eine synthetisierte
+Zusammenführung der beiden):
+
 ```ts
-interface ConflictResolver<State, Event> {
-  resolve(
-    state:     State,                                   // aktueller lokaler State
-    conflicts: Array<{
-      event:     Event;
-      replicaId: ReplicaId;
-      vectorClock: VectorClock;
-    }>,
-  ): State;
+interface ConflictResolver<E> {
+  resolve(a: ConflictCandidate<E>, b: ConflictCandidate<E>): E;
+}
+
+type ConflictCandidate<E> = {
+  event:     E;             // die User-Domain-Event-Payload
+  timestamp: number;        // Wall-Clock der ursprünglichen Replica
+  replica:   ReplicaId;     // ID der ursprünglichen Replica
+  vc:        VectorClock;   // Vector Clock zum Persist-Zeitpunkt
+};
+```
+
+Beachte den **einzelnen Typparameter** (das Event, *nicht* den
+State).  Sind mehr als zwei Events nebenläufig, faltet das
+Framework sie paarweise durch `resolve`, sodass die ganze Menge
+auf ein Gewinner-Event reduziert wird — das dann über dein
+normales `onEvent` angewandt wird.
+
+## Zwei harte Verträge
+
+`resolve` muss sein:
+
+- **Deterministisch** — dasselbe `(a, b)`-Paar liefert auf jeder
+  Replica dasselbe Ergebnis; kein `Date.now()`, kein
+  `Math.random()`, keine externen Reads.
+- **Kommutativ** — `resolve(a, b)` muss gleich `resolve(b, a)`
+  sein.  Events kommen auf verschiedenen Replicas in
+  unterschiedlicher Reihenfolge an, daher lässt ein
+  nicht-kommutativer Resolver Replicas divergieren.
+
+Entscheide den Gewinner aus den Daten der Kandidaten selbst
+(`timestamp`, `replica`, Payload) — nie aus der
+Ankunftsreihenfolge oder „nimm `a`".
+
+## Eingebaute Resolver
+
+### `LastWriterWinsResolver` (Default)
+
+```ts
+protected override resolver(): ConflictResolver<Event> {
+  return new LastWriterWinsResolver<Event>();
 }
 ```
 
-`resolve` erhält:
+Höherer `timestamp` gewinnt; bei Gleichstand gewinnt die höhere
+(lexikografische) `replica`-ID, sodass jede Replica konvergiert.
+Einfach und oft „gut genug".  Vorbehalt: setzt grob vergleichbare
+Wall-Clocks über Replicas voraus — derselbe Trade-off wie
+`LWWRegister`.
 
-- **`state`** — die View der lokalen Replica vor dem Abgleich.
-- **`conflicts`** — Array nebenläufiger Events mit ihren
-  Metadaten (welche Replica sie geschrieben hat, Vector Clock zum
-  Schreibzeitpunkt).
+### `CustomMergeResolver`
 
-Gibt den **gemergten State** zurück.  Muss **rein +
-deterministisch** sein — derselbe Input produziert immer denselben
-Output; keine Seiteneffekte.
-
-## Warum Determinismus wichtig ist
-
-Jede Replica führt denselben Resolver auf denselben
-konfligierenden Events aus, möglicherweise in verschiedenen
-Reihenfolgen + zu verschiedenen Zeiten.  **Für Konvergenz muss
-der Resolver auf jeder Replica denselben State produzieren.**
-
-Nicht-Determinismus bricht Konvergenz:
+Kapsle ein kommutatives Merge der beiden Event-Payloads — nutze
+es, wenn du Domänenwissen hast, das LWW nicht erfasst (z. B.
+addieren sich zwei nebenläufige Einzahlungen einfach):
 
 ```ts
-// ✗ NICHT deterministisch — Date.now() unterscheidet sich pro Aufruf
-{ value: state.value + Date.now() }
+import { CustomMergeResolver } from 'actor-ts';
 
-// ✗ NICHT deterministisch — hängt davon ab, welche Replica läuft
-{ winner: thisReplicaId }   // (auf jeder Replica anders)
-
-// ✓ Deterministisch — überall dieselbe Antwort
-{ value: Math.max(...values) }
-
-// ✓ Deterministisch, wenn event.ts konsistent ist
-{ value: conflicts.sort((a, b) => a.event.ts - b.event.ts).pop().event.value }
+protected override resolver(): ConflictResolver<Event> {
+  return new CustomMergeResolver<Event>((a, b) => ({
+    kind:   'deposited',
+    amount: a.amount + b.amount,   // additives Merge
+  }));
+}
 ```
 
-## Häufige Strategien
+`CustomMergeResolver` sortiert die beiden Kandidaten vor dem
+Aufruf deines Merge nach der Replica-ID, sodass es eine
+deterministische Argumentreihenfolge erhält, selbst wenn deine
+Funktion nicht perfekt symmetrisch ist — der Vertrag verlangt
+aber weiterhin **Kommutativität**.
 
-### Last-Writer-Wins (Timestamp)
+## Eigene Strategien
 
-```ts
-const resolver: ConflictResolver<State, Event> = {
-  resolve(state, conflicts) {
-    const winner = conflicts.reduce((acc, c) =>
-      c.event.ts > acc.event.ts ? c : acc
-    );
-    return applyEvent(state, winner.event);
-  },
-};
-```
+Für alles andere implementiere `ConflictResolver<Event>` direkt.
+`resolve` gibt ein einzelnes Event zurück; der Actor wendet es
+über `onEvent` an.
 
-Jedes Event trägt eine `ts` (Wall-Clock-Millis); der neueste
-Timestamp gewinnt.  Einfach, oft "gut genug."  Vorbehalt: hängt
-von synchronisierten Uhren ab — weiter Clock-Skew bricht die
-Intuition.
-
-### Max / Min
+### Gewinner wählen (max / min)
 
 ```ts
-const resolver = {
-  resolve(state, conflicts) {
-    return { value: Math.max(state.value, ...conflicts.map(c => c.event.value)) };
-  },
-};
-```
-
-Den größten (oder kleinsten) Wert nehmen.  Richtig für Counter,
-die nicht zurückfallen sollten: Lagerbestände, Score Boards,
-Completion-Counts.
-
-### Per-Feld-Merge
-
-```ts
-const resolver: ConflictResolver<UserProfile, ProfileEvent> = {
-  resolve(state, conflicts) {
-    // Jedes Feld verwendet LWW unabhängig
-    const fieldsWithLatest = new Map<keyof UserProfile, { value: any; ts: number }>();
-    for (const c of conflicts) {
-      const ev = c.event;
-      if (ev.kind === 'set-name'  && (!fieldsWithLatest.has('name')  || ev.ts > fieldsWithLatest.get('name')!.ts))
-        fieldsWithLatest.set('name', { value: ev.name, ts: ev.ts });
-      if (ev.kind === 'set-email' && (!fieldsWithLatest.has('email') || ev.ts > fieldsWithLatest.get('email')!.ts))
-        fieldsWithLatest.set('email', { value: ev.email, ts: ev.ts });
+class HighestWins implements ConflictResolver<Event> {
+  resolve(a: ConflictCandidate<Event>, b: ConflictCandidate<Event>): Event {
+    if (a.event.value !== b.event.value) {
+      return a.event.value > b.event.value ? a.event : b.event;
     }
-    let merged = state;
-    for (const [field, { value }] of fieldsWithLatest) {
-      merged = { ...merged, [field]: value };
-    }
-    return merged;
-  },
-};
+    return a.replica > b.replica ? a.event : b.event;   // deterministischer Tie-Break
+  }
+}
 ```
 
-Imitiert CRDT-artiges Per-Feld-LWW.  Der letzte Writer jedes
-Feldes gewinnt unabhängig.  Gut für Dokumente mit weitgehend
-unabhängigen Feldern.
+Richtig für Werte, die nicht zurückgehen dürfen: Lagerbestände,
+High-Scores.  Löse exakte Gleichstände über `replica`, damit das
+Ergebnis auf jeder Replica gleich ist.
 
-### Domain-spezifischer Merge
+### Deterministische Reihenfolge nach (timestamp, replica)
 
 ```ts
-const resolver = {
-  resolve(state, conflicts) {
-    // Shopping Cart: Vereinigung der Items, Maximum der Mengen
-    const items = new Map<string, number>(state.items.entries());
-    for (const c of conflicts) {
-      if (c.event.kind === 'add-item') {
-        const current = items.get(c.event.sku) ?? 0;
-        items.set(c.event.sku, Math.max(current, c.event.quantity));
-      }
-    }
-    return { items };
-  },
-};
+class OrderedWins implements ConflictResolver<Event> {
+  resolve(a: ConflictCandidate<Event>, b: ConflictCandidate<Event>): Event {
+    if (a.timestamp !== b.timestamp) return a.timestamp > b.timestamp ? a.event : b.event;
+    return a.replica > b.replica ? a.event : b.event;
+  }
+}
 ```
 
-Benutzerdefinierte Business-Logik.  Wenn die Daten natürliche
-Merge-Semantik haben (Sets, Max-Counter), kodiere sie hier.
+Genau das macht `LastWriterWinsResolver` — hier als Vorlage für
+dein eigenes Tie-Breaking gezeigt.
 
-## Pure-State vs. Event-Replay
+## Wann ein Merge die falsche Abstraktion ist
 
-Zwei Wege, Konflikte anzuwenden:
+Manchmal **sollten** nebenläufige Events nicht mergen — sie
+widersprechen sich semantisch (z. B. „Konto schließen"
+nebenläufig zu „Einzahlung").  Dafür ist **Single-Writer mit
+Lease** besser — siehe
+[Single-Writer-Lease](/de/persistence/replicated-event-sourcing/single-writer-lease/) —
+das erzwingt sequenzielle Writes, sodass keine Konflikte
+entstehen.
 
-### State-Merge (oben)
-
-`resolve` gibt den **gemergten State direkt** zurück.  Konflikte
-werden kombiniert; das Ergebnis ist ein State.  Nachfolgende
-Events werden normal über `onEvent` angewendet.
-
-### Event-Replay
-
-```ts
-const resolver: ConflictResolver<State, Event> = {
-  resolve(state, conflicts) {
-    // Events in einer deterministischen Reihenfolge anwenden, dann Ergebnis zurückgeben
-    const sorted = [...conflicts].sort((a, b) =>
-      a.event.ts - b.event.ts || a.replicaId.localeCompare(b.replicaId)
-    );
-    let s = state;
-    for (const c of sorted) s = applyEvent(s, c.event);
-    return s;
-  },
-};
-```
-
-Events deterministisch sortieren; durch `onEvent` abspielen.  Oft
-das sauberste Muster — dein existierendes `onEvent` macht die
-Arbeit; der Resolver erzwingt nur eine Reihenfolge.
-
-## Wann State-Merge die falsche Abstraktion ist
-
-Manchmal **sollten** nebenläufige Events nicht mergen — sie sind
-semantisch im Konflikt:
-
-```ts
-// Nebenläufig: "Account schließen" + "Einzahlung"
-// → Resolver muss entscheiden, was "gewinnt"
-```
-
-Für diese ist die richtige Antwort oft **Single-Writer mit einem
-Lease** — siehe
-[Single-Writer-Lease](/de/persistence/replicated-event-sourcing/single-writer-lease/).
-Erzwingt sequenzielle Writes; keine Konflikte zu lösen.
-
-Verwende Replicated ES, wenn Konflikte **erwartungsgemäß natürlich
-mergen**; verwende Single-Writer-Lease, wenn sie nicht passieren
-sollten.
+Nutze Replicated ES, wenn nebenläufige Events **natürlich
+mergen**; nutze das Lease, wenn sie gar nicht auftreten sollen.
 
 ## Performance
 
-`resolve` läuft **bei jeder Nebenläufig-Write-Erkennung** —
-begrenzt durch die Rate eintreffender Cross-Replica-Events.  Für
-typische Replicated-ES-Workloads ist das **selten** (ein oder
-zwei Events pro Key pro Tag).
-
-Schwere Resolver sind in Ordnung.  Sortiere 50 konfligierende
-Events, lass einen quadratischen Algorithmus laufen — immer noch
-billig verglichen mit dem Journal-I/O.
+`resolve` läuft nur bei **Erkennung eines nebenläufigen Writes**
+— begrenzt durch die Rate replica-übergreifender Events,
+typischerweise selten.  Selbst ein aufwändigeres Merge ist billig
+neben dem Journal-I/O.
 
 import { Aside } from '@astrojs/starlight/components';
 
+<Aside type="caution" title="Resolver müssen kommutativ sein">
+  ```ts
+  resolve(a, b) { return a.event; }   // ✗ „nimm, was als a ankam"
+  ```
+  `a` und `b` kommen auf verschiedenen Replicas in
+  unterschiedlicher Reihenfolge an.  Entscheide aus den Daten der
+  Kandidaten, sodass `resolve(a, b) === resolve(b, a)`.
+</Aside>
+
 <Aside type="caution" title="Nicht-deterministische Resolver konvergieren nicht">
   ```ts
-  return { value: Math.random() };   // ✗
+  resolve(a, b) { return Math.random() < 0.5 ? a.event : b.event; }   // ✗
   ```
-  Jede Replica wählt andere Werte; der Cluster einigt sich nie auf
-  einen State.  Immer rein + deterministisch.
+  Jede Replica wählt anders; der Cluster einigt sich nie.
+  Immer rein + deterministisch.
 </Aside>
 
-<Aside type="caution" title="Resolver wirft Exception">
+<Aside type="caution" title="Ein Event zurückgeben, keinen State">
   ```ts
-  resolve(state, conflicts) {
-    throw new Error('this shouldn't happen');   // ✗ bricht Recovery
-  }
+  resolve(a, b) { return { value: 42 }; }   // ✗ muss ein Event sein
   ```
-  Das Framework kann ohne einen State nicht fortfahren.  Wenn du
-  nicht mergen kannst, gib den **lokalen State** unverändert
-  zurück (effektiv die Events des Konflikts ignorieren).  Oder
-  lass den Actor komplett scheitern (überlass es dem Supervisor).
+  `resolve` gibt eines der beiden Events zurück (oder ein
+  synthetisiertes Event desselben Typs).  Der Actor faltet es über
+  dein bestehendes `onEvent` in den State.
 </Aside>
 
-<Aside type="caution" title="Externen State im Resolver lesen">
-  ```ts
-  resolve(state, conflicts) {
-    const config = readSomeExternalConfig();   // ✗
-    return ...;
-  }
-  ```
-  Externe State-Änderungen brechen Determinismus über Replicas
-  hinweg (und über die Zeit).  Backe jeden Kontext in die Events
-  selbst ein.
-</Aside>
+## Wie geht es weiter
 
-## Wie geht's weiter
-
-- **[Replicated Event Sourcing im Überblick](/de/persistence/replicated-event-sourcing/overview/)** —
-  das größere Bild.
-- **[Vector Clocks](/de/persistence/replicated-event-sourcing/vector-clocks/)** —
-  wie Konflikte erkannt werden.
-- **[Single-Writer-Lease](/de/persistence/replicated-event-sourcing/single-writer-lease/)** —
-  Konflikte verhindern vs. auflösen.
-- **[Snapshotting](/de/persistence/replicated-event-sourcing/snapshotting/)** —
-  Snapshots, die den konvergierten State des Resolvers enthalten.
+- **[Replicated Event Sourcing im Überblick](/de/persistence/replicated-event-sourcing/overview/)** — das große Ganze.
+- **[Vector Clocks](/de/persistence/replicated-event-sourcing/vector-clocks/)** — wie Konflikte erkannt werden.
+- **[Single-Writer-Lease](/de/persistence/replicated-event-sourcing/single-writer-lease/)** — Konflikte verhindern vs. auflösen.
+- **[Snapshotting](/de/persistence/replicated-event-sourcing/snapshotting/)** — Snapshots, die den konvergierten State des Resolvers enthalten.

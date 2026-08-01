@@ -87,8 +87,9 @@ flowchart TB
 
 Der Provider stoppt beim **ersten nicht-leeren Ergebnis**.  Eine
 leere Liste von einem Provider triggert den Fallback zum
-nächsten; ein Fehler triggert ebenfalls einen Fallback (mit
-geloggtem Error auf Debug-Level).
+nächsten; ein Fehler triggert ebenfalls einen Fallback (der
+Fehler wird an einen optionalen Log-Callback übergeben —
+standardmäßig ein No-op).
 
 Wenn **jeder** Provider fehlschlägt oder leer zurückgibt,
 resolved `lookup()` zu `[]` — `Cluster.join` des Clusters
@@ -188,14 +189,27 @@ new AggregateSeedProvider([
 ]);
 ```
 
-Ein 403 von der K8s-API → geloggt + übersprungen → fällt durch
-zum Config Provider.  Das macht Aggregate zum richtigen Werkzeug
-für "dieser Code-Pfad läuft überall" — das K8s-Lookup wird
-einfach zum No-op, wo K8s nicht verfügbar ist.
+Ein 403 von der K8s-API → übersprungen → fällt durch zum Config
+Provider.  Das macht Aggregate zum richtigen Werkzeug für
+"dieser Code-Pfad läuft überall" — das K8s-Lookup wird einfach
+zum No-op, wo K8s nicht verfügbar ist.
 
-Fehler werden auf **Debug**-Level geloggt — standardmäßig leise.
-Konfiguriere das System auf `debug`, wenn du Sichtbarkeit
-willst, welche Provider es probiert / nicht geschafft haben.
+`AggregateSeedProvider` nimmt ein **optionales zweites
+Konstruktor-Argument** — einen Log-Callback `(message: string,
+err?: unknown) => void`.  Er ist standardmäßig ein No-op, sodass
+Provider-Fehler ohne übergebenen Callback **stillschweigend
+verschluckt** werden.  Übergib eine Log-Funktion, um Sichtbarkeit
+zu bekommen, welche Provider es probiert / nicht geschafft haben:
+
+```ts
+new AggregateSeedProvider(
+  [
+    new KubernetesApiSeedProvider(kubernetesApiSeedProviderOptions),
+    new ConfigSeedProvider(configSeedProviderOptions),
+  ],
+  (message, error) => console.warn(`[seed] ${message}`, error),
+);
+```
 
 ## Reihenfolge zählt
 

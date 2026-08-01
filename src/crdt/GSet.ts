@@ -29,10 +29,10 @@ import type { Crdt } from './Crdt.js';
  * fixes dedup, not persistence.
  */
 
-export interface GSetOptions<E> {
+export type GSetOptions<E> = {
   /** Custom identity function — see class doc. */
   readonly identity?: (e: E) => string;
-}
+};
 
 const defaultIdentity = (e: unknown): string => JSON.stringify(e);
 
@@ -45,8 +45,8 @@ export class GSet<E> implements Crdt<GSet<E>> {
     private readonly identity: (e: E) => string,
   ) {}
 
-  static empty<E>(opts: GSetOptions<E> = {}): GSet<E> {
-    return new GSet<E>(new Map(), opts.identity ?? (defaultIdentity as (e: E) => string));
+  static empty<E>(options: GSetOptions<E> = {}): GSet<E> {
+    return new GSet<E>(new Map(), options.identity ?? (defaultIdentity as (e: E) => string));
   }
 
   add(element: E): GSet<E> {
@@ -92,9 +92,9 @@ export class GSet<E> implements Crdt<GSet<E>> {
     };
   }
 
-  static fromJSON<E>(json: GSetJson, opts: GSetOptions<E> = {}): GSet<E> {
+  static fromJSON<E>(json: GSetJson, options: GSetOptions<E> = {}): GSet<E> {
     if (json.kind !== 'GSet') throw new Error(`GSet.fromJSON: unexpected kind ${json.kind}`);
-    const identity = opts.identity ?? (defaultIdentity as (e: E) => string);
+    const identity = options.identity ?? (defaultIdentity as (e: E) => string);
     const map = new Map<string, E>();
     for (const serialized of json.elements) {
       const element = JSON.parse(serialized) as E;
@@ -110,7 +110,7 @@ export class GSet<E> implements Crdt<GSet<E>> {
   }
 }
 
-export interface GSetJson {
+export type GSetJson = {
   readonly kind: 'GSet';
   readonly elements: ReadonlyArray<string>;
-}
+};

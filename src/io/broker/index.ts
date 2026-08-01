@@ -93,6 +93,11 @@ export type {
   GrpcClientCommand,
   GrpcInbound,
   GrpcCredentials,
+  ReplyMessage,
+  StreamDataMessage,
+  StreamEndMessage,
+  StreamErrorMessage,
+  RpcErrorMessage,
 } from './GrpcClientActor.js';
 export { GrpcClientOptions, GrpcClientOptionsBuilder, GrpcClientOptionsValidator } from './GrpcClientOptions.js';
 export type { GrpcClientOptionsType } from './GrpcClientOptions.js';
@@ -126,8 +131,8 @@ export type {
   NatsConnectionLike,
   JetStreamClientLike,
   JetStreamSubscriptionLike,
-  JetStreamMsgHandleLike,
-  JetStreamMsgInfoLike,
+  JetStreamMessageHandleLike,
+  JetStreamMessageInfoLike,
   JetStreamManagerLike,
 } from './JetStreamActor.js';
 export { JetStreamOptions, JetStreamOptionsBuilder, JetStreamOptionsValidator } from './JetStreamOptions.js';

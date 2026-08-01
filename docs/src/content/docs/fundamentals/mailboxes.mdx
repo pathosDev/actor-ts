@@ -4,8 +4,8 @@ description: The per-actor queue — default FIFO, BoundedMailbox with overflow 
 ---
 
 Each actor has exactly **one mailbox** — a FIFO queue of envelopes
-waiting to be processed.  When you call `ref.tell(msg)`, the
-framework wraps `msg` in an envelope (with sender, log-context, and
+waiting to be processed.  When you call `ref.tell(message)`, the
+framework wraps `message` in an envelope (with sender, log-context, and
 optional trace context) and enqueues it on the recipient's mailbox.
 The dispatcher pulls the next envelope, hands it to the actor's
 `onReceive`, and waits for that to finish before pulling the next
@@ -59,6 +59,7 @@ import { Mailbox } from 'actor-ts';  // the unbounded base mailbox
 system.spawn(
   Props.create(() => new MyActor())
     .withMailbox(() => new Mailbox()),  // explicit opt-out from the bounded default
+  'my-actor',
 );
 ```
 
@@ -72,6 +73,7 @@ line — the default factory honours it:
 system.spawn(
   Props.create(() => new BurstyActor())
     .withMailboxCapacity(100_000),     // still bounded + drop-head, just deeper
+  'bursty',
 );
 ```
 
@@ -86,15 +88,17 @@ them.
 
 This matters because:
 
-- Calling `ref.stop()` on an actor with a long mailbox doesn't
-  wait for that mailbox to drain — the `terminate` system message
-  jumps to the front, and the actor stops promptly.
+- Calling `ref.stop()` does **not** jump the queue — under the
+  hood it's a *user* message (`PoisonPill`), so the actor first
+  drains the user messages already queued ahead of it, then stops
+  (a graceful drain-then-stop).  Only framework-emitted system
+  messages get the absolute precedence above.
 - A failing actor's supervisor decision (Restart / Resume / Stop)
   takes effect immediately, not after the queue clears.
 
 You don't normally see this distinction — system messages are
 emitted by the framework, not by your code.  But understanding it
-explains why "stop is fast" and "supervision reacts instantly."
+explains why "supervision reacts instantly."
 
 ## `BoundedMailbox`
 
@@ -102,9 +106,9 @@ explains why "stop is fast" and "supervision reacts instantly."
 import { Actor, ActorSystem, Props, BoundedMailbox } from 'actor-ts';
 
 class SlowConsumer extends Actor<{ kind: 'work'; n: number }> {
-  override async onReceive(msg: { kind: 'work'; n: number }): Promise<void> {
+  override async onReceive(message: { kind: 'work'; n: number }): Promise<void> {
     await new Promise(r => setTimeout(r, 100));   // simulate slow work
-    this.log.info(`processed ${msg.n}`);
+    this.log.info(`processed ${message.n}`);
   }
 }
 
@@ -113,6 +117,7 @@ const system = ActorSystem.create('demo');
 const consumer = system.spawn(
   Props.create(() => new SlowConsumer())
     .withMailbox(() => new BoundedMailbox({ capacity: 1_000, overflow: 'drop-head' })),
+  'consumer',
 );
 ```
 
@@ -169,18 +174,19 @@ type Message =
   | { readonly kind: 'bulk';   readonly text: string };
 
 class Worker extends Actor<Message> {
-  override onReceive(msg: Message): void {
-    this.log.info(`[${msg.kind}] ${msg.text}`);
+  override onReceive(message: Message): void {
+    this.log.info(`[${message.kind}] ${message.text}`);
   }
 }
 
 const worker = system.spawn(
   Props.create(() => new Worker())
     .withMailbox(() => new PriorityMailbox<Message>({
-      priorityFor: (msg) => msg.kind === 'urgent' ? 0
-                          : msg.kind === 'normal' ? 5
+      priorityFor: (message) => message.kind === 'urgent' ? 0
+                          : message.kind === 'normal' ? 5
                           : 10,
     })),
+  'worker',
 );
 
 worker.tell({ kind: 'bulk',   text: 'batch import row 1' });
@@ -236,15 +242,16 @@ Props.create(() => new MyActor())
 ```
 
 `withMailboxCapacity(n)` is shorthand for "the default FIFO, but
-bounded with the default `reject` overflow."  Useful when you
+bounded with the default `drop-head` overflow."  Useful when you
 just want a cap and don't care about the policy details.
 
 `withMailbox(factory)` is the general form — you return a brand-new
 mailbox instance from the factory.  The factory is called once per
 actor instance (including on restart), so each restarted actor
-gets a fresh empty mailbox-data-structure.  System-level mailbox
-defaults can also be configured via `application.conf` (see
-[Configuration](/reference/configuration/)).
+gets a fresh empty mailbox-data-structure.  There is no system-wide
+mailbox setting — capacity and overflow are chosen per actor via
+`Props` (`withMailboxCapacity` / `withMailbox`); the framework-wide
+defaults (capacity 10 000, `drop-head`) are compiled in.
 
 <Aside type="caution" title="Don't share a mailbox instance across actors">
   ```ts
@@ -278,7 +285,7 @@ the full behavior-switching story.
 
 ## When the mailbox choice matters
 
-For most actors, the default unbounded FIFO is right.  Reach for an
+For most actors, the default bounded FIFO is right.  Reach for an
 alternative in three situations:
 
 1. **Producer/consumer mismatch.**  The producer can emit faster

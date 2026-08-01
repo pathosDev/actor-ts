@@ -140,9 +140,11 @@ import { Aside } from '@astrojs/starlight/components';
   ```ts
   // Two event kinds — overkill?
   ```
-  For 2-3 simple variants where the if-chain is shorter than the
-  builder, a plain method might read cleaner.  Add the dispatcher
-  when the variant count grows or the code shapes get repetitive.
+  For 2-3 simple variants where a `match(event).with(...)
+  .exhaustive()` is shorter than the builder, a plain `onEvent`
+  method might read cleaner — you keep exhaustiveness either way.
+  Add the dispatcher when the variant count grows or the code
+  shapes get repetitive.
 </Aside>
 
 <Aside type="caution" title="Events without a `kind` discriminator">

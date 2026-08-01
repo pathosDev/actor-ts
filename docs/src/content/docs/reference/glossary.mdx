@@ -29,7 +29,7 @@ tree, and extensions.  See
 failure causes the same directive to apply to every sibling.  See
 [Supervision](/fundamentals/supervision/).
 
-**Ask.**  Request/response over actors — `ref.ask(msg, timeout)`
+**Ask.**  Request/response over actors — `ref.ask(message, timeout)`
 returns a Promise for the reply.  See
 [Ask pattern](/fundamentals/ask-pattern/).
 
@@ -166,9 +166,11 @@ event-sourced variants exist.  See
 members exchange views periodically until convergence.  See
 [Cluster overview](/cluster/overview/).
 
-**Guardian.**  Top-level system actors: `/user`, `/system`,
-`/deadLetters`.  See
-[ActorSystem](/fundamentals/actor-system/).
+**Guardian.**  Top-level system actors: `/user` for what your code
+spawns, `/system` for what the framework spawns for itself, plus the
+synthetic `/deadLetters`.  Group guardians nest under `/system`, one per
+subsystem.  See [ActorSystem](/fundamentals/actor-system/) and
+[Actor paths](/fundamentals/actor-paths/).
 
 ## H
 
@@ -200,8 +202,9 @@ hops.  See [Logging](/fundamentals/logging/).
 
 ## M
 
-**Mailbox.**  The per-actor message queue.  Default unbounded
-FIFO; bounded and priority variants ship.  See
+**Mailbox.**  The per-actor message queue.  Default bounded
+(10,000 capacity, `drop-head` overflow) with FIFO ordering;
+priority and unbounded variants are available.  See
 [Mailboxes](/fundamentals/mailboxes/).
 
 **Message.**  Any value `tell`'d to an actor.  Convention:

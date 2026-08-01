@@ -17,7 +17,8 @@ const props = Props.create(() => new MyActor());
 
 A factory function that returns a fresh `MyActor` instance.  That's
 all you need for an actor with default supervision, default
-dispatcher, and the default unbounded FIFO mailbox.
+dispatcher, and the default mailbox — a bounded FIFO queue
+(capacity 10,000, `drop-head` overflow).
 
 For anything beyond that, chain `with…` builders:
 
@@ -63,17 +64,17 @@ The factory closes over any constructor arguments you need:
 class Worker extends Actor<...> {
   constructor(
     private readonly db: ActorRef<DbMessage>,
-    private readonly cfg: Config,
+    private readonly config: Config,
   ) { super(); }
 }
 
-const props = Props.create(() => new Worker(db, cfg));
+const props = Props.create(() => new Worker(db, config));
 ```
 
-`db` and `cfg` are captured by the closure; every restart sees the
+`db` and `config` are captured by the closure; every restart sees the
 same wiring.
 
-## The four builders
+## The builders
 
 ```ts
 class Props<TMessage> {
@@ -83,6 +84,7 @@ class Props<TMessage> {
   withDispatcher(dispatcher: Dispatcher): Props<TMessage>;
   withMailboxCapacity(capacity: number): Props<TMessage>;
   withMailbox(factory: () => Mailbox<TMessage>): Props<TMessage>;
+  asInternal(): Props<TMessage>;
 }
 ```
 
@@ -116,6 +118,19 @@ actors don't need to override it: the parent's default strategy
 Restart + 10/minute cap.  Reach for `withSupervisorStrategy` when
 that's not right — e.g. a worker that should be stopped on failure
 rather than restarted because its parent will spawn a replacement.
+
+The parent resolves the strategy in this order, first match wins:
+
+1. The failing child's own `Props`.
+2. The parent actor's `supervisorStrategy()` override.
+3. `defaultStrategy`.
+
+So a single child can opt out of its parent's policy without affecting
+its siblings.  Two details fall out of the strategy being applied by the
+parent: an `all-for-one` strategy set on a child's `Props` still widens
+to every sibling, and the restart budget (`maxRetries` /
+`withinTimeRangeMs`) is counted per parent, so siblings share one
+allowance.
 
 See [Supervision](/fundamentals/supervision/) for the
 full strategy semantics.
@@ -151,12 +166,16 @@ you never need this.  See
 Props.create(() => new SlowConsumer()).withMailboxCapacity(500);
 ```
 
-Shorthand for "the default FIFO mailbox, but bounded at 500."
-The default overflow policy (`reject`) applies — full mailbox
-throws `MailboxFullError` at the `tell` site.
+Shorthand for lowering the default mailbox's cap to 500 — the same
+bounded FIFO queue, just a smaller ceiling.  The default overflow
+policy (`drop-head`) applies: a full mailbox discards the **oldest**
+queued message to make room, without throwing.
 
 This is the most common mailbox override: a simple cap with the
-"sender feels the pressure" semantic.
+"drop the oldest under overload" semantic.  For the "sender feels
+the pressure" behavior — a full mailbox throwing `MailboxFullError`
+at the `tell` site — reach for `withMailbox` with an explicit
+`reject` policy instead.
 
 ### `withMailbox`
 
@@ -175,11 +194,29 @@ Props.create(() => new Worker())
 ```
 
 Full control — return any `Mailbox` subclass.  The factory is
-called once per actor incarnation; on restart, a fresh empty
-mailbox-data-structure is created.
+called **once**, when the actor's cell is constructed; the mailbox
+then outlives every restart.  On restart only the `Actor` instance
+is rebuilt — the same mailbox is resumed in place, so messages
+queued before the crash are still there.
 
 See [Mailboxes](/fundamentals/mailboxes/) for the
 overflow policies and priority semantics.
+
+### `asInternal`
+
+Marks an actor as belonging to **tooling** rather than to the
+application, and its children with it.  Whole-system instrumentation
+skips it: without the mark, DevTools' own hub — which publishes the
+spans it has just recorded — traces itself, and every batch comes back
+as the payload of the next one.
+
+```ts
+system.spawn(Props.create(() => new MyProbe()).asInternal(), 'my-probe');
+```
+
+You need it only when writing a tool that observes the system it runs
+in.  Application actors should not be marked: hiding real work from the
+profiler is how a performance problem stays invisible.
 
 ## Naming on spawn
 

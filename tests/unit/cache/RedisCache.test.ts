@@ -367,30 +367,30 @@ describe('RedisCache — TTL validation', () => {
 
 describe('RedisCache — options validation', () => {
   test('rejects an out-of-range port', () => {
-    const opts = RedisCacheOptions.create().withPort(70_000);
-    expect(() => new RedisCache(opts)).toThrow(OptionsError);
+    const options = RedisCacheOptions.create().withPort(70_000);
+    expect(() => new RedisCache(options)).toThrow(OptionsError);
   });
 
   test('rejects a negative db index', () => {
-    const opts = RedisCacheOptions.create().withDb(-1);
-    expect(() => new RedisCache(opts)).toThrow(OptionsError);
+    const options = RedisCacheOptions.create().withDb(-1);
+    expect(() => new RedisCache(options)).toThrow(OptionsError);
   });
 
   test('rejects a url with a non-Redis protocol', () => {
-    const opts = RedisCacheOptions.create().withUrl('http://localhost:6379');
-    expect(() => new RedisCache(opts)).toThrow(OptionsError);
+    const options = RedisCacheOptions.create().withUrl('http://localhost:6379');
+    expect(() => new RedisCache(options)).toThrow(OptionsError);
   });
 
   test('rejects url combined with host/port (mutually exclusive)', () => {
-    const opts = RedisCacheOptions.create()
+    const options = RedisCacheOptions.create()
       .withUrl('redis://localhost:6379')
       .withPort(6380);
-    expect(() => new RedisCache(opts)).toThrow(/mutually exclusive/);
+    expect(() => new RedisCache(options)).toThrow(/mutually exclusive/);
   });
 
   test('accepts a valid url alone', () => {
-    const opts = RedisCacheOptions.create().withUrl('rediss://localhost:6379');
-    expect(() => new RedisCache(opts)).not.toThrow();
+    const options = RedisCacheOptions.create().withUrl('rediss://localhost:6379');
+    expect(() => new RedisCache(options)).not.toThrow();
   });
 });
 

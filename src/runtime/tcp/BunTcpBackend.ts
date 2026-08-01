@@ -15,63 +15,63 @@ import type {
  * touch `sock.data` — the transport keeps its own `WeakMap<socket, conn>`.
  */
 export class BunTcpBackend implements TcpBackend {
-  async listen(opts: {
+  async listen(options: {
     host: string; port: number; tls?: TlsTransportOptionsType; handlers: TcpSocketHandlers;
   }): Promise<TcpListener> {
     const bun = (globalThis as { Bun?: BunGlobal }).Bun;
     if (!bun) throw new Error('BunTcpBackend: globalThis.Bun is not defined');
 
-    const listenOpts: Record<string, unknown> = {
-      hostname: opts.host,
-      port: opts.port,
+    const listenOptions: Record<string, unknown> = {
+      hostname: options.host,
+      port: options.port,
       socket: {
-        open: (s: BunSocketNative) => opts.handlers.onOpen(s),
-        data: (s: BunSocketNative, chunk: Uint8Array) => opts.handlers.onData(s, chunk),
-        close: (s: BunSocketNative) => opts.handlers.onClose(s),
-        error: (s: BunSocketNative, err: Error) => opts.handlers.onError(s, err),
+        open: (s: BunSocketNative) => options.handlers.onOpen(s),
+        data: (s: BunSocketNative, chunk: Uint8Array) => options.handlers.onData(s, chunk),
+        close: (s: BunSocketNative) => options.handlers.onClose(s),
+        error: (s: BunSocketNative, err: Error) => options.handlers.onError(s, err),
       },
     };
-    if (opts.tls?.cert && opts.tls.key) {
-      listenOpts.tls = {
-        cert: opts.tls.cert,
-        key: opts.tls.key,
-        ca: opts.tls.ca,
-        requestCert: opts.tls.requestClientCert ?? false,
-        rejectUnauthorized: opts.tls.rejectUnauthorized ?? true,
+    if (options.tls?.cert && options.tls.key) {
+      listenOptions.tls = {
+        cert: options.tls.cert,
+        key: options.tls.key,
+        ca: options.tls.ca,
+        requestCert: options.tls.requestClientCert ?? false,
+        rejectUnauthorized: options.tls.rejectUnauthorized ?? true,
       };
     }
-    const server = bun.listen(listenOpts);
+    const server = bun.listen(listenOptions);
     return {
-      get port(): number { return server.port ?? opts.port; },
+      get port(): number { return server.port ?? options.port; },
       close: (): void => server.stop(),
     };
   }
 
-  async connect(opts: {
+  async connect(options: {
     host: string; port: number; tls?: TlsTransportOptionsType; handlers: TcpSocketHandlers;
   }): Promise<TcpSocketLike> {
     const bun = (globalThis as { Bun?: BunGlobal }).Bun;
     if (!bun) throw new Error('BunTcpBackend: globalThis.Bun is not defined');
-    const connectOpts: Record<string, unknown> = {
-      hostname: opts.host,
-      port: opts.port,
+    const connectOptions: Record<string, unknown> = {
+      hostname: options.host,
+      port: options.port,
       socket: {
-        open: (s: BunSocketNative) => opts.handlers.onOpen(s),
-        data: (s: BunSocketNative, chunk: Uint8Array) => opts.handlers.onData(s, chunk),
-        close: (s: BunSocketNative) => opts.handlers.onClose(s),
-        error: (s: BunSocketNative, err: Error) => opts.handlers.onError(s, err),
+        open: (s: BunSocketNative) => options.handlers.onOpen(s),
+        data: (s: BunSocketNative, chunk: Uint8Array) => options.handlers.onData(s, chunk),
+        close: (s: BunSocketNative) => options.handlers.onClose(s),
+        error: (s: BunSocketNative, err: Error) => options.handlers.onError(s, err),
       },
     };
-    if (opts.tls) {
-      connectOpts.tls = {
-        ca: opts.tls.ca,
-        cert: opts.tls.cert,
-        key: opts.tls.key,
-        serverName: opts.tls.serverName ?? opts.host,
-        rejectUnauthorized: opts.tls.rejectUnauthorized ?? true,
+    if (options.tls) {
+      connectOptions.tls = {
+        ca: options.tls.ca,
+        cert: options.tls.cert,
+        key: options.tls.key,
+        serverName: options.tls.serverName ?? options.host,
+        rejectUnauthorized: options.tls.rejectUnauthorized ?? true,
       };
     }
-    const ready = bun.connect(connectOpts);
+    const ready = bun.connect(connectOptions);
     return Promise.resolve(ready);
   }
 }
@@ -85,6 +85,6 @@ interface BunSocketNative {
 }
 
 interface BunGlobal {
-  listen(opts: unknown): { stop(): void; port?: number };
-  connect(opts: unknown): Promise<BunSocketNative> | BunSocketNative;
+  listen(options: unknown): { stop(): void; port?: number };
+  connect(options: unknown): Promise<BunSocketNative> | BunSocketNative;
 }

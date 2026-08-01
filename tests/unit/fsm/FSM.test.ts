@@ -8,7 +8,7 @@ import { TestKit } from '../../../src/testkit/TestKit.js';
 import { TestKitOptions } from '../../../src/testkit/TestKitOptions.js';
 
 type DoorState = 'closed' | 'open';
-interface DoorData { readonly openedAt: number | null; readonly opens: number; }
+type DoorData = { readonly openedAt: number | null; readonly opens: number; };
 type DoorCommand = 'open' | 'close' | 'count';
 
 class Door extends FSM<DoorState, DoorData, DoorCommand> {

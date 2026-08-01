@@ -4,31 +4,31 @@ description: Spin up N cluster nodes in one process for testing cluster behavior
 ---
 
 `MultiNodeSpec` runs **N cluster nodes inside one test process**.
-Each is a real `ActorSystem`; they communicate via
-`InMemoryTransport` (no TCP).  Useful for testing cluster
+Each is a real `ActorSystem`; they communicate via an
+in-process transport (no TCP).  Useful for testing cluster
 behavior — sharding, singletons, gossip convergence,
 failover — without Docker.
 
 ```ts
-import { MultiNodeSpec } from 'actor-ts/testkit';
+import { Props } from 'actor-ts';
+import { MultiNodeSpec, TestProbe } from 'actor-ts/testkit';
 
-const spec = await MultiNodeSpec.create({
-  systemName: 'cluster-spec',
-  nodes:      3,
-});
+// Each role name is one node — and doubles as that node's system name.
+const spec = new MultiNodeSpec({ roles: ['a', 'b', 'c'] });
+await spec.start();
+await spec.awaitMembers('a', 3);   // wait for the cluster to converge
 
-// spec.nodes is an array of ActorSystems, all joined into one cluster:
-const node1 = spec.nodes[0];
-const node2 = spec.nodes[1];
+// Reach any node's ActorSystem with systemFor(role):
+const node2 = spec.systemFor('b');
 
-// Spawn actors on different nodes:
-const probe = spec.createTestProbe(0);
+// Spawn actors on a specific node and assert with a probe:
+const probe = new TestProbe(spec.systemFor('a'));
 const remote = node2.spawnAnonymous(Props.create(() => new Worker()));
 
 remote.tell({ kind: 'do', replyTo: probe });
 await probe.expectMessage({ kind: 'done' });
 
-await spec.shutdown();
+await spec.stop();
 ```
 
 ## When to use it
@@ -43,58 +43,72 @@ Three primary cases:
 3. **CI-friendly cluster tests** — fast (sub-second), no
    Docker, no ports.
 
-For tests that need **real network behavior** (TCP semantics,
-TLS, cross-host latency), use
-[ParallelMultiNodeSpec](/testing/parallel-multi-node/)
-or external Docker-Compose.
+For tests that need **true parallelism** (real OS threads —
+concurrent journal writes, scheduler interleaving), use
+[ParallelMultiNodeSpec](/testing/parallel-multi-node/).  For real
+TCP/TLS or cross-host latency, use an external Docker-Compose
+cluster.
 
 ## Configuration
 
 ```ts
-interface MultiNodeSpecOptionsType {
-  systemName: string;
-  nodes:      number;
-  roles?:     Array<string | undefined>;   // per-node roles
-  config?:    Record<string, unknown>;
-}
+type MultiNodeSpecOptionsType = {
+  roles:             ReadonlyArray<string>;   // one node per role; must be unique
+  seedRoles?:        ReadonlyArray<string>;   // bootstrap seeds — defaults to [roles[0]]
+  addresses?:        Record<string, { host: string; port: number }>;
+  failureDetector?:  ClusterOptionsType['failureDetector'];
+  gossipIntervalMs?: number;                  // default 100 (vs. 1 s in production)
+  awaitTimeoutMs?:   number;                  // default 10_000 — how long await* helpers wait
+  logLevel?:         LogLevel;                // defaults to a quiet NoopLogger
+  downing?:          (role: string) => DowningProvider | undefined;
+};
 ```
 
 | Field | Purpose |
 | --- | --- |
-| `systemName` | Logical name — appears in actor paths. |
-| `nodes` | Number of cluster nodes to spin up. |
-| `roles` | Per-node role tags. |
-| `config` | HOCON overrides for all nodes. |
+| `roles` | Node list — each entry is one node, and the string doubles as its system name.  Must be unique. |
+| `seedRoles` | Which roles act as bootstrap seeds.  Defaults to the first role. |
+| `addresses` | Per-role host/port overrides.  Auto-allocated if omitted. |
+| `failureDetector` | Failure-detector overrides — tests usually tighten these so crashes are detected quickly. |
+| `gossipIntervalMs` | Gossip round interval.  Default 100 ms. |
+| `awaitTimeoutMs` | Default timeout for the `await*` helpers.  Default 10 s. |
+| `logLevel` | Log level — quiet by default. |
+| `downing` | Per-role split-brain resolver factory. |
 
-## Per-node roles
+Pass a plain object as shown, or build it fluently with
+`MultiNodeSpecOptions.create().withRoles(['a', 'b', 'c'])`.
+
+## Roles, seeds, and addresses
+
+Each entry in `roles` is a **distinct node** — the string is that
+node's identity and its `ActorSystem` name, so it must be unique
+(the constructor throws on duplicates or an empty list).  By
+default the **first** role is the sole bootstrap seed; override
+that with `seedRoles`:
 
 ```ts
-const spec = await MultiNodeSpec.create({
-  systemName: 'cluster-spec',
-  nodes:      3,
-  roles:      ['frontend', 'compute', 'compute'],
+const spec = new MultiNodeSpec({
+  roles:     ['seed', 'worker-1', 'worker-2'],
+  seedRoles: ['seed'],
 });
-
-// Now:
-// node 0 has role 'frontend'
-// node 1 + 2 have role 'compute'
+await spec.start();
 ```
 
-Useful for testing role-filtered allocation:
+Ports are auto-allocated on `127.0.0.1`; pin specific ones with
+`addresses` when a test needs fixed endpoints:
 
 ```ts
-const shardingOptions = StartShardingOptions.create()
-  // ...
-  .withRole('compute');
-cluster1.sharding.start(shardingOptions);
-  // → only nodes 1 + 2 host shards
+const spec = new MultiNodeSpec({
+  roles:     ['a', 'b'],
+  addresses: { a: { host: '127.0.0.1', port: 2551 } },
+});
 ```
 
 ## What's shared
 
 All nodes share:
 
-- **The same `InMemoryTransport` bus** — they can talk to each
+- **A shared in-process message bus** — they can talk to each
   other.
 - **The same gossip protocol** — membership converges.
 - **Independent actor systems** — separate dispatchers,
@@ -110,37 +124,52 @@ This means:
 
 ## Failover testing
 
+Two ways to take a node down: `crash(role)` yanks its transport
+out abruptly (peers detect it via the failure detector), and
+`leave(role)` performs a graceful cluster exit.
+
 ```ts
 // Verify singleton failover:
-const spec = await MultiNodeSpec.create({ systemName: 'spec', nodes: 3 });
+const spec = new MultiNodeSpec({
+  roles:           ['a', 'b', 'c'],
+  failureDetector: { heartbeatIntervalMs: 50, unreachableAfterMs: 200, downAfterMs: 400 },
+});
+await spec.start();
+await Promise.all([
+  spec.awaitMembers('a', 3),
+  spec.awaitMembers('b', 3),
+  spec.awaitMembers('c', 3),
+]);
 
-// ... start singleton ...
+// ... start the singleton on every node ...
 
-// Find the host node:
-const hostNode = ...;   // identify via cluster.state.leader
+// Identify the current host, then crash it:
+const host = spec.clusterFor('a').leader().toNullable();
+await spec.crash('a');
 
-// Simulate failure:
-await spec.terminateNode(hostNode);
+// Wait for the survivors to down 'a' and re-converge:
+await spec.awaitMembers('b', 2);
+await spec.awaitMemberStatus('b', 'a', 'down');
 
-// Wait for failover:
-await new Promise(r => setTimeout(r, 5_000));
+// ... assert the singleton has moved to a survivor ...
 
-// Verify singleton moved:
-const newHost = ...;
-expect(newHost).not.toBe(hostNode);
-
-await spec.shutdown();
+await spec.stop();
 ```
 
-`spec.terminateNode(index)` terminates a specific node — the
-others observe the unreachable status, gossip the change,
-trigger downing + failover.
+`crash(role)` removes the node abruptly; the others observe the
+unreachable status, gossip the change, then trigger downing +
+failover.  The `await*` helpers replace fragile `setTimeout`
+sleeps — they poll until the condition holds (or throw after
+`awaitTimeoutMs`).
 
 ## Per-node TestProbe
 
+`MultiNodeSpec` has no probe factory — construct a `TestProbe`
+against whichever node's system you want to observe:
+
 ```ts
-const probe0 = spec.createTestProbe(0);   // probe on node 0
-const probe1 = spec.createTestProbe(1);   // probe on node 1
+const probeA = new TestProbe(spec.systemFor('a'));   // probe on node 'a'
+const probeB = new TestProbe(spec.systemFor('b'));   // probe on node 'b'
 ```
 
 Each probe is **bound to one node's actor system**.  Useful
@@ -149,15 +178,20 @@ expected node.
 
 ## Sharding tests
 
+Start a sharding region on every node via its `Cluster` — reach
+each one with `clusterFor(role)`:
+
 ```ts
-const spec = await MultiNodeSpec.create({ nodes: 3 });
+const spec = new MultiNodeSpec({ roles: ['a', 'b', 'c'] });
+await spec.start();
+await spec.awaitMembers('a', 3);
 
 const startShardingOptions = StartShardingOptions.create<Command>()
   .withTypeName('entity')
   .withEntityProps(Props.create(() => new Entity()))
-  .withExtractEntityId((msg) => msg.id);
-const regions = spec.nodes.map(sys =>
-  /* cluster ref */.sharding.start(startShardingOptions)
+  .withExtractEntityId((message) => message.id);
+const regions = spec.allRoles().map((role) =>
+  spec.clusterFor(role).sharding.start(startShardingOptions)
 );
 
 // Spawn entities; verify they spread across nodes:
@@ -165,15 +199,11 @@ for (const id of ['e1', 'e2', 'e3', 'e4', 'e5']) {
   regions[0].tell({ id, kind: 'wake-up' });
 }
 
-// Inspect placement:
-const placement = await regions[0].ask({ kind: 'list-shards', replyTo: ... });
-expect(placement.regions.size).toBeGreaterThan(1);   // distributed
-
-await spec.shutdown();
+await spec.stop();
 ```
 
-The framework's coordinator distributes shards across the
-multi-node-spec just like a real cluster.
+The framework's coordinator distributes shards across the nodes
+just like a real cluster.
 
 ## What MultiNodeSpec doesn't test
 
@@ -197,13 +227,15 @@ import { Aside } from '@astrojs/starlight/components';
   use Toxiproxy + real Docker setups.
 </Aside>
 
-<Aside type="caution" title="Process-level isolation">
+<Aside type="caution" title="No thread isolation">
   ```ts
   // One crashed node in MultiNodeSpec → crashes the test
   ```
   All "nodes" share the test process's event loop + memory.
   A genuine OOM on one node OOMs the test.  Use
-  ParallelMultiNodeSpec for process-isolated tests.
+  [ParallelMultiNodeSpec](/testing/parallel-multi-node/), which
+  runs each node in its own worker thread, when you need that
+  isolation.
 </Aside>
 
 ## Where to next
@@ -213,6 +245,6 @@ import { Aside } from '@astrojs/starlight/components';
 - **[TestKit](/testing/testkit/)** — single-system
   testing.
 - **[ParallelMultiNodeSpec](/testing/parallel-multi-node/)** —
-  multi-process variant.
+  worker-thread variant.
 - **[Cluster overview](/cluster/overview/)** — what
   MultiNodeSpec simulates.

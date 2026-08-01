@@ -24,7 +24,7 @@
 /** Allowed attribute primitive types — matches OTel's spec. */
 export type AttributeValue = string | number | boolean;
 
-export interface SpanContext {
+export type SpanContext = {
   /** 32 hex chars — the trace identifier shared across hops. */
   readonly traceId: string;
   /** 16 hex chars — the per-span identifier. */
@@ -33,12 +33,12 @@ export interface SpanContext {
   readonly traceFlags: number;
   /** Optional W3C tracestate — opaque vendor-specific. */
   readonly traceState?: string;
-}
+};
 
 export type SpanKind = 'internal' | 'server' | 'client' | 'producer' | 'consumer';
 export type SpanStatus = 'unset' | 'ok' | 'error';
 
-export interface SpanOptions {
+export type SpanOptions = {
   /**
    * Parent span context.  `undefined` means "use the active span".
    * `null` explicitly creates a root span.
@@ -48,7 +48,7 @@ export interface SpanOptions {
   readonly kind?: SpanKind;
   /** Override the span start time — defaults to `Date.now()`. */
   readonly startTimeMs?: number;
-}
+};
 
 export interface Span {
   /** The span's own context — what children would inherit. */
@@ -63,7 +63,7 @@ export interface Span {
 }
 
 export interface Tracer {
-  startSpan(name: string, opts?: SpanOptions): Span;
+  startSpan(name: string, options?: SpanOptions): Span;
 
   /** Run `fn` with `span` as the active span (read by `activeSpan()`). */
   withActiveSpan<T>(span: Span, fn: () => T): T;
@@ -87,10 +87,10 @@ export interface Tracer {
  * Trace Context working group's `traceparent` / `tracestate` headers
  * — see {@link encodeTraceparent} / {@link decodeTraceparent}.
  */
-export interface TraceCarrier {
+export type TraceCarrier = {
   readonly traceparent: string;
   readonly tracestate?: string;
-}
+};
 
 /* ----------------------- W3C traceparent codec ------------------------- */
 
@@ -101,9 +101,9 @@ export interface TraceCarrier {
  *
  * Version `00` is the only one currently defined.
  */
-export function encodeTraceparent(ctx: SpanContext): string {
-  const flags = (ctx.traceFlags & 0xff).toString(16).padStart(2, '0');
-  return `00-${ctx.traceId}-${ctx.spanId}-${flags}`;
+export function encodeTraceparent(context: SpanContext): string {
+  const flags = (context.traceFlags & 0xff).toString(16).padStart(2, '0');
+  return `00-${context.traceId}-${context.spanId}-${flags}`;
 }
 
 /**
@@ -136,10 +136,10 @@ export function newSpanId(): string {
 }
 
 function randomHex(byteLength: number): string {
-  const buf = new Uint8Array(byteLength);
+  const buffer = new Uint8Array(byteLength);
   // crypto.getRandomValues is universally available on Bun, Node, Deno.
-  globalThis.crypto.getRandomValues(buf);
+  globalThis.crypto.getRandomValues(buffer);
   let out = '';
-  for (const byte of buf) out += byte.toString(16).padStart(2, '0');
+  for (const byte of buffer) out += byte.toString(16).padStart(2, '0');
   return out;
 }

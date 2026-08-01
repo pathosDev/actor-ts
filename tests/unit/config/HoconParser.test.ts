@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import {
   deepMerge,
+  isForbiddenConfigKey,
   isPlainObject,
   isSubstitution,
   parseHocon,
@@ -209,5 +210,90 @@ describe('isPlainObject', () => {
     expect(isPlainObject(null)).toBe(false);
     expect(isPlainObject('x')).toBe(false);
     expect(isPlainObject({ __substitution: true, path: 'a', optional: false })).toBe(false);
+  });
+});
+
+describe('prototype pollution (#406)', () => {
+  // Every case asserts on a freshly built object rather than a captured one:
+  // pollution shows up as an inherited property, so a fresh `{}` is the probe.
+  const probe = () => ({}) as Record<string, unknown>;
+
+  test('a __proto__ key path is refused instead of polluting Object.prototype', () => {
+    // Before the fix this parsed to `{}` — looking harmless — while setting
+    // `Object.prototype.polluted`, poisoning every object in the process.
+    expect(() => parseHocon('__proto__.polluted = true')).toThrow(/Refusing "__proto__"/);
+    expect(probe().polluted).toBeUndefined();
+  });
+
+  test('a quoted __proto__ key is refused too', () => {
+    // The single-segment variant replaced the config object's own prototype.
+    expect(() => parseHocon('"__proto__" { hacked = 1 }')).toThrow(/Refusing "__proto__"/);
+    expect(probe().hacked).toBeUndefined();
+  });
+
+  test('__proto__ is refused at any depth in a path', () => {
+    expect(() => parseHocon('a.__proto__.b = 1')).toThrow(/Refusing "__proto__"/);
+    expect(() => parseHocon('a { b { __proto__ { c = 1 } } }')).toThrow(/Refusing "__proto__"/);
+  });
+
+  test('constructor and prototype keys are refused as well', () => {
+    expect(() => parseHocon('constructor.prototype.cpwned = 1')).toThrow(/Refusing "constructor"/);
+    expect(() => parseHocon('prototype = 1')).toThrow(/Refusing "prototype"/);
+    expect(probe().cpwned).toBeUndefined();
+  });
+
+  test('the error carries a source position, like every other parse error', () => {
+    expect(() => parseHocon('a = 1\n__proto__.x = 2')).toThrow(/line 2/);
+  });
+
+  test('a substitution may not read through the prototype chain', () => {
+    // `${__proto__}` resolved to Object.prototype and spliced it into config.
+    expect(() => parseHocon('x = ${__proto__}')).toThrow(/Refusing the substitution/);
+    expect(() => parseHocon('x = ${a.constructor}')).toThrow(/Refusing the substitution/);
+  });
+
+  test('keys that merely resemble the forbidden ones still work', () => {
+    // The guard is exact-match; it must not swallow legitimate keys.
+    expect(parseHocon('_proto_ = 1')).toEqual({ _proto_: 1 });
+    expect(parseHocon('constructorName = "x"')).toEqual({ constructorName: 'x' });
+    expect(parseHocon('a.prototypes.b = 1')).toEqual({ a: { prototypes: { b: 1 } } });
+  });
+
+  test('deepMerge drops an own __proto__ property from the overlay', () => {
+    // JSON.parse produces an *own* __proto__, which Object.entries reports and
+    // a plain assignment would then feed to the prototype setter.
+    const overlay = JSON.parse('{"__proto__":{"dmPwned":1}}');
+    const merged = deepMerge({ a: 1 }, overlay);
+    expect(Object.getPrototypeOf(merged)).toBe(Object.prototype);
+    expect(merged).toEqual({ a: 1 });
+    expect((merged as Record<string, unknown>).dmPwned).toBeUndefined();
+    expect(probe().dmPwned).toBeUndefined();
+  });
+
+  test('deepMerge drops an own __proto__ property from the base', () => {
+    // The base used to be copied with `{ ...base }`, which carries it through.
+    const base = JSON.parse('{"__proto__":{"basePwned":1},"a":1}');
+    const merged = deepMerge(base, { b: 2 });
+    expect(Object.getPrototypeOf(merged)).toBe(Object.prototype);
+    expect(merged).toEqual({ a: 1, b: 2 });
+    expect((merged as Record<string, unknown>).basePwned).toBeUndefined();
+  });
+
+  test('stripUndefined and substitution resolution drop forbidden keys', () => {
+    const evil = JSON.parse('{"__proto__":{"spPwned":1},"a":1}');
+    expect(stripUndefined(evil)).toEqual({ a: 1 });
+    expect(Object.getPrototypeOf(stripUndefined(evil))).toBe(Object.prototype);
+
+    const resolved = resolveSubstitutions(JSON.parse('{"__proto__":{"rsPwned":1},"a":1}'));
+    expect(resolved).toEqual({ a: 1 });
+    expect(probe().rsPwned).toBeUndefined();
+  });
+
+  test('isForbiddenConfigKey names exactly the three guarded keys', () => {
+    expect(isForbiddenConfigKey('__proto__')).toBe(true);
+    expect(isForbiddenConfigKey('constructor')).toBe(true);
+    expect(isForbiddenConfigKey('prototype')).toBe(true);
+    expect(isForbiddenConfigKey('proto')).toBe(false);
+    expect(isForbiddenConfigKey('__proto__x')).toBe(false);
   });
 });

@@ -44,12 +44,41 @@ interface NatsOptionsType extends BrokerCommonOptionsType {
   servers:    string[] | string;
   name?:      string;            // client identifier
   user?:      string;
-  pass?:      string;
+  password?:  string;
   token?:     string;
-  tls?:       TlsOptions;
-  pingInterval?: number;         // default 120s
+  subscriptions?: { subject: string; target: ActorRef<NatsMessage> }[];  // wired up at connect time
 }
 ```
+
+## Subscriptions and reconnects
+
+`subscriptions` and the runtime `subscribe` command feed the **same**
+desired set, held by the
+[BrokerActor base](/io/broker-actor-base/#desired-subscriptions) rather
+than by the connection.  Practical consequences:
+
+- Every subscription — configured or added at runtime — is
+  **re-established on the new connection** after a reconnect.
+- A `subscribe` sent while the actor is **disconnected** is applied on
+  the next connect instead of being dropped.
+- `{ kind: 'unsubscribe', subject }` removes the subject for good: it
+  does not come back on the next reconnect, even if it came from
+  `subscriptions`.
+- Re-subscribing a live subject **swaps its target** — the previous
+  subscription is dropped first, so exactly one actor receives it.
+
+```ts
+// Added at runtime; still there after the broker restarts.
+nats.tell({ kind: 'subscribe', subject: 'audit.>', target: auditor });
+// Point the same subject at a different actor.
+nats.tell({ kind: 'subscribe', subject: 'audit.>', target: newAuditor });
+// Gone for good.
+nats.tell({ kind: 'unsubscribe', subject: 'audit.>' });
+```
+
+Note that this is about the *subscription*, not the messages: core NATS
+has no durability, so anything published during the outage is still gone
+(see the caution below).
 
 ## Subjects (NATS topics)
 
@@ -81,26 +110,44 @@ lowercase + dot-separated.
 
 ## Request / reply
 
-NATS supports synchronous request-reply natively:
+Core NATS models request/reply with a **reply subject**: the requester
+publishes with a `replyTo` subject and listens on it; the responder
+sends its answer there.  There's no dedicated `request` command — you
+compose it from `publish` / `subscribe` and the `replyTo` field.
 
 ```ts
+// Requester — listen on a private reply subject, then publish the
+// request with `replyTo` pointing at it:
+nats.tell({ kind: 'subscribe', subject: 'reply.balance.42', target: replyHandler });
 nats.tell({
-  kind:        'request',
-  subject:     'account.balance',
-  payload:     JSON.stringify({ accountId: '42' }),
-  timeoutMs:   1_000,
-  replyTo:     this.self,   // gets the reply message
+  kind: 'publish',
+  publish: {
+    subject: 'account.balance',
+    payload: JSON.stringify({ accountId: '42' }),
+    replyTo: 'reply.balance.42',   // responder answers on this subject
+  },
 });
 
-// Reply handler:
-override onReceive(msg: NatsRequestReply): void {
-  if (msg.kind === 'reply')  this.handleBalance(JSON.parse(...));
-  if (msg.kind === 'timeout') this.handleTimeout();
+// Responder — subscribe to the request subject, answer on `replyTo`:
+class BalanceService extends Actor<NatsMessage> {
+  constructor(private readonly nats: ActorRef<NatsCommand>) { super(); }
+  override onReceive(message: NatsMessage): void {
+    if (!message.replyTo) return;
+    this.nats.tell({
+      kind: 'publish',
+      publish: {
+        subject: message.replyTo,
+        payload: JSON.stringify({ balance: 100 }),
+      },
+    });
+  }
 }
 ```
 
-This is **fast** — a few hundred microseconds round-trip on
-localhost.  Used widely as the "RPC over NATS" pattern.
+Inbound `NatsMessage`s carry `subject`, `payload` (a `Uint8Array`), and
+`replyTo` (an empty string when the publisher set none).  This is the
+"RPC over NATS" pattern — a few hundred microseconds round-trip on
+localhost.
 
 ## When to use NATS
 
@@ -130,7 +177,7 @@ const jetStreamOptions = JetStreamOptions.create()
     name:     'ORDERS',
     subjects: ['orders.>'],
     storage:  'file',
-    maxAge:   86_400 * 7,   // 7 days retention
+    maxAge:   86_400 * 7 * 1_000_000_000,   // 7 days (maxAge is in nanoseconds)
   });
 const js = system.spawn(
   Props.create(() => new JetStreamActor(
@@ -179,10 +226,11 @@ import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="Reply subject management">
   ```ts
-  // Each `request` allocates a temp reply subject; broker resources scale with concurrent requests
+  // Each in-flight request needs its own reply subject + subscription — unsubscribe when the reply lands
   ```
-  Heavy request-reply loads (10K+ concurrent) use lots of
-  temporary subjects.  Usually fine, but watch broker metrics.
+  You manage reply subjects yourself.  Under heavy request-reply load
+  (10K+ concurrent) that's many temporary subjects and subscriptions;
+  unsubscribe once the reply arrives and watch broker metrics.
 </Aside>
 
 <Aside type="caution" title="Wildcards + many subscribers">

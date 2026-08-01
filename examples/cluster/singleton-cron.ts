@@ -10,23 +10,30 @@
  * after ~1s node A is shut down — you will see subsequent ticks labelled
  * with [b] or [c] as failover takes effect.
  */
+import { match } from 'ts-pattern';
 import {
   Actor,
   ActorSystem,
   Cluster,
   ClusterBootstrapOptions,
-  ClusterSingletonId,
   InMemoryTransport,
   NodeAddress,
   Props,
-  StartSingletonOptions,
+  SingletonKey,
   type ActorRef,
 } from '../../src/index.js';
+import { attachDevTools } from '../devtools.js';
 
-type CronCommand = { kind: 'subscribe'; sub: ActorRef<CronEvent> } | { kind: 'tick' };
-interface CronEvent { readonly tickNumber: number; readonly hostedOn: string; }
+type SubscribeCommand = { kind: 'subscribe'; sub: ActorRef<CronEvent> };
+type TickCommand = { kind: 'tick' };
+
+type CronCommand = SubscribeCommand | TickCommand;
+type CronEvent = { readonly tickNumber: number; readonly hostedOn: string; };
 
 class Cron extends Actor<CronCommand> {
+  /** The singleton's identity, declared on the actor itself. */
+  static readonly singleton = SingletonKey.of<CronCommand>('cron');
+
   private tickCount = 0;
   private readonly subs = new Set<ActorRef<CronEvent>>();
   constructor(private readonly host: string) { super(); }
@@ -35,8 +42,18 @@ class Cron extends Actor<CronCommand> {
     console.log(`[${this.host}] cron spawned — scheduling ticks`);
     this.context.timers.startTimerWithFixedDelay('tick', { kind: 'tick' }, 250, 100);
   }
-  override onReceive(cmd: CronCommand): void {
-    if (cmd.kind === 'subscribe') { this.subs.add(cmd.sub); return; }
+  override onReceive(command: CronCommand): void {
+    match(command)
+      .with({ kind: 'subscribe' }, (c) => this.onSubscribe(c))
+      .with({ kind: 'tick' }, () => this.onTick())
+      .exhaustive();
+  }
+
+  private onSubscribe(command: SubscribeCommand): void {
+    this.subs.add(command.sub);
+  }
+
+  private onTick(): void {
     this.tickCount++;
     const evt: CronEvent = { tickNumber: this.tickCount, hostedOn: this.host };
     console.log(`[${this.host}] tick #${this.tickCount}`);
@@ -64,6 +81,7 @@ async function startNode(host: string, port: number, seeds: string[] = []): Prom
       .withGossipIntervalMs(80)
       .withReceptionist(false)
       .withShutdownOnSignals(false));
+  await attachDevTools(system);
   return { sys: system, cluster, name: host };
 }
 
@@ -77,25 +95,25 @@ async function main(): Promise<void> {
 
   // Each node installs its own singleton manager — only the leader hosts
   // the Cron actor.
-  for (const { sys, cluster, name } of [nodeA, nodeB, nodeC]) {
-    sys.extension(ClusterSingletonId).start(cluster, StartSingletonOptions.create<CronCommand>()
-      .withTypeName('cron')
-      .withProps(Props.create(() => new Cron(name))));
+  for (const { cluster, name } of [nodeA, nodeB, nodeC]) {
+    cluster.singleton.start(Cron, () => new Cron(name));
   }
 
   // Spawn a client on each node and subscribe it via the proxy.
-  for (const { sys, name } of [nodeA, nodeB, nodeC]) {
+  for (const { sys, cluster, name } of [nodeA, nodeB, nodeC]) {
     const client = sys.spawnAnonymous(Props.create(() => new CronClient(name)));
-    sys.extension(ClusterSingletonId).get<CronCommand>('cron').forEach(h =>
-      h.proxy.tell({ kind: 'subscribe', sub: client }),
-    );
+    cluster.singleton.ref(Cron).tell({ kind: 'subscribe', sub: client });
   }
 
   // Let the cluster tick for a while.
   await Bun.sleep(900);
   console.log('--- killing the current leader ---');
-  const currentLeader = nodeA.cluster.leader()!.address;
-  const victim = [nodeA, nodeB, nodeC].find(node => node.cluster.selfAddress.equals(currentLeader))!;
+  // `leader()` is an Option — `!` would hand back the Option itself, whose
+  // `.address` is undefined.
+  const currentLeader = nodeA.cluster.leader();
+  if (currentLeader.isNone()) throw new Error('no leader elected');
+  const victim = [nodeA, nodeB, nodeC]
+    .find(node => node.cluster.selfAddress.equals(currentLeader.value.address))!;
   await victim.cluster.leave();
   await victim.sys.terminate();
 

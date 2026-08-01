@@ -35,16 +35,16 @@ import { ORSet, type ORSetJson } from './ORSet.js';
  * `{ identity: k => ... }` for non-JSON-serialisable keys.
  */
 
-export interface ORMapOptions<K> {
+export type ORMapOptions<K> = {
   readonly identity?: (k: K) => string;
-}
+};
 
 const defaultIdentity = (k: unknown): string => JSON.stringify(k);
 
-interface Entry<K, V extends Crdt<V>> {
+type Entry<K, V extends Crdt<V>> = {
   readonly key: K;
   readonly value: V;
-}
+};
 
 export class ORMap<K, V extends Crdt<V>> implements Crdt<ORMap<K, V>> {
   /**
@@ -65,11 +65,11 @@ export class ORMap<K, V extends Crdt<V>> implements Crdt<ORMap<K, V>> {
     private readonly identity: (k: K) => string,
   ) {}
 
-  static empty<K, V extends Crdt<V>>(opts: ORMapOptions<K> = {}): ORMap<K, V> {
+  static empty<K, V extends Crdt<V>>(options: ORMapOptions<K> = {}): ORMap<K, V> {
     return new ORMap<K, V>(
       ORSet.empty<string>(),
       new Map(),
-      opts.identity ?? (defaultIdentity as (k: K) => string),
+      options.identity ?? (defaultIdentity as (k: K) => string),
     );
   }
 
@@ -198,12 +198,12 @@ export class ORMap<K, V extends Crdt<V>> implements Crdt<ORMap<K, V>> {
   static fromJSON<K, V extends Crdt<V>>(
     json: ORMapJson,
     decodeValue: (json: unknown) => V,
-    opts: ORMapOptions<K> = {},
+    options: ORMapOptions<K> = {},
   ): ORMap<K, V> {
     if (json.kind !== 'ORMap') {
       throw new Error(`ORMap.fromJSON: unexpected kind ${json.kind}`);
     }
-    const identity = opts.identity ?? (defaultIdentity as (k: K) => string);
+    const identity = options.identity ?? (defaultIdentity as (k: K) => string);
     const keyset = ORSet.fromJSON<string>(json.keyset);
     const entries = new Map<string, Entry<K, V>>();
     for (const [id, valueJson] of Object.entries(json.values)) {
@@ -233,10 +233,10 @@ export class ORMap<K, V extends Crdt<V>> implements Crdt<ORMap<K, V>> {
   }
 }
 
-export interface ORMapJson {
+export type ORMapJson = {
   readonly kind: 'ORMap';
   readonly keyset: ORSetJson;
   /** Per-key inner-CRDT JSON.  Decoder supplied at fromJSON time. */
   readonly values: Record<string, unknown>;
   readonly keyValues?: Record<string, string>;
-}
+};

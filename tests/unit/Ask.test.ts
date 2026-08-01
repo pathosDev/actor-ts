@@ -96,7 +96,7 @@ describe('ref.ask()', () => {
 
   test('injects replyTo onto the message so explicit-replyTo recipients work', async () => {
     // Recipient reads `msg.replyTo` instead of `this.sender`.
-    interface ReplyCommand { readonly kind: 'reply'; readonly replyTo: import('../../src/ActorRef.js').ActorRef<string> }
+    type ReplyCommand = { readonly kind: 'reply'; readonly replyTo: import('../../src/ActorRef.js').ActorRef<string> };
     class ExplicitReplier extends Actor<ReplyCommand> {
       override onReceive(m: ReplyCommand): void {
         m.replyTo.tell('via-replyTo');
@@ -108,5 +108,63 @@ describe('ref.ask()', () => {
     const reply = await ref.ask<string>({ kind: 'reply' }, 500);
     expect(reply).toBe('via-replyTo');
     await sys.terminate();
+  });
+});
+
+describe('ask — reply-ref naming (#119)', () => {
+  test('names are unpredictable and unique, not a shared counter', async () => {
+    // Was `askResp-${++askCounter}` on a module-global counter: predictable
+    // enough to aim a forged reply at an in-flight ask, shared across every
+    // system in the process, and eventually wrapping into collisions with
+    // names still in flight.
+    const names: string[] = [];
+    class Peek extends Actor<string> {
+      override onReceive(_: string): void {
+        this.sender.forEach((s) => { names.push(s.path.name); s.tell('ok'); });
+      }
+    }
+    const sys = newSystem();
+    const ref = sys.spawn(Props.create(() => new Peek()), 'p');
+    for (let i = 0; i < 50; i++) await ref.ask('x', 200);
+
+    expect(names).toHaveLength(50);
+    expect(new Set(names).size).toBe(50);
+    for (const name of names) expect(name).toMatch(/^askResp-[0-9a-f]{12}$/);
+
+    // The decisive property: knowing one name must not yield the next.  The
+    // format assertion above already rules out a plain counter (`askResp-1`
+    // is not twelve hex characters); this rules out a counter rendered in hex.
+    //
+    // Deliberately not "no suffix is all digits" — hex digits include 0-9, so
+    // a legitimate random suffix is all-digits about once in 139 draws, which
+    // over 50 samples would fail roughly a third of runs.
+    const asNumbers = names.map(n => parseInt(n.slice('askResp-'.length), 16));
+    const consecutive = asNumbers.every((value, index) => index === 0 || value === asNumbers[index - 1]! + 1);
+    expect(consecutive).toBe(false);
+
+    await sys.terminate();
+  });
+
+  test('two systems in one process do not share the name sequence', async () => {
+    // The old counter was module-global, so the Nth ask in either system got
+    // the same name — two independent systems handing out one namespace.
+    const seen: string[] = [];
+    class Peek extends Actor<string> {
+      override onReceive(_: string): void {
+        this.sender.forEach((s) => { seen.push(s.path.name); s.tell('ok'); });
+      }
+    }
+    const first = newSystem('ask-names-a');
+    const second = newSystem('ask-names-b');
+    const refA = first.spawn(Props.create(() => new Peek()), 'p');
+    const refB = second.spawn(Props.create(() => new Peek()), 'p');
+    await refA.ask('x', 200);
+    await refB.ask('x', 200);
+
+    expect(seen).toHaveLength(2);
+    expect(seen[0]).not.toBe(seen[1]);
+
+    await first.terminate();
+    await second.terminate();
   });
 });

@@ -16,6 +16,7 @@ import {
   pipeTo,
   retry,
 } from '../../../src/index.js';
+import { attachDevTools } from '../../devtools.js';
 
 class TransientError extends Error {
   constructor(message: string) { super(message); this.name = 'TransientError'; }
@@ -32,17 +33,18 @@ async function flakyRemoteCall(): Promise<{ userId: number }> {
 }
 
 class UserHandler extends Actor<Success<{ userId: number }> | Failure> {
-  override onReceive(msg: Success<{ userId: number }> | Failure): void {
-    if (msg instanceof Success) {
-      console.log(`received user ${msg.value.userId} after ${attempts} attempts`);
+  override onReceive(message: Success<{ userId: number }> | Failure): void {
+    if (message instanceof Success) {
+      console.log(`received user ${message.value.userId} after ${attempts} attempts`);
     } else {
-      console.log(`gave up: ${msg.cause.name}: ${msg.cause.message}`);
+      console.log(`gave up: ${message.cause.name}: ${message.cause.message}`);
     }
   }
 }
 
 async function main(): Promise<void> {
   const system = ActorSystem.create('retry-demo');
+  const devtools = await attachDevTools(system);
   const ref = system.spawn(Props.create(() => new UserHandler()), 'user-handler');
 
   const work = (): Promise<{ userId: number }> =>
@@ -59,6 +61,7 @@ async function main(): Promise<void> {
   pipeTo(after(50, work), ref);
 
   await Bun.sleep(500);
+  await devtools.holdOpen();
   await system.terminate();
 }
 

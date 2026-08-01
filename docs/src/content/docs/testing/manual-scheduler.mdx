@@ -25,7 +25,7 @@ await kit.shutdown();
 ```
 
 `Heartbeat` schedules a tick via
-`context.timers.startSingleTimer('tick', tickMsg, 5_000)`.  Real
+`context.timers.startSingleTimer('tick', tickMessage, 5_000)`.  Real
 time never elapses; the `advance(5_000)` fires the timer.
 
 ## Why it matters
@@ -43,6 +43,17 @@ sleeps for 5.1 s but the scheduler fires at 5.0 s vs the
 fast; the test waits 5.1 s every time even though the timer
 fires at 5.0 s — slow.
 
+Widening the tolerance doesn't rescue it either, because timers
+also fire **early**.  Platform timer quanta are coarse — Windows'
+default is 15.625 ms — and an event loop that checks deadlines on
+the tick boundary can consider a timer due before its nominal
+delay has passed: a 30 ms `setTimeout` measured as low as 18.7 ms
+on Bun/Windows, and as high as 201 ms under CPU load.  One nominal
+delay, an order of magnitude of spread. No wall-clock bound is
+both tight enough to mean something and loose enough to hold, and
+a more precise clock doesn't help — the timer is early, not the
+measurement.
+
 `ManualScheduler` removes the dependency on real time.  Tests are
 fast (no waits) and deterministic (advance fires timers in order).
 
@@ -52,7 +63,7 @@ fast (no waits) and deterministic (advance fires timers in order).
 class ManualScheduler extends Scheduler {
   now(): number;                                  // current virtual time (ms)
   advance(durationMs: number): void;              // jump forward, fire matured timers
-  advanceTo(absoluteMs: number): void;            // jump to a specific virtual time
+  advanceToNext(): void;                          // jump to the next pending timer's fire time
   pendingCount: number;                           // non-cancelled scheduled tasks
 }
 ```
@@ -61,9 +72,9 @@ Inherited from `Scheduler`:
 
 ```ts
 scheduleOnce(delayMs, target, message, sender?): Cancellable
-scheduleOnceFn(delayMs, fn): Cancellable
+scheduleOnceFunction(delayMs, fn): Cancellable
 scheduleAtFixedRate(initialDelay, interval, target, message, sender?): Cancellable
-scheduleAtFixedRateFn(initialDelay, interval, fn): Cancellable
+scheduleAtFixedRateFunction(initialDelay, interval, fn): Cancellable
 ```
 
 Real-time `setTimeout` is **not** used.  Every schedule is a
@@ -108,17 +119,18 @@ the settings.
 
 ```ts
 scheduler.advance(1_000);   // jump 1 second, fire timers maturing in that window
-scheduler.advanceTo(5_000); // jump to virtual time = 5000ms
-scheduler.now();            // → 5000
+scheduler.advanceToNext();  // jump straight to the next pending timer and fire it
+scheduler.now();            // → current virtual time
 ```
 
 `advance(ms)` is the common case.  Tasks scheduled to fire in the
 advanced window run **in order**, sequentially, before `advance`
 returns.
 
-`advanceTo(absoluteMs)` is for when you've recorded a target
-time and want to fast-forward to it (useful for testing
-"after-N-of-something" patterns).
+`advanceToNext()` fast-forwards straight to the fire time of the
+next pending timer (and fires it), skipping any idle gap — handy
+when you don't want to compute the exact delay by hand.  It is a
+no-op when nothing is scheduled.
 
 ### Repeating timers
 
@@ -206,7 +218,7 @@ import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="`new Date()` and `Date.now()` aren't virtualized">
   ```ts
-  override onReceive(msg) {
+  override onReceive(message) {
     const at = Date.now();   // ← real wall clock, NOT virtual time
     this.persist({ kind: 'observed', at });
   }

@@ -250,10 +250,10 @@ export class KubernetesLease implements Lease {
       }
       this.currentLease = result;
     } catch (e) {
-      const msg = e instanceof K8sLeaseError
+      const message = e instanceof K8sLeaseError
         ? `renewal http error: ${e.message}`
         : `renewal error: ${(e as Error).message}`;
-      this.fireLost(msg);
+      this.fireLost(message);
     }
   }
 

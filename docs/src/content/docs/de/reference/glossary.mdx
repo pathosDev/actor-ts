@@ -30,7 +30,7 @@ Fehler eines Kindes dazu führt, dass dieselbe Direktive auf jedes
 Geschwister angewendet wird.  Siehe
 [Supervision](/de/fundamentals/supervision/).
 
-**Ask.**  Request/Response über Actors — `ref.ask(msg, timeout)`
+**Ask.**  Request/Response über Actors — `ref.ask(message, timeout)`
 gibt ein Promise für die Antwort zurück.  Siehe
 [Ask Pattern](/de/fundamentals/ask-pattern/).
 
@@ -171,9 +171,12 @@ auch event-sourced Varianten existieren.  Siehe
 Mitglieder tauschen ihre Sichten periodisch aus, bis Konvergenz.
 Siehe [Cluster Overview](/de/cluster/overview/).
 
-**Guardian.**  Top-Level-System-Actors: `/user`, `/system`,
-`/deadLetters`.  Siehe
-[ActorSystem](/de/fundamentals/actor-system/).
+**Guardian.**  Top-Level-System-Actors: `/user` für alles, was dein Code
+erzeugt, `/system` für alles, was das Framework für sich selbst erzeugt,
+plus das synthetische `/deadLetters`.  Unter `/system` liegen
+Gruppen-Guardians, einer pro Subsystem.  Siehe
+[ActorSystem](/de/fundamentals/actor-system/) und
+[Actor-Pfade](/de/fundamentals/actor-paths/).
 
 ## H
 
@@ -205,8 +208,9 @@ Siehe [Logging](/de/fundamentals/logging/).
 
 ## M
 
-**Mailbox.**  Die Nachrichten-Queue pro Actor.  Default unbounded
-FIFO; bounded und Priority-Varianten werden ausgeliefert.  Siehe
+**Mailbox.**  Die Nachrichten-Queue pro Actor.  Default bounded
+(10.000 Kapazität, `drop-head`-Overflow) mit FIFO-Reihenfolge;
+Priority- und Unbounded-Varianten sind verfügbar.  Siehe
 [Mailboxes](/de/fundamentals/mailboxes/).
 
 **Message.**  Jeder Wert, der an einen Actor `tell`d wird.

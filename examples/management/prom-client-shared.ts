@@ -25,6 +25,7 @@ import {
   Actor, ActorSystem, MetricsExtensionId, Props,
   promClientRegistry, PromClientAdapterOptions,
 } from '../../src/index.js';
+import { attachDevTools } from '../devtools.js';
 
 // `prom-client` is a peer dep; we resolve it lazily so the framework
 // build still works without it.  In a real app this is a top-of-file
@@ -59,6 +60,7 @@ const orders = new client.Counter({
 //    the same prom-client registry.  `actor_ts_` namespace makes the
 //    bridge-sourced families easy to spot in the exposition.
 const system = ActorSystem.create('metrics-shared');
+const devtools = await attachDevTools(system);
 const promAdapterOptions = PromClientAdapterOptions.create()
   .withClient(client)
   .withRegistry(registry)

@@ -6,20 +6,21 @@
  *   bun run examples/fsm/connection-state.ts
  */
 import { ActorSystem, FSM, Props } from '../../src/index.js';
+import { attachDevTools } from '../devtools.js';
 
 type State = 'disconnected' | 'connecting' | 'connected' | 'reconnecting';
-interface Data {
+type Data = {
   readonly retries: number;
   readonly lastConnectedAt: number | null;
-}
-type Cmd =
+};
+type Command =
   | { kind: 'connect' }
   | { kind: 'connected' }
   | { kind: 'disconnect' }
   | { kind: 'failed'; reason: string }
   | { kind: 'retry' };
 
-class ConnectionFsm extends FSM<State, Data, Cmd> {
+class ConnectionFsm extends FSM<State, Data, Command> {
   constructor() {
     super('disconnected', { retries: 0, lastConnectedAt: null });
 
@@ -58,6 +59,7 @@ class ConnectionFsm extends FSM<State, Data, Cmd> {
 
 async function main(): Promise<void> {
   const system = ActorSystem.create('fsm-conn');
+  const devtools = await attachDevTools(system);
   const ref = system.spawn(Props.create(() => new ConnectionFsm()), 'conn');
 
   ref.tell({ kind: 'connect' });
@@ -71,6 +73,7 @@ async function main(): Promise<void> {
   ref.tell({ kind: 'disconnect' });
 
   await Bun.sleep(100);
+  await devtools.holdOpen();
   await system.terminate();
 }
 

@@ -13,14 +13,14 @@ import { TestKit, RecordingTracer, TracingExtensionId } from 'actor-ts';
 
 const tracer = new RecordingTracer();
 const tk = TestKit.create();
-tk.system.extension(TracingExtensionId).configure({ tracer });
+tk.system.extension(TracingExtensionId).enable(tracer);
 
 // ... Actor ausführen ...
 ref.tell({ kind: 'process' });
 await probe.expectMessage(...);
 
 // Auf aufgezeichnete Spans asserten:
-const spans = tracer.recordedSpans();
+const spans = tracer.recorded();
 expect(spans).toHaveLength(1);
 expect(spans[0].name).toBe('actor.receive');
 expect(spans[0].attributes['actor.path']).toContain('worker');
@@ -31,18 +31,18 @@ expect(spans[0].attributes['actor.path']).toContain('worker');
 Jeder `RecordedSpan`:
 
 ```ts
-interface RecordedSpan {
-  name:        string;
-  context:     SpanContext;
-  parent?:     SpanContext;
-  attributes:  Record<string, AttributeValue>;
-  events:      Array<{ name: string; attrs: ... }>;
-  status:      { status: 'ok' | 'error'; message?: string };
-  startTimeMs: number;
-  endTimeMs:   number;
-  ended:       boolean;
-  kind:        SpanKind;
-}
+type RecordedSpan = {
+  name:           string;
+  kind:           SpanKind;
+  context:        SpanContext;
+  parent:         SpanContext | null;
+  startTimeMs:    number;
+  endTimeMs:      number;
+  attributes:     Record<string, AttributeValue>;
+  status:         SpanStatus;              // 'unset' | 'ok' | 'error'
+  statusMessage?: string;
+  exceptions:     ReadonlyArray<Error>;
+};
 ```
 
 Du siehst, welche Attribute gesetzt wurden, wann der Span
@@ -55,15 +55,14 @@ Verifizieren von Kausalitätsketten) und seinen Endstatus.
 class RecordingTracer implements Tracer {
   // ... volles Tracer-Interface ...
 
-  recordedSpans(): RecordedSpan[];          // alle Spans, inkl. unbeendeter
-  finishedSpans(): RecordedSpan[];          // Spans, bei denen end() aufgerufen wurde
+  recorded(): ReadonlyArray<RecordedSpan>;  // Schnappschuss jedes beendeten Spans
   reset(): void;                            // aufgezeichneten Zustand leeren
 }
 ```
 
-`recordedSpans` gibt jeden Span zurück, den der Tracer erzeugen
-sollte. `finishedSpans` filtert auf die, die beendet wurden —
-nützlich, um „Span gestartet und nie beendet"-Bugs zu erkennen.
+`recorded` gibt einen Schnappschuss jedes Spans zurück, der
+**beendet** wurde — ein Span wird erst bei `end()` erfasst, sodass
+einer, der gestartet, aber nie beendet wurde, nie auftaucht.
 
 ## Übliche Assertion-Muster
 
@@ -73,16 +72,16 @@ nützlich, um „Span gestartet und nie beendet"-Bugs zu erkennen.
 ref.tell({ kind: 'work' });
 await probe.expectMessage(...);
 
-const spans = tracer.finishedSpans();
+const spans = tracer.recorded();
 const receive = spans.find(s => s.name === 'actor.receive' && s.attributes['actor.path']?.includes('worker'));
 expect(receive).toBeDefined();
-expect(receive!.status.status).toBe('ok');
+expect(receive!.status).toBe('ok');
 ```
 
 ### „Hat mein Custom-Span mit den richtigen Attributen gefeuert?"
 
 ```ts
-const orderSpan = tracer.finishedSpans().find(s => s.name === 'place-order');
+const orderSpan = tracer.recorded().find(s => s.name === 'place-order');
 expect(orderSpan).toBeDefined();
 expect(orderSpan!.attributes['order.id']).toBe('o-1');
 expect(orderSpan!.attributes['order.amount']).toBe(42);
@@ -91,7 +90,7 @@ expect(orderSpan!.attributes['order.amount']).toBe(42);
 ### „Haben sich die Spans korrekt verkettet?"
 
 ```ts
-const spans = tracer.finishedSpans();
+const spans = tracer.recorded();
 const parent = spans.find(s => s.name === 'http-request');
 const child  = spans.find(s => s.name === 'db-query');
 

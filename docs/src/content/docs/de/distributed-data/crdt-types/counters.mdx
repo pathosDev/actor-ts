@@ -86,9 +86,9 @@ Warenkorb, verfügbarer Bestand, Saldo nach Ausgleichen.
 ## Mit DistributedData verwenden
 
 ```ts
-import { GCounter, type DistributedData } from 'actor-ts';
+import { GCounter } from 'actor-ts';
 
-const dd: DistributedData = system.extension(DistributedDataId).start(cluster);
+const dd = system.extension(DistributedDataId).start(cluster);
 
 dd.update<GCounter>(
   'request-count',

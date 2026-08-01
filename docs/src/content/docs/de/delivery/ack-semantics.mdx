@@ -199,6 +199,40 @@ Das heißt: **Dein Handler zahlt keine Latenz-Kosten für das
 ACK**.  Der Controller emittiert das ACK, nachdem
 `handler(body)` resolved, und macht weiter.
 
+## Das ACK auf der Producer-Seite beobachten
+
+Der Consumer-Handler entscheidet, *ob* das ACK feuert; mit dem
+**`confirm`-Callback** des Producers *beobachtet* Dein eigener
+Code, dass es eintrifft.  Greif zur ergonomischen
+`ReliableDelivery`-Fassade: `ReliableDelivery.producer` gibt
+einen `ProducerHandle` zurück, dessen `tell(body, confirm?)`
+einen optionalen `ConfirmationCallback` entgegennimmt —
+`(err: Error | null) => void`.
+
+```ts
+const consumer = ReliableDelivery.consumer<OrderEvent>(system, {
+  handler: async (order) => {
+    await save(order);
+  },
+});
+
+const producerOptions = ProducerControllerOptions.create<OrderEvent>().withConsumer(consumer.ref as never);
+const producer = ReliableDelivery.producer<OrderEvent>(system, producerOptions);
+
+producer.tell(order, (err) => {
+  // err === null → der Consumer hat diese Seq geACKt; der Slot wird frei
+  // err !== null → der Producer wurde vor Eintreffen des ACK gestoppt
+});
+```
+
+`confirm(null)` feuert genau einmal — nachdem das ACK des
+Consumers den Producer erreicht hat und der In-Flight-Slot
+freigegeben ist.  Ein erneut zugestelltes (doppeltes) ACK für
+dieselbe Seq wird ignoriert, sodass der Callback nie doppelt
+feuert.  Das ist das **einzige** Producer-seitige Signal, dass
+eine Nachricht angekommen ist; ohne ihn ist der Send aus Sicht
+Deines Codes Fire-and-Forget.
+
 ## Wann du die Controller NICHT einsetzt
 
 import { Aside } from '@astrojs/starlight/components';

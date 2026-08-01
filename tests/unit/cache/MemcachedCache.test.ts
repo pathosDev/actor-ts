@@ -22,18 +22,18 @@ class FakeMemcached implements MemcachedClientLike {
     }
     return { value: Buffer.from(entry.value, 'utf8') };
   }
-  async set(key: string, value: string | Buffer, opts: { expires?: number } = {}): Promise<boolean> {
-    this.log.push({ op: 'set', args: [key, value, opts] });
-    this.store.set(key, { value: value.toString(), expires: secondsAhead(opts.expires) });
+  async set(key: string, value: string | Buffer, options: { expires?: number } = {}): Promise<boolean> {
+    this.log.push({ op: 'set', args: [key, value, options] });
+    this.store.set(key, { value: value.toString(), expires: secondsAhead(options.expires) });
     return true;
   }
-  async add(key: string, value: string | Buffer, opts: { expires?: number } = {}): Promise<boolean> {
-    this.log.push({ op: 'add', args: [key, value, opts] });
+  async add(key: string, value: string | Buffer, options: { expires?: number } = {}): Promise<boolean> {
+    this.log.push({ op: 'add', args: [key, value, options] });
     if (this.store.has(key)) {
       const entry = this.store.get(key)!;
       if (entry.expires === 0 || entry.expires >= Date.now() / 1000) return false;
     }
-    this.store.set(key, { value: value.toString(), expires: secondsAhead(opts.expires) });
+    this.store.set(key, { value: value.toString(), expires: secondsAhead(options.expires) });
     return true;
   }
   async delete(key: string): Promise<boolean> {
@@ -41,13 +41,13 @@ class FakeMemcached implements MemcachedClientLike {
     return this.store.delete(key);
   }
   async increment(
-    key: string, amount: number, opts: { initial?: number; expires?: number } = {},
+    key: string, amount: number, options: { initial?: number; expires?: number } = {},
   ): Promise<{ value: number | null }> {
-    this.log.push({ op: 'increment', args: [key, amount, opts] });
+    this.log.push({ op: 'increment', args: [key, amount, options] });
     const entry = this.store.get(key);
     if (!entry) {
-      const initial = opts.initial ?? 0;
-      this.store.set(key, { value: String(initial), expires: secondsAhead(opts.expires) });
+      const initial = options.initial ?? 0;
+      this.store.set(key, { value: String(initial), expires: secondsAhead(options.expires) });
       return { value: initial };
     }
     const next = Number(entry.value) + amount;
@@ -83,8 +83,8 @@ describe('MemcachedCache — round-trip', () => {
     // memjs's default-arg `{}` may absorb our undefined, so we assert
     // the *behaviour* — `expires` is absent or 0, equivalent to "no TTL".
     const setCall = fake.log.find((l) => l.op === 'set');
-    const opts = setCall!.args[2] as { expires?: number } | undefined;
-    expect(opts === undefined || opts.expires === undefined).toBe(true);
+    const options = setCall!.args[2] as { expires?: number } | undefined;
+    expect(options === undefined || options.expires === undefined).toBe(true);
   });
 
   test('get parses JSON; miss returns None', async () => {
@@ -218,8 +218,8 @@ describe('MemcachedCache — mget / mset (#14)', () => {
     expect(sets).toHaveLength(2);
     // ttlMs=3000 → expires=3 seconds (ceil + 1s floor).
     for (const setCall of sets) {
-      const opts = setCall.args[2] as { expires?: number } | undefined;
-      expect(opts?.expires).toBe(3);
+      const options = setCall.args[2] as { expires?: number } | undefined;
+      expect(options?.expires).toBe(3);
     }
   });
 

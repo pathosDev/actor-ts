@@ -24,6 +24,7 @@
     <!-- No build.  Lit loaded from CDN; same approach as chat-lit. -->
     <script type="module">
       import { LitElement, html, css } from 'https://esm.sh/lit@3';
+      import { match } from 'https://esm.sh/ts-pattern@5';
 
       const WS_PATH = '/ws';
       const TOKEN_KEY = 'voice-token';
@@ -32,12 +33,12 @@
       const MIME_OPUS = 'audio/webm; codecs=opus';
 
       // Shared frame codec — keep in sync with shared/frameCodec.ts.
-      function decodeIncoming(buf) {
-        if (buf.byteLength < 1) return null;
-        const nameLen = buf[0];
-        if (buf.byteLength < 1 + nameLen) return null;
-        const sender = new TextDecoder().decode(buf.subarray(1, 1 + nameLen));
-        const opus = buf.subarray(1 + nameLen);
+      function decodeIncoming(buffer) {
+        if (buffer.byteLength < 1) return null;
+        const nameLen = buffer[0];
+        if (buffer.byteLength < 1 + nameLen) return null;
+        const sender = new TextDecoder().decode(buffer.subarray(1, 1 + nameLen));
+        const opus = buffer.subarray(1 + nameLen);
         return { sender, opus };
       }
 
@@ -189,7 +190,7 @@
           this._reconnectTimer = null;
           this._micStream = null;
           this._micRecorder = null;
-          this._micCtx = null;
+          this._micContext = null;
           this._micAnalyser = null;
           this._incoming = new Map();      // sender → playback entry
           this._incomingMeta = new Map();  // sender → source descriptor
@@ -350,7 +351,7 @@
             });
             const ctx = new (window.AudioContext || window.webkitAudioContext)();
             if (ctx.state === 'suspended') await ctx.resume();
-            this._micCtx = ctx;
+            this._micContext = ctx;
             const src = ctx.createMediaStreamSource(this._micStream);
             const analyser = ctx.createAnalyser(); analyser.fftSize = 512;
             src.connect(analyser);
@@ -359,7 +360,7 @@
 
             this.phase = 'gate-login';
             const stored = sessionStorage.getItem(TOKEN_KEY);
-            if (stored) this._connectAndSend({ type: 'resume', token: stored });
+            if (stored) this._connectAndSend({ kind: 'resume', token: stored });
           } catch (e) {
             this.loginError = `Microphone access denied (${e?.message ?? e}).  Check site settings + reload.`;
             this.requestUpdate();
@@ -385,11 +386,11 @@
           const password = this.renderRoot.querySelector('#p').value;
           if (!username || !password) return;
           this.loginError = '';
-          this._connectAndSend({ type: 'login', username, password });
+          this._connectAndSend({ kind: 'login', username, password });
         }
 
         _logout() {
-          try { this._ws?.send(JSON.stringify({ type: 'logout' })); } catch {}
+          try { this._ws?.send(JSON.stringify({ kind: 'logout' })); } catch {}
           sessionStorage.removeItem(TOKEN_KEY);
           location.reload();
         }
@@ -423,7 +424,7 @@
           this._reconnectAttempts++;
           this._reconnectTimer = setTimeout(() => {
             this._reconnectTimer = null;
-            this._connectAndSend({ type: 'resume', token });
+            this._connectAndSend({ kind: 'resume', token });
           }, delay);
           return true;
         }
@@ -441,50 +442,40 @@
 
         _handleText(raw) {
           let m; try { m = JSON.parse(raw); } catch { return; }
-          switch (m.type) {
-            case 'logged-in':
+          match(m)
+            .with({ kind: 'logged-in' }, (m) => {
               this._cancelReconnect();
               this.username = m.username;
               sessionStorage.setItem(TOKEN_KEY, m.token);
               this.phase = 'app';
-              break;
-            case 'login-failed':
+            })
+            .with({ kind: 'login-failed' }, (m) => {
               this._cancelReconnect();
               sessionStorage.removeItem(TOKEN_KEY);
               try { this._ws?.close(); } catch {}
               this._ws = null;
               if (this.phase === 'app') this._resetToGate();
               else { this.loginError = m.reason || 'Login failed'; this.requestUpdate(); }
-              break;
-            case 'directory':
-              this.directory = { users: [...m.users], groups: m.groups.map((g) => ({ ...g, members: [...g.members] })), rooms: [...m.rooms] };
-              break;
-            case 'online-users':
-              this.onlineUsers = new Set(m.users);
-              break;
-            case 'room-participants': {
+            })
+            .with({ kind: 'directory' }, (m) => this.directory = { users: [...m.users], groups: m.groups.map((g) => ({ ...g, members: [...g.members] })), rooms: [...m.rooms] })
+            .with({ kind: 'online-users' }, (m) => this.onlineUsers = new Set(m.users))
+            .with({ kind: 'room-participants' }, (m) => {
               const next = new Map(this.roomParticipants);
               next.set(m.room, [...m.users]);
               this.roomParticipants = next;
-              break;
-            }
-            case 'voice-target-ok': /* ack */ break;
-            case 'voice-target-failed':
+            })
+            .with({ kind: 'voice-target-ok' }, () => { /* ack */ })
+            .with({ kind: 'voice-target-failed' }, (m) => {
               console.warn('voice-target-failed', m);
               this.activeKey = null;
-              break;
-            case 'voice-incoming-start':
-              this._startIncoming(m.from, m.source);
-              break;
-            case 'voice-incoming-end':
-              this._endIncoming(m.from);
-              break;
-            default: break;
-          }
+            })
+            .with({ kind: 'voice-incoming-start' }, (m) => this._startIncoming(m.from, m.source))
+            .with({ kind: 'voice-incoming-end' }, (m) => this._endIncoming(m.from))
+            .otherwise(() => {});
         }
 
-        _handleBinary(buf) {
-          const decoded = decodeIncoming(buf);
+        _handleBinary(buffer) {
+          const decoded = decodeIncoming(buffer);
           if (!decoded) return;
           this._feedIncoming(decoded.sender, decoded.opus);
         }
@@ -496,7 +487,7 @@
           if (e.currentTarget?.disabled) return;
           if (this.activeKey) this._endPressActiveOnly();
           this.activeKey = key;
-          this._ws?.send(JSON.stringify({ type: 'voice-target', ...target }));
+          this._ws?.send(JSON.stringify({ kind: 'voice-target', ...target }));
           this._startMicRecording();
           if (e.pointerId !== undefined && e.currentTarget?.setPointerCapture) {
             e.currentTarget.setPointerCapture(e.pointerId);
@@ -507,13 +498,13 @@
           if (this.activeKey !== key) return;
           e.preventDefault?.();
           this._stopMicRecording();
-          this._ws?.send(JSON.stringify({ type: 'voice-stop' }));
+          this._ws?.send(JSON.stringify({ kind: 'voice-stop' }));
           this.activeKey = null;
         }
 
         _endPressActiveOnly() {
           this._stopMicRecording();
-          this._ws?.send(JSON.stringify({ type: 'voice-stop' }));
+          this._ws?.send(JSON.stringify({ kind: 'voice-stop' }));
           this.activeKey = null;
         }
 
@@ -522,12 +513,12 @@
           if (next.has(room)) {
             next.delete(room);
             this._stopMicRecording();
-            this._ws?.send(JSON.stringify({ type: 'voice-stop' }));
+            this._ws?.send(JSON.stringify({ kind: 'voice-stop' }));
             this.activeKey = null;
           } else {
             next.add(room);
             this.activeKey = `room:${room}`;
-            this._ws?.send(JSON.stringify({ type: 'voice-target', mode: 'room', room }));
+            this._ws?.send(JSON.stringify({ kind: 'voice-target', mode: 'room', room }));
             this._startMicRecording();
           }
           this.roomTalking = next;
@@ -536,14 +527,14 @@
         _enterRoom(room) {
           const next = new Set(this.joinedRooms);
           next.add(room); this.joinedRooms = next;
-          this._ws?.send(JSON.stringify({ type: 'room-enter', room }));
+          this._ws?.send(JSON.stringify({ kind: 'room-enter', room }));
         }
 
         _leaveRoom(room) {
           if (this.roomTalking.has(room)) this._toggleRoomTalk(room);
           const next = new Set(this.joinedRooms);
           next.delete(room); this.joinedRooms = next;
-          this._ws?.send(JSON.stringify({ type: 'room-leave', room }));
+          this._ws?.send(JSON.stringify({ kind: 'room-leave', room }));
         }
 
         /* ------------------------ mic record / playback -------------------- */

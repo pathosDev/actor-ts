@@ -16,7 +16,7 @@ Reading left to right:
 | --- | --- |
 | `actor-ts://` | The scheme — same for every actor-ts path. |
 | `my-app` | The system name from `ActorSystem.create('my-app')`. |
-| `user` | The user-guardian — every actor you spawn lives under `/user`. |
+| `user` | The user-guardian — every actor *you* spawn lives under `/user`. |
 | `api` | A great-grandparent (e.g. an `Api` manager). |
 | `sessions` | The immediate parent (e.g. a `SessionManager`). |
 | `user-42` | The leaf actor's own name. |
@@ -50,7 +50,7 @@ class Logger extends Actor<Message> {
     // → "depth = 2"  (root is 0, /user is 1, /user/logger is 2)
 
     this.log.info(`elements = ${this.context.path.elements().join(' → ')}`);
-    // → "elements = / → user → logger"
+    // → "elements =  → user → logger"  (leading blank = the empty-named root)
   }
 }
 ```
@@ -89,8 +89,20 @@ If you omit the name, the framework synthesizes one (`'$1'`,
 1. **Names must be unique among siblings.**  `context.spawn(props, 'bar')`
    followed by another `context.spawn(props, 'bar')` on the same
    parent throws — that path is already in use.
-2. **The name "looks like a path segment."**  No slashes, no
-   leading dots, no whitespace.  The framework validates this.
+2. **The name must be a single path segment.**  The framework enforces
+   this and throws on a name that would corrupt the path: a `/` or `\`
+   separator, the traversal segments `.` and `..`, an empty name, or any
+   control character.  A path is rendered by joining segments with `/`
+   and taken apart again by splitting on it, so `spawn(props, 'a/b')`
+   would otherwise produce a path indistinguishable from a child `b` of
+   an actor `a` — colliding with, or impersonating, a different actor,
+   including across the cluster wire where the remote side re-splits the
+   string.  Control characters are refused because paths are written to
+   logs and trace spans.
+
+   Anything else is accepted, including spaces, dots inside the name and
+   non-ASCII characters — `'Order.Placed'`, `'entity#3'` and `'日本語'`
+   are all valid.
 
 The `uid` field on `ActorPath` distinguishes successive incarnations
 of the same path — if `my-foo` stops and is then re-spawned at the
@@ -118,10 +130,10 @@ caller races with the actor's spawn.
 
 Two ways to send to a selection:
 
-- **`selection.tell(msg)`** — resolve once, deliver immediately
+- **`selection.tell(message)`** — resolve once, deliver immediately
   if found, dead-letter if not.  No retry.  Useful when you have
   a clear expectation the actor exists; missing it is an error.
-- **`(await selection.resolveOne(timeout)).tell(msg)`** — wait
+- **`(await selection.resolveOne(timeout)).tell(message)`** — wait
   until the actor exists (or time out).  Useful for spawn-race
   scenarios.
 
@@ -163,8 +175,9 @@ returns `unknown`-typed refs that you lose typing on.
 Reach for an `ActorSelection` in three situations:
 
 1. **Cross-tree lookup** by convention — the actor you want lives
-   at a well-known path (`/user/sharding/region`, `/system/pubsub`),
-   and there's no clean way to thread the ref through.
+   at a well-known path (`/user/api/sessions`,
+   `/system/cluster/pubsub/mediator`), and there's no clean way to
+   thread the ref through.
 2. **Spawn-race resolution** — caller doesn't know exactly when
    the target spawns; `resolveOne(timeout)` waits.
 3. **Looking up actors received as strings** — e.g. an HTTP
@@ -178,7 +191,7 @@ constructors / messages / parent-child relationships**:
 ```ts
 // ✗ awkward
 class Worker extends Actor<...> {
-  override onReceive(msg) {
+  override onReceive(message) {
     const cache = await this.context.actorSelection('/user/cache').resolveOne();
     cache.tell({ kind: 'put', ... });
   }
@@ -187,7 +200,7 @@ class Worker extends Actor<...> {
 // ✓ direct
 class Worker extends Actor<...> {
   constructor(private readonly cache: ActorRef<CacheMessage>) { super(); }
-  override onReceive(msg) {
+  override onReceive(message) {
     this.cache.tell({ kind: 'put', ... });
   }
 }
@@ -200,19 +213,63 @@ path-naming conventions, and survives renames trivially.
 
 ## Special top-level paths
 
-Three top-level guardian paths exist in every system:
+Four top-level paths exist in every system:
 
 | Path | What lives there |
 | --- | --- |
-| `/user` | Your application's top-level actors (everything `system.spawnAnonymous(...)` creates). |
-| `/system` | Framework internals (event-stream listeners, cluster gossipers, the dead-letter actor itself, …). |
+| `/user` | Your application's top-level actors — everything `system.spawn(...)` creates. |
+| `/system` | Framework internals, grouped by subsystem. |
+| `/temp` | The one-shot reply refs `ask` creates, one per outstanding call. |
 | `/deadLetters` | The synthetic recipient for messages with no live target. |
 
-You rarely interact with `/system` paths directly — the extensions
-(cluster, pubsub, sharding) expose their own typed APIs that
-shield you from the path scheme.  But knowing the paths exist is
-useful when reading log output or debugging "where did this
-message go?"
+`/temp` is the odd one out: nothing under it is an actor.  `ask`
+synthesises a reply ref, gives it a `/temp/askResp-<id>` path and
+throws it away as soon as the call settles, so it never appears in a
+supervisor tree and `actorSelection` never finds it.  It has a path at
+all because a reply that crosses the cluster wire is addressed by
+path — the recipient's node needs something to send back to.  You will
+see these in logs as the `sender` of an asked message.
+
+### Inside `/system`
+
+Anything the framework spawns for itself goes here, one group per
+subsystem, so the tree tells you which part of the framework an actor
+belongs to:
+
+| Path | Actor |
+| --- | --- |
+| `/system/cluster/receptionist` | The receptionist. |
+| `/system/cluster/pubsub/mediator` | The distributed pub-sub mediator. |
+| `/system/cluster/crdt/data` | The DistributedData replica. |
+| `/system/cluster/sharding/region-<typeName>` | A shard region. |
+| `/system/cluster/sharding/coordinator-<typeName>` | A shard coordinator. |
+| `/system/cluster/singleton/manager-<typeName>` | A cluster-singleton manager (the singleton itself is its child). |
+| `/system/persistence/projection/<name>` | A projection. |
+| `/system/delivery/consumer-<n>`, `producer-<n>` | Reliable-delivery controllers. |
+| `/system/devtools/hub` | The DevTools WebSocket hub, with its probes alongside it. |
+
+Two things follow from this that are worth knowing when you read a tree:
+
+- **The group levels are actors.** `/system/cluster/sharding` is an empty
+  supervisor whose whole job is to hold the grouping and the supervision
+  policy for what is under it.  It has children and never handles a
+  message.
+- **Groups are created on first use.** A system that never starts
+  clustering or DevTools has an empty `/system` — that is the normal
+  state, not a missing branch.
+
+You rarely address `/system` paths directly: the extensions (cluster,
+pubsub, sharding) expose typed APIs that hand you refs. But knowing the
+layout pays off when reading log output — every actor's logger is bound
+to its path — or answering "where did this message go?"
+
+<Aside type="caution" title="/system is the framework's, not yours">
+  There is no public API for spawning into `/system`, and the paths above
+  are not a stable contract — they moved once already (before this
+  release, framework actors sat flat under `/user`) and a pre-1.0 release
+  may move them again.  Match on them in a log query if it helps you
+  debug; don't build application routing on them.
+</Aside>
 
 <Aside type="caution" title="Don't construct paths from string concat">
   ```ts

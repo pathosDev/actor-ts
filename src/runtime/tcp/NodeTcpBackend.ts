@@ -17,59 +17,59 @@ import type {
  * module imports safely under Bun and Deno too.
  */
 export class NodeTcpBackend implements TcpBackend {
-  async listen(opts: {
+  async listen(options: {
     host: string; port: number; tls?: TlsTransportOptionsType; handlers: TcpSocketHandlers;
   }): Promise<TcpListener> {
-    const useTls = !!(opts.tls && opts.tls.cert && opts.tls.key);
+    const useTls = !!(options.tls && options.tls.cert && options.tls.key);
     const attach = (raw: NodeSocketLike): void => {
       const sock = wrapSocket(raw);
-      raw.on('data', (chunk: Buffer) => opts.handlers.onData(sock, toUint8(chunk)));
-      raw.on('close', () => opts.handlers.onClose(sock));
-      raw.on('error', (err: Error) => opts.handlers.onError(sock, err));
-      opts.handlers.onOpen(sock);
+      raw.on('data', (chunk: Buffer) => options.handlers.onData(sock, toUint8(chunk)));
+      raw.on('close', () => options.handlers.onClose(sock));
+      raw.on('error', (err: Error) => options.handlers.onError(sock, err));
+      options.handlers.onOpen(sock);
     };
     if (useTls) {
       const tls = await loadTls();
       const server = tls.createServer({
-        cert: opts.tls!.cert,
-        key: opts.tls!.key,
-        ca: opts.tls!.ca,
-        requestCert: opts.tls!.requestClientCert ?? false,
-        rejectUnauthorized: opts.tls!.rejectUnauthorized ?? true,
+        cert: options.tls!.cert,
+        key: options.tls!.key,
+        ca: options.tls!.ca,
+        requestCert: options.tls!.requestClientCert ?? false,
+        rejectUnauthorized: options.tls!.rejectUnauthorized ?? true,
       }, attach);
-      return startServer(server, opts.host, opts.port);
+      return startServer(server, options.host, options.port);
     }
     const net = await loadNet();
     const server = net.createServer(attach);
-    return startServer(server, opts.host, opts.port);
+    return startServer(server, options.host, options.port);
   }
 
-  async connect(opts: {
+  async connect(options: {
     host: string; port: number; tls?: TlsTransportOptionsType; handlers: TcpSocketHandlers;
   }): Promise<TcpSocketLike> {
-    const useTls = !!opts.tls;
+    const useTls = !!options.tls;
     let raw: NodeSocketLike;
     if (useTls) {
       const tls = await loadTls();
       raw = tls.connect({
-        host: opts.host,
-        port: opts.port,
-        ca: opts.tls!.ca,
-        cert: opts.tls!.cert,
-        key: opts.tls!.key,
-        servername: opts.tls!.serverName ?? opts.host,
-        rejectUnauthorized: opts.tls!.rejectUnauthorized ?? true,
+        host: options.host,
+        port: options.port,
+        ca: options.tls!.ca,
+        cert: options.tls!.cert,
+        key: options.tls!.key,
+        servername: options.tls!.serverName ?? options.host,
+        rejectUnauthorized: options.tls!.rejectUnauthorized ?? true,
       }) as NodeSocketLike;
     } else {
       const net = await loadNet();
-      raw = net.connect({ host: opts.host, port: opts.port }) as NodeSocketLike;
+      raw = net.connect({ host: options.host, port: options.port }) as NodeSocketLike;
     }
     const sock = wrapSocket(raw);
-    raw.on('connect', () => opts.handlers.onOpen(sock));
-    raw.on('secureConnect', () => opts.handlers.onOpen(sock)); // fires instead of 'connect' on TLS
-    raw.on('data', (chunk: Buffer) => opts.handlers.onData(sock, toUint8(chunk)));
-    raw.on('close', () => opts.handlers.onClose(sock));
-    raw.on('error', (err: Error) => opts.handlers.onError(sock, err));
+    raw.on('connect', () => options.handlers.onOpen(sock));
+    raw.on('secureConnect', () => options.handlers.onOpen(sock)); // fires instead of 'connect' on TLS
+    raw.on('data', (chunk: Buffer) => options.handlers.onData(sock, toUint8(chunk)));
+    raw.on('close', () => options.handlers.onClose(sock));
+    raw.on('error', (err: Error) => options.handlers.onError(sock, err));
     return sock;
   }
 }
@@ -96,12 +96,12 @@ interface NodeServerLike {
 
 interface NodeNetModule {
   createServer(handler?: (sock: NodeSocketLike) => void): NodeServerLike;
-  connect(opts: { host: string; port: number }): NodeSocketLike;
+  connect(options: { host: string; port: number }): NodeSocketLike;
 }
 
 interface NodeTlsModule {
-  createServer(opts: unknown, handler?: (sock: NodeSocketLike) => void): NodeServerLike;
-  connect(opts: unknown): NodeSocketLike;
+  createServer(options: unknown, handler?: (sock: NodeSocketLike) => void): NodeServerLike;
+  connect(options: unknown): NodeSocketLike;
 }
 
 // `Lazy<Promise<…>>` — the thunk returns a Promise, so the Promise itself
@@ -127,9 +127,9 @@ function wrapSocket(raw: NodeSocketLike): TcpSocketLike {
   };
 }
 
-function toUint8(buf: Buffer): Uint8Array {
+function toUint8(buffer: Buffer): Uint8Array {
   // Node Buffers are Uint8Array instances with `.buffer`/`.byteOffset`/`.byteLength`.
-  return new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
+  return new Uint8Array(buffer.buffer, buffer.byteOffset, buffer.byteLength);
 }
 
 function startServer(server: NodeServerLike, host: string, port: number): Promise<TcpListener> {

@@ -24,20 +24,22 @@ import {
   type KafkaRecord,
 } from '../../../../../src/io/broker/KafkaActor.js';
 import { KafkaOptions, KafkaOptionsBuilder } from '../../../../../src/io/broker/KafkaOptions.js';
+import { createTestActorSystem } from '../../../../util/TestActorSystem.js';
 
 const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
 
 /* --------------------------- Mocks ----------------------------- */
 
-interface MockMessage {
+type MockMessage = {
   readonly topic: string;
   readonly partition: number;
   readonly offset: string;
-}
+};
 
 class MockProducer implements KafkaProducerLike {
+  disconnected = false;
   async connect(): Promise<void> {}
-  async disconnect(): Promise<void> {}
+  async disconnect(): Promise<void> { this.disconnected = true; }
   async send(): Promise<unknown> { return undefined; }
 }
 
@@ -46,7 +48,7 @@ class MockConsumer implements KafkaConsumerLike {
   readonly committed: Array<{ topic: string; partition: number; offset: string }> = [];
   /** Each `eachMessage` invocation's resolution — `null` while still pending. */
   readonly inflight: Array<{
-    msg: MockMessage; promise: Promise<void>;
+    message: MockMessage; promise: Promise<void>;
     resolved: boolean; rejected: boolean; rejectError?: Error;
     /** Number of times the captured heartbeat() callback has fired. */
     heartbeats: number;
@@ -57,9 +59,20 @@ class MockConsumer implements KafkaConsumerLike {
     heartbeat?: () => Promise<void>;
   }) => Promise<void>) | null = null;
 
+  /** Every subscribe() this consumer received, in order. */
+  readonly subscribed: Array<{ topic: string; fromBeginning: boolean }> = [];
+  disconnected = false;
+
   async connect(): Promise<void> {}
-  async disconnect(): Promise<void> {}
-  async subscribe(): Promise<void> {}
+  async disconnect(): Promise<void> { this.disconnected = true; }
+  async subscribe(args?: { topic: string; fromBeginning?: boolean }): Promise<void> {
+    if (args) this.subscribed.push({ topic: args.topic, fromBeginning: args.fromBeginning ?? false });
+  }
+
+  /** Topics this consumer was subscribed to, sorted. */
+  get subscribedTopics(): string[] {
+    return this.subscribed.map((s) => s.topic).sort();
+  }
 
   async run(args: {
     autoCommit?: boolean;
@@ -82,7 +95,7 @@ class MockConsumer implements KafkaConsumerLike {
   push(topic: string, partition: number, offset: string): typeof this.inflight[number] {
     if (!this.eachMessage) throw new Error('mock consumer: run() not called yet');
     const tracker = {
-      msg: { topic, partition, offset },
+      message: { topic, partition, offset },
       promise: Promise.resolve() as Promise<void>,
       resolved: false,
       rejected: false,
@@ -114,10 +127,40 @@ class MockConsumer implements KafkaConsumerLike {
 }
 
 class MockKafka implements KafkaInstanceLike {
-  readonly producer_ = new MockProducer();
-  readonly consumer_ = new MockConsumer();
-  producer(): KafkaProducerLike { return this.producer_; }
-  consumer(): KafkaConsumerLike { return this.consumer_; }
+  /**
+   * One entry per `producer()` / `consumer()` call.  A reconnect asks
+   * for fresh clients, so the list length is the number of connect
+   * attempts that got that far — which is how the reconnect tests prove
+   * a re-subscribe landed on the *new* consumer.
+   */
+  readonly producers: MockProducer[] = [];
+  readonly consumers: MockConsumer[] = [];
+
+  producer(): KafkaProducerLike {
+    const producer = new MockProducer();
+    this.producers.push(producer);
+    return producer;
+  }
+
+  consumer(): KafkaConsumerLike {
+    const consumer = new MockConsumer();
+    this.consumers.push(consumer);
+    return consumer;
+  }
+
+  /** The most recent producer — the live one while connected. */
+  get producer_(): MockProducer {
+    const latest = this.producers[this.producers.length - 1];
+    if (!latest) throw new Error('mock kafka: no producer was created');
+    return latest;
+  }
+
+  /** The most recent consumer — the live one while connected. */
+  get consumer_(): MockConsumer {
+    const latest = this.consumers[this.consumers.length - 1];
+    if (!latest) throw new Error('mock kafka: no consumer was created');
+    return latest;
+  }
 }
 
 /** KafkaActor variant that injects a single mock instance. */
@@ -126,6 +169,10 @@ class MockKafkaActor extends KafkaActor {
   protected override async createKafkaInstance(): Promise<KafkaInstanceLike> {
     return this.mock;
   }
+
+  /** Real kafkajs surfaces a drop through a failing send / pump. */
+  publicSimulateLoss(): void { this.handleConnectionLost(new Error('simulated broker loss')); }
+  publicConnectionState(): string { return this.connectionState; }
 }
 
 /* --------------------------- Helpers ---------------------------- */
@@ -137,7 +184,10 @@ class CapturingTarget extends Actor<KafkaRecord> {
 
 async function bootActor(
   sys: ActorSystem, options: KafkaOptionsBuilder,
-): Promise<{ actor: ActorRef<KafkaCommand>; mock: MockKafka; target: CapturingTarget }> {
+): Promise<{
+  actor: ActorRef<KafkaCommand>; mock: MockKafka;
+  target: CapturingTarget; instance: MockKafkaActor;
+}> {
   const target = new CapturingTarget();
   const targetRef = sys.spawn(Props.create(() => target), 'target');
   const ref = { current: null as MockKafkaActor | null };
@@ -151,7 +201,18 @@ async function bootActor(
   );
   // Wait until preStart has fired connectImplementation + run() registration.
   await sleep(60);
-  return { actor: actor as ActorRef<KafkaCommand>, mock: ref.current!.mock, target };
+  return {
+    actor: actor as ActorRef<KafkaCommand>, mock: ref.current!.mock,
+    target, instance: ref.current!,
+  };
+}
+
+/** Drop the connection and wait for the reconnect to build fresh clients. */
+async function reconnect(instance: MockKafkaActor): Promise<void> {
+  const consumerCount = instance.mock.consumers.length;
+  instance.publicSimulateLoss();
+  for (let i = 0; i < 60 && instance.mock.consumers.length === consumerCount; i++) await sleep(10);
+  await sleep(20);
 }
 
 /* ============================================================== */
@@ -232,7 +293,7 @@ describe('KafkaActor — manual commit (#2)', () => {
       const { actor, mock } = await bootActor(sys, kafkaOptions);
       const tracker = mock.consumer_.push('orders', 1, '7');
       await sleep(20);
-      actor.tell({ kind: 'nack', topic: 'orders', partition: 1, offset: '7', reason: 'bad data' });
+      actor.tell({ kind: 'negativeAcknowledgment', topic: 'orders', partition: 1, offset: '7', reason: 'bad data' });
       await tracker.promise;
       expect(tracker.rejected).toBe(true);
       expect(tracker.rejectError?.message).toBe('bad data');
@@ -381,6 +442,113 @@ describe('KafkaActor — options parsing', () => {
   });
 });
 
+describe('KafkaActor — subscriptions across a reconnect (#504)', () => {
+  test('configured topics are subscribed with the configured fromBeginning', async () => {
+    const sys = createTestActorSystem({ name: 'kafka-sub-config' });
+    try {
+      const kafkaOptions = KafkaOptions.create()
+        .withBrokers(['fake:9092'])
+        .withConsumer({ groupId: 'g1', fromBeginning: true })
+        .withTopics(['orders', 'invoices']);
+      const { mock } = await bootActor(sys, kafkaOptions);
+      expect(mock.consumer_.subscribed).toEqual([
+        { topic: 'orders', fromBeginning: true },
+        { topic: 'invoices', fromBeginning: true },
+      ]);
+    } finally {
+      await sys.terminate();
+    }
+  });
+
+  test('configured topics are re-subscribed on the reconnect consumer', async () => {
+    const sys = createTestActorSystem({ name: 'kafka-sub-reconnect' });
+    try {
+      const kafkaOptions = KafkaOptions.create()
+        .withBrokers(['fake:9092'])
+        .withConsumer({ groupId: 'g1' })
+        .withTopics(['orders'])
+        .withReconnect({ initialDelayMs: 10, maxDelayMs: 20, factor: 1 });
+      const { mock, instance } = await bootActor(sys, kafkaOptions);
+      const firstConsumer = mock.consumer_;
+      const firstProducer = mock.producer_;
+
+      await reconnect(instance);
+      expect(instance.publicConnectionState()).toBe('connected');
+      expect(mock.consumers).toHaveLength(2);
+      // The dead clients were disconnected rather than leaked (#504).
+      expect(firstConsumer.disconnected).toBe(true);
+      expect(firstProducer.disconnected).toBe(true);
+      expect(mock.consumer_.subscribedTopics).toEqual(['orders']);
+    } finally {
+      await sys.terminate();
+    }
+  });
+
+  test('a topic added at runtime survives a reconnect', async () => {
+    const sys = createTestActorSystem({ name: 'kafka-sub-runtime' });
+    try {
+      const kafkaOptions = KafkaOptions.create()
+        .withBrokers(['fake:9092'])
+        .withConsumer({ groupId: 'g1' })
+        .withTopics(['orders'])
+        .withReconnect({ initialDelayMs: 10, maxDelayMs: 20, factor: 1 });
+      const { actor, mock, instance } = await bootActor(sys, kafkaOptions);
+
+      actor.tell({ kind: 'subscribe', topic: 'audit' });
+      await sleep(30);
+      expect(mock.consumer_.subscribedTopics).toEqual(['audit', 'orders']);
+
+      await reconnect(instance);
+      expect(mock.consumers).toHaveLength(2);
+      expect(mock.consumer_.subscribedTopics).toEqual(['audit', 'orders']);
+    } finally {
+      await sys.terminate();
+    }
+  });
+
+  test('a subscribe issued while disconnected lands on the next connect', async () => {
+    const sys = createTestActorSystem({ name: 'kafka-sub-offline' });
+    try {
+      const kafkaOptions = KafkaOptions.create()
+        .withBrokers(['fake:9092'])
+        .withConsumer({ groupId: 'g1' })
+        .withTopics(['orders'])
+        .withReconnect({ initialDelayMs: 80, maxDelayMs: 80, factor: 1 });
+      const { actor, mock, instance } = await bootActor(sys, kafkaOptions);
+
+      instance.publicSimulateLoss();
+      expect(instance.publicConnectionState()).toBe('disconnected');
+      actor.tell({ kind: 'subscribe', topic: 'audit' });
+      await sleep(20);
+
+      for (let i = 0; i < 40 && mock.consumers.length < 2; i++) await sleep(10);
+      await sleep(20);
+      expect(instance.publicConnectionState()).toBe('connected');
+      // Not dropped on the floor while offline — applied on the reconnect.
+      expect(mock.consumer_.subscribedTopics).toEqual(['audit', 'orders']);
+    } finally {
+      await sys.terminate();
+    }
+  });
+
+  test('every subscribe is in before run() so kafkajs sees the full set', async () => {
+    const sys = createTestActorSystem({ name: 'kafka-sub-order' });
+    try {
+      const kafkaOptions = KafkaOptions.create()
+        .withBrokers(['fake:9092'])
+        .withConsumer({ groupId: 'g1' })
+        .withTopics(['a', 'b', 'c']);
+      const { mock } = await bootActor(sys, kafkaOptions);
+      // run() captures eachMessage — a push only works once it has been
+      // called, and the subscriptions must already be recorded by then.
+      expect(mock.consumer_.subscribedTopics).toEqual(['a', 'b', 'c']);
+      expect(() => mock.consumer_.push('a', 0, '1')).not.toThrow();
+    } finally {
+      await sys.terminate();
+    }
+  });
+});
+
 describe('KafkaActor — heartbeat (#78)', () => {
   test('heartbeat command forwards to the captured kafkajs callback', async () => {
     const sysOptions = ActorSystemOptions.create()
@@ -501,7 +669,7 @@ describe('KafkaActor — heartbeat (#78)', () => {
       await sleep(60);
       expect(tracker.heartbeats).toBe(countAfterDrain);
 
-      actor.tell({ kind: 'nack', topic: 'orders', partition: 0, offset: '13' });
+      actor.tell({ kind: 'negativeAcknowledgment', topic: 'orders', partition: 0, offset: '13' });
       await tracker.promise;
       expect(tracker.rejected).toBe(true);
     } finally {

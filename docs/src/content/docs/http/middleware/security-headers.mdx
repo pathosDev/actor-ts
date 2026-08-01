@@ -30,10 +30,10 @@ are opt-in.
 | `withCrossOriginResourcePolicy(v \| false)` | `'same-origin'` |
 | `withCrossOriginEmbedderPolicy(v \| false)` | `false` (breaks embeds; opt-in) |
 | `withPermissionsPolicy(map \| false)` | `false` |
-| `withHsts(opts \| false)` | `false` (opt-in) |
+| `withHsts(options \| false)` | `false` (opt-in) |
 
 ```ts
-const opts = SecurityHeadersOptions.create()
+const options = SecurityHeadersOptions.create()
   .withFrameOptions('SAMEORIGIN')
   .withHsts({ maxAge: 31_536_000, preload: true });
 ```

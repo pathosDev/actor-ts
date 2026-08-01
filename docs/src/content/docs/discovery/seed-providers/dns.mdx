@@ -35,11 +35,16 @@ await Cluster.join(system, clusterOptions);
 ## Configuration
 
 ```ts
-interface DnsSeedProviderOptionsType {
-  service:    string;     // SRV record (or A-record hostname)
-  port?:      number;     // required for A-record mode
-  resolver?:  DnsResolver; // override default Node DNS
-}
+type DnsSeedProviderOptionsType = {
+  hostname:    string;   // SRV record name (or A-record hostname)
+  systemName:  string;   // stamped on discovered node addresses
+  port:        number;   // paired with each IP in A-record mode
+  useSrv?:     boolean;  // prefer SRV records (which carry a port) over A
+  cacheTtlMs?: number;   // in-process TTL cache; default 60_000 ms, 0 disables
+  // Override the DNS functions (default: node:dns/promises) — mainly for tests:
+  resolve?:    (hostname: string) => Promise<string[]>;
+  resolveSrv?: (hostname: string) => Promise<Array<{ name: string; port: number }>>;
+};
 ```
 
 ### SRV mode (recommended)
@@ -100,19 +105,34 @@ DNS list; multiple A entries mean multiple seed candidates.
 
 ## DNS caching
 
+`lookup()` isn't one-shot — the bootstrap layer calls it at
+startup, and higher-level retry logic may call it again.  To keep
+repeated calls from hammering DNS, the provider keeps a
+per-instance in-memory TTL cache:
+
 ```ts
-// The provider does ONE lookup at startup.  No subsequent refresh.
+const dnsSeedProviderOptions = DnsSeedProviderOptions.create()
+  .withHostname('_actor-ts._tcp.example.com')
+  .withSystemName('my-app')
+  .withUseSrv()
+  .withCacheTtlMs(30_000); // default 60_000 ms; 0 disables the cache
 ```
 
+- Calls within the `cacheTtlMs` window (default **60 000 ms**)
+  are served from cache without touching DNS.
+- The first call after the TTL expires re-queries DNS.
+- A failed lookup is **not** cached — it retries on the next call.
+
 Once `Cluster.join` completes, the cluster's gossip layer takes
-over membership tracking — DNS is no longer consulted.  This
+over membership tracking, so DNS is off the hot path.  This
 means:
 
 - **A node added after startup** isn't visible to existing peers
   via DNS.  It joins via its own DNS lookup, contacts an existing
   seed, gossip propagates.
-- **DNS TTLs don't matter** for the cluster's runtime — only at
-  startup.
+- **DNS record TTLs** matter only when a lookup actually hits DNS
+  (startup and post-expiry re-queries), not for the cluster's
+  steady-state runtime.
 
 ## When NOT
 

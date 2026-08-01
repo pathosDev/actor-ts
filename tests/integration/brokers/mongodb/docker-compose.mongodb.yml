@@ -1,0 +1,49 @@
+# MongoDB live-integration suite (#397).
+#
+# Brings up MongoDB plus a runner container that exercises the MongoDB journal /
+# snapshot / durable-state backends against it via the `mongodb` driver.
+#
+# Run locally:
+#   bun run test:integration:mongodb
+#   bun run test:integration:mongodb:teardown
+
+name: actor-ts-integration-mongodb
+
+services:
+  mongodb:
+    # `latest` deliberately — surface upstream regressions as soon as they ship.
+    # Production users pin their own version.
+    #
+    # A plain standalone `mongod`, not a replica set: the backend deliberately
+    # needs no multi-document transactions (see MongoJournal's docblock), so the
+    # suite proves it works on the simplest possible deployment.
+    image: mongo:latest
+    healthcheck:
+      # `mongosh` ships with the image, and a successful ping is a stronger gate
+      # than an open port — the server accepts connections only after storage
+      # initialization completes.
+      test: ["CMD-SHELL", "mongosh --quiet --eval 'db.adminCommand({ ping: 1 }).ok' | grep -q 1"]
+      interval: 3s
+      timeout: 5s
+      retries: 30
+      start_period: 5s
+    networks:
+      mongonet: {}
+
+  runner:
+    build:
+      context: ../../../..
+      dockerfile: tests/integration/brokers/mongodb/Dockerfile.runner
+    depends_on:
+      mongodb:
+        condition: service_healthy
+    environment:
+      # Inside the compose bridge MongoDB is reachable by service name.  The
+      # image starts unauthenticated, so no credentials are needed.
+      MONGO_URL: mongodb://mongodb:27017
+      MONGO_DATABASE: actor_ts_test
+    networks:
+      mongonet: {}
+
+networks:
+  mongonet: {}

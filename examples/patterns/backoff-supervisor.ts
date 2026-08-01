@@ -22,12 +22,13 @@ import {
   BackoffSupervisor,
   Props,
 } from '../../src/index.js';
+import { attachDevTools } from '../devtools.js';
 
-type Cmd =
+type Command =
   | { kind: 'fetch'; id: number }
   | { kind: 'crash' };
 
-class FlakyConnector extends Actor<Cmd> {
+class FlakyConnector extends Actor<Command> {
   static failuresLeft = 3;
 
   override preStart(): void {
@@ -40,18 +41,19 @@ class FlakyConnector extends Actor<Cmd> {
     console.log('  [connector] preStart succeeded — open for business');
   }
 
-  override onReceive(cmd: Cmd): void {
-    if (cmd.kind === 'crash') {
+  override onReceive(command: Command): void {
+    if (command.kind === 'crash') {
       console.log('  [connector] crashing on purpose');
       throw new Error('runtime crash');
     }
-    console.log(`  [connector] handling fetch id=${cmd.id}`);
-    this.sender.toNullable()?.tell(`row-${cmd.id}`);
+    console.log(`  [connector] handling fetch id=${command.id}`);
+    this.sender.toNullable()?.tell(`row-${command.id}`);
   }
 }
 
 async function main(): Promise<void> {
   const system = ActorSystem.create('backoff-demo');
+  const devtools = await attachDevTools(system);
 
   const supervisor = system.spawn(
     BackoffSupervisor.props({
@@ -91,6 +93,7 @@ async function main(): Promise<void> {
   console.log('client ← got:', replies);
 
   supervisor.stop();
+  await devtools.holdOpen();
   await system.terminate();
 }
 

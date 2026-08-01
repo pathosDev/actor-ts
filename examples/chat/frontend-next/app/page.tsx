@@ -2,7 +2,7 @@
 
 import { useEffect, useState, type FormEvent } from 'react';
 import { useChat } from '../lib/useChat';
-import { isDmRoom, type RoomName } from '../lib/protocol';
+import { isDirectMessageRoom, type RoomName } from '../lib/protocol';
 
 /**
  * Single client-rendered page that swaps between LoginView and
@@ -117,7 +117,7 @@ function ChatView({ chat }: { chat: ChatHandle }): React.JSX.Element {
   let users = state.currentRoom ? (state.usersByRoom[state.currentRoom] ?? []) : [];
   // DM rooms never get `users` frames; synthesize a two-person list
   // from the room name.
-  if (state.currentRoom && isDmRoom(state.currentRoom) && users.length === 0) {
+  if (state.currentRoom && isDirectMessageRoom(state.currentRoom) && users.length === 0) {
     users = [state.currentRoom.slice(1), ...(state.username ? [state.username] : [])];
   }
   const typingPeers = state.currentRoom ? (state.typingByRoom[state.currentRoom] ?? []) : [];
@@ -161,15 +161,15 @@ function ChatView({ chat }: { chat: ChatHandle }): React.JSX.Element {
             {state.rooms.map((room) => {
               const unread = state.unreadByRoom[room] ?? 0;
               const active = room === state.currentRoom;
-              const dm = isDmRoom(room);
-              const cls = [active ? 'active' : '', dm ? 'dm' : ''].join(' ').trim();
+              const directMessage = isDirectMessageRoom(room);
+              const cls = [active ? 'active' : '', directMessage ? 'dm' : ''].join(' ').trim();
               return (
                 <li
                   key={room}
                   className={cls}
                   onClick={() => chat.selectRoom(room)}
                 >
-                  <span>{dm ? room : `# ${room}`}</span>
+                  <span>{directMessage ? room : `# ${room}`}</span>
                   {unread > 0 && <span className="badge">{unread}</span>}
                 </li>
               );
@@ -223,7 +223,7 @@ function ChatView({ chat }: { chat: ChatHandle }): React.JSX.Element {
                   key={u}
                   className={isSelf ? 'self' : ''}
                   title={isSelf ? '' : `Click to message @${u}`}
-                  onClick={isSelf ? undefined : () => chat.openDm(u)}
+                  onClick={isSelf ? undefined : () => chat.openDirectMessage(u)}
                 >
                   {u}
                   {isSelf ? ' (you)' : ''}

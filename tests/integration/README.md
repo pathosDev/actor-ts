@@ -46,7 +46,7 @@ tests/integration/
 │   ├── partition.ts                       # iptables + tc helpers
 │   └── control-routes.ts                  # HTTP surface for the helpers
 └── scenarios/
-    ├── types.ts                                  # Scenario / ControllerCtx + helpers
+    ├── types.ts                                  # Scenario / ControllerContext + helpers
     ├── 01-membership-convergence.ts              # smoke test — every node sees all peers
     ├── 02-split-brain.ts                         # 2:3 partition, majority survives, then heal
     ├── 03-receptionist-convergence.ts            # workers under one ServiceKey gossip to all 5 nodes
@@ -96,7 +96,7 @@ change touches transport / cluster / downing code.
 2. Add the import to `controller.ts`'s `scenarios` list.
 3. Test locally with `bun run test:integration`.
 
-The `Scenario.run(ctx)` function receives a `ControllerCtx`
+The `Scenario.run(ctx)` function receives a `ControllerContext`
 with `nodes: string[]`, `mgmtToken`, `controlPort`, `mgmtPort`.
 Use `waitFor` from `scenarios/types.ts` for any "wait until X"
 step — it gives a deterministic deadline message on failure

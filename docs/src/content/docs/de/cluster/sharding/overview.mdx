@@ -12,8 +12,9 @@ Per-Game-Room-Actors.
 Der Nutzer gibt dem Framework eine Möglichkeit, eine **Entity-ID**
 aus jeder Nachricht zu extrahieren; das Framework hasht die ID auf
 einen **Shard**; der **Koordinator** entscheidet, welcher Node
-diesen Shard hostet; die lokale **Region** des Nodes spawnt den
-Entity-Actor bei Bedarf. Wenn Nodes kommen und gehen, rebalanciert
+diesen Shard hostet; die lokale **Region** des Nodes routet an diesen
+**Shard**, der den Entity-Actor bei Bedarf spawnt. Wenn Nodes kommen
+und gehen, rebalanciert
 der Koordinator die Shards über die neue Topologie.
 
 ```mermaid
@@ -52,25 +53,31 @@ woandershin und die Entities werden dort neu gespawnt.
 ## Ein minimales Beispiel
 
 ```ts
+import { match } from 'ts-pattern';
 import { Actor, Cluster, ClusterBootstrapOptions, StartShardingOptions } from 'actor-ts';
 
-type CartCommand =
-  | { entityId: string; kind: 'add';   sku: string }
-  | { entityId: string; kind: 'view';  replyTo: ActorRef<Cart> };
+type AddCommand = { entityId: string; kind: 'add'; sku: string };
+type ViewCommand = { entityId: string; kind: 'view'; replyTo: ActorRef<Cart> };
+type CartCommand = AddCommand | ViewCommand;
 
 class CartActor extends Actor<CartCommand> {
   private items: string[] = [];
 
-  override onReceive(cmd: CartCommand): void {
-    if (cmd.kind === 'add')  this.items.push(cmd.sku);
-    if (cmd.kind === 'view') cmd.replyTo.tell({ items: this.items });
+  override onReceive(command: CartCommand): void {
+    match(command)
+      .with({ kind: 'add' }, (c) => this.onAdd(c))
+      .with({ kind: 'view' }, (c) => this.onView(c))
+      .exhaustive();
   }
+
+  private onAdd(command: AddCommand): void { this.items.push(command.sku); }
+  private onView(command: ViewCommand): void { command.replyTo.tell({ items: this.items }); }
 }
 
 // Setup — einzeiliger Cluster- + Sharding-Einstieg:
 const { system, cluster } = await Cluster.bootstrap(ClusterBootstrapOptions.create('my-app'));
 
-const startShardingOptions = StartShardingOptions.create<CartCommand>().withExtractEntityId((msg) => msg.entityId);
+const startShardingOptions = StartShardingOptions.create<CartCommand>().withExtractEntityId((message) => message.entityId);
 const cartRegion = cluster.sharding.start('cart', CartActor,
   startShardingOptions);
 
@@ -81,11 +88,38 @@ cartRegion.tell({ entityId: 'user-42', kind: 'view', replyTo: ... });
 // Gleiche ID → gleicher Entity-Actor, jedes Mal, unabhängig vom Node.
 ```
 
-`cluster.sharding.start()` akzeptiert drei Aufruf-Formen — nimm die,
-die zur Entity passt:
+`cluster.sharding.start()` akzeptiert mehrere Aufruf-Formen — nimm die,
+die zur Entity passt. Die kürzeste lässt die Entity ihre eigene
+Identität deklarieren, wodurch weder Type-Name noch Entity-ID-Extractor
+am Aufrufort wiederholt werden:
 
 ```ts
-// 1. Klassen-Kurzform (am häufigsten):
+class CartActor extends Actor<CartCommand> {
+  static readonly shard = ShardKey.of<CartCommand>('cart', (command) => command.entityId);
+  // ...
+}
+
+const cartRegion = cluster.sharding.start(CartActor);
+const cart = cluster.sharding.entityRefFor(CartActor, 'user-42');
+```
+
+:::caution[Das explizite Typargument ist tragend]
+`ShardKey.of('cart', ...)` — ohne `<CartCommand>` — inferiert
+`ShardKey<unknown>`, und jeder daraus gewonnene Ref degradiert zu
+`ActorRef<unknown>`.
+:::
+
+Die Identität eines `ShardKey` ist allein sein `typeName`; der
+Extractor reitet mit, damit die deklarierende Klasse die einzige
+Wahrheitsquelle ist — ein Node, der Entities nur nachschlägt, kann
+denselben Typ mit `ShardKey.of<CartCommand>('cart')` ohne Extractor
+benennen. Ein `extractEntityId` in den Options überschreibt den auf
+dem Key.
+
+Die übrigen Formen bleiben unverändert:
+
+```ts
+// 1. Klassen-Kurzform:
 const startShardingOptions = StartShardingOptions.create<CartCommand>().withExtractEntityId((m) => m.entityId);
 cluster.sharding.start('cart', CartActor, startShardingOptions);
 
@@ -116,23 +150,30 @@ Aus Sicht des Aufrufers ist die `cartRegion` ein einzelner
 `ActorRef`. Hinter den Kulissen:
 
 1. Die Region berechnet aus `entityId` einen Shard (Default: Hash
-   auf einen von 100 Shards).
+   auf einen von 64 Shards).
 2. Sie fragt den Koordinator "wem gehört dieser Shard?"
 3. Wenn der Besitzer *dieser* Node ist, spawnt sie die Entity
    (falls noch nicht vorhanden) und leitet die Nachricht weiter.
 4. Wenn der Besitzer *ein anderer* Node ist, leitet sie über den
    Cluster-Transport an dessen Region, die dasselbe macht.
 
-## Die drei Actors im Spiel
+## Die vier Actors im Spiel
 
 | Actor | Rolle |
 | --- | --- |
-| **Region** | Eine pro Node. Routet Nachrichten an den Besitzer des richtigen Shards, hostet lokale Entities. |
+| **Region** | Eine pro Node. Routet Nachrichten an den Besitzer des richtigen Shards und entscheidet, wann lokale Entities passiviert werden. |
+| **Shard** | Einer pro hier gehostetem Shard, Kind der Region. Besitzt die Entity-Actors: spawnt sie, stoppt sie, puffert für eine, die gerade geht. |
 | **Koordinator** | Einer pro Cluster (Singleton, auf dem Leader). Entscheidet, welcher Node welchen Shard besitzt. Behandelt Rebalancing bei Mitgliedschaftsänderungen. |
-| **Entity** | Eine pro `entityId`. Hosted auf dem Node, dem aktuell der Shard gehört, in den die ID hasht. |
+| **Entity** | Eine pro `entityId`. Kind ihres Shards, auf dem Node, dem aktuell der Shard gehört, in den die ID hasht. |
 
-Jede Ebene hat eine eigene Seite im Cluster-Abschnitt — siehe
-[ShardRegion](/de/cluster/sharding/), die
+Damit haben Entities einen echten Pfad —
+`/system/cluster/sharding/region-counter/shard-7/entity-user-42` — und genau das macht
+einen Shard überhaupt adressierbar. Siehe
+[Introspektion](/de/cluster/sharding/introspection/) zum Auflisten von
+Shards und zum Holen von Refs darauf.
+
+Die Region ist das Thema dieser Seite; die Entscheidungen des
+Koordinators haben eigene Seiten — siehe die
 [Allokationsstrategie](/de/cluster/sharding/allocation-strategy/)
 und [Rebalance](/de/cluster/sharding/rebalance/) für die
 Mechanik.
@@ -142,26 +183,26 @@ Mechanik.
 `ShardingOptionsType<TMessage>` — die Felder, die du am häufigsten anfasst:
 
 ```ts
-interface ShardingOptionsType<TMessage> {
+type ShardingOptionsType<TMessage> = {
   typeName:               string;
   entityProps:            Props<TMessage>;
   extractEntityId:        (message: TMessage) => string;
   extractEntityMessage?:  (message: TMessage) => unknown;
-  numShards?:             number;             // Default 100
+  numShards?:             number;             // Default 64
   role?:                  string;             // auf Nodes mit dieser Rolle beschränken
   proxy?:                 boolean;            // nur Routing, keine lokalen Entities
   rememberEntities?:      boolean;            // Entities bei Failover neu spawnen (#)
   passivationIdleMs?:     number;             // idle Entities auto-stoppen
   maxEntities?:           number;             // LRU-Cap pro Node
-}
+};
 ```
 
 | Feld | Was es steuert |
 | --- | --- |
 | `typeName` | Ein String, der diesen sharded Typ identifiziert. Verschiedene Typen können im selben Cluster koexistieren (`cart`, `session`, `order`). |
-| `extractEntityId(msg)` | Zieh die Entity-ID aus einer Nachricht. Das ist der Key, der zu einem Shard gehasht wird. |
-| `extractEntityMessage(msg)` | *(Optional)* Wenn der Nachrichten-Envelope Routing-Info plus eine Payload enthält, entfernt das den Envelope, bevor die Entity ihn sieht. Default ist die Nachricht unverändert. |
-| `numShards` | In wie viele Shards der Entity-Raum aufgeteilt wird. 100 reichen für die meisten Cluster; setze auf 1000 für sehr große Cluster (>50 Nodes). |
+| `extractEntityId(message)` | Zieh die Entity-ID aus einer Nachricht. Das ist der Key, der zu einem Shard gehasht wird. |
+| `extractEntityMessage(message)` | *(Optional)* Wenn der Nachrichten-Envelope Routing-Info plus eine Payload enthält, entfernt das den Envelope, bevor die Entity ihn sieht. Default ist die Nachricht unverändert. |
+| `numShards` | In wie viele Shards der Entity-Raum aufgeteilt wird. 64 reichen für die meisten Cluster; setze auf 1000 für sehr große Cluster (>50 Nodes). |
 | `role` | Nur Mitglieder mit dieser Rolle hosten Shards dieses Typs. Nützlich, um compute-schwere Entities auf dedizierten Nodes zu platzieren. |
 | `proxy` | Dieser Node *leitet* Nachrichten an die Region weiter, hostet aber nie lokale Entities. Wird für Client-Nodes in einem asymmetrischen Cluster verwendet. |
 | `rememberEntities` | Persistiere die Menge der *aktiven* Entity-IDs. Nach einem Koordinator-Failover (oder vollem Cluster-Neustart) werden diese IDs eager gespawnt, sodass Nachrichten nicht die gesamte Flotte neu erstellen müssen. |
@@ -174,29 +215,57 @@ willst du meistens `rememberEntities: true` und ein
 
 ## Passivierung
 
-```ts
-import { Passivate, Actor } from 'actor-ts';
+Passivierung stoppt eine idle Entity, um Speicher freizugeben; die
+nächste Nachricht für dieselbe ID erstellt sie neu. Wie auch immer
+sie ausgelöst wird — die Region puffert Nachrichten, die eintreffen,
+während die Entity stoppt, und spielt sie an die frische Inkarnation
+zurück, sodass nichts verloren geht.
 
-class CartActor extends Actor<CartCommand | Passivate> {
-  override onReceive(msg): void {
-    if (msg instanceof Passivate) {
-      // Optional Shutdown-Arbeit erledigen, dann das Passivate-Ack senden.
-      this.context.parent.forEach(p => p.tell({ kind: 'passivate-ack' }));
-      return;
-    }
-    // ...
+**Automatisch** — wenn `passivationIdleMs` ohne Verkehr abläuft oder
+`maxEntities` überschritten wird (die LRU-Entity wird verdrängt), wird
+die Entity gestoppt. Es wird nichts an die Entity geschickt, und es
+gibt keine Quittung. Die *Entscheidung* trifft die Region, weil nur sie
+den Verkehr über alle Shards dieses Nodes sieht — deshalb ist
+`maxEntities` eine Obergrenze pro Node, nicht pro Shard — und der Shard,
+dem die Entity gehört, führt sie aus.
+
+**Manuell (graceful)** — eine Entity bittet darum, passiviert zu
+werden, indem sie ein `Passivate` an ihren Parent schickt, also an ihren
+Shard. `Passivate` trägt eine *Stop-Nachricht*, die an die Entity
+zurückgeleitet wird, sodass die Entity genau entscheidet, wann und wie
+sie herunterfährt (laufende Arbeit abschließen, State flushen, dann
+terminieren). `PoisonPill` als Stop-Nachricht terminiert die Entity,
+sobald sie zurückkommt:
+
+```ts
+import { match } from 'ts-pattern';
+import { Passivate, PoisonPill, Actor } from 'actor-ts';
+
+type AddCommand = { entityId: string; kind: 'add'; sku: string };
+type CheckoutCommand = { entityId: string; kind: 'checkout' };
+type CartCommand = AddCommand | CheckoutCommand;
+
+class CartActor extends Actor<CartCommand> {
+  private items: string[] = [];
+
+  override onReceive(command: CartCommand): void {
+    match(command)
+      .with({ kind: 'add' }, (c) => this.onAdd(c))
+      .with({ kind: 'checkout' }, () => this.onCheckout())
+      .exhaustive();
+  }
+
+  private onAdd(command: AddCommand): void {
+    this.items.push(command.sku);
+  }
+
+  // Mit dem Warenkorb fertig — die Region bitten, uns zu passivieren.
+  private onCheckout(): void {
+    this.context.parent.forEach((parent) =>
+      parent.tell(new Passivate(PoisonPill.instance, this.self), this.self));
   }
 }
 ```
-
-Wenn `passivationIdleMs` konfiguriert ist (oder `maxEntities`
-erreicht wird), schickt die Region `Passivate` an die Entity. Die
-Entity quittiert; die Region stoppt sie und sorgt dafür, dass für
-dieselbe ID gepufferte Nachrichten an die nächste Inkarnation
-drainen, wenn sie spawnt.
-
-Wenn du voll manuelle Kontrolle willst, schicke dem Parent selbst
-eine `{ kind: 'passivate' }`-Nachricht.
 
 ## Rebalancing
 
@@ -287,8 +356,8 @@ import { Aside } from '@astrojs/starlight/components';
 
 ## Wohin als Nächstes
 
-- **[ShardRegion](/de/cluster/sharding/) ** *(Stub)* — der
-  Per-Node-Region-Actor; Konfigurations-Deep-Dive.
+- **[Introspektion](/de/cluster/sharding/introspection/)** — die Shards
+  auflisten, eine Ref auf einen Shard oder eine Entity holen, der Karte folgen.
 - **[Allokationsstrategie](/de/cluster/sharding/allocation-strategy/)** —
   Default Hash-mod-Regions, eigene Strategien.
 - **[Rebalance](/de/cluster/sharding/rebalance/)** — das
@@ -300,5 +369,6 @@ import { Aside } from '@astrojs/starlight/components';
 - **[Sharded Daemon Process](/de/cluster/sharding/sharded-daemon-process/)** —
   Worker in fester Anzahl, verteilt per Sharding.
 
-Die [`ClusterSharding`](/api/classes/clustersharding/) API-Referenz
-deckt die vollständige Oberfläche ab.
+Die API-Referenzen [`ClusterSharding`](/api/classes/clustersharding/) und
+[`ShardRegion`](/api/classes/shardregion/) decken die vollständige
+Oberfläche ab, inklusive des Per-Node-Region-Actors.

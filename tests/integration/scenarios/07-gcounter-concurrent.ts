@@ -27,30 +27,30 @@ const KEY = 'integration-gcounter';
 const INCREMENTS_PER_NODE = 50;
 
 async function incOnce(host: string, controlPort: number): Promise<void> {
-  const res = await fetch(
+  const response = await fetch(
     `http://${host}:${controlPort}/test/ddata/gcounter/inc?key=${KEY}&delta=1&consistency=majority`,
     { method: 'POST' },
   );
-  if (!res.ok) {
-    throw new Error(`/test/ddata/gcounter/inc on ${host} → ${res.status}: ${await res.text()}`);
+  if (!response.ok) {
+    throw new Error(`/test/ddata/gcounter/inc on ${host} → ${response.status}: ${await response.text()}`);
   }
 }
 
 async function readValue(host: string, controlPort: number): Promise<number | null> {
-  const res = await fetch(
+  const response = await fetch(
     `http://${host}:${controlPort}/test/ddata/gcounter/value?key=${KEY}&consistency=majority`,
   );
-  if (res.status === 404) return null;
-  if (!res.ok) throw new Error(`/test/ddata/gcounter/value on ${host} → ${res.status}: ${await res.text()}`);
-  const body = await res.json() as { value: number };
+  if (response.status === 404) return null;
+  if (!response.ok) throw new Error(`/test/ddata/gcounter/value on ${host} → ${response.status}: ${await response.text()}`);
+  const body = await response.json() as { value: number };
   return body.value;
 }
 
 
 export const scenario: Scenario = {
   name: '07-gcounter-concurrent',
-  async run(ctx) {
-    const live = await clusterLiveNodes(ctx.nodes, ctx.controlPort);
+  async run(context) {
+    const live = await clusterLiveNodes(context.nodes, context.controlPort);
     if (live.length < 2) {
       console.log(`[07] skipping — need >=2 live nodes for cross-node convergence, have ${live.length}`);
       return;
@@ -66,7 +66,7 @@ export const scenario: Scenario = {
     await Promise.all(live.map(async (host) => {
       const localBatch: Promise<void>[] = [];
       for (let i = 0; i < INCREMENTS_PER_NODE; i++) {
-        localBatch.push(incOnce(host, ctx.controlPort));
+        localBatch.push(incOnce(host, context.controlPort));
       }
       await Promise.all(localBatch);
     }));
@@ -79,7 +79,7 @@ export const scenario: Scenario = {
     console.log(`[07] waiting for every node to converge on ${expected}...`);
     let lastSnap = '';
     const snapTimer = setInterval(() => {
-      Promise.all(live.map((h) => readValue(h, ctx.controlPort).catch(() => -1)))
+      Promise.all(live.map((h) => readValue(h, context.controlPort).catch(() => -1)))
         .then((vals) => {
           const line = live.map((h, i) => `${h}=${vals[i]}`).join(' ');
           if (line !== lastSnap) {
@@ -93,7 +93,7 @@ export const scenario: Scenario = {
       await Promise.all(live.map(async (host) => {
         await waitFor(
           `${host} reads ${expected}`,
-          async () => (await readValue(host, ctx.controlPort)) === expected,
+          async () => (await readValue(host, context.controlPort)) === expected,
           25_000,
           400,
         );
@@ -105,7 +105,7 @@ export const scenario: Scenario = {
 
     // Final sanity: read once more from every live node, verify
     // they're all numerically identical AND equal to expected.
-    const finals = await Promise.all(live.map((h) => readValue(h, ctx.controlPort)));
+    const finals = await Promise.all(live.map((h) => readValue(h, context.controlPort)));
     for (let i = 0; i < live.length; i++) {
       if (finals[i] !== expected) {
         throw new Error(`[07] final read from ${live[i]} = ${finals[i]} (expected ${expected})`);

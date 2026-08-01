@@ -5,16 +5,16 @@
  * must work together — broker accepts the wildcard subscribe and
  * actor matches concrete inbound topics against the pattern.
  */
-import { spawnInbox, spawnMqtt, type MqttCtx } from '../runner.js';
+import { spawnInbox, spawnMqtt, type MqttContext } from '../runner.js';
 import { waitFor, type BrokerScenario } from '../../lib/scenario.js';
 
-export const scenario: BrokerScenario<MqttCtx> = {
+export const scenario: BrokerScenario<MqttContext> = {
   name: 'wildcard subscriptions — + and # patterns',
-  async run(ctx) {
+  async run(context) {
     const base = `b3/wc-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-    const { ref: mqtt } = spawnMqtt(ctx);
-    const { ref: plusRef, inbox: plusInbox } = spawnInbox(ctx);
-    const { ref: hashRef, inbox: hashInbox } = spawnInbox(ctx);
+    const { ref: mqtt } = spawnMqtt(context);
+    const { ref: plusRef, inbox: plusInbox } = spawnInbox(context);
+    const { ref: hashRef, inbox: hashInbox } = spawnInbox(context);
     try {
       // `+` matches exactly one level.  `base/+/leaf` → matches
       // base/x/leaf, base/y/leaf, but NOT base/x/y/leaf or base/leaf.

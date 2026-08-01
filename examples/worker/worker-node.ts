@@ -2,6 +2,7 @@
  * Worker-side script.  Bun spawns one instance of this file per core.
  */
 import { Actor, ActorSystem, ActorSystemOptions, Cluster, ClusterOptions, Props, WorkerNode } from '../../src/index.js';
+import { attachDevTools } from '../devtools.js';
 
 class HelloWorker extends Actor<'greet'> {
   constructor(private readonly workerId: number) { super(); }
@@ -10,19 +11,23 @@ class HelloWorker extends Actor<'greet'> {
 }
 
 async function main(): Promise<void> {
-  const ctx = await WorkerNode.join<{ workerId: number; seedAddr?: string }>();
+  const context = await WorkerNode.join<{ workerId: number; seedAddr?: string }>();
   const systemOptions = ActorSystemOptions.create().withConfig({ 'actor-ts': { logger: { level: 'info' } } });
-  const system = ActorSystem.create(ctx.systemName, systemOptions);
+  const system = ActorSystem.create(context.systemName, systemOptions);
+  // Each worker is a separate thread with its own copy of this module,
+  // so the shared port counter cannot keep them apart — let the OS
+  // assign one and read the URL off the log line.
+  await attachDevTools(system, { port: 0 });
   const clusterOptions = ClusterOptions.create()
-    .withHost(ctx.self.host)
-    .withPort(ctx.self.port)
-    .withSeeds(ctx.initData.seedAddr ? [ctx.initData.seedAddr] : [])
-    .withTransport(ctx.transport)
+    .withHost(context.self.host)
+    .withPort(context.self.port)
+    .withSeeds(context.initData.seedAddr ? [context.initData.seedAddr] : [])
+    .withTransport(context.transport)
     .withFailureDetector({ heartbeatIntervalMs: 100, unreachableAfterMs: 400, downAfterMs: 800 })
     .withGossipIntervalMs(120);
   const cluster = await Cluster.join(system, clusterOptions);
-  system.spawn(Props.create(() => new HelloWorker(ctx.initData.workerId)), 'hello');
-  ctx.ready();
+  system.spawn(Props.create(() => new HelloWorker(context.initData.workerId)), 'hello');
+  context.ready();
   setTimeout(async () => {
     await cluster.leave();
     await system.terminate();

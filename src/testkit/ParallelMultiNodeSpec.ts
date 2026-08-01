@@ -1,3 +1,4 @@
+import { match } from 'ts-pattern';
 import type { ParallelMultiNodeSpecOptions, ParallelMultiNodeSpecOptionsType } from './ParallelMultiNodeSpecOptions.js';
 import type {
   BrokeredMessage,
@@ -59,28 +60,28 @@ import type { MemberSnapshot } from './internal/parallel-multi-node-bootstrap.js
  * `ScenarioModule` interface.
  */
 
-interface NodeRecord {
+type NodeRecord = {
   readonly role: string;
   readonly address: NodeAddress;
   worker: WorkerLike | null;       // null after crash/leave
   port: PortLike | null;           // broker-side port
   removed: boolean;
-}
+};
 
 let nextPortBase = 30_500;          // disjoint from MultiNodeSpec's 30_000
 
 /* ---------- Control channel: same wire as the bootstrap expects ---------- */
 
-interface QueryMembersResponse {
+type QueryMembersResponse = {
   kind: 'mns-test.query-members-response'; reqId: number; members: MemberSnapshot[];
-}
-interface QueryLeaderResponse {
+};
+type QueryLeaderResponse = {
   kind: 'mns-test.query-leader-response'; reqId: number; leader: string | null;
-}
-interface LeaveResponse { kind: 'mns-test.leave-response'; reqId: number; error?: string }
-interface RunCommandResponse {
+};
+type LeaveResponse = { kind: 'mns-test.leave-response'; reqId: number; error?: string };
+type RunCommandResponse = {
   kind: 'mns-test.run-command-response'; reqId: number; result: unknown; error?: string;
-}
+};
 type ControlResponse =
   | QueryMembersResponse | QueryLeaderResponse
   | LeaveResponse | RunCommandResponse;
@@ -88,10 +89,10 @@ type ControlResponse =
 export class ParallelMultiNodeSpec {
   private readonly options: Required<Omit<
     ParallelMultiNodeSpecOptionsType,
-    'addresses' | 'failureDetector' | 'scenarioModule' | 'scenarioInitDataFor' | 'bootstrapModule'
+    'addresses' | 'failureDetector' | 'scenarioModule' | 'scenarioInitDataFor' | 'bootstrapModule' | 'backend'
   >> & Pick<
     ParallelMultiNodeSpecOptionsType,
-    'addresses' | 'failureDetector' | 'scenarioModule' | 'scenarioInitDataFor' | 'bootstrapModule'
+    'addresses' | 'failureDetector' | 'scenarioModule' | 'scenarioInitDataFor' | 'bootstrapModule' | 'backend'
   >;
   private readonly nodes = new Map<string, NodeRecord>();
   private readonly broker = new MultiNodeBroker();
@@ -131,6 +132,7 @@ export class ParallelMultiNodeSpec {
       scenarioModule: options.scenarioModule,
       scenarioInitDataFor: options.scenarioInitDataFor,
       bootstrapModule: options.bootstrapModule,
+      backend: options.backend,
     };
   }
 
@@ -144,10 +146,10 @@ export class ParallelMultiNodeSpec {
     nextPortBase += this.options.roles.length + 1;
 
     const addressByRole = new Map<string, NodeAddress>();
-    this.options.roles.forEach((role, idx) => {
+    this.options.roles.forEach((role, index) => {
       const explicit = this.options.addresses?.[role];
       const host = explicit?.host ?? '127.0.0.1';
-      const port = explicit?.port ?? (portBase + idx);
+      const port = explicit?.port ?? (portBase + index);
       addressByRole.set(role, new NodeAddress(role, host, port));
     });
 
@@ -236,24 +238,24 @@ export class ParallelMultiNodeSpec {
   /** Async snapshot of the worker's view of cluster members. */
   async getMembers(role: string): Promise<MemberSnapshot[]> {
     const node = this.requireNode(role);
-    const resp = await this.controlRpc<QueryMembersResponse>(node, { kind: 'mns-test.query-members' });
-    return resp.members;
+    const response = await this.controlRpc<QueryMembersResponse>(node, { kind: 'mns-test.query-members' });
+    return response.members;
   }
 
   async getLeader(role: string): Promise<string | null> {
     const node = this.requireNode(role);
-    const resp = await this.controlRpc<QueryLeaderResponse>(node, { kind: 'mns-test.query-leader' });
-    return resp.leader;
+    const response = await this.controlRpc<QueryLeaderResponse>(node, { kind: 'mns-test.query-leader' });
+    return response.leader;
   }
 
   /** Invoke a scenario-defined command on the worker. */
   async runIn<R = unknown>(role: string, command: string, args: unknown = undefined): Promise<R> {
     const node = this.requireNode(role);
-    const resp = await this.controlRpc<RunCommandResponse>(node, {
+    const response = await this.controlRpc<RunCommandResponse>(node, {
       kind: 'mns-test.run-command', command, args,
     });
-    if (resp.error) throw new Error(`runIn(${role}, ${command}): ${resp.error}`);
-    return resp.result as R;
+    if (response.error) throw new Error(`runIn(${role}, ${command}): ${response.error}`);
+    return response.result as R;
   }
 
   /* ---------------------------- await helpers --------------------------- */
@@ -347,7 +349,7 @@ export class ParallelMultiNodeSpec {
   private async spawnRole(
     role: string, address: NodeAddress, seeds: string[],
   ): Promise<NodeRecord> {
-    const backend = await getWorkerBackend();
+    const backend = this.options.backend ?? await getWorkerBackend();
     const bootstrap = this.options.bootstrapModule
       ?? new URL('./internal/parallel-multi-node-bootstrap.js', import.meta.url);
     const worker = backend.spawn(bootstrap, { name: `parallel-mns-${role}` });
@@ -395,16 +397,16 @@ export class ParallelMultiNodeSpec {
   private brokerFacade(worker: WorkerLike): PortLike {
     let handler: ((e: { data: unknown }) => void) | null = null;
     worker.addEventListener('message', (e) => {
-      const msg = (e.data ?? undefined) as { kind?: string } | undefined;
-      if (msg && msg.kind === 'worker-transport' && handler) {
-        handler({ data: (msg as WorkerTransportMessage).envelope });
+      const message = (e.data ?? undefined) as { kind?: string } | undefined;
+      if (message && message.kind === 'worker-transport' && handler) {
+        handler({ data: (message as WorkerTransportMessage).envelope });
       }
     });
     return {
       postMessage(v: unknown): void {
         const envelope: BrokeredMessage = v as BrokeredMessage;
-        const msg: WorkerTransportMessage = { kind: 'worker-transport', envelope };
-        worker.postMessage(msg);
+        const message: WorkerTransportMessage = { kind: 'worker-transport', envelope };
+        worker.postMessage(message);
       },
       get onmessage(): ((e: { data: unknown }) => void) | null { return handler; },
       set onmessage(h: ((e: { data: unknown }) => void) | null) { handler = h; },
@@ -420,20 +422,25 @@ export class ParallelMultiNodeSpec {
         worker.removeEventListener('message', onMessage);
         reject(new Error(`Worker ${addr} did not become ready within 10s`));
       }, 10_000);
+      const onWorkerHello = (_hello: WorkerHelloMessage): void => {
+        worker.postMessage(init);
+      };
+      const onWorkerReady = (_ready: WorkerReadyMessage): void => {
+        clearTimeout(timeout);
+        worker.removeEventListener('message', onMessage);
+        resolve();
+      };
       const onMessage = (e: { data?: unknown }): void => {
-        const msg = (e.data ?? undefined) as { kind?: string } | undefined;
-        if (!msg) return;
-        if (msg.kind === 'worker-hello') {
-          const hello: WorkerHelloMessage = msg as WorkerHelloMessage;
-          void hello;
-          worker.postMessage(init);
-        } else if (msg.kind === 'worker-ready') {
-          const ready: WorkerReadyMessage = msg as WorkerReadyMessage;
-          void ready;
-          clearTimeout(timeout);
-          worker.removeEventListener('message', onMessage);
-          resolve();
-        }
+        const message = (e.data ?? undefined) as { kind?: string } | undefined;
+        if (!message) return;
+        // `.otherwise`, not `.exhaustive`: this is untrusted postMessage data
+        // from a worker that may not have started correctly, so the value is
+        // typed as an open `{ kind?: string }` and anything unrecognised is
+        // ignored rather than crashing the handshake.
+        match(message)
+          .with({ kind: 'worker-hello' }, (m) => onWorkerHello(m as WorkerHelloMessage))
+          .with({ kind: 'worker-ready' }, (m) => onWorkerReady(m as WorkerReadyMessage))
+          .otherwise(() => {});
       };
       worker.addEventListener('message', onMessage);
     });

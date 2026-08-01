@@ -13,7 +13,7 @@ stateDiagram-v2
   [*] --> healthy
   healthy --> unreachable: kein Heartbeat für unreachableAfterMs
   unreachable --> healthy: Heartbeat empfangen
-  unreachable --> down: kein Heartbeat für weitere downAfterMs
+  unreachable --> down: Stille erreicht insgesamt downAfterMs
   down --> [*]: entfernt (empfohlen)
   classDef ok   fill:#312e81,stroke:#818cf8,color:#f1f5f9;
   classDef warn fill:#7c2d12,stroke:#fb923c,color:#fed7aa;
@@ -148,26 +148,33 @@ konfigurierbar (siehe KeepMajority, KeepReferee).
 
 ## Eigener Failure Detector
 
-Der Detector des Frameworks ist bewusst einfach — einfache
+Der eingebaute Detector des Clusters ist bewusst einfach — einfache
 Zeitschwellen, kein Tracking statistischer Varianz. Für LAN-Skala
-reicht das aus. Falls dein Netzwerk Phi-Accrual braucht
-(varianzbewusst, adaptive Schwellwerte), würdest du das
-`FailureDetector`-Interface selbst implementieren und es über die
-`failureDetector`-Override in `Cluster.join` einhängen — das ist
-aber noch nicht als öffentlicher Erweiterungspunkt dokumentiert;
-ein Issue zu eröffnen beschreibt den Anwendungsfall.
+reicht das aus. Die `failureDetector`-Cluster-Option stellt nur seine
+Schwellwerte ein — sie nimmt `Partial<FailureDetectorOptionsType>`
+(die drei `*Ms`-Stellschrauben oben), keine Detector-Instanz; es gibt
+also keinen "eigenen Detector einhängen"-Hook an `Cluster.join`.
+
+Falls dein Netzwerk Phi-Accrual braucht (varianzbewusst, adaptive
+Schwellwerte), bringt das Framework bereits einen mit:
+`PhiAccrualFailureDetector` (mit `PhiAccrualOptions`) ist eine
+öffentliche, exportierte Klasse, die die Verteilung der jüngsten
+Zwischenankunftszeiten verfolgt und einen kontinuierlichen
+Verdachtswert erzeugt. Er ist noch nicht als auswählbarer Detector
+in den Cluster eingebunden — der Cluster fährt immer den einfachen
+`FailureDetector` — daher nutzt du ihn vorerst eigenständig.
 
 ## Failure-Detector-Entscheidungen diagnostizieren
 
 ```ts
 import { MemberUnreachable, MemberReachable } from 'actor-ts';
 
-cluster.subscribe(MemberUnreachable, (evt) => {
-  console.log(`${evt.member.address} als unreachable markiert`);
-});
-
-cluster.subscribe(MemberReachable, (evt) => {
-  console.log(`${evt.member.address} wieder als reachable markiert`);
+cluster.subscribe((evt) => {
+  if (evt instanceof MemberUnreachable) {
+    console.log(`${evt.member.address} als unreachable markiert`);
+  } else if (evt instanceof MemberReachable) {
+    console.log(`${evt.member.address} wieder als reachable markiert`);
+  }
 });
 ```
 

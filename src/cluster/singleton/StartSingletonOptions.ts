@@ -4,7 +4,7 @@ import { OptionsBuilder } from '../../util/OptionsBuilder.js';
 import { OptionsValidator } from '../../util/OptionsValidator.js';
 
 /** Plain options-object shape accepted by {@link ClusterSingleton.start}. */
-export interface StartSingletonOptionsType<T> {
+export type StartSingletonOptionsType<T> = {
   /** Logical name for this singleton — used in the manager/child actor path. */
   readonly typeName: string;
   /** Props used to construct the singleton on the leader. */
@@ -30,14 +30,26 @@ export interface StartSingletonOptionsType<T> {
    * Default: `5_000` ms.  Ignored if no lease is provided.
    */
   readonly acquireRetryIntervalMs?: number;
-}
+  /**
+   * How many messages the proxy holds while the cluster has no host for this
+   * singleton, before it starts dropping them to dead letters.  Default:
+   * `1_000`.
+   *
+   * The wait is normally momentary — a leader is elected within a gossip round
+   * — but it is not bounded by anything: seeds unreachable, or a partition in
+   * which this node sees nobody, is a state that can last as long as the
+   * outage while the application keeps sending.  A cap turns that from
+   * unbounded memory growth into visible message loss.
+   */
+  readonly bufferSize?: number;
+};
 
 /**
  * Fluent builder for {@link StartSingletonOptionsType}:
  *
  *     system.extension(ClusterSingletonId).start(
  *       cluster,
- *       StartSingletonOptions.create<Cmd>()
+ *       StartSingletonOptions.create<Command>()
  *         .withTypeName('counter')
  *         .withProps(Props.create(() => new CounterActor())),
  *     );
@@ -72,6 +84,11 @@ export class StartSingletonOptionsBuilder<T> extends OptionsBuilder<StartSinglet
   withAcquireRetryIntervalMs(ms: number): this {
     return this.set('acquireRetryIntervalMs', ms);
   }
+
+  /** Messages the proxy buffers while no node hosts the singleton.  Default 1000. */
+  withBufferSize(messages: number): this {
+    return this.set('bufferSize', messages);
+  }
 }
 
 /** Validates resolved {@link StartSingletonOptionsType} settings. */
@@ -79,9 +96,17 @@ export class StartSingletonOptionsValidator<T> extends OptionsValidator<StartSin
   constructor() {
     super('StartSingletonOptions');
   }
-  protected rules(_s: Partial<StartSingletonOptionsType<T>>): void {
+  protected rules(s: Partial<StartSingletonOptionsType<T>>): void {
+    // The check helpers pass on `undefined` by design, so the two fields
+    // without which `start()` cannot do anything are asserted here.  The
+    // alternative is a `Cannot read properties of undefined` raised inside
+    // `Props.create`, several frames from anything the caller wrote.
+    if (s.typeName === undefined) this.fail('typeName', 'is required');
+    if (s.props === undefined) this.fail('props', 'is required');
     this.nonEmptyString('typeName');
+    this.nonEmptyString('role');
     this.positiveNumber('acquireRetryIntervalMs');
+    this.positiveInt('bufferSize');
   }
 }
 

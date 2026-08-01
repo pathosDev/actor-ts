@@ -1,16 +1,17 @@
 import { OptionsBuilder } from '../util/OptionsBuilder.js';
 import type { FailureDetectorOptionsType } from '../cluster/FailureDetectorOptions.js';
 import type { LogLevel } from '../Logger.js';
+import type { WorkerBackend } from '../runtime/worker/index.js';
 
 type AddressMap = Readonly<Record<string, { host: string; port: number }>>;
 
 /** Plain options-object shape accepted by a {@link ParallelMultiNodeSpec}. */
-export interface ParallelMultiNodeSpecOptionsType {
+export type ParallelMultiNodeSpecOptionsType = {
   readonly roles: ReadonlyArray<string>;
   readonly seedRoles?: ReadonlyArray<string>;
   /** URL of the scenario module loaded in each worker.  Optional. */
   readonly scenarioModule?: URL;
-  /** Per-role data passed to the scenario module's `setup(ctx)`. */
+  /** Per-role data passed to the scenario module's `setup(context)`. */
   readonly scenarioInitDataFor?: (role: string) => unknown;
   readonly addresses?: AddressMap;
   readonly failureDetector?: Partial<FailureDetectorOptionsType>;
@@ -19,7 +20,9 @@ export interface ParallelMultiNodeSpecOptionsType {
   readonly logLevel?: LogLevel;
   /** URL of the bootstrap script.  Defaults to the bundled one. */
   readonly bootstrapModule?: URL;
-}
+  /** Backend the roles spawn through.  Defaults to the detected one. */
+  readonly backend?: WorkerBackend;
+};
 
 /** Fluent builder for {@link ParallelMultiNodeSpecOptionsType}. */
 export class ParallelMultiNodeSpecOptionsBuilder extends OptionsBuilder<ParallelMultiNodeSpecOptionsType> {
@@ -43,7 +46,7 @@ export class ParallelMultiNodeSpecOptionsBuilder extends OptionsBuilder<Parallel
     return this.set('scenarioModule', scenarioModule);
   }
 
-  /** Per-role data passed to the scenario module's `setup(ctx)`. */
+  /** Per-role data passed to the scenario module's `setup(context)`. */
   withScenarioInitDataFor(scenarioInitDataFor: (role: string) => unknown): this {
     return this.set('scenarioInitDataFor', scenarioInitDataFor);
   }
@@ -76,6 +79,16 @@ export class ParallelMultiNodeSpecOptionsBuilder extends OptionsBuilder<Parallel
   /** URL of the bootstrap script.  Defaults to the bundled one. */
   withBootstrapModule(bootstrapModule: URL): this {
     return this.set('bootstrapModule', bootstrapModule);
+  }
+
+  /**
+   * Spawn the roles through this backend instead of the one
+   * `getWorkerBackend()` picks for the current runtime — the same seam
+   * {@link WorkerClusterOptionsBuilder.withBackend} opens, kept here so
+   * a spec can drive fake workers without mocking a module (#520).
+   */
+  withBackend(backend: WorkerBackend): this {
+    return this.set('backend', backend);
   }
 }
 

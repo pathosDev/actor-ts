@@ -21,23 +21,24 @@ Instanz aufgehört hat, diese macht weiter.
 ## Ein minimales Beispiel
 
 ```ts
-import { PersistentActor, ActorSystem, ActorSystemOptions, Props } from 'actor-ts';
+import { PersistentActor, ActorSystem, ActorSystemOptions, Props, type ActorRef } from 'actor-ts';
 import { InMemoryJournal, InMemorySnapshotStore } from 'actor-ts';
 import { match } from 'ts-pattern';
 
-type Command =
-  | { kind: 'deposit'; amount: number }
-  | { kind: 'withdraw'; amount: number };
+type DepositCommand = { kind: 'deposit'; amount: number };
+type WithdrawCommand = { kind: 'withdraw'; amount: number };
+type GetBalanceCommand = { kind: 'get-balance'; replyTo: ActorRef<number> };
+type Command = DepositCommand | WithdrawCommand | GetBalanceCommand;
 
-type Event =
-  | { kind: 'deposited'; amount: number; ts: number }
-  | { kind: 'withdrawn'; amount: number; ts: number };
+type DepositedEvent = { kind: 'deposited'; amount: number; ts: number };
+type WithdrawnEvent = { kind: 'withdrawn'; amount: number; ts: number };
+type Event = DepositedEvent | WithdrawnEvent;
 
 const actorSystemOptions = ActorSystemOptions.create().withPersistence({
     journal:       new InMemoryJournal(),
     snapshotStore: new InMemorySnapshotStore(),
   });
-interface State { balance: number; }
+type State = { balance: number; };
 
 class Account extends PersistentActor<Command, Event, State> {
   readonly persistenceId = 'account-42';
@@ -47,32 +48,49 @@ class Account extends PersistentActor<Command, Event, State> {
   // Rein: state + event → neuer state. Läuft sowohl bei Persist als auch bei Recovery.
   onEvent(state: State, e: Event): State {
     return match(e)
-      .with({ kind: 'deposited' }, (ev) => ({ balance: state.balance + ev.amount }))
-      .with({ kind: 'withdrawn' }, (ev) => ({ balance: state.balance - ev.amount }))
+      .with({ kind: 'deposited' }, (ev) => this.onDeposited(state, ev))
+      .with({ kind: 'withdrawn' }, (ev) => this.onWithdrawn(state, ev))
       .exhaustive();
   }
 
+  private onDeposited(state: State, ev: DepositedEvent): State {
+    return { balance: state.balance + ev.amount };
+  }
+
+  private onWithdrawn(state: State, ev: WithdrawnEvent): State {
+    return { balance: state.balance - ev.amount };
+  }
+
   // Ein Command behandeln — validieren, bei Gültigkeit persistieren.
-  onCommand(state: State, cmd: Command): void {
-    match(cmd)
-      .with({ kind: 'deposit' }, (c) => {
-        this.persist(
-          { kind: 'deposited', amount: c.amount, ts: Date.now() },
-          (next) => { /* Seiteneffekte mit dem neuen State */ },
-        );
-      })
-      .with({ kind: 'withdraw' }, (c) => {
-        if (state.balance < c.amount) {
-          // Ablehnen — nichts persistieren.
-          this.log.warn(`insufficient funds`);
-          return;
-        }
-        this.persist(
-          { kind: 'withdrawn', amount: c.amount, ts: Date.now() },
-          () => {},
-        );
-      })
+  onCommand(state: State, command: Command): void {
+    match(command)
+      .with({ kind: 'deposit' }, (c) => this.onDeposit(c))
+      .with({ kind: 'withdraw' }, (c) => this.onWithdraw(state, c))
+      .with({ kind: 'get-balance' }, (c) => this.onGetBalance(state, c))
       .exhaustive();
+  }
+
+  private onDeposit(c: DepositCommand): void {
+    this.persist(
+      { kind: 'deposited', amount: c.amount, ts: Date.now() },
+      (next) => { /* Seiteneffekte mit dem neuen State */ },
+    );
+  }
+
+  private onWithdraw(state: State, c: WithdrawCommand): void {
+    if (state.balance < c.amount) {
+      // Ablehnen — nichts persistieren.
+      this.log.warn(`insufficient funds`);
+      return;
+    }
+    this.persist(
+      { kind: 'withdrawn', amount: c.amount, ts: Date.now() },
+      () => {},
+    );
+  }
+
+  private onGetBalance(state: State, c: GetBalanceCommand): void {
+    c.replyTo.tell(state.balance);    // read-only — kein Persist
   }
 }
 
@@ -115,7 +133,23 @@ Actors viele Male abgespielt werden.  Ein Seiteneffekt in `onEvent`
 läuft bei jeder Recovery, was duplizierte E-Mails / duplizierte
 HTTP-Calls / alles dupliziert bedeutet.
 
-### `onCommand(state, cmd) → void | Promise<void>`
+Genau deshalb ist `onEvent` **synchron, während `onCommand` async
+ist** — die Asymmetrie ist der Punkt, kein Versehen.  Ein Command
+entscheidet, und Entscheiden macht I/O: `persist` schreibt ins
+Journal.  Ein Event ist bereits eine Tatsache, und eine Tatsache in
+den State zu falten ist Rechnen.  Alles, was du hier `await`en
+wolltest, ist genau das, was bei der Recovery nicht erneut laufen
+darf; es gehört in den `persist`-Callback oder nach
+`onRecoveryComplete` — beide werden nicht abgespielt.
+
+Lies `state` aus dem **Parameter, niemals aus `this.state`**.  Beim
+Replay läuft `onEvent` losgelöst, bevor `this.state` zugewiesen ist
+— und das DevTools-Time-Travel-Panel leiht es sich genauso, als
+freien Fold über jeden Punkt der Historie.  Ein Handler, der nach
+`this.state` greift, funktioniert auf dem Persist-Pfad und fällt
+erst nach einem Neustart um — die teuerste Art, das herauszufinden.
+
+### `onCommand(state, command) → void | Promise<void>`
 
 Validiert das Command gegen den aktuellen State und entscheidet,
 welche Events persistiert werden.  Drei gültige Ergebnisse:
@@ -130,16 +164,21 @@ welche Events persistiert werden.  Drei gültige Ergebnisse:
   Keine Events werden geschrieben.
 
 ```ts
-onCommand(state: State, cmd: Command): void {
-  if (cmd.kind === 'get-balance') {
-    cmd.replyTo.tell(state.balance);    // read-only — kein Persist
-    return;
-  }
-  if (cmd.kind === 'withdraw') {
-    if (state.balance < cmd.amount) return;   // ablehnen
-    this.persist({ kind: 'withdrawn', amount: cmd.amount, ts: Date.now() },
-      () => {});
-  }
+onCommand(state: State, command: Command): void {
+  match(command)
+    .with({ kind: 'get-balance' }, (c) => this.onGetBalance(state, c))
+    .with({ kind: 'withdraw' }, (c) => this.onWithdraw(state, c))
+    .exhaustive();
+}
+
+private onGetBalance(state: State, command: GetBalanceCommand): void {
+  command.replyTo.tell(state.balance);    // read-only — kein Persist
+}
+
+private onWithdraw(state: State, command: WithdrawCommand): void {
+  if (state.balance < command.amount) return;   // ablehnen
+  this.persist({ kind: 'withdrawn', amount: command.amount, ts: Date.now() },
+    () => {});
 }
 ```
 
@@ -190,7 +229,38 @@ Actor sie der Reihe nach gegen den wiederhergestellten State ab.
 Abspielen des letzten Events feuert.  Verwende ihn für einmaliges
 Post-Recovery-Setup (Watchers registrieren, verwandte Actors
 beschaffen, etc.) — aber nicht für Seiteneffekte pro Event, die bei
-jedem Neustart duplizieren würden.
+jedem Neustart duplizieren würden.  Wirft dieser Hook, ist das ein
+gewöhnlicher Actor-Fehler und geht an die Supervision; es ist kein
+Recovery-Fehler, denn der State wurde einwandfrei wiederhergestellt.
+
+### Wenn die Recovery fehlschlägt
+
+Ein korruptes Event, ein fehlender Upcaster, ein Snapshot, den die
+Integritätsprüfung ablehnt — die Recovery kann werfen, und dann wird
+`onRecoveryFailure` aufgerufen.
+
+**Das ist eine Benachrichtigung, keine Entscheidung.** Ein
+Recovery-Fehler ist so oder so endgültig; der Hook wählt nur, wer
+davon erfährt:
+
+```ts
+// Default — rethrowt, der Fehler erreicht die Supervision als
+// ActorInitializationError, und die Strategie entscheidet.
+onRecoveryFailure(reason: Error): void { throw reason; }
+
+// Override, das zurückkehrt — du hast den Fehler als behandelt
+// übernommen, und der Actor wird daraufhin gestoppt.
+override onRecoveryFailure(reason: Error): void {
+  this.metrics.recoveryFailed.inc();
+}
+```
+
+Weitermachen kann der Actor in keinem der beiden Fälle: `state`
+wurde nie zugewiesen und `lastSequenceNr` ist unbekannt, es gibt
+also keinen Zustand, in dem er ein Command beantworten könnte.  Das
+Stoppen ist es, was das sichtbar hält — bereits wartende Commands
+werden zu **Dead Letters**, statt im Stash zu verschwinden, und der
+Stopp wird auf dem Event-Stream veröffentlicht.
 
 ## Persistenz-ID
 
@@ -278,21 +348,22 @@ Lesen auf:
 ```ts
 import { EventAdapter } from 'actor-ts';
 
-class V1ToV2Adapter implements EventAdapter<EventV2> {
-  upcast(stored: unknown, version: number): EventV2 {
-    if (version === 1) return migrate(stored as EventV1);
-    return stored as EventV2;
-  }
-}
+const v1ToV2Adapter: EventAdapter<EventV2> = {
+  manifest: () => 'deposited',
+  toJournal: (event) => ({ manifest: 'deposited', version: 2, payload: event }),
+  fromJournal: (stored) => stored.version === 1
+    ? migrate(stored.payload as EventV1)
+    : stored.payload as EventV2,
+};
 
 class Account extends PersistentActor<...> {
-  override eventAdapter() { return new V1ToV2Adapter(); }
+  override eventAdapter() { return v1ToV2Adapter; }
 }
 ```
 
 Mit einem konfigurierten Adapter wird jedes Event in einem
 `{ _v, _t, _e }`-Envelope (Version + Typ + Payload) zur Persist-Zeit
-verpackt und beim Lesen über `adapter.upcast(stored, version)`
+verpackt und beim Lesen über `adapter.fromJournal(stored)`
 entpackt.  Rückwärtskompatibilität ist die Verantwortung des Actors.
 
 Siehe [Migration im Überblick](/de/persistence/migration/overview/)
@@ -305,10 +376,12 @@ import { Aside } from '@astrojs/starlight/components';
 <Aside type="caution" title="Seiteneffekte in `onEvent`">
   ```ts
   override onEvent(state, event) {
-    if (event.kind === 'deposited') {
-      sendEmail(event.amount);   // ✗ läuft bei jeder Recovery
-    }
-    return { balance: state.balance + event.amount };
+    return match(event)
+      .with({ kind: 'deposited' }, (e) => {
+        sendEmail(e.amount);   // ✗ läuft bei jeder Recovery
+        return { balance: state.balance + e.amount };
+      })
+      .exhaustive();
   }
   ```
   `onEvent` läuft einmal beim Persist *und* einmal pro Recovery.
@@ -323,17 +396,22 @@ import { Aside } from '@astrojs/starlight/components';
   actor.tell({ kind: 'deposit', amount: 100 });
   // ↑ dieses `tell` kommt an, bevor die Recovery abgeschlossen ist
   ```
-  Commands, die vor Abschluss der Recovery gesendet werden, werden
-  gestasht und verarbeitet, sobald `onRecoveryComplete` läuft.  Das
-  ist normalerweise transparent, bedeutet aber, dass eine langsame
-  Recovery (10 000 Events durch ein langsames Journal) die erste
-  Antwort verzögert.  Überwache die Recovery-Latenz in Produktion.
+  Commands, die vor Abschluss der Recovery gesendet werden, warten in
+  der Mailbox und werden verarbeitet, sobald `onRecoveryComplete`
+  läuft.  Das ist normalerweise transparent, bedeutet aber, dass eine
+  langsame Recovery (10 000 Events durch ein langsames Journal) die
+  erste Antwort verzögert.  Überwache die Recovery-Latenz in
+  Produktion.
+
+  Kommen sie gar nicht an, prüfe, ob die Recovery *fehlgeschlagen*
+  ist statt nur langsam zu sein — siehe [Wenn die Recovery
+  fehlschlägt](#wenn-die-recovery-fehlschlägt).
 </Aside>
 
 <Aside type="caution" title="State aus `onCommand` mutieren">
   ```ts
-  onCommand(state, cmd) {
-    state.balance += cmd.amount;   // ✗ State direkt mutieren
+  onCommand(state, command) {
+    state.balance += command.amount;   // ✗ State direkt mutieren
   }
   ```
   Schreibe nicht direkt in `state`.  Jede Zustandsänderung muss

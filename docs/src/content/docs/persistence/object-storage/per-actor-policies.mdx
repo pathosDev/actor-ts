@@ -17,7 +17,7 @@ Override per-actor by implementing the `compression()` /
 ```ts
 class SensitiveActor extends DurableStateActor<Command, State> {
   protected encryption() {
-    return { keyRing: sensitiveKeyRing };
+    return { mode: 'client-aes256-gcm' as const, masterKeys: sensitiveKeyRing };
   }
 
   protected compression() {
@@ -36,7 +36,7 @@ returned config.
 const objectStorageDurableStateStoreOptions = ObjectStorageDurableStateStoreOptions.create()
   .withBackend(backend)
   .withCompression({ algorithm: 'gzip', level: 6 })
-  .withEncryption({ keyRing: defaultKeyRing });
+  .withEncryption({ mode: 'client-aes256-gcm', masterKeys: defaultKeyRing });
 const store = new ObjectStorageDurableStateStore(objectStorageDurableStateStoreOptions);
 
 // Per-actor: override
@@ -59,7 +59,7 @@ Each method is **independently overridable**:
 ```ts
 class CreditCardActor extends DurableStateActor<...> {
   protected encryption() {
-    return { keyRing: pciKeyRing };   // separate key ring for PCI scope
+    return { mode: 'client-aes256-gcm' as const, masterKeys: pciKeyRing };   // separate key ring for PCI scope
   }
 }
 
@@ -104,7 +104,7 @@ this.compression() → applies if not 'none'
   ↓
 this.encryption() → applies if set
   ↓
-backend.put(key, ciphertext, opts)
+backend.put(key, ciphertext, options)
 ```
 
 The framework looks up the actor's overrides **at each persist**
@@ -116,19 +116,19 @@ new writes use new settings.
 ```
 DurableStateActor.preStart
   ↓
-backend.get(key) → bytes + metadata
+backend.get(key) → framed ATS1 body
   ↓
-detect encryption from metadata (key-id) → decrypt
+read the ATS1 manifest → encrypted flag set? → decrypt (key version from the manifest byte)
   ↓
-detect compression from metadata (Content-Encoding) → decompress
+read the ATS1 manifest → compression flag → decompress
   ↓
 serializer.fromBinary → state
 ```
 
-**Reads use the metadata** stored with the object, not the
-actor's current overrides.  An object encrypted under
-`pciKeyRing` is decrypted via `pciKeyRing` whether or not the
-actor's current `encryption()` says so.
+**Reads use the self-describing `ATS1` manifest** carried in the
+body, not the actor's current overrides.  An object encrypted
+under `pciKeyRing` is decrypted via `pciKeyRing` whether or not
+the actor's current `encryption()` says so.
 
 This means: **rotating an actor's policy doesn't break old
 data** as long as the necessary keys / algorithms are available.
@@ -140,7 +140,7 @@ data** as long as the necessary keys / algorithms are available.
 // New: encryption under pciKeyRing.
 class CreditCardActor extends DurableStateActor<...> {
   protected encryption() {
-    return { keyRing: pciKeyRing };
+    return { mode: 'client-aes256-gcm' as const, masterKeys: pciKeyRing };
   }
 }
 ```
@@ -158,13 +158,13 @@ See [key rotation](/persistence/object-storage/key-rotation/).
 ```ts
 class Account extends PersistentActor<Command, Event, State> {
   // Per-actor compression for snapshots:
-  protected compression() {
+  override compression() {
     return { algorithm: 'zstd' as const };
   }
 
   // Per-actor encryption for snapshots:
-  protected encryption() {
-    return { keyRing: accountKeyRing };
+  override encryption() {
+    return { mode: 'client-aes256-gcm' as const, masterKeys: accountKeyRing };
   }
 }
 ```
@@ -196,7 +196,7 @@ import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="Override returning new object each call">
   ```ts
-  protected compression() {
+  override compression() {
     return { algorithm: 'gzip', level: 6 };   // ← new object every call
   }
   ```
@@ -204,7 +204,7 @@ import { Aside } from '@astrojs/starlight/components';
   Hoist to a constant if perf-sensitive:
   ```ts
   private static readonly GZIP6 = { algorithm: 'gzip' as const, level: 6 };
-  protected compression() { return Account.GZIP6; }
+  override compression() { return Account.GZIP6; }
   ```
 </Aside>
 

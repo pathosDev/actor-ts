@@ -17,7 +17,8 @@ const props = Props.create(() => new MyActor());
 
 Eine Factory-Funktion, die eine frische `MyActor`-Instanz zurückgibt.
 Das ist alles, was du für einen Actor mit Default-Supervision,
-Default-Dispatcher und der Default-unbounded-FIFO-Mailbox brauchst.
+Default-Dispatcher und der Default-Mailbox brauchst — einer
+gebundenen FIFO-Queue (Kapazität 10.000, `drop-head`-Overflow).
 
 Für alles darüber hinaus verkettest du `with…`-Builder:
 
@@ -63,17 +64,17 @@ Die Factory schließt jegliche benötigten Konstruktor-Argumente ein:
 class Worker extends Actor<...> {
   constructor(
     private readonly db: ActorRef<DbMessage>,
-    private readonly cfg: Config,
+    private readonly config: Config,
   ) { super(); }
 }
 
-const props = Props.create(() => new Worker(db, cfg));
+const props = Props.create(() => new Worker(db, config));
 ```
 
-`db` und `cfg` werden vom Closure gefangen; jeder Restart sieht
+`db` und `config` werden vom Closure gefangen; jeder Restart sieht
 dieselbe Verdrahtung.
 
-## Die vier Builder
+## Die Builder
 
 ```ts
 class Props<TMessage> {
@@ -83,6 +84,7 @@ class Props<TMessage> {
   withDispatcher(dispatcher: Dispatcher): Props<TMessage>;
   withMailboxCapacity(capacity: number): Props<TMessage>;
   withMailbox(factory: () => Mailbox<TMessage>): Props<TMessage>;
+  asInternal(): Props<TMessage>;
 }
 ```
 
@@ -118,6 +120,21 @@ Fehler mit einem Restart + 10/Minute-Cap.  Greife zu
 bei Fehler gestoppt statt neu gestartet werden soll, weil sein Parent
 einen Ersatz spawnen wird.
 
+Der Parent löst die Strategie in dieser Reihenfolge auf, der erste
+Treffer gewinnt:
+
+1. Die `Props` des fehlschlagenden Kindes.
+2. Der `supervisorStrategy()`-Override des Parent-Actors.
+3. `defaultStrategy`.
+
+Ein einzelnes Kind kann sich also aus der Policy seines Parents
+ausnehmen, ohne seine Geschwister zu beeinflussen.  Zwei Details folgen
+daraus, dass die Strategie vom Parent angewendet wird: eine
+`all-for-one`-Strategie auf den `Props` eines Kindes greift trotzdem auf
+alle Geschwister, und das Restart-Budget (`maxRetries` /
+`withinTimeRangeMs`) wird pro Parent gezählt — Geschwister teilen sich
+also ein Kontingent.
+
 Siehe [Supervision](/de/fundamentals/supervision/) für die volle
 Strategie-Semantik.
 
@@ -152,12 +169,17 @@ brauchst das nie.  Siehe
 Props.create(() => new SlowConsumer()).withMailboxCapacity(500);
 ```
 
-Kurzform für "die Default-FIFO-Mailbox, aber gebunden auf 500."
-Die Default-Overflow-Policy (`reject`) gilt — eine volle Mailbox
-wirft `MailboxFullError` an der `tell`-Stelle.
+Kurzform, um die Kapazität der Default-Mailbox auf 500 zu senken —
+dieselbe gebundene FIFO-Queue, nur mit kleinerem Limit.  Die
+Default-Overflow-Policy (`drop-head`) gilt: eine volle Mailbox
+verwirft die **älteste** eingereihte Nachricht, um Platz zu
+schaffen, ohne zu werfen.
 
 Das ist der häufigste Mailbox-Override: ein einfacher Cap mit der
-"Sender spürt den Druck"-Semantik.
+"unter Überlast das Älteste verwerfen"-Semantik.  Für die
+"Sender spürt den Druck"-Semantik — eine volle Mailbox, die
+`MailboxFullError` an der `tell`-Stelle wirft — greife stattdessen
+zu `withMailbox` mit einer expliziten `reject`-Policy.
 
 ### `withMailbox`
 
@@ -176,11 +198,31 @@ Props.create(() => new Worker())
 ```
 
 Volle Kontrolle — gib eine beliebige `Mailbox`-Subklasse zurück.  Die
-Factory wird einmal pro Actor-Inkarnation aufgerufen; bei einem
-Restart wird eine frische, leere Mailbox-Datenstruktur erstellt.
+Factory wird **einmal** aufgerufen, wenn die Cell des Actors gebaut
+wird; die Mailbox überlebt danach jeden Restart.  Bei einem Restart
+wird nur die `Actor`-Instanz neu gebaut — dieselbe Mailbox wird an
+Ort und Stelle fortgesetzt, sodass vor dem Crash eingereihte
+Nachrichten noch da sind.
 
 Siehe [Mailboxes](/de/fundamentals/mailboxes/) für die
 Overflow-Policies und Priority-Semantik.
+
+### `asInternal`
+
+Markiert einen Actor als **Werkzeug** statt als Anwendungslogik — und
+seine Kinder gleich mit. Systemweite Instrumentierung überspringt ihn:
+Ohne diese Markierung tract sich der DevTools-Hub selbst, der ja gerade
+die aufgezeichneten Spans publiziert, und jeder Batch käme als Payload
+des nächsten zurück.
+
+```ts
+system.spawn(Props.create(() => new MyProbe()).asInternal(), 'my-probe');
+```
+
+Du brauchst das nur, wenn du ein Werkzeug schreibst, das das System
+beobachtet, in dem es selbst läuft. Anwendungs-Actors gehören nicht
+markiert: Echte Arbeit vor dem Profiler zu verstecken ist der Weg, auf
+dem ein Performance-Problem unsichtbar bleibt.
 
 ## Naming beim Spawn
 

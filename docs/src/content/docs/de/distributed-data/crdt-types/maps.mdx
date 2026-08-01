@@ -33,7 +33,7 @@ Timestamps aufgelöst; Writes auf verschiedene Keys kollidieren
 nicht.
 
 ```ts
-m = m.remove('theme');   // ebenfalls LWW — jüngste Aktion gewinnt
+m = m.remove('node-a', 'theme');   // ebenfalls LWW — jüngste Aktion gewinnt
 ```
 
 `remove` wird ebenfalls als LWW-Operation getrackt — ein
@@ -101,8 +101,8 @@ m = m.increment('node-a', 'page-home',  1);
 m = m.increment('node-a', 'page-about', 1);
 m = m.increment('node-b', 'page-home',  1);
 
-m.get('page-home');   // → 2 (Summe über Replikas)
-m.get('page-about');  // → 1
+m.value('page-home');   // → 2 (Summe über Replikas)
+m.value('page-about');  // → 1
 ```
 
 Eine `GCounterMap<K>` ist funktional `ORMap<K, GCounter>` —
@@ -115,8 +115,8 @@ Die API ist flacher:
 
 ```ts
 m.increment(replicaId, key, delta);   // den Counter eines Keys hochzählen
-m.get(key);                             // → number (Summe über Replikas)
-m.entries();                            // → IterableIterator<[K, number]>
+m.value(key);                         // → number (Summe über Replikas)
+m.pairs();                            // → ReadonlyArray<readonly [K, number]>
 ```
 
 Nimm sie überall, wo du in normalem Code `Map<K, number>`

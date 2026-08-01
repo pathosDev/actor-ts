@@ -109,8 +109,8 @@ function toBase64(bytes: Uint8Array): string {
 
 function fromBase64(s: string): Uint8Array {
   if (typeof Buffer !== 'undefined') {
-    const buf = Buffer.from(s, 'base64');
-    return new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
+    const buffer = Buffer.from(s, 'base64');
+    return new Uint8Array(buffer.buffer, buffer.byteOffset, buffer.byteLength);
   }
   const bin = atob(s);
   const out = new Uint8Array(bin.length);

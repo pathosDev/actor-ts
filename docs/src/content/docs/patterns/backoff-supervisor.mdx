@@ -23,7 +23,7 @@ class Flaky extends Actor<{ kind: 'do-it' }> {
   override preStart(): void {
     if (Math.random() < 0.7) throw new Error('upstream not ready');
   }
-  override onReceive(msg: { kind: 'do-it' }): void {
+  override onReceive(message: { kind: 'do-it' }): void {
     this.log.info('ok');
   }
 }
@@ -93,7 +93,7 @@ The framework names successive children `child-1`, `child-2`,
 The `BackoffOptions<T>` shape:
 
 ```ts
-interface BackoffOptions<T> {
+type BackoffOptions<T> = {
   childProps:        Props<T>;
   childName?:        string;
   minBackoff:        number;
@@ -107,7 +107,7 @@ interface BackoffOptions<T> {
   drainGraceMs?:     number;  // default min(50, minBackoff)
   forwardDuringGrace?: boolean;  // default true
   clock?:            () => number;
-}
+};
 ```
 
 The most interesting fields:

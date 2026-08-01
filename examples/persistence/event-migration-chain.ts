@@ -9,6 +9,7 @@
  *
  *   bun run examples/persistence/event-migration-chain.ts
  */
+import { match } from 'ts-pattern';
 import {
   ActorSystem,
   ActorSystemOptions,
@@ -19,16 +20,20 @@ import {
   MigrationChain,
   type EventAdapter,
 } from '../../src/index.js';
+import { attachDevTools } from '../devtools.js';
 
 type DepositedV1 = { kind: 'deposited'; amount: number };                                    // dollars
 type DepositedV2 = { kind: 'deposited'; amount: number; currency: 'USD' | 'EUR' };           // dollars + currency
 type DepositedV3 = { kind: 'deposited'; cents: number; currency: 'USD' | 'EUR' };            // cents + currency
 type Event = DepositedV3;
 
-type Cmd = { kind: 'deposit'; cents: number } | { kind: 'balance' };
+type DepositCommand = { kind: 'deposit'; cents: number };
+type BalanceCommand = { kind: 'balance' };
+
+type Command = DepositCommand | BalanceCommand;
 type State = { balanceCents: number; currency: 'USD' | 'EUR' };
 
-class Account extends PersistentActor<Cmd, Event, State> {
+class Account extends PersistentActor<Command, Event, State> {
   constructor(readonly persistenceId: string) { super(); }
   initialState(): State { return { balanceCents: 0, currency: 'USD' }; }
   onEvent(s: State, e: Event): State {
@@ -48,15 +53,22 @@ class Account extends PersistentActor<Cmd, Event, State> {
       fromJournal: (s) => chain.upcast(s),
     };
   }
-  async onCommand(_s: State, cmd: Cmd): Promise<void> {
-    if (cmd.kind === 'deposit') {
-      await this.persist(
-        { kind: 'deposited', cents: cmd.cents, currency: 'EUR' },
-        (st) => this.sender.forEach((s) => s.tell({ ok: st })),
-      );
-    } else {
-      this.sender.forEach((s) => s.tell({ balanceCents: this.state.balanceCents, currency: this.state.currency }));
-    }
+  async onCommand(_s: State, command: Command): Promise<void> {
+    await match(command)
+      .with({ kind: 'deposit' }, (c) => this.onDeposit(c))
+      .with({ kind: 'balance' }, () => this.onBalance())
+      .exhaustive();
+  }
+
+  private async onDeposit(command: DepositCommand): Promise<void> {
+    await this.persist(
+      { kind: 'deposited', cents: command.cents, currency: 'EUR' },
+      (st) => this.sender.forEach((s) => s.tell({ ok: st })),
+    );
+  }
+
+  private onBalance(): void {
+    this.sender.forEach((s) => s.tell({ balanceCents: this.state.balanceCents, currency: this.state.currency }));
   }
 }
 
@@ -74,6 +86,7 @@ async function main(): Promise<void> {
 
   const sysOptions = ActorSystemOptions.create().withPersistence({ journal, snapshotStore: snapshots });
   const sys = ActorSystem.create('migration-chain', sysOptions);
+  const devtools = await attachDevTools(sys);
 
   const acct = sys.spawn(Props.create(() => new Account('alice')), 'alice');
   // v1 (1.5 USD = 150 cents) + v2 (2 EUR = 200 cents) + v3 (99 cents) = 449 cents.
@@ -81,6 +94,7 @@ async function main(): Promise<void> {
   console.log('deposit 100 cents EUR  →', await acct.ask({ kind: 'deposit', cents: 100 }, 500));
   console.log('final (cents)          →', await acct.ask({ kind: 'balance' }, 500));
 
+  await devtools.holdOpen();
   await sys.terminate();
 }
 

@@ -14,14 +14,20 @@ import type { ActorRef } from './ActorRef.js';
  * `onReceive`.  A predicate that throws is treated as "no match"
  * for that delivery; the subscription stays active.
  */
-type Class<T> = new (...args: any[]) => T;
+/**
+ * A channel token.  `abstract` is deliberate: matching is by
+ * `instanceof`, so an abstract base is a perfectly good channel — and
+ * the most useful one, since subscribing to it takes a whole family of
+ * events (e.g. every `ActorLifecycleEvent`) with a single call.
+ */
+type Class<T> = abstract new (...args: any[]) => T;
 
-interface Subscription {
+type Subscription = {
   readonly subscriber: ActorRef;
   readonly channel: Class<unknown>;
   /** Optional filter — evaluated before delivery; throws → skip. */
   readonly predicate?: (event: unknown) => boolean;
-}
+};
 
 /**
  * Optional minimal-logger hook for the bus.  ActorSystem assigns its

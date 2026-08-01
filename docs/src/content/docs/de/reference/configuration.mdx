@@ -112,7 +112,7 @@ Platziere das im Projekt-Root.  Das Framework lädt es bei
 
 | Key | Default | Zweck |
 | --- | --- | --- |
-| `http.backend` | `"fastify"` | Einer von `fastify` / `bun` / `express`. |
+| `http.backend` | `"fastify"` | Einer von `fastify` / `express` / `hono`. |
 | `http.shutdown-grace-period` | `5s` | Zeit, um in-flight Requests beim Shutdown leerlaufen zu lassen. |
 | `http.websocket` | *(siehe unten)* | Serverseitige WebSocket-Defaults für [`websocket()`](/de/http/websocket/)-Routen. |
 
@@ -134,13 +134,22 @@ ihre Defaults aus `actor-ts.http.websocket`:
 | --- | --- | --- |
 | `persistence.journal.plugin` | `"...in-memory"` | Voll qualifizierter Key zur Konfig des Journals. |
 | `persistence.snapshot-store.plugin` | `"...in-memory"` | Voll qualifizierter Key zur Konfig des Snapshot Stores. |
-| `persistence.recovery.mode` | `"eager"` | `eager` (Default) — alle Events bei preStart wieder abspielen.  `parallel` — in Chunks wieder abspielen. |
 
 Die Plugin-Keys zeigen auf *einen anderen* Config-Abschnitt, der
 die Settings dieses Plugins enthält.  Z. B. enthält
 `actor-ts.persistence.journal.sqlite` die `path`, `pragmas` etc.
 des SQLite-Journals.  Siehe jede Journal-Seite in
 [Persistence](/de/persistence/overview/) für die per-Plugin-Keys.
+
+### `actor-ts.cache`
+
+| Key | Default | Zweck |
+| --- | --- | --- |
+| `cache.in-memory.maxEntries` | `10000` | Max. Einträge vor LRU-Eviction ([In-Memory-Cache](/de/cache/in-memory/)). |
+| `cache.in-memory.cleanupMs` | `60000` | Intervall (ms) des Hintergrund-Sweeps für abgelaufene Einträge. |
+
+Redis- und Memcached-Caches lesen ihre Verbindungs-Settings aus
+`actor-ts.cache.redis` / `actor-ts.cache.memcached`.
 
 ### `actor-ts.sharding`
 
@@ -234,6 +243,30 @@ actor-ts.cluster.failure-detector.heartbeat-interval = 250ms
 Lädt `shared-cluster.conf` und legt Deinen lokalen Abschnitt
 darüber.
 
+### Reservierte Schlüssel
+
+Drei Schlüssel werden in einer Config-Quelle überall abgelehnt — als
+Schlüssel, als jedes Segment eines Pfadausdrucks und innerhalb einer
+Substitution:
+
+```hocon
+__proto__.anything = 1   # Fehler: abgelehnt
+constructor.x      = 1   # Fehler: abgelehnt
+prototype          = 1   # Fehler: abgelehnt
+value              = ${__proto__}   # Fehler: abgelehnt
+```
+
+Ein Schlüsselpfad wird auf ein einfaches Objekt expandiert, und eine
+Zuweisung an `__proto__` schreibt in den Objekt-Prototypen statt einen
+normalen Schlüssel anzulegen — würde man das zulassen, könnte eine
+Config-Datei das Verhalten *jedes* Objekts im Prozess verändern. Der
+Parser lehnt sie stattdessen mit der gewohnten Zeilen- und
+Spaltenangabe ab.
+
+Die Prüfung vergleicht exakt, ähnlich aussehende Schlüssel sind also
+unproblematisch: `_proto_`, `constructorName` und `prototypes`
+funktionieren normal.
+
 ## Config im Code lesen
 
 ```ts
@@ -246,13 +279,13 @@ const system = ActorSystem.create(
 );
 
 // Innerhalb eines Actors / einer Extension:
-const cfg = system.config;
-const interval = cfg.getDuration('actor-ts.cluster.gossip-interval');
+const config = system.config;
+const interval = config.getDuration('actor-ts.cluster.gossip-interval');
 //      → 500 (in ms)
 ```
 
 Das `Config`-Interface hat typisierte Getter: `getString`, `getNumber`,
-`getBoolean`, `getDuration`, `getSize`, `getStringList`, etc.
+`getBoolean`, `getDuration`, `getBytes`, `getStringList`, etc.
 Fehlende Keys werfen, es sei denn, Du prüfst zuerst mit `hasPath`.
 
 ## Ladereihenfolge
@@ -333,18 +366,22 @@ Broker-Pflichtfeld fehlt in jeder Ebene).  Ungesetzte optionale Felder
 lösen ihn nie aus; sie fallen auf ihre Defaults zurück.
 
 ```ts
-import { OptionsError } from 'actor-ts';
+import { CircuitBreaker, CircuitBreakerOptions, OptionsError } from 'actor-ts';
 
+// Nicht-Broker-Consumer validieren in ihrem Konstruktor, daher wird der
+// Fehler synchron geworfen und ein einfaches try/catch funktioniert:
 try {
-  const mqttOptions = MqttOptions.create()
-    .withBrokerUrl('mqtt://broker:1883')
-    .withQos(7 as MqttQos);          // ungültig
-  system.spawn(Props.create(() => new FeedClient(mqttOptions)), 'feed');
+  const options = CircuitBreakerOptions.create()
+    .withMaxFailures(0);             // ungültig — muss eine positive Ganzzahl sein
+  new CircuitBreaker(options);       // validiert im Konstruktor
 } catch (e) {
   if (e instanceof OptionsError) {
     console.error(`bad option ${e.field}: ${e.message}`);
   }
 }
+// Bei einem Broker-Actor wird der OptionsError erst in preStart geworfen
+// und als ActorInitializationError verpackt — er taucht also über die
+// Supervision auf (nicht im try/catch des Spawn-Aufrufs).
 ```
 
 ## Wie es weitergeht

@@ -20,9 +20,18 @@ export class DeadLetterRef extends ActorRef<unknown> {
   }
 
   tell(message: unknown, sender: ActorRef | null = null): void {
-    const dl = message instanceof DeadLetter
+    // A DeadLetter wrapping another DeadLetter is the signature of a
+    // delivery loop: publishing a dead letter reached a subscriber that
+    // has terminated without unsubscribing, whose cell then wrapped it
+    // again and sent it back here.  Re-publishing would hand it to the
+    // same dead subscriber forever, so the nested one is dropped —
+    // there is nowhere further to send an undeliverable dead letter.
+    // (A single wrap is the NORMAL path: cells wrap before calling.)
+    if (message instanceof DeadLetter && message.message instanceof DeadLetter) return;
+
+    const deadLetter = message instanceof DeadLetter
       ? message
       : new DeadLetter(message, sender, this);
-    this.eventStream.publish(dl);
+    this.eventStream.publish(deadLetter);
   }
 }

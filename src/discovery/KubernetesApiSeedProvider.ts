@@ -43,8 +43,8 @@ function defaultFetchEndpoints(options: KubernetesApiSeedProviderOptionsType): (
 
     const path = `/api/v1/namespaces/${options.namespace}/endpoints/${options.serviceName}`;
     const agent = new https.Agent(ca ? { ca } : {});
-    const res = await new Promise<{ status: number; body: string }>((resolve, reject) => {
-      const req = https.request({
+    const response = await new Promise<{ status: number; body: string }>((resolve, reject) => {
+      const request = https.request({
         host: 'kubernetes.default.svc',
         path,
         method: 'GET',
@@ -57,11 +57,11 @@ function defaultFetchEndpoints(options: KubernetesApiSeedProviderOptionsType): (
         r.on('end', () => resolve({ status: r.statusCode ?? 0, body }));
         r.on('error', reject);
       });
-      req.on('error', reject);
-      req.end();
+      request.on('error', reject);
+      request.end();
     });
-    if (res.status !== 200) throw new Error(`K8s API returned ${res.status}: ${res.body.slice(0, 200)}`);
-    const parsed = JSON.parse(res.body) as {
+    if (response.status !== 200) throw new Error(`K8s API returned ${response.status}: ${response.body.slice(0, 200)}`);
+    const parsed = JSON.parse(response.body) as {
       subsets?: Array<{ addresses?: Array<{ ip: string }> }>;
     };
     const ips: string[] = [];

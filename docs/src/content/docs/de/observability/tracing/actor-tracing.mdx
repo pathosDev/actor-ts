@@ -1,11 +1,11 @@
 ---
 title: Actor-Tracing
-description: Was das Framework auto-span'd, wenn Tracing aktiviert ist — ein Span pro `onReceive`, Attribute für den Actor-Pfad / die Klasse / die Message-Art, Parent-Kontext vom Sender. Spans verketten sich über `tell` und über Cluster-Nodes via W3C-`traceparent`.
+description: Was das Framework auto-span'd, wenn Tracing aktiviert ist — ein Span pro `onReceive`, Attribute für den Actor-Pfad und den Message-Typ, Parent-Kontext vom Sender. Spans verketten sich über `tell` und über Cluster-Nodes via W3C-`traceparent`.
 ---
 
 Wenn die Tracing-Extension konfiguriert ist, **erzeugt das
-Framework automatisch einen Span pro Actor-Message** plus
-Infrastruktur-Spans für Cluster-Wire-Envelopes. Spans
+Framework automatisch einen Span pro Actor-Message** plus einen
+Infrastruktur-Span für eingehende Cluster-Wire-Envelopes. Spans
 **verketten sich über Tells hinweg** — ein Message-Handler, der
 einem anderen Actor etwas `tell`t, gibt den aktiven Span-Kontext
 weiter, sodass der Span des Empfängers zurück zum Sender
@@ -15,11 +15,8 @@ verlinkt.
 
 | Span-Name | Wann | Bemerkenswerte Attribute |
 | --- | --- | --- |
-| `actor.receive` | Einmal pro an `onReceive` gelieferter Message. | `actor.path`, `actor.class`, `messaging.message_kind` |
-| `actor.persist` | Aufruf von PersistentActor.persist(). | `persistence.id`, `persistence.sequence_nr` |
-| `actor.ask` | Ein `ask(...)`-Aufruf. | `actor.path` des Targets |
-| `cluster.envelope.send` | Ausgehender Cross-Cluster-Envelope. | `peer.address`, `messaging.message_kind` |
-| `cluster.envelope.receive` | Eingehender Cross-Cluster-Envelope. | Gleich |
+| `actor.receive` | Einmal pro an `onReceive` gelieferter Message. | `actor.path`, `actor.message.type` |
+| `cluster.envelope.received` | Eingehender Cross-Cluster-Envelope mit Parent-Trace-Kontext. | `cluster.from`, `cluster.to.path` |
 
 Für einen typischen Request-Flow:
 
@@ -27,21 +24,19 @@ Für einen typischen Request-Flow:
 flowchart TB
   R[/"HTTP-Request<br/><i>Root-Span</i>"/]
   API["actor.receive — api-actor"]
-  ASK["actor.ask — frage db-actor"]
-  SEND["cluster.envelope.send<br/><i>Cross-Wire</i>"]
-  RECV["cluster.envelope.receive auf db-Node<br/><i>Peer-Seite</i>"]
+  TELL["tell db-actor<br/><i>Cross-Wire: traceparent injiziert, kein Span</i>"]
+  RECV["cluster.envelope.received auf db-Node<br/><i>Peer-Seite</i>"]
   DB["actor.receive — db-actor"]
-  PERSIST["actor.persist<br/><i>schreibt Journal</i>"]
-  R --> API --> ASK
-  ASK --> SEND --> RECV --> DB --> PERSIST
+  R --> API --> TELL
+  TELL --> RECV --> DB
   classDef root fill:#0f172a,stroke:#6366f1,stroke-width:2px,color:#f1f5f9;
   classDef api  fill:#312e81,stroke:#818cf8,color:#f1f5f9;
   classDef wire fill:#1e293b,stroke:#06b6d4,color:#67e8f9;
   classDef db   fill:#7c2d12,stroke:#fb923c,color:#fed7aa;
   class R root
-  class API,ASK api
-  class SEND,RECV wire
-  class DB,PERSIST db
+  class API api
+  class TELL,RECV wire
+  class DB db
 ```
 
 Jeder Span trägt die Trace-ID — dein Tracing-Backend näht sie
@@ -51,10 +46,10 @@ zu einem Trace zusammen.
 
 ```ts
 // Innerhalb eines Actors:
-override async onReceive(msg) {
+override async onReceive(message) {
   // tracer.activeSpan() gibt den actor.receive-Span zurück
   // tell erzeugt einen Envelope mit gesetztem traceparent
-  this.downstream.tell({ kind: 'derived', from: msg.id });
+  this.downstream.tell({ kind: 'derived', from: message.id });
   // Der actor.receive-Span des Downstream-Actors hat DIESEN Span als Parent
 }
 ```
@@ -73,22 +68,21 @@ Envelope. Der empfangende Node extrahiert ihn; sein
 ```ts
 // actor.receive-Attribute:
 {
-  'actor.path':            'actor-ts://my-app/user/api/sessions/user-42',
-  'actor.class':           'SessionActor',
-  'actor.system':          'my-app',
-  'messaging.message_kind': 'login',
-  // Bei Fehler persistiert:
-  'error.message':         '...',
+  'actor.path':         'actor-ts://my-app/user/api/sessions/user-42',
+  'actor.message.type': 'LoginMessage',
 }
+// Bei einem Fehler zeichnet der Span die Exception auf und setzt
+// einen Error-Status (span.recordException(err) + span.setStatus('error', …)) —
+// es gibt kein error.message-Attribut.
 ```
 
 Für Cluster-Envelopes:
 
 ```ts
+// cluster.envelope.received-Attribute:
 {
-  'peer.address':          'actor-ts://my-app@10.0.0.5:2552',
-  'messaging.message_kind': 'login',
-  'wire.bytes':            234,
+  'cluster.from':    'actor-ts://my-app@10.0.0.5:2552',
+  'cluster.to.path': '/user/api/sessions/user-42',
 }
 ```
 
@@ -115,12 +109,12 @@ durch denselben Tracer laufen.
 ## Anwendungs-Level-Spans hinzufügen
 
 ```ts
-override async onReceive(msg) {
+override async onReceive(message) {
   const tracer = this.context.system.extension(TracingExtensionId).get();
   const span = tracer.startSpan('process-order', {
     attributes: {
-      'order.id':     msg.orderId,
-      'order.amount': msg.amount,
+      'order.id':     message.orderId,
+      'order.amount': message.amount,
     },
   });
   try {
@@ -144,19 +138,30 @@ natürlich innerhalb der Verarbeitung des Actors.
 
 ## MDC-Integration
 
-Wenn Tracing aktiv ist, mergt das Framework `traceId` und
-`spanId` in den
-[LogContext](/de/fundamentals/logging/), sodass jede Log-Zeile,
-die während eines Spans emittiert wird, sie enthält:
+Das Framework mergt `traceId` / `spanId` **nicht** automatisch
+in den
+[LogContext](/de/fundamentals/logging/) — Log-Zeilen werden
+**nicht** von Haus aus mit den IDs des aktiven Spans versehen.
+Die MDC-Felder, die du selbst setzt (z. B. `correlationId`),
+fließen wie gewohnt in jede Log-Zeile; die Trace-IDs sind nur
+dann dabei, wenn du sie hinzufügst.
 
-```
-[2025-05-13T12:00:00Z] INFO ... actor processing {traceId=abc, spanId=def, correlationId=...}
+Um IDs zwischen Logs und Traces zu teilen, kopiere sie selbst vom
+aktiven Span in den MDC:
+
+```ts
+const span = tracer.activeSpan();
+if (span) {
+  const { traceId, spanId } = span.context();
+  LogContext.with({ traceId, spanId }, () => {
+    // hier emittierte Log-Zeilen tragen jetzt traceId + spanId
+  });
+}
 ```
 
-Heißt: deine Logs und Traces teilen IDs — klicke von einem
-langsamen Trace in Honeycomb zu den passenden Log-Zeilen in Loki.
-Außerdem: Spans schließen die bestehenden MDC-Keys als Attribute
-ein.
+Mit den IDs im MDC teilen deine Logs und Traces sie — du kannst
+von einem langsamen Trace in Honeycomb zu den passenden
+Log-Zeilen in Loki springen.
 
 ## Performance
 
@@ -187,7 +192,7 @@ import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="Span-Attribute aus Message-Inhalten">
   ```ts
-  // Das Framework inkludiert messaging.message_kind standardmäßig
+  // Das Framework inkludiert actor.message.type standardmäßig
   // Es inkludiert NICHT automatisch Message-Feldwerte
   ```
   Das ist Absicht — Message-Inhalte können PII oder große
@@ -202,7 +207,7 @@ import { Aside } from '@astrojs/starlight/components';
   ```
   Manueller Workaround:
   ```ts
-  const ctx = tracer.injectContext();
+  const context = tracer.injectContext();
   pipeTo(externalCall(), target, { sender: this.self });
   // Dann liest das Target seinen eigenen Carrier aus den Message-Metadaten, falls nötig
   ```
@@ -219,4 +224,4 @@ import { Aside } from '@astrojs/starlight/components';
 - **[Recording-Tracer](/de/observability/tracing/recording-tracer/)** —
   für Test-Assertions.
 - **[Logging — LogContext](/de/fundamentals/logging/)** —
-  der MDC, der mit Trace-IDs angereichert wird.
+  der MDC, den du selbst mit Trace-IDs versehen kannst.

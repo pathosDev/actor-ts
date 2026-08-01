@@ -16,8 +16,7 @@ import {
 } from '../../../../../src/persistence/migration/index.js';
 import type { ActorRef } from '../../../../../src/ActorRef.js';
 import type { Actor } from '../../../../../src/Actor.js';
-
-const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
+import { awaitCondition } from '../../../../util/AwaitCondition.js';
 
 /* ----------------------------- Domain ----------------------------------- */
 
@@ -25,7 +24,7 @@ type StateV1 = { balance: number };
 type StateV2 = { balance: number; currency: 'USD' | 'EUR' };
 type State = StateV2;
 
-type Cmd =
+type Command =
   | { kind: 'deposit'; amount: number; replyTo: ActorRef }
   | { kind: 'state'; replyTo: ActorRef };
 
@@ -35,16 +34,16 @@ const stateAdapter = (): StateAdapter<State> => defaultsSnapshotAdapter<StateV2>
   defaults: { 1: { currency: 'USD' } },
 });
 
-class Account extends DurableStateActor<Cmd, State> {
+class Account extends DurableStateActor<Command, State> {
   protected override stateAdapter(): StateAdapter<State> { return stateAdapter(); }
-  override async onCommand(cmd: Cmd): Promise<void> {
-    if (cmd.kind === 'deposit') {
-      const next: State = { balance: this.state.balance + cmd.amount, currency: 'EUR' };
+  override async onCommand(command: Command): Promise<void> {
+    if (command.kind === 'deposit') {
+      const next: State = { balance: this.state.balance + command.amount, currency: 'EUR' };
       await this.persist(next);
-      cmd.replyTo.tell({ ok: this.revision } as never);
+      command.replyTo.tell({ ok: this.revision } as never);
       return;
     }
-    cmd.replyTo.tell({ ...this.state } as never);
+    command.replyTo.tell({ ...this.state } as never);
   }
 }
 
@@ -56,13 +55,13 @@ class StrictAccount extends Account {
   }
 }
 
-const props = (store: DurableStateStore, id: string, ctor: typeof Account = Account): Props<Cmd> =>
+const props = (store: DurableStateStore, id: string, ctor: typeof Account = Account): Props<Command> =>
   Props.create(() => {
     const durableStateOptions = DurableStateOptions.create<State>()
       .withPersistenceId(id)
       .withStore(store)
       .withEmptyState((): State => ({ balance: 0, currency: 'USD' }));
-    return new ctor(durableStateOptions) as unknown as Actor<Cmd>;
+    return new ctor(durableStateOptions) as unknown as Actor<Command>;
   });
 
 /* ----------------------------- Tests ------------------------------------ */
@@ -77,7 +76,9 @@ describe('DurableStateActor — adapter round-trip', () => {
     const probe = makeProbe(sys);
     const ref = sys.spawn(props(store, 'acct'), 'a');
     ref.tell({ kind: 'deposit', amount: 50, replyTo: probe.ref });
-    await sleep(30);
+    // The reply is sent *after* `persist` resolves, so it is the strongest
+    // observable proof that the store write has landed.
+    await awaitCondition(() => probe.received.length > 0, { label: 'deposit acknowledged after persist' });
 
     // Wire format: store should hold an envelope.
     const raw = await store.load<unknown>('acct');
@@ -99,7 +100,7 @@ describe('DurableStateActor — adapter round-trip', () => {
     const probe = makeProbe(sys);
     const ref = sys.spawn(props(store, 'acct'), 'a');
     ref.tell({ kind: 'deposit', amount: 100, replyTo: probe.ref });
-    await sleep(30);
+    await awaitCondition(() => probe.received.length > 0, { label: 'deposit acknowledged after persist' });
     await sys.terminate();
 
     const sys2Options = ActorSystemOptions.create()
@@ -109,7 +110,7 @@ describe('DurableStateActor — adapter round-trip', () => {
     const probe2 = makeProbe(sys2);
     const ref2 = sys2.spawn(props(store, 'acct'), 'a');
     ref2.tell({ kind: 'state', replyTo: probe2.ref });
-    await sleep(30);
+    await awaitCondition(() => probe2.received.length > 0, { label: 'recovered state replied' });
     expect(probe2.received).toContainEqual({ balance: 100, currency: 'EUR' });
     await sys2.terminate();
   });
@@ -129,7 +130,7 @@ describe('DurableStateActor — v1 → v2 upcast', () => {
     const probe = makeProbe(sys);
     const ref = sys.spawn(props(store, 'acct'), 'a');
     ref.tell({ kind: 'state', replyTo: probe.ref });
-    await sleep(30);
+    await awaitCondition(() => probe.received.length > 0, { label: 'up-cast state replied' });
     expect(probe.received).toContainEqual({ balance: 999, currency: 'USD' });
     await sys.terminate();
   });
@@ -154,9 +155,11 @@ describe('DurableStateActor — strict mode', () => {
         .withEmptyState((): State => ({ balance: 0, currency: 'USD' }));
       const actorRef = new StrictAccount(durableStateOptions);
       captured = actorRef;
-      return actorRef as unknown as Actor<Cmd>;
+      return actorRef as unknown as Actor<Command>;
     }), 'strict');
-    await sleep(30);
+    await awaitCondition(() => captured !== null && captured.recoveryError !== null, {
+      label: 'strict-mode preStart reported a failure',
+    });
     const actorRef = captured! as unknown as StrictAccount;
     expect(actorRef.recoveryError).toBeInstanceOf(MigrationError);
     expect(actorRef.recoveryError!.message).toContain('expected envelope');
@@ -167,12 +170,12 @@ describe('DurableStateActor — strict mode', () => {
 describe('DurableStateActor — no adapter regression', () => {
   test('actor without stateAdapter uses raw state on disk (pre-migration behaviour)', async () => {
     const store = new InMemoryDurableStateStore();
-    class RawAccount extends DurableStateActor<Cmd, StateV1> {
-      override async onCommand(cmd: Cmd): Promise<void> {
-        if (cmd.kind === 'deposit') {
-          await this.persist({ balance: this.state.balance + cmd.amount });
+    class RawAccount extends DurableStateActor<Command, StateV1> {
+      override async onCommand(command: Command): Promise<void> {
+        if (command.kind === 'deposit') {
+          await this.persist({ balance: this.state.balance + command.amount });
         } else {
-          cmd.replyTo.tell({ ...this.state } as never);
+          command.replyTo.tell({ ...this.state } as never);
         }
       }
     }
@@ -186,10 +189,14 @@ describe('DurableStateActor — no adapter regression', () => {
         .withPersistenceId('r')
         .withStore(store)
         .withEmptyState((): StateV1 => ({ balance: 0 }));
-      return new RawAccount(durableStateOptions) as unknown as Actor<Cmd>;
+      return new RawAccount(durableStateOptions) as unknown as Actor<Command>;
     }), 'raw');
     ref.tell({ kind: 'deposit', amount: 7, replyTo: probe.ref });
-    await sleep(30);
+    // `RawAccount` does not acknowledge a deposit, so the store is the only
+    // thing this test can observe.
+    await awaitCondition(async () => (await store.load<StateV1>('r')).isSome(), {
+      label: 'raw state written to the durable-state store',
+    });
     const raw = await store.load<StateV1>('r');
     expect(raw.toNullable()?.state).toEqual({ balance: 7 });  // no envelope
     await sys.terminate();
@@ -198,7 +205,7 @@ describe('DurableStateActor — no adapter regression', () => {
 
 /* ------------------------- mini probe helper --------------------------- */
 
-interface Probe { ref: ActorRef; received: unknown[]; }
+type Probe = { ref: ActorRef; received: unknown[]; };
 function makeProbe(sys: ActorSystem): Probe {
   const received: unknown[] = [];
   // eslint-disable-next-line @typescript-eslint/no-require-imports

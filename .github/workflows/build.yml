@@ -1,10 +1,13 @@
 name: build
 
 # Verifies `bun run build` produces a usable `dist/` (entry point +
-# type declarations).  Only needs to run when something in the
-# build inputs changes — source, tsconfig, dependency manifest, or
-# the workflow itself.  Skips on docs-only / test-only / README
-# changes so the actions queue stays focused.
+# type declarations) and that the committed DevTools UI bundle was
+# generated from the sources in the tree.  Only needs to run when
+# something in the build inputs changes — source, the DevTools UI
+# sources that get embedded into `src/devtools/generated/uiAssets.ts`,
+# tsconfig, dependency manifest, or the workflow itself.  Skips on
+# docs-only / test-only / README changes so the actions queue stays
+# focused.
 
 on:
   # Run on every branch push (feature work merges locally, so a branch push
@@ -13,6 +16,8 @@ on:
     branches: ['**']
     paths:
       - 'src/**'
+      - 'devtools-ui/**'
+      - 'scripts/**'
       - 'package.json'
       - 'bun.lock'
       - 'tsconfig.json'
@@ -21,6 +26,8 @@ on:
     branches: [main, develop]
     paths:
       - 'src/**'
+      - 'devtools-ui/**'
+      - 'scripts/**'
       - 'package.json'
       - 'bun.lock'
       - 'tsconfig.json'
@@ -38,8 +45,30 @@ jobs:
         with:
           bun-version: latest
 
+      # Frozen: `dependencies` feed the bundle's source-hash below, so a
+      # drifting install would move the fingerprint the check compares.
       - name: Install
-        run: bun install
+        run: bun install --frozen-lockfile
+
+      # The generated bundle is committed on purpose, so a fresh clone
+      # can typecheck, test and smoke without running the UI build —
+      # which is exactly what made staleness invisible: the file is
+      # valid TypeScript whether or not its contents are current, so a
+      # stale one sailed through typecheck and the entire test suite.
+      #
+      # This runs BEFORE the build, and that ordering is load-bearing:
+      # `bun run build` is `build:ui && tsc`, so it regenerates the very
+      # file under test and any check after it would pass by
+      # construction.
+      #
+      # It compares the `source-hash` in the committed module's header
+      # against a fresh one, rather than rebuilding and diffing bytes.
+      # The bytes are not a function of the sources alone — gzip stamps
+      # the OS into every member and `bun-version: latest` moves the
+      # minifier under us — so a byte diff fires on bundles that are
+      # perfectly current (#521).  See scripts/build-devtools-ui.mjs.
+      - name: Verify the embedded DevTools UI bundle is current
+        run: bun run check:ui
 
       - name: Build (tsc → dist/)
         run: bun run build

@@ -3,15 +3,15 @@
  */
 import type { GrpcClientCommand } from '../../../../../src/io/broker/GrpcClientActor.js';
 import type { ActorRef } from '../../../../../src/ActorRef.js';
-import { spawnCollector, type GrpcCtx } from '../runner.js';
+import { spawnCollector, type GrpcContext } from '../runner.js';
 import { waitFor, type BrokerScenario } from '../../lib/scenario.js';
 
-export const scenario: BrokerScenario<GrpcCtx> = {
+export const scenario: BrokerScenario<GrpcContext> = {
   name: 'unary echo — request/response round-trip',
-  async run(ctx) {
-    const { ref: collectorRef, collector } = spawnCollector(ctx);
+  async run(context) {
+    const { ref: collectorRef, collector } = spawnCollector(context);
     try {
-      const client = ctx.client as unknown as ActorRef<GrpcClientCommand>;
+      const client = context.client as unknown as ActorRef<GrpcClientCommand>;
       client.tell({
         kind: 'unary',
         method: 'Unary',

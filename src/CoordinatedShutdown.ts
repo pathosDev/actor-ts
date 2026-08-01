@@ -37,19 +37,19 @@ export class ProcessTerminateReason extends Reason {
 /** A single task.  Returning a Promise makes the task async. */
 export type ShutdownTask = (reason: Reason) => Promise<void> | void;
 
-export interface PhaseDefinition {
+export type PhaseDefinition = {
   readonly name: string;
   readonly timeoutMs: number;
   /** Names of phases that must run before this one. */
   readonly dependsOn: ReadonlyArray<string>;
-  /** If true, task failures halt the pipeline.  Defaults to false. */
+  /** If true, task failures are swallowed and the phase continues; if false, a failure halts the pipeline.  Required — no default. */
   readonly recover: boolean;
-}
+};
 
-interface RegisteredTask {
+type RegisteredTask = {
   readonly name: string;
   readonly task: ShutdownTask;
-}
+};
 
 /** Canonical phase names, run in order from top to bottom. */
 export const Phases = {
@@ -135,6 +135,24 @@ export class CoordinatedShutdown implements Extension {
     }
     list.push({ name, task });
     this.tasks.set(phase, list);
+  }
+
+  /**
+   * Unregister a task, returning whether one was there.
+   *
+   * A task registered for a resource that has since been released must
+   * be able to go with it.  Without this, a component that registers on
+   * acquire — the HTTP layer's `http-unbind-<host>:<port>`, say — could
+   * never re-acquire the same resource in one process: the second
+   * registration collides with a task whose binding no longer exists.
+   */
+  removeTask(phase: string, name: string): boolean {
+    const list = this.tasks.get(phase);
+    if (list === undefined) return false;
+    const index = list.findIndex((t) => t.name === name);
+    if (index < 0) return false;
+    list.splice(index, 1);
+    return true;
   }
 
   /** Add a custom phase.  `dependsOn` tells the coordinator where in the order it sits. */
@@ -264,8 +282,8 @@ export class CoordinatedShutdown implements Extension {
       }
       for (const [, deps] of remaining) {
         for (const done of ready) {
-          const idx = deps.indexOf(done);
-          if (idx >= 0) deps.splice(idx, 1);
+          const index = deps.indexOf(done);
+          if (index >= 0) deps.splice(index, 1);
         }
       }
     }

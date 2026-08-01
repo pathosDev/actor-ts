@@ -110,9 +110,9 @@ export class CborEncoder {
 
   private writeDouble(value: number): void {
     this.chunks.push((7 << 5) | 27);
-    const buf = new ArrayBuffer(8);
-    new DataView(buf).setFloat64(0, value, false);
-    for (const byte of new Uint8Array(buf)) this.chunks.push(byte);
+    const buffer = new ArrayBuffer(8);
+    new DataView(buffer).setFloat64(0, value, false);
+    for (const byte of new Uint8Array(buffer)) this.chunks.push(byte);
   }
 
   private writeHeader(major: number, value: number): void {

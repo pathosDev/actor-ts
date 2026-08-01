@@ -26,6 +26,7 @@ import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 import { defineConfig } from 'astro/config';
+import { unified } from '@astrojs/markdown-remark';
 import starlight from '@astrojs/starlight';
 import { createStarlightTypeDocPlugin } from 'starlight-typedoc';
 import rehypeMermaid from 'rehype-mermaid';
@@ -99,81 +100,91 @@ export default defineConfig({
   // We tell Shiki (Starlight's default syntax highlighter) to NOT touch
   // mermaid code blocks — otherwise it would consume them as plain code
   // and our rehype plugin would see nothing to render.
+  //
+  // Astro 7 made `@astrojs/markdown-satteri` the default Markdown
+  // pipeline and demoted the remark/rehype one to the optional peer
+  // `@astrojs/markdown-remark` — so `markdown.rehypePlugins` is
+  // deprecated and `markdown.processor` is how you opt back in.  We
+  // stay on unified because `rehype-mermaid` is a rehype (hast) plugin
+  // written against that pipeline; Starlight 0.41 detects either
+  // processor and pushes its own plugins into whichever is configured.
   markdown: {
     syntaxHighlight: {
       type: 'shiki',
       excludeLangs: ['mermaid', 'math'],
     },
-    rehypePlugins: [
-      [
-        rehypeMermaid,
-        {
-          // 'inline-svg' inlines the rendered SVG directly into the HTML.
-          // Other options: 'img-svg' (SVG in <img>), 'img-png' (PNG in
-          // <img>), 'pre-mermaid' (no SSR, client-side render).  Inline
-          // is the cleanest for theming + accessibility.
-          strategy: 'inline-svg',
-          // Inject JetBrains Mono into the Playwright/Chromium page so
-          // SSR text-measurement matches the runtime browser (which
-          // also loads JetBrains Mono via @fontsource).  Without this
-          // the headless Chromium falls back to a narrow sans-serif,
-          // computes a too-small bbox, and node labels like "routee-1"
-          // get clipped to "routee-:" at runtime.  The plugin's `css`
-          // option expects a file PATH (not inline CSS) — generated
-          // above into `.astro/mermaid-fonts.css`.
-          css: mermaidCssPath,
-          // Match our dark/light palette.  Mermaid's 'dark' theme uses a
-          // dark background which fits Starlight's default dark mode;
-          // light pages get re-themed via CSS variables on the SVG.
-          mermaidConfig: {
-            theme: 'dark',
-            themeVariables: {
-              // ---- Flowchart + state-diagram palette ----
-              // Indigo accents, slate base — same palette as the logo.
-              primaryColor:       '#1e293b',  // slate-800   — node bg
-              primaryTextColor:   '#f1f5f9',  // slate-100   — node text
-              primaryBorderColor: '#6366f1',  // indigo-500  — node border
-              lineColor:          '#94a3b8',  // slate-400   — connection lines
-              secondaryColor:     '#312e81',  // indigo-900  — alt node bg
-              tertiaryColor:      '#0f172a',  // slate-900   — bg
+    processor: unified({
+      rehypePlugins: [
+        [
+          rehypeMermaid,
+          {
+            // 'inline-svg' inlines the rendered SVG directly into the HTML.
+            // Other options: 'img-svg' (SVG in <img>), 'img-png' (PNG in
+            // <img>), 'pre-mermaid' (no SSR, client-side render).  Inline
+            // is the cleanest for theming + accessibility.
+            strategy: 'inline-svg',
+            // Inject JetBrains Mono into the Playwright/Chromium page so
+            // SSR text-measurement matches the runtime browser (which
+            // also loads JetBrains Mono via @fontsource).  Without this
+            // the headless Chromium falls back to a narrow sans-serif,
+            // computes a too-small bbox, and node labels like "routee-1"
+            // get clipped to "routee-:" at runtime.  The plugin's `css`
+            // option expects a file PATH (not inline CSS) — generated
+            // above into `.astro/mermaid-fonts.css`.
+            css: mermaidCssPath,
+            // Match our dark/light palette.  Mermaid's 'dark' theme uses a
+            // dark background which fits Starlight's default dark mode;
+            // light pages get re-themed via CSS variables on the SVG.
+            mermaidConfig: {
+              theme: 'dark',
+              themeVariables: {
+                // ---- Flowchart + state-diagram palette ----
+                // Indigo accents, slate base — same palette as the logo.
+                primaryColor:       '#1e293b',  // slate-800   — node bg
+                primaryTextColor:   '#f1f5f9',  // slate-100   — node text
+                primaryBorderColor: '#6366f1',  // indigo-500  — node border
+                lineColor:          '#94a3b8',  // slate-400   — connection lines
+                secondaryColor:     '#312e81',  // indigo-900  — alt node bg
+                tertiaryColor:      '#0f172a',  // slate-900   — bg
 
-              // ---- Sequence-diagram palette ----
-              // Mermaid uses an entirely separate set of variables for
-              // sequence diagrams — the flowchart `primaryColor` etc.
-              // are NOT picked up there.  Mirror the indigo/slate look
-              // explicitly so sequence diagrams don't render as plain
-              // grey while the rest of the docs use the brand palette.
-              actorBkg:              '#1e293b',  // slate-800  — actor box bg
-              actorBorder:           '#6366f1',  // indigo-500 — actor box border
-              actorTextColor:        '#f1f5f9',  // slate-100  — actor name
-              actorLineColor:        '#475569',  // slate-600  — vertical lifelines
-              signalColor:           '#94a3b8',  // slate-400  — arrows
-              signalTextColor:       '#cbd5e1',  // slate-300  — arrow labels
-              noteBkgColor:          '#312e81',  // indigo-900 — note bg
-              noteBorderColor:       '#818cf8',  // indigo-400 — note border
-              noteTextColor:         '#f1f5f9',  // slate-100  — note text
-              labelBoxBkgColor:      '#0f172a',  // slate-900  — sequence-numbered loop labels
-              labelBoxBorderColor:   '#6366f1',  // indigo-500
-              labelTextColor:        '#f1f5f9',
-              loopTextColor:         '#cbd5e1',  // slate-300
-              activationBkgColor:    '#312e81',  // indigo-900 — activation bar bg
-              activationBorderColor: '#818cf8',  // indigo-400
-              sequenceNumberColor:   '#0f172a',  // slate-900  — sequence-step circles
+                // ---- Sequence-diagram palette ----
+                // Mermaid uses an entirely separate set of variables for
+                // sequence diagrams — the flowchart `primaryColor` etc.
+                // are NOT picked up there.  Mirror the indigo/slate look
+                // explicitly so sequence diagrams don't render as plain
+                // grey while the rest of the docs use the brand palette.
+                actorBkg:              '#1e293b',  // slate-800  — actor box bg
+                actorBorder:           '#6366f1',  // indigo-500 — actor box border
+                actorTextColor:        '#f1f5f9',  // slate-100  — actor name
+                actorLineColor:        '#475569',  // slate-600  — vertical lifelines
+                signalColor:           '#94a3b8',  // slate-400  — arrows
+                signalTextColor:       '#cbd5e1',  // slate-300  — arrow labels
+                noteBkgColor:          '#312e81',  // indigo-900 — note bg
+                noteBorderColor:       '#818cf8',  // indigo-400 — note border
+                noteTextColor:         '#f1f5f9',  // slate-100  — note text
+                labelBoxBkgColor:      '#0f172a',  // slate-900  — sequence-numbered loop labels
+                labelBoxBorderColor:   '#6366f1',  // indigo-500
+                labelTextColor:        '#f1f5f9',
+                loopTextColor:         '#cbd5e1',  // slate-300
+                activationBkgColor:    '#312e81',  // indigo-900 — activation bar bg
+                activationBorderColor: '#818cf8',  // indigo-400
+                sequenceNumberColor:   '#0f172a',  // slate-900  — sequence-step circles
 
-              // JetBrains Mono matches the rest of the site's code-block
-              // font + the logo wordmark — keeps diagrams visually
-              // unified with the surrounding docs.  Loaded into
-              // Playwright via the `css` option above so SSR and
-              // runtime measure with the same font.
-              fontFamily:         "'JetBrains Mono', ui-monospace, monospace",
-              fontSize:           '14px',
+                // JetBrains Mono matches the rest of the site's code-block
+                // font + the logo wordmark — keeps diagrams visually
+                // unified with the surrounding docs.  Loaded into
+                // Playwright via the `css` option above so SSR and
+                // runtime measure with the same font.
+                fontFamily:         "'JetBrains Mono', ui-monospace, monospace",
+                fontSize:           '14px',
+              },
+              flowchart:  { htmlLabels: true, curve: 'basis', padding: 12 },
+              sequence:   { actorMargin: 50 },
             },
-            flowchart:  { htmlLabels: true, curve: 'basis', padding: 12 },
-            sequence:   { actorMargin: 50 },
           },
-        },
+        ],
       ],
-    ],
+    }),
   },
   integrations: [
     starlight({
@@ -454,6 +465,7 @@ export default defineConfig({
                   collapsed: true,
                   items: [
                     { label: 'Overview',            slug: 'cluster/sharding/overview',                translations: { de: 'Überblick', es: 'Visión general', fr: 'Vue d’ensemble', ja: '概要', ko: '개요', 'pt-BR': 'Visão geral', ru: 'Обзор', 'zh-CN': '概览' } },
+                    { label: 'Introspection',       slug: 'cluster/sharding/introspection',           translations: { de: 'Introspektion', es: 'Introspección', fr: 'Introspection', ja: 'イントロスペクション', ko: '인트로스펙션', 'pt-BR': 'Introspecção', ru: 'Интроспекция', 'zh-CN': '内省' } },
                     { label: 'Allocation strategy', slug: 'cluster/sharding/allocation-strategy',     translations: { de: 'Allocation-Strategie', es: 'Estrategia de asignación', fr: 'Stratégie d’allocation', ja: '配置戦略', ko: '할당 전략', 'pt-BR': 'Estratégia de alocação', ru: 'Стратегия размещения', 'zh-CN': '分配策略' } },
                     { label: 'Rebalance',           slug: 'cluster/sharding/rebalance',               translations: { de: 'Rebalance', es: 'Rebalance', fr: 'Rééquilibrage', ja: 'リバランス', ko: '리밸런스', 'pt-BR': 'Rebalanceamento', ru: 'Ребалансировка', 'zh-CN': '再平衡' } },
                     { label: 'Remember entities',   slug: 'cluster/sharding/remember-entities',       translations: { de: 'Entities merken', es: 'Remember entities', fr: 'Mémorisation des entités', ja: 'エンティティ記憶', ko: '엔티티 기억', 'pt-BR': 'Remember entities', ru: 'Запоминание сущностей', 'zh-CN': '记住实体' } },
@@ -553,6 +565,12 @@ export default defineConfig({
                 { label: 'Cassandra', slug: 'persistence/journals/cassandra', translations: { de: 'Cassandra', es: 'Cassandra', fr: 'Cassandra', ja: 'Cassandra', ko: 'Cassandra', 'pt-BR': 'Cassandra', ru: 'Cassandra', 'zh-CN': 'Cassandra' } },
                 { label: 'PostgreSQL', slug: 'persistence/journals/postgres', translations: { de: 'PostgreSQL', es: 'PostgreSQL', fr: 'PostgreSQL', ja: 'PostgreSQL', ko: 'PostgreSQL', 'pt-BR': 'PostgreSQL', ru: 'PostgreSQL', 'zh-CN': 'PostgreSQL' } },
                 { label: 'MariaDB',    slug: 'persistence/journals/mariadb',   translations: { de: 'MariaDB', es: 'MariaDB', fr: 'MariaDB', ja: 'MariaDB', ko: 'MariaDB', 'pt-BR': 'MariaDB', ru: 'MariaDB', 'zh-CN': 'MariaDB' } },
+                { label: 'libSQL / Turso', slug: 'persistence/journals/libsql', translations: { de: 'libSQL / Turso', es: 'libSQL / Turso', fr: 'libSQL / Turso', ja: 'libSQL / Turso', ko: 'libSQL / Turso', 'pt-BR': 'libSQL / Turso', ru: 'libSQL / Turso', 'zh-CN': 'libSQL / Turso' } },
+                { label: 'SQL Server', slug: 'persistence/journals/mssql', translations: { de: 'SQL Server', es: 'SQL Server', fr: 'SQL Server', ja: 'SQL Server', ko: 'SQL Server', 'pt-BR': 'SQL Server', ru: 'SQL Server', 'zh-CN': 'SQL Server' } },
+                { label: 'Cloudflare D1', slug: 'persistence/journals/cloudflare-d1', translations: { de: 'Cloudflare D1', es: 'Cloudflare D1', fr: 'Cloudflare D1', ja: 'Cloudflare D1', ko: 'Cloudflare D1', 'pt-BR': 'Cloudflare D1', ru: 'Cloudflare D1', 'zh-CN': 'Cloudflare D1' } },
+                { label: 'DynamoDB', slug: 'persistence/journals/dynamodb', translations: { de: 'DynamoDB', es: 'DynamoDB', fr: 'DynamoDB', ja: 'DynamoDB', ko: 'DynamoDB', 'pt-BR': 'DynamoDB', ru: 'DynamoDB', 'zh-CN': 'DynamoDB' } },
+                { label: 'MongoDB', slug: 'persistence/journals/mongodb', translations: { de: 'MongoDB', es: 'MongoDB', fr: 'MongoDB', ja: 'MongoDB', ko: 'MongoDB', 'pt-BR': 'MongoDB', ru: 'MongoDB', 'zh-CN': 'MongoDB' } },
+                { label: 'Wire-compatible databases', slug: 'persistence/journals/wire-compatible', translations: { de: 'Wire-kompatible Datenbanken', es: 'Bases de datos compatibles a nivel de protocolo', fr: 'Bases de données compatibles au niveau du protocole', ja: 'ワイヤ互換データベース', ko: '와이어 호환 데이터베이스', 'pt-BR': 'Bancos compatíveis no protocolo', ru: 'Совместимые по протоколу СУБД', 'zh-CN': '协议兼容数据库' } },
               ],
             },
             {
@@ -562,6 +580,7 @@ export default defineConfig({
               items: [
                 { label: 'In-memory',             slug: 'persistence/snapshot-stores/in-memory',             translations: { de: 'In-Memory', es: 'En memoria', fr: 'En mémoire', ja: 'インメモリ', ko: '인메모리', 'pt-BR': 'Em memória', ru: 'In-memory', 'zh-CN': '内存' } },
                 { label: 'SQLite',                slug: 'persistence/snapshot-stores/sqlite',                translations: { de: 'SQLite', es: 'SQLite', fr: 'SQLite', ja: 'SQLite', ko: 'SQLite', 'pt-BR': 'SQLite', ru: 'SQLite', 'zh-CN': 'SQLite' } },
+                { label: 'Cassandra',             slug: 'persistence/snapshot-stores/cassandra',             translations: { de: 'Cassandra', es: 'Cassandra', fr: 'Cassandra', ja: 'Cassandra', ko: 'Cassandra', 'pt-BR': 'Cassandra', ru: 'Cassandra', 'zh-CN': 'Cassandra' } },
                 { label: 'Cached snapshot store', slug: 'persistence/snapshot-stores/cached-snapshot-store', translations: { de: 'Cached Snapshot Store', es: 'Snapshot store con caché', fr: 'Magasin de Snapshots avec cache', ja: 'キャッシュ付きスナップショットストア', ko: '캐시드 스냅샷 스토어', 'pt-BR': 'Snapshot store com cache', ru: 'Кэшированное хранилище Snapshots', 'zh-CN': '带缓存的快照存储' } },
               ],
             },
@@ -643,6 +662,7 @@ export default defineConfig({
                 { label: 'MQTT',             slug: 'io/mqtt',              translations: { de: 'MQTT', es: 'MQTT', fr: 'MQTT', ja: 'MQTT', ko: 'MQTT', 'pt-BR': 'MQTT', ru: 'MQTT', 'zh-CN': 'MQTT' } },
                 { label: 'AMQP',             slug: 'io/amqp',              translations: { de: 'AMQP', es: 'AMQP', fr: 'AMQP', ja: 'AMQP', ko: 'AMQP', 'pt-BR': 'AMQP', ru: 'AMQP', 'zh-CN': 'AMQP' } },
                 { label: 'NATS',             slug: 'io/nats',              translations: { de: 'NATS', es: 'NATS', fr: 'NATS', ja: 'NATS', ko: 'NATS', 'pt-BR': 'NATS', ru: 'NATS', 'zh-CN': 'NATS' } },
+                { label: 'NATS JetStream',   slug: 'io/jetstream',         translations: { de: 'NATS JetStream', es: 'NATS JetStream', fr: 'NATS JetStream', ja: 'NATS JetStream', ko: 'NATS JetStream', 'pt-BR': 'NATS JetStream', ru: 'NATS JetStream', 'zh-CN': 'NATS JetStream' } },
                 { label: 'Redis Streams',    slug: 'io/redis-streams',     translations: { de: 'Redis Streams', es: 'Redis Streams', fr: 'Redis Streams', ja: 'Redis Streams', ko: 'Redis Streams', 'pt-BR': 'Redis Streams', ru: 'Redis Streams', 'zh-CN': 'Redis Streams' } },
                 { label: 'gRPC',             slug: 'io/grpc',              translations: { de: 'gRPC', es: 'gRPC', fr: 'gRPC', ja: 'gRPC', ko: 'gRPC', 'pt-BR': 'gRPC', ru: 'gRPC', 'zh-CN': 'gRPC' } },
                 { label: 'SSE',              slug: 'io/sse',               translations: { de: 'SSE', es: 'SSE', fr: 'SSE', ja: 'SSE', ko: 'SSE', 'pt-BR': 'SSE', ru: 'SSE', 'zh-CN': 'SSE' } },
@@ -686,6 +706,8 @@ export default defineConfig({
                     { label: 'Security headers', slug: 'http/middleware/security-headers', translations: { de: 'Security-Header', es: 'Cabeceras de seguridad', fr: 'En-têtes de sécurité', ja: 'セキュリティヘッダ', ko: '보안 헤더', 'pt-BR': 'Cabeçalhos de segurança', ru: 'Заголовки безопасности', 'zh-CN': '安全响应头' } },
                     { label: 'CSP',             slug: 'http/middleware/csp',             translations: { de: 'CSP', es: 'CSP', fr: 'CSP', ja: 'CSP', ko: 'CSP', 'pt-BR': 'CSP', ru: 'CSP', 'zh-CN': 'CSP' } },
                     { label: 'Basic auth',      slug: 'http/middleware/basic-auth',      translations: { de: 'Basic-Auth', es: 'Autenticación básica', fr: 'Authentification Basic', ja: 'Basic 認証', ko: 'Basic 인증', 'pt-BR': 'Autenticação básica', ru: 'Basic-аутентификация', 'zh-CN': 'Basic 认证' } },
+                    { label: 'Bearer token',    slug: 'http/middleware/bearer-token',    translations: { de: 'Bearer-Token', es: 'Token Bearer', fr: 'Jeton Bearer', ja: 'Bearer トークン', ko: 'Bearer 토큰', 'pt-BR': 'Token Bearer', ru: 'Bearer-токен', 'zh-CN': 'Bearer 令牌' } },
+                    { label: 'IP allowlist',    slug: 'http/middleware/ip-allowlist',    translations: { de: 'IP-Allowlist', es: 'Lista de IP permitidas', fr: 'Liste d’IP autorisées', ja: 'IP 許可リスト', ko: 'IP 허용 목록', 'pt-BR': 'Lista de IPs permitidos', ru: 'Список разрешённых IP', 'zh-CN': 'IP 白名单' } },
                     { label: 'Request ID',      slug: 'http/middleware/request-id',      translations: { de: 'Request-ID', es: 'ID de solicitud', fr: 'ID de requête', ja: 'リクエスト ID', ko: '요청 ID', 'pt-BR': 'ID de requisição', ru: 'ID запроса', 'zh-CN': '请求 ID' } },
                     { label: 'Timeout',         slug: 'http/middleware/timeout',         translations: { de: 'Timeout', es: 'Tiempo límite', fr: 'Délai d’attente', ja: 'タイムアウト', ko: '타임아웃', 'pt-BR': 'Timeout', ru: 'Тайм-аут', 'zh-CN': '超时' } },
                   ],
@@ -753,6 +775,20 @@ export default defineConfig({
                 { label: 'Overview',       slug: 'observability/management/overview',       translations: { de: 'Überblick', es: 'Visión general', fr: 'Vue d’ensemble', ja: '概要', ko: '개요', 'pt-BR': 'Visão geral', ru: 'Обзор', 'zh-CN': '概览' } },
                 { label: 'Health checks',  slug: 'observability/management/health-checks',  translations: { de: 'Health-Checks', es: 'Health checks', fr: 'Health checks', ja: 'ヘルスチェック', ko: '헬스 체크', 'pt-BR': 'Health checks', ru: 'Проверки работоспособности', 'zh-CN': '健康检查' } },
                 { label: 'HTTP endpoints', slug: 'observability/management/http-endpoints', translations: { de: 'HTTP-Endpoints', es: 'Endpoints HTTP', fr: 'Endpoints HTTP', ja: 'HTTP エンドポイント', ko: 'HTTP 엔드포인트', 'pt-BR': 'Endpoints HTTP', ru: 'HTTP-эндпоинты', 'zh-CN': 'HTTP 端点' } },
+              ],
+            },
+            {
+              label: 'DevTools',
+              translations: { de: 'DevTools', es: 'DevTools', fr: 'DevTools', ja: 'DevTools', ko: 'DevTools', 'pt-BR': 'DevTools', ru: 'DevTools', 'zh-CN': 'DevTools' },
+              collapsed: true,
+              items: [
+                { label: 'Overview',      slug: 'observability/devtools/overview', translations: { de: 'Überblick', es: 'Visión general', fr: 'Vue d’ensemble', ja: '概要', ko: '개요', 'pt-BR': 'Visão geral', ru: 'Обзор', 'zh-CN': '概览' } },
+                { label: 'Actors & cluster', slug: 'observability/devtools/actor-visualizer', translations: { de: 'Actors & Cluster', es: 'Actores y clúster', fr: 'Acteurs et cluster', ja: 'アクターとクラスタ', ko: '액터 및 클러스터', 'pt-BR': 'Atores e cluster', ru: 'Акторы и кластер', 'zh-CN': 'Actor 与集群' } },
+                { label: 'Tracing panel', slug: 'observability/devtools/tracing', translations: { de: 'Tracing-Panel', es: 'Panel de trazado', fr: 'Panneau de tracing', ja: 'トレーシングパネル', ko: '트레이싱 패널', 'pt-BR': 'Painel de tracing', ru: 'Панель трассировки', 'zh-CN': '追踪面板' } },
+                { label: 'Explain plan', slug: 'observability/devtools/explain-plan', translations: { de: 'Explain-Plan', es: 'Plan de explicación', fr: 'Plan d’explication', ja: '実行計画', ko: '실행 계획', 'pt-BR': 'Plano de explicação', ru: 'План выполнения', 'zh-CN': '执行计划' } },
+                { label: 'Time travel', slug: 'observability/devtools/time-travel', translations: { de: 'Time Travel', es: 'Viaje en el tiempo', fr: 'Voyage dans le temps', ja: 'タイムトラベル', ko: '타임 트래블', 'pt-BR': 'Viagem no tempo', ru: 'Путешествие во времени', 'zh-CN': '时间旅行' } },
+                { label: 'Profiler', slug: 'observability/devtools/profiler', translations: { de: 'Profiler', es: 'Profiler', fr: 'Profiler', ja: 'プロファイラ', ko: '프로파일러', 'pt-BR': 'Profiler', ru: 'Профилировщик', 'zh-CN': '性能分析器' } },
+                { label: 'Tap protocol',  slug: 'observability/devtools/protocol', translations: { de: 'Tap-Protokoll', es: 'Protocolo del tap', fr: 'Protocole du tap', ja: 'Tap プロトコル', ko: 'Tap 프로토콜', 'pt-BR': 'Protocolo do tap', ru: 'Протокол tap', 'zh-CN': 'Tap 协议' } },
               ],
             },
           ],

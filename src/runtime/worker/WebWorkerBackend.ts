@@ -27,6 +27,12 @@ export class WebWorkerBackend implements WorkerBackend {
 
 /* ----------------------------- internals --------------------------------- */
 
+/**
+ * Intentionally an intersection rather than `interface … extends Worker`:
+ * these listener signatures are deliberately narrower than the DOM ones, and
+ * an intersection adds them as overloads where `extends` would reject them as
+ * incompatible (TS2430).
+ */
 type NativeWorker = Worker & {
   addEventListener(type: string, listener: (e: { data?: unknown; code?: number }) => void): void;
   removeEventListener(type: string, listener: (e: { data?: unknown; code?: number }) => void): void;

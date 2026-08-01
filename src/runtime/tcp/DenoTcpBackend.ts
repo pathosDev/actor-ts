@@ -19,67 +19,67 @@ import type {
  * bytes.
  */
 export class DenoTcpBackend implements TcpBackend {
-  async listen(opts: {
+  async listen(options: {
     host: string; port: number; tls?: TlsTransportOptionsType; handlers: TcpSocketHandlers;
   }): Promise<TcpListener> {
     const deno = (globalThis as { Deno?: DenoGlobal }).Deno;
     if (!deno) throw new Error('DenoTcpBackend: globalThis.Deno is not defined');
 
-    const useTls = !!(opts.tls && opts.tls.cert && opts.tls.key);
+    const useTls = !!(options.tls && options.tls.cert && options.tls.key);
     const listener: DenoListener = useTls
       ? deno.listenTls({
-          hostname: opts.host,
-          port: opts.port,
-          cert: asString(opts.tls!.cert!),
-          key: asString(opts.tls!.key!),
+          hostname: options.host,
+          port: options.port,
+          cert: asString(options.tls!.cert!),
+          key: asString(options.tls!.key!),
         })
-      : deno.listen({ hostname: opts.host, port: opts.port, transport: 'tcp' });
+      : deno.listen({ hostname: options.host, port: options.port, transport: 'tcp' });
 
     // Kick off an accept loop — don't await it from `listen()` since it
     // runs for the lifetime of the server.
     (async (): Promise<void> => {
       try {
-        for await (const conn of listener) {
-          this.attach(conn, opts.handlers);
+        for await (const connection of listener) {
+          this.attach(connection, options.handlers);
         }
       } catch (err) {
         // Listener closed — emit a synthetic close on any open sockets in
-        // the caller is not our concern; just swallow.  `opts.handlers`
-        // already receives per-connection close events when each `conn`
+        // the caller is not our concern; just swallow.  `options.handlers`
+        // already receives per-connection close events when each `connection`
         // ends.
         if (!isClosedListener(err)) throw err;
       }
     })();
 
     return {
-      get port(): number { return listener.addr.port ?? opts.port; },
+      get port(): number { return listener.addr.port ?? options.port; },
       close(): void { try { listener.close(); } catch { /* ignore */ } },
     };
   }
 
-  async connect(opts: {
+  async connect(options: {
     host: string; port: number; tls?: TlsTransportOptionsType; handlers: TcpSocketHandlers;
   }): Promise<TcpSocketLike> {
     const deno = (globalThis as { Deno?: DenoGlobal }).Deno;
     if (!deno) throw new Error('DenoTcpBackend: globalThis.Deno is not defined');
 
-    const useTls = !!opts.tls;
-    const conn: DenoConn = useTls
+    const useTls = !!options.tls;
+    const connection: DenoConnection = useTls
       ? await deno.connectTls({
-          hostname: opts.host,
-          port: opts.port,
-          caCerts: opts.tls!.ca !== undefined ? [asString(opts.tls!.ca)] : undefined,
-          hostname_: opts.tls!.serverName,
+          hostname: options.host,
+          port: options.port,
+          caCerts: options.tls!.ca !== undefined ? [asString(options.tls!.ca)] : undefined,
+          hostname_: options.tls!.serverName,
         })
-      : await deno.connect({ hostname: opts.host, port: opts.port, transport: 'tcp' });
+      : await deno.connect({ hostname: options.host, port: options.port, transport: 'tcp' });
 
-    const sock = this.attach(conn, opts.handlers);
+    const sock = this.attach(connection, options.handlers);
     return sock;
   }
 
   /** Wrap a Deno.Conn as a TcpSocketLike and drive its async-iterable reads. */
-  private attach(conn: DenoConn, handlers: TcpSocketHandlers): TcpSocketLike {
-    const writer = conn.writable.getWriter();
+  private attach(connection: DenoConnection, handlers: TcpSocketHandlers): TcpSocketLike {
+    const writer = connection.writable.getWriter();
     let closed = false;
 
     const sock: TcpSocketLike = {
@@ -93,13 +93,13 @@ export class DenoTcpBackend implements TcpBackend {
         if (closed) return;
         closed = true;
         void writer.close().catch(() => { /* ignore */ });
-        try { conn.close(); } catch { /* ignore */ }
+        try { connection.close(); } catch { /* ignore */ }
         handlers.onClose(sock);
       },
       get remoteAddress(): string | undefined {
         // Deno.NetAddr on TCP carries { hostname, port, transport }.  Return
         // `hostname:port` for parity with Bun/Node's `socket.remoteAddress`.
-        const address = conn.remoteAddr;
+        const address = connection.remoteAddr;
         if (address && 'hostname' in address && 'port' in address) return `${address.hostname}:${address.port}`;
         return undefined;
       },
@@ -110,7 +110,7 @@ export class DenoTcpBackend implements TcpBackend {
       // `ReadableStream` has `[Symbol.asyncIterator]()` on Bun/Node/Deno
       // but the vanilla DOM typings don't expose it, so we use the
       // explicit reader API for cross-runtime typing compatibility.
-      const reader = conn.readable.getReader();
+      const reader = connection.readable.getReader();
       try {
         while (!closed) {
           const { value, done } = await reader.read();
@@ -142,27 +142,27 @@ function isClosedListener(err: unknown): boolean {
   // Deno.errors.BadResource / InvalidData — thrown when the listener has
   // been closed while we're mid-accept.  No stable type export across Deno
   // versions; string-match the common cases.
-  const msg = (err as Error | undefined)?.message ?? '';
-  return /closed|Bad resource/i.test(msg);
+  const message = (err as Error | undefined)?.message ?? '';
+  return /closed|Bad resource/i.test(message);
 }
 
-interface DenoConn {
+interface DenoConnection {
   readonly readable: ReadableStream<Uint8Array>;
   readonly writable: WritableStream<Uint8Array>;
   readonly remoteAddr?: { hostname?: string; port?: number };
   close(): void;
 }
 
-interface DenoListener extends AsyncIterable<DenoConn> {
+interface DenoListener extends AsyncIterable<DenoConnection> {
   readonly addr: { port?: number };
   close(): void;
 }
 
 interface DenoGlobal {
-  listen(opts: { hostname: string; port: number; transport: 'tcp' }): DenoListener;
-  listenTls(opts: { hostname: string; port: number; cert: string; key: string }): DenoListener;
-  connect(opts: { hostname: string; port: number; transport: 'tcp' }): Promise<DenoConn>;
-  connectTls(opts: {
+  listen(options: { hostname: string; port: number; transport: 'tcp' }): DenoListener;
+  listenTls(options: { hostname: string; port: number; cert: string; key: string }): DenoListener;
+  connect(options: { hostname: string; port: number; transport: 'tcp' }): Promise<DenoConnection>;
+  connectTls(options: {
     hostname: string; port: number; caCerts?: string[]; hostname_?: string;
-  }): Promise<DenoConn>;
+  }): Promise<DenoConnection>;
 }

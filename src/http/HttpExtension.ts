@@ -9,7 +9,7 @@ import type { HttpRequest, HttpResponse } from './types.js';
 import { ConnectionTracker, trackSocket } from './websocket/ConnectionWiring.js';
 
 export interface ServerBuilder {
-  /** Override the default Fastify backend (or use BunServe / Express). */
+  /** Override the default Fastify backend (or use Express / Hono). */
   useBackend(backend: HttpServerBackend): ServerBuilder;
   /**
    * Last-resort handler for errors that escape every route-level
@@ -18,7 +18,7 @@ export interface ServerBuilder {
    * it throws, the default mapping still applies.  Requires a backend
    * that supports `setErrorHandler` (all shipped backends do).
    */
-  withErrorHandler(handler: (err: unknown, req: HttpRequest) => Promise<HttpResponse> | HttpResponse): ServerBuilder;
+  withErrorHandler(handler: (err: unknown, request: HttpRequest) => Promise<HttpResponse> | HttpResponse): ServerBuilder;
   /** Register the full route tree and bind.  Returns the ServerBinding. */
   bind(routes: Route): Promise<ServerBinding>;
 }
@@ -27,7 +27,7 @@ export interface ServerBuilder {
  * System-wide HTTP extension — entry point for the routing DSL and the
  * shared HttpClient.  Every ActorSystem gets one HttpClient and a factory
  * for HTTP servers.  The default server backend is Fastify; swap it per
- * server via `builder.useBackend(new BunServeBackend())`.
+ * server via `builder.useBackend(new HonoBackend())`.
  */
 export class HttpExtension implements Extension {
   /** Shared HTTP client — uses the global fetch. */
@@ -38,14 +38,14 @@ export class HttpExtension implements Extension {
   /** Start building a new server scope.  Call `bind(routes)` to start it. */
   newServerAt(host: string, port: number): ServerBuilder {
     let backend: HttpServerBackend | null = null;
-    let errorHandler: ((err: unknown, req: HttpRequest) => Promise<HttpResponse> | HttpResponse) | null = null;
+    let errorHandler: ((err: unknown, request: HttpRequest) => Promise<HttpResponse> | HttpResponse) | null = null;
     const system = this.system;
     return {
       useBackend(b: HttpServerBackend): ServerBuilder {
         backend = b;
         return this;
       },
-      withErrorHandler(handler: (err: unknown, req: HttpRequest) => Promise<HttpResponse> | HttpResponse): ServerBuilder {
+      withErrorHandler(handler: (err: unknown, request: HttpRequest) => Promise<HttpResponse> | HttpResponse): ServerBuilder {
         errorHandler = handler;
         return this;
       },
@@ -88,18 +88,18 @@ export class HttpExtension implements Extension {
           active.registerRoute({
             method: route.method,
             pattern: route.pattern,
-            handler: async (req: HttpRequest): Promise<HttpResponse> => {
+            handler: async (request: HttpRequest): Promise<HttpResponse> => {
               const start = Date.now();
-              system.log.debug(`[http] ${req.method} ${req.path}`);
+              system.log.debug(`[http] ${request.method} ${request.path}`);
               try {
-                const out = await route.handler(req);
+                const out = await route.handler(request);
                 system.log.debug(
-                  `[http] ${req.method} ${req.path} → ${out.status} (${Date.now() - start} ms)`,
+                  `[http] ${request.method} ${request.path} → ${out.status} (${Date.now() - start} ms)`,
                 );
                 return out;
               } catch (err) {
                 system.log.debug(
-                  `[http] ${req.method} ${req.path} → error after ${Date.now() - start} ms: ${(err as Error).message}`,
+                  `[http] ${request.method} ${request.path} → error after ${Date.now() - start} ms: ${(err as Error).message}`,
                 );
                 throw err;
               }
@@ -115,9 +115,9 @@ export class HttpExtension implements Extension {
           active.registerWebSocket!({
             pattern: route.pattern,
             authorize: route.authorize,
-            onConnection: (req, socket) => {
-              system.log.debug(`[ws] upgrade ${req.path}`);
-              route.connect(system, req, trackSocket(tracker, socket));
+            onConnection: (request, socket) => {
+              system.log.debug(`[ws] upgrade ${request.path}`);
+              route.connect(system, request, trackSocket(tracker, socket));
             },
           });
         }
@@ -137,10 +137,10 @@ export class HttpExtension implements Extension {
             );
           }
           const fb = fallbacks[0]!;
-          active.setNotFound(async (req: HttpRequest): Promise<HttpResponse> => {
-            system.log.debug(`[http] (fallback) ${req.method} ${req.path}`);
+          active.setNotFound(async (request: HttpRequest): Promise<HttpResponse> => {
+            system.log.debug(`[http] (fallback) ${request.method} ${request.path}`);
             try {
-              return await fb.handler(req);
+              return await fb.handler(request);
             } catch (err) {
               return defaultErrorResponse(err);
             }
@@ -165,6 +165,7 @@ export class HttpExtension implements Extension {
         // from the first.  On unbind we also close then hard-terminate
         // live WebSocket sockets so the backend's close() can complete.
         let unbindOnce: Promise<void> | null = null;
+        const shutdownTaskName = `http-unbind-${raw.host}:${raw.port}`;
         const binding: ServerBinding = {
           host: raw.host,
           port: raw.port,
@@ -175,6 +176,12 @@ export class HttpExtension implements Extension {
                 tracker.closeAll(1001, 'server shutting down');
                 tracker.terminateAll();
                 await backendUnbind;
+                // The task is named after the address, so leaving it
+                // behind made re-binding that address impossible: the
+                // next `bind()` collided with a task for a server that
+                // no longer exists.
+                system.extension(CoordinatedShutdownId)
+                  .removeTask(Phases.ServiceUnbind, shutdownTaskName);
               })();
             }
             return unbindOnce;
@@ -185,7 +192,7 @@ export class HttpExtension implements Extension {
         // the server before the rest of the pipeline tears down the system.
         system.extension(CoordinatedShutdownId).addTask(
           Phases.ServiceUnbind,
-          `http-unbind-${binding.host}:${binding.port}`,
+          shutdownTaskName,
           () => binding.unbind(),
         );
         system.log.info(`HTTP server bound on ${binding.host}:${binding.port} (${active.name})`);

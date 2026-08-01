@@ -82,7 +82,7 @@ dd.update<GCounter>(
 
 // Read the local view — gives you the latest known merged state.
 const counter = dd.get<GCounter>('request-count');
-console.log(counter?.value);   // sum across all known replicas
+console.log(counter?.value());   // sum across all known replicas
 ```
 
 The local update is immediate; gossip propagates it to peers over
@@ -104,9 +104,12 @@ toward the global state.
 | **`ORMap<K, C>`** | A map where the values are themselves CRDTs. | Per-key counters, per-key sets. |
 | **`GCounterMap<K>`** | Convenience: a map of GCounters. | Per-key click counters, per-tenant request counts. |
 
-See [CRDT types](/distributed-data/crdt-types/) for the
-deep dive on each — `merge()` semantics, when they fit, when they
-don't.
+The CRDT-type deep dives cover `merge()` semantics, when they fit,
+and when they don't —
+[counters](/distributed-data/crdt-types/counters/),
+[registers](/distributed-data/crdt-types/registers/),
+[sets](/distributed-data/crdt-types/sets/) and
+[maps](/distributed-data/crdt-types/maps/).
 
 ## Consistency knobs
 
@@ -124,9 +127,9 @@ const hits = await dd.getAsync<GCounter>('hits',
 | Level | What it means |
 | --- | --- |
 | `'local'` *(default)* | Apply locally; rely on gossip to propagate.  Read returns the local replica's view. |
-| `'majority'` | Wait until ⌈N/2 + 1⌉ replicas have acked.  Read merges majority responses. |
+| `'majority'` | Wait until ⌊N/2⌋+1 replicas have acked.  Read merges majority responses. |
 | `'all'` | Wait for every up-member.  Strongest consistency, highest latency. |
-| `{ kind: 'count'; n: 3 }` | Wait for exactly `n` acks. |
+| `{ from: 3 }` | Wait for exactly `from` acks (clamped to `[1, N]`). |
 
 Quorum doesn't change the merge semantics — every update still
 merges into every replica eventually.  Quorum just gives you a
@@ -145,7 +148,7 @@ for `'majority'` when:
 
 ```ts
 const unsubscribe = dd.subscribe<GCounter>('hits', (counter) => {
-  console.log(`hits is now ${counter.value}`);
+  console.log(`hits is now ${counter.value()}`);
 });
 
 // ... later
@@ -221,8 +224,9 @@ import { Aside } from '@astrojs/starlight/components';
 
 ## Where to next
 
-- **[CRDT types](/distributed-data/crdt-types/)** —
-  deep dive on each type's semantics.
+- **[Counters](/distributed-data/crdt-types/counters/)** — the first
+  of the CRDT-type deep dives; each one links on to registers, sets
+  and maps.
 - **[Replication](/distributed-data/replication/)** — how
   gossip moves updates between replicas.
 - **[Quorum reads/writes](/distributed-data/quorum-reads-writes/)** —

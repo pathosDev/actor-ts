@@ -29,22 +29,22 @@ import {
 } from 'actor-ts';
 
 const system = ActorSystem.create('my-app');
-const cs = system.extension(CoordinatedShutdownId);
+const coordinatedShutdown = system.extension(CoordinatedShutdownId);
 
-cs.addTask(Phases.ServiceUnbind, 'close-http', async (reason) => {
+coordinatedShutdown.addTask(Phases.ServiceUnbind, 'close-http', async (reason) => {
   await httpServer.close();
 });
 
-cs.addTask(Phases.ServiceRequestsDone, 'drain-in-flight', async () => {
+coordinatedShutdown.addTask(Phases.ServiceRequestsDone, 'drain-in-flight', async () => {
   await waitForInFlightRequests(/* bis zu 10s */);
 });
 
-cs.installProcessHooks();   // SIGTERM/SIGINT → cs.run(ProcessTerminateReason)
+coordinatedShutdown.installProcessHooks();   // SIGTERM/SIGINT → coordinatedShutdown.run(ProcessTerminateReason)
 ```
 
 Drei Dinge passieren, wenn SIGTERM ankommt:
 
-1. Die Runtime ruft `cs.run(new ProcessTerminateReason('SIGTERM'))`.
+1. Die Runtime ruft `coordinatedShutdown.run(new ProcessTerminateReason('SIGTERM'))`.
 2. Die Phasen laufen in kanonischer Reihenfolge.  Innerhalb jeder
    Phase laufen alle registrierten Tasks **parallel**; die Phase
    wartet auf alle (oder auf ihre Timeouts).
@@ -84,8 +84,8 @@ sie gegenüber String-Literalen für Autocomplete:
 ```ts
 import { Phases } from 'actor-ts';
 
-cs.addTask(Phases.ServiceUnbind, ...);   // ✓ typisiert
-cs.addTask('service-unbind',    ...);    // ✗ Stringly-typed, kein Auto-Complete
+coordinatedShutdown.addTask(Phases.ServiceUnbind, ...);   // ✓ typisiert
+coordinatedShutdown.addTask('service-unbind',    ...);    // ✗ Stringly-typed, kein Auto-Complete
 ```
 
 ## Eigene Phasen hinzufügen
@@ -94,14 +94,14 @@ Für app-spezifische Arbeit, die nicht in eine kanonische Phase
 passt, deklariere deine eigene:
 
 ```ts
-cs.addPhase({
+coordinatedShutdown.addPhase({
   name: 'flush-metrics',
   timeoutMs: 3_000,
   dependsOn: [Phases.BeforeActorSystemTerminate],
   recover: true,
 });
 
-cs.addTask('flush-metrics', 'push-prometheus', async () => {
+coordinatedShutdown.addTask('flush-metrics', 'push-prometheus', async () => {
   await metricsRegistry.flush();
 });
 ```
@@ -111,8 +111,12 @@ deine Phase läuft nach `before-actor-system-terminate`, aber **vor**
 `actor-system-terminate` (weil letzteres ersteres in seiner eigenen
 impliziten Kette hat).
 
-Das Framework macht einen topologischen Sort, Zyklen scheitern also
-laut zur Registrierungszeit (`Error: cycle in phase dependencies`).
+Weil `addPhase` verlangt, dass jeder `dependsOn`-Eintrag eine
+bereits registrierte Phase benennt, lässt sich ein Zyklus gar
+nicht erst bilden.  Die Reihenfolge selbst wird durch einen
+topologischen Sort berechnet, wenn `run()` ausgeführt wird —
+dieser Sort würde `Error: cycle in phase dependencies` werfen,
+falls je ein Zyklus entstünde.
 
 ## Task-Semantik
 
@@ -126,7 +130,7 @@ Der `reason` lässt einen Task auf den **Grund** des
 Shutdown-Triggers branchen:
 
 ```ts
-cs.addTask(Phases.ClusterLeave, 'gossip-leave', async (reason) => {
+coordinatedShutdown.addTask(Phases.ClusterLeave, 'gossip-leave', async (reason) => {
   if (reason instanceof ClusterDowningReason) {
     // Wir wurden gedownt — kein Leave gossipen.
     return;
@@ -170,13 +174,13 @@ fertig wird, wird geloggt und entweder:
 Überschreibe pro Phase:
 
 ```ts
-cs.setPhaseTimeout(Phases.ServiceRequestsDone, 30_000);   // 30s Drain-Budget
+coordinatedShutdown.setPhaseTimeout(Phases.ServiceRequestsDone, 30_000);   // 30s Drain-Budget
 ```
 
 Oder definiere deine eigene mit gewünschtem `timeoutMs` / `recover`:
 
 ```ts
-cs.addPhase({
+coordinatedShutdown.addPhase({
   name: 'aggressive-cleanup',
   timeoutMs: 1_000,        // strikter Cap
   dependsOn: [Phases.BeforeActorSystemTerminate],
@@ -187,11 +191,11 @@ cs.addPhase({
 ## SIGTERM / SIGINT-Hooks
 
 ```ts
-cs.installProcessHooks();
-// Oder: cs.installProcessHooks(['SIGTERM', 'SIGINT', 'SIGUSR2']);
+coordinatedShutdown.installProcessHooks();
+// Oder: coordinatedShutdown.installProcessHooks(['SIGTERM', 'SIGINT', 'SIGUSR2']);
 ```
 
-Das hängt Handler an, die `cs.run(new ProcessTerminateReason(signal))`
+Das hängt Handler an, die `coordinatedShutdown.run(new ProcessTerminateReason(signal))`
 aufrufen.  Zweimal aufzurufen ist harmlos (idempotent).  Tests
 überspringen die Hooks meist; Produktion verdrahtet sie immer.
 
@@ -213,7 +217,7 @@ Das Standard-Rezept:
 
 ```ts
 // Bei SIGTERM Coordinated Shutdown laufen lassen:
-cs.installProcessHooks();
+coordinatedShutdown.installProcessHooks();
 
 // PreStop-Hook-Script (in deinem Container-Image):
 //   #!/bin/sh
@@ -231,7 +235,7 @@ für das vollständige Deployment-Manifest.
 
 ## Multi-Trigger-Sicherheit
 
-`cs.run()` ist **idempotent** — es mehrmals aufzurufen, gibt
+`coordinatedShutdown.run()` ist **idempotent** — es mehrmals aufzurufen, gibt
 dasselbe laufende Promise zurück.  Drei unabhängige Trigger
 (SIGTERM, ein Admin-Endpoint und ein Cluster-Downing), die alle
 `run` aufrufen, lassen die Pipeline nicht erneut laufen.  Der erste
@@ -243,11 +247,11 @@ hast:
 
 ```ts
 // SIGTERM-Pfad:
-cs.installProcessHooks();
+coordinatedShutdown.installProcessHooks();
 
 // Admin-Endpoint-Pfad:
 app.post('/shutdown', async (req, res) => {
-  await cs.run(new AdminEndpointReason());
+  await coordinatedShutdown.run(new AdminEndpointReason());
   res.send('ok');
 });
 
@@ -256,7 +260,7 @@ app.post('/shutdown', async (req, res) => {
 
 Alle drei führen am Ende dieselbe Shutdown-Sequenz einmal aus.
 
-## Was nach `cs.run()`-Abschluss läuft
+## Was nach `coordinatedShutdown.run()`-Abschluss läuft
 
 Bis das Promise resolved:
 
@@ -273,11 +277,11 @@ Eine übliche Hülle einer Produktions-Main:
 ```ts
 async function main() {
   const system = ActorSystem.create('my-app');
-  const cs     = system.extension(CoordinatedShutdownId);
+  const coordinatedShutdown = system.extension(CoordinatedShutdownId);
 
   // Tasks registrieren...
 
-  cs.installProcessHooks();
+  coordinatedShutdown.installProcessHooks();
 
   // Blockieren, bis Shutdown vollendet (z.B. via SIGTERM).
   await new Promise(() => {});   // resolved nie; die Hooks treiben den Shutdown
@@ -289,7 +293,7 @@ main().catch((err) => {
 });
 ```
 
-Wenn SIGTERM ankommt, feuert der Hook `cs.run(...)`, die Pipeline
+Wenn SIGTERM ankommt, feuert der Hook `coordinatedShutdown.run(...)`, die Pipeline
 läuft, das System terminiert, und Node beendet sauber, weil keine
 Handles mehr die Loop am Leben halten.
 
@@ -299,8 +303,8 @@ import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="Task-Ordering innerhalb einer Phase">
   ```ts
-  cs.addTask(Phases.ServiceStop, 'close-pool',      ...);
-  cs.addTask(Phases.ServiceStop, 'close-redis',     ...);
+  coordinatedShutdown.addTask(Phases.ServiceStop, 'close-pool',      ...);
+  coordinatedShutdown.addTask(Phases.ServiceStop, 'close-redis',     ...);
   // ↑ diese laufen PARALLEL, nicht in Registrierungsreihenfolge.
   ```
   Innerhalb einer Phase werden alle Tasks zusammen mit `Promise.all`
@@ -311,7 +315,7 @@ import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="Hängender Shutdown — ein Task, der hängt">
   ```ts
-  cs.addTask(Phases.ServiceRequestsDone, 'drain', async () => {
+  coordinatedShutdown.addTask(Phases.ServiceRequestsDone, 'drain', async () => {
     await someEventThatNeverFires();   // ← wird timen, aber wie lange?
   });
   ```
@@ -329,14 +333,14 @@ import { Aside } from '@astrojs/starlight/components';
   Direktes `terminate()` überspringt jeden Task, den du registriert
   hast — der HTTP-Server wird nicht gedrained, der Cluster nicht
   benachrichtigt, das Journal nicht geflusht.  In Produktions-Code
-  gehe immer über `cs.run()`.  Reserviere `system.terminate()` für
+  gehe immer über `coordinatedShutdown.run()`.  Reserviere `system.terminate()` für
   Tests, in denen das Shutdown-DSL ein Overhead ist, den du nicht
   brauchst.
 </Aside>
 
 <Aside type="caution" title="Tasks mit Seiteneffekten auf das Actor-System">
   ```ts
-  cs.addTask(Phases.BeforeActorSystemTerminate, 'final-log', async () => {
+  coordinatedShutdown.addTask(Phases.BeforeActorSystemTerminate, 'final-log', async () => {
     someActor.tell({ kind: 'goodbye' });   // ← kann zu Dead Letters gehen
   });
   ```

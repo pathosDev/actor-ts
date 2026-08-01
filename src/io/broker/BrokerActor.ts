@@ -37,11 +37,11 @@ export type ConnectionState = 'disconnected' | 'connecting' | 'connected' | 'dis
  * intentionally `unknown` — broker-specific outbound types are layered
  * on top by the subclass (e.g. MQTT publishes carry topic+QoS+retain).
  */
-export interface OutboundEnvelope<P = unknown> {
+export type OutboundEnvelope<P = unknown> = {
   readonly payload: P;
   /** Wall-clock when the message was enqueued.  Useful for TTL evictions. */
   readonly enqueuedAt: number;
-}
+};
 
 /**
  * Base class for actors that bridge external messaging systems
@@ -60,9 +60,23 @@ export interface OutboundEnvelope<P = unknown> {
  * implement `configKey()`, `builtInDefaultOptions()`, `readOptionsFromConfig()`,
  * and `requiredOptions()` so the base class can resolve and validate
  * the effective options before `connectImplementation()` runs.
+ *
+ * **Desired subscriptions.**  A protocol whose consumers are named at
+ * runtime (`{ kind: 'subscribe', … }`) records them with
+ * {@link rememberSubscription} and re-establishes them from
+ * {@link applyDesiredSubscriptions} inside its `connectImplementation`.
+ * The desired set is connection-independent, which is what makes a
+ * runtime subscription survive a reconnect and a subscribe issued
+ * during an outage land on the next connect.  `Subscription` is the
+ * subclass's per-key restore payload (defaults to `never` for
+ * protocols that have no such concept).
  */
-export abstract class BrokerActor<S extends BrokerCommonOptionsType, Cmd = unknown, P = unknown>
-  extends Actor<Cmd> {
+export abstract class BrokerActor<
+  S extends BrokerCommonOptionsType,
+  Command = unknown,
+  P = unknown,
+  Subscription = never,
+> extends Actor<Command> {
   /** Constructor options — partial; merged with HOCON + defaults in preStart. */
   private readonly _ctorOptions: Partial<S>;
   /** Final, fully resolved options.  `null` until preStart() ran. */
@@ -75,6 +89,33 @@ export abstract class BrokerActor<S extends BrokerCommonOptionsType, Cmd = unkno
   private readonly _subscribers = new Map<string, Set<ActorRef<unknown>>>();
   /** Reverse index for O(1) cleanup on Terminated. */
   private readonly _subscribed = new WeakMap<ActorRef<unknown>, Set<string>>();
+
+  /**
+   * Subscriptions the actor *wants*, keyed by protocol identifier
+   * (subject / topic / stream).  Independent of any one connection —
+   * see {@link rememberSubscription}.
+   */
+  private readonly _desiredSubscriptions = new Map<string, Subscription>();
+  /**
+   * Whether {@link initialSubscriptions} has been folded in.  Seeding is
+   * once-only: a runtime `unsubscribe` of a configured subscription must
+   * not be resurrected by the next reconnect.
+   */
+  private _subscriptionsSeeded = false;
+  /**
+   * Whether {@link applyDesiredSubscriptions} has run for the *current*
+   * connection — i.e. whether the subclass has something to apply a new
+   * subscription to.  Reset on teardown.
+   */
+  private _subscriptionsApplied = false;
+
+  /**
+   * True between entering `connectImplementation` and completing
+   * `disconnectImplementation`.  Tracked separately from `_state`
+   * because a dropped connection leaves transport state behind while
+   * the state machine already reads `disconnected`.
+   */
+  private _transportOpened = false;
 
   /** Reconnect bookkeeping for the current cycle (since the last successful connect). */
   private _reconnectAttempt = 0;
@@ -135,7 +176,15 @@ export abstract class BrokerActor<S extends BrokerCommonOptionsType, Cmd = unkno
    */
   protected abstract connectImplementation(): Promise<void>;
 
-  /** Close it.  Best-effort — exceptions are logged and swallowed. */
+  /**
+   * Close it and drop every handle the connection owned.  Best-effort —
+   * exceptions are logged and swallowed.
+   *
+   * Called on stop **and before every re-connect attempt**, so it must
+   * be idempotent and must survive being called on an already-dead
+   * connection.  Do *not* discard desired subscriptions here (only the
+   * live handles): the base class restores them on the next connect.
+   */
   protected abstract disconnectImplementation(): Promise<void>;
 
   /**
@@ -144,6 +193,133 @@ export abstract class BrokerActor<S extends BrokerCommonOptionsType, Cmd = unkno
    * and triggers a reconnect cycle.
    */
   protected abstract dispatchOutgoing(envelope: OutboundEnvelope<P>): Promise<void>;
+
+  /* ------------------------- Desired subscriptions ------------------------ */
+
+  /**
+   * Subscriptions declared in the options, folded into the desired set
+   * once, before the first connect.  Default: none.
+   */
+  protected initialSubscriptions(): Iterable<readonly [string, Subscription]> {
+    return [];
+  }
+
+  /**
+   * Establish one subscription on the live connection.  Invoked for
+   * every desired entry on each (re)connect, and immediately when
+   * {@link rememberSubscription} is called while connected.  Must be
+   * safe to call for a key that is already live (treat as a no-op or
+   * re-issue it).  Throwing is logged as a warning and does not fail
+   * the connection.  Default: no-op.
+   */
+  protected applySubscription(_key: string, _subscription: Subscription): void | Promise<void> {
+    /* protocols without runtime subscriptions don't implement this */
+  }
+
+  /**
+   * Tear one subscription down on the live connection.  Invoked by
+   * {@link forgetSubscription} while connected, and before re-applying a
+   * key whose payload changed.  Default: no-op — several protocols can
+   * only drop a subscription by dropping the whole consumer.
+   */
+  protected revokeSubscription(_key: string): void | Promise<void> {
+    /* see applySubscription */
+  }
+
+  /**
+   * Record `key` as a desired subscription and — when connected —
+   * establish it right away.  Safe to call while disconnected: the entry
+   * is applied on the next connect rather than dropped, so a `subscribe`
+   * that arrives during an outage is not lost.
+   *
+   * Re-remembering a live key revokes it first, so the new payload
+   * (e.g. a different target actor) actually takes effect.
+   */
+  protected async rememberSubscription(key: string, subscription: Subscription): Promise<void> {
+    const wasDesired = this._desiredSubscriptions.has(key);
+    this._desiredSubscriptions.set(key, subscription);
+    if (!this._canApplySubscriptionNow()) return;
+    if (wasDesired) await this._revokeSubscriptionSafely(key);
+    await this._applySubscriptionSafely(key, subscription);
+  }
+
+  /** Drop `key` from the desired set and, when connected, from the connection. */
+  protected async forgetSubscription(key: string): Promise<void> {
+    if (!this._desiredSubscriptions.delete(key)) return;
+    if (this._canApplySubscriptionNow()) await this._revokeSubscriptionSafely(key);
+  }
+
+  /**
+   * Whether the subclass currently has a connection to act on.
+   *
+   * `connected` is the obvious case.  The `_subscriptionsApplied` half
+   * covers the sliver of `connecting` *after* the replay pass ran — the
+   * reconnect cycle runs on the scheduler, detached from the mailbox, so
+   * a `subscribe` can be processed between `applyDesiredSubscriptions()`
+   * returning and `_state` flipping to `connected`.  Without this the
+   * entry would sit in the desired set until the *next* reconnect, which
+   * is precisely the silent-loss class of bug this mechanism exists to
+   * kill.  Before the replay pass it stays false: the subclass may not
+   * have a connection yet, and the pass will pick the entry up anyway
+   * (a `Map` iteration sees entries added while it runs).
+   */
+  private _canApplySubscriptionNow(): boolean {
+    return this._state === 'connected'
+      || (this._state === 'connecting' && this._subscriptionsApplied);
+  }
+
+  /**
+   * (Re)establish every desired subscription on the current connection.
+   *
+   * Subclasses call this from `connectImplementation` rather than having
+   * the base class drive it after the fact, because the correct point in
+   * the handshake is protocol-specific — kafkajs, for one, wants every
+   * `subscribe` in before `consumer.run`.
+   */
+  protected async applyDesiredSubscriptions(): Promise<void> {
+    if (!this._subscriptionsSeeded) {
+      this._subscriptionsSeeded = true;
+      for (const [key, subscription] of this.initialSubscriptions()) {
+        if (!this._desiredSubscriptions.has(key)) this._desiredSubscriptions.set(key, subscription);
+      }
+    }
+    for (const [key, subscription] of this._desiredSubscriptions) {
+      await this._applySubscriptionSafely(key, subscription);
+    }
+    this._subscriptionsApplied = true;
+  }
+
+  /** Number of desired subscriptions — exposed for tests / health probes. */
+  protected get desiredSubscriptionCount(): number {
+    return this._desiredSubscriptions.size;
+  }
+
+  /**
+   * One failed subscription must not take the connection down with it —
+   * the rest of the desired set is still worth having, and a reconnect
+   * would not fix a subject the broker rejects.  But it must not be
+   * silent either: a connected-yet-deaf actor is the failure mode this
+   * whole mechanism exists to prevent, so it is a warning, not a debug.
+   */
+  private async _applySubscriptionSafely(key: string, subscription: Subscription): Promise<void> {
+    try {
+      await this.applySubscription(key, subscription);
+    } catch (e) {
+      this.log.warn(
+        `${this.constructor.name}: could not establish subscription '${key}': ${(e as Error).message}`,
+      );
+    }
+  }
+
+  private async _revokeSubscriptionSafely(key: string): Promise<void> {
+    try {
+      await this.revokeSubscription(key);
+    } catch (e) {
+      this.log.warn(
+        `${this.constructor.name}: could not revoke subscription '${key}': ${(e as Error).message}`,
+      );
+    }
+  }
 
   /* ------------------------------- Subscribers ---------------------------- */
 
@@ -186,10 +362,10 @@ export abstract class BrokerActor<S extends BrokerCommonOptionsType, Cmd = unkno
   }
 
   /** Fan-out a received message to every subscriber of `topic`. */
-  protected fanOutToTopic(topic: string, msg: unknown): void {
+  protected fanOutToTopic(topic: string, message: unknown): void {
     const set = this._subscribers.get(topic);
     if (!set) return;
-    for (const ref of set) ref.tell(msg as never);
+    for (const ref of set) ref.tell(message as never);
   }
 
   /** Number of distinct topic subscriptions — useful for tests / metrics. */
@@ -208,35 +384,48 @@ export abstract class BrokerActor<S extends BrokerCommonOptionsType, Cmd = unkno
    */
   protected enqueueOutbound(payload: P): boolean {
     const env: OutboundEnvelope<P> = { payload, enqueuedAt: Date.now() };
-    const limit = this.options.outboundBuffer ?? DEFAULT_OUTBOUND_BUFFER;
 
     // Dispatch on connection state with compile-time exhaustiveness:
     // adding a new state to `ConnectionState` forces every site that
     // matches on it (including this one) to handle the new variant.
     return match(this._state)
-      .with('connected', () => {
-        // Dispatch directly.  If an earlier flush is still draining the
-        // buffer, append at the tail to preserve order.
-        if (this._outboundBuffer.length > 0) {
-          this._outboundBuffer.push(env);
-          return true;
-        }
-        void this._dispatchOne(env);
-        return true;
-      })
-      .with('connecting', 'disconnected', 'disconnecting', () => {
-        if (limit === 0) {
-          this.system.eventStream.publish(new BrokerNotConnected(this.self.path.toString()));
-          return false;
-        }
-        if (this._outboundBuffer.length >= limit) {
-          this._outboundBuffer.shift();  // drop oldest (FIFO eviction)
-          this.system.eventStream.publish(new BrokerBufferOverflow(this.self.path.toString(), limit));
-        }
-        this._outboundBuffer.push(env);
-        return true;
-      })
+      .with('connected', () => this.dispatchWhenConnected(env))
+      .with('connecting', 'disconnected', 'disconnecting', () => this.bufferWhileOffline(env))
       .exhaustive();
+  }
+
+  /**
+   * Connected path: dispatch the envelope now, or — if an earlier flush is
+   * still draining the buffer — append at the tail to preserve order.
+   */
+  private dispatchWhenConnected(env: OutboundEnvelope<P>): boolean {
+    // Dispatch directly.  If an earlier flush is still draining the
+    // buffer, append at the tail to preserve order.
+    if (this._outboundBuffer.length > 0) {
+      this._outboundBuffer.push(env);
+      return true;
+    }
+    void this._dispatchOne(env);
+    return true;
+  }
+
+  /**
+   * Not-connected path (connecting / disconnected / disconnecting): buffer
+   * the envelope, evicting the oldest on overflow (FIFO), or drop it when
+   * buffering is disabled (`outboundBuffer: 0`).
+   */
+  private bufferWhileOffline(env: OutboundEnvelope<P>): boolean {
+    const limit = this.options.outboundBuffer ?? DEFAULT_OUTBOUND_BUFFER;
+    if (limit === 0) {
+      this.system.eventStream.publish(new BrokerNotConnected(this.self.path.toString()));
+      return false;
+    }
+    if (this._outboundBuffer.length >= limit) {
+      this._outboundBuffer.shift();  // drop oldest (FIFO eviction)
+      this.system.eventStream.publish(new BrokerBufferOverflow(this.self.path.toString(), limit));
+    }
+    this._outboundBuffer.push(env);
+    return true;
   }
 
   /** Current connection state — exposed for tests / health probes. */
@@ -259,11 +448,13 @@ export abstract class BrokerActor<S extends BrokerCommonOptionsType, Cmd = unkno
   override async postStop(): Promise<void> {
     this._scheduledReconnectCancel?.();
     this._scheduledReconnectCancel = null;
-    if (this._state !== 'disconnected') {
-      this._state = 'disconnecting';
-      try { await this.disconnectImplementation(); }
-      catch (e) { this.log.warn(`broker disconnectImplementation threw: ${(e as Error).message}`); }
-    }
+    // Gate on transport state, not on `_state`: after a dropped
+    // connection the state machine reads `disconnected` while the
+    // subclass still holds sockets, clients and pending acks — the
+    // old `_state !== 'disconnected'` guard skipped teardown for
+    // exactly the actors that needed it most.
+    if (this._transportOpened) this._state = 'disconnecting';
+    await this._closeTransport();
     this._state = 'disconnected';
     this._outboundBuffer = [];
     this._subscribers.clear();
@@ -273,11 +464,11 @@ export abstract class BrokerActor<S extends BrokerCommonOptionsType, Cmd = unkno
 
   private _resolveOptions(): S {
     const defaults = this.builtInDefaultOptions();
-    const cfg = this.system.config.hasPath(this.configKey())
+    const config = this.system.config.hasPath(this.configKey())
       ? this.system.config.getConfig(this.configKey())
       : null;
-    const fromConfig = cfg
-      ? { ...readCommonOptions(cfg), ...this.readOptionsFromConfig(cfg) } as Partial<S>
+    const fromConfig = config
+      ? { ...readCommonOptions(config), ...this.readOptionsFromConfig(config) } as Partial<S>
       : ({} as Partial<S>);
     return mergeOptions<S>(defaults, fromConfig, this._ctorOptions);
   }
@@ -314,7 +505,18 @@ export abstract class BrokerActor<S extends BrokerCommonOptionsType, Cmd = unkno
       return;
     }
 
+    // Never re-enter connectImplementation on top of the previous
+    // attempt's state.  A drop (or a connect that failed half-way)
+    // leaves the subclass holding a dead client, its subscription
+    // handles and its pending acks; building the new connection on top
+    // of that leaks them and — because the subclass still sees its own
+    // stale handles — can silently skip re-subscribing (#504).
+    await this._closeTransport();
+
     this._state = 'connecting';
+    // Set before the call, not after: a connectImplementation that
+    // throws part-way through has still opened transport state.
+    this._transportOpened = true;
     try {
       await this.connectImplementation();
       this._state = 'connected';
@@ -335,6 +537,20 @@ export abstract class BrokerActor<S extends BrokerCommonOptionsType, Cmd = unkno
       }
       this._handleReconnect(err);
     }
+  }
+
+  /**
+   * Run `disconnectImplementation` if any transport state is open.
+   * Idempotent and never throws — teardown failures are logged, because
+   * the caller's next move (reconnect or stop) has to happen regardless.
+   */
+  private async _closeTransport(): Promise<void> {
+    if (!this._transportOpened) return;
+    this._transportOpened = false;
+    // The live handles go with the connection; the desired set stays.
+    this._subscriptionsApplied = false;
+    try { await this.disconnectImplementation(); }
+    catch (e) { this.log.warn(`broker disconnectImplementation threw: ${(e as Error).message}`); }
   }
 
   /** Called when the connection drops (from inside `dispatchOutgoing` or by the subclass). */
@@ -377,7 +593,7 @@ export abstract class BrokerActor<S extends BrokerCommonOptionsType, Cmd = unkno
     // Use the system scheduler (not the actor TimerScheduler): reconnect
     // is detached from the message pipeline — it should not queue behind
     // user commands.  Cancel-handle is tracked for postStop teardown.
-    const handle = this.system.scheduler.scheduleOnceFn(delayMs, reconnect);
+    const handle = this.system.scheduler.scheduleOnceFunction(delayMs, reconnect);
     this._scheduledReconnectCancel = (): void => { handle.cancel(); };
   }
 

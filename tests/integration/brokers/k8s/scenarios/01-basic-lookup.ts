@@ -4,37 +4,37 @@
  * real K8s API response.
  */
 import { KubernetesApiSeedProvider } from '../../../../../src/discovery/KubernetesApiSeedProvider.js';
-import type { K8sCtx } from '../runner.js';
+import type { K8sContext } from '../runner.js';
 import type { BrokerScenario } from '../../lib/scenario.js';
 
-export const scenario: BrokerScenario<K8sCtx> = {
+export const scenario: BrokerScenario<K8sContext> = {
   name: 'lookup() returns NodeAddresses for Endpoints subsets',
-  async run(ctx) {
+  async run(context) {
     const ns = `b9-basic-${Date.now()}`;
     const svc = 'actor-ts-cluster';
 
     // 1. Create the namespace.
-    let res = await ctx.api('POST', '/api/v1/namespaces', {
+    let response = await context.api('POST', '/api/v1/namespaces', {
       apiVersion: 'v1', kind: 'Namespace',
       metadata: { name: ns },
     });
-    if (res.status !== 201 && res.status !== 409) {
-      throw new Error(`create ns failed: ${res.status} ${res.body.slice(0, 200)}`);
+    if (response.status !== 201 && response.status !== 409) {
+      throw new Error(`create ns failed: ${response.status} ${response.body.slice(0, 200)}`);
     }
 
     try {
       // 2. Create the Service.  Headless (clusterIP: None) so we don't
       //    leak a virtual IP into the test setup.
-      res = await ctx.api('POST', `/api/v1/namespaces/${ns}/services`, {
+      response = await context.api('POST', `/api/v1/namespaces/${ns}/services`, {
         apiVersion: 'v1', kind: 'Service',
         metadata: { name: svc },
         spec: { clusterIP: 'None', ports: [{ port: 9000 }], selector: {} },
       });
-      if (res.status !== 201) throw new Error(`create svc: ${res.status} ${res.body.slice(0, 200)}`);
+      if (response.status !== 201) throw new Error(`create svc: ${response.status} ${response.body.slice(0, 200)}`);
 
       // 3. Create the Endpoints object directly — no real pods backing it,
       //    we hand-craft the subsets so the test is deterministic.
-      res = await ctx.api('POST', `/api/v1/namespaces/${ns}/endpoints`, {
+      response = await context.api('POST', `/api/v1/namespaces/${ns}/endpoints`, {
         apiVersion: 'v1', kind: 'Endpoints',
         metadata: { name: svc },
         subsets: [
@@ -48,10 +48,10 @@ export const scenario: BrokerScenario<K8sCtx> = {
           },
         ],
       });
-      if (res.status !== 201) throw new Error(`create endpoints: ${res.status} ${res.body.slice(0, 200)}`);
+      if (response.status !== 201) throw new Error(`create endpoints: ${response.status} ${response.body.slice(0, 200)}`);
 
       // 4. Build a SeedProvider pointed at this fixture.
-      const buildSeedProvider = (ctx as unknown as {
+      const buildSeedProvider = (context as unknown as {
         buildSeedProvider: (ns: string, svc: string) => KubernetesApiSeedProvider;
       }).buildSeedProvider;
       const provider = buildSeedProvider(ns, svc);
@@ -76,7 +76,7 @@ export const scenario: BrokerScenario<K8sCtx> = {
       }
     } finally {
       // Cleanup — delete the namespace cascades to its objects.
-      await ctx.api('DELETE', `/api/v1/namespaces/${ns}`);
+      await context.api('DELETE', `/api/v1/namespaces/${ns}`);
     }
   },
 };

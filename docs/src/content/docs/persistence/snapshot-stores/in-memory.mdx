@@ -10,26 +10,30 @@ it's the **default** when no snapshot store is configured —
 zero setup, ideal for tests, **never use in production**.
 
 ```ts
-import { InMemorySnapshotStore, PersistenceExtensionId, ActorSystem } from 'actor-ts';
+import { ActorSystem, ActorSystemOptions, InMemoryJournal, InMemorySnapshotStore } from 'actor-ts';
 
-const system = ActorSystem.create('demo');
-system.extension(PersistenceExtensionId).configure({
+// In-memory stores are the default; shown here explicitly:
+const actorSystemOptions = ActorSystemOptions.create().withPersistence({
   journal:       new InMemoryJournal(),
   snapshotStore: new InMemorySnapshotStore(),
 });
+const system = ActorSystem.create('demo', actorSystemOptions);
 ```
 
 ## What it does
 
 Implements the `SnapshotStore` interface — `save`, `loadLatest`,
-`deleteUpTo`.  Each `persistenceId` maps to an array of snapshots
-ordered by sequence number.
+`loadBefore`, `delete`.  Each `persistenceId` maps to an array of
+snapshots ordered by sequence number.
 
-- **`save(pid, snapshot)`** — append to the pid's array.
-- **`loadLatest(pid)`** — return the highest-seq snapshot, or
-  `None`.
-- **`deleteUpTo(pid, seqNr)`** — splice off snapshots with seq
-  ≤ seqNr.
+- **`save(persistenceId, seq, state, options?)`** — append to the pid's
+  array.
+- **`loadLatest(persistenceId, options?)`** — return the highest-seq
+  snapshot, or `None`.
+- **`loadBefore(persistenceId, seq, options?)`** — return the newest
+  snapshot with `sequenceNr < seq`, or `None`.
+- **`delete(persistenceId, toSeq)`** — splice off snapshots with seq
+  ≤ toSeq.
 
 The implementation is **reference semantics** — every other
 snapshot store must match this behavior (modulo persistence /
@@ -56,7 +60,7 @@ import { Aside } from '@astrojs/starlight/components';
 <Aside type="caution" title="Long-running tests">
   Snapshots accumulate in memory.  A benchmark that takes 1M
   snapshots over a run grows the Map linearly.  For long tests,
-  configure `deleteUpTo` cleanup or use the SQLite store with
+  configure `delete` cleanup or use the SQLite store with
   `:memory:`.
 </Aside>
 

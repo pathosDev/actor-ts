@@ -32,13 +32,13 @@ Für pures Key-Value-Caching mit TTLs reicht das voll.
 ## Konfiguration
 
 ```ts
-interface MemcachedCacheOptionsType {
-  servers:      string[];               // 'host:port'
-  username?:    string;
-  password?:    string;
-  timeoutMs?:   number;
-  retries?:     number;
-}
+type MemcachedCacheOptionsType = {
+  servers?:   string;                // kommagetrennt, Default 'localhost:11211'
+  username?:  string;
+  password?:  string;
+  keyPrefix?: string;                // serverseitig, auf jede Operation angewendet
+  client?:    MemcachedClientLike;   // vorgefertigter memjs-Client
+};
 ```
 
 `memjs` (der zugrunde liegende Client) unterstützt SASL-Auth
@@ -119,13 +119,14 @@ import { Aside } from '@astrojs/starlight/components';
   // Zwei Operationen: A lesen, B basierend auf A setzen → Race möglich
   ```
   Memcached hat keine Transaktionen / atomaren Multi-Key-
-  Operationen.  Für "atomarer Counter + Check"-Muster ist das
-  `incr` des Frameworks das einzige atomare Primitiv.
+  Operationen.  Für "atomarer Counter + Check"-Muster sind
+  `incr` und `setIfAbsent` die einzigen atomaren Primitive des
+  Frameworks.
 </Aside>
 
 <Aside type="caution" title="Skalierung des Memcached-Clusters">
   ```ts
-  servers: ['m1:11211', 'm2:11211'];
+  servers: 'm1:11211,m2:11211';
   // m3 hinzufügen: Keys rebalancieren über Consistent-Hashing — einige Cache-Misses während des Rebalances
   ```
   Memcached-Skalierung braucht clientseitiges Bewusstsein für

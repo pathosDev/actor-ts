@@ -60,13 +60,13 @@ const EMPTY: LogContextData = Object.freeze({});
  */
 export const LogContext = {
   /**
-   * Run `fn` with `ctx` as the current context.  The previous context
+   * Run `fn` with `context` as the current context.  The previous context
    * (if any) is shadowed for the duration of the call and restored
    * automatically.  Sync and async `fn` both work — `AsyncLocalStorage`
    * preserves the binding across awaits.
    */
-  run<T>(ctx: LogContextData, fn: () => T): T {
-    return storage.run(ctx, fn);
+  run<T>(context: LogContextData, fn: () => T): T {
+    return storage.run(context, fn);
   },
 
   /**

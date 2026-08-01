@@ -48,7 +48,7 @@ import { ActorSystem, ActorSystemOptions, ThroughputDispatcher } from 'actor-ts'
 const actorSystemOptions = ActorSystemOptions.create().withDispatcher(new ThroughputDispatcher(50));
 const system = ActorSystem.create('mixed-workload', actorSystemOptions);
   // run up to 50 messages per actor before yielding to I/O.  Default
-  // is ~5 in `ImmediateDispatcher`; bumping it to 50 wins on
+  // is 16 in `ThroughputDispatcher`; bumping it to 50 wins on
   // throughput at the cost of HTTP-response latency.
 ```
 
@@ -138,6 +138,7 @@ import { Props, MicrotaskDispatcher } from 'actor-ts';
 const fastActor = system.spawn(
   Props.create(() => new Crunchy())
     .withDispatcher(new MicrotaskDispatcher()),
+  'crunchy',
 );
 ```
 

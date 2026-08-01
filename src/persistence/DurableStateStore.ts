@@ -10,12 +10,12 @@ import type { PersistenceOptions } from './PersistenceOptions.js';
  * Revision is a monotonic counter used for optimistic concurrency: writes
  * must pass the expected previous revision or they fail.
  */
-export interface DurableStateRecord<S> {
+export type DurableStateRecord<S> = {
   readonly persistenceId: string;
   readonly revision: number;
   readonly state: S;
   readonly timestamp: number;
-}
+};
 
 export class DurableStateConcurrencyError extends Error {
   constructor(
@@ -53,4 +53,16 @@ export interface DurableStateStore {
 
   /** Remove the record entirely.  Idempotent. */
   delete(persistenceId: string): Promise<void>;
+
+  /**
+   * Best-effort teardown; idempotent.
+   *
+   * `Journal` and `SnapshotStore` have carried this since they were written;
+   * `DurableStateStore` was the one contract of the three without it, even
+   * though its implementations hold exactly the same kind of resource — a
+   * connection pool, an HTTP client, a SQLite file handle.  Callers that own a
+   * store therefore had no contractual way to release it, and the test suite
+   * leaned on `closeQuietly` probing for the method.
+   */
+  close?(): Promise<void>;
 }

@@ -1,6 +1,6 @@
 ---
 title: HTTP overview
-description: A typed route DSL with three pluggable backends (Fastify, Bun.serve, Express), a shared HTTP client, and middleware for caching, rate-limiting, and idempotency. Built as an extension; not on top of `BrokerActor`.
+description: A typed route DSL with three pluggable backends (Fastify, Hono, Express), a shared HTTP client, and middleware for caching, rate-limiting, and idempotency. Built as an extension; not on top of `BrokerActor`.
 ---
 
 The HTTP module is **separate from the I/O broker actors** — HTTP
@@ -109,10 +109,22 @@ client in a [retry](/patterns/retry/) +
 
 ```ts
 import { cached, rateLimit } from 'actor-ts/http';
+import { InMemoryCache } from 'actor-ts';
+
+const cache = new InMemoryCache();
 
 const routes = concat(
-  rateLimit({ max: 100, intervalMs: 1_000 })(
-    cached({ ttlMs: 30_000 })(
+  rateLimit({
+    cache,
+    windowMs: 1_000,
+    max: 100,
+    key: (request) => request.remoteAddress ?? 'unknown',
+  })(
+    cached({
+      cache,
+      ttlMs: 30_000,
+      key: (request) => request.path,
+    })(
       path('api', /* ... */),
     ),
   ),
@@ -123,8 +135,8 @@ The framework ships three:
 
 | Middleware | What it does |
 | --- | --- |
-| **Response cache** | Caches GET responses keyed by URL + Vary headers. |
-| **Rate limit** | Per-IP / per-key token-bucket rate limiter. |
+| **Response cache** | Caches a handler's response keyed by a user-supplied `key(request)` function. |
+| **Rate limit** | Per-IP / per-key fixed-window rate limiter. |
 | **Idempotency key** | De-duplicates writes based on an `Idempotency-Key` header. |
 
 Each is a `Route -> Route` transformer — wraps a sub-tree of routes
@@ -183,7 +195,7 @@ import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="Backend-specific quirks">
   Each backend has its own pre-existing ecosystem: Fastify's
-  schema validation, Bun.serve's WebSocket integration, Express
+  schema validation, Hono's edge adapters, Express
   middleware.  These are **not** exposed through the DSL — you
   reach for them by configuring the backend instance directly
   before passing to `useBackend`.  Cross-backend portability
@@ -199,7 +211,7 @@ import { Aside } from '@astrojs/starlight/components';
   Content-Type-driven decoding, response encoding.
 - **[Fastify backend](/http/backends/fastify/)** —
   default backend's configuration.
-- **[Bun.serve backend](/http/backends/fastify/) /
+- **[Hono backend](/http/backends/hono/) /
   [Express backend](/http/backends/express/)** —
   alternatives.
 - **[Response cache middleware](/http/middleware/response-cache/)** —

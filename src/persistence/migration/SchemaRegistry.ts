@@ -57,7 +57,7 @@ import { MigrationError } from './Envelope.js';
  */
 
 /** What a single registered version contributes to the registry. */
-export interface SchemaRegistration<Wire = unknown, Upcasted = unknown> {
+export type SchemaRegistration<Wire = unknown, Upcasted = unknown> = {
   /** Codec used to validate / shape payloads at this version. */
   readonly codec: Codec<Wire>;
   /**
@@ -74,7 +74,7 @@ export interface SchemaRegistration<Wire = unknown, Upcasted = unknown> {
    * version's encode round-trip.  Throws if any step fails.
    */
   readonly sample?: unknown;
-}
+};
 
 export interface SchemaDescriptor extends SchemaRegistration {
   readonly manifest: string;

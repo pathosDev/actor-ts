@@ -13,7 +13,7 @@
  *
  *   2. Handler does its work (here: a fake DB call).  On success it
  *      tells the KafkaActor `{ kind: 'commit', topic, partition,
- *      offset }`; on failure it tells `{ kind: 'nack', ... }`.
+ *      offset }`; on failure it tells `{ kind: 'negativeAcknowledgment', ... }`.
  *
  *   3. Crash semantics: if the handler dies mid-processing without
  *      sending either, the pump's commitTimeoutMs fires, kafkajs
@@ -32,8 +32,9 @@ import {
   type KafkaRecord,
 } from '../../src/index.js';
 import type { ActorRef } from '../../src/index.js';
+import { attachDevTools } from '../devtools.js';
 
-interface Order { orderId: string; userId: string; amount: number }
+type Order = { orderId: string; userId: string; amount: number };
 
 class OrderProcessor extends Actor<KafkaRecord> {
   constructor(private readonly kafka: ActorRef<KafkaCommand>) { super(); }
@@ -46,7 +47,7 @@ class OrderProcessor extends Actor<KafkaRecord> {
     } catch (e) {
       console.error(`bad payload at offset ${rec.offset}, nacking:`, e);
       this.kafka.tell({
-        kind: 'nack', topic: rec.topic, partition: rec.partition, offset: rec.offset,
+        kind: 'negativeAcknowledgment', topic: rec.topic, partition: rec.partition, offset: rec.offset,
         reason: 'malformed JSON',
       });
       return;
@@ -65,7 +66,7 @@ class OrderProcessor extends Actor<KafkaRecord> {
     } catch (e) {
       console.error(`db error at offset ${rec.offset}, nacking:`, e);
       this.kafka.tell({
-        kind: 'nack', topic: rec.topic, partition: rec.partition, offset: rec.offset,
+        kind: 'negativeAcknowledgment', topic: rec.topic, partition: rec.partition, offset: rec.offset,
         reason: (e as Error).message,
       });
     }
@@ -82,6 +83,7 @@ async function db_insertOrder(o: Order): Promise<void> {
 
 async function main(): Promise<void> {
   const system = ActorSystem.create('kafka-eo-demo');
+  const devtools = await attachDevTools(system);
 
   // Forward decl so the processor can refer to the kafka actor.
   let kafka!: ActorRef<KafkaCommand>;

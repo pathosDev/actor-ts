@@ -11,24 +11,25 @@
  * entities that were on that node end up answering from elsewhere.
  */
 
+import { match } from 'ts-pattern';
 import { Actor } from '../../../src/Actor.js';
 import type { ActorRef } from '../../../src/ActorRef.js';
 
-export interface ShardedMessage {
+export type ShardedMessage = {
   /** The entity ID — required by the shard region's `extractEntityId`. */
   readonly entityId: string;
-}
+};
 
 /** Increment the counter for `entityId`. */
-export interface ShardedInc extends ShardedMessage { readonly op: 'inc' }
+export interface ShardedIncrement extends ShardedMessage { readonly kind: 'increment' }
 
 /** Query "who hosts you?" — reply via `replyTo`. */
 export interface ShardedWho extends ShardedMessage {
-  readonly op: 'who';
+  readonly kind: 'who';
   readonly replyTo: ActorRef<ShardedWhoReply>;
 }
 
-export type ShardedCommand = ShardedInc | ShardedWho;
+export type ShardedCommand = ShardedIncrement | ShardedWho;
 
 export class ShardedWhoReply {
   constructor(
@@ -45,13 +46,19 @@ export class ShardedWhoReply {
 export class ShardedCounter extends Actor<ShardedCommand> {
   private value = 0;
   constructor(private readonly nodeName: string) { super(); }
-  override onReceive(msg: ShardedCommand): void {
-    if (msg.op === 'inc') {
-      this.value++;
-    } else {
-      // 'who'
-      msg.replyTo.tell(new ShardedWhoReply(msg.entityId, this.nodeName, this.value));
-    }
+  override onReceive(message: ShardedCommand): void {
+    match(message)
+      .with({ kind: 'increment' }, () => this.onIncrement())
+      .with({ kind: 'who' }, (m) => this.onWho(m))
+      .exhaustive();
+  }
+
+  private onIncrement(): void {
+    this.value++;
+  }
+
+  private onWho(message: ShardedWho): void {
+    message.replyTo.tell(new ShardedWhoReply(message.entityId, this.nodeName, this.value));
   }
 }
 

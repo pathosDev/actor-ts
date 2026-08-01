@@ -64,9 +64,9 @@ describe('managementRoutes — cluster queries', () => {
     const http = sys.extension(HttpExtensionId);
     const binding = await http.newServerAt('127.0.0.1', 0).bind(routes);
 
-    const res = await fetch(`http://127.0.0.1:${binding.port}/cluster/members`);
-    const body = await res.json() as { members: Array<{ address: string }>; self: string };
-    expect(res.status).toBe(200);
+    const response = await fetch(`http://127.0.0.1:${binding.port}/cluster/members`);
+    const body = await response.json() as { members: Array<{ address: string }>; self: string };
+    expect(response.status).toBe(200);
     expect(body.members.length).toBe(1);
     expect(body.self).toContain('mgmt@h:');
 
@@ -81,9 +81,9 @@ describe('managementRoutes — cluster queries', () => {
     const http = sys.extension(HttpExtensionId);
     const binding = await http.newServerAt('127.0.0.1', 0).bind(routes);
 
-    const res = await fetch(`http://127.0.0.1:${binding.port}/health`);
-    const body = await res.json() as { status: string };
-    expect(res.status).toBe(200);
+    const response = await fetch(`http://127.0.0.1:${binding.port}/health`);
+    const body = await response.json() as { status: string };
+    expect(response.status).toBe(200);
     expect(body.status).toBe('UP');
 
     await binding.unbind();
@@ -97,8 +97,8 @@ describe('managementRoutes — cluster queries', () => {
     const http = sys.extension(HttpExtensionId);
     const binding = await http.newServerAt('127.0.0.1', 0).bind(routes);
 
-    const res = await fetch(`http://127.0.0.1:${binding.port}/health`);
-    expect(res.status).toBe(503);
+    const response = await fetch(`http://127.0.0.1:${binding.port}/health`);
+    expect(response.status).toBe(503);
 
     await binding.unbind();
     await cluster.leave(); await sys.terminate();
@@ -113,8 +113,8 @@ describe('managementRoutes — cluster queries', () => {
     // Wait until self member is Up.
     await Bun.sleep(150);
 
-    const res = await fetch(`http://127.0.0.1:${binding.port}/ready`);
-    const body = await res.json() as { status: string; clusterReady: boolean };
+    const response = await fetch(`http://127.0.0.1:${binding.port}/ready`);
+    const body = await response.json() as { status: string; clusterReady: boolean };
     expect(body.clusterReady).toBe(true);
     expect(body.status).toBe('UP');
 
@@ -129,8 +129,8 @@ describe('managementRoutes — cluster queries', () => {
     const http = sys.extension(HttpExtensionId);
     const binding = await http.newServerAt('127.0.0.1', 0).bind(routes);
 
-    const res = await fetch(`http://127.0.0.1:${binding.port}/cluster/leave`, { method: 'POST' });
-    expect(res.status).toBe(202);
+    const response = await fetch(`http://127.0.0.1:${binding.port}/cluster/leave`, { method: 'POST' });
+    expect(response.status).toBe(202);
     await Bun.sleep(100);
     // After leave, the cluster's started flag is cleared — getMembers() may still show self in 'leaving'.
     const members = cluster.getMembers();
@@ -147,13 +147,13 @@ describe('managementRoutes — cluster queries', () => {
     const http = sys.extension(HttpExtensionId);
     const binding = await http.newServerAt('127.0.0.1', 0).bind(routes);
 
-    const res = await fetch(`http://127.0.0.1:${binding.port}/cluster/down`, {
+    const response = await fetch(`http://127.0.0.1:${binding.port}/cluster/down`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ address: 'mgmt@h:99999' }),
     });
-    expect(res.status).toBe(404);
-    expect(await res.text()).toContain('no member');
+    expect(response.status).toBe(404);
+    expect(await response.text()).toContain('no member');
 
     await binding.unbind();
     await cluster.leave(); await sys.terminate();
@@ -165,12 +165,12 @@ describe('managementRoutes — cluster queries', () => {
     const http = sys.extension(HttpExtensionId);
     const binding = await http.newServerAt('127.0.0.1', 0).bind(routes);
 
-    const res = await fetch(`http://127.0.0.1:${binding.port}/cluster/down`, {
+    const response = await fetch(`http://127.0.0.1:${binding.port}/cluster/down`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ wrongField: 'mgmt@h:1' }),
     });
-    expect(res.status).toBe(400);
+    expect(response.status).toBe(400);
 
     await binding.unbind();
     await cluster.leave(); await sys.terminate();
@@ -182,12 +182,12 @@ describe('managementRoutes — cluster queries', () => {
     const http = sys.extension(HttpExtensionId);
     const binding = await http.newServerAt('127.0.0.1', 0).bind(routes);
 
-    const res = await fetch(`http://127.0.0.1:${binding.port}/cluster/down`, {
+    const response = await fetch(`http://127.0.0.1:${binding.port}/cluster/down`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ address: 'mgmt@h:1' }),
     });
-    expect(res.status).toBe(404);
+    expect(response.status).toBe(404);
 
     await binding.unbind();
     await cluster.leave(); await sys.terminate();
@@ -199,8 +199,8 @@ describe('managementRoutes — cluster queries', () => {
     const http = sys.extension(HttpExtensionId);
     const binding = await http.newServerAt('127.0.0.1', 0).bind(routes);
 
-    const res = await fetch(`http://127.0.0.1:${binding.port}/cluster/shards`);
-    expect(res.status).toBe(400);
+    const response = await fetch(`http://127.0.0.1:${binding.port}/cluster/shards`);
+    expect(response.status).toBe(400);
 
     await binding.unbind();
     await cluster.leave(); await sys.terminate();
@@ -212,8 +212,8 @@ describe('managementRoutes — cluster queries', () => {
     const http = sys.extension(HttpExtensionId);
     const binding = await http.newServerAt('127.0.0.1', 0).bind(routes);
 
-    const res = await fetch(`http://127.0.0.1:${binding.port}/cluster/shards?type=Orders`);
-    expect(res.status).toBe(404);
+    const response = await fetch(`http://127.0.0.1:${binding.port}/cluster/shards?type=Orders`);
+    expect(response.status).toBe(404);
     // Either "DistributedData not started" or "no shard-map recorded"
     // depending on which path triggers.
 
@@ -227,9 +227,9 @@ describe('managementRoutes — cluster queries', () => {
     const http = sys.extension(HttpExtensionId);
     const binding = await http.newServerAt('127.0.0.1', 0).bind(routes);
 
-    const res = await fetch(`http://127.0.0.1:${binding.port}/metrics`);
-    expect(res.status).toBe(200);
-    expect(res.headers.get('content-type')?.toLowerCase())
+    const response = await fetch(`http://127.0.0.1:${binding.port}/metrics`);
+    expect(response.status).toBe(200);
+    expect(response.headers.get('content-type')?.toLowerCase())
       .toContain('text/plain');
 
     await binding.unbind();
@@ -242,8 +242,8 @@ describe('managementRoutes — cluster queries', () => {
     const http = sys.extension(HttpExtensionId);
     const binding = await http.newServerAt('127.0.0.1', 0).bind(routes);
 
-    const res = await fetch(`http://127.0.0.1:${binding.port}/metrics`);
-    expect(res.status).toBe(404);
+    const response = await fetch(`http://127.0.0.1:${binding.port}/metrics`);
+    expect(response.status).toBe(404);
 
     await binding.unbind();
     await cluster.leave(); await sys.terminate();
@@ -358,10 +358,10 @@ describe('managementRoutes — auth + IP allowlist (#312)', () => {
 
     // Health probes work WITHOUT a token — the standard K8s probe
     // path.  This is the explicit-policy contract from #312.
-    const healthRes = await fetch(`http://127.0.0.1:${binding.port}/health`);
-    expect(healthRes.status).toBe(200);
-    const readyRes = await fetch(`http://127.0.0.1:${binding.port}/ready`);
-    expect(readyRes.status).toBe(200);
+    const healthResponse = await fetch(`http://127.0.0.1:${binding.port}/health`);
+    expect(healthResponse.status).toBe(200);
+    const readyResponse = await fetch(`http://127.0.0.1:${binding.port}/ready`);
+    expect(readyResponse.status).toBe(200);
 
     await binding.unbind();
     await cluster.leave(); await sys.terminate();
@@ -398,7 +398,7 @@ describe('managementRoutes — auth + IP allowlist (#312)', () => {
         allow: ['10.0.0.0/8'],
         // Pin the IP via a custom extractor so the test is not
         // dependent on whatever the platform reports as remoteAddress.
-        getClientIp: (req) => req.headers['x-test-client'] ?? null,
+        getClientIp: (request) => request.headers['x-test-client'] ?? null,
       }),
     });
     const http = sys.extension(HttpExtensionId);

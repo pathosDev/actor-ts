@@ -106,9 +106,9 @@ export function managementRoutes(
    * one gossip-tick stale.  Returns 404 if DD isn't started or the
    * type isn't known.
    */
-  const clusterShards = get(async (req) => {
+  const clusterShards = get(async (request) => {
     if (!cluster) return complete(Status.ServiceUnavailable, 'no cluster');
-    const typeRaw = req.query['type'];
+    const typeRaw = request.query['type'];
     const typeName = Array.isArray(typeRaw) ? typeRaw[0] : typeRaw;
     if (!typeName) {
       return complete(Status.BadRequest, 'missing query param `type`');
@@ -153,11 +153,11 @@ export function managementRoutes(
    * after auth has been wired up at the proxy/ingress layer.
    */
   const downRoute: Route = options.enableDownEndpoint && cluster
-    ? post(async (req) => {
-      if (!req.body) return complete(Status.BadRequest, 'missing JSON body');
+    ? post(async (request) => {
+      if (!request.body) return complete(Status.BadRequest, 'missing JSON body');
       let parsed: { address?: string };
       try {
-        parsed = JSON.parse(new TextDecoder().decode(req.body));
+        parsed = JSON.parse(new TextDecoder().decode(request.body));
       } catch (e) {
         return complete(Status.BadRequest, `invalid JSON: ${(e as Error).message}`);
       }

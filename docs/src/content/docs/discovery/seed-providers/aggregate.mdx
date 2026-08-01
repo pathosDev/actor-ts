@@ -87,7 +87,8 @@ flowchart TB
 
 The provider stops at the **first non-empty result**.  An empty
 list from one provider triggers fallback to the next; an error
-also triggers fallback (with the error logged at debug level).
+also triggers fallback (the error is passed to an optional log
+callback — a no-op by default).
 
 If **every** provider fails or returns empty, `lookup()` resolves
 to `[]` — the cluster's `Cluster.join` then either self-bootstraps
@@ -185,14 +186,26 @@ new AggregateSeedProvider([
 ]);
 ```
 
-A 403 from K8s API → logged + skipped → falls through to the
-config provider.  This makes aggregate the right tool for "this
-code path runs everywhere" — the K8s lookup just becomes a noop
+A 403 from K8s API → skipped → falls through to the config
+provider.  This makes aggregate the right tool for "this code
+path runs everywhere" — the K8s lookup just becomes a noop
 where K8s isn't available.
 
-Errors logged at **debug** level — quiet by default.  Configure
-the system at `debug` level if you want visibility into which
-providers tried + failed.
+`AggregateSeedProvider` takes an **optional second constructor
+argument** — a log callback `(message: string, err?: unknown) =>
+void`.  It defaults to a no-op, so provider errors are **silently
+swallowed** unless you pass one.  Supply a log function to get
+visibility into which providers tried + failed:
+
+```ts
+new AggregateSeedProvider(
+  [
+    new KubernetesApiSeedProvider(kubernetesApiSeedProviderOptions),
+    new ConfigSeedProvider(configSeedProviderOptions),
+  ],
+  (message, error) => console.warn(`[seed] ${message}`, error),
+);
+```
 
 ## Ordering matters
 

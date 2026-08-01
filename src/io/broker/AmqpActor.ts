@@ -1,3 +1,4 @@
+import { match } from 'ts-pattern';
 import type { Config } from '../../config/Config.js';
 import { ConfigKeys } from '../../config/ConfigKeys.js';
 import type { ActorRef } from '../../ActorRef.js';
@@ -8,25 +9,25 @@ import { AmqpOptionsValidator } from './AmqpOptions.js';
 import type { AmqpOptions, AmqpOptionsType } from './AmqpOptions.js';
 
 /** Inbound AMQP delivery handed to subscribers. */
-export interface AmqpDelivery {
+export type AmqpDelivery = {
   readonly queue: string;
   readonly content: Uint8Array;
   readonly properties: Readonly<Record<string, unknown>>;
-  /** Acknowledgement token — forward to the actor as `{ kind: 'ack', delivery }` to ack. */
+  /** Acknowledgement token — forward to the actor as `{ kind: 'acknowledgment', delivery }` to ack. */
   readonly ackToken: number;
-}
+};
 
 /** Outbound publish — routed through `exchange` with `routingKey`. */
-export interface AmqpPublish {
+export type AmqpPublish = {
   readonly exchange: string;
   readonly routingKey: string;
   readonly content: Uint8Array | string;
   readonly persistent?: boolean;
   readonly headers?: Readonly<Record<string, unknown>>;
   readonly contentType?: string;
-}
+};
 
-export interface AmqpQueueBinding {
+export type AmqpQueueBinding = {
   readonly queue: string;
   readonly exchange?: string;
   readonly routingKey?: string;
@@ -44,12 +45,18 @@ export interface AmqpQueueBinding {
     readonly autoDelete?: boolean;
     readonly exclusive?: boolean;
   };
-}
+};
 
-export type AmqpCommand =
-  | { readonly kind: 'publish'; readonly publish: AmqpPublish }
-  | { readonly kind: 'ack'; readonly delivery: AmqpDelivery }
-  | { readonly kind: 'nack'; readonly delivery: AmqpDelivery; readonly requeue?: boolean };
+type PublishCommand = { readonly kind: 'publish'; readonly publish: AmqpPublish };
+type AcknowledgmentCommand = { readonly kind: 'acknowledgment'; readonly delivery: AmqpDelivery };
+/** `requeue` defaults to `true` — redeliver rather than drop unless told otherwise. */
+type NegativeAcknowledgmentCommand = {
+  readonly kind: 'negativeAcknowledgment';
+  readonly delivery: AmqpDelivery;
+  readonly requeue?: boolean;
+};
+
+export type AmqpCommand = PublishCommand | AcknowledgmentCommand | NegativeAcknowledgmentCommand;
 
 /**
  * AMQP 0.9.1 actor backed by `amqplib`.  One connection, one channel
@@ -58,29 +65,29 @@ export type AmqpCommand =
  * `tell({ kind: 'subscribe', ... })` (currently out-of-scope — add when
  * needed).
  *
- * autoAck=true (default) means the consumer acks the message when it
+ * autoAcknowledge=true (default) means the consumer acks the message when it
  * was *delivered* to the actor, not when the actor finished
- * processing.  For at-least-once-with-processing, set autoAck=false
- * and have your handler tell back `{ kind: 'ack' / 'nack', delivery }`.
+ * processing.  For at-least-once-with-processing, set autoAcknowledge=false
+ * and have your handler tell back `{ kind: 'acknowledgment' / 'negativeAcknowledgment', delivery }`.
  */
 export class AmqpActor extends BrokerActor<AmqpOptionsType, AmqpCommand, AmqpPublish> {
   private connection: AmqpConnectionLike | null = null;
   private channel: AmqpChannelLike | null = null;
   /** Map ackToken → underlying amqplib message object (we never expose amqplib types upward). */
   private readonly pendingAcks = new Map<number, AmqpRawMessage>();
-  private nextAckToken = 1;
+  private nextAcknowledgmentToken = 1;
 
   constructor(options: AmqpOptions = {}) { super(options); }
 
   protected configKey(): string { return ConfigKeys.io.broker.amqp; }
   protected builtInDefaultOptions(): Partial<AmqpOptionsType> {
-    return { prefetch: 1, autoAck: true };
+    return { prefetch: 1, autoAcknowledge: true };
   }
   protected readOptionsFromConfig(config: Config): Partial<AmqpOptionsType> {
     const out: { -readonly [K in keyof AmqpOptionsType]?: AmqpOptionsType[K] } = {};
     if (config.hasPath('url')) out.url = config.getString('url');
     if (config.hasPath('prefetch')) out.prefetch = config.getInt('prefetch');
-    if (config.hasPath('autoAck')) out.autoAck = config.getBoolean('autoAck');
+    if (config.hasPath('autoAcknowledge')) out.autoAcknowledge = config.getBoolean('autoAcknowledge');
     return out;
   }
   protected requiredOptions(): ReadonlyArray<keyof AmqpOptionsType> { return ['url']; }
@@ -102,18 +109,18 @@ export class AmqpActor extends BrokerActor<AmqpOptionsType, AmqpCommand, AmqpPub
       }
       const target = binding.target;
       const queueName = binding.queue;
-      await this.channel.consume(queueName, (msg) => {
-        if (!msg) return;
-        const ackToken = this.nextAckToken++;
-        if (this.options.autoAck) {
-          try { this.channel?.ack(msg); } catch { /* ignore */ }
+      await this.channel.consume(queueName, (message) => {
+        if (!message) return;
+        const ackToken = this.nextAcknowledgmentToken++;
+        if (this.options.autoAcknowledge) {
+          try { this.channel?.ack(message); } catch { /* ignore */ }
         } else {
-          this.pendingAcks.set(ackToken, msg);
+          this.pendingAcks.set(ackToken, message);
         }
         target.tell({
           queue: queueName,
-          content: msg.content,
-          properties: msg.properties ?? {},
+          content: message.content,
+          properties: message.properties ?? {},
           ackToken,
         });
       }, { noAck: false });
@@ -156,49 +163,65 @@ export class AmqpActor extends BrokerActor<AmqpOptionsType, AmqpCommand, AmqpPub
     }
   }
 
-  override onReceive(cmd: AmqpCommand): void {
-    if (cmd.kind === 'publish') {
-      this.enqueueOutbound(cmd.publish);
-      return;
-    }
-    if (cmd.kind === 'ack') {
-      const raw = this.pendingAcks.get(cmd.delivery.ackToken);
-      if (raw && this.channel) {
-        try { this.channel.ack(raw); } catch { /* ignore */ }
-        this.pendingAcks.delete(cmd.delivery.ackToken);
-      }
-      return;
-    }
-    // nack
-    const raw = this.pendingAcks.get(cmd.delivery.ackToken);
+  override onReceive(command: AmqpCommand): void {
+    match(command)
+      .with({ kind: 'publish' }, (c) => this.onPublish(c))
+      .with({ kind: 'acknowledgment' }, (c) => this.onAcknowledgment(c))
+      .with({ kind: 'negativeAcknowledgment' }, (c) => this.onNegativeAcknowledgment(c))
+      .exhaustive();
+  }
+
+  /* ----------------------------- internals ------------------------------ */
+
+  private onPublish(command: PublishCommand): void {
+    this.enqueueOutbound(command.publish);
+  }
+
+  /*
+   * Settling is best-effort on both paths: an unknown token (already
+   * settled, or delivered before a reconnect) and a channel that threw are
+   * both no-ops rather than errors — the broker redelivers what we never
+   * acknowledged, so a lost ack costs a redelivery, not correctness.
+   */
+
+  private onAcknowledgment(command: AcknowledgmentCommand): void {
+    const raw = this.pendingAcks.get(command.delivery.ackToken);
     if (raw && this.channel) {
-      try { this.channel.nack(raw, false, cmd.requeue ?? true); } catch { /* ignore */ }
-      this.pendingAcks.delete(cmd.delivery.ackToken);
+      try { this.channel.ack(raw); } catch { /* ignore */ }
+      this.pendingAcks.delete(command.delivery.ackToken);
+    }
+  }
+
+  private onNegativeAcknowledgment(command: NegativeAcknowledgmentCommand): void {
+    const raw = this.pendingAcks.get(command.delivery.ackToken);
+    if (raw && this.channel) {
+      try { this.channel.nack(raw, false, command.requeue ?? true); } catch { /* ignore */ }
+      this.pendingAcks.delete(command.delivery.ackToken);
     }
   }
 }
 
 /* ----------------------------- internals -------------------------------- */
 
-interface AmqpRawMessage {
+type AmqpRawMessage = {
   content: Uint8Array;
   properties?: Record<string, unknown>;
-}
+};
 
 interface AmqpChannelLike {
   prefetch(count: number): Promise<void>;
-  assertQueue(queue: string, opts: { durable?: boolean; autoDelete?: boolean; exclusive?: boolean }): Promise<unknown>;
+  assertQueue(queue: string, options: { durable?: boolean; autoDelete?: boolean; exclusive?: boolean }): Promise<unknown>;
   bindQueue(queue: string, exchange: string, routingKey: string): Promise<unknown>;
   consume(
-    queue: string, cb: (msg: AmqpRawMessage | null) => void,
-    opts: { noAck?: boolean },
+    queue: string, cb: (message: AmqpRawMessage | null) => void,
+    options: { noAck?: boolean },
   ): Promise<unknown>;
   publish(
     exchange: string, routingKey: string, content: Uint8Array,
-    opts: { persistent?: boolean; headers?: Readonly<Record<string, unknown>>; contentType?: string },
+    options: { persistent?: boolean; headers?: Readonly<Record<string, unknown>>; contentType?: string },
   ): boolean;
-  ack(msg: AmqpRawMessage): void;
-  nack(msg: AmqpRawMessage, allUpTo: boolean, requeue: boolean): void;
+  ack(message: AmqpRawMessage): void;
+  nack(message: AmqpRawMessage, allUpTo: boolean, requeue: boolean): void;
   once(event: 'drain', cb: () => void): void;
   close(): Promise<void>;
 }

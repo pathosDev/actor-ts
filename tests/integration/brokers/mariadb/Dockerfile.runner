@@ -5,7 +5,7 @@
 # a regular dependency), then runs the SQL persistence contract against
 # the live mariadb:latest service.
 
-FROM oven/bun:debian
+FROM oven/bun:1.3-debian
 
 RUN apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates curl \

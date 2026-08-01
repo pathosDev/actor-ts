@@ -51,6 +51,12 @@ export interface ObjectStoragePluginHandles {
    * options.
    */
   readonly durableStateStore: ObjectStorageDurableStateStore;
+  /**
+   * Close the shared backend exactly once.  Both stores are built with
+   * `ownsBackend: false`, so neither closes the backend on its own
+   * `close()` — the caller invokes this on shutdown instead (idempotent).
+   */
+  close(): Promise<void>;
 }
 
 /**
@@ -64,7 +70,7 @@ export interface ObjectStoragePluginHandles {
  * **Eager peer-dep validation (#18, #59).**  Before returning, this
  * function probes any optional peer-dependency the configured codecs
  * need — `fzstd` for `compression: 'zstd'` (when neither Bun nor
- * Node 22.15+ provides a native impl), `SubtleCrypto` when any
+ * Node provides a native impl), `SubtleCrypto` when any
  * encryption config is supplied.  A failing probe surfaces the
  * "install X" message **here**, at registration time, instead of
  * silently surviving until the first persist call.  For resolvers
@@ -97,6 +103,7 @@ export async function registerObjectStoragePlugins(
   ext.registerSnapshotStore(snapshotId, (_system: ActorSystem) => {
     return new ObjectStorageSnapshotStore({
       backend,
+      ownsBackend: false,
       ...(resolvedOptions.prefix !== undefined ? { prefix: resolvedOptions.prefix } : {}),
       ...(resolvedOptions.keepN !== undefined ? { keepN: resolvedOptions.keepN } : {}),
       ...(resolvedOptions.compression !== undefined ? { compression: resolvedOptions.compression } : {}),
@@ -107,13 +114,23 @@ export async function registerObjectStoragePlugins(
 
   const durableStateStore = new ObjectStorageDurableStateStore({
     backend,
+    ownsBackend: false,
     ...(resolvedOptions.prefix !== undefined ? { prefix: resolvedOptions.prefix } : {}),
     ...(resolvedOptions.compression !== undefined ? { compression: resolvedOptions.compression } : {}),
     ...(resolvedOptions.encryption !== undefined ? { encryption: resolvedOptions.encryption } : {}),
     ...(resolvedOptions.maxDecompressedBytes !== undefined ? { maxDecompressedBytes: resolvedOptions.maxDecompressedBytes } : {}),
   });
 
-  return { backend, durableStateStore };
+  // The backend is shared across both stores, so neither owns it.  The plugin
+  // owns it and closes it once, here, on shutdown.
+  let backendClosed = false;
+  const close = async (): Promise<void> => {
+    if (backendClosed) return;
+    backendClosed = true;
+    await backend.close?.();
+  };
+
+  return { backend, durableStateStore, close };
 }
 
 /**
@@ -127,8 +144,8 @@ export async function validateObjectStoragePeerDeps(
   const resolvedOptions = (options as ObjectStoragePluginOptionsType);
   // Compression: probe each algorithm at most once.
   const algos = new Set<CompressionConfig['algorithm']>();
-  for (const cfg of collectCompressionConfigs(resolvedOptions.compression)) {
-    algos.add(cfg.algorithm);
+  for (const config of collectCompressionConfigs(resolvedOptions.compression)) {
+    algos.add(config.algorithm);
   }
   for (const algo of algos) {
     await probeCompressionAvailability(algo);

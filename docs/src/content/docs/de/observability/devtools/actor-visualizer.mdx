@@ -1,0 +1,207 @@
+---
+title: Actor- & Cluster-Panel
+description: Der lebende Supervision-Baum mit Mailbox-Tiefen, die Cluster-Topologie mit Shard-Verteilung und eine Übersicht, deren Zahlen jeweils die jüngste Vergangenheit mitführen — damit Spitzen sichtbar werden.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+Drei Ansichten landen gemeinsam, weil sie dieselbe Frage aus
+unterschiedlicher Entfernung beantworten: **Ist dieses System gesund —
+und wenn nicht, wo?**
+
+## Übersicht
+
+Die Seite, mit der DevTools öffnet. Jede Kachel trägt eine Sparkline,
+und die Charts darunter zeichnen dieselben Reihen über die letzten
+Minuten — denn eine einzelne Zahl sagt dir nicht, ob 40 wartende
+Nachrichten der Normalzustand sind oder der Anfang eines Staus.
+
+**Common** beantwortet *was schaue ich hier eigentlich an*:
+Actor-System, Uptime, Runtime, Cluster-Status. Die Uptime ist die des
+Systems selbst, gemessen ab `ActorSystem.startedAtMs` und vom Server
+geschickt — ein Reload der Seite oder eine abgerissene Verbindung lässt
+das System also nicht jünger wirken, als es ist.
+
+**Numbers** sind die Zahlen selbst:
+
+| Kachel | Liest sich als |
+| --- | --- |
+| **Actors** | Lebende Actors, inklusive Guardians |
+| **Messages / s**, **Processed messages** | Durchsatz, aus `actor_messages_delivered_total` |
+| **Spawns / s**, **Stops / s** | Actor-Fluktuation |
+| **Restarts** | Supervisor-getriebene Neustarts seit dem Attach |
+| **Mailbox backlog** | Alle wartenden Nachrichten im System, summiert |
+| **Stashed** | Alle gestashten Nachrichten, summiert |
+| **Suspended actors** | Von der Supervision angehaltene Actors — alles über 0 ist ein Warnzeichen |
+| **Dead letters** | Unzustellbare Nachrichten seit dem Attach |
+| **Mailbox drops** | Nachrichten, die eine begrenzte Mailbox beim Überlauf verworfen hat |
+| **Handler p99** | Zeit in `onReceive`, aus Histogramm-Buckets interpoliert |
+
+Zähler sind auf dem Draht **kumulativ**; die Raten pro Sekunde leitet
+die UI selbst ab. Ein Browser, der sich neu verbindet, im Hintergrund
+gedrosselt wird oder einen Tick verpasst, zeigt damit weiterhin
+korrekte Zahlen statt einer Phantom-Spitze.
+
+Im Cluster sind die Zahlen die des **gesamten Clusters**: Auf jedem
+Knoten läuft ein DevTools-Agent, der mit seinen eigenen Werten
+antwortet, und die Summen oben sind deren Summe. Ein Abschnitt **Per
+node** schlüsselt dieselben Zahlen pro Knoten auf. Ein Knoten, der
+aufhört zu antworten, behält seine letzte Messung mit dem Vermerk *not
+answering*, statt zu verschwinden — und wird eine Stunde später
+vergessen, dasselbe Fenster wie im Cluster-Panel.
+
+**Charts** zeichnet diese Reihen über einen **wählbaren Zeitraum** — von
+einer Minute bis 24 Stunden, standardmäßig fünf Minuten. Die Reihe wird
+ab dem Attach auf dem Server aufgezeichnet: Ein Panel, das eine Stunde
+später geöffnet wird, zeigt diese Stunde, statt einen leeren Graphen zu
+füllen — und ein Reload der Seite verliert sie auch nicht.
+
+Längere Zeiträume werden zusammengefasst: Ein Tag kommt in
+Zwei-Minuten-Buckets, eine Stunde in 15-Sekunden-Buckets, und das Panel
+schreibt dazu welche. Füllstände behalten je Intervall das **Maximum**,
+damit eine Spitze das Zusammenfassen überlebt; kumulative Zähler behalten
+den letzten Wert des Intervalls, damit die Sekundenrechnung stimmt, wie
+grob die Buckets auch sind.
+
+Die drei Diagramme sind getrennt, damit sich ein Füllstand (wartende
+Nachrichten) und eine Rate (Nachrichten pro Sekunde) nie eine y-Achse
+teilen: Auf einer
+gemeinsamen Skala drückt ein Rückstau von 400 eine 2/s-Linie auf null.
+Darunter listet **Busiest mailboxes** die tiefsten Queues von jetzt —
+der schnellste Weg von „irgendwo staut es sich" zu „*dieser* Actor staut
+sich".
+
+<Aside type="note" title="Durchsatz braucht Metriken">
+Nachrichtenzahlen, Mailbox-Drops und Handler-Latenz stammen aus den
+Zählern des Frameworks selbst, und die liegen brach, solange die
+Metrics-Registry nicht eingeschaltet ist. DevTools schaltet sie beim
+Attach ein, falls du es nicht getan hast, und stellt beim Detach die
+Noop-Registry zurück — siehe
+[Kosten](/de/observability/devtools/overview/#kosten).
+</Aside>
+
+## Actors
+
+Der lebende Supervision-Baum, vom Root-Guardian abwärts.
+
+- **Filtern** nach Pfad oder Klassenname. Treffer behalten ihre Vorfahren
+  sichtbar, damit ein Fund tief in einem zugeklappten Ast erreichbar
+  bleibt — und ein Filter hebt das Zuklappen vorübergehend auf, denn ein
+  Treffer, den man nicht sieht, wirkt wie eine gescheiterte Suche.
+- **Badges** zeigen das Ungewöhnliche: wartende Nachrichten, gestashte
+  Nachrichten, eine suspendierte Mailbox. Ein untätiger Actor trägt
+  keine.
+- **Der Status-Punkt ist live.** Grün läuft, Amber suspendiert oder
+  terminierend, Rot beendet. Lifecycle-Events melden nur Geburt, Tod und
+  Neustart — eine Suspendierung meldet niemand —, deshalb inspiziert der
+  Tap den Baum sekündlich neu und schickt die Zellen, die sich bewegt
+  haben.
+- **Ein Restart lässt die Zeile aufblitzen.** Der Pfad überlebt einen
+  Neustart, im Baum bewegt sich also nichts — ohne das Aufblitzen wäre er
+  unsichtbar.
+- **Ein gestoppter Actor bleibt 30 Sekunden stehen**, ausgegraut, mit
+  durchgestrichenem Namen und einem „stopped 12s ago"-Badge, und
+  verschwindet dann. Der Actor, den man sehen will, ist meistens genau
+  der, der gerade gestorben ist; seine Zeile im Moment des Stopps zu
+  entfernen hieß, dass man ihn nie zu Gesicht bekam. *Keep stopped*
+  abschalten, wenn du nur die Lebenden sehen willst.
+- **Hide DevTools actors** ist standardmäßig an. DevTools betreibt Hub
+  und Taps als gewöhnliche Actors; sie existieren wirklich und werden
+  deshalb gelistet, sind aber nicht das, wofür du gekommen bist. Sie
+  werden beim Spawn mit
+  [`Props.asInternal()`](/de/fundamentals/props/#asinternal) markiert
+  statt über den Namen erraten — so verschwinden auch ihre Kinder, und
+  eine DevTools-Websocket-Verbindung ist ein Kind ihres Hubs.
+
+Im Cluster listet das Panel **jeden Knoten** unter einer eigenen
+Überschrift — so sieht man, dass ein Knoten ein Singleton hostet und die
+anderen nicht, oder dass sich nur bei einem die Arbeit staut. Pfade
+wiederholen sich über Knoten hinweg (alle tragen denselben Systemnamen),
+die Bäume werden deshalb über die Adresse auseinandergehalten, nicht über
+den Pfad.
+
+Der lokale Baum kommt als ein Snapshot plus Deltas, damit ein System, das
+ständig Actors erzeugt, nicht jedes Mal den ganzen Baum überträgt.
+Entfernte Knoten melden jede Runde ihren kompletten Baum — sie haben
+keinen Kanal, um einen Spawn im Moment des Entstehens zu schicken —, und
+ein Actor, der darin nicht mehr auftaucht, bekommt dieselben dreißig
+Sekunden Grabstein wie ein lokaler. Ein Knoten, der aufhört zu
+antworten, behält seinen letzten Baum — gedimmt und mit neutralen
+Status-Punkten: Diese Actors laufen nicht, niemand weiß, was sie tun.
+Mailbox-Tiefen laufen über einen eigenen Stream und aktualisieren
+sekündlich.
+
+<Aside type="note" title="Warum der Baum voller wirken kann als dein Code">
+Jede WebSocket-Verbindung zu DevTools erzeugt einen Connection-Actor, und
+auch die Framework-Maschinerie (Sharding, Singletons, Pub-Sub) erzeugt
+Actors. Verborgen wird nichts außer DevTools' eigenen — und das ist eine
+Checkbox.
+</Aside>
+
+<Aside type="tip" title="Die zwei Äste lesen">
+`/user` enthält, was dein Code erzeugt hat; `/system` enthält, was das
+Framework für sich selbst erzeugt hat — nach Subsystem gruppiert:
+`/system/cluster/sharding`, `/system/cluster/pubsub`,
+`/system/devtools` und so weiter. Wenn du deine eigenen Actors suchst,
+ist `/user` die ganze Geschichte.
+
+Die Gruppen-Ebenen sind selbst Actors (leere Supervisor, die nur die
+Gruppierung und eine Supervisions-Strategie halten), erscheinen also als
+Knoten mit Kindern und ohne Nachrichten. Gruppen entstehen erst, wenn sie
+gebraucht werden — ein System, das nie DevTools oder Clustering startet,
+hat unter `/system` nichts.
+</Aside>
+
+## Cluster
+
+Verfügbar, sobald du einen `Cluster` übergibst — ein System kann seinen
+eigenen nicht herausgeben, aus demselben Grund, aus dem
+`managementRoutes` einen entgegennimmt:
+
+```ts
+import { DevTools, DevToolsOptions } from 'actor-ts/devtools';
+
+const devtoolsOptions = DevToolsOptions.create().withCluster(cluster);
+await DevTools.attach(system, devtoolsOptions);
+```
+
+Ohne ihn bleibt das Panel sichtbar und erklärt, warum es nicht verfügbar
+ist, statt zu verschwinden.
+
+- **Topologie** — Members auf einem Ring, nach Status eingefärbt. Der
+  Leader wird größer gezeichnet, der eigene Knoten mit dickem Rand. Ein
+  Ring statt eines Force-Layouts: Jeder Knoten gossipt mit jedem, der
+  Graph ist also vollständig, und eine Simulation würde nur einen langsam
+  einschwingenden Kreis erzeugen — während ein Ring dieselbe Membership
+  jedes Mal gleich zeichnet.
+- **Members** — Adresse, Status, Rollen und wer führt. Ein Knoten, der
+  die Membership verlässt, bleibt **eine Stunde stehen**, durchgestrichen
+  und rot, mit der Angabe, wann er zuletzt gesehen wurde. Genau der
+  ausgefallene Knoten ist der interessante — und der verschwand bisher
+  in dem Moment, in dem er es wurde. Der Eintrag liegt auf dem Server,
+  ein Reload der Seite löscht ihn also nicht.
+- **Shard-Verteilung** — Shards pro Region, pro geshardetem Typ. Typen
+  erscheinen, sobald ihr Coordinator sie republiziert (das Framework
+  führt kein zentrales Register geshardeter Typen), ein frisch geöffnetes
+  Panel füllt sich also binnen eines Coordinator-Ticks.
+- **Membership-Historie** — Übergänge seit dem Attach, neueste zuerst.
+  Unreachable und Down sind als Probleme eingefärbt, Joins und Leaves
+  nicht.
+
+## Kosten
+
+Beide Sampling-Streams laufen im Leerlauf, bis ein Panel sie abonniert —
+ein Browser-Tab, der im Hintergrund offen liegt, kostet das System
+nichts. Der Tree-Tap hört auf Actor-Lifecycle-Events, die die Runtime
+ohnehin publiziert: dieselben Events, die schon die Metriken
+`actor_created_total` / `actor_terminated_total` speisen.
+
+## Ausprobieren
+
+```bash
+bun run examples/cluster/singleton-hello.ts --devtools
+```
+
+Jedes Example ist für DevTools verdrahtet; ein Drei-Knoten-Cluster-Demo
+gibt dir drei Ports ab `9333`. Details im
+[Überblick](/de/observability/devtools/overview/).

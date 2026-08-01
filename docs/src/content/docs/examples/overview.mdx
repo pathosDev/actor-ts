@@ -1,6 +1,6 @@
 ---
 title: Examples overview
-description: Runnable examples in the repo — a chat app demonstrating clustering + pubsub, a voice-pipeline showing brokers + persistence, plus stand-alone snippets for individual concepts.
+description: Runnable examples in the repo — a chat app demonstrating clustering + pubsub, a voice sample showing ephemeral pub/sub + presence CRDTs, plus stand-alone snippets for individual concepts.
 ---
 
 The framework ships **runnable examples** under
@@ -11,8 +11,8 @@ in the repo.  Each is a fully-working app you can clone + run.
 
 | Example | Demonstrates |
 | --- | --- |
-| **[Chat sample](/examples/chat-sample/)** | Cluster + DistributedPubSub + sharded user-sessions + HTTP/WS endpoint. |
-| **[Voice sample](/examples/voice-sample/)** | WebSocket + Kafka + PersistentActor + projections. |
+| **[Chat sample](/examples/chat-sample/)** | Cluster + DistributedPubSub + DistributedData + sharded persistent chat-room / direct-message entities + HTTP/WS endpoint. |
+| **[Voice sample](/examples/voice-sample/)** | WebSocket + Receptionist + DistributedPubSub + DistributedData ORSets — ephemeral by design (no sharding, no persistence). |
 | **[Stand-alone snippets](/examples/stand-alone-snippets/)** | Bite-sized examples per concept — Counter, Saga, Health, etc. |
 
 For **first contact with actor-ts**, start with the
@@ -25,11 +25,13 @@ multi-feature app.
 ```bash
 # Clone the repo:
 git clone https://github.com/pathosDev/actor-ts.git
-cd actor-ts/examples/chat
+cd actor-ts
 
-# Install + run:
+# Install dependencies once, at the repo root:
 bun install
-bun run dev
+
+# Run the chat sample — open three terminals, same command in each:
+bun examples/chat/backend/main.ts
 ```
 
 Each example has its own README with setup steps.
@@ -39,9 +41,10 @@ Each example has its own README with setup steps.
 If you want to see...
 
 - **Cluster + entities** → chat sample.
-- **Broker integration (Kafka)** → voice sample.
-- **PersistentActor patterns** → voice sample.
-- **Distributed pub/sub** → chat sample.
+- **PersistentActor patterns** → chat sample.
+- **Distributed pub/sub** → chat or voice sample.
+- **Receptionist + ephemeral (CRDT) rooms** → voice sample.
+- **Broker integration (Kafka)** → the `examples/io/kafka-exactly-once.ts` snippet.
 - **HTTP + WebSocket** → both samples.
 - **A specific concept in isolation** → stand-alone snippets.
 
@@ -49,11 +52,12 @@ If you want to see...
 
 The examples follow a few conventions:
 
-- **`src/actors/`** — actor classes.
-- **`src/messages.ts`** — shared message types.
-- **`src/main.ts`** — entry point with cluster join + HTTP server
-  startup.
-- **`src/handlers/`** — HTTP / WS route handlers.
+- **`backend/actors/`** — actor classes.
+- **`backend/main.ts`** — entry point; wiring only (cluster join,
+  extensions, sharding, HTTP singleton).
+- **`backend/routes.ts`** — HTTP directive-DSL routes.
+- **`shared/`** — code shared with the frontends: `protocol.ts`
+  (WS message types), `rooms.ts`, `users.ts`.
 
 Reading an example takes ~30 minutes for the full architecture;
 faster if you're already familiar with the framework.
@@ -76,8 +80,8 @@ Examples that get included:
 
 - **[Chat sample](/examples/chat-sample/)** —
   cluster + pubsub.
-- **[Voice sample](/examples/voice-sample/)** — brokers
-  + persistence.
+- **[Voice sample](/examples/voice-sample/)** — ephemeral
+  pub/sub + presence.
 - **[Stand-alone snippets](/examples/stand-alone-snippets/)** —
   per-concept code.
 - **[Quickstart](/intro/quickstart/)** — the

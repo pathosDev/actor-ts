@@ -28,7 +28,7 @@ dass Entities **eager neu erstellt** werden:
 const startShardingOptions = StartShardingOptions.create()
   .withTypeName('session')
   .withEntityProps(Props.create(() => new SessionActor()))
-  .withExtractEntityId((msg) => msg.userId)
+  .withExtractEntityId((message) => message.userId)
   .withRememberEntities(true);
 sharding.start(
   startShardingOptions,
@@ -60,7 +60,7 @@ Zwei-Speicher-Aufteilung:
 
 ```
 Journal (deine Events)            RememberEntitiesStore (nur IDs)
-  pid=cart-user-42                  entityIds = ['cart-user-42', 'cart-user-43', ...]
+  persistenceId=cart-user-42        entityIds = ['cart-user-42', 'cart-user-43', ...]
   Event 1                            
   Event 2
   Event 3
@@ -111,12 +111,12 @@ dauerhaft ist.
 ## Eigener Store
 
 ```ts
-import type { RememberEntitiesStore } from 'actor-ts/cluster/sharding';
+import type { RememberEntitiesStore, RememberEvent } from 'actor-ts';
 
 class RedisRememberEntitiesStore implements RememberEntitiesStore {
-  async addEntity(typeName: string, entityId: string): Promise<void> { /* SADD */ }
-  async removeEntity(typeName: string, entityId: string): Promise<void> { /* SREM */ }
-  async listEntities(typeName: string): Promise<ReadonlyArray<string>> { /* SMEMBERS */ }
+  async append(typeName: string, event: RememberEvent): Promise<void> { /* RPUSH das Event als JSON */ }
+  async load(typeName: string): Promise<RememberEvent[]> { /* LRANGE 0 -1 → jeweils JSON.parse */ return []; }
+  async clear(typeName: string): Promise<void> { /* DEL den Key */ }
 }
 
 const shardingOptions = StartShardingOptions.create()
@@ -136,9 +136,10 @@ Journal auf Cassandra liegt).
 `rememberEntities: true` fügt zwei Write-Operationen pro
 Entity-Lebenszyklus hinzu:
 
-1. **Ein Write, wenn die Entity spawnt** (`addEntity`).
-2. **Ein Write, wenn die Entity passiviert / stoppt**
-   (`removeEntity`).
+1. **Ein Write, wenn die Entity spawnt** (ein `append` eines
+   `started`-Events).
+2. **Ein Write, wenn die Entity passiviert / stoppt** (ein `append`
+   eines `stopped`-Events).
 
 Für High-Churn-Entities (Millionen kurzlebiger Sessions pro
 Stunde) ist das echter Overhead. Erwäge:
@@ -170,14 +171,14 @@ kürzliche Nachricht?" ein Ja ist**, aktivieren.
 Passivierung stoppt idle Entities. Mit `rememberEntities`:
 
 ```
-Entity aktiv → passiviere (idle) → Entity stoppt → Store: removeEntity?
+Entity aktiv → passiviere (idle) → Entity stoppt → Store: append stopped?
 ```
 
 Verhalten des Frameworks:
 
-- **Idle-Timeout-Passivierung** (`passivationIdleMs`) — entfernt die
-  Entity aus dem Store. Nächste Nachricht spawnt sie neu; der
-  Store empfängt erneut ein `addEntity`.
+- **Idle-Timeout-Passivierung** (`passivationIdleMs`) — hängt ein
+  `stopped`-Event an. Nächste Nachricht spawnt sie neu; der
+  Store empfängt erneut ein `started`-Event.
 - **`maxEntities`-LRU-Passivierung** — dasselbe.
 - **`Passivate` von der Entity selbst** — dasselbe.
 

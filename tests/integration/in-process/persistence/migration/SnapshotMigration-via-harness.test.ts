@@ -10,7 +10,7 @@ import { SnapshotMigrationTest } from '../../../../../src/testkit/SnapshotMigrat
 
 type DepositedV1 = { kind: 'deposited'; amount: number };
 type DepositedV2 = { kind: 'deposited'; amount: number; currency: 'USD' | 'EUR' };
-type DepositedV3 = DepositedV2 & { channel: 'web' | 'mobile' };
+interface DepositedV3 extends DepositedV2 { channel: 'web' | 'mobile' }
 
 function buildChain(): MigrationChain<DepositedV3> {
   return MigrationChain.for<DepositedV3>('BankAccount.Deposited', 3)

@@ -65,9 +65,9 @@ dann auf Bestätigungen** der konfigurierten Anzahl Replikas.
 | `consistency` | Worauf gewartet wird |
 | --- | --- |
 | `'local'` (Default) | Nur auf sich selbst — das lokale Anwenden ist das ACK. |
-| `'majority'` | ⌈N/2 + 1⌉ Replikas haben geACKt. |
+| `'majority'` | ⌊N/2⌋ + 1 Replikas haben geACKt. |
 | `'all'` | Jede Replika der Up-Member hat geACKt. |
-| `{ kind: 'count'; n: 3 }` | Genau `n` Replikas haben geACKt. |
+| `{ from: 3 }` | `from` Replikas haben geACKt (begrenzt auf `[1, N]`). |
 
 Das Promise:
 
@@ -172,8 +172,8 @@ await dd.updateAsync('x', ..., {
 });
 ```
 
-Default-Timeout ist `gossipIntervalMs × 5` — fünf Gossip-Runden,
-typischerweise 5 Sekunden.  Pro Call überschreiben, wenn:
+Default-Timeout ist feste 5 Sekunden (`DEFAULT_ASK_TIMEOUT_MS`),
+unabhängig vom Gossip-Intervall.  Pro Call überschreiben, wenn:
 
 - **Strengeres Latenz-Budget** — niedriger setzen; früh ablehnen,
   wenn Konsistenz nicht erreicht werden kann.

@@ -201,7 +201,7 @@ import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="One breaker per logical dependency">
   ```ts
-  const breaker = new CircuitBreaker(opts);
+  const breaker = new CircuitBreaker(options);
   // Used for both /payments and /shipping...
   ```
   A single breaker for two unrelated dependencies trips on *either's*
@@ -213,7 +213,7 @@ import { Aside } from '@astrojs/starlight/components';
 <Aside type="caution" title="Don't share a breaker across an actor restart">
   ```ts
   class MyActor extends Actor<...> {
-    private readonly breaker = new CircuitBreaker(opts);
+    private readonly breaker = new CircuitBreaker(options);
     // ↑ resets on every restart
   }
   ```

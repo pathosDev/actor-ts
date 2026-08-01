@@ -40,11 +40,11 @@ import type { S3ObjectStorageOptions, S3ObjectStorageOptionsType } from './S3Obj
  * R2 the canonical region is `'auto'`.
  */
 
-export interface S3Credentials {
+export type S3Credentials = {
   readonly accessKeyId: string;
   readonly secretAccessKey: string;
   readonly sessionToken?: string;
-}
+};
 
 export class S3ObjectStorageBackend implements ObjectStorageBackend {
   private readonly clientLazy: Lazy<Promise<S3ClientLike>>;
@@ -66,24 +66,24 @@ export class S3ObjectStorageBackend implements ObjectStorageBackend {
     });
   }
 
-  async put(key: string, body: Uint8Array, opts: PutOptions = {}): Promise<{ etag: string }> {
+  async put(key: string, body: Uint8Array, options: PutOptions = {}): Promise<{ etag: string }> {
     const client = await this.clientLazy.get();
     const sdk = await s3SdkLazy.get();
-    const cmd = new sdk.PutObjectCommand({
+    const command = new sdk.PutObjectCommand({
       Bucket: this.bucket,
       Key: key,
       Body: body,
-      ContentType: opts.contentType,
-      ContentEncoding: opts.contentEncoding,
-      IfMatch: opts.ifMatch,
-      IfNoneMatch: opts.ifNoneMatch,
-      ServerSideEncryption: opts.sse === 'AES256' ? 'AES256'
-                          : (opts.sse && typeof opts.sse === 'object') ? 'aws:kms'
+      ContentType: options.contentType,
+      ContentEncoding: options.contentEncoding,
+      IfMatch: options.ifMatch,
+      IfNoneMatch: options.ifNoneMatch,
+      ServerSideEncryption: options.sse === 'AES256' ? 'AES256'
+                          : (options.sse && typeof options.sse === 'object') ? 'aws:kms'
                           : undefined,
-      SSEKMSKeyId: (opts.sse && typeof opts.sse === 'object') ? opts.sse.kmsKeyId : undefined,
+      SSEKMSKeyId: (options.sse && typeof options.sse === 'object') ? options.sse.kmsKeyId : undefined,
     });
     let result;
-    try { result = await client.send(cmd); }
+    try { result = await client.send(command); }
     catch (e) {
       if (isS3PreconditionFailed(e)) {
         throw new ObjectStorageConcurrencyError(
@@ -100,9 +100,9 @@ export class S3ObjectStorageBackend implements ObjectStorageBackend {
   async get(key: string): Promise<Option<ObjectFetched>> {
     const client = await this.clientLazy.get();
     const sdk = await s3SdkLazy.get();
-    const cmd = new sdk.GetObjectCommand({ Bucket: this.bucket, Key: key });
+    const command = new sdk.GetObjectCommand({ Bucket: this.bucket, Key: key });
     let result;
-    try { result = await client.send(cmd); }
+    try { result = await client.send(command); }
     catch (e) {
       if (isS3NotFound(e)) return none;
       throw wrapError(e, ObjectStorageBackendError, `S3 GET failed for ${key}`);
@@ -125,8 +125,8 @@ export class S3ObjectStorageBackend implements ObjectStorageBackend {
   async delete(key: string): Promise<void> {
     const client = await this.clientLazy.get();
     const sdk = await s3SdkLazy.get();
-    const cmd = new sdk.DeleteObjectCommand({ Bucket: this.bucket, Key: key });
-    try { await client.send(cmd); }
+    const command = new sdk.DeleteObjectCommand({ Bucket: this.bucket, Key: key });
+    try { await client.send(command); }
     catch (e) {
       // S3 DELETE is already idempotent — 200/204 even when the key was absent.
       // We only reach this branch on a real error (auth, network, …).
@@ -134,26 +134,26 @@ export class S3ObjectStorageBackend implements ObjectStorageBackend {
     }
   }
 
-  async list(opts: { prefix: string; limit?: number }): Promise<ObjectInfo[]> {
+  async list(options: { prefix: string; limit?: number }): Promise<ObjectInfo[]> {
     const client = await this.clientLazy.get();
     const sdk = await s3SdkLazy.get();
     const out: ObjectInfo[] = [];
     let continuationToken: string | undefined;
     // Page until either we hit the soft limit or the bucket is exhausted.
     while (true) {
-      const remaining = opts.limit ? Math.max(0, opts.limit - out.length) : undefined;
+      const remaining = options.limit ? Math.max(0, options.limit - out.length) : undefined;
       if (remaining === 0) break;
-      const cmd = new sdk.ListObjectsV2Command({
+      const command = new sdk.ListObjectsV2Command({
         Bucket: this.bucket,
-        Prefix: opts.prefix,
+        Prefix: options.prefix,
         // S3 caps MaxKeys at 1000; we ask for our remaining or 1000.
         MaxKeys: remaining ? Math.min(remaining, 1000) : 1000,
         ContinuationToken: continuationToken,
       });
       let result;
-      try { result = await client.send(cmd); }
+      try { result = await client.send(command); }
       catch (e) {
-        throw wrapError(e, ObjectStorageBackendError, `S3 LIST failed for prefix=${opts.prefix}`);
+        throw wrapError(e, ObjectStorageBackendError, `S3 LIST failed for prefix=${options.prefix}`);
       }
       for (const obj of result.Contents ?? []) {
         if (!obj.Key) continue;
@@ -167,7 +167,7 @@ export class S3ObjectStorageBackend implements ObjectStorageBackend {
       continuationToken = result.NextContinuationToken;
     }
     out.sort((a, b) => a.key.localeCompare(b.key));
-    return opts.limit ? out.slice(0, opts.limit) : out;
+    return options.limit ? out.slice(0, options.limit) : out;
   }
 
   async close(): Promise<void> {
@@ -179,7 +179,7 @@ export class S3ObjectStorageBackend implements ObjectStorageBackend {
 
 /* ----------------------------- internals -------------------------------- */
 
-interface S3SdkModule {
+type S3SdkModule = {
   S3Client: new (config: {
     region: string;
     endpoint?: string;
@@ -190,9 +190,9 @@ interface S3SdkModule {
   GetObjectCommand: new (input: { Bucket: string; Key: string }) => unknown;
   DeleteObjectCommand: new (input: { Bucket: string; Key: string }) => unknown;
   ListObjectsV2Command: new (input: ListObjectsV2CommandInput) => unknown;
-}
+};
 
-interface PutObjectCommandInput {
+type PutObjectCommandInput = {
   Bucket: string;
   Key: string;
   Body: Uint8Array;
@@ -202,31 +202,31 @@ interface PutObjectCommandInput {
   IfNoneMatch?: string;
   ServerSideEncryption?: 'AES256' | 'aws:kms';
   SSEKMSKeyId?: string;
-}
+};
 
-interface ListObjectsV2CommandInput {
+type ListObjectsV2CommandInput = {
   Bucket: string;
   Prefix: string;
   MaxKeys?: number;
   ContinuationToken?: string;
-}
+};
 
-interface S3PutResult { ETag?: string; }
-interface S3GetResult {
+type S3PutResult = { ETag?: string; };
+type S3GetResult = {
   Body?: unknown;
   ETag?: string;
   LastModified?: Date;
   ContentEncoding?: string;
   ContentType?: string;
-}
-interface S3ListResult {
+};
+type S3ListResult = {
   Contents?: Array<{ Key?: string; Size?: number; LastModified?: Date }>;
   IsTruncated?: boolean;
   NextContinuationToken?: string;
-}
+};
 
 export interface S3ClientLike {
-  send(cmd: unknown): Promise<S3PutResult & S3GetResult & S3ListResult>;
+  send(command: unknown): Promise<S3PutResult & S3GetResult & S3ListResult>;
   destroy?(): void;
 }
 
@@ -258,7 +258,7 @@ function isS3NotFound(e: unknown): boolean {
 
 /**
  * AWS SDK v3 returns `Body` as a stream-like object with helper methods
- * (`transformToByteArray`, `transformToString`).  Bun & Node 20+ provide
+ * (`transformToByteArray`, `transformToString`).  Bun & Node provide
  * `.transformToByteArray()` directly; we fall back to manual stream
  * reading for older shims.
  */

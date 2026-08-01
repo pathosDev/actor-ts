@@ -1,6 +1,6 @@
 ---
 title: FSM
-description: The in-memory finite-state machine — extend `FSM<StateName, StateData, Message>`, register `when(...)` handlers + `onEnter` / `onExit` callbacks. State lives only in memory; lost on restart.
+description: The in-memory finite-state machine — extend `FSM<StateName, StateData, Message>`, register `when(...)` handlers + `onEnter` / `onExitState` callbacks. State lives only in memory; lost on restart.
 ---
 
 `FSM<SName, SData, Message>` is the base class for in-memory state
@@ -21,18 +21,18 @@ class Door extends FSM<DoorState, DoorData, DoorMessage> {
   constructor() {
     super('closed', {});
 
-    this.when('closed', (data, msg) => {
-      if (msg === 'open') return this.goto('open', { openedAt: Date.now() });
+    this.when('closed', (data, message) => {
+      if (message === 'open') return this.goto('open', { openedAt: Date.now() });
       return this.stay(data);
     });
 
-    this.when('open', (data, msg) => {
-      if (msg === 'close') return this.goto('closed', {});
+    this.when('open', (data, message) => {
+      if (message === 'close') return this.goto('closed', {});
       return this.stay(data);
     });
 
     this.onEnter('open',  (data) => this.log.info(`door opened at ${data.openedAt}`));
-    this.onExit('open',   () => this.log.info(`door closing`));
+    this.onExitState('open', () => this.log.info(`door closing`));
   }
 }
 ```
@@ -44,7 +44,7 @@ class FSM<SName, SData, Message> extends Actor<Message> {
   // In subclass constructor:
   protected when(state: SName, handler: StateHandler<SName, SData, Message>): void;
   protected onEnter(state: SName, fn: (data: SData) => void | Promise<void>): void;
-  protected onExit(state: SName, fn: (data: SData) => void | Promise<void>): void;
+  protected onExitState(state: SName, fn: (data: SData) => void | Promise<void>): void;
   protected onTransition(fn: TransitionCallback<SName, SData>): void;
 
   // In handlers:
@@ -52,8 +52,8 @@ class FSM<SName, SData, Message> extends Actor<Message> {
   protected stay(data: SData): StayTransition<SData>;
 
   // Read-only:
-  protected readonly stateName: SName;
-  protected readonly stateData: SData;
+  protected get state(): SName;
+  protected get data(): SData;
 }
 ```
 
@@ -64,8 +64,8 @@ current state.
 ## `when` — state handlers
 
 ```ts
-this.when('closed', (data, msg) => {
-  if (msg === 'open') return this.goto('open', { openedAt: Date.now() });
+this.when('closed', (data, message) => {
+  if (message === 'open') return this.goto('open', { openedAt: Date.now() });
   return this.stay(data);
 });
 ```
@@ -89,15 +89,15 @@ this.stay({ ...data, lastChecked: Date.now() });  // → stay; new data
 this.stay(data);   // → stay; unchanged data
 ```
 
-- **`goto(state, data)`** — transition.  Fires `onExit` for the
+- **`goto(state, data)`** — transition.  Fires `onExitState` for the
   current state, sets the new state + data, fires `onEnter` for
   the new state.
 - **`stay(data)`** — no transition, but data is updated.  No
-  `onEnter` / `onExit` fires.
+  `onEnter` / `onExitState` fires.
 
 Both return values you can `return` directly.
 
-## `onEnter` and `onExit`
+## `onEnter` and `onExitState`
 
 ```ts
 this.onEnter('open', (data) => {
@@ -105,7 +105,7 @@ this.onEnter('open', (data) => {
   this.context.timers.startSingleTimer('auto-close', 'close', 10_000);
 });
 
-this.onExit('open', () => {
+this.onExitState('open', () => {
   this.context.timers.cancel('auto-close');
 });
 ```
@@ -113,13 +113,14 @@ this.onExit('open', () => {
 Fire on state entry / exit.  Useful for:
 
 - **Setting up timers** in `onEnter` and tearing them down in
-  `onExit`.
+  `onExitState`.
 - **Logging transitions** without coupling that to message
   handling.
 - **Notifying watchers** when entering specific states.
 
-Errors in these callbacks **propagate to the actor's supervisor**
-— same as any `onReceive` error.
+Errors thrown in these callbacks are **caught and logged** (a
+warning via `this.log.warn`) — they do **not** reach the actor's
+supervisor, and the transition completes regardless.
 
 ## `onTransition`
 
@@ -139,8 +140,8 @@ Multiple listeners are supported — `onTransition` appends each.
 
 ```ts
 // In handler / callback code:
-this.stateName;   // → SName
-this.stateData;   // → SData
+this.state;   // → SName
+this.data;    // → SData
 ```
 
 Read-only access.  Mutating these directly would skip transition
@@ -150,9 +151,9 @@ Useful for **decisions** within a handler that depend on more
 than the message:
 
 ```ts
-this.when('connecting', (data, msg) => {
-  if (msg === 'connected') return this.goto('connected', { sessionId: msg.id });
-  if (msg === 'timeout' && data.retries < 3) {
+this.when('connecting', (data, message) => {
+  if (message === 'connected') return this.goto('connected', { sessionId: message.id });
+  if (message === 'timeout' && data.retries < 3) {
     return this.stay({ ...data, retries: data.retries + 1 });
   }
   return this.goto('disconnected', {});
@@ -164,7 +165,7 @@ this.when('connecting', (data, msg) => {
 ```ts
 type DoorData = { openedAt?: number };
 
-this.when('closed', (data, msg) => {
+this.when('closed', (data, message) => {
   return this.goto('open', { ...data, openedAt: Date.now() });
 });
 ```
@@ -195,8 +196,8 @@ import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="Forgetting to handle a state's message">
   ```ts
-  this.when('closed', (data, msg) => {
-    if (msg === 'open') return this.goto('open', { ... });
+  this.when('closed', (data, message) => {
+    if (message === 'open') return this.goto('open', { ... });
     // ✗ forgot to return for other messages — TypeScript catches this
   });
   ```
@@ -206,7 +207,7 @@ import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="Async handler + timer races">
   ```ts
-  this.when('connecting', async (data, msg) => {
+  this.when('connecting', async (data, message) => {
     await someSlowCheck();
     return this.goto('connected', { ... });
   });

@@ -25,9 +25,9 @@ primary target for testing + benchmarks.
 ## Why ts-pattern (not switch / if-else)
 
 ```ts
-match(msg)
-  .with({ kind: 'inc' }, () => state.count++)
-  .with({ kind: 'dec' }, () => state.count--)
+match(message)
+  .with({ kind: 'increment' }, (m) => this.onIncrement(m))
+  .with({ kind: 'decrement' }, (m) => this.onDecrement(m))
   .exhaustive();
 ```
 
@@ -35,11 +35,15 @@ match(msg)
   union without an `with(...)` arm fails to compile.  No
   silent fallthrough.
 - **Type narrowing inside arms**.  No casts, no manual guards.
-- **Readable at scale**.  Switch + assertNever works at 2-3
-  variants; loses out at 5+.
+- **A scannable dispatch table**.  Every arm is a one-line
+  delegation to an `onXxx` handler, so the matcher stays a map of
+  *which message goes where* and never mixes in the *how*.
 
-It's an **opt-in convention** — you can write actors with plain
-switch.  The docs use `match` because it's the safer pattern.
+The convention is uniform: every dispatch on an incoming message,
+event or command uses `match`, and every arm delegates.  Matches
+on internal state (a behavior or state-machine reducer) or that
+compute a value (config, codec, route, priority) keep their bodies
+inline.
 
 ## Why a single-threaded model
 

@@ -15,10 +15,11 @@ hat, wird jede persistierte Payload vor dem Write in einen
 }
 ```
 
-Beim Lesen entpackt das Framework das und routet es durch das
-`upcast(payload, version)` des Adapters.  Der Adapter sieht die
-**Version** + die **Payload**; er gibt das
-aktuelle-Form-Event zurück.
+Beim Lesen entpackt das Framework das in einen **Stored Frame**
+`{ manifest, version, payload }` und routet ihn durch das
+`fromJournal(stored)` des Adapters.  Der Adapter sieht das
+**Manifest**, die **Version** und die **Payload**; er gibt das
+Event in aktueller Form zurück.
 
 ## Die Felder
 
@@ -61,19 +62,42 @@ erste Breaking Change kommt.
 ## Was der Adapter sieht
 
 ```ts
-interface EventAdapter<E> {
-  upcast(stored: unknown, version: number): E;
+interface EventAdapter<DomainEvent, JournalShape = DomainEvent> {
+  manifest(event: DomainEvent): string;
+  toJournal(event: DomainEvent): OutboundFrame<JournalShape>;
+  fromJournal(stored: StoredFrame): DomainEvent;
 }
+
+// was der Adapter auf dem Read-Pfad sieht
+type StoredFrame = {
+  manifest: string;
+  version: number;
+  payload: unknown;
+};
+
+// was der Adapter auf dem Write-Pfad ausgibt (in einen Envelope verpackt)
+type OutboundFrame<JournalShape = unknown> = {
+  manifest: string;
+  version: number;
+  payload: JournalShape;
+};
 ```
 
-`stored` ist die **`_e`-Payload** — ohne den Envelope.
-`version` ist der **`_v`**-Wert.  Der Job des Adapters:
+Beim Lesen entpackt das Framework den Envelope in einen
+`StoredFrame` und ruft das `fromJournal(stored)` des Adapters auf.
+`stored.payload` ist die **`_e`**-Payload — ohne den Envelope;
+`stored.version` ist der **`_v`**-Wert; `stored.manifest` ist der
+**`_t`**-Tag.  Der Read-Pfad-Job des Adapters:
 
-- `version` inspizieren.
-- Wenn es die aktuelle Version ist, `stored` zu `E` (die aktuelle
-  Form) casten und zurückgeben.
-- Wenn es älter ist, `stored` in die aktuelle Form transformieren,
-  dann zurückgeben.
+- `stored.version` inspizieren.
+- Wenn es die aktuelle Version ist, `stored.payload` zu
+  `DomainEvent` (die aktuelle Form) casten und zurückgeben.
+- Wenn es älter ist, `stored.payload` in die aktuelle Form
+  transformieren, dann zurückgeben.
+
+`manifest` und `toJournal` decken den **Write**-Pfad ab — sie
+taggen ein ausgehendes Event und verpacken es als das Triple, das
+das Framework in einen Envelope einwickelt.
 
 Die eingebauten Adapter des Frameworks (defaultsAdapter,
 migratingAdapter) kapseln dieses Pattern.  Benutzerdefinierte

@@ -4,7 +4,7 @@ import type { ActorRef } from '../ActorRef.js';
 import type { Delivery } from './Messages.js';
 
 /** Plain options-object shape accepted by a {@link ProducerController}. */
-export interface ProducerControllerOptionsType<T> {
+export type ProducerControllerOptionsType<T> = {
   readonly consumer: ActorRef<Delivery<T>>;
   /**
    * How long to wait for an Acknowledgment before re-sending.  Default 500ms.
@@ -18,7 +18,7 @@ export interface ProducerControllerOptionsType<T> {
   readonly windowSize?: number;
   /** Stable identifier used by consumers to dedup across restarts. */
   readonly producerId?: string;
-}
+};
 
 /**
  * Fluent builder for {@link ProducerControllerOptionsType}.  The
@@ -26,7 +26,7 @@ export interface ProducerControllerOptionsType<T> {
  * `build()`; the remaining fields default (resend 500 ms, window 16,
  * generated producer id) when left unset.
  *
- *     ProducerControllerOptions.create<Cmd>()
+ *     ProducerControllerOptions.create<Command>()
  *       .withConsumer(consumerRef)
  *       .withWindowSize(32);
  */

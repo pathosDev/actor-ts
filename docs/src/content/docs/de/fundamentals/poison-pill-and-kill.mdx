@@ -70,11 +70,15 @@ Innerhalb eines `onReceive` kann der Actor seine eigene Termination
 anfordern:
 
 ```ts
-override onReceive(msg: Message): void {
-  if (msg.kind === 'done') {
-    this.log.info('completed — winding down');
-    this.context.stopSelf();
-  }
+override onReceive(message: Message): void {
+  match(message)
+    .with({ kind: 'done' }, () => this.onDone())
+    .otherwise(() => {});
+}
+
+private onDone(): void {
+  this.log.info('completed — winding down');
+  this.context.stopSelf();
 }
 ```
 
@@ -182,9 +186,13 @@ Diese zwei sind aus Sicht des Supervisors fast äquivalent:
 otherActor.tell(Kill.instance);
 
 // Option B: der Actor wirft selbst bei einer spezifischen Nachricht.
-override onReceive(msg) {
-  if (msg.kind === 'kill-me') throw new Error('requested');
+override onReceive(message) {
+  match(message)
+    .with({ kind: 'kill-me' }, () => this.onKillMe())
+    .otherwise(() => {});
 }
+
+private onKillMe(): never { throw new Error('requested'); }
 otherActor.tell({ kind: 'kill-me' });
 ```
 

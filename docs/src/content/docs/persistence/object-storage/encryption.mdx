@@ -1,12 +1,12 @@
 ---
 title: Encryption
-description: AES-GCM encryption at rest for object-storage payloads — keys are managed via a versioned `MasterKeyRing` for online rotation. Each blob is encrypted under one master key; key IDs are stored alongside ciphertext.
+description: AES-GCM encryption at rest for object-storage payloads — keys are managed as a single master key or a versioned key ring for online rotation. Each blob is encrypted under a per-persistenceId subkey; the key version travels in the body manifest.
 ---
 
 Object-storage payloads support **client-side AES-GCM
 encryption** — the framework encrypts before put, decrypts on
-get, keys managed via a
-[MasterKeyRing](/operations/security/master-key-rotation/).
+get, keys managed as a single master key or a versioned
+[key ring](/operations/security/master-key-rotation/) for rotation.
 
 ```ts
 import {
@@ -14,22 +14,19 @@ import {
   ObjectStorageDurableStateStoreOptions,
   S3ObjectStorageBackend,
   S3ObjectStorageOptions,
-  MasterKeyRing,
 } from 'actor-ts';
 
-const keyRing = new MasterKeyRing({
-  keys: { 'k1': process.env.MASTER_KEY_V1! },
-  currentKeyId: 'k1',
-});
+const masterKey = Buffer.from(process.env.MASTER_KEY_V1!, 'base64'); // 32 bytes
 
 const objectStorageDurableStateStoreOptions = ObjectStorageDurableStateStoreOptions.create()
   .withBackend(new S3ObjectStorageBackend(S3ObjectStorageOptions.create() /* .withRegion(...).withBucket(...) */))
-  .withEncryption({ keyRing });
+  .withEncryption({ mode: 'client-aes256-gcm', masterKey });
 const store = new ObjectStorageDurableStateStore(objectStorageDurableStateStoreOptions);
 ```
 
-Now every persisted state is AES-GCM-encrypted under `k1`
-before upload.  Reads transparently decrypt.
+Now every persisted state is AES-GCM-encrypted before upload —
+under a per-`persistenceId` subkey derived from the master key.
+Reads transparently decrypt.
 
 ## Why client-side encryption
 
@@ -51,47 +48,62 @@ sensitive payloads.
 ## Configuration
 
 ```ts
-interface EncryptionConfig {
-  keyRing: MasterKeyRing;
-  /** Override the algorithm; default 'AES-GCM'. */
-  algorithm?: 'AES-GCM';
-}
+type EncryptionConfig =
+  | { mode: 'none' }
+  | { mode: 'sse-s3' }                                    // server-side, S3-managed
+  | { mode: 'sse-kms'; kmsKeyId: string }                // server-side, KMS-managed
+  | { mode: 'client-aes256-gcm'; masterKey: Uint8Array; info?: string }
+  | { mode: 'client-aes256-gcm'; masterKeys: MasterKeyRing; info?: string };
+
+type MasterKeyRing = {
+  active: MasterKeyRingEntry;                // new writes encrypt under this
+  retired?: MasterKeyRingEntry[];            // older keys, kept for decryption
+};
+type MasterKeyRingEntry = {
+  version: number;                           // 0..255, embedded in the body manifest
+  key: Uint8Array;                           // 32 bytes (AES-256)
+};
 ```
 
-The `MasterKeyRing` carries:
+Client-side encryption uses `mode: 'client-aes256-gcm'` with
+either a single **`masterKey`** (32 bytes) or a **`masterKeys`**
+ring.  The ring carries:
 
-- **`keys`** — keyId → key bytes map.
-- **`currentKeyId`** — which key new writes use.
+- **`active`** — the key new writes encrypt under.
+- **`retired`** — older keys, kept to decrypt historical blobs.
 
-Multiple keys in the ring let you read older payloads (encrypted
-under older keys) while new payloads use the current key.  This
-is the foundation of
+Each entry's **`version`** byte travels in the body manifest so
+decrypt can pick the matching key.  Carrying the active key plus
+retired keys is the foundation of
 [key rotation](/persistence/object-storage/key-rotation/).
 
 ## How it works
 
 ```
 On put:
-  serialize value → bytes → AES-GCM(bytes, currentKey) → ciphertext
-  → metadata { keyId: currentKeyId, iv, tag }
-  → S3.put(ciphertext, x-amz-meta-key-id: currentKeyId, etc.)
+  serialize value → compress → derive per-pid subkey (HKDF from active key)
+  → AES-GCM(bytes, subkey, iv) → ciphertext
+  → body manifest "ATS1" { flags, keyVersion, iv, ciphertext }
+  → S3.put(body)                      // no key-id metadata header
 
 On get:
-  S3.get → ciphertext + metadata{ keyId, iv, tag }
-  → keyRing.get(keyId) → decrypt(ciphertext, key, iv, tag)
-  → bytes → deserialize
+  S3.get → body manifest { flags, keyVersion, iv, ciphertext }
+  → pick master key by keyVersion (active or a retired entry)
+  → derive per-pid subkey (HKDF) → AES-GCM decrypt → decompress
+  → deserialize
 ```
 
-The **key ID is stored alongside the ciphertext** — every blob
-knows which key it was encrypted with.  This lets the
-framework decrypt **old payloads** using the right key even
-after the current key has been rotated.
+The **key version is embedded in the body manifest** — every
+blob records which key version it was encrypted under.  This lets
+the framework decrypt **old payloads** using the right key even
+after the active key has been rotated (retired keys stay in the
+ring).
 
 ## What it encrypts
 
 - **The body** — serialized state / event / snapshot.
-- **Not** — the object key, metadata headers (other than the
-  key ID), the bucket name.
+- **Not** — the object key, object metadata headers, the bucket
+  name.
 
 For object metadata that shouldn't leak (sensitive
 persistenceIds), use a separate naming scheme (hash IDs before
@@ -104,12 +116,8 @@ The master key bytes come from somewhere.  Common patterns:
 ### Env vars
 
 ```ts
-new MasterKeyRing({
-  keys: {
-    'k1': Buffer.from(process.env.MASTER_KEY_V1!, 'base64'),
-  },
-  currentKeyId: 'k1',
-});
+const masterKey = Buffer.from(process.env.MASTER_KEY_V1!, 'base64'); // 32 bytes
+// → .withEncryption({ mode: 'client-aes256-gcm', masterKey })
 ```
 
 Simplest.  Each key is a 32-byte buffer (for AES-256-GCM),
@@ -130,10 +138,8 @@ const decrypted = await kms.decrypt({
   CiphertextBlob:  Buffer.from(process.env.WRAPPED_KEY!, 'base64'),
 });
 
-const keyRing = new MasterKeyRing({
-  keys: { 'k1': decrypted.Plaintext! },
-  currentKeyId: 'k1',
-});
+const masterKey = decrypted.Plaintext!; // 32 bytes, held in memory
+// → .withEncryption({ mode: 'client-aes256-gcm', masterKey })
 ```
 
 Master key is **stored encrypted** under a cloud KMS key.  The
@@ -176,14 +182,15 @@ automatically.
 After enabling encryption on a previously-unencrypted bucket:
 
 ```
-state/cart-42  ← old, plaintext, no key-id metadata
-state/cart-43  ← new, encrypted, key-id: k1
+state/cart-42  ← old, plaintext (encrypted flag unset in the manifest)
+state/cart-43  ← new, encrypted (encrypted flag set, key version 0)
 ```
 
-The framework detects each per-payload via the metadata:
+The framework detects each per-payload from the body manifest:
 
-- **No key-id metadata** → plaintext path.
-- **Key-id present** → decrypt via the keyRing.
+- **Encrypted flag unset** → plaintext path.
+- **Encrypted flag set** → decrypt using the key version the
+  manifest records.
 
 Means **you can enable encryption gradually** — new writes get
 encrypted, old reads still work, and a background
@@ -204,14 +211,20 @@ import { Aside } from '@astrojs/starlight/components';
   data destruction.
 </Aside>
 
-<Aside type="caution" title="Per-tenant key isolation isn't out-of-the-box">
+<Aside type="tip" title="Per-tenant keys map to persistenceId">
   ```ts
-  // Customer A and Customer B both use the same master key
+  .withEncryption(encryptionByPrefix({
+    'tenant-a/': { mode: 'client-aes256-gcm', masterKey: keyA },
+    'tenant-b/': { mode: 'client-aes256-gcm', masterKey: keyB },
+    default:     { mode: 'client-aes256-gcm', masterKey: keyShared },
+  }))
   ```
-  The framework's encryption is **bucket-wide** — one keyRing
-  for everything.  For per-tenant keys (different customer
-  uses different KEK), wrap the store with per-tenant logic
-  or implement a custom DurableStateStore.
+  `withEncryption` accepts a **per-`persistenceId` resolver**, not
+  just a flat config — the store resolves encryption per key at
+  read/write time.  When a tenant maps to a pid prefix,
+  `encryptionByPrefix(...)` gives each tenant its own key with no
+  wrapper or custom store; an actor can also override
+  `encryption()` per class.
 </Aside>
 
 <Aside type="caution" title="Encrypted backups">

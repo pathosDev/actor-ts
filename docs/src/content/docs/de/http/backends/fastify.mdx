@@ -70,9 +70,10 @@ await http.newServerAt('0.0.0.0', 8080)
   .useBackend(backend)
   .bind(routes);
 
-// Nach dem Bind ist die rohe Fastify-Instanz verfügbar:
-backend.app.register(fastifyJwt, { secret: '...' });
-backend.app.addHook('onRequest', authHook);
+// Nach dem Bind ein natives Plugin über die Escape-Hatch registrieren...
+await backend.withPlugin(fastifyJwt, { secret: '...' });
+// ...oder für Low-Level-Hooks die rohe Fastify-Instanz erreichen:
+backend.fastify.addHook('onRequest', authHook);
 ```
 
 Nutze das für **Plugins, die nicht über die DSL des Frameworks
@@ -89,24 +90,22 @@ Querschnittsthemen.  Sie komponieren sauber.
 ## Lifecycle
 
 ```
-1. FastifyBackend.start(host, port) — erzeugt Fastify-Instanz
+1. new FastifyBackend() — der Konstruktor erzeugt die Fastify-Instanz
 2. Das Framework registriert jede kompilierte Route bei Fastify
 3. Fastify.listen() — öffnet den Port
 4. Beim Shutdown: Fastify.close() — drained In-Flight-Requests, dann Exit
 ```
 
 `Fastify.close()` wartet auf den Abschluss laufender Requests,
-bevor es resolved — passt zur `service-stop`-Phase des
+bevor es resolved — passt zur `service-unbind`-Phase des
 [Coordinated Shutdown](/de/fundamentals/coordinated-shutdown/).
 
-## Peer-Dependency
+## Gebündelte Dependency
 
-```bash
-npm install fastify
-# oder: bun add fastify
-```
-
-Das Framework bundelt Fastify nicht; separat installieren.
+Fastify ist eine **feste Dependency** von actor-ts — es wird mit
+dem Framework installiert, es gibt also nichts extra hinzuzufügen.
+(Die Express- und Hono-Backends sind dagegen optionale
+Peer-Dependencies, die du bei Bedarf installierst.)
 
 ## Performance
 
@@ -150,5 +149,5 @@ import { Aside } from '@astrojs/starlight/components';
   registriert wird.
 - **[Express-Backend](/de/http/backends/express/)** — die
   Alternative.
-- **[Bun.serve-Backend](/de/http/backends/fastify/)** —
-  Bun-native Option.
+- **[Hono-Backend](/de/http/backends/hono/)** — die
+  leichtgewichtige Alternative.

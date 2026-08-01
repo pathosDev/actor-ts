@@ -1,0 +1,64 @@
+---
+title: Bearer token auth
+description: BearerTokenAuth() gates routes behind a pre-shared Authorization Bearer secret — constant-time comparison, multi-token rotation, and a WWW-Authenticate challenge on 401.
+---
+
+`BearerTokenAuth` gates a route subtree behind a pre-shared
+`Authorization: Bearer <token>` secret — the usual guard for the
+destructive [management endpoints](/observability/management/http-endpoints/)
+(`/cluster/down`, `/cluster/leave`).  Tokens are compared in constant
+time, and a `401` advertises a real `WWW-Authenticate: Bearer realm="…"`
+challenge.
+
+```ts
+import { BearerTokenAuth, withMiddleware } from 'actor-ts/http';
+
+const auth = BearerTokenAuth({ tokens: [process.env.MANAGEMENT_TOKEN!] });
+
+const managementRoutes = withMiddleware(auth, clusterRoutes);
+```
+
+`tokens` is a **non-empty list** so you can rotate without downtime:
+emit a new token, deploy clients on it, then drop the old entry.
+
+```ts
+BearerTokenAuth({ tokens: [process.env.TOKEN_CURRENT!, process.env.TOKEN_PREVIOUS!] });
+```
+
+## Configuration
+
+`BearerTokenAuth` takes a plain options object:
+
+| Field | Purpose |
+| --- | --- |
+| `tokens` | Acceptable bearer tokens; at least one must match.  Must be non-empty (throws otherwise).  Multiple entries enable rotation. |
+| `headerName` | Header to read the token from.  Default `'authorization'` — lower-case, because the framework lower-cases header names. |
+| `realm` | Realm advertised in `WWW-Authenticate` on 401.  Default `'actor-ts'`. |
+
+A request is rejected with `401` (plus the `WWW-Authenticate` challenge)
+when the header is missing, is not a `Bearer <token>` value, or carries
+a token matching none of the configured entries.
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Bearer auth needs TLS">
+  A token in a header is only as safe as the transport carrying it.
+  Use `BearerTokenAuth` over HTTPS (a TLS-terminating proxy counts) so
+  the secret is never sent in clear text.
+</Aside>
+
+<Aside type="caution" title="Pair it with an IP allowlist">
+  Defence in depth: combine with an
+  [IP allowlist](/http/middleware/ip-allowlist/) so a leaked token is
+  still useless to an attacker who is not on an allowlisted network.
+</Aside>
+
+## Where to next
+
+- **[IP allowlist](/http/middleware/ip-allowlist/)** — the CIDR guard to
+  layer underneath.
+- **[Basic auth](/http/middleware/basic-auth/)** — the `Authorization: Basic`
+  peer.
+- **[Security](/http/security/)** — where auth sits in the stack.
+- **[Management endpoints](/observability/management/http-endpoints/)** —
+  the routes you most often protect with this.

@@ -18,7 +18,7 @@ import {
   type JetStreamCommand,
   type JetStreamManagerLike,
   type JetStreamMessage,
-  type JetStreamMsgHandleLike,
+  type JetStreamMessageHandleLike,
   type JetStreamSubscriptionLike,
   type NatsConnectionLike,
 } from '../../../../../src/io/broker/JetStreamActor.js';
@@ -28,7 +28,7 @@ const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
 
 /* --------------------------- Mocks ----------------------------- */
 
-class MockHandle implements JetStreamMsgHandleLike {
+class MockHandle implements JetStreamMessageHandleLike {
   acked = false;
   naked = false;
   termed = false;
@@ -55,11 +55,11 @@ class MockHandle implements JetStreamMsgHandleLike {
  * handle's flags.
  */
 class MockSubscription implements JetStreamSubscriptionLike {
-  private resolveNext: ((m: IteratorResult<JetStreamMsgHandleLike>) => void) | null = null;
-  private buffer: JetStreamMsgHandleLike[] = [];
+  private resolveNext: ((m: IteratorResult<JetStreamMessageHandleLike>) => void) | null = null;
+  private buffer: JetStreamMessageHandleLike[] = [];
   destroyed = false;
 
-  push(handle: JetStreamMsgHandleLike): void {
+  push(handle: JetStreamMessageHandleLike): void {
     if (this.resolveNext) {
       const resolveNext = this.resolveNext;
       this.resolveNext = null;
@@ -78,14 +78,14 @@ class MockSubscription implements JetStreamSubscriptionLike {
     }
   }
 
-  [Symbol.asyncIterator](): AsyncIterator<JetStreamMsgHandleLike> {
+  [Symbol.asyncIterator](): AsyncIterator<JetStreamMessageHandleLike> {
     return {
-      next: (): Promise<IteratorResult<JetStreamMsgHandleLike>> => {
+      next: (): Promise<IteratorResult<JetStreamMessageHandleLike>> => {
         if (this.buffer.length > 0) {
           return Promise.resolve({ value: this.buffer.shift()!, done: false });
         }
         if (this.destroyed) return Promise.resolve({ value: undefined as never, done: true });
-        return new Promise<IteratorResult<JetStreamMsgHandleLike>>((resolveNext) => { this.resolveNext = resolveNext; });
+        return new Promise<IteratorResult<JetStreamMessageHandleLike>>((resolveNext) => { this.resolveNext = resolveNext; });
       },
     };
   }
@@ -93,19 +93,19 @@ class MockSubscription implements JetStreamSubscriptionLike {
 
 class MockPullConsumer {
   /** Queue of message batches to hand out on `fetch()`.  Test pushes via `enqueueBatch`. */
-  readonly batches: JetStreamMsgHandleLike[][] = [];
+  readonly batches: JetStreamMessageHandleLike[][] = [];
   readonly fetchCalls: Array<{ max_messages: number; expires: number }> = [];
 
-  enqueueBatch(handles: JetStreamMsgHandleLike[]): void {
+  enqueueBatch(handles: JetStreamMessageHandleLike[]): void {
     this.batches.push(handles);
   }
 
-  async fetch(opts: { max_messages: number; expires: number }): Promise<AsyncIterable<JetStreamMsgHandleLike>> {
-    this.fetchCalls.push({ max_messages: opts.max_messages, expires: opts.expires });
+  async fetch(options: { max_messages: number; expires: number }): Promise<AsyncIterable<JetStreamMessageHandleLike>> {
+    this.fetchCalls.push({ max_messages: options.max_messages, expires: options.expires });
     const batch = this.batches.shift() ?? [];
     // Slice the batch to `max_messages` so the test can model "fewer
     // available than asked".
-    const delivered = batch.slice(0, opts.max_messages);
+    const delivered = batch.slice(0, options.max_messages);
     return (async function* () { for (const handle of delivered) yield handle; })();
   }
 }
@@ -119,21 +119,21 @@ class MockJetStream implements JetStreamClientLike {
   readonly subscribeCalls: Array<{ subject: string; stream: string; consumer: string }> = [];
   readonly pullConsumers = new Map<string, MockPullConsumer>();
 
-  async publish(subject: string, payload: Uint8Array, opts?: {
+  async publish(subject: string, payload: Uint8Array, options?: {
     msgID?: string; expect?: { lastSequence?: number };
     headers?: Readonly<Record<string, string>>;
   }): Promise<unknown> {
     this.published.push({
       subject, payload,
-      msgID: opts?.msgID,
-      expectLastSeq: opts?.expect?.lastSequence,
-      headers: opts?.headers ? { ...opts.headers } : undefined,
+      msgID: options?.msgID,
+      expectLastSeq: options?.expect?.lastSequence,
+      headers: options?.headers ? { ...options.headers } : undefined,
     });
     return { seq: this.published.length };
   }
 
-  async subscribe(subject: string, opts: { stream: string; consumer: string }): Promise<JetStreamSubscriptionLike> {
-    this.subscribeCalls.push({ subject, stream: opts.stream, consumer: opts.consumer });
+  async subscribe(subject: string, options: { stream: string; consumer: string }): Promise<JetStreamSubscriptionLike> {
+    this.subscribeCalls.push({ subject, stream: options.stream, consumer: options.consumer });
     return this.subscription;
   }
 
@@ -152,24 +152,24 @@ class MockJsm implements JetStreamManagerLike {
   readonly streamsUpdate: Array<{ name: string }> = [];
   readonly consumersAdd: Array<{ stream: string; durable: string; deliver_policy?: string; ack_wait?: number }> = [];
   readonly streams = {
-    add: async (cfg: { name: string; subjects: string[]; retention?: string; storage?: string; max_msgs?: number; max_bytes?: number; max_age?: number }) => {
-      this.streamsAdd.push({ name: cfg.name, subjects: [...cfg.subjects] });
+    add: async (config: { name: string; subjects: string[]; retention?: string; storage?: string; max_msgs?: number; max_bytes?: number; max_age?: number }) => {
+      this.streamsAdd.push({ name: config.name, subjects: [...config.subjects] });
     },
     update: async (name: string) => {
       this.streamsUpdate.push({ name });
     },
   };
   readonly consumers = {
-    add: async (stream: string, cfg: {
+    add: async (stream: string, config: {
       durable_name: string; ack_policy?: string; ack_wait?: number;
       filter_subject?: string; max_ack_pending?: number;
       deliver_policy?: string; opt_start_seq?: number; opt_start_time?: string;
     }) => {
       this.consumersAdd.push({
         stream,
-        durable: cfg.durable_name,
-        deliver_policy: cfg.deliver_policy,
-        ack_wait: cfg.ack_wait,
+        durable: config.durable_name,
+        deliver_policy: config.deliver_policy,
+        ack_wait: config.ack_wait,
       });
     },
     update: async (_stream: string, _durable: string) => { /* no-op */ },
@@ -189,9 +189,9 @@ class MockNatsConnection implements NatsConnectionLike {
 }
 
 class MockJetStreamActor extends JetStreamActor {
-  readonly mockConn = new MockNatsConnection();
+  readonly mockConnection = new MockNatsConnection();
   protected override async createNatsConnection(): Promise<NatsConnectionLike> {
-    return this.mockConn;
+    return this.mockConnection;
   }
 }
 
@@ -247,15 +247,15 @@ describe('JetStreamActor — stream + consumer lifecycle', () => {
         .withStream({ name: 'ORDERS', subjects: ['orders.>'] })
         .withConsumer({ durable: 'order-proc', ackWaitMs: 5_000 });
       const { mock } = await bootActor(sys, jetstreamOptions);
-      expect(mock.mockConn.jsm.streamsAdd).toHaveLength(1);
-      expect(mock.mockConn.jsm.streamsAdd[0]?.name).toBe('ORDERS');
-      expect(mock.mockConn.jsm.consumersAdd).toHaveLength(1);
-      expect(mock.mockConn.jsm.consumersAdd[0]?.durable).toBe('order-proc');
+      expect(mock.mockConnection.jsm.streamsAdd).toHaveLength(1);
+      expect(mock.mockConnection.jsm.streamsAdd[0]?.name).toBe('ORDERS');
+      expect(mock.mockConnection.jsm.consumersAdd).toHaveLength(1);
+      expect(mock.mockConnection.jsm.consumersAdd[0]?.durable).toBe('order-proc');
       // ackWaitMs translates to nanoseconds in the underlying API.
-      expect(mock.mockConn.jsm.consumersAdd[0]?.ack_wait).toBe(5_000_000_000);
+      expect(mock.mockConnection.jsm.consumersAdd[0]?.ack_wait).toBe(5_000_000_000);
       // Subscription wired with stream + durable name.
-      expect(mock.mockConn.js.subscribeCalls[0]?.stream).toBe('ORDERS');
-      expect(mock.mockConn.js.subscribeCalls[0]?.consumer).toBe('order-proc');
+      expect(mock.mockConnection.js.subscribeCalls[0]?.stream).toBe('ORDERS');
+      expect(mock.mockConnection.js.subscribeCalls[0]?.consumer).toBe('order-proc');
     } finally {
       await sys.terminate();
     }
@@ -272,10 +272,10 @@ describe('JetStreamActor — stream + consumer lifecycle', () => {
         .withStream({ name: 'EVENTS', subjects: ['events.>'], create: false })
         .withConsumer({ durable: 'd', create: false });
       const { mock } = await bootActor(sys, jetstreamOptions);
-      expect(mock.mockConn.jsm.streamsAdd).toEqual([]);
-      expect(mock.mockConn.jsm.consumersAdd).toEqual([]);
+      expect(mock.mockConnection.jsm.streamsAdd).toEqual([]);
+      expect(mock.mockConnection.jsm.consumersAdd).toEqual([]);
       // Subscribe should still have happened.
-      expect(mock.mockConn.js.subscribeCalls).toHaveLength(1);
+      expect(mock.mockConnection.js.subscribeCalls).toHaveLength(1);
     } finally {
       await sys.terminate();
     }
@@ -292,7 +292,7 @@ describe('JetStreamActor — stream + consumer lifecycle', () => {
         .withStream({ name: 'S', subjects: ['s.>'] })
         .withConsumer({ durable: 'd', deliverPolicy: { kind: 'byStartSeq', startSeq: 100 } });
       const { mock } = await bootActor(sys, jetstreamOptions);
-      expect(mock.mockConn.jsm.consumersAdd[0]?.deliver_policy).toBe('by_start_sequence');
+      expect(mock.mockConnection.jsm.consumersAdd[0]?.deliver_policy).toBe('by_start_sequence');
     } finally {
       await sys.terminate();
     }
@@ -312,12 +312,12 @@ describe('JetStreamActor — ack/nak/term', () => {
         .withConsumer({ durable: 'd', ackWaitMs: 5_000 });
       const { actor, mock, target } = await bootActor(sys, jetstreamOptions);
       const handle = makeHandle(42);
-      mock.mockConn.js.subscription.push(handle);
+      mock.mockConnection.js.subscription.push(handle);
       await sleep(40);
       expect(target.received).toHaveLength(1);
       expect(target.received[0]!.streamSeq).toBe(42);
 
-      actor.tell({ kind: 'ack', streamSeq: 42 });
+      actor.tell({ kind: 'acknowledgment', streamSeq: 42 });
       await sleep(40);
       expect(handle.acked).toBe(true);
     } finally {
@@ -337,9 +337,9 @@ describe('JetStreamActor — ack/nak/term', () => {
         .withConsumer({ durable: 'd' });
       const { actor, mock } = await bootActor(sys, jetstreamOptions);
       const handle = makeHandle(7);
-      mock.mockConn.js.subscription.push(handle);
+      mock.mockConnection.js.subscription.push(handle);
       await sleep(40);
-      actor.tell({ kind: 'nak', streamSeq: 7, delayMs: 1500 });
+      actor.tell({ kind: 'negativeAcknowledgment', streamSeq: 7, delayMs: 1500 });
       await sleep(40);
       expect(handle.naked).toBe(true);
       expect(handle.nakDelay).toBe(1500);
@@ -361,9 +361,9 @@ describe('JetStreamActor — ack/nak/term', () => {
         .withConsumer({ durable: 'd' });
       const { actor, mock } = await bootActor(sys, jetstreamOptions);
       const handle = makeHandle(99);
-      mock.mockConn.js.subscription.push(handle);
+      mock.mockConnection.js.subscription.push(handle);
       await sleep(40);
-      actor.tell({ kind: 'term', streamSeq: 99, reason: 'unparseable' });
+      actor.tell({ kind: 'terminate', streamSeq: 99, reason: 'unparseable' });
       await sleep(40);
       expect(handle.termed).toBe(true);
     } finally {
@@ -383,7 +383,7 @@ describe('JetStreamActor — ack/nak/term', () => {
         .withConsumer({ durable: 'd' });
       const { actor, mock } = await bootActor(sys, jetstreamOptions);
       const handle = makeHandle(5);
-      mock.mockConn.js.subscription.push(handle);
+      mock.mockConnection.js.subscription.push(handle);
       await sleep(40);
       actor.tell({ kind: 'inProgress', streamSeq: 5 });
       await sleep(20);
@@ -392,7 +392,7 @@ describe('JetStreamActor — ack/nak/term', () => {
       expect(handle.acked).toBe(false);
       expect(handle.naked).toBe(false);
       // Clean up.
-      actor.tell({ kind: 'ack', streamSeq: 5 });
+      actor.tell({ kind: 'acknowledgment', streamSeq: 5 });
       await sleep(40);
     } finally {
       await sys.terminate();
@@ -409,15 +409,15 @@ describe('JetStreamActor — ack/nak/term', () => {
         .withServers(['nats://fake:4222'])
         .withStream({ name: 'S', subjects: ['s.>'] })
         .withConsumer({ durable: 'd', ackWaitMs: 60 })
-        .withAckTimeout(60);
+        .withAcknowledgmentTimeout(60);
       const { mock, target } = await bootActor(sys, jetstreamOptions);
       const h1 = makeHandle(1);
-      mock.mockConn.js.subscription.push(h1);
+      mock.mockConnection.js.subscription.push(h1);
       await sleep(120);   // past the timeout
       expect(h1.naked).toBe(true);
       // Pump should be free to receive the next message now.
       const h2 = makeHandle(2);
-      mock.mockConn.js.subscription.push(h2);
+      mock.mockConnection.js.subscription.push(h2);
       await sleep(40);
       expect(target.received).toHaveLength(2);
       expect(target.received[1]!.streamSeq).toBe(2);
@@ -439,8 +439,8 @@ describe('JetStreamActor — ack/nak/term', () => {
       const { mock, target } = await bootActor(sys, jetstreamOptions);
       const h1 = makeHandle(1);
       const h2 = makeHandle(2);
-      mock.mockConn.js.subscription.push(h1);
-      mock.mockConn.js.subscription.push(h2);
+      mock.mockConnection.js.subscription.push(h1);
+      mock.mockConnection.js.subscription.push(h2);
       await sleep(80);
       expect(target.received.map((resolveNext) => resolveNext.streamSeq)).toEqual([1, 2]);
       expect(h1.acked).toBe(false);   // pump didn't call ack
@@ -462,7 +462,7 @@ describe('JetStreamActor — ack/nak/term', () => {
         .withConsumer({ durable: 'd' });
       const { actor } = await bootActor(sys, jetstreamOptions);
       // No handle pushed, so no pending entry.  Sending ack should not throw.
-      actor.tell({ kind: 'ack', streamSeq: 999 });
+      actor.tell({ kind: 'acknowledgment', streamSeq: 999 });
       await sleep(20);
       // Test passes if we get here without unhandled rejection.
       expect(true).toBe(true);
@@ -494,7 +494,7 @@ describe('JetStreamActor — publish', () => {
         },
       });
       await sleep(40);
-      const published = mock.mockConn.js.published[0];
+      const published = mock.mockConnection.js.published[0];
       expect(published?.subject).toBe('orders.new');
       expect(new TextDecoder().decode(published!.payload)).toBe('hello');
       expect(published?.msgID).toBe('abc-123');
@@ -518,7 +518,7 @@ describe('JetStreamActor — options parsing', () => {
         .withStream({ name: 'BILLING', subjects: ['billing.>'] })
         .withConsumer({ durable: 'billing-proc', filterSubject: 'billing.charges' });
       const { mock } = await bootActor(sys, jetstreamOptions);
-      const sub = mock.mockConn.js.subscribeCalls[0];
+      const sub = mock.mockConnection.js.subscribeCalls[0];
       expect(sub?.stream).toBe('BILLING');
       expect(sub?.consumer).toBe('billing-proc');
       // Filter subject is forwarded as the subscribe subject.
@@ -544,10 +544,10 @@ describe('JetStreamActor — pull-consumer mode (#62)', () => {
         .withConsumer({ durable: 'puller', mode: 'pull' });
       const { mock } = await bootActor(sys, jetstreamOptions);
       // No subscribe — pull mode is on-demand.
-      expect(mock.mockConn.js.subscribeCalls).toHaveLength(0);
+      expect(mock.mockConnection.js.subscribeCalls).toHaveLength(0);
       // Pull-consumer handle materialised for ORDERS::puller.
-      expect(mock.mockConn.js.pullConsumers.size).toBe(1);
-      expect(mock.mockConn.js.pullConsumers.has('ORDERS::puller')).toBe(true);
+      expect(mock.mockConnection.js.pullConsumers.size).toBe(1);
+      expect(mock.mockConnection.js.pullConsumers.has('ORDERS::puller')).toBe(true);
     } finally {
       await sys.terminate();
     }
@@ -564,7 +564,7 @@ describe('JetStreamActor — pull-consumer mode (#62)', () => {
         .withStream({ name: 'ORDERS', subjects: ['orders.>'] })
         .withConsumer({ durable: 'puller', mode: 'pull', ackWaitMs: 1_000 });
       const { actor, mock, target } = await bootActor(sys, jetstreamOptions);
-      const pc = mock.mockConn.js.pullConsumers.get('ORDERS::puller')!;
+      const pc = mock.mockConnection.js.pullConsumers.get('ORDERS::puller')!;
       pc.enqueueBatch([makeHandle(1), makeHandle(2), makeHandle(3)]);
 
       actor.tell({ kind: 'fetch', batch: 3, expiresMs: 1_000 });
@@ -576,9 +576,9 @@ describe('JetStreamActor — pull-consumer mode (#62)', () => {
       expect(pc.fetchCalls).toEqual([{ max_messages: 3, expires: 1_000 }]);
 
       // Acknowledgment them all so the pending-map drains.
-      actor.tell({ kind: 'ack', streamSeq: 1 });
-      actor.tell({ kind: 'ack', streamSeq: 2 });
-      actor.tell({ kind: 'ack', streamSeq: 3 });
+      actor.tell({ kind: 'acknowledgment', streamSeq: 1 });
+      actor.tell({ kind: 'acknowledgment', streamSeq: 2 });
+      actor.tell({ kind: 'acknowledgment', streamSeq: 3 });
       await sleep(30);
     } finally {
       await sys.terminate();
@@ -596,7 +596,7 @@ describe('JetStreamActor — pull-consumer mode (#62)', () => {
         .withStream({ name: 'ORDERS', subjects: ['orders.>'] })
         .withConsumer({ durable: 'puller', mode: 'pull' });
       const { actor, mock, target } = await bootActor(sys, jetstreamOptions);
-      const pc = mock.mockConn.js.pullConsumers.get('ORDERS::puller')!;
+      const pc = mock.mockConnection.js.pullConsumers.get('ORDERS::puller')!;
       // No batch enqueued — fetch yields an empty iterator immediately.
 
       actor.tell({ kind: 'fetch', batch: 10, expiresMs: 100 });
@@ -620,14 +620,14 @@ describe('JetStreamActor — pull-consumer mode (#62)', () => {
         .withStream({ name: 'ORDERS', subjects: ['orders.>'] })
         .withConsumer({ durable: 'puller', mode: 'pull' });
       const { actor, mock, target } = await bootActor(sys, jetstreamOptions);
-      const pc = mock.mockConn.js.pullConsumers.get('ORDERS::puller')!;
+      const pc = mock.mockConnection.js.pullConsumers.get('ORDERS::puller')!;
       pc.enqueueBatch([makeHandle(10), makeHandle(11)]);
       pc.enqueueBatch([makeHandle(12), makeHandle(13), makeHandle(14)]);
 
       actor.tell({ kind: 'fetch', batch: 2, expiresMs: 100 });
       await sleep(30);
-      actor.tell({ kind: 'ack', streamSeq: 10 });
-      actor.tell({ kind: 'ack', streamSeq: 11 });
+      actor.tell({ kind: 'acknowledgment', streamSeq: 10 });
+      actor.tell({ kind: 'acknowledgment', streamSeq: 11 });
       await sleep(20);
 
       actor.tell({ kind: 'fetch', batch: 3, expiresMs: 100 });
@@ -635,9 +635,9 @@ describe('JetStreamActor — pull-consumer mode (#62)', () => {
       expect(target.received.map((m) => m.streamSeq)).toEqual([10, 11, 12, 13, 14]);
       expect(pc.fetchCalls).toHaveLength(2);
 
-      actor.tell({ kind: 'ack', streamSeq: 12 });
-      actor.tell({ kind: 'ack', streamSeq: 13 });
-      actor.tell({ kind: 'ack', streamSeq: 14 });
+      actor.tell({ kind: 'acknowledgment', streamSeq: 12 });
+      actor.tell({ kind: 'acknowledgment', streamSeq: 13 });
+      actor.tell({ kind: 'acknowledgment', streamSeq: 14 });
       await sleep(20);
     } finally {
       await sys.terminate();
@@ -655,7 +655,7 @@ describe('JetStreamActor — pull-consumer mode (#62)', () => {
         .withStream({ name: 'ORDERS', subjects: ['orders.>'] })
         .withConsumer({ durable: 'puller', mode: 'pull' });
       const { actor, mock } = await bootActor(sys, jetstreamOptions);
-      const pc = mock.mockConn.js.pullConsumers.get('ORDERS::puller')!;
+      const pc = mock.mockConnection.js.pullConsumers.get('ORDERS::puller')!;
       actor.tell({ kind: 'fetch', batch: 0, expiresMs: 100 });
       actor.tell({ kind: 'fetch', batch: -5, expiresMs: 100 });
       await sleep(20);
@@ -677,11 +677,11 @@ describe('JetStreamActor — pull-consumer mode (#62)', () => {
         .withConsumer({ durable: 'pusher' }); // mode omitted → push (default)
       const { actor, mock } = await bootActor(sys, jetstreamOptions);
       // No pull consumer was ever fetched.
-      expect(mock.mockConn.js.pullConsumers.size).toBe(0);
+      expect(mock.mockConnection.js.pullConsumers.size).toBe(0);
       actor.tell({ kind: 'fetch', batch: 5, expiresMs: 100 });
       await sleep(20);
       // Still no pull consumer.
-      expect(mock.mockConn.js.pullConsumers.size).toBe(0);
+      expect(mock.mockConnection.js.pullConsumers.size).toBe(0);
     } finally {
       await sys.terminate();
     }

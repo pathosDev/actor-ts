@@ -41,9 +41,16 @@ export class BoundedMailbox<T = unknown> extends Mailbox<T> {
     if (this.size >= this.capacity) {
       match(this.overflow)
         .with('drop-head', () => {
-          super.dequeueUser();
-          this.droppedCount++;
-          this.onDrop?.('drop-head');
+          // `removeOldest` rather than `dequeueUser`: the latter returns
+          // undefined while the mailbox is suspended, which used to make this
+          // whole arm a no-op — the queue grew past capacity and the drop was
+          // reported anyway.  Counting is gated on an actual removal so the
+          // metric cannot claim a drop that did not happen.
+          const dropped = super.removeOldest();
+          if (dropped !== undefined) {
+            this.droppedCount++;
+            this.onDrop?.('drop-head');
+          }
           super.enqueue(env);
         })
         .with('drop-new', () => {

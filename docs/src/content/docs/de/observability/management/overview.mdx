@@ -41,14 +41,14 @@ keine Settings**: sie gehen an `system.http(port, { host })`, und
 der `cluster` ist das zweite positionale Argument.
 
 ```ts
-interface ManagementRoutesOptionsType {
+type ManagementRoutesOptionsType = {
   enableLeaveEndpoint?:   boolean;    // POST /cluster/leave (default false)
   enableDownEndpoint?:    boolean;    // POST /cluster/down  (default false)
   enableMetricsEndpoint?: boolean;    // GET  /metrics       (default false)
   auth?:          Middleware;         // guards /cluster/* (+ /metrics)
   ipAllowlist?:   Middleware;         // guards EVERY endpoint, incl. /health + /ready
   authProtectHealth?: boolean;        // also require `auth` on /health + /ready (default false)
-}
+};
 ```
 
 Eine typische Produktions-Verdrahtung:

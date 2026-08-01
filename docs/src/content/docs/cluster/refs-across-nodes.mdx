@@ -75,6 +75,32 @@ This means **request/response between actors on different nodes**
 just works — the reply travels back to the original asker over
 the cluster transport.
 
+## Comparing remote refs
+
+A remote ref's `path` is the path of the actor it points at, so it
+is meaningful in logs and safe to use as a map key:
+
+```ts
+remoteWorker.path.toString();   // "actor-ts://my-app/user/worker"
+```
+
+`ActorRef.equals` compares that rendering — and a path carries the
+**system name, not the node address**.  Every member of a cluster
+shares one system name, so two refs to the *same path on different
+nodes* still compare equal:
+
+```ts
+const onNodeA = /* ref to /user/worker on 10.0.0.5 */;
+const onNodeB = /* ref to /user/worker on 10.0.0.6 */;
+
+onNodeA.equals(onNodeB);   // true — same path, and that is all equals() sees
+```
+
+So `equals` answers *"same actor path?"*, not *"same actor"*.  When
+you need node identity — deduplicating routees, tracking which
+member registered a service — compare the refs' `toString()`, which
+is node-qualified, or keep the `NodeAddress` alongside the ref.
+
 ## The cluster transport
 
 The transport (TCP by default, in-memory in tests) carries:
@@ -137,7 +163,7 @@ Two ways to detect this:
   goes unreachable+downed.  The `Terminated.addressTerminated`
   flag distinguishes "actor stopped" from "node lost."
 - **Subscribe to cluster events** — `MemberRemoved` /
-  `UnreachableMember` for the host's address tells you the
+  `MemberUnreachable` for the host's address tells you the
   whole node is gone.
 
 See [Death watch](/fundamentals/death-watch/) for the
@@ -211,11 +237,12 @@ import { Aside } from '@astrojs/starlight/components';
   ```ts
   remoteActor.tell({ kind: 'upload', data: hugeBlob });   // 100 MB
   ```
-  The cluster transport's max-frame-size default is 1 MB
-  (configurable via `actor-ts.remote.max-frame-size`).  Frames
-  larger than that fail; the message dead-letters.  For large
-  payloads, use a separate side-channel (HTTP upload, S3
-  presigned URL) and pass a reference in the actor message.
+  The cluster transport's max-frame-size default is 16 MiB
+  (configurable via `TcpTransport`'s `maxFrameBytes` constructor
+  argument).  Frames larger than that fail; the message
+  dead-letters.  For large payloads, use a separate side-channel
+  (HTTP upload, S3 presigned URL) and pass a reference in the
+  actor message.
 </Aside>
 
 ## Where to next

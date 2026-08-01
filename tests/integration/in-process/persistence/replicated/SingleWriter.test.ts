@@ -17,7 +17,7 @@ import { LogLevel, NoopLogger } from '../../../../../src/Logger.js';
 import { Props } from '../../../../../src/Props.js';
 import { ReplicatedEventSourcedActor } from '../../../../../src/persistence/ReplicatedEventSourcedActor.js';
 
-type Cmd = { kind: 'add'; n: number };
+type Command = { kind: 'add'; n: number };
 type Event = { kind: 'added'; n: number };
 type State = { value: number };
 
@@ -25,7 +25,7 @@ type State = { value: number };
  *  the surviving actor and threw on the duplicate. */
 let preStartFailures = 0;
 
-class Counter extends ReplicatedEventSourcedActor<Cmd, Event, State> {
+class Counter extends ReplicatedEventSourcedActor<Command, Event, State> {
   readonly persistenceId = 'shared-counter';
   readonly replicaId: string;
   constructor(cluster: Cluster) {
@@ -34,7 +34,7 @@ class Counter extends ReplicatedEventSourcedActor<Cmd, Event, State> {
   }
   initialState(): State { return { value: 0 }; }
   onEvent(s: State, e: Event): State { return { value: s.value + e.n }; }
-  async onCommand(_s: State, c: Cmd): Promise<void> {
+  async onCommand(_s: State, c: Command): Promise<void> {
     if (c.kind === 'add') await this.persist({ kind: 'added', n: c.n });
   }
   override async preStart(): Promise<void> {
@@ -178,7 +178,7 @@ describe('ReplicatedEventSourcedActor — single-writer per pid (#58)', () => {
     // silently degrade debuggability.
     preStartFailures = 0;
     const errors: string[] = [];
-    class CapturingCounter extends ReplicatedEventSourcedActor<Cmd, Event, State> {
+    class CapturingCounter extends ReplicatedEventSourcedActor<Command, Event, State> {
       readonly persistenceId = 'capture-pid';
       readonly replicaId: string;
       constructor(cluster: Cluster) { super(cluster); this.replicaId = cluster.selfAddress.toString(); }

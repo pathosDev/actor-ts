@@ -1,6 +1,6 @@
 ---
 title: Replicated event sourcing overview
-description: Multi-writer event sourcing — multiple replicas of the same entity persist concurrently to a shared journal, vector clocks detect conflicts, conflict resolvers merge them. The right shape for active-active / multi-region setups.
+description: Multi-writer event sourcing — multiple replicas of the same entity, on different cluster nodes, persist concurrently to their own local journals and gossip events via DistributedPubSub; vector clocks detect conflicts, conflict resolvers merge them. The right shape for concurrent writers to the same entity within a cluster.
 ---
 
 Standard
@@ -81,18 +81,17 @@ import {
 type State = { value: number };
 type Event = { kind: 'set'; value: number };
 
-const resolver: ConflictResolver<State, Event> = {
-  resolve(state, conflicts) {
-    // When two replicas concurrently set different values, max wins:
-    const values = conflicts.map(c => (c.event as Event).value);
-    return { value: Math.max(...values) };
+const maxWinsResolver: ConflictResolver<Event> = {
+  // When two replicas concurrently set different values, the higher wins:
+  resolve(a, b) {
+    return a.event.value >= b.event.value ? a.event : b.event;
   },
 };
 
 class Counter extends ReplicatedEventSourcedActor<Command, Event, State> {
   readonly persistenceId = 'counter-42';
   readonly replicaId     = process.env.REPLICA_ID!;
-  readonly conflictResolver = resolver;
+  protected override resolver(): ConflictResolver<Event> { return maxWinsResolver; }
 
   initialState() { return { value: 0 }; }
   onEvent(state: State, event: Event) {
@@ -107,7 +106,7 @@ The actor extends `ReplicatedEventSourcedActor` instead of
 
 - **`replicaId`** — this replica's stable identifier (different
   from `persistenceId`).
-- **`conflictResolver`** — how to merge concurrent events.
+- **`resolver()`** — how to merge concurrent events (optional; defaults to last-writer-wins).
 - The journal must be **shared across replicas** (Cassandra,
   shared object-storage, etc.).
 

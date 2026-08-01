@@ -64,6 +64,9 @@ export {
   KeepRefereeOptionsBuilder,
   KeepMajorityOptions,
   KeepMajorityOptionsBuilder,
+  LeaseMajority,
+  LeaseMajorityOptions,
+  LeaseMajorityOptionsBuilder,
 } from './downing/index.js';
 export type {
   DowningProvider,
@@ -73,6 +76,7 @@ export type {
   KeepOldestOptionsType,
   StaticQuorumOptionsType,
   KeepRefereeOptionsType,
+  LeaseMajorityOptionsType,
 } from './downing/index.js';
 
 // Cluster Singleton.
@@ -83,13 +87,19 @@ export {
   ClusterSingletonProxy,
   ClusterSingletonManagerOptions,
   ClusterSingletonManagerOptionsBuilder,
+  ClusterSingletonManagerOptionsValidator,
   StartSingletonOptions,
   StartSingletonOptionsBuilder,
+  StartSingletonOptionsValidator,
+  SingletonKey,
+  singletonKeyOf,
   singletonManagerPath,
 } from './singleton/index.js';
 export type {
   StartSingletonOptionsType,
-  SingletonHandle,
+  SingletonActorClass,
+  SingletonKeyedClass,
+  SingletonReference,
   ClusterSingletonManagerOptionsType,
   SingletonDeliver,
 } from './singleton/index.js';
@@ -117,11 +127,24 @@ export type { DistributedPubSubOptionsType } from './pubsub/index.js';
 export { ClusterSharding } from './sharding/ClusterSharding.js';
 export { StartShardingOptions, StartShardingOptionsBuilder, StartShardingOptionsValidator } from './sharding/StartShardingOptions.js';
 export type { StartShardingOptionsType } from './sharding/StartShardingOptions.js';
+export { ShardKey, shardKeyOf } from './sharding/ShardKey.js';
+export type { ShardEntityClass, ShardKeyedClass, ShardReference } from './sharding/ShardKey.js';
 export { ShardedDaemonProcess } from './sharding/ShardedDaemonProcess.js';
 export { ShardedDaemonProcessOptions, ShardedDaemonProcessOptionsBuilder, ShardedDaemonProcessOptionsValidator } from './sharding/ShardedDaemonProcessOptions.js';
 export type { ShardedDaemonProcessOptionsType } from './sharding/ShardedDaemonProcessOptions.js';
 export type { ShardedDaemonProcessHandle } from './sharding/ShardedDaemonProcess.js';
 export { ShardRegion } from './sharding/ShardRegion.js';
+export { Shard } from './sharding/Shard.js';
+export type { ShardConfig, ShardMessage } from './sharding/Shard.js';
+export { EntityRef } from './sharding/EntityRef.js';
+export type { ShardInfo } from './sharding/ShardInfo.js';
+// The commands a shard ref accepts — ROADMAP #151.
+export type {
+  EntityEnvelope,
+  GetShardStats,
+  ShardStats,
+  StartEntity,
+} from './sharding/ShardingProtocol.js';
 export { ShardingOptions, ShardingOptionsBuilder, ShardingOptionsValidator } from './sharding/ShardingOptions.js';
 export type { ShardingOptionsType } from './sharding/ShardingOptions.js';
 export { ShardCoordinator } from './sharding/ShardCoordinator.js';

@@ -14,16 +14,16 @@ import type {
  * `upgradeWebSocket` from `hono/deno` (which wraps `Deno.upgradeWebSocket`).
  */
 export class DenoHonoRunner implements HonoServerRunner {
-  async serve(opts: { host: string; port: number; fetch: FetchHandler; serveOptions?: object }): Promise<HonoServerHandle> {
+  async serve(options: { host: string; port: number; fetch: FetchHandler; serveOptions?: object }): Promise<HonoServerHandle> {
     const deno = (globalThis as { Deno?: DenoGlobal }).Deno;
     if (!deno || typeof deno.serve !== 'function') {
       throw new Error('DenoHonoRunner requires Deno runtime (globalThis.Deno.serve).');
     }
     const ac = new AbortController();
-    const server = deno.serve({ hostname: opts.host, port: opts.port, signal: ac.signal, ...(opts.serveOptions ?? {}) }, opts.fetch);
+    const server = deno.serve({ hostname: options.host, port: options.port, signal: ac.signal, ...(options.serveOptions ?? {}) }, options.fetch);
     return {
-      host: opts.host,
-      port: opts.port,
+      host: options.host,
+      port: options.port,
       async stop(graceful: boolean): Promise<void> {
         if (graceful && typeof server.shutdown === 'function') {
           await server.shutdown();
@@ -61,7 +61,7 @@ interface DenoHttpServer {
 
 interface DenoGlobal {
   serve(
-    opts: { hostname: string; port: number; signal?: AbortSignal },
+    options: { hostname: string; port: number; signal?: AbortSignal },
     handler: FetchHandler,
   ): DenoHttpServer;
 }

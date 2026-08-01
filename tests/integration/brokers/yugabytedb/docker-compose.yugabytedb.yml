@@ -1,0 +1,63 @@
+# YugabyteDB wire-compatibility suite (#401).
+#
+# No new backend: this runs the EXISTING Postgres stores against YugabyteDB's
+# YSQL layer, which reuses the PostgreSQL wire protocol and query layer.
+#
+# Yugabyte is the more interesting of the two certifications, because it is
+# known to reword some Postgres error messages (yugabyte/yugabyte-db#9294).
+# That is harmless here precisely because `postgresDialect` classifies by
+# SQLSTATE and never by message text — this suite is what proves it.  Matching
+# the code was necessary but not sufficient: at SERIALIZABLE the losing append
+# is aborted as `40001` before it ever reaches the primary key (#479).
+#
+# Run locally:
+#   bun run test:integration:yugabytedb
+#   bun run test:integration:yugabytedb:teardown
+
+name: actor-ts-integration-yugabytedb
+
+services:
+  yugabytedb:
+    # `latest` deliberately — surface upstream regressions as soon as they ship.
+    image: yugabytedb/yugabyte:latest
+    # `yugabyted` brings up a single-node cluster with YSQL enabled.  Staying in
+    # the foreground is what lets compose manage the lifecycle.
+    command: bin/yugabyted start --daemon=false --background=false
+    healthcheck:
+      # YSQL listens on 5433 (not 5432) and comes up well after the process
+      # starts, so `pg_isready` against that port is the real readiness gate.
+      #
+      # Probe the container's OWN address, not 127.0.0.1: `yugabyted` binds
+      # every service to the node's advertise address, so loopback is never
+      # listening and a 127.0.0.1 probe fails forever even once the cluster is
+      # fully up.  That is what happened — the container went `unhealthy` after
+      # a clean "✅ YugabyteDB Started", compose refused to start the runner on
+      # the unmet `service_healthy` condition, and this certification silently
+      # never ran at all while looking like a slow image.
+      test: ["CMD-SHELL", "postgres/bin/pg_isready -h \"$$(hostname -i)\" -p 5433 -U yugabyte || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 60
+      # Yugabyte's first boot initializes the system catalogs and takes
+      # noticeably longer than any other image in the matrix.
+      start_period: 60s
+    networks:
+      ybnet: {}
+
+  runner:
+    build:
+      context: ../../../..
+      dockerfile: tests/integration/brokers/yugabytedb/Dockerfile.runner
+    depends_on:
+      yugabytedb:
+        condition: service_healthy
+    environment:
+      # The `yugabyte` user and database exist out of the box, without a
+      # password in the default (unauthenticated) configuration.
+      PG_URL: postgres://yugabyte@yugabytedb:5433/yugabyte
+      WIRE_LABEL: yugabytedb
+    networks:
+      ybnet: {}
+
+networks:
+  ybnet: {}

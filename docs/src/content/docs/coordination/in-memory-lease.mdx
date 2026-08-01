@@ -52,16 +52,15 @@ import { Aside } from '@astrojs/starlight/components';
   for those tests, or stick with single-process MultiNodeSpec.
 </Aside>
 
-## Sharing the registry
+## The shared store
 
-To use the same lease across multiple `InMemoryLease` instances
-**within one process**, they need to share the registry:
+Every `InMemoryLease` in a process competes against **one
+module-global store** (`inMemoryLeaseStore`) — there is no
+per-instance registry to wire up.  So two `InMemoryLease`
+instances that share the same `name` mutually exclude
+automatically:
 
 ```ts
-import { InMemoryLeaseRegistry } from 'actor-ts/coordination';
-
-const registry = new InMemoryLeaseRegistry();
-
 const leaseOptions = LeaseOptions.create()
   .withName('singleton-x')
   .withOwner('node-a')
@@ -83,11 +82,12 @@ await leaseB.acquire();   // → false (leaseA holds it)
 ```
 
 This is the **`MultiNodeSpec` pattern** — every simulated node
-gets an `InMemoryLease` against a shared registry, and they fight
+gets an `InMemoryLease` for the same `name`, and they fight
 for the lease like real distributed peers would.
 
-Without an explicit `registry`, every `InMemoryLease` gets its own
-private registry — effectively no mutual exclusion.
+Because the store is a single module-global, mutual exclusion
+holds only within one process — separate processes each get their
+own store and can't see each other's leases.
 
 ## Behavior details
 
@@ -103,18 +103,19 @@ The implementation:
 - **Renewal** runs on a `setInterval` at `renewalIntervalMs`
   (default `ttl / 3`).
 
-For deterministic tests, you may want to inject a
-[ManualScheduler](/testing/manual-scheduler/) into the
-registry — but the framework's `InMemoryLease` currently uses
-real timers.  For very-deterministic lease-timing tests, mock
-`Date.now()` and use direct registry manipulation.
+`InMemoryLease` uses real timers (`setInterval`) and exposes no
+scheduler-injection hook — there is no `ManualScheduler` to wire
+in.  For deterministic lease-timing tests, mock `Date.now()`; to
+reset shared lease state between tests, clear the exported
+`inMemoryLeaseStore` singleton directly (`inMemoryLeaseStore._clear()`).
 
 ## Example: a singleton test
 
 ```ts
 import { describe, it, expect } from 'bun:test';
-import { TestKit, InMemoryLease, LeaseOptions } from 'actor-ts/testkit';
-import { ClusterSingletonManager, Props } from 'actor-ts';
+import { TestKit } from 'actor-ts/testkit';
+import { InMemoryLease, LeaseOptions } from 'actor-ts/coordination';
+import { StartSingletonOptions } from 'actor-ts';
 
 describe('SingletonManager with lease', () => {
   it('only one holder spawns the singleton', async () => {
@@ -136,21 +137,19 @@ describe('SingletonManager with lease', () => {
       lease2Options,
     );
 
-    // (cluster wiring elided)
+    // (cluster wiring + singletonProps elided)
 
-    tk1.system.spawn(
-      ClusterSingletonManager.props({
-        cluster: cluster1, typeName: 's', singletonProps: ..., lease: lease1,
-      }),
-      'singleton-manager-s',
-    );
+    const singleton1Options = StartSingletonOptions.create()
+      .withTypeName('s')
+      .withProps(singletonProps)
+      .withLease(lease1);
+    cluster1.singleton.start(singleton1Options);
 
-    tk2.system.spawn(
-      ClusterSingletonManager.props({
-        cluster: cluster2, typeName: 's', singletonProps: ..., lease: lease2,
-      }),
-      'singleton-manager-s',
-    );
+    const singleton2Options = StartSingletonOptions.create()
+      .withTypeName('s')
+      .withProps(singletonProps)
+      .withLease(lease2);
+    cluster2.singleton.start(singleton2Options);
 
     // Only one should ever have the singleton actor child.
     // ... assert via probes ...

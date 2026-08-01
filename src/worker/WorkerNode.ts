@@ -45,7 +45,7 @@ export const WorkerNode = {
     // ---- Phase 1: wait for the init frame from main. ----
     // We install the listener FIRST, then signal readiness via `hello`.
     const init = await new Promise<WorkerInitMessage>((resolve, reject) => {
-      const onMsg = (e: { data: unknown }): void => {
+      const onMessage = (e: { data: unknown }): void => {
         const data = e.data as Partial<WorkerInitMessage>;
         if (data && data.kind === 'worker-init') {
           selfScope.onmessage = null;
@@ -55,7 +55,7 @@ export const WorkerNode = {
       // Bun delivers worker→worker messages to `self.onmessage` (the DOM
       // property) even when addEventListener('message', …) is a no-op.  We
       // set `onmessage` directly so the init frame is seen reliably.
-      selfScope.onmessage = onMsg;
+      selfScope.onmessage = onMessage;
       const hello: WorkerHelloMessage = { kind: 'worker-hello' };
       post?.call(selfScope, hello);
       const timer = setTimeout(
@@ -80,8 +80,8 @@ export const WorkerNode = {
       transport,
       initData: init.data as TInit,
       ready(): void {
-        const msg: WorkerReadyMessage = { kind: 'worker-ready', self: init.self };
-        post?.call(selfScope, msg);
+        const message: WorkerReadyMessage = { kind: 'worker-ready', self: init.self };
+        post?.call(selfScope, message);
       },
     };
   },
@@ -93,9 +93,9 @@ function buildWorkerPort(
 ): PortLike {
   let handler: ((e: { data: unknown }) => void) | null = null;
   const listener = (e: { data: unknown }): void => {
-    const msg = e.data as { kind?: string } | undefined;
-    if (msg && msg.kind === 'worker-transport' && handler) {
-      handler({ data: (msg as WorkerTransportMessage).envelope });
+    const message = e.data as { kind?: string } | undefined;
+    if (message && message.kind === 'worker-transport' && handler) {
+      handler({ data: (message as WorkerTransportMessage).envelope });
     }
   };
   if (typeof selfScope.addEventListener === 'function') {
@@ -110,8 +110,8 @@ function buildWorkerPort(
   return {
     postMessage(v: unknown) {
       const envelope: BrokeredMessage = v as BrokeredMessage;
-      const msg: WorkerTransportMessage = { kind: 'worker-transport', envelope };
-      post?.call(selfScope, msg);
+      const message: WorkerTransportMessage = { kind: 'worker-transport', envelope };
+      post?.call(selfScope, message);
     },
     get onmessage() { return handler; },
     set onmessage(h: ((e: { data: unknown }) => void) | null) { handler = h; },

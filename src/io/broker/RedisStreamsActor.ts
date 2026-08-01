@@ -1,3 +1,4 @@
+import { match } from 'ts-pattern';
 import type { Config } from '../../config/Config.js';
 import { ConfigKeys } from '../../config/ConfigKeys.js';
 import { Lazy } from '../../util/Lazy.js';
@@ -7,23 +8,28 @@ import { RedisStreamsOptionsValidator } from './RedisStreamsOptions.js';
 import type { RedisStreamsOptions, RedisStreamsOptionsType } from './RedisStreamsOptions.js';
 
 /** Inbound entry from a Redis stream. */
-export interface RedisStreamEntry {
+export type RedisStreamEntry = {
   readonly stream: string;
   readonly id: string;          // e.g. '1689000000000-0'
   readonly fields: Readonly<Record<string, string>>;
-}
+};
 
 /** Outbound publish — adds an entry to a Redis stream via XADD. */
-export interface RedisStreamPublish {
+export type RedisStreamPublish = {
   readonly stream: string;
   readonly fields: Readonly<Record<string, string>>;
   /** Optional `MAXLEN ~ N` cap.  Drops oldest when set. */
   readonly maxLenApprox?: number;
-}
+};
 
-export type RedisStreamsCommand =
-  | { readonly kind: 'publish'; readonly publish: RedisStreamPublish }
-  | { readonly kind: 'ack'; readonly stream: string; readonly id: string };
+type PublishCommand = { readonly kind: 'publish'; readonly publish: RedisStreamPublish };
+type AcknowledgmentCommand = {
+  readonly kind: 'acknowledgment';
+  readonly stream: string;
+  readonly id: string;
+};
+
+export type RedisStreamsCommand = PublishCommand | AcknowledgmentCommand;
 
 /**
  * Redis-Streams actor.  Wraps `ioredis` (already a peer-dep used by
@@ -31,7 +37,7 @@ export type RedisStreamsCommand =
  *
  * Consumer mode uses `XREADGROUP` with a stable consumer name; entries
  * are delivered to `target` and are NOT auto-acked — the caller must
- * `tell({ kind: 'ack', stream, id })` after processing for at-least-
+ * `tell({ kind: 'acknowledgment', stream, id })` after processing for at-least-
  * once semantics with crash-recovery.  For at-most-once, ack
  * immediately on delivery.
  */
@@ -109,18 +115,30 @@ export class RedisStreamsActor
     await this.redisProducer.xadd(...args);
   }
 
-  override onReceive(cmd: RedisStreamsCommand): void {
-    if (cmd.kind === 'publish') {
-      this.enqueueOutbound(cmd.publish);
-    } else if (cmd.kind === 'ack') {
-      if (this.redis && this.options.consumerGroup) {
-        void this.redis.xack(cmd.stream, this.options.consumerGroup.group, cmd.id)
-          .catch((e: Error) => this.log.warn(`xack failed: ${e.message}`));
-      }
-    }
+  override onReceive(command: RedisStreamsCommand): void {
+    match(command)
+      .with({ kind: 'publish' }, (c) => this.onPublish(c))
+      .with({ kind: 'acknowledgment' }, (c) => this.onAcknowledgment(c))
+      .exhaustive();
   }
 
   /* ----------------------------- internals ----------------------------- */
+
+  private onPublish(command: PublishCommand): void {
+    this.enqueueOutbound(command.publish);
+  }
+
+  /**
+   * Fire-and-forget — awaiting the `XACK` would stall the mailbox behind a
+   * broker round-trip.  A failure is logged and the entry stays in the
+   * group's pending list; nothing reclaims it yet (see #462).
+   */
+  private onAcknowledgment(command: AcknowledgmentCommand): void {
+    if (this.redis && this.options.consumerGroup) {
+      void this.redis.xack(command.stream, this.options.consumerGroup.group, command.id)
+        .catch((e: Error) => this.log.warn(`xack failed: ${e.message}`));
+    }
+  }
 
   private async consumerLoop(): Promise<void> {
     const cg = this.options.consumerGroup!;
@@ -168,7 +186,7 @@ interface IoredisConstructor {
   new (url: string): IoredisClientLike;
 }
 
-interface IoredisModule { default?: IoredisConstructor; }
+type IoredisModule = { default?: IoredisConstructor; };
 
 const ioredisLazy: Lazy<Promise<IoredisModule>> = Lazy.of(
   () => lazyImportModule<IoredisModule>('ioredis', { context: 'RedisStreamsActor' }),

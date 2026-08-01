@@ -22,6 +22,7 @@
  * sharding-failover hardening work (Issue #36).  Here we just want
  * green-path rebalancing to work over the multi-node harness.
  */
+import { match } from 'ts-pattern';
 import { describe, expect, test } from 'bun:test';
 import { Actor } from '../../src/Actor.js';
 import { Props } from '../../src/Props.js';
@@ -31,12 +32,25 @@ import { MultiNodeSpec } from '../../src/testkit/MultiNodeSpec.js';
 import { MultiNodeTransport } from '../../src/testkit/internal/MultiNodeTransport.js';
 import type { ActorRef } from '../../src/ActorRef.js';
 
-type Cmd = { id: string; op: 'ping' | 'echo'; payload?: string };
+type PingCommand = { id: string; kind: 'ping'; payload?: string };
+type EchoCommand = { id: string; kind: 'echo'; payload?: string };
 
-class Entity extends Actor<Cmd> {
-  override onReceive(m: Cmd): void {
-    if (m.op === 'ping') this.sender.forEach((s) => s.tell('pong'));
-    else if (m.op === 'echo') this.sender.forEach((s) => s.tell(m.payload ?? ''));
+type Command = PingCommand | EchoCommand;
+
+class Entity extends Actor<Command> {
+  override onReceive(m: Command): void {
+    match(m)
+      .with({ kind: 'ping' }, () => this.onPing())
+      .with({ kind: 'echo' }, (c) => this.onEcho(c))
+      .exhaustive();
+  }
+
+  private onPing(): void {
+    this.sender.forEach((s) => s.tell('pong'));
+  }
+
+  private onEcho(command: EchoCommand): void {
+    this.sender.forEach((s) => s.tell(command.payload ?? ''));
   }
 }
 
@@ -61,15 +75,15 @@ describe('multi-node sharding rebalance', () => {
         spec.awaitMembers('c', 3),
       ]);
 
-      const shardingOptions = StartShardingOptions.create<Cmd>()
+      const shardingOptions = StartShardingOptions.create<Command>()
         .withTypeName('entity')
         .withEntityProps(Props.create(() => new Entity()))
         .withExtractEntityId((m) => m.id)
         .withNumShards(16);
-      const regions: Record<'a' | 'b' | 'c', ActorRef<Cmd>> = {
-        a: spec.clusterFor('a').sharding.start<Cmd>(shardingOptions),
-        b: spec.clusterFor('b').sharding.start<Cmd>(shardingOptions),
-        c: spec.clusterFor('c').sharding.start<Cmd>(shardingOptions),
+      const regions: Record<'a' | 'b' | 'c', ActorRef<Command>> = {
+        a: spec.clusterFor('a').sharding.start<Command>(shardingOptions),
+        b: spec.clusterFor('b').sharding.start<Command>(shardingOptions),
+        c: spec.clusterFor('c').sharding.start<Command>(shardingOptions),
       };
 
       // Let the coordinator finish initial allocation.  A short sleep
@@ -81,7 +95,7 @@ describe('multi-node sharding rebalance', () => {
       // point of location-transparent regions.
       const round1 = await Promise.all(
         Array.from({ length: 16 }, (_, i) =>
-          regions.a.ask<string>({ id: `e-${i}`, op: 'ping' }, 3_000),
+          regions.a.ask<string>({ id: `e-${i}`, kind: 'ping' }, 3_000),
         ),
       );
       expect(round1).toEqual(Array.from({ length: 16 }, () => 'pong'));
@@ -105,7 +119,7 @@ describe('multi-node sharding rebalance', () => {
       // here), but the response semantics are identical.
       const round2 = await Promise.all(
         Array.from({ length: 16 }, (_, i) =>
-          regions.a.ask<string>({ id: `e-${i}`, op: 'ping' }, 5_000),
+          regions.a.ask<string>({ id: `e-${i}`, kind: 'ping' }, 5_000),
         ),
       );
       expect(round2).toEqual(Array.from({ length: 16 }, () => 'pong'));
@@ -113,7 +127,7 @@ describe('multi-node sharding rebalance', () => {
       // And from b's region — proves ask routing works from any survivor.
       const round3 = await Promise.all(
         Array.from({ length: 8 }, (_, i) =>
-          regions.b.ask<string>({ id: `f-${i}`, op: 'echo', payload: `r-${i}` }, 5_000),
+          regions.b.ask<string>({ id: `f-${i}`, kind: 'echo', payload: `r-${i}` }, 5_000),
         ),
       );
       expect(round3).toEqual(Array.from({ length: 8 }, (_, i) => `r-${i}`));

@@ -30,8 +30,8 @@ export function BasicAuth(options: BasicAuthOptions): Middleware {
     throw new HttpError(Status.Unauthorized, message, undefined, challenge);
   };
 
-  return async (req, next) => {
-    const header = req.headers['authorization'];
+  return async (request, next) => {
+    const header = request.headers['authorization'];
     if (!header) unauthorized('missing Authorization header');
     const match = /^Basic\s+(.+)$/i.exec(header!);
     if (!match) unauthorized('authorization scheme must be Basic');

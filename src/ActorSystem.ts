@@ -17,9 +17,18 @@ import { Props } from './Props.js';
 import { Scheduler } from './Scheduler.js';
 import type { ActorSystemOptions, ActorSystemOptionsType } from './ActorSystemOptions.js';
 import { ActorCell } from './internal/ActorCell.js';
+import type { CellInspection, DispatchObserver } from './internal/Instrumentation.js';
 import { DeadLetterRef } from './internal/DeadLetterRef.js';
-import { Guardian, systemGuardianStrategy, userGuardianStrategy } from './internal/Guardian.js';
+import {
+  GUARDIAN_SHUTDOWN_ORDER,
+  Guardian,
+  SYSTEM_GUARDIAN_NAME,
+  USER_GUARDIAN_NAME,
+  systemGuardianStrategy,
+  userGuardianStrategy,
+} from './internal/Guardian.js';
 import { LocalActorRef } from './internal/LocalActorRef.js';
+import { systemGroupPolicy, type SystemGroup } from './internal/SystemPaths.js';
 import { PersistenceExtensionId } from './persistence/PersistenceExtension.js';
 import type { HttpServerBackend } from './http/backend/HttpServerBackend.js';
 import { HttpExtensionId, type ServerBuilder } from './http/HttpExtension.js';
@@ -33,6 +42,13 @@ import { typedProps } from './typed/spawn.js';
  */
 export class ActorSystem {
   readonly name: string;
+  /**
+   * Wall-clock time this system was created.  Stamped first in the
+   * constructor, so `Date.now() - startedAtMs` is the system's uptime —
+   * the one clock that survives a monitoring tool attaching, detaching,
+   * or reconnecting halfway through the run.
+   */
+  readonly startedAtMs: number;
   readonly dispatcher: Dispatcher;
   readonly scheduler: Scheduler;
   readonly eventStream: EventStream;
@@ -46,12 +62,49 @@ export class ActorSystem {
   private readonly rootCell: ActorCell<unknown>;
   private readonly userGuardianCell: ActorCell<unknown>;
   private readonly systemGuardianCell: ActorCell<unknown>;
+  /**
+   * Group guardians under `/system`, keyed by group path — populated on
+   * demand by {@link _systemGroupCell}.  Empty until something actually
+   * spawns a framework actor, so a plain system keeps its three-cell tree.
+   */
+  private readonly systemGroupCells = new Map<string, ActorCell<unknown>>();
+
+  /**
+   * @internal Profiling hook, `null` unless a profiler is running.
+   *
+   * Read once per message on the dispatch path, so it is a field rather
+   * than an extension lookup.  Single-owner by design — see
+   * {@link DispatchObserver}.
+   */
+  _dispatchObserver: DispatchObserver | null = null;
+
+  /**
+   * @internal Open a span for every message, not only for ones that
+   * already belong to a trace.  Owned by `TracingExtension`; see
+   * `recordRootSpans`.
+   *
+   * A field for the same reason as {@link _dispatchObserver}: it is read
+   * once per message, and an extension lookup per message is not.
+   */
+  _traceRootSpans = false;
+
+  /**
+   * @internal Attach the serialised message to each `actor.receive`
+   * span.  Owned by `TracingExtension`; see `captureMessagePayloads`.
+   *
+   * Separate from {@link _traceRootSpans} because the costs differ: one
+   * decides *whether* to open a span, this one decides whether to
+   * `JSON.stringify` a user object while doing so.  Production tracing
+   * wants the first without paying for the second.
+   */
+  _traceMessagePayloads = false;
 
   private _terminating = false;
   private _terminated = false;
   private _terminationResolvers: Array<() => void> = [];
 
   private constructor(name: string, options: ActorSystemOptionsType) {
+    this.startedAtMs = Date.now();
     this.name = name;
     this.config = buildConfig(options);
     this.dispatcher = options.dispatcher ?? dispatcherFromConfig(this.config);
@@ -75,15 +128,19 @@ export class ActorSystem {
 
     const userRef = this.rootCell.spawn(
       Props.create(() => new Guardian(userGuardianStrategy)),
-      'user',
+      USER_GUARDIAN_NAME,
     );
     this.userGuardianCell = (userRef as LocalActorRef<unknown>).getCell();
 
     const systemRef = this.rootCell.spawn(
       Props.create(() => new Guardian(systemGuardianStrategy)),
-      'system',
+      SYSTEM_GUARDIAN_NAME,
     );
     this.systemGuardianCell = (systemRef as LocalActorRef<unknown>).getCell();
+
+    // The root stops its two children in sequence, not together — see
+    // GUARDIAN_SHUTDOWN_ORDER for why `/user` has to drain first.
+    this.rootCell._terminationOrder = GUARDIAN_SHUTDOWN_ORDER;
 
     // Apply persistence overrides AFTER the guardians are wired up so the
     // extension registry exists.  Either field is independent — omitted
@@ -131,10 +188,10 @@ export class ActorSystem {
    */
   http(
     port: number,
-    opts: { readonly host?: string; readonly backend?: HttpServerBackend } = {},
+    options: { readonly host?: string; readonly backend?: HttpServerBackend } = {},
   ): ServerBuilder {
-    const builder = this.extensions.get(HttpExtensionId).newServerAt(opts.host ?? '0.0.0.0', port);
-    return opts.backend ? builder.useBackend(opts.backend) : builder;
+    const builder = this.extensions.get(HttpExtensionId).newServerAt(options.host ?? '0.0.0.0', port);
+    return options.backend ? builder.useBackend(options.backend) : builder;
   }
 
   /**
@@ -187,6 +244,60 @@ export class ActorSystem {
   }
 
   /**
+   * @internal Spawn a framework-owned actor under `/system/<group>`.
+   *
+   * The framework's own actors — the DevTools hub, shard regions, the pub-sub
+   * mediator, projections — do not belong in `/user`, which is the
+   * application's namespace.  Keeping them apart is what lets a reader of the
+   * actor tree tell the two sides apart, and what gives shutdown a boundary
+   * to order against.
+   *
+   * Deliberately internal: this is not an extension point for applications,
+   * and `/user` stays the only place user code can spawn a top-level actor.
+   */
+  _spawnSystemActor<T>(props: Props<T>, group: SystemGroup, name: string): ActorRef<T> {
+    if (this._terminating || this._terminated) {
+      throw new Error(`Cannot create actors on a terminated ActorSystem '${this.name}'`);
+    }
+    return this._systemGroupCell(group).spawn(props, name);
+  }
+
+  /**
+   * @internal The guardian cell for `groupPath`, creating missing levels.
+   *
+   * Memoised rather than probe-and-create, because `ActorCell._createChild`
+   * throws on a duplicate name and several callers sharing one group is the
+   * normal case — the DevTools hub and its three probes, or every sharded
+   * type reaching for `cluster/sharding`.  Creation is lazy so that a system
+   * which never starts DevTools or clustering pays for no group at all.
+   *
+   * A cell exists synchronously even though its `create` message is queued,
+   * so a group can be spawned into immediately after it is made.
+   */
+  private _systemGroupCell(groupPath: string): ActorCell<unknown> {
+    const cached = this.systemGroupCells.get(groupPath);
+    if (cached) return cached;
+
+    let parent = this.systemGuardianCell;
+    let walked = '';
+    for (const segment of groupPath.split('/')) {
+      walked = walked === '' ? segment : `${walked}/${segment}`;
+      const existing = this.systemGroupCells.get(walked);
+      if (existing) {
+        parent = existing;
+        continue;
+      }
+      const policy = systemGroupPolicy(walked);
+      const base = Props.create(() => new Guardian(policy.strategy));
+      const groupRef = parent.spawn(policy.internal ? base.asInternal() : base, segment);
+      const groupCell = (groupRef as LocalActorRef<unknown>).getCell();
+      this.systemGroupCells.set(walked, groupCell);
+      parent = groupCell;
+    }
+    return parent;
+  }
+
+  /**
    * Build an ActorSelection that resolves a path at lookup time.  Accepts
    *   - a fully-qualified URI ("actor-ts://sys/user/foo/bar")
    *   - an absolute path ("/user/foo/bar" or "user/foo/bar")
@@ -201,6 +312,38 @@ export class ActorSystem {
       return new ActorSelection(this, ['<mismatched-system>'], path);
     }
     return new ActorSelection(this, segments, path);
+  }
+
+  /**
+   * @internal Describe every live actor, root first, parents before
+   * children.
+   *
+   * The whole tree in one pass, for introspection tooling that has no
+   * path to start from.  `_resolvePath` answers "what is at this path?";
+   * this answers "what is there at all?", which is the question a
+   * debugger opens with.  The result is a plain snapshot — no cells
+   * escape, so a caller cannot accidentally keep a terminated actor
+   * alive.
+   */
+  _inspectTree(): ReadonlyArray<CellInspection> {
+    const out: CellInspection[] = [];
+    const visit = (cell: ActorCell<unknown>): void => {
+      out.push(cell._inspect());
+      cell._eachChildCell(visit);
+    };
+    visit(this.rootCell);
+    return out;
+  }
+
+  /**
+   * @internal Install (or clear, with `null`) the profiling hook.
+   *
+   * Replaces any existing observer: two profilers running at once would
+   * each see half a picture, so the last caller wins and is expected to
+   * put back what it found.
+   */
+  _setDispatchObserver(observer: DispatchObserver | null): void {
+    this._dispatchObserver = observer;
   }
 
   /** @internal — walk the actor tree and return the ref at `segments`. */
@@ -220,7 +363,12 @@ export class ActorSystem {
     ref.stop();
   }
 
-  /** Shut down: stops /user (children first) and resolves once everything is drained. */
+  /**
+   * Shut down: stops `/user` (children first), then `/system`, and resolves
+   * once everything is drained.  The two guardians go in sequence so a user
+   * actor's `postStop` can still reach the framework actors it depends on —
+   * see `GUARDIAN_SHUTDOWN_ORDER`.
+   */
   terminate(): Promise<void> {
     if (this._terminated) return Promise.resolve();
     if (this._terminating) return this.whenTerminated();

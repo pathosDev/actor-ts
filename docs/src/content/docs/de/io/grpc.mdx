@@ -94,8 +94,8 @@ Handler ein typisiertes Call-Objekt:
 
 | Handler-`kind` | Call-Typ | Reply-API |
 | --- | --- | --- |
-| `unary` | `GrpcUnaryCall` | `respond(res)` / `respondError(msg, code?)` |
-| `serverStream` | `GrpcServerStreamCall` | `send(chunk)` / `complete()` / `fail(msg, code?)` |
+| `unary` | `GrpcUnaryCall` | `respond(res)` / `respondError(message, code?)` |
+| `serverStream` | `GrpcServerStreamCall` | `send(chunk)` / `complete()` / `fail(message, code?)` |
 | `bidi` | `GrpcBidiCall` | `onData(target)` / `send(chunk)` / `complete()` |
 
 Jeder Call trägt `method`, den deserialisierten `request` (außer
@@ -106,12 +106,17 @@ numerischen Status-Code, der auf `13` (INTERNAL) fällt.
 ## Client
 
 ```ts
+import { match, P } from 'ts-pattern';
 import {
   Actor,
   Props,
   GrpcClientActor,
   GrpcClientOptions,
   type GrpcInbound,
+  type ReplyMessage,
+  type RpcErrorMessage,
+  type StreamDataMessage,
+  type StreamErrorMessage,
 } from 'actor-ts';
 
 const grpcClientOptions = GrpcClientOptions.create()
@@ -128,16 +133,30 @@ const client = system.spawn(
 
 // A collector actor receives every reply / stream frame as `GrpcInbound`.
 class ReplyCollector extends Actor<GrpcInbound> {
-  override onReceive(msg: GrpcInbound): void {
-    if (msg.kind === 'reply') {
-      console.log('unary reply:', msg.response);
-    } else if (msg.kind === 'stream-data') {
-      console.log('stream chunk:', msg.chunk);
-    } else if (msg.kind === 'stream-end') {
-      console.log('stream complete');
-    } else if (msg.kind === 'rpc-error' || msg.kind === 'stream-error') {
-      console.error('error:', msg.error.message);
-    }
+  override onReceive(message: GrpcInbound): void {
+    match(message)
+      .with({ kind: 'reply' }, (m) => this.onReply(m))
+      .with({ kind: 'stream-data' }, (m) => this.onStreamData(m))
+      .with({ kind: 'stream-end' }, () => this.onStreamEnd())
+      // Unary and streaming failures are reported the same way.
+      .with(P.union({ kind: 'rpc-error' }, { kind: 'stream-error' }), (m) => this.onError(m))
+      .exhaustive();
+  }
+
+  private onReply(message: ReplyMessage): void {
+    console.log('unary reply:', message.response);
+  }
+
+  private onStreamData(message: StreamDataMessage): void {
+    console.log('stream chunk:', message.chunk);
+  }
+
+  private onStreamEnd(): void {
+    console.log('stream complete');
+  }
+
+  private onError(message: RpcErrorMessage | StreamErrorMessage): void {
+    console.error('error:', message.error.message);
   }
 }
 
@@ -202,7 +221,7 @@ Close:
 
 ```ts
 // Inside the collector, after receiving the streamId hint:
-const streamId = (msg.chunk as { __streamId: number }).__streamId;
+const streamId = (message.chunk as { __streamId: number }).__streamId;
 
 client.tell({ kind: 'bidiSend', streamId, chunk: { text: 'hello' } });
 client.tell({ kind: 'bidiClose', streamId });
@@ -268,17 +287,17 @@ HOCON-Schlüssel liegen unter `actor-ts.io.broker.grpc.server` und
 ```hocon
 actor-ts.io.broker.grpc {
   server {
-    proto-path  = "./proto/sensor.proto"
-    package-name = "sensor.v1"
-    service-name = "SensorService"
-    bind = "0.0.0.0:50051"
+    protoPath   = "./proto/sensor.proto"
+    packageName = "sensor.v1"
+    serviceName = "SensorService"
+    bind        = "0.0.0.0:50051"
   }
   client {
-    proto-path  = "./proto/sensor.proto"
-    package-name = "sensor.v1"
-    service-name = "SensorService"
-    endpoint = "sensor.svc:50051"
-    deadline-ms = 30s
+    protoPath   = "./proto/sensor.proto"
+    packageName = "sensor.v1"
+    serviceName = "SensorService"
+    endpoint    = "sensor.svc:50051"
+    deadlineMs  = 30s
   }
 }
 ```

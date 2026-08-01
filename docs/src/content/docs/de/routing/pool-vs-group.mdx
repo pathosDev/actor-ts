@@ -173,7 +173,7 @@ für das Pattern, das "N globale Workers spawnen" am nächsten kommt.
 | Du stoppst... | Pool-Router | Group-Router |
 | --- | --- | --- |
 | Den Router | Alle Routees stoppen (Kinder kaskadieren). | Routees laufen weiter. |
-| Einen Routee | Supervisor restartet ihn (Default) oder Pool schrumpft. | Router stoppt das Senden an ihn (nachdem der Cluster es bemerkt), Geschwister unberührt. |
+| Einen Routee | Supervisor restartet ihn (Default); wird er gestoppt, bleibt seine tote Ref im Pool und Round-Robin routet ihm weiter ~jede N-te Nachricht → Dead Letters. | Router stoppt das Senden an ihn (nachdem der Cluster es bemerkt), Geschwister unberührt. |
 | Das Actor-System | Alles stoppt normal. | Alles stoppt auf diesem Node; Routees auf anderen Nodes laufen weiter. |
 
 Die Asymmetrie ist wichtig für **sauberen Shutdown** — ein

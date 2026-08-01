@@ -7,16 +7,21 @@
  *   - Invalid transition (`ship` from `'pending'`) is dropped — no
  *     event persists, no state mutates.
  *   - Guard rejection drops the command silently.
- *   - Function-style `event: (cmd, data) => Event` is evaluated.
+ *   - Function-style `event: (command, data) => Event` is evaluated.
  *   - Snapshot policy + recovery via snapshot still produces the
  *     right state + data.
  */
 import { describe, expect, test } from 'bun:test';
+import { Actor } from '../../../src/Actor.js';
+import type { ActorRef } from '../../../src/ActorRef.js';
 import { ActorSystem } from '../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../src/ActorSystemOptions.js';
 import { LogLevel, NoopLogger } from '../../../src/Logger.js';
 import { Props } from '../../../src/Props.js';
+import { ActorLifecycleEvent, ActorStopped } from '../../../src/SystemMessages.js';
+import { awaitCondition } from '../../util/AwaitCondition.js';
 import { PersistenceExtensionId } from '../../../src/persistence/PersistenceExtension.js';
+import type { Journal } from '../../../src/persistence/Journal.js';
 import { InMemoryJournal } from '../../../src/persistence/journals/InMemoryJournal.js';
 import { InMemorySnapshotStore } from '../../../src/persistence/snapshot-stores/InMemorySnapshotStore.js';
 import {
@@ -40,20 +45,20 @@ type OrderEvent =
   | { kind: 'shipped'; carrier: string }
   | { kind: 'cancelled'; reason?: string };
 
-interface OrderData {
+type OrderData = {
   amountPaid: number;
   carrier: string | null;
   cancelReason: string | null;
-}
+};
 
 const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
 
 class OrderFsm extends PersistentFSM<OrderCommand, OrderEvent, OrderState, OrderData> {
   readonly persistenceId: string;
 
-  constructor(pid: string) {
+  constructor(persistenceId: string) {
     super();
-    this.persistenceId = pid;
+    this.persistenceId = persistenceId;
   }
 
   initialFsmState(): OrderState { return 'pending'; }
@@ -63,23 +68,23 @@ class OrderFsm extends PersistentFSM<OrderCommand, OrderEvent, OrderState, Order
     pending: {
       pay: {
         // Function-style event — depends on the command.
-        event: (cmd, _data): OrderEvent => ({ kind: 'paid', amount: cmd.amount }),
+        event: (command, _data): OrderEvent => ({ kind: 'paid', amount: command.amount }),
         next: 'paid',
         // Reject zero / negative amounts via the guard.
-        guard: (cmd) => cmd.amount > 0,
+        guard: (command) => command.amount > 0,
       },
       cancel: {
-        event: (cmd): OrderEvent => ({ kind: 'cancelled', reason: cmd.reason }),
+        event: (command): OrderEvent => ({ kind: 'cancelled', reason: command.reason }),
         next: 'cancelled',
       },
     },
     paid: {
       ship: {
-        event: (cmd): OrderEvent => ({ kind: 'shipped', carrier: cmd.carrier }),
+        event: (command): OrderEvent => ({ kind: 'shipped', carrier: command.carrier }),
         next: 'shipped',
       },
       cancel: {
-        event: (cmd): OrderEvent => ({ kind: 'cancelled', reason: cmd.reason }),
+        event: (command): OrderEvent => ({ kind: 'cancelled', reason: command.reason }),
         next: 'cancelled',
       },
     },
@@ -102,12 +107,12 @@ class OrderFsm extends PersistentFSM<OrderCommand, OrderEvent, OrderState, Order
   // Override onCommand to handle the read-only `getState` query.
   // Calls super for everything else — keeps the framework's
   // transition-table dispatch.
-  override async onCommand(curr: FsmStateData<OrderState, OrderData>, cmd: OrderCommand): Promise<void> {
-    if (cmd.kind === 'getState') {
+  override async onCommand(curr: FsmStateData<OrderState, OrderData>, command: OrderCommand): Promise<void> {
+    if (command.kind === 'getState') {
       this.sender.toNullable()?.tell(curr);
       return;
     }
-    return super.onCommand(curr, cmd);
+    return super.onCommand(curr, command);
   }
 }
 
@@ -304,7 +309,7 @@ type PayEvent =
   | { kind: 'authorized'; amount: number }
   | { kind: 'captured' }
   | { kind: 'expired' };
-interface PayData { amount: number }
+type PayData = { amount: number };
 
 class PaymentFsm extends PersistentFSM<PayCommand, PayEvent, PayState, PayData> {
   readonly persistenceId: string;
@@ -313,11 +318,11 @@ class PaymentFsm extends PersistentFSM<PayCommand, PayEvent, PayState, PayData> 
   /** When set, only fires the timeout if data.amount > 0. */
   private readonly guarded: boolean;
 
-  constructor(pid: string, afterMs: number, opts: { guarded?: boolean } = {}) {
+  constructor(persistenceId: string, afterMs: number, options: { guarded?: boolean } = {}) {
     super();
-    this.persistenceId = pid;
+    this.persistenceId = persistenceId;
     this.afterMs = afterMs;
-    this.guarded = opts.guarded ?? false;
+    this.guarded = options.guarded ?? false;
   }
 
   initialFsmState(): PayState { return 'pending'; }
@@ -330,7 +335,7 @@ class PaymentFsm extends PersistentFSM<PayCommand, PayEvent, PayState, PayData> 
     return {
       pending: {
         authorize: {
-          event: (cmd): PayEvent => ({ kind: 'authorized', amount: cmd.amount }),
+          event: (command): PayEvent => ({ kind: 'authorized', amount: command.amount }),
           next: 'authorized',
         },
       },
@@ -356,12 +361,12 @@ class PaymentFsm extends PersistentFSM<PayCommand, PayEvent, PayState, PayData> 
     return { state: 'expired', data };
   }
 
-  override async onCommand(curr: FsmStateData<PayState, PayData>, cmd: PayCommand): Promise<void> {
-    if (cmd.kind === 'getState') {
+  override async onCommand(curr: FsmStateData<PayState, PayData>, command: PayCommand): Promise<void> {
+    if (command.kind === 'getState') {
       this.sender.toNullable()?.tell(curr);
       return;
     }
-    return super.onCommand(curr, cmd);
+    return super.onCommand(curr, command);
   }
 }
 
@@ -511,16 +516,16 @@ type AuditEvent =
   | { kind: 'paid'; amount: number }
   | { kind: 'audit-logged' }
   | { kind: 'cancelled'; reason?: string };
-interface AuditData { amountPaid: number; audited: boolean; cancelReason: string | null }
+type AuditData = { amountPaid: number; audited: boolean; cancelReason: string | null };
 
 class AuditingFsm extends PersistentFSM<AuditCommand, AuditEvent, AuditState, AuditData> {
   readonly persistenceId: string;
   /** Toggle so a single test class covers literal-array, function-array, and empty-array. */
   private readonly mode: 'array' | 'fnArray' | 'emptyArray';
 
-  constructor(pid: string, mode: 'array' | 'fnArray' | 'emptyArray' = 'array') {
+  constructor(persistenceId: string, mode: 'array' | 'fnArray' | 'emptyArray' = 'array') {
     super();
-    this.persistenceId = pid;
+    this.persistenceId = persistenceId;
     this.mode = mode;
   }
 
@@ -539,8 +544,8 @@ class AuditingFsm extends PersistentFSM<AuditCommand, AuditEvent, AuditState, Au
           ],
           next: 'paid',
         } : this.mode === 'fnArray' ? {
-          event: (cmd, _data): AuditEvent[] => [
-            { kind: 'paid', amount: cmd.amount },
+          event: (command, _data): AuditEvent[] => [
+            { kind: 'paid', amount: command.amount },
             { kind: 'audit-logged' },
           ],
           next: 'paid',
@@ -551,7 +556,7 @@ class AuditingFsm extends PersistentFSM<AuditCommand, AuditEvent, AuditState, Au
           next: 'paid',
         },
         cancel: {
-          event: (cmd): AuditEvent => ({ kind: 'cancelled', reason: cmd.reason }),
+          event: (command): AuditEvent => ({ kind: 'cancelled', reason: command.reason }),
           next: 'cancelled',
         },
       },
@@ -565,12 +570,12 @@ class AuditingFsm extends PersistentFSM<AuditCommand, AuditEvent, AuditState, Au
     return { state: 'cancelled', data: { ...data, cancelReason: ev.reason ?? null } };
   }
 
-  override async onCommand(curr: FsmStateData<AuditState, AuditData>, cmd: AuditCommand): Promise<void> {
-    if (cmd.kind === 'getState') {
+  override async onCommand(curr: FsmStateData<AuditState, AuditData>, command: AuditCommand): Promise<void> {
+    if (command.kind === 'getState') {
       this.sender.toNullable()?.tell(curr);
       return;
     }
-    return super.onCommand(curr, cmd);
+    return super.onCommand(curr, command);
   }
 }
 
@@ -672,6 +677,132 @@ describe('PersistentFSM — multiple events per command (#66)', () => {
       expect(recovered.data.audited).toBe(true);
     } finally {
       await sys2.terminate();
+    }
+  });
+});
+
+describe('PersistentFSM — recovery failure', () => {
+  test('a swallowed recovery failure stops the FSM instead of leaving it stuck', async () => {
+    const { sys, journal, snaps } = buildSystem('fsm-recovery-failure');
+    try {
+      // A snapshot claiming a sequence number ahead of the journal is
+      // refused by assertTrustworthySnapshot, so replay throws before
+      // the base class assigns its state.
+      await journal.append<OrderEvent>('order-broken', [{ kind: 'paid', amount: 100 }], 0);
+      await snaps.save('order-broken', Number.MAX_SAFE_INTEGER, {
+        state: 'shipped', data: { amountPaid: 0, carrier: null, cancelReason: null },
+      });
+
+      const failures: Error[] = [];
+      const stopped: ActorLifecycleEvent[] = [];
+      const ready = { value: false };
+      class Listener extends Actor<ActorLifecycleEvent> {
+        override preStart(): void {
+          this.system.eventStream.subscribe(this.self, ActorLifecycleEvent);
+          ready.value = true;
+        }
+        override onReceive(event: ActorLifecycleEvent): void { stopped.push(event); }
+      }
+      sys.spawn(Props.create(() => new Listener()), 'lifecycle');
+      await awaitCondition(() => ready.value, { label: 'the lifecycle listener subscribed' });
+
+      class SwallowingOrderFsm extends OrderFsm {
+        override onRecoveryFailure(reason: Error): void { failures.push(reason); }
+      }
+      const ref = sys.spawn(Props.create(() => new SwallowingOrderFsm('order-broken')), 'order');
+
+      await awaitCondition(() => failures.length === 1, {
+        label: 'the swallowing hook observed the recovery failure',
+      });
+      // Without the stop, the FSM would sit on an undefined state while
+      // its own onReceive routes __fsm_state_timeout__ around the
+      // recovering guard straight into an unguarded this.state read.
+      await awaitCondition(
+        () => stopped.some((e) => e instanceof ActorStopped && e.actor.equals(ref)),
+        { label: 'the FSM whose recovery failed stopped itself' },
+      );
+    } finally {
+      await sys.terminate();
+    }
+  });
+});
+
+/**
+ * `onReceive` intercepts the state-timeout fire *before* delegating to
+ * the base class, so that branch bypasses the `_recovering` guard every
+ * ordinary command goes through — and `this.state` is unassigned until
+ * replay succeeds (#519).
+ */
+describe('PersistentFSM — a state-timeout fire during recovery', () => {
+  /**
+   * Parks `read` until the test opens it, so recovery is provably still
+   * in flight while the fire is delivered.  Without this the fire and the
+   * end of recovery race, and the test would pass for the wrong reason.
+   */
+  class GatedJournal implements Journal {
+    private release!: () => void;
+    private readonly gate = new Promise<void>((resolve) => { this.release = resolve; });
+    /** True once replay has actually parked — the point of no ambiguity. */
+    reading = false;
+    constructor(private readonly inner: InMemoryJournal) {}
+    open(): void { this.release(); }
+    append<E>(persistenceId: string, events: ReadonlyArray<E>, expectedSeq: number, tags?: ReadonlyArray<string>) {
+      return this.inner.append<E>(persistenceId, events, expectedSeq, tags);
+    }
+    async read<E>(persistenceId: string, fromSeq: number, toSeq?: number) {
+      this.reading = true;
+      await this.gate;
+      return this.inner.read<E>(persistenceId, fromSeq, toSeq);
+    }
+    highestSeq(persistenceId: string): Promise<number> { return this.inner.highestSeq(persistenceId); }
+    delete(persistenceId: string, toSeq: number): Promise<void> { return this.inner.delete(persistenceId, toSeq); }
+    persistenceIds(): Promise<string[]> { return this.inner.persistenceIds(); }
+  }
+
+  test('is dropped instead of dereferencing an unassigned state', async () => {
+    const sysOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off);
+    const sys = ActorSystem.create('fsm-timeout-during-recovery', sysOptions);
+    const gated = new GatedJournal(new InMemoryJournal());
+    sys.extension(PersistenceExtensionId).setJournal(gated);
+    sys.extension(PersistenceExtensionId).setSnapshotStore(new InMemorySnapshotStore());
+
+    const delivered: unknown[] = [];
+    let incarnations = 0;
+    try {
+      // Starting recovery without awaiting it is the one way user code can
+      // reach `onReceive` while `_recovering` is still true — and it is
+      // exactly the trap the next intercept added here would fall into.
+      class RacyFsm extends OrderFsm {
+        override async preStart(): Promise<void> { void super.preStart(); }
+        override async onReceive(message: OrderCommand): Promise<void> {
+          delivered.push(message);
+          await super.onReceive(message);
+        }
+      }
+      const ref = sys.spawn(
+        Props.create(() => { incarnations++; return new RacyFsm('order-racy'); }),
+        'order',
+      );
+      await awaitCondition(() => gated.reading, { label: 'replay parked inside journal.read' });
+
+      // The internal self-tell an armed timer would have produced.
+      (ref as ActorRef<unknown>).tell({ kind: '__fsm_state_timeout__', stateAtArm: 'pending' });
+      await awaitCondition(() => delivered.length === 1, {
+        label: 'the timeout fire was dequeued while recovery was still parked',
+      });
+
+      // Pre-fix, dereferencing the unassigned state threw a TypeError from
+      // inside the handler, which supervision turns into a restart — so the
+      // incarnation count is what separates "dropped" from "blew up".  The
+      // FSM must also still answer once recovery lands.
+      gated.open();
+      const state = await ref.ask<FsmStateData<OrderState, OrderData>>({ kind: 'getState' }, 2_000);
+      expect(state.state).toBe('pending');
+      expect(incarnations).toBe(1);
+    } finally {
+      await sys.terminate();
     }
   });
 });

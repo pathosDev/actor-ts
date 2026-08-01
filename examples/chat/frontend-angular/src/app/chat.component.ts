@@ -1,6 +1,6 @@
 import { Component, ElementRef, computed, inject, signal, viewChild } from '@angular/core';
 import { ChatService } from './chat.service';
-import { isDmRoom, type RoomName } from './protocol';
+import { isDirectMessageRoom, type RoomName } from './protocol';
 
 /**
  * Three-column layout: rooms-panel (left), chat-window (center),
@@ -146,10 +146,10 @@ import { isDmRoom, type RoomName } from './protocol';
           @for (room of chat.rooms(); track room) {
             <li
               [class.active]="room === chat.currentRoom()"
-              [class.dm]="isDmRoom(room)"
+              [class.dm]="isDirectMessageRoom(room)"
               (click)="chat.selectRoom(room)"
             >
-              <span>{{ isDmRoom(room) ? room : '# ' + room }}</span>
+              <span>{{ isDirectMessageRoom(room) ? room : '# ' + room }}</span>
               @if (chat.unreadByRoom()[room] > 0) {
                 <span class="badge">{{ chat.unreadByRoom()[room] }}</span>
               }
@@ -205,7 +205,7 @@ import { isDmRoom, type RoomName } from './protocol';
             <li
               [class.self]="u === chat.username()"
               [title]="u === chat.username() ? '' : 'Click to message @' + u"
-              (click)="u === chat.username() ? null : chat.openDm(u)"
+              (click)="u === chat.username() ? null : chat.openDirectMessage(u)"
             >
               {{ u }}{{ u === chat.username() ? ' (you)' : '' }}
             </li>
@@ -225,7 +225,7 @@ export class ChatComponent {
 
   /** Re-exported as a template-callable so the template can flag DM
    *  list items without importing the helper itself. */
-  protected readonly isDmRoom = isDmRoom;
+  protected readonly isDirectMessageRoom = isDirectMessageRoom;
 
   /** Users to display in the Online panel.  In a default room this is
    *  the cluster-known presence list; in a DM "room" there's no
@@ -234,7 +234,7 @@ export class ChatComponent {
   protected readonly displayedUsers = (): ReadonlyArray<string> => {
     const room = this.chat.currentRoom();
     const list = this.chat.currentUsers();
-    if (room && isDmRoom(room) && list.length === 0) {
+    if (room && isDirectMessageRoom(room) && list.length === 0) {
       const me = this.chat.username();
       return me ? [room.slice(1), me] : [room.slice(1)];
     }
@@ -254,14 +254,14 @@ export class ChatComponent {
     return new Date(ts).toLocaleTimeString();
   }
 
-  /** Render-side receipt info for an own message at `msgTs`.  Returns
+  /** Render-side receipt info for an own message at `messageTs`.  Returns
    *  the symbol (✓ / ✓✓), tooltip text, and the list of readers used
    *  for the `.read` class binding. */
-  protected receiptFor(msgTs: number): { symbol: string; title: string; readers: string[] } {
+  protected receiptFor(messageTs: number): { symbol: string; title: string; readers: string[] } {
     const me = this.chat.username();
     const all = this.chat.currentReceipts();
     const readers = Object.entries(all)
-      .filter(([u, t]) => u !== me && typeof t === 'number' && t >= msgTs)
+      .filter(([u, t]) => u !== me && typeof t === 'number' && t >= messageTs)
       .map(([u]) => u);
     return readers.length === 0
       ? { symbol: '✓', title: 'sent', readers }

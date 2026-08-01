@@ -21,8 +21,10 @@ See [ActorSystem](/fundamentals/actor-system/).
 **ActorRef.**  A typed handle to an actor.  You `tell` and
 `ask` via the ref.  See [Actor](/fundamentals/actor/).
 
-**Mailbox.**  The per-actor message queue.  Default FIFO,
-unbounded.  See [Mailboxes](/fundamentals/mailboxes/).
+**Mailbox.**  The per-actor message queue.  Default bounded
+(10,000 capacity, `drop-head` overflow) with FIFO ordering;
+priority and unbounded variants are available.  See
+[Mailboxes](/fundamentals/mailboxes/).
 
 **Dispatcher.**  Schedules when an actor's `onReceive` runs on
 the JS event loop.  See

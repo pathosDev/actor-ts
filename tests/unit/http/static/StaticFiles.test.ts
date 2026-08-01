@@ -55,25 +55,25 @@ describe.each(backends)('static files — %s backend', (_name, mk) => {
 
   test('serves a file with the correct MIME type', async () => {
     const url = await start(mk, routes());
-    const res = await fetch(`${url}/static/style.css`);
-    expect(res.status).toBe(200);
-    expect(res.headers.get('content-type')).toBe('text/css; charset=utf-8');
-    expect(await res.text()).toBe('body{}');
+    const response = await fetch(`${url}/static/style.css`);
+    expect(response.status).toBe(200);
+    expect(response.headers.get('content-type')).toBe('text/css; charset=utf-8');
+    expect(await response.text()).toBe('body{}');
   });
 
   test('resolves the index file for a directory', async () => {
     const url = await start(mk, routes());
-    const res = await fetch(`${url}/static/`);
-    expect(res.status).toBe(200);
-    expect(res.headers.get('content-type')).toContain('text/html');
-    expect(await res.text()).toBe('<h1>home</h1>');
+    const response = await fetch(`${url}/static/`);
+    expect(response.status).toBe(200);
+    expect(response.headers.get('content-type')).toContain('text/html');
+    expect(await response.text()).toBe('<h1>home</h1>');
   });
 
   test('redirects a directory without a trailing slash', async () => {
     const url = await start(mk, routes());
-    const res = await fetch(`${url}/static`, { redirect: 'manual' });
-    expect(res.status).toBe(301);
-    expect(res.headers.get('location')).toBe('/static/');
+    const response = await fetch(`${url}/static`, { redirect: 'manual' });
+    expect(response.status).toBe(301);
+    expect(response.headers.get('location')).toBe('/static/');
   });
 
   test('serves a nested file', async () => {
@@ -93,8 +93,8 @@ describe.each(backends)('static files — %s backend', (_name, mk) => {
 
   test('404 for an encoded traversal attempt', async () => {
     const url = await start(mk, routes());
-    const res = await fetch(`${url}/static/%2e%2e%2f%2e%2e%2fpackage.json`);
-    expect(res.status).toBe(404);
+    const response = await fetch(`${url}/static/%2e%2e%2f%2e%2e%2fpackage.json`);
+    expect(response.status).toBe(404);
   });
 
   test('honours conditional If-None-Match with a 304', async () => {
@@ -109,33 +109,33 @@ describe.each(backends)('static files — %s backend', (_name, mk) => {
 
   test('HEAD returns headers with an empty body', async () => {
     const url = await start(mk, routes());
-    const res = await fetch(`${url}/static/style.css`, { method: 'HEAD' });
-    expect(res.status).toBe(200);
-    expect(res.headers.get('content-type')).toBe('text/css; charset=utf-8');
-    expect(await res.text()).toBe('');
+    const response = await fetch(`${url}/static/style.css`, { method: 'HEAD' });
+    expect(response.status).toBe(200);
+    expect(response.headers.get('content-type')).toBe('text/css; charset=utf-8');
+    expect(await response.text()).toBe('');
   });
 
   test('serves a single Range as 206', async () => {
     const url = await start(mk, routes());
-    const res = await fetch(`${url}/static/style.css`, { headers: { range: 'bytes=0-3' } });
-    expect(res.status).toBe(206);
-    expect(res.headers.get('content-range')).toBe('bytes 0-3/6');
-    expect(await res.text()).toBe('body');
+    const response = await fetch(`${url}/static/style.css`, { headers: { range: 'bytes=0-3' } });
+    expect(response.status).toBe(206);
+    expect(response.headers.get('content-range')).toBe('bytes 0-3/6');
+    expect(await response.text()).toBe('body');
   });
 
   test('416 for an unsatisfiable Range', async () => {
     const url = await start(mk, routes());
-    const res = await fetch(`${url}/static/style.css`, { headers: { range: 'bytes=99999-' } });
-    expect(res.status).toBe(416);
-    expect(res.headers.get('content-range')).toBe('bytes */6');
+    const response = await fetch(`${url}/static/style.css`, { headers: { range: 'bytes=99999-' } });
+    expect(response.status).toBe(416);
+    expect(response.headers.get('content-range')).toBe('bytes */6');
   });
 
   test('browses a directory that has no index', async () => {
     const url = await start(mk, routes());
-    const res = await fetch(`${url}/browse/sub/`);
-    expect(res.status).toBe(200);
-    expect(res.headers.get('content-type')).toContain('text/html');
-    const html = await res.text();
+    const response = await fetch(`${url}/browse/sub/`);
+    expect(response.status).toBe(200);
+    expect(response.headers.get('content-type')).toContain('text/html');
+    const html = await response.text();
     expect(html).toContain('page.txt');
     expect(html).toContain('href="../"'); // parent link (not at mount root)
   });

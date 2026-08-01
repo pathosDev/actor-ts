@@ -11,11 +11,11 @@ schneller für binärlastige Daten, ähnliche API-Oberfläche.
 import { CborSerializer } from 'actor-ts';
 
 const serializer = new CborSerializer();
-const bytes = serializer.toBinary({ kind: 'inc', n: 1 });
+const bytes = serializer.toBinary({ kind: 'increment', n: 1 });
 //  → Uint8Array (binäres CBOR, kleiner als JSON)
 
 const decoded = serializer.fromBinary(bytes, '');
-//  → { kind: 'inc', n: 1 }
+//  → { kind: 'increment', n: 1 }
 ```
 
 ## Wann CBOR sinnvoll ist
@@ -35,7 +35,7 @@ nicht.
 
 | Payload | JSON | CBOR | Ersparnis |
 | --- | --- | --- | --- |
-| `{ kind: 'inc' }` | 14 Bytes | 9 Bytes | 36 % |
+| `{ kind: 'increment' }` | 14 Bytes | 9 Bytes | 36 % |
 | Order mit 5 Items | 250 Bytes | 180 Bytes | 28 % |
 | Bild-Bytes (10 KB) | 13,3 KB (base64) | 10 KB (nativ) | 25 % |
 | Tief verschachteltes Objekt | variiert | variiert | typisch 20–40 % |
@@ -46,18 +46,24 @@ string-tabellen).
 
 ## Was CBOR besser handhabt als JSON
 
-| Typ | JSON | CBOR |
+Beide Serializer round-trippen dieselben reichen Typen, der Gewinn
+ist also vor allem die **Größe** — CBOR kodiert sie als kompaktes
+Binärformat statt als getaggten JSON-Text:
+
+| Typ | `JsonSerializer` | `CborSerializer` |
 | --- | --- | --- |
-| **`Uint8Array`** | base64-String | Native Bytes |
-| **`Map`** | Verloren (wird `{}`) | Native Map |
-| **`BigInt`** | Wirft | Über Tag unterstützt |
-| **`Date`** | ISO-String | Nativ über Tag (Epoch) |
-| **Float-Präzision** | 15–17 signifikante Stellen | Volles IEEE 754 |
+| **`Uint8Array`** | base64-String (+33 %) | native Byte-Kette |
+| **Zahlen** | Dezimaltext | kompaktes binäres Int / Float |
+| **`Date`** | `{"__date__":"…"}`-Tag-Objekt | Tag 1 + Epoch (kompakt) |
+| **`bigint`** | `{"__bigint__":"…"}`-Tag-Objekt | Bignum-Tag 2 / 3 (kompakt) |
 
-Für Daten mit Binärfeldern oder Map / BigInt erhält CBOR die
-Typinformation.
+Ein Vorbehalt läuft in die andere Richtung: `JsonSerializer`
+erhält `Map` und `Set` (über `__map__` / `__set__`-Tags), aber
+`CborSerializer` **nicht** — eine `Map` / `Set` wird zu einem
+leeren `{}` kodiert und ihre Einträge gehen verloren.  Konvertiere
+sie vor einem CBOR-Round-Trip in Arrays / Plain-Objekte.
 
-## CBOR systemweit aktivieren
+## CBOR zum Extension-Default machen
 
 ```ts
 import { SerializationExtensionId, CborSerializer } from 'actor-ts';
@@ -66,14 +72,24 @@ const ext = system.extension(SerializationExtensionId);
 ext.setDefault(new CborSerializer());
 ```
 
-Jetzt nutzen jedes Cross-Node-`tell`, jedes persistierte Event,
-jeder Durable-State-Write standardmäßig CBOR.
+Das ändert, welchen Serializer die `SerializationExtension` als
+ihren Default behandelt — den, den `ext.encode(value)` für jeden
+Wert ohne spezifische Klassenbindung nutzt.  Es rüstet CBOR
+**nicht** auf den Cluster-Wire oder die Persistenz-Stores um:
+Cross-Node-`tell`s gehen weiterhin als `JSON.stringify` über die
+Leitung (siehe die [Übersicht](/de/serialization/overview/)), und
+Journal- / Durable-State- / Snapshot-Stores schreiben ihr eigenes
+JSON.  Um CBOR-Bytes für eine bestimmte Payload zu erhalten, nutze
+`CborSerializer` direkt (siehe *Serialisierung pro Aufruf* unten).
 
-Per-Class-Bindung funktioniert weiterhin:
+Per-Class-Bindung funktioniert weiterhin — `register` den
+Serializer, dann `bind` die Klasse an ihre numerische ID:
 
 ```ts
-ext.bind(MyEvent, new ProtobufSerializer<MyEvent>());
-// MyEvent nutzt Protobuf; alles andere nutzt CBOR
+const eventSerializer = new ProtobufSerializer<MyEvent>();
+ext.register(eventSerializer);
+ext.bind(MyEvent, eventSerializer.id);
+// MyEvent → Protobuf; andere Werte → der Extension-Default
 ```
 
 ## Serialisierung pro Aufruf

@@ -3,6 +3,7 @@ import { Actor } from '../Actor.js';
 import type { ActorRef } from '../ActorRef.js';
 import { Props } from '../Props.js';
 import { Directive } from '../Supervision.js';
+import { Terminated } from '../SystemMessages.js';
 import {
   StashOverflowError,
   type TimerScheduler,
@@ -48,13 +49,13 @@ export class TypedActor<T> extends Actor<T> {
   private current!: ConcreteBehavior<T>;
   private activeSupervise: SuperviseBehavior<T> | null = null;
   private readonly stashBuffers: StashBufferImplementation<T>[] = [];
-  private typedCtx!: TypedActorContext<T>;
-  private signalHandler: ((ctx: TypedActorContext<T>, signal: Signal) => Behavior<T>) | null = null;
+  private typedContext!: TypedActorContext<T>;
+  private signalHandler: ((context: TypedActorContext<T>, signal: Signal) => Behavior<T>) | null = null;
 
   constructor(private readonly initial: Behavior<T>) { super(); }
 
   override preStart(): void {
-    this.typedCtx = new TypedActorContextImplementation<T>(this.context);
+    this.typedContext = new TypedActorContextImplementation<T>(this.context);
     const resolved = this.resolve(this.initial);
     // `same` on the initial behavior makes no sense — treat as empty so the
     // actor exists but drops messages (surfaces the user error as silence).
@@ -63,6 +64,13 @@ export class TypedActor<T> extends Actor<T> {
   }
 
   override onReceive(message: T): void {
+    // A watched actor's death arrives as a user message, but it is a lifecycle
+    // signal — route it to `onSignal` before the behavior sees it.
+    if (message instanceof Terminated && this.signalHandler) {
+      this.onTerminatedSignal(message);
+      return;
+    }
+
     // Sentinels that short-circuit without running a handler:
     const shortCircuit = match(this.current)
       .with({ kind: 'ignore' }, () => true as const)
@@ -80,7 +88,7 @@ export class TypedActor<T> extends Actor<T> {
 
     let next: Behavior<T>;
     try {
-      next = receiveBehavior.handler(this.typedCtx, message);
+      next = receiveBehavior.handler(this.typedContext, message);
     } catch (err) {
       if (this.handleSupervise(err as Error)) return;
       throw err;
@@ -98,20 +106,57 @@ export class TypedActor<T> extends Actor<T> {
   override postStop(): void {
     if (this.signalHandler) {
       try {
-        const next = this.signalHandler(this.typedCtx, { kind: 'post-stop' });
+        const next = this.signalHandler(this.typedContext, { kind: 'post-stop' });
         void next; // we are stopping anyway — nothing to transition into.
       } catch { /* swallow */ }
     }
   }
 
-  override preRestart(reason: Error, _msg?: T): void {
+  override preRestart(reason: Error, _message?: T): void {
     if (this.signalHandler) {
-      try { this.signalHandler(this.typedCtx, { kind: 'pre-restart', reason }); }
+      try { this.signalHandler(this.typedContext, { kind: 'pre-restart', reason }); }
       catch { /* swallow */ }
     }
   }
 
   /* ---------------- internal ---------------- */
+
+  /**
+   * Deliver a watched actor's termination to `onSignal` as
+   * `{ kind: 'terminated', ref }`.
+   *
+   * The signal kind was declared and documented from the start but never
+   * constructed anywhere, so `onSignal` was simply never called for it: the
+   * `Terminated` that `ActorCell` enqueues went to the *receive* handler
+   * instead, typed as `T`, where a handler written against the declared
+   * protocol had no reason to look for it.
+   *
+   * Unlike `post-stop` and `pre-restart`, the returned behavior matters here —
+   * the actor keeps running afterwards, so a handler answering
+   * `Behaviors.stopped()` to a child's death has to be honoured.  Hence the
+   * same resolve-and-transition tail as `onReceive`.
+   *
+   * Only reached when a signal handler is registered; without one the message
+   * keeps flowing to the receive handler exactly as before, which keeps this
+   * change additive for existing code.  `ActorCell` delivers a `Terminated`
+   * only to an actor that is actually watching the subject, so this cannot
+   * fire for an unrelated actor's death.
+   */
+  private onTerminatedSignal(message: Terminated): void {
+    let next: Behavior<T>;
+    try {
+      next = this.signalHandler!(this.typedContext, { kind: 'terminated', ref: message.actor });
+    } catch (err) {
+      if (this.handleSupervise(err as Error)) return;
+      throw err;
+    }
+
+    if (next.kind === 'same' || next.kind === 'unhandled') return;
+    const resolved = this.resolve(next);
+    if (resolved.kind === 'same') return;
+    this.current = resolved;
+    this.maybeHandleTerminalSentinel();
+  }
 
   private handleSupervise(err: Error): boolean {
     if (!this.activeSupervise) return false;
@@ -146,15 +191,15 @@ export class TypedActor<T> extends Actor<T> {
     for (let hops = 0; hops < 64; hops++) {
       const step: ResolveStep = match(cur)
         .with({ kind: 'setup' }, (n): ResolveStep => ({
-          step: 'continue', next: n.factory(this.typedCtx),
+          step: 'continue', next: n.factory(this.typedContext),
         }))
         .with({ kind: 'with-timers' }, (n): ResolveStep => ({
           step: 'continue', next: n.factory(this.context.timers as TimerScheduler<T>),
         }))
         .with({ kind: 'with-stash' }, (n): ResolveStep => {
-          const buf = new StashBufferImplementation<T>(n.capacity, this.self);
-          this.stashBuffers.push(buf);
-          return { step: 'continue', next: n.factory(buf) };
+          const buffer = new StashBufferImplementation<T>(n.capacity, this.self);
+          this.stashBuffers.push(buffer);
+          return { step: 'continue', next: n.factory(buffer) };
         })
         .with({ kind: 'supervise' }, (n): ResolveStep => {
           this.activeSupervise = n;

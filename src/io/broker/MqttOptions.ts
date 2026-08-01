@@ -30,10 +30,10 @@ import type { MqttCodec } from './MqttCodec.js';
 import type { MqttQos } from './MqttMessages.js';
 
 /** Username / password credentials. */
-export interface MqttCredentials {
+export type MqttCredentials = {
   readonly username?: string;
   readonly password?: string;
-}
+};
 
 /** Plain options-object shape accepted by an {@link MqttActor}. */
 export interface MqttOptionsType extends BrokerCommonOptionsType {

@@ -33,8 +33,8 @@ describe('DeadLetter routing', () => {
     await sleep(30);
 
     expect(seen.length).toBeGreaterThan(0);
-    const msgs = seen.map(d => d.message);
-    expect(msgs).toContain('too-late');
+    const messages = seen.map(d => d.message);
+    expect(messages).toContain('too-late');
     // Sender is null since we called tell without a sender.
     expect(seen.find(d => d.message === 'too-late')!.sender).toBeNull();
     await sys.terminate();
@@ -53,6 +53,36 @@ describe('DeadLetter routing', () => {
     Nobody.tell('nothing');
     await sleep(30);
     expect(seen.find(d => d.message === 'nothing')).toBeUndefined();
+    await sys.terminate();
+  });
+});
+
+describe('DeadLetter delivery loop', () => {
+  test('a terminated DeadLetter subscriber does not spin the dead-letter office', async () => {
+    // Delivering a dead letter to a subscriber that has stopped without
+    // unsubscribing routes it BACK to dead letters, which used to
+    // republish it to the same dead subscriber until the stack blew.
+    // The nested wrap is the loop signature and is dropped.
+    class Listener extends Actor<DeadLetter> {
+      override preStart(): void { this.system.eventStream.subscribe(this.self, DeadLetter); }
+      override onReceive(_: DeadLetter): void {}
+    }
+    class Nothing extends Actor<string> { override onReceive(_: string): void {} }
+
+    const sys = newSystem('dl-loop');
+    const listener = sys.spawn(Props.create(() => new Listener()), 'lst');
+    const dead = sys.spawn(Props.create(() => new Nothing()), 'n');
+    dead.stop();
+    await sleep(30);
+
+    // Stop the subscriber but leave the subscription in place.
+    listener.stop();
+    await sleep(30);
+
+    // Must return rather than recurse; the assertion is that we get here.
+    expect(() => dead.tell('trigger')).not.toThrow();
+    await sleep(30);
+    expect(sys.isTerminated).toBe(false);
     await sys.terminate();
   });
 });

@@ -26,10 +26,11 @@ import {
   websocket,
   type WebsocketConnection,
 } from '../../src/index.js';
+import { attachDevTools } from '../devtools.js';
 
-type ClientMessage =
-  | { kind: 'setName'; name: string }
-  | { kind: 'say'; text: string };
+type SetNameMessage = { kind: 'setName'; name: string };
+type SayMessage = { kind: 'say'; text: string };
+type ClientMessage = SetNameMessage | SayMessage;
 
 type ServerMessage =
   | { kind: 'system'; text: string }
@@ -38,21 +39,25 @@ type ServerMessage =
 class ChatRoom extends WebsocketServerActor<ServerMessage, ClientMessage> {
   private readonly names = new Map<string, string>();
 
-  override onMessage(msg: ClientMessage): void {
-    match(msg)
-      .with({ kind: 'setName' }, ({ name }) => {
-        this.names.set(this.connection.id, name);
-        this.reply({ kind: 'system', text: `you are now "${name}"` });
-        this.broadcast(
-          { kind: 'system', text: `${name} joined` },
-          (c) => c.id !== this.connection.id,
-        );
-      })
-      .with({ kind: 'say' }, ({ text }) => {
-        const from = this.names.get(this.connection.id) ?? 'anon';
-        this.broadcast({ kind: 'chat', from, text });
-      })
+  override onMessage(message: ClientMessage): void {
+    match(message)
+      .with({ kind: 'setName' }, (m) => this.onSetName(m))
+      .with({ kind: 'say' }, (m) => this.onSay(m))
       .exhaustive();
+  }
+
+  private onSetName({ name }: SetNameMessage): void {
+    this.names.set(this.connection.id, name);
+    this.reply({ kind: 'system', text: `you are now "${name}"` });
+    this.broadcast(
+      { kind: 'system', text: `${name} joined` },
+      (c) => c.id !== this.connection.id,
+    );
+  }
+
+  private onSay({ text }: SayMessage): void {
+    const from = this.names.get(this.connection.id) ?? 'anon';
+    this.broadcast({ kind: 'chat', from, text });
   }
 
   protected override onClientConnected(c: WebsocketConnection<ServerMessage>): void {
@@ -68,6 +73,7 @@ class ChatRoom extends WebsocketServerActor<ServerMessage, ClientMessage> {
 
 async function main(): Promise<void> {
   const system = ActorSystem.create('ws-server-demo');
+  const devtools = await attachDevTools(system);
   const chat = system.spawn(Props.create(() => new ChatRoom()), 'chat');
 
   const routes = concat(

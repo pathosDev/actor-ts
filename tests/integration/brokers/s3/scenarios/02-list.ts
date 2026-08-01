@@ -4,13 +4,13 @@
  * continuation-token path by writing >1k keys — that's the only
  * way to verify the pagination loop end-to-end on a real broker.
  */
-import { backend, type S3Ctx } from '../runner.js';
+import { backend, type S3Context } from '../runner.js';
 import type { BrokerScenario } from '../../lib/scenario.js';
 
-export const scenario: BrokerScenario<S3Ctx> = {
+export const scenario: BrokerScenario<S3Context> = {
   name: 'list sorted + prefix scoping + limit',
-  async run(ctx) {
-    const store = backend(ctx);
+  async run(context) {
+    const store = backend(context);
     try {
       // Unique prefix per scenario run so re-runs don't observe
       // each other's keys.

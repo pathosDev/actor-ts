@@ -25,31 +25,31 @@ const STATUS_TEXT: Record<number, string> = {
   503: 'Service Unavailable',
 };
 
-export function writeRawHttpResponse(socket: RawUpgradeSocket, res: HttpResponse): void {
+export function writeRawHttpResponse(socket: RawUpgradeSocket, response: HttpResponse): void {
   let body: string;
-  let contentType = res.contentType;
-  if (res.body === undefined || res.body === null) {
+  let contentType = response.contentType;
+  if (response.body === undefined || response.body === null) {
     body = '';
-  } else if (typeof res.body === 'string') {
-    body = res.body;
+  } else if (typeof response.body === 'string') {
+    body = response.body;
     contentType ??= 'text/plain; charset=utf-8';
-  } else if (res.body instanceof Uint8Array) {
-    body = Buffer.from(res.body).toString('utf8');
+  } else if (response.body instanceof Uint8Array) {
+    body = Buffer.from(response.body).toString('utf8');
     contentType ??= 'application/octet-stream';
   } else {
-    body = JSON.stringify(res.body);
+    body = JSON.stringify(response.body);
     contentType ??= 'application/json; charset=utf-8';
   }
 
-  const statusText = STATUS_TEXT[res.status] ?? '';
+  const statusText = STATUS_TEXT[response.status] ?? '';
   const lines = [
-    `HTTP/1.1 ${res.status} ${statusText}`,
+    `HTTP/1.1 ${response.status} ${statusText}`,
     `content-type: ${contentType ?? 'text/plain; charset=utf-8'}`,
     `content-length: ${Buffer.byteLength(body)}`,
     'connection: close',
   ];
-  if (res.headers) {
-    for (const [k, v] of Object.entries(res.headers)) {
+  if (response.headers) {
+    for (const [k, v] of Object.entries(response.headers)) {
       // Strip CR/LF from the header name and value before writing them to
       // the raw upgrade socket.  Without this, an `authorize` guard that
       // returns a reject response carrying an attacker-influenced header

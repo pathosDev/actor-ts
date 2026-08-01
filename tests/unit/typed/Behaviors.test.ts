@@ -1,3 +1,4 @@
+import { match } from 'ts-pattern';
 import { describe, expect, test } from 'bun:test';
 import { ActorSystem } from '../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../src/ActorSystemOptions.js';
@@ -10,6 +11,8 @@ import {
 import { TestKit } from '../../../src/testkit/TestKit.js';
 import { TestKitOptions } from '../../../src/testkit/TestKitOptions.js';
 import { Directive, OneForOneStrategy } from '../../../src/Supervision.js';
+import { Terminated } from '../../../src/SystemMessages.js';
+import type { ActorRef } from '../../../src/ActorRef.js';
 
 const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
 const newSys = (name = 'typed-unit'): ActorSystem => {
@@ -23,8 +26,8 @@ describe('Behaviors.receive — basic handler', () => {
   test('receives messages and keeps the same behavior via Behaviors.same', async () => {
     const sys = newSys();
     const seen: string[] = [];
-    const behavior: Behavior<string> = Behaviors.receive((_ctx, msg) => {
-      seen.push(msg);
+    const behavior: Behavior<string> = Behaviors.receive((_context, message) => {
+      seen.push(message);
       return Behaviors.same;
     });
     const ref = sys.spawnTyped(behavior, 'r');
@@ -54,9 +57,9 @@ describe('Behaviors.receive — basic handler', () => {
     const probe = kit.createTestProbe<number>();
 
     const counter = (n: number): Behavior<'inc' | 'get'> =>
-      Behaviors.receive((_ctx, msg) => {
-        if (msg === 'inc') return counter(n + 1);
-        if (msg === 'get') { probe.tell(n); return Behaviors.same; }
+      Behaviors.receive((_context, message) => {
+        if (message === 'inc') return counter(n + 1);
+        if (message === 'get') { probe.tell(n); return Behaviors.same; }
         return Behaviors.unhandled;
       });
 
@@ -101,9 +104,9 @@ describe('Behaviors.setup', () => {
     const probe = kit.createTestProbe<string>();
     let setupCalls = 0;
 
-    const behavior = Behaviors.setup<string>((ctx) => {
+    const behavior = Behaviors.setup<string>((context) => {
       setupCalls++;
-      probe.tell(`path=${ctx.path.toString()}`);
+      probe.tell(`path=${context.path.toString()}`);
       return Behaviors.receiveMessage(() => Behaviors.same);
     });
 
@@ -152,26 +155,26 @@ describe('Behaviors.withStash', () => {
     const kit = TestKit.create('typed-stash', kitOptions);
     const probe = kit.createTestProbe<string>();
 
-    type Msg = { kind: 'ready' } | { kind: 'work'; id: number };
+    type Message = { kind: 'ready' } | { kind: 'work'; id: number };
 
     // Start "uninitialized" — stash everything until we receive a 'ready'
     // signal, then replay all buffered work in order.
-    const uninit = (stash: import('../../../src/typed/Behavior.js').StashBuffer<Msg>): Behavior<Msg> =>
-      Behaviors.receive<Msg>((_ctx, msg) => {
-        if (msg.kind === 'ready') {
+    const uninit = (stash: import('../../../src/typed/Behavior.js').StashBuffer<Message>): Behavior<Message> =>
+      Behaviors.receive<Message>((_context, message) => {
+        if (message.kind === 'ready') {
           stash.unstashAll();
           return ready;
         }
-        stash.stash(msg);
+        stash.stash(message);
         return Behaviors.same;
       });
 
-    const ready: Behavior<Msg> = Behaviors.receive((_ctx, msg) => {
-      if (msg.kind === 'work') probe.tell(`work#${msg.id}`);
+    const ready: Behavior<Message> = Behaviors.receive((_context, message) => {
+      if (message.kind === 'work') probe.tell(`work#${message.id}`);
       return Behaviors.same;
     });
 
-    const behavior = Behaviors.withStash<Msg>(16, (stash) => uninit(stash));
+    const behavior = Behaviors.withStash<Message>(16, (stash) => uninit(stash));
     const ref = kit.system.spawnTypedAnonymous(behavior);
     ref.tell({ kind: 'work', id: 1 });
     ref.tell({ kind: 'work', id: 2 });
@@ -192,8 +195,8 @@ describe('Behaviors.withStash', () => {
     const sys = newSys();
     const errors: unknown[] = [];
     const behavior = Behaviors.withStash<string>(2, (stash) =>
-      Behaviors.receiveMessage((msg) => {
-        try { stash.stash(msg); } catch (e) { errors.push(e); }
+      Behaviors.receiveMessage((message) => {
+        try { stash.stash(message); } catch (e) { errors.push(e); }
         return Behaviors.same;
       }),
     );
@@ -216,12 +219,12 @@ describe('Behaviors.supervise', () => {
     const probe = kit.createTestProbe<string>();
     let initCount = 0;
 
-    const inner = Behaviors.setup<string>((_ctx) => {
+    const inner = Behaviors.setup<string>((_context) => {
       initCount++;
       probe.tell(`init#${initCount}`);
-      return Behaviors.receiveMessage((msg) => {
-        if (msg === 'boom') throw new Error('kaboom');
-        probe.tell(`saw:${msg}`);
+      return Behaviors.receiveMessage((message) => {
+        if (message === 'boom') throw new Error('kaboom');
+        probe.tell(`saw:${message}`);
         return Behaviors.same;
       });
     });
@@ -254,9 +257,9 @@ describe('Behaviors.supervise', () => {
 
     const inner = Behaviors.setup<string>(() => {
       initCount++;
-      return Behaviors.receiveMessage((msg) => {
-        if (msg === 'boom') throw new Error('oops');
-        probe.tell(msg);
+      return Behaviors.receiveMessage((message) => {
+        if (message === 'boom') throw new Error('oops');
+        probe.tell(message);
         return Behaviors.same;
       });
     });
@@ -389,6 +392,138 @@ describe('system.spawnTyped + ctx.spawnTyped', () => {
     // Both children received the same message — order across children is
     // not deterministic, so sort.
     expect(seen.sort()).toEqual(['hi', 'hi']);
+    await sys.terminate();
+  });
+});
+
+describe('Behaviors.receiveWithSignal — terminated signal (#448)', () => {
+  test('a watched actor stopping arrives at onSignal, not at the receive handler', async () => {
+    // The `terminated` signal kind was declared and documented from the start
+    // but constructed nowhere, so onSignal was never called for it — the
+    // Terminated went to the receive handler instead, typed as T.
+    const sys = newSys('typed-terminated');
+    const seen: string[] = [];
+    let child: ActorRef<string> | null = null;
+
+    const parent: Behavior<string> = Behaviors.setup<string>((context) => {
+      child = context.spawn(Behaviors.receiveMessage<string>(() => Behaviors.same), 'kid');
+      context.watch(child);
+      return Behaviors.receiveWithSignal<string>(
+        (_context, message) => { seen.push(`message:${message}`); return Behaviors.same; },
+        (_context, signal) => {
+          seen.push(signal.kind === 'terminated' ? `terminated:${signal.ref.path.name}` : signal.kind);
+          return Behaviors.same;
+        },
+      );
+    });
+
+    sys.spawn(typedProps(parent), 'parent');
+    await sleep(40);
+    child!.stop();
+    await sleep(60);
+
+    expect(seen).toEqual(['terminated:kid']);
+    await sys.terminate();
+  });
+
+  test('signal.ref identifies which watched actor stopped', async () => {
+    const sys = newSys('typed-terminated-which');
+    const stopped: string[] = [];
+    let first: ActorRef<string> | null = null;
+    let second: ActorRef<string> | null = null;
+
+    const parent: Behavior<string> = Behaviors.setup<string>((context) => {
+      first = context.spawn(Behaviors.receiveMessage<string>(() => Behaviors.same), 'first');
+      second = context.spawn(Behaviors.receiveMessage<string>(() => Behaviors.same), 'second');
+      context.watch(first);
+      context.watch(second);
+      return Behaviors.receiveWithSignal<string>(
+        () => Behaviors.same,
+        (_context, signal) => {
+          if (signal.kind === 'terminated') stopped.push(signal.ref.path.name);
+          return Behaviors.same;
+        },
+      );
+    });
+
+    sys.spawn(typedProps(parent), 'parent');
+    await sleep(40);
+    second!.stop();
+    await sleep(60);
+    expect(stopped).toEqual(['second']);
+
+    first!.stop();
+    await sleep(60);
+    expect(stopped).toEqual(['second', 'first']);
+
+    await sys.terminate();
+  });
+
+  test('the behavior returned from a terminated signal is honoured', async () => {
+    // Unlike post-stop and pre-restart, the actor keeps running after this
+    // signal — so answering Behaviors.stopped must actually stop it.  The docs
+    // promise the return value "works the same as the receive handler".
+    const sys = newSys('typed-terminated-transition');
+    const seen: string[] = [];
+    let child: ActorRef<string> | null = null;
+
+    const parent: Behavior<string> = Behaviors.setup<string>((context) => {
+      child = context.spawn(Behaviors.receiveMessage<string>(() => Behaviors.same), 'kid');
+      context.watch(child);
+      return Behaviors.receiveWithSignal<string>(
+        (_context, message) => { seen.push(message); return Behaviors.same; },
+        (_context, signal) => match(signal)
+          .with({ kind: 'terminated' }, () => {
+            seen.push('watched-child-died');
+            return Behaviors.stopped as Behavior<string>;
+          })
+          .with({ kind: 'post-stop' }, () => {
+            seen.push('post-stop');
+            return Behaviors.same as Behavior<string>;
+          })
+          .otherwise(() => Behaviors.same as Behavior<string>),
+      );
+    });
+
+    const ref = sys.spawn(typedProps(parent), 'parent');
+    await sleep(40);
+    child!.stop();
+    await sleep(80);
+
+    // Stopping in response to the signal also fires post-stop, which shows the
+    // transition really happened rather than the signal merely being observed.
+    expect(seen).toEqual(['watched-child-died', 'post-stop']);
+
+    ref.tell('ignored — the parent stopped itself');
+    await sleep(40);
+    expect(seen).toEqual(['watched-child-died', 'post-stop']);
+
+    await sys.terminate();
+  });
+
+  test('without an onSignal handler the message still flows to the receive handler', async () => {
+    // Keeps the change additive: code written before the signal worked, which
+    // watched an actor and inspected the Terminated in its receive handler,
+    // behaves exactly as it did.
+    const sys = newSys('typed-terminated-nosignal');
+    const seen: string[] = [];
+    let child: ActorRef<string> | null = null;
+
+    const parent: Behavior<unknown> = Behaviors.setup<unknown>((context) => {
+      child = context.spawn(Behaviors.receiveMessage<string>(() => Behaviors.same), 'kid');
+      context.watch(child);
+      return Behaviors.receiveMessage<unknown>((message) => {
+        seen.push(message instanceof Terminated ? `terminated-as-message:${message.actor.path.name}` : 'other');
+        return Behaviors.same;
+      });
+    });
+
+    sys.spawn(typedProps(parent), 'parent');
+    await sleep(40);
+    child!.stop();
+    await sleep(60);
+
+    expect(seen).toEqual(['terminated-as-message:kid']);
     await sys.terminate();
   });
 });

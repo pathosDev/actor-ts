@@ -27,13 +27,13 @@ curl -fsSL https://bun.sh/install | bash
 Check:
 
 ```bash
-bun --version    # need 1.1+
+bun --version    # need 1.3+
 ```
 
 For Docker:
 
 ```dockerfile
-FROM oven/bun:1.1
+FROM oven/bun:1.3
 WORKDIR /app
 COPY . .
 RUN bun install
@@ -55,8 +55,8 @@ bun add kafkajs       # for KafkaActor
 bun add mqtt          # for MqttActor
 bun add amqplib       # for AmqpActor
 bun add nats          # for NatsActor / JetStreamActor
-bun add redis         # for RedisStreamsActor
-bun add @grpc/grpc-js @grpc/proto-loader   # for GrpcActor
+bun add ioredis       # for RedisStreamsActor
+bun add @grpc/grpc-js @grpc/proto-loader   # for GrpcServerActor / GrpcClientActor
 ```
 
 Most peer deps you skip unless using that specific protocol.

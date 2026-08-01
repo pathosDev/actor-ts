@@ -32,10 +32,10 @@ if (!dir || !key || body === undefined || !mode) {
 const backendOptions = FilesystemObjectStorageOptions.create()
   .withDir(dir);
 const backend = new FilesystemObjectStorageBackend(backendOptions);
-const opts = mode === 'create-only' ? { ifNoneMatch: '*' as const } : {};
+const options = mode === 'create-only' ? { ifNoneMatch: '*' as const } : {};
 
 try {
-  const { etag } = await backend.put(key, new TextEncoder().encode(body), opts);
+  const { etag } = await backend.put(key, new TextEncoder().encode(body), options);
   process.stdout.write(JSON.stringify({ ok: true, etag, body }) + '\n');
   process.exit(0);
 } catch (e) {

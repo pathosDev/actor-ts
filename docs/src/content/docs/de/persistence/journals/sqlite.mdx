@@ -25,10 +25,9 @@ const sqliteJournalOptions = SqliteJournalOptions.create()
   .withPath('/var/lib/my-app/events.db')
   .withWal(true);
 const sqliteSnapshotStoreOptions = SqliteSnapshotStoreOptions.create().withPath('/var/lib/my-app/snapshots.db');
-system.extension(PersistenceExtensionId).configure({
-  journal: new SqliteJournal(sqliteJournalOptions),
-  snapshotStore: new SqliteSnapshotStore(sqliteSnapshotStoreOptions),
-});
+const persistence = system.extension(PersistenceExtensionId);
+persistence.setJournal(new SqliteJournal(sqliteJournalOptions));
+persistence.setSnapshotStore(new SqliteSnapshotStore(sqliteSnapshotStoreOptions));
 ```
 
 Eine einzelne Datei pro System; das Actor-System schreibt durch
@@ -37,12 +36,12 @@ SQLite in den OS-Page-Cache, der beim Commit auf Disk flusht.
 ## Konfiguration
 
 ```ts
-interface SqliteJournalOptions {
+type SqliteJournalOptions = {
   path?:        string;     // Dateipfad, oder ":memory:" für ephemer
   eventsTable?: string;     // Default "events"
   wal?:         boolean;    // WAL-Modus aktivieren (empfohlen)
   driver?:      SqliteDriver;   // expliziter Treiber-Override
-}
+};
 ```
 
 ### `path`
@@ -84,23 +83,25 @@ Verwendung, mit dem Schema:
 
 ```sql
 CREATE TABLE events (
-  pid       TEXT NOT NULL,
-  seq       INTEGER NOT NULL,
-  event     BLOB NOT NULL,
-  ts        INTEGER NOT NULL,
-  tags      TEXT,                   -- legacy CSV-Tags (Rückwärtskompatibilität)
-  PRIMARY KEY (pid, seq)
+  persistence_id TEXT NOT NULL,
+  sequence_nr    INTEGER NOT NULL,
+  payload        TEXT NOT NULL,
+  tags           TEXT,                -- legacy CSV-Tags (Rückwärtskompatibilität)
+  timestamp      INTEGER NOT NULL,
+  PRIMARY KEY (persistence_id, sequence_nr)
 );
+
+CREATE INDEX idx_events_pid ON events (persistence_id);
 
 CREATE TABLE events_tags (
-  pid       TEXT NOT NULL,
-  seq       INTEGER NOT NULL,
-  tag       TEXT NOT NULL,
-  PRIMARY KEY (pid, seq, tag),
-  FOREIGN KEY (pid, seq) REFERENCES events (pid, seq) ON DELETE CASCADE
+  persistence_id TEXT NOT NULL,
+  sequence_nr    INTEGER NOT NULL,
+  tag            TEXT NOT NULL,
+  timestamp      INTEGER NOT NULL,
+  PRIMARY KEY (tag, timestamp, persistence_id, sequence_nr)
 );
 
-CREATE INDEX events_tags_tag ON events_tags (tag);
+CREATE INDEX idx_events_tags_pid_seq ON events_tags (persistence_id, sequence_nr);
 ```
 
 Das Dual-Table-Design (events + events_tags) lässt Tag-Queries
@@ -129,41 +130,87 @@ aktiviere es explizit, wenn du in Produktion gehst.
 
 ### `driver`
 
-```ts
-import { bunSqliteDriver, betterSqlite3Driver } from 'actor-ts/runtime/sqlite';
-
-const sqliteJournalOptions = SqliteJournalOptions.create()
-  .withPath('...')
-  .withDriver(bunSqliteDriver());
-const sqliteJournal2Options = SqliteJournalOptions.create()
-  .withPath('...')
-  .withDriver(betterSqlite3Driver());
-new SqliteJournal(sqliteJournalOptions)
-new SqliteJournal(sqliteJournal2Options)
-```
-
 Das Framework erkennt den richtigen Treiber basierend auf der
-Runtime automatisch:
+Runtime automatisch, sodass du `driver` normalerweise ungesetzt
+lässt:
 
 - **Bun** → `bun:sqlite` (eingebaut).
-- **Node** → `better-sqlite3` (Peer-Dependency, die du
-  installierst).
-- **Deno** → noch nicht unterstützt.
+- **Node** → `better-sqlite3`, wenn installiert, sonst das eingebaute
+  `node:sqlite`.
+- **Deno** → `node:sqlite` (eingebaut, Deno >= 2.2).
 
-Überschreibe `driver`, wenn du ein bestimmtes Backend willst
-(Tests, gepinnte Versionen oder Lauf in einer Runtime, in der
-Auto-Detect nicht funktioniert).
+Die Auto-Detection deckt jede unterstützte Runtime ab, und jede von
+ihnen hat einen Treiber, der keine Installation braucht.  Die
+konkreten Treiber-Klassen sind nicht Teil der öffentlichen API — es
+gibt keinen Import-Pfad, um selbst einen zu konstruieren — daher ist
+der `driver`-Slot eine interne Naht, die die Tests des Frameworks
+verwenden, nichts, was du in Anwendungscode verdrahtest.
 
-## Peer-Dependency auf Node
+## Peer-Dependency auf Node — optional
 
 ```bash
 npm install better-sqlite3
 ```
 
-Wenn du auf Node läufst, ist `better-sqlite3` eine
-**Peer-Dependency** — das Framework bundlet es nicht, du
-installierst es.  Bun-User brauchen das nicht; Bun hat natives
-SQLite.
+Auf Node ist `better-sqlite3` eine **optionale** Peer-Dependency:
+installiert bevorzugt das Framework es, ohne es übernimmt das
+eingebaute `node:sqlite`.  Es lohnt sich, wenn du den zusätzlichen
+Durchsatz willst oder dein Deployment es schon einsetzt; andernfalls
+ist der Zero-Dependency-Pfad ein nativer Build weniger im Image.
+
+Bun und Deno brauchen nichts: `bun:sqlite` und `node:sqlite` sind
+eingebaut.
+
+Für eine **entfernte** SQLite-Datenbank siehe
+[libSQL / Turso](/de/persistence/journals/libsql/) — gleiches Schema,
+über HTTP erreichbar.
+
+## Durable State
+
+Neben Journal und Snapshot-Store gibt es für SQLite einen
+`DurableStateStore` — das Modell „nur den aktuellen Wert halten", ohne
+Event-Log und ohne Replay:
+
+```ts
+import { SqliteDurableStateStore, SqliteDurableStateStoreOptions } from 'actor-ts';
+
+const stateOptions = SqliteDurableStateStoreOptions.create()
+  .withPath('./state.db');
+const store = new SqliteDurableStateStore(stateOptions);
+```
+
+Um ein Datenbank-Handle über Journal, Snapshot-Store und
+Durable-State-Store zu teilen, öffne es selbst und übergib es — der
+Store überlässt das Schließen dann dir:
+
+```ts
+import { getSqliteDriver } from 'actor-ts';
+
+const driver = await getSqliteDriver();
+const database = driver.open('./app.db');
+
+const sharedOptions = SqliteDurableStateStoreOptions.create()
+  .withDatabase(database);
+```
+
+Das Schema ist das des SQLite-Dialekts und damit identisch zu
+[libSQL / Turso](/de/persistence/journals/libsql/) und
+[Cloudflare D1](/de/persistence/journals/cloudflare-d1/) — eine
+Datenbank kann also ohne Migration zwischen einer lokalen Datei und
+einem der beiden wandern.
+
+Ein Unterschied in die andere Richtung ist erwähnenswert: weil hier eine
+lokale Datei statt HTTP im Spiel ist, sind die Transaktionen ein echtes
+`BEGIN IMMEDIATE … COMMIT`.  Die HTTP-basierten SQLite-Backends können
+nur einen atomaren Batch anbieten — genau deshalb legt `SqlPool` die
+Isolation als adapterdefiniert fest.  Dieses Backend liefert mehr, als
+der Vertrag verlangt.
+
+Eine entfernte URL wird bei der Konstruktion abgelehnt:
+`withPath('libsql://…')` wirft und verweist auf
+`LibSqlDurableStateStore` — der lokale Treiber kann sie nicht öffnen,
+und stillschweigend eine *Datei* mit diesem Namen anzulegen wäre das
+verwirrende Ergebnis.
 
 Die Auto-Detection importiert `better-sqlite3` lazy — nur wenn das
 Framework tatsächlich eine SQLite-Datenbank öffnen muss.  Wenn du
@@ -196,8 +243,8 @@ Wenn ein `PersistentActor` startet:
 
 1. Den neuesten Snapshot aus dem Snapshot-Store laden (falls
    vorhanden).
-2. `SELECT event FROM events WHERE pid = ? AND seq > ?` ausführen,
-   um Events nach dem Snapshot zu streamen.
+2. `SELECT payload FROM events WHERE persistence_id = ? AND sequence_nr >= ?`
+   ausführen, um Events nach dem Snapshot zu streamen.
 3. Jedes Event über `onEvent` anwenden.
 
 Für ein 100 000-Event-Journal ohne Snapshot liest die Recovery
@@ -282,10 +329,11 @@ Drei Signale, dass du dem Single-File-SQLite entwachsen bist:
 2. **Anhaltend 100K+ Events/sec** — SQLite kann das mit Tuning
    handhaben, aber du bist an den Rändern; spaltenorientierte /
    verteilte Engines sind dafür entworfen.
-3. **Große Events (> 1 MB pro Stück)** — SQLite speichert sie als
-   BLOBs; die Read-Performance degradiert.  Überlege
-   Event-Compaction (Pointer zu externem Storage speichern) oder
-   ein Journal, das für große Payloads entworfen ist.
+3. **Große Events (> 1 MB pro Stück)** — SQLite speichert jedes
+   Event als JSON-`TEXT`-Payload; die Read-Performance degradiert.
+   Überlege Event-Compaction (Pointer zu externem Storage
+   speichern) oder ein Journal, das für große Payloads entworfen
+   ist.
 
 ## Wie geht's weiter
 

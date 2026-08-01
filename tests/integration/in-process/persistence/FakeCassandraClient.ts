@@ -12,39 +12,56 @@ import type {
  *
  * Statements supported:
  *   - CREATE KEYSPACE / CREATE TABLE ... IF NOT EXISTS (no-op; kept for DDL)
- *   - INSERT INTO keyspace.table (c1, c2, ...) VALUES (?, ?, ...)
+ *   - INSERT INTO keyspace.table (c1, c2, ...) VALUES (?, ?, ...) [IF NOT EXISTS]
+ *   - UPDATE keyspace.table SET c1 = ?, ... WHERE <eq-clauses> [IF <eq-clauses>]
  *   - SELECT col1, col2, ... FROM keyspace.table WHERE <eq-clauses>
  *       [AND seq >= ?] [AND seq <= ?] [AND seq < ?] [LIMIT N]
  *   - DELETE FROM keyspace.table WHERE <eq-clauses> [AND seq <= ?] [AND seq < ?]
  *
  * Every row is stored as a string-keyed record.  Numeric params coerce to
  * Number; other types pass through.
+ *
+ * **Lightweight transactions** are modelled faithfully enough to test the
+ * journal's append serialization (#475): a conditional statement returns the
+ * `[applied]` marker row, and on rejection the row as it actually stands.
+ * Because every `execute` is `async`, concurrent callers interleave at each
+ * `await` — which is what lets the tests race appends deterministically.
  */
 
 type Row = Record<string, unknown>;
 
-interface TableState {
+type TableState = {
   readonly table: string;
   readonly rows: Row[];
-}
+};
 
-interface SelectPlan {
+type SelectPlan = {
   readonly table: string;
   readonly columns: string[] | '*';
   readonly filters: ReadonlyArray<{ column: string; op: '=' | '>=' | '<=' | '<'; index: number }>;
   /** `LIMIT N` → literal value; `LIMIT ?` → parameter index; absent → null. */
   readonly limit: { kind: 'literal'; value: number } | { kind: 'param'; index: number } | null;
-}
+};
 
-interface InsertPlan {
+type InsertPlan = {
   readonly table: string;
   readonly columns: string[];
-}
+  /** `INSERT ... IF NOT EXISTS` — apply only when no row shares the PK. */
+  readonly ifNotExists: boolean;
+};
 
-interface DeletePlan {
+type UpdatePlan = {
+  readonly table: string;
+  readonly assignments: ReadonlyArray<{ column: string; index: number }>;
+  readonly filters: ReadonlyArray<{ column: string; index: number }>;
+  /** `IF col = ?` conditions — absent for an unconditional UPDATE. */
+  readonly conditions: ReadonlyArray<{ column: string; index: number }>;
+};
+
+type DeletePlan = {
   readonly table: string;
   readonly filters: ReadonlyArray<{ column: string; op: '=' | '<=' | '<'; index: number }>;
-}
+};
 
 export class FakeCassandraClient implements CassandraClientLike {
   private readonly tables = new Map<string, TableState>();
@@ -66,8 +83,10 @@ export class FakeCassandraClient implements CassandraClientLike {
       return { rows: [] };
     }
     if (upper.startsWith('INSERT')) {
-      this.handleInsert(statement, params);
-      return { rows: [] };
+      return { rows: this.handleInsert(statement, params) };
+    }
+    if (upper.startsWith('UPDATE')) {
+      return { rows: this.handleUpdate(statement, params) };
     }
     if (upper.startsWith('SELECT')) {
       return { rows: this.handleSelect(statement, params) };
@@ -101,7 +120,7 @@ export class FakeCassandraClient implements CassandraClientLike {
     return state;
   }
 
-  private handleInsert(statement: string, params: ReadonlyArray<unknown>): void {
+  private handleInsert(statement: string, params: ReadonlyArray<unknown>): Row[] {
     const plan = parseInsert(statement);
     if (!plan) throw new Error(`FakeCassandraClient: cannot parse INSERT: ${statement}`);
     const row: Row = {};
@@ -109,8 +128,43 @@ export class FakeCassandraClient implements CassandraClientLike {
     const state = this.stateOf(plan.table);
     // Simple upsert semantics — replace if a row with the same PK exists.
     const existing = state.rows.findIndex((r) => samePrimaryKey(r, row));
+    if (plan.ifNotExists) {
+      // LWT: reject when the PK is taken, handing back the row that won —
+      // exactly what the real driver returns alongside `[applied]: false`.
+      if (existing >= 0) return [{ '[applied]': false, ...state.rows[existing] }];
+      state.rows.push(row);
+      return [{ '[applied]': true }];
+    }
     if (existing >= 0) state.rows[existing] = row;
     else state.rows.push(row);
+    return [];
+  }
+
+  private handleUpdate(statement: string, params: ReadonlyArray<unknown>): Row[] {
+    const plan = parseUpdate(statement);
+    if (!plan) throw new Error(`FakeCassandraClient: cannot parse UPDATE: ${statement}`);
+    const state = this.stateOf(plan.table);
+    const index = state.rows.findIndex(
+      (row) => plan.filters.every((f) => coerce(row[f.column]) === coerce(params[f.index])),
+    );
+    const conditional = plan.conditions.length > 0;
+    const current = index >= 0 ? state.rows[index]! : undefined;
+    if (conditional) {
+      // An UPDATE ... IF on a missing row never applies; Cassandra returns
+      // `[applied]: false` with no further columns.
+      if (current === undefined) return [{ '[applied]': false }];
+      const satisfied = plan.conditions.every(
+        (c) => coerce(current[c.column]) === coerce(params[c.index]),
+      );
+      if (!satisfied) return [{ '[applied]': false, ...current }];
+    }
+    // An unconditional UPDATE on a missing row is an upsert in CQL: the PK
+    // columns come from the WHERE clause.
+    const target: Row = current ?? {};
+    for (const f of plan.filters) target[f.column] = params[f.index];
+    for (const a of plan.assignments) target[a.column] = params[a.index];
+    if (current === undefined) state.rows.push(target);
+    return conditional ? [{ '[applied]': true }] : [];
   }
 
   private handleSelect(statement: string, params: ReadonlyArray<unknown>): Row[] {
@@ -158,11 +212,35 @@ export class FakeCassandraClient implements CassandraClientLike {
 /* ============================ CQL mini-parser ============================ */
 
 function parseInsert(statement: string): InsertPlan | null {
-  const regexMatch = /^INSERT INTO ([\w.]+) \(([^)]+)\) VALUES \(([^)]+)\)(?:\s+IF NOT EXISTS)?$/i.exec(statement);
+  const regexMatch = /^INSERT INTO ([\w.]+) \(([^)]+)\) VALUES \(([^)]+)\)(\s+IF NOT EXISTS)?$/i.exec(statement);
   if (!regexMatch) return null;
   const table = regexMatch[1]!;
   const columns = regexMatch[2]!.split(',').map((c) => c.trim());
-  return { table, columns };
+  return { table, columns, ifNotExists: regexMatch[4] !== undefined };
+}
+
+function parseUpdate(statement: string): UpdatePlan | null {
+  const regexMatch = /^UPDATE ([\w.]+) SET (.+?) WHERE (.+?)(?: IF (.+))?$/i.exec(statement);
+  if (!regexMatch) return null;
+  const table = regexMatch[1]!;
+  // Param order in CQL is positional: SET assignments, then WHERE, then IF.
+  let paramIndex = 0;
+  const bind = (clause: string, separator: RegExp): Array<{ column: string; index: number }> | null => {
+    const out: Array<{ column: string; index: number }> = [];
+    for (const part of clause.split(separator)) {
+      const match = /^(\w+)\s*=\s*\?$/.exec(part.trim());
+      if (!match) return null;
+      out.push({ column: match[1]!, index: paramIndex++ });
+    }
+    return out;
+  };
+  const assignments = bind(regexMatch[2]!, /,/);
+  if (!assignments) return null;
+  const filters = bind(regexMatch[3]!, /\s+AND\s+/i);
+  if (!filters) return null;
+  const conditions = regexMatch[4] === undefined ? [] : bind(regexMatch[4], /\s+AND\s+/i);
+  if (!conditions) return null;
+  return { table, assignments, filters, conditions };
 }
 
 function parseSelect(statement: string): SelectPlan | null {

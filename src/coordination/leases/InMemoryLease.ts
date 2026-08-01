@@ -2,13 +2,13 @@ import type { Lease } from '../Lease.js';
 import { LeaseOptionsValidator } from '../LeaseOptions.js';
 import type { LeaseOptions, LeaseOptionsType } from '../LeaseOptions.js';
 
-interface LeaseRecord {
+type LeaseRecord = {
   readonly name: string;
   owner: string;
   expiresAt: number;
   /** Monotonic counter bumped on every (re)acquire — backs the fencing token. */
   version: number;
-}
+};
 
 /** Global registry shared by all InMemoryLeases in the process — simulates a remote store. */
 class InMemoryLeaseStore {

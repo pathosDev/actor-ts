@@ -1,19 +1,19 @@
 import { OptionsBuilder } from '../util/OptionsBuilder.js';
 import type { DurableStateStore } from './DurableStateStore.js';
 
-export interface DurableStateOptionsType<S> {
+export type DurableStateOptionsType<S> = {
   readonly persistenceId: string;
   readonly store: DurableStateStore;
   /** Factory invoked when no record exists yet. */
   readonly emptyState: () => S;
-}
+};
 
 /**
  * Fluent builder for {@link DurableStateOptionsType}.  A concrete
  * `DurableStateActor` subclass takes a `DurableStateOptions<S>` and hands
  * it to `super(...)`:
  *
- *     class KVActor extends DurableStateActor<Cmd, KV> {
+ *     class KVActor extends DurableStateActor<Command, KV> {
  *       constructor(store: DurableStateStore) {
  *         super(DurableStateOptions.create<KV>()
  *           .withPersistenceId('kv-1')

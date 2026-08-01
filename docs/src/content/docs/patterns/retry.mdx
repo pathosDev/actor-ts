@@ -27,14 +27,15 @@ if every attempt fails.
 ```ts
 function retry<T>(factory: () => Promise<T>, options: RetryOptions): Promise<T>;
 
-interface RetryOptions {
+type RetryOptions = {
   attempts:        number;     // total including initial call (>= 1)
   delayMs?:        number;     // base delay between attempts
   factor?:         number;     // multiplier for exponential backoff (default 1)
   maxDelayMs?:     number;     // ceiling for any individual delay
   shouldRetry?:    (err: Error, attempt: number) => boolean;
   onAttempt?:      (err: Error, attempt: number) => void;
-}
+  sleep?:          (ms: number) => Promise<void>;  // how the delay is awaited
+};
 ```
 
 The `attempts` field is **total attempts**, not retries — `attempts:
@@ -43,7 +44,7 @@ runs up to 3 times.
 
 ## Configuring the backoff
 
-Four knobs cooperate to control the delay between attempts:
+Three knobs cooperate to control the delay between attempts:
 
 | Setting | What it does |
 | --- | --- |
@@ -103,9 +104,9 @@ await retry(
 );
 ```
 
-`shouldRetry` runs after every failed attempt.  Return `false` to
-**short-circuit** — the retry loop exits immediately with that
-error, no more attempts.
+`shouldRetry` runs after every failed attempt except the last.
+Return `false` to **short-circuit** — the retry loop exits
+immediately with that error, no more attempts.
 
 Use it to differentiate transient and permanent failures:
 
@@ -131,6 +132,48 @@ Fires after every failed attempt, including the final one.  Use
 it for retry-aware metrics and logging — counters per attempt,
 spans for tracing, alerts on "we ran out of retries."
 
+## Testing the backoff — `sleep`
+
+`sleep` decides *how* the delay between attempts is awaited.  It
+defaults to `setTimeout`, so you never need it in production —
+override it in tests to take the retry loop off the wall clock:
+
+```ts
+import { ManualScheduler, retry } from 'actor-ts';
+
+const scheduler = new ManualScheduler();
+const attemptTimes: number[] = [];
+
+await retry(
+  async () => { attemptTimes.push(scheduler.now()); throw new Error('fail'); },
+  {
+    attempts:   3,
+    delayMs:    20,
+    factor:     2,
+    maxDelayMs: 30,
+    sleep:      (ms) => new Promise<void>((resolve) => {
+      scheduler.scheduleOnceFunction(ms, resolve);
+      scheduler.advance(ms);
+    }),
+  },
+).catch(() => { /* expected */ });
+
+// Exactly 20ms, then 40ms clamped to maxDelayMs — and instant.
+expect(attemptTimes).toEqual([0, 20, 50]);
+```
+
+Every sleep resolves the moment virtual time reaches it, so the
+schedule is asserted **exactly** and the test costs no wall-clock
+time.  Measuring real gaps instead is a flake waiting to happen:
+a 30 ms `setTimeout` lands anywhere between roughly 19 ms and
+200 ms depending on the platform's timer quantum and machine load,
+which is wide enough that a capped delay is indistinguishable
+from an uncapped one.
+
+Same escape hatch as [`exponentialBackoff`'s
+`random`](/patterns/backoff-policy/) — inject the
+non-determinism, then pin it.
+
 ## Compared to BackoffSupervisor
 
 | Use case | Reach for... |
@@ -148,9 +191,9 @@ For an actor that wants to retry its *own* downstream call,
 
 ```ts
 class MyActor extends Actor<...> {
-  override async onReceive(msg): Promise<void> {
+  override async onReceive(message): Promise<void> {
     const result = await retry(
-      () => this.callDownstream(msg),
+      () => this.callDownstream(message),
       { attempts: 3, delayMs: 200, factor: 2 },
     );
     // ...
@@ -193,10 +236,10 @@ import { Aside } from '@astrojs/starlight/components';
   There's no built-in cancellation.  If you need to abort,
   pass an `AbortSignal` to the factory and check it inside:
   ```ts
-  retry(() => longCall({ signal: ac.signal }), { attempts: 5, delayMs: 1000 });
+  retry(() => longCall({ signal: abortController.signal }), { attempts: 5, delayMs: 1000 });
   ```
-  An `AbortError` thrown by the factory bypasses `shouldRetry`'s
-  default "retry any" — provide a `shouldRetry` that returns
+  By default, `retry` treats an `AbortError` like any other error
+  and keeps retrying it — provide a `shouldRetry` that returns
   `false` for `AbortError` to fail fast on cancellation.
 </Aside>
 

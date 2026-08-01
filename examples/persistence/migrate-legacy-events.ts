@@ -30,11 +30,11 @@ import {
   migrateSnapshotStore,
 } from '../../src/persistence/migration/wrapLegacy.js';
 
-interface LegacyDeposited { kind: 'deposited'; amount: number }
-interface LegacyWithdrawn { kind: 'withdrawn'; amount: number }
+type LegacyDeposited = { kind: 'deposited'; amount: number };
+type LegacyWithdrawn = { kind: 'withdrawn'; amount: number };
 type LegacyEvent = LegacyDeposited | LegacyWithdrawn;
 
-interface LegacyState { balance: number }
+type LegacyState = { balance: number };
 
 async function main(): Promise<void> {
   // === Setup: simulate an existing journal + snapshot store with raw events. ===
@@ -57,8 +57,8 @@ async function main(): Promise<void> {
     `BankAccount.${e.kind === 'deposited' ? 'Deposited' : 'Withdrawn'}`);
   console.log(formatMigrationResult('events   ', eventResult));
 
-  const pids = await journal.persistenceIds();
-  const stateResult = await migrateSnapshotStore<LegacyState>(snapshots, pids,
+  const persistenceIds = await journal.persistenceIds();
+  const stateResult = await migrateSnapshotStore<LegacyState>(snapshots, persistenceIds,
     (_state) => 'BankAccount.State');
   console.log(formatMigrationResult('snapshots', stateResult));
 

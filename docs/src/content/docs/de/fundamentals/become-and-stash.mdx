@@ -22,31 +22,40 @@ Warten auf einen async-Config-Load.
 ## `become` — das Verhalten austauschen
 
 ```ts
+import { match } from 'ts-pattern';
 import { Actor, ActorSystem, Props } from 'actor-ts';
 
-type Message =
-  | { readonly kind: 'on' }
-  | { readonly kind: 'off' }
-  | { readonly kind: 'press' };
+type OnMessage = { readonly kind: 'on' };
+type OffMessage = { readonly kind: 'off' };
+type PressMessage = { readonly kind: 'press' };
+type Message = OnMessage | OffMessage | PressMessage;
 
 class Switch extends Actor<Message> {
-  override onReceive(msg: Message): void {
-    this.offState(msg);
+  override onReceive(message: Message): void {
+    this.offState(message);
   }
 
-  private offState = (msg: Message): void => {
-    if (msg.kind === 'press') {
-      this.log.info('turning on');
-      this.context.become(this.onState);
-    }
+  private offState = (message: Message): void => {
+    match(message)
+      .with({ kind: 'press' }, () => this.onPressWhileOff())
+      .otherwise(() => {});
   };
 
-  private onState = (msg: Message): void => {
-    if (msg.kind === 'press') {
-      this.log.info('turning off');
-      this.context.become(this.offState);
-    }
+  private onPressWhileOff(): void {
+    this.log.info('turning on');
+    this.context.become(this.onState);
+  }
+
+  private onState = (message: Message): void => {
+    match(message)
+      .with({ kind: 'press' }, () => this.onPressWhileOn())
+      .otherwise(() => {});
   };
+
+  private onPressWhileOn(): void {
+    this.log.info('turning off');
+    this.context.become(this.offState);
+  }
 }
 
 const system = ActorSystem.create('demo');
@@ -76,20 +85,28 @@ um das neue Verhalten stattdessen auf einen Stack zu **pushen** —
 
 ```ts
 class Loader extends Actor<Command> {
-  override onReceive(msg: Command): void { this.idle(msg); }
+  override onReceive(message: Command): void { this.idle(message); }
 
-  private idle = (msg: Command): void => {
-    if (msg.kind === 'load') {
-      this.context.become(this.loading, /* discardOld */ false);
-      this.startLoading();
-    }
+  private idle = (message: Command): void => {
+    match(message)
+      .with({ kind: 'load' }, () => this.onLoad())
+      .otherwise(() => {});
   };
 
-  private loading = (msg: Command): void => {
-    if (msg.kind === 'done') {
-      this.context.unbecome();   // poppt loading, idle kehrt zurück
-    }
+  private onLoad(): void {
+    this.context.become(this.loading, /* discardOld */ false);
+    this.startLoading();
+  }
+
+  private loading = (message: Command): void => {
+    match(message)
+      .with({ kind: 'done' }, () => this.onDone())
+      .otherwise(() => {});
   };
+
+  private onDone(): void {
+    this.context.unbecome();   // poppt loading, idle kehrt zurück
+  }
 }
 ```
 
@@ -118,11 +135,15 @@ Ohne `become` würde derselbe Switch so aussehen:
 ```ts
 class Switch extends Actor<Message> {
   private isOn = false;
-  override onReceive(msg: Message): void {
-    if (msg.kind === 'press') {
-      this.isOn = !this.isOn;
-      this.log.info(this.isOn ? 'turning on' : 'turning off');
-    }
+  override onReceive(message: Message): void {
+    match(message)
+      .with({ kind: 'press' }, () => this.onPress())
+      .otherwise(() => {});
+  }
+
+  private onPress(): void {
+    this.isOn = !this.isOn;
+    this.log.info(this.isOn ? 'turning on' : 'turning off');
   }
 }
 ```
@@ -135,7 +156,7 @@ Phase zu ihrer eigenen Funktion, mit ihrem eigenen
 Valid-Message-Set, natürlich verengt.
 
 Für eine formellere Version derselben Idee siehe das
-[FSM](/de/persistence/fsm/)-Pattern — explizite Zustands- +
+[FSM](/de/persistence/fsm/overview/)-Pattern — explizite Zustands- +
 Transition-Deklarationen auf derselben Engine.
 
 ## `stash` — parken, dann replayen
@@ -144,29 +165,33 @@ Transition-Deklarationen auf derselben Engine.
 import { Actor, ActorSystem, Props } from 'actor-ts';
 import { match } from 'ts-pattern';
 
-type Message =
-  | { readonly kind: 'configure'; readonly url: string }
-  | { readonly kind: 'request';   readonly payload: string };
+type ConfigureMessage = { readonly kind: 'configure'; readonly url: string };
+type RequestMessage = { readonly kind: 'request'; readonly payload: string };
+type Message = ConfigureMessage | RequestMessage;
 
 class Worker extends Actor<Message> {
   private url?: string;
 
-  override onReceive(msg: Message): void {
-    match(msg)
-      .with({ kind: 'configure' }, (m) => {
-        this.url = m.url;
-        // Jetzt drainen, was sich angesammelt hat, während wir unkonfiguriert waren.
-        this.context.unstashAll();
-      })
-      .with({ kind: 'request' }, (m) => {
-        if (!this.url) {
-          // Noch nicht bereit — diese Nachricht parken.
-          this.context.stash();
-          return;
-        }
-        this.log.info(`POST ${this.url}: ${m.payload}`);
-      })
+  override onReceive(message: Message): void {
+    match(message)
+      .with({ kind: 'configure' }, (m) => this.onConfigure(m))
+      .with({ kind: 'request' }, (m) => this.onRequest(m))
       .exhaustive();
+  }
+
+  private onConfigure(m: ConfigureMessage): void {
+    this.url = m.url;
+    // Jetzt drainen, was sich angesammelt hat, während wir unkonfiguriert waren.
+    this.context.unstashAll();
+  }
+
+  private onRequest(m: RequestMessage): void {
+    if (!this.url) {
+      // Noch nicht bereit — diese Nachricht parken.
+      this.context.stash();
+      return;
+    }
+    this.log.info(`POST ${this.url}: ${m.payload}`);
   }
 }
 ```
@@ -196,11 +221,11 @@ Drei Details, die zählen:
   werden sie über die Priority-Funktion erneut eingefügt — eine
   unstashed Nachricht reiht sich wieder in ihre Priority-Schicht ein,
   nicht an die absolute Front der Queue.
-- **Der Stash hat eine Kapazität.**  Standardmäßig ist der Buffer
-  gebunden, um Memory-Leaks durch ausuferndes Stashing zu verhindern;
-  Overflow wirft `StashOverflowError`.  Konfiguriere über
-  System-Settings, wenn du größere / kleinere brauchst; siehe
-  [Konfiguration](/de/reference/configuration/).
+- **Der Stash hat eine Kapazität.**  Der Buffer ist gebunden, um
+  Memory-Leaks durch ausuferndes Stashing zu verhindern; Overflow
+  wirft `StashOverflowError`.  Der Bound ist fest auf 1024
+  Nachrichten einkompiliert — es gibt keinen Konfigurations-Knopf
+  dafür.
 
 ### `stash` + `become` — die kanonische Kombination
 
@@ -216,32 +241,42 @@ class Worker extends Actor<Message> {
     void this.loadConfig();
   }
 
-  private loading = (msg: Message): void => {
-    if (msg.kind === 'configure') {
-      this.url = msg.url;
-      this.context.become(this.ready);
-      this.context.unstashAll();
-    } else {
-      // Alles andere, was während des Ladens ankommt — stashen.
-      this.context.stash();
-    }
+  private loading = (message: Message): void => {
+    match(message)
+      .with({ kind: 'configure' }, (m) => this.onConfigure(m))
+      .otherwise(() => this.onDuringLoad());
   };
 
-  private ready = (msg: Message): void => {
-    if (msg.kind === 'request') {
-      this.log.info(`POST ${this.url}: ${msg.payload}`);
-    }
+  private onConfigure(message: ConfigureMessage): void {
+    this.url = message.url;
+    this.context.become(this.ready);
+    this.context.unstashAll();
+  }
+
+  // Alles andere, was während des Ladens ankommt — stashen.
+  private onDuringLoad(): void {
+    this.context.stash();
+  }
+
+  private ready = (message: Message): void => {
+    match(message)
+      .with({ kind: 'request' }, (m) => this.onRequest(m))
+      .otherwise(() => {});
   };
 
-  override onReceive(msg: Message): void {
+  private onRequest(message: RequestMessage): void {
+    this.log.info(`POST ${this.url}: ${message.payload}`);
+  }
+
+  override onReceive(message: Message): void {
     // Initial-Verhalten — das preStart wechselt vor jeder
     // User-Nachricht in 'loading'.  Das hier befriedigt die Signatur.
-    this.loading(msg);
+    this.loading(message);
   }
 
   private async loadConfig(): Promise<void> {
-    const cfg = await fetchConfig();
-    this.context.self.tell({ kind: 'configure', url: cfg.url });
+    const config = await fetchConfig();
+    this.context.self.tell({ kind: 'configure', url: config.url });
   }
 }
 ```
@@ -268,13 +303,15 @@ Initialisierungs-Fensters kein Traffic verloren geht.
   geworden" und entweder eskalieren oder fehlschlagen kann.
 </Aside>
 
-<Aside type="caution" title="Stash + Restart = Zustand verloren">
-  Bei `Restart` wird die Actor-Instanz weggeworfen — inklusive des
-  Stash-Buffers.  Gestashed Nachrichten werden zusammen mit der
-  kurz-vor-dem-Fehlschlag-stehenden Nachricht zu Dead Letters
-  geroutet.  Wenn die Nachrichten über den Fehler hinweg wichtig
-  sind, persistiere sie (PersistentActor) oder lass einen Parent sie
-  nach Abschluss des Restarts erneut senden.
+<Aside type="caution" title="Stash + Restart = Stash verloren">
+  Bei `Restart` — und bei `Stop` — wird die Actor-Instanz weggeworfen,
+  inklusive des Stash-Buffers.  Der Stash kann nicht übernommen werden:
+  der neuen Instanz fehlt genau der Zustand, der diese Nachrichten
+  überhaupt erst unbehandelbar gemacht hat.  Sie werden zu **Dead
+  Letters** geroutet, damit der Verlust wenigstens sichtbar ist; wenn
+  die Nachrichten über den Fehler hinweg wichtig sind, persistiere sie
+  (`PersistentActor`) oder lass einen Parent sie erneut senden, sobald
+  der Restart durch ist.
 </Aside>
 
 ## Wann zu welchem greifen
@@ -293,7 +330,7 @@ Initialisierungs-Fensters kein Traffic verloren geht.
   `onReceive` du mit `become` austauschst.
 - **[Mailboxes](/de/fundamentals/mailboxes/)** — `unstashAll`
   fügt in die Mailbox ein; die Mailbox entscheidet die Reihenfolge.
-- **[FSM](/de/persistence/fsm/)** — ein formellerer
+- **[FSM im Überblick](/de/persistence/fsm/overview/)** — ein formellerer
   State-Machine-Stil auf derselben `become`-Engine.
 - **[Typed Behaviors](/de/typed/behaviors/)** — die typed-API
   drückt dieselbe Idee als funktionale `Behavior<T>`-Werte aus, statt

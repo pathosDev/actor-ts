@@ -19,9 +19,9 @@ konzeptionelle Mapping ab.  Diese Seite fokussiert sich auf
 public class Counter : ReceiveActor {
   private int _count;
   public Counter() {
-    Receive<string>(cmd => {
-      if (cmd == "inc")  _count++;
-      else if (cmd == "get") Sender.Tell(_count);
+    Receive<string>(command => {
+      if (command == "inc")  _count++;
+      else if (command == "get") Sender.Tell(_count);
     });
   }
 }
@@ -33,27 +33,35 @@ counter.Tell("inc");
 
 ```ts
 // actor-ts:
+import { match } from 'ts-pattern';
 import { Actor, ActorSystem, Props, type ActorRef } from 'actor-ts';
 
-type Command = { kind: 'inc' } | { kind: 'get'; replyTo: ActorRef<number> };
+type IncrementCommand = { kind: 'increment' };
+type GetCommand = { kind: 'get'; replyTo: ActorRef<number> };
+type Command = IncrementCommand | GetCommand;
 
 class Counter extends Actor<Command> {
   private count = 0;
-  override onReceive(cmd: Command): void {
-    if (cmd.kind === 'inc')  this.count++;
-    else if (cmd.kind === 'get') cmd.replyTo.tell(this.count);
+  override onReceive(command: Command): void {
+    match(command)
+      .with({ kind: 'increment' }, () => this.onIncrement())
+      .with({ kind: 'get' }, (c) => this.onGet(c))
+      .exhaustive();
   }
+
+  private onIncrement(): void { this.count++; }
+  private onGet(command: GetCommand): void { command.replyTo.tell(this.count); }
 }
 
 const system = ActorSystem.create('MySystem');
 const counter = system.spawn(Props.create(() => new Counter()), 'counter');
-counter.tell({ kind: 'inc' });
+counter.tell({ kind: 'increment' });
 ```
 
 Unterschiede zu Akka.NET:
 
 - **Keine `ReceiveActor`-Basis + `Receive<T>`-Registrierungen** -
-  nutze `onReceive(msg)` mit einem Switch / Pattern-Match.
+  nutze `onReceive(message)` mit einem Switch / Pattern-Match.
 - **Nachrichten-Typen sind explizit** - `Command`-Union vs. Akka.NETs
   oft-untypisiertes `Receive<object>`.
 - **Lambda-Stil-Verhaltensdefinition** ist nicht
@@ -68,21 +76,28 @@ Receive<GetState>(_ => Sender.Tell(_state));
 
 ```ts
 // actor-ts - Option 1: replyTo in der Nachricht
-type Command = { kind: 'get-state'; replyTo: ActorRef<State> };
+type GetStateCommand = { kind: 'get-state'; replyTo: ActorRef<State> };
+type Command = GetStateCommand;
 
 class MyActor extends Actor<Command> {
-  onReceive(cmd: Command): void {
-    if (cmd.kind === 'get-state') cmd.replyTo.tell(this.state);
+  onReceive(command: Command): void {
+    match(command)
+      .with({ kind: 'get-state' }, (c) => this.onGetState(c))
+      .exhaustive();
   }
+
+  private onGetState(command: GetStateCommand): void { command.replyTo.tell(this.state); }
 }
 
 // actor-ts - Option 2: this.sender (Option-Typ)
 class MyActor extends Actor<Command> {
-  onReceive(cmd: Command): void {
-    if (cmd.kind === 'get-state') {
-      this.sender.forEach(s => s.tell(this.state));
-    }
+  onReceive(command: Command): void {
+    match(command)
+      .with({ kind: 'get-state' }, () => this.onGetState())
+      .exhaustive();
   }
+
+  private onGetState(): void { this.sender.forEach(s => s.tell(this.state)); }
 }
 ```
 
@@ -141,7 +156,7 @@ Akka.NETs explizite Address.
 var region = ClusterSharding.Get(system).Start(
   typeName: "Counter",
   entityProps: Props.Create<CounterActor>(),
-  settings: ClusterShardingOptionsType.Create(system),
+  settings: ClusterShardingSettings.Create(system),
   messageExtractor: new MessageExtractor()
 );
 ```
@@ -151,7 +166,7 @@ var region = ClusterSharding.Get(system).Start(
 const region = cluster.sharding.start<Command>({
   typeName: 'Counter',
   entityProps: Props.create(() => new CounterActor()),
-  extractEntityId: (cmd) => cmd.entityId,
+  extractEntityId: (command) => command.entityId,
   numShards: 100,
 });
 ```
@@ -184,14 +199,19 @@ class Account extends PersistentActor<Command, Event, State> {
   initialState(): State { return { balance: 0 }; }
 
   onEvent(state: State, event: Event): State {
-    if (event.kind === 'deposited') return { balance: state.balance + event.amount };
-    return state;
+    return match(event)
+      .with({ kind: 'deposited' }, (e) => ({ balance: state.balance + e.amount }))
+      .exhaustive();
   }
 
-  onCommand(state: State, cmd: Command): void {
-    if (cmd.kind === 'deposit') {
-      this.persist({ kind: 'deposited', amount: cmd.amount }, () => {});
-    }
+  onCommand(state: State, command: Command): void {
+    match(command)
+      .with({ kind: 'deposit' }, (c) => this.onDeposit(c))
+      .exhaustive();
+  }
+
+  private onDeposit(command: DepositCommand): void {
+    this.persist({ kind: 'deposited', amount: command.amount }, () => {});
   }
 }
 ```

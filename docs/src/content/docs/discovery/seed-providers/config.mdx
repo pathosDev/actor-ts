@@ -30,10 +30,10 @@ The simplest provider for the simplest case.
 ## Configuration
 
 ```ts
-interface ConfigSeedProviderOptionsType {
-  seeds?:     string[];           // explicit list
-  envVar?:    string;             // env-var name (CSV)
-}
+type ConfigSeedProviderOptionsType = {
+  seeds:      string[];           // "system@host:port" or "host:port"
+  systemName: string;             // default system name for seeds omitting it
+};
 ```
 
 Two ways to specify:

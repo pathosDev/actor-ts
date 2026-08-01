@@ -44,16 +44,16 @@ amqp.tell({
 interface AmqpOptionsType extends BrokerCommonOptionsType {
   url:        string;                          // amqp:// or amqps://
   prefetch?:  number;                          // unacked messages per consumer; default 1
-  autoAcknowledgment?:   boolean;                         // ack on delivery vs after processing; default true
+  autoAcknowledge?:      boolean;                         // ack on delivery vs after processing; default true
   bindings?:  ReadonlyArray<AmqpQueueBinding>; // queue ↔ exchange ↔ routingKey ↔ target
 }
 
-interface AmqpQueueBinding {
+type AmqpQueueBinding = {
   queue:       string;
   exchange?:   string;                         // omit for the default exchange
   routingKey?: string;
   target:      ActorRef<AmqpDelivery>;         // consumer-actor for this queue
-}
+};
 ```
 
 Bindings declare the queue, the exchange binding, AND the
@@ -69,13 +69,12 @@ on connect (idempotent re-declaration).
 | **`fanout`** | All bound queues, ignoring routing key. |
 | **`headers`** | Match on message headers, not routing key. |
 
-```ts
-exchanges: [
-  { name: 'work',    type: 'direct',  durable: true },  // exact routing
-  { name: 'audit',   type: 'topic',   durable: true },  // pattern match
-  { name: 'notify',  type: 'fanout',  durable: false }, // broadcast
-];
-```
+`AmqpActor` does **not** declare exchanges — they must already
+exist on the broker (created via RabbitMQ configuration, the
+management UI, or your infrastructure tooling).  On connect the
+actor only asserts the queues named in `bindings` and binds them
+to the given exchange; publishing then routes through that
+existing exchange by name.
 
 Most common pattern: **`topic`** exchanges with hierarchical
 routing keys (`orders.placed.priority`, `orders.cancelled`,
@@ -83,8 +82,8 @@ routing keys (`orders.placed.priority`, `orders.cancelled`,
 
 ## Ack / nack
 
-Set `autoAcknowledgment: false` in settings, then the handler tells the
-result back via `{ kind: 'ack', delivery }` or `{ kind: 'nack',
+Set `autoAcknowledge: false` in settings, then the handler tells the
+result back via `{ kind: 'acknowledgment', delivery }` or `{ kind: 'negativeAcknowledgment',
 delivery, requeue }` on the AMQP actor's ref.
 
 ```ts
@@ -94,9 +93,9 @@ class OrderHandler extends Actor<AmqpDelivery> {
   override async onReceive(delivery: AmqpDelivery): Promise<void> {
     try {
       await processOrder(delivery);
-      this.amqp.tell({ kind: 'ack', delivery });
+      this.amqp.tell({ kind: 'acknowledgment', delivery });
     } catch (err) {
-      this.amqp.tell({ kind: 'nack', delivery, requeue: true });
+      this.amqp.tell({ kind: 'negativeAcknowledgment', delivery, requeue: true });
     }
   }
 }
@@ -119,9 +118,11 @@ won't help.
 prefetch: 10   // consume up to 10 unacked at once per consumer
 ```
 
-The default (per AMQP spec) is **unlimited** — the broker would
-push every message in the queue.  Set `prefetch` to a sensible
-batch size (10-50) to avoid overwhelming the consumer.
+The framework default is **1** — a single unacked message per
+consumer at a time.  (The raw AMQP protocol default is 0 =
+unlimited, but the actor sets `prefetch` to 1 unless you override
+it.)  Raise it to a sensible batch size (10-50) to keep the
+consumer busy without overwhelming it.
 
 ## Peer dependency
 

@@ -7,7 +7,7 @@ already follows; keep them consistent.
 ## Project snapshot
 
 `actor-ts` is a **pre-1.0** actor-model framework for TypeScript that
-runs on **Bun, Node.js (≥ 20), and Deno**. ESM throughout; **Bun** is
+runs on **Bun, Node.js (≥ 24), and Deno**. ESM throughout; **Bun** is
 the primary toolchain (`bun test`, `bunx tsc`). Runtime dependencies are
 deliberately tiny — `fastify` + `ts-pattern` — and everything else
 (Express, Hono, `ws`, brokers, SQL/Cassandra drivers, S3, …) is an
@@ -117,18 +117,34 @@ conservative SemVer.) See `docs/.../reference/version-policy.mdx`.
 
 ## Verification gates (before every commit)
 
-- **`bun run typecheck`** (build tsconfig — excludes `examples/` and
-  `tests/`) passes. `bun run typecheck:dev` additionally checks those.
+- **`bun run typecheck`** (build tsconfig — excludes `examples/`,
+  `tests/` and `benchmarks/`) passes. `bun run typecheck:dev`
+  additionally checks those.
 - **`bun test`** is green. Line coverage floor is **≥ 80 %** —
   `bun run test:coverage:gate`.
 - **Cross-runtime:** `bun run smoke` runs `tests/smoke/cases/*.mjs` on
   Bun, Node, and Deno. Add a smoke case for anything runtime-sensitive.
+- **Benchmarks:** a change to a `src/` API that `benchmarks/` calls also
+  needs `bun run typecheck:bench` (benchmarks-only compile) and, for
+  anything that could break at runtime, `bun run bench:smoke` (~30 s —
+  every suite, one unwarmed iteration each). The build tsconfig excludes
+  `benchmarks/`, so nothing else catches an orphaned benchmark; the
+  `benchmarks` workflow gates both. The benchmarks are part of the
+  adoption sweep for a breaking change, exactly like tests and examples.
+- **DevTools UI:** a change under `devtools-ui/` needs **`bun run
+  build:ui`** in the same commit — `src/devtools/generated/uiAssets.ts`
+  is generated but committed, and a stale one is valid TypeScript, so
+  nothing else notices. **`bun run check:ui`** asserts it (and gates the
+  `build` workflow) by comparing a `source-hash` over the UI sources,
+  the build script and the bundled dependencies. It deliberately does
+  not compare the bundle's bytes: those vary with the OS and the Bun
+  release that produced them, so a byte diff is not a staleness signal.
 - **Don't hand-edit** the README test/coverage badges — CI updates them
   on push to `develop`.
 
 ## Runtime portability
 
-- Code must run on **Bun, Node ≥ 20, and Deno**. Runtime-specific
+- Code must run on **Bun, Node ≥ 24, and Deno**. Runtime-specific
   primitives (HTTP serve, sockets, workers, SQLite, …) live behind small
   abstractions in **`src/runtime/`** and auto-detect at startup.
 - **Optional peer dependencies:** `import()` them lazily with a clear
@@ -142,6 +158,57 @@ conservative SemVer.) See `docs/.../reference/version-policy.mdx`.
   relative imports (required by the build's module resolution).
 - Discriminated-union handling via **`ts-pattern`**
   (`match(x).with(…).exhaustive()`).
+- **Every `match` arm delegates to a private `onXxx` handler.** Wherever a
+  `match(…)` dispatches an **incoming message, event, or command** — an actor's
+  `onReceive`/`onCommand`/`onEvent` (or a router it calls), a cluster-event
+  subscription (`cluster.subscribe(evt => match(evt)…)`), or a wire/system-command
+  dispatcher — every arm (each `.with(…)` **and** any `.otherwise(…)`) is a thin
+  call into a private method (`.with({ kind: 'data' }, (m) => this.onData(m))`,
+  `.otherwise((m) => this.onUnhandled(m))`), never an inline body, even a
+  one-liner — no exceptions. Name it `on` + the PascalCase discriminant
+  (`onData`, `onMemberUp`, `onCreate`); type the parameter as the **named variant
+  type** (see next bullet), or omit it for payload-free kinds. Keeps the matcher
+  a scannable dispatch table. **Exempt:** matches on *internal state* (a state
+  machine / behavior / directive reducer) or that *compute a value* in a helper
+  (config, codec, route, priority) stay inline.
+- **`interface` for contracts and heritage, `type` for everything else.** A
+  declaration is an `interface` when it prescribes **function heads** — any
+  method, call or construct signature — or when it **`extends`** another
+  shape. Everything else is a `type X = { … }`: plain data shapes, unions,
+  mapped and conditional types. The split follows what the declaration is
+  *for*. An interface states a contract someone implements, and `extends`
+  reads as a hierarchy where an intersection only reads as conjunction; a
+  data shape states a value's layout, and there `type` composes with the
+  union aliases the project already uses (`type XOptions`, `type Command`).
+  A function-typed **property** (`onLost?: () => void`) is not a function
+  head — that shape stays a `type`. An interface may extend a type alias, so
+  a contract built on a plain data base is written `interface X extends
+  XBase { … }` with `XBase` staying a `type`; the mixture is intended.
+- **Discriminated unions are defined as named variant types.** Declare each
+  tagged union as a union of **named** members
+  (`type Command = DepositCommand | WithdrawCommand | BalanceCommand`), never an
+  inline object-literal union — including the union alias itself
+  (`type Command`, not `type Cmd`). Name a variant `PascalCase(kind)` + a role
+  suffix matching the union (`Command`/`Event`/`Message`) — collision-safe (`Set`,
+  `Get`, `Publish` never bare); keep variant types module-local where the union
+  is. Handlers take the **named variant type** (`onDeposit(c: DepositCommand)`),
+  not `Extract<Union, { kind }>`.
+- **The discriminant field is always `kind`** (never `type` or `tag`) — including
+  the WebSocket/wire protocols of the examples. `type` collides with the `type`
+  keyword; `kind` is the single project-wide convention.
+- **Spell out abbreviations in identifiers** — types, classes, files, aliases,
+  generic type parameters, methods, fields, **and** locals/params, plus the `kind`
+  **string-literal values**. Full words: `Command`/`Message`/`Acknowledgment`/
+  `NegativeAcknowledgment`/`Terminate`/`Increment`/`DirectMessage`/`Request`/
+  `Response`/`Function`/`Context`/`Connection`/`Arguments`/`Directory`/
+  `Repository`/`Deduplication`/`PersistenceId`/`Implementation`/`Constructor`
+  (not `Cmd`/`Msg`/`Ack`/`Nak`/`Nack`/`Term`/`Inc`/`Dm`/`Req`/`Res`/`Fn`/`Ctx`/
+  `Conn`/`Args`/`Dir`/`Repo`/`Dedup`/`Pid`/`Impl`/`Ctor`). **Two exceptions only:**
+  (1) single-letter loop/lambda/catch vars (`m`, `e`, `i`) may stay; (2) names
+  mirroring an **external API** or established **domain acronyms** stay verbatim —
+  nats.js (`.ack()`/`.nak()`, `max_msgs`), prom-client (`inc()`/`dec()`/`set()`),
+  amqplib (`noAck`), DOM (`AudioContext`), `MsgPack` (MessagePack), and `PubSub`,
+  `K8s`, `AMQP`, `MQTT`, `SQL`, `S3`, `DNS`, `CBOR`.
 - HOCON config keys go through **`src/config/ConfigKeys.ts`** (typed,
   single source of truth). Options resolve with precedence:
   **explicit options > HOCON > built-in defaults**.
@@ -189,7 +256,7 @@ conservative SemVer.) See `docs/.../reference/version-policy.mdx`.
     helper — the merge stays a plain spread; validation is a separate void
     assertion. `OptionsBuilder` has no set-time validation.
 - **All option-relevant types are co-located in `XOptions.ts`** — including the
-  `XOptionsType` interface (the config contract read by `readOptionsFromConfig`)
+  `XOptionsType` declaration (the config contract read by `readOptionsFromConfig`)
   and, when present, the `XOptionsValidator` class. The functional file
   (actor/store/factory) imports the type contracts (`XOptions` + `XOptionsType`)
   **type-only** from `./XOptions.js`, and — when it validates — additionally

@@ -19,10 +19,10 @@ export function requestId(options: RequestIdOptions = {}): Middleware {
   const trustIncoming = resolvedOptions.trustIncoming ?? true;
   const generate = resolvedOptions.generate ?? ((): string => randomUUID());
 
-  return async (req, next) => {
-    const incoming = trustIncoming ? req.headers[headerName] : undefined;
+  return async (request, next) => {
+    const incoming = trustIncoming ? request.headers[headerName] : undefined;
     const id = incoming && VALID_ID.test(incoming) ? incoming : generate();
-    const res = await next({ ...req, headers: { ...req.headers, [headerName]: id } });
-    return applyHeaders(res, { [headerName]: id });
+    const response = await next({ ...request, headers: { ...request.headers, [headerName]: id } });
+    return applyHeaders(response, { [headerName]: id });
   };
 }

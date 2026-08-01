@@ -23,24 +23,30 @@ Plus ein Extension-Point: implementiere `Serializer<T>` für
 
 ## Wie das funktioniert
 
+Für ein Cross-Node-`tell` verpackt der Cluster die Nachricht in
+ein Envelope und sendet sie als **`JSON.stringify`**-Frame mit
+Längenpräfix — der einklinkbare `Serializer` wird auf der Leitung
+nicht konsultiert:
+
 ```
 Sender-Seite:
-  tell(remoteRef, msg)
-    → SerializationExtension wählt Serializer für typeof(msg)
-    → serializer.toBinary(msg) → Uint8Array
-    → mit serializerId + manifest + bytes umhüllt
+  remoteRef.tell(message)
+    → in ein Envelope { to, from, body, tag } verpackt
+    → im body eingebettete ActorRefs → wire-sichere Marker
+    → JSON.stringify(envelope) → Frame mit Längenpräfix
     → Cluster-Transport sendet über die Leitung
 
 Empfänger-Seite:
-    Cluster-Transport empfängt Bytes
-    → SerializationExtension wählt Serializer per serializerId
-    → serializer.fromBinary(bytes, manifest) → rekonstruierter Wert
-    → an onReceive des Actors ausgeliefert
+    Cluster-Transport setzt den Frame wieder zusammen
+    → JSON.parse(frame) → Envelope
+    → ActorRef-Marker → lebende Remote-Refs
+    → body an onReceive des Actors ausgeliefert
 ```
 
-Die `serializerId` + das `manifest` sagen dem Empfänger,
-**welchen Serializer er verwenden soll** + **welcher Typ zu
-rekonstruieren ist**.
+Der `body` muss **JSON-sicher** sein.  Der einzige Typ-Hinweis
+auf der Leitung ist `tag` — der Konstruktor-Name der Nachricht —
+fürs Routing; es gibt kein `serializerId` / `manifest`-Framing
+auf dem Cluster-Wire.
 
 ## Das Serializer-Interface
 
@@ -56,10 +62,10 @@ interface Serializer<T = unknown> {
 ```
 
 Kleine Oberfläche — encoden, decoden, identifizieren.  Die
-`SerializationExtension` des Frameworks mappt Klassen auf
-Serializer (über `bind`); bei der Serialisierung schlägt die
-Extension nach, welcher Serializer für die Klasse des Werts zu
-verwenden ist.
+`SerializationExtension` des Frameworks ist eine **Registry**, die
+Klassen auf Serializer mappt (über `bind`); wenn du einen Wert über
+die Extension encodest (`ext.encode`), schlägt sie den an die Klasse
+des Werts gebundenen Serializer nach.
 
 ## Default-Verhalten
 
@@ -102,39 +108,42 @@ registriere:
 import { SerializationExtensionId } from 'actor-ts';
 
 const ext = system.extension(SerializationExtensionId);
-ext.bind(MyEvent, new ProtobufSerializer<MyEvent>(MyEventSchema));
+const serializer = new ProtobufSerializer<MyEvent>(MyEventSchema);
+ext.register(serializer);          // zur ID-Lookup-Tabelle hinzufügen
+ext.bind(MyEvent, serializer.id);  // MyEvent darüber routen
 ```
 
-Jetzt verwendet jeder `MyEvent`-Wert Protobuf für die
-Serialisierung über die Leitung / ins Journal.  Andere Typen
-nutzen weiterhin JSON.
+`bind` nimmt eine **numerische Serializer-ID**, der Serializer muss
+also zuerst `register`t werden.  Jetzt löst die Extension jeden
+`MyEvent`-Wert zu Protobuf auf; andere Typen fallen auf JSON zurück.
 
 Siehe [Eigene Serializer](/de/serialization/custom/) für das
 volle Setup.
 
 ## Was sich serialisieren lässt
 
-Der Default-JSON-Serializer behandelt:
+Die `JsonSerializer`-Klasse behandelt:
 
 - Plain-Objekte (`{ a: 1, b: 'two' }`).
 - Arrays.
 - Strings, Zahlen, Booleans, `null`.
 - Verschachtelte Kombinationen davon.
+- `Date`, `Uint8Array`, `Map`, `Set` und `bigint` — über Type-Tags
+  als echte Instanzen round-getrippt.
 
-**Lässt sich nicht serialisieren**:
+Sie **wirft** bei Funktionen, Symbolen und `undefined`;
+Klasseninstanzen dekodieren zu Plain-Objekten (Methoden +
+Identität verloren).  `CborSerializer` round-trippt ebenfalls
+`Uint8Array`, `Date` und `bigint`, aber — anders als
+`JsonSerializer` — erhält er `Map` / `Set` **nicht** (sie werden
+zu einem leeren `{}` kodiert).
 
-- Funktionen / Closures (keine Methoden-Überlebensgarantie).
-- Klasseninstanzen mit Methoden (Methoden verloren; Datenfelder
-  überleben).
-- `Map` / `Set` (von JSON als `{}` stringified).
-- `Date` (geht über String-Round-Trip; Typinformation verloren).
-- `BigInt` (wirft).
-- Symbole (still verworfen).
-
-CBOR kann ein paar mehr (binäre `Uint8Array` nativ, `Map` als
-echte Map), aber keine Funktionen.
-
-Für komplexe Typen **konvertier vor dem Senden in Plain-Objekte**:
+Der **Cluster-Wire ist anders**: Cross-Node-Nachrichten laufen
+durch rohes `JSON.stringify` (nicht `JsonSerializer`), sodass auf
+der Leitung die üblichen JSON-Grenzen gelten — `Date` → ISO-String,
+`Map` / `Set` → `{}`, `bigint` wirft, `undefined` / Funktionen
+verworfen.  Konvertiere vor einem Cross-Node-`tell` in einfache,
+JSON-sichere Formen:
 
 ```ts
 // ✗
@@ -147,16 +156,18 @@ ref.tell({ when: Date.now() });
 ## Wo Serialisierung passiert
 
 ```
-1. Cluster-Wire — jedes Cross-Node-tell.
+1. Cluster-Wire — jedes Cross-Node-tell (rohes JSON.stringify).
 2. PersistentActor.persist(event) — Events ins Journal.
 3. DurableStateActor.persist(state) — State in den Store.
 4. Snapshot-Writes — Snapshots in den Snapshot-Store.
 5. DistributedData — replizierter State über den Cluster.
 ```
 
-In-Process-Tells **serialisieren nicht** — der Empfänger bekommt
-die exakte In-Memory-Referenz.  Serialisierung passiert nur an
-**Prozess- / Disk- / Cluster-Grenzen**.
+Der Cluster-Wire nutzt `JSON.stringify` direkt auf dem Envelope —
+nicht den einklinkbaren `Serializer` (siehe *Wie das
+funktioniert*).  In-Process-Tells **serialisieren nicht** — der
+Empfänger bekommt die exakte In-Memory-Referenz.  Serialisierung
+passiert nur an **Prozess- / Disk- / Cluster-Grenzen**.
 
 import { Aside } from '@astrojs/starlight/components';
 

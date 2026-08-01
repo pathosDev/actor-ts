@@ -24,8 +24,8 @@ empfangen.
 
 ```ts
 class Slow extends Actor<...> {
-  override async onReceive(msg): Promise<void> {
-    const data = await this.downstream.fetch(msg.id);
+  override async onReceive(message): Promise<void> {
+    const data = await this.downstream.fetch(message.id);
     // ↑ alles in der Mailbox dieses Actors wartet, bis fetch resolved.
     this.handle(data);
   }
@@ -44,6 +44,7 @@ Actors.
 ## `pipeTo` — sende das Ergebnis als Nachricht
 
 ```ts
+import { match, P } from 'ts-pattern';
 import { Actor, pipeTo, Success, Failure } from 'actor-ts';
 
 type Message =
@@ -52,16 +53,24 @@ type Message =
   | Failure;
 
 class Fast extends Actor<Message> {
-  override onReceive(msg: Message): void {
-    if (msg.kind === 'fetch') {
-      pipeTo(this.downstream.fetch(msg.id), this.context.self);
-      return;   // blockiert nicht — onReceive kehrt sofort zurück
-    }
-    if (msg instanceof Success) {
-      this.handle(msg.value);
-    } else if (msg instanceof Failure) {
-      this.log.warn(`fetch failed: ${msg.error.message}`);
-    }
+  override onReceive(message: Message): void {
+    match(message)
+      .with({ kind: 'fetch' }, (m) => this.onFetch(m))
+      .with(P.instanceOf(Success), (s) => this.onSuccess(s))
+      .with(P.instanceOf(Failure), (f) => this.onFailure(f))
+      .exhaustive();
+  }
+
+  private onFetch(message: FetchMessage): void {
+    pipeTo(this.downstream.fetch(message.id), this.context.self);   // blockiert nicht
+  }
+
+  private onSuccess(result: Success<Item>): void {
+    this.handle(result.value);
+  }
+
+  private onFailure(result: Failure): void {
+    this.log.warn(`fetch failed: ${result.cause.message}`);
   }
 }
 ```
@@ -85,10 +94,10 @@ function pipeTo<T>(
   options?:  PipeToOptions,
 ): Promise<T>;
 
-interface PipeToOptions {
+type PipeToOptions = {
   sender?: ActorRef | null;
   wrap?:   boolean;   // Default true — in Success/Failure wickeln
-}
+};
 ```
 
 ### Unwrapped Pipe
@@ -129,11 +138,11 @@ Einfache getaggte Klassen — Werte sind nach der Konstruktion
 unveränderlich.  Pattern-Match mit `instanceof`:
 
 ```ts
-override onReceive(msg: Success<Item> | Failure | Command): void {
-  if (msg instanceof Success) {
-    this.handle(msg.value);
-  } else if (msg instanceof Failure) {
-    this.fail(msg.error);
+override onReceive(message: Success<Item> | Failure | Command): void {
+  if (message instanceof Success) {
+    this.handle(message.value);
+  } else if (message instanceof Failure) {
+    this.fail(message.error);
   } else {
     // es ist ein Command
   }
@@ -145,7 +154,7 @@ Oder in ts-pattern:
 ```ts
 import { P, match } from 'ts-pattern';
 
-match(msg)
+match(message)
   .with(P.instanceOf(Success), (s) => this.handle(s.value))
   .with(P.instanceOf(Failure), (f) => this.fail(f.error))
   .otherwise(() => { /* ... */ });
@@ -252,9 +261,9 @@ import { Aside } from '@astrojs/starlight/components';
   MDC.  Wenn das Ergebnis die gleiche Correlation-ID wie der
   initiierende Request braucht, wickle das Promise:
   ```ts
-  const ctx = LogContext.snapshot();
+  const context = LogContext.snapshot();
   pipeTo(
-    promise.then(v => LogContext.run(ctx, () => v)),
+    promise.then(v => LogContext.run(context, () => v)),
     target,
   );
   ```

@@ -7,12 +7,12 @@
  * argon2 hashing + a real user store.
  */
 
-export interface TestUser {
+export type TestUser = {
   readonly username: string;
   readonly password: string;
   /** Used in UI for an avatar/colour.  Not part of auth. */
   readonly displayName: string;
-}
+};
 
 export const TEST_USERS: ReadonlyArray<TestUser> = [
   { username: 'alice',   password: 'wonderland', displayName: 'Alice'   },

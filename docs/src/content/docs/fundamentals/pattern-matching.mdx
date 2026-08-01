@@ -1,6 +1,6 @@
 ---
 title: Pattern matching
-description: The `match(msg).with(...).exhaustive()` idiom that actor-ts uses everywhere — built on ts-pattern. Compile-time exhaustiveness, type narrowing, and the conventions for matching on `kind` discriminators.
+description: The `match(message).with(...).exhaustive()` idiom that actor-ts uses everywhere — built on ts-pattern. Compile-time exhaustiveness, type narrowing, and the conventions for matching on `kind` discriminators.
 ---
 
 Inside an actor's `onReceive`, you receive a value of the actor's
@@ -12,7 +12,7 @@ benefits over hand-rolled `if/else` ladders:
 1. **Compile-time exhaustiveness.**  Forget a `kind`, the compiler
    fails — no silent fallthrough.
 2. **Type narrowing inside each arm.**  No `as` casts, no manual
-   `if (msg.kind === ...)` guards inside handlers.
+   `if (message.kind === ...)` guards inside handlers.
 3. **Readable for non-trivial unions.**  At 5+ variants the
    `match` form stays scannable; an `if/else if` ladder doesn't.
 
@@ -23,34 +23,56 @@ import { Actor } from 'actor-ts';
 import { match } from 'ts-pattern';
 
 type Command =
-  | { readonly kind: 'inc' }
-  | { readonly kind: 'dec' }
+  | { readonly kind: 'increment' }
+  | { readonly kind: 'decrement' }
   | { readonly kind: 'set'; readonly to: number }
   | { readonly kind: 'reset' };
 
 class Counter extends Actor<Command> {
   private count = 0;
 
-  override onReceive(cmd: Command): void {
-    match(cmd)
-      .with({ kind: 'inc' },   ()  => { this.count++; })
-      .with({ kind: 'dec' },   ()  => { this.count--; })
-      .with({ kind: 'set' },   (m) => { this.count = m.to; })
-      .with({ kind: 'reset' }, ()  => { this.count = 0; })
+  override onReceive(command: Command): void {
+    match(command)
+      .with({ kind: 'increment' },   ()  => this.onIncrement())
+      .with({ kind: 'decrement' },   ()  => this.onDecrement())
+      .with({ kind: 'set' },   (m) => this.onSet(m))
+      .with({ kind: 'reset' }, ()  => this.onReset())
       .exhaustive();
   }
+
+  private onIncrement():   void { this.count++; }
+  private onDecrement():   void { this.count--; }
+  private onSet(command: Extract<Command, { kind: 'set' }>): void { this.count = command.to; }
+  private onReset(): void { this.count = 0; }
 }
 ```
 
-Inside the `set` arm, `m` is automatically typed as
-`{ kind: 'set'; to: number }` — the discriminator narrows the type
-without a cast.
+Every arm is a thin call into a private `onXxx` handler — the house
+rule (see below), never an inline body.  The narrowing survives the
+hand-off: `onSet`'s parameter is typed `Extract<Command, { kind: 'set' }>`,
+so `command.to` is a `number` with no cast.
 
 `.exhaustive()` at the end is the **compile-time check**: if you
 add `{ kind: 'double' }` to `Command` later and forget the matching
 `.with({ kind: 'double' }, ...)` arm, TypeScript refuses to
 compile, pointing at the `.exhaustive()` call.  The build catches
 the omission; you never ship a silently-dropped message.
+
+## Delegate each arm to a private handler
+
+Notice the minimal example above: every arm is a thin call into a
+private `onXxx` method, not an inline body.  That's the house rule —
+each `.with(…)` **and** any `.otherwise(…)` delegates, even a
+one-liner, no exceptions.  The matcher stays a scannable dispatch
+table; the logic lives in named handlers.
+
+- Name the handler `on` + the PascalCase `kind` — `onIncrement`, `onData`,
+  `onCloseAccount`; the `.otherwise(…)` fallback is `onUnhandled`.
+- Type the parameter as the narrowed variant
+  (`Extract<Command, { kind: 'set' }>`) so the handler keeps
+  ts-pattern's narrowing; omit it for payload-free kinds.
+
+It's a hard rule in the repo's `AGENTS.md` (Code style).
 
 ## The `kind` convention
 
@@ -83,7 +105,7 @@ union.
 ### Object-pattern narrowing
 
 ```ts
-match(cmd)
+match(command)
   .with({ kind: 'deposit', amount: P.number },  (m) => { /* m.amount: number */ })
   .with({ kind: 'deposit', amount: 0 },          ()  => { /* zero-amount deposit */ })
   .otherwise(() => { /* fallthrough */ });
@@ -112,9 +134,9 @@ for the full set.
 `match` is an expression — you can return values:
 
 ```ts
-const reply = match(cmd)
-  .with({ kind: 'get' }, () => this.count)
-  .with({ kind: 'inc' }, () => this.count + 1)
+const reply = match(command)
+  .with({ kind: 'get' },  () => this.onGet())    // onGet(): number
+  .with({ kind: 'next' }, () => this.onNext())   // onNext(): number
   .exhaustive();
 ```
 
@@ -125,10 +147,10 @@ typed-actor `Behavior` returns, the expression form is convenient.
 ### `.otherwise` vs `.exhaustive`
 
 ```ts
-match(cmd)
-  .with({ kind: 'inc' }, () => { ... })
-  .with({ kind: 'dec' }, () => { ... })
-  .otherwise(() => this.log.warn('unknown cmd'));   // runtime fallback
+match(command)
+  .with({ kind: 'increment' }, ()  => this.onIncrement())
+  .with({ kind: 'decrement' }, ()  => this.onDecrement())
+  .otherwise((m) => this.onUnhandled(m));   // runtime fallback
 ```
 
 `.otherwise(fn)` catches anything not matched.  Use it for actors
@@ -139,25 +161,6 @@ yet handle.
 **Default to `.exhaustive()`**.  `.otherwise()` disables the
 exhaustiveness check; reach for it deliberately when "ignore the
 rest" is the right semantic.
-
-## When to prefer plain `if`
-
-For two- or three-variant unions, a plain `if`-chain reads cleaner:
-
-```ts
-override onReceive(cmd: Command): void {
-  if (cmd.kind === 'inc') this.count++;
-  else if (cmd.kind === 'dec') this.count--;
-  else cmd.replyTo.tell(this.count);
-}
-```
-
-TypeScript narrows inside each branch — the `else` arm sees
-`{ kind: 'get'; replyTo: ... }` automatically.  You lose the
-`.exhaustive()` check, but at 2-3 variants the cost is low.
-
-The rule of thumb: **use `match` from 4+ variants**, especially
-when arms need destructuring (`(m) => m.amount`).
 
 import { Aside } from '@astrojs/starlight/components';
 
@@ -172,7 +175,7 @@ import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="Don't pattern-match on `instanceof` for cross-process messages">
   ```ts
-  match(msg)
+  match(message)
     .with(P.instanceOf(UserLoggedIn), () => ...)   // ← breaks across the wire
   ```
   Class identity doesn't survive serialization — the receiver
@@ -186,18 +189,15 @@ import { Aside } from '@astrojs/starlight/components';
 
 ## ts-pattern as a runtime dependency
 
-ts-pattern is a peer dependency of the framework — you install it
-yourself:
+ts-pattern is a regular runtime dependency of the framework —
+it's installed automatically alongside actor-ts, so there's
+nothing extra to add.
 
-```bash
-bun add ts-pattern
-# or: npm install ts-pattern
-```
-
-The framework doesn't require you to use it; you can write
-`onReceive` as a plain switch.  But every code example in the
-docs assumes `import { match } from 'ts-pattern'` is available,
-because that's the convention the codebase follows.
+Every code example in the docs assumes
+`import { match } from 'ts-pattern'` is available, because that's
+the convention the codebase follows: every dispatch on an incoming
+message, event or command goes through `match`, and every arm
+delegates to an `onXxx` handler.
 
 ## Where to next
 

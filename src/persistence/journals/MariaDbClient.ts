@@ -1,5 +1,6 @@
 import { Lazy } from '../../util/Lazy.js';
 import { lazyImportModule } from '../../util/LazyImport.js';
+import type { SqlPool, SqlResult } from '../relational/SqlPool.js';
 
 /**
  * Minimal shapes of the `mariadb` connector API the MariaDB backends use.
@@ -14,11 +15,11 @@ import { lazyImportModule } from '../../util/LazyImport.js';
  * coerced at the mapping boundary.
  */
 export type MariaDbRow = Record<string, unknown>;
-export interface MariaDbOkPacket {
+export type MariaDbOkPacket = {
   readonly affectedRows: number | bigint;
   readonly insertId?: number | bigint;
   readonly warningStatus?: number;
-}
+};
 export type MariaDbResult = MariaDbRow[] | MariaDbOkPacket;
 
 export interface MariaDbConnectionLike {
@@ -42,54 +43,72 @@ interface MariaDbModule {
 
 const mariadbLazy: Lazy<Promise<MariaDbModule>> = Lazy.of(
   () => lazyImportModule<MariaDbModule>('mariadb', {
-    context: 'The MariaDB persistence backends require',
+    context: 'The MariaDB persistence backends',
     installHint: 'npm install mariadb',
   }),
 );
 
 /** Connection options shared by the three MariaDB stores. */
-export interface MariaDbConnection {
+export type MariaDbConnection = {
   /** Connection URI passed straight to `createPool`, e.g. `mariadb://user:pass@host:3306/db`. */
   readonly url?: string;
   /** `createPool` config object (host/user/password/database/…); takes precedence over `url`. */
   readonly poolConfig?: Record<string, unknown>;
   /** Pre-built pool — shares one pool across the three stores, or injects a fake in tests. */
   readonly pool?: MariaDbPoolLike;
-}
+};
 
 /** Build (or pass through) the connection pool for a store. */
-export async function buildMariaDbPool(conn: MariaDbConnection): Promise<MariaDbPoolLike> {
-  if (conn.pool) return conn.pool;
+export async function buildMariaDbPool(connection: MariaDbConnection): Promise<MariaDbPoolLike> {
+  if (connection.pool) return connection.pool;
   const mod = await mariadbLazy.get();
-  const arg: Record<string, unknown> | string = conn.poolConfig ?? conn.url ?? {};
+  const arg: Record<string, unknown> | string = connection.poolConfig ?? connection.url ?? {};
   return mod.createPool(arg);
 }
 
 /** Rows from a SELECT result (OK-packets yield `[]`). */
-export function rowsOf(res: MariaDbResult): MariaDbRow[] {
-  return Array.isArray(res) ? res : [];
+export function rowsOf(response: MariaDbResult): MariaDbRow[] {
+  return Array.isArray(response) ? response : [];
 }
 
 /** `affectedRows` from a DML OK-packet (arrays yield 0). */
-export function affectedRowsOf(res: MariaDbResult): number {
-  return Array.isArray(res) ? 0 : Number(res.affectedRows ?? 0);
+export function affectedRowsOf(response: MariaDbResult): number {
+  return Array.isArray(response) ? 0 : Number(response.affectedRows ?? 0);
 }
 
-/** MariaDB/MySQL duplicate-key error (errno 1062 / `ER_DUP_ENTRY`). */
-export function isDuplicateKeyError(e: unknown): boolean {
-  const err = e as { errno?: number; code?: string };
-  return err.errno === 1062 || err.code === 'ER_DUP_ENTRY';
-}
-
-/** Guard configurable table names against injection (see PostgresClient). */
-export function assertSafeIdentifier(name: string, what: string): string {
-  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) {
-    throw new Error(
-      `MariaDB: unsafe ${what} identifier ${JSON.stringify(name)} — `
-      + 'must match /^[A-Za-z_][A-Za-z0-9_]*$/.',
-    );
-  }
-  return name;
+/**
+ * Adapt a `mariadb` pool to the uniform `SqlPool` the relational stores use,
+ * collapsing the connector's dual result shape (row array vs OK-packet) into
+ * one `SqlResult`.
+ */
+export function adaptMariaDbPool(pool: MariaDbPoolLike): SqlPool {
+  const normalize = (response: MariaDbResult): SqlResult => ({
+    rows: rowsOf(response),
+    affectedRows: affectedRowsOf(response),
+  });
+  return {
+    async query(sql, params) {
+      return normalize(await pool.query(sql, params));
+    },
+    async withTransaction(body) {
+      const connection = await pool.getConnection();
+      try {
+        await connection.beginTransaction();
+        const result = await body({
+          query: async (sql, params) => normalize(await connection.query(sql, params)),
+        });
+        await connection.commit();
+        return result;
+      } catch (e) {
+        // Best-effort: a rollback failure must not mask the original error.
+        try { await connection.rollback(); } catch { /* already rolled back */ }
+        throw e;
+      } finally {
+        connection.release();
+      }
+    },
+    end: () => pool.end(),
+  };
 }
 
 /** Test hook — reset the cached lazy `mariadb` import. */

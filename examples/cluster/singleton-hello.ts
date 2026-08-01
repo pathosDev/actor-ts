@@ -13,17 +13,23 @@ import {
   ActorSystem,
   Cluster,
   ClusterBootstrapOptions,
-  ClusterSingletonId,
   InMemoryTransport,
   NodeAddress,
-  Props,
-  StartSingletonOptions,
+  SingletonKey,
 } from '../../src/index.js';
+import { attachDevTools } from '../devtools.js';
 
 class Echo extends Actor<string> {
+  /**
+   * The singleton's identity, declared on the actor itself.  The explicit type
+   * argument is what lets `start` / `ref` hand back an `ActorRef<string>`
+   * instead of `ActorRef<unknown>`.
+   */
+  static readonly singleton = SingletonKey.of<string>('echo');
+
   constructor(private readonly where: string) { super(); }
   override preStart(): void { console.log(`[${this.where}] HostedOn=${this.where} — singleton started here`); }
-  override onReceive(msg: string): void { console.log(`[${this.where}] received '${msg}'`); }
+  override onReceive(message: string): void { console.log(`[${this.where}] received '${message}'`); }
   override postStop(): void { console.log(`[${this.where}] singleton stopped here`); }
 }
 
@@ -42,6 +48,7 @@ async function startNode(host: string, port: number, seeds: string[] = []): Prom
       .withGossipIntervalMs(80)
       .withReceptionist(false)
       .withShutdownOnSignals(false));
+  await attachDevTools(system);
   return { sys: system, cluster, name: host };
 }
 
@@ -53,21 +60,20 @@ async function main(): Promise<void> {
   // Small wait so all three see each other.
   await Bun.sleep(250);
 
-  // Each node starts its own ClusterSingletonManager with the same typeName
-  // and the same Props — but only the leader's manager actually constructs it.
-  for (const { sys, cluster, name } of [nodeA, nodeB, nodeC]) {
-    sys.extension(ClusterSingletonId).start(cluster, StartSingletonOptions.create<string>()
-      .withTypeName('echo')
-      .withProps(Props.create(() => new Echo(name))));
+  // Each node starts its own ClusterSingletonManager for the same key — but
+  // only the leader's manager actually constructs the Echo actor.  `Echo`
+  // needs a constructor argument, so the factory form is used.
+  for (const { cluster, name } of [nodeA, nodeB, nodeC]) {
+    cluster.singleton.start(Echo, () => new Echo(name));
   }
 
   await Bun.sleep(100);
 
   // Every node forwards "tell from X" through its local proxy — the leader
-  // sees them all.
-  nodeA.sys.extension(ClusterSingletonId).get<string>('echo').forEach(h => h.proxy.tell('tell from a'));
-  nodeB.sys.extension(ClusterSingletonId).get<string>('echo').forEach(h => h.proxy.tell('tell from b'));
-  nodeC.sys.extension(ClusterSingletonId).get<string>('echo').forEach(h => h.proxy.tell('tell from c'));
+  // sees them all.  `ref` returns the same memoised proxy `start` did.
+  nodeA.cluster.singleton.ref(Echo).tell('tell from a');
+  nodeB.cluster.singleton.ref(Echo).tell('tell from b');
+  nodeC.cluster.singleton.ref(Echo).tell('tell from c');
 
   await Bun.sleep(150);
   for (const { sys, cluster } of [nodeA, nodeB, nodeC]) {

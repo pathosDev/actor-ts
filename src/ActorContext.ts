@@ -121,6 +121,31 @@ export interface ActorContext<TMessage = unknown> {
   /** Number of currently-stashed messages. */
   readonly stashSize: number;
 
+  /* -------------------------- Diagnostics ------------------------------- */
+
+  /**
+   * Start recording this actor's recent message handlings — type,
+   * sender, mailbox wait, handling time and outcome — for the DevTools
+   * explain plan or for reading back in code.
+   *
+   * Opt-in per actor because it is not free: recording every message on
+   * every actor would cost more than many of the handlers being
+   * measured.  Enabling it also starts timestamping this actor's
+   * incoming envelopes, which is what makes the mailbox-wait figure
+   * possible.
+   *
+   *     override preStart(): void {
+   *       this.context.enableExplainPlan({ capacity: 100 });
+   *     }
+   */
+  enableExplainPlan(options?: { readonly capacity?: number }): void;
+
+  /** Stop recording and discard what was recorded. */
+  disableExplainPlan(): void;
+
+  /** Recorded handlings, oldest first.  Empty while recording is off. */
+  explainPlan(): ReadonlyArray<import('./internal/Instrumentation.js').MessageExplain>;
+
   /* ----------------------------- Timers --------------------------------- */
 
   /**
@@ -146,7 +171,7 @@ export interface ActorContext<TMessage = unknown> {
    * Cluster-aware variants (split a budget across cluster-router
    * routees, etc.) are out of scope here — this is per-actor only.
    */
-  throttle(opts: ThrottleOptions): void;
+  throttle(options: ThrottleOptions): void;
 
   /** Remove any active throttle, restoring unlimited dequeue rate. */
   cancelThrottle(): void;
@@ -170,7 +195,7 @@ export type ThrottleOnExcess =
    */
   | 'drop';
 
-export interface ThrottleOptions {
+export type ThrottleOptions = {
   /** Token-refill rate, tokens per second.  Required; must be > 0. */
   readonly qps: number;
   /** Bucket capacity.  Default: `qps` (one second of refill). */
@@ -179,7 +204,7 @@ export interface ThrottleOptions {
   readonly onExcess?: ThrottleOnExcess;
   /** Time source — pass a deterministic clock for tests.  Default: `Date.now`. */
   readonly now?: () => number;
-}
+};
 
 /**
  * Actor-scoped scheduler.  A fresh `startSingleTimer`/`startTimerWithFixedDelay`

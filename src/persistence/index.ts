@@ -17,6 +17,8 @@ export type {
   CompressionConfig,
   EncryptionConfig,
   PersistenceOptions,
+  MasterKeyRing,
+  MasterKeyRingEntry,
 } from './PersistenceOptions.js';
 
 export { InMemoryJournal } from './journals/InMemoryJournal.js';
@@ -27,6 +29,16 @@ export { InMemorySnapshotStore } from './snapshot-stores/InMemorySnapshotStore.j
 export { SqliteSnapshotStore } from './snapshot-stores/SqliteSnapshotStore.js';
 export { SqliteSnapshotStoreOptions, SqliteSnapshotStoreOptionsBuilder } from './snapshot-stores/SqliteSnapshotStoreOptions.js';
 export type { SqliteSnapshotStoreOptionsType } from './snapshot-stores/SqliteSnapshotStoreOptions.js';
+
+export { SqliteDurableStateStore } from './durable-state-stores/SqliteDurableStateStore.js';
+export {
+  SqliteDurableStateStoreOptions,
+  SqliteDurableStateStoreOptionsBuilder,
+  SqliteDurableStateStoreOptionsValidator,
+} from './durable-state-stores/SqliteDurableStateStoreOptions.js';
+export type { SqliteDurableStateStoreOptionsType } from './durable-state-stores/SqliteDurableStateStoreOptions.js';
+export { adaptSqliteDatabase, buildSqliteDatabase } from './journals/SqliteClient.js';
+export type { SqliteConnection } from './journals/SqliteClient.js';
 export { CachedSnapshotStore } from './snapshot-stores/CachedSnapshotStore.js';
 export { CachedSnapshotStoreOptions, CachedSnapshotStoreOptionsBuilder, CachedSnapshotStoreOptionsValidator } from './snapshot-stores/CachedSnapshotStoreOptions.js';
 export type { CachedSnapshotStoreOptionsType } from './snapshot-stores/CachedSnapshotStoreOptions.js';
@@ -57,6 +69,29 @@ export {
 export { RegisterCassandraPluginsOptions, RegisterCassandraPluginsOptionsBuilder } from './journals/CassandraPluginOptions.js';
 export type { RegisterCassandraPluginsOptionsType } from './journals/CassandraPluginOptions.js';
 
+// Store lifecycle shared by every backend that talks to an external system —
+// lazy first-use connection, one-shot schema preparation, ownership-aware
+// teardown.  The relational and MongoDB families both build on it.
+export { LazyStore } from './LazyStore.js';
+export type { LazyStoreConfig } from './LazyStore.js';
+
+// Relational base layer — the extension point for a new SQL backend.  Supply a
+// `SqlDialect` plus a `SqlPool` adapter and the journal / snapshot /
+// durable-state trio comes with it, instead of a third copy of three stores.
+export { RelationalJournal } from './relational/RelationalJournal.js';
+export type { RelationalJournalConfig } from './relational/RelationalJournal.js';
+export { RelationalSnapshotStore } from './relational/RelationalSnapshotStore.js';
+export type { RelationalSnapshotStoreConfig } from './relational/RelationalSnapshotStore.js';
+export { RelationalDurableStateStore } from './relational/RelationalDurableStateStore.js';
+export type { RelationalDurableStateStoreConfig } from './relational/RelationalDurableStateStore.js';
+export { RelationalStore } from './relational/RelationalStore.js';
+export type { RelationalStoreConfig } from './relational/RelationalStore.js';
+export { expandPlaceholders } from './relational/SqlDialect.js';
+export type { InsertConflictSignal, JournalTableNames, SqlDialect } from './relational/SqlDialect.js';
+export type { SqlExecutor, SqlPool, SqlResult } from './relational/SqlPool.js';
+export { postgresDialect } from './relational/PostgresDialect.js';
+export { mariaDbDialect } from './relational/MariaDbDialect.js';
+
 // PostgreSQL plug-in (journal + snapshot + durable-state).
 export { PostgresJournal } from './journals/PostgresJournal.js';
 export { PostgresJournalOptions, PostgresJournalOptionsBuilder } from './journals/PostgresJournalOptions.js';
@@ -81,6 +116,246 @@ export type {
   PgPoolLike,
   PgClientLike,
 } from './journals/PostgresClient.js';
+
+// Cloudflare D1 plug-in (journal + snapshot + durable-state).  SQLite at the
+// edge over D1's REST API — SDK-free, using the built-in HttpClient, and sharing
+// `sqliteDialect` with the local SQLite and libSQL backends.
+export { D1Journal } from './journals/D1Journal.js';
+export {
+  D1JournalOptions,
+  D1JournalOptionsBuilder,
+  D1JournalOptionsValidator,
+} from './journals/D1JournalOptions.js';
+export type { D1JournalOptionsType } from './journals/D1JournalOptions.js';
+export { D1SnapshotStore } from './snapshot-stores/D1SnapshotStore.js';
+export {
+  D1SnapshotStoreOptions,
+  D1SnapshotStoreOptionsBuilder,
+  D1SnapshotStoreOptionsValidator,
+} from './snapshot-stores/D1SnapshotStoreOptions.js';
+export type { D1SnapshotStoreOptionsType } from './snapshot-stores/D1SnapshotStoreOptions.js';
+export { D1DurableStateStore } from './durable-state-stores/D1DurableStateStore.js';
+export {
+  D1DurableStateStoreOptions,
+  D1DurableStateStoreOptionsBuilder,
+  D1DurableStateStoreOptionsValidator,
+} from './durable-state-stores/D1DurableStateStoreOptions.js';
+export type { D1DurableStateStoreOptionsType } from './durable-state-stores/D1DurableStateStoreOptions.js';
+export {
+  D1OptionsBuilderBase,
+  D1OptionsValidatorBase,
+  assertD1BaseUrl,
+} from './journals/D1OptionsBase.js';
+export type { D1OptionsBaseType } from './journals/D1OptionsBase.js';
+export {
+  registerD1Plugins,
+  D1_JOURNAL_PLUGIN_ID,
+  D1_SNAPSHOT_PLUGIN_ID,
+  D1_DURABLE_STATE_PLUGIN_ID,
+} from './journals/D1Plugin.js';
+export { RegisterD1PluginsOptions, RegisterD1PluginsOptionsBuilder } from './journals/D1PluginOptions.js';
+export type { RegisterD1PluginsOptionsType } from './journals/D1PluginOptions.js';
+export type { D1PluginHandles } from './journals/D1Plugin.js';
+export { D1RequestError, DEFAULT_D1_BASE_URL, adaptD1Client, buildD1Client } from './journals/D1Client.js';
+export type { D1ClientLike, D1Connection, D1QueryResult } from './journals/D1Client.js';
+
+// DynamoDB plug-in (journal + snapshot + durable-state).  The concurrency
+// backstop is a conditional write, and `TransactWriteItems` makes a multi-event
+// append atomic — stronger than the relational backends manage.
+export { DynamoDbJournal } from './journals/DynamoDbJournal.js';
+export {
+  DynamoDbJournalOptions,
+  DynamoDbJournalOptionsBuilder,
+  DynamoDbJournalOptionsValidator,
+} from './journals/DynamoDbJournalOptions.js';
+export type { DynamoDbJournalOptionsType } from './journals/DynamoDbJournalOptions.js';
+export { DynamoDbSnapshotStore } from './snapshot-stores/DynamoDbSnapshotStore.js';
+export {
+  DynamoDbSnapshotStoreOptions,
+  DynamoDbSnapshotStoreOptionsBuilder,
+  DynamoDbSnapshotStoreOptionsValidator,
+} from './snapshot-stores/DynamoDbSnapshotStoreOptions.js';
+export type { DynamoDbSnapshotStoreOptionsType } from './snapshot-stores/DynamoDbSnapshotStoreOptions.js';
+export { DynamoDbDurableStateStore } from './durable-state-stores/DynamoDbDurableStateStore.js';
+export {
+  DynamoDbDurableStateStoreOptions,
+  DynamoDbDurableStateStoreOptionsBuilder,
+  DynamoDbDurableStateStoreOptionsValidator,
+} from './durable-state-stores/DynamoDbDurableStateStoreOptions.js';
+export type { DynamoDbDurableStateStoreOptionsType } from './durable-state-stores/DynamoDbDurableStateStoreOptions.js';
+export { DynamoDbStore } from './journals/DynamoDbStore.js';
+export type { DynamoDbStoreConfig, DynamoDbTableSchema } from './journals/DynamoDbStore.js';
+export {
+  DynamoDbOptionsBuilderBase,
+  DynamoDbOptionsValidatorBase,
+  assertDynamoDbTableName,
+} from './journals/DynamoDbOptionsBase.js';
+export type { DynamoDbOptionsBaseType, DynamoDbTableProvisioning } from './journals/DynamoDbOptionsBase.js';
+export {
+  registerDynamoDbPlugins,
+  DYNAMODB_JOURNAL_PLUGIN_ID,
+  DYNAMODB_SNAPSHOT_PLUGIN_ID,
+  DYNAMODB_DURABLE_STATE_PLUGIN_ID,
+} from './journals/DynamoDbPlugin.js';
+export { RegisterDynamoDbPluginsOptions, RegisterDynamoDbPluginsOptionsBuilder } from './journals/DynamoDbPluginOptions.js';
+export type { RegisterDynamoDbPluginsOptionsType } from './journals/DynamoDbPluginOptions.js';
+export type { DynamoDbPluginHandles } from './journals/DynamoDbPlugin.js';
+export {
+  isConditionalCheckFailed,
+  isTableAlreadyExists,
+  isTableNotFound,
+  numberAttribute,
+  readNumber,
+  readString,
+  readStringSet,
+  stringAttribute,
+  stringSetAttribute,
+} from './journals/DynamoDbClient.js';
+export type {
+  DynamoDbAttribute,
+  DynamoDbBatchWriteResult,
+  DynamoDbClientLike,
+  DynamoDbConnection,
+  DynamoDbGetResult,
+  DynamoDbItem,
+  DynamoDbOperations,
+  DynamoDbQueryResult,
+  DynamoDbTableDescription,
+} from './journals/DynamoDbClient.js';
+
+// MongoDB plug-in (journal + snapshot + durable-state + indexed tag query).
+// The first document-store backend: no SqlDialect, but the same two-layer
+// optimistic concurrency, with a unique compound index in place of a primary key.
+export { MongoJournal } from './journals/MongoJournal.js';
+export {
+  MongoJournalOptions,
+  MongoJournalOptionsBuilder,
+  MongoJournalOptionsValidator,
+  MONGO_URL_PROTOCOLS,
+} from './journals/MongoJournalOptions.js';
+export type { MongoJournalOptionsType } from './journals/MongoJournalOptions.js';
+export { MongoSnapshotStore } from './snapshot-stores/MongoSnapshotStore.js';
+export {
+  MongoSnapshotStoreOptions,
+  MongoSnapshotStoreOptionsBuilder,
+  MongoSnapshotStoreOptionsValidator,
+} from './snapshot-stores/MongoSnapshotStoreOptions.js';
+export type { MongoSnapshotStoreOptionsType } from './snapshot-stores/MongoSnapshotStoreOptions.js';
+export { MongoDurableStateStore } from './durable-state-stores/MongoDurableStateStore.js';
+export {
+  MongoDurableStateStoreOptions,
+  MongoDurableStateStoreOptionsBuilder,
+  MongoDurableStateStoreOptionsValidator,
+} from './durable-state-stores/MongoDurableStateStoreOptions.js';
+export type { MongoDurableStateStoreOptionsType } from './durable-state-stores/MongoDurableStateStoreOptions.js';
+export { MongoQuery } from './query/MongoQuery.js';
+export { MongoStore } from './journals/MongoStore.js';
+export type { MongoStoreConfig } from './journals/MongoStore.js';
+export {
+  registerMongoPlugins,
+  MONGO_JOURNAL_PLUGIN_ID,
+  MONGO_SNAPSHOT_PLUGIN_ID,
+  MONGO_DURABLE_STATE_PLUGIN_ID,
+} from './journals/MongoPlugin.js';
+export { RegisterMongoPluginsOptions, RegisterMongoPluginsOptionsBuilder } from './journals/MongoPluginOptions.js';
+export type { RegisterMongoPluginsOptionsType } from './journals/MongoPluginOptions.js';
+export type { MongoPluginHandles } from './journals/MongoPlugin.js';
+export { DEFAULT_MONGO_DATABASE, isMongoDuplicateKeyError } from './journals/MongoClient.js';
+export type {
+  MongoClientLike,
+  MongoCollectionLike,
+  MongoConnection,
+  MongoCursorLike,
+  MongoDatabaseLike,
+  MongoDeleteResult,
+  MongoDocument,
+  MongoResource,
+  MongoSortSpec,
+  MongoUpdateResult,
+} from './journals/MongoClient.js';
+
+// Microsoft SQL Server plug-in (journal + snapshot + durable-state).  The
+// `mssql`/tedious driver is pure JavaScript, so it runs on all three runtimes.
+export { MsSqlJournal } from './journals/MsSqlJournal.js';
+export {
+  MsSqlJournalOptions,
+  MsSqlJournalOptionsBuilder,
+  MsSqlJournalOptionsValidator,
+} from './journals/MsSqlJournalOptions.js';
+export type { MsSqlJournalOptionsType } from './journals/MsSqlJournalOptions.js';
+export { MsSqlSnapshotStore } from './snapshot-stores/MsSqlSnapshotStore.js';
+export {
+  MsSqlSnapshotStoreOptions,
+  MsSqlSnapshotStoreOptionsBuilder,
+  MsSqlSnapshotStoreOptionsValidator,
+} from './snapshot-stores/MsSqlSnapshotStoreOptions.js';
+export type { MsSqlSnapshotStoreOptionsType } from './snapshot-stores/MsSqlSnapshotStoreOptions.js';
+export { MsSqlDurableStateStore } from './durable-state-stores/MsSqlDurableStateStore.js';
+export {
+  MsSqlDurableStateStoreOptions,
+  MsSqlDurableStateStoreOptionsBuilder,
+  MsSqlDurableStateStoreOptionsValidator,
+} from './durable-state-stores/MsSqlDurableStateStoreOptions.js';
+export type { MsSqlDurableStateStoreOptionsType } from './durable-state-stores/MsSqlDurableStateStoreOptions.js';
+export {
+  registerMsSqlPlugins,
+  MSSQL_JOURNAL_PLUGIN_ID,
+  MSSQL_SNAPSHOT_PLUGIN_ID,
+  MSSQL_DURABLE_STATE_PLUGIN_ID,
+} from './journals/MsSqlPlugin.js';
+export { RegisterMsSqlPluginsOptions, RegisterMsSqlPluginsOptionsBuilder } from './journals/MsSqlPluginOptions.js';
+export type { RegisterMsSqlPluginsOptionsType } from './journals/MsSqlPluginOptions.js';
+export type { MsSqlPluginHandles } from './journals/MsSqlPlugin.js';
+export type {
+  MsSqlConnection,
+  MsSqlPoolLike,
+  MsSqlRequestLike,
+  MsSqlResult,
+  MsSqlTransactionLike,
+} from './journals/MsSqlClient.js';
+export { msSqlDialect } from './relational/MsSqlDialect.js';
+
+// libSQL / Turso plug-in (journal + snapshot + durable-state) — SQLite over
+// HTTP/WebSocket, so it needs no native binding and runs on all three runtimes.
+export { LibSqlJournal } from './journals/LibSqlJournal.js';
+export {
+  LibSqlJournalOptions,
+  LibSqlJournalOptionsBuilder,
+  LibSqlJournalOptionsValidator,
+  LIBSQL_URL_PROTOCOLS,
+} from './journals/LibSqlJournalOptions.js';
+export type { LibSqlJournalOptionsType } from './journals/LibSqlJournalOptions.js';
+export { LibSqlSnapshotStore } from './snapshot-stores/LibSqlSnapshotStore.js';
+export {
+  LibSqlSnapshotStoreOptions,
+  LibSqlSnapshotStoreOptionsBuilder,
+  LibSqlSnapshotStoreOptionsValidator,
+} from './snapshot-stores/LibSqlSnapshotStoreOptions.js';
+export type { LibSqlSnapshotStoreOptionsType } from './snapshot-stores/LibSqlSnapshotStoreOptions.js';
+export { LibSqlDurableStateStore } from './durable-state-stores/LibSqlDurableStateStore.js';
+export {
+  LibSqlDurableStateStoreOptions,
+  LibSqlDurableStateStoreOptionsBuilder,
+  LibSqlDurableStateStoreOptionsValidator,
+} from './durable-state-stores/LibSqlDurableStateStoreOptions.js';
+export type { LibSqlDurableStateStoreOptionsType } from './durable-state-stores/LibSqlDurableStateStoreOptions.js';
+export {
+  registerLibSqlPlugins,
+  LIBSQL_JOURNAL_PLUGIN_ID,
+  LIBSQL_SNAPSHOT_PLUGIN_ID,
+  LIBSQL_DURABLE_STATE_PLUGIN_ID,
+} from './journals/LibSqlPlugin.js';
+export { RegisterLibSqlPluginsOptions, RegisterLibSqlPluginsOptionsBuilder } from './journals/LibSqlPluginOptions.js';
+export type { RegisterLibSqlPluginsOptionsType } from './journals/LibSqlPluginOptions.js';
+export type { LibSqlPluginHandles } from './journals/LibSqlPlugin.js';
+export type {
+  LibSqlConnection,
+  LibSqlClientLike,
+  LibSqlResultSet,
+  LibSqlStatement,
+  LibSqlTransactionLike,
+} from './journals/LibSqlClient.js';
+export { sqliteDialect } from './relational/SqliteDialect.js';
 
 // MariaDB / MySQL plug-in (journal + snapshot + durable-state).
 export { MariaDbJournal } from './journals/MariaDbJournal.js';
@@ -194,6 +469,7 @@ export {
   offsetOfEvent,
   normalizeTagFilter,
   eventMatchesTagFilter,
+  tagFilterCursorKey,
 } from './query/PersistenceQuery.js';
 export { InMemoryQuery } from './query/InMemoryQuery.js';
 export { SqliteQuery } from './query/SqliteQuery.js';

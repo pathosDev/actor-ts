@@ -17,19 +17,19 @@ import type {
  * it into `serveOptions`.
  */
 export class BunHonoRunner implements HonoServerRunner {
-  async serve(opts: { host: string; port: number; fetch: FetchHandler; serveOptions?: object }): Promise<HonoServerHandle> {
+  async serve(options: { host: string; port: number; fetch: FetchHandler; serveOptions?: object }): Promise<HonoServerHandle> {
     const bun = (globalThis as { Bun?: BunServeGlobal }).Bun;
     if (!bun || typeof bun.serve !== 'function') {
       throw new Error('BunHonoRunner requires the Bun runtime (globalThis.Bun.serve).');
     }
     const server = bun.serve({
-      hostname: opts.host,
-      port: opts.port,
-      fetch: opts.fetch,
-      ...(opts.serveOptions ?? {}),
+      hostname: options.host,
+      port: options.port,
+      fetch: options.fetch,
+      ...(options.serveOptions ?? {}),
     });
     return {
-      host: server.hostname ?? opts.host,
+      host: server.hostname ?? options.host,
       port: server.port,
       async stop(graceful: boolean): Promise<void> { server.stop(!graceful); },
     };
@@ -62,5 +62,5 @@ interface BunServer {
 }
 
 interface BunServeGlobal {
-  serve(opts: { hostname: string; port: number; fetch: FetchHandler; websocket?: unknown }): BunServer;
+  serve(options: { hostname: string; port: number; fetch: FetchHandler; websocket?: unknown }): BunServer;
 }

@@ -1,0 +1,60 @@
+# Fast, dependency-free documentation checks that run on every docs change —
+# distinct from `docs.yml` (which does the slow TypeDoc + Astro + Mermaid build
+# and only deploys from `main` at release time).  Doc code fences are never
+# type-checked, so a renamed/removed API silently rots in a snippet until a
+# reader copies it; the api-drift guard greps for the names that have bitten us.
+name: docs-checks
+
+on:
+  push:
+    branches: ['**']
+    paths:
+      - 'docs/**'
+      - '.github/workflows/docs-checks.yml'
+  pull_request:
+    branches: [main, develop]
+    paths:
+      - 'docs/**'
+      - '.github/workflows/docs-checks.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  api-drift:
+    name: API-drift guard
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+
+      # Pure node:fs/url script, no dependencies — no install step needed.
+      - name: Check docs for removed/renamed API names
+        working-directory: docs
+        run: node scripts/check-api-drift.mjs
+
+  # Dependabot bumps `docs/package.json` but never regenerates `docs/bun.lock`
+  # (it does not speak the Bun lockfile format).  The slow `docs.yml` build only
+  # runs on `main` at release time, so a drifted lockfile — or a bump whose peer
+  # ranges do not actually resolve — stayed invisible for weeks and then broke
+  # the release docs deploy (#473).  This job is a ~10 s frozen install that
+  # fails on the PR instead.
+  lockfile-sync:
+    name: docs/bun.lock in sync with docs/package.json
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Frozen install
+        working-directory: docs
+        run: bun install --frozen-lockfile

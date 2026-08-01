@@ -64,11 +64,11 @@ sein, sonst schlägt der Actor beim Start sofort fehl.
 Jedes geparste Event wird als `SseEvent` zugestellt:
 
 ```ts
-interface SseEvent {
+type SseEvent = {
   event: string;   // the `event:` field, or 'message' by default
   data:  string;   // the `data:` payload
   id?:   string;   // the `id:` field, when present
-}
+};
 ```
 
 Der Client parst das SSE-Wire-Format — Events durch eine Leerzeile
@@ -98,8 +98,8 @@ Parsing-Regeln, die der SSE-Spezifikation folgen:
 - **`id`.**  Als `ev.id` zugestellt, wenn der Server eine sendet;
   sonst `undefined`.
 
-Der obige Stream stellt somit vier Events zu: `{ event: 'message',
-data: 'hello' }`, zwei `tick`-Events mit `id` `'100'` / `'101'` und
+Der obige Stream stellt somit drei Events zu: `{ event: 'message',
+data: 'hello' }`, ein `tick`-Event mit `id` `'100'` und
 das mehrzeilige `{ event: 'message', data: 'line-1\nline-2' }`.
 
 ## Reconnect und Circuit Breaker
@@ -113,7 +113,7 @@ SseOptions.create()
   .withUrl('https://example.com/events')
   .withTarget(target)
   .withReconnect({ /* base delay, max delay, jitter … */ })
-  .withCircuitBreaker({ /* failure threshold, cooldown … */ });
+  .withCircuitBreaker(5, 30_000);   // failureThreshold, resetMs
 ```
 
 Wenn der Stream endet oder die Verbindung abbricht, greift die

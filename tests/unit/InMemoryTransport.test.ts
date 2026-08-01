@@ -32,8 +32,8 @@ describe('InMemoryTransport', () => {
   test('send delivers to the registered peer handler', async () => {
     const transportA = newTransport(40101);
     const transportB = newTransport(40102);
-    const receivedOnB: Array<{ from: NodeAddress; msg: WireMessage }> = [];
-    transportB.setHandler((from, msg) => receivedOnB.push({ from, msg }));
+    const receivedOnB: Array<{ from: NodeAddress; message: WireMessage }> = [];
+    transportB.setHandler((from, message) => receivedOnB.push({ from, message }));
     await transportA.start();
     await transportB.start();
     try {
@@ -41,7 +41,7 @@ describe('InMemoryTransport', () => {
       await sleep(20);
       expect(receivedOnB.length).toBe(1);
       expect(receivedOnB[0]!.from.equals(transportA.self)).toBe(true);
-      expect(receivedOnB[0]!.msg.t).toBe('hello');
+      expect(receivedOnB[0]!.message.t).toBe('hello');
     } finally {
       await transportA.shutdown(); await transportB.shutdown();
     }

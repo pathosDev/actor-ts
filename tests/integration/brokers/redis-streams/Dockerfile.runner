@@ -3,7 +3,7 @@
 # runners — see tests/integration/brokers/README.md for the full
 # rationale.
 
-FROM oven/bun:debian
+FROM oven/bun:1.3-debian
 
 RUN apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates curl \

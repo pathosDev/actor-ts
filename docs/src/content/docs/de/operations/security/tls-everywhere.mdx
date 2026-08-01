@@ -44,7 +44,7 @@ const http = system.extension(HttpExtensionId);
 
 await http.newServerAt('0.0.0.0', 8443)
   .useBackend(new FastifyBackend({
-    tls: {
+    https: {
       cert: fs.readFileSync('./tls/http.crt'),
       key:  fs.readFileSync('./tls/http.key'),
     },
@@ -60,8 +60,7 @@ Infrastruktur.
 ## Management-Endpunkt
 
 ```ts
-import { managementRoutes } from 'actor-ts';
-import { FastifyBackend } from 'actor-ts/http';
+import { managementRoutes, FastifyBackend } from 'actor-ts';
 
 const { routes } = managementRoutes(system, cluster);
 

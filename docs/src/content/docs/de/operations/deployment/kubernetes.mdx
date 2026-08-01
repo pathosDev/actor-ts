@@ -116,13 +116,13 @@ spec:
                   key: db-password
           readinessProbe:
             httpGet:
-              path: /health/ready
+              path: /ready
               port: management
             initialDelaySeconds: 5
             periodSeconds: 5
           livenessProbe:
             httpGet:
-              path: /health/alive
+              path: /health
               port: management
             initialDelaySeconds: 15
             periodSeconds: 10
@@ -221,19 +221,19 @@ Requests können "draining"-Antworten sehen.
 ### Readiness- + Liveness-Probes
 
 ```yaml
-readinessProbe: /health/ready
-livenessProbe:  /health/alive
+readinessProbe: /ready
+livenessProbe:  /health
 ```
 
 Die
 [Management-Routen](/de/observability/management/overview/)
 des Frameworks stellen diese Endpunkte bereit.
 
-- **`/health/ready`** — "soll dieser Pod Traffic bekommen?"
+- **`/ready`** — "soll dieser Pod Traffic bekommen?"
   Liefert während des Shutdowns 503, damit der LB ihn vor SIGTERM
   rauswirft. Nutze, um App-spezifische Health-Checks abzusichern
   (DB erreichbar, Dependencies warm etc.).
-- **`/health/alive`** — "ist dieser Pod grundlegend kaputt?"
+- **`/health`** — "ist dieser Pod grundlegend kaputt?"
   Schlägt fehl → K8s startet den Pod neu. Reserviere für wirklich
   unrettbare Zustände — Actor-System läuft nicht, OOM-artige
   Bedingungen.
@@ -241,8 +241,7 @@ des Frameworks stellen diese Endpunkte bereit.
 ## App-seitige Verdrahtung
 
 ```ts
-import { ActorSystem, Cluster, ClusterOptions, CoordinatedShutdownId, managementRoutes } from 'actor-ts';
-import { KubernetesApiSeedProvider, KubernetesApiSeedProviderOptions } from 'actor-ts/discovery';
+import { ActorSystem, Cluster, ClusterOptions, CoordinatedShutdownId, KubernetesApiSeedProvider, KubernetesApiSeedProviderOptions, managementRoutes } from 'actor-ts';
 
 const system = ActorSystem.create('my-app');
 const cs     = system.extension(CoordinatedShutdownId);
@@ -253,12 +252,12 @@ const kubernetesApiSeedProviderOptions = KubernetesApiSeedProviderOptions.create
   .withServiceName(process.env.K8S_SERVICE_NAME!)
   .withSystemName(system.name)
   .withPort(2552);
-const seeds = await new KubernetesApiSeedProvider(kubernetesApiSeedProviderOptions).discover();
+const seeds = await new KubernetesApiSeedProvider(kubernetesApiSeedProviderOptions).lookup();
 
 const clusterOptions = ClusterOptions.create()
   .withHost(process.env.ACTOR_TS_HOSTNAME!)
   .withPort(parseInt(process.env.ACTOR_TS_PORT!))
-  .withSeeds(seeds)
+  .withSeeds(seeds.map(a => a.toString()))
   .withRoles(['compute']);
 const cluster = await Cluster.join(system, clusterOptions);
 
@@ -283,7 +282,7 @@ Fünf Schritte in der Reihenfolge:
    fragt Pods ab, die `app=actor-ts` matchen, und nutzt deren IPs
    als Seeds. Auf dem ersten Pod ist die Seed-Liste nur er selbst
    (der Auto-Promote-to-Leader-Pfad).
-2. **Management-Endpunkte** — `/health/*` für die K8s-Probes,
+2. **Management-Endpunkte** — `/health` + `/ready` für die K8s-Probes,
    `/cluster/members` zum Debuggen.
 3. **App-HTTP** — deine Routes, getrennter Port vom Management.
 4. **SIGTERM-Hooks** — Coordinated Shutdown installiert Hooks, die
@@ -339,7 +338,7 @@ import { Aside } from '@astrojs/starlight/components';
   länger ist als deine längste Shutdown-Phase.
 </Aside>
 
-<Aside type="caution" title="Pre-1.0 des K8sLeaseProviders">
+<Aside type="caution" title="Pre-1.0 des Kubernetes-Lease-Providers">
   Der [Kubernetes-Lease](/de/coordination/kubernetes-lease/)-Provider
   nutzt native K8s-Lease-Ressourcen für Split-Brain-Schutz in
   Singletons. Er funktioniert, hat aber weniger Produktionsstunden als
@@ -356,7 +355,7 @@ import { Aside } from '@astrojs/starlight/components';
 - **[Coordinated Shutdown](/de/fundamentals/coordinated-shutdown/)** —
   die DSL für phased Shutdown.
 - **[Management-Endpunkte](/de/observability/management/overview/)** —
-  die /health/*-Endpunkte, gegen die K8s-Probes laufen.
+  die /health- und /ready-Endpunkte, gegen die K8s-Probes laufen.
 - **[Cluster-Sicherheit](/de/operations/security/cluster-security/)** —
   TLS + Auth für den Cluster-Transport.
 - **[Rolling Migration](/de/operations/upgrades/rolling-migration/)** —

@@ -42,7 +42,7 @@ import { WebsocketIngressActor } from './WebsocketIngressActor.js';
 import { buildRoutes } from '../routes.js';
 import type { ChatRoomCommand } from './ChatRoomActor.js';
 import type { ChatRoomDirectoryCommand } from './ChatRoomDirectoryActor.js';
-import type { DmChannelCommand } from './DmChannelActor.js';
+import type { DirectMessageChannelCommand } from './DirectMessageChannelActor.js';
 import type { OnlineUsersCommand } from './OnlineUsersActor.js';
 import type { ReadReceiptsCommand } from './ReadReceiptsActor.js';
 import type { SessionStore } from '../auth/sessionStore.js';
@@ -57,12 +57,12 @@ import type { SessionStore } from '../auth/sessionStore.js';
  * (`mkcert localhost` for local dev, Caddy or nginx in front for
  * production).
  */
-export interface TlsMaterial {
+export type TlsMaterial = {
   readonly cert: Buffer | string;
   readonly key: Buffer | string;
-}
+};
 
-export interface HttpIngressDeps {
+export type HttpIngressDeps = {
   /** Bind interface — typically `127.0.0.1` for the local demo. */
   readonly host: string;
   /** Public port — single value shared cluster-wide. */
@@ -73,8 +73,8 @@ export interface HttpIngressDeps {
   readonly system: ActorSystem;
   /** Sharded ChatRoom region — local ref on any node. */
   readonly chatRoomRegion: ActorRef<ChatRoomCommand>;
-  /** Sharded DmChannel region (one per canonical participant pair). */
-  readonly dmChannelRegion: ActorRef<DmChannelCommand>;
+  /** Sharded DirectMessageChannel region (one per canonical participant pair). */
+  readonly directMessageChannelRegion: ActorRef<DirectMessageChannelCommand>;
   /** Local OnlineUsersActor on this node. */
   readonly onlineUsers: ActorRef<OnlineUsersCommand>;
   /** Local DistributedPubSub mediator on this node. */
@@ -87,7 +87,7 @@ export interface HttpIngressDeps {
   readonly readReceipts: ActorRef<ReadReceiptsCommand>;
   /** Optional TLS — when set, the listener becomes HTTPS + WSS. */
   readonly tls?: TlsMaterial;
-}
+};
 
 /**
  * The singleton actor's mailbox is empty by design — it just holds
@@ -124,7 +124,7 @@ export class HttpIngressActor extends Actor<never> {
     const ingress = system.spawn(
       Props.create(() => new WebsocketIngressActor({
         chatRoomRegion: this.deps.chatRoomRegion,
-        dmChannelRegion: this.deps.dmChannelRegion,
+        directMessageChannelRegion: this.deps.directMessageChannelRegion,
         onlineUsers: this.deps.onlineUsers,
         mediator: this.deps.mediator,
         sessions: this.deps.sessions,

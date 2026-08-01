@@ -1,0 +1,735 @@
+/*
+ * DevTools design tokens.
+ *
+ * Dark-first on purpose: this is a developer tool that sits open next
+ * to an editor, and `:root` is dark regardless of `prefers-color-scheme`
+ * so it matches that context out of the box.  The toggle in the header
+ * stamps `data-theme="light"` and persists the choice.
+ *
+ * The chrome palette is the one from the documentation site and the
+ * logo — indigo accent on a slate ladder — so the tool looks like part
+ * of the project rather than a bolted-on admin page.  Colour is spent
+ * on DATA, not on furniture: `--dt-data-*` is the categorical ramp for
+ * charts and `--dt-state-*` carries fixed meaning (running, suspended,
+ * failed) so the same status reads the same in every panel.
+ */
+
+:root {
+  color-scheme: dark;
+
+  --dt-bg: #0f172a;             /* slate-900 — page */
+  --dt-bg-elevated: #1e293b;    /* slate-800 — cards, code */
+  --dt-bg-inset: #172033;       /* between page and card — nav rail */
+  --dt-border: #334155;         /* slate-700 */
+  --dt-border-strong: #475569;  /* slate-600 */
+  --dt-text: #cbd5e1;           /* slate-300 — body */
+  --dt-text-strong: #f1f5f9;    /* slate-100 — headings, numbers */
+  --dt-text-muted: #94a3b8;     /* slate-400 — labels */
+  --dt-accent: #818cf8;         /* indigo-400 — bright enough on dark */
+  --dt-accent-strong: #c7d2fe;  /* indigo-200 */
+  --dt-accent-low: #1e1b4b;     /* indigo-950 — hover fill */
+  --dt-shadow: 0 1px 2px rgb(0 0 0 / 40%);
+
+  /* Categorical ramp for charts and series. */
+  --dt-data-1: #818cf8;   /* indigo */
+  --dt-data-2: #22c55e;   /* green  */
+  --dt-data-3: #f59e0b;   /* amber  */
+  --dt-data-4: #ef4444;   /* red    */
+  --dt-data-5: #a855f7;   /* purple */
+  --dt-data-6: #06b6d4;   /* cyan   */
+  --dt-data-7: #ec4899;   /* pink   */
+  --dt-data-8: #84cc16;   /* lime   */
+
+  /* Fixed meanings — never reuse these for series colours. */
+  --dt-state-ok: #22c55e;
+  --dt-state-warn: #f59e0b;
+  --dt-state-error: #ef4444;
+  --dt-state-idle: #64748b;
+
+  --dt-radius: 0;
+  --dt-gap: 16px;
+  --dt-font: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --dt-font-mono: ui-monospace, 'JetBrains Mono', 'Fira Code', Menlo, monospace;
+}
+
+:root[data-theme='light'] {
+  color-scheme: light;
+
+  --dt-bg: #ffffff;
+  --dt-bg-elevated: #f8fafc;
+  --dt-bg-inset: #f1f5f9;
+  --dt-border: #e2e8f0;
+  --dt-border-strong: #cbd5e1;
+  --dt-text: #334155;
+  --dt-text-strong: #0f172a;
+  --dt-text-muted: #64748b;
+  --dt-accent: #4f46e5;         /* indigo-600 — dark enough on white */
+  --dt-accent-strong: #312e81;
+  --dt-accent-low: #e0e7ff;
+  --dt-shadow: 0 1px 2px rgb(15 23 42 / 8%);
+
+  --dt-data-1: #4f46e5;
+  --dt-data-2: #16a34a;
+  --dt-data-3: #d97706;
+  --dt-data-4: #dc2626;
+  --dt-data-5: #9333ea;
+  --dt-data-6: #0891b2;
+  --dt-data-7: #db2777;
+  --dt-data-8: #65a30d;
+
+  --dt-state-ok: #16a34a;
+  --dt-state-warn: #d97706;
+  --dt-state-error: #dc2626;
+  --dt-state-idle: #94a3b8;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--dt-bg);
+  color: var(--dt-text);
+  font-family: var(--dt-font);
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+a { color: var(--dt-accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+/* ------------------------------- shell -------------------------------- */
+
+.dt-app { display: grid; grid-template-rows: auto 1fr; min-height: 100vh; }
+
+.dt-header {
+  display: flex;
+  align-items: center;
+  gap: var(--dt-gap);
+  padding: 10px 18px;
+  background: var(--dt-bg-inset);
+  border-bottom: 1px solid var(--dt-border);
+}
+.dt-header__logo { display: block; height: 26px; }
+.dt-header__logo svg { height: 100%; width: auto; display: block; }
+.dt-header__system {
+  font-family: var(--dt-font-mono);
+  color: var(--dt-text-strong);
+  font-weight: 600;
+}
+.dt-header__spacer { flex: 1; }
+
+.dt-status { display: inline-flex; align-items: center; gap: 7px; font-size: 12.5px; }
+.dt-status__dot { width: 8px; height: 8px; border-radius: 50%; background: var(--dt-state-idle); }
+.dt-status--open .dt-status__dot { background: var(--dt-state-ok); }
+.dt-status--connecting .dt-status__dot { background: var(--dt-state-warn); }
+.dt-status--closed .dt-status__dot,
+.dt-status--incompatible .dt-status__dot { background: var(--dt-state-error); }
+
+.dt-iconbutton {
+  background: transparent;
+  border: 1px solid var(--dt-border);
+  color: var(--dt-text);
+  border-radius: 0;
+  padding: 4px 10px;
+  cursor: pointer;
+  font: inherit;
+  font-size: 13px;
+}
+.dt-iconbutton:hover { background: var(--dt-accent-low); border-color: var(--dt-accent); }
+/* A toggle that is currently doing something to the running system. */
+.dt-iconbutton--active {
+  background: var(--dt-state-error);
+  border-color: var(--dt-state-error);
+  color: var(--dt-bg);
+}
+.dt-iconbutton--active:hover { background: var(--dt-state-error); border-color: var(--dt-state-error); }
+
+/* Room to explain an empty panel, rather than one grey line. */
+.dt-emptystate { display: flex; flex-direction: column; gap: 10px; max-width: 62ch; }
+
+/* Nothing on the other end.  A modal rather than a strip along the top:
+   every panel behind it is still drawing the last thing it heard, which
+   looks exactly like a healthy system, and that is worth interrupting
+   for. */
+.dt-dialog {
+  border: 2px solid var(--dt-state-error);
+  background: var(--dt-bg-elevated);
+  color: var(--dt-text);
+  padding: 0;
+  max-width: 60ch;
+  box-shadow: 0 8px 32px rgb(0 0 0 / 45%);
+}
+.dt-dialog::backdrop { background: rgb(0 0 0 / 55%); }
+.dt-dialog__body { padding: 20px 22px 4px; display: flex; flex-direction: column; gap: 10px; }
+.dt-dialog__body p { margin: 0; font-size: 13.5px; }
+.dt-dialog__title { margin: 0; font-size: 17px; color: var(--dt-state-error); }
+.dt-dialog__hint { color: var(--dt-text-muted); }
+.dt-dialog__actions { display: flex; justify-content: flex-end; padding: 14px 22px 18px; }
+/* Frozen figures should not read as live ones once the dialog is gone. */
+.dt-app--offline .dt-panel { opacity: 0.55; }
+
+.dt-body { display: grid; grid-template-columns: 208px 1fr; min-height: 0; }
+
+.dt-nav {
+  background: var(--dt-bg-inset);
+  border-right: 1px solid var(--dt-border);
+  padding: 12px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.dt-nav__item {
+  display: block;
+  padding: 7px 11px;
+  border-radius: 0;
+  color: var(--dt-text);
+  font-size: 13.5px;
+}
+.dt-nav__item:hover { background: var(--dt-accent-low); text-decoration: none; }
+.dt-nav__item--current { background: var(--dt-accent-low); color: var(--dt-accent-strong); font-weight: 600; }
+.dt-nav__item--unavailable { color: var(--dt-text-muted); cursor: not-allowed; }
+.dt-nav__item--unavailable:hover { background: transparent; }
+
+.dt-panel { padding: 22px 26px; min-width: 0; }
+.dt-panel__title { margin: 0 0 4px; font-size: 19px; color: var(--dt-text-strong); }
+.dt-panel__subtitle { margin: 0 0 22px; color: var(--dt-text-muted); }
+
+/* ------------------------------ dashboard ----------------------------- */
+
+.dt-tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+  gap: var(--dt-gap);
+  margin-bottom: 28px;
+}
+.dt-tile {
+  background: var(--dt-bg-elevated);
+  border: 1px solid var(--dt-border);
+  border-radius: 0;
+  padding: 13px 15px;
+  box-shadow: var(--dt-shadow);
+}
+.dt-tile__label {
+  font-size: 11.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--dt-text-muted);
+}
+.dt-tile__value {
+  font-family: var(--dt-font-mono);
+  font-size: 22px;
+  color: var(--dt-text-strong);
+  margin-top: 3px;
+  overflow-wrap: anywhere;
+}
+.dt-tile__accent { color: var(--dt-accent); }
+
+.dt-section { margin: 0 0 12px; font-size: 15px; color: var(--dt-text-strong); }
+
+.dt-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+  gap: var(--dt-gap);
+}
+.dt-card {
+  display: block;
+  background: var(--dt-bg-elevated);
+  border: 1px solid var(--dt-border);
+  border-left: 3px solid var(--dt-card-accent, var(--dt-accent));
+  border-radius: 0;
+  padding: 15px 17px;
+  color: var(--dt-text);
+  box-shadow: var(--dt-shadow);
+}
+.dt-card:hover { border-color: var(--dt-accent); text-decoration: none; }
+.dt-card--unavailable {
+  --dt-card-accent: var(--dt-state-idle);
+  opacity: 0.62;
+  cursor: not-allowed;
+}
+.dt-card--unavailable:hover { border-color: var(--dt-border); }
+.dt-card__title { font-weight: 600; color: var(--dt-text-strong); margin-bottom: 3px; }
+.dt-card__text { font-size: 13px; color: var(--dt-text-muted); }
+.dt-card__badge {
+  display: inline-block;
+  margin-top: 9px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  padding: 2px 7px;
+  border-radius: 0;
+  background: var(--dt-accent-low);
+  color: var(--dt-accent-strong);
+}
+.dt-card__badge--unavailable { background: transparent; border: 1px solid var(--dt-border-strong); color: var(--dt-text-muted); }
+
+/* ------------------------------- notices ------------------------------ */
+
+.dt-notice {
+  border: 1px solid var(--dt-state-error);
+  border-radius: 0;
+  padding: 14px 16px;
+  margin-bottom: var(--dt-gap);
+  background: color-mix(in srgb, var(--dt-state-error) 12%, transparent);
+  color: var(--dt-text-strong);
+}
+.dt-notice__title { font-weight: 600; margin-bottom: 3px; }
+.dt-notice code { font-family: var(--dt-font-mono); }
+
+.dt-empty { color: var(--dt-text-muted); }
+
+/* ------------------------- tiles: live additions ----------------------- */
+
+.dt-tile { position: relative; overflow: hidden; }
+.dt-tile__alert { color: var(--dt-state-warn); }
+.dt-tile__spark { display: block; width: 100%; height: 26px; margin-top: 6px; }
+
+/* ------------------------------- per node -------------------------------- */
+
+.dt-nodetable { display: flex; flex-direction: column; gap: 3px; margin-bottom: 28px; }
+.dt-nodetable__head,
+.dt-nodetable__row {
+  display: grid;
+  grid-template-columns: minmax(180px, 2fr) repeat(6, minmax(70px, 1fr));
+  gap: 12px;
+  align-items: center;
+}
+.dt-nodetable__head {
+  padding: 0 12px 4px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--dt-text-muted);
+}
+.dt-nodetable__row {
+  padding: 7px 12px;
+  border: 1px solid var(--dt-border);
+  border-radius: 0;
+  background: var(--dt-bg-elevated);
+  font-size: 12.5px;
+}
+/* A node that stopped answering keeps its last figures, visibly aged. */
+.dt-nodetable__row--stale { opacity: 0.6; border-left: 3px solid var(--dt-state-error); }
+.dt-nodetable__address {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  font-family: var(--dt-font-mono);
+  color: var(--dt-text-strong);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dt-nodetable__figure { font-family: var(--dt-font-mono); text-align: right; }
+/* The heading has to move with the column, or the two disagree. */
+.dt-nodetable__head > span:not(:first-child) { text-align: right; }
+
+/* --------------------------------- chart -------------------------------- */
+
+.dt-chart { margin-bottom: 28px; }
+/* Side by side while there is room; each chart keeps its own scale. */
+.dt-charts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(330px, 1fr));
+  gap: var(--dt-gap);
+  margin-bottom: 24px;
+}
+.dt-charts .dt-chart { margin-bottom: 0; }
+.dt-chart__title {
+  margin: 0 0 7px;
+  font-size: 11.5px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--dt-text-muted);
+}
+.dt-chart__canvas {
+  display: block;
+  width: 100%;
+  height: 140px;
+  background: var(--dt-bg-elevated);
+  border: 1px solid var(--dt-border);
+  border-radius: 0;
+}
+.dt-chart__legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  align-items: center;
+  margin-bottom: 8px;
+  font-size: 12.5px;
+  color: var(--dt-text-muted);
+}
+.dt-legend__item { display: inline-flex; align-items: center; gap: 6px; }
+.dt-legend__swatch { width: 10px; height: 3px; border-radius: 0; }
+.dt-legend__peak { margin-left: auto; font-family: var(--dt-font-mono); }
+
+/* -------------------------- horizontal bar rows ------------------------- */
+
+.dt-hotlist, .dt-timeline, .dt-members { display: flex; flex-direction: column; gap: 5px; }
+.dt-hotrow {
+  display: grid;
+  grid-template-columns: minmax(90px, 200px) 1fr 62px;
+  gap: 12px;
+  align-items: center;
+  font-size: 13px;
+}
+.dt-hotrow__name {
+  font-family: var(--dt-font-mono);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dt-hotrow__bar {
+  display: block;
+  height: 8px;
+  border-radius: 0;
+  background: var(--dt-bg-elevated);
+  border: 1px solid var(--dt-border);
+  overflow: hidden;
+}
+.dt-hotrow__fill { display: block; height: 100%; background: var(--dt-data-3); }
+.dt-hotrow__value { font-family: var(--dt-font-mono); text-align: right; color: var(--dt-text-strong); }
+
+/* -------------------------------- toolbar ------------------------------- */
+
+.dt-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  align-items: center;
+  margin-bottom: 14px;
+}
+.dt-toolbar__summary { margin-left: auto; font-size: 12.5px; color: var(--dt-text-muted); }
+.dt-input {
+  flex: 1 1 220px;
+  max-width: 340px;
+  padding: 6px 10px;
+  border-radius: 0;
+  border: 1px solid var(--dt-border);
+  background: var(--dt-bg-elevated);
+  color: var(--dt-text);
+  font: inherit;
+  font-size: 13px;
+}
+.dt-input:focus { outline: 2px solid var(--dt-accent); outline-offset: 1px; }
+.dt-checkbox {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--dt-text-muted);
+  cursor: pointer;
+}
+
+/* ------------------------------ actor tree ------------------------------ */
+
+/* No inner scroller.  A viewport inside a viewport gives you two
+   scrollbars and a tree whose bottom you cannot reach without finding
+   the right one first; the page scrolls instead. */
+.dt-tree {
+  border: 1px solid var(--dt-border);
+  background: var(--dt-bg-elevated);
+}
+
+/* A node that stopped answering: its tree is the last one it sent, so
+   nothing in it is known to be running any more. */
+.dt-tree__group--stale { opacity: 0.55; }
+.dt-tree__group--stale .dt-state { background: var(--dt-state-idle); }
+.dt-tree__row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 12px 3px calc(12px + var(--dt-tree-depth, 0) * 16px);
+  font-size: 13px;
+  border-bottom: 1px solid color-mix(in srgb, var(--dt-border) 45%, transparent);
+}
+.dt-tree__row:last-child { border-bottom: none; }
+.dt-tree__row:hover { background: var(--dt-accent-low); }
+.dt-tree__row--restarted { animation: dt-flash 1.2s ease-out; }
+@keyframes dt-flash {
+  from { background: color-mix(in srgb, var(--dt-data-5) 45%, transparent); }
+  to   { background: transparent; }
+}
+.dt-tree__twisty {
+  width: 18px;
+  flex: none;
+  background: transparent;
+  border: none;
+  color: var(--dt-text-muted);
+  cursor: pointer;
+  font: inherit;
+  padding: 0;
+  text-align: left;
+}
+.dt-tree__twisty--leaf { cursor: default; }
+.dt-tree__name { font-family: var(--dt-font-mono); color: var(--dt-text-strong); }
+.dt-tree__class { color: var(--dt-text-muted); font-size: 12.5px; }
+
+/* State dot with a fixed meaning per colour — never reused for series. */
+.dt-state { width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--dt-state-idle); }
+/* A stopped actor lingers so you can read it, without pretending to be
+   part of the live tree. */
+/* One heading per node, once there is more than one. */
+.dt-tree__node {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  margin: 12px 0 4px;
+  padding: 0 12px;
+  font-family: var(--dt-font-mono);
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--dt-accent);
+}
+.dt-tree__node:first-child { margin-top: 0; }
+.dt-tree__nodecount { color: var(--dt-text-muted); font-weight: 400; }
+
+.dt-tree__row--stopped { opacity: 0.55; }
+.dt-tree__row--stopped .dt-tree__name { text-decoration: line-through; }
+
+.dt-state--ok { background: var(--dt-state-ok); }
+.dt-state--warn { background: var(--dt-state-warn); }
+.dt-state--error { background: var(--dt-state-error); }
+.dt-state--pending { background: var(--dt-state-idle); }
+
+.dt-badge {
+  font-size: 11px;
+  padding: 1px 7px;
+  border-radius: 0;
+  background: var(--dt-accent-low);
+  color: var(--dt-accent-strong);
+  white-space: nowrap;
+}
+.dt-badge--warn { background: color-mix(in srgb, var(--dt-state-warn) 22%, transparent); color: var(--dt-state-warn); }
+.dt-badge--error { background: color-mix(in srgb, var(--dt-state-error) 22%, transparent); color: var(--dt-state-error); }
+.dt-badge--muted { background: transparent; border: 1px solid var(--dt-border); color: var(--dt-text-muted); }
+
+/* -------------------------------- cluster ------------------------------- */
+
+.dt-topology { display: flex; flex-direction: column; align-items: center; margin-bottom: 18px; }
+.dt-topology__svg { width: 100%; max-width: 360px; height: auto; }
+.dt-topology__edge { stroke: var(--dt-border); stroke-width: 1; }
+.dt-topology__circle { stroke: var(--dt-bg); }
+.dt-topology__label { fill: var(--dt-text-muted); font-size: 11px; font-family: var(--dt-font-mono); }
+.dt-topology__legend { font-size: 12px; color: var(--dt-text-muted); margin: 4px 0 0; }
+
+.dt-member { display: flex; align-items: center; gap: 10px; font-size: 13px; }
+/* A node that left is listed from memory, not from the membership. */
+.dt-member--gone { opacity: 0.7; }
+.dt-member--gone .dt-member__address { text-decoration: line-through; }
+
+.dt-member__address { font-family: var(--dt-font-mono); color: var(--dt-text-strong); }
+.dt-member__status { color: var(--dt-text-muted); }
+
+.dt-shards { display: flex; flex-direction: column; gap: 18px; margin-bottom: 24px; }
+.dt-shardmap {
+  border: 1px solid var(--dt-border);
+  border-radius: 0;
+  background: var(--dt-bg-elevated);
+  padding: 13px 15px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.dt-shardmap__head { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; }
+
+.dt-timeline__row {
+  display: grid;
+  grid-template-columns: 82px minmax(120px, auto) 1fr;
+  gap: 12px;
+  align-items: center;
+  font-size: 13px;
+}
+.dt-timeline__time { font-family: var(--dt-font-mono); color: var(--dt-text-muted); }
+.dt-timeline__subject { font-family: var(--dt-font-mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* -------------------------------- tracing ------------------------------- */
+
+/* The list is the panel, so it gets the full width: a route plus a
+   payload does not fit in a sidebar. */
+.dt-tracetable { display: flex; flex-direction: column; gap: 3px; }
+.dt-tracetable__head,
+.dt-tracetable__row {
+  display: grid;
+  grid-template-columns: 74px minmax(140px, 1.4fr) minmax(110px, 0.9fr) minmax(120px, 2fr) 76px;
+  gap: 12px;
+  align-items: center;
+}
+.dt-tracetable__head {
+  padding: 0 10px 4px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--dt-text-muted);
+}
+.dt-tracetable__row {
+  padding: 6px 10px;
+  border: 1px solid var(--dt-border);
+  border-radius: 0;
+  background: var(--dt-bg-elevated);
+  color: var(--dt-text);
+  font: inherit;
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
+}
+.dt-tracetable__row:hover { border-color: var(--dt-accent); }
+.dt-tracetable__row--error { border-left: 3px solid var(--dt-state-error); }
+.dt-tracetable__time { font-family: var(--dt-font-mono); color: var(--dt-text-muted); }
+.dt-tracetable__route,
+.dt-tracetable__message,
+.dt-tracetable__payload {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dt-tracetable__route { font-family: var(--dt-font-mono); color: var(--dt-text-strong); }
+.dt-tracetable__message { display: flex; gap: 6px; align-items: center; }
+.dt-tracetable__payload { font-family: var(--dt-font-mono); color: var(--dt-text-muted); }
+.dt-tracetable__duration { font-family: var(--dt-font-mono); text-align: right; }
+
+.dt-traceheader { margin-bottom: 12px; }
+.dt-traceheader__route { font-family: var(--dt-font-mono); color: var(--dt-text-strong); font-size: 14px; }
+.dt-traceheader__meta { color: var(--dt-text-muted); font-size: 12.5px; margin-top: 2px; }
+.dt-traceheader .dt-code { margin-top: 8px; max-height: 180px; overflow: auto; }
+
+.dt-flame {
+  display: block;
+  width: 100%;
+  background: var(--dt-bg-elevated);
+  border: 1px solid var(--dt-border);
+  border-radius: 0;
+}
+
+.dt-spandetails { min-width: 0; display: flex; flex-direction: column; gap: 10px; margin-top: 12px; }
+.dt-kv {
+  display: grid;
+  grid-template-columns: minmax(96px, auto) 1fr;
+  gap: 3px 14px;
+  margin: 0;
+  font-size: 13px;
+}
+.dt-kv dt { color: var(--dt-text-muted); }
+.dt-kv dd {
+  margin: 0;
+  font-family: var(--dt-font-mono);
+  color: var(--dt-text-strong);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dt-kv--muted dd { color: var(--dt-text); }
+.dt-code {
+  font-family: var(--dt-font-mono);
+  font-size: 12px;
+  background: var(--dt-bg-elevated);
+  border: 1px solid var(--dt-border);
+  border-radius: 0;
+  padding: 10px 12px;
+  margin: 0;
+  overflow-x: auto;
+  color: var(--dt-text);
+}
+
+/* ------------------------------ explain plan ----------------------------- */
+
+.dt-input--narrow { flex: 0 0 88px; max-width: 88px; }
+
+.dt-explain {
+  border: 1px solid var(--dt-border);
+  border-radius: 0;
+  background: var(--dt-bg-elevated);
+  overflow: auto;
+  max-height: 62vh;
+}
+.dt-explain__row {
+  display: grid;
+  grid-template-columns: 76px 78px minmax(110px, 1fr) minmax(90px, 1fr) 84px 84px;
+  gap: 12px;
+  align-items: center;
+  padding: 4px 12px;
+  font-size: 13px;
+  font-family: var(--dt-font-mono);
+  border-bottom: 1px solid color-mix(in srgb, var(--dt-border) 45%, transparent);
+}
+.dt-explain__row:last-child { border-bottom: none; }
+.dt-explain__row--head {
+  position: sticky;
+  top: 0;
+  background: var(--dt-bg-inset);
+  color: var(--dt-text-muted);
+  font-family: var(--dt-font);
+  font-size: 11.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.dt-explain__sequence { display: inline-flex; align-items: center; gap: 7px; }
+.dt-explain__type { color: var(--dt-text-strong); }
+.dt-explain__sender, .dt-explain__type {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ------------------------------ time travel ------------------------------ */
+
+.dt-timetravel { display: grid; grid-template-columns: minmax(260px, 420px) 1fr; gap: var(--dt-gap); }
+.dt-timetravel__events {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  max-height: 62vh;
+  overflow: auto;
+}
+.dt-timetravel__state { min-width: 0; display: flex; flex-direction: column; gap: 12px; }
+.dt-timetravel__slider { margin-bottom: 4px; }
+.dt-slider { width: 100%; accent-color: var(--dt-accent); }
+
+.dt-event {
+  display: grid;
+  grid-template-columns: 44px 66px 1fr auto;
+  gap: 9px;
+  align-items: center;
+  padding: 4px 9px;
+  border: 1px solid var(--dt-border);
+  border-radius: 0;
+  background: var(--dt-bg-elevated);
+  color: var(--dt-text);
+  font: inherit;
+  font-size: 12.5px;
+  font-family: var(--dt-font-mono);
+  text-align: left;
+  cursor: pointer;
+}
+.dt-event:hover { border-color: var(--dt-accent); }
+.dt-event--current { border-color: var(--dt-accent); background: var(--dt-accent-low); }
+/* Events after the slider have not happened yet at this point in time. */
+.dt-event--future { opacity: 0.45; }
+.dt-event__sequence { color: var(--dt-text-strong); }
+.dt-event__time { color: var(--dt-text-muted); }
+.dt-event__payload { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.dt-diff { display: flex; flex-direction: column; gap: 3px; }
+.dt-diff__row {
+  display: grid;
+  grid-template-columns: minmax(90px, 1fr) minmax(60px, 1fr) 18px minmax(60px, 1fr);
+  gap: 9px;
+  align-items: baseline;
+  font-family: var(--dt-font-mono);
+  font-size: 12.5px;
+  padding: 3px 9px;
+  border-radius: 0;
+  border-left: 3px solid transparent;
+}
+.dt-diff__row--added { border-left-color: var(--dt-state-ok); }
+.dt-diff__row--removed { border-left-color: var(--dt-state-error); }
+.dt-diff__row--changed { border-left-color: var(--dt-state-warn); }
+.dt-diff__row--unchanged { opacity: 0.55; }
+.dt-diff__path { color: var(--dt-text-muted); overflow-wrap: anywhere; }
+.dt-diff__before, .dt-diff__after { overflow-wrap: anywhere; }
+.dt-diff__after { color: var(--dt-text-strong); }
+.dt-diff__arrow { color: var(--dt-text-muted); text-align: center; }
+
+.dt-details summary { cursor: pointer; color: var(--dt-text-muted); font-size: 13px; }
+.dt-details pre { max-height: 320px; overflow: auto; }

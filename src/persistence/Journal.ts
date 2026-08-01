@@ -9,13 +9,13 @@ import type { PersistentEvent } from './JournalTypes.js';
  */
 export interface Journal {
   /**
-   * Append `events` to the stream of `pid`, enforcing optimistic concurrency:
-   * the current highest sequence number MUST equal `expectedSeq` or the
-   * call throws `JournalConcurrencyError`.  Returns the written events
+   * Append `events` to the stream of `persistenceId`, enforcing optimistic
+   * concurrency: the current highest sequence number MUST equal `expectedSeq`
+   * or the call throws `JournalConcurrencyError`.  Returns the written events
    * with their assigned sequence numbers.
    */
   append<E = unknown>(
-    pid: string,
+    persistenceId: string,
     events: ReadonlyArray<E>,
     expectedSeq: number,
     tags?: ReadonlyArray<string>,
@@ -27,16 +27,16 @@ export interface Journal {
    * is the first event returned, not the "after" cursor.
    */
   read<E = unknown>(
-    pid: string,
+    persistenceId: string,
     fromSeq: number,
     toSeq?: number,
   ): Promise<PersistentEvent<E>[]>;
 
-  /** Current highest sequence number for `pid` — 0 if no events exist. */
-  highestSeq(pid: string): Promise<number>;
+  /** Current highest sequence number for `persistenceId` — 0 if no events exist. */
+  highestSeq(persistenceId: string): Promise<number>;
 
   /** Delete events up to and including `toSeq` — used when compacting past a snapshot. */
-  delete(pid: string, toSeq: number): Promise<void>;
+  delete(persistenceId: string, toSeq: number): Promise<void>;
 
   /** Persistence IDs currently known to the journal (useful for projections). */
   persistenceIds(): Promise<string[]>;

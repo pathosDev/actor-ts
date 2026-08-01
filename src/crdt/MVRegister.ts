@@ -28,11 +28,11 @@ import type { Crdt, ReplicaId } from './Crdt.js';
  * recency, use `LWWRegister` instead.
  */
 
-interface MVEntry<V> {
+type MVEntry<V> = {
   readonly value: V;
   /** Per-replica version vector at write time. */
   readonly vc: ReadonlyMap<ReplicaId, number>;
-}
+};
 
 export class MVRegister<V> implements Crdt<MVRegister<V>> {
   private constructor(private readonly entries: ReadonlyArray<MVEntry<V>>) {}
@@ -178,10 +178,10 @@ function vcStrictlyDominates(
   return strict;
 }
 
-export interface MVRegisterJson<V> {
+export type MVRegisterJson<V> = {
   readonly kind: 'MVRegister';
   readonly entries: ReadonlyArray<{
     readonly value: V;
     readonly vc: Record<ReplicaId, number>;
   }>;
-}
+};

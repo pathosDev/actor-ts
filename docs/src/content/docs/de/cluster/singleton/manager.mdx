@@ -43,32 +43,43 @@ die Proxies verschieben ihr Ziel.
 
 ## Konfiguration
 
-```ts
-import { ClusterSingletonManager, ClusterSingletonManagerOptions, Props } from 'actor-ts';
+Der Manager wird nicht von Hand gespawnt — `cluster.singleton.start(...)`
+tut das, am bekannten Pfad, den Proxies adressieren, und die
+Start-Options unten sind das, was dabei konfiguriert wird:
 
-const clusterSingletonManagerOptions = ClusterSingletonManagerOptions.create()
-  .withCluster(cluster)
-  .withTypeName('job-scheduler')
-  .withSingletonProps(Props.create(() => new JobScheduler()))
+```ts
+import { SingletonKey, StartSingletonOptions } from 'actor-ts';
+
+const singletonOptions = StartSingletonOptions.create<JobCommand>()
   .withRole('control-plane')            // optional
-  .withLease(leaseImpl)                  // optionaler Split-Brain-Schutz
-  .withAcquireRetryIntervalMs(5_000);
-system.spawn(
-  ClusterSingletonManager.props(
-    clusterSingletonManagerOptions,    // wenn Lease-Acquire scheitert
-  ),
-  'singleton-manager-job-scheduler',
-);
+  .withLease(leaseImpl)                 // optionaler Split-Brain-Schutz
+  .withAcquireRetryIntervalMs(5_000);   // Retry-Takt, wenn Lease-Acquire scheitert
+cluster.singleton.start(JobScheduler, singletonOptions);
 ```
+
+Die `ClusterSingletonManagerOptions` des Managers selbst — `cluster`,
+`typeName`, `singletonProps` und die drei obigen — setzt die Extension
+daraus zusammen. Die Felder stehen hier, weil der Manager auf sie
+reagiert, nicht weil du sie konstruierst:
 
 | Feld | Erforderlich | Was |
 | --- | --- | --- |
 | `cluster` | Ja | Der Cluster, den der Manager beobachtet. |
 | `typeName` | Ja | Logischer Name für diesen Singleton; Name des Kind-Actors. |
-| `singletonProps` | Ja | Wie der Singleton konstruiert wird. Wird nur auf dem Leader aufgerufen. |
-| `role` | Nein | Auf Nodes mit dieser Rolle beschränken. Manager anderer Nodes bleiben passiv. |
-| `lease` | Nein | Falls gesetzt, muss der Leader diese Lease erwerben, bevor er den Singleton spawnt. |
+| `singletonProps` | Ja | Wie der Singleton konstruiert wird. Wird nur auf dem Host aufgerufen. |
+| `role` | Nein | Das Hosten auf Nodes mit dieser Rolle beschränken. Manager anderer Nodes bleiben passiv. |
+| `lease` | Nein | Falls gesetzt, muss der Host diese Lease erwerben, bevor er den Singleton spawnt. |
 | `acquireRetryIntervalMs` | Nein (Default 5s) | Retry-Takt nach einer fehlgeschlagenen Lease-Akquisition. |
+
+### Welche Node hostet
+
+Ohne `role` ist der Host der Cluster-Leader.  Mit `role` ist es das
+**erste Up-Member, das diese Rolle trägt** — nicht „der Leader, sofern
+er die Rolle zufällig trägt“; das würde den Singleton immer dann
+nirgends hosten, wenn der gewählte Leader sie nicht trägt.  Beide
+Formen lesen dieselbe adressgeordnete Member-Liste, also wählt jede
+Node unabhängig dieselbe aus, und der Proxy löst den Host genau so auf
+wie die Manager.
 
 ## Die Namenskonvention
 
@@ -76,7 +87,7 @@ Der Manager **muss** an einem Pfad gespawnt werden, der
 folgendem entspricht:
 
 ```
-actor-ts://<system>/user/singleton-manager-<typeName>
+actor-ts://<system>/system/cluster/singleton/manager-<typeName>
 ```
 
 Daher der Actor-Name `'singleton-manager-job-scheduler'` oben,
@@ -92,7 +103,7 @@ Bruch. Immer:
 import { singletonManagerPath } from 'actor-ts';
 
 const path = singletonManagerPath(system.name, 'job-scheduler');
-// "actor-ts://<sysName>/user/singleton-manager-job-scheduler"
+// "actor-ts://<sysName>/system/cluster/singleton/manager-job-scheduler"
 ```
 
 Du kannst diesen Helper verwenden, wenn du sicherstellen willst,
@@ -118,10 +129,9 @@ schützen soll.
 ### Mit Lease
 
 ```ts
-const managerOptions = ClusterSingletonManagerOptions.create()
-  // ...
+const singletonOptions = StartSingletonOptions.create<JobCommand>()
   .withLease(someLeaseImpl);
-ClusterSingletonManager.props(managerOptions);
+cluster.singleton.start(JobScheduler, singletonOptions);
 ```
 
 Fügt ein asynchrones Gate über die Lease hinzu. Der Ablauf:
@@ -186,9 +196,11 @@ Manager greift nicht ein, wenn sich das Leadership nicht auch
 geändert hat.
 
 Wenn das Kind sich explizit selbst stoppt (`context.stopSelf()`),
-sieht der Manager das Terminated, gibt die Lease frei (falls
-gehalten) und **spawnt nicht erneut**. Der Singleton ist weg, bis
-der nächste Leader-Wechsel kommt.
+sieht der Manager das Terminated, tut damit aber nichts: er
+**spawnt nicht erneut** und **gibt die Lease nicht frei** — eine
+gehaltene Lease bleibt gehalten, und die `child`-Referenz des
+Managers zeigt weiter auf den nun toten Singleton. Der Singleton
+ist weg, bis der nächste Leader-Wechsel kommt.
 
 Wenn du willst, dass ein sich selbst stoppender Singleton neu
 gespawnt wird, ist der Manager nicht der richtige Ort — schreibe
@@ -230,8 +242,10 @@ Direkter Manager-Kontakt ist nur nützlich für:
 ```ts
 import { MemberUp, LeaderChanged } from 'actor-ts';
 
-cluster.subscribe(LeaderChanged, (evt) => {
-  console.log(`Leader ist jetzt ${evt.leader}`);
+cluster.subscribe((evt) => {
+  if (evt instanceof LeaderChanged) {
+    console.log(`Leader ist jetzt ${evt.leader.map((m) => m.address).getOrElse('<none>')}`);
+  }
 });
 ```
 
@@ -245,37 +259,45 @@ Manager loggt diese standardmäßig auf Debug-Level.
 
 import { Aside } from '@astrojs/starlight/components';
 
-<Aside type="caution" title="Manager muss auf jedem Node gespawnt werden">
+<Aside type="caution" title="start() auf jedem Node rufen, der Leader werden kann">
   ```ts
-  // Manche Nodes spawnen den Manager, andere nicht
+  cluster.singleton.ref(JobScheduler);    // adressiert es, hostet es nie
+  cluster.singleton.start(JobScheduler);  // nimmt diesen Node in die Rotation auf
   ```
-  Der Proxy erwartet den Manager am bekannten Pfad auf dem Node,
-  der gerade Leader ist. Wenn der Leader-Node den Manager nicht
-  gespawnt hat, kann der Proxy nicht routen — Nachrichten landen
-  in Dead Letters. Spawne den Manager entweder immer, oder
-  schränke per Rolle ein, sodass nur Rollen-tragende Nodes
-  Leader werden können.
+  Ein Proxy routet zu dem Node, der gerade Leader ist, und erwartet dort
+  einen Manager. Ein Node, der nur `ref` gerufen hat, betreibt keinen —
+  wird er Leader, hostet nirgends etwas das Singleton und Nachrichten
+  landen mit einer Warnung, die den Typ nennt, in den Dead Letters. Rufe
+  `start` also überall, oder schränke per Rolle auf die startenden Nodes ein.
 </Aside>
 
-<Aside type="caution" title="Manager-Name muss der Konvention folgen">
+<Aside type="caution" title="Rolle auf dem Key deklarieren, nicht nur in den Options">
   ```ts
-  system.spawn(ClusterSingletonManager.props(ClusterSingletonManagerOptions.create()/* ... */), 'whatever');
-  // ✗ Proxy sucht `/user/singleton-manager-<typeName>`, nicht /user/whatever
+  class Ingress extends Actor<IngressCommand> {
+    static readonly singleton = SingletonKey.of<IngressCommand>('ingress', 'edge');
+  }
   ```
-  Nutze `singletonManagerPath(...)` oder buchstabier die
-  Konvention aus. Das Framework erzwingt sie nicht; falsch
-  benannte Manager sind für Proxies unsichtbar.
+  Ein Node, der nur `ref` aufruft, hat kein Options-Objekt — er hat den
+  Key, und sonst nichts. Eine Rolle, die *ausschließlich* über
+  `StartSingletonOptions.withRole` gesetzt wird, ist für ihn also
+  unsichtbar, und sein Proxy löst einen anderen Host auf als die
+  Manager. Steht die Rolle auf dem Key, sind sich alle Nodes
+  konstruktionsbedingt einig; `withRole` überschreibt sie weiterhin,
+  wo du eine Antwort pro Deployment brauchst.
 </Aside>
 
-<Aside type="caution" title="Lease-Fehler ohne Retry">
+<Aside type="caution" title="acquireRetryIntervalMs muss positiv sein">
   ```ts
-  acquireRetryIntervalMs: 0,
+  acquireRetryIntervalMs: 0,   // ✗ deaktiviert keine Retries
   ```
-  Auf 0 setzen deaktiviert Retries — ein einzelnes
-  fehlgeschlagenes Acquire lässt den Singleton un-gespawnt, bis
-  das nächste `LeaderChanged`-Event kommt. Nutze einen sinnvollen
-  Wert (Default 5s ist für die meisten Lease-Provider
-  vernünftig).
+  `0` deaktiviert keine Retries — es gibt keinen Abschalt-Schalter.
+  Der Wert wird beim Starten des Singletons als positive Zahl
+  validiert, sodass ein nicht-positiver Wert vorab mit einem
+  `OptionsError` abgelehnt wird. Und `0` bedeutet intern nie "nicht
+  mehr versuchen": der 5s-Default gilt nur für einen *nicht gesetzten*
+  Wert, also würde `0` einfach sofort erneut versuchen. Nutze ein
+  positives Intervall; der 5s-Default passt für die meisten
+  Lease-Provider.
 </Aside>
 
 ## Wohin als Nächstes

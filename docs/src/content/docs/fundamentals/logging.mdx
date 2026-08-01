@@ -10,7 +10,7 @@ actor's path:
 import { Actor } from 'actor-ts';
 
 class Worker extends Actor<...> {
-  override onReceive(msg): void {
+  override onReceive(message): void {
     this.log.info('handling message');
     // → [2025-05-13T11:42:01.123Z] INFO  actor-ts://my-app/user/worker - handling message
   }
@@ -31,22 +31,26 @@ interface Logger {
 }
 ```
 
-Calls below the configured `level` are no-ops — `this.log.debug(...)`
-on a system configured for `info` doesn't even evaluate the
-arguments (the level check happens first).
+Calls below the configured `level` emit nothing — `this.log.debug(...)`
+on a system configured for `info` produces no output.  The arguments
+are still evaluated first, though (they're ordinary function
+arguments), so guard expensive payloads with a manual level check
+(see below).
 
 ## Configuring the level
 
 System-wide via the settings:
 
 ```ts
-const actorSystemOptions = ActorSystemOptions.create().withLogLevel('debug');
+import { ActorSystem, ActorSystemOptions, LogLevel } from 'actor-ts';
+
+const actorSystemOptions = ActorSystemOptions.create().withLogLevel(LogLevel.Debug);
 const system = ActorSystem.create('my-app', actorSystemOptions);
 ```
 
-Or via the env / config file (`actor-ts.log-level = "debug"` in
+Or via the env / config file (`actor-ts.logger.level = "debug"` in
 `application.conf`).  Five levels: `debug` / `info` / `warn` /
-`error` / `silent`.  Default is `info`.
+`error` / `off`.  Default is `info`.
 
 ## Structured JSON logs — built-in `JsonLogger`
 
@@ -75,7 +79,7 @@ Output (one `\n`-terminated JSON object per record):
 Every record carries `ts` (ISO-8601), `level`, `msg`, and the
 merged static + dynamic MDC (static from `withFields`, dynamic
 from `LogContext.run`, with dynamic winning on key collision).
-Extra positional `...args` from `log.info(msg, extra1, extra2)`
+Extra positional `...args` from `log.info(message, extra1, extra2)`
 land under an `args` array — log aggregators index nested keys
 automatically.
 
@@ -133,10 +137,10 @@ import { type Logger, LogLevel, type LogContextData } from 'actor-ts';
 
 class MyLogger implements Logger {
   level = LogLevel.Info;
-  debug(msg: string, ...args: unknown[]): void { /* ... */ }
-  info(msg: string, ...args: unknown[]): void  { /* ... */ }
-  warn(msg: string, ...args: unknown[]): void  { /* ... */ }
-  error(msg: string, ...args: unknown[]): void { /* ... */ }
+  debug(message: string, ...args: unknown[]): void { /* ... */ }
+  info(message: string, ...args: unknown[]): void  { /* ... */ }
+  warn(message: string, ...args: unknown[]): void  { /* ... */ }
+  error(message: string, ...args: unknown[]): void { /* ... */ }
   withSource(source: string): Logger { /* return a bound copy */ return this; }
   withFields(fields: LogContextData): Logger { /* return a bound copy */ return this; }
 }
@@ -151,12 +155,16 @@ Static fields — same value on every record emitted by this logger:
 
 ```ts
 class ShardCoordinator extends Actor<...> {
-  private readonly log = this.context.log.withFields({
-    component: 'shard-coordinator',
-    shardId:   this.shardId,
-  });
+  private log!: Logger;
 
-  override onReceive(msg): void {
+  override preStart(): void {
+    this.log = this.context.log.withFields({
+      component: 'shard-coordinator',
+      shardId:   this.shardId,
+    });
+  }
+
+  override onReceive(message): void {
     this.log.info('rebalance start');
     // → ... shard-coordinator - rebalance start {component=shard-coordinator, shardId=12}
   }
@@ -165,7 +173,9 @@ class ShardCoordinator extends Actor<...> {
 
 `withFields` returns a new logger with the fields stamped on every
 emit.  Useful for component-level tagging that doesn't change
-across messages.
+across messages.  Bind it in `preStart` rather than a field
+initializer — `this.context` isn't available until the actor is
+attached, so a field initializer would throw at construction.
 
 ## Dynamic context — `LogContext` (MDC)
 
@@ -189,7 +199,7 @@ app.post('/orders', async (req, res) => {
 
 // Inside any actor reached via `tell` / `ask` from there:
 class OrderActor extends Actor<...> {
-  override onReceive(msg): void {
+  override onReceive(message): void {
     this.log.info('placing order');
     // → ... order-actor - placing order {correlationId=abc-123, userId=user-42}
     paymentActor.tell({ kind: 'charge', ... });
@@ -203,7 +213,7 @@ operations:
 
 | Method | What it does |
 | --- | --- |
-| `LogContext.run(ctx, fn)` | Runs `fn` with `ctx` as the current context. |
+| `LogContext.run(context, fn)` | Runs `fn` with `context` as the current context. |
 | `LogContext.with(extra, fn)` | Runs `fn` with `{ ...current, ...extra }` as the context. |
 | `LogContext.get()` | Reads the current context (empty object if none active). |
 
@@ -213,7 +223,7 @@ intuition).
 
 ## How MDC propagates across `tell`
 
-When you call `ref.tell(msg)` inside a `LogContext.run` scope, the
+When you call `ref.tell(message)` inside a `LogContext.run` scope, the
 runtime snapshots the current context onto the envelope.  The
 receiving actor's `onReceive` runs under a fresh `LogContext.run`
 of that snapshot.  This means:
@@ -242,7 +252,7 @@ import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="Logging inside `onReceive` ≠ logging inside a setTimeout">
   ```ts
-  override onReceive(msg) {
+  override onReceive(message) {
     this.log.info('handling');               // ✓ MDC present
     setTimeout(() => {
       this.log.info('later');                 // ✗ MDC may be lost
@@ -274,10 +284,14 @@ import { Aside } from '@astrojs/starlight/components';
 
 ```ts
 class PerSessionWorker extends Actor<...> {
-  private readonly log = this.context.log.withFields({ sessionId: this.id });
+  private log!: Logger;
 
-  override async onReceive(msg): Promise<void> {
-    await LogContext.run({ requestId: msg.requestId }, async () => {
+  override preStart(): void {
+    this.log = this.context.log.withFields({ sessionId: this.id });
+  }
+
+  override async onReceive(message): Promise<void> {
+    await LogContext.run({ requestId: message.requestId }, async () => {
       this.log.info('handling');
       // → ... per-session-worker - handling {sessionId=abc, requestId=xyz}
     });

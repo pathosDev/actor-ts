@@ -19,14 +19,14 @@
  * second's worth of capacity), the typical "smooth out small
  * variations" setting.
  */
-export interface TokenBucketOptions {
+export type TokenBucketOptions = {
   /** Token-refill rate, tokens per second.  Required; must be > 0. */
   readonly qps: number;
   /** Bucket capacity.  Default: `qps` (one second of refill). */
   readonly burst?: number;
   /** Time source.  Default: `Date.now`. */
   readonly now?: () => number;
-}
+};
 
 export class TokenBucket {
   private readonly qps: number;
@@ -37,16 +37,16 @@ export class TokenBucket {
   /** Wall-clock instant of the last refill calculation. */
   private lastRefillAt: number;
 
-  constructor(opts: TokenBucketOptions) {
-    if (!Number.isFinite(opts.qps) || opts.qps <= 0) {
-      throw new Error(`TokenBucket: qps must be > 0, got ${opts.qps}`);
+  constructor(options: TokenBucketOptions) {
+    if (!Number.isFinite(options.qps) || options.qps <= 0) {
+      throw new Error(`TokenBucket: qps must be > 0, got ${options.qps}`);
     }
-    if (opts.burst !== undefined && (!Number.isFinite(opts.burst) || opts.burst <= 0)) {
-      throw new Error(`TokenBucket: burst must be > 0, got ${opts.burst}`);
+    if (options.burst !== undefined && (!Number.isFinite(options.burst) || options.burst <= 0)) {
+      throw new Error(`TokenBucket: burst must be > 0, got ${options.burst}`);
     }
-    this.qps = opts.qps;
-    this.capacity = opts.burst ?? opts.qps;
-    this.now = opts.now ?? Date.now;
+    this.qps = options.qps;
+    this.capacity = options.burst ?? options.qps;
+    this.now = options.now ?? Date.now;
     // Start full so the first burst doesn't have to wait — workloads
     // typically expect "I can fire `burst` messages immediately".
     this.tokens = this.capacity;

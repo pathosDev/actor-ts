@@ -11,7 +11,8 @@ per-order coordinators, per-game-room actors.
 The user gives the framework a way to extract an **entity ID**
 from each message; the framework hashes that ID to a **shard**;
 the **coordinator** decides which node hosts that shard; the
-node's local **region** spawns the entity actor on demand.  When
+node's local **region** routes to that **shard**, which spawns the
+entity actor on demand.  When
 nodes come and go, the coordinator rebalances shards across the
 new topology.
 
@@ -51,25 +52,31 @@ elsewhere and the entities re-spawn there.
 ## A minimal example
 
 ```ts
+import { match } from 'ts-pattern';
 import { Actor, Cluster, ClusterBootstrapOptions, StartShardingOptions } from 'actor-ts';
 
-type CartCommand =
-  | { entityId: string; kind: 'add';   sku: string }
-  | { entityId: string; kind: 'view';  replyTo: ActorRef<Cart> };
+type AddCommand = { entityId: string; kind: 'add'; sku: string };
+type ViewCommand = { entityId: string; kind: 'view'; replyTo: ActorRef<Cart> };
+type CartCommand = AddCommand | ViewCommand;
 
 class CartActor extends Actor<CartCommand> {
   private items: string[] = [];
 
-  override onReceive(cmd: CartCommand): void {
-    if (cmd.kind === 'add')  this.items.push(cmd.sku);
-    if (cmd.kind === 'view') cmd.replyTo.tell({ items: this.items });
+  override onReceive(command: CartCommand): void {
+    match(command)
+      .with({ kind: 'add' }, (c) => this.onAdd(c))
+      .with({ kind: 'view' }, (c) => this.onView(c))
+      .exhaustive();
   }
+
+  private onAdd(command: AddCommand): void { this.items.push(command.sku); }
+  private onView(command: ViewCommand): void { command.replyTo.tell({ items: this.items }); }
 }
 
 // Setup — one-line cluster + sharding entry point:
 const { system, cluster } = await Cluster.bootstrap(ClusterBootstrapOptions.create('my-app'));
 
-const startShardingOptions = StartShardingOptions.create<CartCommand>().withExtractEntityId((msg) => msg.entityId);
+const startShardingOptions = StartShardingOptions.create<CartCommand>().withExtractEntityId((message) => message.entityId);
 const cartRegion = cluster.sharding.start('cart', CartActor,
   startShardingOptions);
 
@@ -80,11 +87,37 @@ cartRegion.tell({ entityId: 'user-42', kind: 'view', replyTo: ... });
 // Same ID → same entity actor, every time, regardless of node.
 ```
 
-`cluster.sharding.start()` accepts three calling shapes — pick
-whichever fits the entity:
+`cluster.sharding.start()` accepts several calling shapes — pick
+whichever fits the entity.  The shortest is to let the entity declare
+its own identity, which means neither the type name nor the entity-id
+extractor is repeated at the call site:
 
 ```ts
-// 1. Class shorthand (most common):
+class CartActor extends Actor<CartCommand> {
+  static readonly shard = ShardKey.of<CartCommand>('cart', (command) => command.entityId);
+  // ...
+}
+
+const cartRegion = cluster.sharding.start(CartActor);
+const cart = cluster.sharding.entityRefFor(CartActor, 'user-42');
+```
+
+:::caution[The explicit type argument is load-bearing]
+`ShardKey.of('cart', ...)` — without `<CartCommand>` — infers
+`ShardKey<unknown>`, and every ref taken from it degrades to
+`ActorRef<unknown>`.
+:::
+
+A `ShardKey`'s identity is its `typeName` alone; the extractor rides
+along so the declaring class is the single source of truth, but a node
+that only looks entities up can name the same type with
+`ShardKey.of<CartCommand>('cart')` and no extractor.  An
+`extractEntityId` passed in options overrides the one on the key.
+
+The remaining shapes are unchanged:
+
+```ts
+// 1. Class shorthand:
 const startShardingOptions = StartShardingOptions.create<CartCommand>().withExtractEntityId((m) => m.entityId);
 cluster.sharding.start('cart', CartActor, startShardingOptions);
 
@@ -115,24 +148,31 @@ The `cartRegion` is a single `ActorRef` from the caller's
 perspective.  Behind the scenes:
 
 1. The region computes a shard from `entityId` (default: hash to
-   one of 100 shards).
+   one of 64 shards).
 2. It asks the coordinator "who owns this shard?"
 3. If the owner is *this* node, it spawns the entity (if not
    already present) and forwards the message.
 4. If the owner is *another* node, it forwards over the cluster
    transport to that node's region, which does the same.
 
-## The three actors at play
+## The four actors at play
 
 | Actor | Role |
 | --- | --- |
-| **Region** | One per node.  Routes messages to the right shard's owner, hosts local entities. |
+| **Region** | One per node.  Routes messages to the right shard's owner, and decides when local entities passivate. |
+| **Shard** | One per shard hosted here, a child of the region.  Owns the entity actors: spawns them, stops them, buffers for one on its way out. |
 | **Coordinator** | One per cluster (singleton, on the leader).  Decides which node owns each shard.  Handles rebalancing on membership changes. |
-| **Entity** | One per `entityId`.  Hosted on whichever node currently owns the shard the ID hashes to. |
+| **Entity** | One per `entityId`.  A child of its shard, on whichever node currently owns the shard the ID hashes to. |
 
-Each level has its own page in the cluster section — see
-[ShardRegion](/cluster/sharding/), the
-[allocation strategy](/cluster/sharding/allocation-strategy/),
+That gives entities a real path —
+`/system/cluster/sharding/region-counter/shard-7/entity-user-42`
+— which is what makes a shard addressable at all.  See
+[introspection](/cluster/sharding/introspection/) for listing shards and
+getting refs to them.
+
+The region is the subject of this page; the coordinator's decisions
+have pages of their own — see the
+[allocation strategy](/cluster/sharding/allocation-strategy/)
 and [rebalance](/cluster/sharding/rebalance/) for the
 mechanics.
 
@@ -141,26 +181,26 @@ mechanics.
 `ShardingOptionsType<TMessage>` — the fields you'll most often touch:
 
 ```ts
-interface ShardingOptionsType<TMessage> {
+type ShardingOptionsType<TMessage> = {
   typeName:               string;
   entityProps:            Props<TMessage>;
   extractEntityId:        (message: TMessage) => string;
   extractEntityMessage?:  (message: TMessage) => unknown;
-  numShards?:             number;             // default 100
+  numShards?:             number;             // default 64
   role?:                  string;             // restrict to nodes carrying this role
   proxy?:                 boolean;            // route-only, no local entities
   rememberEntities?:      boolean;            // re-spawn entities on failover (#)
   passivationIdleMs?:     number;             // auto-stop idle entities
   maxEntities?:           number;             // LRU cap per node
-}
+};
 ```
 
 | Field | What it controls |
 | --- | --- |
 | `typeName` | A string identifying this sharded type.  Different types can coexist in the same cluster (`cart`, `session`, `order`). |
-| `extractEntityId(msg)` | Pull the entity ID from a message.  This is the key that gets hashed to a shard. |
-| `extractEntityMessage(msg)` | *(Optional)* If the message envelope contains routing info plus a payload, this strips the envelope before the entity sees it.  Defaults to the message as-is. |
-| `numShards` | How many shards the entity space is divided into.  100 is fine for most clusters; bump to 1000 for very large clusters (>50 nodes). |
+| `extractEntityId(message)` | Pull the entity ID from a message.  This is the key that gets hashed to a shard. |
+| `extractEntityMessage(message)` | *(Optional)* If the message envelope contains routing info plus a payload, this strips the envelope before the entity sees it.  Defaults to the message as-is. |
+| `numShards` | How many shards the entity space is divided into.  64 is fine for most clusters; bump to 1000 for very large clusters (>50 nodes). |
 | `role` | Only members with this role host shards of this type.  Useful for placing compute-heavy entities on dedicated nodes. |
 | `proxy` | This node *forwards* messages to the region but never hosts entities locally.  Used for client nodes in an asymmetric cluster. |
 | `rememberEntities` | Persist the set of *active* entity IDs.  After a coordinator failover (or full cluster restart), those IDs are spawned eagerly so messages don't have to recreate the entire fleet. |
@@ -173,28 +213,55 @@ matched to your traffic pattern.
 
 ## Passivation
 
-```ts
-import { Passivate, Actor } from 'actor-ts';
+Passivation stops an idle entity to free memory; the next message
+for the same ID re-creates it.  However it is triggered, the region
+buffers messages that arrive while the entity is stopping and
+replays them to the fresh incarnation, so nothing is lost.
 
-class CartActor extends Actor<CartCommand | Passivate> {
-  override onReceive(msg): void {
-    if (msg instanceof Passivate) {
-      // Optionally do shutdown work, then send the passivate ack.
-      this.context.parent.forEach(p => p.tell({ kind: 'passivate-ack' }));
-      return;
-    }
-    // ...
+**Automatic** — when `passivationIdleMs` elapses with no traffic, or
+`maxEntities` is exceeded (the least-recently-used entity is
+evicted), the entity is stopped.  Nothing is sent to the entity and no
+acknowledgment is involved.  The *decision* is the region's, because
+only it sees traffic across every shard on this node — which is why
+`maxEntities` is a per-node cap, not a per-shard one — and the shard
+that owns the entity carries it out.
+
+**Manual (graceful)** — an entity asks to be passivated by sending a
+`Passivate` to its parent, which is its shard.  `Passivate` carries a
+*stop-message* that gets forwarded back to the entity, so the entity
+decides exactly when and how it shuts down (finish in-flight work,
+flush state, then terminate).  Using `PoisonPill` as the stop-message
+terminates the entity as soon as it comes back:
+
+```ts
+import { match } from 'ts-pattern';
+import { Passivate, PoisonPill, Actor } from 'actor-ts';
+
+type AddCommand = { entityId: string; kind: 'add'; sku: string };
+type CheckoutCommand = { entityId: string; kind: 'checkout' };
+type CartCommand = AddCommand | CheckoutCommand;
+
+class CartActor extends Actor<CartCommand> {
+  private items: string[] = [];
+
+  override onReceive(command: CartCommand): void {
+    match(command)
+      .with({ kind: 'add' }, (c) => this.onAdd(c))
+      .with({ kind: 'checkout' }, () => this.onCheckout())
+      .exhaustive();
+  }
+
+  private onAdd(command: AddCommand): void {
+    this.items.push(command.sku);
+  }
+
+  // Done with this cart — ask the region to passivate us.
+  private onCheckout(): void {
+    this.context.parent.forEach((parent) =>
+      parent.tell(new Passivate(PoisonPill.instance, this.self), this.self));
   }
 }
 ```
-
-When `passivationIdleMs` is configured (or `maxEntities` is hit),
-the region sends `Passivate` to the entity.  The entity acks; the
-region stops it and ensures buffered messages for the same ID are
-drained to the next incarnation when it spawns.
-
-If you want fully manual control, send the parent a
-`{ kind: 'passivate' }` message yourself.
 
 ## Rebalancing
 
@@ -283,8 +350,8 @@ import { Aside } from '@astrojs/starlight/components';
 
 ## Where to next
 
-- **[ShardRegion](/cluster/sharding/) ** *(stub)* — the
-  per-node region actor; configuration deep dive.
+- **[Introspection](/cluster/sharding/introspection/)** — list the
+  shards, get a ref to one shard or one entity, follow the map.
 - **[Allocation strategy](/cluster/sharding/allocation-strategy/)** —
   default hash-mod-regions, custom strategies.
 - **[Rebalance](/cluster/sharding/rebalance/)** — the
@@ -296,5 +363,6 @@ import { Aside } from '@astrojs/starlight/components';
 - **[Sharded daemon process](/cluster/sharding/sharded-daemon-process/)** —
   fixed-count workers distributed by sharding.
 
-The [`ClusterSharding`](/api/classes/clustersharding/)
-API reference covers the full surface.
+The [`ClusterSharding`](/api/classes/clustersharding/) and
+[`ShardRegion`](/api/classes/shardregion/) API references cover
+the full surface, including the per-node region actor.

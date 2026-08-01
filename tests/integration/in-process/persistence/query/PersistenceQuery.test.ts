@@ -68,39 +68,39 @@ describe('InMemoryQuery — currentEventsByPersistenceId', () => {
 describe('InMemoryQuery — currentEventsByTag', () => {
   test('returns only events tagged with the requested tag, ordered globally', async () => {
     const journal = new InMemoryJournal();
-    await journal.append('alice', [{ msg: 'a1' }], 0, ['accounts']);
+    await journal.append('alice', [{ message: 'a1' }], 0, ['accounts']);
     await sleep(2);
-    await journal.append('bob', [{ msg: 'b1' }], 0, ['accounts', 'vip']);
+    await journal.append('bob', [{ message: 'b1' }], 0, ['accounts', 'vip']);
     await sleep(2);
-    await journal.append('alice', [{ msg: 'a2' }], 1, ['internal']);
+    await journal.append('alice', [{ message: 'a2' }], 1, ['internal']);
     await sleep(2);
-    await journal.append('bob', [{ msg: 'b2' }], 1, ['accounts']);
+    await journal.append('bob', [{ message: 'b2' }], 1, ['accounts']);
 
     const query = new InMemoryQuery(journal);
-    const accounts = await query.currentEventsByTag<{ msg: string }>('accounts', offsetStart);
-    expect(accounts.map((te) => te.event.event.msg)).toEqual(['a1', 'b1', 'b2']);
+    const accounts = await query.currentEventsByTag<{ message: string }>('accounts', offsetStart);
+    expect(accounts.map((te) => te.event.event.message)).toEqual(['a1', 'b1', 'b2']);
 
-    const vip = await query.currentEventsByTag<{ msg: string }>('vip', offsetStart);
-    expect(vip.map((te) => te.event.event.msg)).toEqual(['b1']);
+    const vip = await query.currentEventsByTag<{ message: string }>('vip', offsetStart);
+    expect(vip.map((te) => te.event.event.message)).toEqual(['b1']);
   });
 
   test('fromOffset skips events at-or-before the cursor', async () => {
     const journal = new InMemoryJournal();
-    await journal.append('a', [{ msg: '1' }], 0, ['t']);
+    await journal.append('a', [{ message: '1' }], 0, ['t']);
     await sleep(2);
-    await journal.append('a', [{ msg: '2' }], 1, ['t']);
+    await journal.append('a', [{ message: '2' }], 1, ['t']);
     const query = new InMemoryQuery(journal);
 
-    const all = await query.currentEventsByTag<{ msg: string }>('t', offsetStart);
+    const all = await query.currentEventsByTag<{ message: string }>('t', offsetStart);
     expect(all).toHaveLength(2);
 
     // Use the first event's offset → expect the second to come back.
-    const second = await query.currentEventsByTag<{ msg: string }>('t', all[0]!.offset);
-    expect(second.map((te) => te.event.event.msg)).toEqual(['1', '2']); // inclusive of cursor (>= semantics)
+    const second = await query.currentEventsByTag<{ message: string }>('t', all[0]!.offset);
+    expect(second.map((te) => te.event.event.message)).toEqual(['1', '2']); // inclusive of cursor (>= semantics)
 
     // Use the second event's offset → expect just that one back.
-    const last = await query.currentEventsByTag<{ msg: string }>('t', all[1]!.offset);
-    expect(last.map((te) => te.event.event.msg)).toEqual(['2']);
+    const last = await query.currentEventsByTag<{ message: string }>('t', all[1]!.offset);
+    expect(last.map((te) => te.event.event.message)).toEqual(['2']);
   });
 });
 
@@ -201,7 +201,7 @@ describe('PersistenceQuery — currentPersistenceIds', () => {
  *   5  | inv-2   | type:Invoice, tenant:t2, archived
  *   6  | event-1 | type:Event,  tenant:t1
  */
-async function seedFilterCorpus(journal: { append(pid: string, events: unknown[], expected: number, tags?: string[]): Promise<unknown> }): Promise<void> {
+async function seedFilterCorpus(journal: { append(persistenceId: string, events: unknown[], expected: number, tags?: string[]): Promise<unknown> }): Promise<void> {
   await journal.append('order-1', [{ id: 1 }], 0, ['type:Order',   'tenant:t1']);
   await sleep(2);
   await journal.append('order-2', [{ id: 2 }], 0, ['type:Order',   'tenant:t2']);

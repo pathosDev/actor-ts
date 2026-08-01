@@ -4,12 +4,12 @@ import { OptionsValidator } from '../../util/OptionsValidator.js';
 import type { HttpRequest, HttpResponse } from '../types.js';
 
 /** Plain settings shape for the request-timeout middleware. */
-export interface TimeoutOptionsType {
+export type TimeoutOptionsType = {
   /** Deadline in milliseconds.  Default 30000. */
   readonly ms?: number;
   /** Response produced on timeout.  Default 503 `{ error: 'request timed out' }`. */
-  readonly onTimeout?: (req: HttpRequest) => HttpResponse;
-}
+  readonly onTimeout?: (request: HttpRequest) => HttpResponse;
+};
 
 /** Fluent builder for {@link TimeoutOptionsType}. */
 export class TimeoutOptionsBuilder extends OptionsBuilder<TimeoutOptionsType> {
@@ -19,7 +19,7 @@ export class TimeoutOptionsBuilder extends OptionsBuilder<TimeoutOptionsType> {
   withMs(ms: number): this {
     return this.set('ms', ms);
   }
-  withOnTimeout(fn: (req: HttpRequest) => HttpResponse): this {
+  withOnTimeout(fn: (request: HttpRequest) => HttpResponse): this {
     return this.set('onTimeout', fn);
   }
 }

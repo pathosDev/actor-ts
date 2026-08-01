@@ -1,7 +1,7 @@
 /**
  * One sharded entity per chat room.  PersistentActor — every
- * `SendMessage` is appended to the SQLite journal as a `MsgPosted`
- * event; recovery replays the room's history into in-memory state.
+ * `SendMessage` is appended to the SQLite journal as a `MessagePostedEvent`;
+ * recovery replays the room's history into in-memory state.
  *
  * Routing: ClusterSharding picks a node based on `entityId = roomName`
  * via the message extractor in `main.ts`.  At any moment a given
@@ -47,38 +47,40 @@ export const SNAPSHOT_EVERY_N_EVENTS = 100;
 
 /* --------------------------- public messages --------------------------- */
 
-export interface HistoryReply {
+export type HistoryReply = {
   readonly kind: 'HistoryReply';
   readonly room: RoomName;
   readonly messages: ReadonlyArray<ChatMessage>;
-}
+};
 
-export type ChatRoomCommand =
-  | {
-      readonly kind: 'SendMessage';
-      readonly room: RoomName;
-      readonly from: string;
-      readonly text: string;
-    }
-  | {
-      readonly kind: 'GetHistory';
-      readonly room: RoomName;
-      readonly limit: number;
-      readonly replyTo: ActorRef<HistoryReply>;
-    };
+export type SendMessageCommand = {
+  readonly kind: 'SendMessage';
+  readonly room: RoomName;
+  readonly from: string;
+  readonly text: string;
+};
+
+export type GetHistoryCommand = {
+  readonly kind: 'GetHistory';
+  readonly room: RoomName;
+  readonly limit: number;
+  readonly replyTo: ActorRef<HistoryReply>;
+};
+
+export type ChatRoomCommand = SendMessageCommand | GetHistoryCommand;
 
 /**
  * Body published on `chatRoomTopic(room)` after every persisted
  * message.  Subscribers (UserSessionActors) translate this into a
- * `ServerMessage` of `type: 'message'` and forward over their socket.
+ * `ServerMessage` of `kind: 'message'` and forward over their socket.
  */
-export interface RoomBroadcast {
+export type RoomBroadcast = {
   readonly kind: 'RoomBroadcast';
   readonly room: RoomName;
   readonly from: string;
   readonly text: string;
   readonly ts: number;
-}
+};
 
 /**
  * Ephemeral "user is typing" broadcast — published on the same
@@ -94,11 +96,11 @@ export interface RoomBroadcast {
  * design might split into a separate topic if typing fan-out
  * dominates message fan-out.  Added in #103.
  */
-export interface TypingBroadcast {
+export type TypingBroadcast = {
   readonly kind: 'TypingBroadcast';
   readonly room: RoomName;
   readonly from: string;
-}
+};
 
 /** Topic name a room broadcasts on. */
 export function chatRoomTopic(room: RoomName): string {
@@ -107,17 +109,18 @@ export function chatRoomTopic(room: RoomName): string {
 
 /* ----------------------------- internals ------------------------------ */
 
-interface MsgPosted {
-  readonly kind: 'MsgPosted';
+type MessagePostedEvent = {
+  readonly kind: 'MessagePosted';
   readonly from: string;
   readonly text: string;
   readonly ts: number;
-}
-type ChatEvent = MsgPosted;
+};
 
-interface ChatState {
+type ChatEvent = MessagePostedEvent;
+
+type ChatState = {
   readonly history: ReadonlyArray<ChatMessage>;
-}
+};
 
 /* ------------------------------- actor -------------------------------- */
 
@@ -166,49 +169,54 @@ export class ChatRoomActor extends PersistentActor<ChatRoomCommand, ChatEvent, C
 
   onEvent(state: ChatState, e: ChatEvent): ChatState {
     return match(e)
-      .with({ kind: 'MsgPosted' }, (m) => {
-        const next = [...state.history, { from: m.from, text: m.text, ts: m.ts }];
-        // Trim AFTER append so the most-recent N messages stay live —
-        // older events live on in the journal but aren't kept resident.
-        const trimmed =
-          next.length > HISTORY_LIMIT ? next.slice(next.length - HISTORY_LIMIT) : next;
-        return { history: trimmed };
-      })
+      .with({ kind: 'MessagePosted' }, (m) => this.onMessagePosted(state, m))
       .exhaustive();
   }
 
-  async onCommand(state: ChatState, cmd: ChatRoomCommand): Promise<void> {
-    if (cmd.kind === 'SendMessage') {
-      const event: MsgPosted = {
-        kind: 'MsgPosted',
-        from: cmd.from,
-        text: cmd.text,
-        ts: Date.now(),
-      };
-      await this.persist(event, () => {
-        // After persistence: broadcast cluster-wide via PubSub.  Sender
-        // (originating UserSessionActor) doesn't get an explicit ack —
-        // it sees its own message arrive via the same pubsub fan-out
-        // that reaches every other connected client.  No special
-        // round-tripping, no echo handling on the client.
-        const broadcast: RoomBroadcast = {
-          kind: 'RoomBroadcast',
-          room: this.roomName,
-          from: event.from,
-          text: event.text,
-          ts: event.ts,
-        };
-        const topic = chatRoomTopic(this.roomName);
-        const mediator = this.system.extension(DistributedPubSubId).mediator;
-        mediator.tell(new Publish(topic, broadcast));
-      });
-      return;
-    }
+  private onMessagePosted(state: ChatState, m: MessagePostedEvent): ChatState {
+    const next = [...state.history, { from: m.from, text: m.text, ts: m.ts }];
+    // Trim AFTER append so the most-recent N messages stay live —
+    // older events live on in the journal but aren't kept resident.
+    const trimmed =
+      next.length > HISTORY_LIMIT ? next.slice(next.length - HISTORY_LIMIT) : next;
+    return { history: trimmed };
+  }
 
-    if (cmd.kind === 'GetHistory') {
-      const messages = state.history.slice(-Math.max(1, cmd.limit));
-      cmd.replyTo.tell({ kind: 'HistoryReply', room: this.roomName, messages });
-      return;
-    }
+  async onCommand(state: ChatState, command: ChatRoomCommand): Promise<void> {
+    await match(command)
+      .with({ kind: 'SendMessage' }, (c) => this.onSendMessage(c))
+      .with({ kind: 'GetHistory' }, (c) => this.onGetHistory(state, c))
+      .exhaustive();
+  }
+
+  private async onSendMessage(command: SendMessageCommand): Promise<void> {
+    const event: ChatEvent = {
+      kind: 'MessagePosted',
+      from: command.from,
+      text: command.text,
+      ts: Date.now(),
+    };
+    await this.persist(event, () => {
+      // After persistence: broadcast cluster-wide via PubSub.  Sender
+      // (originating UserSessionActor) doesn't get an explicit ack —
+      // it sees its own message arrive via the same pubsub fan-out
+      // that reaches every other connected client.  No special
+      // round-tripping, no echo handling on the client.
+      const broadcast: RoomBroadcast = {
+        kind: 'RoomBroadcast',
+        room: this.roomName,
+        from: event.from,
+        text: event.text,
+        ts: event.ts,
+      };
+      const topic = chatRoomTopic(this.roomName);
+      const mediator = this.system.extension(DistributedPubSubId).mediator;
+      mediator.tell(new Publish(topic, broadcast));
+    });
+  }
+
+  private onGetHistory(state: ChatState, command: GetHistoryCommand): void {
+    const messages = state.history.slice(-Math.max(1, command.limit));
+    command.replyTo.tell({ kind: 'HistoryReply', room: this.roomName, messages });
   }
 }

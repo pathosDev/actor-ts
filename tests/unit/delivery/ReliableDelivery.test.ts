@@ -169,3 +169,46 @@ describe('ReliableDelivery — flow control', () => {
     await kit.system.terminate();
   });
 });
+
+describe('ReliableDelivery — shutdown (#451)', () => {
+  test('stopping the producer settles in-flight sends, not only queued ones', async () => {
+    const kitOptions = TestKitOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off);
+    const kit = TestKit.create('rd-stop-inflight', kitOptions);
+    const confirmed: Array<{ body: string; err: Error | null }> = [];
+
+    // A probe stands in for the consumer so nothing is ever acked.  With a
+    // window of 2 the first two sends sit in-flight and the other two queue
+    // behind them — covering both collections `postStop` has to drain.
+    const neverAcknowledges = kit.createTestProbe();
+    const producerOptions = ProducerControllerOptions.create<string>()
+      .withConsumer(neverAcknowledges as never)
+      .withResendTimeout(10_000)
+      .withWindowSize(2);
+    const producer = ReliableDelivery.producer<string>(kit.system, producerOptions);
+
+    for (const s of ['a', 'b', 'c', 'd']) {
+      producer.tell(s, (err) => confirmed.push({ body: s, err }));
+    }
+    await sleep(40);
+
+    // Two delivered and awaiting an ack that never comes, two still queued.
+    expect(neverAcknowledges.messageCount).toBe(2);
+    expect(confirmed).toHaveLength(0);
+
+    producer.stop();
+    await sleep(40);
+
+    // Before the fix this was 2 — the queued sends only.  The two in-flight
+    // callers were never called back at all and waited forever.
+    expect(confirmed).toHaveLength(4);
+    expect(confirmed.map(c => c.body).sort()).toEqual(['a', 'b', 'c', 'd']);
+    for (const c of confirmed) {
+      expect(c.err).toBeInstanceOf(Error);
+      expect(c.err?.message).toBe('producer stopped');
+    }
+
+    await kit.system.terminate();
+  });
+});

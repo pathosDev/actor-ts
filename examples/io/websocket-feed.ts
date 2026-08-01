@@ -18,13 +18,14 @@ import {
   websocket,
   websocketSend,
 } from '../../src/index.js';
+import { attachDevTools } from '../devtools.js';
 
 type Up = { kind: 'tick'; n: number };   // client → server
 type Down = { kind: 'ack'; n: number };  // server → client
 
 class EchoServer extends WebsocketServerActor<Down, Up> {
-  override onMessage(msg: Up): void {
-    this.reply({ kind: 'ack', n: msg.n });
+  override onMessage(message: Up): void {
+    this.reply({ kind: 'ack', n: message.n });
   }
 }
 
@@ -34,13 +35,14 @@ class Feed extends WebsocketClientActor<Up, Down> {
     super(clientOptions);
   }
   override onConnected(): void { console.log('[client] connected'); }
-  override onMessage(msg: Down): void { console.log('[client] ← ack', msg.n); }
+  override onMessage(message: Down): void { console.log('[client] ← ack', message.n); }
 }
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
 async function main(): Promise<void> {
   const system = ActorSystem.create('ws-feed-demo');
+  const devtools = await attachDevTools(system);
 
   const server = system.spawn(Props.create(() => new EchoServer()), 'echo');
   const binding = await system.extension(HttpExtensionId).newServerAt('127.0.0.1', 0).bind(websocket('/ws', server));
@@ -56,6 +58,7 @@ async function main(): Promise<void> {
 
   await sleep(400);
   await binding.unbind();
+  await devtools.holdOpen();
   await system.terminate();
 }
 

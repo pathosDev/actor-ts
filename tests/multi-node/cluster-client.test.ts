@@ -25,18 +25,19 @@ import { ClusterClientOptions } from '../../src/cluster/ClusterClientOptions.js'
 import { ClusterClientReceptionistId } from '../../src/cluster/ClusterClientReceptionist.js';
 import { LogLevel, NoopLogger } from '../../src/Logger.js';
 import { Props } from '../../src/Props.js';
+import { SystemGroups } from '../../src/internal/SystemPaths.js';
 
-interface CmdEcho { readonly kind: 'echo'; readonly payload: unknown }
-interface CmdRing { readonly kind: 'ring' }
-type Cmd = CmdEcho | CmdRing;
+type CommandEcho = { readonly kind: 'echo'; readonly payload: unknown };
+type CommandRing = { readonly kind: 'ring' };
+type Command = CommandEcho | CommandRing;
 
-class EchoActor extends Actor<Cmd> {
+class EchoActor extends Actor<Command> {
   public rings = 0;
-  override onReceive(msg: Cmd): void {
-    if (msg.kind === 'echo') {
+  override onReceive(message: Command): void {
+    if (message.kind === 'echo') {
       this.context.sender.fold(
         () => { /* no sender, drop */ },
-        (s) => s.tell(msg.payload),
+        (s) => s.tell(message.payload),
       );
     } else {
       this.rings += 1;
@@ -44,14 +45,14 @@ class EchoActor extends Actor<Cmd> {
   }
 }
 
-interface NodeHandle {
+type NodeHandle = {
   readonly system: ActorSystem;
   readonly cluster: Cluster;
   readonly host: string;
   readonly port: number;
   readonly contactPoint: string;
-  readonly echo: import('../../src/index.js').ActorRef<Cmd> & { actorImplementation: EchoActor };
-}
+  readonly echo: import('../../src/index.js').ActorRef<Command> & { actorImplementation: EchoActor };
+};
 
 // Per-test-file jitter to avoid clashing with concurrent CI runs.
 const PORT_BASE = 41_000 + Math.floor(Math.random() * 8_000);
@@ -118,6 +119,28 @@ describe('ClusterClient — outside-in connectivity', () => {
       await Bun.sleep(20);
     }
     expect(node.echo.actorImplementation.rings).toBe(1);
+  }, 10_000);
+
+  test('ask reaches a framework actor by its absolute /system path', async () => {
+    node = await startNode('cc-test', pickPort());
+    // Bare paths are relative to `/user`, so `system` has to be recognised as
+    // a guardian — otherwise this resolves as a *user* actor literally named
+    // `system` and the framework side of the tree is unaddressable.
+    node.system._spawnSystemActor(
+      Props.create(() => new EchoActor()),
+      SystemGroups.cluster,
+      'echo-probe',
+    );
+    const clientOptions = ClusterClientOptions.create()
+      .withContactPoints([node.contactPoint]);
+    client = new ClusterClient(clientOptions);
+
+    const reply = await client.ask<{ x: number }>(
+      'system/cluster/echo-probe',
+      { kind: 'echo', payload: { x: 7 } },
+    );
+
+    expect(reply).toEqual({ x: 7 });
   }, 10_000);
 
   test('ask to unknown path rejects with a clear error', async () => {

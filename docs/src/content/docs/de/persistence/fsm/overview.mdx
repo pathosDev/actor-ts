@@ -21,10 +21,14 @@ Das Framework liefert zwei Varianten:
 | **[`FSM`](/de/persistence/fsm/fsm/)** | Nur In-Memory | Transiente Zustandsmaschinen (Connection-Lifecycles, Request-Handler). |
 | **[`PersistentFSM`](/de/persistence/fsm/persistent-fsm/)** | Event-sourced | Lange laufende Workflows, die Neustarts überleben (Sagas, Approvals, Orders). |
 
-Beide exponieren dieselbe DSL — `when(state, handler)`,
-`goto(state, data)`, `stay(data)`, `onEnter`- /
-`onExit`-Callbacks.  Die persistente Variante fügt eine
-journal-gestützte Recovery-Schicht hinzu.
+Die beiden Varianten haben **unterschiedliche Formen**.  Das
+In-Memory-`FSM` ist DSL-getrieben — `when(state, handler)`,
+`goto(state, data)`, `stay(data)`, dazu `onEnter`- /
+`onExitState`-Callbacks (siehe Beispiel unten).  `PersistentFSM`
+ist stattdessen **tabellengetrieben**: du deklarierst eine
+`transitions`-Tabelle und einen `applyEvent`-Reducer, initialisierst
+sie mit `initialFsmState` / `initialData`, und jeder Übergang wird
+als Event persistiert und bei der Recovery erneut abgespielt.
 
 ## Ein minimales Beispiel
 
@@ -39,13 +43,13 @@ class Door extends FSM<State, Data, Message> {
   constructor() {
     super('closed', {});
 
-    this.when('closed', (data, msg) => {
-      if (msg === 'open') return this.goto('open', { openedAt: Date.now() });
+    this.when('closed', (data, message) => {
+      if (message === 'open') return this.goto('open', { openedAt: Date.now() });
       return this.stay(data);
     });
 
-    this.when('open', (data, msg) => {
-      if (msg === 'close') return this.goto('closed', {});
+    this.when('open', (data, message) => {
+      if (message === 'close') return this.goto('closed', {});
       return this.stay(data);
     });
 

@@ -23,11 +23,11 @@ export class LocalActorRef<TMessage = unknown> extends ActorRef<TMessage> {
     // its child span links back to ours (#53, #10).  Both fields are
     // omitted from the envelope when their respective extensions are
     // not enabled, keeping the no-instrumentation hot path lean.
-    const ctx = LogContext.get();
+    const context = LogContext.get();
     const tracer = tracerOf(this.cell.system);
     const span = tracer.activeSpan();
     const env: import('./Mailbox.js').Envelope<TMessage> = { message, sender };
-    if (Object.keys(ctx).length > 0) (env as { context?: typeof ctx }).context = ctx;
+    if (Object.keys(context).length > 0) (env as { context?: typeof context }).context = context;
     if (span) (env as { trace?: ReturnType<typeof span.context> }).trace = span.context();
     this.cell.postUserEnvelope(env);
   }

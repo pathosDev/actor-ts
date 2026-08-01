@@ -26,7 +26,7 @@ flowchart LR
 ```
 
 Each node hosts a **mediator** at a well-known path
-(`/user/pubsub-mediator`).  Subscribers register with their local
+(`/system/cluster/pubsub/mediator`).  Subscribers register with their local
 mediator; mediators gossip the topic→node map.  Publishing sends
 the message to the local mediator, which fans out to every node
 that has subscribers for that topic.
@@ -35,15 +35,15 @@ that has subscribers for that topic.
 
 ```ts
 import { ActorSystem, Cluster, ClusterOptions, Props, Actor } from 'actor-ts';
-import { DistributedPubSub, type DistributedPubSubMediator, Publish, Subscribe } from 'actor-ts/cluster/pubsub';
+import { DistributedPubSubId, type DistributedPubSubMediator, Publish, Subscribe } from 'actor-ts/cluster/pubsub';
 
 class ChatMessage {
   constructor(public readonly user: string, public readonly text: string) {}
 }
 
 class ChatRoom extends Actor<ChatMessage> {
-  override onReceive(msg: ChatMessage): void {
-    this.log.info(`[chat] ${msg.user}: ${msg.text}`);
+  override onReceive(message: ChatMessage): void {
+    this.log.info(`[chat] ${message.user}: ${message.text}`);
   }
 }
 
@@ -53,7 +53,8 @@ const clusterOptions = ClusterOptions.create()
   .withPort(port)
   .withSeeds(seeds);
 const cluster = await Cluster.join(system, clusterOptions);
-const ps      = DistributedPubSub.start(cluster);
+const ps      = system.extension(DistributedPubSubId);
+ps.start(cluster);
 
 // Subscribe (typically in an actor's preStart):
 const room = system.spawnAnonymous(Props.create(() => new ChatRoom()));
@@ -97,7 +98,7 @@ interpret the segments — it's just string matching.
 
 ## How fan-out works
 
-On `Publish(topic, msg)`:
+On `Publish(topic, message)`:
 
 1. The local mediator looks up the topic in its `Map<topic,
    { local, remoteNodes }>`.
@@ -123,7 +124,7 @@ second).  Override per-mediator:
 
 ```ts
 const distributedPubSubOptions = DistributedPubSubOptions.create().withGossipIntervalMs(500);
-DistributedPubSub.start(cluster, distributedPubSubOptions);
+system.extension(DistributedPubSubId).start(cluster, distributedPubSubOptions);
 ```
 
 Lower intervals → faster convergence after subscribe / unsubscribe,
@@ -171,7 +172,7 @@ import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="Single-recipient routing">
   ```ts
-  ps.mediator.tell(new Publish('one-receiver', msg));
+  ps.mediator.tell(new Publish('one-receiver', message));
   ```
   If you know there's exactly one subscriber, just hold its ref
   and `tell` directly.  Pubsub adds an extra hop and gossip
@@ -205,7 +206,7 @@ import { Aside } from '@astrojs/starlight/components';
 <Aside type="caution" title="Gossip lag means subscribers miss messages early">
   ```ts
   ps.mediator.tell(new Subscribe('topic', sub));
-  ps.mediator.tell(new Publish('topic', msg));   // ↑ same node — sub gets it
+  ps.mediator.tell(new Publish('topic', message));   // ↑ same node — sub gets it
   // But: a publish on ANOTHER node right after Subscribe might miss `sub`
   ```
   The subscription has to gossip to the publisher's mediator

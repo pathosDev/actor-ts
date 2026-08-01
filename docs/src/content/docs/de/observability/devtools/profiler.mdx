@@ -1,0 +1,92 @@
+---
+title: Profiler
+description: Herausfinden, wo ein Actor-System seine Zeit verbringt — ein aggregierter Flame-Graph nach Actor-Pfad und Nachrichtentyp, oder ein V8-CPU-Profil für die Chrome DevTools.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+Der Profiler von V8 sagt dir, welche JavaScript-Frames CPU verbrennen.
+Für ein Actor-System ist das oft die falsche Frage — du willst wissen,
+*welcher Actor mit welcher Nachricht* die Zeit ausmacht. Das
+Profiler-Panel beantwortet beides.
+
+| Modus | Gruppiert nach | Verfügbar |
+| --- | --- | --- |
+| **Wallclock** | Actor-Pfad → Nachrichtentyp | Immer |
+| **CPU** | JavaScript-Call-Stacks | Wo `node:inspector` existiert |
+
+## Wallclock
+
+Session starten, das System beanspruchen, stoppen. Das Ergebnis ist ein
+aggregierter Flame-Graph: Jeder Balken ist ein Frame — ein Pfadsegment,
+zuletzt der Nachrichtentyp — und seine Breite ist der Anteil an der
+gesamten Bearbeitungszeit in diesem Teilbaum. Die schwersten Geschwister
+stehen links, die teure Strecke liegt also dort, wo das Auge zuerst
+hinsieht.
+
+Ein Hover zeigt Gesamtzeit, Self-Time, Nachrichtenanzahl, Mittelwert pro
+Nachricht und die Fehleranzahl, wo Handler geworfen haben. Unter dem
+Graphen ordnet **Heaviest handlers** die Blätter nach ihrer Eigenzeit —
+der kürzeste Weg von „irgendetwas ist langsam" zu „dieser Handler ist
+langsam".
+
+<Aside type="note" title="Aggregiert, keine Zeitachse">
+Dieser Flame-Graph hat keine Uhr. Identische Stacks werden summiert; ein
+zehntausendmal aufgerufener Handler erscheint einmal, so breit wie die
+Zeit, die er insgesamt verbraucht hat. Das
+[Tracing-Panel](/de/observability/devtools/tracing/) ist das mit der
+Zeitachse — nimm es, wenn dich ein einzelner Request interessiert,
+dieses, wenn dich das ganze System interessiert.
+</Aside>
+
+Gemessen wird mit den frameworkeigenen Per-Message-Zeiten, denselben,
+die hinter der Metrik `actor_message_handler_seconds` stehen. Das Profil
+misst also, was das Actor-System tatsächlich getan hat — nicht, was ein
+Sampler zufällig erwischt hat.
+
+## CPU
+
+Liefert ein normales V8-`.cpuprofile` zurück. Das Panel rendert es
+nicht: Die Chrome DevTools können das besser als eine mitgelieferte UI —
+also herunterladen und dort öffnen.
+
+Es braucht `node:inspector`, das nicht auf jeder Runtime vorhanden ist.
+Das Panel fragt nach, bevor es den Modus anbietet: Wo der Inspector
+fehlt, ist die Option ausgegraut und trägt die Begründung im Label,
+statt erst beim Drücken von Start zu scheitern. Auf Bun heißt das heute
+*„CPU — unavailable (node:inspector is not yet implemented in Bun)"*;
+Wallclock funktioniert überall.
+
+## Herunterladen
+
+Beide Modi exportieren. Wallclock erzeugt speedscope-JSON, das
+[speedscope.app](https://www.speedscope.app) unverändert öffnet —
+praktisch, um ein Profil an einen Bugreport zu hängen oder zwei Läufe
+nebeneinanderzulegen.
+
+## Kosten
+
+Gemessen wird nichts, bevor du Start drückst: Der Profiler setzt für die
+Dauer einer Session genau einen Observer auf den Dispatch-Pfad und
+entfernt ihn danach wieder — inklusive Wiederherstellung dessen, was
+vorher dort war. Außerhalb einer Session kostet es einen Null-Check pro
+Nachricht.
+
+Es läuft immer nur eine Session: Zwei überlappende Profile sähen je einen
+Teil des Bildes und keines wäre richtig. Eine Session, die weiterläuft,
+weil ein Browser-Tab geschlossen wurde, wird beim Detachen von DevTools
+gestoppt — der Hook überlebt also nie das, was ihn angefordert hat.
+
+Sessions können nach einer gesetzten Dauer selbst stoppen (`durationMs`,
+gedeckelt bei zehn Minuten). Ein Profiler ist eine Messung, kein
+Monitoring-Agent — für laufende Zahlen nimm
+[Metriken](/de/observability/metrics/core-metrics/).
+
+## Abschalten
+
+```ts
+DevToolsOptions.create().withPanels({ profiler: false })
+```
+
+Die Steuerungsmethoden werden dann gar nicht erst registriert; kein
+Client kann eine Session starten, egal was er anfragt.

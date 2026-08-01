@@ -31,12 +31,12 @@ import {
  *     cache: ext.cache(),
  *     windowMs: 60_000,
  *     max: 100,
- *     key: (req) => req.remoteAddress ?? '<anon>',
+ *     key: (request) => request.remoteAddress ?? '<anon>',
  *   });
  *   route(post('/api/expensive', limited(handler)));
  *
  * **Security — choosing `key` (security audit HTTP-3):** derive it from a
- * value the client can't freely forge.  `req.remoteAddress` (the socket peer)
+ * value the client can't freely forge.  `request.remoteAddress` (the socket peer)
  * is the safe default.  Do NOT key on a client-settable header such as
  * `x-forwarded-for` unless a trusted proxy strips and re-sets it — otherwise
  * an attacker rotates the header per request for a fresh bucket each time
@@ -51,38 +51,38 @@ import {
  * {@link RateLimitOptions} builder.
  */
 export function rateLimit(options: RateLimitOptions) {
-  const opts = options as RateLimitOptionsType;
-  new RateLimitOptionsValidator().validate(opts);
-  const prefix = opts.keyPrefix ?? 'rl:';
-  const onLimit = opts.onLimit ?? defaultOnLimit;
+  const resolvedOptions = options as RateLimitOptionsType;
+  new RateLimitOptionsValidator().validate(resolvedOptions);
+  const prefix = resolvedOptions.keyPrefix ?? 'rl:';
+  const onLimit = resolvedOptions.onLimit ?? defaultOnLimit;
 
-  return function wrap(handler: (req: HttpRequest) => Promise<HttpResponse> | HttpResponse) {
-    return async function limited(req: HttpRequest): Promise<HttpResponse> {
-      const userKey = await opts.key(req);
+  return function wrap(handler: (request: HttpRequest) => Promise<HttpResponse> | HttpResponse) {
+    return async function limited(request: HttpRequest): Promise<HttpResponse> {
+      const userKey = await resolvedOptions.key(request);
       const cacheKey = `${prefix}${userKey}`;
       let count: number;
       try {
-        count = await opts.cache.incr(cacheKey, opts.windowMs);
+        count = await resolvedOptions.cache.incr(cacheKey, resolvedOptions.windowMs);
       } catch {
         // Cache fault → fail open (let the request through).  Better to
         // serve traffic than to take down the API on Redis hiccups.
-        return handler(req);
+        return handler(request);
       }
-      if (count > opts.max) {
-        const retryAfter = Math.max(1, Math.ceil(opts.windowMs / 1000));
+      if (count > resolvedOptions.max) {
+        const retryAfter = Math.max(1, Math.ceil(resolvedOptions.windowMs / 1000));
         return onLimit({
           key: userKey,
           count,
-          max: opts.max,
-          windowMs: opts.windowMs,
+          max: resolvedOptions.max,
+          windowMs: resolvedOptions.windowMs,
           retryAfterSeconds: retryAfter,
         });
       }
-      const response = await handler(req);
+      const response = await handler(request);
       // Surface the standard X-RateLimit headers when we still have headroom.
       const headers: Record<string, string> = {
-        'x-ratelimit-limit': String(opts.max),
-        'x-ratelimit-remaining': String(Math.max(0, opts.max - count)),
+        'x-ratelimit-limit': String(resolvedOptions.max),
+        'x-ratelimit-remaining': String(Math.max(0, resolvedOptions.max - count)),
       };
       return {
         ...response,
@@ -92,13 +92,13 @@ export function rateLimit(options: RateLimitOptions) {
   };
 }
 
-function defaultOnLimit(ctx: RateLimitContext): HttpResponse {
+function defaultOnLimit(context: RateLimitContext): HttpResponse {
   return complete(
     Status.TooManyRequests,
-    { error: 'rate limited', retryAfter: ctx.retryAfterSeconds },
+    { error: 'rate limited', retryAfter: context.retryAfterSeconds },
     {
-      'retry-after': String(ctx.retryAfterSeconds),
-      'x-ratelimit-limit': String(ctx.max),
+      'retry-after': String(context.retryAfterSeconds),
+      'x-ratelimit-limit': String(context.max),
       'x-ratelimit-remaining': '0',
     },
   );

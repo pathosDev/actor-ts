@@ -4,8 +4,9 @@ description: A small, opportunistic cache abstraction — seven core operations 
 ---
 
 The `Cache` interface is the framework's **opportunistic
-key/value cache**.  Three operations cover ~95 % of real cases:
-get, set, atomic increment, set-if-absent, delete.
+key/value cache**.  Seven operations cover ~95 % of real cases:
+get, set, atomic increment, set-if-absent, delete, bulk get,
+bulk set.
 
 Used by:
 
@@ -28,7 +29,7 @@ interface Cache {
   setIfAbsent<V>(key: string, value: V, ttlMs?: number): Promise<boolean>;
   delete(...keys: string[]): Promise<void>;
   mget<V>(keys: string[]): Promise<Map<string, V>>;
-  mset(entries: Array<[string, unknown, number?]>): Promise<void>;
+  mset<V>(entries: ReadonlyMap<string, V>, ttlMs?: number): Promise<void>;
 }
 ```
 
@@ -129,10 +130,10 @@ state in one Redis call instead of N.
 `mset` is the dual:
 
 ```ts
-await cache.mset([
-  ['user:1', user1, 60_000],
-  ['user:2', user2, 60_000],
-]);
+await cache.mset(new Map([
+  ['user:1', user1],
+  ['user:2', user2],
+]), 60_000);
 ```
 
 ## When NOT to use the cache

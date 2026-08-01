@@ -43,6 +43,7 @@ public class UserGrain : Grain, IUserGrain {
 
 ```ts
 // actor-ts:
+import { match } from 'ts-pattern';
 import { Actor, type ActorRef } from 'actor-ts';
 
 type Command =
@@ -52,9 +53,19 @@ type Command =
 class UserActor extends Actor<Command> {
   private profile: UserProfile = { name: '', email: '' };
 
-  override onReceive(cmd: Command): void {
-    if (cmd.kind === 'get-profile') cmd.replyTo.tell(this.profile);
-    if (cmd.kind === 'update-name')  this.profile = { ...this.profile, name: cmd.name };
+  override onReceive(command: Command): void {
+    match(command)
+      .with({ kind: 'get-profile' }, (c) => this.onGetProfile(c))
+      .with({ kind: 'update-name' }, (c) => this.onUpdateName(c))
+      .exhaustive();
+  }
+
+  private onGetProfile(command: GetProfileCommand): void {
+    command.replyTo.tell(this.profile);
+  }
+
+  private onUpdateName(command: UpdateNameCommand): void {
+    this.profile = { ...this.profile, name: command.name };
   }
 }
 ```
@@ -64,7 +75,7 @@ Unterschiede:
 - **Methodenaufrufe** werden zu **Nachrichten-Arten + Handlern**.
 - **`Task<T>`-Rückgaben** werden zu **expliziten `replyTo`-Refs**.
 - **`IGrainWithStringKey`** ist implizit -
-  `extractEntityId(cmd)` zieht die ID auf der Sharding-Schicht.
+  `extractEntityId(command)` zieht die ID auf der Sharding-Schicht.
 
 ### Grain-Client
 
@@ -82,7 +93,7 @@ import { ClusterSharding } from 'actor-ts';
 const region = cluster.sharding.start<Command>({
   typeName: 'user',
   entityProps: Props.create(() => new UserActor()),
-  extractEntityId: (cmd) => cmd.entityId,
+  extractEntityId: (command) => command.entityId,
 });
 
 // Profil via ask holen:
@@ -161,14 +172,19 @@ class Account extends PersistentActor<Command, Event, State> {
   initialState(): State { return { balance: 0 }; }
 
   onEvent(state: State, event: Event): State {
-    if (event.kind === 'deposited') return { balance: state.balance + event.amount };
-    return state;
+    return match(event)
+      .with({ kind: 'deposited' }, (e) => ({ balance: state.balance + e.amount }))
+      .exhaustive();
   }
 
-  onCommand(state: State, cmd: Command): void {
-    if (cmd.kind === 'deposit') {
-      this.persist({ kind: 'deposited', amount: cmd.amount }, () => {});
-    }
+  onCommand(state: State, command: Command): void {
+    match(command)
+      .with({ kind: 'deposit' }, (c) => this.onDeposit(c))
+      .exhaustive();
+  }
+
+  private onDeposit(command: DepositCommand): void {
+    this.persist({ kind: 'deposited', amount: command.amount }, () => {});
   }
 }
 ```
@@ -226,7 +242,8 @@ await stream.SubscribeAsync((order, _) => ...);
 
 ```ts
 // actor-ts-Äquivalent - DistributedPubSub:
-const ps = DistributedPubSub.start(system, { cluster });
+const ps = system.extension(DistributedPubSubId);
+ps.start(cluster);
 
 ps.mediator.tell(new Publish('orders', order));
 ps.mediator.tell(new Subscribe('orders', subscriberRef));

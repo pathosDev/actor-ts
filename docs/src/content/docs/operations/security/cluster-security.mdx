@@ -17,10 +17,10 @@ transport.
 | Concern | How to address |
 | --- | --- |
 | **Eavesdropping** — peer-to-peer traffic readable by anyone on the wire. | TLS on the cluster transport. |
-| **Unauthorized joins** — a malicious node connects + becomes a cluster member. | Shared-secret auth on the handshake. |
+| **Unauthorized joins** — a malicious node connects + becomes a cluster member. | Mutual TLS (mTLS) — peer certificate verification. |
 
-Both should be enabled together for any external-facing
-cluster.
+Enable TLS with mutual authentication (mTLS) for any
+external-facing cluster — it addresses both.
 
 ## Enabling TLS
 
@@ -29,7 +29,7 @@ import { TcpTransport, NodeAddress, Cluster, ClusterOptions } from 'actor-ts';
 import fs from 'node:fs';
 
 const transport = new TcpTransport(
-  NodeAddress.parse('actor-ts://my-app@10.0.0.5:2552'),
+  NodeAddress.parse('my-app@10.0.0.5:2552'),
   system.log,
   {
     cert: fs.readFileSync('./tls/cluster.crt'),
@@ -112,25 +112,6 @@ spec:
 
 The pod mounts the secret as files; the actor reads them.
 
-## Shared-secret auth (optional layer)
-
-Beyond TLS, the framework can require a **shared secret** in
-the cluster handshake:
-
-```ts
-new TcpTransport(self, log, tlsOpts, /* maxFrame */ undefined, {
-  sharedSecret: process.env.CLUSTER_SECRET,
-});
-```
-
-Every node needs the same secret.  Mismatched secrets fail
-the handshake; bad actors without the secret can't join.
-
-With **TLS + mTLS already in place**, the shared secret adds
-belt-and-braces — handle the **insider threat** of a compromised
-private CA, where an attacker who got a cert could still be
-blocked.  For most deployments, mTLS alone is sufficient.
-
 ## Firewall the cluster port
 
 ```
@@ -170,8 +151,8 @@ Only `app=actor-ts` pods can reach port 2552 on each other.
 | --- | --- |
 | Network eavesdropping | TLS |
 | Man-in-the-middle | TLS + cert verification |
-| Unauthorized cluster join | mTLS + shared secret |
-| Insider with stolen cert | Shared secret + cert rotation |
+| Unauthorized cluster join | mTLS (CA-signed peer certs) |
+| Insider with stolen cert | Cert rotation + revocation |
 | Compromised pod inside the cluster | Application-level auth (out of scope here) |
 
 The cluster transport handles transport-level security.

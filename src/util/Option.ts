@@ -140,8 +140,8 @@ export function fromPredicate<T>(value: T, pred: (v: T) => boolean): Option<T> {
 
 /** First `Some` in the list, else `None`. */
 export function firstSome<T>(...options: ReadonlyArray<Option<T>>): Option<T> {
-  for (const opt of options) {
-    if (opt.isSome()) return opt;
+  for (const option of options) {
+    if (option.isSome()) return option;
   }
   return none;
 }

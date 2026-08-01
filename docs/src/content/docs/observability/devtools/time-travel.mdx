@@ -1,0 +1,106 @@
+---
+title: Time travel
+description: Read a persistence journal in the browser and reconstruct an event-sourced actor's state at any point in its history — read-only, using the same fold the actor itself recovers with.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+"What was this cart's state on Tuesday at 3pm?" Without tooling the
+answer is: replay the events by hand. The time-travel panel does it for
+you — pick a persistence id, drag to a sequence number, and see the
+state as it was, plus exactly what the event at that point changed.
+
+<Aside type="note" title="Read-only, by construction">
+Nothing in this panel writes a journal, a snapshot store or a live
+actor.  "What did this look like?" is a question, and answering it must
+not change the answer.
+</Aside>
+
+## The two halves
+
+**Events** always work. Any journal can be listed and paged, with the
+decoded payload, tags, and — where a migration envelope is present —
+the manifest and schema version, which is what you want when a
+migration is the thing under suspicion.
+
+**State** needs a *fold*. Turning events back into state requires
+`onEvent`, which lives in your actor class and cannot be recovered from
+stored data. The panel finds one in two ways:
+
+| Source | When | What it means |
+| --- | --- | --- |
+| `auto-captured` | The actor is running right now | Its own `initialState` / `onEvent` are borrowed |
+| `registered` | You passed a fold in `DevToolsOptions` | Works even when the actor is not running |
+
+Where neither applies the panel says so plainly and keeps the event log
+working, rather than showing a state it cannot actually derive.
+
+### Registering a fold
+
+Needed for ids whose actor is not running — a finished saga, an entity
+that has been passivated, a journal you are inspecting after the fact:
+
+```ts
+const devtoolsOptions = DevToolsOptions.create().withReplayFolds([{
+  match: (persistenceId) => persistenceId.startsWith('order-'),
+  initialState: () => ({ items: [], total: 0 }),
+  fold: (state, event) => applyOrderEvent(state, event),
+}]);
+await DevTools.attach(system, devtoolsOptions);
+```
+
+An explicit registration wins over auto-capture: it is a deliberate
+statement about how that id folds, while auto-capture is a convenience
+that happens to be available.
+
+To turn auto-capture off entirely — if you would rather see raw events
+than a state derived from an `onEvent` you have not vetted:
+
+```ts
+DevToolsOptions.create().withReplayAutoCapture(false)
+```
+
+## The same fold the actor uses
+
+State is reconstructed by `replayState`, the exact function
+`PersistentActor` recovery calls — including the snapshot fast-path and
+the two snapshot-integrity checks. That is deliberate: a debugger
+running a *slightly different* replay would be free to disagree with
+what the actor actually recovers, which is precisely the thing you are
+using it to check.
+
+One consequence worth knowing: travelling to sequence N uses the newest
+snapshot **before** N, so a jump into the distant past is as cheap as
+recovery is, not a fold from event one.
+
+## Reading the diff
+
+The panel shows the change between the selected point and the one
+before it, because "what did this event do?" is usually the question —
+not the absolute state. Field paths are dotted (`items.0.price`), and
+additions, removals and changes are colour-coded. Unchanged fields are
+hidden behind a toggle; an event that changed nothing says so.
+
+The full state at the selected point is one click away under **Full
+state at this point**.
+
+## Limits and safety
+
+- Large values are truncated for transport and the panel says when that
+  happened — a debugger must not become the reason a system falls over.
+- Event pages are capped (200 by default, 2 000 maximum) so an
+  unbounded read of a million-event journal cannot be requested.
+- The panel is the one that exposes raw persisted events, so it is the
+  first to switch off when DevTools runs anywhere but a dev machine:
+
+  ```ts
+  DevToolsOptions.create().withPanels({ timeTravel: false })
+  ```
+
+  A disabled panel's methods are never registered, so the data cannot
+  leave the process whatever a client asks for.
+
+## No CLI
+
+Time travel ships as a panel only. The [overview](/observability/devtools/overview/)
+explains how to attach; from there it is a browser tab.

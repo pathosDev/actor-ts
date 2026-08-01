@@ -43,12 +43,103 @@ Für **Multi-Process**-Parallelität (separate OS-Prozesse) nutze
 den regulären Cluster + TCP-Transport. Worker-Mesh ist speziell
 für den In-Process-Fall.
 
-## Setup
+## High-Level-API: `WorkerCluster`
+
+Broker, Kanäle und den Per-Worker-Handshake von Hand zu verdrahten
+(siehe [Unter der Haube](#unter-der-haube-manuelle-verdrahtung) weiter
+unten) ist genau das, was `WorkerCluster` automatisiert.  Es spawnt
+einen Worker-Pool aus einem Entrypoint-Modul, führt den
+Hello/Init/Ready-Handshake aus, registriert jeden Worker an einem
+gemeinsamen `WorkerBroker` und startet abgestürzte Worker gemäß einer
+`restartPolicy` neu.  Das zugrunde liegende Worker-Primitiv wird pro
+Runtime gewählt — Web Workers auf Bun/Deno, `node:worker_threads` auf
+Node — sodass derselbe Code überall läuft.
+
+```ts
+// main.ts — Hauptthread
+import { WorkerCluster, WorkerClusterOptions } from 'actor-ts';
+
+const workerClusterOptions = WorkerClusterOptions.create()
+  .withWorkers(4)
+  .withBootstrap(new URL('./worker-node.js', import.meta.url))
+  .withSystemName('multi-core')
+  .withBasePort(2552);
+const cluster = await WorkerCluster.spawn(workerClusterOptions);
+
+console.log(`Spawned ${cluster.size} workers:`);
+for (const address of cluster.addresses) console.log('  -', address.toString());
+
+// ...später, beim Shutdown:
+await cluster.terminate();
+```
+
+Jeder Worker führt das **Bootstrap-Modul** aus.  Es ruft
+`WorkerNode.join()` auf, um den Handshake abzuschließen und seine
+Adresse, den System-Namen, den Transport und `initData` zu erhalten,
+und tritt dann dem Cluster bei wie jeder andere Knoten:
+
+```ts
+// worker-node.ts — läuft in jedem Worker
+import { ActorSystem, Cluster, ClusterOptions, Props, WorkerNode } from 'actor-ts';
+
+async function main(): Promise<void> {
+  const context = await WorkerNode.join<{ seedAddress?: string }>();
+  const system = ActorSystem.create(context.systemName);
+  const clusterOptions = ClusterOptions.create()
+    .withHost(context.self.host)
+    .withPort(context.self.port)
+    .withSeeds(context.initData.seedAddress ? [context.initData.seedAddress] : [])
+    .withTransport(context.transport);
+  await Cluster.join(system, clusterOptions);
+
+  system.spawn(Props.create(() => new MyActor()), 'worker');
+  context.ready();   // dem Hauptthread signalisieren, dass der Knoten läuft
+}
+
+void main();
+```
+
+| Option | Was |
+| --- | --- |
+| `withBootstrap(url)` | Worker-Entrypoint-Modul.  **Pflicht.** |
+| `withWorkers(n \| 'auto')` | Pool-Größe; `'auto'` nutzt die Hardware-Concurrency.  Default `'auto'`. |
+| `withSystemName(name)` | `ActorSystem`-Name, den jeder Worker hostet.  Default `'worker-cluster'`. |
+| `withHostname(host)` | Hostname-Komponente der Adresse jedes Workers.  Default `'worker'`. |
+| `withBasePort(port)` | Port des ersten Workers; jeder weitere inkrementiert.  Default `1`. |
+| `withInitData(data)` | Payload, die jedem Worker im `join()`-Context zugestellt wird (`initData`).  Default `null`. |
+| `withRestartPolicy(p)` | `'always'` / `'on-failure'` / `'never'`.  Default `'on-failure'`. |
+| `withReadyTimeoutMs(ms)` | Handshake-Timeout pro Worker.  Default `10000`. |
+| `withBackend(backend)` | Startet über dieses `WorkerBackend` statt über das erkannte — für eine Runtime, die die Erkennung nicht kennt, oder ein In-Memory-Fake im Test.  Default: erkannt. |
+
+Das zurückgegebene `WorkerCluster` bietet `size`, `addresses` (die
+`NodeAddress` jedes Workers), den gemeinsamen `broker` und
+`terminate()`.  Fehlkonfigurierte Optionen (ein falscher `basePort`,
+ein nicht-positives `workers`) werfen `OptionsError` bei `spawn`.
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="`WorkerNode.join()` in einer async-Funktion aufrufen">
+  ```ts
+  // ✗ Top-Level-await im Worker-Modul
+  const context = await WorkerNode.join();
+  ```
+  Rufe es aus einer `async function main() { … }` auf, die du
+  aufrufst, nicht als Top-Level-`await`.  Auf Bun suspendiert ein
+  Top-Level-await im Worker den Modul-Loader, sodass eingehende
+  Nachrichten nie dispatchen und der Handshake für immer hängt.
+</Aside>
+
+## Unter der Haube: manuelle Verdrahtung
+
+Das obige `WorkerCluster` übernimmt diese Verdrahtung für dich.  Greife
+zum manuellen Weg nur, wenn du volle Kontrolle brauchst — eine eigene
+Topologie, einen maßgeschneiderten Handshake oder zusätzliches
+Per-Node-Setup.
 
 ```ts
 // main.ts — Hauptthread
 import { Worker } from 'node:worker_threads';
-import { ActorSystem, Cluster, ClusterOptions, MessageChannelTransport } from 'actor-ts';
+import { ActorSystem, Cluster, ClusterOptions, MessageChannelTransport, NodeAddress } from 'actor-ts';
 
 const channel = new MessageChannel();
 
@@ -57,10 +148,8 @@ const w1 = new Worker('./worker.js', {
   transferList: [channel.port2],
 });
 
-const transport = new MessageChannelTransport({
-  self:   'main',
-  ports: [channel.port1],
-});
+const mainAddress = new NodeAddress('main', 'main', 0);
+const transport = new MessageChannelTransport(mainAddress, channel.port1);
 
 const system = ActorSystem.create('main');
 const clusterOptions = ClusterOptions.create()
@@ -75,12 +164,10 @@ await Cluster.join(
 
 // worker.js — läuft im Worker-Thread
 import { parentPort, workerData } from 'node:worker_threads';
-import { ActorSystem, Cluster, ClusterOptions, MessageChannelTransport } from 'actor-ts';
+import { ActorSystem, Cluster, ClusterOptions, MessageChannelTransport, NodeAddress } from 'actor-ts';
 
-const transport = new MessageChannelTransport({
-  self:  'w1',
-  ports: [workerData.mainPort],
-});
+const workerAddress = new NodeAddress('w1', 'w1', 0);
+const transport = new MessageChannelTransport(workerAddress, workerData.mainPort);
 
 const system = ActorSystem.create('w1');
 const cluster2Options = ClusterOptions.create()
@@ -98,29 +185,34 @@ await Cluster.join(
 
 ## Die Mesh-Form
 
-Für **mehrere Worker** braucht jedes Paar einen MessageChannel.
-Ein voll vermaschtes Mesh mit 4 Workern braucht 6 Channels
-(binomial(4,2)).
-
-Der `MessageChannelTransport` des Frameworks akzeptiert ein
-**Array von Ports**:
+Der Transport ist ein **Stern, kein voll vermaschtes Mesh**. Ein
+einzelner `WorkerBroker` im Hauptthread ist die Nabe: Er hält
+einen `MessagePort` pro Node und leitet jeden Frame an den Node
+weiter, den die `to`-Adresse des Envelopes benennt. Der
+`MessageChannelTransport` jedes Nodes hält einen **einzelnen
+Port** — sein eigenes Ende eines Channels zum Broker, niemals ein
+Array:
 
 ```ts
-new MessageChannelTransport({
-  self:  'main',
-  ports: [
-    portToW1,
-    portToW2,
-    portToW3,
-  ],
-});
+import { MessageChannelTransport, NodeAddress, WorkerBroker } from 'actor-ts';
+
+// Hauptthread: ein Broker ist die Nabe für jeden Node.
+const broker = new WorkerBroker();
+
+// Ein MessageChannel pro Worker — der Broker behält das eine Ende und
+// der Worker erhält das andere (übertragen via workerData).
+const workerAddress = new NodeAddress('w1', 'w1', 0);
+const channel = new MessageChannel();
+broker.register(workerAddress, channel.port1);
+
+// In diesem Worker hält sein Transport das einzelne ferne Ende:
+const transport = new MessageChannelTransport(workerAddress, channel.port2);
 ```
 
-Jeder Port zielt auf einen Peer.
-
-Für größere Meshes ist die **Stern-Topologie** (alle reden mit
-main; main leitet weiter) einfacher — nur N-1 Channels nötig.
-Aber das macht main zum Flaschenhals.
+Also brauchen **N Worker N Channels** (einen pro Worker) — nicht
+binomial(N,2). Der Broker leitet jeden Hop weiter, was die
+Verdrahtung linear hält, aber den Hauptthread zum Relay für den
+gesamten Node-übergreifenden Verkehr macht.
 
 ## Wie es sich vom TCP-Cluster unterscheidet
 
@@ -145,7 +237,7 @@ Typen (Map, Set, Date etc.).
 const startShardingOptions = StartShardingOptions.create()
   .withTypeName('order')
   .withEntityProps(...)
-  .withExtractEntityId((msg) => msg.id)
+  .withExtractEntityId((message) => message.id)
   .withNumShards(16);
 sharding.start(
   startShardingOptions,
@@ -168,8 +260,6 @@ Ein abstürzender Worker reißt das Hauptsystem nicht mit —
 separate Event-Loops.
 
 ## Wann NICHT verwenden
-
-import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="Wenn Multi-Process funktioniert, nutze es">
   ```

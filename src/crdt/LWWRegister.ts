@@ -84,9 +84,9 @@ export class LWWRegister<V> implements Crdt<LWWRegister<V>> {
   }
 }
 
-export interface LWWRegisterJson<V> {
+export type LWWRegisterJson<V> = {
   readonly kind: 'LWWRegister';
   readonly value: V | null;
   readonly timestamp: number;
   readonly replica: ReplicaId;
-}
+};

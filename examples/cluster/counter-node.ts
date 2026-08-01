@@ -9,6 +9,7 @@
  *
  * Kill terminal 2 and watch terminals 1 and 3 pick up the stranded shards.
  */
+import { match } from 'ts-pattern';
 import {
   Actor,
   Cluster,
@@ -21,10 +22,12 @@ import {
   ShardMapChanged,
   StartShardingOptions,
 } from '../../src/index.js';
+import { attachDevTools } from '../devtools.js';
 
-type Command =
-  | { id: string; op: 'inc' }
-  | { id: string; op: 'get' };
+type IncrementCommand = { id: string; kind: 'increment' };
+type GetCommand = { id: string; kind: 'get' };
+
+type Command = IncrementCommand | GetCommand;
 
 class CounterEntity extends Actor<Command> {
   private count = 0;
@@ -37,16 +40,20 @@ class CounterEntity extends Actor<Command> {
     this.log.info(`entity ${this.self.path.name} stopped (count was ${this.count})`);
   }
 
-  override onReceive(cmd: Command): void {
-    switch (cmd.op) {
-      case 'inc':
-        this.count++;
-        this.log.info(`${this.self.path.name} = ${this.count}`);
-        break;
-      case 'get':
-        this.log.info(`${this.self.path.name} = ${this.count}`);
-        break;
-    }
+  override onReceive(command: Command): void {
+    match(command)
+      .with({ kind: 'increment' }, () => this.onIncrement())
+      .with({ kind: 'get' }, () => this.onGet())
+      .exhaustive();
+  }
+
+  private onIncrement(): void {
+    this.count++;
+    this.log.info(`${this.self.path.name} = ${this.count}`);
+  }
+
+  private onGet(): void {
+    this.log.info(`${this.self.path.name} = ${this.count}`);
   }
 }
 
@@ -77,6 +84,7 @@ async function main(): Promise<void> {
       .withShutdownOnSignals(false)
       .withFailureDetector({ heartbeatIntervalMs: 300, unreachableAfterMs: 1_500, downAfterMs: 3_500 })
       .withGossipIntervalMs(500));
+  await attachDevTools(system);
 
   cluster.subscribe(evt => {
     if (evt instanceof MemberUp) system.log.info(`[+] ${evt.member.address} is UP`);
@@ -84,16 +92,25 @@ async function main(): Promise<void> {
     if (evt instanceof MemberDown) system.log.warn(`[x] ${evt.member.address} marked DOWN`);
     if (evt instanceof MemberRemoved) system.log.warn(`[-] ${evt.member.address} removed`);
     if (evt instanceof ShardMapChanged) {
+      // `shards` maps shard id → *region key*, which is `<node>|<path>` — not
+      // something you want in a log line.  `regions` carries the node address
+      // for each key, so use it to summarise per node.
+      const addressOf = new Map(evt.regions.map((region) => [region.key, region.address]));
       const owners = new Map<string, number>();
-      for (const addr of evt.shards.values()) owners.set(addr, (owners.get(addr) ?? 0) + 1);
-      const summary = Array.from(owners).map(([k, v]) => `${k}=${v}`).join(', ');
+      for (const key of evt.shards.values()) {
+        const address = addressOf.get(key) ?? key;
+        owners.set(address, (owners.get(address) ?? 0) + 1);
+      }
+      const summary = owners.size > 0
+        ? Array.from(owners).map(([address, count]) => `${address}=${count}`).join(', ')
+        : 'no shards placed yet';
       system.log.info(`[~] shard map v${evt.version}: ${summary}`);
     }
   });
 
   const region = cluster.sharding.start('counter', CounterEntity,
     StartShardingOptions.create<Command>()
-      .withExtractEntityId((msg) => msg.id)
+      .withExtractEntityId((message) => message.id)
       .withNumShards(16));
 
   // Self-driven traffic so the demo shows movement without a second client.
@@ -103,7 +120,7 @@ async function main(): Promise<void> {
   const entities = ['alpha', 'beta', 'gamma', 'delta', 'epsilon', 'zeta', 'eta', 'theta'];
   const interval = setInterval(() => {
     const id = entities[tick % entities.length]!;
-    region.tell({ id, op: 'inc' });
+    region.tell({ id, kind: 'increment' });
     tick++;
   }, 400);
 

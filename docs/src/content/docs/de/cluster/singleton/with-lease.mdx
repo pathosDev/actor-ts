@@ -11,26 +11,20 @@ ihren eigenen Leader wählen** → zwei Singletons existieren.
 Die **Single-Writer-Lease** verhindert das:
 
 ```ts
-import { ClusterSingletonManager, ClusterSingletonManagerOptions, KubernetesLease, KubernetesLeaseOptions } from 'actor-ts';
+import { StartSingletonOptions, KubernetesLease, KubernetesLeaseOptions, Props } from 'actor-ts';
 
 const kubernetesLeaseOptions = KubernetesLeaseOptions.create()
   .withName('job-scheduler-singleton')
   .withOwner(process.env.POD_NAME!)
   .withTtlMs(30_000)
   .withNamespace(process.env.K8S_NAMESPACE!);
-const clusterSingletonManagerOptions = ClusterSingletonManagerOptions.create()
-  .withCluster(cluster)
+const startSingletonOptions = StartSingletonOptions.create()
   .withTypeName('job-scheduler')
-  .withSingletonProps(Props.create(() => new JobScheduler()))
+  .withProps(Props.create(() => new JobScheduler()))
   .withLease(new KubernetesLease(
     kubernetesLeaseOptions,
   ));
-system.spawn(
-  ClusterSingletonManager.props(
-    clusterSingletonManagerOptions,
-  ),
-  'singleton-manager-job-scheduler',
-);
+cluster.singleton.start(startSingletonOptions);
 ```
 
 Jetzt **spawnt der Manager den Singleton erst nach dem Erwerb der
@@ -63,15 +57,12 @@ Konsistenz von Gossip.
 ## Konfiguration
 
 ```ts
-const clusterSingletonManagerOptions = ClusterSingletonManagerOptions.create()
-  .withCluster(cluster)
+const startSingletonOptions = StartSingletonOptions.create()
   .withTypeName(typeName)
-  .withSingletonProps(singletonProps)
+  .withProps(singletonProps)
   .withLease(lease)                        // ← optionale Lease
-  .withAcquireRetryIntervalMs(5_000);
-ClusterSingletonManager.props(
-  clusterSingletonManagerOptions,      // Default — Retry nach fehlgeschlagenem Acquire
-);
+  .withAcquireRetryIntervalMs(5_000);      // Default — Retry nach fehlgeschlagenem Acquire
+cluster.singleton.start(startSingletonOptions);
 ```
 
 `Lease` ist dieselbe Abstraktion wie bei
@@ -158,8 +149,12 @@ Für Workloads, bei denen das inakzeptabel ist, erwäge:
 
 - **Niedrigeres TTL** (15 s gibt schnelleres Failover, mehr
   Renewals).
-- **Pufferung beim Sender** — der Singleton-Proxy kann während
-  der Lücke puffern und danach erneut senden.
+- **Pufferung beim Sender** — der Singleton-Proxy puffert, solange
+  der Cluster keinen Host hat, und leert den Puffer, sobald einer
+  da ist.  Der Puffer ist gedeckelt (`withBufferSize`, Default
+  1000); jenseits des Limits gehen Nachrichten mit einer Warnung in
+  die Dead Letters, damit eine Lücke, die sich nie schließt, nicht
+  unbegrenzt wachsen kann.
 - **Andere Architektur** — Singletons sind inhärent
   seriell-bei-Failover.
 

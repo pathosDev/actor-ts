@@ -14,8 +14,8 @@ import { ActorSystem, Behaviors } from 'actor-ts';
 
 type Message = { kind: 'tick' };
 
-const ticker = Behaviors.receive<Message>((ctx, msg) => {
-  ctx.log.info(`tick at ${Date.now()}`);
+const ticker = Behaviors.receive<Message>((context, message) => {
+  context.log.info(`tick at ${Date.now()}`);
   return Behaviors.same;   // bleibe ein Ticker
 });
 
@@ -33,13 +33,12 @@ behandelt die nächste Nachricht.
 ### `receive` — Handler mit Context + Nachricht
 
 ```ts
-const counter = (n: number): Behavior<Message> => Behaviors.receive<Message>((ctx, msg) => {
-  switch (msg.kind) {
-    case 'inc': return counter(n + 1);
-    case 'dec': return counter(n - 1);
-    case 'get': msg.replyTo.tell(n); return Behaviors.same;
-  }
-});
+const counter = (n: number): Behavior<Message> => Behaviors.receive<Message>((context, message) =>
+  match(message)
+    .with({ kind: 'increment' }, () => counter(n + 1))
+    .with({ kind: 'decrement' }, () => counter(n - 1))
+    .with({ kind: 'get' }, (m) => { m.replyTo.tell(n); return Behaviors.same; })
+    .exhaustive());
 ```
 
 Der Handler empfängt sowohl einen `TypedActorContext<T>` (zum
@@ -51,29 +50,29 @@ aktualisiertem Zustand an.
 ### `receiveMessage` — Handler ohne Context
 
 ```ts
-const counter = (n: number): Behavior<Message> => Behaviors.receiveMessage<Message>((msg) => {
-  if (msg.kind === 'inc') return counter(n + 1);
-  return Behaviors.same;
-});
+const counter = (n: number): Behavior<Message> => Behaviors.receiveMessage<Message>((message) =>
+  match(message)
+    .with({ kind: 'increment' }, () => counter(n + 1))
+    .otherwise(() => Behaviors.same));
 ```
 
 Shortcut für den häufigen Fall, dass du den Context nicht brauchst.
-Äquivalent zu `Behaviors.receive((_ctx, msg) => ...)`.
+Äquivalent zu `Behaviors.receive((_context, message) => ...)`.
 
 ### `receiveWithSignal` — Handler + Lifecycle-Signale
 
 ```ts
 const watcher = Behaviors.receiveWithSignal<Message>(
-  (ctx, msg) => {
+  (context, message) => {
     // User-Nachricht behandeln...
     return Behaviors.same;
   },
-  (ctx, signal) => {
-    if (signal.kind === 'terminated') {
-      ctx.log.info(`watched actor ${signal.ref.path} stopped`);
-    }
-    return Behaviors.same;
-  },
+  (context, signal) => match(signal)
+    .with({ kind: 'terminated' }, (s) => {
+      context.log.info(`watched actor ${s.ref.path} stopped`);
+      return Behaviors.same;
+    })
+    .otherwise(() => Behaviors.same),
 );
 ```
 
@@ -92,11 +91,11 @@ untyped-Form.
 ### `setup` — den Context einmal einfangen
 
 ```ts
-const myActor = Behaviors.setup<Message>((ctx) => {
-  ctx.log.info(`I'm starting at ${ctx.path}`);
-  const helper = ctx.spawn(helperBehavior, 'helper');
-  return Behaviors.receive((_ctx, msg) => {
-    helper.tell(msg);   // helper im Closure eingefangen
+const myActor = Behaviors.setup<Message>((context) => {
+  context.log.info(`I'm starting at ${context.path}`);
+  const helper = context.spawn(helperBehavior, 'helper');
+  return Behaviors.receive((_context, message) => {
+    helper.tell(message);   // helper im Closure eingefangen
     return Behaviors.same;
   });
 });
@@ -104,7 +103,7 @@ const myActor = Behaviors.setup<Message>((ctx) => {
 
 `setup` läuft einmal beim Start des Actors.  Verwende es für
 einmalige Initialisierung, die der Receive-Handler einschließen
-soll: Kinder spawnen, `ctx.self` für die Kinder zum Wissen
+soll: Kinder spawnen, `context.self` für die Kinder zum Wissen
 einfangen, externe Verbindungen öffnen.
 
 ## Die Dekoratoren
@@ -120,33 +119,35 @@ import { Behaviors, type TimerScheduler } from 'actor-ts';
 const heartbeat = Behaviors.withTimers<Message>((timers) => {
   timers.startTimerWithFixedDelay('hb', { kind: 'tick' }, 5_000);
 
-  return Behaviors.receiveMessage((msg) => {
-    if (msg.kind === 'tick') console.log('heartbeat');
-    return Behaviors.same;
-  });
+  return Behaviors.receiveMessage((message) =>
+    match(message)
+      .with({ kind: 'tick' }, () => { console.log('heartbeat'); return Behaviors.same; })
+      .otherwise(() => Behaviors.same));
 });
 ```
 
 Die `TimerScheduler`-API ist dieselbe, die `context.timers` in der
 untyped-Form bietet.  `withTimers` fängt sie in einem Closure ein,
 sodass der Receive-Handler Zugriff hat, ohne bei jeder Nachricht
-über `ctx.timers` gehen zu müssen.
+über `context.timers` gehen zu müssen.
 
 ### `withStash`
 
 ```ts
 const init = Behaviors.withStash<Message>(100, (stash) => {
-  return Behaviors.receive((ctx, msg) => {
-    if (msg.kind === 'ready') {
-      stash.unstashAll();   // alle gepufferten Nachrichten erneut abspielen
-      return ready;
-    }
-    stash.stash(msg);       // alles andere für später parken
-    return Behaviors.same;
-  });
+  return Behaviors.receive((context, message) =>
+    match(message)
+      .with({ kind: 'ready' }, () => {
+        stash.unstashAll();   // alle gepufferten Nachrichten erneut abspielen
+        return ready;
+      })
+      .otherwise((m) => {
+        stash.stash(m);       // alles andere für später parken
+        return Behaviors.same;
+      }));
 });
 
-const ready = Behaviors.receive<Message>((ctx, msg) => {
+const ready = Behaviors.receive<Message>((context, message) => {
   // Nachrichten normal behandeln
   return Behaviors.same;
 });
@@ -199,31 +200,35 @@ schlucken soll.
 ## Ein Multi-Behavior-Beispiel
 
 ```ts
+import { match } from 'ts-pattern';
 import { ActorSystem, Behaviors, type Behavior } from 'actor-ts';
 
-type Message =
-  | { kind: 'configure'; url: string }
-  | { kind: 'request';   payload: string };
+type ConfigureMessage = { kind: 'configure'; url: string };
+type RequestMessage    = { kind: 'request';   payload: string };
+
+type Message = ConfigureMessage | RequestMessage;
 
 const initializing = Behaviors.withStash<Message>(100, (stash) =>
-  Behaviors.receive<Message>((ctx, msg) => {
-    if (msg.kind === 'configure') {
-      const url = msg.url;
-      stash.unstashAll();
-      return ready(url);
-    }
-    stash.stash(msg);
-    return Behaviors.same;
-  }),
+  Behaviors.receive<Message>((context, message) =>
+    match(message)
+      .with({ kind: 'configure' }, (m) => {
+        stash.unstashAll();
+        return ready(m.url);
+      })
+      .otherwise((m) => {
+        stash.stash(m);
+        return Behaviors.same;
+      })),
 );
 
 const ready = (url: string): Behavior<Message> =>
-  Behaviors.receive<Message>((ctx, msg) => {
-    if (msg.kind === 'request') {
-      ctx.log.info(`POST ${url}: ${msg.payload}`);
-    }
-    return Behaviors.same;
-  });
+  Behaviors.receive<Message>((context, message) =>
+    match(message)
+      .with({ kind: 'request' }, (m) => {
+        context.log.info(`POST ${url}: ${m.payload}`);
+        return Behaviors.same;
+      })
+      .otherwise(() => Behaviors.same));
 
 const system = ActorSystem.create('demo');
 system.spawnTypedAnonymous(initializing);
@@ -252,7 +257,7 @@ supervised Inneren die Timer."  In der Praxis:
 ```ts
 const supervised = Behaviors
   .supervise(Behaviors.withTimers((timers) =>
-    Behaviors.receive((ctx, msg) => Behaviors.same)
+    Behaviors.receive((context, message) => Behaviors.same)
   ))
   .onFailure(strategy);
 ```
@@ -265,7 +270,7 @@ import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="Bei jeder Nachricht ein frisches Behavior zurückgeben">
   ```ts
-  Behaviors.receive((ctx, msg) => Behaviors.receive((ctx2, msg2) => ...));
+  Behaviors.receive((context, message) => Behaviors.receive((context2, message2) => ...));
   ```
   Einen frisch konstruierten Receive-Wert zurückzugeben, ist okay,
   aber `Behaviors.same` ist günstiger — es ist ein Singleton-Wert,
@@ -276,8 +281,8 @@ import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="`Behaviors.same` zurückzugeben vergessen">
   ```ts
-  Behaviors.receive((ctx, msg) => {
-    ctx.log.info('handled');
+  Behaviors.receive((context, message) => {
+    context.log.info('handled');
     // ← TypeScript wird das markieren — kein Return.
   });
   ```
@@ -291,7 +296,7 @@ import { Aside } from '@astrojs/starlight/components';
   ```ts
   const counter = (n: number): Behavior<Message> => {
     let count = n;
-    return Behaviors.receive((ctx, msg) => {
+    return Behaviors.receive((context, message) => {
       count++;        // ← den Closure mutieren
       return Behaviors.same;
     });
@@ -309,7 +314,7 @@ import { Aside } from '@astrojs/starlight/components';
 - **[Typed Actor](/de/typed/typed-actor/)** — die Runtime,
   die ein Behavior interpretiert.
 - **[Spawn Typed](/de/typed/spawn-typed/)** — `system.spawnTyped`,
-  `ctx.spawnTyped`, `typedProps`.
+  `context.spawnTyped`, `typedProps`.
 - **[Supervision](/de/fundamentals/supervision/)** — was
   `Behaviors.supervise(...).onFailure(...)` intern verwendet.
 - **[Become und Stash (untyped)](/de/fundamentals/become-and-stash/)** —

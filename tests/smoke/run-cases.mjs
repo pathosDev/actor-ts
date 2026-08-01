@@ -1,7 +1,7 @@
 /**
  * Cross-runtime smoke harness (#229).  Discovers every case under
  * tests/smoke/cases/*.mjs, imports the framework once, runs each
- * case against it.  Identical script runs on Bun, Node 20+, Deno —
+ * case against it.  Identical script runs on Bun, Node, Deno —
  * the cases themselves are runtime-neutral by design (no
  * runtime-specific globals, only stdlib + actor-ts).
  *

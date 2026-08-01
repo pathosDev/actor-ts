@@ -21,7 +21,7 @@
 import { describe, expect, test } from 'bun:test';
 import { Actor } from '../../src/Actor.js';
 import { Props } from '../../src/Props.js';
-import { ClusterSingletonId, StartSingletonOptions } from '../../src/cluster/singleton/index.js';
+import { StartSingletonOptions } from '../../src/cluster/singleton/index.js';
 import { MultiNodeSpec } from '../../src/testkit/MultiNodeSpec.js';
 import { MultiNodeTransport } from '../../src/testkit/internal/MultiNodeTransport.js';
 
@@ -59,10 +59,7 @@ describe('multi-node singleton failover', () => {
         const singletonOptions = StartSingletonOptions.create()
           .withTypeName('marker')
           .withProps(Props.create(() => new Marker(role)));
-        spec.systemFor(role).extension(ClusterSingletonId).start(
-          spec.clusterFor(role),
-          singletonOptions,
-        );
+        spec.clusterFor(role).singleton.start(singletonOptions);
       }
 
       // Wait for the first preStart to fire — that's our initial host.

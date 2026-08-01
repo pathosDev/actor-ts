@@ -1,10 +1,10 @@
 ---
 title: Redis Streams
-description: Redis Streams als Broker — `XADD` zum Publishen, `XREAD` / `XREADGROUP` zum Konsumieren. Consumer Groups für Work-Sharing mit ACK-Semantik. Die richtige Form, wenn Redis schon im Stack steht und du leichtgewichtiges Streaming willst.
+description: Redis Streams als Broker — `XADD` zum Publishen, `XREADGROUP` zum Konsumieren. Consumer Groups für Work-Sharing mit ACK-Semantik. Die richtige Form, wenn Redis schon im Stack steht und du leichtgewichtiges Streaming willst.
 ---
 
 `RedisStreamsActor` integriert mit Redis Streams (der Familie
-`XADD` / `XREAD` / `XREADGROUP`).  Die richtige Form, wenn Redis
+`XADD` / `XREADGROUP`).  Die richtige Form, wenn Redis
 bereits in deiner Infrastruktur steckt und du Streaming willst,
 ohne Kafka oder NATS aufzusetzen.
 
@@ -51,29 +51,12 @@ interface RedisStreamsOptionsType extends BrokerCommonOptionsType {
 }
 ```
 
-## Consumer-Modi
+## Konsumieren mit einer Consumer Group
 
-### Ohne Consumer Group — `XREAD`
-
-```ts
-// Keine consumerGroup → nutzt XREAD
-const redisStreamsOptions = RedisStreamsOptions.create()
-  .withUrl(url)
-  .withStreams(['events'])
-  .withTarget(handler);
-new RedisStreamsActor(
-  redisStreamsOptions,
-);
-```
-
-Liest standardmäßig ab der **`$` (latest)**-Position des Streams —
-jeder Consumer sieht jede Nachricht nach dem Subscribe.  Kein ACK;
-kein Work-Sharing.
-
-Gut für **Broadcast-artige** Verteilung, bei der jeder Consumer
-jede Nachricht verarbeiten soll.
-
-### Mit Consumer Group — `XREADGROUP`
+Konsum läuft immer über eine **Consumer Group** — der Actor nutzt
+ausschließlich `XREADGROUP`.  Der Consumer startet nur, wenn
+`consumerGroup`, `streams` und `target` alle gesetzt sind; es gibt
+keinen gruppenlosen `XREAD`-Broadcast-Pfad.
 
 ```ts
 const redisStreamsOptions = RedisStreamsOptions.create()
@@ -108,7 +91,7 @@ class OrderProcessor extends Actor<RedisStreamEntry> {
   override async onReceive(entry: RedisStreamEntry): Promise<void> {
     const order = JSON.parse(entry.fields.body);
     await processOrder(order);
-    this.redis.tell({ kind: 'ack', stream: entry.stream, id: entry.id });
+    this.redis.tell({ kind: 'acknowledgment', stream: entry.stream, id: entry.id });
   }
 }
 ```
@@ -116,11 +99,11 @@ class OrderProcessor extends Actor<RedisStreamEntry> {
 Der `entry`:
 
 ```ts
-interface RedisStreamEntry {
+type RedisStreamEntry = {
   stream:  string;
   id:      string;                          // z. B. "1684923847-0"
   fields:  Record<string, string>;          // dein XADD-Payload
-}
+};
 ```
 
 Stream-IDs sind `<millis>-<seq>`-Strings.  Nimm die **`id` als
@@ -147,11 +130,12 @@ weitermachen, wo der vorige aufgehört hat (via XPENDING + XCLAIM).
 ## Peer-Dependency
 
 ```bash
-npm install redis
-# oder: bun add redis
+npm install ioredis
+# oder: bun add ioredis
 ```
 
-Nutzt den offiziellen `redis`- (node-redis) v4+-Client.
+`ioredis` ist der zugrunde liegende Client.  Versionen 5+ sind
+getestet.
 
 ## Wann Redis Streams
 

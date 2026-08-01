@@ -50,10 +50,10 @@ describe.each(backends)('ReadableStream response body — %s backend', (_name, m
       body: streamOf([enc.encode('hello '), enc.encode('streamed '), enc.encode('world')]),
       contentType: 'text/plain; charset=utf-8',
     })));
-    const res = await fetch(`${url}/`);
-    expect(res.status).toBe(200);
-    expect(res.headers.get('content-type')).toContain('text/plain');
-    expect(await res.text()).toBe('hello streamed world');
+    const response = await fetch(`${url}/`);
+    expect(response.status).toBe(200);
+    expect(response.headers.get('content-type')).toContain('text/plain');
+    expect(await response.text()).toBe('hello streamed world');
   });
 
   test('defaults to application/octet-stream and round-trips a large body byte-for-byte', async () => {
@@ -65,9 +65,9 @@ describe.each(backends)('ReadableStream response body — %s backend', (_name, m
     for (let off = 0; off < big.length; off += 16 * 1024) chunks.push(big.slice(off, off + 16 * 1024));
 
     const url = await start(mk, get(() => ({ status: Status.OK, body: streamOf(chunks) })));
-    const res = await fetch(`${url}/`);
-    expect(res.headers.get('content-type')).toContain('application/octet-stream');
-    const received = new Uint8Array(await res.arrayBuffer());
+    const response = await fetch(`${url}/`);
+    expect(response.headers.get('content-type')).toContain('application/octet-stream');
+    const received = new Uint8Array(await response.arrayBuffer());
     expect(received.length).toBe(big.length);
     expect(received[0]).toBe(0);
     expect(received[257]).toBe(1);

@@ -90,17 +90,17 @@ long enough to catch most spurious sends.
 ### `receiveOne(timeoutMs?)` / `receiveN(n, timeoutMs?)`
 
 ```ts
-const msg = await probe.receiveOne();
-const msgs = await probe.receiveN(3);
+const message = await probe.receiveOne();
+const messages = await probe.receiveN(3);
 ```
 
 Get the next message(s) **without asserting**.  Use when the
 shape varies and you want to inspect with custom logic:
 
 ```ts
-const msg = await probe.receiveOne();
-if (msg.kind === 'success') expect(msg.value).toBeGreaterThan(0);
-else expect(msg.error).toBeDefined();
+const message = await probe.receiveOne();
+if (message.kind === 'success') expect(message.value).toBeGreaterThan(0);
+else expect(message.error).toBeDefined();
 ```
 
 ### `fishForMessage(predicate)`
@@ -141,7 +141,7 @@ After `expectMessage` / `receiveOne` / etc., `probe.sender` holds the
 sender of that just-consumed message.  Useful for asserting that
 "this reply came from the right actor."
 
-`probe.reply(msg)` is a shortcut that `tell`s the last sender:
+`probe.reply(message)` is a shortcut that `tell`s the last sender:
 
 ```ts
 ref.tell({ kind: 'request' }, probe);
@@ -174,8 +174,8 @@ messages and assert only on what comes next.
 ```ts
 class OrderHandler extends Actor<OrderCommand> {
   constructor(private readonly db: ActorRef<DbCommand>) { super(); }
-  override onReceive(cmd: OrderCommand): void {
-    this.db.tell({ kind: 'insert', orderId: cmd.id });
+  override onReceive(command: OrderCommand): void {
+    this.db.tell({ kind: 'insert', orderId: command.id });
   }
 }
 
@@ -196,8 +196,8 @@ needing the DB to exist.
 
 ```ts
 const counter = tk.system.spawnAnonymous(Props.create(() => new Counter()));
-counter.tell({ kind: 'inc' });
-counter.tell({ kind: 'inc' });
+counter.tell({ kind: 'increment' });
+counter.tell({ kind: 'increment' });
 counter.tell({ kind: 'get', replyTo: probe as ActorRef<number> });
 await probe.expectMessage(2);
 ```

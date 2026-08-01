@@ -35,16 +35,16 @@ export function encodeIncoming(senderUsername: string, opus: Uint8Array): Uint8A
   return out;
 }
 
-export interface DecodedFrame {
+export type DecodedFrame = {
   readonly sender: string;
   readonly opus: Uint8Array;
-}
+};
 
-export function decodeIncoming(buf: Uint8Array): DecodedFrame | null {
-  if (buf.byteLength < 1) return null;
-  const nameLen = buf[0]!;
-  if (buf.byteLength < 1 + nameLen) return null;
-  const sender = new TextDecoder().decode(buf.subarray(1, 1 + nameLen));
-  const opus = buf.subarray(1 + nameLen);
+export function decodeIncoming(buffer: Uint8Array): DecodedFrame | null {
+  if (buffer.byteLength < 1) return null;
+  const nameLen = buffer[0]!;
+  if (buffer.byteLength < 1 + nameLen) return null;
+  const sender = new TextDecoder().decode(buffer.subarray(1, 1 + nameLen));
+  const opus = buffer.subarray(1 + nameLen);
   return { sender, opus };
 }

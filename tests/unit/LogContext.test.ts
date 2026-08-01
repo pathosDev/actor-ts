@@ -14,9 +14,9 @@ import { LogContext } from '../../src/LogContext.js';
 
 describe('LogContext — basic scoping', () => {
   test('outside any run, get() returns the empty (frozen) object', () => {
-    const ctx = LogContext.get();
-    expect(ctx).toEqual({});
-    expect(Object.isFrozen(ctx)).toBe(true);
+    const context = LogContext.get();
+    expect(context).toEqual({});
+    expect(Object.isFrozen(context)).toBe(true);
   });
 
   test('run() makes ctx visible for the duration of the callback', () => {

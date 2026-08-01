@@ -72,8 +72,8 @@ const textDecoder = /* @__PURE__ */ new TextDecoder('utf-8', { fatal: false });
  * (or throw for) a `T`.  A thrown validator is wrapped as a
  * {@link MqttDecodeError}.
  */
-export function mqttJsonCodec<T = unknown>(opts: { validate?: (value: unknown) => T } = {}): MqttCodec<T> {
-  const validate = opts.validate;
+export function mqttJsonCodec<T = unknown>(options: { validate?: (value: unknown) => T } = {}): MqttCodec<T> {
+  const validate = options.validate;
   return {
     name: 'json',
     encode(value: unknown): Uint8Array {

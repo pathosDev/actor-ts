@@ -4,105 +4,245 @@ description: An event-sourced FSM — transitions are persisted as events; on re
 ---
 
 `PersistentFSM` is the event-sourced variant of
-[FSM](/persistence/fsm/fsm/).  Each state transition
-becomes a **persisted event** — on restart, the FSM replays them
-and resumes in the exact state it was in.
+[FSM](/persistence/fsm/fsm/).  It is **table-driven**: you declare a
+transition table, and every command that fires a transition persists
+its event(s).  On restart, the FSM replays those events through
+`applyEvent` and resumes in the exact state it was in.
 
 ```ts
+import { match } from 'ts-pattern';
 import { PersistentFSM } from 'actor-ts';
+import type { FsmStateData, FsmTransitionMap } from 'actor-ts';
 
-type State = 'created' | 'submitted' | 'approved' | 'rejected';
-type Data  = { id: string; reviewer?: string; reason?: string };
-type Message   = { kind: 'submit' } | { kind: 'approve'; reviewer: string } | { kind: 'reject'; reason: string };
+type State   = 'created' | 'submitted' | 'approved' | 'rejected';
+type Data    = { id: string; reviewer?: string; reason?: string };
+type Command =
+  | { kind: 'submit' }
+  | { kind: 'approve'; reviewer: string }
+  | { kind: 'reject'; reason: string };
+type Event =
+  | { kind: 'submitted' }
+  | { kind: 'approved'; reviewer: string }
+  | { kind: 'rejected'; reason: string };
 
-class OrderApproval extends PersistentFSM<State, Data, Message> {
-  readonly persistenceId = `order-${this.orderId}`;
+class OrderApproval extends PersistentFSM<Command, Event, State, Data> {
+  readonly persistenceId: string;
 
   constructor(private readonly orderId: string) {
-    super('created', { id: orderId });
+    super();
+    this.persistenceId = `order-${orderId}`;
+  }
 
-    this.when('created', (data, msg) => {
-      if (msg.kind === 'submit') return this.goto('submitted', data);
-      return this.stay(data);
-    });
+  initialFsmState(): State { return 'created'; }
+  initialData(): Data { return { id: this.orderId }; }
 
-    this.when('submitted', (data, msg) => {
-      if (msg.kind === 'approve') return this.goto('approved', { ...data, reviewer: msg.reviewer });
-      if (msg.kind === 'reject')  return this.goto('rejected', { ...data, reason: msg.reason });
-      return this.stay(data);
-    });
+  transitions: FsmTransitionMap<State, Command, Event, Data> = {
+    created: {
+      submit: { event: { kind: 'submitted' }, next: 'submitted' },
+    },
+    submitted: {
+      approve: {
+        event: (command): Event => ({ kind: 'approved', reviewer: command.reviewer }),
+        next: 'approved',
+      },
+      reject: {
+        event: (command): Event => ({ kind: 'rejected', reason: command.reason }),
+        next: 'rejected',
+      },
+    },
+    // `approved` and `rejected` are terminal — no entries.
+  };
 
-    // Terminal states — no further transitions.
-    this.when('approved',  (data) => this.stay(data));
-    this.when('rejected',  (data) => this.stay(data));
+  applyEvent(state: State, data: Data, event: Event): FsmStateData<State, Data> {
+    return match(event)
+      .with({ kind: 'submitted' }, () => ({ state: 'submitted' as const, data }))
+      .with({ kind: 'approved' },  (e) => ({ state: 'approved' as const, data: { ...data, reviewer: e.reviewer } }))
+      .with({ kind: 'rejected' },  (e) => ({ state: 'rejected' as const, data: { ...data, reason: e.reason } }))
+      .exhaustive();
   }
 }
 ```
 
-A restart **replays** the persisted transitions (events), so the
-FSM picks up exactly where the previous incarnation left off —
-including the current state name, data, and any in-flight
-side-effect bookkeeping.
+The type parameters are `PersistentFSM<Command, Event, SName, Data>` —
+the incoming command union, the persisted event union, the state-name
+union, and the domain data.  A restart **replays** the persisted events
+through `applyEvent`, so the FSM picks up exactly where the previous
+incarnation left off — current state name and data included.
+
+## What you implement
+
+Four members drive the machine — no `when` / `goto` / `stay` DSL:
+
+- **`initialFsmState()`** — the starting state name when no events have
+  been replayed.
+- **`initialData()`** — the starting data.
+- **`transitions`** — the transition table (`state` × `command.kind` →
+  entry).  Declared as a class field so the per-command type narrowing
+  works at each call site.
+- **`applyEvent(state, data, event)`** — the **pure fold** that returns
+  the combined `{ state, data }`.  It runs both at persist time
+  (forward) *and* during recovery (replay), so it must be deterministic
+  and free of side effects.
+
+`persistenceId` (inherited from
+[PersistentActor](/persistence/persistent-actor/)) names the event
+stream.
 
 ## What gets persisted
 
-Every transition (`goto`) is persisted as a `StateChangeEvent`:
+There is no framework wrapper event — the journal stores your own
+domain `Event` values.  On each command the base class:
 
-```ts
-type StateChangeEvent<SName, SData> = {
-  from: SName;
-  to:   SName;
-  data: SData;
-  ts:   number;
-};
-```
+1. Looks up `transitions[currentState][command.kind]`.  If there is no
+   entry, it's an **invalid transition** — logged at warn, nothing
+   persisted, no state change (override `onInvalidTransition` to
+   customise).
+2. If the entry has a `guard` and it returns `false`, the command is
+   dropped — logged at debug, nothing persisted (override
+   `onGuardRejected` to customise).
+3. Otherwise it evaluates the entry's `event`, persists it via
+   `persistAll`, and applies it through `applyEvent`.
 
-The framework writes one event per transition.  `stay(...)` does
-**not** persist — only state changes are recorded.
-
-This is a deliberate choice: stays are usually data-only updates
-that don't need durability for FSM correctness.  If you need data
-updates persisted too, transition explicitly (`goto('same-state',
-newData)`) — but this generates noise events.
+`applyEvent` is the single source of truth for state + data updates.
 
 ## Recovery
 
-1. **`preStart`** reads every `StateChangeEvent` for the
-   `persistenceId` from the journal.
-2. **Replays each event** in order — applies `from → to` plus the
-   stored data.
-3. **Final state + data** are the result of the replay; the FSM is
-   now `onReceive`-available with that state.
+1. **`preStart`** loads the latest snapshot (if any) and reads every
+   subsequent domain event for the `persistenceId` from the journal.
+2. **Replays each event** in order through `applyEvent`, rebuilding both
+   the state name and the data.
+3. **`onRecoveryComplete`** fires with the final replayed state, after
+   which the FSM starts processing live commands.
+
+If recovery fails, the FSM stops before any transition runs or any
+state timeout is armed — see [When recovery
+fails](/persistence/persistent-actor/#when-recovery-fails).
 
 Same idiom as
 [PersistentActor](/persistence/persistent-actor/) —
-replay deterministically rebuilds the state machine's exact
-position.
+replay deterministically rebuilds the state machine's exact position.
+`transitions` and guards are only consulted for **live commands**
+(deciding the next transition); replay drives state purely through
+`applyEvent`.
 
-`when` handlers don't run during replay — they're for **command
-handling** (deciding the next transition), not state derivation.
-The transition itself is what's stored; replay just sets the
-state.
+## The transition table
 
-## Configuration
+Each entry has an `event`, a target `next`, and an optional `guard`:
 
 ```ts
-class OrderApproval extends PersistentFSM<S, D, M> {
-  abstract readonly persistenceId: string;
+transitions: FsmTransitionMap<State, Command, Event, Data> = {
+  submitted: {
+    approve: {
+      // A guard skips the transition (no event, no state change) when
+      // it returns false — logged at debug.
+      guard: (command) => command.reviewer.length > 0,
+      event: (command): Event => ({ kind: 'approved', reviewer: command.reviewer }),
+      next: 'approved',
+    },
+  },
+};
+```
 
-  // Optional overrides:
-  snapshotPolicy(): SnapshotPolicy<...> { return everyNEvents(50); }
-  eventAdapter(): EventAdapter<...> | undefined { return undefined; }
-  // ... same as PersistentActor
+`event` takes three shapes: a **literal** (`{ kind: 'submitted' }`), a
+**function** `(command, data) => Event`, or — for multiple events per
+command (#66) — an **array** or a function returning one.  Array events
+persist atomically in a single `persistAll`, `applyEvent` runs once per
+event, and only the **final** post-replay state is checked against
+`next`.  An empty array is a no-op (nothing persisted, no transition).
+
+```ts
+pay: {
+  event: (command): Event[] => [
+    { kind: 'paid', amount: command.amount },
+    { kind: 'audit-logged' },
+  ],
+  next: 'paid',
+},
+```
+
+`next` is mainly informational — `applyEvent` is what actually drives
+the transition — but a mismatch between the two is logged at warn to
+catch table/fold drift.
+
+## State timeouts (#65)
+
+A state may declare a `_timeout` entry that arms a one-shot timer when
+the FSM enters that state.  If `afterMs` elapses before a command
+transitions out, the FSM auto-fires the timeout event through the same
+persist-then-apply pipeline:
+
+```ts
+authorized: {
+  capture: { event: { kind: 'captured' }, next: 'captured' },
+  // Auto-expire the authorization if nobody captures in time.
+  _timeout: {
+    afterMs: 15 * 60 * 1000,
+    event: { kind: 'expired' },
+    next: 'expired',
+    // Optional guard — returning false cancels the fire silently.
+    // guard: (data) => data.amount > 0,
+  },
+},
+```
+
+The timer is re-armed on every transition and cancelled when the FSM
+leaves the state (or stops).  On recovery it is **re-armed relative to
+the wall-clock at recovery completion** — a long-stopped FSM gets a
+fresh `afterMs` window rather than an immediate "already expired" fire.
+
+## Side effects
+
+`PersistentFSM` has **no** `onEnter` / `onExit` / `onTransition` hooks —
+those belong only to the in-memory [FSM](/persistence/fsm/fsm/).  Never
+put side effects in `applyEvent`: it is a pure fold that runs on every
+replay, so a side effect there would fire again on each restart.
+
+Put side effects where they run **only for live commands** — override
+`onCommand`, delegate to `super.onCommand`, then act on the new state.
+`onCommand` never runs during replay (recovery drives state through
+`applyEvent` alone), so the side effect fires once per real transition:
+
+```ts
+override async onCommand(curr: FsmStateData<State, Data>, command: Command): Promise<void> {
+  await super.onCommand(curr, command);   // runs the table-driven transition
+  if (this.currentFsmState === 'submitted') {
+    await this.notifyReviewer(this.currentData);   // forward-only side effect
+  }
 }
 ```
 
-Inherits the same persistence machinery as `PersistentActor`:
+For work that must run once after the FSM comes back up, use
+`onRecoveryComplete(state)`.
 
-- `persistenceId` — the event stream key.
+## Configuration
+
+The persistence machinery is inherited from `PersistentActor` — override
+the same hooks:
+
+```ts
+class OrderApproval extends PersistentFSM<Command, Event, State, Data> {
+  readonly persistenceId = 'order-42';
+
+  // Optional overrides (same as PersistentActor):
+  override snapshotPolicy() { return everyNEvents(50); }
+  override eventAdapter() { return undefined; }
+  override tagsFor(event: Event) { return undefined; }
+  // ... initialFsmState / initialData / transitions / applyEvent as above
+}
+```
+
+- `persistenceId` — the event-stream key.
 - `snapshotPolicy` — periodic snapshots to bound replay.
 - `eventAdapter` / `snapshotAdapter` — schema migration.
 - `tagsFor` — tagging events for projection consumption.
+
+## Reading current state
+
+Two protected getters expose the combined state (reliable after
+recovery), handy inside overridden handlers:
+
+- `currentFsmState` — the current state name.
+- `currentData` — the current domain data.
 
 ## Snapshots for FSMs
 
@@ -110,9 +250,9 @@ Inherits the same persistence machinery as `PersistentActor`:
 override snapshotPolicy() { return everyNEvents(50); }
 ```
 
-For long-running FSMs accumulating many transitions, snapshots
-bound replay.  The snapshot serializes `{ stateName, stateData }`
-— a compact blob.
+For long-running FSMs accumulating many transitions, snapshots bound
+replay.  The snapshot serializes the combined `{ state, data }`
+(`FsmStateData`) — a compact blob.
 
 Pick the interval based on transition frequency:
 
@@ -123,114 +263,38 @@ Pick the interval based on transition frequency:
 See [Snapshots](/persistence/snapshots/) for the
 general policy guidance.
 
-## Side effects per transition
-
-```ts
-class OrderApproval extends PersistentFSM<State, Data, Message> {
-  // ...
-
-  override async onEnter(state: State, data: Data): Promise<void> {
-    if (state === 'submitted') {
-      await this.notifyReviewer(data);   // ← side effect on transition
-    }
-  }
-}
-```
-
-`onEnter` callbacks run **only on state changes** — both at
-transition time and **NOT** during replay.  This is the key
-difference from PersistentActor: persistent FSMs treat
-state-entry as the side-effect hook, and recovery skips them.
-
-This means **side effects can live in `onEnter`** without worry
-of duplication on restart.  This is a meaningful ergonomic win
-over PersistentActor's "side effects only in persist callback."
-
-```
-Event flow during a transition:
-  1. Handler returns goto(newState, newData)
-  2. Framework persists StateChangeEvent
-  3. onExit(oldState, oldData) fires
-  4. onEnter(newState, newData) fires  ← side effects here
-  5. Reply / further work proceeds
-
-Event flow during recovery:
-  1. Read persisted events
-  2. For each: update state + data (no callbacks)
-  3. onReceive resumes — first new command runs normally
-```
-
-## Long-running workflow example
-
-A multi-step saga:
-
-```ts
-type SagaState =
-  | 'reserved-inventory'
-  | 'charged-payment'
-  | 'scheduled-shipping'
-  | 'completed'
-  | 'compensating-inventory'
-  | 'compensating-payment'
-  | 'failed';
-
-class OrderSaga extends PersistentFSM<SagaState, Data, Message> {
-  // Each transition is persisted.  A crash mid-saga resumes from
-  // the last persisted state — no work is lost.
-
-  this.when('reserved-inventory', (data, msg) => {
-    if (msg.kind === 'payment-success') return this.goto('charged-payment', { ... });
-    if (msg.kind === 'payment-failure') return this.goto('compensating-inventory', { ... });
-    return this.stay(data);
-  });
-
-  override async onEnter(state, data) {
-    if (state === 'charged-payment') {
-      await scheduleShipping(data);   // safe — fires once per real transition
-    }
-    if (state === 'compensating-inventory') {
-      await releaseInventory(data);
-    }
-  }
-}
-```
-
-The combination of **persisted transitions** + **non-replayed
-onEnter callbacks** makes this pattern much cleaner than
-PersistentActor-with-event-handlers for state-machine-shaped
-workflows.
-
 ## Pitfalls
 
 import { Aside } from '@astrojs/starlight/components';
 
-<Aside type="caution" title="`stay` updates aren't persisted">
+<Aside type="caution" title="`applyEvent` must be a pure fold">
   ```ts
-  this.when('current', (data, msg) => this.stay({ ...data, counter: data.counter + 1 }));
+  applyEvent(state, data, event) {
+    await sendEmail(data);   // ✗ runs again on every replay
+    return { state: 'sent', data };
+  }
   ```
-  `stay(newData)` updates the in-memory data but **isn't
-  persisted**.  On restart, the counter resets to whatever the
-  last `goto` set.  For critical data, transition (or use a
-  separate PersistentActor for data accumulation).
+  `applyEvent` runs both forward and during recovery.  Anything with a
+  side effect belongs in `onCommand` (forward-only) or
+  `onRecoveryComplete` — never in the fold.
 </Aside>
 
-<Aside type="caution" title="Side effects in handlers, not onEnter">
+<Aside type="caution" title="Data updates need an event">
   ```ts
-  this.when('idle', async (data, msg) => {
-    await externalCall();   // ✗ runs on every replay before recovery completes
-    return this.goto('working', data);
-  });
+  // A command with no matching transition entry is dropped — the
+  // in-memory data is NOT mutated as a side channel.
   ```
-  Handlers run only on **new** messages, not during replay —
-  this is OK for stay-decisions, but **side effects in
-  handlers** still risk duplicating if the actor crashes
-  mid-call.  Prefer side effects in `onEnter` of the destination
-  state.
+  The only way to change state or data is to persist an event that
+  `applyEvent` folds in.  There is no `stay(newData)`: if you need a
+  data-only update to survive a restart, model it as an event with a
+  transition whose `next` is the same state.
 </Aside>
 
 <Aside type="caution" title="Same `persistenceId` for FSM and other actor">
   ```ts
   // Two actors using 'order-42' — conflict!
+  const fsm    = new OrderApproval('42');       // persistenceId 'order-42'
+  const events = new OrderEvents('order-42');   // same stream — clash
   ```
   PersistentFSM and PersistentActor share the journal.  Same
   `persistenceId` = same event stream.  Use distinct IDs

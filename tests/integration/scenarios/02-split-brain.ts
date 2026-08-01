@@ -22,20 +22,20 @@ import { membersFrom, upCountFrom, waitFor, type Scenario } from './types.js';
 
 export const scenario: Scenario = {
   name: '02-split-brain-2-vs-3',
-  async run(ctx) {
-    if (ctx.nodes.length < 5) {
-      console.log(`[02] skipping — need >=5 nodes, have ${ctx.nodes.length}`);
+  async run(context) {
+    if (context.nodes.length < 5) {
+      console.log(`[02] skipping — need >=5 nodes, have ${context.nodes.length}`);
       return;
     }
-    const [nodeA, nodeB, nodeC, nodeD, nodeE] = ctx.nodes;
+    const [nodeA, nodeB, nodeC, nodeD, nodeE] = context.nodes;
     const left = [nodeA!, nodeB!];
     const right = [nodeC!, nodeD!, nodeE!];
 
     // 1. Pre-flight: confirm the cluster is converged before we partition.
-    await Promise.all(ctx.nodes.map(async (host) => {
+    await Promise.all(context.nodes.map(async (host) => {
       await waitFor(
-        `${host} sees ${ctx.nodes.length} up (pre-partition)`,
-        async () => (await upCountFrom(host, ctx.controlPort)) === ctx.nodes.length,
+        `${host} sees ${context.nodes.length} up (pre-partition)`,
+        async () => (await upCountFrom(host, context.controlPort)) === context.nodes.length,
         15_000,
         200,
       );
@@ -49,14 +49,14 @@ export const scenario: Scenario = {
     for (const leftNode of left) {
       for (const rightNode of right) {
         partitionCalls.push(
-          fetch(`http://${leftNode}:${ctx.controlPort}/test/partition?peer=${rightNode}`, { method: 'POST' }),
-          fetch(`http://${rightNode}:${ctx.controlPort}/test/partition?peer=${leftNode}`, { method: 'POST' }),
+          fetch(`http://${leftNode}:${context.controlPort}/test/partition?peer=${rightNode}`, { method: 'POST' }),
+          fetch(`http://${rightNode}:${context.controlPort}/test/partition?peer=${leftNode}`, { method: 'POST' }),
         );
       }
     }
     const responses = await Promise.all(partitionCalls);
-    for (const res of responses) {
-      if (!res.ok) throw new Error(`[02] partition call failed: ${res.status}`);
+    for (const response of responses) {
+      if (!response.ok) throw new Error(`[02] partition call failed: ${response.status}`);
     }
 
     // 3. Wait for the majority side to see exactly its three members
@@ -68,7 +68,7 @@ export const scenario: Scenario = {
       await waitFor(
         `${host} sees 3 up, 2 unreachable`,
         async () => {
-          const members = await membersFrom(host, ctx.controlPort);
+          const members = await membersFrom(host, context.controlPort);
           const up = members.filter((m) => m.status === 'up').length;
           const unreachable = members.filter((m) => m.status === 'unreachable').length;
           return up === 3 && unreachable === 2;
@@ -88,7 +88,7 @@ export const scenario: Scenario = {
       await waitFor(
         `${host} sees the 3 majority peers as unreachable`,
         async () => {
-          const members = await membersFrom(host, ctx.controlPort);
+          const members = await membersFrom(host, context.controlPort);
           const unreachable = members.filter((m) => m.status === 'unreachable').length;
           return unreachable === 3;
         },
@@ -104,14 +104,14 @@ export const scenario: Scenario = {
     for (const leftNode of left) {
       for (const rightNode of right) {
         healCalls.push(
-          fetch(`http://${leftNode}:${ctx.controlPort}/test/heal?peer=${rightNode}`, { method: 'POST' }),
-          fetch(`http://${rightNode}:${ctx.controlPort}/test/heal?peer=${leftNode}`, { method: 'POST' }),
+          fetch(`http://${leftNode}:${context.controlPort}/test/heal?peer=${rightNode}`, { method: 'POST' }),
+          fetch(`http://${rightNode}:${context.controlPort}/test/heal?peer=${leftNode}`, { method: 'POST' }),
         );
       }
     }
     const healResponses = await Promise.all(healCalls);
-    for (const res of healResponses) {
-      if (!res.ok) throw new Error(`[02] heal call failed: ${res.status}`);
+    for (const response of healResponses) {
+      if (!response.ok) throw new Error(`[02] heal call failed: ${response.status}`);
     }
 
     // 6. After heal: every node should converge BACK to a 5-member
@@ -119,10 +119,10 @@ export const scenario: Scenario = {
     //    `removed` via downing — for the default no-op downing
     //    strategy that doesn't happen, all 5 should rejoin.
     console.log('[02] waiting for cluster to re-converge on 5 up...');
-    await Promise.all(ctx.nodes.map(async (host) => {
+    await Promise.all(context.nodes.map(async (host) => {
       await waitFor(
         `${host} re-converges on 5 up after heal`,
-        async () => (await upCountFrom(host, ctx.controlPort)) === ctx.nodes.length,
+        async () => (await upCountFrom(host, context.controlPort)) === context.nodes.length,
         30_000,
         300,
       );

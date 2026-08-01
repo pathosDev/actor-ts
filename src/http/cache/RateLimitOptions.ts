@@ -10,16 +10,16 @@ import type { Cache } from '../../cache/Cache.js';
 import type { HttpRequest, HttpResponse } from '../types.js';
 
 /** Context handed to a custom {@link RateLimitOptionsType.onLimit} builder. */
-export interface RateLimitContext {
+export type RateLimitContext = {
   readonly key: string;
   readonly count: number;
   readonly max: number;
   readonly windowMs: number;
   readonly retryAfterSeconds: number;
-}
+};
 
 /** Plain options-object shape accepted by {@link rateLimit}. */
-export interface RateLimitOptionsType {
+export type RateLimitOptionsType = {
   /** Backing cache.  Should be a shared/distributed one (Redis) in prod. */
   readonly cache: Cache;
   /** Length of the rolling window in milliseconds. */
@@ -27,7 +27,7 @@ export interface RateLimitOptionsType {
   /** Maximum requests allowed per window per key. */
   readonly max: number;
   /** Identity function — typically derives from IP, user id, or API key. */
-  readonly key: (req: HttpRequest) => string | Promise<string>;
+  readonly key: (request: HttpRequest) => string | Promise<string>;
   /**
    * Cache-key namespace prepended to the user key.  Defaults to
    * `'rl:'` so multiple rate-limiters in the same cache don't collide.
@@ -38,13 +38,13 @@ export interface RateLimitOptionsType {
    * full control over the body / headers.  Default: a plain 429 with
    * `Retry-After` (seconds-rounded-up).
    */
-  readonly onLimit?: (ctx: RateLimitContext) => HttpResponse;
-}
+  readonly onLimit?: (context: RateLimitContext) => HttpResponse;
+};
 
 /**
  * Fluent builder for {@link RateLimitOptionsType}:
  *
- *     rateLimit(RateLimitOptions.create().withCache(cache).withWindowMs(60_000).withMax(100).withKey((req) => req.remoteAddress ?? '<anon>'))
+ *     rateLimit(RateLimitOptions.create().withCache(cache).withWindowMs(60_000).withMax(100).withKey((request) => request.remoteAddress ?? '<anon>'))
  */
 export class RateLimitOptionsBuilder extends OptionsBuilder<RateLimitOptionsType> {
   /** Start a fresh builder.  Equivalent to `new RateLimitOptionsBuilder()`. */
@@ -68,7 +68,7 @@ export class RateLimitOptionsBuilder extends OptionsBuilder<RateLimitOptionsType
   }
 
   /** Identity function — typically derives from IP, user id, or API key. */
-  withKey(key: (req: HttpRequest) => string | Promise<string>): this {
+  withKey(key: (request: HttpRequest) => string | Promise<string>): this {
     return this.set('key', key);
   }
 
@@ -78,7 +78,7 @@ export class RateLimitOptionsBuilder extends OptionsBuilder<RateLimitOptionsType
   }
 
   /** Custom 429 response builder — full control over the limit response. */
-  withOnLimit(onLimit: (ctx: RateLimitContext) => HttpResponse): this {
+  withOnLimit(onLimit: (context: RateLimitContext) => HttpResponse): this {
     return this.set('onLimit', onLimit);
   }
 }

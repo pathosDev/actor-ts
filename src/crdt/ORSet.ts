@@ -32,17 +32,17 @@ import type { Crdt, ReplicaId } from './Crdt.js';
  *   const cart = ORSet.empty<Item>({ identity: (i) => i.sku });
  */
 
-export interface ORSetOptions<E> {
+export type ORSetOptions<E> = {
   /** Custom identity function — see class doc. */
   readonly identity?: (e: E) => string;
-}
+};
 
 const defaultIdentity = (e: unknown): string => JSON.stringify(e);
 
-interface ElementEntry<E> {
+type ElementEntry<E> = {
   readonly element: E;
   readonly tags: ReadonlySet<string>;
-}
+};
 
 export class ORSet<E> implements Crdt<ORSet<E>> {
   /**
@@ -64,10 +64,10 @@ export class ORSet<E> implements Crdt<ORSet<E>> {
     private readonly identity: (e: E) => string,
   ) {}
 
-  static empty<E>(opts: ORSetOptions<E> = {}): ORSet<E> {
+  static empty<E>(options: ORSetOptions<E> = {}): ORSet<E> {
     return new ORSet<E>(
       new Map(), new Map(), new Map(),
-      opts.identity ?? (defaultIdentity as (e: E) => string),
+      options.identity ?? (defaultIdentity as (e: E) => string),
     );
   }
 
@@ -182,9 +182,9 @@ export class ORSet<E> implements Crdt<ORSet<E>> {
     };
   }
 
-  static fromJSON<E>(json: ORSetJson, opts: ORSetOptions<E> = {}): ORSet<E> {
+  static fromJSON<E>(json: ORSetJson, options: ORSetOptions<E> = {}): ORSet<E> {
     if (json.kind !== 'ORSet') throw new Error(`ORSet.fromJSON: unexpected kind ${json.kind}`);
-    const identity = opts.identity ?? (defaultIdentity as (e: E) => string);
+    const identity = options.identity ?? (defaultIdentity as (e: E) => string);
     const elements = new Map<string, ElementEntry<E>>();
     for (const [key, tags] of Object.entries(json.elements)) {
       // Backwards-compat: old wire shape didn't carry
@@ -261,7 +261,7 @@ function objectToMapOfSets(
   return out;
 }
 
-export interface ORSetJson {
+export type ORSetJson = {
   readonly kind: 'ORSet';
   /** Per-element-key tag list. */
   readonly elements: Record<string, string[]>;
@@ -270,4 +270,4 @@ export interface ORSetJson {
   readonly elementValues?: Record<string, string>;
   readonly tombstones: Record<string, string[]>;
   readonly counters: Record<ReplicaId, number>;
-}
+};

@@ -30,12 +30,13 @@ import {
   zodCodec,
   type ParserLike,
 } from '../../src/index.js';
+import { attachDevTools } from '../devtools.js';
 
 /* ------------------- Domain types (three versions) ------------------- */
 
-interface DepositedV1 { kind: 'deposited'; amount: number }
+type DepositedV1 = { kind: 'deposited'; amount: number };
 interface DepositedV2 extends DepositedV1 { currency: 'USD' | 'EUR' }
-interface DepositedV3 { kind: 'deposited'; cents: number; currency: 'USD' | 'EUR' }
+type DepositedV3 = { kind: 'deposited'; cents: number; currency: 'USD' | 'EUR' };
 
 const v1Schema: ParserLike<DepositedV1> = {
   parse(input) {
@@ -87,7 +88,7 @@ registry.register('BankAccount.Deposited', 3, {
 
 /* --------------------------- Actor ----------------------------- */
 
-interface AccountState { cents: number; currency: 'USD' | 'EUR' | '' }
+type AccountState = { cents: number; currency: 'USD' | 'EUR' | '' };
 
 class Account extends PersistentActor<{ kind: 'deposit'; cents: number }, DepositedV3, AccountState> {
   readonly persistenceId = 'account-1';
@@ -112,6 +113,7 @@ async function main(): Promise<void> {
   const journal = new InMemoryJournal();
   const sysOptions = ActorSystemOptions.create().withPersistence({ journal });
   const sys = ActorSystem.create('schema-registry-demo', sysOptions);
+  const devtools = await attachDevTools(sys);
 
   // Pre-seed the journal with a v1-shaped event (representing data
   // written before the schema evolved) — wrapped in the standard
@@ -129,6 +131,7 @@ async function main(): Promise<void> {
   state = await ref.ask<AccountState>({ kind: 'deposit', cents: 250 }, 1_000);
   console.log('after deposit:', state);
 
+  await devtools.holdOpen();
   await sys.terminate();
 }
 

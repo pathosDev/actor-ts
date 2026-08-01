@@ -1,3 +1,4 @@
+import { match } from 'ts-pattern';
 import type { Config } from '../../config/Config.js';
 import { ConfigKeys } from '../../config/ConfigKeys.js';
 import type { ActorRef } from '../../ActorRef.js';
@@ -8,34 +9,59 @@ import { NatsOptionsValidator } from './NatsOptions.js';
 import type { NatsOptions, NatsOptionsType } from './NatsOptions.js';
 
 /** Inbound NATS message handed to subscribers. */
-export interface NatsMessage {
+export type NatsMessage = {
   readonly subject: string;
   readonly payload: Uint8Array;
   /** Reply subject (for request/reply patterns).  Empty when not set. */
   readonly replyTo: string;
-}
+};
 
 /** Outbound publish — one NATS message. */
-export interface NatsPublish {
+export type NatsPublish = {
   readonly subject: string;
   readonly payload: Uint8Array | string;
   readonly replyTo?: string;
-}
+};
 
-export type NatsCommand =
-  | { readonly kind: 'publish'; readonly publish: NatsPublish }
-  | { readonly kind: 'subscribe'; readonly subject: string; readonly target: ActorRef<NatsMessage> }
-  | { readonly kind: 'unsubscribe'; readonly subject: string };
+/** Publish one message on a subject. */
+type PublishCommand = { readonly kind: 'publish'; readonly publish: NatsPublish };
+
+/**
+ * Subscribe `target` to `subject`.  The subscription is *desired* state:
+ * it is re-established on every reconnect, and one sent while the actor
+ * is disconnected lands on the next connect instead of being dropped.
+ * Re-subscribing a live subject swaps the target.
+ */
+type SubscribeCommand = {
+  readonly kind: 'subscribe';
+  readonly subject: string;
+  readonly target: ActorRef<NatsMessage>;
+};
+
+/** Drop the subscription for `subject`, on the broker and from the desired set. */
+type UnsubscribeCommand = { readonly kind: 'unsubscribe'; readonly subject: string };
+
+export type NatsCommand = PublishCommand | SubscribeCommand | UnsubscribeCommand;
 
 /**
  * NATS-Core (no JetStream) actor backed by the official `nats` peer-dep.
- * Plain pub/sub with optional request/reply via `replyTo`.  JetStream
- * (durable streams + consumers) is out-of-scope for v1 — would warrant
- * its own actor with very different semantics.
+ * Plain pub/sub with optional request/reply via `replyTo`.  For durable
+ * streams + consumers, use the sister `JetStreamActor`.
+ *
+ * Subscriptions — configured via `subscriptions` or added at runtime with
+ * `{ kind: 'subscribe', … }` — are held as desired state by
+ * {@link BrokerActor} and re-applied on every reconnect, so a connection
+ * drop cannot silently leave the actor deaf.
  */
-export class NatsActor extends BrokerActor<NatsOptionsType, NatsCommand, NatsPublish> {
+export class NatsActor
+  extends BrokerActor<NatsOptionsType, NatsCommand, NatsPublish, ActorRef<NatsMessage>> {
   private nc: NatsConnectionLike | null = null;
-  private readonly subs = new Map<string, NatsSubscriptionLike>();
+  /**
+   * Handles owned by the *current* connection, subject → handle.  Wiped
+   * on disconnect; the desired set that repopulates it lives in the base
+   * class and outlives any one connection.
+   */
+  private readonly liveSubscriptions = new Map<string, NatsSubscriptionLike>();
 
   constructor(options: NatsOptions = {}) { super(options); }
 
@@ -58,22 +84,31 @@ export class NatsActor extends BrokerActor<NatsOptionsType, NatsCommand, NatsPub
     return typeof servers === 'string' ? servers : '';
   }
 
-  protected async connectImplementation(): Promise<void> {
+  /**
+   * Build a `NatsConnectionLike`.  Override in a test subclass to inject
+   * a mock connection — mirrors `JetStreamActor.createNatsConnection`,
+   * and keeps the `nats` peer-dep out of the unit tests.
+   */
+  protected async createNatsConnection(): Promise<NatsConnectionLike> {
     const nats = await natsLazy.get();
     const servers = Array.isArray(this.options.servers)
       ? [...this.options.servers]
       : [this.options.servers as string];
-    this.nc = await nats.connect({
+    return nats.connect({
       servers,
       token: this.options.token,
       user: this.options.user,
       pass: this.options.password,
       name: this.options.name,
     });
+  }
 
-    for (const subscription of this.options.subscriptions ?? []) {
-      this.subscribeOnConnection(subscription.subject, subscription.target);
-    }
+  protected async connectImplementation(): Promise<void> {
+    this.nc = await this.createNatsConnection();
+
+    // Re-establish the whole desired set (configured + runtime) on the
+    // fresh connection — the previous connection's handles are gone.
+    await this.applyDesiredSubscriptions();
 
     // The connection emits a closed-promise we await loosely.
     void this.nc.closed().then((err) => {
@@ -82,14 +117,49 @@ export class NatsActor extends BrokerActor<NatsOptionsType, NatsCommand, NatsPub
   }
 
   protected async disconnectImplementation(): Promise<void> {
-    for (const sub of this.subs.values()) {
-      try { sub.unsubscribe(); } catch { /* ignore */ }
+    for (const live of this.liveSubscriptions.values()) {
+      // The connection may already be dead — unsubscribing is best-effort.
+      try { live.unsubscribe(); } catch { /* ignore */ }
     }
-    this.subs.clear();
+    // Only the live handles go; the desired set is the base class's and
+    // is what `applyDesiredSubscriptions` restores on the next connect.
+    this.liveSubscriptions.clear();
     if (this.nc) {
       try { await this.nc.drain(); } catch { /* ignore */ }
       this.nc = null;
     }
+  }
+
+  protected override initialSubscriptions(): Iterable<readonly [string, ActorRef<NatsMessage>]> {
+    return (this.options.subscriptions ?? []).map(
+      (subscription) => [subscription.subject, subscription.target] as const,
+    );
+  }
+
+  protected override applySubscription(subject: string, target: ActorRef<NatsMessage>): void {
+    if (!this.nc) throw new Error('NatsActor: not connected');
+    if (this.liveSubscriptions.has(subject)) return;
+    const live = this.nc.subscribe(subject, {
+      callback: (err, message) => {
+        if (err) {
+          this.log.warn(`NatsActor: subscription error on '${subject}': ${err.message}`);
+          return;
+        }
+        target.tell({
+          subject: message.subject,
+          payload: message.data,
+          replyTo: message.reply ?? '',
+        });
+      },
+    });
+    this.liveSubscriptions.set(subject, live);
+  }
+
+  protected override revokeSubscription(subject: string): void {
+    const live = this.liveSubscriptions.get(subject);
+    if (!live) return;
+    this.liveSubscriptions.delete(subject);
+    live.unsubscribe();
   }
 
   protected async dispatchOutgoing(env: OutboundEnvelope<NatsPublish>): Promise<void> {
@@ -101,65 +171,60 @@ export class NatsActor extends BrokerActor<NatsOptionsType, NatsCommand, NatsPub
     this.nc.publish(publish.subject, bytes, publish.replyTo ? { reply: publish.replyTo } : undefined);
   }
 
-  override onReceive(cmd: NatsCommand): void {
-    if (cmd.kind === 'publish') {
-      this.enqueueOutbound(cmd.publish);
-    } else if (cmd.kind === 'subscribe') {
-      if (this.connectionState === 'connected' && this.nc) {
-        this.subscribeOnConnection(cmd.subject, cmd.target);
-      }
-    } else {
-      const existing = this.subs.get(cmd.subject);
-      if (existing) {
-        try { existing.unsubscribe(); } catch { /* ignore */ }
-        this.subs.delete(cmd.subject);
-      }
-    }
+  override onReceive(command: NatsCommand): void {
+    // Compile-time exhaustiveness: adding a new NatsCommand variant
+    // forces this site to handle it explicitly.
+    match(command)
+      .with({ kind: 'publish' },     (m) => this.onPublish(m))
+      .with({ kind: 'subscribe' },   (m) => this.onSubscribe(m))
+      .with({ kind: 'unsubscribe' }, (m) => this.onUnsubscribe(m))
+      .exhaustive();
   }
 
   /* ----------------------------- internals ----------------------------- */
 
-  private subscribeOnConnection(subject: string, target: ActorRef<NatsMessage>): void {
-    if (!this.nc) return;
-    if (this.subs.has(subject)) return;
-    const sub = this.nc.subscribe(subject, {
-      callback: (err, msg) => {
-        if (err) {
-          this.log.warn(`NatsActor: subscription error on '${subject}': ${err.message}`);
-          return;
-        }
-        target.tell({
-          subject: msg.subject,
-          payload: msg.data,
-          replyTo: msg.reply ?? '',
-        });
-      },
-    });
-    this.subs.set(subject, sub);
+  private onPublish(command: PublishCommand): void {
+    this.enqueueOutbound(command.publish);
+  }
+
+  private onSubscribe(command: SubscribeCommand): void {
+    // Recorded as desired even while disconnected — the base class
+    // applies it now if the connection is up, on the next connect if not.
+    void this.rememberSubscription(command.subject, command.target);
+  }
+
+  private onUnsubscribe(command: UnsubscribeCommand): void {
+    void this.forgetSubscription(command.subject);
   }
 }
 
-/* ----------------------------- internals -------------------------------- */
+/* -------------------- nats peer-dep type stubs --------------------- */
 
-interface NatsSubscriptionLike {
+/**
+ * Minimal subscription/connection surface the actor depends on.
+ * Exported so test seams (subclasses overriding
+ * `createNatsConnection`) can satisfy the shape without the real
+ * `nats` peer-dep.
+ */
+export interface NatsSubscriptionLike {
   unsubscribe(): void;
 }
 
-interface NatsRawMessage {
+export type NatsRawMessage = {
   subject: string;
   data: Uint8Array;
   reply?: string;
-}
+};
 
-interface NatsConnectionLike {
-  publish(subject: string, payload: Uint8Array, opts?: { reply?: string }): void;
-  subscribe(subject: string, opts: { callback: (err: Error | null, msg: NatsRawMessage) => void }): NatsSubscriptionLike;
+export interface NatsConnectionLike {
+  publish(subject: string, payload: Uint8Array, options?: { reply?: string }): void;
+  subscribe(subject: string, options: { callback: (err: Error | null, message: NatsRawMessage) => void }): NatsSubscriptionLike;
   drain(): Promise<void>;
   closed(): Promise<Error | undefined>;
 }
 
 interface NatsModule {
-  connect(opts: {
+  connect(options: {
     servers: string[];
     token?: string;
     user?: string;

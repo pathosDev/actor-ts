@@ -88,17 +88,10 @@ export interface PersistenceQuery {
  * Tunables for a live query.  The defaults are deliberately
  * conservative — projections are I/O-bound, not latency-critical.
  */
-export interface LiveQueryOptions {
+export type LiveQueryOptions = {
   /** Poll interval in ms.  Default: `1_000` (1 second). */
   readonly pollIntervalMs?: number;
-  /** Max events to buffer per poll.  Default: `100`. */
-  readonly batchSize?: number;
-  /**
-   * Optional clock — useful for tests that want to control
-   * time-based offset progression.  Defaults to `Date.now`.
-   */
-  readonly clock?: () => number;
-}
+};
 
 /**
  * Cursor used by tag queries.  Composite by design so two events that
@@ -109,7 +102,7 @@ export interface LiveQueryOptions {
  * Compare via {@link offsetGreaterOrEqual} / {@link offsetCompare} —
  * the tuple structure makes naive `>=` comparison wrong.
  */
-export interface Offset {
+export type Offset = {
   /** Wall-clock time of the event's persist call. */
   readonly timestamp: number;
   /**
@@ -120,7 +113,7 @@ export interface Offset {
   readonly persistenceId: string;
   /** Tiebreaker within a persistence id when timestamps collide. */
   readonly sequenceNr: number;
-}
+};
 
 /** Sentinel: read every event from the start of recorded history. */
 export const offsetStart: Offset = {
@@ -158,10 +151,10 @@ export function offsetOfEvent<E>(ev: PersistentEvent<E>): Offset {
  * Event paired with the {@link Offset} a consumer must persist to
  * resume after a crash.  See `eventsByTag`.
  */
-export interface TaggedEvent<E = unknown> {
+export type TaggedEvent<E = unknown> = {
   readonly event: PersistentEvent<E>;
   readonly offset: Offset;
-}
+};
 
 /**
  * Tag-filter spec for `eventsByTag` / `currentEventsByTag`.  A bare
@@ -191,11 +184,11 @@ export type TagFilter = string | TagFilterSpec;
  * empty `{}` matches every event.  See `TagFilter` for the empty-list
  * semantics.
  */
-export interface TagFilterSpec {
+export type TagFilterSpec = {
   readonly all?: ReadonlyArray<string>;
   readonly any?: ReadonlyArray<string>;
   readonly not?: ReadonlyArray<string>;
-}
+};
 
 /**
  * Normalise a {@link TagFilter} into the canonical {@link TagFilterSpec}
@@ -209,6 +202,34 @@ export function normalizeTagFilter(filter: TagFilter): TagFilterSpec {
     any: filter.any,
     not: filter.not,
   };
+}
+
+/**
+ * A stable string key identifying a {@link TagFilter}, for use as a projection
+ * cursor key.
+ *
+ * A bare string maps to **itself**, unchanged — that matters more than it
+ * looks: the by-tag projection uses this as its `OffsetStore` key, so any other
+ * mapping would orphan every cursor already persisted and silently replay each
+ * deployed projection from the beginning.
+ *
+ * Object filters get a canonical form with each operator's tags sorted, so two
+ * filters that mean the same thing share one cursor however they were written.
+ * Not a hash: a readable key is worth more than a short one in an offset table
+ * an operator has to inspect.
+ */
+export function tagFilterCursorKey(filter: TagFilter): string {
+  if (typeof filter === 'string') return filter;
+  const operator = (name: string, tags: ReadonlyArray<string> | undefined): string =>
+    tags !== undefined && tags.length > 0 ? `${name}(${[...tags].sort().join(',')})` : '';
+  const parts = [
+    operator('all', filter.all),
+    operator('any', filter.any),
+    operator('not', filter.not),
+  ].filter(part => part.length > 0);
+  // `{}` matches everything; give it a name rather than an empty key, which
+  // would collide with a projection whose tag was the empty string.
+  return parts.length > 0 ? parts.join('+') : 'all-events';
 }
 
 /**
@@ -241,4 +262,38 @@ export function eventMatchesTagFilter(
     }
   }
   return true;
+}
+
+/**
+ * Turn pre-filtered storage rows into ordered `TaggedEvent`s.
+ *
+ * Every indexed tag query has the same tail: the storage layer can only
+ * pre-filter on one tag and a coarse `timestamp >= …` bound, so the caller
+ * refines each row in JS, drops rows that fall before the requested offset —
+ * a per-row compare is unavoidable, because `Offset` breaks timestamp ties on
+ * `(persistenceId, sequenceNr)` and the coarse SQL bound cannot — and sorts
+ * the survivors.  That tail is shared here; the row *shape* is not, since
+ * Cassandra returns a CQL set of tags and already-wide numbers while SQLite
+ * returns a CSV string.
+ *
+ * `mapMatching` therefore does the backend-specific work and returns `null`
+ * for a row the full filter rejects.  Keeping the reject decision inside the
+ * callback is what lets a backend skip parsing the payload of a row it is
+ * about to discard.
+ */
+export function refineTaggedRows<Row, E>(
+  rows: ReadonlyArray<Row>,
+  fromOffset: Offset,
+  mapMatching: (row: Row) => PersistentEvent<E> | null,
+): TaggedEvent<E>[] {
+  const refined: TaggedEvent<E>[] = [];
+  for (const row of rows) {
+    const event = mapMatching(row);
+    if (event === null) continue;
+    const offset = offsetOfEvent(event);
+    if (offsetCompare(offset, fromOffset) < 0) continue;
+    refined.push({ event, offset });
+  }
+  refined.sort((a, b) => offsetCompare(a.offset, b.offset));
+  return refined;
 }

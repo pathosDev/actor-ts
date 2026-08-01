@@ -41,8 +41,8 @@ describe('cors — validation + compile', () => {
       CorsOptions.create().withAnyOrigin(),
       path('api', concat(get(() => complete(Status.OK, 'g')), options(() => complete(Status.OK, 'custom')))),
     ));
-    const opts = compiled.filter((c) => c.kind === 'http' && c.method === 'OPTIONS');
-    expect(opts).toHaveLength(1);
+    const optionsRoutes = compiled.filter((c) => c.kind === 'http' && c.method === 'OPTIONS');
+    expect(optionsRoutes).toHaveLength(1);
   });
 
   test('folds an origin check into a websocket upgrade in the subtree', async () => {
@@ -50,10 +50,10 @@ describe('cors — validation + compile', () => {
     const compiled = compile(cors(CorsOptions.create().withOrigins('https://ok.example'), path('ws', wsLiteral)));
     const ws = compiled.find((c) => c.kind === 'websocket');
     if (!ws || ws.kind !== 'websocket') throw new Error('expected a websocket route');
-    const req = (headers: Record<string, string>): HttpRequest => ({ method: 'GET', path: '/ws', headers, query: {}, params: {}, body: null });
-    expect((await ws.authorize(req({ origin: 'https://evil.example' })))?.status).toBe(403);
-    expect(await ws.authorize(req({ origin: 'https://ok.example' }))).toBeNull();
-    expect(await ws.authorize(req({}))).toBeNull(); // no Origin → not treated as cross-origin
+    const request = (headers: Record<string, string>): HttpRequest => ({ method: 'GET', path: '/ws', headers, query: {}, params: {}, body: null });
+    expect((await ws.authorize(request({ origin: 'https://evil.example' })))?.status).toBe(403);
+    expect(await ws.authorize(request({ origin: 'https://ok.example' }))).toBeNull();
+    expect(await ws.authorize(request({}))).toBeNull(); // no Origin → not treated as cross-origin
   });
 });
 
@@ -90,44 +90,44 @@ describe.each(backends)('cors — %s backend', (_name, mk) => {
 
   test('answers a preflight for an allowed origin', async () => {
     const url = await start(mk, withCors());
-    const res = await fetch(`${url}/api`, {
+    const response = await fetch(`${url}/api`, {
       method: 'OPTIONS',
       headers: { origin: ALLOWED, 'access-control-request-method': 'GET' },
     });
-    expect(res.status).toBe(204);
-    expect(res.headers.get('access-control-allow-origin')).toBe(ALLOWED);
-    expect(res.headers.get('access-control-allow-methods')).toContain('GET');
-    expect(res.headers.get('vary') ?? '').toContain('Origin');
+    expect(response.status).toBe(204);
+    expect(response.headers.get('access-control-allow-origin')).toBe(ALLOWED);
+    expect(response.headers.get('access-control-allow-methods')).toContain('GET');
+    expect(response.headers.get('vary') ?? '').toContain('Origin');
   });
 
   test('without cors, a preflight carries no CORS headers (pins the routing constraint)', async () => {
     const url = await start(mk, path('api', get(() => complete(Status.OK, 'data'))));
-    const res = await fetch(`${url}/api`, {
+    const response = await fetch(`${url}/api`, {
       method: 'OPTIONS',
       headers: { origin: ALLOWED, 'access-control-request-method': 'GET' },
     });
-    expect(res.headers.get('access-control-allow-origin')).toBeNull();
+    expect(response.headers.get('access-control-allow-origin')).toBeNull();
   });
 
   test('decorates the actual response for an allowed origin', async () => {
     const url = await start(mk, withCors());
-    const res = await fetch(`${url}/api`, { headers: { origin: ALLOWED } });
-    expect(res.status).toBe(200);
-    expect(res.headers.get('access-control-allow-origin')).toBe(ALLOWED);
-    expect(res.headers.get('vary') ?? '').toContain('Origin');
+    const response = await fetch(`${url}/api`, { headers: { origin: ALLOWED } });
+    expect(response.status).toBe(200);
+    expect(response.headers.get('access-control-allow-origin')).toBe(ALLOWED);
+    expect(response.headers.get('vary') ?? '').toContain('Origin');
   });
 
   test('omits CORS headers for a disallowed origin', async () => {
     const url = await start(mk, withCors());
-    const res = await fetch(`${url}/api`, { headers: { origin: 'https://evil.example' } });
-    expect(res.status).toBe(200);
-    expect(res.headers.get('access-control-allow-origin')).toBeNull();
+    const response = await fetch(`${url}/api`, { headers: { origin: 'https://evil.example' } });
+    expect(response.status).toBe(200);
+    expect(response.headers.get('access-control-allow-origin')).toBeNull();
   });
 
   test('withAnyOrigin echoes a literal * (no credentials)', async () => {
     const url = await start(mk, cors(CorsOptions.create().withAnyOrigin(), path('api', get(() => complete(Status.OK, 'd')))));
-    const res = await fetch(`${url}/api`, { headers: { origin: ALLOWED } });
-    expect(res.headers.get('access-control-allow-origin')).toBe('*');
+    const response = await fetch(`${url}/api`, { headers: { origin: ALLOWED } });
+    expect(response.headers.get('access-control-allow-origin')).toBe('*');
   });
 
   test('credentials echoes the origin and sets allow-credentials', async () => {
@@ -135,19 +135,19 @@ describe.each(backends)('cors — %s backend', (_name, mk) => {
       CorsOptions.create().withOrigins(ALLOWED).withCredentials(),
       path('api', get(() => complete(Status.OK, 'd'))),
     ));
-    const res = await fetch(`${url}/api`, { headers: { origin: ALLOWED } });
-    expect(res.headers.get('access-control-allow-origin')).toBe(ALLOWED);
-    expect(res.headers.get('access-control-allow-credentials')).toBe('true');
+    const response = await fetch(`${url}/api`, { headers: { origin: ALLOWED } });
+    expect(response.headers.get('access-control-allow-origin')).toBe(ALLOWED);
+    expect(response.headers.get('access-control-allow-credentials')).toBe('true');
   });
 
   test('echoes the requested headers on a preflight when none are configured', async () => {
     const url = await start(mk, withCors());
-    const res = await fetch(`${url}/api`, {
+    const response = await fetch(`${url}/api`, {
       method: 'OPTIONS',
       headers: { origin: ALLOWED, 'access-control-request-method': 'GET', 'access-control-request-headers': 'x-custom, content-type' },
     });
-    expect(res.status).toBe(204);
-    expect(res.headers.get('access-control-allow-headers') ?? '').toContain('x-custom');
+    expect(response.status).toBe(204);
+    expect(response.headers.get('access-control-allow-headers') ?? '').toContain('x-custom');
   });
 
   test('uses the configured allowed headers + max-age on a preflight', async () => {
@@ -155,12 +155,12 @@ describe.each(backends)('cors — %s backend', (_name, mk) => {
       CorsOptions.create().withOrigins(ALLOWED).withAllowedHeaders('x-a', 'x-b').withMaxAge(120),
       path('api', get(() => complete(Status.OK, 'd'))),
     ));
-    const res = await fetch(`${url}/api`, {
+    const response = await fetch(`${url}/api`, {
       method: 'OPTIONS',
       headers: { origin: ALLOWED, 'access-control-request-method': 'GET' },
     });
-    expect(res.headers.get('access-control-allow-headers')).toBe('x-a, x-b');
-    expect(res.headers.get('access-control-max-age')).toBe('120');
+    expect(response.headers.get('access-control-allow-headers')).toBe('x-a, x-b');
+    expect(response.headers.get('access-control-max-age')).toBe('120');
   });
 
   test('a user OPTIONS route still handles a non-preflight OPTIONS', async () => {
@@ -169,7 +169,7 @@ describe.each(backends)('cors — %s backend', (_name, mk) => {
       path('api', concat(get(() => complete(Status.OK, 'g')), options(() => complete(Status.OK, 'custom-options')))),
     ));
     // No Origin / Access-Control-Request-Method → not a preflight → user handler runs.
-    const res = await fetch(`${url}/api`, { method: 'OPTIONS' });
-    expect(await res.text()).toBe('custom-options');
+    const response = await fetch(`${url}/api`, { method: 'OPTIONS' });
+    expect(await response.text()).toBe('custom-options');
   });
 });

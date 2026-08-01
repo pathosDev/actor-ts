@@ -1,0 +1,184 @@
+---
+title: DevTools tap protocol
+description: The versioned wire contract between the DevTools UI and a running actor system — one multiplexed WebSocket carrying stream subscriptions and request/response, with an explicit compatibility rule.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+Every DevTools panel talks to the actor system through one **tap**: a
+single multiplexed WebSocket plus a couple of JSON endpoints.  One
+socket rather than one per panel means a browser tab holds a single
+connection, switching panels costs no reconnect, and an idle tab costs
+the system nothing.
+
+This page is the contract.  It is stable enough to write your own client
+against — the types are exported from `actor-ts/devtools`.
+
+## Endpoints
+
+| Endpoint | Purpose |
+| --- | --- |
+| `GET /` | The UI shell (omit with `serveUi: false`) |
+| `GET /assets/*` | UI bundle |
+| `GET /api/info` | Handshake data as plain JSON — curl-able, no socket needed |
+| `WS /api/ws` | The tap |
+
+## Versioning
+
+The protocol carries a single integer version, exported as
+`DEVTOOLS_PROTOCOL_VERSION`.
+
+- **Additive changes keep the version.** New frame kinds, new streams,
+  new request methods and new *optional* payload fields may appear at
+  any time.  Clients **must ignore** frame kinds, streams and fields
+  they do not recognise — that is what lets an older UI keep working
+  against a newer server.
+- **Anything else bumps it.** Removing or renaming a field, or changing
+  the meaning or type of an existing one.
+
+The version is exchanged in the handshake and a mismatch **closes the
+socket** with code `4400`.  Refusing beats negotiating here: a UI bundle
+from a different release rendering a half-understood actor tree is worse
+than a banner telling you to rebuild.
+
+<Aside type="note">
+The full surface — including the streams and methods whose panels are
+still being built — is declared in version 1 from the start.  That is
+deliberate: it means each panel that lands is a pure addition, and the
+version stays put across the whole series.
+</Aside>
+
+## Handshake
+
+The client sends `hello` first; nothing else is accepted before it.
+
+```json
+// client → server
+{ "kind": "hello", "protocolVersion": 1, "client": "devtools-ui" }
+```
+
+```json
+// server → client
+{
+  "kind": "welcome",
+  "protocolVersion": 1,
+  "serverVersion": "0.11.0",
+  "systemName": "orders",
+  "startedAtMs": 1730000000000,
+  "streams": ["stats", "actors"],
+  "panels": [
+    { "id": "dashboard", "status": "active" },
+    { "id": "time-travel", "status": "unavailable", "reason": "no journal configured" }
+  ]
+}
+```
+
+`streams` and `panels` are the capability advertisement.  A panel is
+`active`, `disabled` (the operator switched it off), or `unavailable`
+with a **reason** — which the UI renders on the greyed-out nav entry, so
+a capability this system lacks is explained rather than silently
+missing.
+
+## Frames
+
+### Client → server
+
+| Kind | Fields | Meaning |
+| --- | --- | --- |
+| `hello` | `protocolVersion`, `client?` | Open the session |
+| `subscribe` | `stream`, `parameters?` | Start receiving a stream |
+| `unsubscribe` | `stream` | Stop receiving it |
+| `request` | `requestId`, `method`, `parameters?` | Invoke a pull operation |
+
+### Server → client
+
+| Kind | Fields | Meaning |
+| --- | --- | --- |
+| `welcome` | see above | Handshake accepted |
+| `event` | `stream`, `sequenceNumber`, `payload` | One stream event |
+| `response` | `requestId`, `result` | Answer to a `request` |
+| `error` | `code`, `message`, `requestId?` | Rejection |
+
+Error codes: `version-mismatch`, `malformed-frame`, `unknown-stream`,
+`unknown-method`, `unavailable`, `bad-parameters`, `internal`.  An error
+carrying a `requestId` rejects that request; one without it is
+connection-level.
+
+## Streams
+
+Subscribing yields a **snapshot first, then deltas** — the server
+generates the snapshot on the same mailbox that publishes the deltas, so
+it can never be built from a half-updated view.
+
+| Stream | Payload kinds |
+| --- | --- |
+| `stats` | `stats-sample` |
+| `actors` | `actor-tree-snapshot`, `actor-started`, `actor-changed`, `actor-stopped`, `actor-restarted` |
+| `cluster` | `cluster-snapshot`, `cluster-event`, `shard-map-changed` |
+| `mailboxes` | `mailbox-sample` |
+| `spans` | `span-batch` |
+| `explain` | `explain-entries` |
+| `profiler` | `profiler-progress`, `profiler-completed` |
+
+### Sequence numbers and gaps
+
+Every `event` frame carries a per-stream `sequenceNumber` starting at 1.
+A gap means frames were dropped, so the client's incremental state is
+now a guess: the bundled UI responds by re-subscribing for a fresh
+snapshot rather than rendering a tree that quietly disagrees with
+reality.  Any client should do the same.
+
+Counters in stream payloads are **cumulative since attach, never
+deltas** — a client computes rates from consecutive samples, so a
+reconnect or a missed tick cannot corrupt the figures.
+
+## Requests
+
+Pull operations, namespaced by the panel that owns them:
+
+| Method | Purpose |
+| --- | --- |
+| `explain.enable` / `explain.disable` / `explain.fetch` | Per-actor explain plan |
+| `journal.ids` / `journal.read` | Browse a persistence journal |
+| `replay.capabilities` / `replay.state` / `replay.diff` | Reconstruct past state |
+| `profiler.capabilities` | Which profiling modes this host can run |
+| `profiler.start` / `profiler.stop` | Control a profiling session |
+| `stats.history` | The overview's charted series for a chosen timespan |
+| `tracing.buffer` | How many recent spans the server retains |
+
+A method with no handler on this system answers `error` with code
+`unavailable` — the same signal the panel descriptor already gave, so a
+client that ignored the handshake still fails safely.
+
+Requests are answered **off** the tap's mailbox, so a slow journal read
+cannot stall other connected tabs.
+
+## Writing a client
+
+The types and helpers are exported from the DevTools entry point:
+
+```ts
+import { match } from 'ts-pattern';
+import {
+  DEVTOOLS_PROTOCOL_VERSION,
+  decodeClientFrame,
+  helloFrame,
+  type DevToolsServerFrame,
+} from 'actor-ts/devtools';
+
+const socket = new WebSocket('ws://127.0.0.1:9333/api/ws');
+socket.addEventListener('open', () => socket.send(JSON.stringify(helloFrame('my-client'))));
+socket.addEventListener('message', (event) => {
+  const frame = JSON.parse(String(event.data)) as DevToolsServerFrame;
+  match(frame)
+    .with({ kind: 'welcome' }, () => socket.send(JSON.stringify({ kind: 'subscribe', stream: 'stats' })))
+    .otherwise(() => {});
+});
+```
+
+Inbound frames on the server side go through `decodeClientFrame`, which
+rejects anything that is not a well-formed frame — including kinds it
+does not know.  The "ignore what you don't recognise" half of the
+compatibility rule applies to clients reading server frames, not to the
+server: it has no reason to accept frames from a client newer than
+itself.

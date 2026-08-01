@@ -84,7 +84,7 @@ dd.update<GCounter>(
 
 // Lokale Sicht lesen — liefert den letzten bekannten gemergten Stand.
 const counter = dd.get<GCounter>('request-count');
-console.log(counter?.value);   // Summe über alle bekannten Replikas
+console.log(counter?.value());   // Summe über alle bekannten Replikas
 ```
 
 Das lokale Update ist sofort wirksam; Gossip propagiert es in
@@ -106,9 +106,12 @@ kein Netzwerk) und liefern, was die lokale Replika aktuell weiß
 | **`ORMap<K, C>`** | Eine Map, deren Werte selbst CRDTs sind. | Counter pro Key, Sets pro Key. |
 | **`GCounterMap<K>`** | Convenience: eine Map von GCounters. | Klicks pro Key, Requests pro Tenant. |
 
-In [CRDT-Typen](/de/distributed-data/crdt-types/) findest du den
-Deep Dive zu jedem — `merge()`-Semantik, wann sie passen, wann
-nicht.
+Die Deep Dives zu den CRDT-Typen behandeln `merge()`-Semantik, wann
+sie passen und wann nicht —
+[Counter](/de/distributed-data/crdt-types/counters/),
+[Register](/de/distributed-data/crdt-types/registers/),
+[Sets](/de/distributed-data/crdt-types/sets/) und
+[Maps](/de/distributed-data/crdt-types/maps/).
 
 ## Konsistenz-Stellschrauben
 
@@ -126,9 +129,9 @@ const hits = await dd.getAsync<GCounter>('hits',
 | Level | Was es bedeutet |
 | --- | --- |
 | `'local'` *(Default)* | Lokal anwenden; auf Gossip vertrauen, dass es propagiert.  Read liefert die Sicht der lokalen Replika. |
-| `'majority'` | Warten, bis ⌈N/2 + 1⌉ Replikas geACKt haben.  Read merged die Mehrheitsantworten. |
+| `'majority'` | Warten, bis ⌊N/2⌋+1 Replikas geACKt haben.  Read merged die Mehrheitsantworten. |
 | `'all'` | Auf jedes Up-Member warten.  Stärkste Konsistenz, höchste Latenz. |
-| `{ kind: 'count'; n: 3 }` | Auf genau `n` ACKs warten. |
+| `{ from: 3 }` | Auf genau `from` ACKs warten (begrenzt auf `[1, N]`). |
 
 Quorum ändert die Merge-Semantik nicht — jedes Update merged
 irgendwann in jede Replika.  Quorum gibt dir nur eine **Garantie**,
@@ -149,7 +152,7 @@ Default.  Greife zu `'majority'`, wenn:
 
 ```ts
 const unsubscribe = dd.subscribe<GCounter>('hits', (counter) => {
-  console.log(`hits liegt jetzt bei ${counter.value}`);
+  console.log(`hits liegt jetzt bei ${counter.value()}`);
 });
 
 // ... später
@@ -230,8 +233,9 @@ import { Aside } from '@astrojs/starlight/components';
 
 ## Wohin als Nächstes
 
-- **[CRDT-Typen](/de/distributed-data/crdt-types/)** —
-  Deep Dive zur Semantik jedes Typs.
+- **[Counter](/de/distributed-data/crdt-types/counters/)** — der erste
+  der CRDT-Typ-Deep-Dives; jede Seite verlinkt weiter auf Register,
+  Sets und Maps.
 - **[Replikation](/de/distributed-data/replication/)** — wie
   Gossip Updates zwischen Replikas verteilt.
 - **[Quorum Reads/Writes](/de/distributed-data/quorum-reads-writes/)** —

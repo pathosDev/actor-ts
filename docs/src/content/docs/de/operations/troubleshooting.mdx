@@ -34,8 +34,13 @@ Ursachen zum Prüfen (in dieser Reihenfolge):
 Diagnostik:
 
 ```ts
-cluster.subscribe(MemberJoined, (e) => system.log.info(`saw join: ${e.member.address}`));
-cluster.subscribe(SelfUp, () => system.log.info('self up'));
+cluster.subscribe((evt) => {
+  if (evt instanceof MemberJoined) {
+    system.log.info(`saw join: ${evt.member.address}`);
+  } else if (evt instanceof SelfUp) {
+    system.log.info('self up');
+  }
+});
 ```
 
 Prüfe, ob `SelfUp` feuert. Wenn nicht, hat der lokale Node nicht
@@ -183,7 +188,9 @@ zu isolieren.
 
 Ursachen (häufigste zuerst):
 
-1. **Unbounded Mailboxes** mit langsamem Consumer. Die
+1. **Eine opt-in unbounded Mailbox** mit langsamem Consumer — die
+   Default-Mailbox ist bounded (10.000, `drop-head`), das tritt also
+   nur auf, wenn du sie durch `() => new Mailbox()` ersetzt.  Die
    Mailbox-Depth-Metrik wächst.
 2. **Subscriber-Set-Leaks** — Actors registrieren sich am
    Event-Stream oder DistributedPubSub, aber unsubscriben sich

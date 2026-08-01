@@ -16,7 +16,7 @@ import { MariaDbDurableStateStore } from '../../../../src/persistence/durable-st
 import { MariaDbDurableStateStoreOptions } from '../../../../src/persistence/durable-state-stores/MariaDbDurableStateStoreOptions.js';
 import { waitForPort } from '../lib/wait-for-port.js';
 import { runScenarios } from '../lib/scenario.js';
-import { sqlPersistenceScenarios, type SqlPersistenceCtx } from '../lib/persistence-contract.js';
+import { sqlPersistenceScenarios, type SqlPersistenceContext } from '../lib/persistence-contract.js';
 
 function requireEnv(name: string): string {
   const value = process.env[name];
@@ -38,22 +38,31 @@ async function main(): Promise<void> {
     connectionLimit: 5,
   };
 
-  const journalOptions = MariaDbJournalOptions.create()
-    .withPoolConfig(poolConfig);
-  const snapshotStoreOptions = MariaDbSnapshotStoreOptions.create()
-    .withPoolConfig(poolConfig)
-    .withKeepN(2);
-  const durableStateOptions = MariaDbDurableStateStoreOptions.create()
-    .withPoolConfig(poolConfig);
-  const ctx: SqlPersistenceCtx = {
+  // Factories, not instances: every contract scenario builds its own store so
+  // the scenarios stay independent (and identical to the in-process suite,
+  // where each one gets a fresh fake pool).
+  const context: SqlPersistenceContext = {
     env: process.env,
     label: 'mariadb',
-    journal: new MariaDbJournal(journalOptions),
-    snapshotStore: new MariaDbSnapshotStore(snapshotStoreOptions),
-    durableState: new MariaDbDurableStateStore(durableStateOptions),
+    async makeJournal() {
+      const journalOptions = MariaDbJournalOptions.create()
+        .withPoolConfig(poolConfig);
+      return new MariaDbJournal(journalOptions);
+    },
+    async makeSnapshotStore(keepN) {
+      const snapshotStoreOptions = MariaDbSnapshotStoreOptions.create()
+        .withPoolConfig(poolConfig)
+        .withKeepN(keepN ?? 2);
+      return new MariaDbSnapshotStore(snapshotStoreOptions);
+    },
+    async makeDurableStateStore() {
+      const durableStateOptions = MariaDbDurableStateStoreOptions.create()
+        .withPoolConfig(poolConfig);
+      return new MariaDbDurableStateStore(durableStateOptions);
+    },
   };
 
-  await runScenarios(sqlPersistenceScenarios(), ctx);
+  await runScenarios(sqlPersistenceScenarios(), context);
 }
 
 main().catch((e) => {

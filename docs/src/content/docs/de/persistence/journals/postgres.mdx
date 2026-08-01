@@ -110,11 +110,11 @@ einfacher (eine Datei, kein Server).
 ## Konfiguration
 
 ```ts
-interface PostgresConnection {
+type PostgresConnection = {
   url?:        string;                      // postgres://user:pass@host:5432/db
   poolConfig?: Record<string, unknown>;     // weitere pg.Pool-Optionen (ssl, max, …)
   pool?:       PgPoolLike;                   // vorgebauter / geteilter Pool
-}
+};
 
 interface PostgresJournalOptions extends PostgresConnection {
   eventsTable?:      string;   // Default 'events'
@@ -182,7 +182,12 @@ und setze `autoCreateTables: false`, wenn deine DB-Rolle kein DDL darf.
   EINER Transaktion aus; das `expectedSeq` des Callers wird gegen den
   aktuellen Head geprüft.  Ein durchrutschender konkurrierender Writer
   verletzt den Primary-Key-Unique-Constraint (SQLSTATE `23505`), was als
-  Backstop in `JournalConcurrencyError` übersetzt wird.
+  Backstop in `JournalConcurrencyError` übersetzt wird.  Bricht die Engine
+  den Verlierer *vor* der Key-Prüfung wegen Contention ab (`40001` /
+  `40P01` — bei `SERIALIZABLE` erreichbar und auf den wire-kompatiblen
+  Engines der Normalfall), gilt dasselbe, aber erst wenn ein erneutes Lesen
+  bestätigt, dass der Head sich bewegt hat: ein gewöhnliches Lock-Problem
+  bleibt ein `JournalError`, statt zur Retry-Schleife zu werden.
 - **Durable-State-CAS** nutzt die `revision`-Spalte: Anlegen
   (`expectedRevision === 0`) ist `INSERT … ON CONFLICT DO NOTHING`, ein
   Update ist `UPDATE … WHERE revision = expected`.  Null betroffene

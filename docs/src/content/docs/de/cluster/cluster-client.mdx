@@ -12,7 +12,7 @@ er kann cluster-interne Actors per bekannten
 ```ts
 import { ClusterClient, ClusterClientOptions } from 'actor-ts';
 
-const clusterClientOptions = ClusterClientOptions.create().withContactPoints(['actor-ts://my-app@10.0.0.5:2552/system/receptionist']);
+const clusterClientOptions = ClusterClientOptions.create().withContactPoints(['actor-ts://my-app@10.0.0.5:2552/system/cluster/receptionist']);
 const client = new ClusterClient(
   clusterClientOptions,
 );
@@ -20,8 +20,8 @@ const client = new ClusterClient(
 // Senden an einen bekannten Cluster-Actor:
 client.send('/user/api/orders', { kind: 'place', ... });
 
-// Oder über Receptionist per Service-Key:
-client.sendByKey(ServiceKey.of<ApiMessage>('api'), { kind: 'list-orders' });
+// Oder fragen und auf die Antwort warten:
+const orders = await client.ask('/user/api/orders', { kind: 'list-orders' });
 ```
 
 ## Wann verwenden
@@ -48,67 +48,65 @@ möglich ist.
 sequenceDiagram
   participant Ext as Externer Prozess
   participant Cluster
-  Ext->>Cluster: kontaktiere Cluster-Receptionist über bekannten Pfad
-  Cluster-->>Ext: bekannte Service-Refs
-  Ext->>Cluster: schicke Nachrichten an Refs
+  Ext->>Cluster: verbinden + Hello-Handshake
+  Ext->>Cluster: Envelope mit Ziel-Pfad + Nachricht
+  Cluster-->>Ext: Antwort (bei ask)
 ```
 
 Der Client:
 
-1. Verbindet sich mit einem oder mehreren **Kontakten** (bekannte
-   Cluster-Nodes, auf denen ein
-   `ClusterClientReceptionist` läuft).
-2. Entdeckt verfügbare Services über den Receptionist.
-3. Routet Nachrichten zu den richtigen Actors.
-4. Behandelt Failover, wenn Kontakte unerreichbar werden —
+1. Verbindet sich mit einem oder mehreren **Kontaktpunkten**
+   (Cluster-Nodes, auf denen ein `ClusterClientReceptionist`
+   läuft).
+2. Schickt jede Nachricht in einem Envelope, adressiert an einen
+   Ziel-Actor-**Pfad** — `send` für Fire-and-Forget, `ask` für
+   Request/Reply.
+3. Der Receptionist auf dem Kontakt-Node löst diesen Pfad in
+   seinem lokalen Actor-Baum auf und stellt die Nachricht zu.
+4. Behandelt Failover, wenn ein Kontaktpunkt unerreichbar wird —
    verbindet sich zu einem anderen.
 
 ## Konfiguration
 
 ```ts
-interface ClusterClientOptionsType {
-  contacts:            string[];       // mindestens ein Cluster-Node-Pfad
-  reconnectIntervalMs?: number;
-  acceptableHeartbeatPauseMs?: number;
-}
+type ClusterClientOptionsType = {
+  contactPoints: ReadonlyArray<string>;            // mindestens ein Node: host:port oder <system>@host:port
+  systemName?: string;                             // synthetischer System-Name im Hello des Clients
+  clientIdentity?: { host: string; port: number }; // Identität für das Reply-Routing
+  askTimeoutMs?: number;                           // Standard-Ask-Timeout (ms; Standard 5000)
+  tls?: TlsTransportOptionsType;                   // muss zum Cluster passen
+  logger?: Logger;                                 // Standard: ConsoleLogger auf WARN
+};
 ```
 
-`contacts` ist die Liste der Receptionist-Pfade. Der Client wählt
-zufällig einen aus, um sich zu verbinden; bei Ausfall fällt er auf
-andere zurück.
+`contactPoints` ist die Liste der zu wählenden Cluster-Nodes —
+jeweils ein `host:port`- oder `<system>@host:port`-String. Der
+Client probiert sie der Reihe nach; bei Ausfall fällt er auf den
+nächsten zurück.
 
-Für **stabile Kontaktadressen** deployt die Cluster-Seite typisch
-einen `ClusterClientReceptionist` auf einem festen Pod (oder
-sharded Set) an einem bekannten Pfad.
+Für **stabile Kontaktadressen** betreibt die Cluster-Seite typisch
+einen `ClusterClientReceptionist` auf einem festen Satz von Nodes,
+deren Adressen zu den Kontaktpunkten des Clients werden.
 
 ## Serverseite — ClusterClientReceptionist
 
 ```ts
-import { ClusterClientReceptionist } from 'actor-ts';
+import { ClusterClientReceptionistId } from 'actor-ts';
 
-system.spawn(
-  ClusterClientReceptionist.props({
-    cluster,
-    role: 'frontend',   // optional — auf bestimmte Nodes beschränken
-  }),
-  'cluster-client-receptionist',
-);
+// Der Receptionist ist eine Per-System-Extension — starte ihn auf
+// jedem Node, der Outside-in-Client-Verbindungen annehmen soll:
+system.extension(ClusterClientReceptionistId).start(cluster);
 ```
 
-Der Receptionist legt registrierte Services für externe Clients
-offen. Actors registrieren:
+Es gibt keine Service-Registry zu befüllen. Der Receptionist löst
+den Ziel-Pfad jedes Envelopes im lokalen Actor-Baum auf und stellt
+die Nachricht zu — jeder bereits unter `/user` laufende Actor ist
+über den Pfad erreichbar, an den der Client sendet (z. B.
+`client.send('/user/api/orders', ...)`).
 
-```ts
-const receptionistRef = system.actorSelection('/user/cluster-client-receptionist');
-
-receptionistRef.tell({
-  kind:    'register-service',
-  key:     ServiceKey.of<OrdersMessage>('orders'),
-  ref:     ordersActor,
-});
-```
-
-Externe Clients können dann `sendByKey('orders', msg)` machen.
+Seine einzige Option, `askTimeoutMs`, begrenzt die Wartezeit, wenn
+ein Client-Envelope ein ask trägt; setze sie über
+`ClusterClientReceptionistOptions`.
 
 ## Vergleich mit Cluster-fähigem ActorRef
 
@@ -159,7 +157,7 @@ import { Aside } from '@astrojs/starlight/components';
 - **[Refs über Nodes hinweg](/de/cluster/refs-across-nodes/)** —
   Cluster-interne Ref-Semantik zum Vergleich.
 - **[Receptionist](/de/discovery/receptionist/)** — die
-  cluster-interne Service-Registry; ClusterClient baut darauf
-  auf.
+  cluster-interne Service-Registry (eine eigenständige Komponente
+  mit ähnlichem Namen).
 - **[HTTP-Überblick](/de/http/overview/)** — die häufigere
   extern zugängliche Alternative.

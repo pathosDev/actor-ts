@@ -4,40 +4,52 @@ description: Bridge the framework's metrics into an existing `prom-client` regis
 ---
 
 If your app already uses `prom-client` (the de-facto Node /
-Prometheus library) for its non-actor metrics, the
-**`PromClientAdapter`** lets the framework's metrics live in the
-same `prom-client` registry — one `/metrics` endpoint, all
+Prometheus library) for its non-actor metrics,
+**`promClientRegistry(...)`** lets the framework's metrics live in
+the same `prom-client` registry — one `/metrics` endpoint, all
 metrics together.
 
 ```ts
-import { Registry } from 'prom-client';
-import { ActorSystem, MetricsExtensionId, PromClientAdapter } from 'actor-ts';
+import client from 'prom-client';
+import {
+  ActorSystem,
+  MetricsExtensionId,
+  promClientRegistry,
+  PromClientAdapterOptions,
+} from 'actor-ts';
 
-const promRegistry = new Registry();
-// ... register your existing prom-client metrics ...
+// Your app's existing prom-client registry.  `client.register` is
+// the default global one; here we use a fresh Registry for clarity.
+const registry = new client.Registry();
+// ... register your existing prom-client metrics on `registry` ...
 
 const system = ActorSystem.create('my-app');
-const metrics = system.extension(MetricsExtensionId);
 
-// Mirror framework metrics into the prom-client registry:
-const adapter = new PromClientAdapter({
-  source: metrics.registry,
-  target: promRegistry,
-});
+// Point the metrics extension at a registry that writes straight
+// into prom-client.  Every framework counter / gauge / histogram
+// from here on lands in `registry` alongside your app metrics.
+const promAdapterOptions = PromClientAdapterOptions.create()
+  .withClient(client)
+  .withRegistry(registry)
+  .withNamePrefix('actor_ts_');
+system.extension(MetricsExtensionId).useRegistry(
+  promClientRegistry(promAdapterOptions),
+);
 
-adapter.start();
-
-// Now exposing prom-client's combined export includes framework metrics:
+// Your existing /metrics endpoint now emits framework + app metrics:
 get(async () => ({
   status: 200,
-  body: await promRegistry.metrics(),
-  contentType: promRegistry.contentType,
+  body: await registry.metrics(),
+  contentType: registry.contentType,
 }));
 ```
 
-The adapter **mirrors** framework metrics into the prom-client
-registry on a periodic interval (configurable).  Both registries
-work normally; the adapter syncs values between them.
+`promClientRegistry(...)` returns a `MetricsRegistry` that writes
+**straight through** to prom-client — every framework counter,
+gauge, and histogram mutation lands in your prom-client registry
+synchronously.  There's no background sync, no interval, and no
+second copy of the values: prom-client holds the canonical state,
+and your existing `register.metrics()` route emits everything.
 
 ## When to use it
 
@@ -56,28 +68,31 @@ no extra dependency.
 ## Configuration
 
 ```ts
-interface PromClientAdapterOptionsType {
-  source:        MetricsRegistry;     // the framework's registry
-  target:        Registry;             // prom-client's
-  syncIntervalMs?: number;             // default 5000
-  prefix?:        string;              // optional name prefix
-}
+type PromClientAdapterOptionsType = {
+  client:      PromClientLike;          // the prom-client namespace: import client from 'prom-client'
+  registry:    PromClientRegistryLike;  // the Registry to publish into — typically client.register
+  namePrefix?: string;                  // prefix applied to every metric name — default: ''
+};
 ```
 
-`syncIntervalMs` is the cadence at which framework values get
-copied into the prom-client registry.  For most scrape setups
-(every 15-30 s), a 5-second sync is plenty.
+`client` and `registry` are mandatory — the bridge has nothing to
+publish into without them.  `client` is the `prom-client` namespace
+you already import; `registry` is the `Registry` it writes into
+(usually `client.register`, the default global registry).  The
+plain object above works anywhere the builder does — the builder is
+the documented default.
 
-`prefix` lets you namespace framework metrics:
+`namePrefix` lets you namespace framework metrics so the
+bridge-sourced families are easy to spot in the exposition:
 
 ```ts
-new PromClientAdapter({
-  source: metrics.registry,
-  target: promRegistry,
-  prefix: 'actorts_',
-});
+const prefixedOptions = PromClientAdapterOptions.create()
+  .withClient(client)
+  .withRegistry(registry)
+  .withNamePrefix('actorts_');
+promClientRegistry(prefixedOptions);
 
-// → actorts_http_requests_total, actorts_sessions_active, ...
+// → actorts_messages_delivered_total, actorts_members_up, ...
 ```
 
 ## Peer dependency
@@ -95,7 +110,7 @@ adapter.
 - **[Observability overview](/observability/overview/)** —
   the bigger picture.
 - **[Core metrics](/observability/metrics/core-metrics/)** —
-  the framework's metric primitives that get mirrored.
+  the framework's metric primitives that flow through the bridge.
 - **[Prometheus exporter](/observability/metrics/prometheus-exporter/)** —
   the framework-native alternative when you don't need
   prom-client.

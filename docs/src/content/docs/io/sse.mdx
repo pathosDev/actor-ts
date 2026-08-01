@@ -63,11 +63,11 @@ the actor fails fast at startup.
 Each parsed event is delivered as an `SseEvent`:
 
 ```ts
-interface SseEvent {
+type SseEvent = {
   event: string;   // the `event:` field, or 'message' by default
   data:  string;   // the `data:` payload
   id?:   string;   // the `id:` field, when present
-}
+};
 ```
 
 The client parses the SSE wire format — events separated by a blank
@@ -97,8 +97,8 @@ Parsing rules that follow the SSE spec:
 - **`id`.**  Delivered as `ev.id` when the server sends one;
   otherwise `undefined`.
 
-So the stream above delivers four events: `{ event: 'message', data:
-'hello' }`, two `tick` events with `id` `'100'` / `'101'`, and the
+So the stream above delivers three events: `{ event: 'message', data:
+'hello' }`, one `tick` event with `id` `'100'`, and the
 multiline `{ event: 'message', data: 'line-1\nline-2' }`.
 
 ## Reconnect and circuit breaker
@@ -111,7 +111,7 @@ SseOptions.create()
   .withUrl('https://example.com/events')
   .withTarget(target)
   .withReconnect({ /* base delay, max delay, jitter … */ })
-  .withCircuitBreaker({ /* failure threshold, cooldown … */ });
+  .withCircuitBreaker(5, 30_000);   // failureThreshold, resetMs
 ```
 
 When the stream ends or the connection drops, the base class'

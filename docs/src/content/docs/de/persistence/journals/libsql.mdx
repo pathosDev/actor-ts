@@ -1,0 +1,293 @@
+---
+title: libSQL / Turso
+description: Event-Journal, Snapshot-Store und Durable-State-Store auf Basis von libSQL — SQLite über HTTP oder WebSocket. Braucht kein natives Binding und ist damit das SQLite-Backend, das überall läuft, auch auf Deno und in Edge-Runtimes. Schema-kompatibel mit dem lokalen SQLite-Backend.
+---
+
+Das libSQL-Backend liefert alle drei Persistence-Komponenten gegen eine
+[Turso](https://turso.tech)-Datenbank oder ein selbst betriebenes
+[`sqld`](https://github.com/tursodatabase/libsql), über den
+[`@libsql/client`](https://www.npmjs.com/package/@libsql/client)-Treiber:
+
+- **`LibSqlJournal`** — das Event-Journal für `PersistentActor`s.
+- **`LibSqlSnapshotStore`** — Snapshots, um die Recovery zu begrenzen.
+- **`LibSqlDurableStateStore`** — Key-Value-Durable-State für
+  `DurableStateActor`s.  Das ist der **erste Durable-State-Store der
+  SQLite-Familie** — das lokale
+  [SQLite-Backend](/de/persistence/journals/sqlite/) liefert nur Journal +
+  Snapshot.
+
+Zwei Dinge unterscheiden es von den anderen Backends:
+
+- **Kein natives Binding.** Der Treiber spricht HTTP und WebSocket, läuft
+  damit auf jeder unterstützten Runtime und auch in Edge-Sandboxes, die
+  native Addons überhaupt nicht laden können.
+- **Schema-kompatibel mit dem lokalen SQLite-Backend.** Tabellen und
+  Statements sind identisch: Du kannst gegen eine lokale Datei entwickeln
+  und nach Turso deployen — oder eine Turso-Datenbank herunterziehen und
+  lokal öffnen — ohne Migration.
+
+Wie Postgres und Cassandra ist es **über Cluster-Nodes geteilt**: jeder
+Node kann jede persistenceId lesen und schreiben.
+
+## Installation
+
+`@libsql/client` ist eine optionale Peer-Dependency — installiere sie
+neben actor-ts:
+
+```bash
+bun add @libsql/client
+```
+
+Das Framework importiert sie lazy, erst wenn ein libSQL-Store zum ersten
+Mal genutzt wird — bis dahin bleibt sie aus deinem Bundle heraus.
+
+## Einrichtung
+
+Registriere Journal + Snapshot-Store an der `PersistenceExtension` und
+erhalte einen einsatzbereiten Durable-State-Store.  Setz die Verbindung
+einmal am Composite, dann erben sie alle drei Komponenten:
+
+```ts
+import {
+  ActorSystem,
+  ActorSystemOptions,
+  LibSqlDurableStateStoreOptions,
+  LibSqlJournalOptions,
+  LibSqlSnapshotStoreOptions,
+  PersistenceExtensionId,
+  RegisterLibSqlPluginsOptions,
+  registerLibSqlPlugins,
+} from 'actor-ts';
+
+const systemOptions = ActorSystemOptions.create()
+  // Die libSQL-Plugins als aktives Journal + Snapshot-Store auswählen.
+  .withConfig({
+    'actor-ts': {
+      persistence: {
+        journal: { plugin: 'actor-ts.persistence.journal.libsql' },
+        'snapshot-store': { plugin: 'actor-ts.persistence.snapshot-store.libsql' },
+      },
+    },
+  });
+const system = ActorSystem.create('my-app', systemOptions);
+
+const ext = system.extension(PersistenceExtensionId);
+const libSqlSnapshotStoreOptions = LibSqlSnapshotStoreOptions.create()
+  .withKeepN(3);
+const registerOptions = RegisterLibSqlPluginsOptions.create()
+  .withUrl('libsql://my-database.turso.io')
+  .withAuthToken(process.env.TURSO_AUTH_TOKEN!)
+  .withJournal(LibSqlJournalOptions.create() /* .withEventsTable(...).withTagsTable(...) */)
+  .withSnapshotStore(libSqlSnapshotStoreOptions)
+  .withDurableStateStore(LibSqlDurableStateStoreOptions.create() /* .withTable(...) */);
+const { durableStateStore } = registerLibSqlPlugins(ext, registerOptions);
+```
+
+`registerLibSqlPlugins` registriert Journal + Snapshot-Store über die
+Extension (ausgewählt durch die Plugin-IDs in der Config oben) und **gibt**
+den Durable-State-Store zurück.  `PersistenceExtension` hat keine
+Durable-State-Registry — übergib `durableStateStore` direkt an die
+Settings deines `DurableStateActor` (dasselbe Muster wie beim Postgres-
+und beim Object-Storage-Plugin).
+
+### Einen Client teilen
+
+Ein libSQL-Client ist selbst schon ein Connection-Pool; einen `client` zu
+übergeben ist daher die effiziente Variante, wenn alle drei Komponenten
+dieselbe Datenbank adressieren:
+
+```ts
+import { createClient } from '@libsql/client/web';
+
+const client = createClient({
+  url: 'libsql://my-database.turso.io',
+  authToken: process.env.TURSO_AUTH_TOKEN,
+});
+const registerLibSqlPluginsOptions = RegisterLibSqlPluginsOptions.create()
+  .withClient(client);
+registerLibSqlPlugins(ext, registerLibSqlPluginsOptions);
+```
+
+Ein geteilter Client gehört dem **Caller**: kein Store schließt ihn, du
+schließt ihn also selbst beim Shutdown.  Übergib stattdessen `url` /
+`authToken`, dann baut jeder Store seinen eigenen Client und schließt ihn
+bei `close()`.
+
+### Selbst betriebenes `sqld`
+
+```ts
+const libSqlJournalOptions = LibSqlJournalOptions.create()
+  .withUrl('http://127.0.0.1:8080');
+```
+
+Ein lokales `sqld` braucht üblicherweise kein Auth-Token; lass
+`withAuthToken` dann weg.
+
+## Wann du es einsetzt
+
+- **Du willst SQLite-Semantik ohne nativen Build-Schritt.** Kein
+  `better-sqlite3`-Compile, keine Plattform-Binaries im Image.
+- **Du läufst auf Deno oder in einer Edge-Runtime.** Das einzige
+  SQLite-Backend, das dort funktioniert, weil es nie ein natives Addon
+  lädt.
+- **Du nutzt Turso schon** oder willst ein Managed-SQLite mit Replicas in
+  der Nähe deiner Nutzer.
+- **Du willst Durable-State in der SQLite-Familie.** Der einzige
+  Durable-State-Store dieser Familie.
+
+Für eine **lokale Single-Node-Datenbank** ist
+[`SqliteJournal`](/de/persistence/journals/sqlite/) die bessere Wahl: es
+spricht direkt mit der Datei, hält Prepared Statements über Aufrufe hinweg
+und zahlt keinen Netzwerk-Round-Trip pro Statement.
+
+## Konfiguration
+
+```ts
+type LibSqlConnection = {
+  url?:       string;           // libsql:// | http(s):// | ws(s)://
+  authToken?: string;           // Turso-Token; bei lokalem sqld weglassen
+  client?:    LibSqlClientLike; // vorgebauter / geteilter Client
+};
+
+interface LibSqlJournalOptions extends LibSqlConnection {
+  eventsTable?:      string;   // Default 'events'
+  tagsTable?:        string;   // Default '<eventsTable>_tags'
+  autoCreateTables?: boolean;  // Default true
+}
+interface LibSqlSnapshotStoreOptions extends LibSqlConnection {
+  snapshotsTable?:   string;   // Default 'snapshots'
+  keepN?:            number;   // neueste N pro pid; Default 3, <=0 behält alle
+  autoCreateTables?: boolean;
+}
+interface LibSqlDurableStateStoreOptions extends LibSqlConnection {
+  table?:            string;   // Default 'durable_state'
+  autoCreateTables?: boolean;
+}
+```
+
+Die Optionen werden bei der Konstruktion des Stores validiert — eine
+falsche URL oder ein leeres Auth-Token schlägt beim Verdrahten fehl, nicht
+erst beim ersten Append.  Tabellennamen kommen aus der Config (nicht von
+Nutzereingaben) und werden gegen ein Safe-Identifier-Pattern geprüft; alles
+andere — persistenceIds, Tags, Payloads — geht als Bind-Parameter (`?`)
+durch und wird nie per String-Konkatenation zusammengesetzt.
+
+## Schema
+
+Mit `autoCreateTables` (dem Default) führt das Backend beim ersten Zugriff
+`CREATE TABLE IF NOT EXISTS` aus.  Das sind dieselben Tabellen, die auch
+das lokale SQLite-Backend anlegt:
+
+```sql
+CREATE TABLE events (
+  persistence_id TEXT NOT NULL,
+  sequence_nr    INTEGER NOT NULL,
+  payload        TEXT NOT NULL,    -- JSON
+  tags           TEXT,             -- CSV (zusätzlich in events_tags gespiegelt)
+  timestamp      INTEGER NOT NULL,
+  PRIMARY KEY (persistence_id, sequence_nr)
+);
+CREATE TABLE events_tags (         -- indizierte Tag-Lookups für Projections
+  persistence_id TEXT NOT NULL,
+  sequence_nr    INTEGER NOT NULL,
+  tag            TEXT NOT NULL,
+  timestamp      INTEGER NOT NULL,
+  PRIMARY KEY (tag, timestamp, persistence_id, sequence_nr)
+);
+CREATE TABLE events_meta (         -- High-Water-Mark der Kompaktierung
+  persistence_id TEXT PRIMARY KEY,
+  deleted_to     INTEGER NOT NULL
+);
+CREATE TABLE snapshots (
+  persistence_id TEXT NOT NULL,
+  sequence_nr    INTEGER NOT NULL,
+  payload        TEXT NOT NULL,
+  timestamp      INTEGER NOT NULL,
+  PRIMARY KEY (persistence_id, sequence_nr)
+);
+CREATE TABLE durable_state (
+  persistence_id TEXT PRIMARY KEY,
+  revision       INTEGER NOT NULL,
+  payload        TEXT NOT NULL,
+  timestamp      INTEGER NOT NULL
+);
+```
+
+Leg die Tabellen vorab an und setze `autoCreateTables: false`, wenn die
+Datenbankrolle kein DDL ausführen darf.
+
+## Concurrency-Modell
+
+- **Journal-Append** liest den aktuellen Head und fügt innerhalb einer
+  interaktiven Transaktion ein; das `expectedSeq` des Callers wird gegen
+  diesen Head geprüft.  Ein konkurrierender Writer, der sich
+  dazwischenschiebt, verletzt den Primary Key, und der resultierende
+  `SQLITE_CONSTRAINT`-Fehler wird als Backstop in einen
+  `JournalConcurrencyError` übersetzt — die Garantie hält also selbst dann,
+  wenn der Transport keine strikte Isolation liefern kann.
+- **Durable-State-CAS** läuft über die `revision`-Spalte: ein Create
+  (`expectedRevision === 0`) ist `INSERT … ON CONFLICT DO NOTHING`, ein
+  Update `UPDATE … WHERE revision = expected`.  Null betroffene Zeilen ⇒
+  `DurableStateConcurrencyError`, mit der aktuellen Revision für den
+  Caller zurückgelesen.
+
+## Fallstricke
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Nur Remote-Datenbanken">
+  Eine `file:`- oder `:memory:`-URL wird bei der Konstruktion des Stores
+  abgelehnt.  Der HTTP-Entry-Point des Treibers kann eine lokale Datenbank
+  überhaupt nicht öffnen — der Store schlägt daher sofort fehl und
+  verweist auf `SqliteJournal`, statt den Treiber beim ersten Append
+  `URL_SCHEME_NOT_SUPPORTED` werfen zu lassen.
+</Aside>
+
+<Aside type="caution" title="Eine Write-Transaktion hält ein Lock">
+  `'write'`-Transaktionen nehmen das Write-Lock der Datenbank, und der
+  Server gibt es nach etwa fünf Sekunden frei.  Ein Append sind eine
+  Handvoll Statements, das Fenster ist also klein — aber eine hängende
+  Verbindung mitten im Append zeigt sich als fehlgeschlagener Append, nicht
+  als halb geschriebener Stream.  Halte Batches maßvoll und lass den Actor
+  neu versuchen.
+</Aside>
+
+<Aside type="caution" title="Ein Round-Trip pro Statement">
+  Jedes Statement ist ein Netzwerkaufruf; ein Append von N Events kostet
+  also N + 2 Round-Trips.  Bei einem schreibintensiven Pfad in eine ferne
+  Region entweder aggressiver snapshotten oder die Datenbank näher an den
+  Cluster holen.
+</Aside>
+
+<Aside type="caution" title="Kein In-Process-Event-Bus">
+  libSQL ist ein Cross-Process-Backend (wie Postgres und Cassandra) und
+  veröffentlicht daher KEINEN In-Process-Journal-Event-Bus.
+  `PersistenceQuery`-Live-Subscriber fallen auf Polling zurück.
+</Aside>
+
+<Aside type="caution" title="Compression- / Encryption-Optionen werden ignoriert">
+  Per-Call-`PersistenceOptions` (Compression, Encryption) gelten nur für
+  die Object-Storage-Stores.  Die SQL-Backends speichern JSON als `TEXT` —
+  die Optionen werden hier still ignoriert, genau wie bei SQLite, Postgres
+  und Cassandra.
+</Aside>
+
+<Aside type="note" title="Die Installation zieht Plattform-Binaries">
+  Das Framework importiert `@libsql/client/web`, das zur Laufzeit nichts
+  Natives lädt.  Das npm-Paket liefert aber weiterhin Binaries für seinen
+  Embedded-Replica-Modus mit, die daher bei der Installation
+  heruntergeladen werden — auch wenn sie hier nie benutzt werden.
+</Aside>
+
+## Wie geht's weiter
+
+- **[SQLite-Journal](/de/persistence/journals/sqlite/)** — das lokale
+  Geschwister, gleiches Schema, ohne Netzwerk.
+- **[PostgreSQL](/de/persistence/journals/postgres/)** — relational, mit
+  transaktionaler Isolation und ohne Round-Trip pro Statement.
+- **[MariaDB](/de/persistence/journals/mariadb/)** — das Geschwister aus
+  der MySQL-Familie.
+- **[Durable State](/de/persistence/durable-state/)** — die
+  State-orientierte Alternative zum Event-Sourcing.
+- **[Snapshots](/de/persistence/snapshots/)** — begrenzt den
+  Recovery-Scan.

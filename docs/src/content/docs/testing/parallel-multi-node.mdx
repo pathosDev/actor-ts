@@ -1,107 +1,136 @@
 ---
 title: ParallelMultiNodeSpec
-description: Multi-node tests in **separate OS processes** — TCP transport, full serialization, process-isolated crashes. Slower than MultiNodeSpec but tests behavior that requires real isolation.
+description: Multi-node tests across real worker threads — true parallelism for concurrency-sensitive cluster tests. Slower to start than MultiNodeSpec, but exercises behavior that only surfaces with genuine OS threads and cross-worker serialization.
 ---
 
-`ParallelMultiNodeSpec` is the **process-isolated** variant of
+`ParallelMultiNodeSpec` is the **worker-thread** variant of
 [MultiNodeSpec](/testing/multi-node-spec/).  Each
-"node" runs in **its own OS process**, communicating via real
-TCP.  Tests the same shape but at higher fidelity.
+"node" runs in its own `worker_threads` Worker (or a Web Worker
+on Bun/Deno), connected through an in-process broker.  Same test
+shape as `MultiNodeSpec`, but with **real OS threads** so
+concurrency bugs the single-threaded variant papers over can
+surface.
 
 ```ts
 import { ParallelMultiNodeSpec } from 'actor-ts/testkit';
 
-const spec = await ParallelMultiNodeSpec.create({
-  systemName: 'parallel-spec',
-  nodes:      3,
-  nodeScript: './tests/cluster-node.ts',
+const spec = new ParallelMultiNodeSpec({
+  roles:          ['a', 'b', 'c'],
+  scenarioModule: new URL('./my-scenario.ts', import.meta.url),
 });
+await spec.start();
+await spec.awaitMembers('a', 3);
 
-// Each node runs in a child process; tests interact via spec's API.
+// Drive the worker-side scenario over an RPC:
+const result = await spec.runIn('a', 'compute', { x: 42 });
 
-await spec.shutdown();
+await spec.stop();
 ```
 
 ## When to use it
 
-For tests that need **real-world fidelity**:
+For tests that need **true parallelism**:
 
-- **Serialization** — messages cross the wire as bytes.
-- **Process isolation** — one node OOMing doesn't affect others.
-- **Real TCP** — actual network conditions (loopback, but
-  TCP).
-- **Per-process Bun/Node tooling** — debugger attach,
-  perf profiling, etc.
+- **Real threads** — catches races the in-process variant
+  serialises away on a single event loop (concurrent journal
+  writes, scheduler-thread interleaving).
+- **Serialization** — every message crosses a worker boundary
+  via structured clone, so non-serializable payloads (functions,
+  class instances) fail here just as they would on a real wire.
+- **Thread isolation** — each node has its own heap and event
+  loop.
 
 For most cluster tests, **MultiNodeSpec is faster + simpler** —
-use ParallelMultiNodeSpec only when single-process tests don't
-cover the case.
+use ParallelMultiNodeSpec only when single-threaded tests don't
+cover the case.  Neither variant uses TCP; for real network
+conditions, use an external Docker-Compose cluster.
 
 ## Configuration
 
 ```ts
-interface ParallelMultiNodeSpecOptionsType {
-  systemName:  string;
-  nodes:       number;
-  nodeScript:  string;                  // entry file each node runs
-  nodeEnv?:    Record<string, string>;  // env vars for each node
-  startupTimeoutMs?: number;
-}
+type ParallelMultiNodeSpecOptionsType = {
+  roles:                ReadonlyArray<string>;   // one worker per role; must be unique
+  seedRoles?:           ReadonlyArray<string>;   // bootstrap seeds — defaults to [roles[0]]
+  scenarioModule?:      URL;                      // module each worker loads (setup + commands)
+  scenarioInitDataFor?: (role: string) => unknown;   // per-role data passed to setup()
+  addresses?:           Record<string, { host: string; port: number }>;
+  failureDetector?:     Partial<FailureDetectorOptionsType>;
+  gossipIntervalMs?:    number;
+  awaitTimeoutMs?:      number;                   // default 30_000 (worker bootstrap is slower)
+  logLevel?:            LogLevel;
+  bootstrapModule?:     URL;                      // override the bundled worker bootstrap
+};
 ```
 
 | Field | Purpose |
 | --- | --- |
-| `nodeScript` | Path to a TS file each node executes — sets up actor system + cluster join. |
-| `nodeEnv` | Env vars passed to all child processes. |
-| `startupTimeoutMs` | How long to wait for all nodes to reach Up. |
+| `roles` | Node list — one worker per role; the string is the worker's system name.  Must be unique. |
+| `seedRoles` | Which roles act as bootstrap seeds.  Defaults to the first role. |
+| `scenarioModule` | URL of the module each worker imports — it owns the actor-shaped setup and the `commands` map `runIn` dispatches to. |
+| `scenarioInitDataFor` | Per-role data forwarded to the scenario's `setup(context)`. |
+| `failureDetector` | Failure-detector overrides. |
+| `awaitTimeoutMs` | Default `await*` timeout.  Default 30 s — worker bootstrap is slower than in-process. |
+| `bootstrapModule` | Override the bundled worker entry point (advanced). |
 
-## The node script
+## The scenario module
 
-Each child process runs this:
-
-```ts
-// tests/cluster-node.ts
-import { ActorSystem, Cluster, ClusterOptions, MessageChannelTransport } from 'actor-ts';
-
-const port = parseInt(process.env.ACTOR_TS_PORT!);
-const seeds = (process.env.ACTOR_TS_SEEDS ?? '').split(',').filter(Boolean);
-
-const system = ActorSystem.create('parallel-spec');
-const clusterOptions = ClusterOptions.create()
-  .withHost('localhost')
-  .withPort(port)
-  .withSeeds(seeds);
-const cluster = await Cluster.join(system, clusterOptions);
-
-// Wait for the test's instructions:
-process.on('message', (msg) => {
-  // Handle test commands sent via IPC
-  if (msg === 'spawn-counter') {
-    const ref = system.spawnAnonymous(Props.create(() => new Counter()));
-    process.send!({ kind: 'ready', path: ref.path.toString() });
-  }
-  // ...
-});
-```
-
-The script is **what each child process becomes** — sets up its
-own actor system, joins the cluster, listens for IPC commands
-from the test.
-
-## IPC
+Each worker joins the cluster automatically — the harness owns
+the `ActorSystem` + `Cluster` bootstrap.  Your test-specific
+actor code lives in a **scenario module**: a plain module that
+exports an optional `setup(context)` hook and a `commands` map.
+The worker imports it by URL, runs `setup` once after the cluster
+joins, then dispatches `runIn(role, command, args)` calls to the
+matching command.
 
 ```ts
-// In the test:
-spec.sendToNode(0, { kind: 'spawn-counter' });
-const reply = await spec.expectFromNode(0, ...);
+// my-scenario.ts
+import type { ScenarioModule } from 'actor-ts/testkit';
+import { Props, type ActorRef } from 'actor-ts';
+
+export const setup: ScenarioModule['setup'] = (context) => {
+  // context = { role, system, cluster, initData, state }
+  context.state.counter = context.system.spawnAnonymous(
+    Props.create(() => new Counter()),
+  );
+};
+
+export const commands: ScenarioModule['commands'] = {
+  increment(args, context): void {
+    (context.state.counter as ActorRef<Command>).tell({ kind: 'increment' });
+  },
+  // Commands may return any JSON-serialisable value back to the harness:
+  ping(): string {
+    return 'pong';
+  },
+};
 ```
 
-Communication between the test process + each node process
-goes via **IPC messages** (parent-child).  The test orchestrates;
-nodes execute.
+The module owns everything actor-shaped (entity classes, sharding
+regions, …).  The harness only ever exchanges JSON-serialisable
+command/response pairs with it — closures can't cross the worker
+boundary, which is why scenario code lives in its own file loaded
+by URL rather than inline in the test.
 
-This is more verbose than MultiNodeSpec — but **necessary**:
-the test can't reach the child's in-memory actors directly.
+## Driving the workers
+
+The test can't touch a worker's in-memory actors directly, so it
+drives them through the harness:
+
+```ts
+// Invoke a scenario command on a specific role and await its result:
+await spec.runIn('a', 'increment');
+const reply = await spec.runIn<string>('a', 'ping');   // → 'pong'
+
+// Inspect each worker's cluster view (JSON snapshots, not live objects):
+const members = await spec.getMembers('a');
+const leader = await spec.getLeader('a');
+```
+
+`runIn(role, command, args?)` calls into the scenario module's
+`commands` map and returns whatever that handler returns.  Because
+`systemFor` / `clusterFor` can't hand back objects that live in
+another thread, membership is exposed as `getMembers(role)` /
+`getLeader(role)` snapshots instead.
 
 ## When to use which
 
@@ -112,8 +141,9 @@ the test can't reach the child's in-memory actors directly.
 | Singleton failover | ✓ | ✓ |
 | Gossip convergence | ✓ | ✓ |
 | Serialization round-trip | ✗ | ✓ |
-| Per-process memory isolation | ✗ | ✓ |
-| Real TCP semantics | ✗ | ✓ |
+| Per-worker heap isolation | ✗ | ✓ |
+| True parallelism (OS threads) | ✗ | ✓ |
+| Real TCP semantics | ✗ | ✗ |
 | CI speed | very fast | slow |
 
 For 90 % of tests, MultiNodeSpec.  For the 10 % where
@@ -121,45 +151,48 @@ fidelity matters, ParallelMultiNodeSpec.
 
 ## Cost
 
-Spinning up child processes:
+Spinning up worker threads:
 
-- **Per-node startup**: 200-500ms (Bun loads, joins cluster).
-- **3-node spec**: ~1.5s total.
-- **Compared to MultiNodeSpec**: sub-100ms total.
+- **Per-node startup**: 200-500 ms (worker spawn + cluster
+  handshake).
+- **3-node spec**: ~1.5 s total.
+- **Compared to MultiNodeSpec**: sub-100 ms total.
 
 For **tight test loops** (many test cases), the cost adds up.
 Use ParallelMultiNodeSpec sparingly — one or two key tests for
-real serialization / isolation, MultiNodeSpec for the rest.
+real parallelism / serialization, MultiNodeSpec for the rest.
 
 ## Cleanup
 
 ```ts
-await spec.shutdown();
-// → terminates all child processes
+await spec.stop();
+// → terminates every worker thread (awaited, so none leak)
 // → unblocks the test process to exit
 ```
 
-**Always call shutdown** — orphaned child processes leak.
-The test framework typically cleans them up if the test
-crashes, but explicit shutdown is safer.
+**Always call `stop()`** — orphaned worker threads leak and can
+starve later tests.  The test framework may clean them up if the
+test crashes, but explicit teardown is safer.
 
 import { Aside } from '@astrojs/starlight/components';
 
-<Aside type="caution" title="Child-process crashes are silent">
+<Aside type="caution" title="Worker crashes are opaque">
   ```ts
-  // Child throws an unhandled error; ParallelMultiNodeSpec
-  // sees a dead process, not the error
+  // A worker throws an unhandled error; ParallelMultiNodeSpec
+  // sees a dead worker, not the error
   ```
-  Have your node script catch + log errors verbosely.
-  Otherwise debugging child failures is painful.
+  Have your scenario module catch + log errors verbosely.
+  Otherwise debugging worker failures is painful.
 </Aside>
 
-<Aside type="caution" title="Port allocation">
+<Aside type="caution" title="Addresses are auto-allocated">
   ```ts
-  // Two tests in parallel both bind port 2552
+  // Don't pin the same address in two specs that run in parallel
   ```
-  ParallelMultiNodeSpec auto-allocates random ports.  Don't
-  hard-code port numbers if you run tests in parallel.
+  Each role gets an auto-allocated `host:port` **identity** (used
+  for cluster addressing over the broker, not a bound socket).
+  Only set `addresses` explicitly when a test needs it, and keep
+  them unique across concurrently-running specs.
 </Aside>
 
 ## Where to next
@@ -167,6 +200,6 @@ import { Aside } from '@astrojs/starlight/components';
 - **[Testing overview](/testing/overview/)** — the
   bigger picture.
 - **[MultiNodeSpec](/testing/multi-node-spec/)** — the
-  faster single-process variant.
+  faster in-process variant.
 - **[TestKit](/testing/testkit/)** — for single-system
   tests.

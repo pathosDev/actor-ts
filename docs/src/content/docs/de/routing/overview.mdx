@@ -43,8 +43,8 @@ Drei Patterns:
 import { ActorSystem, Props, Router, Actor } from 'actor-ts';
 
 class Worker extends Actor<{ payload: string }> {
-  override onReceive(msg: { payload: string }): void {
-    this.log.info(`worked on ${msg.payload}`);
+  override onReceive(message: { payload: string }): void {
+    this.log.info(`worked on ${message.payload}`);
   }
 }
 
@@ -100,8 +100,8 @@ die richtige Passung ist.
 ## Router und Supervision
 
 Der Router ist ein regulärer Actor — er hat seine eigene
-Supervisor-Strategie.  Der Default ist "beobachte jeden Routee,
-logge, wenn einer stoppt."  Wenn ein Routee crashed:
+Supervisor-Strategie und `watch`t jeden Routee.  Wenn ein Routee
+crashed:
 
 - Ohne Eingriff wendet der Parent des Routees (der Router) seine
   Supervisor-Strategie an.  Standardmäßig ist das die
@@ -109,8 +109,10 @@ logge, wenn einer stoppt."  Wenn ein Routee crashed:
 - Der neu gestartete Routee tritt dem Pool an demselben Pfad wieder
   bei.  Der Router muss nichts Besonderes tun.
 - Alles, was während des kurzen Restart-Fensters an den Routee
-  geroutet wurde, geht zu Dead Letters (die Mailbox des Routees wird
-  vor dem Restart gedrained, dann frisch).
+  geroutet wurde, bleibt in seiner Mailbox — die Mailbox wird für
+  den Restart suspendiert und danach wieder aufgenommen (dieselbe
+  Instanz, nicht gedrained), sodass diese Nachrichten verarbeitet
+  werden, sobald der Routee wieder läuft.
 
 Für Per-Routee-Supervisor-Strategien konfiguriere sie auf den
 Routee-`Props`:
@@ -123,9 +125,12 @@ system.spawn(Router.roundRobin(4, routeeProps), 'workers');
 ```
 
 Jetzt wird jeder Worker, der throwt, **gestoppt** statt neu
-gestartet — und der Router beobachtet ihn sterben, aber der Pool
-wird einfach kleiner.  Das würdest du mit einem höher-Level-Supervisor
-kombinieren, der entscheidet, wann der ganze Pool neu gespawnt wird.
+gestartet — und der Router beobachtet ihn sterben, aber seine Ref
+bleibt im Pool.  Round-Robin gibt diesem Slot weiterhin etwa jede
+N-te Nachricht, die dann bis zum Neustart des ganzen Routers in
+Dead Letters landet.  Das würdest du mit einem
+höher-Level-Supervisor kombinieren, der entscheidet, wann der ganze
+Pool neu gespawnt wird.
 
 ## Router sind nicht (der einzige) Weg zur Parallelisierung
 

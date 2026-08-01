@@ -2,7 +2,7 @@ import type { ActorRef } from '../ActorRef.js';
 import type { LogContextData } from '../LogContext.js';
 import type { SpanContext } from '../tracing/Tracer.js';
 
-export interface Envelope<T = unknown> {
+export type Envelope<T = unknown> = {
   readonly message: T;
   readonly sender: ActorRef | null;
   /**
@@ -20,7 +20,15 @@ export interface Envelope<T = unknown> {
    * hops and cluster nodes.  See {@link Tracer}.
    */
   readonly trace?: SpanContext;
-}
+  /**
+   * Wall clock at first enqueue, stamped only while the receiving
+   * actor has an explain plan enabled — see `ActorContext.
+   * enableExplainPlan`.  A stashed message keeps its original stamp
+   * when replayed (`prependUser` does not restamp), so mailbox wait
+   * measures the whole time from arrival to handling.
+   */
+  readonly enqueuedAtMs?: number;
+};
 
 /**
  * Per-actor message queue.  System messages (create, terminate, failure, …)
@@ -48,6 +56,23 @@ export class Mailbox<T = unknown> {
 
   dequeueUser(): Envelope<T> | undefined {
     if (this._suspended) return undefined;
+    return this.userQueue.shift();
+  }
+
+  /**
+   * Remove the oldest user message, regardless of suspension.
+   *
+   * `dequeueUser` refuses while suspended, and rightly so — a suspended actor
+   * must not be handed work.  Making room in a full queue is a different
+   * question: it is not delivery, and a bounded mailbox that quietly stops
+   * enforcing its bound while the actor is suspended is unbounded exactly when
+   * the bound matters most, since suspension means the actor has failed and is
+   * awaiting its parent's supervision decision while messages keep arriving.
+   *
+   * Returns `undefined` only when the queue is already empty, which lets the
+   * caller distinguish a real drop from a no-op.
+   */
+  protected removeOldest(): Envelope<T> | undefined {
     return this.userQueue.shift();
   }
 

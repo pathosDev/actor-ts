@@ -15,12 +15,12 @@ import { Props } from '../../../../src/Props.js';
 import { AmqpActor, type AmqpDelivery, type AmqpQueueBinding } from '../../../../src/io/broker/AmqpActor.js';
 import { AmqpOptions } from '../../../../src/io/broker/AmqpOptions.js';
 import { waitForPort } from '../lib/wait-for-port.js';
-import { runScenarios, type BrokerScenario, type BrokerScenarioCtx } from '../lib/scenario.js';
+import { runScenarios, type BrokerScenario, type BrokerScenarioContext } from '../lib/scenario.js';
 import { scenario as pubsubScenario } from './scenarios/01-publish-consume.js';
 import { scenario as ackScenario } from './scenarios/02-ack-nack.js';
 import { scenario as fanoutScenario } from './scenarios/03-fanout-exchange.js';
 
-export interface AmqpCtx extends BrokerScenarioCtx {
+export interface AmqpContext extends BrokerScenarioContext {
   readonly url: string;
   readonly system: ActorSystem;
 }
@@ -47,37 +47,37 @@ async function main(): Promise<void> {
     .withLogger(new JsonLogger()).withLogLevel(LogLevel.Info));
   process.on('SIGTERM', () => { void system.terminate(); });
 
-  const ctx: AmqpCtx = { env: process.env, url, system };
+  const context: AmqpContext = { env: process.env, url, system };
 
   try {
-    const scenarios: BrokerScenario<AmqpCtx>[] = [
+    const scenarios: BrokerScenario<AmqpContext>[] = [
       pubsubScenario,
       ackScenario,
       fanoutScenario,
     ];
-    await runScenarios(scenarios, ctx);
+    await runScenarios(scenarios, context);
   } finally {
     await system.terminate();
   }
 }
 
-export function spawnAmqp(ctx: AmqpCtx, opts: {
+export function spawnAmqp(context: AmqpContext, options: {
   bindings?: ReadonlyArray<AmqpQueueBinding>;
-  autoAck?: boolean;
+  autoAcknowledge?: boolean;
 } = {}): ReturnType<ActorSystem['spawnAnonymous']> {
   const builder = AmqpOptions.create()
-    .withUrl(ctx.url)
-    .withAutoAck(opts.autoAck ?? true);
-  if (opts.bindings) builder.withBindings(opts.bindings);
+    .withUrl(context.url)
+    .withAutoAcknowledge(options.autoAcknowledge ?? true);
+  if (options.bindings) builder.withBindings(options.bindings);
   const actor = new AmqpActor(builder);
-  return ctx.system.spawnAnonymous(Props.create(() => actor));
+  return context.system.spawnAnonymous(Props.create(() => actor));
 }
 
-export function spawnInbox(ctx: AmqpCtx): {
+export function spawnInbox(context: AmqpContext): {
   ref: ReturnType<ActorSystem['spawnAnonymous']>; inbox: InboxActor;
 } {
   const inbox = new InboxActor();
-  const ref = ctx.system.spawnAnonymous(Props.create(() => inbox));
+  const ref = context.system.spawnAnonymous(Props.create(() => inbox));
   return { ref, inbox };
 }
 

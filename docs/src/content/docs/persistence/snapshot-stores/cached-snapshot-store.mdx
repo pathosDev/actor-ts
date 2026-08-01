@@ -1,10 +1,12 @@
 ---
 title: Cached snapshot store
-description: A decorator that wraps any `SnapshotStore` with an LRU read-through cache. Useful when the underlying store is slow (network-mounted, encrypted) and snapshot loads happen frequently (high actor churn).
+description: A decorator that wraps any `SnapshotStore` with a TTL-based read-through cache backed by any `Cache` (in-memory, Redis, or Memcached). Useful when the underlying store is slow (network-mounted, encrypted) and snapshot loads happen frequently (high actor churn).
 ---
 
 `CachedSnapshotStore` is a **decorator** — wrap any
-`SnapshotStore` to add an in-process LRU cache for reads.
+`SnapshotStore` to add a TTL-based read-through cache for
+`loadLatest`, backed by any `Cache` (in-memory, Redis, or
+Memcached).
 
 ```ts
 import {
@@ -12,7 +14,8 @@ import {
   CachedSnapshotStoreOptions,
   ObjectStorageSnapshotStore,
   ObjectStorageSnapshotStoreOptions,
-  PersistenceExtensionId,
+  ActorSystem,
+  ActorSystemOptions,
 } from 'actor-ts';
 
 const objectStorageSnapshotStoreOptions = ObjectStorageSnapshotStoreOptions.create().withBackend(backend);
@@ -28,10 +31,11 @@ const cached = new CachedSnapshotStore(
   cachedSnapshotStoreOptions,        // optional TTL
 );
 
-system.extension(PersistenceExtensionId).configure({
+const actorSystemOptions = ActorSystemOptions.create().withPersistence({
   journal:       myJournal,
   snapshotStore: cached,
 });
+const system = ActorSystem.create('app', actorSystemOptions);
 ```
 
 ## When you need it
@@ -54,30 +58,42 @@ underlying store has measurable read latency.**
 ## Configuration
 
 ```ts
-interface CachedSnapshotStoreOptionsType {
-  underlying: SnapshotStore;
-  maxEntries: number;     // LRU capacity
-  ttlMs?:     number;     // optional expiration
-}
+type CachedSnapshotStoreOptionsType = {
+  cache:      Cache;   // backing cache (required)
+  ttlMs?:     number;  // cache TTL in ms, default 5 minutes
+  keyPrefix?: string;  // key prefix, default 'snap:'
+};
 ```
 
 | Field | What |
 | --- | --- |
-| `underlying` | The real snapshot store the cache fronts. |
-| `maxEntries` | Max cached entries.  LRU eviction beyond this. |
-| `ttlMs` | Optional — drop cache entries this old.  Useful if snapshots may be deleted externally. |
+| `cache` | Backing cache (**required**) — typically Redis in production.  Any `Cache`: in-memory, Redis, or Memcached. |
+| `ttlMs` | Cache TTL in milliseconds.  Default: 5 minutes. |
+| `keyPrefix` | Key prefix (default `'snap:'`) — prevents collisions in shared caches. |
+
+The underlying store is the constructor's **first argument** —
+`new CachedSnapshotStore(underlying, options)` — not an option.
 
 ## Cache semantics
 
-- **`loadLatest(pid)`** — check cache; on hit, return.  On miss,
-  load from underlying, cache the result, return.
-- **`save(pid, snapshot)`** — write through to underlying, then
-  update the cache.
-- **`deleteUpTo(pid, seqNr)`** — write through, invalidate the
-  pid's cache entry.
+- **`loadLatest(persistenceId)`** — read-through with TTL.  Check cache; on
+  hit, return.  On miss, load from underlying, cache the result with `ttlMs`,
+  return.
+- **`save(persistenceId, seq, state)`** — write-through-with-invalidate:
+  delegate to the underlying store, then **delete** the cache entry.  It
+  deliberately does *not* write the new snapshot back — in a cluster two
+  nodes may race on save, and a local write would leave a stale entry.  The
+  next read repopulates.
+- **`loadBefore(persistenceId, seq)`** — **not cached** (too many possible
+  `seq` values, and it's used rarely — only during recovery).
+- **`delete(persistenceId, toSeq)`** — delegate to the underlying store, then
+  invalidate the cache entry.
 
-The cache is **consistent with writes** — a save followed by
-`loadLatest` returns the just-saved snapshot, never a stale value.
+After a `save`, the cache entry is invalidated, so the next
+`loadLatest` re-fetches from the underlying store and returns the
+just-saved snapshot.  TTL is the safety net: even if a node crashes
+between the underlying write and the cache invalidation, the stale
+entry expires within `ttlMs`.
 
 ## Performance
 
@@ -86,9 +102,11 @@ turns subsequent loads of the same snapshot into sub-microsecond
 operations.  A typical sharded-entity workload sees 80-95 % hit
 rate after warm-up.
 
-The cache itself is in-process — no shared cache across nodes.
-For a cluster of N nodes, each has its own cache; misses on a
-fresh node pay the full underlying-load cost.
+The cache can be **shared across nodes** — back it with Redis or
+Memcached and every node reads from the same cache, so a snapshot
+loaded on one node is a hit on all the others.  Back it with an
+in-memory cache instead and each node keeps its own copy; misses
+on a fresh node pay the full underlying-load cost.
 
 ## Pitfalls
 
@@ -102,14 +120,6 @@ import { Aside } from '@astrojs/starlight/components';
   The cache assumes **it's the only writer**.  If something
   else writes to the underlying store, set a TTL or invalidate
   manually.
-</Aside>
-
-<Aside type="caution" title="Sized too small">
-  ```ts
-  maxEntries: 100;   // ✗ for 10 000 active entities
-  ```
-  An undersized cache thrashes — every load hits cache, then
-  evicts.  Size `maxEntries` to at least the working-set size.
 </Aside>
 
 ## Where to next

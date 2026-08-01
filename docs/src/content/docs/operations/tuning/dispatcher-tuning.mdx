@@ -51,7 +51,7 @@ import { ThroughputDispatcher } from 'actor-ts';
 
 const heavyActor = system.spawn(
   Props.create(() => new HeavyWorker())
-    .withDispatcher(new ThroughputDispatcher({ throughput: 100 })),
+    .withDispatcher(new ThroughputDispatcher(100)),
 );
 ```
 
@@ -92,18 +92,18 @@ Microtasks bypass the event loop, ~50× faster scheduling.
 ## ThroughputDispatcher options
 
 ```ts
-new ThroughputDispatcher({
-  throughput:        100,        // messages per batch
-  yieldStrategy:     'setImmediate',   // or 'setTimeout' or 'microtask'
-});
+new ThroughputDispatcher(100); // messages per batch
 ```
+
+The constructor is positional — `throughput` first, an
+optional dispatcher `id` second:
 
 - **`throughput`** — messages processed per actor before
   yielding.  Higher = more throughput, worse I/O interleaving.
-  Common values: 10-1000.
-- **`yieldStrategy`** — how to yield between batches.
-  `setImmediate` is the I/O-friendly default; `microtask`
-  yields shorter but doesn't release the event loop.
+  Common values: 10-1000.  Defaults to 16.
+- Between batches it always yields via `setImmediate` (falling
+  back to `setTimeout(0)` where `setImmediate` is unavailable),
+  so I/O and timers interleave.  This isn't configurable.
 
 For a batch processor handling broker messages: `throughput: 200`
 is a reasonable starting point.
@@ -113,7 +113,7 @@ is a reasonable starting point.
 ```ts
 const heavy = system.spawn(
   Props.create(() => new BulkProcessor())
-    .withDispatcher(new ThroughputDispatcher({ throughput: 500 })),
+    .withDispatcher(new ThroughputDispatcher(500)),
 );
 
 const httpHandler = system.spawn(
@@ -129,7 +129,7 @@ dispatcher; HTTP handlers stay on the default.  This is the
 ## System-wide dispatcher
 
 ```ts
-const actorSystemOptions = ActorSystemOptions.create().withDispatcher(new ThroughputDispatcher({ throughput: 100 }));
+const actorSystemOptions = ActorSystemOptions.create().withDispatcher(new ThroughputDispatcher(100));
 const system = ActorSystem.create('my-app', actorSystemOptions);
 ```
 
@@ -187,7 +187,7 @@ import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="Very high throughput values">
   ```ts
-  new ThroughputDispatcher({ throughput: 100_000 });
+  new ThroughputDispatcher(100_000);
   ```
   Processing 100K messages without yielding starves everything
   else in the same process.  Stay below ~1000.

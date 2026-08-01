@@ -10,21 +10,22 @@
 import { Actor, ActorSystem, ActorSystemOptions, Props } from '../../src/index.js';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
+import { attachDevTools } from '../devtools.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const appConf = resolve(here, 'application.conf');
 
 class DiagActor extends Actor<'report'> {
   override onReceive(_: 'report'): void {
-    const cfg = this.system.config;
-    console.log('SYSTEM NAME     :', cfg.getString('actor-ts.system.name'));
-    console.log('GOSSIP INTERVAL :', cfg.getDuration('actor-ts.cluster.gossip-interval'), 'ms');
-    console.log('SHARDS          :', cfg.getInt('actor-ts.sharding.number-of-shards'));
-    console.log('REMEMBER ENT.   :', cfg.getBoolean('actor-ts.sharding.remember-entities'));
-    console.log('PASSIVATION     :', cfg.getDuration('actor-ts.sharding.passivation-idle'), 'ms');
-    console.log('FRAME SIZE      :', cfg.getBytes('actor-ts.remote.max-frame-size'), 'bytes');
-    if (cfg.hasPath('actor-ts.remote.tcp.hostname')) {
-      console.log('TCP HOSTNAME    :', cfg.getString('actor-ts.remote.tcp.hostname'));
+    const config = this.system.config;
+    console.log('SYSTEM NAME     :', config.getString('actor-ts.system.name'));
+    console.log('GOSSIP INTERVAL :', config.getDuration('actor-ts.cluster.gossip-interval'), 'ms');
+    console.log('SHARDS          :', config.getInt('actor-ts.sharding.number-of-shards'));
+    console.log('REMEMBER ENT.   :', config.getBoolean('actor-ts.sharding.remember-entities'));
+    console.log('PASSIVATION     :', config.getDuration('actor-ts.sharding.passivation-idle'), 'ms');
+    console.log('FRAME SIZE      :', config.getBytes('actor-ts.remote.max-frame-size'), 'bytes');
+    if (config.hasPath('actor-ts.remote.tcp.hostname')) {
+      console.log('TCP HOSTNAME    :', config.getString('actor-ts.remote.tcp.hostname'));
     }
     this.self.stop();
   }
@@ -36,9 +37,11 @@ async function main(): Promise<void> {
     // A code override still wins over the file contents.
     .withConfig({ 'actor-ts': { logger: { level: 'info' } } });
   const system = ActorSystem.create('from-file', systemOptions);
+  const devtools = await attachDevTools(system);
   const diag = system.spawn(Props.create(() => new DiagActor()), 'diag');
   diag.tell('report');
   await new Promise(resolve => setTimeout(resolve, 50));
+  await devtools.holdOpen();
   await system.terminate();
 }
 

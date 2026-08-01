@@ -1,0 +1,62 @@
+---
+title: IP allowlist
+description: IpAllowlist() restricts a route subtree to clients inside configured IPv4/IPv6 CIDRs — reads the socket peer by default and never trusts x-forwarded-for unless you opt in.
+---
+
+`IpAllowlist` restricts a route subtree to clients whose IP falls
+inside one of the configured CIDRs — defence-in-depth on top of
+[`BearerTokenAuth`](/http/middleware/bearer-token/): even a leaked
+token is useless off an allowlisted network.
+
+```ts
+import { IpAllowlist, withMiddleware } from 'actor-ts/http';
+
+const allowlist = IpAllowlist({ allow: ['10.0.0.0/8', '127.0.0.1/32'] });
+
+const managementRoutes = withMiddleware(allowlist, clusterRoutes);
+```
+
+IPv4 and IPv6 CIDRs are both supported (`'::1/128'`, `'fd00::/8'`), and
+IPv4-mapped IPv6 peers (`::ffff:a.b.c.d`) on a dual-stack socket are
+normalised so a plain IPv4 CIDR still matches.  A non-matching — or
+missing — client IP fails closed with `403`.
+
+## Configuration
+
+`IpAllowlist` takes a plain options object:
+
+| Field | Purpose |
+| --- | --- |
+| `allow` | Non-empty list of CIDR strings; at least one must contain the client IP, else `403`.  Invalid CIDR syntax throws at construction. |
+| `getClientIp` | Override IP extraction.  Default reads `request.remoteAddress` (the socket peer).  Returning `null`/`undefined` denies the request (fail-closed). |
+
+### Behind a reverse proxy
+
+The default reads the **socket peer** and deliberately does **not**
+trust `x-forwarded-for` — that header is client-spoofable when no proxy
+sits in front.  Behind a trusted proxy (Cloudflare, AWS ALB, NGINX)
+that strips and sets it, opt in explicitly:
+
+```ts
+IpAllowlist({
+  allow: ['10.0.0.0/8'],
+  getClientIp: (request) => request.headers['x-forwarded-for']?.split(',')[0]?.trim(),
+});
+```
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Only read x-forwarded-for behind a proxy that sets it">
+  If clients can reach the app directly, they can forge
+  `x-forwarded-for` and walk straight through the allowlist.  Override
+  `getClientIp` **only** when a trusted proxy in front strips the
+  inbound header and sets its own.
+</Aside>
+
+## Where to next
+
+- **[Bearer token auth](/http/middleware/bearer-token/)** — the token
+  guard to layer on top.
+- **[Security](/http/security/)** — where the allowlist sits in the stack.
+- **[Management endpoints](/observability/management/http-endpoints/)** —
+  the routes you most often restrict by network.

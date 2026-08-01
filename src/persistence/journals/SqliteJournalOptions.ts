@@ -1,7 +1,7 @@
 import type { SqliteDriver } from '../../runtime/sqlite/index.js';
 import { OptionsBuilder } from '../../util/OptionsBuilder.js';
 
-export interface SqliteJournalOptionsType {
+export type SqliteJournalOptionsType = {
   /** File path (absolute or relative) or ":memory:" for an ephemeral DB. */
   readonly path?: string;
   /** Table name for events.  Default: `events`. */
@@ -11,10 +11,11 @@ export interface SqliteJournalOptionsType {
   /**
    * Explicit driver — useful for tests or when you want to pin a
    * specific SQLite backend.  Default: auto-detect via `getSqliteDriver()`
-   * (Bun → `bun:sqlite`, Node → `better-sqlite3`).
+   * (Bun → `bun:sqlite`, Node → `better-sqlite3` or `node:sqlite`,
+   * Deno → `node:sqlite`).
    */
   readonly driver?: SqliteDriver;
-}
+};
 
 /**
  * Fluent builder for {@link SqliteJournalOptionsType}:

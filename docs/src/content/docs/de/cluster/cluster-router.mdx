@@ -43,8 +43,8 @@ Unterscheidung zwischen lokalen Pools und Cluster-Groups.
 import { ActorSystem, Cluster, ClusterOptions, ClusterRouter, ClusterRouterOptions, Props, Actor } from 'actor-ts';
 
 class Worker extends Actor<{ payload: string }> {
-  override onReceive(msg: { payload: string }): void {
-    this.log.info(`gearbeitet an ${msg.payload}`);
+  override onReceive(message: { payload: string }): void {
+    this.log.info(`gearbeitet an ${message.payload}`);
   }
 }
 
@@ -87,13 +87,13 @@ einzelne Nachricht bekommt.
 ## Konfiguration
 
 ```ts
-interface ClusterRouterOptions<TMessage> {
+type ClusterRouterOptions<TMessage> = {
   cluster:     Cluster;
   routerType:  'round-robin' | 'random' | 'consistent-hashing' | 'broadcast';
   routeePath:  string;
   role?:       string;
-  extractKey?: (msg: TMessage) => string;
-}
+  extractKey?: (message: TMessage) => string;
+};
 ```
 
 | Feld | Erforderlich | Was |
@@ -125,7 +125,7 @@ const clusterRouterOptions = ClusterRouterOptions.create()
   .withCluster(cluster)
   .withRouterType('consistent-hashing')
   .withRouteePath('/user/cache')
-  .withExtractKey((msg) => msg.userId);
+  .withExtractKey((message) => message.userId);
 ClusterRouter.props(
   clusterRouterOptions,
 );
@@ -246,7 +246,7 @@ import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="Consistent-Hashing mit schiefen Keys">
   ```ts
-  extractKey: (msg) => msg.userId,
+  extractKey: (message) => message.userId,
   // ↑ wenn 80 % des Traffics für einen User ist, behandelt ein Routee 80 %
   ```
   Gleiches Problem wie bei jedem Hash-basierten Schema — schiefe

@@ -18,7 +18,7 @@ import type { NodeAddressData } from '../NodeAddress.js';
  * lifecycle is steady).  Keeping them apart lets each tune
  * independently.
  */
-export interface CoordinatorStateData {
+export type CoordinatorStateData = {
   /** Replica that wrote this snapshot.  Informational + LWW tiebreak. */
   readonly leader: string;
   /** Wall-clock millis at write time.  LWW tiebreak. */
@@ -27,17 +27,17 @@ export interface CoordinatorStateData {
   readonly regions: ReadonlyArray<RegionInfoData>;
   /** Allocation map.  `[shardId, regionKey][]` — Map's wire shape. */
   readonly shardHome: ReadonlyArray<readonly [number, string]>;
-}
+};
 
 /** JSON-friendly mirror of the in-memory `RegionInfo`. */
-export interface RegionInfoData {
+export type RegionInfoData = {
   /** Same key as `regionKey(node, path)`. */
   readonly key: string;
   readonly node: NodeAddressData;
   readonly path: string;
   readonly proxy: boolean;
   readonly shards: ReadonlyArray<number>;
-}
+};
 
 /**
  * Pluggable persistence for the coordinator's allocation state.

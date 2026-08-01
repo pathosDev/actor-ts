@@ -90,13 +90,13 @@ point; measure recovery latency in production before changing.
 
 ## Where snapshots live
 
-Snapshots are stored in a **separate** snapshot store, configured at
-the persistence-extension level:
+Snapshots are stored in a **separate** snapshot store, wired at
+system creation via `withPersistence`:
 
 ```ts
-import { PersistenceExtensionId, InMemoryJournal, InMemorySnapshotStore } from 'actor-ts';
+import { ActorSystemOptions, InMemoryJournal, InMemorySnapshotStore } from 'actor-ts';
 
-system.extension(PersistenceExtensionId).configure({
+const actorSystemOptions = ActorSystemOptions.create().withPersistence({
   journal:       new InMemoryJournal(),
   snapshotStore: new InMemorySnapshotStore(),
 });
@@ -108,6 +108,14 @@ Built-in snapshot stores:
 | --- | --- |
 | `InMemorySnapshotStore` | Tests, dev. |
 | `SqliteSnapshotStore` | Single-node production. |
+| `PostgresSnapshotStore` | PostgreSQL-backed production. |
+| `MariaDbSnapshotStore` | MariaDB / MySQL-backed production. |
+| `LibSqlSnapshotStore` | libSQL / Turso — remote SQLite over HTTP. |
+| `MsSqlSnapshotStore` | Microsoft SQL Server-backed production. |
+| `MongoSnapshotStore` | MongoDB-backed production. |
+| `DynamoDbSnapshotStore` | DynamoDB-backed production. |
+| `D1SnapshotStore` | Cloudflare D1 — SQLite at the edge. |
+| `CassandraSnapshotStore` | Distributed — Cassandra / ScyllaDB. |
 | `ObjectStorageSnapshotStore` | Filesystem / S3 with optional encryption. |
 | `CachedSnapshotStore` | Wraps another store with a read-through cache. |
 
@@ -167,15 +175,21 @@ shape.  Two options:
 2. **Use a snapshot adapter** to upcast old snapshots on load:
 
    ```ts
-   class V1ToV2SnapAdapter implements SnapshotAdapter<StateV2> {
-     upcast(stored: unknown, version: number): StateV2 {
-       if (version === 1) return migrateSnapshot(stored as StateV1);
-       return stored as StateV2;
+   class V1ToV2SnapshotAdapter implements SnapshotAdapter<StateV2> {
+     manifest(_state: StateV2): string { return 'Account.State'; }
+
+     toJournal(state: StateV2): OutboundFrame<StateV2> {
+       return { manifest: 'Account.State', version: 2, payload: state };
+     }
+
+     fromJournal(stored: StoredFrame): StateV2 {
+       if (stored.version === 1) return migrateSnapshot(stored.payload as StateV1);
+       return stored.payload as StateV2;
      }
    }
 
    class Account extends PersistentActor<...> {
-     override snapshotAdapter() { return new V1ToV2SnapAdapter(); }
+     override snapshotAdapter() { return new V1ToV2SnapshotAdapter(); }
    }
    ```
 

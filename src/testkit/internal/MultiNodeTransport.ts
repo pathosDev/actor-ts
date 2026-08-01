@@ -43,7 +43,7 @@ export class MultiNodeTransport implements Transport {
     MultiNodeTransport.registry.delete(this.self.toString());
   }
 
-  send(to: NodeAddress, msg: WireMessage): void {
+  send(to: NodeAddress, message: WireMessage): void {
     if (this.stopped) return;
     const toKey = to.toString();
     if (this.blockedOutgoing.has(toKey)) return;
@@ -54,7 +54,7 @@ export class MultiNodeTransport implements Transport {
     if (peer.blockedOutgoing.has(this.self.toString())) return;
     const from = this.self;
     queueMicrotask(() => {
-      if (!peer.stopped) peer.handler(from, msg);
+      if (!peer.stopped) peer.handler(from, message);
     });
   }
 

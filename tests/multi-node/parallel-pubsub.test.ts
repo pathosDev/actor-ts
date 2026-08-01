@@ -60,16 +60,16 @@ describeMns('ParallelMultiNodeSpec — DistributedPubSub e2e', () => {
       // Drain probes — each side should have received the published
       // message.
       const deadline = Date.now() + 3_000;
-      let bMsgs: unknown[] = [];
-      let cMsgs: unknown[] = [];
+      let bMessages: unknown[] = [];
+      let cMessages: unknown[] = [];
       while (Date.now() < deadline) {
-        bMsgs = await spec.runIn<unknown[]>('b', 'drain', { topic: 'orders' });
-        cMsgs = await spec.runIn<unknown[]>('c', 'drain', { topic: 'orders' });
-        if (bMsgs.length > 0 && cMsgs.length > 0) break;
+        bMessages = await spec.runIn<unknown[]>('b', 'drain', { topic: 'orders' });
+        cMessages = await spec.runIn<unknown[]>('c', 'drain', { topic: 'orders' });
+        if (bMessages.length > 0 && cMessages.length > 0) break;
         await Bun.sleep(80);
       }
-      expect(bMsgs).toEqual([{ sku: 'XYZ-1' }]);
-      expect(cMsgs).toEqual([{ sku: 'XYZ-1' }]);
+      expect(bMessages).toEqual([{ sku: 'XYZ-1' }]);
+      expect(cMessages).toEqual([{ sku: 'XYZ-1' }]);
     } finally {
       await spec.stop();
     }

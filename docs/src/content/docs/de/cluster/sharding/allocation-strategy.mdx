@@ -28,7 +28,7 @@ import { HashAllocationStrategy, StartShardingOptions } from 'actor-ts';
 const startShardingOptions = StartShardingOptions.create()
   .withTypeName('cart')
   .withEntityProps(Props.create(() => new CartActor()))
-  .withExtractEntityId((msg) => msg.entityId)
+  .withExtractEntityId((message) => message.entityId)
   .withAllocationStrategy(new HashAllocationStrategy());
 sharding.start(
   startShardingOptions,   // Default
@@ -180,7 +180,7 @@ nicht gegenseitig die Arbeit zunichtemachen.
 ## Performance
 
 `allocate` läuft einmal pro neuer Shard-ID — begrenzt durch
-`numShards` (Default 100). Selbst eine teure Strategie ist hier in
+`numShards` (Default 64). Selbst eine teure Strategie ist hier in
 Ordnung.
 
 `rebalance` läuft alle `rebalanceIntervalMs` (Default 2 s). Es

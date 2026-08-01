@@ -1,0 +1,136 @@
+---
+title: Cassandra-Snapshot-Store
+description: Verteilter Snapshot-Store auf Cassandra/Scylla — das Multi-Node-Gegenstück zu `CassandraJournal`. Geclustert nach `sequence_nr DESC`, sodass der neueste Snapshot ein Single-Row-Read ist; behält die neuesten N pro persistenceId.
+---
+
+`CassandraSnapshotStore` persistiert Snapshots in einem Cassandra-
+(oder Scylla-)Cluster — **über Cluster-Knoten geteilt**, das
+Snapshot-Gegenstück zu
+[`CassandraJournal`](/de/persistence/journals/cassandra/).  Sharded
+Entities wandern zwischen Knoten, also muss auch ihr Snapshot-Store
+geteilt sein; genau dafür ist dieses Backend da.
+
+```ts
+import {
+  ActorSystem,
+  ActorSystemOptions,
+  CassandraJournal,
+  CassandraJournalOptions,
+  CassandraSnapshotStore,
+  CassandraSnapshotStoreOptions,
+} from 'actor-ts';
+
+const cassandraJournalOptions = CassandraJournalOptions.create()
+  .withContactPoints(['cassandra-1:9042', 'cassandra-2:9042'])
+  .withKeyspace('my_app_events');
+const cassandraSnapshotStoreOptions = CassandraSnapshotStoreOptions.create()
+  .withContactPoints(['cassandra-1:9042', 'cassandra-2:9042'])
+  .withKeyspace('my_app_events')
+  .withKeepN(5);
+const actorSystemOptions = ActorSystemOptions.create().withPersistence({
+  journal: new CassandraJournal(cassandraJournalOptions),
+  snapshotStore: new CassandraSnapshotStore(cassandraSnapshotStoreOptions),
+});
+const system = ActorSystem.create('my-app', actorSystemOptions);
+```
+
+## Wann verwenden
+
+Gleiche Regel wie beim Journal: Cassandra dann, wenn **mehrere Knoten
+sich die Persistenz teilen** — Sharded Entities, die auf dem Knoten
+recovern, auf dem sie gerade landen.  Für Single-Node-Deployments ist
+der [SQLite-Snapshot-Store](/de/persistence/snapshot-stores/sqlite/)
+einfacher und günstiger.
+
+Ist das Journal Cassandra, recovert aber jede Entity immer auf
+demselben Knoten, *kannst* du Snapshots auf SQLite halten — doch sobald
+eine Entity wandert (Sharding, Failover), verliert sie ihren Snapshot
+und spielt ab Sequenz null neu ab.  Bei Sharded Workloads sollte der
+Snapshot-Store zum Journal passen.
+
+## Konfiguration
+
+```ts
+type CassandraSnapshotStoreOptions = {
+  contactPoints?:      string[];   // Cluster-Contact-Points
+  keyspace?:           string;     // Keyspace, das nach Connect ge-USEt wird
+  snapshotsTable?:     string;     // Tabellenname, Default 'snapshots'
+  keepN?:              number;     // Snapshots pro pid; <= 0 = alle behalten (Default 3)
+  autoCreateTables?:   boolean;    // Tabelle beim ersten Connect anlegen (Default true)
+  autoCreateKeyspace?: boolean;    // Keyspace beim Start anlegen (Default false)
+  consistency?:        number;     // CQL-Consistency, Default LOCAL_QUORUM (6)
+  client?:             CassandraClientLike; // vorgefertigten Driver-Client wiederverwenden
+  /* ...plus die geteilten Connection-Felder: localDataCenter, credentials, port, replication */
+};
+```
+
+Die Connection-Felder (`contactPoints`, `keyspace`, `localDataCenter`,
+`credentials`, `port`, `consistency`, Keyspace-Auto-Anlage) sind
+**dieselbe Menge, die das Journal nimmt** — siehe
+[Cassandra-Journal-Konfiguration](/de/persistence/journals/cassandra/#konfiguration).
+Zwei Felder sind snapshot-spezifisch:
+
+| Feld | Was |
+| --- | --- |
+| `snapshotsTable` | Tabellenname.  Default `snapshots`. |
+| `keepN` | Neueste Snapshots, die pro `persistenceId` behalten werden; ältere werden bei jedem `save` geprunt.  Default `3`; `<= 0` behält jeden Snapshot. |
+
+Um zwei Connection-Pools zu vermeiden, übergib mit `withClient(...)`
+einen vorgefertigten Driver-Client, sodass der Snapshot-Store die
+Cassandra-Verbindung des Journals mitnutzt, statt eine eigene zu
+öffnen.
+
+## Schema
+
+Das Framework legt beim ersten Gebrauch eine Tabelle automatisch an:
+
+```cql
+CREATE TABLE snapshots (
+  persistence_id  text,
+  sequence_nr     bigint,
+  timestamp       bigint,
+  payload         text,
+  PRIMARY KEY (persistence_id, sequence_nr)
+) WITH CLUSTERING ORDER BY (sequence_nr DESC);
+```
+
+Geclustert nach `sequence_nr` **absteigend**, sodass `loadLatest` ein
+Single-Row-`LIMIT 1`-Read ist — kein Scan.  `loadBefore(seq)` ergänzt
+eine `sequence_nr < ?`-Schranke.  Das Keyspace muss bereits existieren
+(oder `withAutoCreateKeyspace(true)` setzen); das Framework legt die
+Tabelle an, nicht das Keyspace.
+
+## Stolperfallen
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Compression- und Encryption-Optionen werden ignoriert">
+  Anders als die Object-Storage-Stores hat der Cassandra-Snapshot-Store
+  keine Kompression und keine clientseitige Verschlüsselung — der
+  Payload wird als serialisierter Text abgelegt.  Entsprechende
+  `PersistenceOptions` werden stillschweigend ignoriert.  Nutze den
+  [Object-Storage-Snapshot-Store](/de/persistence/object-storage/snapshot-store-backend/),
+  wenn du Kompression oder At-Rest-Verschlüsselung brauchst.
+</Aside>
+
+<Aside type="caution" title="`keepN` pruned beim Speichern, nicht per Timer">
+  Das Pruning läuft innerhalb von `save` und behält die neuesten `keepN`
+  pro pid.  Eine pid, die nie wieder snapshottet, behält, was sie hatte
+  — es gibt keinen Hintergrund-Sweep.  Setze `keepN <= 0` nur, wenn eine
+  externe Retention-Policy das Aufräumen übernimmt, sonst wächst die
+  Tabelle unbegrenzt.
+</Aside>
+
+## Wie geht's weiter
+
+- **[Snapshots](/de/persistence/snapshots/)** — die Policy + Mechanik
+  (`snapshotPolicy`, `SnapshotOffer`).
+- **[Cassandra-Journal](/de/persistence/journals/cassandra/)** — das
+  Journal, mit dem du dies paarst.
+- **[SQLite-Snapshot-Store](/de/persistence/snapshot-stores/sqlite/)** —
+  die Single-Node-Alternative.
+- **[Object-Storage-Snapshot-Store](/de/persistence/object-storage/snapshot-store-backend/)** —
+  wenn Snapshots Kompression oder Verschlüsselung brauchen.
+
+Die [`CassandraSnapshotStore`](/api/classes/cassandrasnapshotstore/)
+API-Referenz deckt alle Optionen ab.

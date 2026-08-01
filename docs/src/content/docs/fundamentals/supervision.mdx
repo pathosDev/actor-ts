@@ -33,24 +33,36 @@ the right semantic for your domain.
 ## A minimal example
 
 ```ts
+import { match } from 'ts-pattern';
 import { Actor, ActorSystem, Props, OneForOneStrategy, Directive } from 'actor-ts';
 
-class Worker extends Actor<{ kind: 'do-it' } | { kind: 'fail' }> {
-  override onReceive(msg: { kind: 'do-it' } | { kind: 'fail' }): void {
-    if (msg.kind === 'fail') throw new Error('boom');
-    this.log.info('did the work');
+type DoItCommand = { kind: 'do-it' };
+type FailCommand = { kind: 'fail' };
+type WorkerCommand = DoItCommand | FailCommand;
+
+class Worker extends Actor<WorkerCommand> {
+  override onReceive(command: WorkerCommand): void {
+    match(command)
+      .with({ kind: 'do-it' }, () => this.onDoIt())
+      .with({ kind: 'fail' }, () => this.onFail())
+      .exhaustive();
   }
+
+  private onDoIt(): void { this.log.info('did the work'); }
+  private onFail(): never { throw new Error('boom'); }
 }
 
 class Boss extends Actor<{ kind: 'spawn-worker' }> {
   // Custom supervisor strategy for this Boss's children: always restart,
   // but cap at 5 restarts per minute — beyond that, stop the child.
-  override supervisorStrategy = new OneForOneStrategy(
-    (err) => Directive.Restart,
-    { maxRetries: 5, withinTimeRangeMs: 60_000 },
-  );
+  override supervisorStrategy() {
+    return new OneForOneStrategy(
+      (err) => Directive.Restart,
+      { maxRetries: 5, withinTimeRangeMs: 60_000 },
+    );
+  }
 
-  override onReceive(msg: { kind: 'spawn-worker' }): void {
+  override onReceive(message: { kind: 'spawn-worker' }): void {
     const worker = this.context.spawnAnonymous(Props.create(() => new Worker()));
     worker.tell({ kind: 'do-it' });
     worker.tell({ kind: 'fail' });   // <- throws
@@ -85,10 +97,12 @@ producer + consumer pair that talk over an internal channel.
 ```ts
 import { AllForOneStrategy, Directive } from 'actor-ts';
 
-override supervisorStrategy = new AllForOneStrategy(
-  () => Directive.Restart,
-  { maxRetries: 3, withinTimeRangeMs: 30_000 },
-);
+override supervisorStrategy() {
+  return new AllForOneStrategy(
+    () => Directive.Restart,
+    { maxRetries: 3, withinTimeRangeMs: 30_000 },
+  );
+}
 ```
 
 The vast majority of actor-ts code uses `OneForOneStrategy`.  Reach
@@ -107,16 +121,18 @@ class TransientNetworkError extends Error {}
 class CorruptedStateError   extends Error {}
 class UnknownProblem        extends Error {}
 
-override supervisorStrategy = new OneForOneStrategy(
-  decideBy(
-    [
-      { match: TransientNetworkError, then: Directive.Resume   },  // skip the bad message
-      { match: CorruptedStateError,   then: Directive.Restart  },  // clean reboot
-      { match: UnknownProblem,        then: Directive.Escalate },  // ask grandparent
-    ],
-    Directive.Restart,   // fallback when none matched
-  ),
-);
+override supervisorStrategy() {
+  return new OneForOneStrategy(
+    decideBy(
+      [
+        { match: TransientNetworkError, then: Directive.Resume   },  // skip the bad message
+        { match: CorruptedStateError,   then: Directive.Restart  },  // clean reboot
+        { match: UnknownProblem,        then: Directive.Escalate },  // ask grandparent
+      ],
+      Directive.Restart,   // fallback when none matched
+    ),
+  );
+}
 ```
 
 `decideBy` is a helper that builds a decider from a list of
@@ -243,6 +259,7 @@ strategy in `Props`:
 const ref = system.spawn(
   Props.create(() => new MyTopActor())
     .withSupervisorStrategy(stoppingStrategy),
+  'my-top-actor',
 );
 ```
 
@@ -257,8 +274,8 @@ things: the strategy *handling* this actor's failures (set on
   ```ts
   class CountServer extends Actor<...> {
     private count = 0;  // ← lost on restart!
-    onReceive(msg: ...) {
-      if (msg.causesACrash) throw new Error('oops');
+    onReceive(message: ...) {
+      if (message.causesACrash) throw new Error('oops');
       this.count++;
     }
   }
@@ -293,7 +310,7 @@ things: the strategy *handling* this actor's failures (set on
 
 <Aside type="caution" title="Async errors are caught — uncaught Promise rejections aren't">
   ```ts
-  override async onReceive(msg) {
+  override async onReceive(message) {
     await operationThatRejects();   // ✓ caught by supervisor
     
     setTimeout(() => {
@@ -304,7 +321,7 @@ things: the strategy *handling* this actor's failures (set on
   The supervisor only sees what `onReceive` throws or rejects with.
   Code that runs in a detached callback (raw `setTimeout`, raw
   `Promise.then` chains that escape the actor) bypasses supervision.
-  Use `context.scheduler` for actor-bound timers; they propagate
+  Use `context.timers` for actor-bound timers; they propagate
   errors back into the mailbox.
 </Aside>
 

@@ -2,11 +2,13 @@
  * Supervisor restart overhead — how expensive is a one-for-one restart?
  * Each op = one failed command + resumed processing.
  *
- * Note: `withSupervisorStrategy` on Props sets the strategy an actor uses to
- * supervise its OWN children.  How a child is supervised is decided by its
- * *parent*, so we spawn `Shaky` inside a `Supervisor` actor whose
- * `supervisorStrategy()` permits unlimited restarts.  Without this, the
- * user-guardian's default strategy (maxRetries=10) would abort the run.
+ * Note: how a child is supervised is decided by its *parent* — either by the
+ * parent actor's `supervisorStrategy()` or, per child, by
+ * `Props.withSupervisorStrategy` on that child's own Props.  Either way the
+ * user guardian's default (maxRetries=10) would abort a 1 000-restart run, so
+ * `Shaky` runs inside a `Supervisor` whose strategy permits unlimited
+ * restarts.  The extra hop through `Supervisor` is part of the measured
+ * round-trip — keep it so numbers stay comparable with earlier runs.
  *
  *   bun run benchmarks/single-node/supervisor-restart.ts
  */
@@ -19,30 +21,29 @@ import {
   NoopLogger,
   OneForOneStrategy,
   Props,
-  ask,
   type ActorRef,
   type SupervisorStrategy,
 } from '../../src/index.js';
 import { runGroup } from '../lib/harness.js';
 
-type Cmd = 'boom' | 'ping';
+type Command = 'boom' | 'ping';
 
-class Shaky extends Actor<Cmd> {
-  override onReceive(m: Cmd): void {
+class Shaky extends Actor<Command> {
+  override onReceive(m: Command): void {
     if (m === 'boom') throw new Error('restart-me');
     this.sender.forEach((s) => s.tell('pong'));
   }
 }
 
-class Supervisor extends Actor<Cmd> {
-  private child!: ActorRef<Cmd>;
+class Supervisor extends Actor<Command> {
+  private child!: ActorRef<Command>;
   override preStart(): void {
     this.child = this.context.spawn(Props.create(() => new Shaky()), 'shaky');
   }
   override supervisorStrategy(): SupervisorStrategy {
     return new OneForOneStrategy(() => Directive.Restart, { maxRetries: -1 });
   }
-  override onReceive(m: Cmd): void {
+  override onReceive(m: Command): void {
     // Forward to child, preserving sender for `ask`.
     this.child.tell(m, this.sender.toNullable());
   }
@@ -62,7 +63,7 @@ async function main(): Promise<void> {
       iterations: 1_000,
       run: async () => {
         ref.tell('boom');
-        await ask<Cmd, string>(ref, 'ping', 5_000);
+        await ref.ask<string>('ping', 5_000);
       },
     },
   ]);

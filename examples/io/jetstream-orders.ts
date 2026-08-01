@@ -32,8 +32,9 @@ import {
   type JetStreamMessage,
 } from '../../src/index.js';
 import type { ActorRef } from '../../src/index.js';
+import { attachDevTools } from '../devtools.js';
 
-interface Order { orderId: string; amount: number }
+type Order = { orderId: string; amount: number };
 
 class OrderProcessor extends Actor<JetStreamMessage> {
   constructor(private readonly js: ActorRef<JetStreamCommand>) { super(); }
@@ -45,17 +46,17 @@ class OrderProcessor extends Actor<JetStreamMessage> {
       order = JSON.parse(text);
     } catch {
       console.error(`bad payload at streamSeq=${m.streamSeq}, terming`);
-      this.js.tell({ kind: 'term', streamSeq: m.streamSeq, reason: 'malformed JSON' });
+      this.js.tell({ kind: 'terminate', streamSeq: m.streamSeq, reason: 'malformed JSON' });
       return;
     }
 
     try {
       await db_insertOrder(order);
       console.log(`processed ${order.orderId} (streamSeq=${m.streamSeq}, deliveries=${m.deliveries})`);
-      this.js.tell({ kind: 'ack', streamSeq: m.streamSeq });
+      this.js.tell({ kind: 'acknowledgment', streamSeq: m.streamSeq });
     } catch (e) {
       console.error(`db error at streamSeq=${m.streamSeq}, naking with backoff`);
-      this.js.tell({ kind: 'nak', streamSeq: m.streamSeq, delayMs: 5_000 });
+      this.js.tell({ kind: 'negativeAcknowledgment', streamSeq: m.streamSeq, delayMs: 5_000 });
     }
   }
 }
@@ -67,6 +68,7 @@ async function db_insertOrder(o: Order): Promise<void> {
 
 async function main(): Promise<void> {
   const system = ActorSystem.create('js-orders-demo');
+  const devtools = await attachDevTools(system);
   let js!: ActorRef<JetStreamCommand>;
 
   const processor = system.spawn(

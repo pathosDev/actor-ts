@@ -34,12 +34,12 @@ function hostOf(urlLike: string): string | null {
 }
 
 /** Same-origin check for unsafe methods: the Origin/Referer host must match the request host (or an allowlisted origin). */
-function isSameOrigin(req: HttpRequest, allowedOrigins: ReadonlyArray<string> | undefined, allowMissing: boolean): boolean {
-  const source = req.headers['origin'] ?? req.headers['referer'];
+function isSameOrigin(request: HttpRequest, allowedOrigins: ReadonlyArray<string> | undefined, allowMissing: boolean): boolean {
+  const source = request.headers['origin'] ?? request.headers['referer'];
   if (!source) return allowMissing;
   const sourceHost = hostOf(source);
   if (!sourceHost) return false;
-  if (req.headers['host'] && sourceHost === req.headers['host']) return true;
+  if (request.headers['host'] && sourceHost === request.headers['host']) return true;
   if (allowedOrigins) {
     for (const allowed of allowedOrigins) {
       if (allowed === source || hostOf(allowed) === sourceHost) return true;
@@ -56,9 +56,9 @@ function isSameOrigin(req: HttpRequest, allowedOrigins: ReadonlyArray<string> | 
  */
 export function requireSameOrigin(options: SameOriginOptions = {}): Middleware {
   const resolvedOptions = options as Partial<SameOriginOptionsType>;
-  return async (req, next) => {
-    if (SAFE_METHODS.has(req.method)) return next();
-    if (!isSameOrigin(req, resolvedOptions.allowedOrigins, resolvedOptions.allowMissingOrigin ?? false)) {
+  return async (request, next) => {
+    if (SAFE_METHODS.has(request.method)) return next();
+    if (!isSameOrigin(request, resolvedOptions.allowedOrigins, resolvedOptions.allowMissingOrigin ?? false)) {
       throw new HttpError(Status.Forbidden, 'cross-origin request rejected');
     }
     return next();
@@ -93,11 +93,11 @@ function hasSetCookie(headers: Readonly<Record<string, string>> | undefined): bo
   return Object.keys(headers).some((k) => k.toLowerCase() === 'set-cookie');
 }
 
-function formFieldValue(req: HttpRequest, field: string): string | undefined {
-  const ct = req.headers['content-type'] ?? '';
-  if (!ct.includes('application/x-www-form-urlencoded') || !req.body) return undefined;
+function formFieldValue(request: HttpRequest, field: string): string | undefined {
+  const ct = request.headers['content-type'] ?? '';
+  if (!ct.includes('application/x-www-form-urlencoded') || !request.body) return undefined;
   try {
-    return new URLSearchParams(new TextDecoder().decode(req.body)).get(field) ?? undefined;
+    return new URLSearchParams(new TextDecoder().decode(request.body)).get(field) ?? undefined;
   } catch { return undefined; }
 }
 
@@ -106,10 +106,10 @@ function formFieldValue(req: HttpRequest, field: string): string | undefined {
  * the forwarded request header first (present from the very first GET),
  * then the cookie.
  */
-export function readCsrfToken(req: HttpRequest, opts: { cookieName?: string; headerName?: string } = {}): string | null {
-  const fromHeader = req.headers[(opts.headerName ?? 'x-csrf-token').toLowerCase()];
+export function readCsrfToken(request: HttpRequest, options: { cookieName?: string; headerName?: string } = {}): string | null {
+  const fromHeader = request.headers[(options.headerName ?? 'x-csrf-token').toLowerCase()];
   if (fromHeader) return fromHeader;
-  return parseCookies(req.headers['cookie'])[opts.cookieName ?? 'csrf-token'] ?? null;
+  return parseCookies(request.headers['cookie'])[options.cookieName ?? 'csrf-token'] ?? null;
 }
 
 /** Build the stateless double-submit CSRF middleware. */
@@ -136,27 +136,27 @@ export function csrfProtection(options: CsrfOptions): Middleware {
   const verifyOrigin = resolvedOptions.verifyOrigin ?? true;
   const formFieldName = resolvedOptions.formFieldName;
 
-  return async (req, next) => {
-    const cookies = parseCookies(req.headers['cookie']);
+  return async (request, next) => {
+    const cookies = parseCookies(request.headers['cookie']);
     const cookieToken = cookies[cookieName];
 
-    if (SAFE_METHODS.has(req.method)) {
+    if (SAFE_METHODS.has(request.method)) {
       const token = cookieToken && verifyToken(secret, cookieToken) ? cookieToken : makeToken(secret);
       // Forward the token to the handler as a request header so an SSR
       // handler can read it via readCsrfToken() even on the first GET.
-      const res = await next({ ...req, headers: { ...req.headers, [headerName]: token } });
-      if (hasSetCookie(res.headers)) return res; // single-value Record — don't stomp
-      return applyHeaders(res, {
+      const response = await next({ ...request, headers: { ...request.headers, [headerName]: token } });
+      if (hasSetCookie(response.headers)) return response; // single-value Record — don't stomp
+      return applyHeaders(response, {
         'set-cookie': serializeCookie(cookieName, token, cookieAttrs),
       });
     }
 
     // Unsafe method: origin gate (token is the primary gate, so a missing
     // Origin/Referer is allowed through to the token check), then the pair.
-    if (verifyOrigin && !isSameOrigin(req, resolvedOptions.allowedOrigins, true)) {
+    if (verifyOrigin && !isSameOrigin(request, resolvedOptions.allowedOrigins, true)) {
       throw new HttpError(Status.Forbidden, 'CSRF verification failed');
     }
-    const submitted = req.headers[headerName] ?? (formFieldName ? formFieldValue(req, formFieldName) : undefined);
+    const submitted = request.headers[headerName] ?? (formFieldName ? formFieldValue(request, formFieldName) : undefined);
     if (
       !cookieToken
       || submitted === undefined

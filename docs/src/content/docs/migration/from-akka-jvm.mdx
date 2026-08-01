@@ -14,8 +14,8 @@ named identically.  This guide walks through the translation.
 | `akka.actor.Actor` | `Actor<TMessage>` |
 | `akka.actor.ActorRef` | `ActorRef<T>` |
 | `akka.actor.Props` | `Props<TMessage>` |
-| `tell(msg)` / `!` | `tell(msg)` |
-| `ask(msg).mapTo[T]` | `ref.ask<TRes>(msg, timeoutMs)` |
+| `tell(message)` / `!` | `tell(message)` |
+| `ask(message).mapTo[T]` | `ref.ask<TRes>(message, timeoutMs)` |
 | `context.spawnAnonymous(props)` | `context.spawnAnonymous(props)` |
 | `OneForOneStrategy` | `OneForOneStrategy` |
 | `AllForOneStrategy` | `AllForOneStrategy` |
@@ -28,8 +28,8 @@ named identically.  This guide walks through the translation.
 | `setReceiveTimeout(d)` | `context.setReceiveTimeout(ms)` |
 | `EventStream` | `system.eventStream` |
 | `Cluster.get(system).join(...)` | `Cluster.join(system, settings)` |
-| `ClusterSharding` | `ClusterSharding` |
-| `ClusterSingleton` | `ClusterSingletonManager` / `Proxy` |
+| `ClusterSharding` | `cluster.sharding` (+ `ShardKey`) |
+| `ClusterSingleton` | `cluster.singleton` (+ `SingletonKey`) |
 | `DistributedPubSub` | `DistributedPubSub` |
 | `DistributedData` | `DistributedData` (via extension) |
 | `PersistentActor` | `PersistentActor` |
@@ -52,16 +52,22 @@ class Counter extends Actor {
 }
 
 // actor-ts:
+import { match } from 'ts-pattern';
 import { Actor, type ActorRef } from 'actor-ts';
 
-type Command = { kind: 'inc' } | { kind: 'get'; replyTo: ActorRef<number> };
+type Command = { kind: 'increment' } | { kind: 'get'; replyTo: ActorRef<number> };
 
 class Counter extends Actor<Command> {
   private count = 0;
-  override onReceive(cmd: Command): void {
-    if (cmd.kind === 'inc') this.count++;
-    else cmd.replyTo.tell(this.count);
+  override onReceive(command: Command): void {
+    match(command)
+      .with({ kind: 'increment' }, () => this.onIncrement())
+      .with({ kind: 'get' }, (c) => this.onGet(c))
+      .exhaustive();
   }
+
+  private onIncrement(): void { this.count++; }
+  private onGet(command: GetCommand): void { command.replyTo.tell(this.count); }
 }
 ```
 
@@ -105,7 +111,7 @@ cluster.join(Address("akka", "MySystem", "host", port))
 val region = ClusterSharding(system).start(
   typeName = "Counter",
   entityProps = Props[Counter],
-  settings = ClusterShardingOptionsType(system),
+  settings = ClusterShardingSettings(system),
   extractEntityId = ...,
   extractShardId  = ...,
 )
@@ -120,7 +126,7 @@ const cluster = await Cluster.join(system, clusterOptions);
 const region = cluster.sharding.start({
   typeName: 'Counter',
   entityProps: Props.create(() => new Counter()),
-  extractEntityId: (msg) => msg.id,
+  extractEntityId: (message) => message.id,
   numShards: 100,
 });
 ```
@@ -130,7 +136,7 @@ Mostly drop-in.  Differences:
 - `extractShardId` is **derived** from `extractEntityId + numShards`
   in actor-ts (`shardId = hash(entityId) % numShards`).  No
   separate function.
-- `ClusterShardingOptionsType` is inline as `start()` options.
+- `ClusterShardingSettings` is inline as `start()` options.
 
 ### PersistentActor
 
@@ -158,14 +164,19 @@ class Account extends PersistentActor<Command, Event, State> {
   initialState(): State { return { balance: 0 }; }
 
   onEvent(state: State, event: Event): State {
-    if (event.kind === 'deposited') return { balance: state.balance + event.amount };
-    return state;
+    return match(event)
+      .with({ kind: 'deposited' }, (e) => ({ balance: state.balance + e.amount }))
+      .exhaustive();
   }
 
-  onCommand(state: State, cmd: Command): void {
-    if (cmd.kind === 'deposit') {
-      this.persist({ kind: 'deposited', amount: cmd.amount }, () => {});
-    }
+  onCommand(state: State, command: Command): void {
+    match(command)
+      .with({ kind: 'deposit' }, (c) => this.onDeposit(c))
+      .exhaustive();
+  }
+
+  private onDeposit(command: DepositCommand): void {
+    this.persist({ kind: 'deposited', amount: command.amount }, () => {});
   }
 }
 ```
@@ -187,23 +198,28 @@ val singleton = system.spawn(
   ClusterSingletonManager.props(
     singletonProps = Props[MyActor],
     terminationMessage = PoisonPill,
-    settings = ClusterSingletonManagerOptionsType(system),
+    settings = ClusterSingletonManagerSettings(system),
   ),
   name = "singletonManager",
 )
 
 // actor-ts:
-system.spawn(
-  ClusterSingletonManager.props({
-    cluster,
-    typeName: 'my-singleton',
-    singletonProps: Props.create(() => new MyActor()),
-  }),
-  'singleton-manager-my-singleton',
-);
+class MyActor extends Actor<MyCommand> {
+  static readonly singleton = SingletonKey.of<MyCommand>('my-singleton');
+}
+const singleton = cluster.singleton.start(MyActor);
+singleton.tell({ kind: 'do-something' });
 ```
 
-Same model, slightly different config shape.
+Same model, less ceremony — the actor declares its own identity as a
+static, and `start` returns the proxy `ActorRef` directly rather than a
+handle to unwrap.  There is no `terminationMessage` equivalent; a node
+leaving rotation stops its child through the normal `postStop` path.
+
+Nodes that only need to *talk* to the singleton call
+`cluster.singleton.ref(MyActor)` — the counterpart to Akka's
+`ClusterSingletonProxy.props`, and to `ClusterSharding.startProxy` on
+the sharding side.
 
 ## What's missing
 

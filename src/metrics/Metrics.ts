@@ -34,7 +34,7 @@ export type Labels = Readonly<Record<string, LabelValue>>;
  * A single point-in-time observation of one metric series.  Exporters
  * walk the registry and turn each sample into their wire format.
  */
-export interface MetricSample {
+export type MetricSample = {
   /** Family name — e.g. `actor_messages_delivered_total`. */
   readonly name: string;
   /** Free-form description for `# HELP`. */
@@ -56,7 +56,7 @@ export interface MetricSample {
   readonly count?: number;
   /** For histograms: total observation sum.  Series name `_sum`. */
   readonly sum?: number;
-}
+};
 
 /* ------------------------------- Counter ----------------------------- */
 
@@ -169,32 +169,32 @@ class HistogramImplementation implements Histogram {
  * Metric family metadata.  One family produces N series indexed by
  * label-tuple; series are created lazily on first label access.
  */
-interface CounterFamily {
+type CounterFamily = {
   readonly kind: 'counter';
   readonly help: string;
   readonly children: Map<string, { labels: Labels; metric: CounterImplementation }>;
-}
-interface GaugeFamily {
+};
+type GaugeFamily = {
   readonly kind: 'gauge';
   readonly help: string;
   readonly children: Map<string, { labels: Labels; metric: GaugeImplementation }>;
-}
-interface HistogramFamily {
+};
+type HistogramFamily = {
   readonly kind: 'histogram';
   readonly help: string;
   readonly buckets: ReadonlyArray<number>;
   readonly children: Map<string, { labels: Labels; metric: HistogramImplementation }>;
-}
+};
 
 type Family = CounterFamily | GaugeFamily | HistogramFamily;
 
-export interface CounterOptions { readonly help?: string }
-export interface GaugeOptions { readonly help?: string }
-export interface HistogramOptions {
+export type CounterOptions = { readonly help?: string };
+export type GaugeOptions = { readonly help?: string };
+export type HistogramOptions = {
   readonly help?: string;
   /** Override the default bucket set.  Sorted automatically. */
   readonly buckets?: ReadonlyArray<number>;
-}
+};
 
 /**
  * Collection of metric families bound to one ActorSystem.  Pluggable
@@ -208,9 +208,9 @@ export interface MetricsRegistry {
    * same family across calls; `labels` selects (or creates) a child
    * series within it.
    */
-  counter(name: string, labels?: Labels, opts?: CounterOptions): Counter;
-  gauge(name: string, labels?: Labels, opts?: GaugeOptions): Gauge;
-  histogram(name: string, labels?: Labels, opts?: HistogramOptions): Histogram;
+  counter(name: string, labels?: Labels, options?: CounterOptions): Counter;
+  gauge(name: string, labels?: Labels, options?: GaugeOptions): Gauge;
+  histogram(name: string, labels?: Labels, options?: HistogramOptions): Histogram;
 
   /** Snapshot every series as a flat list of {@link MetricSample}s. */
   collect(): ReadonlyArray<MetricSample>;
@@ -227,18 +227,18 @@ export interface MetricsRegistry {
 export class DefaultMetricsRegistry implements MetricsRegistry {
   private readonly families = new Map<string, Family>();
 
-  counter(name: string, labels: Labels = {}, opts: CounterOptions = {}): Counter {
-    const family = this.familyOf(name, 'counter', opts.help);
+  counter(name: string, labels: Labels = {}, options: CounterOptions = {}): Counter {
+    const family = this.familyOf(name, 'counter', options.help);
     return this.childOf<CounterImplementation>(family, labels, () => new CounterImplementation());
   }
 
-  gauge(name: string, labels: Labels = {}, opts: GaugeOptions = {}): Gauge {
-    const family = this.familyOf(name, 'gauge', opts.help);
+  gauge(name: string, labels: Labels = {}, options: GaugeOptions = {}): Gauge {
+    const family = this.familyOf(name, 'gauge', options.help);
     return this.childOf<GaugeImplementation>(family, labels, () => new GaugeImplementation());
   }
 
-  histogram(name: string, labels: Labels = {}, opts: HistogramOptions = {}): Histogram {
-    const family = this.familyOf(name, 'histogram', opts.help, opts.buckets);
+  histogram(name: string, labels: Labels = {}, options: HistogramOptions = {}): Histogram {
+    const family = this.familyOf(name, 'histogram', options.help, options.buckets);
     return this.childOf<HistogramImplementation>(family, labels,
       () => new HistogramImplementation((family as HistogramFamily).buckets));
   }

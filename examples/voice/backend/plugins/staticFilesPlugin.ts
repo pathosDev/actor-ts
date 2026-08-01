@@ -14,19 +14,19 @@
 import * as fs from 'node:fs';
 import type { FastifyBackend } from '../../../../src/http/backend/FastifyBackend.js';
 
-export interface StaticFilesOptions {
+export type StaticFilesOptions = {
   /** Absolute path to the static-files root (`examples/chat/static`). */
   readonly root: string;
   /** URL prefix.  Default `/static/`. */
   readonly prefix?: string;
-}
+};
 
 export async function registerStaticFiles(
   backend: FastifyBackend,
-  opts: StaticFilesOptions,
+  options: StaticFilesOptions,
 ): Promise<void> {
-  if (!fs.existsSync(opts.root)) {
-    fs.mkdirSync(opts.root, { recursive: true });
+  if (!fs.existsSync(options.root)) {
+    fs.mkdirSync(options.root, { recursive: true });
   }
   // `@fastify/static` ships with both default and named exports
   // depending on the bundler — normalise.
@@ -36,8 +36,8 @@ export async function registerStaticFiles(
   };
   const plugin = mod.default ?? mod.fastifyStatic ?? mod;
   await backend.withPlugin(plugin, {
-    root: opts.root,
-    prefix: opts.prefix ?? '/static/',
+    root: options.root,
+    prefix: options.prefix ?? '/static/',
     decorateReply: false,
   });
 }

@@ -46,11 +46,11 @@ Ergebnis jedes Checks auflistet.
 ```ts
 type HealthCheckFn = () => Promise<HealthCheckResult> | HealthCheckResult;
 
-interface HealthCheckResult {
+type HealthCheckResult = {
   name:    string;         // identifies the check in the response
   status:  boolean;        // true = healthy
   detail?: string;         // human-readable note, usually on failure
-}
+};
 ```
 
 Ein Check kann sync oder async sein.  `addLiveness` /

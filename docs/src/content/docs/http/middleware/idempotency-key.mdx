@@ -54,14 +54,14 @@ here's the original response."  No double charge.
 ## Configuration
 
 ```ts
-interface IdempotencyOptions {
+type IdempotencyOptions = {
   cache:          Cache;
   ttlMs?:         number;                              // default 24h
   headerName?:    string;                              // default 'idempotency-key'
   keyPrefix?:     string;                              // default 'idem:'
   missingHeader?: 'reject' | 'pass-through';           // default 'reject'
   identity?:      (req: HttpRequest) => string | Promise<string>;   // per-caller scope; default none
-}
+};
 ```
 
 | Field | Purpose |
@@ -94,10 +94,14 @@ The middleware stores the **complete response**.  Subsequent
 requests with the same key get an identical response — same
 status, headers, body.
 
-For **error responses**, behavior is configurable.  By default:
-4xx + 5xx are **also cached** (so a "payment failed" reply
-isn't re-processed into a "payment succeeded" on retry).  This
-matches the standard idempotency-key semantic.
+For **error responses**, what counts is whether the handler
+**returns** or **throws**.  A *returned* response is cached
+unconditionally — a 4xx or 5xx replays on retry exactly like a
+2xx, so a "payment failed" reply isn't re-processed into a
+"payment succeeded".  A handler that *throws* instead drops its
+in-flight claim, leaving the key free so the client can retry
+and re-run the handler.  There's no option to choose which
+statuses get cached.
 
 ## Per-tenant scoping
 

@@ -4,10 +4,10 @@ import type { ActorSystem } from '../ActorSystem.js';
 import { TestProbeOptionsValidator } from './TestProbeOptions.js';
 import type { TestProbeOptions, TestProbeOptionsType } from './TestProbeOptions.js';
 
-interface Pending {
+type Pending = {
   readonly message: unknown;
   readonly sender: ActorRef | null;
-}
+};
 
 let probeCounter = 0;
 
@@ -35,11 +35,11 @@ export class TestProbe extends ActorRef<unknown> {
     options: TestProbeOptions = {},
   ) {
     super();
-    const opts = (options as Partial<TestProbeOptionsType>);
-    new TestProbeOptionsValidator().validate(opts);
-    const name = opts.name ?? `test-probe-${++probeCounter}`;
+    const resolvedOptions = (options as Partial<TestProbeOptionsType>);
+    new TestProbeOptionsValidator().validate(resolvedOptions);
+    const name = resolvedOptions.name ?? `test-probe-${++probeCounter}`;
     this.path = new ActorPath('', null, system.name).child(name);
-    this.defaultTimeoutMs = opts.defaultTimeoutMs ?? 3_000;
+    this.defaultTimeoutMs = resolvedOptions.defaultTimeoutMs ?? 3_000;
   }
 
   tell(message: unknown, sender: ActorRef | null = null): void {
@@ -80,9 +80,9 @@ export class TestProbe extends ActorRef<unknown> {
   }
 
   /** Receive the next `n` messages. */
-  async receiveN(name: number, timeoutMs?: number): Promise<unknown[]> {
+  async receiveN(count: number, timeoutMs?: number): Promise<unknown[]> {
     const out: unknown[] = [];
-    for (let i = 0; i < name; i++) out.push(await this.receiveOne(timeoutMs));
+    for (let i = 0; i < count; i++) out.push(await this.receiveOne(timeoutMs));
     return out;
   }
 
@@ -118,8 +118,8 @@ export class TestProbe extends ActorRef<unknown> {
     await new Promise<void>((resolve, reject) => {
       const timer = setTimeout(() => {
         // Remove our entry from waiters before resolving.
-        const idx = this.waiters.indexOf(entry);
-        if (idx >= 0) this.waiters.splice(idx, 1);
+        const index = this.waiters.indexOf(entry);
+        if (index >= 0) this.waiters.splice(index, 1);
         resolve();
       }, timeoutMs);
       const entry = {
@@ -136,14 +136,14 @@ export class TestProbe extends ActorRef<unknown> {
 
   /** Receive messages until `pred` returns true.  Other messages are discarded. */
   async fishForMessage<T>(
-    pred: (m: unknown) => boolean,
+    predicate: (m: unknown) => boolean,
     timeoutMs: number = this.defaultTimeoutMs,
   ): Promise<T> {
     const deadline = Date.now() + timeoutMs;
     while (true) {
       const remaining = Math.max(0, deadline - Date.now());
-      const msg = await this.receiveOne(remaining || 1);
-      if (pred(msg)) return msg as T;
+      const message = await this.receiveOne(remaining || 1);
+      if (predicate(message)) return message as T;
     }
   }
 
@@ -166,8 +166,8 @@ export class TestProbe extends ActorRef<unknown> {
       };
       if (timeout > 0 && Number.isFinite(timeout)) {
         entry.timer = setTimeout(() => {
-          const idx = this.waiters.indexOf(entry);
-          if (idx >= 0) this.waiters.splice(idx, 1);
+          const index = this.waiters.indexOf(entry);
+          if (index >= 0) this.waiters.splice(index, 1);
           reject(new Error(`TestProbe timeout after ${timeout}ms`));
         }, timeout);
       }

@@ -3,18 +3,20 @@ title: JSON-Serializer
 description: JsonSerializer ist der Default — umschließt `JSON.stringify` / `JSON.parse` mit UTF-8-Kodierung. Menschenlesbar debugbar; universell. Die richtige Wahl, solange du nicht die Größe oder Geschwindigkeit von CBOR oder ein typisiertes Schema wie Protobuf brauchst.
 ---
 
-`JsonSerializer` ist der **Default**-Serializer.  Standard-JSON
-über `JSON.stringify` + `JSON.parse`; Bytes sind UTF-8.
+`JsonSerializer` ist der **Default**-Serializer.  Er umschließt
+`JSON.stringify` + `JSON.parse` (Bytes sind UTF-8) mit einem
+Baum-Walk, der zusätzlich `Date`, `Uint8Array`, `Map`, `Set` und
+`bigint` über Type-Tags round-trippt.
 
 ```ts
 import { JsonSerializer } from 'actor-ts';
 
 const serializer = new JsonSerializer();
-const bytes = serializer.toBinary({ kind: 'inc', n: 1 });
-//  → Uint8Array von '{"kind":"inc","n":1}' als UTF-8
+const bytes = serializer.toBinary({ kind: 'increment', n: 1 });
+//  → Uint8Array von '{"kind":"increment","n":1}' als UTF-8
 
 const decoded = serializer.fromBinary(bytes, '');
-//  → { kind: 'inc', n: 1 }
+//  → { kind: 'increment', n: 1 }
 ```
 
 ## Warum JSON der Default ist
@@ -35,18 +37,17 @@ deckt es ab.
 - Plain-Objekte, Arrays.
 - Strings, Zahlen, Booleans, `null`.
 - Verschachtelte Kombinationen.
+- `Date`, `Uint8Array`, `Map`, `Set` und `bigint` — über Type-Tags
+  (`__date__`, `__map__`, …) zurück in echte Instanzen round-getrippt.
 
-Was **verworfen oder transformiert** wird:
+Worauf du **achten** musst:
 
 | Typ | Verhalten |
 | --- | --- |
-| `undefined` | Aus Objekten / Arrays verworfen. |
-| `Date` | Über `toISOString()` stringified; geht als String durch den Round-Trip. |
-| `Map` / `Set` | Als leeres `{}` serialisiert. |
-| `BigInt` | Wirft `TypeError`. |
-| `Function` | Verworfen (in Objekten); Arrays werden zu `null`. |
-| `Symbol` | Verworfen. |
-| Klasseninstanzen | Als plain `{ ...fields }` serialisiert; Methoden verloren. |
+| `undefined` | **Wirft** einen `SerializationError` (strenger als rohes `JSON.stringify`, das es verwirft). |
+| `Function` / `Symbol` | **Werfen** einen `SerializationError`. |
+| Klasseninstanzen | Als plain `{ ...fields }` dekodiert; Methoden + Klassenidentität verloren. |
+| `Date` / `Map` / `Set` / `bigint` / `Uint8Array` | Round-trippen als echte Instanzen, aber das JSON trägt eine actor-ts-spezifische Tag-Form (z. B. `{"__date__":"…"}`) — ein einfacher (Nicht-actor-ts-)JSON-Leser sieht keinen blanken Wert. |
 
 Für **die meisten Actor-Nachrichten** ist das okay — die
 [Message-Konventionen](/de/fundamentals/messages/) des Frameworks
@@ -90,42 +91,45 @@ selten die operative Komplexität.
 
 import { Aside } from '@astrojs/starlight/components';
 
-<Aside type="caution" title="Date-Round-Trip">
+<Aside type="caution" title="Type-Tags round-trippen echte Instanzen">
   ```ts
-  ref.tell({ at: new Date() });
-  // Sender:   { at: Date(2025-05-13T12:00:00Z) }
-  // Empfänger: { at: "2025-05-13T12:00:00.000Z" }  ← String, kein Date
+  const serializer = new JsonSerializer();
+  const bytes = serializer.toBinary({ at: new Date('2025-05-13T12:00:00Z') });
+  // → {"at":{"__date__":"2025-05-13T12:00:00.000Z"}}
+  const back = serializer.fromBinary(bytes, '') as { at: Date };
+  // → { at: Date(2025-05-13T12:00:00.000Z) }  ← ein echtes Date
   ```
-  Der Empfänger bekommt einen **String**, kein `Date`.  Wandle
-  explizit:
-  ```ts
-  override onReceive(msg) {
-    const at = new Date(msg.at);   // String → Date
-  }
-  ```
-  Oder nimm in Nachrichten `Date.now()` (Zahl) statt
-  `new Date()`.
+  `JsonSerializer` stellt `Date`, `Map`, `Set`, `bigint` und
+  `Uint8Array` als echte Instanzen wieder her — aber über
+  actor-ts-spezifische Tags.  Ein Nicht-actor-ts-Consumer, der das
+  rohe JSON liest, sieht die Tag-Form, keinen blanken Wert.  Der
+  **Cluster-Wire** nutzt rohes `JSON.stringify` (nicht diesen
+  Serializer), sodass Cross-Node-`tell`s diesen Round-Trip **nicht**
+  bekommen — siehe die [Übersicht](/de/serialization/overview/).
 </Aside>
 
-<Aside type="caution" title="BigInt wirft">
+<Aside type="caution" title="`undefined`, Funktionen und Symbole werfen">
   ```ts
-  ref.tell({ id: 1234567890123456789n });   // ✗ TypeError
+  const serializer = new JsonSerializer();
+  serializer.toBinary({ run: () => 1 });   // ✗ SerializationError
+  serializer.toBinary({ x: undefined });   // ✗ SerializationError
   ```
-  JSON kann BigInt nicht serialisieren.  Wandle in der Nachricht
-  in einen String:
-  ```ts
-  ref.tell({ id: String(myBigInt) });
-  ```
-  Oder nimm CBOR, das BigInt-Support hat.
+  Anders als rohes `JSON.stringify` (das `undefined` und Funktionen
+  still verwirft) wirft `JsonSerializer` einen `SerializationError`.
+  Halte Nachrichten bei Plain-Data — `bigint` ist in Ordnung, es
+  round-trippt über einen Tag.
 </Aside>
 
-<Aside type="caution" title="`Map` und `Set` werden zu `{}`">
+<Aside type="caution" title="Klassenidentität bleibt nicht erhalten">
   ```ts
-  ref.tell({ m: new Map([['a', 1]]) });
-  // → JSON: { "m": {} } — Map-Einträge verloren
+  class Money { constructor(readonly cents: number) {} plus(n: number) { return this.cents + n; } }
+  const serializer = new JsonSerializer();
+  const back = serializer.fromBinary(serializer.toBinary(new Money(500)), '');
+  // → { cents: 500 }  ← Plain-Objekt, keine `plus()`-Methode, nicht `instanceof Money`
   ```
-  JSON weiß nicht, wie es Map / Set serialisieren soll.  Wandle
-  vor dem Senden in Arrays von Tupeln oder Plain-Objekte um.
+  Klasseninstanzen dekodieren zu Plain-Objekten — Datenfelder
+  überleben, Methoden und `instanceof` nicht.  Registriere einen
+  eigenen Serializer, wenn du klassenerhaltende Round-Trips brauchst.
 </Aside>
 
 ## Wohin als Nächstes

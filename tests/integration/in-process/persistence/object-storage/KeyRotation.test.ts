@@ -85,15 +85,15 @@ describe('SnapshotStore — master-key rotation', () => {
       .withBackend(backend)
       .withEncryption(legacyConfig);
     const legacyStore = new ObjectStorageSnapshotStore(legacyStoreOptions);
-    await legacyStore.save('legacy-1', 1, { msg: 'old data' });
+    await legacyStore.save('legacy-1', 1, { message: 'old data' });
 
     // Read with the new keyring shape that has v0 as active.
     const ringStoreOptions = ObjectStorageSnapshotStoreOptions.create()
       .withBackend(backend)
       .withEncryption({mode: 'client-aes256-gcm',masterKeys: { active: { version: 0, key: v0 } },});
     const ringStore = new ObjectStorageSnapshotStore(ringStoreOptions);
-    const loaded = await ringStore.loadLatest<{ msg: string }>('legacy-1');
-    expect(loaded.toNullable()?.state).toEqual({ msg: 'old data' });
+    const loaded = await ringStore.loadLatest<{ message: string }>('legacy-1');
+    expect(loaded.toNullable()?.state).toEqual({ message: 'old data' });
   });
 
   test('reading a body whose version is not in the keyring throws with operator-friendly hint', async () => {

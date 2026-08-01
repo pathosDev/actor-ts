@@ -21,7 +21,7 @@
 export type CompressionAlgo = 'none' | 'gzip' | 'zstd';
 
 /** Compression directive — what algorithm a single write should use. */
-export interface CompressionConfig {
+export type CompressionConfig = {
   readonly algorithm: CompressionAlgo;
   /**
    * Optional compression level — higher trades CPU for a smaller body.
@@ -31,8 +31,8 @@ export interface CompressionConfig {
    *   - `zstd`: 1–22 (default 3).  Levels ≥20 ("ultra") use large
    *     windows the pure-JS `fzstd` decompress-fallback may be unable to
    *     read (it caps at a 32 MB window) — keep ≤19 if any reader might
-   *     run on a runtime without native zstd (i.e. not Bun and not
-   *     Node ≥22.15).
+   *     run on a runtime without native zstd (i.e. neither Bun nor
+   *     Node).
    *   - `none`: ignored.
    *
    * The level is an encoder-only setting: it is NOT recorded on the wire
@@ -42,7 +42,7 @@ export interface CompressionConfig {
    * and the two mix freely in one bucket.
    */
   readonly level?: number;
-}
+};
 
 /**
  * One entry in a versioned master-key ring used by client-side
@@ -59,14 +59,14 @@ export interface CompressionConfig {
  * re-encrypted at the new version (e.g. via a re-encryption sweep),
  * the corresponding `retired` entry can be dropped.
  */
-export interface MasterKeyRingEntry {
+export type MasterKeyRingEntry = {
   /** 0..255 — embedded in the body manifest by `BodyCodec`. */
   readonly version: number;
   /** 32 bytes (AES-256). */
   readonly key: Uint8Array;
-}
+};
 
-export interface MasterKeyRing {
+export type MasterKeyRing = {
   /** Currently-active key — every new write encrypts under this one. */
   readonly active: MasterKeyRingEntry;
   /**
@@ -74,7 +74,7 @@ export interface MasterKeyRing {
    * version a manifest may reference must appear here OR as `active`.
    */
   readonly retired?: ReadonlyArray<MasterKeyRingEntry>;
-}
+};
 
 /**
  * Encryption directive — supports server-side modes (handed to the
@@ -130,11 +130,11 @@ export type IntegrityConfig =
  * fields optional — when omitted, the store falls back to its own
  * configuration (e.g. plugin defaults / per-pid resolver).
  */
-export interface PersistenceOptions {
+export type PersistenceOptions = {
   readonly compression?: CompressionConfig;
   readonly encryption?: EncryptionConfig;
   readonly integrity?: IntegrityConfig;
-}
+};
 
 /**
  * @deprecated Use `PersistenceOptions` — kept as an alias so the older

@@ -27,14 +27,15 @@ Fehler, wenn jeder Versuch fehlschlägt.
 ```ts
 function retry<T>(factory: () => Promise<T>, options: RetryOptions): Promise<T>;
 
-interface RetryOptions {
+type RetryOptions = {
   attempts:        number;     // gesamt inklusive initialer Call (>= 1)
   delayMs?:        number;     // Base-Delay zwischen Versuchen
   factor?:         number;     // Multiplikator für Exponential-Backoff (Default 1)
   maxDelayMs?:     number;     // Obergrenze für jedes einzelne Delay
   shouldRetry?:    (err: Error, attempt: number) => boolean;
   onAttempt?:      (err: Error, attempt: number) => void;
-}
+  sleep?:          (ms: number) => Promise<void>;  // wie das Delay gewartet wird
+};
 ```
 
 Das `attempts`-Feld ist **Gesamt-Versuche**, nicht Retries —
@@ -43,7 +44,7 @@ Das `attempts`-Feld ist **Gesamt-Versuche**, nicht Retries —
 
 ## Das Backoff konfigurieren
 
-Vier Knöpfe kooperieren zur Steuerung des Delays zwischen Versuchen:
+Drei Knöpfe kooperieren zur Steuerung des Delays zwischen Versuchen:
 
 | Setting | Was es tut |
 | --- | --- |
@@ -103,9 +104,9 @@ await retry(
 );
 ```
 
-`shouldRetry` läuft nach jedem fehlgeschlagenen Versuch.  Gib
-`false` zurück, um **kurzzuschließen** — die Retry-Loop endet
-sofort mit diesem Fehler, keine weiteren Versuche.
+`shouldRetry` läuft nach jedem fehlgeschlagenen Versuch außer dem
+letzten.  Gib `false` zurück, um **kurzzuschließen** — die
+Retry-Loop endet sofort mit diesem Fehler, keine weiteren Versuche.
 
 Verwende es, um zwischen transienten und permanenten Fehlern zu
 unterscheiden:
@@ -134,6 +135,49 @@ Verwende es für retry-bewusste Metriken und Logging — Counter pro
 Versuch, Spans fürs Tracing, Alerts auf "uns sind die Retries
 ausgegangen."
 
+## Das Backoff testen — `sleep`
+
+`sleep` entscheidet, *wie* das Delay zwischen Versuchen gewartet
+wird.  Default ist `setTimeout`, in Produktion brauchst du es also
+nie — überschreibe es in Tests, um die Retry-Schleife von der
+Wall-Clock zu lösen:
+
+```ts
+import { ManualScheduler, retry } from 'actor-ts';
+
+const scheduler = new ManualScheduler();
+const attemptTimes: number[] = [];
+
+await retry(
+  async () => { attemptTimes.push(scheduler.now()); throw new Error('fail'); },
+  {
+    attempts:   3,
+    delayMs:    20,
+    factor:     2,
+    maxDelayMs: 30,
+    sleep:      (ms) => new Promise<void>((resolve) => {
+      scheduler.scheduleOnceFunction(ms, resolve);
+      scheduler.advance(ms);
+    }),
+  },
+).catch(() => { /* erwartet */ });
+
+// Exakt 20ms, dann 40ms geklemmt auf maxDelayMs — und instant.
+expect(attemptTimes).toEqual([0, 20, 50]);
+```
+
+Jeder Sleep löst in dem Moment auf, in dem die virtuelle Zeit ihn
+erreicht — der Zeitplan wird also **exakt** geprüft und der Test
+kostet keine Wall-Clock-Zeit.  Stattdessen echte Abstände zu
+messen ist ein Flake mit Anlauf: ein 30-ms-`setTimeout` landet je
+nach Timer-Quantum der Plattform und Maschinenlast irgendwo
+zwischen etwa 19 ms und 200 ms — breit genug, dass ein gecapptes
+Delay von einem ungecappten nicht mehr zu unterscheiden ist.
+
+Dieselbe Hintertür wie [`random` bei
+`exponentialBackoff`](/de/patterns/backoff-policy/) — die
+Nichtdeterminismus-Quelle injizieren und dann festnageln.
+
 ## Verglichen mit BackoffSupervisor
 
 | Use Case | Greife zu... |
@@ -151,9 +195,9 @@ will, ist `retry` innerhalb von `onReceive` okay:
 
 ```ts
 class MyActor extends Actor<...> {
-  override async onReceive(msg): Promise<void> {
+  override async onReceive(message): Promise<void> {
     const result = await retry(
-      () => this.callDownstream(msg),
+      () => this.callDownstream(message),
       { attempts: 3, delayMs: 200, factor: 2 },
     );
     // ...
@@ -197,10 +241,10 @@ import { Aside } from '@astrojs/starlight/components';
   Es gibt keine eingebaute Cancellation.  Wenn du abbrechen musst,
   übergib ein `AbortSignal` an die Factory und prüfe es innen:
   ```ts
-  retry(() => longCall({ signal: ac.signal }), { attempts: 5, delayMs: 1000 });
+  retry(() => longCall({ signal: abortController.signal }), { attempts: 5, delayMs: 1000 });
   ```
-  Ein von der Factory geworfener `AbortError` umgeht den Default
-  "retrye alles" von `shouldRetry` — liefere ein `shouldRetry`,
+  Standardmäßig behandelt `retry` einen `AbortError` wie jeden
+  anderen Fehler und retryt ihn weiter — liefere ein `shouldRetry`,
   das für `AbortError` `false` zurückgibt, um bei Cancellation
   schnell zu scheitern.
 </Aside>

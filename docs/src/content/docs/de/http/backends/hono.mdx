@@ -52,7 +52,7 @@ await http.newServerAt('0.0.0.0', 8080)
 
 ```ts
 const backend = new HonoBackend();
-const honoApp = backend.app;   // ← in die Edge-Runtime exportieren
+const honoApp = backend.getApp();   // ← in die Edge-Runtime exportieren
 ```
 
 In Cloudflare Workers:
@@ -90,9 +90,9 @@ await http.newServerAt('0.0.0.0', 8080)
   .useBackend(backend)
   .bind(routes);
 
-backend.app.use('*', logger());
-backend.app.use('/api/*', cors());
-backend.app.use('*', secureHeaders());
+backend.getApp().use('*', logger());
+backend.getApp().use('/api/*', cors());
+backend.getApp().use('*', secureHeaders());
 ```
 
 Honos Middleware-Ökosystem ist kleiner als das von Express, deckt

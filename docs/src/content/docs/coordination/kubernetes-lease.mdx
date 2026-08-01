@@ -31,7 +31,7 @@ scheduling, network partition between pods, etc.
 ## Configuration
 
 ```ts
-interface KubernetesLeaseOptionsType {
+type KubernetesLeaseOptionsType = {
   // From LeaseOptionsType:
   name:                  string;
   owner:                 string;
@@ -42,23 +42,25 @@ interface KubernetesLeaseOptionsType {
 
   // K8s-specific:
   namespace:             string;
-  apiBaseUrl?:           string;     // override the in-cluster default
-  serviceAccountToken?:  string;     // override the in-cluster default
-}
+  apiServerUrl?:         string;     // override the in-cluster default
+  authToken?:            string;     // override the in-cluster default
+  caCert?:               string;     // override the in-cluster default
+};
 ```
 
 | K8s field | Default | What |
 | --- | --- | --- |
 | `namespace` | required | K8s namespace where the Lease resource lives. |
-| `apiBaseUrl` | in-cluster | The K8s API server URL — defaults to `https://kubernetes.default.svc`. |
-| `serviceAccountToken` | in-cluster | The pod's service account token — defaults to `/var/run/secrets/kubernetes.io/serviceaccount/token`. |
+| `apiServerUrl` | in-cluster | The K8s API server URL — defaults to `https://kubernetes.default.svc`. |
+| `authToken` | in-cluster | The pod's service account token — defaults to `/var/run/secrets/kubernetes.io/serviceaccount/token`. |
+| `caCert` | in-cluster | PEM-encoded CA cert for the API server's TLS — defaults to `/var/run/secrets/kubernetes.io/serviceaccount/ca.crt`. |
 
 For pods running in-cluster, you only need `namespace` and `name`
 (+ the standard `LeaseOptionsType` fields).  The framework reads the
 API URL and token from the standard locations.
 
 For tests / dev pointing at a local K8s API (kind, minikube),
-override `apiBaseUrl` + `serviceAccountToken`.
+override `apiServerUrl` + `authToken` + `caCert`.
 
 ## RBAC
 
@@ -152,25 +154,34 @@ lease produce one winner.
 
 ## Renewal
 
-While holding, the framework patches `spec.renewTime` every
-`renewalIntervalMs`:
+While holding, the framework re-`PUT`s the whole `Lease` object with a
+bumped `spec.renewTime` every `renewalIntervalMs`:
 
 ```
-PATCH /apis/coordination.k8s.io/v1/namespaces/<ns>/leases/<name>
-{ spec: { renewTime: "2025-05-13T12:00:00.000Z" } }
+PUT /apis/coordination.k8s.io/v1/namespaces/<ns>/leases/<name>
+{
+  metadata: { resourceVersion: "148302", ... },  // echoed back for the CAS
+  spec: { holderIdentity: "pod-abc-1", leaseDurationSeconds: 30,
+          renewTime: "2025-05-13T12:00:00.000Z" }
+}
 ```
 
-If the patch fails:
+The `resourceVersion` from the last read turns the write into an
+optimistic-concurrency compare-and-set — K8s rejects with 409 if anyone
+else mutated the object since.
 
-- **Transient (5xx, connection refused)** → retry, log, eventually
-  give up if `ttlMs` elapses without success.
-- **CAS conflict (409)** → another holder took over; fire `onLost`.
+If the write fails, renewal gives up immediately and fires `onLost` —
+there is no retry budget inside the loop:
+
+- **Transient (5xx, connection refused, timeout)** → fire `onLost`.
+- **CAS conflict (409) or 404** → another holder took over, or the
+  object was deleted; fire `onLost`.
 
 ## Loss detection
 
 `onLost` fires when:
 
-- A renewal patch returns CAS conflict.
+- A renewal PUT returns CAS conflict.
 - The framework observes the lease was modified by someone else
   (a probe GET before some critical operation).
 - Network partition prevents renewal for longer than `ttlMs`.
@@ -183,8 +194,8 @@ The handler should drop ownership state immediately — see
 Each lease holder generates:
 
 - 1 GET + (potentially) 1 CREATE on acquire.
-- 1 PATCH every `renewalIntervalMs` while holding.
-- 1 PATCH (or DELETE) on release.
+- 1 PUT every `renewalIntervalMs` while holding.
+- 1 DELETE on release.
 
 For a 30-second TTL with 10-second renewal, that's **~6 API
 calls per minute per lease**.  Pennies on any modest K8s
@@ -217,7 +228,7 @@ import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="Token rotation">
   ```ts
-  serviceAccountToken: 'eyJ...';   // ✗ static token
+  authToken: 'eyJ...';   // ✗ static token
   ```
   In-cluster tokens are auto-rotated; using the kubelet-mounted
   token via the default path works seamlessly.  Hard-coded
@@ -236,6 +247,7 @@ const kubernetesLeaseOptions = KubernetesLeaseOptions.create()
   .withTtlMs(5_000)
   .withApiServerUrl('https://localhost:8443')
   .withAuthToken(fs.readFileSync('./test-token', 'utf-8'))
+  .withCaCert(fs.readFileSync('./test-ca.crt', 'utf-8'))
   .withNamespace('test');
 const lease = new KubernetesLease(
   kubernetesLeaseOptions,

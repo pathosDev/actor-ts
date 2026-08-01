@@ -1,3 +1,4 @@
+import { match } from 'ts-pattern';
 import type { Config } from '../../config/Config.js';
 import { ConfigKeys } from '../../config/ConfigKeys.js';
 import { Lazy } from '../../util/Lazy.js';
@@ -6,20 +7,22 @@ import { UdpSocketOptionsValidator } from './UdpSocketOptions.js';
 import type { UdpSocketOptions, UdpSocketOptionsType } from './UdpSocketOptions.js';
 
 /** Inbound datagram delivered to the target actor. */
-export interface UdpDatagram {
+export type UdpDatagram = {
   readonly payload: Uint8Array;
   readonly remoteHost: string;
   readonly remotePort: number;
-}
+};
 
 /** Outbound datagram — explicit destination (UDP is not connection-oriented). */
-export interface UdpOutbound {
+export type UdpOutbound = {
   readonly payload: Uint8Array | string;
   readonly host: string;
   readonly port: number;
-}
+};
 
-export type UdpSocketCommand = { readonly kind: 'send'; readonly datagram: UdpOutbound };
+type SendCommand = { readonly kind: 'send'; readonly datagram: UdpOutbound };
+
+export type UdpSocketCommand = SendCommand;
 
 /**
  * UDP-socket actor.  Uses `node:dgram` (built-in everywhere).  No
@@ -69,9 +72,9 @@ export class UdpSocketActor
         this.socket = sock;
         const addr = sock.address();
         this.actualPort = addr.port;
-        sock.on('message', (msg, rinfo) => {
+        sock.on('message', (message, rinfo) => {
           this.options.target?.tell({
-            payload: msg, remoteHost: rinfo.address, remotePort: rinfo.port,
+            payload: message, remoteHost: rinfo.address, remotePort: rinfo.port,
           });
         });
         sock.on('error', (e) => this.handleConnectionLost(e));
@@ -110,21 +113,27 @@ export class UdpSocketActor
     });
   }
 
-  override onReceive(cmd: UdpSocketCommand): void {
-    if (cmd.kind === 'send') this.enqueueOutbound(cmd.datagram);
+  override onReceive(command: UdpSocketCommand): void {
+    match(command)
+      .with({ kind: 'send' }, (c) => this.onSend(c))
+      .exhaustive();
+  }
+
+  private onSend(command: SendCommand): void {
+    this.enqueueOutbound(command.datagram);
   }
 }
 
 /* ---------------------------- internals --------------------------------- */
 
 interface DgramSocket {
-  on(event: 'message', cb: (msg: Uint8Array, rinfo: { address: string; port: number }) => void): void;
+  on(event: 'message', cb: (message: Uint8Array, rinfo: { address: string; port: number }) => void): void;
   on(event: 'error', cb: (err: Error) => void): void;
   once(event: 'listening', cb: () => void): void;
   once(event: 'error', cb: (err: Error) => void): void;
   removeAllListeners(event?: string): void;
   bind(port: number, host?: string): void;
-  send(msg: Uint8Array, port: number, host: string, cb: (err?: Error) => void): void;
+  send(message: Uint8Array, port: number, host: string, cb: (err?: Error) => void): void;
   close(cb?: () => void): void;
   address(): { port: number; address: string };
 }

@@ -25,9 +25,9 @@
  * caught.  Adversarial test cases live alongside each backend.
  */
 
-export interface KeyValidationRules {
+export type KeyValidationRules = {
   /** Error constructor used for every thrown rejection. */
-  readonly errorClass: new (msg: string) => Error;
+  readonly errorClass: new (message: string) => Error;
   /**
    * Phrase prepended to every rejection message — typically the
    * backend name ('memcached key', 'invalid key' for FS, etc.).
@@ -67,7 +67,7 @@ export interface KeyValidationRules {
    * the tree on `path.resolve()`.  Default: false.
    */
   readonly rejectRelativeTraversal?: boolean;
-}
+};
 
 /**
  * Build a key-validator function from a rule set.  Returns
@@ -124,10 +124,10 @@ export function makeKeyValidator(rules: KeyValidationRules): (key: string) => vo
       throw new errorClass(`${errorPrefix}: NUL byte not allowed`);
     }
     if (rejectSpace) {
-      const spaceIdx = key.indexOf(' ');
-      if (spaceIdx >= 0) {
+      const spaceIndex = key.indexOf(' ');
+      if (spaceIndex >= 0) {
         throw new errorClass(
-          `${errorPrefix}: contains space at index ${spaceIdx} — would allow protocol injection`,
+          `${errorPrefix}: contains space at index ${spaceIndex} — would allow protocol injection`,
         );
       }
     }

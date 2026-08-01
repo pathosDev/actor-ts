@@ -20,14 +20,14 @@
  */
 import type { PgClientLike, PgPoolLike, PgQueryResult } from '../../../../src/persistence/journals/PostgresClient.js';
 
-interface EventRow { persistence_id: string; sequence_nr: number; payload: string; tags: string | null; timestamp: number; }
-interface TagRow { persistence_id: string; sequence_nr: number; tag: string; timestamp: number; }
-interface SnapRow { persistence_id: string; sequence_nr: number; payload: string; timestamp: number; }
-interface StateRow { persistence_id: string; revision: number; payload: string; timestamp: number; }
+type EventRow = { persistence_id: string; sequence_nr: number; payload: string; tags: string | null; timestamp: number; };
+type TagRow = { persistence_id: string; sequence_nr: number; tag: string; timestamp: number; };
+type SnapRow = { persistence_id: string; sequence_nr: number; payload: string; timestamp: number; };
+type StateRow = { persistence_id: string; revision: number; payload: string; timestamp: number; };
 
 class PgUniqueViolation extends Error {
   readonly code = '23505';
-  constructor(msg: string) { super(msg); this.name = 'PgUniqueViolation'; }
+  constructor(message: string) { super(message); this.name = 'PgUniqueViolation'; }
 }
 
 const norm = (sql: string): string => sql.replace(/\s+/g, ' ').trim();
@@ -43,6 +43,8 @@ export class FakePgPool implements PgPoolLike {
   private readonly tags = new Map<string, TagRow[]>();
   private readonly snaps = new Map<string, SnapRow[]>();
   private readonly states = new Map<string, Map<string, StateRow>>();
+  /** Compaction high-water mark: meta table name → persistence_id → deleted_to. */
+  private readonly meta = new Map<string, Map<string, number>>();
   ended = false;
   /** Every statement text, in order — lets tests assert on the issued SQL. */
   readonly log: string[] = [];
@@ -60,6 +62,21 @@ export class FakePgPool implements PgPoolLike {
       const rows = (this.events.get(table) ?? []).filter((r) => r.persistence_id === valuesArray[0]);
       const hi = rows.reduce((map, r) => Math.max(map, r.sequence_nr), 0);
       return { rows: [{ hi: String(hi) }], rowCount: 1 };
+    }
+
+    // ---- meta (compaction high-water mark) ----
+    if (/^INSERT INTO \w+\s*\(persistence_id, deleted_to\)/i.test(sql)) {
+      const table = tableFrom(sql, 'INTO');
+      const map = this.meta.get(table) ?? (this.meta.set(table, new Map()), this.meta.get(table)!);
+      const [persistence_id, deletedTo] = valuesArray as [string, number];
+      // ON CONFLICT … DO UPDATE SET deleted_to = GREATEST(existing, incoming)
+      map.set(persistence_id, Math.max(map.get(persistence_id) ?? 0, deletedTo));
+      return { rows: [], rowCount: 1 };
+    }
+    if (/^SELECT COALESCE\(deleted_to, 0\) AS d FROM/i.test(sql)) {
+      const table = tableFrom(sql, 'FROM');
+      const value = this.meta.get(table)?.get(valuesArray[0] as string);
+      return value === undefined ? { rows: [], rowCount: 0 } : { rows: [{ d: String(value) }], rowCount: 1 };
     }
 
     if (/^INSERT INTO \w+\s*\(persistence_id, sequence_nr, payload, tags, timestamp\)/i.test(sql)) {
@@ -85,9 +102,9 @@ export class FakePgPool implements PgPoolLike {
     if (/^SELECT persistence_id, sequence_nr, payload, tags, timestamp FROM/i.test(sql)) {
       const table = tableFrom(sql, 'FROM');
       const hasUpper = sql.includes('sequence_nr <= $3');
-      const [pid, from, to] = valuesArray as [string, number, number?];
+      const [persistenceId, from, to] = valuesArray as [string, number, number?];
       const rows = (this.events.get(table) ?? [])
-        .filter((r) => r.persistence_id === pid && r.sequence_nr >= from && (!hasUpper || r.sequence_nr <= (to as number)))
+        .filter((r) => r.persistence_id === persistenceId && r.sequence_nr >= from && (!hasUpper || r.sequence_nr <= (to as number)))
         .sort((a, b) => a.sequence_nr - b.sequence_nr)
         .map((r) => ({ ...r, sequence_nr: String(r.sequence_nr), timestamp: String(r.timestamp) }));
       return { rows, rowCount: rows.length };
@@ -103,21 +120,21 @@ export class FakePgPool implements PgPoolLike {
       const table = tableFrom(sql, 'FROM');
       // events_tags / events: WHERE persistence_id=$1 AND sequence_nr <= $2
       if (/sequence_nr <= \$2/i.test(sql)) {
-        const [pid, toSeq] = valuesArray as [string, number];
+        const [persistenceId, toSeq] = valuesArray as [string, number];
         for (const map of [this.tags, this.events]) {
           const arr = map.get(table);
-          if (arr) map.set(table, arr.filter((r) => !(r.persistence_id === pid && (r as { sequence_nr: number }).sequence_nr <= toSeq)) as never);
+          if (arr) map.set(table, arr.filter((r) => !(r.persistence_id === persistenceId && (r as { sequence_nr: number }).sequence_nr <= toSeq)) as never);
         }
         const snapArr = this.snaps.get(table);
-        if (snapArr) this.snaps.set(table, snapArr.filter((r) => !(r.persistence_id === pid && r.sequence_nr <= toSeq)));
+        if (snapArr) this.snaps.set(table, snapArr.filter((r) => !(r.persistence_id === persistenceId && r.sequence_nr <= toSeq)));
         return { rows: [], rowCount: 0 };
       }
       // snapshot keepN prune: … WHERE persistence_id=$1 AND sequence_nr NOT IN (… LIMIT $2)
       if (/NOT IN/i.test(sql)) {
-        const [pid, keepN] = valuesArray as [string, number];
-        const arr = (this.snaps.get(table) ?? []).filter((r) => r.persistence_id === pid).sort((a, b) => b.sequence_nr - a.sequence_nr);
+        const [persistenceId, keepN] = valuesArray as [string, number];
+        const arr = (this.snaps.get(table) ?? []).filter((r) => r.persistence_id === persistenceId).sort((a, b) => b.sequence_nr - a.sequence_nr);
         const keep = new Set(arr.slice(0, keepN).map((r) => r.sequence_nr));
-        this.snaps.set(table, (this.snaps.get(table) ?? []).filter((r) => r.persistence_id !== pid || keep.has(r.sequence_nr)));
+        this.snaps.set(table, (this.snaps.get(table) ?? []).filter((r) => r.persistence_id !== persistenceId || keep.has(r.sequence_nr)));
         return { rows: [], rowCount: 0 };
       }
       // durable_state delete: WHERE persistence_id=$1
@@ -138,9 +155,9 @@ export class FakePgPool implements PgPoolLike {
     if (/^SELECT persistence_id, sequence_nr, payload, timestamp FROM/i.test(sql)) {
       const table = tableFrom(sql, 'FROM');
       const before = sql.includes('sequence_nr < $2');
-      const [pid, seq] = valuesArray as [string, number?];
+      const [persistenceId, seq] = valuesArray as [string, number?];
       const rows = (this.snaps.get(table) ?? [])
-        .filter((r) => r.persistence_id === pid && (!before || r.sequence_nr < (seq as number)))
+        .filter((r) => r.persistence_id === persistenceId && (!before || r.sequence_nr < (seq as number)))
         .sort((a, b) => b.sequence_nr - a.sequence_nr);
       const row = rows[0];
       return { rows: row ? [{ ...row, sequence_nr: String(row.sequence_nr), timestamp: String(row.timestamp) }] : [], rowCount: row ? 1 : 0 };

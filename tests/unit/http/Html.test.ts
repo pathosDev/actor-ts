@@ -84,11 +84,11 @@ describe('html tagged template', () => {
 
 describe('completeHtml', () => {
   test('sets text/html and nosniff', () => {
-    const res = completeHtml(200, html`<h1>hi</h1>`);
-    expect(res.status).toBe(200);
-    expect(res.contentType).toBe('text/html; charset=utf-8');
-    expect(res.headers?.['x-content-type-options']).toBe('nosniff');
-    expect(res.body).toBe('<h1>hi</h1>');
+    const response = completeHtml(200, html`<h1>hi</h1>`);
+    expect(response.status).toBe(200);
+    expect(response.contentType).toBe('text/html; charset=utf-8');
+    expect(response.headers?.['x-content-type-options']).toBe('nosniff');
+    expect(response.body).toBe('<h1>hi</h1>');
   });
 
   test('accepts a raw string body', () => {
@@ -96,8 +96,8 @@ describe('completeHtml', () => {
   });
 
   test('supplied headers win over the nosniff default', () => {
-    const res = completeHtml(200, html`x`, { 'x-content-type-options': 'off', 'x-extra': '1' });
-    expect(res.headers?.['x-content-type-options']).toBe('off');
-    expect(res.headers?.['x-extra']).toBe('1');
+    const response = completeHtml(200, html`x`, { 'x-content-type-options': 'off', 'x-extra': '1' });
+    expect(response.headers?.['x-content-type-options']).toBe('off');
+    expect(response.headers?.['x-extra']).toBe('1');
   });
 });

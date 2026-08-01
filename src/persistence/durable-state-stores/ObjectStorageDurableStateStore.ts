@@ -33,7 +33,7 @@ import type { ObjectStorageDurableStateStoreOptions, ObjectStorageDurableStateSt
 /**
  * DurableState backed by any `ObjectStorageBackend`.  Each
  * `persistenceId` lives at the single key
- * `<prefix><pid>/state.json` and is rewritten in place — there is no
+ * `<prefix><persistenceId>/state.json` and is rewritten in place — there is no
  * sequence-padded history, and `revision` lives entirely in the body.
  *
  * Strict CAS via ETag.  Every successful `load` and `upsert` caches the
@@ -51,13 +51,14 @@ import type { ObjectStorageDurableStateStoreOptions, ObjectStorageDurableStateSt
 const utf8 = new TextEncoder();
 const utf8Decoder = new TextDecoder();
 
-interface CachedEntry {
+type CachedEntry = {
   readonly etag: string;
   readonly revision: number;
-}
+};
 
 export class ObjectStorageDurableStateStore implements DurableStateStore {
   private readonly backend: ObjectStorageBackend;
+  private readonly ownsBackend: boolean;
   private readonly prefix: string;
   private readonly compression: CompressionConfig | CompressionResolver | undefined;
   private readonly encryption: EncryptionConfig | EncryptionResolver | undefined;
@@ -71,6 +72,7 @@ export class ObjectStorageDurableStateStore implements DurableStateStore {
     if (resolvedOptions.backend === undefined) throw new Error('ObjectStorageDurableStateStore: backend is required (call withBackend()).');
     new ObjectStorageDurableStateStoreOptionsValidator().validate(resolvedOptions);
     this.backend = resolvedOptions.backend;
+    this.ownsBackend = resolvedOptions.ownsBackend ?? true;
     this.prefix = resolvedOptions.prefix ?? '';
     this.compression = resolvedOptions.compression;
     this.encryption = resolvedOptions.encryption;
@@ -79,22 +81,22 @@ export class ObjectStorageDurableStateStore implements DurableStateStore {
     this.maxDecompressedBytes = resolvedOptions.maxDecompressedBytes ?? DEFAULT_MAX_DECOMPRESSED_BYTES;
   }
 
-  async load<S>(pid: string, options?: PersistenceOptions): Promise<Option<DurableStateRecord<S>>> {
-    const fetched = await this.backend.get(this.keyFor(pid));
+  async load<S>(persistenceId: string, options?: PersistenceOptions): Promise<Option<DurableStateRecord<S>>> {
+    const fetched = await this.backend.get(this.keyFor(persistenceId));
     if (fetched.isNone()) return none;
     // Per-call encryption (from the actor) wins over the plugin default.
     const encryption = options?.encryption
-      ?? resolveEncryption(this.encryption, pid, { mode: 'none' });
+      ?? resolveEncryption(this.encryption, persistenceId, { mode: 'none' });
     const integrity = options?.integrity
-      ?? resolveIntegrity(this.integrity, pid, { mode: 'none' });
+      ?? resolveIntegrity(this.integrity, persistenceId, { mode: 'none' });
     if (this.requireIntegrity && integrity.mode !== 'hmac-sha256') {
       throw new JournalError(
         `ObjectStorageDurableStateStore.load: requireIntegrity=true demands `
-        + `an integrity config with mode='hmac-sha256' (pid=${pid}).`,
+        + `an integrity config with mode='hmac-sha256' (persistenceId=${persistenceId}).`,
       );
     }
-    const subKeyFor = resolveDecryptSubkey(encryption, pid);
-    const decodeOpts: import('../object-storage/BodyCodec.js').DecodeOptions = {
+    const subKeyFor = resolveDecryptSubkey(encryption, persistenceId);
+    const decodeOptions: import('../object-storage/BodyCodec.js').DecodeOptions = {
       ...(subKeyFor ? { encryption: { subKeyFor } } : {}),
       ...(integrity.mode === 'hmac-sha256'
         ? {
@@ -108,24 +110,24 @@ export class ObjectStorageDurableStateStore implements DurableStateStore {
     };
     let decoded: import('../object-storage/BodyCodec.js').DecodedBody;
     try {
-      decoded = await decodeBody(fetched.value.body, decodeOpts);
+      decoded = await decodeBody(fetched.value.body, decodeOptions);
     } catch (e) {
       throw new JournalError(
-        `ObjectStorageDurableStateStore.load: integrity / decode failure for ${pid}`,
+        `ObjectStorageDurableStateStore.load: integrity / decode failure for ${persistenceId}`,
         e,
       );
     }
     let parsed: { revision: number; state: S; timestamp: number };
     try { parsed = JSON.parse(utf8Decoder.decode(decoded.payload)); }
     catch (e) {
-      throw new JournalError(`ObjectStorageDurableStateStore.load: malformed JSON for ${pid}`, e);
+      throw new JournalError(`ObjectStorageDurableStateStore.load: malformed JSON for ${persistenceId}`, e);
     }
     // Cache AFTER decode succeeds (integrity check inside decodeBody).
     // Before #116 we cached before parsing; an attacker could tamper
     // with the revision in the body and the cache would trust it.
-    this.etagCache.set(pid, { etag: fetched.value.etag, revision: parsed.revision });
+    this.etagCache.set(persistenceId, { etag: fetched.value.etag, revision: parsed.revision });
     return some({
-      persistenceId: pid,
+      persistenceId: persistenceId,
       revision: parsed.revision,
       state: parsed.state,
       timestamp: parsed.timestamp,
@@ -133,7 +135,7 @@ export class ObjectStorageDurableStateStore implements DurableStateStore {
   }
 
   async upsert<S>(
-    pid: string,
+    persistenceId: string,
     expectedRevision: number,
     state: S,
     options?: PersistenceOptions,
@@ -144,16 +146,16 @@ export class ObjectStorageDurableStateStore implements DurableStateStore {
     // Per-call options take precedence over plugin defaults / resolver —
     // matches the SnapshotStore precedence order.
     const compression = options?.compression
-      ?? resolveCompression(this.compression, pid, { algorithm: 'gzip' });
+      ?? resolveCompression(this.compression, persistenceId, { algorithm: 'gzip' });
     const encryption = options?.encryption
-      ?? resolveEncryption(this.encryption, pid, { mode: 'none' });
+      ?? resolveEncryption(this.encryption, persistenceId, { mode: 'none' });
     const integrity = options?.integrity
-      ?? resolveIntegrity(this.integrity, pid, { mode: 'none' });
+      ?? resolveIntegrity(this.integrity, persistenceId, { mode: 'none' });
 
     const now = Date.now();
     const newRevision = expectedRevision + 1;
     const json = JSON.stringify({ revision: newRevision, state, timestamp: now });
-    const active = await activeEncryptKey(encryption, pid);
+    const active = await activeEncryptKey(encryption, persistenceId);
     const stampVersion = active && isVersionedKeyShape(encryption);
     const body = await encodeBody(utf8.encode(json), {
       compression: compression.algorithm,
@@ -169,13 +171,13 @@ export class ObjectStorageDurableStateStore implements DurableStateStore {
         : {}),
     });
 
-    const cached = this.etagCache.get(pid);
+    const cached = this.etagCache.get(persistenceId);
 
     // If we have a cached snapshot and its revision doesn't match what the
     // caller expects, the caller is stale — surface CAS up-front rather
     // than overwriting the wrong record.
     if (cached !== undefined && cached.revision !== expectedRevision) {
-      throw new DurableStateConcurrencyError(pid, expectedRevision, cached.revision);
+      throw new DurableStateConcurrencyError(persistenceId, expectedRevision, cached.revision);
     }
 
     const ifMatch = expectedRevision === 0 ? undefined : cached?.etag;
@@ -191,21 +193,21 @@ export class ObjectStorageDurableStateStore implements DurableStateStore {
       // recover.
       // Pass `options` so the cache-refresh load can decrypt with the
       // caller's encryption preferences.
-      const opt = await this.load<S>(pid, options);
-      if (opt.isNone()) {
-        throw new DurableStateConcurrencyError(pid, expectedRevision, 0);
+      const option = await this.load<S>(persistenceId, options);
+      if (option.isNone()) {
+        throw new DurableStateConcurrencyError(persistenceId, expectedRevision, 0);
       }
-      if (opt.value.revision !== expectedRevision) {
-        throw new DurableStateConcurrencyError(pid, expectedRevision, opt.value.revision);
+      if (option.value.revision !== expectedRevision) {
+        throw new DurableStateConcurrencyError(persistenceId, expectedRevision, option.value.revision);
       }
     }
 
-    const refreshedEtag = this.etagCache.get(pid)?.etag;
+    const refreshedEtag = this.etagCache.get(persistenceId)?.etag;
     const effectiveIfMatch = expectedRevision === 0 ? undefined : refreshedEtag;
 
     let etag: string;
     try {
-      const result = await this.backend.put(this.keyFor(pid), body, {
+      const result = await this.backend.put(this.keyFor(persistenceId), body, {
         contentType: 'application/json',
         contentEncoding: compression.algorithm === 'none' ? undefined : compression.algorithm,
         ifMatch: effectiveIfMatch,
@@ -217,35 +219,44 @@ export class ObjectStorageDurableStateStore implements DurableStateStore {
       etag = result.etag;
     } catch (e) {
       if (e instanceof ObjectStorageConcurrencyError) {
+        // Drop the cached etag: the backend just told us it is stale, and the
+        // `If-Match` above is built from this cache.  Keeping it meant every
+        // retry re-sent the same stale etag and was rejected again, so an
+        // entry stayed wedged until something happened to call `load` (which
+        // refreshes the cache) or `delete`.  Forgetting it makes the next
+        // attempt fetch the real etag instead.
+        this.etagCache.delete(persistenceId);
         // -1 communicates "the backend rejected us, but didn't tell us the
         // current revision; load() will fetch the truth".
-        throw new DurableStateConcurrencyError(pid, expectedRevision, -1);
+        throw new DurableStateConcurrencyError(persistenceId, expectedRevision, -1);
       }
       throw e;
     }
 
-    this.etagCache.set(pid, { etag, revision: newRevision });
-    return { persistenceId: pid, revision: newRevision, state, timestamp: now };
+    this.etagCache.set(persistenceId, { etag, revision: newRevision });
+    return { persistenceId: persistenceId, revision: newRevision, state, timestamp: now };
   }
 
-  async delete(pid: string): Promise<void> {
-    await this.backend.delete(this.keyFor(pid));
-    this.etagCache.delete(pid);
+  async delete(persistenceId: string): Promise<void> {
+    await this.backend.delete(this.keyFor(persistenceId));
+    this.etagCache.delete(persistenceId);
   }
 
   async close(): Promise<void> {
     this.etagCache.clear();
-    await this.backend.close?.();
+    // Only close a backend we own.  When it's shared (e.g. registerObjectStoragePlugins
+    // hands the same backend to the snapshot + durable-state stores) the owner closes it.
+    if (this.ownsBackend) await this.backend.close?.();
   }
 
-  /** Test hook — drop the cached ETag for a pid (simulates actor restart). */
-  forgetEtagForTest(pid: string): void {
-    this.etagCache.delete(pid);
+  /** Test hook — drop the cached ETag for a persistenceId (simulates actor restart). */
+  forgetEtagForTest(persistenceId: string): void {
+    this.etagCache.delete(persistenceId);
   }
 
   /* ----------------------------- internals ------------------------------ */
 
-  private keyFor(pid: string): string {
-    return `${this.prefix}${pid}/state.json`;
+  private keyFor(persistenceId: string): string {
+    return `${this.prefix}${persistenceId}/state.json`;
   }
 }

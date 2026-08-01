@@ -214,10 +214,10 @@ export class Config {
   }
 }
 
-export interface LoadOptions {
+export type LoadOptions = {
   readonly appConfPath?: string;
   readonly overrides?: Config | unknown;
-}
+};
 
 /** Thrown on type mismatches or missing paths. */
 export class ConfigError extends Error {

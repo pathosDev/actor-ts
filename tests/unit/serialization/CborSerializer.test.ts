@@ -17,14 +17,14 @@ describe('CborSerializer', () => {
   });
 
   test('round-trips typical actor messages', () => {
-    const msg = {
+    const message = {
       id: 'alice',
       op: 'deposit' as const,
       amount: 100.5,
       metadata: { traceId: 'abc-123' },
       retries: [1, 2, 3],
     };
-    expect(rt(msg)).toEqual(msg);
+    expect(rt(message)).toEqual(message);
   });
 
   test('round-trips nested Uint8Array without base64 overhead', () => {
@@ -36,8 +36,8 @@ describe('CborSerializer', () => {
   });
 
   test('CBOR is smaller than JSON for integer-heavy messages', () => {
-    const msg = { ids: Array.from({ length: 32 }, (_, i) => i * 1000) };
-    expect(cbor.toBinary(msg).byteLength).toBeLessThan(json.toBinary(msg).byteLength);
+    const message = { ids: Array.from({ length: 32 }, (_, i) => i * 1000) };
+    expect(cbor.toBinary(message).byteLength).toBeLessThan(json.toBinary(message).byteLength);
   });
 
   test('CBOR is smaller than JSON for byte payloads (no base64 overhead)', () => {

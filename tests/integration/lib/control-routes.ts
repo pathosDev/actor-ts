@@ -17,6 +17,7 @@ import {
   Status,
   type Route,
 } from '../../../src/http/index.js';
+import { match } from 'ts-pattern';
 import { Actor } from '../../../src/Actor.js';
 import { Props } from '../../../src/Props.js';
 import type { ActorRef } from '../../../src/ActorRef.js';
@@ -166,9 +167,9 @@ class ExtraWorker extends Actor<unknown> {
  */
 type SlowSinkMessage = { kind: 'process'; sleepMs: number };
 class SlowSink extends Actor<SlowSinkMessage> {
-  override async onReceive(msg: SlowSinkMessage): Promise<void> {
-    if (msg.sleepMs > 0) {
-      await new Promise<void>((r) => setTimeout(r, msg.sleepMs));
+  override async onReceive(message: SlowSinkMessage): Promise<void> {
+    if (message.sleepMs > 0) {
+      await new Promise<void>((r) => setTimeout(r, message.sleepMs));
     }
   }
 }
@@ -202,22 +203,22 @@ class CounterStateCollector extends Actor<CounterStateReply> {
  * (kind: 'event', seq, text) so it survives wire-serialisation
  * to remote mediators without prototype loss.
  */
-interface PubSubEvent {
+type PubSubEvent = {
   readonly kind: 'event';
   readonly seq: number;
   readonly text: string;
-}
+};
 
-interface PubSubSnapshotQuery {
+type PubSubSnapshotQuery = {
   readonly kind: 'snapshot';
   readonly replyTo: ActorRef<PubSubSnapshot>;
-}
+};
 
-interface PubSubSnapshot {
+type PubSubSnapshot = {
   readonly received: number;
   readonly lastSeq: number;
   readonly lastText: string | null;
-}
+};
 
 /**
  * Long-lived PubSub subscriber for scenario 12.  Accumulates every
@@ -229,17 +230,24 @@ class PubSubReceiver extends Actor<PubSubEvent | PubSubSnapshotQuery> {
   private lastSeq = -1;
   private lastText: string | null = null;
   override onReceive(m: PubSubEvent | PubSubSnapshotQuery): void {
-    if (m.kind === 'event') {
-      this.received += 1;
-      this.lastSeq = m.seq;
-      this.lastText = m.text;
-    } else if (m.kind === 'snapshot') {
-      m.replyTo.tell({
-        received: this.received,
-        lastSeq: this.lastSeq,
-        lastText: this.lastText,
-      });
-    }
+    match(m)
+      .with({ kind: 'event' }, (e) => this.onEvent(e))
+      .with({ kind: 'snapshot' }, (q) => this.onSnapshot(q))
+      .exhaustive();
+  }
+
+  private onEvent(event: PubSubEvent): void {
+    this.received += 1;
+    this.lastSeq = event.seq;
+    this.lastText = event.text;
+  }
+
+  private onSnapshot(query: PubSubSnapshotQuery): void {
+    query.replyTo.tell({
+      received: this.received,
+      lastSeq: this.lastSeq,
+      lastText: this.lastText,
+    });
   }
 }
 
@@ -251,12 +259,12 @@ class PubSubSnapshotCollector extends Actor<PubSubSnapshot> {
   }
 }
 
-export interface ControlDeps {
-  /** Singleton proxy from `ClusterSingletonId.start(...)`. */
+export type ControlDeps = {
+  /** Singleton ref from `cluster.singleton.start(...)`. */
   readonly singletonProxy: ActorRef<SingletonMessage>;
   /** Shard-region ref from `ClusterSharding.get(...).start(...)`. */
   readonly shardingRegion: ActorRef<ShardedCommand>;
-}
+};
 
 export function makeControlRoutes(
   system: ActorSystem,
@@ -652,7 +660,7 @@ export function makeControlRoutes(
     // lives on the cluster leader.  The proxy buffers until the
     // leader is known, then forwards.
     path('singleton', path('inc', post(async () => {
-      deps.singletonProxy.tell({ kind: 'inc' });
+      deps.singletonProxy.tell({ kind: 'increment' });
       return completeJson(Status.OK, { sent: true });
     }))),
 
@@ -689,8 +697,8 @@ export function makeControlRoutes(
     path('sharding', path('inc', post(async (req) => {
       const id = queryParam(req, 'id');
       if (!id) return complete(Status.BadRequest, 'missing ?id=');
-      deps.shardingRegion.tell({ entityId: id, op: 'inc' });
-      return completeJson(Status.OK, { sent: { id, op: 'inc' } });
+      deps.shardingRegion.tell({ entityId: id, kind: 'increment' });
+      return completeJson(Status.OK, { sent: { id, kind: 'increment' } });
     }))),
 
     // GET /test/sharding/who?id=X — query which node currently
@@ -711,7 +719,7 @@ export function makeControlRoutes(
           )) as ActorRef<ShardedWhoReply>;
           deps.shardingRegion.tell({
             entityId: id,
-            op: 'who',
+            kind: 'who',
             replyTo: collector,
           });
         });
@@ -734,8 +742,8 @@ export function makeControlRoutes(
     path('persistence', path('inc', post(async (req) => {
       const id = queryParam(req, 'id');
       if (!id) return complete(Status.BadRequest, 'missing ?id=');
-      ensurePersistentCounter(id).tell({ kind: 'inc' });
-      return completeJson(Status.OK, { sent: { id, op: 'inc' } });
+      ensurePersistentCounter(id).tell({ kind: 'increment' });
+      return completeJson(Status.OK, { sent: { id, kind: 'increment' } });
     }))),
 
     // GET /test/persistence/state?id=X — sends `get-state` to the

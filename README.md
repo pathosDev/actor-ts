@@ -5,14 +5,14 @@
 <p align="center">
   <a href="https://github.com/pathosDev/actor-ts/actions/workflows/build.yml"><img alt="build workflow" src="https://github.com/pathosDev/actor-ts/actions/workflows/build.yml/badge.svg?branch=main"/></a>
   <a href="https://github.com/pathosDev/actor-ts/actions/workflows/test.yml"><img alt="tests workflow" src="https://github.com/pathosDev/actor-ts/actions/workflows/test.yml/badge.svg?branch=main"/></a>
-  <a href="#"><img alt="tests" src="https://img.shields.io/badge/tests-2657%20of%202657-22c55e?style=flat-square&logo=bun"/></a>
-  <a href="#"><img alt="coverage" src="https://img.shields.io/badge/coverage-~90%25-22c55e?style=flat-square"/></a>
+  <a href="#"><img alt="tests" src="https://img.shields.io/badge/tests-3578%20of%203578-22c55e?style=flat-square&logo=bun"/></a>
+  <a href="#"><img alt="coverage" src="https://img.shields.io/badge/coverage-~91%25-22c55e?style=flat-square"/></a>
 </p>
 
 <p align="center">
-  <a href="#"><img alt="typescript" src="https://img.shields.io/badge/typescript-5.4+-3178c6?style=flat-square&logo=typescript&logoColor=white"/></a>
-  <a href="#"><img alt="bun" src="https://img.shields.io/badge/bun-%3E%3D1.1-f7bf88?style=flat-square&logo=bun&logoColor=white"/></a>
-  <a href="#"><img alt="node" src="https://img.shields.io/badge/node-%3E%3D20-339933?style=flat-square&logo=node.js&logoColor=white"/></a>
+  <a href="#"><img alt="typescript" src="https://img.shields.io/badge/typescript-5.6+-3178c6?style=flat-square&logo=typescript&logoColor=white"/></a>
+  <a href="#"><img alt="bun" src="https://img.shields.io/badge/bun-%3E%3D1.3-f7bf88?style=flat-square&logo=bun&logoColor=white"/></a>
+  <a href="#"><img alt="node" src="https://img.shields.io/badge/node-%3E%3D24-339933?style=flat-square&logo=node.js&logoColor=white"/></a>
   <a href="#"><img alt="deno" src="https://img.shields.io/badge/deno-%3E%3D2.0-000000?style=flat-square&logo=deno&logoColor=white"/></a>
 </p>
 
@@ -28,7 +28,7 @@
 > the actor-model stack (actors, supervision, cluster, sharding, persistence,
 > HTTP) to TypeScript, running on Bun, Node.js, and Deno.  Large parts were
 > written with AI pair-programming and **have not been battle-tested in
-> production**.  Test coverage is good (~2657 tests, ~90 % line) but the
+> production**.  Test coverage is good (~3578 tests, ~91 % line) but the
 > surface area is enormous.  **Do not deploy this to anything that matters
 > yet.**  Use it to learn, to prototype, to benchmark ideas — not to handle
 > real money, users, or data.
@@ -50,11 +50,14 @@ A short tour of what's in the box:
   resolvers, weakly-up, multiple transports (TCP, MessageChannel, in-memory).
 - **Cluster sharding + singleton + pub-sub + reliable delivery + receptionist**
   — production patterns from the actor-model tradition.
-- **Distributed Data** — eight CRDTs (counters, registers, sets, maps) with
+- **Distributed Data** — nine CRDTs (counters, registers, sets, maps) with
   durable-storage backend, quorum reads/writes, automatic gossip.
 - **Persistence** — `PersistentActor`, `DurableState`, snapshots, projections,
   persistence-query, replicated event sourcing.  Journals for in-memory,
-  SQLite (via Bun-SQLite + better-sqlite3), Cassandra / ScyllaDB.
+  SQLite (built-in driver on every runtime — `bun:sqlite`, `node:sqlite`, or
+  `better-sqlite3`), libSQL / Turso, PostgreSQL, MariaDB,
+  Microsoft SQL Server, MongoDB, DynamoDB, Cloudflare D1,
+  Cassandra / ScyllaDB.
 - **Object storage** — S3 / MinIO / R2 / filesystem with optional gzip/zstd
   compression and client-side AES-256-GCM encryption (per-tenant subkeys via
   HKDF).
@@ -80,6 +83,12 @@ A short tour of what's in the box:
 - **Observability** — Prometheus exporter, OTel tracing, management
   HTTP endpoints (`/health`, `/ready`, `/cluster/members`, `/sharding/regions`),
   out-of-the-box stock metrics.
+- **DevTools** — `DevTools.attach(system)` opens an embedded web UI: live
+  actor tree and mailbox depths, cluster topology and shard distribution,
+  a span flame graph, a per-actor explain plan, time travel over a
+  persistence journal, and a profiler.  Vanilla TypeScript bundled into the
+  package — no UI framework, no CDN.  Loopback-only and unauthenticated by
+  default, and it refuses a routable bind without a gate.
 - **TestKit** — `TestProbe`, `ManualScheduler`, `MultiNodeSpec` for
   deterministic tests including cluster scenarios.
 
@@ -136,20 +145,24 @@ build.
 import { Actor, ActorSystem, Props, type ActorRef } from 'actor-ts';
 import { match } from 'ts-pattern';
 
-type Command =
-  | { kind: 'inc' }
-  | { kind: 'dec' }
-  | { kind: 'get'; replyTo: ActorRef<number> };
+type IncrementCommand = { kind: 'increment' };
+type DecrementCommand = { kind: 'decrement' };
+type GetCommand = { kind: 'get'; replyTo: ActorRef<number> };
+type Command = IncrementCommand | DecrementCommand | GetCommand;
 
 class Counter extends Actor<Command> {
   private count = 0;
   override onReceive(cmd: Command): void {
     match(cmd)
-      .with({ kind: 'inc' }, () => { this.count++; })
-      .with({ kind: 'dec' }, () => { this.count--; })
-      .with({ kind: 'get' }, m => m.replyTo.tell(this.count))
+      .with({ kind: 'increment' }, () => this.onIncrement())
+      .with({ kind: 'decrement' }, () => this.onDecrement())
+      .with({ kind: 'get' }, m => this.onGet(m))
       .exhaustive();
   }
+
+  private onIncrement(): void { this.count++; }
+  private onDecrement(): void { this.count--; }
+  private onGet(m: GetCommand): void { m.replyTo.tell(this.count); }
 }
 ```
 
@@ -166,8 +179,8 @@ import { ActorSystem, Props } from 'actor-ts';
 const system  = ActorSystem.create('demo');
 const counter = system.spawnAnonymous(Props.create(() => new Counter()));
 
-counter.tell({ kind: 'inc' });
-counter.tell({ kind: 'inc' });
+counter.tell({ kind: 'increment' });
+counter.tell({ kind: 'increment' });
 
 const value = await counter.ask<number>({ kind: 'get' }, 5_000);
 console.log(value);  // 2
@@ -181,24 +194,40 @@ the rest of the app sees, every mutation durable.
 
 ```ts
 import { PersistentActor, ActorSystem, Props } from 'actor-ts';
+import { match } from 'ts-pattern';
 
-type Command   = { kind: 'inc' } | { kind: 'dec' };
-type Event = { kind: 'incremented' } | { kind: 'decremented' };
-interface State { count: number }
+type IncrementCommand = { kind: 'increment' };
+type DecrementCommand = { kind: 'decrement' };
+type Command = IncrementCommand | DecrementCommand;
+
+type IncrementedEvent = { kind: 'incremented' };
+type DecrementedEvent = { kind: 'decremented' };
+type Event = IncrementedEvent | DecrementedEvent;
+
+type State = { count: number };
 
 class Counter extends PersistentActor<Command, Event, State> {
   readonly persistenceId = 'counter-1';
   initialState(): State { return { count: 0 }; }
+
+  // A fold that computes a value — arms stay inline.
   onEvent(s: State, e: Event): State {
-    return e.kind === 'incremented'
-      ? { count: s.count + 1 }
-      : { count: s.count - 1 };
+    return match(e)
+      .with({ kind: 'incremented' }, () => ({ count: s.count + 1 }))
+      .with({ kind: 'decremented' }, () => ({ count: s.count - 1 }))
+      .exhaustive();
   }
+
+  // A command dispatch — every arm delegates to an `onXxx` handler.
   onCommand(_state: State, cmd: Command): void {
-    this.persist({
-      kind: cmd.kind === 'inc' ? 'incremented' : 'decremented',
-    });
+    match(cmd)
+      .with({ kind: 'increment' }, () => this.onIncrement())
+      .with({ kind: 'decrement' }, () => this.onDecrement())
+      .exhaustive();
   }
+
+  private onIncrement(): void { this.persist({ kind: 'incremented' }); }
+  private onDecrement(): void { this.persist({ kind: 'decremented' }); }
 }
 ```
 
@@ -218,11 +247,43 @@ import { Cluster } from 'actor-ts';
 // a single-node cluster, which is exactly what you want.
 const { system, cluster } = await Cluster.bootstrap({ name: 'app' });
 
-const cartRegion = cluster.sharding.start('cart', CartActor, {
-  extractEntityId: (msg: CartCommand) => msg.entityId,
-});
+// `CartActor` declares its own identity, so neither the type name nor
+// the entity-id extractor is repeated here:
+//   static readonly shard = ShardKey.of<CartCommand>('cart', (c) => c.entityId);
+const cartRegion = cluster.sharding.start(CartActor);
 
 cartRegion.tell({ entityId: 'user-42', kind: 'add', sku: 'book-1' });
+
+// A handle on one entity, wherever it lives — no routing key needed
+// in the message, because the handle names its entity.
+const cart = cluster.sharding.entityRefFor(CartActor, 'user-42');
+cart.tell({ kind: 'add', sku: 'book-2' });
+
+// And the shards themselves are addressable: where they live, how
+// full they are, and a live ref to each.
+for (const shard of await cluster.sharding.shards('cart')) {
+  console.log(shard.shardId, `${shard.node}`, shard.entityCount);
+}
+```
+
+### Cluster singleton — exactly one instance, cluster-wide
+
+One node hosts it; the rest hold a forwarding ref. Failover moves it
+without callers changing anything.
+
+```ts
+class JobScheduler extends Actor<JobCommand> {
+  static readonly singleton = SingletonKey.of<JobCommand>('job-scheduler');
+  override onReceive(command: JobCommand): void { /* ... */ }
+}
+
+// On every node that may host it — get-or-create, so calling this
+// from several modules is safe.
+const scheduler = cluster.singleton.start(JobScheduler);
+scheduler.tell({ kind: 'schedule', jobId: '42' });
+
+// On a node that should only talk to it, never host it:
+cluster.singleton.ref(JobScheduler).tell({ kind: 'schedule', jobId: '43' });
 ```
 
 ---
@@ -241,6 +302,8 @@ The docs site is the canonical entry point.  Highlights:
   what the actor model gives you that Promise/Worker code doesn't.
 - **[Migrating from Akka / Pekko / Orleans](https://actor-ts.dev/migration/overview/)** —
   for people coming from another actor framework.
+- **[DevTools](https://actor-ts.dev/observability/devtools/overview/)** —
+  attach the embedded UI to a running system and look inside it.
 - **[API reference](https://actor-ts.dev/api/)** —
   every public class, function, type generated from JSDoc.
 

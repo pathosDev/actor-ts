@@ -1,8 +1,9 @@
+import { match } from 'ts-pattern';
 import {
   type ChatMessage,
   type ClientMessage,
-  dmRoomFor,
-  isDmRoom,
+  directMessageRoomFor,
+  isDirectMessageRoom,
   isRoomName,
   type RoomName,
   type ServerMessage,
@@ -68,7 +69,7 @@ class ChatStore {
     if (typeof sessionStorage !== 'undefined') {
       const stored = sessionStorage.getItem(TOKEN_KEY);
       if (stored) this.#connect((ws) =>
-        ws.send(JSON.stringify({ type: 'resume', token: stored } satisfies ClientMessage)),
+        ws.send(JSON.stringify({ kind: 'resume', token: stored } satisfies ClientMessage)),
       );
     }
   }
@@ -76,7 +77,7 @@ class ChatStore {
   /** Open a WS and authenticate with credentials. */
   connect(username: string, password: string): void {
     this.#connect((ws) =>
-      ws.send(JSON.stringify({ type: 'login', username, password } satisfies ClientMessage)),
+      ws.send(JSON.stringify({ kind: 'login', username, password } satisfies ClientMessage)),
     );
   }
 
@@ -118,7 +119,7 @@ class ChatStore {
     this.#reconnectTimer = setTimeout(() => {
       this.#reconnectTimer = null;
       this.#connect((ws) =>
-        ws.send(JSON.stringify({ type: 'resume', token } satisfies ClientMessage)),
+        ws.send(JSON.stringify({ kind: 'resume', token } satisfies ClientMessage)),
       );
     }, delay);
     return true;
@@ -134,8 +135,8 @@ class ChatStore {
 
   send(room: RoomName, text: string): void {
     if (!text.trim() || !this.#ws) return;
-    const cmd: ClientMessage = { type: 'send', room, text };
-    this.#ws.send(JSON.stringify(cmd));
+    const command: ClientMessage = { kind: 'send', room, text };
+    this.#ws.send(JSON.stringify(command));
   }
 
   /** Send a `typing` frame at most once per 2 s. */
@@ -144,7 +145,7 @@ class ChatStore {
     const now = Date.now();
     if (now - this.#lastTypingSentAt < 2000) return;
     this.#lastTypingSentAt = now;
-    this.#ws.send(JSON.stringify({ type: 'typing', room } satisfies ClientMessage));
+    this.#ws.send(JSON.stringify({ kind: 'typing', room } satisfies ClientMessage));
   }
 
   /** Send `read-up-to` if it advances the last we sent for this room. */
@@ -153,7 +154,7 @@ class ChatStore {
     const last = this.#lastReadSentByRoom.get(room) ?? 0;
     if (ts <= last) return;
     this.#lastReadSentByRoom.set(room, ts);
-    this.#ws.send(JSON.stringify({ type: 'read-up-to', room, ts } satisfies ClientMessage));
+    this.#ws.send(JSON.stringify({ kind: 'read-up-to', room, ts } satisfies ClientMessage));
   }
 
   selectRoom(room: RoomName): void {
@@ -162,15 +163,15 @@ class ChatStore {
       // User-created rooms aren't auto-joined at login.  `join` is
       // idempotent server-side, so sending it for every selection
       // is harmless.
-      this.#ws.send(JSON.stringify({ type: 'join', room } satisfies ClientMessage));
-      this.#ws.send(JSON.stringify({ type: 'switch-active-room', room } satisfies ClientMessage));
+      this.#ws.send(JSON.stringify({ kind: 'join', room } satisfies ClientMessage));
+      this.#ws.send(JSON.stringify({ kind: 'switch-active-room', room } satisfies ClientMessage));
     }
     this.currentRoom = room;
     this.unreadByRoom[room] = 0;
     // Switching INTO a room means the user is reading whatever's
     // already there — mark the highest known ts as read.
-    const msgs = this.messagesByRoom[room] ?? [];
-    const maxTs = msgs.reduce((a, message) => Math.max(a, message.ts ?? 0), 0);
+    const messages = this.messagesByRoom[room] ?? [];
+    const maxTs = messages.reduce((a, message) => Math.max(a, message.ts ?? 0), 0);
     if (maxTs > 0) this.markReadUpTo(room, maxTs);
   }
 
@@ -179,9 +180,9 @@ class ChatStore {
    * state; subsequent `selectRoom` carries the `join` +
    * `switch-active-room` protocol frames for the `@<otherUser>` name.
    */
-  openDm(otherUser: string): void {
+  openDirectMessage(otherUser: string): void {
     if (!otherUser || otherUser === this.username) return;
-    const room = dmRoomFor(otherUser);
+    const room = directMessageRoomFor(otherUser);
     if (!this.rooms.includes(room)) {
       this.rooms = [...this.rooms, room];
       this.messagesByRoom[room] ??= [];
@@ -199,7 +200,7 @@ class ChatStore {
   createRoom(name: string): boolean {
     if (!isRoomName(name)) return false;
     if (this.#ws && this.#ws.readyState === WebSocket.OPEN) {
-      this.#ws.send(JSON.stringify({ type: 'create-room', name } satisfies ClientMessage));
+      this.#ws.send(JSON.stringify({ kind: 'create-room', name } satisfies ClientMessage));
     }
     return true;
   }
@@ -207,7 +208,7 @@ class ChatStore {
   logout(): void {
     this.#cancelReconnect();
     if (this.#ws && this.#ws.readyState === WebSocket.OPEN) {
-      try { this.#ws.send(JSON.stringify({ type: 'logout' } satisfies ClientMessage)); } catch { /* ignore */ }
+      try { this.#ws.send(JSON.stringify({ kind: 'logout' } satisfies ClientMessage)); } catch { /* ignore */ }
     }
     if (typeof sessionStorage !== 'undefined') sessionStorage.removeItem(TOKEN_KEY);
     if (this.#ws) {
@@ -229,8 +230,8 @@ class ChatStore {
   }
 
   #handleServer(message: ServerMessage): void {
-    switch (message.type) {
-      case 'logged-in':
+    match(message)
+      .with({ kind: 'logged-in' }, (message) => {
         this.#cancelReconnect();
         this.username = message.username;
         if (message.token && typeof sessionStorage !== 'undefined') {
@@ -238,8 +239,8 @@ class ChatStore {
         }
         this.loginError = '';
         this.phase = 'chat';
-        break;
-      case 'login-failed':
+      })
+      .with({ kind: 'login-failed' }, (message) => {
         this.#cancelReconnect();
         if (typeof sessionStorage !== 'undefined') sessionStorage.removeItem(TOKEN_KEY);
         this.#ws?.close();
@@ -249,21 +250,20 @@ class ChatStore {
         // way, fall back to the login screen.
         if (this.phase !== 'login') this.#reset();
         this.loginError = message.reason || 'Login failed.';
-        break;
-      case 'rooms': {
+      })
+      .with({ kind: 'rooms' }, (message) => {
         // Preserve open DMs across `rooms` broadcasts — they live
         // only in the client, not in the cluster-wide directory.
-        const dms = this.rooms.filter(isDmRoom);
-        this.rooms = [...message.rooms, ...dms];
+        const directMessages = this.rooms.filter(isDirectMessageRoom);
+        this.rooms = [...message.rooms, ...directMessages];
         for (const r of this.rooms) {
           this.messagesByRoom[r] ??= [];
           this.usersByRoom[r] ??= [];
           this.unreadByRoom[r] ??= 0;
         }
         if (!this.currentRoom) this.currentRoom = message.rooms[0] ?? null;
-        break;
-      }
-      case 'room-added':
+      })
+      .with({ kind: 'room-added' }, (message) => {
         // `rooms` carries the full set; this is the per-name notice
         // for toast UX.  Idempotent.
         if (!this.rooms.includes(message.name)) {
@@ -272,20 +272,17 @@ class ChatStore {
           this.usersByRoom[message.name] ??= [];
           this.unreadByRoom[message.name] ??= 0;
         }
-        break;
-      case 'room-removed': {
+      })
+      .with({ kind: 'room-removed' }, (message) => {
         this.rooms = this.rooms.filter((r) => r !== message.name);
         const wasCurrent = this.currentRoom === message.name;
         delete this.messagesByRoom[message.name];
         delete this.usersByRoom[message.name];
         delete this.unreadByRoom[message.name];
         if (wasCurrent) this.currentRoom = this.rooms[0] ?? null;
-        break;
-      }
-      case 'history':
-        this.messagesByRoom[message.room] = message.messages.slice();
-        break;
-      case 'message': {
+      })
+      .with({ kind: 'history' }, (message) => { this.messagesByRoom[message.room] = message.messages.slice(); })
+      .with({ kind: 'message' }, (message) => {
         const list = this.messagesByRoom[message.room] ?? [];
         list.push({ from: message.from, text: message.text, ts: message.ts });
         this.messagesByRoom[message.room] = list;
@@ -295,20 +292,13 @@ class ChatStore {
           // Active view — mark read so the sender's ✓✓ updates.
           this.markReadUpTo(message.room, message.ts);
         }
-        break;
-      }
-      case 'users':
-        this.usersByRoom[message.room] = message.users.slice().sort();
-        break;
-      case 'user-typing':
-        this.#onUserTyping(message.room, message.username);
-        break;
-      case 'read-receipts':
-        this.receiptsByRoom = { ...this.receiptsByRoom, [message.room]: message.receipts };
-        break;
-      case 'system':
-        break;
-    }
+      })
+      .with({ kind: 'users' }, (message) => { this.usersByRoom[message.room] = message.users.slice().sort(); })
+      .with({ kind: 'user-typing' }, (message) => { this.#onUserTyping(message.room, message.username); })
+      .with({ kind: 'read-receipts' }, (message) => { this.receiptsByRoom = { ...this.receiptsByRoom, [message.room]: message.receipts }; })
+      // Not surfaced by this frontend.
+      .with({ kind: 'system' }, () => {})
+      .exhaustive();
   }
 
   #onUserTyping(room: RoomName, username: string): void {

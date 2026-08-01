@@ -98,6 +98,34 @@ describe('ObjectStorageDurableStateStore — strict CAS', () => {
     store.forgetEtagForTest('a');
     await expect(store.upsert('a', 1, { v: 'wrong' })).rejects.toBeInstanceOf(DurableStateConcurrencyError);
   });
+
+  test('a CAS rejection drops the stale etag so a correct retry can succeed (#117)', async () => {
+    // Two stores over one backend reproduce what a second writer leaves
+    // behind: `first` holds a cached etag that the backend has since replaced,
+    // while the revision it cached is still the one the caller expects — so the
+    // up-front revision check passes and the CAS is decided by the backend.
+    const secondOptions = ObjectStorageDurableStateStoreOptions.create().withBackend(backend);
+    const second = new ObjectStorageDurableStateStore(secondOptions);
+
+    await store.upsert('a', 0, { v: 1 });          // → revision 1, `store` caches its etag
+    await second.upsert('a', 1, { v: 2 });         // → revision 2, new etag in the bucket
+
+    // `store` still believes revision 1, and sends its now-stale etag.
+    await expect(store.upsert('a', 1, { v: 3 })).rejects.toBeInstanceOf(DurableStateConcurrencyError);
+
+    // The caller learns the real revision and retries correctly.  Before the
+    // fix the rejected etag stayed cached, so this threw again — and reported
+    // `actual: 1` from the stale cache, which is not the truth either.  The
+    // recovery path for a missing etag already existed; a CAS failure simply
+    // never routed into it.
+    const healed = await store.upsert('a', 2, { v: 4 });
+    expect(healed.revision).toBe(3);
+    expect(healed.state).toEqual({ v: 4 });
+
+    const reread = await second.load('a');
+    expect(reread.isSome()).toBe(true);
+    if (reread.isSome()) expect(reread.value.state).toEqual({ v: 4 });
+  });
 });
 
 describe('ObjectStorageDurableStateStore — input validation', () => {
@@ -122,13 +150,13 @@ describe('ObjectStorageDurableStateStore — prefix and resolvers', () => {
   test('per-pid compression resolver is honoured', async () => {
     const seen = new Map<string, string | undefined>();
     const wrapping: typeof backend = Object.assign(Object.create(Object.getPrototypeOf(backend)), backend);
-    wrapping.put = async (key, body, opts) => {
-      seen.set(key, opts?.contentEncoding);
-      return backend.put(key, body, opts);
+    wrapping.put = async (key, body, options) => {
+      seen.set(key, options?.contentEncoding);
+      return backend.put(key, body, options);
     };
     const storeOptions = ObjectStorageDurableStateStoreOptions.create()
       .withBackend(wrapping)
-      .withCompression((pid) => pid.startsWith('big-') ? { algorithm: 'zstd' } : { algorithm: 'gzip' });
+      .withCompression((persistenceId) => persistenceId.startsWith('big-') ? { algorithm: 'zstd' } : { algorithm: 'gzip' });
     const store = new ObjectStorageDurableStateStore(storeOptions);
     await store.upsert('big-payload', 0, { x: 'x'.repeat(200) });
     await store.upsert('small',       0, { x: 'tiny' });

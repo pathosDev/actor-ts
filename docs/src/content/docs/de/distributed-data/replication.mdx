@@ -1,15 +1,15 @@
 ---
 title: Replikation
-description: Wie DistributedData Zustand zwischen Nodes gossipt — periodisches Delta-Gossip, Merge beim Empfang, Benachrichtigung der Subscriber. Die Mechanik, die du normalerweise nicht kennen musst — aber das Verständnis hilft beim Troubleshooting "warum ist mein Write noch nicht angekommen?".
+description: Wie DistributedData Zustand zwischen Nodes gossipt — periodisches Full-State-Gossip, Merge beim Empfang, Benachrichtigung der Subscriber. Die Mechanik, die du normalerweise nicht kennen musst — aber das Verständnis hilft beim Troubleshooting "warum ist mein Write noch nicht angekommen?".
 ---
 
 DistributedData repliziert Zustand via **Gossip**:
 
 - Alle `gossipIntervalMs` wählt jeder Node einen zufälligen Peer.
-- Der Node sendet seine **State Deltas** seit dem letzten Gossip
-  mit diesem Peer.
-- Der Peer merged; wenn sich sein Zustand geändert hat,
-  benachrichtigt er die lokalen Subscriber.
+- Der Node sendet einen **vollständigen Snapshot** jedes Keys, den
+  er aktuell hält.
+- Der Peer merged jeden Eintrag; wenn sich sein Zustand geändert
+  hat, benachrichtigt er die lokalen Subscriber.
 
 Das bedeutet, Writes propagieren **eventually** — typischerweise
 in 1-2 Gossip-Runden (1-2 Sekunden default).  Für die meisten
@@ -24,7 +24,7 @@ sequenceDiagram
   participant A as node-A
   participant B as node-B
   Note over A: lokales Update angewendet — sofort
-  A->>B: Gossip-Tick — Delta kommt an
+  A->>B: Gossip-Tick — vollständiger Snapshot kommt an
   Note over B: in lokalen Zustand mergen<br/>per-CRDT-Merge-Funktion
   Note over B: falls sich der lokale Wert geändert hat<br/>Subscriber benachrichtigen
 ```
@@ -58,19 +58,23 @@ Für typische Anwendungen:
 
 ## Was gegossipt wird
 
-**Nur Deltas** — DistributedData tracked, was jeder Peer gesehen
-hat, und sendet nur die Änderungen seit dem letzten erfolgreichen
-Austausch.
+**Der vollständige State** — bei jedem Tick serialisiert
+DistributedData jeden Key seiner lokalen Replika und pusht den
+gesamten Snapshot an einen zufälligen Peer.  Es gibt kein
+Delta-Tracking und keine Empfangs-Historie pro Peer; jedes Gossip
+trägt die komplette Menge.
 
-So ist das Gossip-Volumen proportional zur **Update-Rate**, nicht
-zur Gesamt-State-Größe.  Eine Map mit einer Million Einträgen,
-die sich nicht ändert, kostet im Gossip nichts; ein kleiner
-Counter, der 1000-mal pro Sekunde inkrementiert wird, kostet viel
-mehr.
+So ist das Gossip-Volumen proportional zur **Gesamt-State-Größe**,
+nicht zur Update-Rate.  Eine Map mit einer Million Einträgen kostet
+jedes Mal, wenn sie gegossipt wird, ihre volle serialisierte Größe
+— egal ob sie sich geändert hat; ein kleiner Counter kostet fast
+nichts, egal wie oft er inkrementiert wird.
 
-Die Ausnahme: bei einem frischen Peer-Beitritt (oder nach einer
-langen Partition) ist der erste Gossip der **Full State** — es
-gibt keine Delta-Historie.
+Das ist bewusst simpel — kein Digest, kein Delta — was billig zu
+implementieren und für die kleinen bis mittleren Stores, für die
+DistributedData gedacht ist, gut genug ist.  Wenn dein Store groß
+wird, erhöhe `gossipIntervalMs`, um die Kosten über die Zeit zu
+verteilen.
 
 ## Auswahl des Peers pro Runde
 
@@ -118,34 +122,45 @@ Für Dashboard-Widgets, Echtzeit-UI-Updates oder Business-Logik,
 die auf Änderungen irgendwo im Cluster reagieren soll, ist
 `subscribe` der Hook.
 
-## Peers vergessen
+## Wenn ein Peer den Cluster verlässt
 
-Wenn `MemberRemoved` für ein Cluster-Mitglied feuert:
+Wenn `MemberRemoved` für ein Cluster-Mitglied feuert, tut
+DistributedData **nichts** — es gibt keinen Zustand pro Peer, der
+aufzuräumen wäre.  Gossip hält keinen Version Vector und keine
+Empfangs-Historie pro Peer; jeder Tick wählt einfach einen
+zufälligen Peer aus den *aktuellen* Up-Members, sodass ein
+ausgeschiedener Node schlicht kein Gossip-Ziel mehr ist.
 
-- Der Replicator vergisst den Gossip-Empfangszustand dieses Peers.
-- Die Tombstones des Peers (für ORSet etc.) werden gemäß den
-  Pruning-Regeln des CRDT irgendwann aus dem lokalen Zustand
-  entfernt.
+Der Zustand, den der Peer beigetragen hat, bleibt in der lokalen
+Replika, eingemerged wie jedes andere Update.  CRDT-Tombstones
+(ein entferntes `ORSet`-Element, ein `null`-Register in einer
+`LWWMap`) werden **nie garbage-collected** — sie bleiben dauerhaft
+erhalten, damit ein veraltetes Gossip einen entfernten Key nicht
+wiederauferstehen lassen kann.  Über einen langlebigen Store mit
+starkem Churn ist die Tombstone-Akkumulation der praktische
+Kostenpunkt, den man im Auge behalten sollte.
 
-Das heißt: **Ein Peer, der den Cluster verlässt, leakt keine
-Gossip-Historie** — sein Slot im Version Vector verschwindet.
-
-Für Replikas, die später **unter derselben Identität wieder
-beitreten könnten** (stabile Pod-Namen, persistente Volumes),
-gibt es ein kurzes Fenster, in dem der Zustand des Peers
-teilweise vergessen sein kann.  Meist harmlos — ein frisches
-Handshake bringt alles zurück.
+Eine Replika, die **später unter derselben Identität wieder
+beitritt** (stabile Pod-Namen, persistente Volumes), braucht keine
+Sonderbehandlung — sie ist einfach wieder ein weiterer Up-Member,
+und Gossip lässt ihren Zustand über die nächsten paar Ticks erneut
+konvergieren.
 
 ## Bandbreitenkosten
 
 Grobe Zahlen für einen 10-Node-Cluster mit Default-Gossip von 1
 Sekunde:
 
-- **Idle Steady State** — minimaler Traffic (~1 KB/sec pro Paar,
-  meist leere Deltas).
-- **Aktive Workload** — proportional zur Write-Rate.  Pro Write
-  geht eine Delta-Nachricht von ~100-500 Bytes über die nächsten
-  Gossip-Runden an jeden Peer.
+- **Pro Tick, pro Node** — eine Nachricht, die den vollständig
+  serialisierten Store trägt, geht an einen einzigen zufälligen
+  Peer.  Ihre Größe wird durch den **Gesamt-State** bestimmt, nicht
+  dadurch, wie viel sich seit dem letzten Tick geändert hat, sodass
+  ein Idle-Store das trotzdem bei jedem Tick zahlt; die Kosten
+  wachsen nur nicht mit der Write-Rate.
+- **Skalierungs-Stellschrauben** — die Store-Größe treibt die
+  Kosten pro Nachricht und `gossipIntervalMs` treibt, wie oft du
+  sie zahlst.  Ein großer Store bei einem schnellen Intervall ist
+  die teure Kombination.
 
 Für sehr große Cluster (50+ Nodes) kann das Gossip-Volumen
 relevant werden.  Das Gossip des Frameworks ist im

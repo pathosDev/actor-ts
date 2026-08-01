@@ -12,7 +12,8 @@ import { Lazy } from '../../util/Lazy.js';
  *
  * Runtime support differs by DIRECTION:
  *   - COMPRESS (write): native only — Bun (`Bun.zstdCompressSync`) or
- *     Node ≥22.15 (`zlib.zstdCompressSync`).  There is NO pure-JS
+ *     Node (`zlib.zstdCompressSync`; every supported Node ships it).
+ *     There is NO pure-JS
  *     fallback for writing: `fzstd` is decompress-only (it exposes no
  *     `compress`).  Selecting `zstd` on a runtime without native support
  *     throws a clear error — eagerly at plugin-init via
@@ -79,12 +80,12 @@ const gzipCompressor: Compressor = {
 
 /* ------------------------------- zstd ----------------------------------- */
 
-type ZstdCompressFn = (input: Uint8Array, level?: number) => Promise<Uint8Array>;
-type ZstdDecompressFn = (input: Uint8Array) => Promise<Uint8Array>;
+type ZstdCompressFunction = (input: Uint8Array, level?: number) => Promise<Uint8Array>;
+type ZstdDecompressFunction = (input: Uint8Array) => Promise<Uint8Array>;
 
 /**
  * zstd COMPRESS resolution — native only.  Bun (`Bun.zstdCompressSync`)
- * then Node ≥22.15 (`zlib.zstdCompressSync`).  Deliberately NO `fzstd`
+ * then Node (`zlib.zstdCompressSync`).  Deliberately NO `fzstd`
  * fallback: fzstd is decompress-only (exposes no `compress`), so a
  * runtime without native zstd cannot WRITE zstd — we throw a clear error
  * here instead of the cryptic `fzstd.compress is not a function` the
@@ -94,14 +95,14 @@ type ZstdDecompressFn = (input: Uint8Array) => Promise<Uint8Array>;
  * `{ params: { [ZSTD_c_compressionLevel]: N } }` — but the 1..22 scale
  * (default 3) is the same.
  */
-const zstdCompressLazy: Lazy<Promise<ZstdCompressFn>> = Lazy.of<Promise<ZstdCompressFn>>(async () => {
+const zstdCompressLazy: Lazy<Promise<ZstdCompressFunction>> = Lazy.of<Promise<ZstdCompressFunction>>(async () => {
   const bun = (globalThis as { Bun?: {
     zstdCompressSync?: (input: Uint8Array, opts?: { level?: number }) => Uint8Array;
   } }).Bun;
   if (bun?.zstdCompressSync) {
-    const compressFn = bun.zstdCompressSync;
+    const compressFunction = bun.zstdCompressSync;
     return async (i: Uint8Array, level?: number): Promise<Uint8Array> =>
-      compressFn(i, level !== undefined ? { level: clampZstdLevel(level) } : undefined);
+      compressFunction(i, level !== undefined ? { level: clampZstdLevel(level) } : undefined);
   }
 
   try {
@@ -111,18 +112,18 @@ const zstdCompressLazy: Lazy<Promise<ZstdCompressFn>> = Lazy.of<Promise<ZstdComp
       constants?: { ZSTD_c_compressionLevel?: number };
     };
     if (zlib.zstdCompressSync) {
-      const compressFn = zlib.zstdCompressSync;
+      const compressFunction = zlib.zstdCompressSync;
       const levelParam = zlib.constants?.ZSTD_c_compressionLevel;
       return async (i: Uint8Array, level?: number): Promise<Uint8Array> =>
         level !== undefined && levelParam !== undefined
-          ? compressFn(i, { params: { [levelParam]: clampZstdLevel(level) } })
-          : compressFn(i);
+          ? compressFunction(i, { params: { [levelParam]: clampZstdLevel(level) } })
+          : compressFunction(i);
     }
   } catch { /* node:zlib unavailable — fall through to the error */ }
 
   throw new Error(
     'zstd compression requires native runtime support — Bun (zstdCompressSync) '
-    + 'or Node ≥22.15 (zlib.zstdCompressSync).  The optional `fzstd` peer '
+    + 'or Node (zlib.zstdCompressSync).  The optional `fzstd` peer '
     + 'dependency can only DECOMPRESS, so it cannot write zstd bodies.  '
     + "Either run on a native-zstd runtime, or use compression: { algorithm: "
     + "'gzip' } which works everywhere.",
@@ -130,19 +131,19 @@ const zstdCompressLazy: Lazy<Promise<ZstdCompressFn>> = Lazy.of<Promise<ZstdComp
 });
 
 /**
- * zstd DECOMPRESS resolution — native first (Bun, Node ≥22.15), then the
+ * zstd DECOMPRESS resolution — native first (Bun, Node), then the
  * pure-JS `fzstd` peer-dep so a runtime without native zstd can still
  * READ zstd bodies written elsewhere.  Note fzstd caps the back-reference
  * window at 2^25 (32 MB) and may fail on ultra-level (≥20) frames — see
  * `CompressionConfig.level`.
  */
-const zstdDecompressLazy: Lazy<Promise<ZstdDecompressFn>> = Lazy.of<Promise<ZstdDecompressFn>>(async () => {
+const zstdDecompressLazy: Lazy<Promise<ZstdDecompressFunction>> = Lazy.of<Promise<ZstdDecompressFunction>>(async () => {
   const bun = (globalThis as { Bun?: {
     zstdDecompressSync?: (input: Uint8Array) => Uint8Array;
   } }).Bun;
   if (bun?.zstdDecompressSync) {
-    const decompressFn = bun.zstdDecompressSync;
-    return async (i: Uint8Array): Promise<Uint8Array> => decompressFn(i);
+    const decompressFunction = bun.zstdDecompressSync;
+    return async (i: Uint8Array): Promise<Uint8Array> => decompressFunction(i);
   }
 
   try {
@@ -151,8 +152,8 @@ const zstdDecompressLazy: Lazy<Promise<ZstdDecompressFn>> = Lazy.of<Promise<Zstd
       zstdDecompressSync?: (input: Uint8Array) => Uint8Array;
     };
     if (zlib.zstdDecompressSync) {
-      const decompressFn = zlib.zstdDecompressSync;
-      return async (i: Uint8Array): Promise<Uint8Array> => decompressFn(i);
+      const decompressFunction = zlib.zstdDecompressSync;
+      return async (i: Uint8Array): Promise<Uint8Array> => decompressFunction(i);
     }
   } catch { /* node:zlib unavailable — fall through to fzstd */ }
 
@@ -164,8 +165,8 @@ const zstdDecompressLazy: Lazy<Promise<ZstdDecompressFn>> = Lazy.of<Promise<Zstd
     return async (i: Uint8Array): Promise<Uint8Array> => fzstd.decompress(i);
   } catch (e) {
     throw new Error(
-      'No zstd decompressor available.  Either upgrade to Bun 1.1+ / '
-      + 'Node 22.15+, or install the `fzstd` peer dependency: '
+      'No zstd decompressor available.  Either run on Bun / Node, '
+      + 'or install the `fzstd` peer dependency: '
       + '`npm install fzstd`.\nOriginal error: '
       + (e instanceof Error ? e.message : String(e)),
     );

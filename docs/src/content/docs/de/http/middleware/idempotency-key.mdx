@@ -54,14 +54,14 @@ hier ist die ursprüngliche Response."  Keine Doppelbuchung.
 ## Konfiguration
 
 ```ts
-interface IdempotencyOptions {
+type IdempotencyOptions = {
   cache:          Cache;
   ttlMs?:         number;                              // Default 24 h
   headerName?:    string;                              // Default 'idempotency-key'
   keyPrefix?:     string;                              // Default 'idem:'
   missingHeader?: 'reject' | 'pass-through';           // Default 'reject'
   identity?:      (req: HttpRequest) => string | Promise<string>;   // Scope pro Aufrufer; Default keiner
-}
+};
 ```
 
 | Feld | Zweck |
@@ -95,11 +95,15 @@ Die Middleware speichert die **komplette Response**.  Spätere
 Requests mit demselben Key bekommen eine identische Response —
 gleicher Status, gleiche Header, gleicher Body.
 
-Für **Fehler-Responses** ist das Verhalten konfigurierbar.  Per
-Default: 4xx + 5xx werden **ebenfalls gecacht** (damit ein
-"Payment fehlgeschlagen" beim Retry nicht zu einem "Payment
-erfolgreich" wird).  Das entspricht der Standard-Idempotency-Key-
-Semantik.
+Bei **Fehler-Responses** kommt es darauf an, ob der Handler
+**etwas zurückgibt** oder **wirft**.  Eine *zurückgegebene*
+Response wird bedingungslos gecacht — eine 4xx oder 5xx wird beim
+Retry genauso abgespielt wie eine 2xx, damit ein "Payment
+fehlgeschlagen" nicht zu einem "Payment erfolgreich" wird.  Ein
+Handler, der stattdessen *wirft*, verwirft seinen In-Flight-
+Anspruch und lässt den Key frei, sodass der Client erneut
+versuchen und den Handler nochmals ausführen kann.  Es gibt keine
+Option, um auszuwählen, welche Statuscodes gecacht werden.
 
 ## Scoping pro Mandant
 

@@ -7,30 +7,36 @@ import {
   type PersistentEvent,
 } from '../JournalTypes.js';
 import { assertSafeIdentifier } from '../storage/SqlIdentifier.js';
+import { assertValidTags } from '../storage/TagValidator.js';
 import type { SqliteJournalOptions, SqliteJournalOptionsType } from './SqliteJournalOptions.js';
 
-interface Stmts {
+type Stmts = {
   insert: SqliteStatement;
   insertTag: SqliteStatement;
   readAll: SqliteStatement;
   readRange: SqliteStatement;
   highestSeq: SqliteStatement;
+  /** Highest deleted sequence number per pid — the high-water mark that survives compaction. */
+  deletedTo: SqliteStatement;
+  /** Upsert the high-water mark on delete (monotonic — never lowers it). */
+  upsertDeletedTo: SqliteStatement;
   deleteUpTo: SqliteStatement;
   deleteTagsUpTo: SqliteStatement;
-  pids: SqliteStatement;
+  persistenceIds: SqliteStatement;
   /** Used by the tags-table backfill at startup. */
   countTags: SqliteStatement;
   /** Iterates events that still have CSV tags but no row in the tag table. */
   rowsWithCsvTags: SqliteStatement;
-}
+};
 
 /**
  * Journal backed by SQLite — zero-dependency, single-file persistence.
  *
- * Works on Bun (`bun:sqlite`) and Node.js (`better-sqlite3`) via the
- * `SqliteDriver` abstraction in `src/runtime/sqlite/`.  Both backends
- * share the same prepared-statement + transaction shape, so the journal
- * code itself is unchanged across runtimes.
+ * Works on all three runtimes via the `SqliteDriver` abstraction in
+ * `src/runtime/sqlite/` — Bun (`bun:sqlite`), Node (`better-sqlite3`, or the
+ * built-in `node:sqlite` when it is not installed) and Deno (`node:sqlite`).
+ * Every driver shares the same prepared-statement + transaction shape, so the
+ * journal code itself is unchanged across runtimes.
  *
  * Construction is lazy: the native DB is opened on the first `append` /
  * `read` / `highestSeq` / `delete` / `persistenceIds` call.  This keeps
@@ -65,21 +71,23 @@ export class SqliteJournal implements Journal {
   }
 
   async append<E>(
-    pid: string,
+    persistenceId: string,
     events: ReadonlyArray<E>,
     expectedSeq: number,
     tags?: ReadonlyArray<string>,
   ): Promise<PersistentEvent<E>[]> {
+    assertValidTags(tags);
     await this.ensureOpen();
     if (events.length === 0) return [];
     const db = this.db!;
     const stmts = this.stmts!;
     const now = Date.now();
     const txn = db.transaction((items: unknown[]) => {
-      const row = stmts.highestSeq.get(pid) as { hi: number | null } | undefined;
-      const actualSeq = row?.hi ?? 0;
+      const row = stmts.highestSeq.get(persistenceId) as { hi: number | null } | undefined;
+      const del = (stmts.deletedTo.get(persistenceId) as { d: number | null } | undefined)?.d ?? 0;
+      const actualSeq = Math.max(row?.hi ?? 0, del);
       if (actualSeq !== expectedSeq) {
-        throw new JournalConcurrencyError(pid, expectedSeq, actualSeq);
+        throw new JournalConcurrencyError(persistenceId, expectedSeq, actualSeq);
       }
       const out: PersistentEvent<E>[] = [];
       let seq = actualSeq;
@@ -87,7 +95,7 @@ export class SqliteJournal implements Journal {
         seq++;
         const payload = JSON.stringify(ev);
         const tagString = tags && tags.length ? tags.join(',') : null;
-        stmts.insert.run(pid, seq, payload, tagString, now);
+        stmts.insert.run(persistenceId, seq, payload, tagString, now);
         // Also populate the tags join table so SqliteQuery's
         // tag-search can do an indexed lookup instead of a CSV scan.
         // Both inserts run inside the same transaction — partial
@@ -95,11 +103,11 @@ export class SqliteJournal implements Journal {
         if (tags) {
           for (const tag of tags) {
             if (tag.length === 0) continue;
-            stmts.insertTag.run(pid, seq, tag, now);
+            stmts.insertTag.run(persistenceId, seq, tag, now);
           }
         }
         out.push({
-          persistenceId: pid,
+          persistenceId: persistenceId,
           sequenceNr: seq,
           event: ev,
           timestamp: now,
@@ -121,19 +129,19 @@ export class SqliteJournal implements Journal {
     return written;
   }
 
-  async read<E>(pid: string, fromSeq: number, toSeq?: number): Promise<PersistentEvent<E>[]> {
+  async read<E>(persistenceId: string, fromSeq: number, toSeq?: number): Promise<PersistentEvent<E>[]> {
     await this.ensureOpen();
     const stmts = this.stmts!;
     try {
       const rows = toSeq === undefined
-        ? (stmts.readAll.all(pid, fromSeq) as Array<{
+        ? (stmts.readAll.all(persistenceId, fromSeq) as Array<{
             persistence_id: string;
             sequence_nr: number;
             payload: string;
             tags: string | null;
             timestamp: number;
           }>)
-        : (stmts.readRange.all(pid, fromSeq, toSeq) as Array<{
+        : (stmts.readRange.all(persistenceId, fromSeq, toSeq) as Array<{
             persistence_id: string;
             sequence_nr: number;
             payload: string;
@@ -152,28 +160,46 @@ export class SqliteJournal implements Journal {
     }
   }
 
-  async highestSeq(pid: string): Promise<number> {
+  async highestSeq(persistenceId: string): Promise<number> {
     await this.ensureOpen();
-    const row = this.stmts!.highestSeq.get(pid) as { hi: number | null } | undefined;
-    return row?.hi ?? 0;
+    try {
+      const row = this.stmts!.highestSeq.get(persistenceId) as { hi: number | null } | undefined;
+      const del = (this.stmts!.deletedTo.get(persistenceId) as { d: number | null } | undefined)?.d ?? 0;
+      // Highest ever = max of the surviving events and the compaction high-water
+      // mark, so the counter never rewinds after a full delete.
+      return Math.max(row?.hi ?? 0, del);
+    } catch (e) {
+      throw new JournalError(`SqliteJournal.highestSeq failed: ${(e as Error).message}`, e);
+    }
   }
 
-  async delete(pid: string, toSeq: number): Promise<void> {
+  async delete(persistenceId: string, toSeq: number): Promise<void> {
     await this.ensureOpen();
-    // Order matters: delete from the tags-table FIRST so that a
-    // crash mid-delete leaves an inconsistent state where tags exist
-    // for events that don't — recoverable via a manual cleanup or a
-    // future backfill.  Doing it the other way around would produce
-    // events with missing tags, which the JOIN-based query path
-    // would silently miss.
-    this.stmts!.deleteTagsUpTo.run(pid, toSeq);
-    this.stmts!.deleteUpTo.run(pid, toSeq);
+    try {
+      // Order matters: delete from the tags-table FIRST so that a
+      // crash mid-delete leaves an inconsistent state where tags exist
+      // for events that don't — recoverable via a manual cleanup or a
+      // future backfill.  Doing it the other way around would produce
+      // events with missing tags, which the JOIN-based query path
+      // would silently miss.
+      this.stmts!.deleteTagsUpTo.run(persistenceId, toSeq);
+      this.stmts!.deleteUpTo.run(persistenceId, toSeq);
+      // Record the high-water mark so highestSeq / the append concurrency check
+      // don't rewind once the highest events are compacted away.
+      this.stmts!.upsertDeletedTo.run(persistenceId, toSeq);
+    } catch (e) {
+      throw new JournalError(`SqliteJournal.delete failed: ${(e as Error).message}`, e);
+    }
   }
 
   async persistenceIds(): Promise<string[]> {
     await this.ensureOpen();
-    const rows = this.stmts!.pids.all() as Array<{ persistence_id: string }>;
-    return rows.map(r => r.persistence_id);
+    try {
+      const rows = this.stmts!.persistenceIds.all() as Array<{ persistence_id: string }>;
+      return rows.map(r => r.persistence_id);
+    } catch (e) {
+      throw new JournalError(`SqliteJournal.persistenceIds failed: ${(e as Error).message}`, e);
+    }
   }
 
   async close(): Promise<void> {
@@ -195,6 +221,7 @@ export class SqliteJournal implements Journal {
     const driver = this.options.driver ?? await getSqliteDriver();
     const db = driver.open(this.options.path ?? ':memory:');
     const tagsTable = `${this.table}_tags`;
+    const metaTable = `${this.table}_meta`;
     db.exec(`
       CREATE TABLE IF NOT EXISTS ${this.table} (
         persistence_id TEXT NOT NULL,
@@ -213,6 +240,10 @@ export class SqliteJournal implements Journal {
         PRIMARY KEY (tag, timestamp, persistence_id, sequence_nr)
       );
       CREATE INDEX IF NOT EXISTS idx_${tagsTable}_pid_seq ON ${tagsTable}(persistence_id, sequence_nr);
+      CREATE TABLE IF NOT EXISTS ${metaTable} (
+        persistence_id TEXT PRIMARY KEY,
+        deleted_to     INTEGER NOT NULL
+      );
     `);
     if (this.options.wal) db.exec('PRAGMA journal_mode = WAL;');
 
@@ -232,13 +263,20 @@ export class SqliteJournal implements Journal {
       highestSeq: db.prepare(
         `SELECT MAX(sequence_nr) AS hi FROM ${this.table} WHERE persistence_id = ?`,
       ),
+      deletedTo: db.prepare(
+        `SELECT deleted_to AS d FROM ${metaTable} WHERE persistence_id = ?`,
+      ),
+      upsertDeletedTo: db.prepare(
+        `INSERT INTO ${metaTable}(persistence_id, deleted_to) VALUES (?, ?)
+         ON CONFLICT(persistence_id) DO UPDATE SET deleted_to = MAX(deleted_to, excluded.deleted_to)`,
+      ),
       deleteUpTo: db.prepare(
         `DELETE FROM ${this.table} WHERE persistence_id = ? AND sequence_nr <= ?`,
       ),
       deleteTagsUpTo: db.prepare(
         `DELETE FROM ${tagsTable} WHERE persistence_id = ? AND sequence_nr <= ?`,
       ),
-      pids: db.prepare(
+      persistenceIds: db.prepare(
         `SELECT DISTINCT persistence_id FROM ${this.table}`,
       ),
       countTags: db.prepare(

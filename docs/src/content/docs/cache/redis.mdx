@@ -31,17 +31,15 @@ simpler.
 ## Configuration
 
 ```ts
-interface RedisCacheOptionsType {
+type RedisCacheOptionsType = {
   url?:       string;                // 'redis://host:port'
   host?:      string;
   port?:      number;
   password?:  string;
-  username?:  string;
   db?:        number;
   keyPrefix?: string;
-  tls?:       boolean;               // true for `rediss://`
-  cluster?:   ClusterNodes;          // for Redis Cluster
-}
+  client?:    RedisClientLike;       // pre-built ioredis client
+};
 ```
 
 URL form:
@@ -108,9 +106,10 @@ const redisCache2Options = RedisCacheOptions.create().withUrl('rediss://redis.ex
 new RedisCache(redisCache2Options);
 ```
 
-`rediss://` URL prefix or explicit `tls: true`.  Cert
-verification goes through Node's TLS defaults; for self-signed
-in dev, you'd need explicit ioredis TLS options.
+`rediss://` URL prefix selects TLS — or pass a pre-built TLS
+client via `withClient`.  Cert verification goes through Node's
+TLS defaults; for self-signed in dev, you'd need explicit
+ioredis TLS options.
 
 ## Bulk operations are real bulk
 

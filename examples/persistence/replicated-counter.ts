@@ -30,11 +30,11 @@ import {
 } from '../../src/index.js';
 import { MultiNodeSpec } from '../../src/testkit/MultiNodeSpec.js';
 
-type Cmd = { kind: 'add'; amount: number };
+type Command = { kind: 'add'; amount: number };
 type Event = { kind: 'added'; amount: number };
-interface State { value: number }
+type State = { value: number };
 
-class ReplicatedCounter extends ReplicatedEventSourcedActor<Cmd, Event, State> {
+class ReplicatedCounter extends ReplicatedEventSourcedActor<Command, Event, State> {
   readonly persistenceId = 'counter-1';
   readonly replicaId: string;
   readonly label: string;
@@ -49,19 +49,25 @@ class ReplicatedCounter extends ReplicatedEventSourcedActor<Cmd, Event, State> {
 
   onEvent(s: State, e: Event): State {
     return match(e)
-      .with({ kind: 'added' }, (a) => ({ value: s.value + a.amount }))
+      .with({ kind: 'added' }, (a) => this.onAdded(s, a))
       .exhaustive();
   }
 
-  async onCommand(_s: State, c: Cmd): Promise<void> {
+  private onAdded(s: State, a: Event): State {
+    return { value: s.value + a.amount };
+  }
+
+  async onCommand(_s: State, c: Command): Promise<void> {
     await match(c)
-      .with({ kind: 'add' }, async (cmd) => {
-        await this.persist({ kind: 'added', amount: cmd.amount }, () => {
-          // eslint-disable-next-line no-console
-          console.log(`[${this.label}] persisted: amount=${cmd.amount}`);
-        });
-      })
+      .with({ kind: 'add' }, (command) => this.onAdd(command))
       .exhaustive();
+  }
+
+  private async onAdd(command: Command): Promise<void> {
+    await this.persist({ kind: 'added', amount: command.amount }, () => {
+      // eslint-disable-next-line no-console
+      console.log(`[${this.label}] persisted: amount=${command.amount}`);
+    });
   }
 
   /** Test/example hook to read the local view of the value. */
@@ -92,10 +98,10 @@ async function main(): Promise<void> {
   for (const role of ['a', 'b', 'c'] as const) {
     const cluster = spec.clusterFor(role);
     const ref = spec.systemFor(role).spawn(
-      Props.create<Cmd>(() => {
+      Props.create<Command>(() => {
         const inst = new ReplicatedCounter(cluster, role);
         instances.set(role, inst);
-        return inst as unknown as Actor<Cmd>;
+        return inst as unknown as Actor<Command>;
       }),
       `counter-${role}`,
     );

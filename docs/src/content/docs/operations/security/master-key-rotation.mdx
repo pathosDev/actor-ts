@@ -6,27 +6,30 @@ description: Rotate the master encryption key for at-rest data (object-storage s
 For at-rest encryption
 ([object-storage encryption](/persistence/object-storage/encryption/),
 durable-DD-encryption), the framework's keys live in a
-**`MasterKeyRing`** — a versioned map of key-id → encryption
-key.  Rotation is **online**: new writes go under a fresh key
-ID; old reads still work under whatever key they were
-encrypted with; a background sweep eventually re-encrypts
-older data.
+**`MasterKeyRing`** — a versioned set of keys: one `active`
+key plus any number of `retired` ones, each tagged with a
+numeric **version** (a single byte, 0-255).  Rotation is
+**online**: new writes go under the `active` key; old reads
+still work under whatever version they were encrypted with;
+a background sweep eventually re-encrypts older data.
 
 ```ts
-import { MasterKeyRing } from 'actor-ts';
+import type { MasterKeyRing } from 'actor-ts';
 
-const keyRing = new MasterKeyRing({
-  keys: {
-    'k1': process.env.MASTER_KEY_V1!,
-    'k2': process.env.MASTER_KEY_V2!,   // new — current
-  },
-  currentKeyId: 'k2',
-});
+// Each key is 32 raw bytes (AES-256) — decode from a base64 env
+// var, a mounted secret, or a KMS unwrap (see "Storage of master
+// keys" below).
+const keyRing: MasterKeyRing = {
+  active:  { version: 2, key: Buffer.from(process.env.MASTER_KEY_V2!, 'base64') },  // new — current
+  retired: [{ version: 1, key: Buffer.from(process.env.MASTER_KEY_V1!, 'base64') }],
+};
 ```
 
-`currentKeyId` is the key used for **new writes**.  Reads
-consult `keys` to find the right key for whatever the stored
-data is encrypted under.
+`MasterKeyRing` is a **type**, not a class — you build the plain
+object above; there is nothing to `new`.  `active` is the key
+used for **new writes**.  Reads dispatch on the version byte
+stored in each blob's manifest, matching it against `active` or
+one of the `retired` entries.
 
 ## When to rotate
 
@@ -45,16 +48,17 @@ practice** — limits blast radius of an undetected leak.
 ## The rotation flow
 
 ```
-   1. Generate a fresh key.  Add to keyRing.keys; do NOT yet
-      promote to currentKeyId.
-   2. Roll out the updated keyRing to all nodes.  Verify reads
-      work — old data still uses old key, new data still uses
-      previous key.
-   3. Update currentKeyId to the new key.  Roll out.  New writes
-      use the new key.  Old data still readable.
+   1. Generate a fresh key with the next version number.  Add it
+      to keyRing.retired; do NOT yet promote it to active.
+   2. Roll out the updated ring to all nodes.  Verify reads work
+      — old data still decrypts, writes still use the current
+      active key.
+   3. Promote the fresh key to active (move the previous active
+      into retired).  Roll out.  New writes use the new key; old
+      data still readable.
    4. Run the re-encryption sweep.  Old data is read, decrypted,
-      re-encrypted under the new key.
-   5. Once the sweep completes, remove the old key from keyRing.
+      re-encrypted under the active key.
+   5. Once the sweep completes, drop the old key from retired.
       Keep a rollback window of ~7 days where the old key is
       still available; after that, drop it.
 ```
@@ -64,36 +68,31 @@ The framework supports each of these steps without downtime.
 ## Step 1 — add the new key
 
 ```ts
-const keyRing = new MasterKeyRing({
-  keys: {
-    'k1': process.env.MASTER_KEY_V1!,
-    'k2': process.env.MASTER_KEY_V2!,   // new
-  },
-  currentKeyId: 'k1',   // still v1 — only added v2 to ring
-});
+const keyRing: MasterKeyRing = {
+  active:  { version: 1, key: Buffer.from(process.env.MASTER_KEY_V1!, 'base64') },   // still v1 — active unchanged
+  retired: [{ version: 2, key: Buffer.from(process.env.MASTER_KEY_V2!, 'base64') }], // v2 added to the ring, not yet active
+};
 ```
 
 Roll out this config to every node.  Reads of v1-encrypted data
-still work; writes still use v1.
+still work; writes still use v1 — but every node now holds v2 and
+can decrypt under it.
 
 This step is **safe and reversible** — if v2 isn't actually
-needed yet, revert by removing it from `keys`.
+needed yet, revert by removing it from `retired`.
 
 ## Step 2 — promote the new key
 
 ```ts
-const keyRing = new MasterKeyRing({
-  keys: {
-    'k1': process.env.MASTER_KEY_V1!,
-    'k2': process.env.MASTER_KEY_V2!,
-  },
-  currentKeyId: 'k2',   // ← now v2
-});
+const keyRing: MasterKeyRing = {
+  active:  { version: 2, key: Buffer.from(process.env.MASTER_KEY_V2!, 'base64') },   // ← now v2
+  retired: [{ version: 1, key: Buffer.from(process.env.MASTER_KEY_V1!, 'base64') }],
+};
 ```
 
-Roll out.  New writes go under v2.  Reads consult the keyRing
-and find the right key (v1 or v2) based on the stored data's
-key-id header.
+Roll out.  New writes go under v2.  Reads consult the ring and
+find the right key (v1 or v2) based on the version byte in the
+stored blob's manifest.
 
 After this step, **gradually new data accumulates under v2** as
 the workload writes.  Old data **stays under v1** until
@@ -102,45 +101,52 @@ re-encrypted.
 ## Step 3 — re-encrypt sweep
 
 ```ts
-import { ReEncryptionSweep } from 'actor-ts';
+import { reEncryptObjectStorage } from 'actor-ts';
 
-const sweep = new ReEncryptionSweep({
-  store:           snapshotStore,
-  keyRing,
-  targetKeyId:     'k2',
-  batchSize:       100,
-  rateLimit:       50,   // items per second
+// `backend` is the ObjectStorageBackend your store writes through
+// (a FilesystemObjectStorageBackend, S3ObjectStorageBackend, …).
+const result = await reEncryptObjectStorage(backend, {
+  keyPrefix: 'snapshots/',   // which objects to sweep
+  keyring:   keyRing,        // active = v2, retired = [v1]
 });
 
-await sweep.run();
+console.log(`re-encrypted ${result.rewrote} of ${result.scanned} objects`);
 ```
 
-The sweep walks the store, finds items not encrypted under
-`targetKeyId`, decrypts + re-encrypts.
+The sweep lists every object under `keyPrefix` and, for each one
+not already at the ring's `active` version, decrypts it and
+re-encrypts under `active`.  Objects already current are skipped
+without a write.
 
-Knobs:
+Useful options:
 
-- **`batchSize`** — items processed per batch.
-- **`rateLimit`** — bound the I/O rate so the sweep doesn't
-  hammer the underlying storage.
-- **`filter`** — limit to specific persistenceIds (for partial
+- **`skip`** — a `(key) => boolean` predicate; matching keys are
+  left untouched (exclude non-body objects, or scope a partial
   rotation).
+- **`onProgress`** — per-object callback for logging or an
+  operator dashboard on long sweeps.
+- **`progress`** — a `ReEncryptProgressStore` (e.g.
+  `InMemoryReEncryptProgressStore`) for crash-resume of very
+  large sweeps.
+- **`verifyKeyringCompleteness`** — on by default: samples some
+  blobs and refuses to start if any references a version missing
+  from the ring.
 
-The sweep is **idempotent + resumable** — interrupting it and
-re-running picks up where it left off.  Tracks progress in
-the store's metadata.
+The sweep is **idempotent + resumable** — an object already at
+the `active` version is skipped without a write, so re-running
+after an interruption is safe.  By default a resumed run re-lists
+and re-checks every key; pass a `progress` store to skip straight
+past the objects already done.
 
 ## Step 4 — retire the old key
 
 After the sweep completes (every item encrypted under v2):
 
 ```ts
-const keyRing = new MasterKeyRing({
-  keys: {
-    'k2': process.env.MASTER_KEY_V2!,
-  },
-  currentKeyId: 'k2',
-});
+const keyRing: MasterKeyRing = {
+  active: { version: 2, key: Buffer.from(process.env.MASTER_KEY_V2!, 'base64') },
+  // retired dropped — v1 is gone
+};
 ```
 
 Drop v1 entirely.  Any data still encrypted under v1 (e.g.,
@@ -178,22 +184,27 @@ import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="Dropping the old key before sweep completes">
   ```ts
-  // currentKeyId: 'k2' + dropped k1 from keyRing
-  // BUT some data still encrypted under k1
+  // active: v2, retired: [] — v1 dropped from the ring
+  // BUT some data still encrypted under v1
   ```
   Result: that data is **permanently unreadable**.  No
-  recovery short of restoring the dropped key.  Always finish
-  the sweep + retain the old key for a rollback window before
-  retiring.
+  recovery short of restoring the dropped key.  The sweep's
+  `verifyKeyringCompleteness` check catches a missing version
+  before it starts, but nothing guards the live read path —
+  always finish the sweep + retain the old key for a rollback
+  window before retiring.
 </Aside>
 
-<Aside type="caution" title="Sweep on a too-tight rate limit">
+<Aside type="caution" title="The sweep has no built-in throttle">
   ```ts
-  rateLimit: 1000_000,   // ✗ saturates storage
+  // reEncryptObjectStorage runs as fast as the backend allows —
+  // there is no rateLimit / batchSize knob.
   ```
-  Sweep is background work.  Tight rate limits prevent it
-  competing with foreground traffic.  Slow sweep is fine —
-  bias toward "won't impact prod" over "finishes fast."
+  A large sweep can compete with foreground traffic (and, on S3,
+  run up request costs).  Run it as background work, off-peak,
+  and scope it with `keyPrefix` / `skip`; watch it via
+  `onProgress`.  Bias toward "won't impact prod" over "finishes
+  fast."
 </Aside>
 
 <Aside type="caution" title="Master keys in plain env">

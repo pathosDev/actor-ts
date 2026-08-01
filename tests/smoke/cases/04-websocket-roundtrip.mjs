@@ -21,7 +21,7 @@ export async function run({ actorTs }) {
   } = actorTs;
 
   class Echo extends WebsocketServerActor {
-    onMessage(msg) { this.reply({ pong: msg.n }); }
+    onMessage(message) { this.reply({ pong: message.n }); }
   }
 
   const sysOptions = ActorSystemOptions.create()

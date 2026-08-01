@@ -36,7 +36,7 @@ function getSubtle(): SubtleCrypto {
   if (!subtle) {
     throw new Error(
       'SubtleCrypto is not available in this runtime.  Body integrity '
-      + 'requires WebCrypto — Node 20+, Bun, or Deno.',
+      + 'requires WebCrypto — Node, Bun, or Deno.',
     );
   }
   return subtle;

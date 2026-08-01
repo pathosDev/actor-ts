@@ -15,7 +15,7 @@ import type { WebsocketServerRef } from '../../../../src/http/websocket/Websocke
 // in these compile/authorize-only tests — a stub is sufficient.
 const target = {} as unknown as WebsocketServerRef<unknown, unknown, never>;
 
-const req = (headers: Record<string, string> = {}): HttpRequest => ({
+const request = (headers: Record<string, string> = {}): HttpRequest => ({
   method: 'GET', path: '/ws', headers, query: {}, params: {}, body: null,
 });
 
@@ -34,38 +34,38 @@ describe('websocket() — allowedOrigins (CSWSH defence, WS-2)', () => {
 
   test('no allowedOrigins → any Origin accepted (unchanged default)', async () => {
     const endpoint = wsEndpoint(websocket('/ws', target));
-    expect(await endpoint.authorize(req({ origin: 'https://evil.example.com' }))).toBeNull();
+    expect(await endpoint.authorize(request({ origin: 'https://evil.example.com' }))).toBeNull();
   });
 
   test('present-but-unlisted Origin → 403', async () => {
     const endpoint = wsEndpoint(websocket('/ws', target, allow));
-    const res = await endpoint.authorize(req({ origin: 'https://evil.example.com' }));
-    expect(res).not.toBeNull();
-    expect(res!.status).toBe(Status.Forbidden);
+    const response = await endpoint.authorize(request({ origin: 'https://evil.example.com' }));
+    expect(response).not.toBeNull();
+    expect(response!.status).toBe(Status.Forbidden);
   });
 
   test('listed Origin → accepted (case-insensitive)', async () => {
     const endpoint = wsEndpoint(websocket('/ws', target, allow));
-    expect(await endpoint.authorize(req({ origin: 'https://app.example.com' }))).toBeNull();
-    expect(await endpoint.authorize(req({ origin: 'HTTPS://APP.EXAMPLE.COM' }))).toBeNull();
+    expect(await endpoint.authorize(request({ origin: 'https://app.example.com' }))).toBeNull();
+    expect(await endpoint.authorize(request({ origin: 'HTTPS://APP.EXAMPLE.COM' }))).toBeNull();
   });
 
   test('missing Origin (non-browser client) → allowed', async () => {
     const endpoint = wsEndpoint(websocket('/ws', target, allow));
-    expect(await endpoint.authorize(req())).toBeNull();
+    expect(await endpoint.authorize(request())).toBeNull();
   });
 
   test('builder form withAllowedOrigins behaves identically', async () => {
-    const opts = WebsocketRouteOptions.create().withAllowedOrigins(['https://app.example.com']);
-    const endpoint = wsEndpoint(websocket('/ws', target, opts));
-    expect((await endpoint.authorize(req({ origin: 'https://evil.example.com' })))!.status).toBe(Status.Forbidden);
-    expect(await endpoint.authorize(req({ origin: 'https://app.example.com' }))).toBeNull();
+    const options = WebsocketRouteOptions.create().withAllowedOrigins(['https://app.example.com']);
+    const endpoint = wsEndpoint(websocket('/ws', target, options));
+    expect((await endpoint.authorize(request({ origin: 'https://evil.example.com' })))!.status).toBe(Status.Forbidden);
+    expect(await endpoint.authorize(request({ origin: 'https://app.example.com' }))).toBeNull();
   });
 
   test('composes with withMiddleware — bad origin rejected even when middleware passes', async () => {
     const passthrough: Middleware = (_r, next) => next();
     const endpoint = wsEndpoint(withMiddleware(passthrough, websocket('/ws', target, allow)));
-    expect((await endpoint.authorize(req({ origin: 'https://evil.example.com' })))!.status).toBe(Status.Forbidden);
-    expect(await endpoint.authorize(req({ origin: 'https://app.example.com' }))).toBeNull();
+    expect((await endpoint.authorize(request({ origin: 'https://evil.example.com' })))!.status).toBe(Status.Forbidden);
+    expect(await endpoint.authorize(request({ origin: 'https://app.example.com' }))).toBeNull();
   });
 });

@@ -67,12 +67,13 @@ class OrderActor extends PersistentActor<PlaceCommand, OrderPlaced, OrderState> 
 
   initialState() { return { orders: {} as Record<string, Order> }; }
   onEvent(state, e) {
-    if (e.kind === 'placed') return { orders: { ...state.orders, [e.order.id]: e.order } };
-    return state;
+    return match(e)
+      .with({ kind: 'placed' }, (ev) => ({ orders: { ...state.orders, [ev.order.id]: ev.order } }))
+      .exhaustive();
   }
-  onCommand(state, cmd: PlaceCommand) {
-    if (state.orders[cmd.order.id]) return;   // schon platziert
-    this.persist({ kind: 'placed', order: cmd.order }, () => {});
+  onCommand(state, command: PlaceCommand) {
+    if (state.orders[command.order.id]) return;   // schon platziert
+    this.persist({ kind: 'placed', order: command.order }, () => {});
   }
 }
 ```
@@ -124,13 +125,13 @@ type JobEvent =
   | { kind: 'failed';  job: Job; error: Error };
 
 class Worker extends Actor<{ kind: 'run'; job: Job; replyTo: ActorRef<JobEvent> }> {
-  override async onReceive(msg): Promise<void> {
-    msg.replyTo.tell({ kind: 'started', job: msg.job });
+  override async onReceive(message): Promise<void> {
+    message.replyTo.tell({ kind: 'started', job: message.job });
     try {
-      const result = await execute(msg.job);
-      msg.replyTo.tell({ kind: 'done', job: msg.job, result });
+      const result = await execute(message.job);
+      message.replyTo.tell({ kind: 'done', job: message.job, result });
     } catch (e) {
-      msg.replyTo.tell({ kind: 'failed', job: msg.job, error: e as Error });
+      message.replyTo.tell({ kind: 'failed', job: message.job, error: e as Error });
     }
   }
 }
@@ -157,14 +158,14 @@ class HealthMonitor {
   }
 
   private async tick(): Promise<void> {
-    for (const svc of this.services) {
-      const ok = await this.ping(svc);
-      this.status.set(svc, ok ? 'up' : 'down');
+    for (const service of this.services) {
+      const ok = await this.ping(service);
+      this.status.set(service, ok ? 'up' : 'down');
     }
   }
 
-  getStatus(svc: string): 'up' | 'down' {
-    return this.status.get(svc) ?? 'down';
+  getStatus(service: string): 'up' | 'down' {
+    return this.status.get(service) ?? 'down';
   }
 }
 ```
@@ -184,9 +185,9 @@ Ein langlebiges Objekt mit sowohl **State** als auch
 ### Nachher
 
 ```ts
-type Message =
-  | { kind: 'tick' }
-  | { kind: 'get-status'; svc: string; replyTo: ActorRef<'up' | 'down'> };
+type TickMessage = { kind: 'tick' };
+type GetStatusMessage = { kind: 'get-status'; service: string; replyTo: ActorRef<'up' | 'down'> };
+type Message = TickMessage | GetStatusMessage;
 
 class HealthMonitor extends Actor<Message> {
   private status = new Map<string, 'up' | 'down'>();
@@ -197,15 +198,22 @@ class HealthMonitor extends Actor<Message> {
     this.context.timers.startTimerWithFixedDelay('tick', { kind: 'tick' }, 10_000);
   }
 
-  override async onReceive(msg: Message): Promise<void> {
-    if (msg.kind === 'tick') {
-      for (const svc of this.services) {
-        const ok = await this.ping(svc);
-        this.status.set(svc, ok ? 'up' : 'down');
-      }
-    } else if (msg.kind === 'get-status') {
-      msg.replyTo.tell(this.status.get(msg.svc) ?? 'down');
+  override async onReceive(message: Message): Promise<void> {
+    await match(message)
+      .with({ kind: 'tick' }, () => this.onTick())
+      .with({ kind: 'get-status' }, (m) => this.onGetStatus(m))
+      .exhaustive();
+  }
+
+  private async onTick(): Promise<void> {
+    for (const service of this.services) {
+      const ok = await this.ping(service);
+      this.status.set(service, ok ? 'up' : 'down');
     }
+  }
+
+  private onGetStatus(message: GetStatusMessage): void {
+    message.replyTo.tell(this.status.get(message.service) ?? 'down');
   }
 }
 ```
@@ -248,28 +256,32 @@ wenn das Refund selbst fehlschlägt?).
 ```ts
 type Command = { kind: 'place'; order: NewOrder };
 type Event =
-  | { kind: 'inventory-reserved'; resId: string }
+  | { kind: 'inventory-reserved'; reservationId: string }
   | { kind: 'payment-charged';     chargeId: string }
   | { kind: 'shipping-scheduled';  shippingId: string }
   | { kind: 'compensating-...' };
 
 class OrderSaga extends PersistentActor<Command, Event, OrderSagaState> {
   // ...
-  async onCommand(state, cmd) {
-    if (cmd.kind === 'place') {
-      const reserved = await inventory.reserve(cmd.order.items);
-      this.persist({ kind: 'inventory-reserved', resId: reserved.id }, async () => {
-        try {
-          const charged = await payment.charge(...);
-          this.persist({ kind: 'payment-charged', chargeId: charged.id }, async () => {
-            // ... und so weiter
-          });
-        } catch (e) {
-          // Kompensieren - Events treiben auch die Kompensation:
-          this.persist({ kind: 'compensating-refund-needed' }, () => {});
-        }
-      });
-    }
+  async onCommand(state, command) {
+    await match(command)
+      .with({ kind: 'place' }, (c) => this.onPlace(c))
+      .exhaustive();
+  }
+
+  private async onPlace(command: PlaceCommand): Promise<void> {
+    const reserved = await inventory.reserve(command.order.items);
+    this.persist({ kind: 'inventory-reserved', reservationId: reserved.id }, async () => {
+      try {
+        const charged = await payment.charge(...);
+        this.persist({ kind: 'payment-charged', chargeId: charged.id }, async () => {
+          // ... und so weiter
+        });
+      } catch (e) {
+        // Kompensieren - Events treiben auch die Kompensation:
+        this.persist({ kind: 'compensating-refund-needed' }, () => {});
+      }
+    });
   }
 }
 ```

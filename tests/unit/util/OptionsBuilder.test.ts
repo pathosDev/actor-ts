@@ -1,11 +1,11 @@
 import { describe, expect, test } from 'bun:test';
 import { OptionsBuilder } from '../../../src/util/OptionsBuilder.js';
 
-interface Foo {
+type Foo = {
   readonly a?: number;
   readonly b?: string;
   readonly c?: boolean;
-}
+};
 
 class FooOptions extends OptionsBuilder<Foo> {
   static create(): FooOptions {

@@ -355,10 +355,10 @@ class FencedFakeLease implements Lease {
   }
 
   /** Resolve the Nth-issued pending acquire with the given outcome. */
-  resolveAt(idx: number, got: boolean): void {
-    const entry = this.pending[idx];
-    if (!entry) throw new Error(`FencedFakeLease.resolveAt(${idx}): no such pending acquire`);
-    this.pending[idx] = null as never;
+  resolveAt(index: number, got: boolean): void {
+    const entry = this.pending[index];
+    if (!entry) throw new Error(`FencedFakeLease.resolveAt(${index}): no such pending acquire`);
+    this.pending[index] = null as never;
     if (entry.kind === 'token') {
       const value = got ? { token: this.tokenStream.shift() ?? 'tX' } : null;
       entry.resolve(value);

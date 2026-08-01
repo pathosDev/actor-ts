@@ -1,0 +1,86 @@
+// Knip configuration — dead-code and dependency hygiene (#416).
+//
+// Unconfigured, knip reports ~341 "unused files" and several hundred duplicate
+// exports here, because the defaults assume an application: anything not
+// reachable from one entry point is dead, and two names for one value is a
+// mistake. Neither holds for a library whose whole surface is its exports, and
+// one of them is a documented convention. So the rules that fight the project
+// are off, and the ones that catch real problems are on.
+{
+  "$schema": "https://unpkg.com/knip@6/schema.json",
+
+  // The things that legitimately reach into the tree without being imported by
+  // it: the test suites, the smoke cases (discovered at runtime by their own
+  // harness), the build scripts and the benchmarks. The three published entry
+  // points are NOT listed — knip derives `src/index.ts`, `src/testkit/index.ts`
+  // and `src/devtools/index.ts` from the `exports` map itself, and repeating
+  // them here is reported as a redundant pattern.
+  "entry": [
+    "tests/**/*.test.ts",
+    "tests/**/*.mjs",
+    "tests/integration/**/*.ts",
+    "scripts/**/*.{ts,mjs}",
+    "benchmarks/**/*.ts"
+  ],
+
+  "project": ["src/**/*.ts", "scripts/**/*.{ts,mjs}"],
+
+  // `examples/` stays out of scope via `project` above. It is not published, and
+  // its four frontends (Angular, Next, React, Svelte) each carry their own
+  // package.json — resolving those imports against the root manifest reports
+  // every framework dependency as unlisted, which is noise, not a finding.
+
+  // Only the packages knip actually reports. Every one is reached through a
+  // lazy `import()` (or is the type package for one), which static analysis
+  // cannot attribute to the manifest entry — `@hono/node-server` and
+  // `@hono/node-ws` from `HonoBackend.ts`, `better-sqlite3` from
+  // `SqliteJournal.ts` / `SqliteClient.ts`, `express` from `ExpressBackend.ts`.
+  // The rest of the optional peers resolve fine and are deliberately not listed:
+  // an ignore entry that is not needed hides a finding later.
+  "ignoreDependencies": [
+    "@fastify/static",
+    "@hono/node-server",
+    "@hono/node-ws",
+    "@types/better-sqlite3",
+    "@types/express",
+    "better-sqlite3",
+    "express",
+    "hono"
+  ],
+
+  "rules": {
+    // OFF — fights the project rather than finding problems:
+    //
+    // `duplicates`: AGENTS.md requires every options family to export `XOptions`
+    // as *both* a type union and a value alias for `XOptionsBuilder`. That is
+    // two names for one value on purpose, in ~60 files.
+    "duplicates": "off",
+    // `exports` / `types`: a library's public API has no in-repo consumer by
+    // definition. Turning these on would report the entire surface.
+    "exports": "off",
+    "types": "off",
+    "nsExports": "off",
+    "nsTypes": "off",
+    // `enumMembers`: same reasoning one level down — a public enum's members
+    // need no internal reference to be justified.
+    "enumMembers": "off",
+
+    // ON — these catch things that are actually wrong:
+    //
+    // `files`: a module reachable from no entry point is dead weight in the
+    // published package.
+    "files": "error",
+    // `dependencies` / `devDependencies`: a manifest entry nothing imports.
+    "dependencies": "error",
+    "devDependencies": "error",
+    // `unlisted` / `unresolved`: an import with no manifest entry behind it —
+    // the failure mode that breaks a fresh install rather than the local tree.
+    "unlisted": "error",
+    "unresolved": "error",
+    // `binaries`: a script invoking a tool nobody declared.
+    "binaries": "error",
+    // OFF — referencing an optional peer is the whole design: the framework
+    // imports it lazily so a consumer installs only the backends it uses.
+    "optionalPeerDependencies": "off"
+  }
+}

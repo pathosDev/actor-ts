@@ -33,6 +33,7 @@ import {
 } from './BodyCodec.js';
 import { deriveSubkey } from './Encryption.js';
 import type { ObjectStorageBackend } from './ObjectStorageBackend.js';
+import { makeKeyValidator } from '../storage/KeyValidator.js';
 
 const ATS1_MAGIC_PREFIX = new Uint8Array([0x41, 0x54, 0x53, 0x31]); // "ATS1"
 
@@ -48,12 +49,12 @@ const ATS1_MAGIC_PREFIX = new Uint8Array([0x41, 0x54, 0x53, 0x31]); // "ATS1"
  * `ReEncryptProgress` shape used by the per-event `onProgress` hook —
  * that one is event-data, this one is durable state.)
  */
-export interface ReEncryptResumeState {
+export type ReEncryptResumeState = {
   /** Key of the last object the sweep successfully wrote.  `null` = fresh start. */
   readonly lastKey: string | null;
   /** Cumulative count of objects rewritten across runs of the same sweep. */
   readonly processedCount: number;
-}
+};
 
 /**
  * Crash-resume hook for the re-encryption sweep.  Same shape pattern
@@ -83,7 +84,7 @@ export class InMemoryReEncryptProgressStore implements ReEncryptProgressStore {
   async clear(): Promise<void> { this.state = { lastKey: null, processedCount: 0 }; }
 }
 
-export interface ReEncryptOptions {
+export type ReEncryptOptions = {
   /** Common key prefix to sweep (e.g. `'snapshots/'` or `'state/'`). */
   readonly keyPrefix: string;
   /**
@@ -151,16 +152,16 @@ export interface ReEncryptOptions {
   readonly verifyKeyringCompleteness?: boolean;
   /** Sample size for the completeness check.  Default: min(100, total). */
   readonly sampleSize?: number;
-}
+};
 
-export interface ReEncryptProgress {
+export type ReEncryptProgress = {
   readonly key: string;
-  readonly idx: number;
+  readonly index: number;
   readonly total: number;
-  readonly action: 'rewrote' | 'skipped-current' | 'skipped-unencrypted' | 'skipped-non-ats1';
-}
+  readonly action: 'rewrote' | 'skipped-current' | 'skipped-unencrypted' | 'skipped-non-ats1' | 'skipped-malformed-key';
+};
 
-export interface ReEncryptResult {
+export type ReEncryptResult = {
   /** Total objects examined. */
   readonly scanned: number;
   /** Objects that were re-encrypted to the active key. */
@@ -174,7 +175,19 @@ export interface ReEncryptResult {
   readonly skippedUnencrypted: number;
   /** Objects skipped because they aren't `ATS1`-framed (e.g. raw user blobs). */
   readonly skippedNonAts1: number;
-}
+  /**
+   * Objects skipped because their key could not yield a usable persistence id.
+   *
+   * Keys come from the store's `list()`, i.e. from the bucket rather than from
+   * us, and the sweep derives its HKDF salt from the key.  Since it then
+   * *rewrites* the body, a key that yields the wrong salt would not merely fail
+   * — it would re-encrypt data under a salt the owning store never reproduces,
+   * leaving it permanently undecryptable.  Such keys are skipped instead, and
+   * a non-zero count here is worth investigating: nothing the framework writes
+   * produces one.
+   */
+  readonly skippedMalformedKey: number;
+};
 
 /**
  * Re-encrypt every body under `keyPrefix` to the active key in `keyring`.
@@ -193,28 +206,29 @@ export interface ReEncryptResult {
  *     keyPrefix: 'snapshots/',
  *     keyring: { active: { version: 2, key: newKey },
  *                retired: [{ version: 1, key: oldKey }] },
- *     onProgress: (e) => process.stderr.write(`${e.idx}/${e.total} ${e.key}\n`),
+ *     onProgress: (e) => process.stderr.write(`${e.index}/${e.total} ${e.key}\n`),
  *   });
  *   console.log(`re-encrypted ${result.rewrote} of ${result.scanned}`);
  */
 export async function reEncryptObjectStorage(
   backend: ObjectStorageBackend,
-  opts: ReEncryptOptions,
+  options: ReEncryptOptions,
 ): Promise<ReEncryptResult> {
-  const rawItems = await backend.list({ prefix: opts.keyPrefix });
+  const rawItems = await backend.list({ prefix: options.keyPrefix });
   // Sort lexicographically so that resume by `lastKey` is deterministic
   // across backends (FS-backend lists in disk order, S3 lists alphabetic
   // — sorting normalises).
   const items = [...rawItems].sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
-  const pidFromKey = opts.pidFromKey ?? defaultPidFromKey;
+  const persistenceIdFromKey = options.pidFromKey ?? defaultPidFromKey;
   const result = {
     scanned: 0,
     rewrote: 0,
     skippedCurrent: 0,
     skippedUnencrypted: 0,
     skippedNonAts1: 0,
+    skippedMalformedKey: 0,
   };
-  const activeVersion = opts.keyring.active.version;
+  const activeVersion = options.keyring.active.version;
   if (!Number.isInteger(activeVersion) || activeVersion < 0 || activeVersion > 255) {
     throw new Error(
       `reEncryptObjectStorage: keyring.active.version must be an integer in [0, 255], got ${activeVersion}`,
@@ -225,16 +239,16 @@ export async function reEncryptObjectStorage(
   // gather their key versions, fail fast if any version isn't in the
   // keyring.  Better to refuse before touching the corpus than to
   // half-rewrite and then crash on a missing retired key.
-  if (opts.verifyKeyringCompleteness !== false) {
-    const sampleSize = opts.sampleSize ?? Math.min(100, items.length);
+  if (options.verifyKeyringCompleteness !== false) {
+    const sampleSize = options.sampleSize ?? Math.min(100, items.length);
     const haveVersions = new Set<number>([
-      opts.keyring.active.version,
-      ...(opts.keyring.retired?.map((r) => r.version) ?? []),
+      options.keyring.active.version,
+      ...(options.keyring.retired?.map((r) => r.version) ?? []),
     ]);
     const missing = new Set<number>();
     for (let i = 0; i < sampleSize; i++) {
       const item = items[i]!;
-      if (opts.skip?.(item.key)) continue;
+      if (options.skip?.(item.key)) continue;
       const fetched = await backend.get(item.key);
       if (fetched.isNone()) continue;
       const framed = fetched.value.body;
@@ -257,26 +271,34 @@ export async function reEncryptObjectStorage(
   }
 
   // Resume from saved progress (#109).
-  let resumeStartIdx = 0;
+  let resumeStartIndex = 0;
   let processedCountBase = 0;
-  if (opts.progress) {
-    const saved = await opts.progress.load();
+  if (options.progress) {
+    const saved = await options.progress.load();
     if (saved.lastKey !== null) {
       // First index where key > lastKey.  Lower-bound scan since items
       // are sorted.
-      while (resumeStartIdx < items.length && items[resumeStartIdx]!.key <= saved.lastKey) {
-        resumeStartIdx += 1;
+      while (resumeStartIndex < items.length && items[resumeStartIndex]!.key <= saved.lastKey) {
+        resumeStartIndex += 1;
       }
       processedCountBase = saved.processedCount;
     }
   }
-  const saveEveryN = opts.saveProgressEveryN ?? 50;
+  const saveEveryN = options.saveProgressEveryN ?? 50;
 
   const total = items.length;
-  for (let idx = resumeStartIdx; idx < total; idx++) {
-    const item = items[idx]!;
-    if (opts.skip?.(item.key)) continue;
+  for (let index = resumeStartIndex; index < total; index++) {
+    const item = items[index]!;
+    if (options.skip?.(item.key)) continue;
     result.scanned += 1;
+
+    // Validate before fetching: the key decides the HKDF salt, and a rewrite
+    // under the wrong salt is unrecoverable.  See `skippedMalformedKey`.
+    if (!isUsableSweepKey(item.key, options.keyPrefix, persistenceIdFromKey)) {
+      result.skippedMalformedKey += 1;
+      options.onProgress?.({ key: item.key, index, total, action: 'skipped-malformed-key' });
+      continue;
+    }
 
     const fetched = await backend.get(item.key);
     if (fetched.isNone()) {
@@ -288,14 +310,14 @@ export async function reEncryptObjectStorage(
 
     if (!startsWithAts1(framed)) {
       result.skippedNonAts1 += 1;
-      opts.onProgress?.({ key: item.key, idx, total, action: 'skipped-non-ats1' });
+      options.onProgress?.({ key: item.key, index, total, action: 'skipped-non-ats1' });
       continue;
     }
     const flags = framed[4]!;
     const encrypted = (flags & FLAG_ENCRYPTED) !== 0;
     if (!encrypted) {
       result.skippedUnencrypted += 1;
-      opts.onProgress?.({ key: item.key, idx, total, action: 'skipped-unencrypted' });
+      options.onProgress?.({ key: item.key, index, total, action: 'skipped-unencrypted' });
       continue;
     }
     const versioned = (flags & FLAG_KEY_VERSIONED) !== 0;
@@ -306,28 +328,28 @@ export async function reEncryptObjectStorage(
       // considered "at version 0" for skip purposes — we still rewrite
       // them so the corpus ends up uniformly versioned.
       result.skippedCurrent += 1;
-      opts.onProgress?.({ key: item.key, idx, total, action: 'skipped-current' });
+      options.onProgress?.({ key: item.key, index, total, action: 'skipped-current' });
       continue;
     }
 
-    const pid = pidFromKey(item.key, opts.keyPrefix);
-    const info = opts.info ?? 'actor-ts/snapshot/v1';
+    const persistenceId = persistenceIdFromKey(item.key, options.keyPrefix);
+    const info = options.info ?? 'actor-ts/snapshot/v1';
 
     // Decrypt with whatever retired/active key matches the body's version.
     const decoded = await decodeBody(framed, {
       encryption: {
         subKeyFor: async (v: number): Promise<Uint8Array | null> => {
-          if (opts.keyring.active.version === v) {
-            return deriveSubkey(opts.keyring.active.key, pid, info);
+          if (options.keyring.active.version === v) {
+            return deriveSubkey(options.keyring.active.key, persistenceId, info);
           }
-          const retired = opts.keyring.retired?.find((r) => r.version === v);
-          return retired ? deriveSubkey(retired.key, pid, info) : null;
+          const retired = options.keyring.retired?.find((r) => r.version === v);
+          return retired ? deriveSubkey(retired.key, persistenceId, info) : null;
         },
       },
     });
 
     // Re-encrypt with the active key + active version stamp.
-    const activeSubkey = await deriveSubkey(opts.keyring.active.key, pid, info);
+    const activeSubkey = await deriveSubkey(options.keyring.active.key, persistenceId, info);
     const rewritten = await encodeBody(decoded.payload, {
       compression: decoded.compression,
       encryption: { subKey: activeSubkey, keyVersion: activeVersion },
@@ -344,12 +366,12 @@ export async function reEncryptObjectStorage(
       ifMatch: fetched.value.etag,
     });
     result.rewrote += 1;
-    opts.onProgress?.({ key: item.key, idx, total, action: 'rewrote' });
+    options.onProgress?.({ key: item.key, index, total, action: 'rewrote' });
 
     // Persist progress every Nth REWRITE (skips don't count — they're
     // cheap to redo).
-    if (opts.progress && result.rewrote % saveEveryN === 0) {
-      await opts.progress.save({
+    if (options.progress && result.rewrote % saveEveryN === 0) {
+      await options.progress.save({
         lastKey: item.key,
         processedCount: processedCountBase + result.rewrote,
       });
@@ -358,18 +380,18 @@ export async function reEncryptObjectStorage(
   // Successful end → clear progress so a fresh re-run starts from the
   // beginning.  If we crashed instead, the saved progress stays on
   // disk and the next call resumes.
-  if (opts.progress) await opts.progress.clear();
+  if (options.progress) await options.progress.clear();
   return result;
 }
 
 /* ----------------------------- internals --------------------------------- */
 
-function startsWithAts1(buf: Uint8Array): boolean {
-  return buf.length >= 5
-    && buf[0] === ATS1_MAGIC_PREFIX[0]
-    && buf[1] === ATS1_MAGIC_PREFIX[1]
-    && buf[2] === ATS1_MAGIC_PREFIX[2]
-    && buf[3] === ATS1_MAGIC_PREFIX[3];
+function startsWithAts1(buffer: Uint8Array): boolean {
+  return buffer.length >= 5
+    && buffer[0] === ATS1_MAGIC_PREFIX[0]
+    && buffer[1] === ATS1_MAGIC_PREFIX[1]
+    && buffer[2] === ATS1_MAGIC_PREFIX[2]
+    && buffer[3] === ATS1_MAGIC_PREFIX[3];
 }
 
 /**
@@ -379,6 +401,43 @@ function startsWithAts1(buf: Uint8Array): boolean {
  * decrypt + re-encrypt time, so it MUST match what the original
  * write site used.
  */
+/**
+ * Key-level rules shared with the storage backends.  Reused rather than
+ * re-stated so the sweep cannot drift from the front-line validator; control
+ * characters and NUL in a key that came out of a bucket mean the key was not
+ * written by this framework.
+ */
+const assertSweepKeyShape = makeKeyValidator({
+  errorClass: Error,
+  errorPrefix: 'reEncryptObjectStorage: key',
+  rejectControlChars: true,
+});
+
+/**
+ * True when `key` can be swept safely.
+ *
+ * Two independent checks.  The shared validator covers the key's own shape.
+ * The second is specific to what the sweep *does* with the key: the extracted
+ * persistence id becomes the HKDF salt, so an empty or whitespace-only id
+ * would derive a subkey that the owning store never uses — and because the
+ * sweep rewrites the body afterwards, that is silent, permanent data loss
+ * rather than a failed read.  A custom `pidFromKey` is covered too, since the
+ * check runs on its output.
+ */
+function isUsableSweepKey(
+  key: string,
+  keyPrefix: string,
+  pidFromKey: (key: string, keyPrefix: string) => string,
+): boolean {
+  try {
+    assertSweepKeyShape(key);
+  } catch {
+    return false;
+  }
+  const persistenceId = pidFromKey(key, keyPrefix);
+  return typeof persistenceId === 'string' && persistenceId.trim().length > 0;
+}
+
 function defaultPidFromKey(key: string, keyPrefix: string): string {
   let start = 0;
   if (key.startsWith(keyPrefix)) start = keyPrefix.length;

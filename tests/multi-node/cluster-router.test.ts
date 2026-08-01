@@ -56,11 +56,11 @@ async function waitFor(pred: () => boolean, timeoutMs = 15_000): Promise<void> {
  */
 async function waitStable<T>(
   read: () => T,
-  opts: { settleTicks?: number; tickMs?: number; timeoutMs?: number } = {},
+  options: { settleTicks?: number; tickMs?: number; timeoutMs?: number } = {},
 ): Promise<T> {
-  const settleTicks = opts.settleTicks ?? 3;
-  const tickMs = opts.tickMs ?? 50;
-  const timeoutMs = opts.timeoutMs ?? 15_000;
+  const settleTicks = options.settleTicks ?? 3;
+  const tickMs = options.tickMs ?? 50;
+  const timeoutMs = options.timeoutMs ?? 15_000;
   const deadline = Date.now() + timeoutMs;
   let prev = read();
   let stableFor = 0;
@@ -78,12 +78,12 @@ async function waitStable<T>(
   throw new Error(`waitStable: did not settle within ${timeoutMs} ms (last value: ${JSON.stringify(prev)})`);
 }
 
-interface Node {
+type Node = {
   readonly role: string;
   readonly sys: ActorSystem;
   readonly cluster: Cluster;
   readonly received: string[];
-}
+};
 
 async function startNode(
   systemName: string, port: number, seeds: string[], roles: string[],

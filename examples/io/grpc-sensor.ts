@@ -15,6 +15,7 @@
  *
  * The .proto file lives next to this script (`sensor.proto`).
  */
+import { match, P } from 'ts-pattern';
 import { join } from 'node:path';
 import { writeFileSync, unlinkSync } from 'node:fs';
 import {
@@ -28,7 +29,12 @@ import {
   type GrpcInbound,
   type GrpcServerStreamCall,
   type GrpcUnaryCall,
+  type ReplyMessage,
+  type RpcErrorMessage,
+  type StreamDataMessage,
+  type StreamErrorMessage,
 } from '../../src/index.js';
+import { attachDevTools } from '../devtools.js';
 
 // --- proto definition (inlined for self-contained example) -----------------
 
@@ -73,16 +79,31 @@ class WatchSensorHandler extends Actor<GrpcServerStreamCall> {
 }
 
 class ReplyCollector extends Actor<GrpcInbound> {
-  override onReceive(msg: GrpcInbound): void {
-    if (msg.kind === 'reply') {
-      console.log('[client] unary reply:', msg.response);
-    } else if (msg.kind === 'stream-data') {
-      console.log('[client] stream chunk:', msg.chunk);
-    } else if (msg.kind === 'stream-end') {
-      console.log('[client] stream complete');
-    } else if (msg.kind === 'rpc-error' || msg.kind === 'stream-error') {
-      console.error('[client] error:', msg.error.message);
-    }
+  override onReceive(message: GrpcInbound): void {
+    match(message)
+      .with({ kind: 'reply' }, (m) => this.onReply(m))
+      .with({ kind: 'stream-data' }, (m) => this.onStreamData(m))
+      .with({ kind: 'stream-end' }, () => this.onStreamEnd())
+      // Unary and streaming failures read the same on the console, so one
+      // arm covers both rather than two identical handlers.
+      .with(P.union({ kind: 'rpc-error' }, { kind: 'stream-error' }), (m) => this.onError(m))
+      .exhaustive();
+  }
+
+  private onReply(message: ReplyMessage): void {
+    console.log('[client] unary reply:', message.response);
+  }
+
+  private onStreamData(message: StreamDataMessage): void {
+    console.log('[client] stream chunk:', message.chunk);
+  }
+
+  private onStreamEnd(): void {
+    console.log('[client] stream complete');
+  }
+
+  private onError(message: RpcErrorMessage | StreamErrorMessage): void {
+    console.error('[client] error:', message.error.message);
   }
 }
 
@@ -92,6 +113,7 @@ async function main(): Promise<void> {
 
   try {
     const sys = ActorSystem.create('grpc-demo');
+    const devtools = await attachDevTools(sys);
 
     // Server side.
     const getHandler = sys.spawn(Props.create(() => new GetSensorHandler()), 'get');
@@ -128,6 +150,7 @@ async function main(): Promise<void> {
     });
 
     await Bun.sleep(1_500);
+    await devtools.holdOpen();
     await sys.terminate();
   } finally {
     try { unlinkSync(protoPath); } catch { /* ignore */ }

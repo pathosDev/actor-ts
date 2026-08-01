@@ -15,11 +15,9 @@ const kafkaOptions = KafkaOptions.create()
   .withBrokers(['kafka-1:9092', 'kafka-2:9092'])
   .withClientId('my-app')
   // Consumer-Actor-Target wird einmalig hier konfiguriert.
-  .withConsumer({
-    groupId: 'my-app-orders',
-    topics:  ['orders', 'payments'],
-    target:  orderHandler,
-  });
+  .withConsumer({ groupId: 'my-app-orders' })
+  .withTopics(['orders', 'payments'])
+  .withTarget(orderHandler);
 const kafka = system.spawn(
   Props.create(() => new KafkaActor(
     kafkaOptions,
@@ -57,9 +55,9 @@ interface KafkaOptionsType extends BrokerCommonOptionsType {
     fromBeginning?:  boolean;
     commitMode?:     'auto' | 'manual';
     commitTimeoutMs?: number;
-    topics?:         ReadonlyArray<string>;
-    target?:         ActorRef<KafkaRecord>;     // Consumer-Actor für eingehende Records
   };
+  target?:  ActorRef<KafkaRecord>;     // Consumer-Actor für eingehende Records
+  topics?:  ReadonlyArray<string>;
 }
 ```
 
@@ -105,10 +103,25 @@ class OrderHandler extends Actor<KafkaRecord> {
 }
 ```
 
-Der Actor liefert jeden konsumierten Record an `consumer.target`.
+Der Actor liefert jeden konsumierten Record an `target`.
 Für Kafkas Consumer-Group-Work-Sharing nimm **mehrere
 Actor-Instanzen** mit derselben `groupId` — jede Instanz
 übernimmt eine Teilmenge der Partitionen.
+
+`topics` und das `subscribe`-Kommando zur Laufzeit speisen dieselbe
+gewünschte Menge, die von der
+[BrokerActor-Basisklasse](/de/io/broker-actor-base/#desired-subscriptions)
+gehalten wird und nicht vom Consumer: ein zur Laufzeit hinzugefügtes Topic
+wird nach einem Reconnect **neu subscribed**, und ein `subscribe`, das
+gesendet wird während der Actor getrennt ist, wird beim nächsten Connect
+angewandt statt verworfen.  Konfigurierte Topics erben
+`consumer.fromBeginning`; eine Ergänzung zur Laufzeit startet beim
+aktuellen Offset.
+
+Ein `unsubscribe` gibt es nicht — kafkajs kann einem laufenden Consumer
+kein einzelnes Topic entziehen.  Stoppe den Actor (oder starte einen
+zweiten mit einer anderen `groupId`), wenn ein Consumer wirklich eine
+andere Topic-Menge braucht.
 
 ## Commit-Modi
 

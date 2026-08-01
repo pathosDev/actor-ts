@@ -1,5 +1,6 @@
 import { Lazy } from '../../util/Lazy.js';
 import { lazyImportModule } from '../../util/LazyImport.js';
+import type { SqlPool, SqlResult } from '../relational/SqlPool.js';
 
 /**
  * Minimal shapes of the `pg` (node-postgres) API the Postgres backends
@@ -12,11 +13,11 @@ import { lazyImportModule } from '../../util/LazyImport.js';
  * precision loss), so every numeric column the backends read is coerced
  * with `Number(...)` at the mapping boundary.
  */
-export interface PgQueryResult {
+export type PgQueryResult = {
   readonly rows: ReadonlyArray<Record<string, unknown>>;
   /** Rows affected by INSERT/UPDATE/DELETE — `null` for some statements. */
   readonly rowCount: number | null;
-}
+};
 
 /** A single pooled connection — `query` + `release` back to the pool. */
 export interface PgClientLike {
@@ -31,19 +32,19 @@ export interface PgPoolLike {
   end(): Promise<void>;
 }
 
-interface PgModule {
+type PgModule = {
   Pool: new (config: Record<string, unknown>) => PgPoolLike;
-}
+};
 
 const pgLazy: Lazy<Promise<PgModule>> = Lazy.of(
   () => lazyImportModule<PgModule>('pg', {
-    context: 'The Postgres persistence backends require',
+    context: 'The Postgres persistence backends',
     installHint: 'npm install pg',
   }),
 );
 
 /** Connection options shared by all three Postgres stores. */
-export interface PostgresConnection {
+export type PostgresConnection = {
   /** Connection string, e.g. `postgres://user:pass@host:5432/db`. */
   readonly url?: string;
   /**
@@ -57,32 +58,53 @@ export interface PostgresConnection {
    * (see `registerPostgresPlugins`), or to inject a fake in tests.
    */
   readonly pool?: PgPoolLike;
-}
+};
 
 /** Build (or pass through) the connection pool for a store. */
-export async function buildPgPool(conn: PostgresConnection): Promise<PgPoolLike> {
-  if (conn.pool) return conn.pool;
+export async function buildPgPool(connection: PostgresConnection): Promise<PgPoolLike> {
+  if (connection.pool) return connection.pool;
   const pg = await pgLazy.get();
-  const config: Record<string, unknown> = { ...conn.poolConfig };
-  if (conn.url !== undefined) config.connectionString = conn.url;
+  const config: Record<string, unknown> = { ...connection.poolConfig };
+  if (connection.url !== undefined) config.connectionString = connection.url;
   return new pg.Pool(config);
 }
 
 /**
- * Guard configurable table names against SQL injection (#136).  Table
- * names come from trusted config, not user input — but a parameter bind
- * (`$1`) cannot stand in for an *identifier*, so the name is interpolated
- * into the DDL/DML string directly.  Constrain it to a safe charset so a
- * hostile/typo'd config can't smuggle SQL through the table name.
+ * Adapt a node-postgres pool to the uniform `SqlPool` the relational stores
+ * use.  `rowCount` is `null` for some statements, so it is normalized here
+ * rather than at every call site.
  */
-export function assertSafeIdentifier(name: string, what: string): string {
-  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) {
-    throw new Error(
-      `Postgres: unsafe ${what} identifier ${JSON.stringify(name)} — `
-      + 'must match /^[A-Za-z_][A-Za-z0-9_]*$/.',
-    );
-  }
-  return name;
+export function adaptPgPool(pool: PgPoolLike): SqlPool {
+  const normalize = (result: PgQueryResult): SqlResult => ({
+    rows: result.rows,
+    affectedRows: result.rowCount ?? 0,
+  });
+  return {
+    async query(sql, params) {
+      return normalize(await pool.query(sql, params));
+    },
+    async withTransaction(body) {
+      // A transaction needs a dedicated connection: `BEGIN` on a pool would
+      // land on an arbitrary member and the following statements on others.
+      const client = await pool.connect();
+      try {
+        await client.query('BEGIN');
+        const result = await body({
+          query: async (sql, params) => normalize(await client.query(sql, params)),
+        });
+        await client.query('COMMIT');
+        return result;
+      } catch (e) {
+        // Best-effort: the server may have aborted the transaction already,
+        // and that failure must not mask the original error.
+        try { await client.query('ROLLBACK'); } catch { /* already rolled back */ }
+        throw e;
+      } finally {
+        client.release();
+      }
+    },
+    end: () => pool.end(),
+  };
 }
 
 /** Test hook — reset the cached lazy `pg` import. */

@@ -40,6 +40,7 @@
 import { getTcpBackend, type TcpSocketLike, type TlsTransportOptionsType } from '../runtime/tcp/index.js';
 import { ConsoleLogger, LogLevel, type Logger } from '../Logger.js';
 import { DEFAULT_ASK_TIMEOUT_MS } from '../util/Constants.js';
+import { safeStringify } from '../util/SafeStringify.js';
 import { NodeAddress, type NodeAddressData } from './NodeAddress.js';
 import { encodeFrame, FrameDecoder, type WireMessage, type HelloMessage, type HelloAcknowledgmentMessage } from './Protocol.js';
 import type {
@@ -49,11 +50,11 @@ import type {
 import { ClusterClientOptionsValidator } from './ClusterClientOptions.js';
 import type { ClusterClientOptions, ClusterClientOptionsType } from './ClusterClientOptions.js';
 
-interface PendingAsk {
+type PendingAsk = {
   readonly resolve: (value: unknown) => void;
   readonly reject: (err: Error) => void;
   readonly timer: ReturnType<typeof setTimeout>;
-}
+};
 
 const HELLO_TIMEOUT_MS = 5_000;
 
@@ -91,7 +92,7 @@ export class ClusterClient {
   private socket: TcpSocketLike | null = null;
   private decoder = new FrameDecoder();
   private connectingPromise: Promise<void> | null = null;
-  private nextContactIdx = 0;
+  private nextContactIndex = 0;
   private readonly pending = new Map<string, PendingAsk>();
   private stopped = false;
   /** Filled by `hello-ack`; the contact-point's real address (post-handshake). */
@@ -127,7 +128,9 @@ export class ClusterClient {
   /**
    * Fire-and-forget tell to the actor at `targetPath` on the cluster.
    * `targetPath` accepts the same shapes as `ActorSystem.actorSelection`:
-   * full URI, absolute path, or relative-to-`/user`.
+   * full URI, absolute path, or relative-to-`/user`.  A path starting with
+   * `system/` addresses a framework actor — e.g.
+   * `'system/cluster/receptionist'`.
    */
   async send(targetPath: string, message: unknown): Promise<void> {
     await this.ensureConnected();
@@ -208,7 +211,7 @@ export class ClusterClient {
     // so a future reconnect prefers the next one.
     for (let attempt = 0; attempt < this.contactPoints.length; attempt++) {
       const target = this.contactPoints[
-        (this.nextContactIdx + attempt) % this.contactPoints.length
+        (this.nextContactIndex + attempt) % this.contactPoints.length
       ]!;
       try {
         const sock = await new Promise<TcpSocketLike>((resolve, reject) => {
@@ -254,7 +257,7 @@ export class ClusterClient {
         void sock;
         // Move the round-robin index past the successful contact-point
         // so the next reconnect prefers a different one.
-        this.nextContactIdx = (this.nextContactIdx + attempt + 1) % this.contactPoints.length;
+        this.nextContactIndex = (this.nextContactIndex + attempt + 1) % this.contactPoints.length;
         return;
       } catch (e) {
         errors.push(e as Error);
@@ -280,7 +283,16 @@ export class ClusterClient {
       }
       const frameType = (frame as { t: string }).t;
       if (frameType === 'cluster-client-reply') {
-        this.handleReply(frame as unknown as ClusterClientReplyMessage);
+        // Contained on purpose.  `push` returns a *batch* of frames, so a throw
+        // from one reply used to abandon the rest of the batch — every later
+        // frame in the same chunk was dropped, and the asks they would have
+        // settled were left to time out instead.  One malformed reply must not
+        // take the others with it.
+        try {
+          this.handleReply(frame as unknown as ClusterClientReplyMessage);
+        } catch (e) {
+          this.log.warn(`ClusterClient: failed to handle a reply frame: ${e instanceof Error ? e.message : String(e)}`);
+        }
         continue;
       }
       this.log.debug(`ClusterClient: ignoring unsolicited frame type "${frameType}"`);
@@ -296,8 +308,15 @@ export class ClusterClient {
     if (reply.ok) {
       pending.resolve(reply.body);
     } else {
+      // `safeStringify` rather than `JSON.stringify`: this builds the message
+      // for an error that already happened, and a throw from here would
+      // replace it with an unrelated one raised inside the reporting code.
+      // Wire bodies arrive as parsed JSON today, so they cannot be circular —
+      // but this is the one place the framework re-stringifies data it
+      // received rather than data it authored, and the guarantee should not
+      // depend on the frame codec staying JSON-only.
       pending.reject(new Error(
-        typeof reply.body === 'string' ? reply.body : JSON.stringify(reply.body),
+        typeof reply.body === 'string' ? reply.body : safeStringify(reply.body),
       ));
     }
   }
@@ -315,11 +334,11 @@ export class ClusterClient {
     this.pending.clear();
   }
 
-  private writeFrame(msg: WireMessage): void {
+  private writeFrame(message: WireMessage): void {
     if (!this.socket) {
       throw new Error('ClusterClient: not connected — call send()/ask() which awaits ensureConnected()');
     }
-    this.socket.write(encodeFrame(msg));
+    this.socket.write(encodeFrame(message));
   }
 }
 

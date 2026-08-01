@@ -16,7 +16,7 @@ export type InvalidMessagePolicy = 'close' | 'drop' | 'hook';
 /** What to do when a slow consumer's send buffer exceeds `maxBufferedBytes`. */
 export type BackpressurePolicy = 'drop' | 'close';
 
-export interface ResolvedWebsocketPolicy {
+export type ResolvedWebsocketPolicy = {
   readonly maxFrameBytes: number;
   readonly onOversizeFrame: OversizeFramePolicy;
   readonly onInvalidMessage: InvalidMessagePolicy;
@@ -28,17 +28,17 @@ export interface ResolvedWebsocketPolicy {
    * (security audit WS-5).  `Infinity` (the default) = unlimited.
    */
   readonly maxConnections: number;
-}
+};
 
 /** Fields a `websocket()` route may override; everything else falls back. */
-export interface WebsocketPolicyOptions {
+export type WebsocketPolicyOptions = {
   readonly maxFrameBytes?: number;
   readonly onOversizeFrame?: OversizeFramePolicy;
   readonly onInvalidMessage?: InvalidMessagePolicy;
   readonly maxBufferedBytes?: number;
   readonly onBackpressure?: BackpressurePolicy;
   readonly maxConnections?: number;
-}
+};
 
 export const DEFAULT_WEBSOCKET_POLICY: ResolvedWebsocketPolicy = {
   maxFrameBytes: DEFAULT_WEBSOCKET_MAX_FRAME_BYTES,

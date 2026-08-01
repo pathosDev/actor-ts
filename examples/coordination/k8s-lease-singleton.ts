@@ -35,11 +35,12 @@
  * because it's standalone.
  */
 import {
-  Actor, ActorSystem, Cluster, ClusterOptions, ClusterSingletonId, InMemoryTransport,
+  Actor, ActorSystem, Cluster, ClusterOptions, InMemoryTransport,
   NodeAddress, Props, StartSingletonOptions,
 } from '../../src/index.js';
 import { KubernetesLease } from '../../src/coordination/leases/KubernetesLease.js';
 import { KubernetesLeaseOptions } from '../../src/coordination/leases/KubernetesLeaseOptions.js';
+import { attachDevTools } from '../devtools.js';
 
 const NAMESPACE = process.env.K8S_NAMESPACE ?? 'default';
 const POD_NAME = process.env.HOSTNAME ?? `local-${process.pid}`;
@@ -55,8 +56,8 @@ class CronActor extends Actor<{ kind: 'tick' }> {
     if (this.timer) clearInterval(this.timer);
     console.log(`[${POD_NAME}] CronActor STOPPED — singleton released or lost`);
   }
-  override onReceive(msg: { kind: 'tick' }): void {
-    if (msg.kind === 'tick') {
+  override onReceive(message: { kind: 'tick' }): void {
+    if (message.kind === 'tick') {
       this.ticks++;
       console.log(`[${POD_NAME}] tick #${this.ticks}`);
     }
@@ -65,6 +66,7 @@ class CronActor extends Actor<{ kind: 'tick' }> {
 
 async function main(): Promise<void> {
   const system = ActorSystem.create('app');
+  const devtools = await attachDevTools(system);
 
   // The cluster is what drives leader election; the lease arbitrates
   // ties under split-brain.  In a real deploy you'd point seeds at
@@ -95,14 +97,14 @@ async function main(): Promise<void> {
     .withProps(Props.create(() => new CronActor()))
     .withLease(lease)
     .withAcquireRetryIntervalMs(5_000);
-  const handle = system.extension(ClusterSingletonId).start(cluster, singletonOptions);
-  void handle;   // we never tell the proxy in this example — the actor
-                 // self-ticks via setInterval.
+  // The returned ref goes unused here — this actor self-ticks via setInterval
+  // rather than being told anything.
+  cluster.singleton.start(singletonOptions);
   console.log(`[${POD_NAME}] running guarded workload — stop with Ctrl-C`);
 
   const shutdown = async (): Promise<void> => {
     console.log(`\n[${POD_NAME}] shutting down`);
-    handle.stop();           // releases the lease + stops the manager
+    cluster.singleton.stop('cron');   // releases the lease + stops the manager
     await cluster.leave();
     await system.terminate();
     process.exit(0);

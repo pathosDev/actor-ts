@@ -1,7 +1,7 @@
 import type { SqliteDriver } from '../../runtime/sqlite/index.js';
 import { OptionsBuilder } from '../../util/OptionsBuilder.js';
 
-export interface SqliteSnapshotStoreOptionsType {
+export type SqliteSnapshotStoreOptionsType = {
   /** Path or ":memory:". Defaults to ":memory:". */
   readonly path?: string;
   /** Table name; default `snapshots`. */
@@ -13,7 +13,7 @@ export interface SqliteSnapshotStoreOptionsType {
    * specific SQLite backend.  Default: auto-detect via `getSqliteDriver()`.
    */
   readonly driver?: SqliteDriver;
-}
+};
 
 /**
  * Fluent builder for {@link SqliteSnapshotStoreOptionsType}:

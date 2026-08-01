@@ -36,26 +36,26 @@ import {
 export class InMemoryQuery implements PersistenceQuery {
   constructor(protected readonly journal: Journal) {}
 
-  /* ------------------------------ by pid -------------------------------- */
+  /* ------------------------------ by persistenceId -------------------------------- */
 
   async currentEventsByPersistenceId<E>(
-    pid: string, fromSeq: number, toSeq?: number,
+    persistenceId: string, fromSeq: number, toSeq?: number,
   ): Promise<PersistentEvent<E>[]> {
-    return this.journal.read<E>(pid, fromSeq, toSeq);
+    return this.journal.read<E>(persistenceId, fromSeq, toSeq);
   }
 
   eventsByPersistenceId<E>(
-    pid: string, fromSeq: number, options: LiveQueryOptions = {},
+    persistenceId: string, fromSeq: number, options: LiveQueryOptions = {},
   ): AsyncIterable<PersistentEvent<E>> {
     const journal = this.journal;
     const bus = journal.events;
     if (bus) {
-      return pushStreamByPersistenceId<E>(journal, pid, fromSeq, bus);
+      return pushStreamByPersistenceId<E>(journal, persistenceId, fromSeq, bus);
     }
     const pollIntervalMs = options.pollIntervalMs ?? 1_000;
     return liveStream<PersistentEvent<E>>(pollIntervalMs, async (lastEmitted) => {
       const fromInclusive = lastEmitted ? lastEmitted.sequenceNr + 1 : fromSeq;
-      const events = await journal.read<E>(pid, fromInclusive);
+      const events = await journal.read<E>(persistenceId, fromInclusive);
       return events;
     });
   }
@@ -67,9 +67,9 @@ export class InMemoryQuery implements PersistenceQuery {
   ): Promise<TaggedEvent<E>[]> {
     const spec = normalizeTagFilter(filter);
     const out: TaggedEvent<E>[] = [];
-    const pids = await this.journal.persistenceIds();
-    for (const pid of pids) {
-      const events = await this.journal.read<E>(pid, 1);
+    const persistenceIds = await this.journal.persistenceIds();
+    for (const persistenceId of persistenceIds) {
+      const events = await this.journal.read<E>(persistenceId, 1);
       for (const ev of events) {
         if (!eventMatchesTagFilter(ev.tags, spec)) continue;
         const offset = offsetOfEvent(ev);
@@ -102,7 +102,7 @@ export class InMemoryQuery implements PersistenceQuery {
     });
   }
 
-  /* ----------------------------- pids ----------------------------------- */
+  /* ----------------------------- persistenceIds ----------------------------------- */
 
   async currentPersistenceIds(): Promise<string[]> {
     return this.journal.persistenceIds();
@@ -121,7 +121,7 @@ export class InMemoryQuery implements PersistenceQuery {
  * fromSeq, exactly once" hold in the face of concurrent appends.
  */
 function pushStreamByPersistenceId<E>(
-  journal: Journal, pid: string, fromSeq: number, bus: JournalEventBus,
+  journal: Journal, persistenceId: string, fromSeq: number, bus: JournalEventBus,
 ): AsyncIterable<PersistentEvent<E>> {
   return {
     [Symbol.asyncIterator](): AsyncIterator<PersistentEvent<E>> {
@@ -144,7 +144,7 @@ function pushStreamByPersistenceId<E>(
       };
 
       const onPublish = (ev: PersistentEvent<unknown>): void => {
-        if (ev.persistenceId !== pid) return;
+        if (ev.persistenceId !== persistenceId) return;
         if (ev.sequenceNr < fromSeq) return; // historical, irrelevant
         emit(ev as PersistentEvent<E>);
       };
@@ -152,7 +152,7 @@ function pushStreamByPersistenceId<E>(
 
       // Catch-up read happens off-mainline — we kick it asynchronously
       // and let any bus events that arrived in the meantime queue.
-      void journal.read<E>(pid, fromSeq).then((events) => {
+      void journal.read<E>(persistenceId, fromSeq).then((events) => {
         for (const ev of events) emit(ev);
       }).catch((err) => {
         // eslint-disable-next-line no-console

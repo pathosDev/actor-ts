@@ -25,20 +25,27 @@ single-writer system** with replicated-ES's recovery semantics
 underneath.
 
 ```ts
-import { ReplicatedEventSourcedActor, KubernetesLease } from 'actor-ts';
+import { ReplicatedEventSourcedActor, KubernetesLease, KubernetesLeaseOptions, LastWriterWinsResolver } from 'actor-ts';
+import type { Lease, ConflictResolver } from 'actor-ts';
 
 class Account extends ReplicatedEventSourcedActor<Command, Event, State> {
   readonly persistenceId = `account-${this.userId}`;
   readonly replicaId     = process.env.REPLICA_ID!;
-  readonly conflictResolver = ...;
 
-  // Opt in to lease:
-  readonly lease: Lease = new KubernetesLease({
-    name:  `account-${this.userId}-writer`,
-    owner: process.env.REPLICA_ID!,
-    ttlMs: 30_000,
-    namespace: 'default',
-  });
+  // Opt in to a lease by overriding lease() — the default returns null (no lease):
+  protected override lease(): Lease {
+    const kubernetesLeaseOptions = KubernetesLeaseOptions.create()
+      .withName(`account-${this.userId}-writer`)
+      .withOwner(process.env.REPLICA_ID!)
+      .withTtlMs(30_000)
+      .withNamespace('default');
+    return new KubernetesLease(kubernetesLeaseOptions);
+  }
+
+  // The conflict resolver is overridden the same way (see below):
+  protected override resolver(): ConflictResolver<Event> {
+    return new LastWriterWinsResolver<Event>();
+  }
 }
 ```
 
@@ -47,8 +54,8 @@ The actor:
 1. On `preStart`, attempts to acquire the lease.
 2. On success → becomes the **writer**.
 3. On failure → starts in **read-only mode**.
-4. On `onLost` → drops back to read-only; another replica
-   eventually acquires.
+4. On `onLeaseLost(reason)` → drops back to read-only; another
+   replica eventually acquires.
 
 ## When to use
 
@@ -66,13 +73,14 @@ lease, conflicts simply don't arise.
 ## How read-only replicas behave
 
 ```ts
-override async onCommand(state: State, cmd: Command): Promise<void> {
-  if (!this.lease.checkAlive()) {
+override async onCommand(state: State, command: Command): Promise<void> {
+  if (!this.isLeaseHolder) {
     // I'm not the writer — reject or forward
-    cmd.replyTo.tell({ kind: 'not-writer', currentWriter: ... });
+    command.replyTo.tell({ kind: 'not-writer' });
     return;
   }
-  // I am the writer — proceed normally
+  // I am the writer — proceed normally.
+  // (persist() also throws for a non-holder as a backstop.)
   this.persist(event, () => {});
 }
 ```
@@ -118,8 +126,8 @@ TTL = faster failover but more renewal traffic.
 
 ```ts
 class Account extends ReplicatedEventSourcedActor<...> {
-  readonly lease = ...;
-  readonly conflictResolver = ...;   // ← still required
+  protected override lease(): Lease { /* ... */ }
+  protected override resolver(): ConflictResolver<Event> { /* ← still required */ }
 }
 ```
 
@@ -158,8 +166,8 @@ Adding the lease:
   rarely.
 
 The lease itself doesn't slow normal writes — they proceed
-locally without lease consultation per call.  The check is
-`lease.checkAlive()` (local, sub-microsecond).
+locally without a network round-trip per call.  The write gate
+is the cached `isLeaseHolder` getter (local, sub-microsecond).
 
 ## Without the lease
 
@@ -200,8 +208,8 @@ import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="Lease + conflict resolver mismatch">
   ```ts
-  readonly conflictResolver = ...;   // assumes lots of conflicts
-  readonly lease            = ...;   // makes conflicts rare
+  protected override resolver() { /* ... */ }  // assumes lots of conflicts
+  protected override lease()    { /* ... */ }  // makes conflicts rare
   ```
   Some "expensive merge" resolvers are unnecessary when the
   lease keeps conflicts near-zero.  Keep the resolver simple

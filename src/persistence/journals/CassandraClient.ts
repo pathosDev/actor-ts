@@ -4,14 +4,16 @@
  * so tests can supply an in-memory stand-in without pulling in the real
  * driver, and so the driver itself stays an *optional* peer dependency.
  */
-export interface CassandraRowResult {
-  readonly rows: Array<Record<string, unknown>>;
-}
+import { lazyImportModule } from '../../util/LazyImport.js';
 
-export interface CassandraBatchQuery {
+export type CassandraRowResult = {
+  readonly rows: Array<Record<string, unknown>>;
+};
+
+export type CassandraBatchQuery = {
   readonly query: string;
   readonly params?: ReadonlyArray<unknown>;
-}
+};
 
 export interface CassandraClientLike {
   connect(): Promise<void>;
@@ -19,7 +21,7 @@ export interface CassandraClientLike {
   execute(
     query: string,
     params?: ReadonlyArray<unknown>,
-    options?: { prepare?: boolean; consistency?: number },
+    options?: { prepare?: boolean; consistency?: number; serialConsistency?: number },
   ): Promise<CassandraRowResult>;
   batch(
     queries: ReadonlyArray<CassandraBatchQuery>,
@@ -27,7 +29,7 @@ export interface CassandraClientLike {
   ): Promise<void>;
 }
 
-export interface CassandraConnection {
+export type CassandraConnection = {
   /** Node(s) to seed the cluster topology from. */
   readonly contactPoints: ReadonlyArray<string>;
   /** Local DC — required for DCAwareRoundRobinPolicy.  Defaults to `datacenter1`. */
@@ -53,7 +55,7 @@ export interface CassandraConnection {
    * `cassandra-driver`'s `types.consistencies`.
    */
   readonly consistency?: number;
-}
+};
 
 /**
  * DDL for the `events_by_tag` side table populated by `CassandraJournal`
@@ -83,15 +85,15 @@ export function tagIndexDdl(args: {
 /**
  * Build the default keyspace-bootstrap statement — used by autoCreateKeyspace.
  */
-export function keyspaceDdl(conn: CassandraConnection): string {
-  const cls = conn.replication?.class ?? 'SimpleStrategy';
+export function keyspaceDdl(connection: CassandraConnection): string {
+  const cls = connection.replication?.class ?? 'SimpleStrategy';
   if (cls === 'NetworkTopologyStrategy') {
-    const dcs = conn.replication?.dataCenters ?? {};
+    const dcs = connection.replication?.dataCenters ?? {};
     const pairs = Object.entries(dcs).map(([dc, rf]) => `'${dc}': ${rf}`).join(', ');
-    return `CREATE KEYSPACE IF NOT EXISTS ${conn.keyspace} WITH replication = { 'class': 'NetworkTopologyStrategy', ${pairs} }`;
+    return `CREATE KEYSPACE IF NOT EXISTS ${connection.keyspace} WITH replication = { 'class': 'NetworkTopologyStrategy', ${pairs} }`;
   }
-  const rf = conn.replication?.replicationFactor ?? 1;
-  return `CREATE KEYSPACE IF NOT EXISTS ${conn.keyspace} WITH replication = { 'class': 'SimpleStrategy', 'replication_factor': ${rf} }`;
+  const rf = connection.replication?.replicationFactor ?? 1;
+  return `CREATE KEYSPACE IF NOT EXISTS ${connection.keyspace} WITH replication = { 'class': 'SimpleStrategy', 'replication_factor': ${rf} }`;
 }
 
 /**
@@ -100,31 +102,25 @@ export function keyspaceDdl(conn: CassandraConnection): string {
  * creates a Cassandra journal.  If the user constructs their own client
  * elsewhere they can bypass this entirely.
  */
-export async function createCassandraClient(conn: CassandraConnection): Promise<CassandraClientLike> {
+export async function createCassandraClient(connection: CassandraConnection): Promise<CassandraClientLike> {
   type CassandraDriver = {
     Client: new (options: unknown) => CassandraClientLike & {
       connect(): Promise<void>;
     };
   };
-  let driver: CassandraDriver;
-  try {
-    // `cassandra-driver` is an OPTIONAL peer dependency.  We indirect
-    // through a runtime-built specifier to avoid the compile-time
-    // module-not-found error when users haven't installed it.
-    const moduleName = 'cassandra-driver';
-    driver = (await import(moduleName)) as unknown as CassandraDriver;
-  } catch (e) {
-    throw new Error(
-      'CassandraJournal requires the "cassandra-driver" package. Install it with: '
-      + 'bun add cassandra-driver\nOriginal error: ' + (e instanceof Error ? e.message : String(e)),
-    );
-  }
+  // `cassandra-driver` is an OPTIONAL peer dependency — lazy-imported through
+  // the shared helper so the missing-dependency message matches the other
+  // backends (Postgres/MariaDB) instead of hand-rolling its own wording.
+  const driver = await lazyImportModule<CassandraDriver>('cassandra-driver', {
+    context: 'The Cassandra/ScyllaDB persistence backends',
+    installHint: 'npm install cassandra-driver',
+  });
   const options: Record<string, unknown> = {
-    contactPoints: conn.contactPoints,
-    localDataCenter: conn.localDataCenter ?? 'datacenter1',
-    protocolOptions: { port: conn.port ?? 9042 },
+    contactPoints: connection.contactPoints,
+    localDataCenter: connection.localDataCenter ?? 'datacenter1',
+    protocolOptions: { port: connection.port ?? 9042 },
   };
-  if (conn.credentials) options.credentials = conn.credentials;
+  if (connection.credentials) options.credentials = connection.credentials;
   // We deliberately don't set `keyspace` here — we may need to CREATE it first.
   const client = new driver.Client(options);
   return client;

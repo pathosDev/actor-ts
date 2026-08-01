@@ -22,7 +22,7 @@ const backends: Array<[string, () => HttpServerBackend]> = [
   ['hono', () => new HonoBackend()],
 ];
 
-type ErrHandler = (err: unknown, req: HttpRequest) => Promise<HttpResponse> | HttpResponse;
+type ErrHandler = (err: unknown, request: HttpRequest) => Promise<HttpResponse> | HttpResponse;
 
 const live: Array<{ binding: ServerBinding; system: ActorSystem }> = [];
 afterEach(async () => {
@@ -55,9 +55,9 @@ describe.each(backends)('withErrorHandler — %s backend', (_name, mk) => {
     // per-route catch now routes through setErrorHandler.
     const url = await start(mk, get(() => { throw new Error('kaboom'); }),
       (err) => completeJson(Status.BadGateway, { handled: true, msg: (err as Error).message }));
-    const res = await fetch(`${url}/`);
-    expect(res.status).toBe(Status.BadGateway);
-    expect(await res.json()).toEqual({ handled: true, msg: 'kaboom' });
+    const response = await fetch(`${url}/`);
+    expect(response.status).toBe(Status.BadGateway);
+    expect(await response.json()).toEqual({ handled: true, msg: 'kaboom' });
   });
 
   test('receives the original HttpError instance', async () => {
@@ -80,9 +80,9 @@ describe.each(backends)('withErrorHandler — %s backend', (_name, mk) => {
     const url = await start(mk,
       handleErrors(() => complete(Status.Accepted, 'scoped'), get(() => { throw new HttpError(Status.InternalServerError, 'x'); })),
       () => complete(Status.BadGateway, 'server'));
-    const res = await fetch(`${url}/`);
-    expect(res.status).toBe(Status.Accepted);
-    expect(await res.text()).toBe('scoped');
+    const response = await fetch(`${url}/`);
+    expect(response.status).toBe(Status.Accepted);
+    expect(await response.text()).toBe('scoped');
   });
 });
 
@@ -95,5 +95,44 @@ describe('withErrorHandler — bind guard', () => {
     };
     await expect(start(() => stub, get(() => complete(Status.OK, '')), () => complete(Status.OK, '')))
       .rejects.toThrow(/does not support withErrorHandler/);
+  });
+});
+
+describe.each(backends)('default 500 does not echo the thrown message — %s backend (#356)', (_name, mk) => {
+  test('an unhandled throw yields a generic body with no message field', async () => {
+    // All three backends used to put `message: err.message` in the default 500
+    // body.  A thrown Error's text routinely carries filesystem paths, SQL
+    // fragments or driver internals, and none of it is a client's business.
+    // `defaultErrorResponse` in Route.ts was always correct — the backends
+    // simply did not route through it.
+    const secret = '/srv/app/src/db/credentials.ts: ECONNREFUSED postgres://user:hunter2@10.0.0.5:5432';
+    const url = await start(mk, get(() => { throw new Error(secret); }));
+
+    const response = await fetch(`${url}/`);
+    expect(response.status).toBe(Status.InternalServerError);
+
+    const body = await response.text();
+    expect(JSON.parse(body)).toEqual({ error: 'Internal Server Error' });
+    expect(body).not.toContain('hunter2');
+    expect(body).not.toContain('/srv/app');
+    expect(body).not.toContain('ECONNREFUSED');
+  });
+
+  test('an HttpError still reports its own message, which is deliberate', async () => {
+    // The distinction that matters: an HttpError message is authored by the
+    // application for the client, so suppressing it would break every 404 and
+    // 409 message.  Only the generic 500 path is sanitised.
+    const url = await start(mk, get(() => { throw new HttpError(Status.Conflict, 'version conflict') ; }));
+    const response = await fetch(`${url}/`);
+    expect(response.status).toBe(Status.Conflict);
+    expect(await response.json()).toEqual({ error: 'version conflict' });
+  });
+
+  test('withErrorHandler remains the way to surface the detail', async () => {
+    // Sanitising the default must not remove the ability to see the error —
+    // an operator who wants it installs a handler.
+    const url = await start(mk, get(() => { throw new Error('boom-detail'); }),
+      (err) => completeJson(Status.InternalServerError, { detail: (err as Error).message }));
+    expect(await (await fetch(`${url}/`)).json()).toEqual({ detail: 'boom-detail' });
   });
 });

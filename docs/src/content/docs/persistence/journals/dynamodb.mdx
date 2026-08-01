@@ -1,0 +1,215 @@
+---
+title: DynamoDB
+description: Event journal, snapshot store and durable-state store backed by Amazon DynamoDB. Conditional writes give it the strongest optimistic concurrency of any backend — a multi-event append is atomic, so a losing writer can never leave a partial one behind.
+---
+
+The DynamoDB backend provides all three persistence components against Amazon
+DynamoDB, via [`@aws-sdk/client-dynamodb`](https://www.npmjs.com/package/@aws-sdk/client-dynamodb):
+
+- **`DynamoDbJournal`** — the event journal for `PersistentActor`s.
+- **`DynamoDbSnapshotStore`** — snapshots to bound recovery.
+- **`DynamoDbDurableStateStore`** — key-value durable state for
+  `DurableStateActor`s.
+
+It has the **strongest optimistic concurrency** of any backend the framework
+ships — see [Concurrency model](#concurrency-model) — and it is fully serverless:
+no instance to run, on-demand capacity by default.
+
+## Install
+
+`@aws-sdk/client-dynamodb` is an optional peer dependency:
+
+```bash
+bun add @aws-sdk/client-dynamodb
+```
+
+It is the same SDK family already used for the S3 object-storage backend, so if
+you use that, the runtime story is one you already have. The framework
+lazy-imports it only when a DynamoDB store is first used.
+
+## Setup
+
+Register the journal + snapshot store against the `PersistenceExtension` and
+receive a ready-to-use durable-state store. Set the connection once on the
+composite and all three components inherit it:
+
+```ts
+import {
+  ActorSystem,
+  ActorSystemOptions,
+  DynamoDbDurableStateStoreOptions,
+  DynamoDbJournalOptions,
+  DynamoDbSnapshotStoreOptions,
+  PersistenceExtensionId,
+  RegisterDynamoDbPluginsOptions,
+  registerDynamoDbPlugins,
+} from 'actor-ts';
+
+const systemOptions = ActorSystemOptions.create()
+  // Select the DynamoDB plugins as the active journal + snapshot store.
+  .withConfig({
+    'actor-ts': {
+      persistence: {
+        journal: { plugin: 'actor-ts.persistence.journal.dynamodb' },
+        'snapshot-store': { plugin: 'actor-ts.persistence.snapshot-store.dynamodb' },
+      },
+    },
+  });
+const system = ActorSystem.create('my-app', systemOptions);
+
+const ext = system.extension(PersistenceExtensionId);
+const dynamoDbSnapshotStoreOptions = DynamoDbSnapshotStoreOptions.create()
+  .withKeepN(3);
+const registerOptions = RegisterDynamoDbPluginsOptions.create()
+  .withRegion('eu-central-1')
+  .withJournal(DynamoDbJournalOptions.create() /* .withEventsTable(...) */)
+  .withSnapshotStore(dynamoDbSnapshotStoreOptions)
+  .withDurableStateStore(DynamoDbDurableStateStoreOptions.create() /* .withTable(...) */);
+const { durableStateStore } = registerDynamoDbPlugins(ext, registerOptions);
+```
+
+Credentials come from the standard AWS provider chain (environment, shared
+config, IAM role), so nothing about them is actor-ts-specific. Pass
+`withClientConfig({ credentials })` to override.
+
+### Local development
+
+`dynamodb-local` needs an endpoint override, and the SDK will not sign a request
+without credentials even though the emulator ignores them:
+
+```ts
+const dynamoDbJournalOptions = DynamoDbJournalOptions.create()
+  .withRegion('eu-central-1')
+  .withEndpoint('http://localhost:8000')
+  .withClientConfig({ credentials: { accessKeyId: 'local', secretAccessKey: 'local' } });
+```
+
+## When to use it
+
+- **You are on AWS and want no database to operate.** No instance, no
+  connection pool, no patching.
+- **You want the strongest append guarantee available.** The transactional
+  append is atomic, which not even the relational backends manage for a
+  multi-event batch under contention.
+- **Your write pattern is spiky.** On-demand billing needs no capacity planning.
+
+## Configuration
+
+```ts
+type DynamoDbConnection = {
+  region?:       string;                    // eu-central-1, …
+  endpoint?:     string;                    // http(s) URL — dynamodb-local, LocalStack
+  clientConfig?: Record<string, unknown>;   // { credentials, maxAttempts, … }
+  operations?:   DynamoDbOperations;        // pre-built / shared façade
+};
+
+type DynamoDbTableProvisioning = {
+  autoCreateTables?:      boolean;   // default true
+  billingMode?:           'PAY_PER_REQUEST' | 'PROVISIONED';   // default on-demand
+  provisionedThroughput?: { readCapacityUnits: number; writeCapacityUnits: number };
+  tableReadyTimeoutMs?:   number;    // default 30_000
+};
+
+interface DynamoDbJournalOptions extends DynamoDbConnection, DynamoDbTableProvisioning {
+  eventsTable?: string;   // default 'actor_ts_events'
+}
+interface DynamoDbSnapshotStoreOptions extends DynamoDbConnection, DynamoDbTableProvisioning {
+  snapshotsTable?: string;   // default 'actor_ts_snapshots'
+  keepN?:          number;   // keep newest N per pid; default 3, <=0 keeps all
+}
+interface DynamoDbDurableStateStoreOptions extends DynamoDbConnection, DynamoDbTableProvisioning {
+  table?: string;   // default 'actor_ts_durable_state'
+}
+```
+
+Options are validated when the store is constructed. Two rules earn their
+keep: a table name is checked against DynamoDB's own charset and length, and
+capacity units are rejected unless `billingMode` is `PROVISIONED` — AWS silently
+ignores them otherwise, which makes the mistake invisible.
+
+## Tables
+
+| Table | Partition key | Sort key | Holds |
+| --- | --- | --- | --- |
+| `actor_ts_events` | `pid` | `seq` (N) | one item per event; `seq = 0` is the compaction mark |
+| `actor_ts_snapshots` | `pid` | `seq` (N) | one item per snapshot |
+| `actor_ts_durable_state` | `pid` | — | one item per persistence id |
+
+With `autoCreateTables` (the default) each store creates its table on first use
+and **waits for it to become `ACTIVE`** — `CreateTable` returns while the table
+is still `CREATING`, and every operation against it fails until it flips. The
+wait happens inside the lazy init, so the first caller blocks and everyone behind
+it gets a table that works.
+
+## Concurrency model
+
+- **Journal append is one atomic transaction.** Every event goes into a single
+  `TransactWriteItems`, each `Put` carrying
+  `ConditionExpression: attribute_not_exists(pid)` — "only if this `(pid, seq)`
+  item does not exist". A racing writer therefore cannot win a partial append:
+  the transaction is all-or-nothing, and its cancellation becomes
+  `JournalConcurrencyError`. The head read that precedes it is only an
+  optimization, turning the common stale append into one cheap query instead of
+  a rejected transaction.
+- **Durable-state CAS is a native conditional write** —
+  `PutItem … attribute_not_exists(pid)` to create, `UpdateItem … revision = :expected`
+  to update — needing neither a transaction nor a read-back.
+- **The compaction mark only rises.** It is updated with
+  `attribute_not_exists(deletedTo) OR deletedTo < :value`, which is `GREATEST`
+  expressed as a condition; a lower value is rejected, and that rejection is the
+  expected outcome rather than an error.
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="note" title="Why this is the strongest of the backends">
+  The relational backends and MongoDB both read the head and then write, relying
+  on a primary key to reject a racing writer — which works, but a mid-batch
+  failure can still leave part of an append behind (MongoDB documents exactly
+  that caveat). DynamoDB's transactional put removes the possibility: the
+  batch either lands whole or not at all.
+</Aside>
+
+## Pitfalls
+
+<Aside type="caution" title="An append is capped at 100 events">
+  DynamoDB allows at most 100 items in one `TransactWriteItems`. An append of
+  more than that is **refused** with a clear error rather than split into
+  chunks — chunking would break the atomicity the concurrency model rests on.
+  Persist in smaller batches; a single-event append is the common case anyway.
+</Aside>
+
+<Aside type="caution" title="persistenceIds is a full table scan">
+  DynamoDB can only enumerate partition keys by scanning, so this call reads the
+  whole events table and costs accordingly. The framework never uses it on a
+  hot path — it is for projection tooling — but do not call it per request.
+</Aside>
+
+<Aside type="caution" title="No indexed tag query yet">
+  `currentEventsByTag` falls back to the journal-walking scan, exactly as it does
+  on Postgres and MariaDB. An indexed path needs a second table keyed by tag (or
+  a slice-based model), which is design work of its own rather than a
+  configuration flag. If you rely on heavy tag queries, prefer MongoDB, SQLite /
+  libSQL or Cassandra.
+</Aside>
+
+<Aside type="caution" title="Reads page, and the 400 KB item limit is real">
+  A `Query` returns at most 1 MB, so recovery pages through `LastEvaluatedKey` —
+  handled for you. What is not handled: a single event whose JSON exceeds
+  DynamoDB's 400 KB per-item limit is rejected by the service. Keep events
+  small, which event sourcing wants anyway.
+</Aside>
+
+<Aside type="caution" title="Compression / encryption options are ignored">
+  Per-call `PersistenceOptions` apply only to the object-storage stores, as with
+  every SQL backend, Cassandra and MongoDB.
+</Aside>
+
+## Where to next
+
+- **[MongoDB](/persistence/journals/mongodb/)** — the other non-SQL backend, with
+  an indexed tag query.
+- **[PostgreSQL](/persistence/journals/postgres/)** — if you would rather run a
+  relational database.
+- **[Durable state](/persistence/durable-state/)** — the contract DynamoDB fits
+  best.
+- **[Snapshots](/persistence/snapshots/)** — bound the recovery scan.

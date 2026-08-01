@@ -172,8 +172,7 @@ The framework publishes several event types you can subscribe to:
 | Event | Where it comes from |
 | --- | --- |
 | `DeadLetter` | Every message routed to `/deadLetters` is also published.  Useful for "alarms on lost messages." |
-| `ClusterEvent` (subclasses) | `MemberUp`, `MemberRemoved`, `UnreachableMember`, etc.  See [Cluster](/cluster/overview/). |
-| `JournalEvent` | Persisted events emitted by `PersistentActor`s, for `Projection` consumers. |
+| `MemberUp`, `MemberRemoved`, `MemberUnreachable`, … | Concrete cluster membership events published by the cluster extension.  Subscribe to each class directly — `ClusterEvent` is a union type, not a subscribable base class.  See [Cluster](/cluster/overview/). |
 | Broker events | `BrokerActor` subclasses publish connect/disconnect/lag events. |
 
 See each extension's docs for the full event vocabulary it

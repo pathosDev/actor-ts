@@ -9,15 +9,16 @@
  *   bun run examples/config/hello-config.ts
  */
 import { Actor, ActorSystem, ActorSystemOptions, Props } from '../../src/index.js';
+import { attachDevTools } from '../devtools.js';
 
 class DiagActor extends Actor<'report'> {
   override onReceive(_: 'report'): void {
-    const cfg = this.system.config;
-    this.log.info('system name       =', cfg.getString('actor-ts.system.name'));
-    this.log.info('gossip-interval   =', cfg.getDuration('actor-ts.cluster.gossip-interval'), 'ms');
-    this.log.info('number-of-shards  =', cfg.getInt('actor-ts.sharding.number-of-shards'));
-    this.log.info('http backend      =', cfg.getString('actor-ts.http.backend'));
-    this.log.info('max-frame-size    =', cfg.getBytes('actor-ts.remote.max-frame-size'), 'bytes');
+    const config = this.system.config;
+    this.log.info('system name       =', config.getString('actor-ts.system.name'));
+    this.log.info('gossip-interval   =', config.getDuration('actor-ts.cluster.gossip-interval'), 'ms');
+    this.log.info('number-of-shards  =', config.getInt('actor-ts.sharding.number-of-shards'));
+    this.log.info('http backend      =', config.getString('actor-ts.http.backend'));
+    this.log.info('max-frame-size    =', config.getBytes('actor-ts.remote.max-frame-size'), 'bytes');
     this.self.stop();
   }
 }
@@ -30,10 +31,12 @@ async function main(): Promise<void> {
       },
     });
   const system = ActorSystem.create('hello-config', systemOptions);
+  const devtools = await attachDevTools(system);
 
   const diag = system.spawn(Props.create(() => new DiagActor()), 'diag');
   diag.tell('report');
   await new Promise(resolve => setTimeout(resolve, 50));
+  await devtools.holdOpen();
   await system.terminate();
 }
 

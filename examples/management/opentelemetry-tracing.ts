@@ -41,9 +41,11 @@ class Step extends Actor<{ name: string; next?: ActorRef<{ name: string }> }> {
 }
 
 import type { ActorRef } from '../../src/index.js';
+import { attachDevTools } from '../devtools.js';
 
 const tracer = new RecordingTracer();
 const system = ActorSystem.create('otel-demo');
+const devtools = await attachDevTools(system);
 system.extension(TracingExtensionId).enable(tracer);
 
 const step3 = system.spawn(Props.create(() => new Step()), 'step-3');

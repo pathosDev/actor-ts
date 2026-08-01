@@ -37,10 +37,10 @@ async function waitFor(pred: () => boolean, timeoutMs = 5_000): Promise<void> {
   if (!pred()) throw new Error(`waitFor timed out after ${timeoutMs}ms`);
 }
 
-interface Node {
+type Node = {
   readonly sys: ActorSystem;
   readonly cluster: Cluster;
-}
+};
 
 async function startNode(systemName: string, port: number, seeds: string[]): Promise<Node> {
   const sysOptions = ActorSystemOptions.create()

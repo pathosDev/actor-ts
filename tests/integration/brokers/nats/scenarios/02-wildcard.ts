@@ -4,16 +4,16 @@
  * broker side as the framework's subscribe just passes through.
  */
 import type { NatsMessage } from '../../../../../src/io/broker/NatsActor.js';
-import { spawnInbox, spawnNats, type NatsCtx } from '../runner.js';
+import { spawnInbox, spawnNats, type NatsContext } from '../runner.js';
 import { waitFor, type BrokerScenario } from '../../lib/scenario.js';
 
-export const scenario: BrokerScenario<NatsCtx> = {
+export const scenario: BrokerScenario<NatsContext> = {
   name: 'wildcard subscriptions — * and > tokens',
-  async run(ctx) {
+  async run(context) {
     const base = `b6wc.${Date.now()}.${Math.random().toString(36).slice(2)}`;
-    const nats = spawnNats(ctx);
-    const { ref: starRef, inbox: starInbox } = spawnInbox(ctx);
-    const { ref: gtRef, inbox: gtInbox } = spawnInbox(ctx);
+    const nats = spawnNats(context);
+    const { ref: starRef, inbox: starInbox } = spawnInbox(context);
+    const { ref: gtRef, inbox: gtInbox } = spawnInbox(context);
     try {
       // `*` matches exactly one token (no dots in the substitution).
       nats.tell({

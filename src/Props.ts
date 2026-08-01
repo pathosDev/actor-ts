@@ -6,7 +6,7 @@ import type { SupervisorStrategy } from './Supervision.js';
 export type ActorFactory<TMessage> = () => Actor<TMessage>;
 export type MailboxFactory<TMessage> = () => Mailbox<TMessage>;
 
-export interface PropsConfig<TMessage> {
+export type PropsConfig<TMessage> = {
   readonly factory: ActorFactory<TMessage>;
   readonly supervisorStrategy?: SupervisorStrategy;
   readonly dispatcher?: Dispatcher;
@@ -16,7 +16,16 @@ export interface PropsConfig<TMessage> {
    * non-default queueing.  When omitted the default `Mailbox` is used.
    */
   readonly mailbox?: MailboxFactory<TMessage>;
-}
+  /**
+   * This actor belongs to the tooling, not to the application.
+   *
+   * Whole-system instrumentation skips it, which is what keeps a
+   * debugger from observing itself: DevTools' own hub publishes the
+   * spans it just recorded, so tracing it feeds its own output back in.
+   * Children inherit the mark — a tooling actor's children are tooling.
+   */
+  readonly internal?: boolean;
+};
 
 /**
  * Immutable configuration describing how to create an actor.
@@ -44,5 +53,10 @@ export class Props<TMessage = unknown> {
 
   withMailbox(factory: MailboxFactory<TMessage>): Props<TMessage> {
     return new Props({ ...this.config, mailbox: factory });
+  }
+
+  /** Mark this actor as tooling — see {@link PropsConfig.internal}. */
+  asInternal(): Props<TMessage> {
+    return new Props({ ...this.config, internal: true });
   }
 }

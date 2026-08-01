@@ -12,26 +12,20 @@ elect their own leader** → two singletons exist.
 The **single-writer lease** prevents this:
 
 ```ts
-import { ClusterSingletonManager, ClusterSingletonManagerOptions, KubernetesLease, KubernetesLeaseOptions } from 'actor-ts';
+import { StartSingletonOptions, KubernetesLease, KubernetesLeaseOptions, Props } from 'actor-ts';
 
 const kubernetesLeaseOptions = KubernetesLeaseOptions.create()
   .withName('job-scheduler-singleton')
   .withOwner(process.env.POD_NAME!)
   .withTtlMs(30_000)
   .withNamespace(process.env.K8S_NAMESPACE!);
-const clusterSingletonManagerOptions = ClusterSingletonManagerOptions.create()
-  .withCluster(cluster)
+const startSingletonOptions = StartSingletonOptions.create()
   .withTypeName('job-scheduler')
-  .withSingletonProps(Props.create(() => new JobScheduler()))
+  .withProps(Props.create(() => new JobScheduler()))
   .withLease(new KubernetesLease(
     kubernetesLeaseOptions,
   ));
-system.spawn(
-  ClusterSingletonManager.props(
-    clusterSingletonManagerOptions,
-  ),
-  'singleton-manager-job-scheduler',
-);
+cluster.singleton.start(startSingletonOptions);
 ```
 
 Now the manager **only spawns the singleton after acquiring
@@ -64,15 +58,12 @@ eventual-consistency.
 ## Configuration
 
 ```ts
-const clusterSingletonManagerOptions = ClusterSingletonManagerOptions.create()
-  .withCluster(cluster)
+const startSingletonOptions = StartSingletonOptions.create()
   .withTypeName(typeName)
-  .withSingletonProps(singletonProps)
+  .withProps(singletonProps)
   .withLease(lease)                        // ← optional Lease
-  .withAcquireRetryIntervalMs(5_000);
-ClusterSingletonManager.props(
-  clusterSingletonManagerOptions,      // default — retry after failed acquire
-);
+  .withAcquireRetryIntervalMs(5_000);      // default — retry after failed acquire
+cluster.singleton.start(startSingletonOptions);
 ```
 
 `Lease` is the same abstraction as
@@ -155,8 +146,11 @@ route to a stopped manager + dead-letter.
 For workloads where this is unacceptable, consider:
 
 - **Lower TTL** (15 s gives faster failover, more renewals).
-- **Buffering at the sender** — the singleton proxy can buffer
-  during gap, retry after.
+- **Buffering at the sender** — the singleton proxy buffers while
+  the cluster has no host and drains when one appears.  The buffer
+  is capped (`withBufferSize`, default 1000); past the cap messages
+  go to dead letters with a warning, so a gap that never closes
+  cannot grow without bound.
 - **Different architecture** — singletons are inherently
   serial-on-failover.
 

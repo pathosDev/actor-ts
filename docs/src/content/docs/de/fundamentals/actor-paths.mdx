@@ -16,7 +16,7 @@ Von links nach rechts gelesen:
 | --- | --- |
 | `actor-ts://` | Das Schema — für jeden actor-ts-Pfad gleich. |
 | `my-app` | Der Systemname aus `ActorSystem.create('my-app')`. |
-| `user` | Der User-Guardian — jeder Actor, den du spawnst, lebt unter `/user`. |
+| `user` | Der User-Guardian — jeder Actor, den *du* spawnst, lebt unter `/user`. |
 | `api` | Ein Urgroßelter (z.B. ein `Api`-Manager). |
 | `sessions` | Der direkte Parent (z.B. ein `SessionManager`). |
 | `user-42` | Der eigene Name des Leaf-Actors. |
@@ -52,7 +52,7 @@ class Logger extends Actor<Message> {
     // → "depth = 2"  (Root ist 0, /user ist 1, /user/logger ist 2)
 
     this.log.info(`elements = ${this.context.path.elements().join(' → ')}`);
-    // → "elements = / → user → logger"
+    // → "elements =  → user → logger"  (führende Lücke = die leer benannte Wurzel)
   }
 }
 ```
@@ -91,9 +91,21 @@ Wenn du den Namen weglässt, synthetisiert das Framework einen
 1. **Namen müssen unter Geschwistern eindeutig sein.**  Zweimal
    `context.spawn(props, 'bar')` auf demselben Parent wirft einen
    Fehler — der Pfad ist bereits in Verwendung.
-2. **Der Name "sieht aus wie ein Pfadsegment."**  Keine Slashes,
-   keine führenden Punkte, keine Leerzeichen.  Das Framework
-   validiert das.
+2. **Der Name muss ein einzelnes Pfadsegment sein.**  Das Framework
+   erzwingt das und wirft bei einem Namen, der den Pfad beschädigen
+   würde: ein Trennzeichen `/` oder `\`, die Traversal-Segmente `.` und
+   `..`, ein leerer Name oder ein beliebiges Steuerzeichen.  Ein Pfad
+   wird durch Verbinden der Segmente mit `/` gerendert und durch Splitten
+   daran wieder zerlegt — `spawn(props, 'a/b')` würde also einen Pfad
+   erzeugen, der von einem Kind `b` eines Aktors `a` nicht zu
+   unterscheiden ist, und damit mit einem anderen Aktor kollidieren oder
+   ihn imitieren, auch über die Cluster-Verbindung, wo die Gegenseite den
+   String erneut splittet.  Steuerzeichen werden abgelehnt, weil Pfade in
+   Logs und Trace-Spans geschrieben werden.
+
+   Alles andere ist erlaubt, inklusive Leerzeichen, Punkte innerhalb des
+   Namens und Nicht-ASCII-Zeichen — `'Order.Placed'`, `'entity#3'` und
+   `'日本語'` sind alle gültig.
 
 Das `uid`-Feld auf `ActorPath` unterscheidet aufeinanderfolgende
 Inkarnationen desselben Pfads — wenn `my-foo` stoppt und dann am
@@ -121,11 +133,11 @@ nützlich, wenn der Aufrufer mit dem Spawn des Actors race-t.
 
 Zwei Wege, einer Selection etwas zu senden:
 
-- **`selection.tell(msg)`** — einmal auflösen, sofort liefern, wenn
+- **`selection.tell(message)`** — einmal auflösen, sofort liefern, wenn
   gefunden, in Dead Letters legen, wenn nicht.  Kein Retry.  Nützlich,
   wenn du eine klare Erwartung hast, dass der Actor existiert; ihn zu
   verfehlen ist ein Fehler.
-- **`(await selection.resolveOne(timeout)).tell(msg)`** — warte, bis
+- **`(await selection.resolveOne(timeout)).tell(message)`** — warte, bis
   der Actor existiert (oder bis zum Timeout).  Nützlich für
   Spawn-Race-Szenarien.
 
@@ -169,9 +181,9 @@ Typisierung verlierst.
 Greife in drei Situationen zu einer `ActorSelection`:
 
 1. **Cross-Tree-Lookup** per Konvention — der gewünschte Actor lebt
-   an einem bekannten Pfad (`/user/sharding/region`,
-   `/system/pubsub`), und es gibt keinen sauberen Weg, die Ref
-   durchzureichen.
+   an einem bekannten Pfad (`/user/api/sessions`,
+   `/system/cluster/pubsub/mediator`), und es gibt keinen sauberen Weg,
+   die Ref durchzureichen.
 2. **Spawn-Race-Auflösung** — der Aufrufer weiß nicht genau, wann
    das Target gespawnt wird; `resolveOne(timeout)` wartet.
 3. **Lookups von Actors, die als Strings empfangen wurden** — z.B.
@@ -186,7 +198,7 @@ weiterzureichen**:
 ```ts
 // ✗ umständlich
 class Worker extends Actor<...> {
-  override onReceive(msg) {
+  override onReceive(message) {
     const cache = await this.context.actorSelection('/user/cache').resolveOne();
     cache.tell({ kind: 'put', ... });
   }
@@ -195,7 +207,7 @@ class Worker extends Actor<...> {
 // ✓ direkt
 class Worker extends Actor<...> {
   constructor(private readonly cache: ActorRef<CacheMessage>) { super(); }
-  override onReceive(msg) {
+  override onReceive(message) {
     this.cache.tell({ kind: 'put', ... });
   }
 }
@@ -208,19 +220,66 @@ Pfad-Naming-Konventionen ab und überlebt Renames trivial.
 
 ## Spezielle Top-Level-Pfade
 
-Drei Top-Level-Guardian-Pfade existieren in jedem System:
+Vier Top-Level-Pfade existieren in jedem System:
 
 | Pfad | Was dort lebt |
 | --- | --- |
-| `/user` | Die Top-Level-Actors deiner Anwendung (alles, was `system.spawnAnonymous(...)` erzeugt). |
-| `/system` | Framework-Internas (Event-Stream-Listener, Cluster-Gossiper, der Dead-Letter-Actor selbst, …). |
+| `/user` | Die Top-Level-Actors deiner Anwendung — alles, was `system.spawn(...)` erzeugt. |
+| `/system` | Framework-Internas, nach Subsystem gruppiert. |
+| `/temp` | Die Einweg-Antwort-Refs, die `ask` erzeugt — einer pro offenem Aufruf. |
 | `/deadLetters` | Der synthetische Empfänger für Nachrichten ohne lebendes Ziel. |
 
-Du interagierst selten direkt mit `/system`-Pfaden — die Extensions
-(Cluster, PubSub, Sharding) bieten ihre eigenen typisierten APIs an,
-die dich vom Pfad-Schema abschirmen.  Aber zu wissen, dass die Pfade
-existieren, ist nützlich, wenn du Log-Output liest oder "wo ist diese
-Nachricht hingegangen?" debuggst.
+`/temp` fällt aus der Reihe: nichts darunter ist ein Actor.  `ask`
+synthetisiert einen Antwort-Ref, gibt ihm einen Pfad
+`/temp/askResp-<id>` und wirft ihn weg, sobald der Aufruf abgeschlossen
+ist — er taucht also in keinem Supervisor-Baum auf und `actorSelection`
+findet ihn nie.  Einen Pfad hat er überhaupt nur, weil eine Antwort,
+die über die Cluster-Leitung geht, per Pfad adressiert wird: der Knoten
+des Empfängers braucht ein Ziel zum Zurücksenden.  In Logs siehst du
+diese Refs als `sender` einer per `ask` verschickten Nachricht.
+
+### Innerhalb von `/system`
+
+Alles, was das Framework für sich selbst erzeugt, liegt hier — eine
+Gruppe pro Subsystem, sodass der Baum verrät, zu welchem Teil des
+Frameworks ein Actor gehört:
+
+| Pfad | Actor |
+| --- | --- |
+| `/system/cluster/receptionist` | Der Receptionist. |
+| `/system/cluster/pubsub/mediator` | Der Distributed-PubSub-Mediator. |
+| `/system/cluster/crdt/data` | Die DistributedData-Replika. |
+| `/system/cluster/sharding/region-<typeName>` | Eine Shard-Region. |
+| `/system/cluster/sharding/coordinator-<typeName>` | Ein Shard-Coordinator. |
+| `/system/cluster/singleton/manager-<typeName>` | Ein Cluster-Singleton-Manager (der Singleton selbst ist dessen Kind). |
+| `/system/persistence/projection/<name>` | Eine Projection. |
+| `/system/delivery/consumer-<n>`, `producer-<n>` | Reliable-Delivery-Controller. |
+| `/system/devtools/hub` | Der DevTools-WebSocket-Hub, mit seinen Probes daneben. |
+
+Zwei Dinge folgen daraus, die beim Lesen eines Baums helfen:
+
+- **Die Gruppen-Ebenen sind Actors.** `/system/cluster/sharding` ist ein
+  leerer Supervisor, dessen ganze Aufgabe darin besteht, die Gruppierung
+  und die Supervisions-Strategie für alles darunter zu halten. Er hat
+  Kinder und verarbeitet nie eine Nachricht.
+- **Gruppen entstehen bei der ersten Nutzung.** Ein System, das nie
+  Clustering oder DevTools startet, hat ein leeres `/system` — das ist
+  der Normalzustand, kein fehlender Ast.
+
+Du adressierst `/system`-Pfade selten direkt: die Extensions (Cluster,
+PubSub, Sharding) bieten typisierte APIs, die dir Refs geben. Aber die
+Kenntnis des Layouts zahlt sich beim Lesen von Log-Output aus — der
+Logger jedes Actors ist an seinen Pfad gebunden — oder bei der Frage "wo
+ist diese Nachricht hingegangen?".
+
+<Aside type="caution" title="/system gehört dem Framework, nicht dir">
+  Es gibt keine öffentliche API, um in `/system` zu spawnen, und die
+  Pfade oben sind kein stabiler Vertrag — sie sind schon einmal
+  umgezogen (vor diesem Release lagen Framework-Actors flach unter
+  `/user`), und ein pre-1.0-Release kann sie erneut verschieben. Nutze
+  sie in einer Log-Query, wenn es beim Debuggen hilft; baue kein
+  Anwendungs-Routing darauf.
+</Aside>
 
 <Aside type="caution" title="Pfade nicht aus String-Konkat bauen">
   ```ts

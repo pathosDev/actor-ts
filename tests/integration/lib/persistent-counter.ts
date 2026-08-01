@@ -15,26 +15,28 @@
  * shortcut) and rebuilds the state — that's the integration test.
  */
 
+import { match } from 'ts-pattern';
 import type { ActorRef } from '../../../src/ActorRef.js';
 import { PersistentActor, everyNEvents } from '../../../src/persistence/PersistentActor.js';
 import type { SnapshotPolicy } from '../../../src/persistence/PersistentActor.js';
 
-export interface CounterInc { readonly kind: 'inc' }
-export interface CounterGetState {
+export type CounterIncrement = { readonly kind: 'increment' };
+export type CounterGetState = {
   readonly kind: 'get-state';
   readonly replyTo: ActorRef<CounterStateReply>;
-}
-export type CounterCommand = CounterInc | CounterGetState;
+};
+export type CounterCommand = CounterIncrement | CounterGetState;
 
-export interface CounterIncremented { readonly kind: 'incremented' }
+export type CounterIncremented = { readonly kind: 'incremented' };
+
 export type CounterEvent = CounterIncremented;
 
-export interface CounterState { count: number }
+export type CounterState = { count: number };
 
-export interface CounterStateReply {
+export type CounterStateReply = {
   readonly kind: 'state';
   readonly count: number;
-}
+};
 
 /**
  * The persistent counter — one instance per `persistenceId`.  The
@@ -51,18 +53,27 @@ export class PersistentCounter extends PersistentActor<CounterCommand, CounterEv
   }
 
   override onEvent(state: CounterState, e: CounterEvent): CounterState {
-    if (e.kind === 'incremented') return { count: state.count + 1 };
-    return state;
+    // A fold that computes a value — arms stay inline.
+    return match(e)
+      .with({ kind: 'incremented' }, () => ({ count: state.count + 1 }))
+      .exhaustive();
   }
 
-  override onCommand(state: CounterState, cmd: CounterCommand): void {
-    if (cmd.kind === 'inc') {
-      this.persist({ kind: 'incremented' }, () => {
-        // No reply on inc — fire-and-forget.
-      });
-    } else if (cmd.kind === 'get-state') {
-      cmd.replyTo.tell({ kind: 'state', count: state.count });
-    }
+  override onCommand(state: CounterState, command: CounterCommand): void {
+    match(command)
+      .with({ kind: 'increment' }, () => this.onIncrement())
+      .with({ kind: 'get-state' }, (c) => this.onGetState(state, c))
+      .exhaustive();
+  }
+
+  private onIncrement(): void {
+    this.persist({ kind: 'incremented' }, () => {
+      // No reply on inc — fire-and-forget.
+    });
+  }
+
+  private onGetState(state: CounterState, command: CounterGetState): void {
+    command.replyTo.tell({ kind: 'state', count: state.count });
   }
 
   override snapshotPolicy(): SnapshotPolicy<CounterState, CounterEvent> {

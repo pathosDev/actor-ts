@@ -28,7 +28,6 @@ import {
   ActorSystemOptions,
   Cluster,
   ClusterOptions,
-  ClusterSingletonId,
   MemberDown,
   MemberRemoved,
   MemberUnreachable,
@@ -41,7 +40,7 @@ import { DistributedPubSubId, DistributedPubSubOptions } from '../../../src/clus
 import { ReceptionistId } from '../../../src/discovery/Receptionist.js';
 import { ReceptionistOptions } from '../../../src/discovery/ReceptionistOptions.js';
 import {
-  parseArgs,
+  parseArguments,
   BASE_CLUSTER_PORT,
   MAX_NODE_SLOTS,
 } from './config.js';
@@ -52,25 +51,26 @@ import {
 import { SessionStore } from './auth/sessionStore.js';
 import { VoicePresenceActor } from './actors/VoicePresenceActor.js';
 import { httpIngressProps } from './actors/HttpIngressActor.js';
+import { attachDevTools } from '../../devtools.js';
 
 async function main(): Promise<void> {
-  const cfg = parseArgs(process.argv.slice(2));
+  const config = parseArguments(process.argv.slice(2));
   const SYSTEM_NAME = 'voice-cluster';
 
   // -------- 1. Cluster discovery (same shape as chat) --------
   const seedProvider = new SameHostScanSeedProvider({
     systemName: SYSTEM_NAME,
-    host: cfg.host,
+    host: config.host,
     basePort: BASE_CLUSTER_PORT,
     maxSlots: MAX_NODE_SLOTS,
   });
-  const port = cfg.port ?? await pickFirstFreePort({
-    host: cfg.host,
+  const port = config.port ?? await pickFirstFreePort({
+    host: config.host,
     basePort: BASE_CLUSTER_PORT,
     maxSlots: MAX_NODE_SLOTS,
   });
-  const seeds = cfg.seeds !== null
-    ? [...cfg.seeds]
+  const seeds = config.seeds !== null
+    ? [...config.seeds]
     : (await seedProvider.lookup())
         .filter((a) => a.port !== port)
         .map((a) => a.toString());
@@ -85,12 +85,12 @@ async function main(): Promise<void> {
     ? ` · seeds=[${seeds.join(',')}]`
     : ' · bootstrap (no seeds)';
   system.log.info(
-    `voice node starting · cluster=${cfg.host}:${port} · http=${cfg.host}:${cfg.httpPort} (singleton)${seedSummary}`,
+    `voice node starting · cluster=${config.host}:${port} · http=${config.host}:${config.httpPort} (singleton)${seedSummary}`,
   );
 
   // -------- 3. Cluster.join --------
   const clusterOptions = ClusterOptions.create()
-    .withHost(cfg.host)
+    .withHost(config.host)
     .withPort(port)
     .withSeeds(seeds)
     .withFailureDetector({
@@ -100,6 +100,9 @@ async function main(): Promise<void> {
     })
     .withGossipIntervalMs(500);
   const cluster = await Cluster.join(system, clusterOptions);
+  // After the join, so the cluster panel has something to show — a
+  // system cannot hand out its own `Cluster`.
+  await attachDevTools(system, { cluster });
   cluster.subscribe((evt) => {
     if (evt instanceof MemberUp)
       system.log.info(`[+] ${evt.member.address} is UP`);
@@ -133,8 +136,8 @@ async function main(): Promise<void> {
   const singletonOptions = StartSingletonOptions.create()
     .withTypeName('http-ingress')
     .withProps(httpIngressProps({
-      host: cfg.host,
-      httpPort: cfg.httpPort,
+      host: config.host,
+      httpPort: config.httpPort,
       staticDir,
       system,
       receptionist,
@@ -142,7 +145,7 @@ async function main(): Promise<void> {
       voicePresence,
       sessions,
     }));
-  system.extension(ClusterSingletonId).start(cluster, singletonOptions);
+  cluster.singleton.start(singletonOptions);
 
   // -------- 7. Graceful shutdown --------
   let shuttingDown = false;

@@ -23,7 +23,7 @@ export interface BenchmarkSpec {
 }
 
 /** Raw measurement + derived stats for a single benchmark. */
-export interface BenchmarkResult {
+export type BenchmarkResult = {
   readonly name: string;
   readonly group: string;
   readonly unit: string;
@@ -35,7 +35,22 @@ export interface BenchmarkResult {
   readonly perOpNs: number;
   readonly iterationStats: BenchStats;
   readonly rssDeltaBytes: number;
-}
+};
+
+/**
+ * Smoke mode — collapses every benchmark to a single unwarmed iteration.
+ *
+ * The numbers it prints are meaningless (one unwarmed sample measures the
+ * JIT, not the framework); the point is to prove each suite still *runs*
+ * against the current `src/` API, in CI time rather than benchmark time.
+ * `bun run bench:smoke` is the entry point, and it exists because the whole
+ * suite sat broken for months on a removed `ask` export (#506) — nothing
+ * executed the benchmarks, so nothing noticed.
+ *
+ * Read once at module load: the flag is a whole-process mode, and re-reading
+ * `process.env` per benchmark would let a suite silently change it mid-run.
+ */
+const smokeMode = process.env.ACTOR_TS_BENCH_SMOKE === '1';
 
 /**
  * Run a single benchmark.  Returns timing stats and a rough memory delta
@@ -43,9 +58,11 @@ export interface BenchmarkResult {
  * then measures each iteration with `Bun.nanoseconds()` for ns resolution.
  */
 export async function runBenchmark(spec: BenchmarkSpec): Promise<BenchmarkResult> {
-  const iterations = spec.iterations ?? 1_000;
+  const iterations = smokeMode ? 1 : (spec.iterations ?? 1_000);
   const opsPerIteration = spec.opsPerIteration ?? 1;
-  const warmup = spec.warmupIterations ?? Math.max(1, Math.min(100, Math.floor(iterations / 10)));
+  const warmup = smokeMode
+    ? 0
+    : (spec.warmupIterations ?? Math.max(1, Math.min(100, Math.floor(iterations / 10))));
 
   await spec.setup?.();
 
@@ -95,11 +112,11 @@ export async function runBenchmark(spec: BenchmarkSpec): Promise<BenchmarkResult
 
 /* =============================== Table helpers ============================= */
 
-interface TableColumn {
+type TableColumn = {
   readonly header: string;
   readonly width: number;
   readonly align?: 'left' | 'right';
-}
+};
 
 /**
  * Minimal unicode-box table renderer.  Prints top border + column headers +
@@ -268,11 +285,11 @@ const MEMORY_COLUMNS: ReadonlyArray<TableColumn> = [
   { header: 'heap',   width: 14, align: 'right' },
 ];
 
-export interface MemoryMeasurement {
+export type MemoryMeasurement = {
   readonly label: string;
   readonly deltaRss: number;
   readonly deltaHeap: number;
-}
+};
 
 export interface MemoryGroup {
   measure(label: string, allocate: () => Promise<void> | void): Promise<MemoryMeasurement>;

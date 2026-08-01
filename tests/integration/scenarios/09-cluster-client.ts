@@ -22,17 +22,17 @@ import { ClusterClientOptions } from '../../../src/cluster/ClusterClientOptions.
 import { NoopLogger } from '../../../src/Logger.js';
 import { clusterLiveNodes, sleep, type Scenario } from './types.js';
 
-interface PongReply {
+type PongReply = {
   readonly kind: 'pong';
   readonly nodeName: string;
   readonly receivedAt: number;
-}
+};
 
 
 export const scenario: Scenario = {
   name: '09-cluster-client',
-  async run(ctx) {
-    const live = await clusterLiveNodes(ctx.nodes, ctx.controlPort);
+  async run(context) {
+    const live = await clusterLiveNodes(context.nodes, context.controlPort);
     if (live.length < 1) {
       console.log('[09] skipping — no live nodes to contact');
       return;

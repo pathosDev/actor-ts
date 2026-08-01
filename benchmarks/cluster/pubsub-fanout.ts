@@ -40,13 +40,13 @@ async function fanout(nSubs: number): Promise<void> {
   let resolve!: () => void;
   const done = new Promise<void>((r) => { resolve = r; });
 
-  class Sub extends Actor<string> {
+  class Subscriber extends Actor<string> {
     override onReceive(): void {
       if (--remaining === 0) resolve();
     }
   }
   for (let i = 0; i < nSubs; i++) {
-    mediator.tell(new Subscribe('topic', sys.spawnAnonymous(Props.create(() => new Sub()))));
+    mediator.tell(new Subscribe('topic', sys.spawnAnonymous(Props.create(() => new Subscriber()))));
   }
   await Bun.sleep(20); // settle subscriptions
 

@@ -168,12 +168,13 @@ gives a typed registry of all known event shapes + their
 versions:
 
 ```ts
-import { SchemaRegistry } from 'actor-ts';
+import { InMemorySchemaRegistry, zodCodec } from 'actor-ts';
 
-const registry = new SchemaRegistry()
-  .add('Deposited', 2)
-  .add('Withdrawn', 1)
-  .add('AccountClosed', 1);
+const registry = new InMemorySchemaRegistry();
+
+registry.register('Deposited', 2, { codec: zodCodec(DepositedV2) });
+registry.register('Withdrawn', 1, { codec: zodCodec(WithdrawnV1) });
+registry.register('AccountClosed', 1, { codec: zodCodec(AccountClosedV1) });
 ```
 
 Optional — adapters work without it.  Useful when:

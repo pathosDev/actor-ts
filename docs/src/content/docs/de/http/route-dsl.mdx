@@ -186,34 +186,39 @@ gegenüber Zahlen-Literalen — an der Call-Site leichter zu lesen.
 Der Handler bekommt eine `HttpRequest`:
 
 ```ts
-interface HttpRequest {
+type HttpRequest = {
   readonly method:  HttpMethod;
   readonly path:    string;
   readonly headers: Record<string, string>;
   readonly query:   Record<string, string>;
+  readonly params:  Record<string, string>;
   readonly body:    Uint8Array | null;
-}
+};
 ```
 
 ### Pfadparameter
 
-Die aktuelle DSL hat keinen typisierten Pfadparameter-Extraktor —
-Parameter sind Teil des rohen `req.path`.  Extrahiere von Hand:
+`:id`-artige Segmente werden in `req.params` erfasst, mit dem
+Segmentnamen als Schlüssel:
 
 ```ts
+import { pathParam } from 'actor-ts/http';
+
 path('orders',
   path(':id',
     get(async (req) => {
-      // req.path ist z. B. "/api/orders/o-42"
-      const id = req.path.split('/').pop()!;
+      const id = req.params.id;        // aus :id erfasst — z. B. "o-42"
       return completeJson(200, { id });
     }),
   ),
 );
 ```
 
-(Eine typisierte Extraktor-DSL ist auf der Roadmap; siehe
-[FAQ](/de/reference/faq/).)
+`req.params` enthält jedes `:name`-Segment, das das passende Muster
+erfasst hat, mit dem Namen als Schlüssel.  `pathParam(req, name)`
+ist dieselbe Abfrage mit einer Absicherung — sie liefert den Wert
+als String und wirft einen 500, falls das Muster ihn nie gebunden
+hat (ein Programmierfehler, kein Client-Fehler).
 
 ### Query-Parameter
 
@@ -257,7 +262,7 @@ import {
   completeJson, complete, reject, Status, entity,
 } from 'actor-ts/http';
 
-interface Customer { id: string; name: string; }
+type Customer = { id: string; name: string; };
 
 const customers = path('customers',
   concat(

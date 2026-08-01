@@ -25,10 +25,9 @@ const sqliteJournalOptions = SqliteJournalOptions.create()
   .withPath('/var/lib/my-app/events.db')
   .withWal(true);
 const sqliteSnapshotStoreOptions = SqliteSnapshotStoreOptions.create().withPath('/var/lib/my-app/snapshots.db');
-system.extension(PersistenceExtensionId).configure({
-  journal: new SqliteJournal(sqliteJournalOptions),
-  snapshotStore: new SqliteSnapshotStore(sqliteSnapshotStoreOptions),
-});
+const persistence = system.extension(PersistenceExtensionId);
+persistence.setJournal(new SqliteJournal(sqliteJournalOptions));
+persistence.setSnapshotStore(new SqliteSnapshotStore(sqliteSnapshotStoreOptions));
 ```
 
 A single file per system; the actor system writes through SQLite
@@ -37,12 +36,12 @@ to the OS page cache, which flushes to disk on commit.
 ## Configuration
 
 ```ts
-interface SqliteJournalOptions {
+type SqliteJournalOptions = {
   path?:        string;     // file path, or ":memory:" for ephemeral
   eventsTable?: string;     // default "events"
   wal?:         boolean;    // enable WAL mode (recommended)
   driver?:      SqliteDriver;   // explicit driver override
-}
+};
 ```
 
 ### `path`
@@ -83,23 +82,25 @@ the schema:
 
 ```sql
 CREATE TABLE events (
-  pid       TEXT NOT NULL,
-  seq       INTEGER NOT NULL,
-  event     BLOB NOT NULL,
-  ts        INTEGER NOT NULL,
-  tags      TEXT,                   -- legacy CSV tags (back-compat)
-  PRIMARY KEY (pid, seq)
+  persistence_id TEXT NOT NULL,
+  sequence_nr    INTEGER NOT NULL,
+  payload        TEXT NOT NULL,
+  tags           TEXT,                -- legacy CSV tags (back-compat)
+  timestamp      INTEGER NOT NULL,
+  PRIMARY KEY (persistence_id, sequence_nr)
 );
+
+CREATE INDEX idx_events_pid ON events (persistence_id);
 
 CREATE TABLE events_tags (
-  pid       TEXT NOT NULL,
-  seq       INTEGER NOT NULL,
-  tag       TEXT NOT NULL,
-  PRIMARY KEY (pid, seq, tag),
-  FOREIGN KEY (pid, seq) REFERENCES events (pid, seq) ON DELETE CASCADE
+  persistence_id TEXT NOT NULL,
+  sequence_nr    INTEGER NOT NULL,
+  tag            TEXT NOT NULL,
+  timestamp      INTEGER NOT NULL,
+  PRIMARY KEY (tag, timestamp, persistence_id, sequence_nr)
 );
 
-CREATE INDEX events_tags_tag ON events_tags (tag);
+CREATE INDEX idx_events_tags_pid_seq ON events_tags (persistence_id, sequence_nr);
 ```
 
 The dual-table design (events + events_tags) lets tag queries hit
@@ -127,42 +128,86 @@ explicitly when you go to production.
 
 ### `driver`
 
-```ts
-import { bunSqliteDriver, betterSqlite3Driver } from 'actor-ts/runtime/sqlite';
-
-const sqliteJournalOptions = SqliteJournalOptions.create()
-  .withPath('...')
-  .withDriver(bunSqliteDriver());
-const sqliteJournal2Options = SqliteJournalOptions.create()
-  .withPath('...')
-  .withDriver(betterSqlite3Driver());
-new SqliteJournal(sqliteJournalOptions)
-new SqliteJournal(sqliteJournal2Options)
-```
-
-The framework auto-detects the right driver based on the runtime:
+The framework auto-detects the right driver based on the runtime,
+so you normally leave `driver` unset:
 
 - **Bun** → `bun:sqlite` (built-in).
-- **Node** → `better-sqlite3` (peer dependency you install).
-- **Deno** → not yet supported.
+- **Node** → `better-sqlite3` when it is installed, otherwise the
+  built-in `node:sqlite`.
+- **Deno** → `node:sqlite` (built-in, Deno >= 2.2).
 
-Override `driver` when you want a specific backend (tests, pinned
-versions, or running in a runtime where auto-detect doesn't
-work).
+Auto-detection covers every supported runtime, and every one of them
+has a driver that needs no install.  The concrete
+driver classes aren't part of the public API — there's no import
+path to construct one by hand — so the `driver` slot is an
+internal seam the framework's own tests use, not something you
+wire up in application code.
 
-## Peer dependency on Node
+## Peer dependency on Node — optional
 
 ```bash
 npm install better-sqlite3
 ```
 
-When running on Node, `better-sqlite3` is a **peer dependency** —
-the framework doesn't bundle it, you install it.  Bun users don't
-need this; Bun has native SQLite.
+On Node, `better-sqlite3` is an **optional** peer dependency: install
+it and the framework prefers it, skip it and the built-in
+`node:sqlite` takes over.  It is worth installing if you want the
+extra throughput or if your deployment already runs it; otherwise the
+zero-dependency path is one less native build in your image.
 
-The auto-detection imports `better-sqlite3` lazily — only when the
-framework actually needs to open a SQLite database.  If you're on
-Bun and never use SQLite, the missing peer doesn't matter.
+Either way the import is lazy — only when the framework actually needs
+to open a SQLite database.  If you never use SQLite, a missing peer
+doesn't matter.
+
+Bun and Deno need nothing: `bun:sqlite` and `node:sqlite` are built in.
+
+For a **remote** SQLite database, see
+[libSQL / Turso](/persistence/journals/libsql/) — the same schema,
+reached over HTTP.
+
+## Durable state
+
+Alongside the journal and snapshot store, SQLite has a
+`DurableStateStore` — the "keep only the current value" model, with no
+event log and no replay:
+
+```ts
+import { SqliteDurableStateStore, SqliteDurableStateStoreOptions } from 'actor-ts';
+
+const stateOptions = SqliteDurableStateStoreOptions.create()
+  .withPath('./state.db');
+const store = new SqliteDurableStateStore(stateOptions);
+```
+
+To share one database handle across the journal, the snapshot store and
+the durable-state store, open it yourself and pass it in — the store
+then leaves closing it to you:
+
+```ts
+import { getSqliteDriver } from 'actor-ts';
+
+const driver = await getSqliteDriver();
+const database = driver.open('./app.db');
+
+const sharedOptions = SqliteDurableStateStoreOptions.create()
+  .withDatabase(database);
+```
+
+The schema is the SQLite dialect's, identical to
+[libSQL / Turso](/persistence/journals/libsql/) and
+[Cloudflare D1](/persistence/journals/cloudflare-d1/), so a database can
+move between a local file and either of those without a migration.
+
+One difference worth knowing in the other direction: because this talks
+to a local file rather than over HTTP, its transactions are a real
+`BEGIN IMMEDIATE … COMMIT`.  The HTTP-fronted SQLite backends can only
+offer an atomic batch, which is why `SqlPool` specifies isolation as
+adapter-defined — this backend gives more than the contract asks for.
+
+A remote URL is rejected at construction: `withPath('libsql://…')`
+throws and points you at `LibSqlDurableStateStore`, because the local
+driver cannot open one and silently creating a *file* with that name is
+the confusing outcome.
 
 ## How it performs
 
@@ -189,8 +234,8 @@ events per second sustained, consider:
 When a `PersistentActor` starts:
 
 1. Load latest snapshot from the snapshot store (if any).
-2. Run `SELECT event FROM events WHERE pid = ? AND seq > ?` to
-   stream events after the snapshot.
+2. Run `SELECT payload FROM events WHERE persistence_id = ? AND sequence_nr >= ?`
+   to stream events after the snapshot.
 3. Apply each event via `onEvent`.
 
 For a 100 000-event journal with no snapshot, recovery reads
@@ -273,10 +318,10 @@ Three signals you've outgrown single-file SQLite:
 2. **Sustained 100K+ events/sec** — SQLite can handle it with
    tuning but you're at the edges; columnar / distributed engines
    are designed for it.
-3. **Large events (> 1 MB each)** — SQLite stores them as BLOBs;
-   read performance degrades.  Consider event compaction (store
-   pointers to external storage) or a journal designed for large
-   payloads.
+3. **Large events (> 1 MB each)** — SQLite stores each event as a
+   JSON `TEXT` payload; read performance degrades.  Consider event
+   compaction (store pointers to external storage) or a journal
+   designed for large payloads.
 
 ## Where to next
 

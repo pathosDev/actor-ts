@@ -19,25 +19,31 @@ bei Timeout rejected.
 ## Ein minimales Beispiel
 
 ```ts
+import { match } from 'ts-pattern';
 import { Actor, ActorSystem, Props, type ActorRef } from 'actor-ts';
 
-type Command =
-  | { readonly kind: 'inc' }
-  | { readonly kind: 'get'; readonly replyTo: ActorRef<number> };
+type IncrementCommand = { readonly kind: 'increment' };
+type GetCommand = { readonly kind: 'get'; readonly replyTo: ActorRef<number> };
+type Command = IncrementCommand | GetCommand;
 
 class Counter extends Actor<Command> {
   private count = 0;
-  override onReceive(cmd: Command): void {
-    if (cmd.kind === 'inc') this.count++;
-    else if (cmd.kind === 'get') cmd.replyTo.tell(this.count);
+  override onReceive(command: Command): void {
+    match(command)
+      .with({ kind: 'increment' }, () => this.onIncrement())
+      .with({ kind: 'get' }, (c) => this.onGet(c))
+      .exhaustive();
   }
+
+  private onIncrement(): void { this.count++; }
+  private onGet(command: GetCommand): void { command.replyTo.tell(this.count); }
 }
 
 const system = ActorSystem.create('demo');
 const counter = system.spawnAnonymous(Props.create(() => new Counter()));
 
-counter.tell({ kind: 'inc' });
-counter.tell({ kind: 'inc' });
+counter.tell({ kind: 'increment' });
+counter.tell({ kind: 'increment' });
 
 // Methode-auf-Ref — knapp, leitet den Reply-Typ ab:
 const current = await counter.ask<number>({ kind: 'get' }, 5_000);
@@ -46,18 +52,14 @@ console.log(current);  // 2
 await system.terminate();
 ```
 
-Zwei äquivalente Schreibweisen:
+`ask` ist eine Methode auf jeder `ActorRef`:
 
 ```ts
 // Methode auf jeder ActorRef — leitet Reply aus dem Type-Argument ab:
 ref.ask<Reply>(message, timeoutMs?): Promise<Reply>
-
-// Freie Funktion — nützlich, wo du die explizite Form willst:
-function target:    ActorRef<TReq>.ask<TRes = unknown>(message:   OmitReplyTo<TReq>,
-  timeoutMs: number = 5_000,): Promise<TRes>
 ```
 
-Der Parameter-Typ `OmitReplyTo<TReq>` zieht `replyTo` aus jeder
+Der Parameter-Typ `OmitReplyTo<TMessage>` zieht `replyTo` aus jeder
 Variante der Message-Union ab, die es deklariert — Aufrufer schreiben
 das Feld selbst nie hin.  Das Framework allokiert eine
 One-Shot-Reply-Ref, hängt sie sowohl als `context.sender` als auch
@@ -79,8 +81,8 @@ Für den Empfänger ist es einfach ein normales `tell` auf einer
 normalen Ref:
 
 ```ts
-if (cmd.kind === 'get') {
-  cmd.replyTo.tell(this.count);
+private onGet(command: GetCommand): void {
+  command.replyTo.tell(this.count);
 }
 ```
 
@@ -89,7 +91,7 @@ Innerhalb des Empfängers kannst du dieselbe Ref auch über
 hängt die temporäre Ref auch über diesen Kanal an:
 
 ```ts
-if (cmd.kind === 'get') {
+private onGet(command: GetCommand): void {
   this.sender.forEach((replyTo) => replyTo.tell(this.count));
 }
 ```
@@ -128,10 +130,12 @@ pro Aufrufstelle:
   HTTP-Call innerhalb des Actors): das Timeout des unterliegenden
   Calls + ein kleiner Puffer.
 
-Wenn der Timeout feuert, wird die temporäre Reply-to-Ref gestoppt.
-Eine späte Antwort vom Actor geht in die Dead Letters, und der
-`AskTimeoutError` rejected das Promise.  Der Actor selbst ist nicht
-betroffen — er hat keine Ahnung, dass der Asker aufgegeben hat.
+Wenn der Timeout feuert, rejected der `AskTimeoutError` das Promise.
+Die temporäre Reply-to-Ref ist ein One-Shot: sobald sie einmal
+abgeschlossen ist — durch den Timeout oder die erste Antwort — wird
+jede spätere Antwort still an Ort und Stelle verworfen (sie geht nicht
+in die Dead Letters).  Der Actor selbst ist nicht betroffen — er hat
+keine Ahnung, dass der Asker aufgegeben hat.
 
 ## Mit einem Error antworten
 
@@ -143,14 +147,18 @@ Fehler rejected, statt mit der Nachricht resolved.
 
 ```ts
 class Service extends Actor<Command> {
-  override onReceive(cmd: Command): void {
-    if (cmd.kind === 'fetch') {
-      if (this.unavailable) {
-        cmd.replyTo.tell(new Error('service unavailable'));
-        return;
-      }
-      cmd.replyTo.tell(this.data);
+  override onReceive(command: Command): void {
+    match(command)
+      .with({ kind: 'fetch' }, (c) => this.onFetch(c))
+      .exhaustive();
+  }
+
+  private onFetch(command: FetchCommand): void {
+    if (this.unavailable) {
+      command.replyTo.tell(new Error('service unavailable'));
+      return;
     }
+    command.replyTo.tell(this.data);
   }
 }
 
@@ -188,7 +196,7 @@ Drei Situationen, in denen einfaches `tell` der richtige Aufruf ist:
 
 <Aside type="caution" title="Innerhalb des `onReceive` eines Actors, wenn das Warten die Mailbox blockiert">
   ```ts
-  override async onReceive(msg) {
+  override async onReceive(message) {
     const dep = await other.ask({ kind: 'q' });
     // ↑ die Mailbox dieses Actors blockiert, bis der ask resolved.
     this.useDep(dep);
@@ -218,5 +226,5 @@ Drei Situationen, in denen einfaches `tell` der richtige Aufruf ist:
   `pipeTo`, `after`, sequence — async-Ergebnisse zurück in die
   Actor-Welt komponieren, ohne mit `await` zu blockieren.
 
-Die [`ask`-Funktions-API-Referenz](/api/functions/ask/) dokumentiert
-die volle Signatur und die Error-Typen.
+Die [`ActorRef`-Klassen-API-Referenz](/api/classes/actorref/)
+dokumentiert die volle Signatur der `ask`-Methode und die Error-Typen.

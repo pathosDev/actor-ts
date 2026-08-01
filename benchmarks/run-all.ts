@@ -5,20 +5,26 @@
  *
  *   bun run benchmarks/run-all.ts
  *   bun run benchmarks/run-all.ts --group=single-node
+ *   bun run benchmarks/run-all.ts --exclude=worker
  *
  * CLI flags:
- *   --group=<name>   — only run suites under benchmarks/<name>/
- *   --list           — list all discovered suites and exit
+ *   --group=<name>            — only run suites under benchmarks/<name>/
+ *   --exclude=<name>[,<name>] — skip these groups (applied after --group)
+ *   --list                    — list all discovered suites and exit
+ *
+ * Exits non-zero if any suite failed, so `bun run bench` / `bench:smoke`
+ * can gate CI.  Every suite still runs — one broken benchmark must not
+ * hide the state of the other twenty-three.
  */
 import { spawnSync } from 'node:child_process';
 import { readdirSync, statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { ansi } from './lib/stats.js';
 
-interface Suite {
+type Suite = {
   readonly group: string;
   readonly file: string;
-}
+};
 
 const root = resolve(import.meta.dirname ?? '.', '.');
 
@@ -43,10 +49,16 @@ function discover(): Suite[] {
 function run(): void {
   const args = process.argv.slice(2);
   const groupFlag = args.find((a) => a.startsWith('--group='))?.slice('--group='.length);
+  const excludeFlag = args.find((a) => a.startsWith('--exclude='))?.slice('--exclude='.length);
   const listOnly = args.includes('--list');
 
+  const excluded = new Set(
+    (excludeFlag ?? '').split(',').map((g) => g.trim()).filter((g) => g.length > 0),
+  );
+
   const suites = discover();
-  const filtered = groupFlag ? suites.filter((s) => s.group === groupFlag) : suites;
+  const filtered = (groupFlag ? suites.filter((s) => s.group === groupFlag) : suites)
+    .filter((s) => !excluded.has(s.group));
   if (filtered.length === 0) {
     console.error(
       groupFlag
@@ -54,6 +66,10 @@ function run(): void {
         : 'No benchmarks found.',
     );
     process.exit(1);
+  }
+  // Name what was skipped — a silent exclusion reads as "everything ran".
+  if (excluded.size > 0) {
+    console.log(ansi.gray(`  (skipping group(s): ${[...excluded].join(', ')})`));
   }
   if (listOnly) {
     for (const s of filtered) console.log(`${s.group}  ${s.file}`);
@@ -69,15 +85,34 @@ function run(): void {
 
   const start = Date.now();
 
+  const failed: string[] = [];
   for (const s of filtered) {
     const rel = s.file.slice(root.length + 1).replace(/\\/g, '/');
     console.log('\n' + ansi.cyan('▸ ') + ansi.bold(s.group) + ansi.gray(' / ') + rel);
-    const res = spawnSync('bun', ['run', s.file], { stdio: 'inherit' });
-    if (res.status !== 0) console.error(ansi.red(`  [exit=${res.status}] ${s.file}`));
+    const result = spawnSync('bun', ['run', s.file], { stdio: 'inherit' });
+    if (result.status !== 0) {
+      console.error(ansi.red(`  [exit=${result.status}] ${s.file}`));
+      failed.push(rel);
+    }
   }
 
   const elapsed = ((Date.now() - start) / 1000).toFixed(1);
   console.log('\n' + ansi.gray('─'.repeat(60)));
+
+  // Every suite runs even when an earlier one dies (one broken benchmark
+  // should not hide the state of the other twenty), but the driver still
+  // has to REPORT that failure in its exit code — otherwise `bun run
+  // bench` is green while the suite is on fire, which is exactly how #506
+  // survived: ten suites failing to import, exit status 0.
+  if (failed.length > 0) {
+    console.log(
+      `  ${ansi.red('✗')} ${failed.length} of ${filtered.length} suites failed `
+      + `— total wall time ${ansi.bold(elapsed + 's')}`,
+    );
+    for (const f of failed) console.log(ansi.red(`      ${f}`));
+    process.exit(1);
+  }
+
   console.log(`  ${ansi.green('✓')} done — total wall time ${ansi.bold(elapsed + 's')}`);
 }
 

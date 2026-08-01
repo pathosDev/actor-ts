@@ -10,14 +10,14 @@ import type { Cache } from '../../cache/Cache.js';
 import type { HttpRequest } from '../types.js';
 
 /** Plain options-object shape accepted by {@link idempotent}. */
-export interface IdempotencyOptionsType {
+export type IdempotencyOptionsType = {
   readonly cache: Cache;
   /** How long to remember responses.  Default: 24 hours. */
   readonly ttlMs?: number;
   /**
    * Header to read the idempotency key from.  Default: `'idempotency-key'`
    * (the standard).  Header names are matched case-insensitively against
-   * the `req.headers` map (which holds them lower-cased).
+   * the `request.headers` map (which holds them lower-cased).
    */
   readonly headerName?: string;
   /**
@@ -39,10 +39,10 @@ export interface IdempotencyOptionsType {
    * endpoint, unsafe when the response is identity-specific (the second
    * caller would get the first caller's data / `Set-Cookie`).  Return the
    * authenticated principal (user / tenant / API-key id), e.g.
-   * `identity: (req) => req.headers['x-account-id'] ?? 'anon'`.
+   * `identity: (request) => request.headers['x-account-id'] ?? 'anon'`.
    */
-  readonly identity?: (req: HttpRequest) => string | Promise<string>;
-}
+  readonly identity?: (request: HttpRequest) => string | Promise<string>;
+};
 
 /**
  * Fluent builder for {@link IdempotencyOptionsType}:
@@ -81,7 +81,7 @@ export class IdempotencyOptionsBuilder extends OptionsBuilder<IdempotencyOptions
   }
 
   /** Per-caller scope folded into the cache key (security audit HTTP-4). */
-  withIdentity(identity: (req: HttpRequest) => string | Promise<string>): this {
+  withIdentity(identity: (request: HttpRequest) => string | Promise<string>): this {
     return this.set('identity', identity);
   }
 }

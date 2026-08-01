@@ -1,0 +1,306 @@
+---
+title: DevTools — Überblick
+description: Eine einbettbare Web-UI für ein laufendes Actor-System — an einen Port hängen, Browser öffnen, das System sehen. Erst die Übersicht, dann ein Panel pro Werkzeug. Standardmäßig nur Loopback und ohne Auth.
+---
+
+import { Aside, Steps } from '@astrojs/starlight/components';
+
+Ein guter Teil dessen, warum sich die BEAM so anfühlt, wie sie sich
+anfühlt: Man kann das System *sehen*. `observer` verbindet sich mit
+einem laufenden Node und zeigt Prozessbaum, Mailboxes, Last. DevTools
+ist diese Idee für `actor-ts` — eine einbettbare Web-UI, die du an ein
+laufendes `ActorSystem` hängst.
+
+```ts
+import { ActorSystem } from 'actor-ts';
+import { DevTools, DevToolsOptions } from 'actor-ts/devtools';
+
+const system = ActorSystem.create('orders');
+
+const devtoolsOptions = DevToolsOptions.create().withPort(9333);
+const devtools = await DevTools.attach(system, devtoolsOptions);
+console.log(devtools.url);   // http://127.0.0.1:9333
+```
+
+Öffnest du diese URL, landest du auf der **Übersicht**: was dieses
+System ist, was es tut, und wohin sich das entwickelt. Die Nav-Leiste
+links ist der Weg in jedes andere Werkzeug.
+
+<Aside type="caution" title="Behandle den DevTools-Port wie einen Debugger-Port">
+DevTools liest lebenden Actor-Zustand — Klassennamen, Mailbox-Tiefen und
+(mit dem Time-Travel-Panel) persistierte Events. Es bindet standardmäßig
+`127.0.0.1` und bleibt ohne Auth: richtig für einen Laptop, falsch für
+alles andere. Lies [Sicherheit](#sicherheit), bevor du den Host änderst.
+</Aside>
+
+## Die Panels
+
+DevTools ist ein Produkt, zusammengesetzt aus mehreren Werkzeugen. Die
+Nav-Leiste zeigt immer die vollständige Liste: Ein Werkzeug, das dieses
+System nicht anbieten kann, bleibt ausgegraut — **mit Begründung**, denn
+nichts soll sich hinter einem Klick verstecken, der ins Leere läuft.
+
+| Panel | Zeigt |
+| --- | --- |
+| **Übersicht** | Systemidentität, Uptime, Live-Zahlen, Verläufe |
+| **Actors** | Live-Actor-Baum, Cell-States, Mailbox-Tiefen, ausgelastetste Actors |
+| **Cluster** | Node-Topologie, Shard-Verteilung, Membership-Historie |
+| **Tracing** | Flame-Graph und Waterfall über aufgezeichnete Message-Spans |
+| **Explain-Plan** | Die letzten Nachrichten eines Actors, mit Timings |
+| **Time Travel** | Journal durchsehen, Zustand zu beliebigem Zeitpunkt rekonstruieren |
+| **Profiler** | Wo das Actor-System seine Zeit verbringt |
+
+Alle sprechen ein gemeinsames
+[Tap-Protokoll](/de/observability/devtools/protocol/) über einen
+einzigen WebSocket — sie teilen sich eine Verbindung, statt dass jedes
+seine eigene öffnet.
+
+Die Übersicht selbst besteht aus drei Abschnitten, in der Reihenfolge,
+in der man die Fragen tatsächlich stellt:
+
+- **Common** — Actor-System, Uptime, Runtime, Cluster-Status. Die Uptime
+  ist die *des Systems*, vom Server gelesen — sie übersteht damit einen
+  Reload der Seite und eine abgerissene Verbindung.
+- **Numbers** — Aktoren, Nachrichten pro Sekunde, verarbeitete
+  Nachrichten, Spawn- und Stop-Raten, Restarts, Mailbox-Rückstau,
+  gestashte Nachrichten, suspendierte Aktoren, Dead Letters,
+  Mailbox-Drops und Handler-p99.
+- **Charts** — dieselben Zahlen über die letzten Minuten, auf drei
+  Diagramme verteilt, damit sich ein Füllstand und eine Rate nie eine
+  y-Achse teilen, dazu die aktuell vollsten Mailboxen.
+
+## Attachen
+
+`DevTools.attach` bindet einen eigenen Server — meist das, was du
+willst, denn der DevTools-Port sollte getrennt vom Anwendungsport
+gefirewallt werden.
+
+<Steps>
+
+1. **Attachen**, am besten hinter einem Flag, damit Produktion es nie
+   startet:
+
+   ```ts
+   if (process.env.DEVTOOLS === '1') {
+     await DevTools.attach(system);   // http://127.0.0.1:9333
+   }
+   ```
+
+2. **URL öffnen**, die das zurückgegebene Binding meldet. Mit `port: 0`
+   sucht das Betriebssystem einen freien Port aus, und das Binding sagt
+   dir welchen.
+
+3. **Detachen**, wenn du fertig bist. Das passiert auch automatisch im
+   `CoordinatedShutdown`, ein `SIGTERM` gibt den Port also von selbst
+   frei:
+
+   ```ts
+   await devtools.detach();
+   ```
+
+</Steps>
+
+### In einen bestehenden Server einhängen
+
+Willst du DevTools neben deine
+[Management-Endpunkte](/de/observability/management/overview/) legen
+statt auf einen eigenen Port, hol dir die Routen und binde sie selbst:
+
+```ts
+import { concat, path } from 'actor-ts';
+import { DevTools } from 'actor-ts/devtools';
+
+const routes = concat(
+  managementRoutes(system, cluster).routes,
+  path('devtools', DevTools.mount(system)),
+);
+await system.http(8558, { host: '127.0.0.1' }).bind(routes);
+```
+
+Welche Middleware auch immer diesen Teilbaum umschließt, gilt damit auch
+für DevTools.
+
+## Optionen
+
+Builder-first wie überall im Framework; ein einfaches Objekt tut es
+genauso.
+
+```ts
+const devtoolsOptions = DevToolsOptions.create()
+  .withPort(9333)
+  .withHost('127.0.0.1')
+  .withPanels({ timeTravel: false });
+```
+
+| Option | Default | Bedeutung |
+| --- | --- | --- |
+| `host` | `'127.0.0.1'` | Interface zum Binden. Alles Routbare braucht eine Absicherung — siehe unten. |
+| `port` | `9333` | Port zum Binden; `0` sucht einen freien. |
+| `auth` | — | Middleware um den gesamten Baum (z. B. `BearerTokenAuth`). |
+| `ipAllowlist` | — | Middleware um den gesamten Baum. |
+| `allowRemote` | `false` | Ungesichertes, routbares Binden bewusst bestätigen. |
+| `backend` | Framework-Default | HTTP-Backend für den DevTools-Server. |
+| `serveUi` | `true` | `false` lässt den Tap ohne UI laufen. |
+| `allowedOrigins` | Same-Origin | Origins, die den WebSocket öffnen dürfen. |
+| `panels` | alle an | Schalter pro Panel — siehe unten. |
+| `uiDevelopmentRoot` | — | UI von der Platte servieren; nur für Panel-Entwicklung. |
+
+### Panels abschalten
+
+Jedes Panel lässt sich einzeln abschalten, und ein abgeschaltetes Panel
+bleibt abgeschaltet — seine Daten verlassen den Prozess nicht, egal was
+ein Client anfragt:
+
+```ts
+const devtoolsOptions = DevToolsOptions.create()
+  .withPanels({ timeTravel: false, profiler: false });
+```
+
+Über Time Travel solltest du zuerst nachdenken: Das ist das Panel, das
+rohe persistierte Events sichtbar macht.
+
+## Sicherheit
+
+DevTools ist ein Debugger, und die Defaults behandeln es auch so.
+
+- **Standardmäßig Loopback.** `host` ist `127.0.0.1`, nichts außerhalb
+  der Maschine kommt heran.
+- **Ein routbares Binden muss Absicht sein.** Setzt du `host` auf etwas,
+  das nicht Loopback ist, wirft es — es sei denn, du übergibst zusätzlich
+  `auth`, `ipAllowlist` oder `allowRemote: true`. Die Fehlermeldung nennt
+  alle drei, damit ein Tippfehler im Host-String nicht stillschweigend
+  deinen Actor-Zustand veröffentlicht.
+- **Absicherungen gelten für alles.** `auth` und `ipAllowlist`
+  umschließen die UI, die JSON-Endpunkte *und* das WebSocket-Upgrade —
+  eine Absicherung nur auf dem JSON würde den eigentlichen Datenkanal
+  offen lassen.
+- **Same-Origin-Sockets.** Der Tap lehnt ein WebSocket-Upgrade von einer
+  nicht gelisteten Origin ab; eine besuchte Seite kann deine lokalen
+  DevTools also nicht anwählen.
+
+Wenn du sie doch exponierst, hänge sie hinter dieselbe Auth wie deine
+Management-Endpunkte und behandle die Credentials als Produktivgeheimnis:
+
+```ts
+import { BearerTokenAuth } from 'actor-ts';
+
+const devtoolsOptions = DevToolsOptions.create()
+  .withHost('0.0.0.0')
+  .withAuth(BearerTokenAuth({ tokens: [process.env.DEVTOOLS_TOKEN!] }));
+```
+
+## An den Examples ausprobieren
+
+Jedes Example im Repository ist für DevTools verdrahtet, und keines
+zahlt dafür, solange du nicht fragst:
+
+```bash
+bun run examples/hello-world.ts --devtools
+```
+
+`--devtools` funktioniert in jeder Shell. `DEVTOOLS=1 bun run …` tut
+dasselbe in einer POSIX-Shell, aber `VAR=wert befehl` ist in PowerShell
+ein Parser-Fehler — dort setzt du die Variable separat:
+
+```powershell
+$env:DEVTOOLS = '1'; bun run examples/hello-world.ts
+```
+
+Die meisten Examples sind Skripte, die nach ein paar hundert
+Millisekunden fertig sind — zu schnell, um einen Browser zu öffnen. Mit
+aktivierten DevTools halten sie kurz vor dem Herunterfahren an, geben die
+URL aus und warten auf `Ctrl+C`, damit es überhaupt etwas zu sehen gibt.
+Ohne bleiben Timing und Ausgabe exakt wie vorher.
+
+Examples mit mehreren Systemen geben jedem System einen eigenen Port,
+aufsteigend ab `--devtools-port` / `DEVTOOLS_PORT` (Default `9333`) — ein Drei-Knoten-Cluster
+läuft also auf `9333`, `9334`, `9335`:
+
+```bash
+bun run examples/cluster/singleton-hello.ts --devtools
+```
+
+Ein Cluster aus *getrennten Terminals* funktioniert genauso, obwohl jeder
+Prozess seine eigene Kopie dieses Zählers hat: Genommen wird der erste
+freie Port im Bereich. Drei Mal `bun run examples/voice/backend/main.ts
+--devtools` ergeben also `9333`, `9334` und `9335`, ganz ohne Flags. Ist
+keiner frei — oder scheitert an DevTools sonst etwas —, protokolliert das
+Example eine Warnung und startet trotzdem. Ein Debugger, der nicht binden
+kann, ist kein Grund, das zu debuggende Programm sterben zu lassen.
+
+Gebunden wird auf `127.0.0.1`. `--devtools-host` / `DEVTOOLS_HOST` ändert
+das — das Flag für den Fall, dass der Browser nicht auf der Maschine
+läuft, auf der das Example läuft: ein Container, eine VM, eine WSL- oder
+Remote-Dev-Box.
+
+```bash
+bun run examples/hello-world.ts --devtools --devtools-host 0.0.0.0
+```
+
+Einen Nicht-Loopback-Host dort hinzuschreiben ist genau die bewusste
+Entscheidung, nach der [Sicherheit](#sicherheit) fragt. Das Example
+ergänzt deshalb `allowRemote`, und DevTools bindet — mit der Warnung,
+dass es ohne Auth erreichbar ist — statt sich zu verweigern und dich
+rätseln zu lassen, warum. Dieser Handel taugt für ein Example und sonst
+nichts: Alles mit echtem State gehört hinter `auth` oder eine
+`ipAllowlist`. Ein Wildcard-Bind meldet sich als Loopback-URL zurück,
+denn `http://0.0.0.0:9333` ist keine Adresse, die ein Browser öffnen
+kann.
+
+Langlaufende Examples (die Chat- und Voice-Backends, die HTTP-Services)
+halten nicht an — sie laufen ohnehin, bis du sie stoppst. Die Verdrahtung
+liegt in `examples/devtools.ts`, rund dreißig Zeilen, falls du das Muster
+in deine eigene App übernehmen willst.
+
+## Wenn nichts mehr antwortet
+
+Jedes Panel zeigt weiter, was ihm zuletzt gesagt wurde — die letzte
+Messung vor dem Ausfall eines Knotens ist meist die interessante —, und
+genau deshalb sähe eine abgerissene Verbindung sonst aus wie ein
+gesundes System. Nach ein paar Sekunden ohne Antwort geht ein Dialog auf: **No node
+reachable**, mit der Angabe, wie lange das schon so ist — und er schließt
+sich von selbst, sobald wieder etwas antwortet. Wegklicken kannst du ihn,
+um die letzten Zahlen trotzdem zu lesen; das Panel bleibt dabei gedimmt,
+damit sie nicht mit lebenden verwechselt werden, und die Uptime friert
+auf ihrem letzten Stand ein, statt über den Tod des Systems hinaus
+weiterzuzählen, das sie misst.
+
+Jeder Knoten liefert seine eigenen DevTools aus — der Port eines anderen
+Knotens kann also noch antworten, während der geöffnete es nicht tut.
+
+## Kosten
+
+**Ungenutzt: keine.** Die Extension zu erzeugen tut nichts: kein Port,
+keine Taps, keine Instrumentierung. Alles beginnt bei `attach()`, und
+die Datenerfassung eines Panels läuft nur, solange ein Browser sie
+tatsächlich abonniert hat — eine offene Übersicht bringt das System
+nicht dazu, Spans aufzuzeichnen.
+
+**Solange DevTools hängt**, schaltet es die
+[Metrics-Registry](/de/observability/metrics/core-metrics/) ein, falls
+du das nicht schon getan hast: Nachrichtendurchsatz, Mailbox-Drops und
+Handler-Latenz zählt das Framework selbst, und gegen die
+Noop-Registry stehen sie alle auf 0. Damit laufen alle
+Framework-Metriken scharf, Cluster-Zähler eingeschlossen, solange
+DevTools attached ist; `detach()` setzt die Noop-Registry zurück. Eine
+Registry, die du selbst eingeschaltet hast, bleibt in beide Richtungen
+unangetastet — DevTools liest sie und schaltet sie nie ab.
+
+## An der UI arbeiten
+
+Die UI ist reines TypeScript, gebündelt von `Bun.build` und in das
+veröffentlichte Paket eingebettet: kein UI-Framework zur Laufzeit, kein
+Netzwerkzugriff. Um an einem Panel zu arbeiten:
+
+```bash
+bun run build:ui -- --dev --watch
+```
+
+```bash
+bun run dev:devtools
+```
+
+Das erste baut bei jedem Speichern nach `devtools-ui/.dev`, das zweite
+startet ein Demo-System, das dieses Verzeichnis via `uiDevelopmentRoot`
+ausliefert. Die Schleife ist Speichern → Neu laden, ohne
+TypeScript-Build und ohne Server-Neustart.

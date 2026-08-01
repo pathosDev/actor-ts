@@ -6,7 +6,7 @@ export type {
   HonoServerHandle,
   HonoServerRunner,
   HonoWebsocketBridge,
-  UpgradeWebsocketFn,
+  UpgradeWebsocketFunction,
   WSContextLike,
   WSEventsLike,
 } from './HonoServerRunner.js';

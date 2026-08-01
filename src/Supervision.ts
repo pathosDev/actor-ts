@@ -13,28 +13,28 @@ export enum Directive {
 export type Decider = (error: Error) => Directive;
 
 /** Descriptor for a supervision strategy. */
-export interface SupervisorStrategy {
+export type SupervisorStrategy = {
   readonly scope: 'one-for-one' | 'all-for-one';
   readonly decider: Decider;
   /** Maximum number of restarts tolerated within the time window. -1 = unlimited. */
   readonly maxRetries: number;
   /** Sliding time window in ms. 0 = no window (counts are never reset). */
   readonly withinTimeRangeMs: number;
-}
+};
 
-export interface StrategyOptions {
+export type StrategyOptions = {
   maxRetries?: number;
   withinTimeRangeMs?: number;
-}
+};
 
 /** Applies the directive only to the failing child. */
 export class OneForOneStrategy implements SupervisorStrategy {
   readonly scope = 'one-for-one' as const;
   readonly maxRetries: number;
   readonly withinTimeRangeMs: number;
-  constructor(public readonly decider: Decider, opts: StrategyOptions = {}) {
-    this.maxRetries = opts.maxRetries ?? -1;
-    this.withinTimeRangeMs = opts.withinTimeRangeMs ?? 0;
+  constructor(public readonly decider: Decider, options: StrategyOptions = {}) {
+    this.maxRetries = options.maxRetries ?? -1;
+    this.withinTimeRangeMs = options.withinTimeRangeMs ?? 0;
   }
 }
 
@@ -43,9 +43,9 @@ export class AllForOneStrategy implements SupervisorStrategy {
   readonly scope = 'all-for-one' as const;
   readonly maxRetries: number;
   readonly withinTimeRangeMs: number;
-  constructor(public readonly decider: Decider, opts: StrategyOptions = {}) {
-    this.maxRetries = opts.maxRetries ?? -1;
-    this.withinTimeRangeMs = opts.withinTimeRangeMs ?? 0;
+  constructor(public readonly decider: Decider, options: StrategyOptions = {}) {
+    this.maxRetries = options.maxRetries ?? -1;
+    this.withinTimeRangeMs = options.withinTimeRangeMs ?? 0;
   }
 }
 
@@ -91,7 +91,7 @@ export class ActorInitializationError extends Error {
   }
 }
 
-/** Raised when an actor explicitly watches another that terminates and does not handle Terminated. */
+/** Death-pact error for an actor that watches another which terminates without handling Terminated.  Note: not currently raised automatically by the runtime — an unhandled Terminated is swallowed. */
 export class DeathPactError extends Error {
   constructor(public readonly actorPath: string) {
     super(`Death pact with terminated actor ${actorPath}`);

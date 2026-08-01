@@ -19,11 +19,11 @@ import { readFileSync } from 'node:fs';
 import { Agent, type RequestOptions, request } from 'node:https';
 import { KubernetesApiSeedProvider } from '../../../../src/discovery/KubernetesApiSeedProvider.js';
 import { KubernetesApiSeedProviderOptions } from '../../../../src/discovery/KubernetesApiSeedProviderOptions.js';
-import { runScenarios, type BrokerScenario, type BrokerScenarioCtx } from '../lib/scenario.js';
+import { runScenarios, type BrokerScenario, type BrokerScenarioContext } from '../lib/scenario.js';
 import { scenario as basicLookupScenario } from './scenarios/01-basic-lookup.js';
 import { scenario as emptyEndpointsScenario } from './scenarios/02-empty-endpoints.js';
 
-export interface K8sCtx extends BrokerScenarioCtx {
+export interface K8sContext extends BrokerScenarioContext {
   readonly apiUrl: string;
   readonly ca: Buffer;
   readonly clientCert: Buffer;
@@ -76,7 +76,7 @@ async function main(): Promise<void> {
 
   const api = async (method: string, path: string, body?: unknown): Promise<{ status: number; body: string }> => {
     const url = new URL(path, apiUrl);
-    const opts: RequestOptions = {
+    const options: RequestOptions = {
       method,
       hostname: url.hostname,
       port: url.port || 443,
@@ -86,20 +86,20 @@ async function main(): Promise<void> {
     };
     const bodyStr = body !== undefined ? JSON.stringify(body) : undefined;
     if (bodyStr) {
-      (opts.headers as Record<string, string>)['Content-Type'] = 'application/json';
-      (opts.headers as Record<string, string>)['Content-Length'] = String(Buffer.byteLength(bodyStr));
+      (options.headers as Record<string, string>)['Content-Type'] = 'application/json';
+      (options.headers as Record<string, string>)['Content-Length'] = String(Buffer.byteLength(bodyStr));
     }
     return new Promise((resolve, reject) => {
-      const req = request(opts, (r) => {
-        let buf = '';
+      const clientRequest = request(options, (r) => {
+        let buffer = '';
         r.setEncoding('utf8');
-        r.on('data', (c: string) => { buf += c; });
-        r.on('end', () => resolve({ status: r.statusCode ?? 0, body: buf }));
+        r.on('data', (c: string) => { buffer += c; });
+        r.on('end', () => resolve({ status: r.statusCode ?? 0, body: buffer }));
         r.on('error', reject);
       });
-      req.on('error', reject);
-      if (bodyStr) req.write(bodyStr);
-      req.end();
+      clientRequest.on('error', reject);
+      if (bodyStr) clientRequest.write(bodyStr);
+      clientRequest.end();
     });
   };
 
@@ -112,9 +112,9 @@ async function main(): Promise<void> {
         .withSystemName('k8s-integration')
         .withPort(9000)
         .withFetchEndpoints(async (): Promise<string[]> => {
-          const res = await api('GET', `/api/v1/namespaces/${namespace}/endpoints/${serviceName}`);
-          if (res.status !== 200) throw new Error(`k8s API ${res.status}: ${res.body.slice(0, 200)}`);
-          const parsed = JSON.parse(res.body) as {
+          const response = await api('GET', `/api/v1/namespaces/${namespace}/endpoints/${serviceName}`);
+          if (response.status !== 200) throw new Error(`k8s API ${response.status}: ${response.body.slice(0, 200)}`);
+          const parsed = JSON.parse(response.body) as {
             subsets?: Array<{ addresses?: Array<{ ip: string }> }>;
           };
           const ips: string[] = [];
@@ -125,7 +125,7 @@ async function main(): Promise<void> {
         }),
     );
 
-  const ctx: K8sCtx = {
+  const context: K8sContext = {
     env: process.env,
     apiUrl,
     ca: auth.ca,
@@ -134,16 +134,16 @@ async function main(): Promise<void> {
     seedProvider: buildSeedProvider('default', 'placeholder'),
     api,
   };
-  // Stuff the builder onto the ctx so scenarios can re-build with
+  // Stuff the builder onto the context so scenarios can re-build with
   // different namespace/serviceName.  Cast to side-extend.
-  (ctx as unknown as { buildSeedProvider: typeof buildSeedProvider }).buildSeedProvider =
+  (context as unknown as { buildSeedProvider: typeof buildSeedProvider }).buildSeedProvider =
     buildSeedProvider;
 
-  const scenarios: BrokerScenario<K8sCtx>[] = [
+  const scenarios: BrokerScenario<K8sContext>[] = [
     basicLookupScenario,
     emptyEndpointsScenario,
   ];
-  await runScenarios(scenarios, ctx);
+  await runScenarios(scenarios, context);
 }
 
 main().catch((e) => {

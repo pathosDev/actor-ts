@@ -34,9 +34,9 @@ class TestServer extends WebsocketServerActor<SOut, SIn> {
   constructor(private readonly events: string[]) {
     super();
   }
-  onMessage(msg: SIn): void {
-    if (msg.kind === 'ping') this.reply({ kind: 'pong', n: msg.n });
-    else this.broadcast({ kind: 'bcast', text: msg.text });
+  onMessage(message: SIn): void {
+    if (message.kind === 'ping') this.reply({ kind: 'pong', n: message.n });
+    else this.broadcast({ kind: 'bcast', text: message.text });
   }
   override onClientConnected(c: WebsocketConnection<SOut>): void {
     this.events.push(`connect:${c.id}`);
@@ -237,9 +237,9 @@ export function runWebsocketBackendSuite(label: string, makeBackend: () => HttpS
         ),
       );
       const httpBase = base.replace('ws://', 'http://');
-      const res = await fetch(`${httpBase}/health`);
-      expect(res.status).toBe(200);
-      expect(await res.text()).toBe('ok');
+      const response = await fetch(`${httpBase}/health`);
+      expect(response.status).toBe(200);
+      expect(await response.text()).toBe('ok');
 
       const ws = await wsOpen(`${base}/ws`);
       ws.send(JSON.stringify({ kind: 'ping', n: 7 }));

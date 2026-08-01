@@ -1,110 +1,139 @@
 ---
 title: ParallelMultiNodeSpec
-description: Multi-Node-Tests in **separaten OS-Prozessen** — TCP-Transport, volle Serialisierung, prozess-isolierte Crashes. Langsamer als MultiNodeSpec, aber testet Verhalten, das echte Isolation braucht.
+description: Multi-Node-Tests über echte Worker-Threads — echte Parallelität für nebenläufigkeits-sensible Cluster-Tests. Startet langsamer als MultiNodeSpec, übt aber Verhalten aus, das nur mit echten OS-Threads und Cross-Worker-Serialisierung auftaucht.
 ---
 
-`ParallelMultiNodeSpec` ist die **prozess-isolierte** Variante
+`ParallelMultiNodeSpec` ist die **Worker-Thread**-Variante
 von [MultiNodeSpec](/de/testing/multi-node-spec/). Jeder „Node"
-läuft in **seinem eigenen OS-Prozess** und kommuniziert via
-echtem TCP. Testet dieselbe Form, aber auf höherer Fidelity.
+läuft in seinem eigenen `worker_threads`-Worker (oder einem
+Web-Worker auf Bun/Deno), verbunden über einen In-Process-Broker.
+Dieselbe Test-Form wie `MultiNodeSpec`, aber mit **echten
+OS-Threads**, sodass Nebenläufigkeits-Bugs, welche die
+single-threaded Variante überdeckt, auftauchen können.
 
 ```ts
 import { ParallelMultiNodeSpec } from 'actor-ts/testkit';
 
-const spec = await ParallelMultiNodeSpec.create({
-  systemName: 'parallel-spec',
-  nodes:      3,
-  nodeScript: './tests/cluster-node.ts',
+const spec = new ParallelMultiNodeSpec({
+  roles:          ['a', 'b', 'c'],
+  scenarioModule: new URL('./my-scenario.ts', import.meta.url),
 });
+await spec.start();
+await spec.awaitMembers('a', 3);
 
-// Jeder Node läuft in einem Kindprozess; Tests interagieren via spec-API.
+// Das Worker-seitige Szenario über einen RPC ansteuern:
+const result = await spec.runIn('a', 'compute', { x: 42 });
 
-await spec.shutdown();
+await spec.stop();
 ```
 
 ## Wann nutzen
 
-Für Tests, die **Real-World-Fidelity** brauchen:
+Für Tests, die **echte Parallelität** brauchen:
 
-- **Serialisierung** — Nachrichten gehen als Bytes über die
-  Wire.
-- **Prozess-Isolation** — ein OOMer Node beeinflusst andere
-  nicht.
-- **Echtes TCP** — tatsächliche Netzwerkbedingungen (Loopback,
-  aber TCP).
-- **Per-Prozess-Bun/Node-Tooling** — Debugger anhängen, Perf-
-  Profiling usw.
+- **Echte Threads** — fängt Races, die die In-Process-Variante
+  auf einer einzelnen Event-Loop wegserialisiert (nebenläufige
+  Journal-Schreibvorgänge, Scheduler-Thread-Interleaving).
+- **Serialisierung** — jede Nachricht überquert eine
+  Worker-Grenze via Structured Clone, sodass nicht-serialisierbare
+  Payloads (Funktionen, Klasseninstanzen) hier genauso scheitern
+  wie über eine echte Wire.
+- **Thread-Isolation** — jeder Node hat seinen eigenen Heap und
+  seine eigene Event-Loop.
 
 Für die meisten Cluster-Tests ist **MultiNodeSpec schneller +
-einfacher** — nutze ParallelMultiNodeSpec nur, wenn Single-
-Prozess-Tests den Fall nicht abdecken.
+einfacher** — nutze ParallelMultiNodeSpec nur, wenn
+single-threaded Tests den Fall nicht abdecken. Keine der beiden
+Varianten nutzt TCP; für echte Netzwerkbedingungen nutze einen
+externen Docker-Compose-Cluster.
 
 ## Konfiguration
 
 ```ts
-interface ParallelMultiNodeSpecOptionsType {
-  systemName:  string;
-  nodes:       number;
-  nodeScript:  string;                  // Entry-Datei, die jeder Node ausführt
-  nodeEnv?:    Record<string, string>;  // Env-Vars für jeden Node
-  startupTimeoutMs?: number;
-}
+type ParallelMultiNodeSpecOptionsType = {
+  roles:                ReadonlyArray<string>;   // ein Worker pro Rolle; müssen eindeutig sein
+  seedRoles?:           ReadonlyArray<string>;   // Bootstrap-Seeds — Default [roles[0]]
+  scenarioModule?:      URL;                      // Modul, das jeder Worker lädt (setup + commands)
+  scenarioInitDataFor?: (role: string) => unknown;   // Per-Rolle-Daten für setup()
+  addresses?:           Record<string, { host: string; port: number }>;
+  failureDetector?:     Partial<FailureDetectorOptionsType>;
+  gossipIntervalMs?:    number;
+  awaitTimeoutMs?:      number;                   // Default 30_000 (Worker-Bootstrap ist langsamer)
+  logLevel?:            LogLevel;
+  bootstrapModule?:     URL;                      // überschreibt den gebündelten Worker-Bootstrap
+};
 ```
 
 | Feld | Zweck |
 | --- | --- |
-| `nodeScript` | Pfad zu einer TS-Datei, die jeder Node ausführt — setzt Actor-System + Cluster-Join auf. |
-| `nodeEnv` | Env-Vars, die an alle Kindprozesse übergeben werden. |
-| `startupTimeoutMs` | Wie lange auf alle Nodes warten, bis sie Up erreichen. |
+| `roles` | Node-Liste — ein Worker pro Rolle; der String ist der System-Name des Workers. Müssen eindeutig sein. |
+| `seedRoles` | Welche Rollen als Bootstrap-Seeds dienen. Default ist die erste Rolle. |
+| `scenarioModule` | URL des Moduls, das jeder Worker importiert — es besitzt das actor-förmige Setup und die `commands`-Map, an die `runIn` dispatcht. |
+| `scenarioInitDataFor` | Per-Rolle-Daten, die an das `setup(context)` des Szenarios weitergereicht werden. |
+| `failureDetector` | Failure-Detector-Overrides. |
+| `awaitTimeoutMs` | Default-`await*`-Timeout. Default 30 s — Worker-Bootstrap ist langsamer als in-process. |
+| `bootstrapModule` | Überschreibt den gebündelten Worker-Einstiegspunkt (fortgeschritten). |
 
-## Das Node-Skript
+## Das Szenario-Modul
 
-Jeder Kindprozess führt das aus:
-
-```ts
-// tests/cluster-node.ts
-import { ActorSystem, Cluster, ClusterOptions, MessageChannelTransport } from 'actor-ts';
-
-const port = parseInt(process.env.ACTOR_TS_PORT!);
-const seeds = (process.env.ACTOR_TS_SEEDS ?? '').split(',').filter(Boolean);
-
-const system = ActorSystem.create('parallel-spec');
-const clusterOptions = ClusterOptions.create()
-  .withHost('localhost')
-  .withPort(port)
-  .withSeeds(seeds);
-const cluster = await Cluster.join(system, clusterOptions);
-
-// Auf Anweisungen des Tests warten:
-process.on('message', (msg) => {
-  // Verarbeite Test-Kommandos, die via IPC gesendet werden
-  if (msg === 'spawn-counter') {
-    const ref = system.spawnAnonymous(Props.create(() => new Counter()));
-    process.send!({ kind: 'ready', path: ref.path.toString() });
-  }
-  // ...
-});
-```
-
-Das Skript ist **das, was jeder Kindprozess wird** — setzt sein
-eigenes Actor-System auf, joint den Cluster, lauscht auf
-IPC-Kommandos vom Test.
-
-## IPC
+Jeder Worker joint den Cluster automatisch — die Harness besitzt
+den `ActorSystem`- + `Cluster`-Bootstrap. Dein test-spezifischer
+Actor-Code lebt in einem **Szenario-Modul**: einem schlichten
+Modul, das einen optionalen `setup(context)`-Hook und eine
+`commands`-Map exportiert. Der Worker importiert es per URL, führt
+`setup` einmal nach dem Cluster-Join aus und dispatcht dann
+`runIn(role, command, args)`-Aufrufe an das passende Kommando.
 
 ```ts
-// Im Test:
-spec.sendToNode(0, { kind: 'spawn-counter' });
-const reply = await spec.expectFromNode(0, ...);
+// my-scenario.ts
+import type { ScenarioModule } from 'actor-ts/testkit';
+import { Props, type ActorRef } from 'actor-ts';
+
+export const setup: ScenarioModule['setup'] = (context) => {
+  // context = { role, system, cluster, initData, state }
+  context.state.counter = context.system.spawnAnonymous(
+    Props.create(() => new Counter()),
+  );
+};
+
+export const commands: ScenarioModule['commands'] = {
+  increment(args, context): void {
+    (context.state.counter as ActorRef<Command>).tell({ kind: 'increment' });
+  },
+  // Kommandos dürfen jeden JSON-serialisierbaren Wert an die Harness zurückgeben:
+  ping(): string {
+    return 'pong';
+  },
+};
 ```
 
-Die Kommunikation zwischen Test-Prozess + jedem Node-Prozess
-läuft über **IPC-Messages** (Parent-Child). Der Test
-orchestriert; Nodes führen aus.
+Das Modul besitzt alles Actor-Förmige (Entity-Klassen,
+Sharding-Regionen, …). Die Harness tauscht mit ihm nur
+JSON-serialisierbare Kommando/Antwort-Paare aus — Closures können
+die Worker-Grenze nicht überqueren, weshalb Szenario-Code in einer
+eigenen, per URL geladenen Datei lebt statt inline im Test.
 
-Das ist verboser als MultiNodeSpec — aber **notwendig**: der
-Test kann die In-Memory-Actor des Kindprozesses nicht direkt
-erreichen.
+## Die Worker ansteuern
+
+Der Test kann die In-Memory-Actor eines Workers nicht direkt
+anfassen, also steuert er sie über die Harness:
+
+```ts
+// Ein Szenario-Kommando auf einer bestimmten Rolle aufrufen und das Ergebnis abwarten:
+await spec.runIn('a', 'increment');
+const reply = await spec.runIn<string>('a', 'ping');   // → 'pong'
+
+// Die Cluster-Sicht jedes Workers inspizieren (JSON-Snapshots, keine Live-Objekte):
+const members = await spec.getMembers('a');
+const leader = await spec.getLeader('a');
+```
+
+`runIn(role, command, args?)` ruft in die `commands`-Map des
+Szenario-Moduls und gibt zurück, was dieser Handler zurückgibt.
+Weil `systemFor` / `clusterFor` keine Objekte zurückreichen
+können, die in einem anderen Thread leben, wird Membership
+stattdessen als `getMembers(role)`- / `getLeader(role)`-Snapshots
+bereitgestellt.
 
 ## Wann was nutzen
 
@@ -115,8 +144,9 @@ erreichen.
 | Singleton-Failover | ✓ | ✓ |
 | Gossip-Konvergenz | ✓ | ✓ |
 | Serialisierungs-Roundtrip | ✗ | ✓ |
-| Per-Prozess-Speicher-Isolation | ✗ | ✓ |
-| Echte TCP-Semantik | ✗ | ✓ |
+| Per-Worker-Heap-Isolation | ✗ | ✓ |
+| Echte Parallelität (OS-Threads) | ✗ | ✓ |
+| Echte TCP-Semantik | ✗ | ✗ |
 | CI-Geschwindigkeit | sehr schnell | langsam |
 
 Für 90 % der Tests, MultiNodeSpec. Für die 10 %, wo Fidelity
@@ -124,46 +154,51 @@ zählt, ParallelMultiNodeSpec.
 
 ## Kosten
 
-Kindprozesse hochfahren:
+Worker-Threads hochfahren:
 
-- **Per-Node-Startup**: 200-500 ms (Bun lädt, joint Cluster).
+- **Per-Node-Startup**: 200-500 ms (Worker-Spawn + Cluster-
+  Handshake).
 - **3-Node-Spec**: ~1,5 s gesamt.
 - **Im Vergleich zu MultiNodeSpec**: sub-100 ms gesamt.
 
 Für **enge Test-Loops** (viele Test-Fälle) summieren sich die
 Kosten. Nutze ParallelMultiNodeSpec sparsam — ein oder zwei
-Schlüssel-Tests für echte Serialisierung / Isolation,
+Schlüssel-Tests für echte Parallelität / Serialisierung,
 MultiNodeSpec für den Rest.
 
 ## Cleanup
 
 ```ts
-await spec.shutdown();
-// → terminiert alle Kindprozesse
+await spec.stop();
+// → terminiert jeden Worker-Thread (awaited, sodass keiner leakt)
 // → entsperrt den Test-Prozess zum Beenden
 ```
 
-**Rufe immer shutdown** — verwaiste Kindprozesse leaken. Das
-Test-Framework räumt sie üblicherweise auf, wenn der Test
-crasht, aber expliziter Shutdown ist sicherer.
+**Rufe immer `stop()`** — verwaiste Worker-Threads leaken und
+können spätere Tests aushungern. Das Test-Framework räumt sie
+womöglich auf, wenn der Test crasht, aber explizites Teardown ist
+sicherer.
 
 import { Aside } from '@astrojs/starlight/components';
 
-<Aside type="caution" title="Kindprozess-Crashes sind still">
+<Aside type="caution" title="Worker-Crashes sind undurchsichtig">
   ```ts
-  // Kind wirft einen unbehandelten Fehler; ParallelMultiNodeSpec
-  // sieht einen toten Prozess, nicht den Fehler
+  // Ein Worker wirft einen unbehandelten Fehler; ParallelMultiNodeSpec
+  // sieht einen toten Worker, nicht den Fehler
   ```
-  Lass dein Node-Skript Fehler verbose fangen + loggen.
-  Ansonsten ist das Debuggen von Kind-Failures mühsam.
+  Lass dein Szenario-Modul Fehler verbose fangen + loggen.
+  Ansonsten ist das Debuggen von Worker-Failures mühsam.
 </Aside>
 
-<Aside type="caution" title="Port-Allokation">
+<Aside type="caution" title="Adressen werden automatisch vergeben">
   ```ts
-  // Zwei Tests parallel binden beide Port 2552
+  // Fixiere nicht dieselbe Adresse in zwei parallel laufenden Specs
   ```
-  ParallelMultiNodeSpec allokiert automatisch zufällige Ports.
-  Hardcode keine Port-Nummern, wenn du Tests parallel ausführst.
+  Jede Rolle bekommt eine automatisch vergebene
+  `host:port`-**Identität** (für Cluster-Adressierung über den
+  Broker, kein gebundener Socket). Setze `addresses` nur explizit,
+  wenn ein Test es braucht, und halte sie über gleichzeitig
+  laufende Specs hinweg eindeutig.
 </Aside>
 
 ## Wo es weitergeht
@@ -171,6 +206,6 @@ import { Aside } from '@astrojs/starlight/components';
 - **[Testing — Überblick](/de/testing/overview/)** — das
   größere Bild.
 - **[MultiNodeSpec](/de/testing/multi-node-spec/)** — die
-  schnellere Single-Prozess-Variante.
+  schnellere In-Process-Variante.
 - **[TestKit](/de/testing/testkit/)** — für Single-System-
   Tests.

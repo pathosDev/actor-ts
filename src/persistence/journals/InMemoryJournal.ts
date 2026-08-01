@@ -4,6 +4,7 @@ import {
   JournalConcurrencyError,
   type PersistentEvent,
 } from '../JournalTypes.js';
+import { assertValidTags } from '../storage/TagValidator.js';
 
 /**
  * In-process journal backed by plain arrays.  The default plug-in used by
@@ -16,18 +17,32 @@ import {
  */
 export class InMemoryJournal implements Journal {
   private readonly streams = new Map<string, PersistentEvent<unknown>[]>();
+  /**
+   * Highest sequence number ever assigned per persistenceId — the "high
+   * water mark".  Kept separate from `streams` so `delete` (compaction)
+   * can drop events without rewinding the counter: sequence numbers must
+   * never be reused, even after every event for a pid is deleted (Akka
+   * semantics).  Mirrors the relational backends' `_meta.deleted_to`.
+   */
+  private readonly highWater = new Map<string, number>();
   readonly events: JournalEventBus = new InProcessJournalEventBus();
 
   async append<E>(
-    pid: string,
+    persistenceId: string,
     events: ReadonlyArray<E>,
     expectedSeq: number,
     tags?: ReadonlyArray<string>,
   ): Promise<PersistentEvent<E>[]> {
-    const stream = this.streams.get(pid) ?? [];
-    const actualSeq = stream.length === 0 ? 0 : stream[stream.length - 1]!.sequenceNr;
+    assertValidTags(tags);
+    // Nothing is being written, so there is nothing to conflict over — an
+    // empty append is a no-op, and notably does NOT run the optimistic-
+    // concurrency check.  Every other journal returns early here; the
+    // in-memory one used to fall through and reject a stale expectedSeq.
+    if (events.length === 0) return [];
+    const stream = this.streams.get(persistenceId) ?? [];
+    const actualSeq = this.highWater.get(persistenceId) ?? 0;
     if (actualSeq !== expectedSeq) {
-      throw new JournalConcurrencyError(pid, expectedSeq, actualSeq);
+      throw new JournalConcurrencyError(persistenceId, expectedSeq, actualSeq);
     }
     const now = Date.now();
     const appended: PersistentEvent<E>[] = [];
@@ -35,7 +50,7 @@ export class InMemoryJournal implements Journal {
     for (const ev of events) {
       seq++;
       const pe: PersistentEvent<E> = {
-        persistenceId: pid,
+        persistenceId: persistenceId,
         sequenceNr: seq,
         event: ev,
         timestamp: now,
@@ -44,7 +59,8 @@ export class InMemoryJournal implements Journal {
       appended.push(pe);
       stream.push(pe as PersistentEvent<unknown>);
     }
-    this.streams.set(pid, stream);
+    this.streams.set(persistenceId, stream);
+    this.highWater.set(persistenceId, seq);
     // Publish AFTER the in-memory state is updated so subscribers
     // that immediately re-read see the events they were notified
     // about.
@@ -52,37 +68,37 @@ export class InMemoryJournal implements Journal {
     return appended;
   }
 
-  async read<E>(pid: string, fromSeq: number, toSeq?: number): Promise<PersistentEvent<E>[]> {
-    const stream = this.streams.get(pid);
+  async read<E>(persistenceId: string, fromSeq: number, toSeq?: number): Promise<PersistentEvent<E>[]> {
+    const stream = this.streams.get(persistenceId);
     if (!stream) return [];
-    const to = toSeq ?? (stream.length === 0 ? 0 : stream[stream.length - 1]!.sequenceNr);
+    const to = toSeq ?? (this.highWater.get(persistenceId) ?? 0);
     return stream
       .filter(e => e.sequenceNr >= fromSeq && e.sequenceNr <= to)
       .map(e => e as PersistentEvent<E>);
   }
 
-  async highestSeq(pid: string): Promise<number> {
-    const stream = this.streams.get(pid);
-    if (!stream || stream.length === 0) return 0;
-    return stream[stream.length - 1]!.sequenceNr;
+  async highestSeq(persistenceId: string): Promise<number> {
+    return this.highWater.get(persistenceId) ?? 0;
   }
 
-  async delete(pid: string, toSeq: number): Promise<void> {
-    const stream = this.streams.get(pid);
+  async delete(persistenceId: string, toSeq: number): Promise<void> {
+    const stream = this.streams.get(persistenceId);
     if (!stream) return;
+    // Drop the events but keep the high-water mark — sequence numbers never
+    // rewind, so a subsequent append still expects seq > the highest ever.
     const next = stream.filter(e => e.sequenceNr > toSeq);
-    this.streams.set(pid, next);
+    this.streams.set(persistenceId, next);
   }
 
   async persistenceIds(): Promise<string[]> {
     return Array.from(this.streams.keys());
   }
 
-  async close(): Promise<void> { this.streams.clear(); }
+  async close(): Promise<void> { this.streams.clear(); this.highWater.clear(); }
 
   /**
    * Migration hook (#9).  Applies `transform` to every persisted
-   * event's payload under `pid`, rewriting in place — sequence numbers,
+   * event's payload under `persistenceId`, rewriting in place — sequence numbers,
    * timestamps, tags are preserved.  Used by `migrateInMemoryJournal`
    * to wrap legacy raw events into the `_v/_t/_e` envelope when an
    * actor is retro-fitted with an `EventAdapter`.
@@ -91,8 +107,8 @@ export class InMemoryJournal implements Journal {
    * `migrateInMemoryJournal` helper instead of calling this directly;
    * the underscored prefix marks it as a migration-only escape hatch.
    */
-  async _remapForMigration<E, F>(pid: string, transform: (e: E) => F): Promise<void> {
-    const stream = this.streams.get(pid);
+  async _remapForMigration<E, F>(persistenceId: string, transform: (e: E) => F): Promise<void> {
+    const stream = this.streams.get(persistenceId);
     if (!stream) return;
     for (let i = 0; i < stream.length; i++) {
       const pe = stream[i]!;

@@ -1,14 +1,14 @@
 import type { Member } from '../Member.js';
 import type { NodeAddress } from '../NodeAddress.js';
 
-export interface ClusterPartitionView {
+export type ClusterPartitionView = {
   /** All members the local node currently knows about. */
   readonly allMembers: ReadonlyArray<Member>;
   /** Subset of `allMembers` this node considers unreachable. */
   readonly unreachable: ReadonlySet<string>; // addr.toString() keys
   /** This node's own address. */
   readonly self: NodeAddress;
-}
+};
 
 /**
  * Decision from a downing strategy — the addresses (serialised as strings)

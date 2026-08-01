@@ -1,3 +1,4 @@
+import { match } from 'ts-pattern';
 import { describe, expect, test } from 'bun:test';
 import { ActorSystem } from '../../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../../src/ActorSystemOptions.js';
@@ -14,8 +15,14 @@ import { Props } from '../../../../src/Props.js';
 const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
 
 /** Shared domain types for the tests. */
-type Cmd = { kind: 'deposit'; amount: number } | { kind: 'withdraw'; amount: number } | { kind: 'balance' };
-type Event = { kind: 'deposited'; amount: number } | { kind: 'withdrew'; amount: number };
+type DepositCommand = { kind: 'deposit'; amount: number };
+type WithdrawCommand = { kind: 'withdraw'; amount: number };
+type BalanceCommand = { kind: 'balance' };
+type Command = DepositCommand | WithdrawCommand | BalanceCommand;
+
+type DepositedEvent = { kind: 'deposited'; amount: number };
+type WithdrewEvent = { kind: 'withdrew'; amount: number };
+type Event = DepositedEvent | WithdrewEvent;
 type State = { balance: number };
 
 function makeSystem(): { system: ActorSystem; journal: InMemoryJournal; snapshots: InMemorySnapshotStore } {
@@ -31,28 +38,40 @@ function makeSystem(): { system: ActorSystem; journal: InMemoryJournal; snapshot
   return { system, journal, snapshots };
 }
 
-class Account extends PersistentActor<Cmd, Event, State> {
+class Account extends PersistentActor<Command, Event, State> {
   readonly persistenceId: string;
-  constructor(pid: string, private readonly replyTo?: (m: unknown) => void) {
+  constructor(persistenceId: string, private readonly replyTo?: (m: unknown) => void) {
     super();
-    this.persistenceId = pid;
+    this.persistenceId = persistenceId;
   }
   initialState(): State { return { balance: 0 }; }
   onEvent(s: State, e: Event): State {
-    if (e.kind === 'deposited') return { balance: s.balance + e.amount };
-    if (e.kind === 'withdrew')  return { balance: s.balance - e.amount };
-    return s;
+    // A fold that computes a value — arms stay inline.
+    return match(e)
+      .with({ kind: 'deposited' }, (d) => ({ balance: s.balance + d.amount }))
+      .with({ kind: 'withdrew' }, (w) => ({ balance: s.balance - w.amount }))
+      .exhaustive();
   }
   override onRecoveryComplete(s: State): void { this.replyTo?.({ ready: s.balance }); }
-  async onCommand(state: State, cmd: Cmd): Promise<void> {
-    if (cmd.kind === 'deposit') {
-      await this.persist({ kind: 'deposited', amount: cmd.amount }, s => this.replyTo?.({ balance: s.balance }));
-    } else if (cmd.kind === 'withdraw') {
-      if (cmd.amount > state.balance) { this.replyTo?.({ error: 'insufficient' }); return; }
-      await this.persist({ kind: 'withdrew', amount: cmd.amount }, s => this.replyTo?.({ balance: s.balance }));
-    } else if (cmd.kind === 'balance') {
-      this.replyTo?.({ balance: state.balance });
-    }
+  async onCommand(state: State, command: Command): Promise<void> {
+    await match(command)
+      .with({ kind: 'deposit' }, (c) => this.onDeposit(c))
+      .with({ kind: 'withdraw' }, (c) => this.onWithdraw(state, c))
+      .with({ kind: 'balance' }, () => this.onBalance(state))
+      .exhaustive();
+  }
+
+  private async onDeposit(command: DepositCommand): Promise<void> {
+    await this.persist({ kind: 'deposited', amount: command.amount }, s => this.replyTo?.({ balance: s.balance }));
+  }
+
+  private async onWithdraw(state: State, command: WithdrawCommand): Promise<void> {
+    if (command.amount > state.balance) { this.replyTo?.({ error: 'insufficient' }); return; }
+    await this.persist({ kind: 'withdrew', amount: command.amount }, s => this.replyTo?.({ balance: s.balance }));
+  }
+
+  private onBalance(state: State): void {
+    this.replyTo?.({ balance: state.balance });
   }
 }
 
@@ -119,13 +138,13 @@ describe('PersistentActor — stash during persist', () => {
       readonly persistenceId = 'slow-1';
       initialState() { return { count: 0 }; }
       onEvent(s: { count: number }): { count: number } { return { count: s.count + 1 }; }
-      async onCommand(_s: unknown, cmd: 'ping' | 'fast'): Promise<void> {
-        if (cmd === 'ping') {
+      async onCommand(_s: unknown, command: 'ping' | 'fast'): Promise<void> {
+        if (command === 'ping') {
           order.push('persist-start');
           await this.persist('pinged', () => {
             order.push('persist-done');
           });
-        } else if (cmd === 'fast') {
+        } else if (command === 'fast') {
           order.push('fast-ran');
         }
       }
@@ -152,7 +171,7 @@ describe('PersistentActor — snapshots', () => {
       initialState() { return { n: 0 }; }
       onEvent(s: { n: number }): { n: number } { return { n: s.n + 1 }; }
       snapshotPolicy() { return everyNEvents<{ n: number }, 'ticked'>(3); }
-      async onCommand(_s: unknown, _cmd: 'inc'): Promise<void> {
+      async onCommand(_s: unknown, _command: 'inc'): Promise<void> {
         await this.persist('ticked');
       }
     }
@@ -176,7 +195,7 @@ describe('PersistentActor — persistAll atomic batch', () => {
       readonly persistenceId = 'batch';
       initialState() { return []; }
       onEvent(s: number[], e: number): number[] { return [...s, e]; }
-      async onCommand(_s: unknown, _cmd: 'go'): Promise<void> {
+      async onCommand(_s: unknown, _command: 'go'): Promise<void> {
         await this.persistAll([1, 2, 3]);
       }
     }

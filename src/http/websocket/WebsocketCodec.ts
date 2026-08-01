@@ -2,7 +2,7 @@
  * Codec seam for the typed WebSocket stack.  A codec turns application
  * messages into wire frames and back:
  *
- *   - `encode(msg: TOut): WebsocketFrame`  — outbound (server→client / client→server)
+ *   - `encode(message: TOut): WebsocketFrame`  — outbound (server→client / client→server)
  *   - `decode(frame: WebsocketFrame): TIn` — inbound
  *
  * `TOut` comes first to match the actor-class generic order
@@ -44,7 +44,7 @@ export class WebsocketEncodeError extends Error {
 export interface WebsocketCodec<TOut, TIn> {
   /** Stable identifier — 'json' | 'raw' | custom.  Informational (logs). */
   readonly name: string;
-  encode(msg: TOut): WebsocketFrame;
+  encode(message: TOut): WebsocketFrame;
   decode(frame: WebsocketFrame): TIn;
 }
 
@@ -61,14 +61,14 @@ const textDecoder = /* @__PURE__ */ new TextDecoder('utf-8', { fatal: false });
  * (or throw for) a `TIn`.  A thrown validator is wrapped as a
  * {@link WebsocketDecodeError}.
  */
-export function jsonCodec<TOut, TIn>(opts: { validate?: (value: unknown) => TIn } = {}): WebsocketCodec<TOut, TIn> {
-  const validate = opts.validate;
+export function jsonCodec<TOut, TIn>(options: { validate?: (value: unknown) => TIn } = {}): WebsocketCodec<TOut, TIn> {
+  const validate = options.validate;
   return {
     name: 'json',
-    encode(msg: TOut): WebsocketFrame {
+    encode(message: TOut): WebsocketFrame {
       let data: string;
       try {
-        data = JSON.stringify(msg);
+        data = JSON.stringify(message);
       } catch (cause) {
         throw new WebsocketEncodeError('jsonCodec: failed to stringify outbound message', { cause });
       }

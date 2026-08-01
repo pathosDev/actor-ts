@@ -3,7 +3,7 @@ import { OptionsValidator } from '../util/OptionsValidator.js';
 import type { DurableStateStore } from '../persistence/DurableStateStore.js';
 
 /** Plain options-object shape accepted by {@link DistributedData.start}. */
-export interface DistributedDataOptionsType {
+export type DistributedDataOptionsType = {
   /** Period between gossip pushes.  Default: 1 s. */
   readonly gossipInterval?: number;
   /**
@@ -22,7 +22,7 @@ export interface DistributedDataOptionsType {
    * S3 / filesystem backends for production.
    */
   readonly durableStore?: DurableStateStore;
-}
+};
 
 /**
  * Fluent builder for {@link DistributedDataOptionsType}.  Fed to

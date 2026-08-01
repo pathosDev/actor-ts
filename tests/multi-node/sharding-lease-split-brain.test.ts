@@ -25,12 +25,14 @@
  *   that at most ONE coordinator is in `leaseState === 'held'`
  *   at any point during the experiment.
  */
+import { match } from 'ts-pattern';
 import { describe, expect, test } from 'bun:test';
 import { Actor } from '../../src/Actor.js';
 import { Props } from '../../src/Props.js';
 import { ClusterSharding } from '../../src/cluster/sharding/ClusterSharding.js';
 import { StartShardingOptions } from '../../src/cluster/sharding/StartShardingOptions.js';
 import { ShardCoordinator } from '../../src/cluster/sharding/ShardCoordinator.js';
+import { coordinatorSegments } from '../util/systemPaths.js';
 import {
   InMemoryLease,
   inMemoryLeaseStore,
@@ -40,11 +42,19 @@ import { MultiNodeSpec } from '../../src/testkit/MultiNodeSpec.js';
 import { MultiNodeTransport } from '../../src/testkit/internal/MultiNodeTransport.js';
 import type { ActorRef } from '../../src/ActorRef.js';
 
-type Cmd = { id: string; op: 'ping' };
+type PingCommand = { id: string; kind: 'ping' };
 
-class Entity extends Actor<Cmd> {
-  override onReceive(m: Cmd): void {
-    if (m.op === 'ping') this.sender.forEach((s) => s.tell('pong'));
+type Command = PingCommand;
+
+class Entity extends Actor<Command> {
+  override onReceive(m: Command): void {
+    match(m)
+      .with({ kind: 'ping' }, () => this.onPing())
+      .exhaustive();
+  }
+
+  private onPing(): void {
+    this.sender.forEach((s) => s.tell('pong'));
   }
 }
 
@@ -68,12 +78,10 @@ function findCoordinator(
   spec: MultiNodeSpec, role: string, typeName: string,
 ): ShardCoordinator | null {
   const sys = spec.systemFor(role);
-  // Coordinator lives at /user/sharding-coordinator-{typeName}
-  const seg = `sharding-coordinator-${typeName}`;
-  const refOpt = sys._resolvePath(['user', seg]);
-  if (refOpt.isNone()) return null;
+  const refOption = sys._resolvePath(coordinatorSegments(sys.name, typeName));
+  if (refOption.isNone()) return null;
   // Internal hop: the LocalActorRef's cell holds the actor instance.
-  const ref = refOpt.value as unknown as { getCell?: () => { actor?: ShardCoordinator } };
+  const ref = refOption.value as unknown as { getCell?: () => { actor?: ShardCoordinator } };
   const actor = ref.getCell?.().actor;
   return actor ?? null;
 }
@@ -103,7 +111,7 @@ describe('multi-node sharding lease — split-brain protection', () => {
         .withOwner('a')
         .withTtlMs(10_000)
         .withRenewalIntervalMs(80);
-      const shardingOptionsA = StartShardingOptions.create<Cmd>()
+      const shardingOptionsA = StartShardingOptions.create<Command>()
         .withTypeName('entity')
         .withEntityProps(Props.create(() => new Entity()))
         .withExtractEntityId((m) => m.id)
@@ -116,7 +124,7 @@ describe('multi-node sharding lease — split-brain protection', () => {
         .withOwner('b')
         .withTtlMs(10_000)
         .withRenewalIntervalMs(80);
-      const shardingOptionsB = StartShardingOptions.create<Cmd>()
+      const shardingOptionsB = StartShardingOptions.create<Command>()
         .withTypeName('entity')
         .withEntityProps(Props.create(() => new Entity()))
         .withExtractEntityId((m) => m.id)
@@ -129,7 +137,7 @@ describe('multi-node sharding lease — split-brain protection', () => {
         .withOwner('c')
         .withTtlMs(10_000)
         .withRenewalIntervalMs(80);
-      const shardingOptionsC = StartShardingOptions.create<Cmd>()
+      const shardingOptionsC = StartShardingOptions.create<Command>()
         .withTypeName('entity')
         .withEntityProps(Props.create(() => new Entity()))
         .withExtractEntityId((m) => m.id)
@@ -137,10 +145,10 @@ describe('multi-node sharding lease — split-brain protection', () => {
         .withRebalanceIntervalMs(200)
         .withLease(new InMemoryLease(leaseOptionsC))
         .withAcquireRetryIntervalMs(100);
-      const regions: Record<'a' | 'b' | 'c', ActorRef<Cmd>> = {
-        a: spec.clusterFor('a').sharding.start<Cmd>(shardingOptionsA),
-        b: spec.clusterFor('b').sharding.start<Cmd>(shardingOptionsB),
-        coordinator: spec.clusterFor('c').sharding.start<Cmd>(shardingOptionsC),
+      const regions: Record<'a' | 'b' | 'c', ActorRef<Command>> = {
+        a: spec.clusterFor('a').sharding.start<Command>(shardingOptionsA),
+        b: spec.clusterFor('b').sharding.start<Command>(shardingOptionsB),
+        c: spec.clusterFor('c').sharding.start<Command>(shardingOptionsC),
       };
       void regions;
 
@@ -156,7 +164,7 @@ describe('multi-node sharding lease — split-brain protection', () => {
       expect(heldCount).toBe(1);
 
       // Sanity: ask via any region — the system is functional.
-      const reply = await regions.a.ask<string>({ id: 'e-1', op: 'ping' }, 3_000);
+      const reply = await regions.a.ask<string>({ id: 'e-1', kind: 'ping' }, 3_000);
       expect(reply).toBe('pong');
 
       // Now partition.  Whichever role is currently active stays

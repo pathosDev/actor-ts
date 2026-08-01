@@ -26,7 +26,7 @@ function wsOnly(endpoints: CompiledEndpoint[]): CompiledWebsocketRoute[] {
   return endpoints.filter((endpoint): endpoint is CompiledWebsocketRoute => endpoint.kind === 'websocket');
 }
 
-const req = (overrides: Partial<HttpRequest> = {}): HttpRequest => ({
+const request = (overrides: Partial<HttpRequest> = {}): HttpRequest => ({
   method: 'GET',
   path: '/ws',
   headers: {},
@@ -47,7 +47,7 @@ describe('compile — websocket routes', () => {
     const ws0 = endpoint as CompiledWebsocketRoute;
     expect(ws0.connect).toBe(noopConnect);
     // Default authorize accepts (null).
-    expect(await ws0.authorize(req())).toBeNull();
+    expect(await ws0.authorize(request())).toBeNull();
   });
 
   test('path() prefixes the ws pattern and keeps :params verbatim', () => {
@@ -72,45 +72,45 @@ describe('compile — websocket routes', () => {
 });
 
 describe('compile — middleware folds into ws authorize (runs at upgrade)', () => {
-  const passthrough: Middleware = (_req, next) => next();
+  const passthrough: Middleware = (_request, next) => next();
 
   test('passthrough middleware → authorize accepts (null)', async () => {
     const endpoint = wsOnly(compile(withMiddleware(passthrough, ws())))[0]!;
-    expect(await endpoint.authorize(req())).toBeNull();
+    expect(await endpoint.authorize(request())).toBeNull();
   });
 
   test('short-circuiting middleware → authorize returns the rejection response', async () => {
     const block: Middleware = () => complete(Status.Unauthorized, 'denied');
     const endpoint = wsOnly(compile(withMiddleware(block, ws())))[0]!;
-    const res = await endpoint.authorize(req());
-    expect(res).not.toBeNull();
-    expect(res!.status).toBe(Status.Unauthorized);
+    const response = await endpoint.authorize(request());
+    expect(response).not.toBeNull();
+    expect(response!.status).toBe(Status.Unauthorized);
   });
 
   test('middleware throwing HttpError → authorize returns that status + message', async () => {
     const bad: Middleware = () => { throw new HttpError(Status.Forbidden, 'nope', { reason: 'x' }); };
     const endpoint = wsOnly(compile(withMiddleware(bad, ws())))[0]!;
-    const res = await endpoint.authorize(req());
-    expect(res!.status).toBe(Status.Forbidden);
-    expect(res!.body).toEqual({ error: 'nope', reason: 'x' });
+    const response = await endpoint.authorize(request());
+    expect(response!.status).toBe(Status.Forbidden);
+    expect(response!.body).toEqual({ error: 'nope', reason: 'x' });
   });
 
   test('middleware sees the upgrade request (can reject on a missing header)', async () => {
     const requireToken: Middleware = (r, next) =>
       r.headers['authorization'] ? next() : complete(Status.Unauthorized, 'no token');
     const endpoint = wsOnly(compile(withMiddleware(requireToken, path('ws', ws()))))[0]!;
-    expect(await endpoint.authorize(req())).not.toBeNull();
-    expect(await endpoint.authorize(req({ headers: { authorization: 'Bearer t' } }))).toBeNull();
+    expect(await endpoint.authorize(request())).not.toBeNull();
+    expect(await endpoint.authorize(request({ headers: { authorization: 'Bearer t' } }))).toBeNull();
   });
 
   test('nested middleware: outer passes, inner blocks → reject', async () => {
     const block: Middleware = () => complete(Status.Forbidden, 'inner-deny');
     const endpoint = wsOnly(compile(withMiddleware(passthrough, withMiddleware(block, ws()))))[0]!;
-    expect((await endpoint.authorize(req()))!.status).toBe(Status.Forbidden);
+    expect((await endpoint.authorize(request()))!.status).toBe(Status.Forbidden);
   });
 
   test('nested middleware: both pass → accept', async () => {
     const endpoint = wsOnly(compile(withMiddleware(passthrough, withMiddleware(passthrough, ws()))))[0]!;
-    expect(await endpoint.authorize(req())).toBeNull();
+    expect(await endpoint.authorize(request())).toBeNull();
   });
 });

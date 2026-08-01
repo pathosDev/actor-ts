@@ -37,7 +37,7 @@ Argument:
 
 ```ts
 const actorSystemOptions = ActorSystemOptions.create()
-  .withLogLevel('info')
+  .withLogLevel(LogLevel.Info)
   .withConfigFile('./application.conf');
 const system = ActorSystem.create('my-app', actorSystemOptions);
 ```
@@ -47,8 +47,8 @@ Die vollständige Settings-Form:
 | Feld | Zweck |
 | --- | --- |
 | `logger` | Eigene `Logger`-Instanz.  Standardmäßig ein Console-Logger, der `logLevel` respektiert. |
-| `logLevel` | Einer von `debug` / `info` / `warn` / `error` / `silent`. |
-| `dispatcher` | Eigener `Dispatcher`.  Standardmäßig ein Microtask-basierter Dispatcher; Tests tauschen typischerweise einen Immediate- oder Manual-Dispatcher ein. |
+| `logLevel` | Einer von `debug` / `info` / `warn` / `error` / `off`. |
+| `dispatcher` | Eigener `Dispatcher`.  Standardmäßig der Immediate-Dispatcher; tausche einen Microtask- oder Throughput-basierten ein, um das Scheduling anzupassen. |
 | `scheduler` | Eigener `Scheduler`.  Standardmäßig ein Echtzeit-Scheduler; Tests injizieren `ManualScheduler`, um die Zeit zu kontrollieren. |
 | `config` | Entweder eine vorgefertigte `Config` oder ein einfaches Objekt mit HOCON-Overrides.  Wird über die Referenz-Defaults + einer eventuellen `application.conf` gelegt. |
 | `configFile` | Expliziter Pfad zu einer `application.conf`-Datei.  Überschreibt die `ACTOR_TS_CONFIG`-Env-Variable und das CWD-Lookup. |
@@ -63,7 +63,9 @@ Projekt-Root:
 
 ```hocon
 actor-ts {
-  log-level = "info"
+  logger {
+    level = "info"
+  }
   dispatcher {
     throughput = 100
   }
@@ -101,7 +103,7 @@ gespawnt, nicht über `system.spawn`:
 
 ```ts
 class Parent extends Actor<...> {
-  override onReceive(msg) {
+  override onReceive(message) {
     const child = this.context.spawn(
       Props.create(() => new Child()),
       'worker',
@@ -127,23 +129,36 @@ flowchart LR
   USER["/user<br/><i>Actors deiner Anwendung</i>"]
   SYS["/system<br/><i>framework-interne Actors</i>"]
   DEAD["/deadLetters<br/><i>Nachrichten an tote Refs</i>"]
+  CLU["/system/cluster<br/><i>Sharding, Singleton, PubSub, …</i>"]
+  DT["/system/devtools<br/><i>Hub + Probes</i>"]
   ROOT --> USER
   ROOT --> SYS
   ROOT --> DEAD
+  SYS --> CLU
+  SYS --> DT
   classDef root  fill:#0f172a,stroke:#6366f1,stroke-width:2px,color:#f1f5f9;
   classDef user  fill:#312e81,stroke:#818cf8,stroke-width:1.5px,color:#f1f5f9;
   classDef sys   fill:#1e293b,stroke:#475569,color:#cbd5e1;
   classDef dead  fill:#1e293b,stroke:#475569,color:#94a3b8;
   class ROOT root
   class USER user
-  class SYS sys
+  class SYS,CLU,DT sys
   class DEAD dead
 ```
 
-Wenn du `system.spawnAnonymous(props)` aufrufst, wird der Actor unter
-`/user` erzeugt.  Wenn das System terminiert, stoppen die Guardians in
-umgekehrter Reihenfolge nacheinander: User-Actors zuerst (damit sie
-ihre Arbeit beenden können), dann die System-Internas.
+Wenn du `system.spawn(props, name)` aufrufst, wird der Actor unter
+`/user` erzeugt.  `/user` enthält nur, was dein Code erzeugt hat; alles,
+was das Framework für sich selbst erzeugt, liegt unter `/system` — eine
+Gruppe pro Subsystem, siehe [Actor-Pfade](/de/fundamentals/actor-paths/)
+für das vollständige Layout.  Es gibt keine öffentliche API, um in
+`/system` zu spawnen.
+
+Beim Terminieren gehen die beiden Guardians nacheinander, nicht
+gleichzeitig: `/user` wird vollständig geleert, dann `/system`.  Diese
+Reihenfolge ist es, die einem `postStop` eines User-Actors erlaubt, die
+Framework-Actors zu erreichen, von denen er abhängt — sich beim
+PubSub-Mediator abmelden, einen Shard zurückgeben — statt mit ihnen um
+Dead Letters zu rennen.
 
 Der `/deadLetters`-"Actor" ist speziell — Nachrichten an ein `tell`
 auf einer gestoppten Ref oder an eine nie existierte Ref werden
@@ -174,17 +189,17 @@ indem du nach ihnen greifst, lass sie weg, indem du es nicht tust.
 ### Eine eigene Extension schreiben
 
 ```ts
-import { type Extension, type ExtensionId } from 'actor-ts';
+import { extensionId, type Extension, type ExtensionId } from 'actor-ts';
 
 class MetricsCollector implements Extension {
   constructor(private readonly system: ActorSystem) {}
   incCounter(name: string): void { /* ... */ }
 }
 
-const MetricsCollectorId: ExtensionId<MetricsCollector> = {
-  name: 'MetricsCollector',
-  create: (system) => new MetricsCollector(system),
-};
+const MetricsCollectorId: ExtensionId<MetricsCollector> = extensionId(
+  'MetricsCollector',
+  (system) => new MetricsCollector(system),
+);
 
 // Lookup ist idempotent — der erste Aufruf erzeugt, folgende Aufrufe
 // geben die gecachte Instanz zurück.
@@ -214,7 +229,10 @@ await system.terminate();
 2. `/user` rekursiv stoppen — deine Actors bekommen `postStop`,
    Kinder zuerst.  Actors mit laufenden async `onReceive`s beenden
    ihre aktuelle Nachricht, bevor sie stoppen.
-3. `/system` stoppen — Framework-Internas wickeln sich ab.
+3. `/system` stoppen — Framework-Internas wickeln sich ab.  Das beginnt
+   erst, wenn `/user` vollständig geleert ist, sodass ein `postStop` aus
+   Schritt 2 noch mit den Sharding-, PubSub- oder Delivery-Actors reden
+   kann, von denen es abhängt.
 4. Dispatcher und Scheduler schließen — keine neuen Nachrichten,
    keine neuen Timer.
 5. Das zurückgegebene Promise resolven.

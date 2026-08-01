@@ -100,7 +100,7 @@ type BufferedEvent =
  */
 export function websocketPackageAdapter(
   socket: WebsocketPackageSocket,
-  opts: { readonly remoteAddress?: string; readonly protocol?: string } = {},
+  options: { readonly remoteAddress?: string; readonly protocol?: string } = {},
 ): WebsocketSocketAdapter {
   let listeners: WebsocketListeners | null = null;
   const pending: BufferedEvent[] = [];
@@ -138,7 +138,7 @@ export function websocketPackageAdapter(
       return (socket.readyState ?? WebsocketReadyState.OPEN) as 0 | 1 | 2 | 3;
     },
     bufferedAmount: () => socket.bufferedAmount ?? 0,
-    remoteAddress: opts.remoteAddress,
-    protocol: opts.protocol ?? socket.protocol,
+    remoteAddress: options.remoteAddress,
+    protocol: options.protocol ?? socket.protocol,
   };
 }

@@ -25,12 +25,14 @@
  *   8. Send messages to surviving entities — they succeed without
  *      a fresh allocation pass.
  */
+import { match } from 'ts-pattern';
 import { describe, expect, test } from 'bun:test';
 import { Actor } from '../../src/Actor.js';
 import { ClusterSharding } from '../../src/cluster/sharding/ClusterSharding.js';
 import { StartShardingOptions } from '../../src/cluster/sharding/StartShardingOptions.js';
 import { DistributedDataCoordinatorStateStore } from '../../src/cluster/sharding/CoordinatorState.js';
 import { ShardCoordinator } from '../../src/cluster/sharding/ShardCoordinator.js';
+import { coordinatorSegments } from '../util/systemPaths.js';
 import { DistributedDataId } from '../../src/crdt/DistributedData.js';
 import { DistributedDataOptions } from '../../src/crdt/DistributedDataOptions.js';
 import { Props } from '../../src/Props.js';
@@ -38,11 +40,19 @@ import { MultiNodeSpec } from '../../src/testkit/MultiNodeSpec.js';
 import { MultiNodeTransport } from '../../src/testkit/internal/MultiNodeTransport.js';
 import type { ActorRef } from '../../src/ActorRef.js';
 
-type Cmd = { id: string; op: 'ping' };
+type PingCommand = { id: string; kind: 'ping' };
 
-class Entity extends Actor<Cmd> {
-  override onReceive(m: Cmd): void {
-    if (m.op === 'ping') this.sender.forEach((s) => s.tell('pong'));
+type Command = PingCommand;
+
+class Entity extends Actor<Command> {
+  override onReceive(m: Command): void {
+    match(m)
+      .with({ kind: 'ping' }, () => this.onPing())
+      .exhaustive();
+  }
+
+  private onPing(): void {
+    this.sender.forEach((s) => s.tell('pong'));
   }
 }
 
@@ -71,9 +81,9 @@ function findCoordinator(
   spec: MultiNodeSpec, role: string, typeName: string,
 ): ShardCoordinator | null {
   const sys = spec.systemFor(role);
-  const refOpt = sys._resolvePath(['user', `sharding-coordinator-${typeName}`]);
-  if (refOpt.isNone()) return null;
-  const internal = refOpt.value as unknown as { getCell?: () => { actor?: ShardCoordinator } };
+  const refOption = sys._resolvePath(coordinatorSegments(sys.name, typeName));
+  if (refOption.isNone()) return null;
+  const internal = refOption.value as unknown as { getCell?: () => { actor?: ShardCoordinator } };
   return internal.getCell?.().actor ?? null;
 }
 
@@ -91,10 +101,10 @@ describe('ShardCoordinator state persistence — leader failover', () => {
       // Stand up DD on every node (with tight gossip so the
       // coordinator-state snapshot reaches followers fast) + wire
       // the DD-backed store into ClusterSharding.
-      const regions: Record<'a' | 'b' | 'c', ActorRef<Cmd>> = {
-        a: undefined as unknown as ActorRef<Cmd>,
-        b: undefined as unknown as ActorRef<Cmd>,
-        c: undefined as unknown as ActorRef<Cmd>,
+      const regions: Record<'a' | 'b' | 'c', ActorRef<Command>> = {
+        a: undefined as unknown as ActorRef<Command>,
+        b: undefined as unknown as ActorRef<Command>,
+        c: undefined as unknown as ActorRef<Command>,
       };
       for (const role of ['a', 'b', 'c'] as const) {
         const sys = spec.systemFor(role);
@@ -105,21 +115,21 @@ describe('ShardCoordinator state persistence — leader failover', () => {
         const store = new DistributedDataCoordinatorStateStore(
           dd, cluster.selfAddress.toString(),
         );
-        const shardingOptions = StartShardingOptions.create<Cmd>()
+        const shardingOptions = StartShardingOptions.create<Command>()
           .withTypeName('entity')
           .withEntityProps(Props.create(() => new Entity()))
           .withExtractEntityId((m) => m.id)
           .withNumShards(8)
           .withRebalanceIntervalMs(200)
           .withCoordinatorStateStore(store);
-        regions[role] = cluster.sharding.start<Cmd>(shardingOptions);
+        regions[role] = cluster.sharding.start<Command>(shardingOptions);
       }
 
       // Allocate the shards by asking 8 distinct entity ids.  Each
       // ask triggers a `GetShardHome` → `tryAllocate` → snapshot
       // save on the leader.
       for (let i = 0; i < 8; i++) {
-        const reply = await regions.a.ask<string>({ id: `e-${i}`, op: 'ping' }, 3_000);
+        const reply = await regions.a.ask<string>({ id: `e-${i}`, kind: 'ping' }, 3_000);
         expect(reply).toBe('pong');
       }
 
@@ -178,7 +188,7 @@ describe('ShardCoordinator state persistence — leader failover', () => {
       // the dead leader's region had ~3 of the 8 shards — those
       // entities re-allocate to survivors as messages arrive.
       const survivor = survivors.find((r) => r === newLeaderRole) ?? 'b';
-      const reply = await regions[survivor].ask<string>({ id: 'e-1', op: 'ping' }, 3_000);
+      const reply = await regions[survivor].ask<string>({ id: 'e-1', kind: 'ping' }, 3_000);
       expect(reply).toBe('pong');
     } finally {
       await spec.stop();

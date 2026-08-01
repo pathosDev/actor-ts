@@ -78,12 +78,12 @@ describe('GCounter — CRDT laws (property-based)', () => {
 
 const pncounterArb: fc.Arbitrary<PNCounter> = fc.array(
   fc.oneof(
-    fc.record({ kind: fc.constant('inc' as const), replica: replicaId, delta: positiveDelta }),
-    fc.record({ kind: fc.constant('dec' as const), replica: replicaId, delta: positiveDelta }),
+    fc.record({ kind: fc.constant('increment' as const), replica: replicaId, delta: positiveDelta }),
+    fc.record({ kind: fc.constant('decrement' as const), replica: replicaId, delta: positiveDelta }),
   ),
   { maxLength: 20 },
 ).map((ops) => ops.reduce((acc, op) =>
-  op.kind === 'inc'
+  op.kind === 'increment'
     ? acc.increment(op.replica, op.delta)
     : acc.decrement(op.replica, op.delta),
   PNCounter.empty(),

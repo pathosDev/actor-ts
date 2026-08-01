@@ -5,8 +5,7 @@ import { InMemoryQuery } from './InMemoryQuery.js';
 import {
   eventMatchesTagFilter,
   normalizeTagFilter,
-  offsetCompare,
-  offsetOfEvent,
+  refineTaggedRows,
   type Offset,
   type TagFilter,
   type TagFilterSpec,
@@ -94,9 +93,9 @@ export class CassandraQuery extends InMemoryQuery {
 
   private async fetchTagPartition(tag: string, fromTimestamp: number): Promise<TagIndexRow[]> {
     const qualified = `${this.access.options.keyspace}.${this.cassandra.tagIndexTable}`;
-    let res;
+    let response;
     try {
-      res = await this.access.client.execute(
+      response = await this.access.client.execute(
         `SELECT persistence_id, sequence_nr, timestamp, payload, tags FROM ${qualified} `
         + `WHERE tag = ? AND timestamp >= ?`,
         [tag, fromTimestamp],
@@ -105,7 +104,7 @@ export class CassandraQuery extends InMemoryQuery {
     } catch (e) {
       throw new JournalError(`CassandraQuery.currentEventsByTag failed: ${(e as Error).message}`, e);
     }
-    return res.rows as unknown as TagIndexRow[];
+    return response.rows as unknown as TagIndexRow[];
   }
 }
 
@@ -120,35 +119,31 @@ function refineAndSort<E>(
   spec: TagFilterSpec,
   fromOffset: Offset,
 ): TaggedEvent<E>[] {
-  const out: TaggedEvent<E>[] = [];
-  for (const row of rows) {
+  return refineTaggedRows<TagIndexRow, E>(rows, fromOffset, (row) => {
+    // Cassandra hands the tags back as a CQL `set<text>`; an empty set is
+    // "untagged", not a tag list of length zero.
     const tags = Array.isArray(row.tags) && row.tags.length > 0 ? row.tags : undefined;
-    if (!eventMatchesTagFilter(tags, spec)) continue;
-    const event: PersistentEvent<E> = {
+    if (!eventMatchesTagFilter(tags, spec)) return null;
+    return {
       persistenceId: row.persistence_id,
       sequenceNr: Number(row.sequence_nr),
       event: JSON.parse(row.payload) as E,
       timestamp: Number(row.timestamp),
       tags,
     };
-    const offset = offsetOfEvent(event);
-    if (offsetCompare(offset, fromOffset) < 0) continue;
-    out.push({ event, offset });
-  }
-  out.sort((a, b) => offsetCompare(a.offset, b.offset));
-  return out;
+  });
 }
 
-interface TagIndexRow {
+type TagIndexRow = {
   persistence_id: string;
   sequence_nr: string | number;
   timestamp: string | number;
   payload: string;
   tags: string[] | null;
-}
+};
 
 /** Type-only escape hatch matching the layout of `CassandraJournal`'s privates. */
-interface CassandraInternalAccess {
+type CassandraInternalAccess = {
   readonly client: CassandraClientLike;
   readonly options: { readonly keyspace: string };
-}
+};

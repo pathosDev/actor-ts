@@ -5,12 +5,13 @@
  *   bun run examples/patterns/stash-init.ts
  */
 import { Actor, ActorSystem, Props } from '../../src/index.js';
+import { attachDevTools } from '../devtools.js';
 
-type Cmd =
+type Command =
   | { kind: 'query'; q: string }
   | { kind: '__ready' };
 
-class LoadingRepo extends Actor<Cmd> {
+class LoadingRepository extends Actor<Command> {
   private ready = false;
   private data: Record<string, number> = {};
 
@@ -19,8 +20,8 @@ class LoadingRepo extends Actor<Cmd> {
     this.context.timers.startSingleTimer('load', { kind: '__ready' }, 80);
   }
 
-  override onReceive(msg: Cmd): void {
-    if (msg.kind === '__ready') {
+  override onReceive(message: Command): void {
+    if (message.kind === '__ready') {
       this.data = { alice: 1, bob: 2 };
       this.ready = true;
       this.log.info('Repo warm — replaying stashed queries');
@@ -28,17 +29,18 @@ class LoadingRepo extends Actor<Cmd> {
       return;
     }
     if (!this.ready) {
-      this.log.info(`stashing ${msg.q} (${this.context.stashSize + 1} buffered)`);
+      this.log.info(`stashing ${message.q} (${this.context.stashSize + 1} buffered)`);
       this.context.stash();
       return;
     }
-    this.log.info(`${msg.q} → ${this.data[msg.q] ?? 'unknown'}`);
+    this.log.info(`${message.q} → ${this.data[message.q] ?? 'unknown'}`);
   }
 }
 
 async function main(): Promise<void> {
   const system = ActorSystem.create('stash-demo');
-  const repo = system.spawn(Props.create(() => new LoadingRepo()), 'repo');
+  const devtools = await attachDevTools(system);
+  const repo = system.spawn(Props.create(() => new LoadingRepository()), 'repo');
 
   // Fire queries immediately; they pile up until the repo is warm.
   repo.tell({ kind: 'query', q: 'alice' });
@@ -46,6 +48,7 @@ async function main(): Promise<void> {
   repo.tell({ kind: 'query', q: 'carol' });
 
   await new Promise(r => setTimeout(r, 200));
+  await devtools.holdOpen();
   await system.terminate();
 }
 

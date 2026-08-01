@@ -3,13 +3,22 @@
  *
  *   bun run benchmarks/single-node/become-unbecome.ts
  */
-import { Actor, ActorSystem, ActorSystemOptions, LogLevel, NoopLogger, Props, ask } from '../../src/index.js';
+import { Actor, ActorSystem, ActorSystemOptions, LogLevel, NoopLogger, Props } from '../../src/index.js';
 import { runGroup } from '../lib/harness.js';
 
-type Msg = 'swap' | { kind: 'ping' };
+type Message = 'swap' | { kind: 'ping' };
 
-class Swapper extends Actor<Msg> {
-  override onReceive(m: Msg): void {
+/*
+ * The dispatch below deliberately stays a raw `if`-chain, against the
+ * project-wide `match()` rule (AGENTS.md).  This benchmark measures the
+ * per-message path itself, and ts-pattern's allocation per `match()` call
+ * shows up directly in the number: converting it cost ~10 % here
+ * (57k -> 51k swap/s), consistently across alternating runs.
+ * Measuring the framework's overhead through a matcher that production
+ * actor code would amortise differently makes the figure say less, not more.
+ */
+class Swapper extends Actor<Message> {
+  override onReceive(m: Message): void {
     if (m === 'swap') {
       this.context.become((inner) => {
         if (inner === 'swap') this.context.unbecome();
@@ -40,9 +49,9 @@ async function main(): Promise<void> {
       opsPerIteration: 2,
       run: async () => {
         ref.tell('swap');
-        await ask<Msg, 'pong'>(ref, { kind: 'ping' }, 10_000);
+        await ref.ask<'pong'>({ kind: 'ping' }, 10_000);
         ref.tell('swap');
-        await ask<Msg, 'pong'>(ref, { kind: 'ping' }, 10_000);
+        await ref.ask<'pong'>({ kind: 'ping' }, 10_000);
       },
     },
   ]);

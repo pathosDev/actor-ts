@@ -246,10 +246,11 @@ Für exactly-once-Semantik muss die Projektion idempotent sein
 
 ### Was ist mit TypeScript-Versionen?
 
-Wir testen gegen **TypeScript 5.6+**.  Frühere Versionen
-funktionieren möglicherweise, werden aber nicht unterstützt.
-Das Framework verwendet einige Features (z. B. `const`-
-Typparameter), die in jüngsten Releases gelandet sind.
+Das Framework selbst baut und typechecked mit **TypeScript 7**
+(dem nativen Compiler); die veröffentlichten Typen sind ab
+**TypeScript 5.6+** konsumierbar (die `typescript`-Peer-Dependency
+erlaubt `^5.6 || ^6 || ^7`).  Frühere Versionen funktionieren
+möglicherweise, werden aber nicht unterstützt.
 
 ### Warum ts-pattern?
 
@@ -258,8 +259,8 @@ Es ist der sauberste Weg, den wir gefunden haben, um
 Discriminated-Union-Dispatch-Pattern ist überall in der Codebase,
 und ein handgerollter Switch verliert die Exhaustiveness-Prüfung.
 
-Du *musst* ts-pattern in Deinem eigenen Code nicht verwenden;
-einfache `if/else`-Leitern funktionieren.  Siehe
+Es wird automatisch zusammen mit actor-ts installiert, Du musst
+also nichts zusätzlich hinzufügen.  Siehe
 [Pattern Matching](/de/fundamentals/pattern-matching/).
 
 ### Bun vs Node — welches sollte ich wählen?
@@ -280,23 +281,32 @@ Siehe [Runtime — Compatibility Matrix](/de/runtime/compatibility-matrix/).
 ## Debugging
 
 <Aside type="caution" title="Warum empfängt mein Actor keine Nachrichten?">
-  Drei häufige Ursachen:
+  Vier häufige Ursachen:
   - **Der Ref zeigt auf einen gestoppten Actor** — Nachrichten
     werden an `/deadLetters` geroutet (prüfe das System-Log).
   - **Die Mailbox ist voll** mit `reject`-Overflow — `tell` wirft
     `MailboxFullError` am Sender.  Fang es dort, wo Du tellst.
   - **Recovery ist noch nicht abgeschlossen** für einen
     `PersistentActor` — Nachrichten, die vor `onRecoveryComplete`
-    gesendet werden, werden gestasht.  Langsame Recovery
+    gesendet werden, warten in der Mailbox.  Langsame Recovery
     verursacht scheinbare Verzögerungen.
+  - **Die Recovery ist *fehlgeschlagen*** bei einem
+    `PersistentActor` — ein korruptes Event oder ein abgelehnter
+    Snapshot.  Der Actor stoppt, seine Nachrichten gehen also an
+    `/deadLetters`.  Hat ein `onRecoveryFailure`-Override den Fehler
+    verschluckt, ist die Log-Zeile, nach der Du suchst, "recovery
+    failed and onRecoveryFailure returned without rethrowing".
+    Siehe [Wenn die Recovery
+    fehlschlägt](/de/persistence/persistent-actor/#wenn-die-recovery-fehlschlägt).
 </Aside>
 
 <Aside type="caution" title="Warum startet mein Actor ständig neu?">
   Normalerweise wirft `onReceive`.  Prüfe das System-Log — jeder
   Fehler wird mit dem Error und der angewendeten Direktive
-  geloggt.  Der Default-Supervisor restartet bis zu 10/Minute,
-  dann eskaliert er; darüber hinaus siehst Du "supervisor
-  giving up" in den Logs.
+  geloggt.  Der Default-Supervisor restartet bis zu 10/Minute;
+  sobald diese Schwelle überschritten wird, stoppt er das Kind
+  und loggt "Restart threshold exceeded (10 in 60000ms) —
+  stopping children".
 </Aside>
 
 <Aside type="caution" title="Warum läuft mein Ask in ein Timeout?">
@@ -307,7 +317,7 @@ Siehe [Runtime — Compatibility Matrix](/de/runtime/compatibility-matrix/).
     `Terminated` für das Ziel kommt an, aber nicht die Antwort.
   - **Der Reply-To-Ref ist der falsche** — `ask` generiert einen
     temporären Ref; wenn Du nicht den in der Nachricht
-    (`cmd.replyTo`) verwendest, geht die Antwort woanders hin.
+    (`command.replyTo`) verwendest, geht die Antwort woanders hin.
 </Aside>
 
 <Aside type="caution" title="Warum werden meine Events nicht wieder abgespielt?">

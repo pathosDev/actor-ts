@@ -14,13 +14,14 @@
  */
 import { Actor, ActorSystem, Cluster, ClusterOptions, InMemoryTransport, NodeAddress, Props } from '../../src/index.js';
 import { DistributedPubSubId, DistributedPubSubOptions, Publish, Subscribe } from '../../src/cluster/pubsub/index.js';
+import { attachDevTools } from '../devtools.js';
 
-interface DomainEvent { readonly type: string; readonly payload: unknown; }
+type DomainEvent = { readonly kind: string; readonly payload: unknown; };
 
 class TopicListener extends Actor<DomainEvent> {
   constructor(private readonly label: string) { super(); }
   override onReceive(evt: DomainEvent): void {
-    console.log(`[${this.label}] received ${evt.type} → ${JSON.stringify(evt.payload)}`);
+    console.log(`[${this.label}] received ${evt.kind} → ${JSON.stringify(evt.payload)}`);
   }
 }
 
@@ -30,6 +31,7 @@ async function startNode(host: string, port: number, seeds: string[] = []): Prom
   mediator: import('../../src/ActorRef.js').ActorRef<Subscribe | Publish>;
 }> {
   const system = ActorSystem.create('events');
+  await attachDevTools(system);
   const clusterOptions = ClusterOptions.create()
     .withHost(host)
     .withPort(port)
@@ -80,9 +82,9 @@ async function main(): Promise<void> {
   await Bun.sleep(350);
 
   // A publishes from where the events originate.
-  nodeA.mediator.tell(new Publish('orders', { type: 'OrderPlaced', payload: { id: 42, total: 99.5 } }));
-  nodeA.mediator.tell(new Publish('shipping', { type: 'ShipmentDispatched', payload: { orderId: 42, tracking: 'X-123' } }));
-  nodeA.mediator.tell(new Publish('broadcast', { type: 'SystemAnnouncement', payload: 'nightly maintenance at 02:00' }));
+  nodeA.mediator.tell(new Publish('orders', { kind: 'OrderPlaced', payload: { id: 42, total: 99.5 } }));
+  nodeA.mediator.tell(new Publish('shipping', { kind: 'ShipmentDispatched', payload: { orderId: 42, tracking: 'X-123' } }));
+  nodeA.mediator.tell(new Publish('broadcast', { kind: 'SystemAnnouncement', payload: 'nightly maintenance at 02:00' }));
 
   await Bun.sleep(150);
   console.log('--- B leaves ---');
@@ -93,8 +95,8 @@ async function main(): Promise<void> {
   await Bun.sleep(600);
 
   // Publish again — only C should react now; A no longer forwards to B.
-  nodeA.mediator.tell(new Publish('orders', { type: 'OrderPlaced', payload: { id: 43, total: 12.0 } }));
-  nodeA.mediator.tell(new Publish('broadcast', { type: 'SystemAnnouncement', payload: 'all clear' }));
+  nodeA.mediator.tell(new Publish('orders', { kind: 'OrderPlaced', payload: { id: 43, total: 12.0 } }));
+  nodeA.mediator.tell(new Publish('broadcast', { kind: 'SystemAnnouncement', payload: 'all clear' }));
 
   await Bun.sleep(200);
   await nodeA.cluster.leave(); await nodeA.system.terminate();

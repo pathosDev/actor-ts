@@ -33,12 +33,12 @@ Internally:
 ## Configuration
 
 ```ts
-interface ProducerControllerOptionsType<T> {
+type ProducerControllerOptionsType<T> = {
   consumer:          ActorRef<Delivery<T>>;
   resendTimeout?:  number;       // default 500
   windowSize?:       number;       // default 16
   producerId?:       string;       // auto-generated if omitted
-}
+};
 ```
 
 | Field | Purpose |
@@ -59,15 +59,28 @@ incoming `{ kind: 'reliable-delivery.send' }` messages are **queued** — the
 caller's tell succeeds, but actual sending pauses until the
 consumer's acks free up the buffer.
 
-For senders that need to know about pressure:
+There is no signal back to the caller when this queueing happens: a
+`reliable-delivery.send` is fire-and-forget — the producer never replies
+to it, so there is no `ask`-based "I sent it" acknowledgment to await.
+
+For senders that need to know a message got through, pass a `confirm`
+callback on the send.  It fires once the consumer acks that message —
+with `null` on success, or an `Error` if the producer stops while the
+message is still queued:
 
 ```ts
-const result = await producer.ask({ kind: 'reliable-delivery.send', body, replyTo: ... }, 30_000);
-//                                         ^ replies after the message is at least sent
+producer.tell({
+  kind: 'reliable-delivery.send',
+  body: { orderId: 'o-1' },
+  confirm: (err) => {
+    if (err) console.error('delivery failed', err);
+    else console.log('delivered and acked');
+  },
+});
 ```
 
-`ask`-style sends wait for the producer's "I sent it" reply,
-giving you a natural backpressure signal.
+To turn that into real backpressure, pace your sends against these
+confirmations — hold off on the next batch until earlier messages confirm.
 
 ## Retransmission
 

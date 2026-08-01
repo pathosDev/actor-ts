@@ -18,10 +18,18 @@
  * connection stops (and `postStop` still reports the disconnect) rather
  * than restarting into a dead socket.
  */
+import { match } from 'ts-pattern';
 import { Actor } from '../../Actor.js';
 import { WebsocketReadyState, type WebsocketSocketAdapter } from './SocketAdapter.js';
 import { WebsocketDecodeError, type WebsocketCodec } from './WebsocketCodec.js';
-import { WebsocketConnectionImplementation, type WebsocketConnection, type WebsocketOutboundCommand } from './WebsocketConnection.js';
+import {
+  WebsocketConnectionImplementation,
+  type CloseCommand,
+  type OutCommand,
+  type OutRawCommand,
+  type WebsocketConnection,
+  type WebsocketOutboundCommand,
+} from './WebsocketConnection.js';
 import {
   websocketConnectedSignal,
   websocketDataSignal,
@@ -38,14 +46,14 @@ import {
   type WebsocketUpgradeInfo,
 } from './types.js';
 
-export interface WebsocketConnectionDeps<TOut, TIn, TSelf> {
+export type WebsocketConnectionDeps<TOut, TIn, TSelf> = {
   readonly socket: WebsocketSocketAdapter;
   readonly codec: WebsocketCodec<TOut, TIn>;
   readonly policy: ResolvedWebsocketPolicy;
   readonly hub: WebsocketServerRef<TOut, TIn, TSelf>;
   readonly id: string;
   readonly upgrade: WebsocketUpgradeInfo;
-}
+};
 
 export class WebsocketConnectionActor<TOut, TIn, TSelf = never>
   extends Actor<WebsocketOutboundCommand<TOut>> {
@@ -62,11 +70,11 @@ export class WebsocketConnectionActor<TOut, TIn, TSelf = never>
   }
 
   override preStart(): void {
-    const conn = new WebsocketConnectionImplementation<TOut>(this.d.id, this.d.upgrade, this.d.socket, this.self, this.system.name);
-    this.connection = conn;
+    const connection = new WebsocketConnectionImplementation<TOut>(this.d.id, this.d.upgrade, this.d.socket, this.self, this.system.name);
+    this.connection = connection;
     // Tell the hub 'connected' BEFORE attaching listeners, so it is
     // mailbox-ordered before any inbound data flushed by setListeners.
-    this.d.hub.tell(websocketConnectedSignal<TOut>(conn), conn);
+    this.d.hub.tell(websocketConnectedSignal<TOut>(connection), connection);
     this.d.socket.setListeners({
       onMessage: (data) => this.handleInbound(data),
       onClose: (code, reason) => this.handleClose(code, reason),
@@ -74,30 +82,42 @@ export class WebsocketConnectionActor<TOut, TIn, TSelf = never>
     });
   }
 
-  override onReceive(cmd: WebsocketOutboundCommand<TOut>): void {
+  override onReceive(command: WebsocketOutboundCommand<TOut>): void {
     if (this.closed) {
       this.log.debug(`WebsocketConnectionActor ${this.d.id}: command after close — ignored`);
       return;
     }
-    switch (cmd._cmd) {
-      case 'out': {
-        let frame: WebsocketFrame;
-        try {
-          frame = this.d.codec.encode(cmd.msg);
-        } catch (err) {
-          this.log.error(`WebsocketConnectionActor ${this.d.id}: encode failed, dropping message: ${(err as Error).message}`);
-          return;
-        }
-        this.write(frame);
-        break;
-      }
-      case 'out-raw':
-        this.write(cmd.frame);
-        break;
-      case 'close':
-        this.closeSocket(cmd.code, cmd.reason);
-        break;
+    match(command)
+      .with({ kind: 'out' }, (c) => this.onOut(c))
+      .with({ kind: 'out-raw' }, (c) => this.onOutRaw(c))
+      .with({ kind: 'close' }, (c) => this.onClose(c))
+      .exhaustive();
+  }
+
+  /* --------------------- dispatch arm handlers -------------------- */
+
+  /**
+   * A failed encode drops the one message rather than crashing the
+   * connection: the socket is still healthy, and taking it down would
+   * punish every other message queued behind this one.
+   */
+  private onOut(command: OutCommand<TOut>): void {
+    let frame: WebsocketFrame;
+    try {
+      frame = this.d.codec.encode(command.message);
+    } catch (err) {
+      this.log.error(`WebsocketConnectionActor ${this.d.id}: encode failed, dropping message: ${(err as Error).message}`);
+      return;
     }
+    this.write(frame);
+  }
+
+  private onOutRaw(command: OutRawCommand): void {
+    this.write(command.frame);
+  }
+
+  private onClose(command: CloseCommand): void {
+    this.closeSocket(command.code, command.reason);
   }
 
   override postStop(): void {

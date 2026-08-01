@@ -29,8 +29,8 @@ import { ActorSystem, Props, Router, Actor, Broadcast } from 'actor-ts';
 type Message = { payload: string };
 
 class Worker extends Actor<Message> {
-  override onReceive(msg: Message): void {
-    this.log.info(`processed ${msg.payload}`);
+  override onReceive(message: Message): void {
+    this.log.info(`processed ${message.payload}`);
   }
 }
 
@@ -141,11 +141,12 @@ oneRoutee.stop();
 ```
 
 Wenn ein Routee stoppt, beobachtet der Router ihn und… tut
-standardmäßig nichts im aktuellen Router des Frameworks.  Die
-Pool-Größe schrumpft effektiv, bis sie restarted.  Für
-selbstheilende Pools wickle die Routee-Props in eine
-Supervisor-Strategie, die bei Stop restartet (oder wickle den
-ganzen Pool in einen BackoffSupervisor).
+standardmäßig nichts im aktuellen Router des Frameworks.  Seine Ref
+bleibt im Pool — der Router entfernt sie nie — sodass Round-Robin
+ihm weiterhin etwa jede N-te Nachricht zuteilt, die bis zum Neustart
+des ganzen Routers in Dead Letters landet.  Für selbstheilende Pools
+wickle die Routee-Props in eine Supervisor-Strategie, die bei Stop
+restartet (oder wickle den ganzen Pool in einen BackoffSupervisor).
 
 import { Aside } from '@astrojs/starlight/components';
 

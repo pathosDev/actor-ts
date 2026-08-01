@@ -116,9 +116,9 @@ describe('ObjectStorageSnapshotStore — compression resolver', () => {
   test('per-pid resolver picks different algorithms for different pids', async () => {
     const seenAlgos = new Map<string, string | undefined>();
     const wrapping: typeof backend = Object.assign(Object.create(Object.getPrototypeOf(backend)), backend);
-    wrapping.put = async (key, body, opts) => {
-      seenAlgos.set(key, opts?.contentEncoding);
-      return backend.put(key, body, opts);
+    wrapping.put = async (key, body, options) => {
+      seenAlgos.set(key, options?.contentEncoding);
+      return backend.put(key, body, options);
     };
     const storeOptions = ObjectStorageSnapshotStoreOptions.create()
       .withBackend(wrapping)
@@ -135,7 +135,7 @@ describe('ObjectStorageSnapshotStore — compression resolver', () => {
   test('round-trip survives gzip and zstd', async () => {
     const storeOptions = ObjectStorageSnapshotStoreOptions.create()
       .withBackend(backend)
-      .withCompression((pid) => pid.startsWith('zstd-')? { algorithm: 'zstd' }: { algorithm: 'gzip' });
+      .withCompression((persistenceId) => persistenceId.startsWith('zstd-')? { algorithm: 'zstd' }: { algorithm: 'gzip' });
     const store = new ObjectStorageSnapshotStore(storeOptions);
     await store.save('gzip-pid', 1, { hello: 'gzip' });
     await store.save('zstd-pid', 1, { hello: 'zstd' });
@@ -180,7 +180,7 @@ describe('ObjectStorageSnapshotStore — encryption (client-aes256-gcm)', () => 
     const storeOptions = ObjectStorageSnapshotStoreOptions.create()
       .withBackend(backend)
       .withCompression({ algorithm: 'none' })
-      .withEncryption((pid) => pid.startsWith('tenant-')? { mode: 'client-aes256-gcm', masterKey }: { mode: 'none' });
+      .withEncryption((persistenceId) => persistenceId.startsWith('tenant-')? { mode: 'client-aes256-gcm', masterKey }: { mode: 'none' });
     const store = new ObjectStorageSnapshotStore(storeOptions);
     await store.save('tenant-acme/x', 1, { who: 'acme' });
     await store.save('tenant-bigcorp/x', 1, { who: 'bigcorp' });

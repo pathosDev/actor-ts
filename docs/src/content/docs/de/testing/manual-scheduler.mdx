@@ -26,7 +26,7 @@ await kit.shutdown();
 ```
 
 `Heartbeat` plant einen Tick via
-`context.timers.startSingleTimer('tick', tickMsg, 5_000)`. Echte
+`context.timers.startSingleTimer('tick', tickMessage, 5_000)`. Echte
 Zeit verstreicht nie; der `advance(5_000)` feuert den Timer.
 
 ## Warum das wichtig ist
@@ -44,6 +44,18 @@ schläft 5,1 s, aber der Scheduler feuert bei 5,0 s, während
 ist schnell; der Test wartet jedes Mal 5,1 s, obwohl der Timer
 bei 5,0 s feuert — langsam.
 
+Die Toleranz aufzuweiten rettet es auch nicht, denn Timer feuern
+ebenso **zu früh**. Timer-Quanten der Plattform sind grob — unter
+Windows sind 15,625 ms der Default — und eine Event-Loop, die
+Deadlines auf der Tick-Grenze prüft, kann einen Timer als fällig
+ansehen, bevor sein nominales Delay verstrichen ist: ein
+30-ms-`setTimeout` wurde unter Bun/Windows mit nur 18,7 ms
+gemessen, und unter CPU-Last mit bis zu 201 ms. Ein nominales
+Delay, eine Zehnerpotenz Streuung. Keine Wall-Clock-Grenze ist
+gleichzeitig eng genug, um etwas zu bedeuten, und weit genug, um
+zu halten — und eine präzisere Uhr hilft nicht: zu früh ist der
+Timer, nicht die Messung.
+
 `ManualScheduler` entfernt die Abhängigkeit von echter Zeit.
 Tests sind schnell (kein Warten) und deterministisch (advance
 feuert Timer in Reihenfolge).
@@ -54,7 +66,7 @@ feuert Timer in Reihenfolge).
 class ManualScheduler extends Scheduler {
   now(): number;                                  // aktuelle virtuelle Zeit (ms)
   advance(durationMs: number): void;              // vorwärts springen, gereifte Timer feuern
-  advanceTo(absoluteMs: number): void;            // zu einer spezifischen virtuellen Zeit springen
+  advanceToNext(): void;                          // zum Feuerzeitpunkt des nächsten Timers springen
   pendingCount: number;                           // nicht abgebrochene geplante Aufgaben
 }
 ```
@@ -63,9 +75,9 @@ Vom `Scheduler` geerbt:
 
 ```ts
 scheduleOnce(delayMs, target, message, sender?): Cancellable
-scheduleOnceFn(delayMs, fn): Cancellable
+scheduleOnceFunction(delayMs, fn): Cancellable
 scheduleAtFixedRate(initialDelay, interval, target, message, sender?): Cancellable
-scheduleAtFixedRateFn(initialDelay, interval, fn): Cancellable
+scheduleAtFixedRateFunction(initialDelay, interval, fn): Cancellable
 ```
 
 Echtes `setTimeout` wird **nicht** genutzt. Jeder Schedule ist
@@ -110,17 +122,18 @@ Gleiche Idee — übergib den Manual-Scheduler an
 
 ```ts
 scheduler.advance(1_000);   // 1 Sekunde springen, Timer in dem Fenster feuern
-scheduler.advanceTo(5_000); // zu virtueller Zeit = 5000 ms springen
-scheduler.now();            // → 5000
+scheduler.advanceToNext();  // direkt zum nächsten anstehenden Timer springen und ihn feuern
+scheduler.now();            // → aktuelle virtuelle Zeit
 ```
 
 `advance(ms)` ist der gängige Fall. Aufgaben, die im
 voraneilenden Fenster feuern sollen, laufen **in Reihenfolge**,
 sequenziell, bevor `advance` zurückkehrt.
 
-`advanceTo(absoluteMs)` ist für den Fall, dass du eine Zielzeit
-aufgenommen hast und dorthin vorspringen willst (nützlich für
-„nach-N-von-etwas"-Muster zu testen).
+`advanceToNext()` springt direkt zum Feuerzeitpunkt des nächsten
+anstehenden Timers (und feuert ihn) und überspringt jede
+Leerlauf-Lücke — praktisch, wenn du die genaue Verzögerung nicht
+von Hand berechnen willst. Ist nichts geplant, ist es ein No-op.
 
 ### Wiederholende Timer
 
@@ -209,7 +222,7 @@ import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="`new Date()` und `Date.now()` werden nicht virtualisiert">
   ```ts
-  override onReceive(msg) {
+  override onReceive(message) {
     const at = Date.now();   // ← echte Wall-Clock, NICHT virtuelle Zeit
     this.persist({ kind: 'observed', at });
   }

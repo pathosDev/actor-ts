@@ -183,34 +183,38 @@ literal numbers — easier to read at the call site.
 The handler receives an `HttpRequest`:
 
 ```ts
-interface HttpRequest {
+type HttpRequest = {
   readonly method:  HttpMethod;
   readonly path:    string;
   readonly headers: Record<string, string>;
   readonly query:   Record<string, string>;
+  readonly params:  Record<string, string>;
   readonly body:    Uint8Array | null;
-}
+};
 ```
 
 ### Path parameters
 
-The current DSL doesn't have a typed path-parameter extractor —
-parameters are part of the raw `req.path`.  Extract by hand:
+`:id`-style segments are captured into `req.params`, keyed by the
+segment name:
 
 ```ts
+import { pathParam } from 'actor-ts/http';
+
 path('orders',
   path(':id',
     get(async (req) => {
-      // req.path is e.g. "/api/orders/o-42"
-      const id = req.path.split('/').pop()!;
+      const id = req.params.id;        // captured from :id — e.g. "o-42"
       return completeJson(200, { id });
     }),
   ),
 );
 ```
 
-(A typed-extractor DSL is on the roadmap; see
-[FAQ](/reference/faq/).)
+`req.params` holds every `:name` segment the matched pattern
+captured, keyed by name.  `pathParam(req, name)` is the same lookup
+with a guard — it returns the value as a string and throws a 500 if
+the pattern never bound it (a programming error, not a client one).
 
 ### Query parameters
 
@@ -254,7 +258,7 @@ import {
   completeJson, complete, reject, Status, entity,
 } from 'actor-ts/http';
 
-interface Customer { id: string; name: string; }
+type Customer = { id: string; name: string; };
 
 const customers = path('customers',
   concat(

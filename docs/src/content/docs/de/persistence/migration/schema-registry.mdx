@@ -1,31 +1,53 @@
 ---
 title: Schema-Registry
-description: Ein typisiertes Register bekannter Event- / State-Schemas + ihrer Versionen. Optional, aber nützlich in großen Codebases — Single Source of Truth für "welche Schemas existieren", Laufzeit-Validierung und Tooling, das Schemas introspectet.
+description: Ein typisierter Katalog bekannter Event- / State-Schemas — jedes (manifest, version) gepaart mit einem Codec und einem Upcaster. Optional, aber nützlich in großen Codebases — ein Ort, der validierte, selbst-migrierende Adapter baut, plus Introspektion fürs Tooling.
 ---
 
 Für größere Codebases mit vielen Event-Typen wird **zu wissen,
 was existiert**, ein Problem.  Jeder `PersistentActor`
-deklariert seine Events; einige haben Adapter; Versionen leben
-in den Adapter-Configs.  Kein zentraler Katalog.
+deklariert seine Events; einige haben Adapter; Versionen, Codecs
+und Upcaster liegen verstreut in den Adapter-Configs.  Kein
+zentraler Katalog.
 
-`SchemaRegistry` ist der optionale Katalog:
+`InMemorySchemaRegistry` ist der optionale Katalog.  Du
+registrierst jedes `(manifest, version)` **einmal** — mit dem
+Codec, der diese Version validiert, und dem Upcaster, der die
+vorherige Version nach vorne bringt — und die Registry baut die
+Adapter für dich:
 
 ```ts
-import { SchemaRegistry } from 'actor-ts';
+import { InMemorySchemaRegistry, zodCodec } from 'actor-ts';
+import { z } from 'zod';
 
-export const registry = new SchemaRegistry()
-  .add('Deposited',     2)
-  .add('Withdrawn',     1)
-  .add('AccountFrozen', 3)
-  .add('AccountClosed', 1);
+const DepositedV1 = z.object({ kind: z.literal('deposited'), amount: z.number() });
+const DepositedV2 = z.object({
+  kind:     z.literal('deposited'),
+  amount:   z.number(),
+  currency: z.enum(['USD', 'EUR']),
+});
+type DepositedV1 = z.infer<typeof DepositedV1>;
+type DepositedV2 = z.infer<typeof DepositedV2>;
+
+export const registry = new InMemorySchemaRegistry();
+
+registry.register('Deposited', 1, { codec: zodCodec(DepositedV1) });
+registry.register('Deposited', 2, {
+  codec:          zodCodec(DepositedV2),
+  upcastFromPrev: (v1: DepositedV1): DepositedV2 => ({ ...v1, currency: 'USD' }),
+});
 ```
 
-Eine einfache **typisierte Map von Event-Name → aktuelle
-Version**.  Verwende sie, um:
+`register` **mutiert die Registry an Ort und Stelle** und gibt
+`void` zurück; erneutes Registrieren desselben
+`(manifest, version)` überschreibt es.  Verwende die Registry, um:
 
 - Den aktuellen Stand jedes Schemas zu **dokumentieren**.
-- Zu **validieren**, dass Adapter die richtige Version
-  deklarieren.
+- Payloads zu **validieren** — der `codec` jeder Version
+  (typischerweise ein `zodCodec`) wird sowohl auf dem Schreib- als
+  auch dem Lesepfad erzwungen.
+- **Adapter zu bauen** — `registry.eventAdapter(manifest)` schreibt
+  bei der neuesten Version und liest jede ältere Version, indem es
+  die registrierten Upcaster nach vorne verkettet.
 - **Tooling anzutreiben** — Admin-Dashboards, Dev-Tools, die
   Journal-Inhalte zeigen.
 
@@ -36,92 +58,136 @@ verfolgen, welche bei welcher Version ist.
 ## Ein minimales Beispiel
 
 ```ts
-import { SchemaRegistry } from 'actor-ts';
+import { InMemorySchemaRegistry, zodCodec } from 'actor-ts';
 
 // Geteiltes Modul — `schemas.ts`:
-export const registry = new SchemaRegistry()
-  .add('Deposited', 2)
-  .add('Withdrawn', 1)
-  .add('Frozen',    3);
+export const registry = new InMemorySchemaRegistry();
 
-export type SchemaName = 'Deposited' | 'Withdrawn' | 'Frozen';
+registry.register('Deposited', 1, { codec: zodCodec(DepositedV1) });
+registry.register('Deposited', 2, {
+  codec:          zodCodec(DepositedV2),
+  upcastFromPrev: (v1: DepositedV1): DepositedV2 => ({ ...v1, currency: 'USD' }),
+});
+
+registry.register('Withdrawn', 1, { codec: zodCodec(WithdrawnV1) });
+registry.register('Frozen',    1, { codec: zodCodec(FrozenV1) });
 ```
 
-Dann in Actors:
+Dann in Actors — keine handgeschriebene Chain; die Registry baut
+den Adapter:
 
 ```ts
 import { registry } from './schemas.js';
 
 class Account extends PersistentActor<...> {
   override eventAdapter() {
-    const chain = MigrationChain.for<DepositedEventV2>(
-      'Deposited',
-      registry.versionOf('Deposited'),   // → 2
-    ).add({ fromVersion: 1, toVersion: 2, upcast: v1ToV2 });
-    return migratingAdapter(chain);
+    return registry.eventAdapter<DepositedV2>('Deposited');
   }
 }
 ```
 
-Die `currentVersion` des Adapters und der Wert der Registry
-**müssen übereinstimmen**.  Zieh aus der Registry, um das zu
-erzwingen.
+Der Adapter schreibt neue Events bei der **neuesten**
+registrierten Version von `'Deposited'` und dekodiert beim Lesen
+jedes gespeicherte Event mit dem Codec seiner eigenen Version,
+bevor er die Upcaster nach vorne zur neuesten Form verkettet.
 
 ## Die API
 
 ```ts
-class SchemaRegistry {
-  add(name: string, version: number): SchemaRegistry;
-  versionOf(name: string): number;
-  has(name: string): boolean;
-  list(): Array<{ name: string; version: number }>;
+interface SchemaRegistry {
+  register<Wire, Upcasted>(
+    manifest: string,
+    version: number,
+    registration: SchemaRegistration<Wire, Upcasted>,
+  ): void;
+  get(manifest: string, version: number): SchemaDescriptor | undefined;
+  latestVersion(manifest: string): number | undefined;
+  list(): ReadonlyArray<SchemaDescriptor>;
+  eventAdapter<E>(manifest: string): EventAdapter<E, unknown>;
+  snapshotAdapter<S>(manifest: string): SnapshotAdapter<S, unknown>;
 }
+
+type SchemaRegistration<Wire, Upcasted> = {
+  readonly codec: Codec<Wire>;
+  readonly upcastFromPrev?: (prev: unknown) => Upcasted;
+  readonly compatibility?: 'none' | 'backward' | 'sample';
+  readonly sample?: unknown;
+};
 ```
 
-- **`add(name, version)`** — ein Schema registrieren.  Gibt die
-  Registry zum Verketten zurück.
-- **`versionOf(name)`** — die aktuelle Version lesen.  Wirft,
-  wenn nicht registriert.
-- **`has(name)`** — Existenz prüfen.
-- **`list()`** — alles Registrierte aufzählen.
+- **`register(manifest, version, { codec, upcastFromPrev?, compatibility?, sample? })`**
+  — eine Version hinzufügen oder ersetzen.  Mutiert an Ort und
+  Stelle, gibt `void` zurück.
+- **`get(manifest, version)`** — der `SchemaDescriptor` für eine
+  Version, oder `undefined`.
+- **`latestVersion(manifest)`** — höchste registrierte Version, oder
+  `undefined`, wenn das Manifest unbekannt ist.
+- **`list()`** — jede Registrierung als
+  `ReadonlyArray<SchemaDescriptor>` (`{ manifest, version, codec, … }`).
+- **`eventAdapter(manifest)`** / **`snapshotAdapter(manifest)`** —
+  den migrierenden Adapter für Events / State bauen.
 
-Immutable: `add()` gibt eine neue Registry zurück; das Original
-wird nicht mutiert.  Nützlich für Test-Scaffolding, wo du
-frische Registries pro Test willst.
+`SchemaRegistry` ist ein **Interface**; die ausgelieferte
+Implementierung ist `InMemorySchemaRegistry`
+(`new InMemorySchemaRegistry()`), die den gesamten State in einem
+Prozess hält.  Implementiere das Interface selbst, wenn du einen
+anderen Backing-Store brauchst.
 
-## Validierung gegen Adapter
+## Kompatibilitäts-Checks
+
+Die Registry kann **zur Register-Zeit** prüfen, dass eine neue
+Version die vorherige noch lesen kann — und so einen fehlenden
+oder kaputten Upcaster erwischen, bevor du deployst:
 
 ```ts
-import { SchemaRegistry, validateAdapter } from 'actor-ts';
-
-// Während Tests / Startup:
-const chain = MigrationChain.for<EventV2>('Deposited', 2)
-  .add({ fromVersion: 1, toVersion: 2, upcast: v1ToV2 });
-const adapter = migratingAdapter(chain);
-validateAdapter(adapter, registry, 'Deposited');
-// → wirft, wenn currentVersion(2) !== registry.versionOf('Deposited')
+registry.register('Deposited', 2, {
+  codec:          zodCodec(DepositedV2),
+  upcastFromPrev: (v1: DepositedV1): DepositedV2 => ({ ...v1, currency: 'USD' }),
+  compatibility:  'backward',
+});
 ```
 
-Für Produktions-Code rufe `validateAdapter` beim System-Startup
-als Sicherheitsnetz auf: wenn du die Version eines Adapters
-hochziehst, aber vergisst, die Registry zu aktualisieren,
-schlägt der Validate-Call laut fehl.
+- **`'none'`** (Default) — kein Check.
+- **`'backward'`** — verlangt, dass die vorherige Version
+  registriert ist und dass diese Registrierung ein `upcastFromPrev`
+  liefert.  Das strukturelle Minimum, das den Lesepfad für alte
+  Daten funktionsfähig hält.
+- **`'sample'`** — alles, was `'backward'` prüft, plus ein
+  Round-Trip eines gelieferten `sample`: mit dem vorherigen Codec
+  dekodieren, upcasten, mit dem neuen Codec neu enkodieren.
+  Erwischt latente Upcaster-Bugs zur Register-Zeit statt zur
+  Deploy-Zeit.
+
+```ts
+registry.register('Deposited', 2, {
+  codec:          zodCodec(DepositedV2),
+  upcastFromPrev: (v1: DepositedV1): DepositedV2 => ({ ...v1, currency: 'USD' }),
+  compatibility:  'sample',
+  sample:         { kind: 'deposited', amount: 100 },
+});
+// → wirft zur Register-Zeit, wenn der v1 → v2 Round-Trip fehlschlägt
+```
+
+Eine inkompatible Registrierung wirft sofort, daher ist es dein
+Sicherheitsnetz, die Registry beim Startup zu verdrahten: eine
+Version hochziehen, aber den Upcaster vergessen, und die
+Registrierung schlägt laut fehl.
 
 ## Tooling
 
 Ein paar häufige Tooling-Formen, die von der Registry profitieren:
 
 ```ts
-// Admin-Panel: jeden Event-Typ und seine aktuelle Version auflisten
-const all = registry.list();   // → [{ name: 'Deposited', version: 2 }, ...]
+// Admin-Panel: jedes registrierte Schema und seine Version auflisten
+const all = registry.list();   // → [{ manifest: 'Deposited', version: 2, codec, ... }, ...]
 
 // Dev-Skript: warnen, wenn ein Event im Journal eine Version hat,
 // die HÖHER ist als das, was die Registry kennt (ein Deploy-Issue)
 for await (const event of query.eventsByPersistenceId(...)) {
   const envelopeVersion = event.event._v;
-  const expectedMax = registry.versionOf(event.event._t);
-  if (envelopeVersion > expectedMax) {
-    console.warn(`event ${event.event._t} has version ${envelopeVersion}, registry knows up to ${expectedMax}`);
+  const latest = registry.latestVersion(event.event._t);
+  if (latest !== undefined && envelopeVersion > latest) {
+    console.warn(`event ${event.event._t} has version ${envelopeVersion}, registry knows up to ${latest}`);
   }
 }
 ```
@@ -141,15 +207,19 @@ import { Aside } from '@astrojs/starlight/components';
   Deposited?"
 </Aside>
 
-<Aside type="caution" title="Nicht dasselbe wie Avro-Schemas">
+<Aside type="caution" title="Keine Remote-Schema-Registry">
   ```ts
-  // Die Registry trackt Namen + Versions-Nummern — NICHT die tatsächlichen Schemas
+  // Jede Version trägt einen Codec — die Validierung lebt IN der Registry
   ```
-  Das ist nicht Apache Avro / Confluent Schema Registry.  Sie
-  speichert nicht das strukturelle Schema jedes Events.  Für
-  Wire-Format-Schema-Erzwingung würdest du eine separate
-  Validierungs-Library (zod, valibot) auf Adapter-Ebene
-  integrieren.
+  Das ist keine Confluent- / Apache-Avro-**HTTP**-Schema-Registry:
+  Es gibt keine Remote-Subject-Versionierung und keine
+  Kompatibilitäts-Aushandlung über die Leitung — das ist außerhalb
+  des Scopes für v1.  Aber das strukturelle Schema *ist* hier —
+  jedes `(manifest, version)` trägt einen `codec` (bring dein
+  eigenes `zod` / `valibot` mit), erzwungen auf Lesen und
+  Schreiben, und die Registry verkettet Upcaster, um alte Daten zu
+  migrieren.  Validierung ist eingebaut, nicht separat auf
+  Adapter-Ebene angeflanscht.
 </Aside>
 
 <Aside type="caution" title="Mehrere Umgebungen">

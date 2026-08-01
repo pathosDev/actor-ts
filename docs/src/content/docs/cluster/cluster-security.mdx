@@ -1,6 +1,6 @@
 ---
 title: Cluster security
-description: TLS + shared-secret authentication on the cluster transport — encrypt gossip + envelope traffic and prevent unauthorized cluster joins. Required for any cluster crossing untrusted networks.
+description: TLS + mutual authentication on the cluster transport — encrypt gossip + envelope traffic and prevent unauthorized cluster joins. Required for any cluster crossing untrusted networks.
 ---
 
 The cluster transport defaults to **unauthenticated plain TCP**.
@@ -18,7 +18,7 @@ For the operational context, see
 | --- | --- |
 | Eavesdropping | TLS on cluster transport |
 | MITM (interception + modification) | TLS + cert verification |
-| Unauthorized join (anyone with port access can join) | mTLS + shared-secret auth |
+| Unauthorized join (anyone with port access can join) | mTLS (cert-based peer auth) |
 | Compromised cert (issued for a stolen identity) | Cert rotation + revocation |
 
 ## Enabling TLS
@@ -91,30 +91,6 @@ With `rejectUnauthorized: true` + a shared CA, **every
 connection requires both sides to present a valid cert** signed
 by the CA.  No anonymous joins; no plain-text fallback.
 
-## Shared-secret as defense in depth
-
-Beyond mTLS, the framework supports an additional
-**shared-secret check** in the cluster handshake:
-
-```ts
-new TcpTransport(self, log, tlsOpts, /* maxFrame */ undefined, {
-  sharedSecret: process.env.CLUSTER_SECRET,
-});
-```
-
-Every node compares the secret during the initial handshake;
-mismatch fails the connection.
-
-When useful:
-
-- **Insider threat** — someone with a valid cert but
-  unauthorized.
-- **CA compromise** — if your CA's key leaks, a shared secret
-  is an extra barrier.
-
-For most deployments, **mTLS alone is sufficient**.  The shared
-secret is paranoid-safe.
-
 ## In K8s
 
 cert-manager + secrets is the standard pattern:
@@ -137,18 +113,12 @@ spec:
   renewBefore: 720h
 
 ---
-# Pod mounts the secret + cluster-secret:
+# Pod mounts the TLS secret:
 apiVersion: v1
 kind: Pod
 spec:
   containers:
     - name: app
-      env:
-        - name: CLUSTER_SECRET
-          valueFrom:
-            secretKeyRef:
-              name: actor-ts-secrets
-              key: cluster-secret
       volumeMounts:
         - name: tls
           mountPath: /etc/tls
@@ -185,7 +155,7 @@ spec:
 ```
 
 Only `app=actor-ts` pods can reach port 2552.  Combined with
-mTLS + shared secret, this is **three independent layers**.
+mTLS, this is **two independent layers**.
 
 ## Performance impact
 

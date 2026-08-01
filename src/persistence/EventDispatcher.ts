@@ -27,7 +27,7 @@
  *     .on('reset',       () => ({ count: 0 }))
  *     .build();
  *
- *   class CounterActor extends PersistentActor<Cmd, Event, State> {
+ *   class CounterActor extends PersistentActor<Command, Event, State> {
  *     override onEvent = onEvent;
  *     // ... rest of the actor ...
  *   }
@@ -44,9 +44,9 @@
  * 'EventDispatcherIncomplete<\"c\">' has no call signatures."`
  * The `unhandled` field-name surfaces which kind is missing.
  */
-export interface EventDispatcherIncomplete<Unhandled extends string> {
+export type EventDispatcherIncomplete<Unhandled extends string> = {
   readonly __unhandled: Unhandled;
-}
+};
 
 /**
  * Builder state, parameterised by the kinds that have already been

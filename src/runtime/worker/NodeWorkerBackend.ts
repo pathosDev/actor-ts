@@ -57,7 +57,7 @@ interface NodeWorkerThread {
   terminate(): Promise<number>;
 }
 
-type WorkerThreadConstructor = new (url: URL | string, opts?: { name?: string }) => NodeWorkerThread;
+type WorkerThreadConstructor = new (url: URL | string, options?: { name?: string }) => NodeWorkerThread;
 
 // Real ctor installed by `preload()`; the fallback thunk is only
 // reached if a caller forgets to preload — the spawn() guard also

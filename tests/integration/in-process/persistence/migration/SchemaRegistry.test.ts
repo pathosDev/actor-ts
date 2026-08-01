@@ -20,9 +20,9 @@ import {
   InMemorySchemaRegistry,
 } from '../../../../../src/persistence/migration/SchemaRegistry.js';
 
-interface DepositedV1 { kind: 'deposited'; amount: number }
-interface DepositedV2 { kind: 'deposited'; amount: number; currency: 'USD' | 'EUR' }
-interface DepositedV3 { kind: 'deposited'; cents: number; currency: 'USD' | 'EUR' }
+type DepositedV1 = { kind: 'deposited'; amount: number };
+type DepositedV2 = { kind: 'deposited'; amount: number; currency: 'USD' | 'EUR' };
+type DepositedV3 = { kind: 'deposited'; cents: number; currency: 'USD' | 'EUR' };
 
 const v1Schema: ParserLike<DepositedV1> = {
   parse(input: unknown) {

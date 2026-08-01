@@ -102,14 +102,14 @@ contenders can then acquire.
 ## Settings
 
 ```ts
-interface LeaseOptionsType {
+type LeaseOptionsType = {
   name:                  string;       // unique lease identifier
   owner:                 string;       // this holder's identifier (pod name / UUID)
   ttlMs:                 number;       // auto-expire after this many ms of no-renewal
   renewalIntervalMs?:    number;       // typically ttl/3
   acquireRetries?:       number;       // max attempts per acquire()
   acquireRetryDelayMs?:  number;       // delay between attempts
-}
+};
 ```
 
 | Setting | Typical values |
@@ -133,7 +133,7 @@ Zookeeper).  The interface is small — ~50 lines of glue.
 ## A minimal example
 
 ```ts
-import { ClusterSingletonManager, KubernetesLease, KubernetesLeaseOptions, Props } from 'actor-ts';
+import { StartSingletonOptions, KubernetesLease, KubernetesLeaseOptions, Props } from 'actor-ts';
 
 const kubernetesLeaseOptions = KubernetesLeaseOptions.create()
   .withName('my-app-singleton-lease')
@@ -145,15 +145,11 @@ const lease = new KubernetesLease(
   kubernetesLeaseOptions,
 );
 
-system.spawn(
-  ClusterSingletonManager.props({
-    cluster,
-    typeName:        'job-scheduler',
-    singletonProps:  Props.create(() => new JobScheduler()),
-    lease,           // ← split-brain protection
-  }),
-  'singleton-manager-job-scheduler',
-);
+const startSingletonOptions = StartSingletonOptions.create()
+  .withTypeName('job-scheduler')
+  .withProps(Props.create(() => new JobScheduler()))
+  .withLease(lease);        // ← split-brain protection
+cluster.singleton.start(startSingletonOptions);
 ```
 
 The singleton manager will:
@@ -184,13 +180,15 @@ import { Aside } from '@astrojs/starlight/components';
   lease — the lease just keeps the singleton invariant.
 </Aside>
 
-<Aside type="caution" title="Renewal failure ≠ lease lost">
+<Aside type="caution" title="A failed renewal drops the lease immediately">
   ```ts
-  // Single renewal attempt fails — usually transient
+  // A single failed renewal fires onLost at once — no retry
   ```
-  The framework retries renewals before declaring the lease
-  lost.  Don't panic at the first failed renew; only `onLost`
-  fires when ownership is genuinely gone.
+  Neither built-in backend retries renewals.  The first failed
+  renew — a lost race, a `409`/`404`, or any transient backend
+  error — fires `onLost` and drops the lease immediately.
+  `acquireRetries` applies only to `acquire()`, never to the
+  renewal loop, so treat any `onLost` as a real ownership change.
 </Aside>
 
 ## Where to next

@@ -51,18 +51,18 @@ const actorSystemOptions = ActorSystemOptions.create().withConfig({
 const system = ActorSystem.create('my-app', actorSystemOptions);
 
 const ext = system.extension(PersistenceExtensionId);
-const mariaDbJournalOptions = MariaDbJournalOptions.create().withPoolConfig(conn);
+const mariaDbJournalOptions = MariaDbJournalOptions.create().withPoolConfig(connection);
 const mariaDbSnapshotStoreOptions = MariaDbSnapshotStoreOptions.create()
-  .withPoolConfig(conn)
+  .withPoolConfig(connection)
   .withKeepN(3);
-const mariaDbDurableStateStoreOptions = MariaDbDurableStateStoreOptions.create().withPoolConfig(conn);
+const mariaDbDurableStateStoreOptions = MariaDbDurableStateStoreOptions.create().withPoolConfig(connection);
 const registerMariaDbPluginsOptions = RegisterMariaDbPluginsOptions.create()
   .withJournal(mariaDbJournalOptions)
   .withSnapshotStore(mariaDbSnapshotStoreOptions)
   .withDurableStateStore(mariaDbDurableStateStoreOptions);
 const { durableStateStore } = registerMariaDbPlugins(ext, registerMariaDbPluginsOptions);
 
-// conn = { host, port: 3306, user, password, database } — oder gib oben
+// connection = { host, port: 3306, user, password, database } — oder gib oben
 // einen geteilten `pool` (aus mariadb.createPool) via `.withPool(pool)`
 // mit, um einen Pool über alle drei zu nutzen, oder eine Connection-URL
 // via `.withUrl(...)`.
@@ -75,11 +75,11 @@ ihn in die Settings deines `DurableStateActor` reichst.
 ## Konfiguration
 
 ```ts
-interface MariaDbConnection {
+type MariaDbConnection = {
   url?:        string;                    // mariadb://user:pass@host:3306/db
   poolConfig?: Record<string, unknown>;   // { host, port, user, password, database, … }
   pool?:       MariaDbPoolLike;           // vorgebauter / geteilter Pool
-}
+};
 interface MariaDbJournalOptions extends MariaDbConnection {
   eventsTable?: string; tagsTable?: string; autoCreateTables?: boolean;
 }
@@ -128,10 +128,23 @@ Das Verhalten ist identisch; das SQL unterscheidet sich:
 | `keepN`-Prune | `NOT IN (SELECT … LIMIT)` | derived-table-gewrappte Subquery¹ |
 | Durable-Create-Konflikt | `ON CONFLICT DO NOTHING` → rowCount | reines `INSERT`, `ER_DUP_ENTRY` (1062) fangen |
 | Concurrency-Backstop | SQLSTATE `23505` | `ER_DUP_ENTRY` / 1062 |
+| Contention-Backstop | SQLSTATE `40001` / `40P01` | `ER_CHECKREAD` (1020), 1213, 1205² |
 
 ¹ MySQL/MariaDB lehnen `LIMIT` in einer nackten `IN (SELECT …)` gegen die
 zu löschende Tabelle ab, daher wrappt der Prune die Subquery in eine
 Derived Table.
+
+² Ein unterlegener Writer erreicht den Primary Key nicht immer.  Unter
+echter Contention bricht InnoDB ihn vorher ab — *„Record has changed since
+last read"* (errno 1020) — der Duplicate-Key-Backstop allein hätte dem
+Caller also einen undurchsichtigen `JournalError` gereicht, ohne
+Unterscheidungsmöglichkeit zwischen wiederholbarem Race und echtem
+Speicherfehler.  Diese Abbrüche werden ebenfalls klassifiziert, aber nur
+dann als `JournalConcurrencyError` gemeldet, wenn ein erneutes Lesen zeigt,
+dass der Head sich tatsächlich bewegt hat; sonst bleibt der Fehler stehen,
+denn ein Lock-Wait-Timeout gegen eine unbeteiligte lange Transaktion ist
+ein echter Fehler, und ein Retry würde sich nur drehen.  Für Durable-State-
+CAS gilt dasselbe.
 
 `BIGINT` kann der Connector als JS-`bigint` liefern; das Backend coerct
 Sequence/Revision/Timestamp an der Mapping-Grenze zu `number`.

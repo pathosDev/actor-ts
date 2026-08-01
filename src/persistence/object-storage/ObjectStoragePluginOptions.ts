@@ -7,11 +7,9 @@ import type {
 } from './PluginConfig.js';
 import type { ObjectStorageBackendSpec } from './ObjectStoragePlugin.js';
 
-export interface ObjectStoragePluginOptionsType {
+export type ObjectStoragePluginOptionsType = {
   /** Plugin ID under which the snapshot store is registered. */
   readonly snapshotPluginId?: string;
-  /** Plugin ID for the durable-state store. */
-  readonly durableStatePluginId?: string;
   /** Backend definition — filesystem, S3, or custom. */
   readonly backend: ObjectStorageBackendSpec;
   /** Key prefix prepended to every object — e.g. `'env-prod/'`. */
@@ -29,7 +27,7 @@ export interface ObjectStoragePluginOptionsType {
    * (`DEFAULT_MAX_DECOMPRESSED_BYTES`); `Infinity` opts out.
    */
   readonly maxDecompressedBytes?: number;
-}
+};
 
 /**
  * Fluent builder for {@link ObjectStoragePluginOptionsType}.  The `backend`
@@ -87,11 +85,6 @@ export class ObjectStoragePluginOptionsBuilder extends OptionsBuilder<ObjectStor
   /** Plugin ID under which the snapshot store is registered. */
   withSnapshotPluginId(snapshotPluginId: string): this {
     return this.set('snapshotPluginId', snapshotPluginId);
-  }
-
-  /** Plugin ID for the durable-state store. */
-  withDurableStatePluginId(durableStatePluginId: string): this {
-    return this.set('durableStatePluginId', durableStatePluginId);
   }
 }
 

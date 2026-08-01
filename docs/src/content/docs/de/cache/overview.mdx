@@ -4,8 +4,9 @@ description: Eine kleine, opportunistische Cache-Abstraktion — sieben Kernoper
 ---
 
 Das `Cache`-Interface ist der **opportunistische Key/Value-Cache**
-des Frameworks.  Drei Operationen decken ~95 % der realen Fälle ab:
-get, set, atomares Inkrement, set-if-absent, delete.
+des Frameworks.  Sieben Operationen decken ~95 % der realen Fälle ab:
+get, set, atomares Inkrement, set-if-absent, delete, Bulk-Get,
+Bulk-Set.
 
 Genutzt von:
 
@@ -28,7 +29,7 @@ interface Cache {
   setIfAbsent<V>(key: string, value: V, ttlMs?: number): Promise<boolean>;
   delete(...keys: string[]): Promise<void>;
   mget<V>(keys: string[]): Promise<Map<string, V>>;
-  mset(entries: Array<[string, unknown, number?]>): Promise<void>;
+  mset<V>(entries: ReadonlyMap<string, V>, ttlMs?: number): Promise<void>;
 }
 ```
 
@@ -131,10 +132,10 @@ aktiven Entität in einem Redis-Call statt N holen.
 `mset` ist das Gegenstück:
 
 ```ts
-await cache.mset([
-  ['user:1', user1, 60_000],
-  ['user:2', user2, 60_000],
-]);
+await cache.mset(new Map([
+  ['user:1', user1],
+  ['user:2', user2],
+]), 60_000);
 ```
 
 ## Wann den Cache NICHT nutzen

@@ -15,7 +15,11 @@ import type { ActorSystem } from './ActorSystem.js';
 export class ActorSelection {
   constructor(
     private readonly system: ActorSystem,
-    /** Segments after `/user/` or `/system/`, e.g. ['user', 'foo', 'bar']. */
+    /**
+     * Segments relative to the root, guardian *included* — so
+     * `['user', 'foo', 'bar']` for a user actor and
+     * `['system', 'cluster', 'receptionist']` for a framework one.
+     */
     readonly pathSegments: ReadonlyArray<string>,
     /** Printable form, convenient for logging. */
     readonly pathString: string,

@@ -4,110 +4,256 @@ description: Eine event-sourced FSM — Übergänge werden als Events persistier
 ---
 
 `PersistentFSM` ist die event-sourced Variante von
-[FSM](/de/persistence/fsm/fsm/).  Jeder Zustandsübergang wird zu
-einem **persistierten Event** — beim Neustart spielt die FSM sie
-ab und setzt im exakten Zustand fort, in dem sie war.
+[FSM](/de/persistence/fsm/fsm/).  Sie ist **tabellengetrieben**: Du
+deklarierst eine Übergangstabelle, und jedes Command, das einen Übergang
+auslöst, persistiert dessen Event(s).  Beim Neustart spielt die FSM
+diese Events durch `applyEvent` ab und setzt im exakten Zustand fort, in
+dem sie war.
 
 ```ts
+import { match } from 'ts-pattern';
 import { PersistentFSM } from 'actor-ts';
+import type { FsmStateData, FsmTransitionMap } from 'actor-ts';
 
-type State = 'created' | 'submitted' | 'approved' | 'rejected';
-type Data  = { id: string; reviewer?: string; reason?: string };
-type Message   = { kind: 'submit' } | { kind: 'approve'; reviewer: string } | { kind: 'reject'; reason: string };
+type State   = 'created' | 'submitted' | 'approved' | 'rejected';
+type Data    = { id: string; reviewer?: string; reason?: string };
+type Command =
+  | { kind: 'submit' }
+  | { kind: 'approve'; reviewer: string }
+  | { kind: 'reject'; reason: string };
+type Event =
+  | { kind: 'submitted' }
+  | { kind: 'approved'; reviewer: string }
+  | { kind: 'rejected'; reason: string };
 
-class OrderApproval extends PersistentFSM<State, Data, Message> {
-  readonly persistenceId = `order-${this.orderId}`;
+class OrderApproval extends PersistentFSM<Command, Event, State, Data> {
+  readonly persistenceId: string;
 
   constructor(private readonly orderId: string) {
-    super('created', { id: orderId });
+    super();
+    this.persistenceId = `order-${orderId}`;
+  }
 
-    this.when('created', (data, msg) => {
-      if (msg.kind === 'submit') return this.goto('submitted', data);
-      return this.stay(data);
-    });
+  initialFsmState(): State { return 'created'; }
+  initialData(): Data { return { id: this.orderId }; }
 
-    this.when('submitted', (data, msg) => {
-      if (msg.kind === 'approve') return this.goto('approved', { ...data, reviewer: msg.reviewer });
-      if (msg.kind === 'reject')  return this.goto('rejected', { ...data, reason: msg.reason });
-      return this.stay(data);
-    });
+  transitions: FsmTransitionMap<State, Command, Event, Data> = {
+    created: {
+      submit: { event: { kind: 'submitted' }, next: 'submitted' },
+    },
+    submitted: {
+      approve: {
+        event: (command): Event => ({ kind: 'approved', reviewer: command.reviewer }),
+        next: 'approved',
+      },
+      reject: {
+        event: (command): Event => ({ kind: 'rejected', reason: command.reason }),
+        next: 'rejected',
+      },
+    },
+    // `approved` und `rejected` sind terminal — keine Einträge.
+  };
 
-    // Terminale Zustände — keine weiteren Übergänge.
-    this.when('approved',  (data) => this.stay(data));
-    this.when('rejected',  (data) => this.stay(data));
+  applyEvent(state: State, data: Data, event: Event): FsmStateData<State, Data> {
+    return match(event)
+      .with({ kind: 'submitted' }, () => ({ state: 'submitted' as const, data }))
+      .with({ kind: 'approved' },  (e) => ({ state: 'approved' as const, data: { ...data, reviewer: e.reviewer } }))
+      .with({ kind: 'rejected' },  (e) => ({ state: 'rejected' as const, data: { ...data, reason: e.reason } }))
+      .exhaustive();
   }
 }
 ```
 
-Ein Neustart **spielt** die persistierten Übergänge (Events)
-**ab**, sodass die FSM genau dort weitermacht, wo die vorherige
-Inkarnation aufgehört hat — einschließlich des aktuellen
-Zustandsnamens, der Daten und etwaiger laufender
-Seiteneffekt-Buchhaltung.
+Die Typparameter sind `PersistentFSM<Command, Event, SName, Data>` — die
+eingehende Command-Union, die persistierte Event-Union, die
+Zustandsnamen-Union und die Domain-Daten.  Ein Neustart **spielt** die
+persistierten Events durch `applyEvent` **ab**, sodass die FSM genau
+dort weitermacht, wo die vorherige Inkarnation aufgehört hat —
+einschließlich des aktuellen Zustandsnamens und der Daten.
+
+## Was du implementierst
+
+Vier Member treiben die Maschine — kein `when` / `goto` / `stay`-DSL:
+
+- **`initialFsmState()`** — der Startzustandsname, wenn noch keine Events
+  abgespielt wurden.
+- **`initialData()`** — die Startdaten.
+- **`transitions`** — die Übergangstabelle (`state` × `command.kind` →
+  Eintrag).  Als Klassenfeld deklariert, damit die Command-spezifische
+  Typverengung an jeder Aufrufstelle funktioniert.
+- **`applyEvent(state, data, event)`** — der **reine Fold**, der das
+  kombinierte `{ state, data }` zurückgibt.  Er läuft sowohl zur
+  Persist-Zeit (vorwärts) *als auch* während der Recovery (Replay), muss
+  also deterministisch und frei von Seiteneffekten sein.
+
+`persistenceId` (geerbt von
+[PersistentActor](/de/persistence/persistent-actor/)) benennt den
+Event-Stream.
 
 ## Was persistiert wird
 
-Jeder Übergang (`goto`) wird als `StateChangeEvent`
-persistiert:
+Es gibt kein Framework-Wrapper-Event — das Journal speichert deine
+eigenen Domain-`Event`-Werte.  Bei jedem Command tut die Basisklasse:
 
-```ts
-type StateChangeEvent<SName, SData> = {
-  from: SName;
-  to:   SName;
-  data: SData;
-  ts:   number;
-};
-```
+1. Schlägt `transitions[currentState][command.kind]` nach.  Gibt es
+   keinen Eintrag, ist es ein **ungültiger Übergang** — auf warn
+   geloggt, nichts persistiert, keine Zustandsänderung (überschreibe
+   `onInvalidTransition`, um das anzupassen).
+2. Hat der Eintrag einen `guard` und gibt dieser `false` zurück, wird
+   das Command verworfen — auf debug geloggt, nichts persistiert
+   (überschreibe `onGuardRejected`, um das anzupassen).
+3. Andernfalls wertet sie das `event` des Eintrags aus, persistiert es
+   via `persistAll` und wendet es über `applyEvent` an.
 
-Das Framework schreibt ein Event pro Übergang.  `stay(...)`
-persistiert **nicht** — nur Zustandsänderungen werden
-aufgezeichnet.
-
-Das ist eine bewusste Wahl: Stays sind normalerweise
-Daten-Updates, die keine Durability für FSM-Korrektheit
-brauchen.  Wenn du Daten-Updates auch persistiert brauchst,
-übergehe explizit (`goto('same-state', newData)`) — aber das
-erzeugt Noise-Events.
+`applyEvent` ist die einzige Quelle der Wahrheit für Zustands- +
+Daten-Updates.
 
 ## Recovery
 
-1. **`preStart`** liest jedes `StateChangeEvent` für die
-   `persistenceId` aus dem Journal.
-2. **Spielt jedes Event** der Reihe nach ab — wendet
-   `from → to` plus die gespeicherten Daten an.
-3. **Finaler Zustand + Daten** sind das Ergebnis des Replays;
-   die FSM ist jetzt mit diesem Zustand für `onReceive`
-   verfügbar.
+1. **`preStart`** lädt den letzten Snapshot (falls vorhanden) und liest
+   jedes nachfolgende Domain-Event für die `persistenceId` aus dem
+   Journal.
+2. **Spielt jedes Event** der Reihe nach durch `applyEvent` ab und baut
+   sowohl den Zustandsnamen als auch die Daten wieder auf.
+3. **`onRecoveryComplete`** feuert mit dem finalen abgespielten Zustand,
+   woraufhin die FSM beginnt, Live-Commands zu verarbeiten.
+
+Schlägt die Recovery fehl, stoppt die FSM, bevor ein Übergang läuft
+oder ein State-Timeout armiert wird — siehe [Wenn die Recovery
+fehlschlägt](/de/persistence/persistent-actor/#wenn-die-recovery-fehlschlägt).
 
 Dieselbe Idiomatik wie
-[PersistentActor](/de/persistence/persistent-actor/) — Replay
-baut deterministisch die exakte Position der Zustandsmaschine
-wieder auf.
+[PersistentActor](/de/persistence/persistent-actor/) — Replay baut
+deterministisch die exakte Position der Zustandsmaschine wieder auf.
+`transitions` und Guards werden nur für **Live-Commands** herangezogen
+(den nächsten Übergang entscheiden); Replay treibt den Zustand rein über
+`applyEvent`.
 
-`when`-Handler laufen während des Replays nicht — sie sind für
-die **Command-Behandlung** (den nächsten Übergang entscheiden),
-nicht für die Zustands-Ableitung.  Der Übergang selbst ist das,
-was gespeichert wird; Replay setzt nur den Zustand.
+## Die Übergangstabelle
 
-## Konfiguration
+Jeder Eintrag hat ein `event`, ein Ziel `next` und einen optionalen
+`guard`:
 
 ```ts
-class OrderApproval extends PersistentFSM<S, D, M> {
-  abstract readonly persistenceId: string;
+transitions: FsmTransitionMap<State, Command, Event, Data> = {
+  submitted: {
+    approve: {
+      // Ein Guard überspringt den Übergang (kein Event, keine
+      // Zustandsänderung), wenn er false zurückgibt — auf debug geloggt.
+      guard: (command) => command.reviewer.length > 0,
+      event: (command): Event => ({ kind: 'approved', reviewer: command.reviewer }),
+      next: 'approved',
+    },
+  },
+};
+```
 
-  // Optionale Overrides:
-  snapshotPolicy(): SnapshotPolicy<...> { return everyNEvents(50); }
-  eventAdapter(): EventAdapter<...> | undefined { return undefined; }
-  // ... gleiche wie PersistentActor
+`event` nimmt drei Formen an: ein **Literal** (`{ kind: 'submitted' }`),
+eine **Funktion** `(command, data) => Event` oder — für mehrere Events
+pro Command (#66) — ein **Array** oder eine Funktion, die eines
+zurückgibt.  Array-Events persistieren atomar in einem einzigen
+`persistAll`, `applyEvent` läuft einmal pro Event, und nur der **finale**
+Zustand nach dem Replay wird gegen `next` geprüft.  Ein leeres Array ist
+ein No-op (nichts persistiert, kein Übergang).
+
+```ts
+pay: {
+  event: (command): Event[] => [
+    { kind: 'paid', amount: command.amount },
+    { kind: 'audit-logged' },
+  ],
+  next: 'paid',
+},
+```
+
+`next` ist hauptsächlich informativ — `applyEvent` ist das, was den
+Übergang tatsächlich treibt — aber eine Diskrepanz zwischen den beiden
+wird auf warn geloggt, um ein Auseinanderdriften von Tabelle und Fold zu
+erkennen.
+
+## Zustands-Timeouts (#65)
+
+Ein Zustand kann einen `_timeout`-Eintrag deklarieren, der beim Eintritt
+in diesen Zustand einen einmaligen Timer scharf stellt.  Verstreicht
+`afterMs`, bevor ein Command herausübergeht, feuert die FSM das
+Timeout-Event automatisch durch dieselbe Persist-dann-Apply-Pipeline:
+
+```ts
+authorized: {
+  capture: { event: { kind: 'captured' }, next: 'captured' },
+  // Die Autorisierung automatisch ablaufen lassen, wenn niemand
+  // rechtzeitig captured.
+  _timeout: {
+    afterMs: 15 * 60 * 1000,
+    event: { kind: 'expired' },
+    next: 'expired',
+    // Optionaler Guard — false bricht das Feuern still ab.
+    // guard: (data) => data.amount > 0,
+  },
+},
+```
+
+Der Timer wird bei jedem Übergang neu scharf gestellt und abgebrochen,
+wenn die FSM den Zustand verlässt (oder stoppt).  Bei der Recovery wird
+er **relativ zur Wall-Clock beim Recovery-Abschluss neu scharf
+gestellt** — eine lange gestoppte FSM bekommt ein frisches
+`afterMs`-Fenster statt eines sofortigen „bereits abgelaufen"-Feuerns.
+
+## Seiteneffekte
+
+`PersistentFSM` hat **keine** `onEnter` / `onExit` / `onTransition`-Hooks
+— die gehören nur zur In-Memory-[FSM](/de/persistence/fsm/fsm/).  Bringe
+niemals Seiteneffekte in `applyEvent` unter: Es ist ein reiner Fold, der
+bei jedem Replay läuft, sodass ein Seiteneffekt dort bei jedem Neustart
+erneut feuern würde.
+
+Bringe Seiteneffekte dort unter, wo sie **nur für Live-Commands** laufen
+— überschreibe `onCommand`, delegiere an `super.onCommand` und handle
+dann auf dem neuen Zustand.  `onCommand` läuft während des Replays nie
+(die Recovery treibt den Zustand allein über `applyEvent`), sodass der
+Seiteneffekt einmal pro echtem Übergang feuert:
+
+```ts
+override async onCommand(curr: FsmStateData<State, Data>, command: Command): Promise<void> {
+  await super.onCommand(curr, command);   // führt den tabellengetriebenen Übergang aus
+  if (this.currentFsmState === 'submitted') {
+    await this.notifyReviewer(this.currentData);   // Seiteneffekt nur vorwärts
+  }
 }
 ```
 
-Erbt dieselbe Persistenz-Maschinerie wie `PersistentActor`:
+Für Arbeit, die einmal nach dem Wiederhochfahren der FSM laufen muss,
+verwende `onRecoveryComplete(state)`.
+
+## Konfiguration
+
+Die Persistenz-Maschinerie wird von `PersistentActor` geerbt —
+überschreibe dieselben Hooks:
+
+```ts
+class OrderApproval extends PersistentFSM<Command, Event, State, Data> {
+  readonly persistenceId = 'order-42';
+
+  // Optionale Overrides (gleiche wie PersistentActor):
+  override snapshotPolicy() { return everyNEvents(50); }
+  override eventAdapter() { return undefined; }
+  override tagsFor(event: Event) { return undefined; }
+  // ... initialFsmState / initialData / transitions / applyEvent wie oben
+}
+```
 
 - `persistenceId` — der Event-Stream-Key.
 - `snapshotPolicy` — periodische Snapshots zur Replay-Begrenzung.
 - `eventAdapter` / `snapshotAdapter` — Schema-Migration.
 - `tagsFor` — Events für Projektions-Konsum taggen.
+
+## Aktuellen Zustand lesen
+
+Zwei protected Getter legen den kombinierten Zustand offen (nach der
+Recovery verlässlich), praktisch innerhalb überschriebener Handler:
+
+- `currentFsmState` — der aktuelle Zustandsname.
+- `currentData` — die aktuellen Domain-Daten.
 
 ## Snapshots für FSMs
 
@@ -115,9 +261,9 @@ Erbt dieselbe Persistenz-Maschinerie wie `PersistentActor`:
 override snapshotPolicy() { return everyNEvents(50); }
 ```
 
-Für lange laufende FSMs, die viele Übergänge akkumulieren,
-begrenzen Snapshots den Replay.  Der Snapshot serialisiert
-`{ stateName, stateData }` — ein kompakter Blob.
+Für lange laufende FSMs, die viele Übergänge akkumulieren, begrenzen
+Snapshots den Replay.  Der Snapshot serialisiert das kombinierte
+`{ state, data }` (`FsmStateData`) — ein kompakter Blob.
 
 Wähle das Intervall basierend auf der Übergangs-Frequenz:
 
@@ -128,117 +274,39 @@ Wähle das Intervall basierend auf der Übergangs-Frequenz:
 Siehe [Snapshots](/de/persistence/snapshots/) für die
 allgemeine Policy-Guidance.
 
-## Seiteneffekte pro Übergang
-
-```ts
-class OrderApproval extends PersistentFSM<State, Data, Message> {
-  // ...
-
-  override async onEnter(state: State, data: Data): Promise<void> {
-    if (state === 'submitted') {
-      await this.notifyReviewer(data);   // ← Seiteneffekt bei Übergang
-    }
-  }
-}
-```
-
-`onEnter`-Callbacks laufen **nur bei Zustandsänderungen** — sowohl
-zur Übergangszeit als auch **NICHT** während des Replays.  Das ist
-der Schlüssel-Unterschied zu PersistentActor: Persistente FSMs
-behandeln den Zustands-Eintritt als Seiteneffekt-Hook, und die
-Recovery überspringt sie.
-
-Das bedeutet, **Seiteneffekte können in `onEnter` leben**, ohne
-Sorge vor Duplizierung beim Neustart.  Das ist ein bedeutsamer
-ergonomischer Gewinn gegenüber PersistentActors "Seiteneffekte
-nur im Persist-Callback."
-
-```
-Event-Flow während eines Übergangs:
-  1. Handler gibt goto(newState, newData) zurück
-  2. Framework persistiert StateChangeEvent
-  3. onExit(oldState, oldData) feuert
-  4. onEnter(newState, newData) feuert  ← Seiteneffekte hier
-  5. Antwort / weitere Arbeit läuft weiter
-
-Event-Flow während der Recovery:
-  1. Persistierte Events lesen
-  2. Für jedes: Zustand + Daten aktualisieren (keine Callbacks)
-  3. onReceive setzt fort — erstes neues Command läuft normal
-```
-
-## Lange laufendes Workflow-Beispiel
-
-Eine Multi-Step-Saga:
-
-```ts
-type SagaState =
-  | 'reserved-inventory'
-  | 'charged-payment'
-  | 'scheduled-shipping'
-  | 'completed'
-  | 'compensating-inventory'
-  | 'compensating-payment'
-  | 'failed';
-
-class OrderSaga extends PersistentFSM<SagaState, Data, Message> {
-  // Jeder Übergang wird persistiert. Ein Crash mitten in der Saga
-  // setzt vom letzten persistierten Zustand fort — keine Arbeit geht verloren.
-
-  this.when('reserved-inventory', (data, msg) => {
-    if (msg.kind === 'payment-success') return this.goto('charged-payment', { ... });
-    if (msg.kind === 'payment-failure') return this.goto('compensating-inventory', { ... });
-    return this.stay(data);
-  });
-
-  override async onEnter(state, data) {
-    if (state === 'charged-payment') {
-      await scheduleShipping(data);   // sicher — feuert einmal pro echtem Übergang
-    }
-    if (state === 'compensating-inventory') {
-      await releaseInventory(data);
-    }
-  }
-}
-```
-
-Die Kombination aus **persistierten Übergängen** +
-**nicht-abgespielten onEnter-Callbacks** macht dieses Muster
-viel sauberer als PersistentActor-mit-Event-Handlern für
-zustandsmaschinen-förmige Workflows.
-
 ## Stolperfallen
 
 import { Aside } from '@astrojs/starlight/components';
 
-<Aside type="caution" title="`stay`-Updates werden nicht persistiert">
+<Aside type="caution" title="`applyEvent` muss ein reiner Fold sein">
   ```ts
-  this.when('current', (data, msg) => this.stay({ ...data, counter: data.counter + 1 }));
+  applyEvent(state, data, event) {
+    await sendEmail(data);   // ✗ läuft bei jedem Replay erneut
+    return { state: 'sent', data };
+  }
   ```
-  `stay(newData)` aktualisiert die In-Memory-Daten, wird aber
-  **nicht persistiert**.  Beim Neustart setzt sich der Counter
-  auf das zurück, was das letzte `goto` gesetzt hat.  Für
-  kritische Daten gehe über (oder verwende einen separaten
-  PersistentActor für die Daten-Akkumulation).
+  `applyEvent` läuft sowohl vorwärts als auch während der Recovery.
+  Alles mit einem Seiteneffekt gehört in `onCommand` (nur vorwärts) oder
+  `onRecoveryComplete` — niemals in den Fold.
 </Aside>
 
-<Aside type="caution" title="Seiteneffekte in Handlern, nicht in onEnter">
+<Aside type="caution" title="Daten-Updates brauchen ein Event">
   ```ts
-  this.when('idle', async (data, msg) => {
-    await externalCall();   // ✗ läuft bei jedem Replay vor dem Recovery-Abschluss
-    return this.goto('working', data);
-  });
+  // Ein Command ohne passenden Übergangs-Eintrag wird verworfen — die
+  // In-Memory-Daten werden NICHT als Seitenkanal mutiert.
   ```
-  Handler laufen nur bei **neuen** Messages, nicht während des
-  Replays — das ist okay für Stay-Entscheidungen, aber
-  **Seiteneffekte in Handlern** riskieren immer noch
-  Duplizierung, wenn der Actor mitten im Call abstürzt.
-  Bevorzuge Seiteneffekte in `onEnter` des Ziel-Zustands.
+  Der einzige Weg, Zustand oder Daten zu ändern, ist ein Event zu
+  persistieren, das `applyEvent` einfaltet.  Es gibt kein
+  `stay(newData)`: Wenn ein reines Daten-Update einen Neustart überleben
+  soll, modelliere es als Event mit einem Übergang, dessen `next`
+  derselbe Zustand ist.
 </Aside>
 
 <Aside type="caution" title="Gleiche `persistenceId` für FSM und anderen Actor">
   ```ts
   // Zwei Actors verwenden 'order-42' — Konflikt!
+  const fsm    = new OrderApproval('42');       // persistenceId 'order-42'
+  const events = new OrderEvents('order-42');   // gleicher Stream — Kollision
   ```
   PersistentFSM und PersistentActor teilen sich das Journal.
   Gleiche `persistenceId` = gleicher Event-Stream.  Verwende

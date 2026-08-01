@@ -230,9 +230,11 @@ the view + offset atomically).  See
 
 ### What about TypeScript versions?
 
-We test against **TypeScript 5.6+**.  Earlier versions may work
-but aren't supported.  The framework uses some features
-(e.g., `const` type parameters) that landed in recent releases.
+The framework itself builds and typechecks with **TypeScript 7**
+(the native compiler); the published types are consumable from
+**TypeScript 5.6+** (the `typescript` peer-dependency range is
+`^5.6 || ^6 || ^7`).  Earlier versions may work but aren't
+supported.
 
 ### Why ts-pattern?
 
@@ -241,8 +243,8 @@ in TS — the discriminated-union dispatch pattern is everywhere in
 the codebase and a hand-rolled switch loses the exhaustiveness
 check.
 
-You're not *required* to use ts-pattern in your own code; plain
-`if/else` ladders work fine.  See
+It's installed automatically alongside actor-ts, so there's
+nothing extra to add.  See
 [Pattern matching](/fundamentals/pattern-matching/).
 
 ### Bun vs Node — which should I pick?
@@ -262,21 +264,28 @@ See [Runtime — Compatibility matrix](/runtime/compatibility-matrix/).
 ## Debugging
 
 <Aside type="caution" title="Why isn't my actor receiving messages?">
-  Three common causes:
+  Four common causes:
   - **The ref points at a stopped actor** — messages route to
     `/deadLetters` (check the system log).
   - **The mailbox is full** with `reject` overflow — `tell` throws
     `MailboxFullError` at the sender.  Catch it where you tell.
   - **Recovery hasn't finished** for a `PersistentActor` — messages
-    sent before `onRecoveryComplete` are stashed.  Slow recovery
-    causes apparent delays.
+    sent before `onRecoveryComplete` wait in the mailbox.  Slow
+    recovery causes apparent delays.
+  - **Recovery *failed*** for a `PersistentActor` — a corrupt event
+    or a refused snapshot.  The actor stops, so its messages go to
+    `/deadLetters`.  If an `onRecoveryFailure` override swallowed
+    the error, the log line to look for is "recovery failed and
+    onRecoveryFailure returned without rethrowing".  See
+    [When recovery fails](/persistence/persistent-actor/#when-recovery-fails).
 </Aside>
 
 <Aside type="caution" title="Why does my actor keep restarting?">
   Usually `onReceive` is throwing.  Check the system log — every
   failure is logged with the error and the directive applied.
-  The default supervisor restarts up to 10/minute, then escalates;
-  beyond that you'll see "supervisor giving up" in the logs.
+  The default supervisor restarts up to 10/minute; once that
+  threshold is exceeded it stops the child, logging "Restart
+  threshold exceeded (10 in 60000ms) — stopping children".
 </Aside>
 
 <Aside type="caution" title="Why is my ask timing out?">
@@ -287,7 +296,7 @@ See [Runtime — Compatibility matrix](/runtime/compatibility-matrix/).
     target arrives but not the reply.
   - **The reply-to ref is the wrong one** — `ask` generates a
     temporary ref; if you don't use the one in the message
-    (`cmd.replyTo`), the reply goes elsewhere.
+    (`command.replyTo`), the reply goes elsewhere.
 </Aside>
 
 <Aside type="caution" title="Why don't my events replay?">

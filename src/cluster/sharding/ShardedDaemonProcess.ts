@@ -13,16 +13,16 @@ import { ShardedDaemonProcessOptionsValidator } from './ShardedDaemonProcessOpti
 import type { ShardedDaemonProcessOptions, ShardedDaemonProcessOptionsType } from './ShardedDaemonProcessOptions.js';
 
 /** Envelope the sharded region routes to daemon #index. */
-interface DaemonEnvelope<T> { readonly index: number; readonly body: T | Wakeup; }
+type DaemonEnvelope<T> = { readonly index: number; readonly body: T | Wakeup; };
 
 /** Internal no-op message used to materialize a daemon on startup. */
-interface Wakeup { readonly t: 'sharded-daemon.wakeup'; }
+type Wakeup = { readonly t: 'sharded-daemon.wakeup'; };
 const WAKEUP: Wakeup = { t: 'sharded-daemon.wakeup' };
 
 export interface ShardedDaemonProcessHandle<T> {
   /**
    * Sharded region ref.  Messages sent here must carry a `{index, body}`
-   * envelope — use `tell(i, msg)` on the handle instead.
+   * envelope — use `tell(i, message)` on the handle instead.
    */
   readonly region: ActorRef<DaemonEnvelope<T>>;
 
@@ -88,9 +88,9 @@ export class ShardedDaemonProcess {
       match(evt)
         .with(
           P.union(P.instanceOf(LeaderChanged), P.instanceOf(MemberRemoved)),
-          () => { setTimeout(wakeAll, 100); },
+          () => onTopologyChanged(wakeAll),
         )
-        .otherwise(() => { /* other events don't warrant a re-wake */ }),
+        .otherwise(() => onOtherClusterEvent()),
     );
 
     // Periodic liveness backstop — fires even when no cluster events do,
@@ -99,7 +99,7 @@ export class ShardedDaemonProcess {
     const livenessIntervalMs = resolvedOptions.livenessIntervalMs ?? 30_000;
     let livenessTimer: Cancellable | null = null;
     if (livenessIntervalMs > 0) {
-      livenessTimer = system.scheduler.scheduleAtFixedRateFn(
+      livenessTimer = system.scheduler.scheduleAtFixedRateFunction(
         livenessIntervalMs, livenessIntervalMs, wakeAll,
       );
     }
@@ -136,13 +136,29 @@ class DaemonHost<T> extends Actor<DaemonEnvelope<T>> {
     this.inner = this.context.spawn(props, 'daemon');
   }
 
-  override onReceive(msg: DaemonEnvelope<T> | T | Wakeup): void {
+  override onReceive(message: DaemonEnvelope<T> | T | Wakeup): void {
     // ShardRegion uses `extractEntityMessage` to unwrap the envelope before
-    // delivery, so `msg` here is actually the `body` field of the envelope.
-    if (isWakeup(msg)) return; // already awake — preStart ran
-    this.inner?.tell(msg as T);
+    // delivery, so `message` here is actually the `body` field of the envelope.
+    if (isWakeup(message)) return; // already awake — preStart ran
+    this.inner?.tell(message as T);
   }
 }
+
+/**
+ * A leader change or a departed member can leave shards without a home.
+ * The short delay lets the coordinator finish reallocating before we
+ * re-wake, so the wake-ups don't race the allocation they depend on.
+ *
+ * Module-level rather than a method: the subscription is set up in static
+ * `init`, where there is no instance, and the handler needs `wakeAll` from
+ * the enclosing scope.
+ */
+function onTopologyChanged(wakeAll: () => void): void {
+  setTimeout(wakeAll, 100);
+}
+
+/** Every other cluster event leaves shard homes intact — nothing to re-wake. */
+function onOtherClusterEvent(): void {}
 
 function indexFromEntityName(name: string): number {
   // Names are set by ShardRegion as `entity-<entityId>` where entityId is

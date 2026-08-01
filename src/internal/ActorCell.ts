@@ -27,6 +27,9 @@ import {
 } from '../Supervision.js';
 import {
   ActorKilledError,
+  ActorRestarted,
+  ActorStarted,
+  ActorStopped,
   DeadLetter,
   Kill,
   PoisonPill,
@@ -34,10 +37,26 @@ import {
   Terminated,
 } from '../SystemMessages.js';
 import { Envelope, Mailbox } from './Mailbox.js';
+import {
+  describeMessagePayload,
+  describeMessageType,
+  ExplainRecorder,
+  type CellInspection,
+  type CellState,
+  type DispatchObserver,
+  type MessageExplain,
+  type MessageOutcome,
+} from './Instrumentation.js';
 import { BoundedMailbox } from '../mailbox/BoundedMailbox.js';
 import { DEFAULT_MAILBOX_CAPACITY, DEFAULT_MAILBOX_OVERFLOW } from '../util/Constants.js';
 import { LocalActorRef } from './LocalActorRef.js';
-import type { SystemCommand } from './SystemCommand.js';
+import type {
+  ChildTerminatedCommand,
+  FailureCommand,
+  RecreateCommand,
+  SystemCommand,
+  WatchNotifyCommand,
+} from './SystemCommand.js';
 import type { Cancellable } from '../Scheduler.js';
 import { match } from 'ts-pattern';
 import { fromNullable, type Option } from '../util/Option.js';
@@ -45,12 +64,8 @@ import { TokenBucket } from '../util/TokenBucket.js';
 
 const DEFAULT_STASH_CAPACITY = 1024;
 
-type CellState =
-  | 'creating'
-  | 'running'
-  | 'suspended'
-  | 'terminating'
-  | 'terminated';
+/** Messages kept by an explain plan when the caller names no capacity. */
+const DEFAULT_EXPLAIN_CAPACITY = 100;
 
 /**
  * Internal runtime for a single actor.  Bridges the user-visible Actor /
@@ -92,8 +107,37 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
   /** Pending pause-mode resume, so we don't double-schedule. */
   private _throttleResumeTimer: Cancellable | null = null;
 
+  /**
+   * Recent-message recorder, `null` until `enableExplainPlan()`.
+   * Its presence is also what turns on envelope timestamping, so an
+   * actor nobody is inspecting pays nothing.
+   */
+  private _explain: ExplainRecorder | null = null;
+
+  /**
+   * Tooling actor — see `PropsConfig.internal`.  Inherited, so a
+   * DevTools websocket connection spawned under the DevTools hub counts
+   * as tooling without anyone having to say so twice.
+   */
+  readonly _internal: boolean;
+
   /** Per-actor timer scheduler. */
   readonly timers: TimerScheduler<TMessage> = new CellTimerScheduler<TMessage>(this);
+
+  /**
+   * @internal Child names to stop one after another instead of all at once,
+   * each fully drained before the next is asked to stop.
+   *
+   * Set only on the root cell, to `GUARDIAN_SHUTDOWN_ORDER`.  `null`
+   * everywhere else: for an ordinary actor, stopping every child
+   * concurrently is both correct and faster — siblings are peers, and
+   * nothing about being a child implies an ordering.  The guardians are the
+   * exception because one of them exists to serve the other.
+   */
+  _terminationOrder: ReadonlyArray<string> | null = null;
+
+  /** Cursor into {@link _terminationOrder} while terminating. */
+  private _terminationGroupIndex = 0;
 
   constructor(
     readonly system: ActorSystem,
@@ -102,6 +146,7 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
     public readonly name: string,
   ) {
     this._parent = parent;
+    this._internal = props.config.internal === true || parent?._internal === true;
     const uid = parent ? parent._nextChildUid() : 0;
     this.path = parent
       ? parent.path.child(name, uid)
@@ -172,6 +217,133 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
   /** @internal — used by ActorSelection to walk down the tree. */
   _findChildCell(name: string): ActorCell<unknown> | null {
     return this._children.get(name) ?? null;
+  }
+
+  /**
+   * @internal Describe this cell for introspection tooling.
+   *
+   * A snapshot of what a debugger wants to show, taken from fields that
+   * are otherwise private.  Deliberately separate from the public
+   * `children` / `stashSize` accessors: those are the actor-facing API
+   * and should not grow diagnostic surface.
+   */
+  _inspect(): CellInspection {
+    return {
+      path: this.path.toString(),
+      parentPath: this._parent?.path.toString() ?? null,
+      name: this.path.name,
+      className: this.actor?.constructor.name ?? '?',
+      cellState: this.state,
+      mailboxSize: this.mailbox.size,
+      stashSize: this._stashBuffer.length,
+      suspended: this.mailbox.suspended,
+      dispatcher: this.props.config.dispatcher?.id ?? null,
+      childCount: this._children.size,
+      internal: this._internal,
+    };
+  }
+
+  enableExplainPlan(options: { readonly capacity?: number } = {}): void {
+    this._enableExplain(options.capacity ?? DEFAULT_EXPLAIN_CAPACITY);
+  }
+
+  disableExplainPlan(): void {
+    this._disableExplain();
+  }
+
+  explainPlan(): ReadonlyArray<MessageExplain> {
+    return this._explainEntries();
+  }
+
+  /**
+   * @internal Start recording recent message handlings.  Re-enabling
+   * with a different capacity starts a fresh ring.
+   */
+  _enableExplain(capacity: number): void {
+    if (this._explain !== null && this._explain.capacity === capacity) return;
+    this._explain = new ExplainRecorder(capacity);
+  }
+
+  /** @internal Stop recording and discard what was recorded. */
+  _disableExplain(): void {
+    this._explain = null;
+  }
+
+  /** @internal Recorded handlings, oldest first; empty when disabled. */
+  _explainEntries(): ReadonlyArray<MessageExplain> {
+    return this._explain?.snapshot() ?? [];
+  }
+
+  /** @internal Ring capacity, or `0` when recording is off. */
+  _explainCapacity(): number {
+    return this._explain?.capacity ?? 0;
+  }
+
+  /** @internal Report one completed handling to a running profiler. */
+  private _observeDispatch(
+    observer: DispatchObserver,
+    env: Envelope<TMessage>,
+    handleTimeMs: number,
+    failure: Error | null,
+  ): void {
+    observer.onMessageProcessed({
+      actorPath: this.path.toString(),
+      className: this.actor?.constructor.name ?? '?',
+      messageType: describeMessageType(env.message),
+      handleTimeMs,
+      outcome: failure !== null
+        ? 'error'
+        : this._currentEnvelope === null ? 'stashed' : 'ok',
+    });
+  }
+
+  /** @internal Fold one completed handling into the ring. */
+  private _recordExplain(
+    env: Envelope<TMessage>,
+    startedAtMs: number,
+    handleTimeMs: number,
+    failure: Error | null,
+    span: Span | null,
+  ): void {
+    // `stash()` nulls the current envelope to mark the message as owned
+    // by the stash — which is exactly how a stashed handling is told
+    // apart from one that simply returned.
+    const outcome: MessageOutcome = failure !== null
+      ? 'error'
+      : this._currentEnvelope === null ? 'stashed' : 'ok';
+    this._explain?.record({
+      atMs: startedAtMs,
+      messageType: describeMessageType(env.message),
+      senderPath: env.sender?.path.toString() ?? null,
+      mailboxWaitMs: env.enqueuedAtMs === undefined ? null : startedAtMs - env.enqueuedAtMs,
+      handleTimeMs,
+      outcome,
+      errorMessage: failure?.message ?? null,
+      spanId: span?.context().spanId ?? null,
+    });
+  }
+
+  /**
+   * @internal The actor instance, or `null` before creation.
+   *
+   * For introspection that has to ask what KIND of actor this is —
+   * the time-travel panel derives a replay fold from a live
+   * `PersistentActor` this way.  Callers must not retain it: the
+   * instance is replaced on every restart.
+   */
+  _actorForInspection(): Actor<TMessage> | null {
+    return this.actor;
+  }
+
+  /**
+   * @internal Iterate the child cells.
+   *
+   * `children` returns refs, which cannot be walked further — a tree
+   * view needs the cells.  Callers must not retain them: a cell
+   * outlives its usefulness the moment the actor terminates.
+   */
+  _eachChildCell(visit: (child: ActorCell<unknown>) => void): void {
+    for (const child of this._children.values()) visit(child);
   }
 
   actorSelection(path: string): import('../ActorSelection.js').ActorSelection {
@@ -252,15 +424,38 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
 
   get stashSize(): number { return this._stashBuffer.length; }
 
+  /**
+   * Send whatever the stash still holds to dead letters.
+   *
+   * The mailbox is drained on termination, but the stash is a separate
+   * buffer, so anything parked there used to vanish without a trace on
+   * both the stop and the restart path.  That is the worst shape a lost
+   * message can take: a stashed message arrived *earlier* than everything
+   * still queued — it is the one the sender is most likely waiting on —
+   * and "I told an actor and nothing happened, anywhere" is unfalsifiable
+   * from the outside.  Dead-lettering costs nothing and makes it visible.
+   *
+   * Drained before the mailbox on the stop path, so the dead-letter
+   * stream keeps arrival order.
+   */
+  private deadLetterStash(): void {
+    if (this._stashBuffer.length === 0) return;
+    const drained = this._stashBuffer;
+    this._stashBuffer = [];
+    for (const env of drained) {
+      this.system.deadLetters.tell(new DeadLetter(env.message, env.sender, this.self));
+    }
+  }
+
   /* ------------------------- Rate limiting (#83) ------------------------ */
 
-  throttle(opts: ThrottleOptions): void {
+  throttle(options: ThrottleOptions): void {
     this._throttleBucket = new TokenBucket({
-      qps: opts.qps,
-      burst: opts.burst,
-      now: opts.now,
+      qps: options.qps,
+      burst: options.burst,
+      now: options.now,
     });
-    this._throttleOnExcess = opts.onExcess ?? 'pause';
+    this._throttleOnExcess = options.onExcess ?? 'pause';
     // Switching configs invalidates any pending pause-resume timer
     // (the new bucket may already have tokens) — let the next run()
     // make a fresh decision.
@@ -305,7 +500,7 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
     this.mailbox.prependUser([env]);
     if (this._throttleResumeTimer) return true; // already armed
     const waitMs = Math.max(1, this._throttleBucket.timeUntilNext(1));
-    this._throttleResumeTimer = this.system.scheduler.scheduleOnceFn(
+    this._throttleResumeTimer = this.system.scheduler.scheduleOnceFunction(
       waitMs, () => {
         this._throttleResumeTimer = null;
         if (this.state === 'running' && this.mailbox.hasMessages()) {
@@ -335,7 +530,9 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
       this.system.deadLetters.tell(new DeadLetter(message, sender, this.self));
       return;
     }
-    this.mailbox.enqueue({ message, sender });
+    this.mailbox.enqueue(this._explain === null
+      ? { message, sender }
+      : { message, sender, enqueuedAtMs: Date.now() });
     this.schedule();
   }
 
@@ -350,13 +547,15 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
       this.system.deadLetters.tell(new DeadLetter(env.message, env.sender, this.self));
       return;
     }
-    this.mailbox.enqueue(env);
+    this.mailbox.enqueue(this._explain === null || env.enqueuedAtMs !== undefined
+      ? env
+      : { ...env, enqueuedAtMs: Date.now() });
     this.schedule();
   }
 
   /** @internal */
-  enqueueSystem(cmd: SystemCommand, sender: ActorRef | null = null): void {
-    this.mailbox.enqueueSystem({ message: cmd, sender });
+  enqueueSystem(command: SystemCommand, sender: ActorRef | null = null): void {
+    this.mailbox.enqueueSystem({ message: command, sender });
     this.schedule();
   }
 
@@ -422,36 +621,44 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
     }
   }
 
-  private async handleSystemCommand(cmd: SystemCommand): Promise<void> {
-    await match(cmd)
-      .with({ kind: 'create' }, () => this.doCreate())
-      .with({ kind: 'terminate' }, () => this.doTerminate())
-      .with({ kind: 'recreate' }, (signal) => this.doRecreate(signal.cause))
-      .with({ kind: 'suspend' }, () => {
-        this.mailbox.suspend();
-        if (this.state === 'running') this.state = 'suspended';
-      })
-      .with({ kind: 'resume' }, () => {
-        this.mailbox.resume();
-        if (this.state === 'suspended') this.state = 'running';
-      })
-      .with({ kind: 'failure' }, (signal) => this.superviseChildFailure(signal.cause, signal.child, signal.message))
-      .with({ kind: 'childTerminated' }, (signal) => this.handleChildTerminated(signal.child))
-      .with({ kind: 'watchNotify' }, (signal) => {
-        this.mailbox.enqueue({ message: new Terminated(signal.target) as unknown as TMessage, sender: null });
-      })
-      .with({ kind: 'receiveTimeout' }, async () => {
-        if (this.state === 'running') {
-          await this.handleUserMessage({ message: ReceiveTimeout.instance as unknown as TMessage, sender: null });
-        }
-      })
+  private async handleSystemCommand(command: SystemCommand): Promise<void> {
+    await match(command)
+      .with({ kind: 'create' }, () => this.onCreate())
+      .with({ kind: 'terminate' }, () => this.onTerminate())
+      .with({ kind: 'recreate' }, (signal) => this.onRecreate(signal))
+      .with({ kind: 'suspend' }, () => this.onSuspend())
+      .with({ kind: 'resume' }, () => this.onResume())
+      .with({ kind: 'failure' }, (signal) => this.onFailure(signal))
+      .with({ kind: 'childTerminated' }, (signal) => this.onChildTerminated(signal))
+      .with({ kind: 'watchNotify' }, (signal) => this.onWatchNotify(signal))
+      .with({ kind: 'receiveTimeout' }, async () => this.onReceiveTimeout())
       .exhaustive();
   }
 
-  private async doCreate(): Promise<void> {
+  private onSuspend(): void {
+    this.mailbox.suspend();
+    if (this.state === 'running') this.state = 'suspended';
+  }
+
+  private onResume(): void {
+    this.mailbox.resume();
+    if (this.state === 'suspended') this.state = 'running';
+  }
+
+  private onWatchNotify(signal: WatchNotifyCommand): void {
+    this.mailbox.enqueue({ message: new Terminated(signal.target) as unknown as TMessage, sender: null });
+  }
+
+  private async onReceiveTimeout(): Promise<void> {
+    if (this.state === 'running') {
+      await this.handleUserMessage({ message: ReceiveTimeout.instance as unknown as TMessage, sender: null });
+    }
+  }
+
+  private async onCreate(): Promise<void> {
     try {
       const actor = this.props.config.factory();
-      (actor as unknown as { _attach(ctx: ActorContext<TMessage>): void })._attach(this);
+      (actor as unknown as { _attach(context: ActorContext<TMessage>): void })._attach(this);
       this.actor = actor;
       this.behaviorStack = [(m: TMessage) => actor.onReceive(m)];
       this.state = 'running';
@@ -462,6 +669,9 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
         'actor_created_total', {},
         { help: 'Cumulative count of actors successfully started.' },
       ).inc();
+      this.system.eventStream.publish(
+        new ActorStarted(this.self, actor.constructor.name, this._parent?.path.toString() ?? null),
+      );
     } catch (e) {
       const err = e instanceof Error ? e : new Error(String(e));
       this.log.error('Actor initialization failed', err);
@@ -469,15 +679,48 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
     }
   }
 
-  private async doTerminate(): Promise<void> {
+  private async onTerminate(): Promise<void> {
     if (this.state === 'terminated' || this.state === 'terminating') return;
     this.state = 'terminating';
     this._clearReceiveTimer();
+
+    if (this._terminationOrder) {
+      await this.terminateNextGroup();
+      return;
+    }
 
     // Stop all children and wait for them
     const childRefs = Array.from(this._children.values());
     for (const child of childRefs) child.enqueueSystem({ kind: 'terminate' });
     // Children notify us via 'childTerminated'; we finish in finalizeTermination.
+    if (this._children.size === 0) {
+      await this.finalizeTermination();
+    }
+  }
+
+  /**
+   * Ask the next named child in {@link _terminationOrder} to stop, or finish
+   * once every name is drained.
+   *
+   * Re-entered from `onChildTerminated`, which is what makes the teardown
+   * sequential: one `terminate` goes out per round trip.  Names that have no
+   * child are skipped rather than waited on, so an order listing a guardian
+   * that was never created still completes.
+   */
+  private async terminateNextGroup(): Promise<void> {
+    const order = this._terminationOrder ?? [];
+    while (this._terminationGroupIndex < order.length) {
+      const child = this._children.get(order[this._terminationGroupIndex]!);
+      this._terminationGroupIndex++;
+      if (child) {
+        child.enqueueSystem({ kind: 'terminate' });
+        return;
+      }
+    }
+    // Every named child is gone.  Anything left is unordered — stop it now.
+    for (const child of Array.from(this._children.values())) {
+      child.enqueueSystem({ kind: 'terminate' });
+    }
     if (this._children.size === 0) {
       await this.finalizeTermination();
     }
@@ -498,6 +741,10 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
       this.log.error('postStop threw', e);
     }
 
+    // Drain the stash first — those messages arrived before anything still
+    // queued, so this keeps the dead-letter stream in arrival order.
+    this.deadLetterStash();
+
     // Drain any remaining user messages to dead letters
     for (const env of this.mailbox.drainUser()) {
       this.system.deadLetters.tell(new DeadLetter(env.message, env.sender, this.self));
@@ -510,6 +757,7 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
       'actor_terminated_total', {},
       { help: 'Cumulative count of actors that have been stopped.' },
     ).inc();
+    this.system.eventStream.publish(new ActorStopped(this.self));
 
     // Notify watchers
     const term = new Terminated(this.self);
@@ -530,12 +778,16 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
     }
   }
 
-  private async doRecreate(cause: Error): Promise<void> {
+  private async onRecreate(signal: RecreateCommand): Promise<void> {
+    const cause = signal.cause;
     if (!this.actor) return;
 
-    // Timers and stash belong to the outgoing instance.
+    // Timers and stash belong to the outgoing instance.  The stash cannot
+    // carry over — the new instance has none of the state that made those
+    // messages un-handleable — but it goes to dead letters rather than
+    // being dropped, so a restart does not swallow them silently.
     this.timers.cancelAll();
-    this._stashBuffer = [];
+    this.deadLetterStash();
 
     // Let the old instance clean up (stopping children is the default).
     try {
@@ -547,7 +799,7 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
     // Build a new instance.
     try {
       const next = this.props.config.factory();
-      (next as unknown as { _attach(ctx: ActorContext<TMessage>): void })._attach(this);
+      (next as unknown as { _attach(context: ActorContext<TMessage>): void })._attach(this);
       this.actor = next;
       this.behaviorStack = [(m: TMessage) => next.onReceive(m)];
       await next.postRestart(cause);
@@ -558,6 +810,7 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
         'actor_restarted_total', {},
         { help: 'Cumulative count of supervisor-driven actor restarts.' },
       ).inc();
+      this.system.eventStream.publish(new ActorRestarted(this.self, cause));
     } catch (e) {
       const err = e instanceof Error ? e : new Error(String(e));
       this.failToParent(new ActorInitializationError(`Actor ${this.path} failed to restart`, err));
@@ -581,14 +834,14 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
   }
 
   private async handleUserMessage(env: Envelope<TMessage>): Promise<void> {
-    const msg = env.message;
+    const message = env.message;
 
-    if (msg === (PoisonPill.instance as unknown as TMessage)) {
-      await this.doTerminate();
+    if (message === (PoisonPill.instance as unknown as TMessage)) {
+      await this.onTerminate();
       return;
     }
-    if (msg === (Kill.instance as unknown as TMessage)) {
-      this.failToParent(new ActorKilledError(), msg);
+    if (message === (Kill.instance as unknown as TMessage)) {
+      this.failToParent(new ActorKilledError(), message);
       return;
     }
 
@@ -601,11 +854,11 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
     const tracer = tracerOf(this.system);
     // Open a server-kind `actor.receive` span when tracing is enabled
     // and either we have a parent in the envelope or we're starting a
-    // root.  Span is the "active" one for the duration of `behavior(msg)`
+    // root.  Span is the "active" one for the duration of `behavior(message)`
     // so child tells from inside the handler get this span as parent.
     let span: Span | null = null;
 
-    // Establish the MDC scope for the duration of `behavior(msg)`.  Any
+    // Establish the MDC scope for the duration of `behavior(message)`.  Any
     // `tell`s issued from inside the handler snapshot this same context
     // (LocalActorRef + RemoteActorRef both read `LogContext.get()`),
     // so the trail propagates downstream without manual plumbing.
@@ -615,10 +868,12 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
       this._currentSender = env.sender;
       this._currentEnvelope = env;
       const startNs = performance.now();
+      const startedAtMs = Date.now();
+      let failure: Error | null = null;
       try {
-        if (msg instanceof Terminated) {
+        if (message instanceof Terminated) {
           // Only deliver when we are actually watching.
-          const key = msg.actor.path.toString();
+          const key = message.actor.path.toString();
           if (!this._watching.has(key)) {
             this._currentSender = null;
             this._currentEnvelope = null;
@@ -628,28 +883,40 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
         }
         const behavior = this.behaviorStack[this.behaviorStack.length - 1];
         if (span) {
-          await tracer.withActiveSpan(span, () => behavior(msg));
+          await tracer.withActiveSpan(span, () => behavior(message));
         } else {
-          await behavior(msg);
+          await behavior(message);
         }
         this._resetReceiveTimer();
         if (span) span.setStatus('ok');
       } catch (e) {
         const err = e instanceof Error ? e : new Error(String(e));
+        failure = err;
         if (span) {
           span.recordException(err);
           span.setStatus('error', err.message);
         }
-        this.failToParent(err, msg);
+        this.failToParent(err, message);
       } finally {
         if (span) span.end();
+        const elapsedMs = performance.now() - startNs;
         // Record handler duration in seconds — Prom convention.  Using
         // the per-call `metrics` ref keeps a single dispatch through
         // the extension chain.
         metrics.histogram(
           'actor_message_handler_seconds', {},
           { help: 'Time spent inside actor onReceive handlers, seconds.' },
-        ).observe((performance.now() - startNs) / 1000);
+        ).observe(elapsedMs / 1000);
+        // One null check on the hot path; the recorder only exists
+        // while somebody is inspecting this actor.
+        if (this._explain !== null) {
+          this._recordExplain(env, startedAtMs, elapsedMs, failure, span);
+        }
+        // A second null check, for the whole-system profiler (#226).
+        // Reading the field directly avoids an extension lookup per
+        // message.
+        const observer = this.system._dispatchObserver;
+        if (observer !== null) this._observeDispatch(observer, env, elapsedMs, failure);
         this._currentSender = null;
         this._currentEnvelope = null;
       }
@@ -660,14 +927,33 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
     // for system-message-shaped envelopes are still useful — the path
     // is what matters).  `null` parent → root span; envelope-supplied
     // SpanContext → child of the originating tell.
-    if (env.trace || tracerOf(this.system).activeSpan()) {
+    //
+    // The flag is read before the extension lookup because it is a plain
+    // field: on the ordinary path (no trace, no root recording) this
+    // costs one boolean instead of walking the extension chain.
+    // A tooling actor is never part of the application's trace — not as
+    // a root and not as a child.  Excluding it only from roots was not
+    // enough: DevTools' probes receive event-stream publishes *during* an
+    // application message, so they inherited its trace and reappeared in
+    // the middle of the route.
+    if (!this._internal
+      && (env.trace || this.system._traceRootSpans || tracerOf(this.system).activeSpan())) {
+      // The sender and the payload are what turn a flame graph into a
+      // readable message trail; the payload only when something is
+      // watching, since serialising every message is not free.
+      const attributes: Record<string, string> = {
+        'actor.path': this.path.toString(),
+        'actor.message.type': describeMessageType(message),
+        'actor.sender': env.sender?.path.toString() ?? '',
+      };
+      if (this.system._traceMessagePayloads) {
+        const payload = describeMessagePayload(message);
+        if (payload !== null) attributes['actor.message.payload'] = payload;
+      }
       span = tracer.startSpan('actor.receive', {
         parent: env.trace ?? undefined,
         kind: 'consumer',
-        attributes: {
-          'actor.path': this.path.toString(),
-          'actor.message.type': (msg as { constructor?: { name?: string } })?.constructor?.name ?? typeof msg,
-        },
+        attributes,
       });
     }
 
@@ -694,15 +980,26 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
     }
   }
 
-  private async superviseChildFailure(
-    cause: Error,
-    childRef: ActorRef,
-    message: unknown,
-  ): Promise<void> {
+  private async onFailure(signal: FailureCommand): Promise<void> {
+    const cause = signal.cause;
+    const childRef = signal.child;
+    const message = signal.message;
     const child = this.findChildByRef(childRef);
     if (!child) return;
 
-    const strategy: SupervisorStrategy = this.actor?.supervisorStrategy() ?? defaultStrategy;
+    // The failing child's own Props win, then this actor's strategy, then the
+    // framework default.  `Props.withSupervisorStrategy` states how *that*
+    // actor is supervised, so it has to be read here, on the parent — the
+    // child never gets to answer for its own failure.
+    //
+    // Two consequences of expressing a per-child override through
+    // parent-side machinery, both deliberate: an `all-for-one` strategy in a
+    // child's Props still widens to every sibling, and the restart budget in
+    // `registerRestart` stays per-parent, so siblings share one allowance.
+    const strategy: SupervisorStrategy =
+      child.props.config.supervisorStrategy
+      ?? this.actor?.supervisorStrategy()
+      ?? defaultStrategy;
     const directive = strategy.decider(cause);
 
     const affected = strategy.scope === 'all-for-one'
@@ -750,13 +1047,19 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
     return null;
   }
 
-  private async handleChildTerminated(childRef: ActorRef): Promise<void> {
+  private async onChildTerminated(signal: ChildTerminatedCommand): Promise<void> {
+    const childRef = signal.child;
     const key = childRef.path.name;
     if (this._children.has(key)) this._children.delete(key);
     // Any Terminated(childRef) owed to us was already delivered via the
     // child's watcher set in finalizeTermination — no double delivery here.
 
-    if (this.state === 'terminating' && this._children.size === 0) {
+    if (this.state !== 'terminating') return;
+    if (this._terminationOrder) {
+      await this.terminateNextGroup();
+      return;
+    }
+    if (this._children.size === 0) {
       await this.finalizeTermination();
     }
   }

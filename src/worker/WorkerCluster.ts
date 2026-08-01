@@ -1,42 +1,43 @@
+import { match } from 'ts-pattern';
 import { NodeAddress } from '../cluster/NodeAddress.js';
 import type {
   BrokeredMessage,
   PortLike,
 } from '../cluster/transports/MessageChannelTransport.js';
-import { getWorkerBackend, type WorkerLike } from '../runtime/worker/index.js';
+import { getWorkerBackend, type WorkerBackend, type WorkerLike } from '../runtime/worker/index.js';
 import { WorkerClusterOptionsValidator } from './WorkerClusterOptions.js';
 import type { WorkerClusterOptions, WorkerClusterOptionsType } from './WorkerClusterOptions.js';
 import { WorkerBroker } from './WorkerBroker.js';
 
 export type RestartPolicy = 'always' | 'on-failure' | 'never';
 
-export interface WorkerHandle {
+export type WorkerHandle = {
   readonly id: number;
   readonly address: NodeAddress;
   readonly worker: WorkerLike;
-}
+};
 
-export interface WorkerHelloMessage {
+export type WorkerHelloMessage = {
   readonly kind: 'worker-hello';
-}
+};
 
-export interface WorkerInitMessage {
+export type WorkerInitMessage = {
   readonly kind: 'worker-init';
   readonly self: ReturnType<NodeAddress['toJSON']>;
   readonly systemName: string;
   readonly data: unknown;
-}
+};
 
-export interface WorkerReadyMessage {
+export type WorkerReadyMessage = {
   readonly kind: 'worker-ready';
   readonly self: ReturnType<NodeAddress['toJSON']>;
-}
+};
 
 /** Wire frame flowing in both directions on every worker↔main channel. */
-export interface WorkerTransportMessage {
+export type WorkerTransportMessage = {
   readonly kind: 'worker-transport';
   readonly envelope: BrokeredMessage;
-}
+};
 
 /**
  * Spawn a pool of workers and wire them into a shared broker via their
@@ -46,15 +47,16 @@ export interface WorkerTransportMessage {
  *
  * The underlying Worker implementation is picked per runtime — Bun and
  * Deno use the Web Worker API, Node.js uses `node:worker_threads` — via
- * `getWorkerBackend()`.  The cluster code itself never branches on
- * runtime; it only ever sees a runtime-neutral `WorkerLike`.
+ * `getWorkerBackend()`, unless the options name one explicitly.  The
+ * cluster code itself never branches on runtime; it only ever sees a
+ * runtime-neutral `WorkerLike`.
  */
 export class WorkerCluster {
   readonly broker: WorkerBroker;
   private readonly handles: WorkerHandle[] = [];
   private readonly options: Required<
     Pick<WorkerClusterOptionsType, 'systemName' | 'hostname' | 'basePort' | 'readyTimeoutMs' | 'restartPolicy'>
-  > & { bootstrap: URL | string; workers: number | 'auto'; initData: unknown };
+  > & { bootstrap: URL | string; workers: number | 'auto'; initData: unknown; backend?: WorkerBackend };
   private closed = false;
 
   private constructor(
@@ -72,6 +74,7 @@ export class WorkerCluster {
       initData: options.initData ?? null,
       readyTimeoutMs: options.readyTimeoutMs ?? 10_000,
       restartPolicy: options.restartPolicy ?? 'on-failure',
+      backend: options.backend,
     };
   }
 
@@ -114,7 +117,7 @@ export class WorkerCluster {
       this.options.basePort + index,
     );
 
-    const backend = await getWorkerBackend();
+    const backend = this.options.backend ?? await getWorkerBackend();
     const url = this.options.bootstrap instanceof URL
       ? this.options.bootstrap
       : new URL(this.options.bootstrap);
@@ -143,16 +146,16 @@ export class WorkerCluster {
   private brokerFacade(worker: WorkerLike): PortLike {
     let handler: ((e: { data: unknown }) => void) | null = null;
     worker.addEventListener('message', (e) => {
-      const msg = (e.data ?? undefined) as { kind?: string } | undefined;
-      if (msg && msg.kind === 'worker-transport' && handler) {
-        handler({ data: (msg as WorkerTransportMessage).envelope });
+      const message = (e.data ?? undefined) as { kind?: string } | undefined;
+      if (message && message.kind === 'worker-transport' && handler) {
+        handler({ data: (message as WorkerTransportMessage).envelope });
       }
     });
     return {
       postMessage(v: unknown) {
         const envelope: BrokeredMessage = v as BrokeredMessage;
-        const msg: WorkerTransportMessage = { kind: 'worker-transport', envelope };
-        worker.postMessage(msg);
+        const message: WorkerTransportMessage = { kind: 'worker-transport', envelope };
+        worker.postMessage(message);
       },
       get onmessage() { return handler; },
       set onmessage(h: ((e: { data: unknown }) => void) | null) { handler = h; },
@@ -166,16 +169,25 @@ export class WorkerCluster {
         worker.removeEventListener('message', onMessage);
         reject(new Error(`Worker ${addr} did not become ready within ${this.options.readyTimeoutMs}ms`));
       }, this.options.readyTimeoutMs);
+      const onWorkerHello = (): void => {
+        worker.postMessage(init);
+      };
+      const onWorkerReady = (): void => {
+        clearTimeout(timeout);
+        worker.removeEventListener('message', onMessage);
+        resolve();
+      };
       const onMessage = (e: { data?: unknown }): void => {
-        const msg = (e.data ?? undefined) as { kind?: string } | undefined;
-        if (!msg) return;
-        if (msg.kind === 'worker-hello') {
-          worker.postMessage(init);
-        } else if (msg.kind === 'worker-ready') {
-          clearTimeout(timeout);
-          worker.removeEventListener('message', onMessage);
-          resolve();
-        }
+        const message = (e.data ?? undefined) as { kind?: string } | undefined;
+        if (!message) return;
+        // `.otherwise`, not `.exhaustive`: this is untrusted postMessage data
+        // from a worker that may not have started correctly, so the value is
+        // typed as an open `{ kind?: string }` and anything unrecognised is
+        // ignored rather than crashing the handshake.
+        match(message)
+          .with({ kind: 'worker-hello' }, () => onWorkerHello())
+          .with({ kind: 'worker-ready' }, () => onWorkerReady())
+          .otherwise(() => {});
       };
       worker.addEventListener('message', onMessage);
     });

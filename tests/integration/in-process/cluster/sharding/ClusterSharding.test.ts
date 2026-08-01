@@ -1,3 +1,4 @@
+import { match } from 'ts-pattern';
 import { describe, expect, test } from 'bun:test';
 import { Actor } from '../../../../../src/Actor.js';
 import { ActorSystem } from '../../../../../src/ActorSystem.js';
@@ -12,12 +13,25 @@ import { LogLevel, NoopLogger } from '../../../../../src/Logger.js';
 import { Props } from '../../../../../src/Props.js';
 import type { ActorRef } from '../../../../../src/ActorRef.js';
 
-type Cmd = { id: string; op: 'ping' | 'echo'; payload?: string };
+type PingCommand = { id: string; kind: 'ping'; payload?: string };
+type EchoCommand = { id: string; kind: 'echo'; payload?: string };
 
-class Entity extends Actor<Cmd> {
-  override onReceive(m: Cmd): void {
-    if (m.op === 'ping') this.sender.forEach((s) => s.tell('pong'));
-    else if (m.op === 'echo') this.sender.forEach((s) => s.tell(m.payload ?? ''));
+type Command = PingCommand | EchoCommand;
+
+class Entity extends Actor<Command> {
+  override onReceive(m: Command): void {
+    match(m)
+      .with({ kind: 'ping' }, () => this.onPing())
+      .with({ kind: 'echo' }, (c) => this.onEcho(c))
+      .exhaustive();
+  }
+
+  private onPing(): void {
+    this.sender.forEach((s) => s.tell('pong'));
+  }
+
+  private onEcho(command: EchoCommand): void {
+    this.sender.forEach((s) => s.tell(command.payload ?? ''));
   }
 }
 
@@ -32,11 +46,11 @@ async function waitFor(pred: () => boolean, timeoutMs = 5_000, stepMs = 20): Pro
   if (!pred()) throw new Error(`waitFor timed out after ${timeoutMs}ms`);
 }
 
-interface Node {
+type Node = {
   sys: ActorSystem;
   cluster: Cluster;
-  region: ActorRef<Cmd>;
-}
+  region: ActorRef<Command>;
+};
 
 async function startNode(sysName: string, p: number, seeds: string[] = []): Promise<Node> {
   const sysOptions = ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off);
@@ -48,12 +62,12 @@ async function startNode(sysName: string, p: number, seeds: string[] = []): Prom
     .withTransport(new InMemoryTransport(new NodeAddress(sysName, 'h', p)))
     .withGossipIntervalMs(30);
   const cluster = await Cluster.join(sys, clusterOptions);
-  const shardingOptions = StartShardingOptions.create<Cmd>()
+  const shardingOptions = StartShardingOptions.create<Command>()
     .withTypeName('entity')
     .withEntityProps(Props.create(() => new Entity()))
     .withExtractEntityId((m) => m.id)
     .withNumShards(16);
-  const region = cluster.sharding.start<Cmd>(shardingOptions);
+  const region = cluster.sharding.start<Command>(shardingOptions);
   return { sys, cluster, region };
 }
 
@@ -72,7 +86,7 @@ describe('ClusterSharding — initialization after convergence', () => {
     await waitFor(() => nodes.every((node) => node.cluster.upMembers().length === 2));
     await sleep(200);
 
-    const reply = await seed.region.ask<string>({ id: 'warm-0', op: 'ping' }, 3_000);
+    const reply = await seed.region.ask<string>({ id: 'warm-0', kind: 'ping' }, 3_000);
     expect(reply).toBe('pong');
 
     await stopAll(nodes);
@@ -92,7 +106,7 @@ describe('ClusterSharding — initialization after convergence', () => {
     // regardless of whether the shard is local or remote relative to the asker.
     const replies = await Promise.all(
       Array.from({ length: 16 }, (_, i) =>
-        seed.region.ask<string>({ id: `e-${i}`, op: 'echo', payload: `reply-${i}` }, 3_000),
+        seed.region.ask<string>({ id: `e-${i}`, kind: 'echo', payload: `reply-${i}` }, 3_000),
       ),
     );
     expect(replies).toEqual(Array.from({ length: 16 }, (_, i) => `reply-${i}`));
@@ -111,8 +125,8 @@ describe('ClusterSharding — initialization after convergence', () => {
     await sleep(200);
 
     for (let i = 0; i < 8; i++) {
-      const fromA = await seed.region.ask<string>({ id: `x-${i}`, op: 'ping' }, 3_000);
-      const fromB = await n1.region.ask<string>({ id: `y-${i}`, op: 'ping' }, 3_000);
+      const fromA = await seed.region.ask<string>({ id: `x-${i}`, kind: 'ping' }, 3_000);
+      const fromB = await n1.region.ask<string>({ id: `y-${i}`, kind: 'ping' }, 3_000);
       expect(fromA).toBe('pong');
       expect(fromB).toBe('pong');
     }
@@ -131,7 +145,7 @@ describe('ClusterSharding — initialization after convergence', () => {
     // Let the coordinator's rebalance timer fire at least once.
     await sleep(2_200);
 
-    const reply = await seed.region.ask<string>({ id: 'warm-0', op: 'ping' }, 3_000);
+    const reply = await seed.region.ask<string>({ id: 'warm-0', kind: 'ping' }, 3_000);
     expect(reply).toBe('pong');
 
     await stopAll(nodes);
@@ -186,12 +200,12 @@ describe('cluster.sharding', () => {
       .withGossipIntervalMs(30);
     const cluster = await Cluster.join(sys, clusterOptions);
     try {
-      const shardingOptions = StartShardingOptions.create<Cmd>()
-        .withExtractEntityId((m: Cmd) => m.id)
+      const shardingOptions = StartShardingOptions.create<Command>()
+        .withExtractEntityId((m: Command) => m.id)
         .withNumShards(4);
       const region = cluster.sharding.start('entity', Entity, shardingOptions);
       await waitFor(() => cluster.upMembers().length === 1);
-      const reply = await region.ask<string>({ id: 'e-1', op: 'ping' }, 2_000);
+      const reply = await region.ask<string>({ id: 'e-1', kind: 'ping' }, 2_000);
       expect(reply).toBe('pong');
     } finally {
       await cluster.leave();
@@ -209,15 +223,15 @@ describe('cluster.sharding', () => {
  * different tag means LRU evicted the earlier instance and a fresh
  * one materialised on the next message.
  */
-class TaggedEntity extends Actor<{ id: string; op: 'ping' }> {
+class TaggedEntity extends Actor<{ id: string; kind: 'ping' }> {
   private readonly tag = Math.random().toString(36).slice(2, 10);
-  override onReceive(_m: { id: string; op: 'ping' }): void {
+  override onReceive(_m: { id: string; kind: 'ping' }): void {
     this.sender.forEach((s) => s.tell(this.tag));
   }
 }
 
 interface LruNode extends Node {
-  region: ActorRef<{ id: string; op: 'ping' }>;
+  region: ActorRef<{ id: string; kind: 'ping' }>;
 }
 
 async function startLruNode(
@@ -232,14 +246,14 @@ async function startLruNode(
     .withTransport(new InMemoryTransport(new NodeAddress(sysName, 'h', p)))
     .withGossipIntervalMs(30);
   const cluster = await Cluster.join(sys, clusterOptions);
-  const shardingOptions = StartShardingOptions.create<{ id: string; op: 'ping' }>()
+  const shardingOptions = StartShardingOptions.create<{ id: string; kind: 'ping' }>()
     .withTypeName('lru-entity')
     .withEntityProps(Props.create(() => new TaggedEntity()))
     .withExtractEntityId((m) => m.id)
     .withNumShards(16)
     .withMaxEntities(maxEntities);
-  const region = cluster.sharding.start<{ id: string; op: 'ping' }>(shardingOptions);
-  return { sys, cluster, region: region as ActorRef<{ id: string; op: 'ping' }> } as LruNode;
+  const region = cluster.sharding.start<{ id: string; kind: 'ping' }>(shardingOptions);
+  return { sys, cluster, region: region as ActorRef<{ id: string; kind: 'ping' }> } as LruNode;
 }
 
 describe('ClusterSharding — LRU passivation (#82)', () => {
@@ -254,7 +268,7 @@ describe('ClusterSharding — LRU passivation (#82)', () => {
       const ids = ['a', 'b', 'c', 'd', 'e'];
       const firstTags = new Map<string, string>();
       for (const id of ids) {
-        const tag = await node.region.ask<string>({ id, op: 'ping' }, 3_000,);
+        const tag = await node.region.ask<string>({ id, kind: 'ping' }, 3_000,);
         firstTags.set(id, tag);
         // Tiny gap so each entity's `lastActivity` is distinguishable.
         await sleep(5);
@@ -267,13 +281,13 @@ describe('ClusterSharding — LRU passivation (#82)', () => {
       // 'a' and 'b' were the oldest — eviction should have replaced
       // them with fresh instances on subsequent activity.  We re-ping
       // them and assert the tag is *different* (fresh instance).
-      const aAgain = await node.region.ask<string>({ id: 'a', op: 'ping' }, 3_000,);
+      const aAgain = await node.region.ask<string>({ id: 'a', kind: 'ping' }, 3_000,);
       expect(aAgain).not.toBe(firstTags.get('a'));
 
       // 'd' and 'e' are recent and must NOT have been evicted —
       // their tag stays stable.  (We DON'T check 'c' because the
       // exact eviction count depends on serialised mailbox timing.)
-      const eAgain = await node.region.ask<string>({ id: 'e', op: 'ping' }, 3_000,);
+      const eAgain = await node.region.ask<string>({ id: 'e', kind: 'ping' }, 3_000,);
       expect(eAgain).toBe(firstTags.get('e'));
     } finally {
       await stopAll([node]);
@@ -290,12 +304,12 @@ describe('ClusterSharding — LRU passivation (#82)', () => {
       const ids = ['p', 'q', 'r', 's', 't'];
       const firstTags = new Map<string, string>();
       for (const id of ids) {
-        const tag = await node.region.ask<string>({ id, op: 'ping' }, 3_000,);
+        const tag = await node.region.ask<string>({ id, kind: 'ping' }, 3_000,);
         firstTags.set(id, tag);
       }
       await sleep(50);
       for (const id of ids) {
-        const same = await node.region.ask<string>({ id, op: 'ping' }, 3_000,);
+        const same = await node.region.ask<string>({ id, kind: 'ping' }, 3_000,);
         expect(same).toBe(firstTags.get(id));
       }
     } finally {
@@ -310,14 +324,14 @@ describe('ClusterSharding — LRU passivation (#82)', () => {
     const node = await startLruNode('lru-recreate', 46_201, 2);
     try {
       await sleep(60);
-      const t1 = await node.region.ask<string>({ id: 'evictee', op: 'ping' }, 3_000,);
+      const t1 = await node.region.ask<string>({ id: 'evictee', kind: 'ping' }, 3_000,);
       // Drive enough fresh ids to push 'evictee' out of the cap.
       for (const id of ['f1', 'f2', 'f3']) {
         await sleep(5);
-        await node.region.ask<string>({ id, op: 'ping' }, 3_000,);
+        await node.region.ask<string>({ id, kind: 'ping' }, 3_000,);
       }
       await sleep(50);
-      const t2 = await node.region.ask<string>({ id: 'evictee', op: 'ping' }, 3_000,);
+      const t2 = await node.region.ask<string>({ id: 'evictee', kind: 'ping' }, 3_000,);
       // Different tag confirms re-creation; second ask succeeding at
       // all confirms re-spawn went through cleanly.
       expect(t2).not.toBe(t1);

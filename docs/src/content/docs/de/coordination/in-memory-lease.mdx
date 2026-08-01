@@ -53,16 +53,14 @@ import { Aside } from '@astrojs/starlight/components';
   bleiben.
 </Aside>
 
-## Das Registry teilen
+## Der gemeinsame Store
 
-Um denselben Lease über mehrere `InMemoryLease`-Instanzen **innerhalb
-eines Prozesses** zu nutzen, müssen sie das Registry teilen:
+Jedes `InMemoryLease` in einem Prozess konkurriert gegen **einen
+modul-globalen Store** (`inMemoryLeaseStore`) — es gibt kein
+Registry pro Instanz zu verdrahten.  Zwei `InMemoryLease`-Instanzen,
+die denselben `name` teilen, schließen sich also automatisch aus:
 
 ```ts
-import { InMemoryLeaseRegistry } from 'actor-ts/coordination';
-
-const registry = new InMemoryLeaseRegistry();
-
 const leaseOptions = LeaseOptions.create()
   .withName('singleton-x')
   .withOwner('node-a')
@@ -84,13 +82,13 @@ await leaseB.acquire();   // → false (leaseA hält ihn)
 ```
 
 Das ist das **`MultiNodeSpec`-Muster** — jeder simulierte Node
-bekommt ein `InMemoryLease` gegen ein gemeinsames Registry, und
-sie kämpfen um den Lease, wie es echte verteilte Peers tun
-würden.
+bekommt ein `InMemoryLease` für denselben `name`, und sie kämpfen
+um den Lease, wie es echte verteilte Peers tun würden.
 
-Ohne explizites `registry` bekommt jedes `InMemoryLease` sein
-eigenes privates Registry — effektiv kein gegenseitiger
-Ausschluss.
+Da der Store ein einzelnes modul-globales Objekt ist, gilt der
+gegenseitige Ausschluss nur innerhalb eines Prozesses — separate
+Prozesse bekommen jeweils ihren eigenen Store und sehen die Leases
+der anderen nicht.
 
 ## Verhaltensdetails
 
@@ -108,19 +106,20 @@ Die Implementierung:
 - **Renewal** läuft auf einem `setInterval` zum
   `renewalIntervalMs` (Default `ttl / 3`).
 
-Für deterministische Tests willst du vielleicht einen
-[ManualScheduler](/de/testing/manual-scheduler/) in das Registry
-injizieren — das `InMemoryLease` des Frameworks nutzt aber
-aktuell echte Timer.  Für sehr-deterministische
-Lease-Timing-Tests mocke `Date.now()` und manipuliere das
-Registry direkt.
+`InMemoryLease` nutzt echte Timer (`setInterval`) und bietet keinen
+Scheduler-Injektionspunkt — es gibt keinen `ManualScheduler`, den
+man einhängen könnte.  Für deterministische Lease-Timing-Tests mocke
+`Date.now()`; um geteilten Lease-State zwischen Tests
+zurückzusetzen, leere das exportierte Singleton `inMemoryLeaseStore`
+direkt (`inMemoryLeaseStore._clear()`).
 
 ## Beispiel: ein Singleton-Test
 
 ```ts
 import { describe, it, expect } from 'bun:test';
-import { TestKit, InMemoryLease, LeaseOptions } from 'actor-ts/testkit';
-import { ClusterSingletonManager, Props } from 'actor-ts';
+import { TestKit } from 'actor-ts/testkit';
+import { InMemoryLease, LeaseOptions } from 'actor-ts/coordination';
+import { StartSingletonOptions } from 'actor-ts';
 
 describe('SingletonManager mit Lease', () => {
   it('nur ein Halter spawnt den Singleton', async () => {
@@ -142,21 +141,19 @@ describe('SingletonManager mit Lease', () => {
       lease2Options,
     );
 
-    // (Cluster-Verdrahtung ausgelassen)
+    // (Cluster-Verdrahtung + singletonProps ausgelassen)
 
-    tk1.system.spawn(
-      ClusterSingletonManager.props({
-        cluster: cluster1, typeName: 's', singletonProps: ..., lease: lease1,
-      }),
-      'singleton-manager-s',
-    );
+    const singleton1Options = StartSingletonOptions.create()
+      .withTypeName('s')
+      .withProps(singletonProps)
+      .withLease(lease1);
+    cluster1.singleton.start(singleton1Options);
 
-    tk2.system.spawn(
-      ClusterSingletonManager.props({
-        cluster: cluster2, typeName: 's', singletonProps: ..., lease: lease2,
-      }),
-      'singleton-manager-s',
-    );
+    const singleton2Options = StartSingletonOptions.create()
+      .withTypeName('s')
+      .withProps(singletonProps)
+      .withLease(lease2);
+    cluster2.singleton.start(singleton2Options);
 
     // Nur einer sollte je das Singleton-Actor-Child haben.
     // ... per Probes asserten ...

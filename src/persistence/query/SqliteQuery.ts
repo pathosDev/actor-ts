@@ -5,8 +5,7 @@ import { InMemoryQuery } from './InMemoryQuery.js';
 import {
   eventMatchesTagFilter,
   normalizeTagFilter,
-  offsetCompare,
-  offsetOfEvent,
+  refineTaggedRows,
   type Offset,
   type TagFilter,
   type TagFilterSpec,
@@ -169,7 +168,7 @@ export class SqliteQuery extends InMemoryQuery {
 }
 
 /**
- * Translate driver rows into `TaggedEvent`s, JS-refine against the
+ * Translate join-table rows into `TaggedEvent`s, JS-refine against the
  * full filter (the SQL only saw the pre-filter strategy), and sort.
  * Shared by both the all-pre-filter and any-pre-filter paths.
  */
@@ -178,44 +177,36 @@ function refineAndSort<E>(
   spec: TagFilterSpec,
   fromOffset: Offset,
 ): TaggedEvent<E>[] {
-  const out: TaggedEvent<E>[] = [];
-  for (const row of rows) {
+  return refineTaggedRows<TagRow, E>(rows, fromOffset, (row) => {
+    // SQLite stores the tag list as a CSV column alongside the event.
     const tags = row.tags ? row.tags.split(',') : undefined;
-    if (!eventMatchesTagFilter(tags, spec)) continue;
-    const event: PersistentEvent<E> = {
+    if (!eventMatchesTagFilter(tags, spec)) return null;
+    return {
       persistenceId: row.persistence_id,
       sequenceNr: row.sequence_nr,
       event: JSON.parse(row.payload) as E,
       timestamp: row.timestamp,
       tags,
     };
-    // The SQL `timestamp >= ?` filter is a coarse cut, but the
-    // (persistence_id, sequence_nr) tiebreakers in `Offset` mean
-    // we still need a precise compare per row.
-    const offset = offsetOfEvent(event);
-    if (offsetCompare(offset, fromOffset) < 0) continue;
-    out.push({ event, offset });
-  }
-  out.sort((a, b) => offsetCompare(a.offset, b.offset));
-  return out;
+  });
 }
 
-interface TagStmts {
+type TagStmts = {
   fetchByTag: { all(tag: string, fromTimestamp: number): TagRow[] };
-}
+};
 
-interface AnyStmts {
+type AnyStmts = {
   fetchByAny: { all(...args: unknown[]): TagRow[] };
-}
+};
 
 interface PreparedDb {
   prepare(sql: string): { all(...args: unknown[]): unknown[] };
 }
 
-interface TagRow {
+type TagRow = {
   persistence_id: string;
   sequence_nr: number;
   payload: string;
   tags: string | null;
   timestamp: number;
-}
+};

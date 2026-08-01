@@ -6,7 +6,7 @@ description: How an actor observes when another actor stops — `context.watch(r
 Supervision catches *failure* — what to do when a child actor's
 `onReceive` throws.  **Death watch** catches *termination* — knowing
 that some other actor has stopped, whatever the reason (clean stop,
-crash beyond restart limits, parent terminated, network partition).
+crash beyond restart limits, parent terminated).
 
 The two mechanisms are different on purpose: a child failing is its
 parent's problem to handle; a sibling stopping is a notification
@@ -15,15 +15,26 @@ event that any other actor can subscribe to.
 ## A minimal example
 
 ```ts
+import { match, P } from 'ts-pattern';
 import { Actor, ActorSystem, Props, Terminated, type ActorRef } from 'actor-ts';
 
-class Watcher extends Actor<Terminated | { kind: 'watch'; ref: ActorRef }> {
-  override onReceive(msg: Terminated | { kind: 'watch'; ref: ActorRef }): void {
-    if (msg instanceof Terminated) {
-      this.log.info(`watched actor stopped: ${msg.actor.path}`);
-    } else if (msg.kind === 'watch') {
-      this.context.watch(msg.ref);
-    }
+type WatchCommand = { kind: 'watch'; ref: ActorRef };
+type WatcherMessage = Terminated | WatchCommand;
+
+class Watcher extends Actor<WatcherMessage> {
+  override onReceive(message: WatcherMessage): void {
+    match(message)
+      .with(P.instanceOf(Terminated), (t) => this.onTerminated(t))
+      .with({ kind: 'watch' }, (c) => this.onWatch(c))
+      .exhaustive();
+  }
+
+  private onTerminated(signal: Terminated): void {
+    this.log.info(`watched actor stopped: ${signal.actor.path}`);
+  }
+
+  private onWatch(command: WatchCommand): void {
+    this.context.watch(command.ref);
   }
 }
 
@@ -66,21 +77,21 @@ Three fields:
 | Field | Meaning |
 | --- | --- |
 | `actor` | The ref that stopped.  Same instance you passed to `watch`. |
-| `existenceConfirmed` | `true` if the framework actually saw this actor exist before its termination; `false` if you watched a ref that was already invalid. |
-| `addressTerminated` | `true` if the entire **node** went unreachable (cluster case), not just this single actor. |
+| `existenceConfirmed` | Whether the framework saw this actor exist before its termination.  Currently always `true` — every `Terminated` the framework delivers uses the constructor default. |
+| `addressTerminated` | Reserved for the cluster case (an entire **node** going unreachable, not just this actor).  Currently always `false` — the framework does not yet set it. |
 
 Watching an actor that's already stopped delivers `Terminated`
-**immediately** with `existenceConfirmed = false`.  This is by
-design — your watcher always gets a notification, no matter when
-you registered.  Treat `existenceConfirmed` as "did the watch
-catch the actor alive at any point" rather than as an error
-signal.
+**immediately** — your watcher always gets a notification, no
+matter when you registered.  That notification carries the
+default `existenceConfirmed = true` like every other; the current
+implementation never sets it `false`, so don't branch on it as an
+error signal.
 
-The `addressTerminated` flag matters in cluster setups: if the
-node hosting the watched actor leaves the cluster, all actors on
-that node are considered terminated, and watchers across the
-cluster receive a `Terminated` with this flag set.  See
-[Cluster](/cluster/overview/) for the membership story.
+The `addressTerminated` flag is reserved for cluster setups where
+an entire node — not just one actor — goes away.  It is currently
+always `false`: the framework does not yet raise node-level
+`Terminated` notifications.  See [Cluster](/cluster/overview/) for
+the membership story.
 
 ## `unwatch`
 
@@ -111,8 +122,8 @@ class Worker extends Actor<Message | Terminated> {
   override preStart(): void {
     this.context.watch(this.db);
   }
-  override onReceive(msg: Message | Terminated): void {
-    if (msg instanceof Terminated && msg.actor === this.db) {
+  override onReceive(message: Message | Terminated): void {
+    if (message instanceof Terminated && message.actor === this.db) {
       this.log.warn('DB stopped — winding down');
       this.context.stopSelf();
       return;
@@ -143,9 +154,9 @@ class Manager extends Actor<Command | Terminated> {
     }
   }
 
-  override onReceive(msg: Command | Terminated): void {
-    if (msg instanceof Terminated) {
-      this.alive.delete(msg.actor.path.name);
+  override onReceive(message: Command | Terminated): void {
+    if (message instanceof Terminated) {
+      this.alive.delete(message.actor.path.name);
       if (this.alive.size === 0) {
         this.log.info('all workers stopped — manager exiting');
         this.context.stopSelf();
@@ -166,18 +177,18 @@ DSL formalizes this pattern at the system level.
 
 ```ts
 const remoteEntity = await this.system.actorSelection(
-  'actor-ts://my-app@10.0.0.5:2552/user/sharding/Entity/12345',
+  'actor-ts://my-app@10.0.0.5:2552/system/cluster/sharding/region-Entity/entity-12345',
 ).resolveOne(1_000);
 
 this.context.watch(remoteEntity);
 ```
 
 Watch works the same way across nodes — the framework propagates
-termination notifications through the cluster transport.  If the
-remote node becomes unreachable, the watcher receives `Terminated`
-with `addressTerminated = true`.  See
-[Refs across nodes](/cluster/refs-across-nodes/) for the
-wire protocol that makes this work.
+termination notifications through the cluster transport when the
+watched actor stops.  Node-level unreachability does not yet
+deliver `Terminated` (the `addressTerminated` flag is always
+`false`).  See [Refs across nodes](/cluster/refs-across-nodes/)
+for the wire protocol that makes this work.
 
 ## What it does NOT replace
 
@@ -199,8 +210,8 @@ import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="`Terminated` for an actor you never watched">
   ```ts
-  override onReceive(msg) {
-    if (msg instanceof Terminated) { ... }   // ← will this ever fire?
+  override onReceive(message) {
+    if (message instanceof Terminated) { ... }   // ← will this ever fire?
   }
   ```
   If you never call `context.watch`, `Terminated` doesn't arrive.
@@ -239,8 +250,10 @@ the actors they *depend on* (which are someone else's children).
   observer-handles-actor-stop mechanism — distinct, often used
   together.
 - **[Poison pill and Kill](/fundamentals/poison-pill-and-kill/)** —
-  the two ways to terminate an actor, both of which trigger
-  `Terminated` for any watchers.
+  two ways to terminate an actor.  Poison pill stops it (a
+  `Terminated` follows); `Kill` raises an error through supervision,
+  so under the default restart strategy the actor restarts and no
+  `Terminated` fires unless the strategy resolves to Stop.
 - **[Coordinated shutdown](/fundamentals/coordinated-shutdown/)** —
   uses watch internally to wait for whole subsystems to drain.
 - **[Refs across nodes](/cluster/refs-across-nodes/)** —
