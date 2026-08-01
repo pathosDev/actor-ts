@@ -79,8 +79,15 @@ export class StartSingletonOptionsValidator<T> extends OptionsValidator<StartSin
   constructor() {
     super('StartSingletonOptions');
   }
-  protected rules(_s: Partial<StartSingletonOptionsType<T>>): void {
+  protected rules(s: Partial<StartSingletonOptionsType<T>>): void {
+    // The check helpers pass on `undefined` by design, so the two fields
+    // without which `start()` cannot do anything are asserted here.  The
+    // alternative is a `Cannot read properties of undefined` raised inside
+    // `Props.create`, several frames from anything the caller wrote.
+    if (s.typeName === undefined) this.fail('typeName', 'is required');
+    if (s.props === undefined) this.fail('props', 'is required');
     this.nonEmptyString('typeName');
+    this.nonEmptyString('role');
     this.positiveNumber('acquireRetryIntervalMs');
   }
 }

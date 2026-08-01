@@ -130,6 +130,17 @@ export class ShardingOptionsValidator<
   }
   protected commonRules(s: Partial<S>): void {
     const options = s as Partial<ShardingOptionsType<TMessage>>;
+    // Required-ness is asserted here rather than through the check helpers,
+    // which pass on `undefined` by design.  Without these, a region missing
+    // its props or its extractor validates cleanly and then fails deep inside
+    // `settingsToConfig` or on the first message, far from the call that was
+    // actually wrong.  A proxy region is exempt: it hosts nothing, so it needs
+    // neither.
+    if (options.typeName === undefined) this.fail('typeName', 'is required');
+    if (!options.proxy) {
+      if (options.entityProps === undefined) this.fail('entityProps', 'is required');
+      if (options.extractEntityId === undefined) this.fail('extractEntityId', 'is required');
+    }
     if (options.typeName !== undefined && (typeof options.typeName !== 'string' || options.typeName.length === 0)) {
       this.fail('typeName', 'must be a non-empty string', options.typeName);
     }
