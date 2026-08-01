@@ -247,15 +247,16 @@ import { Cluster } from 'actor-ts';
 // a single-node cluster, which is exactly what you want.
 const { system, cluster } = await Cluster.bootstrap({ name: 'app' });
 
-const cartRegion = cluster.sharding.start('cart', CartActor, {
-  extractEntityId: (msg: CartCommand) => msg.entityId,
-});
+// `CartActor` declares its own identity, so neither the type name nor
+// the entity-id extractor is repeated here:
+//   static readonly shard = ShardKey.of<CartCommand>('cart', (c) => c.entityId);
+const cartRegion = cluster.sharding.start(CartActor);
 
 cartRegion.tell({ entityId: 'user-42', kind: 'add', sku: 'book-1' });
 
 // A handle on one entity, wherever it lives — no routing key needed
 // in the message, because the handle names its entity.
-const cart = cluster.sharding.entityRefFor<CartCommand>('cart', 'user-42');
+const cart = cluster.sharding.entityRefFor(CartActor, 'user-42');
 cart.tell({ kind: 'add', sku: 'book-2' });
 
 // And the shards themselves are addressable: where they live, how
@@ -263,6 +264,26 @@ cart.tell({ kind: 'add', sku: 'book-2' });
 for (const shard of await cluster.sharding.shards('cart')) {
   console.log(shard.shardId, `${shard.node}`, shard.entityCount);
 }
+```
+
+### Cluster singleton — exactly one instance, cluster-wide
+
+One node hosts it; the rest hold a forwarding ref. Failover moves it
+without callers changing anything.
+
+```ts
+class JobScheduler extends Actor<JobCommand> {
+  static readonly singleton = SingletonKey.of<JobCommand>('job-scheduler');
+  override onReceive(command: JobCommand): void { /* ... */ }
+}
+
+// On every node that may host it — get-or-create, so calling this
+// from several modules is safe.
+const scheduler = cluster.singleton.start(JobScheduler);
+scheduler.tell({ kind: 'schedule', jobId: '42' });
+
+// On a node that should only talk to it, never host it:
+cluster.singleton.ref(JobScheduler).tell({ kind: 'schedule', jobId: '43' });
 ```
 
 ---

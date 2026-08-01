@@ -11,6 +11,48 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Added
 
+- **`SingletonKey` and `ShardKey` — typed, class-declared identities** (#523).
+  A singleton's name and its message type used to be two unlinked facts: the
+  `typeName` string went one way, the `<T>` generic another, and
+  `get<T>(typeName)` re-asserted the type with no checking at all.  Both keys
+  tie them together the way `ServiceKey` already did for the Receptionist, and
+  both are meant to be declared on the actor itself:
+
+  ```ts
+  class UserRepository extends PersistentActor<UserRepositoryCommand, Event, State> {
+    static readonly singleton = SingletonKey.of<UserRepositoryCommand>('user-repository');
+    constructor(private readonly users: ActorRef<UserCommand>) { super(); }
+  }
+  class UserActor extends PersistentActor<UserCommand, Event, State> {
+    static readonly shard = ShardKey.of<UserCommand>('user', (command) => command.userId);
+  }
+
+  const users = cluster.sharding.start(UserActor);
+  const repository = cluster.singleton.start(UserRepository, () => new UserRepository(users));
+  ```
+
+  A static is the carrier because TypeScript's `implements` constrains only
+  the **instance** side of a class — there is no `static implements`, and
+  `abstract static` is a compile error — so a `SingletonActor` marker
+  interface would be structurally empty and check nothing.  It is deliberately
+  not shipped.  A static also composes with any base class, which matters
+  because these actors are usually `PersistentActor`s and TypeScript has
+  single inheritance.  `ShardKey` carries the `extractEntityId` alongside the
+  name (identity is the name alone, so a lookup-only node can omit the
+  extractor); an extractor in options still overrides it.  The sharding half
+  is purely additive — every existing calling shape keeps working.
+- **`ClusterSingleton.ref(key)` — a singleton ref without hosting it** (#523),
+  the counterpart to `ClusterSharding.startProxy` that the singleton API never
+  had.  Works on a node that never calls `start`.  `ref` and `start` return
+  the same memoised ref per key, and the local manager is resolved per
+  delivery — so a node that calls `ref` first and `start` later keeps the same
+  ref, which simply begins delivering locally instead of over the wire.  A
+  leader that never called `start` hosts nothing, so its ref dead-letters with
+  a single latched warning rather than buffering: unlike "no leader elected
+  yet", that state does not heal on its own.
+- **`cluster.singleton`** (#523) — the facade mirroring `cluster.sharding`,
+  plus `ClusterSingleton.get(system, cluster)` for callers holding the two
+  separately, and `stop(key)` / `managerFor(key)` / `isStarted(key)`.
 - **`WorkerClusterOptions.withBackend()` and the same option on
   `ParallelMultiNodeSpecOptions`** (#520) — spawn workers through a given
   `WorkerBackend` instead of the one `getWorkerBackend()` detects.  For a
@@ -563,6 +605,30 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Changed
 
+- **BREAKING — `ClusterSingleton.start()` returns an `ActorRef`; `SingletonHandle`
+  is gone** (#523).  Addressing a singleton took three concepts and a hop —
+  `system.extension(ClusterSingletonId).start(cluster, options).proxy` — so
+  every singleton grew a hand-written `getOrCreate(cluster)` wrapper whose only
+  job was to hide that line.  Sharding has had `cluster.sharding` and returned
+  a plain `ActorRef` all along; singleton was the outlier.
+
+  Migration:
+
+  | Before | After |
+  | --- | --- |
+  | `system.extension(ClusterSingletonId).start(cluster, options)` | `cluster.singleton.start(options)` |
+  | `handle.proxy.tell(m)` | `singletonRef.tell(m)` |
+  | `handle.stop()` | `cluster.singleton.stop(key)` |
+  | `handle.manager` | `cluster.singleton.managerFor(key)` |
+  | `.get<T>(name).forEach(h => h.proxy.tell(m))` | `cluster.singleton.ref<T>(name).tell(m)` |
+
+  `withTypeName` / `withProps` are unchanged, so builder call sites do not move.
+  One behaviour change to know about: `stop()` on the returned ref is now a
+  warning no-op.  It used to mean "stop forwarding" and was reachable only
+  through `SingletonHandle.stop()`; now that the proxy *is* the returned
+  `ActorRef`, `ref.stop()` is the natural thing to write, and `ActorRef.stop()`
+  means "PoisonPill the target" everywhere else — it would have killed whatever
+  the leader was hosting.  Use `cluster.singleton.stop(key)`.
 - **BREAKING — framework actors moved from `/user` to grouped `/system`
   paths** (#509).  `ActorSystem` has always built a `/system` guardian and
   then never used it: the field was assigned in the constructor and read
@@ -780,6 +846,26 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Fixed
 
+- **A stopped singleton can be started again** (#523).  The extension's
+  registry was written on start and never emptied, so `stop()` left a dead
+  entry behind — and because `start()` is get-or-create, every later start on
+  that node short-circuited to it and returned a proxy that had already stopped
+  forwarding.  Silent, total, and undebuggable, with no way back short of
+  tearing down the `ActorSystem`.  The registry is now pruned from the
+  manager's own `postStop`, so supervision and system shutdown are covered too,
+  not just the explicit path.  Restarting in the same turn still cannot work —
+  the actor name stays taken until termination settles — but it now says so
+  instead of surfacing `Child name 'manager-x' is not unique under …`.
+- **Required singleton and sharding options are enforced** (#523).
+  `OptionsValidator`'s check helpers are no-ops on `undefined` by design, and
+  required-ness was never asserted for these two, so
+  `{ typeName: 'x' }` with no `props` (singleton) or no `entityProps` /
+  `extractEntityId` (sharding) validated cleanly and failed much later — the
+  singleton inside `Props.create`, the region deep in `settingsToConfig` or on
+  its first message, neither naming the missing field.  A proxy region stays
+  exempt: it routes but never hosts.  An empty `role` on a singleton is
+  rejected too — it silently matched no node, so the singleton was hosted
+  nowhere.
 - **A module mock in the worker tests no longer hands a fake backend to the
   rest of the suite** (#520).  `tests/unit/worker/WorkerCluster.test.ts`
   installed its in-memory `FakeWorkerBackend` with `mock.module`, which in Bun

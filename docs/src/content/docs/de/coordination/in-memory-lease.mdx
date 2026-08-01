@@ -119,7 +119,7 @@ direkt (`inMemoryLeaseStore._clear()`).
 import { describe, it, expect } from 'bun:test';
 import { TestKit } from 'actor-ts/testkit';
 import { InMemoryLease, LeaseOptions } from 'actor-ts/coordination';
-import { ClusterSingletonId, StartSingletonOptions } from 'actor-ts';
+import { StartSingletonOptions } from 'actor-ts';
 
 describe('SingletonManager mit Lease', () => {
   it('nur ein Halter spawnt den Singleton', async () => {
@@ -147,13 +147,13 @@ describe('SingletonManager mit Lease', () => {
       .withTypeName('s')
       .withProps(singletonProps)
       .withLease(lease1);
-    tk1.system.extension(ClusterSingletonId).start(cluster1, singleton1Options);
+    cluster1.singleton.start(singleton1Options);
 
     const singleton2Options = StartSingletonOptions.create()
       .withTypeName('s')
       .withProps(singletonProps)
       .withLease(lease2);
-    tk2.system.extension(ClusterSingletonId).start(cluster2, singleton2Options);
+    cluster2.singleton.start(singleton2Options);
 
     // Nur einer sollte je das Singleton-Actor-Child haben.
     // ... per Probes asserten ...

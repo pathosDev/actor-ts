@@ -174,7 +174,7 @@ pubsub topic.
 const singletonOptions = StartSingletonOptions.create()
   .withTypeName('http-ingress')
   .withProps(httpIngressProps({ host, httpPort, staticDir, /* ...deps */ }));
-system.extension(ClusterSingletonId).start(cluster, singletonOptions);
+cluster.singleton.start(singletonOptions);
 ```
 
 Exactly one node binds `:8081` at a time; the `HttpIngressActor` binds

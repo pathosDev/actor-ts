@@ -178,7 +178,7 @@ reine CRDT-Mitgliedschaft plus ein PubSub-Topic.
 const singletonOptions = StartSingletonOptions.create()
   .withTypeName('http-ingress')
   .withProps(httpIngressProps({ host, httpPort, staticDir, /* ...Abhängigkeiten */ }));
-system.extension(ClusterSingletonId).start(cluster, singletonOptions);
+cluster.singleton.start(singletonOptions);
 ```
 
 Genau ein Node bindet zu jeder Zeit `:8081`; der `HttpIngressActor`

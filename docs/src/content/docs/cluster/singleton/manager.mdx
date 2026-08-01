@@ -42,21 +42,24 @@ shift their target.
 
 ## Configuration
 
-```ts
-import { ClusterSingletonManager, ClusterSingletonManagerOptions, Props } from 'actor-ts';
+The manager is not spawned by hand — `cluster.singleton.start(...)`
+does it, at the well-known path proxies address, and the start options
+below are what it configures:
 
-const clusterSingletonManagerOptions = ClusterSingletonManagerOptions.create()
-  .withCluster(cluster)
-  .withTypeName('job-scheduler')
-  .withSingletonProps(Props.create(() => new JobScheduler()))
+```ts
+import { SingletonKey, StartSingletonOptions } from 'actor-ts';
+
+const singletonOptions = StartSingletonOptions.create<JobCommand>()
   .withRole('control-plane')            // optional
-  .withLease(leaseImpl)                  // optional split-brain protection
+  .withLease(leaseImpl)                 // optional split-brain protection
   .withAcquireRetryIntervalMs(5_000);   // retry cadence when lease acquire fails
-system.spawn(
-  Props.create(() => new ClusterSingletonManager(clusterSingletonManagerOptions)),
-  'singleton-manager-job-scheduler',
-);
+cluster.singleton.start(JobScheduler, singletonOptions);
 ```
+
+The manager's own `ClusterSingletonManagerOptions` — `cluster`,
+`typeName`, `singletonProps` and the three above — are assembled from
+these by the extension.  The fields are documented here because they
+are what the manager acts on, not because you construct them:
 
 | Field | Required | What |
 | --- | --- | --- |
@@ -112,10 +115,9 @@ to prevent.
 ### With lease
 
 ```ts
-const managerOptions = ClusterSingletonManagerOptions.create()
-  // ...
+const singletonOptions = StartSingletonOptions.create<JobCommand>()
   .withLease(someLeaseImpl);
-Props.create(() => new ClusterSingletonManager(managerOptions));
+cluster.singleton.start(JobScheduler, singletonOptions);
 ```
 
 Adds an async gate on the lease.  The flow:
@@ -239,25 +241,27 @@ manager logs these by default at debug level.
 
 import { Aside } from '@astrojs/starlight/components';
 
-<Aside type="caution" title="Manager must be spawned on every node">
+<Aside type="caution" title="Call start() on every node that may become leader">
   ```ts
-  // Some nodes spawn the manager, others don't
+  cluster.singleton.ref(JobScheduler);    // addresses it, never hosts it
+  cluster.singleton.start(JobScheduler);  // puts this node into rotation
   ```
-  The proxy expects the manager to exist at the well-known path
-  on whichever node is currently leader.  If the leader's node
-  didn't spawn the manager, the proxy can't route — messages
-  dead-letter.  Either always spawn the manager, or
-  role-restrict so only role-carrying nodes can be leader.
+  A proxy routes to whichever node is currently leader and expects a
+  manager there.  A node that only ever called `ref` runs no manager,
+  so if it becomes leader nothing anywhere is hosting the singleton and
+  messages dead-letter with a warning naming the type.  Either call
+  `start` everywhere, or role-restrict so only starting nodes can host.
 </Aside>
 
-<Aside type="caution" title="Manager name must match the convention">
+<Aside type="caution" title="A role nobody carries hosts nowhere">
   ```ts
-  system.spawn(Props.create(() => new ClusterSingletonManager(ClusterSingletonManagerOptions.create()/* ... */)), 'whatever');
-  // ✗ proxy looks for `/system/cluster/singleton/manager-<typeName>`
+  StartSingletonOptions.create<JobCommand>().withRole('control-plane');
   ```
-  Use `singletonManagerPath(...)` or just spell out the
-  convention.  The framework doesn't enforce; misnamed managers
-  are invisible to proxies.
+  The manager hosts only when this node is **both** the cluster leader
+  **and** carries the role.  If the elected leader does not carry it,
+  no node hosts the singleton at all — unlike Akka, which picks the
+  oldest member *with* the role.  Give the role to the nodes that sort
+  earliest, or leave it unset, until that is fixed.
 </Aside>
 
 <Aside type="caution" title="acquireRetryIntervalMs must be positive">

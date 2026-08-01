@@ -28,8 +28,8 @@ named identically.  This guide walks through the translation.
 | `setReceiveTimeout(d)` | `context.setReceiveTimeout(ms)` |
 | `EventStream` | `system.eventStream` |
 | `Cluster.get(system).join(...)` | `Cluster.join(system, settings)` |
-| `ClusterSharding` | `ClusterSharding` |
-| `ClusterSingleton` | `ClusterSingletonManager` / `Proxy` |
+| `ClusterSharding` | `cluster.sharding` (+ `ShardKey`) |
+| `ClusterSingleton` | `cluster.singleton` (+ `SingletonKey`) |
 | `DistributedPubSub` | `DistributedPubSub` |
 | `DistributedData` | `DistributedData` (via extension) |
 | `PersistentActor` | `PersistentActor` |
@@ -204,15 +204,22 @@ val singleton = system.spawn(
 )
 
 // actor-ts:
-const startSingletonOptions = StartSingletonOptions.create()
-  .withTypeName('my-singleton')
-  .withProps(Props.create(() => new MyActor()));
-const handle = system.extension(ClusterSingletonId).start(cluster, startSingletonOptions);
+class MyActor extends Actor<MyCommand> {
+  static readonly singleton = SingletonKey.of<MyCommand>('my-singleton');
+}
+const singleton = cluster.singleton.start(MyActor);
+singleton.tell({ kind: 'do-something' });
 ```
 
-Same model — actor-ts starts the singleton through the
-`ClusterSingleton` extension, which returns a `SingletonHandle`
-you send to via `handle.proxy`.
+Same model, less ceremony — the actor declares its own identity as a
+static, and `start` returns the proxy `ActorRef` directly rather than a
+handle to unwrap.  There is no `terminationMessage` equivalent; a node
+leaving rotation stops its child through the normal `postStop` path.
+
+Nodes that only need to *talk* to the singleton call
+`cluster.singleton.ref(MyActor)` — the counterpart to Akka's
+`ClusterSingletonProxy.props`, and to `ClusterSharding.startProxy` on
+the sharding side.
 
 ## What's missing
 

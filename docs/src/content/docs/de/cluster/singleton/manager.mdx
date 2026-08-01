@@ -43,21 +43,24 @@ die Proxies verschieben ihr Ziel.
 
 ## Konfiguration
 
-```ts
-import { ClusterSingletonManager, ClusterSingletonManagerOptions, Props } from 'actor-ts';
+Der Manager wird nicht von Hand gespawnt — `cluster.singleton.start(...)`
+tut das, am bekannten Pfad, den Proxies adressieren, und die
+Start-Options unten sind das, was dabei konfiguriert wird:
 
-const clusterSingletonManagerOptions = ClusterSingletonManagerOptions.create()
-  .withCluster(cluster)
-  .withTypeName('job-scheduler')
-  .withSingletonProps(Props.create(() => new JobScheduler()))
+```ts
+import { SingletonKey, StartSingletonOptions } from 'actor-ts';
+
+const singletonOptions = StartSingletonOptions.create<JobCommand>()
   .withRole('control-plane')            // optional
-  .withLease(leaseImpl)                  // optionaler Split-Brain-Schutz
+  .withLease(leaseImpl)                 // optionaler Split-Brain-Schutz
   .withAcquireRetryIntervalMs(5_000);   // Retry-Takt, wenn Lease-Acquire scheitert
-system.spawn(
-  Props.create(() => new ClusterSingletonManager(clusterSingletonManagerOptions)),
-  'singleton-manager-job-scheduler',
-);
+cluster.singleton.start(JobScheduler, singletonOptions);
 ```
+
+Die `ClusterSingletonManagerOptions` des Managers selbst — `cluster`,
+`typeName`, `singletonProps` und die drei obigen — setzt die Extension
+daraus zusammen. Die Felder stehen hier, weil der Manager auf sie
+reagiert, nicht weil du sie konstruierst:
 
 | Feld | Erforderlich | Was |
 | --- | --- | --- |
@@ -116,10 +119,9 @@ schützen soll.
 ### Mit Lease
 
 ```ts
-const managerOptions = ClusterSingletonManagerOptions.create()
-  // ...
+const singletonOptions = StartSingletonOptions.create<JobCommand>()
   .withLease(someLeaseImpl);
-Props.create(() => new ClusterSingletonManager(managerOptions));
+cluster.singleton.start(JobScheduler, singletonOptions);
 ```
 
 Fügt ein asynchrones Gate über die Lease hinzu. Der Ablauf:
@@ -247,26 +249,27 @@ Manager loggt diese standardmäßig auf Debug-Level.
 
 import { Aside } from '@astrojs/starlight/components';
 
-<Aside type="caution" title="Manager muss auf jedem Node gespawnt werden">
+<Aside type="caution" title="start() auf jedem Node rufen, der Leader werden kann">
   ```ts
-  // Manche Nodes spawnen den Manager, andere nicht
+  cluster.singleton.ref(JobScheduler);    // adressiert es, hostet es nie
+  cluster.singleton.start(JobScheduler);  // nimmt diesen Node in die Rotation auf
   ```
-  Der Proxy erwartet den Manager am bekannten Pfad auf dem Node,
-  der gerade Leader ist. Wenn der Leader-Node den Manager nicht
-  gespawnt hat, kann der Proxy nicht routen — Nachrichten landen
-  in Dead Letters. Spawne den Manager entweder immer, oder
-  schränke per Rolle ein, sodass nur Rollen-tragende Nodes
-  Leader werden können.
+  Ein Proxy routet zu dem Node, der gerade Leader ist, und erwartet dort
+  einen Manager. Ein Node, der nur `ref` gerufen hat, betreibt keinen —
+  wird er Leader, hostet nirgends etwas das Singleton und Nachrichten
+  landen mit einer Warnung, die den Typ nennt, in den Dead Letters. Rufe
+  `start` also überall, oder schränke per Rolle auf die startenden Nodes ein.
 </Aside>
 
-<Aside type="caution" title="Manager-Name muss der Konvention folgen">
+<Aside type="caution" title="Eine Rolle, die niemand trägt, hostet nirgends">
   ```ts
-  system.spawn(Props.create(() => new ClusterSingletonManager(ClusterSingletonManagerOptions.create()/* ... */)), 'whatever');
-  // ✗ Proxy sucht `/system/cluster/singleton/manager-<typeName>`
+  StartSingletonOptions.create<JobCommand>().withRole('control-plane');
   ```
-  Nutze `singletonManagerPath(...)` oder buchstabier die
-  Konvention aus. Das Framework erzwingt sie nicht; falsch
-  benannte Manager sind für Proxies unsichtbar.
+  Der Manager hostet nur, wenn dieser Node **sowohl** Cluster-Leader ist
+  **als auch** die Rolle trägt. Trägt der gewählte Leader sie nicht,
+  hostet gar kein Node das Singleton — anders als Akka, das den ältesten
+  Member *mit* der Rolle wählt. Gib die Rolle den Nodes, die zuerst
+  sortieren, oder lass sie ungesetzt, bis das behoben ist.
 </Aside>
 
 <Aside type="caution" title="acquireRetryIntervalMs muss positiv sein">
