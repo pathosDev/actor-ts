@@ -7,6 +7,7 @@ import { SystemGroups, singletonManagerName, systemActorPath } from '../../inter
 import { fromNullable, type Option } from '../../util/Option.js';
 import type { Cluster } from '../Cluster.js';
 import type { Member } from '../Member.js';
+import { ClusterSingletonManagerOptionsValidator } from './ClusterSingletonManagerOptions.js';
 import type { ClusterSingletonManagerOptions, ClusterSingletonManagerOptionsType } from './ClusterSingletonManagerOptions.js';
 import { LeaderChanged, MemberRemoved, SelfUp } from '../ClusterEvents.js';
 
@@ -123,6 +124,7 @@ export class ClusterSingletonManager<T> extends Actor<Inbox> {
   constructor(options: ClusterSingletonManagerOptions<T>) {
     super();
     this.options = options as ClusterSingletonManagerOptionsType<T>;
+    new ClusterSingletonManagerOptionsValidator<T>().validate(this.options);
   }
 
   override preStart(): void {

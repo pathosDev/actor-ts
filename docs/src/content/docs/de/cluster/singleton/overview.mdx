@@ -151,9 +151,16 @@ keine Klasse gibt, an die ein Static passt:
 
 ```ts
 const singletonOptions = StartSingletonOptions.create<JobCommand>()
-  .withRole('control-plane');   // schlägt eine auf dem Key deklarierte Rolle
+  .withRole('control-plane')    // schlägt eine auf dem Key deklarierte Rolle
+  .withBufferSize(5_000);       // Nachrichten, während keine Node hostet
 cluster.singleton.start(JobScheduler, singletonOptions);
 ```
+
+`bufferSize` begrenzt, was der Proxy hält, solange der Cluster keinen
+Host hat — normalerweise eine Gossip-Runde, in einem Ausfall aber
+unbegrenzt.  Jenseits des Limits (Default 1000) gehen Nachrichten mit
+einer Warnung in die Dead Letters, statt den Puffer ewig wachsen zu
+lassen.
 
 :::note[Es gibt bewusst kein `SingletonActor`-Interface]
 TypeScripts `implements`-Klausel prüft ausschließlich die

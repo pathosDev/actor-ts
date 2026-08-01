@@ -1,6 +1,7 @@
 import type { Lease } from '../../coordination/Lease.js';
 import type { Props } from '../../Props.js';
 import { OptionsBuilder } from '../../util/OptionsBuilder.js';
+import { OptionsValidator } from '../../util/OptionsValidator.js';
 import type { Cluster } from '../Cluster.js';
 
 /** Plain options-object shape consumed by a {@link ClusterSingletonManager}. */
@@ -58,6 +59,34 @@ export class ClusterSingletonManagerOptionsBuilder<T> extends OptionsBuilder<Clu
   /** Retry interval (ms) for `lease.acquire()` after a failed attempt.  Default 5 s. */
   withAcquireRetryIntervalMs(ms: number): this {
     return this.set('acquireRetryIntervalMs', ms);
+  }
+}
+
+/**
+ * Validates resolved {@link ClusterSingletonManagerOptionsType} settings.
+ *
+ * Lower-stakes than most validators in the repo, because the extension is
+ * normally the only thing that builds these and it validates
+ * `StartSingletonOptions` first — so this is reachable only by a caller
+ * constructing the manager directly.  Worth closing anyway: that caller gets
+ * the same up-front `OptionsError` as everyone else instead of a
+ * `Cannot read properties of undefined` from inside `preStart`.
+ */
+export class ClusterSingletonManagerOptionsValidator<T>
+  extends OptionsValidator<ClusterSingletonManagerOptionsType<T>> {
+  constructor() {
+    super('ClusterSingletonManagerOptions');
+  }
+
+  protected rules(s: Partial<ClusterSingletonManagerOptionsType<T>>): void {
+    // The check helpers are no-ops on `undefined` by design, so required-ness
+    // is asserted separately — as in `StartSingletonOptionsValidator`.
+    if (s.cluster === undefined) this.fail('cluster', 'is required');
+    if (s.typeName === undefined) this.fail('typeName', 'is required');
+    if (s.singletonProps === undefined) this.fail('singletonProps', 'is required');
+    this.nonEmptyString('typeName');
+    this.nonEmptyString('role');
+    this.positiveNumber('acquireRetryIntervalMs');
   }
 }
 

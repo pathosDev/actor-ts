@@ -87,6 +87,7 @@ export {
   ClusterSingletonProxy,
   ClusterSingletonManagerOptions,
   ClusterSingletonManagerOptionsBuilder,
+  ClusterSingletonManagerOptionsValidator,
   StartSingletonOptions,
   StartSingletonOptionsBuilder,
   StartSingletonOptionsValidator,

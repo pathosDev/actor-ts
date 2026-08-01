@@ -149,8 +149,12 @@ Für Workloads, bei denen das inakzeptabel ist, erwäge:
 
 - **Niedrigeres TTL** (15 s gibt schnelleres Failover, mehr
   Renewals).
-- **Pufferung beim Sender** — der Singleton-Proxy kann während
-  der Lücke puffern und danach erneut senden.
+- **Pufferung beim Sender** — der Singleton-Proxy puffert, solange
+  der Cluster keinen Host hat, und leert den Puffer, sobald einer
+  da ist.  Der Puffer ist gedeckelt (`withBufferSize`, Default
+  1000); jenseits des Limits gehen Nachrichten mit einer Warnung in
+  die Dead Letters, damit eine Lücke, die sich nie schließt, nicht
+  unbegrenzt wachsen kann.
 - **Andere Architektur** — Singletons sind inhärent
   seriell-bei-Failover.
 

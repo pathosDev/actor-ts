@@ -146,9 +146,15 @@ a static on:
 
 ```ts
 const singletonOptions = StartSingletonOptions.create<JobCommand>()
-  .withRole('control-plane');   // wins over a role declared on the key
+  .withRole('control-plane')    // wins over a role declared on the key
+  .withBufferSize(5_000);       // messages held while no node hosts it
 cluster.singleton.start(JobScheduler, singletonOptions);
 ```
+
+`bufferSize` bounds what the proxy holds while the cluster has no host
+— normally a gossip round, but nothing bounds it in an outage.  Past
+the cap (default 1000) messages go to dead letters with a warning
+rather than growing the buffer forever.
 
 :::note[There is deliberately no `SingletonActor` interface]
 TypeScript's `implements` clause constrains only the **instance** side

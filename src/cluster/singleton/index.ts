@@ -14,7 +14,11 @@ export {
   ClusterSingletonManager,
   singletonManagerPath,
 } from './ClusterSingletonManager.js';
-export { ClusterSingletonManagerOptions, ClusterSingletonManagerOptionsBuilder } from './ClusterSingletonManagerOptions.js';
+export {
+  ClusterSingletonManagerOptions,
+  ClusterSingletonManagerOptionsBuilder,
+  ClusterSingletonManagerOptionsValidator,
+} from './ClusterSingletonManagerOptions.js';
 export type { ClusterSingletonManagerOptionsType } from './ClusterSingletonManagerOptions.js';
 export type { SingletonDeliver } from './ClusterSingletonManager.js';
 export { ClusterSingletonProxy } from './ClusterSingletonProxy.js';

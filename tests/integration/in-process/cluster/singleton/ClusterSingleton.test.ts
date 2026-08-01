@@ -3,7 +3,11 @@ import { Actor } from '../../../../../src/Actor.js';
 import { ActorSystem } from '../../../../../src/ActorSystem.js';
 import { Cluster } from '../../../../../src/cluster/Cluster.js';
 import { ClusterOptions } from '../../../../../src/cluster/ClusterOptions.js';
-import { SingletonKey, StartSingletonOptions } from '../../../../../src/cluster/singleton/index.js';
+import {
+  ClusterSingletonProxy,
+  SingletonKey,
+  StartSingletonOptions,
+} from '../../../../../src/cluster/singleton/index.js';
 import { InMemoryTransport } from '../../../../../src/cluster/Transport.js';
 import { NodeAddress } from '../../../../../src/cluster/NodeAddress.js';
 import { LogLevel, NoopLogger } from '../../../../../src/Logger.js';
@@ -445,6 +449,68 @@ describe('ClusterSingleton — role filter', () => {
     expect(received).toEqual(['hello']);
 
     await stop(nodeA); await stop(nodeB);
+  });
+});
+
+/**
+ * #526 — the proxy buffers whatever it cannot route yet, and the buffer had no
+ * cap.  "No host yet" is normally momentary, but nothing bounds it: unreachable
+ * seeds, or a partition where this node sees nobody, keep the cluster there for
+ * the length of the outage while the application keeps sending.
+ *
+ * A role no member carries is the same state, reachable deterministically and
+ * without breaking a transport.
+ */
+describe('ClusterSingleton — proxy buffer bound', () => {
+  test('drops to dead letters past bufferSize instead of growing without limit', async () => {
+    const node = await startNodeWithRole('sng-buffer', 'h', 52401, [], []);
+    try {
+      class Never extends Actor<string> {
+        override onReceive(): void {}
+      }
+
+      const singletonOptions = StartSingletonOptions.create<string>()
+        .withTypeName('unhostable')
+        .withRole('role-nobody-carries')
+        .withBufferSize(3)
+        .withProps(Props.create(() => new Never()));
+      const proxy = node.cluster.singleton.start(singletonOptions) as ClusterSingletonProxy<string>;
+
+      for (let index = 0; index < 10; index++) proxy.tell(`m${index}`);
+
+      // Three held, seven dropped — not ten held.
+      expect(proxy.hasPending()).toBe(true);
+      expect(proxy.droppedCount).toBe(7);
+    } finally {
+      await stop(node);
+    }
+  });
+
+  test('keeps dropping while the buffer stays full — the latch is on the log, not the policy', async () => {
+    const node = await startNodeWithRole('sng-buffer-2', 'h', 52411, [], []);
+    try {
+      class Never extends Actor<string> {
+        override onReceive(): void {}
+      }
+
+      const singletonOptions = StartSingletonOptions.create<string>()
+        .withTypeName('unhostable-2')
+        .withRole('role-nobody-carries')
+        .withBufferSize(1)
+        .withProps(Props.create(() => new Never()));
+      const proxy = node.cluster.singleton.start(singletonOptions) as ClusterSingletonProxy<string>;
+
+      proxy.tell('kept');
+      proxy.tell('dropped');
+      expect(proxy.droppedCount).toBe(1);
+
+      // The warning latches so a hot path cannot flood the log; the dropping
+      // itself must not, or the counter would under-report the loss.
+      proxy.tell('also-dropped');
+      expect(proxy.droppedCount).toBe(2);
+    } finally {
+      await stop(node);
+    }
   });
 });
 
