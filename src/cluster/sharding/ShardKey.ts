@@ -45,7 +45,11 @@ export class ShardKey<TCommand = unknown> {
     return new ShardKey<TCommand>(typeName, extractEntityId);
   }
 
-  equals(other: ShardKey): boolean { return this.typeName === other.typeName; }
+  // Typed on TCommand rather than `ShardKey<unknown>`: the extractor puts
+  // TCommand in a parameter position, so the type is invariant and a
+  // `ShardKey<Command>` would not be assignable to a `ShardKey<unknown>`
+  // parameter.  Comparing keys of different entity types is meaningless anyway.
+  equals(other: ShardKey<TCommand>): boolean { return this.typeName === other.typeName; }
   toString(): string { return `ShardKey(${this.typeName})`; }
 }
 

@@ -132,7 +132,7 @@ describe('ClusterSingleton — single node', () => {
 
     // Kill the manager behind the facade's back.
     const manager = nodeA.cluster.singleton.managerFor('idle');
-    expect(manager.nonEmpty).toBe(true);
+    if (manager.isNone()) throw new Error('no manager registered');
     manager.value.stop();
 
     await waitFor(() => !nodeA.cluster.singleton.isStarted('idle'), 2_000);

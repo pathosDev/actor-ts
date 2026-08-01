@@ -108,8 +108,12 @@ async function main(): Promise<void> {
   // Let the cluster tick for a while.
   await Bun.sleep(900);
   console.log('--- killing the current leader ---');
-  const currentLeader = nodeA.cluster.leader()!.address;
-  const victim = [nodeA, nodeB, nodeC].find(node => node.cluster.selfAddress.equals(currentLeader))!;
+  // `leader()` is an Option — `!` would hand back the Option itself, whose
+  // `.address` is undefined.
+  const currentLeader = nodeA.cluster.leader();
+  if (currentLeader.isNone()) throw new Error('no leader elected');
+  const victim = [nodeA, nodeB, nodeC]
+    .find(node => node.cluster.selfAddress.equals(currentLeader.value.address))!;
   await victim.cluster.leave();
   await victim.sys.terminate();
 

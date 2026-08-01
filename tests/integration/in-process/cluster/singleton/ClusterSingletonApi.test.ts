@@ -82,7 +82,9 @@ describe('ClusterSingleton — calling shapes', () => {
 
     for (const typeName of ['echo', 'labelled', 'bare', 'built', 'plain']) {
       expect(singleton.isStarted(typeName)).toBe(true);
-      expect(singleton.managerFor(typeName).value.path.toString()).toBe(managerPath(typeName));
+      const manager = singleton.managerFor(typeName);
+      if (manager.isNone()) throw new Error(`no manager for '${typeName}'`);
+      expect(manager.value.path.toString()).toBe(managerPath(typeName));
     }
 
     await stopNode(node);
