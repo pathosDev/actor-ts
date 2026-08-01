@@ -31,7 +31,12 @@ export async function getWorkerBackend(): Promise<WorkerBackend> {
   return cached;
 }
 
-/** Test hook: reset the cached backend so tests can swap in a fake. */
+/**
+ * Drop the memoised backend so the next call re-detects.  Only useful
+ * where the runtime answer can change mid-process — i.e. tests that move
+ * `setRuntimeOverride` around.  To run against a fake backend, pass it as
+ * the `backend` option instead; this function swaps nothing in.
+ */
 export function resetWorkerBackendCache(): void {
   cached = null;
   cachedFor = null;

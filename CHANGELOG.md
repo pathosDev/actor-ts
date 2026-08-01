@@ -11,6 +11,13 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Added
 
+- **`WorkerClusterOptions.withBackend()` and the same option on
+  `ParallelMultiNodeSpecOptions`** (#520) — spawn workers through a given
+  `WorkerBackend` instead of the one `getWorkerBackend()` detects.  For a
+  runtime the detection does not know, and for driving fake workers in a test
+  without mocking a module.  `WorkerBackend` is exported from the package root
+  now that it is part of a public options shape.  See *Fixed* for why the seam
+  had to exist.
 - **Shard introspection: `ClusterSharding.shards()`, `shardRefFor()`, and the
   `StartEntity` / `GetShardStats` shard commands** (#151).  The sharding
   protocol had no query message of any kind — `ShardCoordinator` handled seven
@@ -773,6 +780,21 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Fixed
 
+- **A module mock in the worker tests no longer hands a fake backend to the
+  rest of the suite** (#520).  `tests/unit/worker/WorkerCluster.test.ts`
+  installed its in-memory `FakeWorkerBackend` with `mock.module`, which in Bun
+  is process-global and permanent — `bun test` runs every file in one process,
+  and nothing took the mock back.  Whenever the runner visited
+  `tests/unit/worker/` before `tests/unit/runtime/`, the four
+  `getWorkerBackend` tests asserted against the leaked fake and failed; the
+  mock also replaced `resetWorkerBackendCache` with a no-op, so their own cache
+  reset silently did nothing.  That is what had `tests` and `multi-runtime` red
+  on `develop` since 2026-07-27 while the same suite stayed green on Windows,
+  where the file order differs — the defect was latent since #315, not a
+  regression.  `WorkerCluster` and `ParallelMultiNodeSpec` now take the backend
+  as an option (below), so the test injects its fake and mocks nothing.  No
+  first-party module is mocked anywhere in the suite any more, which is what
+  makes the leak impossible rather than merely fixed.
 - **A `PersistentFSM` state-timeout that fires during recovery is dropped
   instead of crashing the FSM** (#519).  `onReceive` intercepts the internal
   `__fsm_state_timeout__` self-tell *before* delegating to the base class, so

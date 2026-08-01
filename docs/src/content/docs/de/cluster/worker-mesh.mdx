@@ -109,6 +109,7 @@ void main();
 | `withInitData(data)` | Payload, die jedem Worker im `join()`-Context zugestellt wird (`initData`).  Default `null`. |
 | `withRestartPolicy(p)` | `'always'` / `'on-failure'` / `'never'`.  Default `'on-failure'`. |
 | `withReadyTimeoutMs(ms)` | Handshake-Timeout pro Worker.  Default `10000`. |
+| `withBackend(backend)` | Startet über dieses `WorkerBackend` statt über das erkannte — für eine Runtime, die die Erkennung nicht kennt, oder ein In-Memory-Fake im Test.  Default: erkannt. |
 
 Das zurückgegebene `WorkerCluster` bietet `size`, `addresses` (die
 `NodeAddress` jedes Workers), den gemeinsamen `broker` und

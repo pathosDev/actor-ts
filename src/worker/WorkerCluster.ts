@@ -4,7 +4,7 @@ import type {
   BrokeredMessage,
   PortLike,
 } from '../cluster/transports/MessageChannelTransport.js';
-import { getWorkerBackend, type WorkerLike } from '../runtime/worker/index.js';
+import { getWorkerBackend, type WorkerBackend, type WorkerLike } from '../runtime/worker/index.js';
 import { WorkerClusterOptionsValidator } from './WorkerClusterOptions.js';
 import type { WorkerClusterOptions, WorkerClusterOptionsType } from './WorkerClusterOptions.js';
 import { WorkerBroker } from './WorkerBroker.js';
@@ -47,15 +47,16 @@ export type WorkerTransportMessage = {
  *
  * The underlying Worker implementation is picked per runtime — Bun and
  * Deno use the Web Worker API, Node.js uses `node:worker_threads` — via
- * `getWorkerBackend()`.  The cluster code itself never branches on
- * runtime; it only ever sees a runtime-neutral `WorkerLike`.
+ * `getWorkerBackend()`, unless the options name one explicitly.  The
+ * cluster code itself never branches on runtime; it only ever sees a
+ * runtime-neutral `WorkerLike`.
  */
 export class WorkerCluster {
   readonly broker: WorkerBroker;
   private readonly handles: WorkerHandle[] = [];
   private readonly options: Required<
     Pick<WorkerClusterOptionsType, 'systemName' | 'hostname' | 'basePort' | 'readyTimeoutMs' | 'restartPolicy'>
-  > & { bootstrap: URL | string; workers: number | 'auto'; initData: unknown };
+  > & { bootstrap: URL | string; workers: number | 'auto'; initData: unknown; backend?: WorkerBackend };
   private closed = false;
 
   private constructor(
@@ -73,6 +74,7 @@ export class WorkerCluster {
       initData: options.initData ?? null,
       readyTimeoutMs: options.readyTimeoutMs ?? 10_000,
       restartPolicy: options.restartPolicy ?? 'on-failure',
+      backend: options.backend,
     };
   }
 
@@ -115,7 +117,7 @@ export class WorkerCluster {
       this.options.basePort + index,
     );
 
-    const backend = await getWorkerBackend();
+    const backend = this.options.backend ?? await getWorkerBackend();
     const url = this.options.bootstrap instanceof URL
       ? this.options.bootstrap
       : new URL(this.options.bootstrap);

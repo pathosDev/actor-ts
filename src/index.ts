@@ -796,6 +796,7 @@ export type {
 export { WorkerCluster, WorkerClusterOptions, WorkerBroker, WorkerNode } from './worker/index.js';
 export type {
   WorkerClusterOptionsType,
+  WorkerBackend,
   WorkerHandle,
   WorkerInitMessage,
   WorkerReadyMessage,

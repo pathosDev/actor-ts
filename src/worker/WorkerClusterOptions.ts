@@ -1,3 +1,4 @@
+import type { WorkerBackend } from '../runtime/worker/index.js';
 import { OptionsBuilder } from '../util/OptionsBuilder.js';
 import { OptionsValidator } from '../util/OptionsValidator.js';
 import type { RestartPolicy } from './WorkerCluster.js';
@@ -12,6 +13,7 @@ export type WorkerClusterOptionsType = {
   readonly initData?: unknown;
   readonly restartPolicy?: RestartPolicy;
   readonly readyTimeoutMs?: number;
+  readonly backend?: WorkerBackend;
 };
 
 /**
@@ -71,6 +73,19 @@ export class WorkerClusterOptionsBuilder extends OptionsBuilder<WorkerClusterOpt
   /** How long to wait for a worker's ready handshake before failing.  Default: 10000ms. */
   withReadyTimeoutMs(readyTimeoutMs: number): this {
     return this.set('readyTimeoutMs', readyTimeoutMs);
+  }
+
+  /**
+   * Spawn workers through this backend instead of the one
+   * `getWorkerBackend()` picks for the current runtime.  Two uses: a
+   * runtime the auto-detection does not know, and an in-memory fake in
+   * a test.  Without it there is no way past `getWorkerBackend()`, which
+   * is what pushed the tests into mocking the module globally — and a
+   * module mock in Bun outlives the file that installs it (#520).
+   * Default: the detected backend.
+   */
+  withBackend(backend: WorkerBackend): this {
+    return this.set('backend', backend);
   }
 }
 
