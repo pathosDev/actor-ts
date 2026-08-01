@@ -19,12 +19,23 @@ import type { SingletonKey } from './SingletonKey.js';
  * expected (e.g. as a sender for ask patterns).  It is not backed by a real
  * actor — it is a thin forwarder.
  */
+/**
+ * How many messages a proxy holds while the cluster has no host, unless the
+ * caller says otherwise.  A thousand is enough to ride out an election —
+ * normally a gossip round — without being enough to matter if the wait never
+ * ends.
+ */
+const DEFAULT_BUFFER_SIZE = 1_000;
+
 export class ClusterSingletonProxy<TCommand> extends ActorRef<TCommand> {
   readonly path: ActorPath;
   private buffer: TCommand[] = [];
   private unsubscribe: (() => void) | null = null;
   private forwarding = true;
   private warnedMissingHost = false;
+  private warnedBufferFull = false;
+  /** Messages dropped because the no-host buffer was full — useful for metrics. */
+  droppedCount = 0;
 
   constructor(
     private readonly cluster: Cluster,
@@ -42,6 +53,8 @@ export class ClusterSingletonProxy<TCommand> extends ActorRef<TCommand> {
      * Defaults to the key's, which is why the key carries it.
      */
     private role: string | undefined = key.role,
+    /** Cap on the no-host buffer.  See {@link DEFAULT_BUFFER_SIZE}. */
+    private readonly bufferSize: number = DEFAULT_BUFFER_SIZE,
   ) {
     super();
     // Synthetic — no actor is spawned here.  The path exists so logs and dead
@@ -63,10 +76,42 @@ export class ClusterSingletonProxy<TCommand> extends ActorRef<TCommand> {
     if (!this.forwarding) return;
     const hostOpt = singletonHost(this.cluster, this.role);
     if (hostOpt.isNone()) {
-      this.buffer.push(message);
+      this.bufferUntilHosted(message);
       return;
     }
     this.deliver(message, hostOpt.value.address);
+  }
+
+  /**
+   * Hold a message until a host appears — but only up to `bufferSize`.
+   *
+   * "No host yet" is normally momentary, which is why buffering is the right
+   * answer at all.  What is not bounded is how long it can last: unreachable
+   * seeds, or a partition in which this node sees nobody, hold the cluster
+   * there for the length of the outage while the application keeps sending.
+   * Unbounded, that is a memory leak that ends the process; bounded, it is
+   * message loss that says so in the log.
+   *
+   * Drops the *newest* rather than evicting the oldest: the buffer exists to
+   * preserve the order a caller sent in, and dropping from the front would
+   * hand the singleton a torn prefix of it.
+   */
+  private bufferUntilHosted(message: TCommand): void {
+    if (this.buffer.length >= this.bufferSize) {
+      this.droppedCount++;
+      if (!this.warnedBufferFull) {
+        this.warnedBufferFull = true;
+        this.cluster.system.log.warn(
+          `singleton '${this.key.typeName}': no node is hosting it and the proxy buffer is full `
+          + `(${this.bufferSize}) — dropping to dead letters until a host appears.  Raise the cap `
+          + 'with `StartSingletonOptions.withBufferSize(n)` if this is a long election, or check '
+          + 'why the cluster has no host.',
+        );
+      }
+      this.cluster.system.deadLetters.tell(message as never);
+      return;
+    }
+    this.buffer.push(message);
   }
 
   /**
@@ -170,6 +215,10 @@ export class ClusterSingletonProxy<TCommand> extends ActorRef<TCommand> {
     if (hostOpt.isNone() || this.buffer.length === 0) return;
     const hostAddress = hostOpt.value.address;
     const drained = this.buffer.splice(0, this.buffer.length);
+    // The overflow warning latches so a hot path cannot flood the log, but the
+    // condition it reports genuinely recovers — unlatch it here so a second,
+    // later outage is reported too rather than passing silently.
+    this.warnedBufferFull = false;
     for (const message of drained) this.deliver(message, hostAddress);
   }
 }

@@ -1459,6 +1459,30 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Security
 
+- **The cluster-singleton proxy buffer is bounded** (#526).
+  `ClusterSingletonProxy` held every message sent before the cluster had a host,
+  with no cap and no overflow policy.  That wait is normally a gossip round —
+  which is why buffering is the right answer — but nothing bounds how long it
+  can last: unreachable seeds, or a partition in which this node sees nobody,
+  keep the cluster there for the length of the outage while the application
+  keeps sending.  Unbounded, that is a memory leak that ends the process.
+  A new `bufferSize` (`StartSingletonOptions.withBufferSize`, default `1_000`)
+  drops the newest message to dead letters past the cap, with a latched
+  warning and a `droppedCount` for metrics — dropping the *newest* because the
+  buffer exists to preserve send order and evicting from the front would hand
+  the singleton a torn prefix of it.  Every other buffered path in the
+  framework (mailboxes, WebSocket frames) was already bounded; this one was
+  the gap.
+- **`ClusterSingletonManagerOptions` is validated** (#526).  The one options
+  family in the cluster layer with real constraints and no validator.  The new
+  `ClusterSingletonManagerOptionsValidator` asserts the required `cluster` /
+  `typeName` / `singletonProps` and checks `typeName` / `role` non-empty and
+  `acquireRetryIntervalMs` positive, running once in the manager's
+  constructor.  Narrow by construction — the extension is normally the only
+  thing that builds these, and it validates `StartSingletonOptions` first — so
+  this closes the door for a caller constructing the manager directly, who
+  previously got a `Cannot read properties of undefined` from inside
+  `preStart` instead of an `OptionsError`.
 - **A rejected CAS no longer wedges an object-storage durable-state entry**
   (#117).  When the backend refused a `put` on a stale `If-Match`, the store
   threw the concurrency error but **kept the rejected etag cached** — and that

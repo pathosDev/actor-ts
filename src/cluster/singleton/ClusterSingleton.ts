@@ -130,7 +130,10 @@ export class ClusterSingleton implements Extension {
     // managers do.  Options win over a key-declared role, and the shorthand
     // forms have already folded the class's key into `options` — so reading it
     // back off `options` covers every calling shape with one line.
-    return this.proxyFor(SingletonKey.of<TCommand>(options.typeName, options.role));
+    return this.proxyFor(
+      SingletonKey.of<TCommand>(options.typeName, options.role),
+      options.bufferSize,
+    );
   }
 
   /**
@@ -312,7 +315,15 @@ export class ClusterSingleton implements Extension {
    * only through the unsubscribe closure it holds.  Handing out a fresh proxy
    * per call would leak one listener — and one buffer — per call.
    */
-  private proxyFor<TCommand>(key: SingletonKey<TCommand>): ActorRef<TCommand> {
+  private proxyFor<TCommand>(
+    key: SingletonKey<TCommand>,
+    /**
+     * Only `start()` has one.  A `ref()`-only proxy takes the default — unlike
+     * the role, a buffer cap is a local resource bound, so nodes disagreeing
+     * about it costs nothing.
+     */
+    bufferSize?: number,
+  ): ActorRef<TCommand> {
     const existing = this.proxies.get(key.typeName);
     if (existing) {
       // The memo is keyed on typeName alone, so a proxy taken earlier from a
@@ -329,6 +340,8 @@ export class ClusterSingleton implements Extension {
       // predates any local `start()`, and a `start()` may follow on this node
       // later — a captured ref would be impossible to obtain or permanently stale.
       () => this.managers.get(key.typeName) ?? null,
+      key.role,
+      bufferSize,
     );
     this.proxies.set(key.typeName, proxy as unknown as ClusterSingletonProxy<never>);
     return proxy;

@@ -30,6 +30,18 @@ export type StartSingletonOptionsType<T> = {
    * Default: `5_000` ms.  Ignored if no lease is provided.
    */
   readonly acquireRetryIntervalMs?: number;
+  /**
+   * How many messages the proxy holds while the cluster has no host for this
+   * singleton, before it starts dropping them to dead letters.  Default:
+   * `1_000`.
+   *
+   * The wait is normally momentary — a leader is elected within a gossip round
+   * — but it is not bounded by anything: seeds unreachable, or a partition in
+   * which this node sees nobody, is a state that can last as long as the
+   * outage while the application keeps sending.  A cap turns that from
+   * unbounded memory growth into visible message loss.
+   */
+  readonly bufferSize?: number;
 };
 
 /**
@@ -72,6 +84,11 @@ export class StartSingletonOptionsBuilder<T> extends OptionsBuilder<StartSinglet
   withAcquireRetryIntervalMs(ms: number): this {
     return this.set('acquireRetryIntervalMs', ms);
   }
+
+  /** Messages the proxy buffers while no node hosts the singleton.  Default 1000. */
+  withBufferSize(messages: number): this {
+    return this.set('bufferSize', messages);
+  }
 }
 
 /** Validates resolved {@link StartSingletonOptionsType} settings. */
@@ -89,6 +106,7 @@ export class StartSingletonOptionsValidator<T> extends OptionsValidator<StartSin
     this.nonEmptyString('typeName');
     this.nonEmptyString('role');
     this.positiveNumber('acquireRetryIntervalMs');
+    this.positiveInt('bufferSize');
   }
 }
 

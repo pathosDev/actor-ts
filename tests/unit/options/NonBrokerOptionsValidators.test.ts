@@ -33,6 +33,10 @@ import {
   StartSingletonOptionsValidator,
   type StartSingletonOptionsType,
 } from '../../../src/cluster/singleton/StartSingletonOptions.js';
+import {
+  ClusterSingletonManagerOptionsValidator,
+  type ClusterSingletonManagerOptionsType,
+} from '../../../src/cluster/singleton/ClusterSingletonManagerOptions.js';
 import { WorkerClusterOptionsValidator, type WorkerClusterOptionsType } from '../../../src/worker/WorkerClusterOptions.js';
 import {
   ProducerControllerOptionsValidator,
@@ -317,8 +321,43 @@ describe('StartSingletonOptionsValidator', () => {
     expect(() => check({ typeName: 'counter' })).toThrow(/props is required/);
   });
 
+  test('rejects a non-positive or fractional bufferSize', () => {
+    expect(() => check({ ...required, bufferSize: 0 })).toThrow(/bufferSize/);
+    expect(() => check({ ...required, bufferSize: -1 })).toThrow(/bufferSize/);
+    expect(() => check({ ...required, bufferSize: 1.5 })).toThrow(/bufferSize/);
+  });
+
   test('accepts a valid singleton config', () => {
-    expect(() => check({ ...required, acquireRetryIntervalMs: 5_000 })).not.toThrow();
+    expect(() => check({ ...required, acquireRetryIntervalMs: 5_000, bufferSize: 10 })).not.toThrow();
+  });
+});
+
+describe('ClusterSingletonManagerOptionsValidator', () => {
+  const check = (s: Partial<ClusterSingletonManagerOptionsType<unknown>>): void =>
+    new ClusterSingletonManagerOptionsValidator<unknown>().validate(s);
+
+  // Only the shape matters here — the validator never dereferences it.
+  const required = {
+    cluster: {} as ClusterSingletonManagerOptionsType<unknown>['cluster'],
+    typeName: 'counter',
+    singletonProps: Props.create(() => new NoopEntity()),
+  } satisfies Partial<ClusterSingletonManagerOptionsType<unknown>>;
+
+  test('rejects each missing required field by name', () => {
+    expect(() => check({})).toThrow(/cluster is required/);
+    expect(() => check({ cluster: required.cluster })).toThrow(/typeName is required/);
+    expect(() => check({ cluster: required.cluster, typeName: 'counter' }))
+      .toThrow(/singletonProps is required/);
+  });
+
+  test('rejects empty typeName / role and non-positive acquireRetryIntervalMs', () => {
+    expect(() => check({ ...required, typeName: '' })).toThrow(OptionsError);
+    expect(() => check({ ...required, role: '' })).toThrow(/role/);
+    expect(() => check({ ...required, acquireRetryIntervalMs: 0 })).toThrow(/acquireRetryIntervalMs/);
+  });
+
+  test('accepts a valid manager config', () => {
+    expect(() => check({ ...required, role: 'worker', acquireRetryIntervalMs: 1_000 })).not.toThrow();
   });
 });
 

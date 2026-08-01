@@ -146,8 +146,11 @@ route to a stopped manager + dead-letter.
 For workloads where this is unacceptable, consider:
 
 - **Lower TTL** (15 s gives faster failover, more renewals).
-- **Buffering at the sender** — the singleton proxy can buffer
-  during gap, retry after.
+- **Buffering at the sender** — the singleton proxy buffers while
+  the cluster has no host and drains when one appears.  The buffer
+  is capped (`withBufferSize`, default 1000); past the cap messages
+  go to dead letters with a warning, so a gap that never closes
+  cannot grow without bound.
 - **Different architecture** — singletons are inherently
   serial-on-failover.
 
