@@ -27,6 +27,13 @@ import {
 } from './ShardRegion.js';
 import { ShardCoordinator } from './ShardCoordinator.js';
 import { ShardCoordinatorOptions } from './ShardCoordinatorOptions.js';
+import {
+  ShardKey,
+  shardKeyOf,
+  type ShardEntityClass,
+  type ShardKeyedClass,
+  type ShardReference,
+} from './ShardKey.js';
 import { StartShardingOptionsValidator } from './StartShardingOptions.js';
 import type { StartShardingOptions, StartShardingOptionsType } from './StartShardingOptions.js';
 import { isShardingMessage } from './ShardingProtocol.js';
@@ -62,9 +69,16 @@ export class ClusterSharding {
   }
 
   /**
-   * Start a sharded region for a type.  Three calling shapes:
+   * Start a sharded region for a type.  Several calling shapes:
    *
    * ```ts
+   * // The entity class declares its own key, including how a command names
+   * // its entity — nothing left to repeat at the call site.
+   * sharding.start(UserActor);
+   *
+   * // Same, but the entity needs dependencies.
+   * sharding.start(CartActor, () => new CartActor(deps));
+   *
    * // Shorthand: pass the entity class.  Framework wraps it with Props.create.
    * sharding.start('counter', CounterEntity, {
    *   extractEntityId: (message) => message.id,
@@ -83,20 +97,28 @@ export class ClusterSharding {
    * );
    * ```
    */
+  start<TMessage>(
+    entityClass: ShardEntityClass<TMessage>,
+    options?: StartShardingOptions<TMessage>,
+  ): ActorRef<TMessage>;
+  start<TMessage>(
+    entityClass: ShardKeyedClass<TMessage>,
+    factory: () => Actor<TMessage>,
+    options?: StartShardingOptions<TMessage>,
+  ): ActorRef<TMessage>;
+  start<TMessage>(
+    key: ShardKey<TMessage>,
+    entity: ActorClassOrFactory<TMessage>,
+    options?: StartShardingOptions<TMessage>,
+  ): ActorRef<TMessage>;
   start<TMessage>(options: StartShardingOptions<TMessage>): ActorRef<TMessage>;
   start<TMessage>(
     typeName: string,
     entity: ActorClassOrFactory<TMessage>,
     options?: StartShardingOptions<TMessage>,
   ): ActorRef<TMessage>;
-  start<TMessage>(
-    arg1: string | StartShardingOptions<TMessage>,
-    arg2?: ActorClassOrFactory<TMessage>,
-    arg3?: StartShardingOptions<TMessage>,
-  ): ActorRef<TMessage> {
-    const options = typeof arg1 === 'string'
-      ? this.buildOptionsFromShorthand(arg1, arg2!, arg3 ?? {})
-      : arg1 as StartShardingOptionsType<TMessage>;
+  start<TMessage>(arg1: unknown, arg2?: unknown, arg3?: unknown): ActorRef<TMessage> {
+    const options = this.resolveStartOptions<TMessage>(arg1, arg2, arg3);
     new StartShardingOptionsValidator<TMessage>().validate(options);
 
     this.ensureCoordinator(options as StartShardingOptionsType<unknown>);
@@ -120,31 +142,115 @@ export class ClusterSharding {
     return ref;
   }
 
+  /**
+   * Normalize every calling shape of {@link start} into one options object.
+   *
+   * The runtime forms are mutually exclusive: a `ShardKey` instance, a string
+   * typeName, a function (the entity class), or an object (a builder or a
+   * plain options object — both read identically, since a builder *is* its
+   * settings).  Each shorthand assembles a COMPLETE options object before
+   * validation, so the validator sees one shape whichever door was used.
+   */
+  private resolveStartOptions<TMessage>(
+    arg1: unknown,
+    arg2: unknown,
+    arg3: unknown,
+  ): StartShardingOptionsType<TMessage> {
+    if (typeof arg1 === 'string') {
+      return this.buildOptionsFromShorthand(
+        arg1,
+        arg2 as ActorClassOrFactory<TMessage>,
+        arg3 as StartShardingOptions<TMessage> | undefined,
+      );
+    }
+    if (arg1 instanceof ShardKey) {
+      return this.buildOptionsFromShorthand(
+        arg1 as ShardKey<TMessage>,
+        arg2 as ActorClassOrFactory<TMessage>,
+        arg3 as StartShardingOptions<TMessage> | undefined,
+      );
+    }
+    if (typeof arg1 === 'function') {
+      const key = (arg1 as Partial<ShardKeyedClass<TMessage>>).shard;
+      if (!(key instanceof ShardKey)) {
+        throw new Error(
+          `${(arg1 as { name?: string }).name ?? 'The entity class'} does not declare a shard key — `
+          + 'add `static readonly shard = ShardKey.of<Command>(\'type-name\', (command) => command.id)`, '
+          + 'or pass the typeName explicitly as the first argument',
+        );
+      }
+      // `start(TheClass, factory, options?)` vs `start(TheClass, options?)`: only
+      // the DI form puts a function in the second slot, and a zero-argument
+      // class is its own factory.
+      const hasFactory = typeof arg2 === 'function';
+      return this.buildOptionsFromShorthand(
+        key,
+        (hasFactory ? arg2 : arg1) as ActorClassOrFactory<TMessage>,
+        (hasFactory ? arg3 : arg2) as StartShardingOptions<TMessage> | undefined,
+      );
+    }
+    return arg1 as StartShardingOptionsType<TMessage>;
+  }
+
   /** @internal — wrap the shorthand entity arg into a Props + assemble full options. */
   private buildOptionsFromShorthand<TMessage>(
-    typeName: string,
+    type: string | ShardKey<TMessage>,
     entity: ActorClassOrFactory<TMessage>,
-    options: StartShardingOptions<TMessage>,
+    options: StartShardingOptions<TMessage> | undefined,
   ): StartShardingOptionsType<TMessage> {
-    const partialOptions = (options as Partial<StartShardingOptionsType<TMessage>>);
+    const partialOptions = (options ?? {}) as Partial<StartShardingOptionsType<TMessage>>;
+    const key = typeof type === 'string' ? null : type;
     return {
+      // An extractor on the key is a default the declaring class supplies; an
+      // explicit one in the options is the caller overriding it for this region.
+      ...(key?.extractEntityId ? { extractEntityId: key.extractEntityId } : {}),
       ...partialOptions,
-      typeName,
+      typeName: key ? key.typeName : type,
       entityProps: Props.create<TMessage>(actorFactoryOf(entity)),
     } as StartShardingOptionsType<TMessage>;
   }
 
   /**
    * Start a proxy region — routes to the cluster but never hosts entities.
-   * Takes the same builder as {@link start}; `proxy` is forced on internally,
-   * so any `withProxy(...)` on the passed builder is overridden.
+   * Takes a key (or the class declaring one) or the same builder as
+   * {@link start}; `proxy` is forced on internally, so any `withProxy(...)` on
+   * the passed builder is overridden.
+   *
+   * A proxy hosts nothing, so it needs neither entity props nor an extractor —
+   * placeholders stand in for both, which is what lets the key form be a single
+   * argument.
    */
-  startProxy<TMessage>(options: StartShardingOptions<TMessage>): ActorRef<TMessage> {
+  startProxy<TMessage>(
+    key: ShardKey<TMessage> | ShardKeyedClass<TMessage>,
+  ): ActorRef<TMessage>;
+  startProxy<TMessage>(options: StartShardingOptions<TMessage>): ActorRef<TMessage>;
+  startProxy<TMessage>(
+    arg: ShardKey<TMessage> | ShardKeyedClass<TMessage> | StartShardingOptions<TMessage>,
+  ): ActorRef<TMessage> {
+    const fromKey = arg instanceof ShardKey || typeof (arg as ShardKeyedClass<TMessage>).shard === 'object';
+    const base: Partial<StartShardingOptionsType<TMessage>> = fromKey
+      ? this.proxyOptionsFor(shardKeyOf(arg as ShardKey<TMessage> | ShardKeyedClass<TMessage>))
+      : (arg as Partial<StartShardingOptionsType<TMessage>>);
     // Force `proxy: true` regardless of what the caller passed.  Resolve to a
     // plain options object first so both builder and plain-object inputs are
     // handled uniformly (a `Partial<StartShardingOptionsType>` has no `.withProxy`).
-    const resolvedOptions: Partial<StartShardingOptionsType<TMessage>> = { ...(options as Partial<StartShardingOptionsType<TMessage>>), proxy: true };
-    return this.start(resolvedOptions);
+    return this.start({ ...base, proxy: true });
+  }
+
+  /** Placeholder region options for a node that routes but never hosts. */
+  private proxyOptionsFor<TMessage>(key: ShardKey<TMessage>): Partial<StartShardingOptionsType<TMessage>> {
+    return {
+      typeName: key.typeName,
+      entityProps: Props.create<TMessage>(() => {
+        throw new Error(`shard '${key.typeName}' is a proxy region on this node and never hosts entities`);
+      }),
+      extractEntityId: key.extractEntityId ?? ((): string => {
+        throw new Error(
+          `shard '${key.typeName}' is a proxy region started from a key with no extractEntityId — `
+          + 'address entities through `entityRefFor(key, id)` rather than telling the region directly',
+        );
+      }),
+    };
   }
 
   /**
@@ -170,7 +276,13 @@ export class ClusterSharding {
    * @throws if no region for `typeName` has been started on this node — a
    *   proxy region (`startProxy`) is enough.
    */
-  entityRefFor<TMessage>(typeName: string, entityId: string): ActorRef<TMessage> {
+  entityRefFor<TMessage>(
+    key: ShardKey<TMessage> | ShardKeyedClass<TMessage>,
+    entityId: string,
+  ): ActorRef<TMessage>;
+  entityRefFor<TMessage>(typeName: string, entityId: string): ActorRef<TMessage>;
+  entityRefFor<TMessage>(reference: ShardReference<TMessage>, entityId: string): ActorRef<TMessage> {
+    const { typeName } = shardKeyOf(reference);
     const region = this.regionOrThrow(typeName);
     return new EntityRef<TMessage>(
       region,
