@@ -3,13 +3,14 @@
 # file is committed on purpose (see scripts/build-devtools-ui.mjs) so
 # typecheck, tests and smoke runs work straight from a fresh clone.
 # `eol=lf` matters as much as the rest: the build writes LF, so without
-# it a CRLF checkout reports the file as modified after every build and
-# the freshness check can never pass on Windows.
+# it a CRLF checkout reports the file as modified after every build —
+# permanent noise in `git status` for every Windows contributor.
 src/devtools/generated/uiAssets.ts linguist-generated -diff text eol=lf
 
-# The DevTools UI sources are embedded verbatim into the generated
-# bundle above, so their bytes must not depend on a checkout's
-# line-ending conversion — otherwise the same commit produces a
-# different bundle on Windows than on Linux and the freshness check
-# fails for half the contributors.
+# The DevTools UI sources are bundled into the generated module above
+# and fingerprinted by its `source-hash`, so their bytes must not depend
+# on a checkout's line-ending conversion — otherwise the same commit
+# hashes differently on Windows than on Linux and the freshness check
+# fails for half the contributors.  The build normalises what it reads
+# as well; this is the other half of that pair.
 devtools-ui/** text eol=lf
