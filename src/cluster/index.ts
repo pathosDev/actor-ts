@@ -89,10 +89,16 @@ export {
   ClusterSingletonManagerOptionsBuilder,
   StartSingletonOptions,
   StartSingletonOptionsBuilder,
+  StartSingletonOptionsValidator,
+  SingletonKey,
+  singletonKeyOf,
   singletonManagerPath,
 } from './singleton/index.js';
 export type {
   StartSingletonOptionsType,
+  SingletonActorClass,
+  SingletonKeyedClass,
+  SingletonReference,
   SingletonHandle,
   ClusterSingletonManagerOptionsType,
   SingletonDeliver,
