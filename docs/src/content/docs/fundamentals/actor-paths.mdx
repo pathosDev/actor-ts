@@ -213,13 +213,22 @@ path-naming conventions, and survives renames trivially.
 
 ## Special top-level paths
 
-Three top-level paths exist in every system:
+Four top-level paths exist in every system:
 
 | Path | What lives there |
 | --- | --- |
 | `/user` | Your application's top-level actors — everything `system.spawn(...)` creates. |
 | `/system` | Framework internals, grouped by subsystem. |
+| `/temp` | The one-shot reply refs `ask` creates, one per outstanding call. |
 | `/deadLetters` | The synthetic recipient for messages with no live target. |
+
+`/temp` is the odd one out: nothing under it is an actor.  `ask`
+synthesises a reply ref, gives it a `/temp/askResp-<id>` path and
+throws it away as soon as the call settles, so it never appears in a
+supervisor tree and `actorSelection` never finds it.  It has a path at
+all because a reply that crosses the cluster wire is addressed by
+path — the recipient's node needs something to send back to.  You will
+see these in logs as the `sender` of an asked message.
 
 ### Inside `/system`
 

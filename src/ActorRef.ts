@@ -30,6 +30,24 @@ export type OmitReplyTo<TMessage> = TMessage extends { replyTo: ActorRef<unknown
 const nextAskName = (): string => `askResp-${crypto.randomUUID().replace(/-/g, '').slice(0, 12)}`;
 
 /**
+ * Path segment holding the short-lived refs `ask` synthesises.
+ *
+ * A reply ref used to *be* a root (`new ActorPath(name, null, systemName)`),
+ * and {@link ActorPath} renders a root without its own name — so the ref came
+ * out as `actor-ts://<system>/`, name gone.  Locally that is invisible: the ref
+ * is passed around as an object and never looked up by path.  Across the
+ * cluster wire the path is the whole address, so every reply went back
+ * addressed to the bare system root, matched nothing on arrival, and each
+ * cross-node `ask` timed out (#517).
+ *
+ * A named segment keeps the name in the rendering.  `temp` rather than `user`
+ * or `system` because these are not actors in the tree — nothing spawns them,
+ * `_resolvePath` never finds them, and the cluster resolves them through a
+ * registration that lives exactly as long as the ask does.
+ */
+const TEMP_SEGMENT = 'temp';
+
+/**
  * Handle to an actor.  The only way to interact with an actor — you never
  * hold a direct reference to the Actor instance itself.  tell() is fire-and-
  * forget; ask() provides a request/response Promise.
@@ -94,39 +112,59 @@ export abstract class ActorRef<TMessage = unknown> {
  * class has a concrete reply-ref to instantiate without any module-cycle
  * gymnastics — `AskResponseRef extends ActorRef`, both in the same file.
  */
-class AskResponseRef<T> extends ActorRef<unknown> {
+export class AskResponseRef<T = unknown> extends ActorRef<unknown> {
   readonly path: ActorPath;
   readonly promise: Promise<T>;
   private resolveFunction!: (value: T) => void;
   private rejectFunction!: (err: Error) => void;
   private settled = false;
   private timer: ReturnType<typeof setTimeout> | null = null;
+  private readonly settleCallbacks: Array<() => void> = [];
 
   constructor(systemName: string, name: string, timeoutMs: number, targetLabel: string) {
     super();
-    this.path = new ActorPath(name, null, systemName);
+    this.path = new ActorPath('', null, systemName).child(TEMP_SEGMENT).child(name);
     this.promise = new Promise<T>((resolve, reject) => {
       this.resolveFunction = resolve;
       this.rejectFunction = reject;
     });
     if (timeoutMs > 0) {
       this.timer = setTimeout(() => {
-        if (!this.settled) {
-          this.settled = true;
-          this.rejectFunction(new AskTimeoutError(
-            `Ask timed out after ${timeoutMs}ms waiting for reply from ${targetLabel}`,
-          ));
-        }
+        if (this.settled) return;
+        this.settle();
+        this.rejectFunction(new AskTimeoutError(
+          `Ask timed out after ${timeoutMs}ms waiting for reply from ${targetLabel}`,
+        ));
       }, timeoutMs);
     }
   }
 
   tell(message: unknown): void {
     if (this.settled) return;
-    this.settled = true;
-    if (this.timer) { clearTimeout(this.timer); this.timer = null; }
+    this.settle();
     if (message instanceof Error) this.rejectFunction(message);
     else this.resolveFunction(message as T);
+  }
+
+  /**
+   * @internal Run `callback` once this ref settles — by reply, by error, or by
+   * timeout.  Fires immediately if it already has.
+   *
+   * The cluster hangs the teardown of its wire registration here.  Without it
+   * that map would gain an entry per cross-node ask and never lose one, which
+   * is the unbounded growth every other buffered path in the framework is
+   * careful to avoid.
+   */
+  _onSettled(callback: () => void): void {
+    if (this.settled) { callback(); return; }
+    this.settleCallbacks.push(callback);
+  }
+
+  private settle(): void {
+    this.settled = true;
+    if (this.timer) { clearTimeout(this.timer); this.timer = null; }
+    for (const callback of this.settleCallbacks) callback();
+    this.settleCallbacks.length = 0;
   }
 }
 
