@@ -319,7 +319,7 @@ export class Cluster {
    * direct remote-ref).  Receiving nodes decode in `onEnvelope`.
    */
   _sendEnvelope(to: NodeAddress, env: EnvelopeMessage): void {
-    const encoded: EnvelopeMessage = { ...env, body: encodeRefs(env.body, this.selfAddress) };
+    const encoded: EnvelopeMessage = { ...env, body: encodeRefs(env.body, this) };
     this.transport.send(to, encoded);
   }
 

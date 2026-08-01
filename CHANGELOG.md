@@ -846,6 +846,30 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Fixed
 
+- **`ask()` across nodes gets its reply instead of timing out** (#517).  The
+  one-shot reply ref `ask` synthesises was built as a *root* path
+  (`new ActorPath(name, null, systemName)`), and `ActorPath` renders a root
+  without its own name — so the ref came out as `actor-ts://<system>/`, the
+  `askResp-…` name gone.  Locally that is invisible, because the ref is passed
+  around as an object and never looked up by path.  Across the wire the path is
+  the whole address: the reply went back addressed to the bare system root,
+  `parsePathSegments` yielded `[]`, the receiving node's path guard rejected it,
+  and the ask timed out having *already been answered*.  The docs recommend
+  `ask` for exactly this case (`cluster/refs-across-nodes`), and none of the
+  existing cross-node tests covered it — they all pass a spawned actor as
+  `replyTo`, which has a real path.
+
+  Two halves to the fix.  The ref now lives at `/temp/askResp-<id>`, which keeps
+  the name in the rendering **and** makes the path unique per call — a detail
+  that matters more than the name: with every ask rendering to the same string,
+  two in flight at once would have shared one registration and the second would
+  have evicted the first.  And because an ask ref is not an actor and so cannot
+  be resolved through the actor tree, `Cluster` registers it as a per-path
+  envelope handler — done at *encode* time, the point where the ref is known to
+  be leaving the node, so a purely local ask stays off the map entirely, and
+  torn down when the ask settles by reply or timeout, so the map does not grow
+  by one entry per call.  `/temp` is documented in `fundamentals/actor-paths`
+  as the fourth top-level path.
 - **A stopped singleton can be started again** (#523).  The extension's
   registry was written on start and never emptied, so `stop()` left a dead
   entry behind — and because `start()` is get-or-create, every later start on

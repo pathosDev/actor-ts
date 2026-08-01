@@ -1,5 +1,5 @@
 import { parsePathSegments } from '../ActorPath.js';
-import { ActorRef, Nobody, NobodyRef } from '../ActorRef.js';
+import { ActorRef, AskResponseRef, Nobody, NobodyRef } from '../ActorRef.js';
 import { NodeAddress } from './NodeAddress.js';
 import { RemoteActorRef } from './RemoteActorRef.js';
 import type { Cluster } from './Cluster.js';
@@ -33,14 +33,19 @@ export function isWireActorRef(v: unknown): v is WireActorRef {
  * Recursively walk a user message value and replace every `ActorRef`
  * instance with a `WireActorRef` marker.  Local refs (including the
  * short-lived ask-response ref and `DeadLetterRef`) are stamped with
- * `fromAddress` so the receiver can reconstruct a `RemoteActorRef`
+ * `cluster.selfAddress` so the receiver can reconstruct a `RemoteActorRef`
  * pointing back here.  Remote refs carry their existing target node.
  * `Nobody` becomes a sentinel marker.
  *
+ * Takes the whole `Cluster` rather than just the address — symmetric with
+ * {@link decodeRefs}, and because encoding an ask-response ref is also the
+ * moment it has to become addressable from the other side (see
+ * {@link registerAskResponseRef}).
+ *
  * Non-ref values pass through untouched — this walker only rewrites refs.
  */
-export function encodeRefs(value: unknown, fromAddress: NodeAddress): unknown {
-  return walk(value, (ref) => encodeSingleRef(ref, fromAddress), new WeakSet());
+export function encodeRefs(value: unknown, cluster: Cluster): unknown {
+  return walk(value, (ref) => encodeSingleRef(ref, cluster), new WeakSet());
 }
 
 /**
@@ -55,7 +60,7 @@ export function decodeRefs(value: unknown, cluster: Cluster): unknown {
 
 /* ------------------------------ internals -------------------------------- */
 
-function encodeSingleRef(ref: ActorRef, fromAddress: NodeAddress): WireActorRef {
+function encodeSingleRef(ref: ActorRef, cluster: Cluster): WireActorRef {
   if (ref instanceof NobodyRef) {
     return { $ref: WIRE_REF_TAG, path: 'nobody' };
   }
@@ -68,8 +73,12 @@ function encodeSingleRef(ref: ActorRef, fromAddress: NodeAddress): WireActorRef 
       system: ref.targetNode.systemName,
     };
   }
+  if (ref instanceof AskResponseRef) {
+    registerAskResponseRef(ref, cluster);
+  }
   // Local refs (LocalActorRef / ask-response ref / DeadLetterRef) — tag
   // with our own address so the other side can send back to us.
+  const fromAddress = cluster.selfAddress;
   return {
     $ref: WIRE_REF_TAG,
     path: ref.path.toString(),
@@ -77,6 +86,31 @@ function encodeSingleRef(ref: ActorRef, fromAddress: NodeAddress): WireActorRef 
     port: fromAddress.port,
     system: fromAddress.systemName,
   };
+}
+
+/**
+ * Make a one-shot ask-response ref reachable from another node, for as long as
+ * the ask is outstanding.
+ *
+ * An ask ref is not an actor: nothing spawned it, so `_resolvePath` cannot find
+ * it and an inbound reply would fall through to the catch-all and be dropped
+ * (#517).  Registering it as a per-path envelope handler puts it in the one
+ * lookup `dispatchEnvelope` consults *before* it tries the actor tree.
+ *
+ * Done here, at encode time, rather than in `ask` itself: this is the point at
+ * which the ref is known to be leaving the node, so a purely local ask — the
+ * overwhelmingly common case — pays nothing and stays off the map entirely.
+ *
+ * Registration is keyed by path, so encoding the same ref onto envelopes for
+ * several nodes is idempotent; the teardown on settle likewise runs at most
+ * once per key.
+ */
+function registerAskResponseRef(ref: AskResponseRef, cluster: Cluster): void {
+  const unregister = cluster._registerEnvelopeHandler(
+    ref.path.toString(),
+    (envelope) => ref.tell(envelope.body),
+  );
+  ref._onSettled(unregister);
 }
 
 function decodeSingleRef(wire: WireActorRef, cluster: Cluster): ActorRef {

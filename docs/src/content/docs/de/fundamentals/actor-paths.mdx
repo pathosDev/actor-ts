@@ -220,13 +220,23 @@ Pfad-Naming-Konventionen ab und überlebt Renames trivial.
 
 ## Spezielle Top-Level-Pfade
 
-Drei Top-Level-Pfade existieren in jedem System:
+Vier Top-Level-Pfade existieren in jedem System:
 
 | Pfad | Was dort lebt |
 | --- | --- |
 | `/user` | Die Top-Level-Actors deiner Anwendung — alles, was `system.spawn(...)` erzeugt. |
 | `/system` | Framework-Internas, nach Subsystem gruppiert. |
+| `/temp` | Die Einweg-Antwort-Refs, die `ask` erzeugt — einer pro offenem Aufruf. |
 | `/deadLetters` | Der synthetische Empfänger für Nachrichten ohne lebendes Ziel. |
+
+`/temp` fällt aus der Reihe: nichts darunter ist ein Actor.  `ask`
+synthetisiert einen Antwort-Ref, gibt ihm einen Pfad
+`/temp/askResp-<id>` und wirft ihn weg, sobald der Aufruf abgeschlossen
+ist — er taucht also in keinem Supervisor-Baum auf und `actorSelection`
+findet ihn nie.  Einen Pfad hat er überhaupt nur, weil eine Antwort,
+die über die Cluster-Leitung geht, per Pfad adressiert wird: der Knoten
+des Empfängers braucht ein Ziel zum Zurücksenden.  In Logs siehst du
+diese Refs als `sender` einer per `ask` verschickten Nachricht.
 
 ### Innerhalb von `/system`
 
