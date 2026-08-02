@@ -65,6 +65,10 @@ export const ConfigKeys = {
 
   /** HTTP subsystem config roots — `actor-ts.http.*`. */
   http: {
+    /** Which shipped backend `newServerAt(...).bind()` uses when none is set in code. */
+    backend: 'actor-ts.http.backend',
+    /** How long `unbind()` lets in-flight requests drain before forcing. */
+    shutdownGracePeriod: 'actor-ts.http.shutdown-grace-period',
     /** Server-side WebSocket defaults for `websocket()` routes. */
     websocket: 'actor-ts.http.websocket',
   },

@@ -148,6 +148,34 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Fixed
 
+- **`actor-ts.http.backend` and `actor-ts.http.shutdown-grace-period` are
+  actually read** (part of #653).  `newServerAt(...).bind()` hardcoded
+  `new FastifyBackend()` and the auto-registered shutdown task called
+  `unbind()` with no grace period at all — so the documented 5 s drain window
+  was, in practice, zero.
+
+  ```hocon
+  actor-ts.http {
+    backend = "hono"
+    shutdown-grace-period = 10s
+  }
+  ```
+
+  `useBackend(...)` still wins; the config only decides what `bind()` picks
+  when the builder was given nothing.  An unrecognised name now fails the
+  `bind()` with a `ConfigError` naming the key and the accepted values,
+  instead of silently falling back.  Express and Hono are imported
+  dynamically, so naming neither keeps both out of your bundle.
+
+  The reference comment advertised **`fastify | bun | express`** — a `bun`
+  backend that has never existed, and no mention of the Hono backend that
+  does.  Corrected to `fastify | express | hono`, and `backend = "bun"` now
+  fails loudly rather than being ignored.
+
+  The grace period is an upper bound, not a sleep: `unbind()` still returns as
+  soon as the server has closed, so the newly-live 5 s default costs nothing
+  when no request is in flight.
+
 - **The `actor-ts.cluster.*` and `actor-ts.remote.*` config blocks are actually
   read** (part of #653; closes #754).  Same defect as the sharding block: the
   keys shipped in `reference.conf`, the Configuration page documented them, and

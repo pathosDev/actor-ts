@@ -146,8 +146,20 @@ meaning once the implementation lands.
 | Key | Default | Purpose |
 | --- | --- | --- |
 | `http.backend` | `"fastify"` | One of `fastify` / `express` / `hono`. |
-| `http.shutdown-grace-period` | `5s` | Time to drain in-flight requests on shutdown. |
+| `http.shutdown-grace-period` | `5s` | How long `unbind()` lets in-flight requests drain before connections are forced. |
 | `http.websocket` | *(see below)* | Server-side WebSocket defaults for [`websocket()`](/http/websocket/) routes. |
+
+`http.backend` only decides what `newServerAt(...).bind()` uses when the
+builder was given no backend of its own — `useBackend(new HonoBackend())`
+always wins, and is still the only way to pass a backend you configured or
+wrote yourself.  An unrecognised name fails the `bind()` with a
+`ConfigError` rather than silently falling back to Fastify.  Express and
+Hono are optional peer dependencies, imported only if you name them.
+
+The grace period is an **upper bound, not a delay**: `unbind()` returns as
+soon as the server has actually closed, and only waits out the window if
+requests are still in flight.  A caller that passes its own value —
+`binding.unbind(1_000)` — overrides it.
 
 Server-side WebSocket routes (`websocket(path, actorRef)`) read their
 defaults from `actor-ts.http.websocket`:

@@ -47,8 +47,8 @@ actor-ts {
   }
 
   http {
-    backend = "fastify"   # fastify | bun | express
-    shutdown-grace-period = 5s
+    backend = "fastify"   # fastify | express | hono
+    shutdown-grace-period = 5s   # in-flight drain window before connections are forced
 
     # Server-side defaults for websocket() routes (per-connection policy).
     # Leaf names match the WebsocketRouteOptions fields (camelCase); a route
