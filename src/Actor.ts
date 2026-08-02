@@ -1,6 +1,7 @@
 import type { ActorContext } from './ActorContext.js';
 import type { ActorRef } from './ActorRef.js';
 import type { ActorSystem } from './ActorSystem.js';
+import type { Cluster } from './cluster/Cluster.js';
 import type { EntityContext } from './EntityContext.js';
 import type { Logger } from './Logger.js';
 import { defaultStrategy, SupervisorStrategy } from './Supervision.js';
@@ -31,6 +32,30 @@ export abstract class Actor<TMessage = unknown> {
   protected get sender(): Option<ActorRef> { return this._context.sender; }
   protected get system(): ActorSystem { return this._context.system; }
   protected get log(): Logger { return this._context.log; }
+
+  /**
+   * The `Cluster` this actor runs in — membership, `selfAddress`,
+   * `leader()`, and through it `sharding` / `singleton` (#833).  Removes
+   * the need to thread a `Cluster` through the actor's constructor, which
+   * a framework-constructed actor (a sharded entity, a singleton) has no
+   * call site for in the first place.
+   *
+   * A *getter*, for the same reason `entityId` is one: the context is
+   * attached after construction, so a `readonly cluster = ...` field
+   * initializer would run too early.  Read it from `preStart` onwards.
+   *
+   * For "is this system clustered at all?" ask `this.context.cluster`,
+   * which answers `None` rather than throwing.
+   *
+   * @throws if the enclosing `ActorSystem` never joined a cluster.
+   */
+  protected get cluster(): Cluster {
+    const cluster = this._context?.cluster.toNullable() ?? null;
+    if (cluster === null) {
+      throw notClustered(this.constructor.name, this._context?.path.toString() ?? null);
+    }
+    return cluster;
+  }
 
   /**
    * The id this entity was routed by — exactly what `extractEntityId`
@@ -111,5 +136,24 @@ function notAShardedEntity(className: string, path: string | null): Error {
     + 'or give it an identity directly with `Props.create(...).withEntity({ ... })`. '
     + 'Note the context is attached after construction: derive from `entityId` in a '
     + 'getter or in `preStart`, never in a field initializer.',
+  );
+}
+
+/**
+ * Same shape as {@link notAShardedEntity}, for the same reason: no cluster
+ * on this system and asked-before-the-context-was-attached are
+ * indistinguishable at the call site, so the message names both — and the
+ * way out of each.
+ */
+function notClustered(className: string, path: string | null): Error {
+  const where = path === null ? ' (before it was started)' : ` at ${path}`;
+  return new Error(
+    `${className}${where} has no Cluster — `
+    + '`this.cluster` needs the enclosing ActorSystem to have joined one. '
+    + 'Join it with `await Cluster.join(system, clusterOptions)` (or '
+    + '`Cluster.bootstrap(...)`) before spawning, or ask '
+    + '`this.context.cluster`, which answers `None` instead of throwing. '
+    + 'Note the context is attached after construction: read it in '
+    + '`preStart` or later, never in a field initializer.',
   );
 }

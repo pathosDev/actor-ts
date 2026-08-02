@@ -73,6 +73,54 @@ After `Cluster.join` resolves, the node is in the cluster
 (though possibly still in `joining` state for a few seconds until
 convergence).
 
+## Reaching the cluster from an actor
+
+`Cluster.join` also publishes the instance onto the `ActorSystem`, so
+you do not have to thread the handle through every actor that needs it:
+
+```ts
+system.cluster;          // Option<Cluster> — None if this system never joined
+this.context.cluster;    // the same Option, inside an actor
+this.cluster;            // unwrapped, inside an actor — throws if there is none
+```
+
+The unwrapped form is the one to use in code that only ever runs
+clustered, which includes every sharded entity and every singleton —
+those are constructed by the framework, so there is no call site to
+inject a cluster at:
+
+```ts
+class CartEntity extends Actor<CartMessage> {
+  override preStart(): void {
+    // No constructor argument, no closure, no options field.
+    this.log.info(`cart ${this.entityId} on ${this.cluster.selfAddress}`);
+  }
+
+  private onCheckout(): void {
+    if (this.cluster.isLeader()) { /* ... */ }
+  }
+}
+```
+
+`this.cluster.sharding` and `this.cluster.singleton` come along with it,
+so an actor can start a region or a singleton from the inside.
+
+Reach for `this.context.cluster` instead when the actor must also run on
+a plain, unclustered system — it answers `None` rather than throwing.
+Both read through to `system.cluster` on each access, so an actor that
+outlived the join, or a system that rejoined after `leave()`, always
+sees the current instance.
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="note" title="It stays an Option on purpose">
+  A cluster binds a transport and starts gossip, heartbeat and
+  failure-detection timers.  `system.cluster` therefore never creates
+  one on demand the way a lazily-initialised extension would — a
+  local-only system must not grow a cluster just because something
+  asked for it.
+</Aside>
+
 ## The membership states
 
 Every member goes through a small state machine:
@@ -265,8 +313,6 @@ a multi-process app where each process holds independent state,
 you don't need it either — just use process boundaries.  Reach for
 it when you genuinely need **shared logical state across multiple
 machines**.
-
-import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="Cluster joining isn't instant">
   ```ts

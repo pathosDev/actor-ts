@@ -220,7 +220,21 @@ export abstract class ReplicatedEventSourcedActor<Command, Event, State>
   private _isLeaseHolder = true;
   private _leaseUnsubscribeLost: (() => void) | null = null;
 
-  constructor(public readonly cluster: Cluster) { super(); }
+  private readonly _cluster: Cluster;
+
+  constructor(cluster: Cluster) {
+    super();
+    this._cluster = cluster;
+  }
+
+  /**
+   * The cluster this replica replicates over.  Still taken through the
+   * constructor — a replicated actor is handed the cluster it belongs to
+   * rather than inferring it — but exposed as an override of
+   * {@link Actor.cluster} so `this.cluster` means one thing everywhere,
+   * and widened back to `public` so external readers keep working.
+   */
+  override get cluster(): Cluster { return this._cluster; }
 
   /** Current state — updated after every event apply. */
   protected get state(): State { return this._state; }
