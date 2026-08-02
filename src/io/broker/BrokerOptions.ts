@@ -1,9 +1,10 @@
 /**
  * Shared configuration for every broker actor: the common options type
  * (reconnect / circuit-breaker / outbound buffer) that all broker actors
- * accept, the read/merge helpers that resolve it, the error raised when a
+ * accept, the HOCON reader that resolves it, the error raised when a
  * required option is missing, and the builder base that concrete
- * `<X>Options` extend.
+ * `<X>Options` extend.  The layering that combines the reader's output with
+ * defaults and constructor args is `mergeOptions` in `util/OptionsMerge`.
  *
  * The builder base is the "übergeordnete Klasse für gemeinsame Use-Cases"
  * layer between {@link OptionsBuilder} and the concrete builders, so each
@@ -104,35 +105,6 @@ export function readCommonOptions(config: Config): BrokerCommonOptionsType {
   }
 
   return out;
-}
-
-/**
- * Merge options in the documented precedence order:
- *   1. constructor args  (highest)
- *   2. HOCON config under `configKey`
- *   3. built-in defaults  (lowest)
- *
- * Falsy / undefined values from a higher layer don't shadow lower
- * layers — `undefined` means "not set", not "explicitly clear".
- */
-export function mergeOptions<S extends object>(
-  builtInDefaultOptions: Partial<S>,
-  fromConfig: Partial<S>,
-  fromConstructor: Partial<S>,
-): S {
-  return {
-    ...builtInDefaultOptions,
-    ...stripUndefined(fromConfig),
-    ...stripUndefined(fromConstructor),
-  } as S;
-}
-
-function stripUndefined<T extends object>(o: T): T {
-  const out: Record<string, unknown> = {};
-  for (const [k, v] of Object.entries(o)) {
-    if (v !== undefined) out[k] = v;
-  }
-  return out as T;
 }
 
 /** Raised when required options are missing from every layer. */

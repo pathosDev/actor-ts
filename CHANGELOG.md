@@ -128,6 +128,61 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   channel's `persistenceId` is now built from the real `|`-separated pair id
   rather than the sanitized one.
 
+### Fixed
+
+- **The `actor-ts.sharding.*` config block is actually read** (#834, part of
+  #653).  `reference.conf` shipped all five keys and the Configuration page
+  documented them with their defaults, but nothing in `src/` ever looked at
+  them: every sharding setting came from `ShardingOptions` alone.  An operator
+  who wrote
+
+  ```hocon
+  actor-ts.sharding.passivation-idle = 2 minutes
+  ```
+
+  got no passivation whatsoever — entities stayed resident forever, with no
+  warning, because the value was never read rather than rejected.
+  `examples/config/application.conf` sets exactly this key, which made it look
+  like a working example.
+
+  `ClusterSharding.start` now layers the block under the caller's options, so
+  the precedence the rest of the framework documents — **explicit options >
+  HOCON > built-in defaults** — finally holds for sharding too, per field:
+
+  ```ts
+  // actor-ts.sharding: number-of-shards = 128, passivation-idle = 2 minutes
+
+  const shardingOptions = StartShardingOptions.create<CartCommand>()
+    .withTypeName('cart')
+    .withEntityProps(Props.create(() => new CartEntity()))
+    .withExtractEntityId((command) => command.entityId)
+    .withNumShards(256);
+
+  cluster.sharding.start(shardingOptions);
+  // numShards 256 (explicit), passivationIdleMs 120_000 (config file)
+  ```
+
+  All five keys land: `number-of-shards`, `remember-entities` and
+  `passivation-idle` reach the region, `rebalance-interval` and
+  `hand-off-timeout` the per-type coordinator — `start` is the only call that
+  feeds both, which is why the merge lives there and not in `ShardRegion`.
+  The keys are now reachable from `ConfigKeys.sharding`, and an explicit
+  `undefined` counts as "not set" and falls through to the file instead of
+  shadowing it.
+
+  **No behaviour change without a config file:** the reference values are
+  identical to the built-in fallbacks (64 / 2s / 10s / false / 0ms), and a
+  regression test pins them together so wiring the block cannot drift into
+  changing defaults.
+
+  Internally, `mergeOptions` / `stripUndefined` moved from
+  `io/broker/BrokerOptions.ts` to `util/OptionsMerge.ts` — the precedence rule
+  is project-wide, and sharding is its second caller.  Not a public export;
+  no import path in the published API changes.
+
+  The other dead blocks — `cluster.*`, `remote.*`, `http.backend`, `worker.*`,
+  `coordinated-shutdown.*` — remain open under #653.
+
 ## [0.12.0] — 2026-08-01
 
 ### Added

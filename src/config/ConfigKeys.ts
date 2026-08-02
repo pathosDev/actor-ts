@@ -87,6 +87,20 @@ export const ConfigKeys = {
     },
   },
 
+  /**
+   * Cluster-sharding defaults — `actor-ts.sharding.*`.  Read once per
+   * started type by `ClusterSharding.start`, which layers them under the
+   * explicit options; the first three reach the region, the last two the
+   * per-type coordinator.
+   */
+  sharding: {
+    numberOfShards: 'actor-ts.sharding.number-of-shards',
+    rememberEntities: 'actor-ts.sharding.remember-entities',
+    passivationIdle: 'actor-ts.sharding.passivation-idle',
+    rebalanceInterval: 'actor-ts.sharding.rebalance-interval',
+    handOffTimeout: 'actor-ts.sharding.hand-off-timeout',
+  },
+
   /** Cluster transport root — `actor-ts.transport`. */
   transport: 'actor-ts.transport',
 
