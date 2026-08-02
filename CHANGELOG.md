@@ -148,6 +148,33 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Fixed
 
+- **`actor-ts.system.name`, `actor-ts.worker-cluster.*` and
+  `actor-ts.coordinated-shutdown.*` are actually read** (part of #653) — the
+  last of the inert blocks.
+
+  `ActorSystem.create()` now takes an **optional** name: omit it and the
+  system is named from `actor-ts.system.name`, falling back to `"default"` as
+  before.  `create('billing')` still wins.
+
+  `CoordinatedShutdown` picks up all three of its keys.
+  `default-phase-timeout` seeds the 12 canonical phases (it was hardcoded to
+  `5_000`, now `DEFAULT_PHASE_TIMEOUT_MS` in `util/Constants.ts`).
+  `terminate-actor-system = false` drops the built-in terminator task while
+  leaving the phase and any user tasks in it intact — for a host process that
+  owns the system's lifetime.  **`exit-jvm` is renamed to `exit-process`** —
+  it is a JVM-ism in a TypeScript framework, and it now does something: with
+  it on, `process.exit(0)` runs once the pipeline completes, which is how you
+  stop a lingering handle from making a finished shutdown look like a hang.
+
+  **The `worker` block is now `worker-cluster`, and `count` is `workers`** —
+  named after `WorkerClusterOptions`, whose fields they fill in, and in
+  lockstep with them.  `WorkerCluster.spawn` is a static with no `ActorSystem`
+  in scope, so it loads the config chain itself (the same one
+  `ActorSystem.create` uses).  An unknown `restart-policy` is now rejected by
+  `WorkerClusterOptionsValidator` instead of falling through the internal
+  `match` and silently meaning "never restart" — that check was missing for
+  code-supplied values too.
+
 - **`actor-ts.http.backend` and `actor-ts.http.shutdown-grace-period` are
   actually read** (part of #653).  `newServerAt(...).bind()` hardcoded
   `new FastifyBackend()` and the auto-registered shutdown task called
@@ -172,9 +199,15 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   does.  Corrected to `fastify | express | hono`, and `backend = "bun"` now
   fails loudly rather than being ignored.
 
-  The grace period is an upper bound, not a sleep: `unbind()` still returns as
-  soon as the server has closed, so the newly-live 5 s default costs nothing
-  when no request is in flight.
+  **`shutdown-grace-period`'s published default moves `5s` → `0ms`**, the same
+  correction as `max-frame-bytes`: `unbind()` has always been called with no
+  grace period, so `0` — force as soon as the server closes — is what every
+  deployment has actually been running.  Making the documented `5s` live
+  turned out to cost real time rather than none: where a backend's `close()`
+  cannot settle (Express with a live WebSocket on Bun), the window is not an
+  upper bound that resolves early but a deadline that is always reached, so
+  every such shutdown would have gained five seconds.  Raise it deliberately
+  if you want in-flight requests to finish.
 
 - **The `actor-ts.cluster.*` and `actor-ts.remote.*` config blocks are actually
   read** (part of #653; closes #754).  Same defect as the sharding block: the

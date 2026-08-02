@@ -105,10 +105,12 @@ export class ActorSystem {
   private _terminated = false;
   private _terminationResolvers: Array<() => void> = [];
 
-  private constructor(name: string, options: ActorSystemOptionsType) {
+  private constructor(name: string | undefined, options: ActorSystemOptionsType) {
     this.startedAtMs = Date.now();
-    this.name = name;
+    // Config first: the name may come out of it, and nothing in the build
+    // depends on the name.
     this.config = buildConfig(options);
+    this.name = name ?? systemNameFromConfig(this.config);
     this.dispatcher = options.dispatcher ?? dispatcherFromConfig(this.config);
     this.scheduler = options.scheduler ?? new Scheduler();
     this.eventStream = new EventStream();
@@ -117,7 +119,7 @@ export class ActorSystem {
     // Wire the system logger into the bus so a throwing subscriber
     // predicate (#85) gets surfaced rather than silently dropped.
     this.eventStream.log = this.log;
-    this.deadLetters = new DeadLetterRef(name, this.eventStream);
+    this.deadLetters = new DeadLetterRef(this.name, this.eventStream);
     this.extensions = new Extensions(this);
 
     // Construct the supervisor chain: /  ->  /user, /system.
@@ -155,9 +157,13 @@ export class ActorSystem {
     }
   }
 
-  /** Create a new actor system. */
+  /**
+   * Create a new actor system.  Omitting `name` falls back to
+   * `actor-ts.system.name` and, failing that, to `"default"` — so a
+   * deployment can name its system from config without a rebuild.
+   */
   static create(
-    name: string = 'default',
+    name?: string,
     options: ActorSystemOptions = {},
   ): ActorSystem {
     return new ActorSystem(name, (options as Partial<ActorSystemOptionsType>));
@@ -429,6 +435,13 @@ function buildConfig(options: ActorSystemOptionsType): Config {
     appConfPath: options.configFile,
     overrides: userLayer,
   });
+}
+
+/** `actor-ts.system.name`, or the historical `"default"` when unset. */
+function systemNameFromConfig(config: Config): string {
+  return config.hasPath(ConfigKeys.system.name)
+    ? config.getString(ConfigKeys.system.name)
+    : 'default';
 }
 
 function logLevelFromConfig(config: Config): LogLevel {

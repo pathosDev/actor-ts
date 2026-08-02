@@ -48,7 +48,10 @@ actor-ts {
 
   http {
     backend = "fastify"   # fastify | express | hono
-    shutdown-grace-period = 5s   # in-flight drain window before connections are forced
+    # In-flight drain window for unbind() before connections are forced.
+    # 0 keeps the historical behaviour (force immediately); raise it if you
+    # want in-flight requests to finish on shutdown.
+    shutdown-grace-period = 0ms
 
     # Server-side defaults for websocket() routes (per-connection policy).
     # Leaf names match the WebsocketRouteOptions fields (camelCase); a route
@@ -93,15 +96,15 @@ actor-ts {
     max-entities = 0         # 0 = no per-node cap
   }
 
-  worker {
-    count = "auto"   # "auto" uses navigator.hardwareConcurrency
+  worker-cluster {
+    workers = "auto"   # "auto" uses navigator.hardwareConcurrency
     restart-policy = "on-failure"   # always | on-failure | never
   }
 
   coordinated-shutdown {
     default-phase-timeout = 5s
     terminate-actor-system = true
-    exit-jvm = false   # node-level: whether to call process.exit
+    exit-process = false   # call process.exit(0) once the pipeline completes
   }
 }
 `.trim();

@@ -74,7 +74,7 @@ Platziere das im Projekt-Root.  Das Framework lädt es bei
 
 | Key | Default | Zweck |
 | --- | --- | --- |
-| `system.name` | `"default"` | Systemname — verwendet in Actor-Pfaden und zur Cluster-Identifikation. |
+| `system.name` | `"default"` | Systemname — verwendet in Actor-Pfaden und zur Cluster-Identifikation.  Greift, wenn `ActorSystem.create()` ohne Namen aufgerufen wird; ein explizites `create('billing')` gewinnt. |
 
 ### `actor-ts.logger`
 
@@ -148,7 +148,7 @@ Bedeutung behält, sobald die Implementierung landet.
 | Key | Default | Zweck |
 | --- | --- | --- |
 | `http.backend` | `"fastify"` | Einer von `fastify` / `express` / `hono`. |
-| `http.shutdown-grace-period` | `5s` | Wie lange `unbind()` in-flight Requests leerlaufen lässt, bevor Verbindungen erzwungen geschlossen werden. |
+| `http.shutdown-grace-period` | `0ms` | Wie lange `unbind()` in-flight Requests leerlaufen lässt, bevor Verbindungen erzwungen geschlossen werden.  `0` erzwingt sofort. |
 | `http.websocket` | *(siehe unten)* | Serverseitige WebSocket-Defaults für [`websocket()`](/de/http/websocket/)-Routen. |
 
 `http.backend` entscheidet nur darüber, was `newServerAt(...).bind()`
@@ -159,10 +159,16 @@ Ein unbekannter Name lässt `bind()` mit einem `ConfigError` scheitern,
 statt still auf Fastify zurückzufallen.  Express und Hono sind optionale
 Peer-Dependencies und werden nur importiert, wenn du sie benennst.
 
-Die Grace Period ist eine **Obergrenze, keine Wartezeit**: `unbind()`
-kehrt zurück, sobald der Server tatsächlich geschlossen ist, und wartet
-das Fenster nur aus, wenn noch Requests laufen.  Ein Aufrufer, der einen
-eigenen Wert übergibt — `binding.unbind(1_000)` — überschreibt sie.
+Die Grace Period ist per Default `0` — sofort erzwingen —, weil `unbind()`
+genau das in der Praxis immer getan hat.  Erhöhe sie, wenn in-flight
+Requests fertig werden sollen.
+
+Meist ist sie eine Obergrenze und keine Wartezeit: `unbind()` kehrt zurück,
+sobald der Server tatsächlich geschlossen ist.  Wo das `close()` eines
+Backends nicht settlen kann — etwa Express mit einem lebenden WebSocket —
+wird das Fenster zu einer Deadline, die immer erreicht wird; ein großer Wert
+ist dort also Zeit, die du immer bezahlst.  Ein Aufrufer, der einen eigenen
+Wert übergibt — `binding.unbind(1_000)` — überschreibt die Config.
 
 Serverseitige WebSocket-Routen (`websocket(path, actorRef)`) lesen
 ihre Defaults aus `actor-ts.http.websocket`:
@@ -237,16 +243,35 @@ Stores — haben keine HOCON-Form und bleiben im Code.
 
 | Key | Default | Zweck |
 | --- | --- | --- |
-| `coordinated-shutdown.default-phase-timeout` | `5s` | Default-Timeout pro Phase. |
-| `coordinated-shutdown.terminate-actor-system` | `true` | Ob in der finalen Phase `system.terminate()` aufgerufen wird. |
-| `coordinated-shutdown.exit-jvm` | `false` | Ob nach dem Shutdown `process.exit()` aufgerufen wird. |
+| `coordinated-shutdown.default-phase-timeout` | `5s` | Default-Timeout pro Phase.  Eine Phase, die es überschreitet, wird abgebrochen, damit die nächste noch läuft. |
+| `coordinated-shutdown.terminate-actor-system` | `true` | Ob der eingebaute Terminator-Task in der finalen Phase `system.terminate()` aufruft. |
+| `coordinated-shutdown.exit-process` | `false` | Ob nach Abschluss der Pipeline `process.exit(0)` aufgerufen wird. |
 
-### `actor-ts.worker` *(Multi-Runtime-Worker)*
+`terminate-actor-system = false` entfernt nur den eingebauten Terminator —
+in `ActorSystemTerminate` registrierte eigene Tasks laufen weiterhin.
+Nutze es, wenn ein Host-Prozess die Lebensdauer des Systems besitzt und ein
+Signal-Handler es nicht killen darf.
+
+`exit-process` ist für den umgekehrten Fall: ein hängengebliebenes Handle
+(ein offener Socket, eine gepoolte Verbindung, die ein Treiber nie
+freigegeben hat) hält den Prozess am Leben, nachdem die Pipeline fertig
+ist — von außen nicht von einem Hänger zu unterscheiden.  Per Default aus,
+weil ein erzwungener Exit genau die Leaks verdeckt, die du eigentlich
+finden willst.
+
+### `actor-ts.worker-cluster` *(Multi-Runtime-Worker)*
 
 | Key | Default | Zweck |
 | --- | --- | --- |
-| `worker.count` | `"auto"` | Anzahl Worker — `"auto"` verwendet `navigator.hardwareConcurrency`. |
-| `worker.restart-policy` | `"on-failure"` | `always` / `on-failure` / `never`. |
+| `worker-cluster.workers` | `"auto"` | Anzahl Worker — `"auto"` verwendet `navigator.hardwareConcurrency`. |
+| `worker-cluster.restart-policy` | `"on-failure"` | `always` / `on-failure` / `never`. |
+
+Diese Keys füllen `WorkerCluster.spawn(options)` für Felder auf, die der
+Aufruf nicht setzt.  `spawn` ist ein Static ohne `ActorSystem` im Scope und
+lädt die Config-Kette daher selbst — dieselbe, die `ActorSystem.create`
+verwendet, inklusive `ACTOR_TS_CONFIG` und `./application.conf`.  Eine
+unbekannte `restart-policy` wird mit einem `OptionsError` abgelehnt, statt
+still „never" zu bedeuten.
 
 ### Broker-Plugins — `actor-ts.io.broker.*`
 

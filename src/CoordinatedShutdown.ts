@@ -1,5 +1,7 @@
 import type { ActorSystem } from './ActorSystem.js';
+import { ConfigKeys } from './config/ConfigKeys.js';
 import { extensionId, type Extension, type ExtensionId } from './Extension.js';
+import { DEFAULT_PHASE_TIMEOUT_MS } from './util/Constants.js';
 
 /**
  * Structured reason passed to every shutdown task so that they can behave
@@ -87,12 +89,32 @@ export class CoordinatedShutdown implements Extension {
 
   /**
    * Default per-phase timeout in ms.  Can be changed globally or per-phase
-   * via `setPhaseTimeout`.  5 seconds is a reasonable balance between
+   * via `setPhaseTimeout`, or from `actor-ts.coordinated-shutdown.
+   * default-phase-timeout`.  5 seconds is a reasonable balance between
    * letting slow tasks finish and not blocking shutdown indefinitely.
+   *
+   * Assigning it later only affects phases registered after the fact — the
+   * 12 canonical phases copy it when they are seeded below, which is why
+   * the config read has to happen first.
    */
-  defaultPhaseTimeoutMs = 5_000;
+  defaultPhaseTimeoutMs = DEFAULT_PHASE_TIMEOUT_MS;
+
+  /** Call `process.exit(0)` once the pipeline completes.  Off by default. */
+  private readonly exitProcess: boolean;
 
   constructor(private readonly system: ActorSystem) {
+    const config = system.config;
+    const keys = ConfigKeys.coordinatedShutdown;
+    if (config.hasPath(keys.defaultPhaseTimeout)) {
+      this.defaultPhaseTimeoutMs = config.getDuration(keys.defaultPhaseTimeout);
+    }
+    this.exitProcess = config.hasPath(keys.exitProcess)
+      ? config.getBoolean(keys.exitProcess)
+      : false;
+    const terminateActorSystem = config.hasPath(keys.terminateActorSystem)
+      ? config.getBoolean(keys.terminateActorSystem)
+      : true;
+
     // Seed the 12 canonical phases linearly — each depends on the previous.
     const order: DefaultPhase[] = [
       Phases.BeforeServiceUnbind,
@@ -116,10 +138,15 @@ export class CoordinatedShutdown implements Extension {
         recover: true,
       });
     }
-    // Built-in terminator in the final phase.
-    this.addTask(Phases.ActorSystemTerminate, 'terminate-actor-system', async () => {
-      if (!this.system.isTerminated) await this.system.terminate();
-    });
+    // Built-in terminator in the final phase.  Opting out leaves the phase
+    // in place — user tasks registered there still run — and hands the
+    // system's lifetime back to the embedder, which is the point: a host
+    // process that owns the system does not want a signal handler killing it.
+    if (terminateActorSystem) {
+      this.addTask(Phases.ActorSystemTerminate, 'terminate-actor-system', async () => {
+        if (!this.system.isTerminated) await this.system.terminate();
+      });
+    }
   }
 
   /* ----------------------------- Public API ----------------------------- */
@@ -226,6 +253,15 @@ export class CoordinatedShutdown implements Extension {
       await this.runPhase(phase, reason);
     }
     this._completed = true;
+    // Last thing, and only when asked: a lingering handle (an open socket, a
+    // pooled DB connection a driver never released) otherwise keeps the
+    // process alive long after the pipeline is done, and the operator has no
+    // way to tell "shutting down" from "hung".  `_completed` is already set,
+    // so anything awaiting `run()` observes success even though this call
+    // does not return.
+    if (this.exitProcess && typeof process !== 'undefined' && typeof process.exit === 'function') {
+      process.exit(0);
+    }
   }
 
   private async runPhase(phase: string, reason: Reason): Promise<void> {

@@ -25,6 +25,11 @@
  */
 
 export const ConfigKeys = {
+  /** ActorSystem identity — `actor-ts.system.*`. */
+  system: {
+    name: 'actor-ts.system.name',
+  },
+
   /** Logger root — `actor-ts.logger.*`. */
   logger: {
     level: 'actor-ts.logger.level',
@@ -137,6 +142,26 @@ export const ConfigKeys = {
     maxEntities: 'actor-ts.sharding.max-entities',
     rebalanceInterval: 'actor-ts.sharding.rebalance-interval',
     handOffTimeout: 'actor-ts.sharding.hand-off-timeout',
+  },
+
+  /**
+   * `WorkerCluster.spawn` defaults — `actor-ts.worker-cluster.*`.
+   *
+   * The block is named after the options type it feeds rather than after
+   * "worker", both because that is what it configures and because
+   * {@link ConfigKeys.worker} below is already taken by the IPC sentinels,
+   * which are not config paths at all.
+   */
+  workerCluster: {
+    workers: 'actor-ts.worker-cluster.workers',
+    restartPolicy: 'actor-ts.worker-cluster.restart-policy',
+  },
+
+  /** CoordinatedShutdown pipeline defaults — `actor-ts.coordinated-shutdown.*`. */
+  coordinatedShutdown: {
+    defaultPhaseTimeout: 'actor-ts.coordinated-shutdown.default-phase-timeout',
+    terminateActorSystem: 'actor-ts.coordinated-shutdown.terminate-actor-system',
+    exitProcess: 'actor-ts.coordinated-shutdown.exit-process',
   },
 
   /**
