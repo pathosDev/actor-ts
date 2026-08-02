@@ -1,0 +1,173 @@
+---
+title: The full reference.conf
+description: Every setting actor-ts ships, verbatim from the bundled reference configuration — the complete list of what you can put in an application.conf.
+---
+
+This is the framework's built-in configuration, reproduced exactly as it
+ships in `src/config/reference.ts`.  It is the **complete** set of
+first-party settings: anything not here has no HOCON form, and anything
+here is read by something (a test fails the build otherwise — see
+[No dead keys](#no-dead-keys) below).
+
+Every value shown is the default already in effect, so you never need to
+copy the whole thing.  Put only what you want to change in your
+`application.conf`:
+
+```hocon
+# application.conf — everything else keeps the defaults below
+actor-ts {
+  system.name = "billing"
+  sharding.passivation-idle = 2 minutes
+}
+```
+
+For what each key *does*, see [Configuration](/reference/configuration/) —
+this page is the exhaustive list, that one is the explanation.
+
+## The file
+
+```hocon
+actor-ts {
+  system {
+    name = "default"
+  }
+
+  logger {
+    level = "info"   # debug | info | warn | error | off
+  }
+
+  dispatcher {
+    default = "immediate"   # immediate | microtask | throughput
+    throughput = 16
+  }
+
+  cluster {
+    gossip-interval = 1s
+    seed-retry-interval = 3s
+
+    failure-detector {
+      heartbeat-interval = 500ms
+      unreachable-after = 2s
+      down-after = 5s     # measured from the last heartbeat, so > unreachable-after
+    }
+  }
+
+  remote {
+    # Bind address of this node.  Cluster.join reads these when its options
+    # leave host/port unset, so a deployment can move the address into config.
+    tcp {
+      host = "0.0.0.0"
+      port = 2552
+    }
+    tls {
+      enabled = false   # DEAD KEY — not read by anything yet, see issue #591
+    }
+    max-frame-bytes = 16M   # per-frame wire cap; lower it on semi-trusted networks
+  }
+
+  http {
+    backend = "fastify"   # fastify | express | hono
+    # In-flight drain window for unbind() before connections are forced.
+    # 0 keeps the historical behaviour (force immediately); raise it if you
+    # want in-flight requests to finish on shutdown.
+    shutdown-grace-period = 0ms
+
+    # Server-side defaults for websocket() routes (per-connection policy).
+    # Leaf names match the WebsocketRouteOptions fields (camelCase); a route
+    # may override any of them, and the resolved values are validated
+    # (OptionsError on a bad value).
+    websocket {
+      maxFrameBytes    = 1M       # inbound frame size cap
+      onOversizeFrame  = "close"  # close | drop
+      onInvalidMessage = "close"  # close | drop | hook
+      maxBufferedBytes = 4M       # outbound buffer cap before backpressure
+      onBackpressure   = "drop"   # drop | close
+      # maxConnections is unlimited by default; set a positive integer to cap.
+    }
+  }
+
+  cache {
+    # Defaults for the built-in in-memory cache (the "default" cache, and any
+    # cache whose plugin resolves to actor-ts.cache.in-memory).  Leaf names
+    # match the InMemoryCacheOptions fields (camelCase) and are validated on
+    # read — a bad value throws OptionsError.
+    in-memory {
+      maxEntries = 10000   # LRU cap on entries (Infinity/unbounded only settable in code)
+      cleanupMs  = 60000   # background expired-entry sweep interval, ms (0 disables the sweep)
+    }
+  }
+
+  persistence {
+    journal {
+      plugin = "actor-ts.persistence.journal.in-memory"
+    }
+    snapshot-store {
+      plugin = "actor-ts.persistence.snapshot-store.in-memory"
+    }
+  }
+
+  sharding {
+    number-of-shards = 64
+    rebalance-interval = 2s
+    hand-off-timeout = 10s
+    remember-entities = false
+    passivation-idle = 0ms   # 0 disables the idle sweep
+    max-entities = 0         # 0 = no per-node cap
+  }
+
+  worker-cluster {
+    workers = "auto"   # "auto" uses navigator.hardwareConcurrency
+    restart-policy = "on-failure"   # always | on-failure | never
+  }
+
+  coordinated-shutdown {
+    default-phase-timeout = 5s
+    terminate-actor-system = true
+    exit-process = false   # call process.exit(0) once the pipeline completes
+  }
+}
+```
+
+## What is deliberately not here
+
+Two families of settings have no entry above, and both are by design.
+
+**Plugin subtrees.**  Journals, snapshot stores, caches and brokers read
+their own connection settings from their own subtree —
+`actor-ts.persistence.journal.postgres`, `actor-ts.io.broker.kafka`,
+`actor-ts.cache.redis`, and so on.  They are optional peers, so shipping
+defaults for them would mean shipping a configuration for a package you
+may not have installed.  Each is documented on its own page.
+
+**Anything that is not a value.**  Entity props, message extractors,
+allocation strategies, leases, transports, downing providers, custom
+backends — a config file cannot express a class or a closure, so these
+stay in code and are passed through the relevant `XOptions` builder.
+
+## Precedence
+
+Three layers, highest first:
+
+1. **Explicit options** in code — `ClusterOptions.create().withPort(2552)`,
+   `ActorSystem.create('billing')`.
+2. **Your `application.conf`** (or an inline `config` object).
+3. **This file.**
+
+Per *field*, not per block: setting one failure-detector threshold in code
+leaves the other two coming from your config file.  An `undefined` in code
+means "not set" and falls through — it does not blank out the layer below.
+
+## No dead keys
+
+For a long stretch this file documented about twenty-five settings that
+nothing in the framework ever read.  You could set
+`actor-ts.sharding.passivation-idle = 2 minutes`, get no passivation, and
+receive no warning — the value was not rejected, it was never looked at
+(issue #653).
+
+That is now a build failure.  A test walks every leaf above and asserts it
+is both reachable from `ConfigKeys` — the typed list of paths the framework
+recognises — and referenced from the source.  One key is knowingly exempt
+and says so in place: `remote.tls.enabled` is inert until
+[#591](https://github.com/pathosDev/actor-ts/issues/591) lands, and the
+exemption is registered with that issue number rather than left implicit.

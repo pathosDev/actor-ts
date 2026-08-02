@@ -146,6 +146,19 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   channel's `persistenceId` is now built from the real `|`-separated pair id
   rather than the sanitized one.
 
+### Documentation
+
+- **A new page publishes the complete `reference.conf`** — every setting the
+  framework ships, verbatim, so "what can I configure?" has one exhaustive
+  answer instead of a curated example.  The Configuration page keeps
+  explaining what each key does and links across.
+
+  The copy is pinned to the source: a test compares the page's HOCON block to
+  `REFERENCE_CONF` and fails on any drift, in both languages.  A published
+  default that no longer matches the shipped one is the same lie as a
+  documented key nothing reads, which is what the rest of this release is
+  about.
+
 ### Fixed
 
 - **A guard against the next dead config key** (closes #653).
