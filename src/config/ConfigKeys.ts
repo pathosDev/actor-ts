@@ -88,9 +88,42 @@ export const ConfigKeys = {
   },
 
   /**
+   * Cluster membership defaults — `actor-ts.cluster.*`.  Read once by
+   * `Cluster.join`, which layers them under the explicit `ClusterOptions`.
+   *
+   * `cluster.leader-election` is absent because it no longer exists: the
+   * leader is always the lowest-addressed up-member, and a one-value
+   * selector was documenting a choice the framework does not offer.
+   */
+  cluster: {
+    gossipInterval: 'actor-ts.cluster.gossip-interval',
+    seedRetryInterval: 'actor-ts.cluster.seed-retry-interval',
+    failureDetector: {
+      heartbeatInterval: 'actor-ts.cluster.failure-detector.heartbeat-interval',
+      unreachableAfter: 'actor-ts.cluster.failure-detector.unreachable-after',
+      downAfter: 'actor-ts.cluster.failure-detector.down-after',
+    },
+  },
+
+  /**
+   * Cluster bind address and wire limits — `actor-ts.remote.*`.
+   *
+   * `remote.tls.enabled` is deliberately absent: it is still dead, tracked
+   * as its own security issue (#591), and named in the dead-key guard's
+   * exception list rather than quietly wired to nothing.
+   */
+  remote: {
+    tcp: {
+      host: 'actor-ts.remote.tcp.host',
+      port: 'actor-ts.remote.tcp.port',
+    },
+    maxFrameBytes: 'actor-ts.remote.max-frame-bytes',
+  },
+
+  /**
    * Cluster-sharding defaults — `actor-ts.sharding.*`.  Read once per
    * started type by `ClusterSharding.start`, which layers them under the
-   * explicit options; the first three reach the region, the last two the
+   * explicit options; the first four reach the region, the last two the
    * per-type coordinator.
    */
   sharding: {
@@ -101,9 +134,6 @@ export const ConfigKeys = {
     rebalanceInterval: 'actor-ts.sharding.rebalance-interval',
     handOffTimeout: 'actor-ts.sharding.hand-off-timeout',
   },
-
-  /** Cluster transport root — `actor-ts.transport`. */
-  transport: 'actor-ts.transport',
 
   /**
    * Worker IPC sentinels — used by the multi-runtime test harness and

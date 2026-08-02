@@ -42,12 +42,11 @@ actor-ts {
   }
 
   remote {
-    transport = "tcp"
     tcp {
-      hostname = "0.0.0.0"
-      port     = ${?ACTOR_TS_PORT}   # Env-Var-Substitution; fällt auf Default zurück
+      host = "0.0.0.0"
+      port = ${?ACTOR_TS_PORT}   # Env-Var-Substitution; fällt auf Default zurück
     }
-    max-frame-size = 1M
+    max-frame-bytes = 16M
   }
 
   persistence {
@@ -96,20 +95,53 @@ Platziere das im Projekt-Root.  Das Framework lädt es bei
 | --- | --- | --- |
 | `cluster.gossip-interval` | `1s` | Wie oft Gossip mit einem zufälligen Peer ausgetauscht wird. |
 | `cluster.seed-retry-interval` | `3s` | Wie oft Seed-Verbindungen während des Joins wiederholt werden. |
-| `cluster.leader-election` | `"lowest-address"` | Strategie zur Auswahl eines neuen Leaders. |
 | `cluster.failure-detector.heartbeat-interval` | `500ms` | Wie oft Heartbeats gesendet werden. |
 | `cluster.failure-detector.unreachable-after` | `2s` | Verdachtsschwelle für `unreachable`-Status. |
-| `cluster.failure-detector.down-after` | `5s` | Verdachtsschwelle für erzwungenes Down. |
+| `cluster.failure-detector.down-after` | `5s` | Verdachtsschwelle für erzwungenes Down.  Wird ab dem letzten Heartbeat gemessen, muss also größer als `unreachable-after` sein. |
+
+Diese Keys liegen unter dem, was `Cluster.join(system, options)` übergibt —
+ein explizites `withGossipIntervalMs(…)` gewinnt also weiterhin.  Der
+Failure Detector wird *pro Schwelle* gemergt: setzt du im Code nur
+`down-after`, bleiben die beiden anderen aus der Datei erhalten.
+
+`seeds`, `roles`, der Transport und der Downing Provider haben keine
+HOCON-Form — die ersten beiden sind Deployment-Identität, die an die
+Join-Stelle gehört, die letzten beiden sind Objekte, die eine
+Config-Datei nicht ausdrücken kann.
 
 ### `actor-ts.remote`
 
 | Key | Default | Zweck |
 | --- | --- | --- |
-| `remote.transport` | `"tcp"` | Derzeit nur `"tcp"` und der In-Memory-Test-Transport. |
-| `remote.tcp.hostname` | `"0.0.0.0"` | TCP-Bind-Adresse. |
-| `remote.tcp.port` | `2552` | TCP-Bind-Port. |
-| `remote.tls.enabled` | `false` | TLS auf dem Cluster-Transport umschalten. |
-| `remote.max-frame-size` | `1M` | Maximal erlaubte Wire-Frame-Größe. |
+| `remote.tcp.host` | `"0.0.0.0"` | Bind-Adresse.  Wird verwendet, wenn `ClusterOptions` `host` nicht setzt. |
+| `remote.tcp.port` | `2552` | Bind-Port.  Wird verwendet, wenn `ClusterOptions` `port` nicht setzt. |
+| `remote.max-frame-bytes` | `16M` | Wire-Cap pro Frame.  Ein Frame, dessen Längen-Präfix darüber liegt, wird verworfen, bevor irgendeine Payload gepuffert wird. |
+| `remote.tls.enabled` | `false` | **Nicht implementiert** — siehe unten. |
+
+Weil die Bind-Adresse aus der Config lesbar ist, kann ein Deployment sie
+komplett aus dem Code herausziehen:
+
+```hocon
+actor-ts.remote.tcp {
+  host = "0.0.0.0"
+  port = ${?ACTOR_TS_PORT}   # Env-Var-Substitution
+}
+```
+
+`remote.max-frame-bytes` gilt für den Transport, den der Cluster sich
+selbst baut.  Wenn du einen `TcpTransport` selbst konstruierst und per
+`withTransport(…)` übergibst, setz das Cap dort — das Framework re-capped
+keinen Transport, den es nicht erzeugt hat.
+
+:::caution[`remote.tls.enabled` tut nichts]
+Dieser Key ist weiterhin inert: ihn auf `true` zu setzen aktiviert **kein**
+TLS, und du bekommst keinen Fehler.  TLS ist derzeit nur erreichbar, indem
+du einen `TcpTransport` mit TLS-Konfiguration konstruierst und ihn an
+`ClusterOptions.withTransport(…)` übergibst.  Verfolgt als
+[Issue #591](https://github.com/pathosDev/actor-ts/issues/591); der Key ist
+bewusst als bekannt-toter Key gelistet statt entfernt, damit der Wert seine
+Bedeutung behält, sobald die Implementierung landet.
+:::
 
 ### `actor-ts.http`
 
@@ -239,7 +271,7 @@ Erkannte Einheiten: `ns`, `us`, `ms`, `s`, `m`, `h`, `d`.
 ### Sizes
 
 ```hocon
-max-frame-size = 1M         # 1 048 576 Bytes
+max-frame-bytes = 16M       # 16 777 216 Bytes
 buffer = 64K
 heap = 2G
 ```

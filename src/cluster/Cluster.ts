@@ -15,7 +15,7 @@ import {
 } from '../util/Constants.js';
 import { none, some, type Option } from '../util/Option.js';
 import { ClusterExtensionId } from './ClusterExtension.js';
-import { ClusterOptionsValidator } from './ClusterOptions.js';
+import { ClusterOptionsValidator, withClusterConfigDefaults } from './ClusterOptions.js';
 import type { ClusterOptions, ClusterOptionsType } from './ClusterOptions.js';
 import {
   LeaderChanged,
@@ -122,7 +122,11 @@ export class Cluster {
     this.selfAddress = new NodeAddress(system.name, options.host, options.port);
     this.selfRoles = new Set(options.roles ?? []);
     this.log = system.log.withSource(`cluster@${this.selfAddress}`);
-    this.transport = options.transport ?? new TcpTransport(this.selfAddress, this.log);
+    // The frame cap only reaches a transport this constructor builds; an
+    // injected one was constructed with its own, and silently re-capping
+    // someone else's transport would be a surprise.
+    this.transport = options.transport
+      ?? new TcpTransport(this.selfAddress, this.log, null, options.maxFrameBytes);
     const fdOptions: FailureDetectorOptionsType = {
       ...defaultFailureDetectorOptions,
       ...(options.failureDetector ?? {}),
@@ -161,7 +165,7 @@ export class Cluster {
     system: ActorSystem,
     options: ClusterOptions,
   ): Promise<Cluster> {
-    const resolvedOptions = options as ClusterOptionsType;
+    const resolvedOptions = withClusterConfigDefaults(system.config, options as ClusterOptionsType);
     new ClusterOptionsValidator().validate(resolvedOptions);
     const cluster = new Cluster(system, resolvedOptions);
     const extension = system.extension(ClusterExtensionId);

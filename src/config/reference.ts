@@ -25,25 +25,25 @@ actor-ts {
   cluster {
     gossip-interval = 1s
     seed-retry-interval = 3s
-    leader-election = "lowest-address"
 
     failure-detector {
       heartbeat-interval = 500ms
       unreachable-after = 2s
-      down-after = 5s
+      down-after = 5s     # measured from the last heartbeat, so > unreachable-after
     }
   }
 
   remote {
-    transport = "tcp"
+    # Bind address of this node.  Cluster.join reads these when its options
+    # leave host/port unset, so a deployment can move the address into config.
     tcp {
-      hostname = "0.0.0.0"
+      host = "0.0.0.0"
       port = 2552
     }
     tls {
-      enabled = false
+      enabled = false   # DEAD KEY — not read by anything yet, see issue #591
     }
-    max-frame-size = 1M
+    max-frame-bytes = 16M   # per-frame wire cap; lower it on semi-trusted networks
   }
 
   http {

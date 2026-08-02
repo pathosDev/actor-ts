@@ -148,6 +148,65 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Fixed
 
+- **The `actor-ts.cluster.*` and `actor-ts.remote.*` config blocks are actually
+  read** (part of #653; closes #754).  Same defect as the sharding block: the
+  keys shipped in `reference.conf`, the Configuration page documented them, and
+  `Cluster.join` took every value from `ClusterOptions` alone.  `Cluster.join`
+  now layers them underneath, so **explicit options > HOCON > built-in
+  defaults** holds here too.
+
+  The bind address comes with it, which is what the docs have shown all along:
+
+  ```hocon
+  actor-ts.remote.tcp {
+    host = "0.0.0.0"
+    port = ${?ACTOR_TS_PORT}   # env-var substitution — now actually applied
+  }
+  ```
+
+  One consequence worth knowing: `host` / `port` are validated on the *merged*
+  settings, and the reference config supplies both, so a `Cluster.join` that
+  omits them no longer throws `OptionsError` — it binds `0.0.0.0:2552`.  That is
+  the point of the feature, but it turns a startup error into a running node,
+  so pin the address in config if you were relying on the throw.
+
+  `failureDetector` merges **per threshold**, not per object: setting only
+  `downAfterMs` in code keeps `heartbeat-interval` and `unreachable-after` from
+  the file.  A shallow merge would have silently reset the two the caller never
+  mentioned.
+
+  **`remote.max-frame-size` → `remote.max-frame-bytes`, and its documented
+  default was wrong.**  The key is renamed to match the field it feeds
+  (`ClusterOptions.maxFrameBytes`, new, with `withMaxFrameBytes(…)`), and the
+  reference value moves `1M` → `16M`.  The `1M` in the docs was never the
+  effective cap — nothing read the key, so every cluster has always run at
+  `DEFAULT_MAX_FRAME_BYTES` (16 MiB).  Publishing `16M` states what the
+  framework actually does; the alternative, keeping `1M` now that it is live,
+  would have tightened every existing cluster's wire cap 16× on upgrade and
+  broken anyone sending large envelopes.  **If you sized your deployment
+  against the documented 1 MiB, set `max-frame-bytes = 1M` explicitly — it now
+  works.**  The cap applies to the transport the cluster builds for itself; an
+  injected `withTransport(…)` keeps the cap it was constructed with.
+
+  **Two dead keys removed rather than wired:**
+
+  - `cluster.leader-election = "lowest-address"` — the leader is always the
+    lowest-addressed up-member and there is no second strategy, so the key
+    documented a choice the framework does not offer.
+  - `remote.transport = "tcp"` — a custom transport is an object passed to
+    `withTransport(…)`, never a string; the in-memory transport is a test
+    detail. `ConfigKeys.transport` (`'actor-ts.transport'`) went with it — it
+    matched no documented path and was referenced nowhere.
+
+  `remote.tcp.hostname` is now `remote.tcp.host`, matching `ClusterOptions.host`
+  and the `withHost(…)` that sets it.  All four renamed/removed keys were inert,
+  so no working configuration changes meaning — but a config file that named
+  them was never doing anything anyway.
+
+  `remote.tls.enabled` stays dead **on purpose** (#591): it is now flagged as
+  such in the docs and named in the dead-key guard's exception list, rather than
+  being quietly wired to a TLS implementation that does not exist yet.
+
 - **The `actor-ts.sharding.*` config block is actually read** (#834, part of
   #653).  `reference.conf` shipped all five keys and the Configuration page
   documented them with their defaults, but nothing in `src/` ever looked at

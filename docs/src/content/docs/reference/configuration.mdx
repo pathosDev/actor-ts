@@ -41,12 +41,11 @@ actor-ts {
   }
 
   remote {
-    transport = "tcp"
     tcp {
-      hostname = "0.0.0.0"
-      port     = ${?ACTOR_TS_PORT}   # env-var substitution; falls back to default
+      host = "0.0.0.0"
+      port = ${?ACTOR_TS_PORT}   # env-var substitution; falls back to default
     }
-    max-frame-size = 1M
+    max-frame-bytes = 16M
   }
 
   persistence {
@@ -95,20 +94,52 @@ Place this at the project root.  The framework auto-loads it on
 | --- | --- | --- |
 | `cluster.gossip-interval` | `1s` | How often gossip is exchanged with a random peer. |
 | `cluster.seed-retry-interval` | `3s` | How often to retry seed connections during join. |
-| `cluster.leader-election` | `"lowest-address"` | Strategy for picking a new leader. |
 | `cluster.failure-detector.heartbeat-interval` | `500ms` | How often heartbeats are sent. |
 | `cluster.failure-detector.unreachable-after` | `2s` | Suspicion threshold for `unreachable` status. |
-| `cluster.failure-detector.down-after` | `5s` | Suspicion threshold for forced down. |
+| `cluster.failure-detector.down-after` | `5s` | Suspicion threshold for forced down.  Measured from the last heartbeat, so it must exceed `unreachable-after`. |
+
+These are layered under whatever `Cluster.join(system, options)` passes, so
+an explicit `withGossipIntervalMs(…)` still wins.  The failure detector
+merges *per threshold*: setting only `down-after` in code keeps the other
+two from the file.
+
+`seeds`, `roles`, the transport and the downing provider have no HOCON
+form — the first two are per-deployment identity that belongs at the join
+site, the last two are objects a config file cannot express.
 
 ### `actor-ts.remote`
 
 | Key | Default | Purpose |
 | --- | --- | --- |
-| `remote.transport` | `"tcp"` | Currently only `"tcp"` and the in-memory test transport. |
-| `remote.tcp.hostname` | `"0.0.0.0"` | TCP bind address. |
-| `remote.tcp.port` | `2552` | TCP bind port. |
-| `remote.tls.enabled` | `false` | Toggle TLS on the cluster transport. |
-| `remote.max-frame-size` | `1M` | Maximum allowed wire frame size. |
+| `remote.tcp.host` | `"0.0.0.0"` | Bind address.  Used when `ClusterOptions` leaves `host` unset. |
+| `remote.tcp.port` | `2552` | Bind port.  Used when `ClusterOptions` leaves `port` unset. |
+| `remote.max-frame-bytes` | `16M` | Per-frame wire cap.  A frame whose length-prefix exceeds it is rejected before any payload is buffered. |
+| `remote.tls.enabled` | `false` | **Not implemented** — see below. |
+
+Because the bind address is readable from config, a deployment can move it
+out of code entirely:
+
+```hocon
+actor-ts.remote.tcp {
+  host = "0.0.0.0"
+  port = ${?ACTOR_TS_PORT}   # env-var substitution
+}
+```
+
+`remote.max-frame-bytes` applies to the transport the cluster builds for
+itself.  If you construct a `TcpTransport` yourself and pass it via
+`withTransport(…)`, set its cap there — the framework will not re-cap a
+transport it did not create.
+
+:::caution[`remote.tls.enabled` does nothing]
+This key is still inert: setting it to `true` does **not** enable TLS, and
+you get no error.  TLS is currently only reachable by constructing
+`TcpTransport` with a TLS configuration and passing it to
+`ClusterOptions.withTransport(…)`.  Tracked as
+[issue #591](https://github.com/pathosDev/actor-ts/issues/591); it is
+listed as a known-dead key rather than removed, so the value keeps its
+meaning once the implementation lands.
+:::
 
 ### `actor-ts.http`
 
@@ -238,7 +269,7 @@ Recognized units: `ns`, `us`, `ms`, `s`, `m`, `h`, `d`.
 ### Sizes
 
 ```hocon
-max-frame-size = 1M         # 1 048 576 bytes
+max-frame-bytes = 16M       # 16 777 216 bytes
 buffer = 64K
 heap = 2G
 ```

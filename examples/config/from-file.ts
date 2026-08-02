@@ -23,9 +23,9 @@ class DiagActor extends Actor<'report'> {
     console.log('SHARDS          :', config.getInt('actor-ts.sharding.number-of-shards'));
     console.log('REMEMBER ENT.   :', config.getBoolean('actor-ts.sharding.remember-entities'));
     console.log('PASSIVATION     :', config.getDuration('actor-ts.sharding.passivation-idle'), 'ms');
-    console.log('FRAME SIZE      :', config.getBytes('actor-ts.remote.max-frame-size'), 'bytes');
-    if (config.hasPath('actor-ts.remote.tcp.hostname')) {
-      console.log('TCP HOSTNAME    :', config.getString('actor-ts.remote.tcp.hostname'));
+    console.log('MAX FRAME BYTES :', config.getBytes('actor-ts.remote.max-frame-bytes'), 'bytes');
+    if (config.hasPath('actor-ts.remote.tcp.host')) {
+      console.log('TCP HOST        :', config.getString('actor-ts.remote.tcp.host'));
     }
     this.self.stop();
   }
