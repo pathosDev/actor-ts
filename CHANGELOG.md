@@ -9,6 +9,49 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ## [Unreleased]
 
+### Changed
+
+- **BREAKING — `ReplicatedEventSourcedActor` no longer takes a `Cluster`, and
+  `replicaId` now has a default** (#833).  Both existed only because the actor
+  could not reach its own cluster; now that it can, they are boilerplate every
+  subclass was copying:
+
+  ```ts
+  // before
+  class Counter extends ReplicatedEventSourcedActor<Command, Event, State> {
+    readonly persistenceId = 'counter-1';
+    readonly replicaId: string;
+    constructor(cluster: Cluster) {
+      super(cluster);
+      this.replicaId = cluster.selfAddress.toString();
+    }
+  }
+  new Counter(cluster);
+
+  // after
+  class Counter extends ReplicatedEventSourcedActor<Command, Event, State> {
+    readonly persistenceId = 'counter-1';
+  }
+  new Counter();
+  ```
+
+  **Migration:** drop the `cluster` constructor argument and the `super(cluster)`
+  it fed (a subclass with no other dependencies can drop its constructor
+  entirely).  `replicaId` defaults to `this.cluster.selfAddress.toString()`,
+  which is what every in-repo subclass set it to by hand.
+
+  A **custom** `replicaId` becomes a getter — as a field it now collides with
+  the base-class accessor (`TS2610`):
+
+  ```ts
+  override get replicaId(): string { return process.env.REPLICA_ID!; }
+  ```
+
+  Override it when the id must survive a re-address (a fixed region name, say);
+  two replicas that ever share an id dedupe each other's events away, so the
+  node-address default is the safe one.  The actor must now run on a system
+  that joined a cluster — it did before too, it just took the cluster by hand.
+
 ### Added
 
 - **An actor can reach its own `Cluster`** (#833).  `this.context` and

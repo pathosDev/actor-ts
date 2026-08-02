@@ -2,7 +2,6 @@ import { match, P } from 'ts-pattern';
 import { Actor } from '../Actor.js';
 import type { ActorRef } from '../ActorRef.js';
 import type { ActorSystem } from '../ActorSystem.js';
-import type { Cluster } from '../cluster/Cluster.js';
 import { DistributedPubSubId, DistributedPubSubOptions } from '../cluster/pubsub/index.js';
 import type { Lease } from '../coordination/Lease.js';
 import {
@@ -54,11 +53,7 @@ import { VectorClock, type VectorClockData } from './replicated/VectorClock.js';
  *     Command, Event, { value: number }
  *   > {
  *     readonly persistenceId = 'counter-1';
- *     readonly replicaId: string;
- *     constructor(cluster: Cluster) {
- *       super(cluster);
- *       this.replicaId = cluster.selfAddress.toString();
- *     }
+ *     // `replicaId` defaults to this node's address; no constructor needed.
  *     initialState() { return { value: 0 }; }
  *     onEvent(s, e) { return { value: s.value + e.amount }; }
  *     onCommand(s, c) { this.persist({ amount: c.delta }); }
@@ -120,8 +115,24 @@ function getLivePersistenceIdsForSystem(system: ActorSystem): Set<string> {
 export abstract class ReplicatedEventSourcedActor<Command, Event, State>
   extends Actor<Command | ReplicatedEventEnvelope<Event>> {
   abstract readonly persistenceId: string;
-  /** Stable id for this replica.  Default: cluster.selfAddress.toString(). */
-  abstract readonly replicaId: ReplicaId;
+
+  /**
+   * Stable id for this replica — one half of the `(replica,
+   * seqAtReplica)` pair that identifies an event cluster-wide, and a
+   * tie-breaker in the deterministic event order.
+   *
+   * Defaults to this node's cluster address, which is what every replica
+   * wanted anyway.  Override only when the id must survive a re-address
+   * — a fixed datacenter or region name, say — because two replicas that
+   * ever share an id will dedupe each other's events away:
+   *
+   *     override get replicaId(): ReplicaId { return 'eu-west'; }
+   *
+   * A getter rather than a field, so the default can read the cluster:
+   * the context is attached after construction.  Read from `preStart`
+   * onwards.
+   */
+  get replicaId(): ReplicaId { return this.cluster.selfAddress.toString(); }
 
   abstract initialState(): State;
   abstract onEvent(state: State, event: Event): State;
@@ -219,22 +230,6 @@ export abstract class ReplicatedEventSourcedActor<Command, Event, State>
    */
   private _isLeaseHolder = true;
   private _leaseUnsubscribeLost: (() => void) | null = null;
-
-  private readonly _cluster: Cluster;
-
-  constructor(cluster: Cluster) {
-    super();
-    this._cluster = cluster;
-  }
-
-  /**
-   * The cluster this replica replicates over.  Still taken through the
-   * constructor — a replicated actor is handed the cluster it belongs to
-   * rather than inferring it — but exposed as an override of
-   * {@link Actor.cluster} so `this.cluster` means one thing everywhere,
-   * and widened back to `public` so external readers keep working.
-   */
-  override get cluster(): Cluster { return this._cluster; }
 
   /** Current state — updated after every event apply. */
   protected get state(): State { return this._state; }
