@@ -26,8 +26,9 @@
  *     copy of the own fields) for the rare caller that wants to freeze a
  *     builder it intends to keep mutating; ordinary consumers don't need
  *     it because they already read/spread the argument.
- *   - **Feeds the existing resolution.** For brokers the options are the
- *     highest-precedence layer of `mergeOptions(defaults, HOCON, ctor)`;
+ *   - **Feeds the existing resolution.** Wherever HOCON is layered in — the
+ *     broker actors, `ClusterSharding.start` — the options are the
+ *     highest-precedence layer of `mergeOptions(defaults, HOCON, explicit)`;
  *     because a builder records ONLY the fields you set, unset fields fall
  *     through to HOCON — the builder never competes with config.
  *

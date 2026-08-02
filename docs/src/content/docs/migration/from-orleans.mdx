@@ -108,8 +108,10 @@ region.tell({ entityId: 'user-42', kind: 'update-name', name: 'Alice' });
 ```
 
 The **region** is a single `ActorRef` — messages routed by
-`extractEntityId`.  Each unique ID has one actor; on first
-message it spawns; idle → it passivates.
+`extractEntityId`.  Each unique ID has one actor, spawned on its first
+message.  Unlike an Orleans grain it does *not* deactivate on its own:
+there is no default idle window, so an entity stays resident until
+something passivates it (see below).
 
 ### Activation / deactivation
 

@@ -16,10 +16,10 @@ import {
   BrokerOptionsError,
   DEFAULT_OUTBOUND_BUFFER,
   DEFAULT_RECONNECT,
-  mergeOptions,
   readCommonOptions,
   type BrokerCommonOptionsType,
 } from './BrokerOptions.js';
+import { mergeOptions } from '../../util/OptionsMerge.js';
 
 /**
  * Connection-lifecycle state machine.  Transitions are linear:

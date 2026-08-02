@@ -1,3 +1,5 @@
+import type { Config } from '../../config/Config.js';
+import { ConfigKeys } from '../../config/ConfigKeys.js';
 import type { Lease } from '../../coordination/Lease.js';
 import type { AllocationStrategy } from './AllocationStrategy.js';
 import type { CoordinatorStateStore } from './CoordinatorState.js';
@@ -128,6 +130,42 @@ export class StartShardingOptionsValidator<TMessage>
     this.positiveNumber('handOffTimeoutMs');
     this.positiveNumber('acquireRetryIntervalMs');
   }
+}
+
+/**
+ * The slice of sharding settings HOCON can supply.  All five are plain
+ * scalars, so the type carries no entity-message parameter — deliberately,
+ * since the config file is read once per node and cannot know the type it
+ * will be layered under.
+ *
+ * The polymorphic fields (`entityProps`, the extractors, `allocationStrategy`,
+ * `lease`, the stores) are absent by nature: HOCON has no way to express a
+ * class or a closure, so those stay code-only.
+ */
+export type ShardingConfigDefaults = Pick<
+  StartShardingOptionsType<unknown>,
+  'numShards' | 'rememberEntities' | 'passivationIdleMs' | 'rebalanceIntervalMs' | 'handOffTimeoutMs'
+>;
+
+/**
+ * Read the `actor-ts.sharding.*` block into the shape
+ * {@link ClusterSharding.start} merges under the caller's options.
+ *
+ * Only keys actually present are returned.  That is the whole point of the
+ * `hasPath` guards: a key read unconditionally would come back `undefined`
+ * and, once spread, shadow the built-in default it was supposed to fall
+ * through to.
+ */
+export function readShardingOptionsFromConfig(config: Config): ShardingConfigDefaults {
+  const keys = ConfigKeys.sharding;
+  // Mutable while being filled; consumers see the readonly shape.
+  const out: { -readonly [K in keyof ShardingConfigDefaults]: ShardingConfigDefaults[K] } = {};
+  if (config.hasPath(keys.numberOfShards)) out.numShards = config.getInt(keys.numberOfShards);
+  if (config.hasPath(keys.rememberEntities)) out.rememberEntities = config.getBoolean(keys.rememberEntities);
+  if (config.hasPath(keys.passivationIdle)) out.passivationIdleMs = config.getDuration(keys.passivationIdle);
+  if (config.hasPath(keys.rebalanceInterval)) out.rebalanceIntervalMs = config.getDuration(keys.rebalanceInterval);
+  if (config.hasPath(keys.handOffTimeout)) out.handOffTimeoutMs = config.getDuration(keys.handOffTimeout);
+  return out;
 }
 
 /**

@@ -273,6 +273,21 @@ Die Defaults sind sinnvoll für kleine Cluster. Für Produktion
 willst du meistens `rememberEntities: true` und ein
 `passivationIdleMs` passend zu deinem Verkehrsmuster.
 
+Vier davon sind auch HOCON-Keys — `number-of-shards`,
+`remember-entities`, `passivation-idle`, dazu die
+Koordinator-Keys `rebalance-interval` und `hand-off-timeout`. Sie
+setzen die node-weite Grundeinstellung für jeden sharded Typ und
+liegen *unter* dem, was `start(...)` explizit übergibt — ein
+Per-Typ-Wert im Builder gewinnt also weiterhin. Siehe
+[Konfiguration](/de/reference/configuration/#actor-tssharding).
+
+```hocon
+actor-ts.sharding {
+  number-of-shards = 128
+  passivation-idle = 2 minutes
+}
+```
+
 ## Passivierung
 
 Passivierung stoppt eine idle Entity, um Speicher freizugeben; die
@@ -280,6 +295,11 @@ nächste Nachricht für dieselbe ID erstellt sie neu. Wie auch immer
 sie ausgelöst wird — die Region puffert Nachrichten, die eintreffen,
 während die Entity stoppt, und spielt sie an die frische Inkarnation
 zurück, sodass nichts verloren geht.
+
+Es gibt **kein Standard-Idle-Fenster** — `passivationIdleMs` ist `0`
+(deaktiviert), solange du es nicht setzt, im Code oder über
+`actor-ts.sharding.passivation-idle`. Eine Entity, die niemand
+passiviert, bleibt für die Lebensdauer ihres Nodes resident.
 
 **Automatisch** — wenn `passivationIdleMs` ohne Verkehr abläuft oder
 `maxEntities` überschritten wird (die LRU-Entity wird verdrängt), wird

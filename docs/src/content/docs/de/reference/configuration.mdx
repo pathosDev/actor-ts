@@ -58,7 +58,9 @@ actor-ts {
   sharding {
     number-of-shards    = 64
     rebalance-interval  = 2s
+    hand-off-timeout    = 10s
     remember-entities   = false
+    passivation-idle    = 0ms   # 0 deaktiviert die Auto-Passivierung
   }
 }
 ```
@@ -160,6 +162,29 @@ Redis- und Memcached-Caches lesen ihre Verbindungs-Settings aus
 | `sharding.hand-off-timeout` | `10s` | Wie lange auf HandOffComplete gewartet wird, bevor zwangsumverteilt wird. |
 | `sharding.remember-entities` | `false` | Persistiere die Menge aktiver Entity-IDs. |
 | `sharding.passivation-idle` | `0ms` | Auto-Passiviere eine Entität nach diesem Idle-Fenster.  `0` = deaktiviert. |
+
+Diese Keys gelten für **jeden** auf dem Node gestarteten Sharded Type.  Sie
+werden einmal pro `sharding.start(...)` gelesen und unter das gelegt, was
+dieser Aufruf explizit übergibt — die übliche Reihenfolge gilt also pro Feld:
+
+```ts
+// actor-ts.sharding.passivation-idle = 2 minutes
+
+const shardingOptions = StartShardingOptions.create<CartCommand>()
+  .withTypeName('cart')
+  .withEntityProps(Props.create(() => new CartEntity()))
+  .withExtractEntityId((command) => command.entityId)
+  .withNumShards(256);
+
+cluster.sharding.start(shardingOptions);
+// numShards 256 (explizit), passivationIdleMs 120_000 (Config-Datei)
+```
+
+Ein Setting für genau einen Typ gehört deshalb in den Builder; die
+Config-Datei ist für die node-weite Grundeinstellung, die du ohne Rebuild
+zwischen Staging und Produktion verschieben willst.  Die polymorphen Optionen
+— Entity-Props, die Extraktoren, die Allocation Strategy, ein Lease, die
+Stores — haben keine HOCON-Form und bleiben im Code.
 
 ### `actor-ts.coordinated-shutdown`
 

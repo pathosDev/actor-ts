@@ -57,7 +57,9 @@ actor-ts {
   sharding {
     number-of-shards    = 64
     rebalance-interval  = 2s
+    hand-off-timeout    = 10s
     remember-entities   = false
+    passivation-idle    = 0ms   # 0 disables auto-passivation
   }
 }
 ```
@@ -159,6 +161,29 @@ Redis and Memcached caches read their connection settings from
 | `sharding.hand-off-timeout` | `10s` | How long to wait for HandOffComplete before force-reallocating. |
 | `sharding.remember-entities` | `false` | Persist the set of active entity IDs. |
 | `sharding.passivation-idle` | `0ms` | Auto-passivate an entity after this idle window.  `0` = disabled. |
+
+These apply to **every** sharded type started on the node.  They are read
+once per `sharding.start(...)` and layered under whatever that call passes
+explicitly, so the usual order holds per field:
+
+```ts
+// actor-ts.sharding.passivation-idle = 2 minutes
+
+const shardingOptions = StartShardingOptions.create<CartCommand>()
+  .withTypeName('cart')
+  .withEntityProps(Props.create(() => new CartEntity()))
+  .withExtractEntityId((command) => command.entityId)
+  .withNumShards(256);
+
+cluster.sharding.start(shardingOptions);
+// numShards 256 (explicit), passivationIdleMs 120_000 (config file)
+```
+
+A per-type setting therefore belongs in the builder; the config file is for
+the node-wide baseline you want to move between staging and production
+without a rebuild.  The polymorphic options — entity props, the extractors,
+the allocation strategy, a lease, the stores — have no HOCON form and stay
+in code.
 
 ### `actor-ts.coordinated-shutdown`
 
