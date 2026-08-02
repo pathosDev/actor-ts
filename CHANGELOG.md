@@ -9,6 +9,8 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ## [Unreleased]
 
+## [0.12.1] — 2026-08-03
+
 ### Changed
 
 - **BREAKING — `ReplicatedEventSourcedActor` no longer takes a `Cluster`, and
