@@ -33,11 +33,11 @@ class CounterEntity extends Actor<Command> {
   private count = 0;
 
   override preStart(): void {
-    this.log.info(`entity ${this.self.path.name} started on this node`);
+    this.log.info(`entity ${this.entityId} started on this node, shard ${this.entity.shardId}`);
   }
 
   override postStop(): void {
-    this.log.info(`entity ${this.self.path.name} stopped (count was ${this.count})`);
+    this.log.info(`entity ${this.entityId} stopped (count was ${this.count})`);
   }
 
   override onReceive(command: Command): void {
@@ -49,11 +49,11 @@ class CounterEntity extends Actor<Command> {
 
   private onIncrement(): void {
     this.count++;
-    this.log.info(`${this.self.path.name} = ${this.count}`);
+    this.log.info(`${this.entityId} = ${this.count}`);
   }
 
   private onGet(): void {
-    this.log.info(`${this.self.path.name} = ${this.count}`);
+    this.log.info(`${this.entityId} = ${this.count}`);
   }
 }
 

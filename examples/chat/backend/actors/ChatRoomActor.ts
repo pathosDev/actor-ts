@@ -125,27 +125,20 @@ type ChatState = {
 /* ------------------------------- actor -------------------------------- */
 
 export class ChatRoomActor extends PersistentActor<ChatRoomCommand, ChatEvent, ChatState> {
-  private _roomName: RoomName | null = null;
-
   /**
-   * `persistenceId` is bound to the entity's roomName.
-   *
-   * ClusterSharding spawns the actor with name `entity-<roomName>` —
-   * we strip the prefix to recover the room.  The actor field is
-   * overridden as a getter (the abstract field in the base class
-   * accepts either shape) so `this.self` is available at the time it
-   * runs (preStart, after `_attach()`).
+   * `persistenceId` is bound to the entity's roomName — the id
+   * ClusterSharding routed this actor by.  A getter, not a field (the
+   * abstract member in the base class accepts either shape): the actor
+   * context is attached after construction, so a field initializer would
+   * run before there is an entity id to read.
    */
   override get persistenceId(): string {
     return `chat-room-${this.roomName}`;
   }
 
+  /** `entityId = roomName` — see the routing note at the top of the file. */
   private get roomName(): RoomName {
-    if (this._roomName !== null) return this._roomName;
-    const name = this.self.path.name;
-    const stripped = name.startsWith('entity-') ? name.slice('entity-'.length) : name;
-    this._roomName = stripped as RoomName;
-    return this._roomName;
+    return this.entityId as RoomName;
   }
 
   initialState(): ChatState {
