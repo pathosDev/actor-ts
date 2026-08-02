@@ -264,6 +264,13 @@ cart.tell({ kind: 'add', sku: 'book-2' });
 for (const shard of await cluster.sharding.shards('cart')) {
   console.log(shard.shardId, `${shard.node}`, shard.entityCount);
 }
+
+// Inside the entity, its own id — the value `extractEntityId` returned,
+// not the sanitized form in the actor path.  Usually spent on a
+// per-entity journal stream:
+class CartActor extends PersistentActor<CartCommand, CartEvent, CartState> {
+  override get persistenceId(): string { return `cart-${this.entityId}`; }
+}
 ```
 
 ### Cluster singleton — exactly one instance, cluster-wide

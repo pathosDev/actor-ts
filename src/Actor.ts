@@ -1,6 +1,7 @@
 import type { ActorContext } from './ActorContext.js';
 import type { ActorRef } from './ActorRef.js';
 import type { ActorSystem } from './ActorSystem.js';
+import type { EntityContext } from './EntityContext.js';
 import type { Logger } from './Logger.js';
 import { defaultStrategy, SupervisorStrategy } from './Supervision.js';
 import type { Option } from './util/Option.js';
@@ -32,6 +33,39 @@ export abstract class Actor<TMessage = unknown> {
   protected get log(): Logger { return this._context.log; }
 
   /**
+   * The id this entity was routed by — exactly what `extractEntityId`
+   * returned, not the sanitized form in the actor path.  Stable for the
+   * actor's whole life and across restarts.
+   *
+   * Readable from `preStart` onwards, which is what lets a sharded
+   * `PersistentActor` build its journal stream out of it:
+   *
+   *     override get persistenceId(): string { return `cart-${this.entityId}`; }
+   *
+   * A *getter*, not a field initializer — the context is attached after
+   * construction, so `readonly persistenceId = ...` would run too early.
+   *
+   * @throws if this actor is not a sharded entity — see {@link entity}.
+   */
+  protected get entityId(): string { return this.entity.entityId; }
+
+  /**
+   * Full sharding identity: {@link entityId} plus the type and shard it was
+   * routed into.  For "am I an entity at all?" ask `this.context.entity`,
+   * which answers `None` rather than throwing.
+   *
+   * @throws if `ClusterSharding` did not start this actor as an entity.
+   *   That includes an entity's own children, which are not entities.
+   */
+  protected get entity(): EntityContext {
+    const entity = this._context?.entity.toNullable() ?? null;
+    if (entity === null) {
+      throw notAShardedEntity(this.constructor.name, this._context?.path.toString() ?? null);
+    }
+    return entity;
+  }
+
+  /**
    * Main message handler.  Receives each envelope dequeued from the mailbox.
    * A thrown error (sync or async) is caught by the supervisor.
    */
@@ -61,4 +95,21 @@ export abstract class Actor<TMessage = unknown> {
    * up to 10 times per minute, then stop.
    */
   supervisorStrategy(): SupervisorStrategy { return defaultStrategy; }
+}
+
+/**
+ * Module-level so the getters stay one-liners.  Names both plausible causes
+ * — wrong actor, or right actor asked too early — because the two look
+ * identical from the call site.
+ */
+function notAShardedEntity(className: string, path: string | null): Error {
+  const where = path === null ? ' (before it was started)' : ` at ${path}`;
+  return new Error(
+    `${className}${where} is not a sharded entity — `
+    + '`entityId` / `entity` are only set on actors ClusterSharding started, '
+    + 'and not on an entity\'s own children.  Start it with `sharding.start(...)`, '
+    + 'or give it an identity directly with `Props.create(...).withEntity({ ... })`. '
+    + 'Note the context is attached after construction: derive from `entityId` in a '
+    + 'getter or in `preStart`, never in a field initializer.',
+  );
 }

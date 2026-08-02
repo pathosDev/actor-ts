@@ -1,6 +1,7 @@
 import type { ActorRef } from './ActorRef.js';
 import type { ActorPath } from './ActorPath.js';
 import type { ActorSystem } from './ActorSystem.js';
+import type { EntityContext } from './EntityContext.js';
 import type { Props } from './Props.js';
 import type { Logger } from './Logger.js';
 import type { Option } from './util/Option.js';
@@ -30,6 +31,20 @@ export interface ActorContext<TMessage = unknown> {
 
   /** Snapshot of direct children. */
   readonly children: ReadonlyArray<ActorRef>;
+
+  /**
+   * Sharding identity when `ClusterSharding` started this actor as an
+   * entity, `None` for every other actor.
+   *
+   * Set on the entity itself and nowhere else — an entity's own children
+   * get `None` — so `Some` here means "I *am* the entity", not "I live
+   * under one".  A child that needs the id gets it passed down.
+   *
+   * Inside an entity, prefer the `this.entityId` / `this.entity` getters on
+   * {@link Actor}: they answer the same question without the unwrapping,
+   * because entity code already knows it is an entity.
+   */
+  readonly entity: Option<EntityContext>;
 
   /** Logger bound to this actor's path. */
   readonly log: Logger;

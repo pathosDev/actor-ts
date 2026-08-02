@@ -162,7 +162,15 @@ export class Shard extends Actor<ShardInbox> {
     this.log.debug(
       `[sharding] spawning entity '${entityId}' in shard ${this.config.shardId} of '${this.config.typeName}'`,
     );
-    const ref = this.context.spawn(this.config.entityProps, entityName(entityId));
+    // The child name is a lossy rendering of the id (see `entityName`), so
+    // the identity travels on the Props instead — that is the only copy the
+    // entity can read back verbatim.
+    const props = this.config.entityProps.withEntity({
+      entityId,
+      typeName: this.config.typeName,
+      shardId: this.config.shardId,
+    });
+    const ref = this.context.spawn(props, entityName(entityId));
     this.context.watch(ref);
     const state: EntityState = { ref: ref as ActorRef<unknown>, passivating: null };
     this.entities.set(entityId, state);

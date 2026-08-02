@@ -11,6 +11,7 @@ import {
 import { ActorPath } from '../ActorPath.js';
 import { ActorRef } from '../ActorRef.js';
 import type { ActorSystem } from '../ActorSystem.js';
+import type { EntityContext } from '../EntityContext.js';
 import { LogContext } from '../LogContext.js';
 import type { Logger } from '../Logger.js';
 import { metricsOf } from '../metrics/MetricsExtension.js';
@@ -121,6 +122,15 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
    */
   readonly _internal: boolean;
 
+  /**
+   * Sharding identity when a `Shard` spawned this cell as an entity.
+   *
+   * Read off the Props, so it survives a restart for free — the cell keeps
+   * the Props it was created with.  Unlike `_internal` it is deliberately
+   * NOT inherited: an entity's children are not themselves entities.
+   */
+  private readonly _entity: EntityContext | null;
+
   /** Per-actor timer scheduler. */
   readonly timers: TimerScheduler<TMessage> = new CellTimerScheduler<TMessage>(this);
 
@@ -147,6 +157,7 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
   ) {
     this._parent = parent;
     this._internal = props.config.internal === true || parent?._internal === true;
+    this._entity = props.config.entity ?? null;
     const uid = parent ? parent._nextChildUid() : 0;
     this.path = parent
       ? parent.path.child(name, uid)
@@ -179,6 +190,8 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
     for (const child of this._children.values()) out.push(child.self);
     return out;
   }
+
+  get entity(): Option<EntityContext> { return fromNullable(this._entity); }
 
   spawn<T>(props: Props<T>, name: string): ActorRef<T> {
     return this._createChild(props, name);

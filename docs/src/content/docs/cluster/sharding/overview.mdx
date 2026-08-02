@@ -176,6 +176,64 @@ have pages of their own — see the
 and [rebalance](/cluster/sharding/rebalance/) for the
 mechanics.
 
+## Knowing which entity you are
+
+An entity nearly always needs the id it was routed by — to name its
+journal stream, its pub/sub topic, or a row in someone else's database.
+It reads that off itself:
+
+```ts
+class CartEntity extends Actor<CartCommand> {
+  override preStart(): void {
+    this.log.info(`cart ${this.entityId} woke up in shard ${this.entity.shardId}`);
+  }
+}
+```
+
+| | |
+| --- | --- |
+| `this.entityId` | The value `extractEntityId` returned, unchanged. |
+| `this.entity` | The same id plus `typeName` and `shardId`. |
+| `this.context.entity` | The `Option` form — `None` when this actor is not an entity.  Both getters above throw instead. |
+
+The commonest use is a per-entity `persistenceId`, which is what gives a
+sharded [`PersistentActor`](/persistence/persistent-actor/) one event
+stream per entity rather than one per type:
+
+```ts
+class CartEntity extends PersistentActor<CartCommand, CartEvent, CartState> {
+  override get persistenceId(): string { return `cart-${this.entityId}`; }
+}
+```
+
+:::caution[A getter, not a field]
+The actor context is attached *after* the constructor runs, so
+``readonly persistenceId = `cart-${this.entityId}` `` throws.  Read the
+id from a getter, or from `preStart` onwards.
+:::
+
+The identity is set on the entity and nowhere else — an entity's own
+children get `None`, so `this.context.entity.nonEmpty` answers "am I the
+entity?".  Pass the id down explicitly to a child that needs it.
+
+To exercise an entity on its own, hand it an identity directly instead
+of standing up a cluster around it:
+
+```ts
+const props = Props.create(() => new CartEntity())
+  .withEntity({ entityId: 'user-42', typeName: 'cart', shardId: 3 });
+const cart = system.spawn(props, 'cart-under-test');
+```
+
+### Why not read it off the path?
+
+`.../shard-7/entity-user-42` looks like it carries the id, and for
+simple ids slicing off the `entity-` prefix does work.  It is not the
+id, though: actor names have a restricted alphabet, so the shard folds
+every character outside `[A-Za-z0-9_-]` to `_` when it names the child.
+`user:42` and `user/42` both land on `entity-user_42`.  The path is a
+*label*; `entityId` is the value.
+
 ## Configuration
 
 `ShardingOptionsType<TMessage>` — the fields you'll most often touch:

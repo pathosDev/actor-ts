@@ -122,8 +122,8 @@ export class ShardedDaemonProcess {
 
 /**
  * Host actor spawned by ShardRegion for each daemon index.  On first start
- * it derives its daemon index from its actor name and constructs the real
- * user Actor as a child.  All user messages are forwarded to that child.
+ * it reads its daemon index off its sharding identity and constructs the
+ * real user Actor as a child.  All user messages are forwarded to that child.
  */
 class DaemonHost<T> extends Actor<DaemonEnvelope<T>> {
   private inner: ActorRef<T> | null = null;
@@ -131,8 +131,8 @@ class DaemonHost<T> extends Actor<DaemonEnvelope<T>> {
   constructor(private readonly behaviorFor: (i: number) => Props<T>) { super(); }
 
   override preStart(): void {
-    const index = indexFromEntityName(this.context.path.name);
-    const props = this.behaviorFor(index);
+    // The entity id IS the daemon index — `extractEntityId` stringifies it.
+    const props = this.behaviorFor(Number.parseInt(this.entityId, 10));
     this.inner = this.context.spawn(props, 'daemon');
   }
 
@@ -159,13 +159,6 @@ function onTopologyChanged(wakeAll: () => void): void {
 
 /** Every other cluster event leaves shard homes intact — nothing to re-wake. */
 function onOtherClusterEvent(): void {}
-
-function indexFromEntityName(name: string): number {
-  // Names are set by ShardRegion as `entity-<entityId>` where entityId is
-  // the stringified daemon index (see extractEntityId above).
-  const match = name.match(/^entity-(\d+)$/);
-  return match ? parseInt(match[1]!, 10) : 0;
-}
 
 function isWakeup(x: unknown): x is Wakeup {
   return !!x && typeof x === 'object' && (x as { t?: string }).t === 'sharded-daemon.wakeup';
