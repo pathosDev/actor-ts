@@ -148,6 +148,26 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Fixed
 
+- **A guard against the next dead config key** (closes #653).
+  `tests/unit/config/NoDeadConfigKeys.test.ts` asserts, for every leaf in
+  `REFERENCE_CONF`, that it is reachable from `ConfigKeys` *and* referenced
+  from somewhere under `src/`.  A key added to the reference config without a
+  reader now fails CI with a message naming the key.
+
+  Knowingly-unimplemented keys go in `KNOWN_DEAD_KEYS` with the issue that
+  will remove them — the list has exactly one entry (`remote.tls.enabled`,
+  #591), and the guard also checks that each excused key still *exists*, so
+  an exception cannot outlive its key.
+
+  The check proves a reference rather than a correct read: a key mentioned in
+  dead code would still pass.  That ceiling is deliberate — the defect worth
+  catching is "declared and never wired up", and modelling config flow
+  through the options mergers would be a lot of machinery for the rest.
+
+  `PersistenceExtension` moved its two raw path literals onto
+  `ConfigKeys.persistence.*` along the way; it was the last reader in `src/`
+  still spelling paths by hand.
+
 - **`actor-ts.system.name`, `actor-ts.worker-cluster.*` and
   `actor-ts.coordinated-shutdown.*` are actually read** (part of #653) — the
   last of the inert blocks.
