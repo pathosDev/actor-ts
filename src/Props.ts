@@ -1,5 +1,6 @@
 import type { Actor } from './Actor.js';
 import type { Dispatcher } from './Dispatcher.js';
+import type { EntityContext } from './EntityContext.js';
 import type { Mailbox } from './internal/Mailbox.js';
 import type { SupervisorStrategy } from './Supervision.js';
 
@@ -25,6 +26,12 @@ export type PropsConfig<TMessage> = {
    * Children inherit the mark — a tooling actor's children are tooling.
    */
   readonly internal?: boolean;
+
+  /**
+   * Spawn this actor as a sharded entity with the given identity —
+   * see {@link Props.withEntity}.
+   */
+  readonly entity?: EntityContext;
 };
 
 /**
@@ -58,5 +65,18 @@ export class Props<TMessage = unknown> {
   /** Mark this actor as tooling — see {@link PropsConfig.internal}. */
   asInternal(): Props<TMessage> {
     return new Props({ ...this.config, internal: true });
+  }
+
+  /**
+   * Spawn this actor as a sharded entity, so it can read its own identity
+   * back off `this.entityId` / `this.context.entity`.
+   *
+   * `ClusterSharding` calls this itself for every entity a shard creates.
+   * It is public for the test bench: an entity that derives its
+   * `persistenceId` from `this.entityId` is otherwise unspawnable without a
+   * cluster standing behind it.
+   */
+  withEntity(entity: EntityContext): Props<TMessage> {
+    return new Props({ ...this.config, entity });
   }
 }

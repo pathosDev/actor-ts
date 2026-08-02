@@ -9,6 +9,43 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ## [Unreleased]
 
+### Added
+
+- **A sharded entity can read its own `entityId`** (#832).  The id an entity
+  was routed by used to stop at the `Shard` that spawned it — the entity could
+  only get it back by slicing the `entity-` prefix off its actor path, which is
+  boilerplate at every call site and, worse, lossy: actor names have a
+  restricted alphabet, so `Shard` folds everything outside `[A-Za-z0-9_-]` to
+  `_` (#568) and `user:42` and `user/42` both read back as `user_42`.
+
+  ```ts
+  class CartEntity extends PersistentActor<CartCommand, CartEvent, CartState> {
+    // one journal stream per entity, from the id sharding actually routed
+    override get persistenceId(): string { return `cart-${this.entityId}`; }
+  }
+  ```
+
+  Three accessors, all additive:
+
+  - `this.entityId` — the value `extractEntityId` returned, verbatim.
+  - `this.entity` — that plus `typeName` and `shardId` (`EntityContext`).
+  - `this.context.entity` — the `Option` form, `None` for a non-entity actor;
+    the two getters throw there instead.
+
+  Available from `preStart` onwards — early enough for a `PersistentActor` to
+  build its `persistenceId` before recovery — and stable across a restart.  It
+  is a getter, not a field: the context is attached after construction, so a
+  field initializer would still run too early.  The identity sits on the entity
+  and nowhere else; an entity's own children get `None`.
+
+  `Props.withEntity({ entityId, typeName, shardId })` is the same door
+  `ClusterSharding` uses, left public so an entity can be unit-tested without a
+  cluster around it.  `ShardedDaemonProcess` no longer regex-parses its own
+  actor name to find its daemon index, and the chat example's two
+  `PersistentActor`s drop their path-stripping getters — the direct-message
+  channel's `persistenceId` is now built from the real `|`-separated pair id
+  rather than the sanitized one.
+
 ## [0.12.0] — 2026-08-01
 
 ### Added
