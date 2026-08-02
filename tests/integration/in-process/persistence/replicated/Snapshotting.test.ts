@@ -43,16 +43,11 @@ type State = { value: number };
 
 class CountingCounter extends ReplicatedEventSourcedActor<Command, Event, State> {
   readonly persistenceId = 'snap-counter';
-  readonly replicaId: string;
   /** Spy: how many times `onEvent` was called.  Reset between restarts. */
   static onEventCallCount = 0;
   /** User-controlled snapshot policy override per test. */
   static currentPolicy: SnapshotPolicy<State, Event> = () => false;
 
-  constructor(cluster: Cluster) {
-    super(cluster);
-    this.replicaId = cluster.selfAddress.toString();
-  }
   initialState(): State { return { value: 0 }; }
   onEvent(s: State, e: Event): State {
     CountingCounter.onEventCallCount += 1;
@@ -105,7 +100,7 @@ async function startActor(
   let instance!: CountingCounter;
   const ref = sys.spawn(
     Props.create<Command>(() => {
-      const actorRef = new CountingCounter(cluster);
+      const actorRef = new CountingCounter();
       instance = actorRef;
       return actorRef as unknown as Actor<Command>;
     }),

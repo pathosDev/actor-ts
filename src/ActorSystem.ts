@@ -29,6 +29,8 @@ import {
 } from './internal/Guardian.js';
 import { LocalActorRef } from './internal/LocalActorRef.js';
 import { systemGroupPolicy, type SystemGroup } from './internal/SystemPaths.js';
+import type { Cluster } from './cluster/Cluster.js';
+import { ClusterExtensionId } from './cluster/ClusterExtension.js';
 import { PersistenceExtensionId } from './persistence/PersistenceExtension.js';
 import type { HttpServerBackend } from './http/backend/HttpServerBackend.js';
 import { HttpExtensionId, type ServerBuilder } from './http/HttpExtension.js';
@@ -167,6 +169,23 @@ export class ActorSystem {
    */
   extension<T extends Extension>(id: ExtensionId<T>): T {
     return this.extensions.get(id);
+  }
+
+  /**
+   * The `Cluster` this system joined, or `None` if it never did (#833).
+   *
+   * Filled in by `Cluster.join`, so a local-only system stays local — the
+   * getter never starts a cluster.  Inside an actor prefer
+   * `this.context.cluster` (same `Option`) or `this.cluster` (unwrapped,
+   * for code that already knows it is clustered).
+   *
+   * The `Cluster` type is imported type-only and the value import is just
+   * the extension id, which is why core can hand out a cluster without
+   * depending on the cluster layer at runtime — the same split
+   * `EntityContext` uses.
+   */
+  get cluster(): Option<Cluster> {
+    return this.extensions.get(ClusterExtensionId).get();
   }
 
   /**

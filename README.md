@@ -267,11 +267,20 @@ for (const shard of await cluster.sharding.shards('cart')) {
 
 // Inside the entity, its own id — the value `extractEntityId` returned,
 // not the sanitized form in the actor path.  Usually spent on a
-// per-entity journal stream:
+// per-entity journal stream.  The cluster it runs in is right there
+// too, so nothing has to be threaded through the constructor:
 class CartActor extends PersistentActor<CartCommand, CartEvent, CartState> {
   override get persistenceId(): string { return `cart-${this.entityId}`; }
+
+  override preStart(): void {
+    this.log.info(`cart ${this.entityId} on ${this.cluster.selfAddress}`);
+  }
 }
 ```
+
+`this.cluster` throws on a system that never joined one; ask
+`this.context.cluster` (an `Option<Cluster>`, matching `system.cluster`)
+when the actor has to work either way.
 
 ### Cluster singleton — exactly one instance, cluster-wide
 

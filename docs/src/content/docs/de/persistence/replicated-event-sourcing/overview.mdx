@@ -91,7 +91,6 @@ const maxWinsResolver: ConflictResolver<Event> = {
 
 class Counter extends ReplicatedEventSourcedActor<Command, Event, State> {
   readonly persistenceId = 'counter-42';
-  readonly replicaId     = process.env.REPLICA_ID!;
   protected override resolver(): ConflictResolver<Event> { return maxWinsResolver; }
 
   initialState() { return { value: 0 }; }
@@ -103,14 +102,27 @@ class Counter extends ReplicatedEventSourcedActor<Command, Event, State> {
 ```
 
 Der Actor erweitert `ReplicatedEventSourcedActor` statt
-`PersistentActor`.  Drei zusätzliche Dinge zu spezifizieren:
+`PersistentActor`.  In den Konstruktor wird nichts hineingereicht: die
+Basisklasse liest den `Cluster` vom `ActorSystem`
+(siehe [`this.cluster`](/de/cluster/overview/#den-cluster-aus-einem-actor-heraus-erreichen)).
+Zwei zusätzliche Dinge zu spezifizieren:
 
-- **`replicaId`** — der stabile Identifier dieser Replica
-  (anders als `persistenceId`).
 - **`resolver()`** — wie nebenläufige Events gemergt werden
   (optional; Default ist Last-Writer-Wins).
 - Das Journal muss **über Replicas geteilt** sein (Cassandra,
   geteilter Object Storage, etc.).
+
+`replicaId` — der stabile Identifier dieser Replica, anders als
+`persistenceId` — hat als Default die Cluster-Adresse dieses Nodes.
+Überschreibe ihn nur, wenn die Id eine Adressänderung überleben muss,
+z.B. ein fester Regionsname:
+
+```ts
+override get replicaId(): string { return process.env.REPLICA_ID!; }
+```
+
+Zwei Replicas, die sich jemals eine Id teilen, deduplizieren sich
+gegenseitig die Events weg — der Default ist also der sichere.
 
 ## Die Komponenten
 

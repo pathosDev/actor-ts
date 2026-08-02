@@ -26,6 +26,16 @@ export interface ActorContext<TMessage = unknown> {
   /** The enclosing ActorSystem. */
   readonly system: ActorSystem;
 
+  /**
+   * The `Cluster` this actor's system joined, `None` on a local-only
+   * system (#833).  Ask this when the actor has to work either way —
+   * it answers rather than throws.
+   *
+   * Inside code that only ever runs clustered, prefer the `this.cluster`
+   * getter on {@link Actor}: same object, no unwrapping.
+   */
+  readonly cluster: Option<import('./cluster/Cluster.js').Cluster>;
+
   /** Parent actor, or `None` for the root guardian. */
   readonly parent: Option<ActorRef>;
 

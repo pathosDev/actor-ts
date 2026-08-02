@@ -11,6 +11,7 @@ import {
 import { ActorPath } from '../ActorPath.js';
 import { ActorRef } from '../ActorRef.js';
 import type { ActorSystem } from '../ActorSystem.js';
+import type { Cluster } from '../cluster/Cluster.js';
 import type { EntityContext } from '../EntityContext.js';
 import { LogContext } from '../LogContext.js';
 import type { Logger } from '../Logger.js';
@@ -192,6 +193,15 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
   }
 
   get entity(): Option<EntityContext> { return fromNullable(this._entity); }
+
+  /**
+   * Read through to the system on every access rather than snapshotting
+   * at construction: an actor can outlive the moment it was spawned in,
+   * and a system that joins a cluster later (or rejoins after `leave()`)
+   * must not leave already-running actors holding `None` or a dead
+   * instance.
+   */
+  get cluster(): Option<Cluster> { return this.system.cluster; }
 
   spawn<T>(props: Props<T>, name: string): ActorRef<T> {
     return this._createChild(props, name);

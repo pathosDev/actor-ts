@@ -9,7 +9,89 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ## [Unreleased]
 
+### Changed
+
+- **BREAKING — `ReplicatedEventSourcedActor` no longer takes a `Cluster`, and
+  `replicaId` now has a default** (#833).  Both existed only because the actor
+  could not reach its own cluster; now that it can, they are boilerplate every
+  subclass was copying:
+
+  ```ts
+  // before
+  class Counter extends ReplicatedEventSourcedActor<Command, Event, State> {
+    readonly persistenceId = 'counter-1';
+    readonly replicaId: string;
+    constructor(cluster: Cluster) {
+      super(cluster);
+      this.replicaId = cluster.selfAddress.toString();
+    }
+  }
+  new Counter(cluster);
+
+  // after
+  class Counter extends ReplicatedEventSourcedActor<Command, Event, State> {
+    readonly persistenceId = 'counter-1';
+  }
+  new Counter();
+  ```
+
+  **Migration:** drop the `cluster` constructor argument and the `super(cluster)`
+  it fed (a subclass with no other dependencies can drop its constructor
+  entirely).  `replicaId` defaults to `this.cluster.selfAddress.toString()`,
+  which is what every in-repo subclass set it to by hand.
+
+  A **custom** `replicaId` becomes a getter — as a field it now collides with
+  the base-class accessor (`TS2610`):
+
+  ```ts
+  override get replicaId(): string { return process.env.REPLICA_ID!; }
+  ```
+
+  Override it when the id must survive a re-address (a fixed region name, say);
+  two replicas that ever share an id dedupe each other's events away, so the
+  node-address default is the safe one.  The actor must now run on a system
+  that joined a cluster — it did before too, it just took the cluster by hand.
+
 ### Added
+
+- **An actor can reach its own `Cluster`** (#833).  `this.context` and
+  `this.system` were always there; the `Cluster` was the one runtime object
+  that had to be threaded in by hand — through a constructor argument, an
+  options field, or a captured closure — and a framework-constructed actor (a
+  sharded entity, a singleton) has no call site to thread it through at all.
+
+  ```ts
+  class CartEntity extends Actor<CartMessage> {
+    override preStart(): void {
+      // No constructor argument, no closure, no options field.
+      this.log.info(`cart ${this.entityId} on ${this.cluster.selfAddress}`);
+    }
+  }
+  ```
+
+  Three accessors, all additive:
+
+  - `system.cluster` — `Option<Cluster>`, filled in by `Cluster.join`.
+  - `this.context.cluster` — the same `Option`, for an actor that must also
+    run unclustered.
+  - `this.cluster` — unwrapped, throwing when the system never joined one, on
+    the same "this code already knows" trade-off as `this.entityId`.  The
+    error names `Cluster.join` and the `Option` form rather than just the
+    symptom.
+
+  `cluster.sharding` / `cluster.singleton` come along with it, so an actor can
+  start a region or a singleton from the inside.  All three read through to
+  the system on every access: an actor that outlived the join sees the
+  cluster, and a system that rejoined after `leave()` resolves to the new
+  instance rather than the dead one.  It stays an `Option` deliberately —
+  a cluster binds a transport and starts gossip/heartbeat/failure-detection
+  timers, so a local-only system must never grow one on demand.
+
+  Registration is a new `ClusterExtension` (`clusterOf(system)`, mirroring
+  `metricsOf` / `tracerOf`) that `Cluster.join` is the sole writer of.  Core
+  keeps its runtime independence from the cluster layer the same way
+  `EntityContext` does: type-only import of `Cluster`, value import of just
+  the extension id.
 
 - **A sharded entity can read its own `entityId`** (#832).  The id an entity
   was routed by used to stop at the `Shard` that spawned it — the entity could

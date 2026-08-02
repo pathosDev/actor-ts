@@ -14,6 +14,7 @@ import {
   DEFAULT_TOMBSTONE_TTL_MS,
 } from '../util/Constants.js';
 import { none, some, type Option } from '../util/Option.js';
+import { ClusterExtensionId } from './ClusterExtension.js';
 import { ClusterOptionsValidator } from './ClusterOptions.js';
 import type { ClusterOptions, ClusterOptionsType } from './ClusterOptions.js';
 import {
@@ -142,7 +143,20 @@ export class Cluster {
       options.tombstoneMinRetentionMs ?? 6 * fdOptions.downAfterMs;
   }
 
-  /** Entry point: start the cluster and attempt to contact seed nodes. */
+  /**
+   * Entry point: start the cluster and attempt to contact seed nodes.
+   *
+   * Also publishes the instance to the {@link ClusterExtension}, which is
+   * what makes `system.cluster`, `context.cluster` and an actor's
+   * `this.cluster` resolve — so a clustered actor no longer has to have
+   * the `Cluster` threaded in through its constructor (#833).
+   *
+   * Registration happens *before* `_start` on purpose: startup already
+   * emits `MemberJoined` / `SelfUp`, and a subscriber woken by `SelfUp`
+   * asking `system.cluster` must not be told there is none.  A failed
+   * start puts the previous value back rather than leaving a cluster
+   * that never bound its transport reachable system-wide.
+   */
   static async join(
     system: ActorSystem,
     options: ClusterOptions,
@@ -150,7 +164,18 @@ export class Cluster {
     const resolvedOptions = options as ClusterOptionsType;
     new ClusterOptionsValidator().validate(resolvedOptions);
     const cluster = new Cluster(system, resolvedOptions);
-    await cluster._start(resolvedOptions.seeds ?? []);
+    const extension = system.extension(ClusterExtensionId);
+    const previous = extension.get();
+    extension._register(cluster);
+    try {
+      await cluster._start(resolvedOptions.seeds ?? []);
+    } catch (e) {
+      previous.fold(
+        () => extension._unregister(),
+        (earlier) => extension._register(earlier),
+      );
+      throw e;
+    }
     return cluster;
   }
 
