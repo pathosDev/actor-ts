@@ -239,7 +239,14 @@ conservative SemVer.) See `docs/.../reference/version-policy.mdx`.
   `K8s`, `AMQP`, `MQTT`, `SQL`, `S3`, `DNS`, `CBOR`.
 - HOCON config keys go through **`src/config/ConfigKeys.ts`** (typed,
   single source of truth). Options resolve with precedence:
-  **explicit options > HOCON > built-in defaults**.
+  **explicit options > HOCON > built-in defaults** — layered with
+  `mergeOptions` from `src/util/OptionsMerge.ts`, where `undefined` on a
+  higher layer means "not set" and falls through rather than shadowing.
+  **A key in `reference.conf` must be reachable from `ConfigKeys` and read
+  by something in `src/`** — `tests/unit/config/NoDeadConfigKeys.test.ts`
+  fails otherwise. A knowingly-unimplemented key goes in that test's
+  `KNOWN_DEAD_KEYS` with the issue that will remove it; adding a key
+  nothing reads is not an option.
 - **JSDoc explains the *why*** — constraints, rationale, non-obvious
   trade-offs — not a restatement of the code. Match the surrounding
   comment density; no narration or noise.

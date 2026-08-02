@@ -25,6 +25,11 @@
  */
 
 export const ConfigKeys = {
+  /** ActorSystem identity — `actor-ts.system.*`. */
+  system: {
+    name: 'actor-ts.system.name',
+  },
+
   /** Logger root — `actor-ts.logger.*`. */
   logger: {
     level: 'actor-ts.logger.level',
@@ -65,6 +70,10 @@ export const ConfigKeys = {
 
   /** HTTP subsystem config roots — `actor-ts.http.*`. */
   http: {
+    /** Which shipped backend `newServerAt(...).bind()` uses when none is set in code. */
+    backend: 'actor-ts.http.backend',
+    /** How long `unbind()` lets in-flight requests drain before forcing. */
+    shutdownGracePeriod: 'actor-ts.http.shutdown-grace-period',
     /** Server-side WebSocket defaults for `websocket()` routes. */
     websocket: 'actor-ts.http.websocket',
   },
@@ -88,21 +97,72 @@ export const ConfigKeys = {
   },
 
   /**
+   * Cluster membership defaults — `actor-ts.cluster.*`.  Read once by
+   * `Cluster.join`, which layers them under the explicit `ClusterOptions`.
+   *
+   * `cluster.leader-election` is absent because it no longer exists: the
+   * leader is always the lowest-addressed up-member, and a one-value
+   * selector was documenting a choice the framework does not offer.
+   */
+  cluster: {
+    gossipInterval: 'actor-ts.cluster.gossip-interval',
+    seedRetryInterval: 'actor-ts.cluster.seed-retry-interval',
+    failureDetector: {
+      heartbeatInterval: 'actor-ts.cluster.failure-detector.heartbeat-interval',
+      unreachableAfter: 'actor-ts.cluster.failure-detector.unreachable-after',
+      downAfter: 'actor-ts.cluster.failure-detector.down-after',
+    },
+  },
+
+  /**
+   * Cluster bind address and wire limits — `actor-ts.remote.*`.
+   *
+   * `remote.tls.enabled` is deliberately absent: it is still dead, tracked
+   * as its own security issue (#591), and named in the dead-key guard's
+   * exception list rather than quietly wired to nothing.
+   */
+  remote: {
+    tcp: {
+      host: 'actor-ts.remote.tcp.host',
+      port: 'actor-ts.remote.tcp.port',
+    },
+    maxFrameBytes: 'actor-ts.remote.max-frame-bytes',
+  },
+
+  /**
    * Cluster-sharding defaults — `actor-ts.sharding.*`.  Read once per
    * started type by `ClusterSharding.start`, which layers them under the
-   * explicit options; the first three reach the region, the last two the
+   * explicit options; the first four reach the region, the last two the
    * per-type coordinator.
    */
   sharding: {
     numberOfShards: 'actor-ts.sharding.number-of-shards',
     rememberEntities: 'actor-ts.sharding.remember-entities',
     passivationIdle: 'actor-ts.sharding.passivation-idle',
+    maxEntities: 'actor-ts.sharding.max-entities',
     rebalanceInterval: 'actor-ts.sharding.rebalance-interval',
     handOffTimeout: 'actor-ts.sharding.hand-off-timeout',
   },
 
-  /** Cluster transport root — `actor-ts.transport`. */
-  transport: 'actor-ts.transport',
+  /**
+   * `WorkerCluster.spawn` defaults — `actor-ts.worker-cluster.*`.
+   *
+   * The block is named after the options type it feeds rather than after
+   * "worker", both because that is what it configures and because
+   * {@link ConfigKeys.worker} below is already taken by the IPC sentinels,
+   * which are not config paths at all.
+   */
+  workerCluster: {
+    workers: 'actor-ts.worker-cluster.workers',
+    restartPolicy: 'actor-ts.worker-cluster.restart-policy',
+  },
+
+  /** CoordinatedShutdown pipeline defaults — `actor-ts.coordinated-shutdown.*`. */
+  coordinatedShutdown: {
+    defaultPhaseTimeout: 'actor-ts.coordinated-shutdown.default-phase-timeout',
+    terminateActorSystem: 'actor-ts.coordinated-shutdown.terminate-actor-system',
+    exitProcess: 'actor-ts.coordinated-shutdown.exit-process',
+  },
 
   /**
    * Worker IPC sentinels — used by the multi-runtime test harness and

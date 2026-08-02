@@ -274,7 +274,7 @@ willst du meistens `rememberEntities: true` und ein
 `passivationIdleMs` passend zu deinem Verkehrsmuster.
 
 Vier davon sind auch HOCON-Keys — `number-of-shards`,
-`remember-entities`, `passivation-idle`, dazu die
+`remember-entities`, `passivation-idle` und `max-entities` — ebenso die
 Koordinator-Keys `rebalance-interval` und `hand-off-timeout`. Sie
 setzen die node-weite Grundeinstellung für jeden sharded Typ und
 liegen *unter* dem, was `start(...)` explizit übergibt — ein
@@ -285,6 +285,7 @@ Per-Typ-Wert im Builder gewinnt also weiterhin. Siehe
 actor-ts.sharding {
   number-of-shards = 128
   passivation-idle = 2 minutes
+  max-entities     = 50000
 }
 ```
 

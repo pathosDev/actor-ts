@@ -54,6 +54,24 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Added
 
+- **`actor-ts.sharding.max-entities` — the per-node entity cap is configurable**
+  (#835).  `maxEntities` LRU-passivates the coldest entity when a node is at
+  capacity; it was the one passivation trigger with no HOCON form, which left
+  the time bound (`passivation-idle`) tunable per environment and the memory
+  bound code-only.  An entity count is exactly the value that differs between a
+  laptop and a 64 GB production node:
+
+  ```hocon
+  actor-ts.sharding {
+    passivation-idle = 2 minutes
+    max-entities     = 50000        # 0 = no cap (the default)
+  }
+  ```
+
+  Same layering as the rest of the block — an explicit `withMaxEntities(…)`
+  still wins — and the reference value is `0`, so nothing changes for anyone
+  who does not set it.
+
 - **An actor can reach its own `Cluster`** (#833).  `this.context` and
   `this.system` were always there; the `Cluster` was the one runtime object
   that had to be threaded in by hand — through a constructor argument, an
@@ -128,7 +146,160 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   channel's `persistenceId` is now built from the real `|`-separated pair id
   rather than the sanitized one.
 
+### Documentation
+
+- **A new page publishes the complete `reference.conf`** — every setting the
+  framework ships, verbatim, so "what can I configure?" has one exhaustive
+  answer instead of a curated example.  The Configuration page keeps
+  explaining what each key does and links across.
+
+  The copy is pinned to the source: a test compares the page's HOCON block to
+  `REFERENCE_CONF` and fails on any drift, in both languages.  A published
+  default that no longer matches the shipped one is the same lie as a
+  documented key nothing reads, which is what the rest of this release is
+  about.
+
 ### Fixed
+
+- **A guard against the next dead config key** (closes #653).
+  `tests/unit/config/NoDeadConfigKeys.test.ts` asserts, for every leaf in
+  `REFERENCE_CONF`, that it is reachable from `ConfigKeys` *and* referenced
+  from somewhere under `src/`.  A key added to the reference config without a
+  reader now fails CI with a message naming the key.
+
+  Knowingly-unimplemented keys go in `KNOWN_DEAD_KEYS` with the issue that
+  will remove them — the list has exactly one entry (`remote.tls.enabled`,
+  #591), and the guard also checks that each excused key still *exists*, so
+  an exception cannot outlive its key.
+
+  The check proves a reference rather than a correct read: a key mentioned in
+  dead code would still pass.  That ceiling is deliberate — the defect worth
+  catching is "declared and never wired up", and modelling config flow
+  through the options mergers would be a lot of machinery for the rest.
+
+  `PersistenceExtension` moved its two raw path literals onto
+  `ConfigKeys.persistence.*` along the way; it was the last reader in `src/`
+  still spelling paths by hand.
+
+- **`actor-ts.system.name`, `actor-ts.worker-cluster.*` and
+  `actor-ts.coordinated-shutdown.*` are actually read** (part of #653) — the
+  last of the inert blocks.
+
+  `ActorSystem.create()` now takes an **optional** name: omit it and the
+  system is named from `actor-ts.system.name`, falling back to `"default"` as
+  before.  `create('billing')` still wins.
+
+  `CoordinatedShutdown` picks up all three of its keys.
+  `default-phase-timeout` seeds the 12 canonical phases (it was hardcoded to
+  `5_000`, now `DEFAULT_PHASE_TIMEOUT_MS` in `util/Constants.ts`).
+  `terminate-actor-system = false` drops the built-in terminator task while
+  leaving the phase and any user tasks in it intact — for a host process that
+  owns the system's lifetime.  **`exit-jvm` is renamed to `exit-process`** —
+  it is a JVM-ism in a TypeScript framework, and it now does something: with
+  it on, `process.exit(0)` runs once the pipeline completes, which is how you
+  stop a lingering handle from making a finished shutdown look like a hang.
+
+  **The `worker` block is now `worker-cluster`, and `count` is `workers`** —
+  named after `WorkerClusterOptions`, whose fields they fill in, and in
+  lockstep with them.  `WorkerCluster.spawn` is a static with no `ActorSystem`
+  in scope, so it loads the config chain itself (the same one
+  `ActorSystem.create` uses).  An unknown `restart-policy` is now rejected by
+  `WorkerClusterOptionsValidator` instead of falling through the internal
+  `match` and silently meaning "never restart" — that check was missing for
+  code-supplied values too.
+
+- **`actor-ts.http.backend` and `actor-ts.http.shutdown-grace-period` are
+  actually read** (part of #653).  `newServerAt(...).bind()` hardcoded
+  `new FastifyBackend()` and the auto-registered shutdown task called
+  `unbind()` with no grace period at all — so the documented 5 s drain window
+  was, in practice, zero.
+
+  ```hocon
+  actor-ts.http {
+    backend = "hono"
+    shutdown-grace-period = 10s
+  }
+  ```
+
+  `useBackend(...)` still wins; the config only decides what `bind()` picks
+  when the builder was given nothing.  An unrecognised name now fails the
+  `bind()` with a `ConfigError` naming the key and the accepted values,
+  instead of silently falling back.  Express and Hono are imported
+  dynamically, so naming neither keeps both out of your bundle.
+
+  The reference comment advertised **`fastify | bun | express`** — a `bun`
+  backend that has never existed, and no mention of the Hono backend that
+  does.  Corrected to `fastify | express | hono`, and `backend = "bun"` now
+  fails loudly rather than being ignored.
+
+  **`shutdown-grace-period`'s published default moves `5s` → `0ms`**, the same
+  correction as `max-frame-bytes`: `unbind()` has always been called with no
+  grace period, so `0` — force as soon as the server closes — is what every
+  deployment has actually been running.  Making the documented `5s` live
+  turned out to cost real time rather than none: where a backend's `close()`
+  cannot settle (Express with a live WebSocket on Bun), the window is not an
+  upper bound that resolves early but a deadline that is always reached, so
+  every such shutdown would have gained five seconds.  Raise it deliberately
+  if you want in-flight requests to finish.
+
+- **The `actor-ts.cluster.*` and `actor-ts.remote.*` config blocks are actually
+  read** (part of #653; closes #754).  Same defect as the sharding block: the
+  keys shipped in `reference.conf`, the Configuration page documented them, and
+  `Cluster.join` took every value from `ClusterOptions` alone.  `Cluster.join`
+  now layers them underneath, so **explicit options > HOCON > built-in
+  defaults** holds here too.
+
+  The bind address comes with it, which is what the docs have shown all along:
+
+  ```hocon
+  actor-ts.remote.tcp {
+    host = "0.0.0.0"
+    port = ${?ACTOR_TS_PORT}   # env-var substitution — now actually applied
+  }
+  ```
+
+  One consequence worth knowing: `host` / `port` are validated on the *merged*
+  settings, and the reference config supplies both, so a `Cluster.join` that
+  omits them no longer throws `OptionsError` — it binds `0.0.0.0:2552`.  That is
+  the point of the feature, but it turns a startup error into a running node,
+  so pin the address in config if you were relying on the throw.
+
+  `failureDetector` merges **per threshold**, not per object: setting only
+  `downAfterMs` in code keeps `heartbeat-interval` and `unreachable-after` from
+  the file.  A shallow merge would have silently reset the two the caller never
+  mentioned.
+
+  **`remote.max-frame-size` → `remote.max-frame-bytes`, and its documented
+  default was wrong.**  The key is renamed to match the field it feeds
+  (`ClusterOptions.maxFrameBytes`, new, with `withMaxFrameBytes(…)`), and the
+  reference value moves `1M` → `16M`.  The `1M` in the docs was never the
+  effective cap — nothing read the key, so every cluster has always run at
+  `DEFAULT_MAX_FRAME_BYTES` (16 MiB).  Publishing `16M` states what the
+  framework actually does; the alternative, keeping `1M` now that it is live,
+  would have tightened every existing cluster's wire cap 16× on upgrade and
+  broken anyone sending large envelopes.  **If you sized your deployment
+  against the documented 1 MiB, set `max-frame-bytes = 1M` explicitly — it now
+  works.**  The cap applies to the transport the cluster builds for itself; an
+  injected `withTransport(…)` keeps the cap it was constructed with.
+
+  **Two dead keys removed rather than wired:**
+
+  - `cluster.leader-election = "lowest-address"` — the leader is always the
+    lowest-addressed up-member and there is no second strategy, so the key
+    documented a choice the framework does not offer.
+  - `remote.transport = "tcp"` — a custom transport is an object passed to
+    `withTransport(…)`, never a string; the in-memory transport is a test
+    detail. `ConfigKeys.transport` (`'actor-ts.transport'`) went with it — it
+    matched no documented path and was referenced nowhere.
+
+  `remote.tcp.hostname` is now `remote.tcp.host`, matching `ClusterOptions.host`
+  and the `withHost(…)` that sets it.  All four renamed/removed keys were inert,
+  so no working configuration changes meaning — but a config file that named
+  them was never doing anything anyway.
+
+  `remote.tls.enabled` stays dead **on purpose** (#591): it is now flagged as
+  such in the docs and named in the dead-key guard's exception list, rather than
+  being quietly wired to a TLS implementation that does not exist yet.
 
 - **The `actor-ts.sharding.*` config block is actually read** (#834, part of
   #653).  `reference.conf` shipped all five keys and the Configuration page

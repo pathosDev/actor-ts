@@ -270,16 +270,17 @@ usually want `rememberEntities: true` and a `passivationIdleMs`
 matched to your traffic pattern.
 
 Four of these are also HOCON keys — `number-of-shards`,
-`remember-entities`, `passivation-idle`, plus the coordinator's
-`rebalance-interval` and `hand-off-timeout`.  They set the node-wide
-baseline for every sharded type and sit *under* whatever `start(...)`
-passes explicitly, so a per-type value in the builder still wins.  See
-[Configuration](/reference/configuration/#actor-tssharding).
+`remember-entities`, `passivation-idle` and `max-entities` — as are the
+coordinator's `rebalance-interval` and `hand-off-timeout`.  They set the
+node-wide baseline for every sharded type and sit *under* whatever
+`start(...)` passes explicitly, so a per-type value in the builder still
+wins.  See [Configuration](/reference/configuration/#actor-tssharding).
 
 ```hocon
 actor-ts.sharding {
   number-of-shards = 128
   passivation-idle = 2 minutes
+  max-entities     = 50000
 }
 ```
 

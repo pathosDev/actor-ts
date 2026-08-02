@@ -44,6 +44,15 @@ export const DEFAULT_ASK_TIMEOUT_MS = 5_000;
 export const DEFAULT_SEED_RETRY_INTERVAL_MS = 3_000;
 
 /**
+ * Default per-phase timeout in the `CoordinatedShutdown` pipeline.
+ * A phase that overruns it is abandoned so the next one still gets
+ * to run — 5 s balances letting a slow task finish against blocking
+ * shutdown indefinitely.  Overridable globally, per phase, or via
+ * `actor-ts.coordinated-shutdown.default-phase-timeout`.
+ */
+export const DEFAULT_PHASE_TIMEOUT_MS = 5_000;
+
+/**
  * Default tombstone retention (`Cluster.tombstoneTtlMs`).  24 h
  * gives slow / partitioned peers a generous window to converge
  * after a member is removed; once expired, peers can re-mint the

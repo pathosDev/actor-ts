@@ -1,5 +1,8 @@
+import { Config } from '../config/Config.js';
+import { ConfigKeys } from '../config/ConfigKeys.js';
 import type { WorkerBackend } from '../runtime/worker/index.js';
 import { OptionsBuilder } from '../util/OptionsBuilder.js';
+import { mergeOptions } from '../util/OptionsMerge.js';
 import { OptionsValidator } from '../util/OptionsValidator.js';
 import type { RestartPolicy } from './WorkerCluster.js';
 
@@ -101,7 +104,63 @@ export class WorkerClusterOptionsValidator extends OptionsValidator<WorkerCluste
     }
     this.port('basePort');
     this.positiveNumber('readyTimeoutMs');
+    // Worth checking now that a config file can supply it: an unknown policy
+    // used to fall through the `match` in WorkerCluster and silently mean
+    // "never restart".
+    this.oneOf('restartPolicy', ['always', 'on-failure', 'never']);
   }
+}
+
+/**
+ * The slice of worker-cluster settings HOCON can supply.  Everything else
+ * is either per-call identity (`bootstrap`, `initData`) or an object a
+ * config file cannot express (`backend`).
+ */
+export type WorkerClusterConfigDefaults = Pick<
+  WorkerClusterOptionsType,
+  'workers' | 'restartPolicy'
+>;
+
+/**
+ * Read `actor-ts.worker-cluster.*`.  Unlike the rest of the framework's
+ * config readers this one loads the config itself: {@link WorkerCluster.spawn}
+ * is a static with no `ActorSystem` in scope — the workers each build their
+ * own system *after* spawning — so there is no `system.config` to read.
+ * {@link Config.load} is the same chain `ActorSystem.create` uses, honouring
+ * `ACTOR_TS_CONFIG` and `./application.conf`.
+ */
+export function readWorkerClusterOptionsFromConfig(
+  config: Config = Config.load(),
+): WorkerClusterConfigDefaults {
+  const keys = ConfigKeys.workerCluster;
+  const out: { -readonly [K in keyof WorkerClusterConfigDefaults]: WorkerClusterConfigDefaults[K] } = {};
+  if (config.hasPath(keys.workers)) {
+    // `"auto"` and a plain count share one leaf, so the raw value decides
+    // which reader applies rather than the key.
+    const raw = config.getString(keys.workers);
+    out.workers = raw === 'auto' ? 'auto' : config.getInt(keys.workers);
+  }
+  if (config.hasPath(keys.restartPolicy)) {
+    out.restartPolicy = config.getString(keys.restartPolicy) as RestartPolicy;
+  }
+  return out;
+}
+
+/**
+ * Layer the config block under the caller's options — **explicit options >
+ * HOCON > built-in defaults**, as everywhere else.  The result is what
+ * {@link WorkerClusterOptionsValidator} sees, so a bad `restart-policy` in a
+ * config file is rejected exactly like a bad one in code.
+ */
+export function withWorkerClusterConfigDefaults(
+  options: WorkerClusterOptionsType,
+  config?: Config,
+): WorkerClusterOptionsType {
+  return mergeOptions<WorkerClusterOptionsType>(
+    {},
+    readWorkerClusterOptionsFromConfig(config),
+    options,
+  );
 }
 
 /**

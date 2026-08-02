@@ -19,6 +19,11 @@ aufgelöst:
 Alles, was nicht in Schicht 1 oder 2 spezifiziert ist, fällt auf
 den Reference-Default zurück.
 
+Diese Seite erklärt, was die einzelnen Keys *tun*.  Die vollständige
+Liste — jede Einstellung, die das Framework mitbringt, wörtlich aus der
+gebündelten Datei — steht unter
+[Die vollständige reference.conf](/de/reference/reference-conf/).
+
 ## Eine vollständige `application.conf`
 
 ```hocon
@@ -42,12 +47,11 @@ actor-ts {
   }
 
   remote {
-    transport = "tcp"
     tcp {
-      hostname = "0.0.0.0"
-      port     = ${?ACTOR_TS_PORT}   # Env-Var-Substitution; fällt auf Default zurück
+      host = "0.0.0.0"
+      port = ${?ACTOR_TS_PORT}   # Env-Var-Substitution; fällt auf Default zurück
     }
-    max-frame-size = 1M
+    max-frame-bytes = 16M
   }
 
   persistence {
@@ -61,6 +65,7 @@ actor-ts {
     hand-off-timeout    = 10s
     remember-entities   = false
     passivation-idle    = 0ms   # 0 deaktiviert die Auto-Passivierung
+    max-entities        = 0     # 0 = kein Cap pro Node
   }
 }
 ```
@@ -74,7 +79,7 @@ Platziere das im Projekt-Root.  Das Framework lädt es bei
 
 | Key | Default | Zweck |
 | --- | --- | --- |
-| `system.name` | `"default"` | Systemname — verwendet in Actor-Pfaden und zur Cluster-Identifikation. |
+| `system.name` | `"default"` | Systemname — verwendet in Actor-Pfaden und zur Cluster-Identifikation.  Greift, wenn `ActorSystem.create()` ohne Namen aufgerufen wird; ein explizites `create('billing')` gewinnt. |
 
 ### `actor-ts.logger`
 
@@ -95,28 +100,80 @@ Platziere das im Projekt-Root.  Das Framework lädt es bei
 | --- | --- | --- |
 | `cluster.gossip-interval` | `1s` | Wie oft Gossip mit einem zufälligen Peer ausgetauscht wird. |
 | `cluster.seed-retry-interval` | `3s` | Wie oft Seed-Verbindungen während des Joins wiederholt werden. |
-| `cluster.leader-election` | `"lowest-address"` | Strategie zur Auswahl eines neuen Leaders. |
 | `cluster.failure-detector.heartbeat-interval` | `500ms` | Wie oft Heartbeats gesendet werden. |
 | `cluster.failure-detector.unreachable-after` | `2s` | Verdachtsschwelle für `unreachable`-Status. |
-| `cluster.failure-detector.down-after` | `5s` | Verdachtsschwelle für erzwungenes Down. |
+| `cluster.failure-detector.down-after` | `5s` | Verdachtsschwelle für erzwungenes Down.  Wird ab dem letzten Heartbeat gemessen, muss also größer als `unreachable-after` sein. |
+
+Diese Keys liegen unter dem, was `Cluster.join(system, options)` übergibt —
+ein explizites `withGossipIntervalMs(…)` gewinnt also weiterhin.  Der
+Failure Detector wird *pro Schwelle* gemergt: setzt du im Code nur
+`down-after`, bleiben die beiden anderen aus der Datei erhalten.
+
+`seeds`, `roles`, der Transport und der Downing Provider haben keine
+HOCON-Form — die ersten beiden sind Deployment-Identität, die an die
+Join-Stelle gehört, die letzten beiden sind Objekte, die eine
+Config-Datei nicht ausdrücken kann.
 
 ### `actor-ts.remote`
 
 | Key | Default | Zweck |
 | --- | --- | --- |
-| `remote.transport` | `"tcp"` | Derzeit nur `"tcp"` und der In-Memory-Test-Transport. |
-| `remote.tcp.hostname` | `"0.0.0.0"` | TCP-Bind-Adresse. |
-| `remote.tcp.port` | `2552` | TCP-Bind-Port. |
-| `remote.tls.enabled` | `false` | TLS auf dem Cluster-Transport umschalten. |
-| `remote.max-frame-size` | `1M` | Maximal erlaubte Wire-Frame-Größe. |
+| `remote.tcp.host` | `"0.0.0.0"` | Bind-Adresse.  Wird verwendet, wenn `ClusterOptions` `host` nicht setzt. |
+| `remote.tcp.port` | `2552` | Bind-Port.  Wird verwendet, wenn `ClusterOptions` `port` nicht setzt. |
+| `remote.max-frame-bytes` | `16M` | Wire-Cap pro Frame.  Ein Frame, dessen Längen-Präfix darüber liegt, wird verworfen, bevor irgendeine Payload gepuffert wird. |
+| `remote.tls.enabled` | `false` | **Nicht implementiert** — siehe unten. |
+
+Weil die Bind-Adresse aus der Config lesbar ist, kann ein Deployment sie
+komplett aus dem Code herausziehen:
+
+```hocon
+actor-ts.remote.tcp {
+  host = "0.0.0.0"
+  port = ${?ACTOR_TS_PORT}   # Env-Var-Substitution
+}
+```
+
+`remote.max-frame-bytes` gilt für den Transport, den der Cluster sich
+selbst baut.  Wenn du einen `TcpTransport` selbst konstruierst und per
+`withTransport(…)` übergibst, setz das Cap dort — das Framework re-capped
+keinen Transport, den es nicht erzeugt hat.
+
+:::caution[`remote.tls.enabled` tut nichts]
+Dieser Key ist weiterhin inert: ihn auf `true` zu setzen aktiviert **kein**
+TLS, und du bekommst keinen Fehler.  TLS ist derzeit nur erreichbar, indem
+du einen `TcpTransport` mit TLS-Konfiguration konstruierst und ihn an
+`ClusterOptions.withTransport(…)` übergibst.  Verfolgt als
+[Issue #591](https://github.com/pathosDev/actor-ts/issues/591); der Key ist
+bewusst als bekannt-toter Key gelistet statt entfernt, damit der Wert seine
+Bedeutung behält, sobald die Implementierung landet.
+:::
 
 ### `actor-ts.http`
 
 | Key | Default | Zweck |
 | --- | --- | --- |
 | `http.backend` | `"fastify"` | Einer von `fastify` / `express` / `hono`. |
-| `http.shutdown-grace-period` | `5s` | Zeit, um in-flight Requests beim Shutdown leerlaufen zu lassen. |
+| `http.shutdown-grace-period` | `0ms` | Wie lange `unbind()` in-flight Requests leerlaufen lässt, bevor Verbindungen erzwungen geschlossen werden.  `0` erzwingt sofort. |
 | `http.websocket` | *(siehe unten)* | Serverseitige WebSocket-Defaults für [`websocket()`](/de/http/websocket/)-Routen. |
+
+`http.backend` entscheidet nur darüber, was `newServerAt(...).bind()`
+verwendet, wenn der Builder kein eigenes Backend bekommen hat —
+`useBackend(new HonoBackend())` gewinnt immer und bleibt der einzige Weg,
+ein selbst konfiguriertes oder selbst geschriebenes Backend zu übergeben.
+Ein unbekannter Name lässt `bind()` mit einem `ConfigError` scheitern,
+statt still auf Fastify zurückzufallen.  Express und Hono sind optionale
+Peer-Dependencies und werden nur importiert, wenn du sie benennst.
+
+Die Grace Period ist per Default `0` — sofort erzwingen —, weil `unbind()`
+genau das in der Praxis immer getan hat.  Erhöhe sie, wenn in-flight
+Requests fertig werden sollen.
+
+Meist ist sie eine Obergrenze und keine Wartezeit: `unbind()` kehrt zurück,
+sobald der Server tatsächlich geschlossen ist.  Wo das `close()` eines
+Backends nicht settlen kann — etwa Express mit einem lebenden WebSocket —
+wird das Fenster zu einer Deadline, die immer erreicht wird; ein großer Wert
+ist dort also Zeit, die du immer bezahlst.  Ein Aufrufer, der einen eigenen
+Wert übergibt — `binding.unbind(1_000)` — überschreibt die Config.
 
 Serverseitige WebSocket-Routen (`websocket(path, actorRef)`) lesen
 ihre Defaults aus `actor-ts.http.websocket`:
@@ -162,6 +219,7 @@ Redis- und Memcached-Caches lesen ihre Verbindungs-Settings aus
 | `sharding.hand-off-timeout` | `10s` | Wie lange auf HandOffComplete gewartet wird, bevor zwangsumverteilt wird. |
 | `sharding.remember-entities` | `false` | Persistiere die Menge aktiver Entity-IDs. |
 | `sharding.passivation-idle` | `0ms` | Auto-Passiviere eine Entität nach diesem Idle-Fenster.  `0` = deaktiviert. |
+| `sharding.max-entities` | `0` | Entity-Obergrenze pro Node; bei Überlauf wird die am längsten ungenutzte Entität passiviert.  `0` = kein Cap. |
 
 Diese Keys gelten für **jeden** auf dem Node gestarteten Sharded Type.  Sie
 werden einmal pro `sharding.start(...)` gelesen und unter das gelegt, was
@@ -190,16 +248,35 @@ Stores — haben keine HOCON-Form und bleiben im Code.
 
 | Key | Default | Zweck |
 | --- | --- | --- |
-| `coordinated-shutdown.default-phase-timeout` | `5s` | Default-Timeout pro Phase. |
-| `coordinated-shutdown.terminate-actor-system` | `true` | Ob in der finalen Phase `system.terminate()` aufgerufen wird. |
-| `coordinated-shutdown.exit-jvm` | `false` | Ob nach dem Shutdown `process.exit()` aufgerufen wird. |
+| `coordinated-shutdown.default-phase-timeout` | `5s` | Default-Timeout pro Phase.  Eine Phase, die es überschreitet, wird abgebrochen, damit die nächste noch läuft. |
+| `coordinated-shutdown.terminate-actor-system` | `true` | Ob der eingebaute Terminator-Task in der finalen Phase `system.terminate()` aufruft. |
+| `coordinated-shutdown.exit-process` | `false` | Ob nach Abschluss der Pipeline `process.exit(0)` aufgerufen wird. |
 
-### `actor-ts.worker` *(Multi-Runtime-Worker)*
+`terminate-actor-system = false` entfernt nur den eingebauten Terminator —
+in `ActorSystemTerminate` registrierte eigene Tasks laufen weiterhin.
+Nutze es, wenn ein Host-Prozess die Lebensdauer des Systems besitzt und ein
+Signal-Handler es nicht killen darf.
+
+`exit-process` ist für den umgekehrten Fall: ein hängengebliebenes Handle
+(ein offener Socket, eine gepoolte Verbindung, die ein Treiber nie
+freigegeben hat) hält den Prozess am Leben, nachdem die Pipeline fertig
+ist — von außen nicht von einem Hänger zu unterscheiden.  Per Default aus,
+weil ein erzwungener Exit genau die Leaks verdeckt, die du eigentlich
+finden willst.
+
+### `actor-ts.worker-cluster` *(Multi-Runtime-Worker)*
 
 | Key | Default | Zweck |
 | --- | --- | --- |
-| `worker.count` | `"auto"` | Anzahl Worker — `"auto"` verwendet `navigator.hardwareConcurrency`. |
-| `worker.restart-policy` | `"on-failure"` | `always` / `on-failure` / `never`. |
+| `worker-cluster.workers` | `"auto"` | Anzahl Worker — `"auto"` verwendet `navigator.hardwareConcurrency`. |
+| `worker-cluster.restart-policy` | `"on-failure"` | `always` / `on-failure` / `never`. |
+
+Diese Keys füllen `WorkerCluster.spawn(options)` für Felder auf, die der
+Aufruf nicht setzt.  `spawn` ist ein Static ohne `ActorSystem` im Scope und
+lädt die Config-Kette daher selbst — dieselbe, die `ActorSystem.create`
+verwendet, inklusive `ACTOR_TS_CONFIG` und `./application.conf`.  Eine
+unbekannte `restart-policy` wird mit einem `OptionsError` abgelehnt, statt
+still „never" zu bedeuten.
 
 ### Broker-Plugins — `actor-ts.io.broker.*`
 
@@ -237,7 +314,7 @@ Erkannte Einheiten: `ns`, `us`, `ms`, `s`, `m`, `h`, `d`.
 ### Sizes
 
 ```hocon
-max-frame-size = 1M         # 1 048 576 Bytes
+max-frame-bytes = 16M       # 16 777 216 Bytes
 buffer = 64K
 heap = 2G
 ```
