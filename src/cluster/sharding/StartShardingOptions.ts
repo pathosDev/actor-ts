@@ -144,7 +144,12 @@ export class StartShardingOptionsValidator<TMessage>
  */
 export type ShardingConfigDefaults = Pick<
   StartShardingOptionsType<unknown>,
-  'numShards' | 'rememberEntities' | 'passivationIdleMs' | 'rebalanceIntervalMs' | 'handOffTimeoutMs'
+  | 'numShards'
+  | 'rememberEntities'
+  | 'passivationIdleMs'
+  | 'maxEntities'
+  | 'rebalanceIntervalMs'
+  | 'handOffTimeoutMs'
 >;
 
 /**
@@ -163,6 +168,7 @@ export function readShardingOptionsFromConfig(config: Config): ShardingConfigDef
   if (config.hasPath(keys.numberOfShards)) out.numShards = config.getInt(keys.numberOfShards);
   if (config.hasPath(keys.rememberEntities)) out.rememberEntities = config.getBoolean(keys.rememberEntities);
   if (config.hasPath(keys.passivationIdle)) out.passivationIdleMs = config.getDuration(keys.passivationIdle);
+  if (config.hasPath(keys.maxEntities)) out.maxEntities = config.getInt(keys.maxEntities);
   if (config.hasPath(keys.rebalanceInterval)) out.rebalanceIntervalMs = config.getDuration(keys.rebalanceInterval);
   if (config.hasPath(keys.handOffTimeout)) out.handOffTimeoutMs = config.getDuration(keys.handOffTimeout);
   return out;

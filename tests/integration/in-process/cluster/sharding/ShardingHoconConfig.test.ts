@@ -153,6 +153,23 @@ describe('ClusterSharding — actor-ts.sharding.* HOCON keys', () => {
     await waitFor(() => stopped === 1);
   });
 
+  test('max-entities caps the node and LRU-passivates the coldest entity', async () => {
+    const node = await startNode('hocon-cap', 45_404, {
+      'actor-ts': { sharding: { 'max-entities': 2 } },
+    });
+
+    // Distinct ids in a stable order, so the first one is unambiguously the LRU.
+    node.region.tell({ id: 'user-1', kind: 'work' });
+    await waitFor(() => created === 1);
+    node.region.tell({ id: 'user-2', kind: 'work' });
+    await waitFor(() => created === 2);
+
+    // The third entity is one too many: the region evicts `user-1` to make room.
+    node.region.tell({ id: 'user-3', kind: 'work' });
+    await waitFor(() => created === 3);
+    await waitFor(() => stopped === 1);
+  });
+
   test('number-of-shards reaches the region — entity ids hash into the configured space', async () => {
     const node = await startNode('hocon-shards', 45_403, {
       'actor-ts': { sharding: { 'number-of-shards': 4 } },

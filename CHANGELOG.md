@@ -54,6 +54,24 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Added
 
+- **`actor-ts.sharding.max-entities` — the per-node entity cap is configurable**
+  (#835).  `maxEntities` LRU-passivates the coldest entity when a node is at
+  capacity; it was the one passivation trigger with no HOCON form, which left
+  the time bound (`passivation-idle`) tunable per environment and the memory
+  bound code-only.  An entity count is exactly the value that differs between a
+  laptop and a 64 GB production node:
+
+  ```hocon
+  actor-ts.sharding {
+    passivation-idle = 2 minutes
+    max-entities     = 50000        # 0 = no cap (the default)
+  }
+  ```
+
+  Same layering as the rest of the block — an explicit `withMaxEntities(…)`
+  still wins — and the reference value is `0`, so nothing changes for anyone
+  who does not set it.
+
 - **An actor can reach its own `Cluster`** (#833).  `this.context` and
   `this.system` were always there; the `Cluster` was the one runtime object
   that had to be threaded in by hand — through a constructor argument, an

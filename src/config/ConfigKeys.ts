@@ -97,6 +97,7 @@ export const ConfigKeys = {
     numberOfShards: 'actor-ts.sharding.number-of-shards',
     rememberEntities: 'actor-ts.sharding.remember-entities',
     passivationIdle: 'actor-ts.sharding.passivation-idle',
+    maxEntities: 'actor-ts.sharding.max-entities',
     rebalanceInterval: 'actor-ts.sharding.rebalance-interval',
     handOffTimeout: 'actor-ts.sharding.hand-off-timeout',
   },

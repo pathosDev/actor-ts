@@ -61,6 +61,7 @@ actor-ts {
     hand-off-timeout    = 10s
     remember-entities   = false
     passivation-idle    = 0ms   # 0 deaktiviert die Auto-Passivierung
+    max-entities        = 0     # 0 = kein Cap pro Node
   }
 }
 ```
@@ -162,6 +163,7 @@ Redis- und Memcached-Caches lesen ihre Verbindungs-Settings aus
 | `sharding.hand-off-timeout` | `10s` | Wie lange auf HandOffComplete gewartet wird, bevor zwangsumverteilt wird. |
 | `sharding.remember-entities` | `false` | Persistiere die Menge aktiver Entity-IDs. |
 | `sharding.passivation-idle` | `0ms` | Auto-Passiviere eine Entität nach diesem Idle-Fenster.  `0` = deaktiviert. |
+| `sharding.max-entities` | `0` | Entity-Obergrenze pro Node; bei Überlauf wird die am längsten ungenutzte Entität passiviert.  `0` = kein Cap. |
 
 Diese Keys gelten für **jeden** auf dem Node gestarteten Sharded Type.  Sie
 werden einmal pro `sharding.start(...)` gelesen und unter das gelegt, was

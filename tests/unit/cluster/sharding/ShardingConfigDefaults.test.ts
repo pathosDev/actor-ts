@@ -5,12 +5,13 @@ import { readShardingOptionsFromConfig } from '../../../../src/cluster/sharding/
 import { mergeOptions } from '../../../../src/util/OptionsMerge.js';
 
 describe('readShardingOptionsFromConfig', () => {
-  test('reads all five keys of the sharding block', () => {
+  test('reads every key of the sharding block', () => {
     const config = Config.parseString(`
       actor-ts.sharding {
         number-of-shards   = 128
         remember-entities  = true
         passivation-idle   = 2 minutes
+        max-entities       = 50000
         rebalance-interval = 5s
         hand-off-timeout   = 30s
       }
@@ -20,6 +21,7 @@ describe('readShardingOptionsFromConfig', () => {
       numShards: 128,
       rememberEntities: true,
       passivationIdleMs: 120_000,
+      maxEntities: 50_000,
       rebalanceIntervalMs: 5_000,
       handOffTimeoutMs: 30_000,
     });
@@ -48,6 +50,7 @@ describe('readShardingOptionsFromConfig', () => {
       numShards: 64,
       rememberEntities: false,
       passivationIdleMs: 0,
+      maxEntities: 0,
       rebalanceIntervalMs: 2_000,
       handOffTimeoutMs: 10_000,
     });
@@ -58,6 +61,7 @@ describe('readShardingOptionsFromConfig', () => {
       numberOfShards: 'actor-ts.sharding.number-of-shards',
       rememberEntities: 'actor-ts.sharding.remember-entities',
       passivationIdle: 'actor-ts.sharding.passivation-idle',
+      maxEntities: 'actor-ts.sharding.max-entities',
       rebalanceInterval: 'actor-ts.sharding.rebalance-interval',
       handOffTimeout: 'actor-ts.sharding.hand-off-timeout',
     });
