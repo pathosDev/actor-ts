@@ -18,7 +18,6 @@ import { describe, expect, test } from 'bun:test';
 import { Actor as _Actor } from '../../src/Actor.js';
 import { ReplicatedEventSourcedActor } from '../../src/persistence/ReplicatedEventSourcedActor.js';
 import { Props } from '../../src/Props.js';
-import type { Cluster } from '../../src/cluster/Cluster.js';
 import { MultiNodeSpec } from '../../src/testkit/MultiNodeSpec.js';
 import { MultiNodeTransport } from '../../src/testkit/internal/MultiNodeTransport.js';
 import type { ActorRef } from '../../src/ActorRef.js';
@@ -36,8 +35,6 @@ const TIGHT_FD = {
 
 class ReplicatedCounter extends ReplicatedEventSourcedActor<Command, Event, { value: number }> {
   readonly persistenceId = 'counter-1';
-  readonly replicaId: string;
-  constructor(cluster: Cluster) { super(cluster); this.replicaId = cluster.selfAddress.toString(); }
   initialState(): { value: number } { return { value: 0 }; }
   onEvent(s: { value: number }, e: Event): { value: number } {
     return { value: s.value + e.n };
@@ -72,10 +69,9 @@ describe('Replicated ES — three-node convergence', () => {
       const instances = new Map<string, ReplicatedCounter>();
       const refs = new Map<string, ActorRef<Command>>();
       for (const role of ['a', 'b', 'c'] as const) {
-        const cluster = spec.clusterFor(role);
         const ref = spec.systemFor(role).spawn(
           Props.create<Command>(() => {
-            const inst = new ReplicatedCounter(cluster);
+            const inst = new ReplicatedCounter();
             instances.set(role, inst);
             return inst as unknown as _Actor<Command>;
           }),
@@ -132,10 +128,9 @@ describe('Replicated ES — three-node convergence', () => {
       const instances = new Map<string, ReplicatedCounter>();
       const refs = new Map<string, ActorRef<Command>>();
       for (const role of ['a', 'b', 'c'] as const) {
-        const cluster = spec.clusterFor(role);
         const ref = spec.systemFor(role).spawn(
           Props.create<Command>(() => {
-            const inst = new ReplicatedCounter(cluster);
+            const inst = new ReplicatedCounter();
             instances.set(role, inst);
             return inst as unknown as _Actor<Command>;
           }),

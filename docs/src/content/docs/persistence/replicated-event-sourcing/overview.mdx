@@ -90,7 +90,6 @@ const maxWinsResolver: ConflictResolver<Event> = {
 
 class Counter extends ReplicatedEventSourcedActor<Command, Event, State> {
   readonly persistenceId = 'counter-42';
-  readonly replicaId     = process.env.REPLICA_ID!;
   protected override resolver(): ConflictResolver<Event> { return maxWinsResolver; }
 
   initialState() { return { value: 0 }; }
@@ -102,13 +101,25 @@ class Counter extends ReplicatedEventSourcedActor<Command, Event, State> {
 ```
 
 The actor extends `ReplicatedEventSourcedActor` instead of
-`PersistentActor`.  Three additional things to specify:
+`PersistentActor`.  Nothing is passed into the constructor: the base
+class reads the `Cluster` off the `ActorSystem` (see
+[`this.cluster`](/cluster/overview/#reaching-the-cluster-from-an-actor)).
+Two additional things to specify:
 
-- **`replicaId`** — this replica's stable identifier (different
-  from `persistenceId`).
 - **`resolver()`** — how to merge concurrent events (optional; defaults to last-writer-wins).
 - The journal must be **shared across replicas** (Cassandra,
   shared object-storage, etc.).
+
+`replicaId` — this replica's stable identifier, distinct from
+`persistenceId` — defaults to this node's cluster address.  Override it
+only when the id has to survive a re-address, e.g. a fixed region name:
+
+```ts
+override get replicaId(): string { return process.env.REPLICA_ID!; }
+```
+
+Two replicas that ever share an id will dedupe each other's events
+away, so the default is the safe one.
 
 ## The pieces
 

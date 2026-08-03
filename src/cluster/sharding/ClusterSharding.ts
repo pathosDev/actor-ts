@@ -4,6 +4,7 @@ import type { ActorSystem } from '../../ActorSystem.js';
 import { actorFactoryOf, type ActorClassOrFactory } from '../../internal/ActorConstruction.js';
 import { PersistenceExtensionId } from '../../persistence/PersistenceExtension.js';
 import { Props } from '../../Props.js';
+import { mergeOptions } from '../../util/OptionsMerge.js';
 import {
   SystemGroups,
   assertSpawnedAt,
@@ -34,7 +35,7 @@ import {
   type ShardKeyedClass,
   type ShardReference,
 } from './ShardKey.js';
-import { StartShardingOptionsValidator } from './StartShardingOptions.js';
+import { StartShardingOptionsValidator, readShardingOptionsFromConfig } from './StartShardingOptions.js';
 import type { StartShardingOptions, StartShardingOptionsType } from './StartShardingOptions.js';
 import { isShardingMessage } from './ShardingProtocol.js';
 import type { GetShardLocation, GetShards } from './ShardingProtocol.js';
@@ -118,7 +119,7 @@ export class ClusterSharding {
     options?: StartShardingOptions<TMessage>,
   ): ActorRef<TMessage>;
   start<TMessage>(arg1: unknown, arg2?: unknown, arg3?: unknown): ActorRef<TMessage> {
-    const options = this.resolveStartOptions<TMessage>(arg1, arg2, arg3);
+    const options = this.withConfigDefaults(this.resolveStartOptions<TMessage>(arg1, arg2, arg3));
     new StartShardingOptionsValidator<TMessage>().validate(options);
 
     this.ensureCoordinator(options as StartShardingOptionsType<unknown>);
@@ -190,6 +191,32 @@ export class ClusterSharding {
       );
     }
     return arg1 as StartShardingOptionsType<TMessage>;
+  }
+
+  /**
+   * Layer the `actor-ts.sharding.*` block under the caller's options, giving
+   * a sharded type the precedence the rest of the framework documents:
+   * **explicit options > HOCON > built-in defaults**.
+   *
+   * It happens here, and not in `ShardRegion`, because `start` is the only
+   * point that feeds *both* the region and — through {@link ensureCoordinator}
+   * — its coordinator; `rebalance-interval` and `hand-off-timeout` never
+   * reach the region at all.  Running before the validator is what lets a
+   * cross-field rule see the values the node will actually run with.
+   *
+   * The defaults layer is empty on purpose: the built-in fallbacks already
+   * live at their point of use (`settingsToConfig`'s `??` chain, the
+   * coordinator's own defaults), and duplicating them here would give the
+   * project two places to disagree about what `64` means.
+   */
+  private withConfigDefaults<TMessage>(
+    options: StartShardingOptionsType<TMessage>,
+  ): StartShardingOptionsType<TMessage> {
+    return mergeOptions<StartShardingOptionsType<TMessage>>(
+      {},
+      readShardingOptionsFromConfig(this.system.config),
+      options,
+    );
   }
 
   /** @internal — wrap the shorthand entity arg into a Props + assemble full options. */

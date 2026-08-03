@@ -1,5 +1,8 @@
+import type { Config } from '../config/Config.js';
+import { ConfigKeys } from '../config/ConfigKeys.js';
 import { OptionsBuilder } from '../util/OptionsBuilder.js';
 import { OptionsValidator } from '../util/OptionsValidator.js';
+import { mergeOptions, stripUndefined } from '../util/OptionsMerge.js';
 import type { FailureDetectorOptionsType } from './FailureDetectorOptions.js';
 import type { Transport } from './Transport.js';
 import type { DowningProvider } from './downing/DowningProvider.js';
@@ -62,6 +65,17 @@ export type ClusterOptionsType = {
    * KeepOldest, KeepReferee, StaticQuorum, LeaseMajority).
    */
   readonly downing?: DowningProvider;
+  /**
+   * Per-frame cap on the cluster wire, in bytes.  Frames whose
+   * length-prefix exceeds it are rejected before any payload is
+   * buffered, so it bounds what one peer can make this node hold.
+   *
+   * Only applies to the transport the cluster builds for itself — an
+   * explicit {@link transport} carries its own cap, set where it is
+   * constructed.  Default: 16 MiB (`DEFAULT_MAX_FRAME_BYTES`); lower it
+   * on a network that crosses a semi-trusted boundary.
+   */
+  readonly maxFrameBytes?: number;
 };
 
 /**
@@ -149,6 +163,11 @@ export class ClusterOptionsBuilder extends OptionsBuilder<ClusterOptionsType> {
   withDowning(downing: DowningProvider): this {
     return this.set('downing', downing);
   }
+
+  /** Per-frame wire cap for the cluster's own transport.  Default: 16 MiB. */
+  withMaxFrameBytes(maxFrameBytes: number): this {
+    return this.set('maxFrameBytes', maxFrameBytes);
+  }
 }
 
 /** Validates resolved {@link ClusterOptionsType} settings. */
@@ -169,7 +188,87 @@ export class ClusterOptionsValidator extends OptionsValidator<ClusterOptionsType
     this.positiveNumber('tombstonePruneIntervalMs');
     this.positiveNumber('tombstoneMinRetentionMs');
     this.nonNegativeNumber('weaklyUpAfterMs'); // 0 disables auto weakly-up
+    this.positiveInt('maxFrameBytes');
   }
+}
+
+/**
+ * The slice of cluster settings HOCON can supply — `actor-ts.cluster.*`
+ * plus the bind address and wire cap under `actor-ts.remote.*`.
+ *
+ * `seeds`, `roles`, `transport` and `downing` are absent on purpose:
+ * the last two are objects HOCON cannot express, and the first two are
+ * per-deployment identity rather than tuning — they belong at the join
+ * site where the node knows who it is.
+ */
+export type ClusterConfigDefaults = Partial<Pick<
+  ClusterOptionsType,
+  'host' | 'port' | 'gossipIntervalMs' | 'seedRetryIntervalMs' | 'failureDetector' | 'maxFrameBytes'
+>>;
+
+/**
+ * Read the cluster block into the shape {@link Cluster.join} merges under
+ * the caller's options.  Only keys actually present are returned, so an
+ * absent one falls through to the built-in default instead of landing as
+ * an explicit `undefined`.
+ *
+ * `failureDetector` is assembled from its three leaves and omitted
+ * entirely when none of them is set — an empty object here would still
+ * count as "set" and shadow nothing, but it would make the merge in
+ * `Cluster.join` harder to reason about than it needs to be.
+ */
+export function readClusterOptionsFromConfig(config: Config): ClusterConfigDefaults {
+  const keys = ConfigKeys.cluster;
+  const remote = ConfigKeys.remote;
+  // Mutable while being filled; consumers see the readonly shape.
+  const out: { -readonly [K in keyof ClusterConfigDefaults]: ClusterConfigDefaults[K] } = {};
+  if (config.hasPath(remote.tcp.host)) out.host = config.getString(remote.tcp.host);
+  if (config.hasPath(remote.tcp.port)) out.port = config.getInt(remote.tcp.port);
+  if (config.hasPath(remote.maxFrameBytes)) out.maxFrameBytes = config.getBytes(remote.maxFrameBytes);
+  if (config.hasPath(keys.gossipInterval)) out.gossipIntervalMs = config.getDuration(keys.gossipInterval);
+  if (config.hasPath(keys.seedRetryInterval)) {
+    out.seedRetryIntervalMs = config.getDuration(keys.seedRetryInterval);
+  }
+  const failureDetector = readFailureDetectorFromConfig(config);
+  if (Object.keys(failureDetector).length > 0) out.failureDetector = failureDetector;
+  return out;
+}
+
+/**
+ * Layer the cluster config block under the caller's options — the
+ * precedence every configurable thing in the framework documents:
+ * **explicit options > HOCON > built-in defaults**.
+ *
+ * `failureDetector` needs the nested pass: it is one field holding three
+ * thresholds, so the shallow merge would let an explicit `{ downAfterMs }`
+ * drop the other two straight back to the built-in defaults, silently
+ * discarding the config file's values for settings the caller never
+ * mentioned.  Per-field precedence has to reach inside it.
+ */
+export function withClusterConfigDefaults(
+  config: Config,
+  options: ClusterOptionsType,
+): ClusterOptionsType {
+  const fromConfig = readClusterOptionsFromConfig(config);
+  const merged = mergeOptions<ClusterOptionsType>({}, fromConfig, options);
+  const failureDetector = {
+    ...fromConfig.failureDetector,
+    ...stripUndefined(options.failureDetector ?? {}),
+  };
+  return Object.keys(failureDetector).length > 0 ? { ...merged, failureDetector } : merged;
+}
+
+function readFailureDetectorFromConfig(config: Config): Partial<FailureDetectorOptionsType> {
+  const keys = ConfigKeys.cluster.failureDetector;
+  const out: { -readonly [K in keyof FailureDetectorOptionsType]?: FailureDetectorOptionsType[K] } = {};
+  if (config.hasPath(keys.heartbeatInterval)) {
+    out.heartbeatIntervalMs = config.getDuration(keys.heartbeatInterval);
+  }
+  if (config.hasPath(keys.unreachableAfter)) {
+    out.unreachableAfterMs = config.getDuration(keys.unreachableAfter);
+  }
+  if (config.hasPath(keys.downAfter)) out.downAfterMs = config.getDuration(keys.downAfter);
+  return stripUndefined(out);
 }
 
 /**

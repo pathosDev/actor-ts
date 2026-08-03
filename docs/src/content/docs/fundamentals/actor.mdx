@@ -144,6 +144,34 @@ a `tell` from outside the actor world (e.g. from an HTTP handler)
 attaches `None`.  Use `.forEach` to reply only if one is present, or
 `.getOrElse(system.deadLetters)` if you want a fallback.
 
+### `this.cluster`, on a clustered system
+
+An actor in a system that has joined a cluster reaches it the same way,
+without anything being passed into the constructor:
+
+```ts
+class RoomActor extends Actor<RoomMessage> {
+  override preStart(): void {
+    this.log.info(`hosted on ${this.cluster.selfAddress}`);
+    this.log.info(`${this.cluster.upMembers().length} member(s) up`);
+  }
+}
+```
+
+`this.cluster` throws when the system never joined one, on the
+assumption that code reaching for it already knows it is clustered —
+the same trade-off `this.entityId` makes.  When the actor has to work
+either way, ask `this.context.cluster`, which is an `Option<Cluster>`
+and answers `None` instead:
+
+```ts
+this.context.cluster.forEach((cluster) => cluster.subscribe(onEvent));
+```
+
+Both read through to `system.cluster` on every access, so an actor that
+was already running when `Cluster.join(...)` completed picks it up.  See
+[Cluster overview](/cluster/overview/).
+
 ## Lifecycle hooks
 
 The base class defines four lifecycle hooks; all default to no-op.

@@ -26,7 +26,6 @@ import {
   Actor,
   Props,
   ReplicatedEventSourcedActor,
-  type Cluster,
 } from '../../src/index.js';
 import { MultiNodeSpec } from '../../src/testkit/MultiNodeSpec.js';
 
@@ -36,14 +35,10 @@ type State = { value: number };
 
 class ReplicatedCounter extends ReplicatedEventSourcedActor<Command, Event, State> {
   readonly persistenceId = 'counter-1';
-  readonly replicaId: string;
-  readonly label: string;
 
-  constructor(cluster: Cluster, label: string) {
-    super(cluster);
-    this.replicaId = cluster.selfAddress.toString();
-    this.label = label;
-  }
+  // No cluster in the constructor: the base class reads it off the
+  // ActorSystem, and `replicaId` defaults to this node's address.
+  constructor(private readonly label: string) { super(); }
 
   initialState(): State { return { value: 0 }; }
 
@@ -96,10 +91,9 @@ async function main(): Promise<void> {
   // canonical history via PubSub.
   const instances = new Map<string, ReplicatedCounter>();
   for (const role of ['a', 'b', 'c'] as const) {
-    const cluster = spec.clusterFor(role);
     const ref = spec.systemFor(role).spawn(
       Props.create<Command>(() => {
-        const inst = new ReplicatedCounter(cluster, role);
+        const inst = new ReplicatedCounter(role);
         instances.set(role, inst);
         return inst as unknown as Actor<Command>;
       }),

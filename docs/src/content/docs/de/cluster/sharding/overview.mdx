@@ -178,6 +178,66 @@ Koordinators haben eigene Seiten — siehe die
 und [Rebalance](/de/cluster/sharding/rebalance/) für die
 Mechanik.
 
+## Wissen, welche Entity man ist
+
+Eine Entity braucht fast immer die ID, über die sie geroutet wurde — für
+den Namen ihres Journal-Streams, ihres Pub/Sub-Topics oder einer Zeile in
+einer fremden Datenbank. Sie liest sie an sich selbst ab:
+
+```ts
+class CartEntity extends Actor<CartCommand> {
+  override preStart(): void {
+    this.log.info(`cart ${this.entityId} woke up in shard ${this.entity.shardId}`);
+  }
+}
+```
+
+| | |
+| --- | --- |
+| `this.entityId` | Der Wert, den `extractEntityId` zurückgegeben hat — unverändert. |
+| `this.entity` | Dieselbe ID plus `typeName` und `shardId`. |
+| `this.context.entity` | Die `Option`-Form — `None`, wenn dieser Actor keine Entity ist. Die beiden Getter darüber werfen stattdessen. |
+
+Der häufigste Fall ist eine `persistenceId` pro Entity — genau das gibt
+einem geshardeten [`PersistentActor`](/de/persistence/persistent-actor/)
+einen Event-Stream pro Entity statt einen pro Typ:
+
+```ts
+class CartEntity extends PersistentActor<CartCommand, CartEvent, CartState> {
+  override get persistenceId(): string { return `cart-${this.entityId}`; }
+}
+```
+
+:::caution[Ein Getter, kein Feld]
+Der Actor-Context wird *nach* dem Konstruktor angehängt — ``readonly
+persistenceId = `cart-${this.entityId}` `` wirft also. Lies die ID in
+einem Getter oder ab `preStart`.
+:::
+
+Die Identität sitzt auf der Entity und sonst nirgends — die eigenen
+Kinder einer Entity bekommen `None`, `this.context.entity.nonEmpty`
+beantwortet also „bin ich die Entity?“. Ein Kind, das die ID braucht,
+bekommt sie explizit weitergereicht.
+
+Um eine Entity isoliert zu testen, gibst du ihr die Identität direkt,
+statt einen Cluster darum herum hochzufahren:
+
+```ts
+const props = Props.create(() => new CartEntity())
+  .withEntity({ entityId: 'user-42', typeName: 'cart', shardId: 3 });
+const cart = system.spawn(props, 'cart-under-test');
+```
+
+### Warum nicht einfach den Pfad auslesen?
+
+`.../shard-7/entity-user-42` sieht aus, als trüge er die ID, und für
+einfache IDs funktioniert das Abschneiden des `entity-`-Präfixes auch.
+Es *ist* aber nicht die ID: Actor-Namen haben ein eingeschränktes
+Alphabet, deshalb faltet der Shard beim Benennen des Kindes jedes Zeichen
+außerhalb von `[A-Za-z0-9_-]` auf `_`. `user:42` und `user/42` landen
+beide auf `entity-user_42`. Der Pfad ist ein *Etikett*; `entityId` ist
+der Wert.
+
 ## Konfiguration
 
 `ShardingOptionsType<TMessage>` — die Felder, die du am häufigsten anfasst:
@@ -213,6 +273,22 @@ Die Defaults sind sinnvoll für kleine Cluster. Für Produktion
 willst du meistens `rememberEntities: true` und ein
 `passivationIdleMs` passend zu deinem Verkehrsmuster.
 
+Vier davon sind auch HOCON-Keys — `number-of-shards`,
+`remember-entities`, `passivation-idle` und `max-entities` — ebenso die
+Koordinator-Keys `rebalance-interval` und `hand-off-timeout`. Sie
+setzen die node-weite Grundeinstellung für jeden sharded Typ und
+liegen *unter* dem, was `start(...)` explizit übergibt — ein
+Per-Typ-Wert im Builder gewinnt also weiterhin. Siehe
+[Konfiguration](/de/reference/configuration/#actor-tssharding).
+
+```hocon
+actor-ts.sharding {
+  number-of-shards = 128
+  passivation-idle = 2 minutes
+  max-entities     = 50000
+}
+```
+
 ## Passivierung
 
 Passivierung stoppt eine idle Entity, um Speicher freizugeben; die
@@ -220,6 +296,11 @@ nächste Nachricht für dieselbe ID erstellt sie neu. Wie auch immer
 sie ausgelöst wird — die Region puffert Nachrichten, die eintreffen,
 während die Entity stoppt, und spielt sie an die frische Inkarnation
 zurück, sodass nichts verloren geht.
+
+Es gibt **kein Standard-Idle-Fenster** — `passivationIdleMs` ist `0`
+(deaktiviert), solange du es nicht setzt, im Code oder über
+`actor-ts.sharding.passivation-idle`. Eine Entity, die niemand
+passiviert, bleibt für die Lebensdauer ihres Nodes resident.
 
 **Automatisch** — wenn `passivationIdleMs` ohne Verkehr abläuft oder
 `maxEntities` überschritten wird (die LRU-Entity wird verdrängt), wird

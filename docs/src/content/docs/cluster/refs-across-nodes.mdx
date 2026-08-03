@@ -237,9 +237,11 @@ import { Aside } from '@astrojs/starlight/components';
   ```ts
   remoteActor.tell({ kind: 'upload', data: hugeBlob });   // 100 MB
   ```
-  The cluster transport's max-frame-size default is 16 MiB
-  (configurable via `TcpTransport`'s `maxFrameBytes` constructor
-  argument).  Frames larger than that fail; the message
+  The cluster transport's per-frame cap defaults to 16 MiB — set
+  `actor-ts.remote.max-frame-bytes`, or
+  `ClusterOptions.withMaxFrameBytes(…)`, to change it (a transport you
+  construct yourself takes it as a `TcpTransport` constructor
+  argument).  Frames larger than the cap fail; the message
   dead-letters.  For large payloads, use a separate side-channel
   (HTTP upload, S3 presigned URL) and pass a reference in the
   actor message.

@@ -30,22 +30,25 @@ type State = { value: number };
 
 class LeasedCounter extends ReplicatedEventSourcedActor<Command, Event, State> {
   readonly persistenceId: string;
-  readonly replicaId: string;
   /** Captured loss callbacks for assertions. */
   readonly leaseLossEvents: string[] = [];
   /** Track persist throws separately from the value query. */
   lastPersistError: Error | null = null;
 
   constructor(
-    cluster: Cluster,
     persistenceId: string,
-    replica: string,
+    private readonly replica: string,
     private readonly leaseInstance: Lease | null,
   ) {
-    super(cluster);
+    super();
     this.persistenceId = persistenceId;
-    this.replicaId = replica;
   }
+
+  /**
+   * Fixed names rather than the node-address default: these replicas all
+   * share one node, so the default would give them the same id.
+   */
+  override get replicaId(): string { return this.replica; }
 
   initialState(): State { return { value: 0 }; }
   onEvent(s: State, e: Event): State { return { value: s.value + e.n }; }
@@ -93,7 +96,7 @@ describe('ReplicatedEventSourcedActor — optional Lease (#89)', () => {
     try {
       sys.spawn(
         Props.create(() => {
-          actor = new LeasedCounter(cluster, 'no-lease', 'r1', null);
+          actor = new LeasedCounter('no-lease', 'r1', null);
           return actor as unknown as Actor<unknown>;
         }),
         'a',
@@ -135,7 +138,7 @@ describe('ReplicatedEventSourcedActor — optional Lease (#89)', () => {
       const leaseB = new InMemoryLease(leaseBOptions);
       sys.spawn(
         Props.create(() => {
-          a = new LeasedCounter(cluster, 'lease-a', 'r-a', leaseA);
+          a = new LeasedCounter('lease-a', 'r-a', leaseA);
           return a as unknown as Actor<unknown>;
         }),
         'a',
@@ -143,7 +146,7 @@ describe('ReplicatedEventSourcedActor — optional Lease (#89)', () => {
       await sleep(60);
       sys.spawn(
         Props.create(() => {
-          b = new LeasedCounter(cluster, 'lease-b', 'r-b', leaseB);
+          b = new LeasedCounter('lease-b', 'r-b', leaseB);
           return b as unknown as Actor<unknown>;
         }),
         'b',
@@ -185,7 +188,7 @@ describe('ReplicatedEventSourcedActor — optional Lease (#89)', () => {
       const lease = new InMemoryLease(leaseOptions);
       sys.spawn(
         Props.create(() => {
-          a = new LeasedCounter(cluster, 'lease-loss', 'r-a', lease);
+          a = new LeasedCounter('lease-loss', 'r-a', lease);
           return a as unknown as Actor<unknown>;
         }),
         'a',
@@ -226,7 +229,7 @@ describe('ReplicatedEventSourcedActor — optional Lease (#89)', () => {
       let ref1: LeasedCounter | null = null;
       const a1 = sys.spawn(
         Props.create(() => {
-          ref1 = new LeasedCounter(cluster, 'handover-1', 'r-1', first);
+          ref1 = new LeasedCounter('handover-1', 'r-1', first);
           return ref1 as unknown as Actor<unknown>;
         }),
         'a1',
@@ -248,7 +251,7 @@ describe('ReplicatedEventSourcedActor — optional Lease (#89)', () => {
       let ref2: LeasedCounter | null = null;
       sys.spawn(
         Props.create(() => {
-          ref2 = new LeasedCounter(cluster, 'handover-2', 'r-2', second);
+          ref2 = new LeasedCounter('handover-2', 'r-2', second);
           return ref2 as unknown as Actor<unknown>;
         }),
         'a2',

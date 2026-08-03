@@ -897,6 +897,7 @@ export default defineConfig({
           collapsed: true,
           items: [
             { label: 'Configuration',  slug: 'reference/configuration',  translations: { de: 'Konfiguration', es: 'Configuración', fr: 'Configuration', ja: '設定', ko: '설정', 'pt-BR': 'Configuração', ru: 'Конфигурация', 'zh-CN': '配置' } },
+            { label: 'Full reference.conf', slug: 'reference/reference-conf', translations: { de: 'Vollständige reference.conf', es: 'reference.conf completo', fr: 'reference.conf complet', ja: '完全な reference.conf', ko: '전체 reference.conf', 'pt-BR': 'reference.conf completo', ru: 'Полный reference.conf', 'zh-CN': '完整 reference.conf' } },
             { label: 'Version policy', slug: 'reference/version-policy', translations: { de: 'Versionsrichtlinie', es: 'Política de versiones', fr: 'Politique de versions', ja: 'バージョンポリシー', ko: '버전 정책', 'pt-BR': 'Política de versionamento', ru: 'Политика версионирования', 'zh-CN': '版本策略' } },
             { label: 'FAQ',            slug: 'reference/faq',            translations: { de: 'FAQ', es: 'FAQ', fr: 'FAQ', ja: 'FAQ', ko: 'FAQ', 'pt-BR': 'FAQ', ru: 'FAQ', 'zh-CN': 'FAQ' } },
             { label: 'Glossary',       slug: 'reference/glossary',       translations: { de: 'Glossar', es: 'Glosario', fr: 'Glossaire', ja: '用語集', ko: '용어집', 'pt-BR': 'Glossário', ru: 'Глоссарий', 'zh-CN': '术语表' } },

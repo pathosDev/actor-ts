@@ -540,7 +540,6 @@ type PendingRead = {
 };
 
 class DistributedDataActor extends Actor<ActorMessage> {
-  private readonly cluster: Cluster;
   private readonly view: SharedView;
   private readonly gossipIntervalMs: number;
   private readonly durable: DurableDistributedDataStore | null;
@@ -562,16 +561,25 @@ class DistributedDataActor extends Actor<ActorMessage> {
     view: SharedView;
   }) {
     super();
-    this.cluster = options.cluster;
     this.view = options.view;
     this.gossipIntervalMs = options.options.gossipInterval ?? 1_000;
     this.durable = options.options.durableStore
       ? new DurableDistributedDataStore(
           options.options.durableStore,
-          this.cluster.selfAddress.toString(),
+          options.cluster.selfAddress.toString(),
         )
       : null;
   }
+
+  /**
+   * The cluster `DistributedData.start` was bound to, which is what this
+   * actor must gossip over — not whatever `system.cluster` happens to
+   * resolve to.  The two are the same in every normal setup; overriding
+   * keeps them the same in the ones where they aren't (a test wiring two
+   * clusters through one system).  Reading the parameter property rather
+   * than a copy of it means there is still exactly one owner.
+   */
+  protected override get cluster(): Cluster { return this.options.cluster; }
 
   override async preStart(): Promise<void> {
     // Wire handlers are registered in the extension's `start()` so they're

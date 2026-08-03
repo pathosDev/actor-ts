@@ -77,6 +77,57 @@ Nachdem `Cluster.join` aufgelöst ist, befindet sich der Node im
 Cluster (möglicherweise aber noch ein paar Sekunden im Zustand
 `joining`, bis Konvergenz eintritt).
 
+## Den Cluster aus einem Actor heraus erreichen
+
+`Cluster.join` veröffentlicht die Instanz zugleich am `ActorSystem` —
+du musst das Handle also nicht durch jeden Actor durchreichen, der es
+braucht:
+
+```ts
+system.cluster;          // Option<Cluster> — None, wenn dieses System nie beigetreten ist
+this.context.cluster;    // dasselbe Option, innerhalb eines Actors
+this.cluster;            // ausgepackt, innerhalb eines Actors — wirft, wenn es keinen gibt
+```
+
+Die ausgepackte Form ist die für Code, der ohnehin nur geclustert
+läuft. Dazu gehören jede Sharded Entity und jeder Singleton: die
+konstruiert das Framework, es gibt also gar keine Aufrufstelle, an der
+sich ein Cluster injizieren ließe:
+
+```ts
+class CartEntity extends Actor<CartMessage> {
+  override preStart(): void {
+    // No constructor argument, no closure, no options field.
+    this.log.info(`cart ${this.entityId} on ${this.cluster.selfAddress}`);
+  }
+
+  private onCheckout(): void {
+    if (this.cluster.isLeader()) { /* ... */ }
+  }
+}
+```
+
+`this.cluster.sharding` und `this.cluster.singleton` kommen damit
+gleich mit — ein Actor kann also von innen heraus eine Region oder
+einen Singleton starten.
+
+Greife stattdessen zu `this.context.cluster`, wenn der Actor auch auf
+einem einfachen, ungeclusterten System laufen muss: das antwortet mit
+`None`, statt zu werfen. Beide lesen bei jedem Zugriff auf
+`system.cluster` durch — ein Actor, der den Beitritt überlebt hat, oder
+ein System, das nach `leave()` erneut beigetreten ist, sieht also immer
+die aktuelle Instanz.
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="note" title="Es bleibt bewusst ein Option">
+  Ein Cluster bindet einen Transport und startet Timer für Gossip,
+  Heartbeat und Failure Detection. `system.cluster` erzeugt deshalb nie
+  einen bei Bedarf, wie es eine lazy initialisierte Extension täte — ein
+  rein lokales System darf keinen Cluster bekommen, bloß weil etwas
+  danach gefragt hat.
+</Aside>
+
 ## Die Mitgliedschaftszustände
 
 Jedes Mitglied durchläuft eine kleine Zustandsmaschine:
@@ -278,8 +329,6 @@ Für eine Multi-Process-App, in der jeder Prozess unabhängigen
 Zustand hält, ebenfalls nicht — nutze einfach Prozessgrenzen.
 Greife zu, wenn du wirklich **gemeinsamen logischen Zustand über
 mehrere Maschinen** brauchst.
-
-import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="Cluster-Join ist nicht sofort fertig">
   ```ts

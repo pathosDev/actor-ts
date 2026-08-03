@@ -1,6 +1,7 @@
 import type { ActorRef } from './ActorRef.js';
 import type { ActorPath } from './ActorPath.js';
 import type { ActorSystem } from './ActorSystem.js';
+import type { EntityContext } from './EntityContext.js';
 import type { Props } from './Props.js';
 import type { Logger } from './Logger.js';
 import type { Option } from './util/Option.js';
@@ -25,11 +26,35 @@ export interface ActorContext<TMessage = unknown> {
   /** The enclosing ActorSystem. */
   readonly system: ActorSystem;
 
+  /**
+   * The `Cluster` this actor's system joined, `None` on a local-only
+   * system (#833).  Ask this when the actor has to work either way —
+   * it answers rather than throws.
+   *
+   * Inside code that only ever runs clustered, prefer the `this.cluster`
+   * getter on {@link Actor}: same object, no unwrapping.
+   */
+  readonly cluster: Option<import('./cluster/Cluster.js').Cluster>;
+
   /** Parent actor, or `None` for the root guardian. */
   readonly parent: Option<ActorRef>;
 
   /** Snapshot of direct children. */
   readonly children: ReadonlyArray<ActorRef>;
+
+  /**
+   * Sharding identity when `ClusterSharding` started this actor as an
+   * entity, `None` for every other actor.
+   *
+   * Set on the entity itself and nowhere else — an entity's own children
+   * get `None` — so `Some` here means "I *am* the entity", not "I live
+   * under one".  A child that needs the id gets it passed down.
+   *
+   * Inside an entity, prefer the `this.entityId` / `this.entity` getters on
+   * {@link Actor}: they answer the same question without the unwrapping,
+   * because entity code already knows it is an entity.
+   */
+  readonly entity: Option<EntityContext>;
 
   /** Logger bound to this actor's path. */
   readonly log: Logger;

@@ -1,4 +1,8 @@
+import { match } from 'ts-pattern';
 import type { ActorSystem } from '../ActorSystem.js';
+import type { Config } from '../config/Config.js';
+import { ConfigError } from '../config/Config.js';
+import { ConfigKeys } from '../config/ConfigKeys.js';
 import { CoordinatedShutdownId, Phases } from '../CoordinatedShutdown.js';
 import { extensionId, type Extension, type ExtensionId } from '../Extension.js';
 import type { HttpServerBackend, ServerBinding } from './backend/HttpServerBackend.js';
@@ -50,7 +54,7 @@ export class HttpExtension implements Extension {
         return this;
       },
       async bind(routes: Route): Promise<ServerBinding> {
-        const active: HttpServerBackend = backend ?? new FastifyBackend();
+        const active: HttpServerBackend = backend ?? await backendFromConfig(system.config);
         const compiled = compile(routes);
         const httpRoutes = compiled.filter((r) => r.kind === 'http');
         const wsRoutes = compiled.filter((r) => r.kind === 'websocket');
@@ -166,13 +170,17 @@ export class HttpExtension implements Extension {
         // live WebSocket sockets so the backend's close() can complete.
         let unbindOnce: Promise<void> | null = null;
         const shutdownTaskName = `http-unbind-${raw.host}:${raw.port}`;
+        // Read once at bind time, not per unbind: the shutdown path is the
+        // caller that never passes one, and it must not depend on config
+        // being reachable while the system is already tearing down.
+        const configuredGracePeriodMs = shutdownGracePeriodFromConfig(system.config);
         const binding: ServerBinding = {
           host: raw.host,
           port: raw.port,
           unbind(gracePeriodMs?: number): Promise<void> {
             if (!unbindOnce) {
               unbindOnce = (async () => {
-                const backendUnbind = raw.unbind(gracePeriodMs);
+                const backendUnbind = raw.unbind(gracePeriodMs ?? configuredGracePeriodMs);
                 tracker.closeAll(1001, 'server shutting down');
                 tracker.terminateAll();
                 await backendUnbind;
@@ -206,6 +214,38 @@ export class HttpExtension implements Extension {
 
   /** Fire-and-forget request via the shared client. */
   singleRequest = this.client.singleRequest.bind(this.client);
+}
+
+/**
+ * Instantiate the backend named by `actor-ts.http.backend`.  Only consulted
+ * when the builder was not given one — `useBackend(...)` is the explicit
+ * layer and always wins.
+ *
+ * Express and Hono are imported dynamically rather than at module scope:
+ * both are optional peer dependencies, and a static import would put every
+ * shipped backend into the bundle of an application that uses one.  Fastify
+ * is the built-in default and already imported.
+ */
+async function backendFromConfig(config: Config): Promise<HttpServerBackend> {
+  if (!config.hasPath(ConfigKeys.http.backend)) return new FastifyBackend();
+  const name = config.getString(ConfigKeys.http.backend);
+  return await match(name)
+    .with('fastify', async () => new FastifyBackend())
+    .with('express', async () => new (await import('./backend/ExpressBackend.js')).ExpressBackend())
+    .with('hono', async () => new (await import('./backend/HonoBackend.js')).HonoBackend())
+    .otherwise(() => {
+      throw new ConfigError(
+        `${ConfigKeys.http.backend} = "${name}" is not a known backend — `
+        + 'expected "fastify", "express" or "hono".  For a backend of your own, '
+        + 'pass it to newServerAt(...).useBackend(...) instead.',
+      );
+    });
+}
+
+/** In-flight drain window for `unbind()`, or `undefined` when unconfigured. */
+function shutdownGracePeriodFromConfig(config: Config): number | undefined {
+  const key = ConfigKeys.http.shutdownGracePeriod;
+  return config.hasPath(key) ? config.getDuration(key) : undefined;
 }
 
 export const HttpExtensionId: ExtensionId<HttpExtension> = extensionId(

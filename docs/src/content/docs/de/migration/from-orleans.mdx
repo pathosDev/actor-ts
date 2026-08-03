@@ -109,8 +109,10 @@ region.tell({ entityId: 'user-42', kind: 'update-name', name: 'Alice' });
 
 Die **Region** ist eine einzelne `ActorRef` - Nachrichten werden
 per `extractEntityId` geroutet.  Jede einzigartige ID hat einen
-Actor; beim ersten Eingang spawnt er; bei Leerlauf passiviert
-er.
+Actor, der beim ersten Eingang spawnt.  Anders als ein
+Orleans-Grain deaktiviert er sich *nicht* von selbst: es gibt kein
+Standard-Idle-Fenster, eine Entity bleibt also resident, bis sie
+jemand passiviert (siehe unten).
 
 ### Aktivierung / Deaktivierung
 

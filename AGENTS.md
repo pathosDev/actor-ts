@@ -28,6 +28,34 @@ deliberately tiny — `fastify` + `ts-pattern` — and everything else
   (see *Issues & workflow*).
 - Commits that only touch CI-maintained artifacts (e.g. the README
   test/coverage badges) use `[skip ci]`.
+- **Commit as the private identity `~/.gitconfig` declares** — the one the
+  whole history already uses. This is a personal project; a work address
+  does not belong in it. The config is correct, but something in the
+  tooling has been observed substituting a work address at commit time,
+  and a wrong author only surfaces afterwards in the log. **So pin the
+  identity explicitly instead of trusting that the config is honoured** —
+  environment variables outrank both `--local` config and
+  `-c user.email=…`:
+
+  ```sh
+  name=$(git config user.name); mail=$(git config user.email)
+  GIT_AUTHOR_NAME="$name" GIT_AUTHOR_EMAIL="$mail" \
+  GIT_COMMITTER_NAME="$name" GIT_COMMITTER_EMAIL="$mail" \
+  git commit -F <message-file>
+  ```
+
+  Reading the values back out of `git config` is deliberate: it keeps the
+  address itself out of this file, and it makes the recipe work unchanged
+  in a fork, where the right author is whoever is doing the work.
+
+  Applies to merge commits too. Verify afterwards with
+  `git log --format='%an <%ae> | %cn <%ce>' -1` — checking `git config
+  user.email` proves nothing, since the override does not live there.
+  Nothing is pushed by the agent, so a wrong author is always still
+  fixable: rewind the branch with a mixed `git reset <base>`, re-commit
+  the same file sets with the identity pinned, and confirm the rewrite
+  changed nothing but authorship by comparing `git rev-parse HEAD^{tree}`
+  against the old tip's tree.
 
 ## Branches & pushing
 
@@ -211,7 +239,14 @@ conservative SemVer.) See `docs/.../reference/version-policy.mdx`.
   `K8s`, `AMQP`, `MQTT`, `SQL`, `S3`, `DNS`, `CBOR`.
 - HOCON config keys go through **`src/config/ConfigKeys.ts`** (typed,
   single source of truth). Options resolve with precedence:
-  **explicit options > HOCON > built-in defaults**.
+  **explicit options > HOCON > built-in defaults** — layered with
+  `mergeOptions` from `src/util/OptionsMerge.ts`, where `undefined` on a
+  higher layer means "not set" and falls through rather than shadowing.
+  **A key in `reference.conf` must be reachable from `ConfigKeys` and read
+  by something in `src/`** — `tests/unit/config/NoDeadConfigKeys.test.ts`
+  fails otherwise. A knowingly-unimplemented key goes in that test's
+  `KNOWN_DEAD_KEYS` with the issue that will remove it; adding a key
+  nothing reads is not an option.
 - **JSDoc explains the *why*** — constraints, rationale, non-obvious
   trade-offs — not a restatement of the code. Match the surrounding
   comment density; no narration or noise.

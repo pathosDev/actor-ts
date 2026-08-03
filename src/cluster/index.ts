@@ -1,5 +1,6 @@
 // Cluster entry points.
 export { Cluster, inMemoryTransport } from './Cluster.js';
+export { ClusterExtension, ClusterExtensionId, clusterOf } from './ClusterExtension.js';
 export { ClusterOptions, ClusterOptionsBuilder, ClusterOptionsValidator } from './ClusterOptions.js';
 export type { ClusterOptionsType } from './ClusterOptions.js';
 export { bootstrapCluster } from './ClusterBootstrap.js';

@@ -102,24 +102,15 @@ export class DirectMessageChannelActor extends PersistentActor<
   DirectMessageState
 > {
   /**
-   * `persistenceId` is bound to the actor path's name (the
-   * sharded-entity slot, which sharding spawns as `entity-<id>`).
-   * The actor system sanitizes the entity-id when building the
-   * path — characters outside `[A-Za-z0-9_-]` (e.g. `|`) are
-   * rewritten — so this string is the **sanitized** form, not
-   * necessarily the original `canonicalPairId(a, b)` value.  That's
-   * fine for journal-stream uniqueness because the sharding system
-   * already guarantees one entity per sanitized name; the path is
-   * the only stable id we can derive synchronously during recovery
-   * (before any command arrives).  For semantic operations that
-   * need the original `|`-separated pair-id (e.g. routing broadcasts
-   * back to participant inboxes), use `command.pairId` from the
-   * incoming command instead.
+   * `persistenceId` is bound to the entity id — the original
+   * `canonicalPairId(a, b)`, `|` separator and all.  The actor *path*
+   * would not do: it sanitizes characters outside `[A-Za-z0-9_-]`, so
+   * `a|b` reads back as `a_b` there.  `entityId` is the routed value
+   * itself, and it is readable synchronously during recovery, before any
+   * command has arrived.
    */
   override get persistenceId(): string {
-    const name = this.self.path.name;
-    const stripped = name.startsWith('entity-') ? name.slice('entity-'.length) : name;
-    return `dm-channel-${stripped}`;
+    return `dm-channel-${this.entityId}`;
   }
 
   initialState(): DirectMessageState {

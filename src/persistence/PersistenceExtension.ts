@@ -1,4 +1,5 @@
 import type { ActorSystem } from '../ActorSystem.js';
+import { ConfigKeys } from '../config/ConfigKeys.js';
 import { extensionId, type Extension, type ExtensionId } from '../Extension.js';
 import type { Journal } from './Journal.js';
 import { InMemoryJournal } from './journals/InMemoryJournal.js';
@@ -86,15 +87,17 @@ export class PersistenceExtension implements Extension {
   }
 
   private currentJournalPluginId(): string {
-    return this.system.config.hasPath('actor-ts.persistence.journal.plugin')
-      ? this.system.config.getString('actor-ts.persistence.journal.plugin')
-      : 'actor-ts.persistence.journal.in-memory';
+    const key = ConfigKeys.persistence.journal.plugin;
+    return this.system.config.hasPath(key)
+      ? this.system.config.getString(key)
+      : ConfigKeys.persistence.journal.inMemory;
   }
 
   private currentSnapshotPluginId(): string {
-    return this.system.config.hasPath('actor-ts.persistence.snapshot-store.plugin')
-      ? this.system.config.getString('actor-ts.persistence.snapshot-store.plugin')
-      : 'actor-ts.persistence.snapshot-store.in-memory';
+    const key = ConfigKeys.persistence.snapshotStore.plugin;
+    return this.system.config.hasPath(key)
+      ? this.system.config.getString(key)
+      : ConfigKeys.persistence.snapshotStore.inMemory;
   }
 }
 

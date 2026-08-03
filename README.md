@@ -5,7 +5,7 @@
 <p align="center">
   <a href="https://github.com/pathosDev/actor-ts/actions/workflows/build.yml"><img alt="build workflow" src="https://github.com/pathosDev/actor-ts/actions/workflows/build.yml/badge.svg?branch=main"/></a>
   <a href="https://github.com/pathosDev/actor-ts/actions/workflows/test.yml"><img alt="tests workflow" src="https://github.com/pathosDev/actor-ts/actions/workflows/test.yml/badge.svg?branch=main"/></a>
-  <a href="#"><img alt="tests" src="https://img.shields.io/badge/tests-3578%20of%203578-22c55e?style=flat-square&logo=bun"/></a>
+  <a href="#"><img alt="tests" src="https://img.shields.io/badge/tests-3709%20of%203709-22c55e?style=flat-square&logo=bun"/></a>
   <a href="#"><img alt="coverage" src="https://img.shields.io/badge/coverage-~91%25-22c55e?style=flat-square"/></a>
 </p>
 
@@ -28,7 +28,7 @@
 > the actor-model stack (actors, supervision, cluster, sharding, persistence,
 > HTTP) to TypeScript, running on Bun, Node.js, and Deno.  Large parts were
 > written with AI pair-programming and **have not been battle-tested in
-> production**.  Test coverage is good (~3578 tests, ~91 % line) but the
+> production**.  Test coverage is good (~3709 tests, ~91 % line) but the
 > surface area is enormous.  **Do not deploy this to anything that matters
 > yet.**  Use it to learn, to prototype, to benchmark ideas — not to handle
 > real money, users, or data.
@@ -264,7 +264,23 @@ cart.tell({ kind: 'add', sku: 'book-2' });
 for (const shard of await cluster.sharding.shards('cart')) {
   console.log(shard.shardId, `${shard.node}`, shard.entityCount);
 }
+
+// Inside the entity, its own id — the value `extractEntityId` returned,
+// not the sanitized form in the actor path.  Usually spent on a
+// per-entity journal stream.  The cluster it runs in is right there
+// too, so nothing has to be threaded through the constructor:
+class CartActor extends PersistentActor<CartCommand, CartEvent, CartState> {
+  override get persistenceId(): string { return `cart-${this.entityId}`; }
+
+  override preStart(): void {
+    this.log.info(`cart ${this.entityId} on ${this.cluster.selfAddress}`);
+  }
+}
 ```
+
+`this.cluster` throws on a system that never joined one; ask
+`this.context.cluster` (an `Option<Cluster>`, matching `system.cluster`)
+when the actor has to work either way.
 
 ### Cluster singleton — exactly one instance, cluster-wide
 

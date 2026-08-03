@@ -65,6 +65,7 @@ export type { ActorContext, Receive, TimerScheduler } from './ActorContext.js';
 export { StashOverflowError, StashOutsideHandlerError } from './ActorContext.js';
 export { Props } from './Props.js';
 export type { ActorFactory, PropsConfig } from './Props.js';
+export type { EntityContext } from './EntityContext.js';
 
 // Supervision
 export {

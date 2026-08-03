@@ -18,7 +18,7 @@ class DiagActor extends Actor<'report'> {
     this.log.info('gossip-interval   =', config.getDuration('actor-ts.cluster.gossip-interval'), 'ms');
     this.log.info('number-of-shards  =', config.getInt('actor-ts.sharding.number-of-shards'));
     this.log.info('http backend      =', config.getString('actor-ts.http.backend'));
-    this.log.info('max-frame-size    =', config.getBytes('actor-ts.remote.max-frame-size'), 'bytes');
+    this.log.info('max-frame-bytes   =', config.getBytes('actor-ts.remote.max-frame-bytes'), 'bytes');
     this.self.stop();
   }
 }

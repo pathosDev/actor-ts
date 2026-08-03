@@ -149,6 +149,35 @@ HTTP-Handler) hängt `None` an.  Verwende `.forEach`, um nur zu
 antworten, wenn einer da ist, oder `.getOrElse(system.deadLetters)`,
 wenn du einen Fallback willst.
 
+### `this.cluster`, auf einem geclusterten System
+
+Ein Actor in einem System, das einem Cluster beigetreten ist, erreicht
+diesen auf dieselbe Weise — ohne dass irgendetwas in den Konstruktor
+gereicht werden muss:
+
+```ts
+class RoomActor extends Actor<RoomMessage> {
+  override preStart(): void {
+    this.log.info(`hosted on ${this.cluster.selfAddress}`);
+    this.log.info(`${this.cluster.upMembers().length} member(s) up`);
+  }
+}
+```
+
+`this.cluster` wirft, wenn das System nie beigetreten ist — unter der
+Annahme, dass Code, der danach greift, bereits weiß, dass er geclustert
+läuft.  Denselben Kompromiss geht `this.entityId` ein.  Wenn der Actor
+in beiden Fällen funktionieren muss, frage `this.context.cluster`: das
+ist ein `Option<Cluster>` und antwortet stattdessen mit `None`:
+
+```ts
+this.context.cluster.forEach((cluster) => cluster.subscribe(onEvent));
+```
+
+Beide lesen bei jedem Zugriff auf `system.cluster` durch — ein Actor,
+der bereits lief, als `Cluster.join(...)` fertig wurde, bekommt den
+Cluster also mit.  Siehe [Cluster-Überblick](/de/cluster/overview/).
+
 ## Lifecycle-Hooks
 
 Die Basisklasse definiert vier Lifecycle-Hooks; alle sind
