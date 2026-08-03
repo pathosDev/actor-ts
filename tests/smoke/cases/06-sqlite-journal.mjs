@@ -46,6 +46,25 @@ export async function run({ actorTs }) {
     // The journal is still usable after the rollback.
     const resumed = await journal.append('account-1', ['deposited:20'], 2);
     if (resumed[0].sequenceNr !== 3) throw new Error(`expected seq 3 — got ${resumed[0].sequenceNr}`);
+
+    // Rich payload types round-trip through the tagged payload codec (#888).
+    // Also exercises the base64 fallback path per runtime (Buffer vs btoa).
+    await journal.append('account-1', [{
+      kind: 'rolesGranted',
+      roles: new Set(['ledger-admin', 'auditor']),
+      grantedAt: new Date('2024-06-01T12:00:00.000Z'),
+      raw: new Uint8Array([1, 2, 250]),
+    }], 3);
+    const [rich] = await journal.read('account-1', 4);
+    if (!(rich.event.roles instanceof Set) || !rich.event.roles.has('auditor')) {
+      throw new Error('Set did not survive the store round-trip');
+    }
+    if (!(rich.event.grantedAt instanceof Date) || rich.event.grantedAt.toISOString() !== '2024-06-01T12:00:00.000Z') {
+      throw new Error('Date did not survive the store round-trip');
+    }
+    if (!(rich.event.raw instanceof Uint8Array) || rich.event.raw[2] !== 250) {
+      throw new Error('Uint8Array did not survive the store round-trip');
+    }
   } finally {
     await journal.close();
   }
