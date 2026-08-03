@@ -3,6 +3,7 @@ import {
   JournalConcurrencyError,
   type PersistentEvent,
 } from '../JournalTypes.js';
+import { decodePayload, encodePayload } from '../storage/PayloadCodec.js';
 import { assertSafeIdentifier } from '../storage/SqlIdentifier.js';
 import { assertValidTags } from '../storage/TagValidator.js';
 import { expandPlaceholders, type JournalTableNames } from './SqlDialect.js';
@@ -119,7 +120,7 @@ export class RelationalJournal extends RelationalStore implements Journal {
         for (const event of events) {
           seq++;
           await transaction.query(this.statements.insertEvent, [
-            persistenceId, seq, JSON.stringify(event), tagString, now,
+            persistenceId, seq, encodePayload(event), tagString, now,
           ]);
           if (tags) {
             for (const tag of tags) {
@@ -171,7 +172,7 @@ export class RelationalJournal extends RelationalStore implements Journal {
       return (result.rows as unknown as EventRow[]).map((row) => ({
         persistenceId: row.persistence_id,
         sequenceNr: Number(row.sequence_nr),
-        event: JSON.parse(row.payload) as E,
+        event: decodePayload(row.payload) as E,
         timestamp: Number(row.timestamp),
         tags: row.tags ? String(row.tags).split(',') : undefined,
       }));

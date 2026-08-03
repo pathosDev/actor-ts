@@ -4,6 +4,7 @@ import {
   JournalError,
   type PersistentEvent,
 } from '../JournalTypes.js';
+import { decodePayload, encodePayload } from '../storage/PayloadCodec.js';
 import { assertValidTags } from '../storage/TagValidator.js';
 import {
   buildDynamoDbOperations,
@@ -125,7 +126,7 @@ export class DynamoDbJournal extends DynamoDbStore implements Journal {
             Item: {
               pid: stringAttribute(persistenceId),
               seq: numberAttribute(seq),
-              payload: stringAttribute(JSON.stringify(event)),
+              payload: stringAttribute(encodePayload(event)),
               ts: numberAttribute(now),
               // A DynamoDB set cannot be empty, so an untagged event simply has
               // no `tags` attribute.
@@ -177,7 +178,7 @@ export class DynamoDbJournal extends DynamoDbStore implements Journal {
       return items.map((item) => ({
         persistenceId: readString(item, 'pid'),
         sequenceNr: readNumber(item, 'seq'),
-        event: JSON.parse(readString(item, 'payload')) as E,
+        event: decodePayload(readString(item, 'payload')) as E,
         timestamp: readNumber(item, 'ts'),
         tags: readStringSet(item, 'tags'),
       }));

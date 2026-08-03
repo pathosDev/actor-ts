@@ -20,6 +20,7 @@ export type {
   MasterKeyRing,
   MasterKeyRingEntry,
 } from './PersistenceOptions.js';
+export { decodePayload, encodePayload } from './storage/PayloadCodec.js';
 
 export { InMemoryJournal } from './journals/InMemoryJournal.js';
 export { SqliteJournal } from './journals/SqliteJournal.js';

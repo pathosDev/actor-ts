@@ -6,6 +6,7 @@ import {
   JournalError,
   type PersistentEvent,
 } from '../JournalTypes.js';
+import { decodePayload, encodePayload } from '../storage/PayloadCodec.js';
 import { assertSafeIdentifier } from '../storage/SqlIdentifier.js';
 import { assertValidTags } from '../storage/TagValidator.js';
 import type { SqliteJournalOptions, SqliteJournalOptionsType } from './SqliteJournalOptions.js';
@@ -93,7 +94,7 @@ export class SqliteJournal implements Journal {
       let seq = actualSeq;
       for (const ev of items as E[]) {
         seq++;
-        const payload = JSON.stringify(ev);
+        const payload = encodePayload(ev);
         const tagString = tags && tags.length ? tags.join(',') : null;
         stmts.insert.run(persistenceId, seq, payload, tagString, now);
         // Also populate the tags join table so SqliteQuery's
@@ -151,7 +152,7 @@ export class SqliteJournal implements Journal {
       return rows.map(r => ({
         persistenceId: r.persistence_id,
         sequenceNr: r.sequence_nr,
-        event: JSON.parse(r.payload) as E,
+        event: decodePayload(r.payload) as E,
         timestamp: r.timestamp,
         tags: r.tags ? r.tags.split(',') : undefined,
       }));

@@ -16,6 +16,7 @@ import {
   type DynamoDbOperations,
 } from '../journals/DynamoDbClient.js';
 import { DynamoDbStore, type DynamoDbTableSchema } from '../journals/DynamoDbStore.js';
+import { decodePayload, encodePayload } from '../storage/PayloadCodec.js';
 import {
   DynamoDbDurableStateStoreOptionsValidator,
   type DynamoDbDurableStateStoreOptions,
@@ -79,7 +80,7 @@ export class DynamoDbDurableStateStore extends DynamoDbStore implements DurableS
     const operations = await this.ensureOpen();
     const now = Date.now();
     const newRevision = expectedRevision + 1;
-    const payload = JSON.stringify(state);
+    const payload = encodePayload(state);
     try {
       if (expectedRevision === 0) {
         await operations.putItem({
@@ -131,7 +132,7 @@ export class DynamoDbDurableStateStore extends DynamoDbStore implements DurableS
     return some({
       persistenceId,
       revision: readNumber(found.Item, 'revision'),
-      state: JSON.parse(readString(found.Item, 'payload')) as S,
+      state: decodePayload(readString(found.Item, 'payload')) as S,
       timestamp: readNumber(found.Item, 'ts'),
     });
   }

@@ -26,6 +26,7 @@ import {
   type DurableStateStore,
 } from '../DurableStateStore.js';
 import type { PersistenceOptions } from '../PersistenceOptions.js';
+import { decodePayload, encodePayload } from '../storage/PayloadCodec.js';
 import { none, some, type Option } from '../../util/Option.js';
 import { ObjectStorageDurableStateStoreOptionsValidator } from './ObjectStorageDurableStateStoreOptions.js';
 import type { ObjectStorageDurableStateStoreOptions, ObjectStorageDurableStateStoreOptionsType } from './ObjectStorageDurableStateStoreOptions.js';
@@ -118,7 +119,7 @@ export class ObjectStorageDurableStateStore implements DurableStateStore {
       );
     }
     let parsed: { revision: number; state: S; timestamp: number };
-    try { parsed = JSON.parse(utf8Decoder.decode(decoded.payload)); }
+    try { parsed = decodePayload(utf8Decoder.decode(decoded.payload)) as { revision: number; state: S; timestamp: number }; }
     catch (e) {
       throw new JournalError(`ObjectStorageDurableStateStore.load: malformed JSON for ${persistenceId}`, e);
     }
@@ -154,7 +155,7 @@ export class ObjectStorageDurableStateStore implements DurableStateStore {
 
     const now = Date.now();
     const newRevision = expectedRevision + 1;
-    const json = JSON.stringify({ revision: newRevision, state, timestamp: now });
+    const json = encodePayload({ revision: newRevision, state, timestamp: now });
     const active = await activeEncryptKey(encryption, persistenceId);
     const stampVersion = active && isVersionedKeyShape(encryption);
     const body = await encodeBody(utf8.encode(json), {

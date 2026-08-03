@@ -1,6 +1,7 @@
 import type { CassandraJournal } from '../journals/CassandraJournal.js';
 import type { CassandraClientLike } from '../journals/CassandraClient.js';
 import { JournalError, type PersistentEvent } from '../JournalTypes.js';
+import { decodePayload } from '../storage/PayloadCodec.js';
 import { InMemoryQuery } from './InMemoryQuery.js';
 import {
   eventMatchesTagFilter,
@@ -127,7 +128,7 @@ function refineAndSort<E>(
     return {
       persistenceId: row.persistence_id,
       sequenceNr: Number(row.sequence_nr),
-      event: JSON.parse(row.payload) as E,
+      event: decodePayload(row.payload) as E,
       timestamp: Number(row.timestamp),
       tags,
     };

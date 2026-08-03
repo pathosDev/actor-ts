@@ -8,6 +8,7 @@ import {
   type CassandraClientLike,
   type CassandraConnection,
 } from '../journals/CassandraClient.js';
+import { decodePayload, encodePayload } from '../storage/PayloadCodec.js';
 import { assertSafeIdentifier } from '../storage/SqlIdentifier.js';
 import type { CassandraSnapshotStoreOptions, CassandraSnapshotStoreOptionsType } from './CassandraSnapshotStoreOptions.js';
 
@@ -76,7 +77,7 @@ export class CassandraSnapshotStore implements SnapshotStore {
     // Cassandra store has no compression / encryption — options ignored.
     await this.ensureStarted();
     const now = Date.now();
-    const payload = JSON.stringify(state);
+    const payload = encodePayload(state);
     try {
       await this.client.execute(
         `INSERT INTO ${this.qualified()} (persistence_id, sequence_nr, timestamp, payload) VALUES (?, ?, ?, ?)`,
@@ -148,7 +149,7 @@ export class CassandraSnapshotStore implements SnapshotStore {
       persistenceId: row.persistence_id,
       sequenceNr: Number(row.sequence_nr),
       timestamp: Number(row.timestamp),
-      state: JSON.parse(row.payload) as S,
+      state: decodePayload(row.payload) as S,
     });
   }
 

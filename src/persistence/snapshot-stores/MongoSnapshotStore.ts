@@ -8,6 +8,7 @@ import {
   type MongoDatabaseLike,
 } from '../journals/MongoClient.js';
 import { MongoStore } from '../journals/MongoStore.js';
+import { decodePayload, encodePayload } from '../storage/PayloadCodec.js';
 import {
   MongoSnapshotStoreOptionsValidator,
   type MongoSnapshotStoreOptions,
@@ -61,7 +62,7 @@ export class MongoSnapshotStore extends MongoStore implements SnapshotStore {
     try {
       await this.snapshots(database).updateOne(
         { persistenceId, sequenceNr: seq },
-        { $set: { payload: JSON.stringify(state), timestamp: now } },
+        { $set: { payload: encodePayload(state), timestamp: now } },
         { upsert: true },
       );
       if (this.keepN > 0) await this.prune(database, persistenceId);
@@ -126,7 +127,7 @@ function toSnapshot<S>(document: SnapshotDocument): Snapshot<S> {
   return {
     persistenceId: document.persistenceId,
     sequenceNr: Number(document.sequenceNr),
-    state: JSON.parse(document.payload) as S,
+    state: decodePayload(document.payload) as S,
     timestamp: Number(document.timestamp),
   };
 }

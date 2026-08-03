@@ -1,6 +1,7 @@
 import type { SqliteJournal } from '../journals/SqliteJournal.js';
 import type { PersistentEvent } from '../JournalTypes.js';
 import { JournalError } from '../JournalTypes.js';
+import { decodePayload } from '../storage/PayloadCodec.js';
 import { InMemoryQuery } from './InMemoryQuery.js';
 import {
   eventMatchesTagFilter,
@@ -184,7 +185,7 @@ function refineAndSort<E>(
     return {
       persistenceId: row.persistence_id,
       sequenceNr: row.sequence_nr,
-      event: JSON.parse(row.payload) as E,
+      event: decodePayload(row.payload) as E,
       timestamp: row.timestamp,
       tags,
     };

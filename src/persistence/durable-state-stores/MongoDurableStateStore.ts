@@ -13,6 +13,7 @@ import {
   type MongoDatabaseLike,
 } from '../journals/MongoClient.js';
 import { MongoStore } from '../journals/MongoStore.js';
+import { decodePayload, encodePayload } from '../storage/PayloadCodec.js';
 import {
   MongoDurableStateStoreOptionsValidator,
   type MongoDurableStateStoreOptions,
@@ -81,7 +82,7 @@ export class MongoDurableStateStore extends MongoStore implements DurableStateSt
     const { database } = await this.ensureOpen();
     const now = Date.now();
     const newRevision = expectedRevision + 1;
-    const payload = JSON.stringify(state);
+    const payload = encodePayload(state);
     try {
       if (expectedRevision === 0) {
         try {
@@ -121,7 +122,7 @@ export class MongoDurableStateStore extends MongoStore implements DurableStateSt
     return some({
       persistenceId,
       revision: Number(document.revision),
-      state: JSON.parse(document.payload) as S,
+      state: decodePayload(document.payload) as S,
       timestamp: Number(document.timestamp),
     });
   }

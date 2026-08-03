@@ -12,6 +12,7 @@ import {
   type DynamoDbOperations,
 } from '../journals/DynamoDbClient.js';
 import { DynamoDbStore, type DynamoDbTableSchema } from '../journals/DynamoDbStore.js';
+import { decodePayload, encodePayload } from '../storage/PayloadCodec.js';
 import {
   DynamoDbSnapshotStoreOptionsValidator,
   type DynamoDbSnapshotStoreOptions,
@@ -66,7 +67,7 @@ export class DynamoDbSnapshotStore extends DynamoDbStore implements SnapshotStor
         Item: {
           pid: stringAttribute(persistenceId),
           seq: numberAttribute(seq),
-          payload: stringAttribute(JSON.stringify(state)),
+          payload: stringAttribute(encodePayload(state)),
           ts: numberAttribute(now),
         },
       });
@@ -189,7 +190,7 @@ function toSnapshot<S>(item: DynamoDbItem): Snapshot<S> {
   return {
     persistenceId: readString(item, 'pid'),
     sequenceNr: readNumber(item, 'seq'),
-    state: JSON.parse(readString(item, 'payload')) as S,
+    state: decodePayload(readString(item, 'payload')) as S,
     timestamp: readNumber(item, 'ts'),
   };
 }

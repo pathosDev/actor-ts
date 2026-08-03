@@ -11,6 +11,7 @@ import {
   type CassandraConnection,
 } from './CassandraClient.js';
 import { CassandraJournalOptionsValidator } from './CassandraJournalOptions.js';
+import { decodePayload, encodePayload } from '../storage/PayloadCodec.js';
 import { assertSafeIdentifier } from '../storage/SqlIdentifier.js';
 import { assertValidTags } from '../storage/TagValidator.js';
 import type { CassandraJournalOptions, CassandraJournalOptionsType } from './CassandraJournalOptions.js';
@@ -180,7 +181,7 @@ export class CassandraJournal implements Journal {
         const partition = Math.floor((seq - 1) / partitionSize);
         if (batchPartition !== null && partition !== batchPartition) await flush();
         batchPartition = partition;
-        const payload = JSON.stringify(ev);
+        const payload = encodePayload(ev);
         batchOps.push({
           query:
             `INSERT INTO ${this.qualified(this.eventsTable)} (persistence_id, partition_nr, sequence_nr, timestamp, payload, tags) VALUES (?, ?, ?, ?, ?, ?)`,
@@ -266,7 +267,7 @@ export class CassandraJournal implements Journal {
           out.push({
             persistenceId: row.persistence_id,
             sequenceNr: Number(row.sequence_nr),
-            event: JSON.parse(row.payload) as E,
+            event: decodePayload(row.payload) as E,
             timestamp: Number(row.timestamp),
             tags: row.tags && row.tags.length > 0 ? row.tags : undefined,
           });

@@ -15,6 +15,7 @@ import { resolveCompression, resolveEncryption } from '../object-storage/PluginC
 import type { ObjectStorageBackend } from '../object-storage/ObjectStorageBackend.js';
 import type { PersistenceOptions } from '../PersistenceOptions.js';
 import type { SnapshotStore } from '../SnapshotStore.js';
+import { decodePayload, encodePayload } from '../storage/PayloadCodec.js';
 import { none, some, type Option } from '../../util/Option.js';
 import { ObjectStorageSnapshotStoreOptionsValidator } from './ObjectStorageSnapshotStoreOptions.js';
 import type { ObjectStorageSnapshotStoreOptions, ObjectStorageSnapshotStoreOptionsType } from './ObjectStorageSnapshotStoreOptions.js';
@@ -76,7 +77,7 @@ export class ObjectStorageSnapshotStore implements SnapshotStore {
       ?? resolveEncryption(this.encryption, persistenceId, { mode: 'none' });
 
     const now = Date.now();
-    const json = JSON.stringify({ persistenceId: persistenceId, sequenceNr: seq, state, timestamp: now });
+    const json = encodePayload({ persistenceId: persistenceId, sequenceNr: seq, state, timestamp: now });
     let body: Uint8Array;
     try {
       const active = await activeEncryptKey(encryption, persistenceId);
@@ -182,7 +183,7 @@ export class ObjectStorageSnapshotStore implements SnapshotStore {
     });
     const json = utf8Decoder.decode(decoded.payload);
     let parsed: { persistenceId: string; sequenceNr: number; state: S; timestamp: number };
-    try { parsed = JSON.parse(json); }
+    try { parsed = decodePayload(json) as { persistenceId: string; sequenceNr: number; state: S; timestamp: number }; }
     catch (e) {
       throw new JournalError(`ObjectStorageSnapshotStore: malformed JSON at key ${key}`, e);
     }
