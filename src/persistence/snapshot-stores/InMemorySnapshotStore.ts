@@ -1,22 +1,27 @@
 import type { Snapshot } from '../JournalTypes.js';
 import type { PersistenceOptions } from '../PersistenceOptions.js';
 import type { SnapshotStore } from '../SnapshotStore.js';
+import { decodePayload, encodePayload } from '../storage/PayloadCodec.js';
 import { none, some, type Option } from '../../util/Option.js';
 
 /**
  * In-process snapshot store.  Keeps all snapshots per persistenceId;
  * `loadLatest` picks the newest, `loadBefore` the newest `< seq`.
  * Plug-in implementations typically keep only the last N snapshots to
- * save space — the in-memory one doesn't bother.
+ * save space — the in-memory one doesn't bother.  Stored state takes the
+ * same `PayloadCodec` round-trip a real store performs (#888): loads see
+ * the value a real backend would return, and later mutations of the
+ * caller's object no longer alias into the store.
  */
 export class InMemorySnapshotStore implements SnapshotStore {
   private readonly store = new Map<string, Snapshot<unknown>[]>();
 
   async save<S>(persistenceId: string, seq: number, state: S, _options?: PersistenceOptions): Promise<Snapshot<S>> {
     // In-memory store ignores compression / encryption options.
+    const stored = decodePayload(encodePayload(state));
     const list = this.store.get(persistenceId) ?? [];
     const snap: Snapshot<S> = { persistenceId, sequenceNr: seq, state, timestamp: Date.now() };
-    list.push(snap as Snapshot<unknown>);
+    list.push({ ...snap, state: stored } as Snapshot<unknown>);
     // Keep sorted ascending by seq for easy queries.
     list.sort((a, b) => a.sequenceNr - b.sequenceNr);
     this.store.set(persistenceId, list);

@@ -5,11 +5,14 @@ import {
 } from '../DurableStateStore.js';
 import { JournalError } from '../JournalTypes.js';
 import type { PersistenceOptions } from '../PersistenceOptions.js';
+import { decodePayload, encodePayload } from '../storage/PayloadCodec.js';
 import { fromNullable, type Option } from '../../util/Option.js';
 
 /**
  * Reference Durable State store backed by a JS Map.  Useful for tests and
  * single-process development; swap for a SQLite/Cassandra store in production.
+ * Stored state takes the same `PayloadCodec` round-trip a real store performs
+ * (#888), so loads match a real backend and mutations don't alias.
  */
 export class InMemoryDurableStateStore implements DurableStateStore {
   private readonly records = new Map<string, DurableStateRecord<unknown>>();
@@ -39,7 +42,7 @@ export class InMemoryDurableStateStore implements DurableStateStore {
       state,
       timestamp: Date.now(),
     };
-    this.records.set(persistenceId, record as DurableStateRecord<unknown>);
+    this.records.set(persistenceId, { ...record, state: decodePayload(encodePayload(state)) });
     return record;
   }
 

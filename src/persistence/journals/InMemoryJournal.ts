@@ -4,13 +4,19 @@ import {
   JournalConcurrencyError,
   type PersistentEvent,
 } from '../JournalTypes.js';
+import { decodePayload, encodePayload } from '../storage/PayloadCodec.js';
 import { assertValidTags } from '../storage/TagValidator.js';
 
 /**
  * In-process journal backed by plain arrays.  The default plug-in used by
  * tests and dev-mode; data lives only as long as the process and is NOT
  * shared across ActorSystem instances.  Serves as reference semantics for
- * all other Journal implementations.
+ * all other Journal implementations — including the value model: stored
+ * events take the same `PayloadCodec` round-trip a real store performs, so
+ * an event that would corrupt or fail on Postgres fails the same way here,
+ * in tests, instead of on the first production recovery (#888).  Like the
+ * real stores, `append` returns and publishes the caller's original
+ * objects; only the stored stream holds the round-tripped copies.
  *
  * Exposes an in-process `JournalEventBus` so the query layer can do
  * sub-poll-interval push delivery (see #42).
@@ -44,20 +50,24 @@ export class InMemoryJournal implements Journal {
     if (actualSeq !== expectedSeq) {
       throw new JournalConcurrencyError(persistenceId, expectedSeq, actualSeq);
     }
+    // Round-trip every payload BEFORE touching the stream: a real store's
+    // transaction rolls back when one event of a batch fails to encode, and
+    // mutating incrementally here would leave a partial append behind.
+    const roundTripped = events.map((ev) => decodePayload(encodePayload(ev)));
     const now = Date.now();
     const appended: PersistentEvent<E>[] = [];
     let seq = actualSeq;
-    for (const ev of events) {
+    for (let index = 0; index < events.length; index++) {
       seq++;
       const pe: PersistentEvent<E> = {
         persistenceId: persistenceId,
         sequenceNr: seq,
-        event: ev,
+        event: events[index]!,
         timestamp: now,
         tags: tags ? [...tags] : undefined,
       };
       appended.push(pe);
-      stream.push(pe as PersistentEvent<unknown>);
+      stream.push({ ...pe, event: roundTripped[index] } as PersistentEvent<unknown>);
     }
     this.streams.set(persistenceId, stream);
     this.highWater.set(persistenceId, seq);
