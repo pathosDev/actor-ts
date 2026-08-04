@@ -82,6 +82,27 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   entity named by the next message returned, and the coordinator kept listing
   the rest with `started` events that would never see a `stopped`.  The region
   now asks the coordinator to re-send what it remembers.
+- **The sharding-failover churn test no longer measures the scheduler**
+  (#902).  `tests/multi-node/sharding-failover.test.ts` → "burst of asks
+  during repeated coordinator state churn" drove asks for a fixed 1.5 s and
+  then asserted on how many it had managed (`replies > 0`, `replies +
+  failures > 20`) — a **count** bounded by a **wall clock**.  Instrumenting
+  the loop in a full-suite run showed the ask costing p50 0 ms and max 4 ms
+  while `Bun.sleep(5)` cost 15–16 ms, one full Windows timer quantum (#477):
+  the sample count was ~100 % timer granularity, leaving `> 20` a mere 4.6×
+  over a floor that says nothing about sharding.  One stalled event loop then
+  reds the build two ways — the window yields under 21 iterations, or the
+  first ask hits its own 4 s timeout and, 4 s being longer than the 1.5 s
+  window, the loop exits with `replies` still 0.  The burst is now bounded by
+  a fixed count, and the graceful leave is keyed to the driver's progress
+  rather than to a sleep — which also fixes an interleaving that was
+  machine-dependent, landing the leave after ~13 asks on an idle machine but
+  after the first one on a stalled machine.  Ruled out along the way: the
+  #892 passivation defaults cannot fire here (both sweeps share one timer
+  whose first tick is at 300 s, against a 30 s test timeout), and graceful
+  leave does not in fact race in-flight asks at the wire — a probe firing the
+  leave at t=0 saw 0 failures across ~1 400 asks.  Test-only change; no
+  runtime behaviour changed.
 
 ## [0.12.2] — 2026-08-04
 
