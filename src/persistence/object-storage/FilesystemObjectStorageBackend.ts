@@ -1,5 +1,6 @@
 import { Lazy } from '../../util/Lazy.js';
 import { none, some, type Option } from '../../util/Option.js';
+import { randomId } from '../../util/RandomString.js';
 import { wrapError } from '../../util/WrapError.js';
 import { makeKeyValidator } from '../storage/KeyValidator.js';
 import {
@@ -167,8 +168,14 @@ export class FilesystemObjectStorageBackend implements ObjectStorageBackend {
       }
 
       // Atomic write: write to a per-process temp file, then rename.
-      const tmpPath =
-        `${fullPath}.tmp.${process.pid}.${Date.now()}.${Math.floor(Math.random() * 1e9)}`;
+      //
+      // The suffix was `${Date.now()}.${Math.floor(Math.random() * 1e9)}`.  Both
+      // halves are guessable — the clock is observable and `Math.random()` is
+      // not a CSPRNG — and a predictable temp path in a shared directory is the
+      // classic setup for a local race: pre-create it, or drop a symlink there,
+      // and the write lands somewhere else.  `randomId` is what every other
+      // generated identifier in the framework draws from.
+      const tmpPath = `${fullPath}.tmp.${process.pid}.${randomId(12)}`;
       try {
         await fs.writeFile(tmpPath, body);
         await fs.rename(tmpPath, fullPath);
