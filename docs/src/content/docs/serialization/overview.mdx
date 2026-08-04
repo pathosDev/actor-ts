@@ -127,8 +127,12 @@ The `JsonSerializer` class handles:
 - Nested combinations of the above.
 - `Date`, `Uint8Array`, `Map`, `Set`, and `bigint` — round-tripped
   as real instances via type tags.
+- `NaN` / `Infinity` / `-0`, `RegExp`, `URL`, `Error` (name +
+  message + cause, no stack), and every typed array / `DataView` /
+  `ArrayBuffer` (#889).
 
-It **throws** on functions, symbols, and `undefined`; class
+It **throws** on functions, symbols, `undefined`, circular
+references, `Promise`, and `WeakMap` / `WeakSet`; class
 instances decode to plain objects (methods + identity lost).
 `CborSerializer` also round-trips `Uint8Array`, `Date`, and
 `bigint`, but — unlike `JsonSerializer` — it does **not** preserve
@@ -157,6 +161,17 @@ ref.tell({ when: Date.now() });
 4. Snapshot writes — snapshots to the snapshot store.
 5. DistributedData — replicated state across the cluster.
 ```
+
+**Persistence (2-4) writes the tagged JSON tree format** — the same
+tree `JsonSerializer` uses — so `Date` / `Map` / `Set` / `bigint` /
+`Uint8Array` round-trip through every journal, snapshot store and
+durable-state store without configuration.  Each store also accepts
+an explicit `withSerializer(...)` option that routes a custom
+`Serializer` into its rows (see
+[custom serializers](/serialization/custom/#using-a-custom-serializer-for-persistence));
+the `SerializationExtension` **registry bindings are still not
+consulted** for persistence or the wire — that wiring is tracked in
+[#450](https://github.com/pathosDev/actor-ts/issues/450).
 
 The cluster wire uses `JSON.stringify` on the envelope directly —
 not the pluggable `Serializer` (see *How it works*).  In-process

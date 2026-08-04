@@ -1,8 +1,8 @@
-import { OptionsBuilder } from '../../util/OptionsBuilder.js';
+import { StoreSerializerOptionsBuilder, type StoreSerializerOptionsBase } from '../storage/StoreSerializerOptions.js';
 import { OptionsValidator } from '../../util/OptionsValidator.js';
 import type { CassandraClientLike, CassandraConnection } from './CassandraClient.js';
 
-export interface CassandraJournalOptionsType extends CassandraConnection {
+export interface CassandraJournalOptionsType extends CassandraConnection, StoreSerializerOptionsBase {
   /** Table name for events.  Default: `events`. */
   readonly eventsTable?: string;
   /** Table tracking the highest sequence number per pid.  Default: `metadata`. */
@@ -100,7 +100,7 @@ export interface CassandraJournalOptionsType extends CassandraConnection {
  * fields too — the connection mixin is not built on its own; each
  * concrete store exposes its connection surface directly.
  */
-export class CassandraJournalOptionsBuilder extends OptionsBuilder<CassandraJournalOptionsType> {
+export class CassandraJournalOptionsBuilder extends StoreSerializerOptionsBuilder<CassandraJournalOptionsType> {
   /** Start a fresh builder.  Equivalent to `new CassandraJournalOptionsBuilder()`. */
   static create(): CassandraJournalOptionsBuilder {
     return new CassandraJournalOptionsBuilder();

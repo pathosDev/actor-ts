@@ -1,4 +1,5 @@
 import { OptionsBuilder } from '../../util/OptionsBuilder.js';
+import type { Serializer } from '../../serialization/Serializer.js';
 import type { PgPoolLike } from './PostgresClient.js';
 import type { PostgresJournalOptions } from './PostgresJournalOptions.js';
 import type { PostgresSnapshotStoreOptions } from '../snapshot-stores/PostgresSnapshotStoreOptions.js';
@@ -12,6 +13,8 @@ export type RegisterPostgresPluginsOptionsType = {
    * lazily builds its own pool from its `url` / `poolConfig`.
    */
   readonly pool?: PgPoolLike;
+  /** Shared payload serializer injected into all three stores (a leaf's own `serializer` wins). */
+  readonly serializer?: Serializer;
   /** Journal-specific options (table names, autoCreate, and connection if no shared `pool`). */
   readonly journal?: PostgresJournalOptions;
   /** Snapshot-store-specific options. */
@@ -42,6 +45,11 @@ export class RegisterPostgresPluginsOptionsBuilder extends OptionsBuilder<Regist
   /** Shared connection pool injected into all three stores. */
   withPool(pool: PgPoolLike): this {
     return this.set('pool', pool);
+  }
+
+  /** Shared payload serializer injected into all three stores (a leaf's own `serializer` wins). */
+  withSerializer(serializer: Serializer): this {
+    return this.set('serializer', serializer);
   }
 
   /** Journal-specific options (table names, autoCreate, and connection if no shared pool). */

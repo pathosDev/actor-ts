@@ -1,11 +1,11 @@
-import { OptionsBuilder } from '../../util/OptionsBuilder.js';
+import { StoreSerializerOptionsBuilder, type StoreSerializerOptionsBase } from '../storage/StoreSerializerOptions.js';
 import { OptionsError, OptionsValidator } from '../../util/OptionsValidator.js';
 import type { MongoClientLike, MongoConnection } from './MongoClient.js';
 
 /** URL schemes a MongoDB deployment can be reached on. */
 export const MONGO_URL_PROTOCOLS = ['mongodb', 'mongodb+srv'] as const;
 
-export interface MongoJournalOptionsType extends MongoConnection {
+export interface MongoJournalOptionsType extends MongoConnection, StoreSerializerOptionsBase {
   /** Events collection name.  Default: `events`.  Its meta collection is `${it}_meta`. */
   readonly eventsCollection?: string;
   /** Create the indexes on first use.  Default: true. */
@@ -22,7 +22,7 @@ export interface MongoJournalOptionsType extends MongoConnection {
  * Pass a pre-built `withClient(...)` to share ONE client across the journal,
  * snapshot and durable-state stores.
  */
-export class MongoJournalOptionsBuilder extends OptionsBuilder<MongoJournalOptionsType> {
+export class MongoJournalOptionsBuilder extends StoreSerializerOptionsBuilder<MongoJournalOptionsType> {
   /** Start a fresh builder.  Equivalent to `new MongoJournalOptionsBuilder()`. */
   static create(): MongoJournalOptionsBuilder {
     return new MongoJournalOptionsBuilder();

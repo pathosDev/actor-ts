@@ -361,6 +361,41 @@ compatibility is the actor's responsibility.
 See [Migration overview](/persistence/migration/overview/)
 for the full migration story.
 
+## What events and state may contain
+
+Every store — journal, snapshot store, durable-state store, on every
+backend — writes payloads in the **tagged JSON tree format** (the
+same tree [`JsonSerializer`](/serialization/json/) uses), so rich
+types survive the round-trip without any configuration.  The
+in-memory stores apply the same round-trip, so what works in a test
+works in production and vice versa.
+
+| Payload content | Round-trip behavior |
+| --- | --- |
+| Plain objects, arrays, strings, finite numbers, booleans, `null` | Stored as plain JSON — byte-identical to before. |
+| `Date`, `Map`, `Set`, `bigint`, `Uint8Array` | **Round-trip as real instances** via type tags. |
+| `NaN`, `Infinity`, `-Infinity`, `-0` | **Round-trip exactly** — no more `null` / `0` (#889). |
+| `RegExp` (source + flags), `URL` | **Round-trip as real instances.** |
+| `Error` (incl. subclasses, `cause`, `AggregateError`) | **Round-trips** name + message + cause — deliberately without the stack: a persisted stack would leak filesystem paths into long-lived rows. |
+| Typed arrays (`Int8Array` … `BigUint64Array`), `DataView`, `ArrayBuffer` | **Round-trip byte-exactly.** |
+| `undefined` object property | Dropped, like `JSON.stringify` — reads back as `undefined`. |
+| `undefined` in arrays / `Set` / `Map` entries | **Preserved as `undefined`** (#889) — plain JSON's `null` there would be a different value. |
+| `new Number/String/Boolean` wrappers | Unwrap to their primitive, like `JSON.stringify`. |
+| Class instances | `toJSON()` is honoured; otherwise stored as plain `{ ...fields }` — methods and `instanceof` are gone after recovery.  Use plain data, an [event adapter](/persistence/migration/overview/), or a per-store serializer (below). |
+| Functions, symbols, circular references, `Promise`, `WeakMap` / `WeakSet` | **Throw at persist time** (`SerializationError` — loud, instead of corrupting the stored row). |
+
+### Custom serializer per store
+
+Every store options builder takes `withSerializer(serializer)` — the
+way to preserve class identity or use a binary format for rows.  See
+[using a custom serializer for persistence](/serialization/custom/#using-a-custom-serializer-for-persistence)
+for the framing, mixed-history behavior, and the in-memory exception.
+
+Rows written by earlier actor-ts versions used bare
+`JSON.stringify`; they keep decoding unchanged — the tags only
+appear in newly written rows where plain JSON would corrupt the
+value.
+
 ## Common pitfalls
 
 import { Aside } from '@astrojs/starlight/components';

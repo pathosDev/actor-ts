@@ -3,6 +3,7 @@ import { JournalError, type Snapshot } from '../JournalTypes.js';
 import type { PersistenceOptions } from '../PersistenceOptions.js';
 import type { SnapshotStore } from '../SnapshotStore.js';
 import { none, some, type Option } from '../../util/Option.js';
+import { decodePayload, encodePayload } from '../storage/PayloadCodec.js';
 import { assertSafeIdentifier } from '../storage/SqlIdentifier.js';
 import type { SqliteSnapshotStoreOptions, SqliteSnapshotStoreOptionsType } from './SqliteSnapshotStoreOptions.js';
 
@@ -44,7 +45,7 @@ export class SqliteSnapshotStore implements SnapshotStore {
     const stmts = this.stmts!;
     const now = Date.now();
     try {
-      stmts.insert.run(persistenceId, seq, JSON.stringify(state), now);
+      stmts.insert.run(persistenceId, seq, encodePayload(state, this.options.serializer), now);
       if (this.keepN > 0) {
         stmts.deleteOlderThan.run(persistenceId, persistenceId, this.keepN);
       }
@@ -66,7 +67,7 @@ export class SqliteSnapshotStore implements SnapshotStore {
     return some({
       persistenceId: row.persistence_id,
       sequenceNr: row.sequence_nr,
-      state: JSON.parse(row.payload) as S,
+      state: decodePayload(row.payload, this.options.serializer) as S,
       timestamp: row.timestamp,
     });
   }
@@ -83,7 +84,7 @@ export class SqliteSnapshotStore implements SnapshotStore {
     return some({
       persistenceId: row.persistence_id,
       sequenceNr: row.sequence_nr,
-      state: JSON.parse(row.payload) as S,
+      state: decodePayload(row.payload, this.options.serializer) as S,
       timestamp: row.timestamp,
     });
   }

@@ -44,6 +44,47 @@ export function durableStateContractScenarios(): ContractScenario<DurableStateHa
       },
     },
     {
+      name: 'rich state types survive the store round-trip',
+      async run(harness) {
+        const store = await harness.make();
+        const persistenceId = harness.pid('rich-types');
+        // Companion to the journal/snapshot rich-type scenarios (#888).
+        type RichState = {
+          updatedAt: Date;
+          members: Set<string>;
+          counters: Map<string, bigint>;
+          digest: Uint8Array;
+          missing: number;
+          histogram: Int32Array;
+        };
+        try {
+          await store.upsert<RichState>(persistenceId, 0, {
+            updatedAt: new Date('2024-06-01T12:00:00.000Z'),
+            members: new Set(['a', 'b']),
+            counters: new Map([['hits', 42n]]),
+            digest: new Uint8Array([3, 1, 4]),
+            missing: NaN,
+            histogram: new Int32Array([7, -8]),
+          });
+          const loaded = (await store.load<RichState>(persistenceId)).toNullable();
+          assert(loaded !== null, 'record is readable');
+          assert(loaded.state.updatedAt instanceof Date, 'Date survives as a Date instance');
+          assertEqual(loaded.state.updatedAt.toISOString(), '2024-06-01T12:00:00.000Z', 'Date value is preserved');
+          assert(loaded.state.members instanceof Set, 'Set survives as a Set instance');
+          assertEqual(Array.from(loaded.state.members).sort(), ['a', 'b'], 'Set members are preserved');
+          assert(loaded.state.counters instanceof Map, 'Map survives as a Map instance');
+          assert(loaded.state.counters.get('hits') === 42n, 'bigint Map value is preserved');
+          assert(loaded.state.digest instanceof Uint8Array, 'Uint8Array survives as bytes');
+          assertEqual(Array.from(loaded.state.digest), [3, 1, 4], 'byte values are preserved');
+          assert(Number.isNaN(loaded.state.missing), 'NaN survives instead of becoming null (#889)');
+          assert(loaded.state.histogram instanceof Int32Array, 'typed arrays survive as instances');
+          assertEqual(Array.from(loaded.state.histogram), [7, -8], 'typed-array values are preserved');
+        } finally {
+          await closeQuietly(store);
+        }
+      },
+    },
+    {
       name: 'stale expectedRevision throws DurableStateConcurrencyError with the actual revision',
       async run(harness) {
         const store = await harness.make();

@@ -48,11 +48,11 @@ export function registerDynamoDbPlugins(
   options: RegisterDynamoDbPluginsOptions = {},
 ): DynamoDbPluginHandles {
   const resolvedOptions = (options as RegisterDynamoDbPluginsOptionsType);
-  const { operations, region, endpoint, clientConfig } = resolvedOptions;
-  // A shared façade overrides a leaf's own; shared connection details only fill
-  // in where the leaf is silent.
+  const { operations, region, endpoint, clientConfig, serializer } = resolvedOptions;
+  // A shared façade overrides a leaf's own; shared connection details and the
+  // serializer only fill in where the leaf is silent.
   const shared = { operations };
-  const connection = { region, endpoint, clientConfig };
+  const connection = { region, endpoint, clientConfig, serializer };
 
   const journal = mergeLeafOptions<Partial<DynamoDbJournalOptionsType>>(resolvedOptions.journal, shared, connection);
   const snapshotStore = mergeLeafOptions<Partial<DynamoDbSnapshotStoreOptionsType>>(resolvedOptions.snapshotStore, shared, connection);

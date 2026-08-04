@@ -1,4 +1,5 @@
 import { OptionsBuilder } from '../../util/OptionsBuilder.js';
+import type { Serializer } from '../../serialization/Serializer.js';
 import type { D1ClientLike } from './D1Client.js';
 import type { D1JournalOptions } from './D1JournalOptions.js';
 import type { D1SnapshotStoreOptions } from '../snapshot-stores/D1SnapshotStoreOptions.js';
@@ -18,6 +19,8 @@ export type RegisterD1PluginsOptionsType = {
   readonly apiToken?: string;
   /** API base URL applied to every store that does not set its own. */
   readonly baseUrl?: string;
+  /** Shared payload serializer applied to every store that does not set its own. */
+  readonly serializer?: Serializer;
   /** Journal-specific options (table names, autoCreate). */
   readonly journal?: D1JournalOptions;
   /** Snapshot-store-specific options (table name, keepN). */
@@ -47,6 +50,11 @@ export class RegisterD1PluginsOptionsBuilder extends OptionsBuilder<RegisterD1Pl
   /** Shared transport injected into all three stores. */
   withClient(client: D1ClientLike): this {
     return this.set('client', client);
+  }
+
+  /** Shared payload serializer applied to every store that does not set its own. */
+  withSerializer(serializer: Serializer): this {
+    return this.set('serializer', serializer);
   }
 
   /** Cloudflare account id applied to every store that does not set its own. */

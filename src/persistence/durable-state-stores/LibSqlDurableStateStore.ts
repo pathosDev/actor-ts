@@ -25,6 +25,7 @@ export class LibSqlDurableStateStore extends RelationalDurableStateStore {
       dialect: sqliteDialect,
       table: resolvedOptions.table,
       autoCreateTables: resolvedOptions.autoCreateTables,
+      serializer: resolvedOptions.serializer,
       ownsPool: resolvedOptions.client === undefined,
       openPool: async () => adaptLibSqlClient(await buildLibSqlClient(resolvedOptions)),
     });

@@ -45,11 +45,11 @@ export function registerLibSqlPlugins(
   options: RegisterLibSqlPluginsOptions = {},
 ): LibSqlPluginHandles {
   const resolvedOptions = (options as RegisterLibSqlPluginsOptionsType);
-  const { client, url, authToken } = resolvedOptions;
-  // A shared client overrides a leaf's own; a shared url / token only fills in
-  // where the leaf is silent.
+  const { client, url, authToken, serializer } = resolvedOptions;
+  // A shared client overrides a leaf's own; a shared url / token / serializer
+  // only fills in where the leaf is silent.
   const shared = { client };
-  const connection = { url, authToken };
+  const connection = { url, authToken, serializer };
 
   const journal = mergeLeafOptions<Partial<LibSqlJournalOptionsType>>(resolvedOptions.journal, shared, connection);
   const snapshotStore = mergeLeafOptions<Partial<LibSqlSnapshotStoreOptionsType>>(resolvedOptions.snapshotStore, shared, connection);

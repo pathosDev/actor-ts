@@ -49,6 +49,48 @@ export function snapshotContractScenarios(): ContractScenario<SnapshotHarness>[]
       },
     },
     {
+      name: 'rich state types survive the store round-trip',
+      async run(harness) {
+        const store = await harness.make();
+        const persistenceId = harness.pid('rich-types');
+        // Companion to the journal's rich-type scenario (#888): snapshots take
+        // a different write path in every backend, so they need their own proof.
+        type RichState = {
+          updatedAt: Date;
+          members: Set<string>;
+          counters: Map<string, bigint>;
+          digest: Uint8Array;
+          ratio: number;
+          pattern: RegExp;
+        };
+        try {
+          await store.save<RichState>(persistenceId, 4, {
+            updatedAt: new Date('2024-06-01T12:00:00.000Z'),
+            members: new Set(['a', 'b']),
+            counters: new Map([['hits', 42n]]),
+            digest: new Uint8Array([9, 0, 255]),
+            ratio: Infinity,
+            pattern: /^v\d+$/,
+          });
+          const latest = (await store.loadLatest<RichState>(persistenceId)).toNullable();
+          assert(latest !== null, 'snapshot is readable');
+          assert(latest.state.updatedAt instanceof Date, 'Date survives as a Date instance');
+          assertEqual(latest.state.updatedAt.toISOString(), '2024-06-01T12:00:00.000Z', 'Date value is preserved');
+          assert(latest.state.members instanceof Set, 'Set survives as a Set instance');
+          assertEqual(Array.from(latest.state.members).sort(), ['a', 'b'], 'Set members are preserved');
+          assert(latest.state.counters instanceof Map, 'Map survives as a Map instance');
+          assert(latest.state.counters.get('hits') === 42n, 'bigint Map value is preserved');
+          assert(latest.state.digest instanceof Uint8Array, 'Uint8Array survives as bytes');
+          assertEqual(Array.from(latest.state.digest), [9, 0, 255], 'byte values are preserved');
+          assert(latest.state.ratio === Infinity, 'Infinity survives instead of becoming null (#889)');
+          assert(latest.state.pattern instanceof RegExp, 'RegExp survives as a RegExp instance');
+          assert(latest.state.pattern.test('v3'), 'RegExp source is preserved');
+        } finally {
+          await closeQuietly(store);
+        }
+      },
+    },
+    {
       name: 'loadBefore returns the newest snapshot strictly below seq',
       async run(harness) {
         const store = await harness.make();

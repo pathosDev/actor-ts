@@ -1,4 +1,5 @@
 import { OptionsBuilder } from '../../util/OptionsBuilder.js';
+import type { Serializer } from '../../serialization/Serializer.js';
 import type {
   CompressionConfig,
   CompressionResolver,
@@ -20,6 +21,8 @@ export type ObjectStoragePluginOptionsType = {
   readonly compression?: CompressionConfig | CompressionResolver;
   /** Encryption config or per-pid resolver.  Default: none. */
   readonly encryption?: EncryptionConfig | EncryptionResolver;
+  /** Payload serializer applied to both stores this plugin registers. */
+  readonly serializer?: Serializer;
   /**
    * Cap on the decompressed size of a stored body in bytes — the
    * decompression-bomb guard on read (security audit #3), applied to both the
@@ -72,6 +75,11 @@ export class ObjectStoragePluginOptionsBuilder extends OptionsBuilder<ObjectStor
   /** Encryption config or per-pid resolver (passed whole).  Default: none. */
   withEncryption(encryption: EncryptionConfig | EncryptionResolver): this {
     return this.set('encryption', encryption);
+  }
+
+  /** Payload serializer applied to both stores this plugin registers. */
+  withSerializer(serializer: Serializer): this {
+    return this.set('serializer', serializer);
   }
 
   /**

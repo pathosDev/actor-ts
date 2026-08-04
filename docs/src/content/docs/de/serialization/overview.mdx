@@ -130,8 +130,12 @@ Die `JsonSerializer`-Klasse behandelt:
 - Verschachtelte Kombinationen davon.
 - `Date`, `Uint8Array`, `Map`, `Set` und `bigint` — über Type-Tags
   als echte Instanzen round-getrippt.
+- `NaN` / `Infinity` / `-0`, `RegExp`, `URL`, `Error` (Name +
+  Message + Cause, ohne Stack) und jedes Typed Array / `DataView` /
+  `ArrayBuffer` (#889).
 
-Sie **wirft** bei Funktionen, Symbolen und `undefined`;
+Sie **wirft** bei Funktionen, Symbolen, `undefined`, zirkulären
+Referenzen, `Promise` und `WeakMap` / `WeakSet`;
 Klasseninstanzen dekodieren zu Plain-Objekten (Methoden +
 Identität verloren).  `CborSerializer` round-trippt ebenfalls
 `Uint8Array`, `Date` und `bigint`, aber — anders als
@@ -162,6 +166,18 @@ ref.tell({ when: Date.now() });
 4. Snapshot-Writes — Snapshots in den Snapshot-Store.
 5. DistributedData — replizierter State über den Cluster.
 ```
+
+**Die Persistenz (2-4) schreibt das getaggte JSON-Tree-Format** —
+denselben Tree, den `JsonSerializer` nutzt — sodass `Date` / `Map` /
+`Set` / `bigint` / `Uint8Array` ohne Konfiguration durch jeden
+Journal, Snapshot-Store und Durable-State-Store round-trippen.
+Jeder Store akzeptiert zusätzlich eine explizite
+`withSerializer(...)`-Option, die einen eigenen `Serializer` in
+seine Rows routet (siehe
+[eigene Serializer](/de/serialization/custom/#einen-eigenen-serializer-für-die-persistenz-nutzen));
+die **Registry-Bindings** der `SerializationExtension` werden für
+Persistenz und Wire weiterhin **nicht** konsultiert — dieses Wiring
+trackt [#450](https://github.com/pathosDev/actor-ts/issues/450).
 
 Der Cluster-Wire nutzt `JSON.stringify` direkt auf dem Envelope —
 nicht den einklinkbaren `Serializer` (siehe *Wie das

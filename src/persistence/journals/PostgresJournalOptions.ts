@@ -1,7 +1,7 @@
-import { OptionsBuilder } from '../../util/OptionsBuilder.js';
+import { StoreSerializerOptionsBuilder, type StoreSerializerOptionsBase } from '../storage/StoreSerializerOptions.js';
 import type { PgPoolLike, PostgresConnection } from './PostgresClient.js';
 
-export interface PostgresJournalOptionsType extends PostgresConnection {
+export interface PostgresJournalOptionsType extends PostgresConnection, StoreSerializerOptionsBase {
   /** Events table name.  Default: `events`. */
   readonly eventsTable?: string;
   /** Tags join table name.  Default: `${eventsTable}_tags`. */
@@ -20,7 +20,7 @@ export interface PostgresJournalOptionsType extends PostgresConnection {
  * `withPool(...)` to share ONE pool across the journal, snapshot, and
  * durable-state stores.
  */
-export class PostgresJournalOptionsBuilder extends OptionsBuilder<PostgresJournalOptionsType> {
+export class PostgresJournalOptionsBuilder extends StoreSerializerOptionsBuilder<PostgresJournalOptionsType> {
   /** Start a fresh builder.  Equivalent to `new PostgresJournalOptionsBuilder()`. */
   static create(): PostgresJournalOptionsBuilder {
     return new PostgresJournalOptionsBuilder();

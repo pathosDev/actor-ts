@@ -1,8 +1,8 @@
-import { OptionsBuilder } from '../../util/OptionsBuilder.js';
+import { StoreSerializerOptionsBuilder, type StoreSerializerOptionsBase } from '../storage/StoreSerializerOptions.js';
 import { OptionsValidator } from '../../util/OptionsValidator.js';
 import type { MsSqlConnection, MsSqlPoolLike } from './MsSqlClient.js';
 
-export interface MsSqlJournalOptionsType extends MsSqlConnection {
+export interface MsSqlJournalOptionsType extends MsSqlConnection, StoreSerializerOptionsBase {
   /** Events table name.  Default: `events`. */
   readonly eventsTable?: string;
   /** Tags join table name.  Default: `${eventsTable}_tags`. */
@@ -20,7 +20,7 @@ export interface MsSqlJournalOptionsType extends MsSqlConnection {
  * Pass a pre-built `withPool(...)` to share ONE pool across the journal,
  * snapshot and durable-state stores.
  */
-export class MsSqlJournalOptionsBuilder extends OptionsBuilder<MsSqlJournalOptionsType> {
+export class MsSqlJournalOptionsBuilder extends StoreSerializerOptionsBuilder<MsSqlJournalOptionsType> {
   /** Start a fresh builder.  Equivalent to `new MsSqlJournalOptionsBuilder()`. */
   static create(): MsSqlJournalOptionsBuilder {
     return new MsSqlJournalOptionsBuilder();

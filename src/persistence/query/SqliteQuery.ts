@@ -1,6 +1,8 @@
 import type { SqliteJournal } from '../journals/SqliteJournal.js';
 import type { PersistentEvent } from '../JournalTypes.js';
 import { JournalError } from '../JournalTypes.js';
+import type { Serializer } from '../../serialization/Serializer.js';
+import { decodePayload } from '../storage/PayloadCodec.js';
 import { InMemoryQuery } from './InMemoryQuery.js';
 import {
   eventMatchesTagFilter,
@@ -82,7 +84,7 @@ export class SqliteQuery extends InMemoryQuery {
       } catch (e) {
         throw new JournalError(`SqliteQuery.currentEventsByTag failed: ${(e as Error).message}`, e);
       }
-      return refineAndSort<E>(rows, spec, fromOffset);
+      return refineAndSort<E>(rows, spec, fromOffset, this.sqlite.serializer);
     }
 
     // Strategy 2: any-only — walk the join table on `t.tag IN (...)`,
@@ -95,7 +97,7 @@ export class SqliteQuery extends InMemoryQuery {
       } catch (e) {
         throw new JournalError(`SqliteQuery.currentEventsByTag failed: ${(e as Error).message}`, e);
       }
-      return refineAndSort<E>(rows, spec, fromOffset);
+      return refineAndSort<E>(rows, spec, fromOffset, this.sqlite.serializer);
     }
 
     // Strategy 3: only `not` (or fully empty filter) — fall back to
@@ -176,6 +178,7 @@ function refineAndSort<E>(
   rows: ReadonlyArray<TagRow>,
   spec: TagFilterSpec,
   fromOffset: Offset,
+  serializer?: Serializer,
 ): TaggedEvent<E>[] {
   return refineTaggedRows<TagRow, E>(rows, fromOffset, (row) => {
     // SQLite stores the tag list as a CSV column alongside the event.
@@ -184,7 +187,7 @@ function refineAndSort<E>(
     return {
       persistenceId: row.persistence_id,
       sequenceNr: row.sequence_nr,
-      event: JSON.parse(row.payload) as E,
+      event: decodePayload(row.payload, serializer) as E,
       timestamp: row.timestamp,
       tags,
     };

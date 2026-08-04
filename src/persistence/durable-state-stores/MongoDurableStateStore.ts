@@ -13,6 +13,8 @@ import {
   type MongoDatabaseLike,
 } from '../journals/MongoClient.js';
 import { MongoStore } from '../journals/MongoStore.js';
+import type { Serializer } from '../../serialization/Serializer.js';
+import { decodePayload, encodePayload } from '../storage/PayloadCodec.js';
 import {
   MongoDurableStateStoreOptionsValidator,
   type MongoDurableStateStoreOptions,
@@ -51,6 +53,8 @@ type StateDocument = {
 export class MongoDurableStateStore extends MongoStore implements DurableStateStore {
   private readonly collectionName: string;
 
+  private readonly serializer?: Serializer;
+
   constructor(options: MongoDurableStateStoreOptions = {}) {
     const resolvedOptions = (options as MongoDurableStateStoreOptionsType);
     new MongoDurableStateStoreOptionsValidator().validate(resolvedOptions);
@@ -60,6 +64,7 @@ export class MongoDurableStateStore extends MongoStore implements DurableStateSt
       openClient: () => buildMongoResource(resolvedOptions),
     });
     this.collectionName = resolvedOptions.collection ?? 'durable_state';
+    this.serializer = resolvedOptions.serializer;
   }
 
   /** Nothing to create: `_id` is indexed and unique by definition. */
@@ -81,7 +86,7 @@ export class MongoDurableStateStore extends MongoStore implements DurableStateSt
     const { database } = await this.ensureOpen();
     const now = Date.now();
     const newRevision = expectedRevision + 1;
-    const payload = JSON.stringify(state);
+    const payload = encodePayload(state, this.serializer);
     try {
       if (expectedRevision === 0) {
         try {
@@ -121,7 +126,7 @@ export class MongoDurableStateStore extends MongoStore implements DurableStateSt
     return some({
       persistenceId,
       revision: Number(document.revision),
-      state: JSON.parse(document.payload) as S,
+      state: decodePayload(document.payload, this.serializer) as S,
       timestamp: Number(document.timestamp),
     });
   }

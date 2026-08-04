@@ -2,6 +2,7 @@ import { type Snapshot } from '../JournalTypes.js';
 import type { PersistenceOptions } from '../PersistenceOptions.js';
 import type { SnapshotStore } from '../SnapshotStore.js';
 import { none, some, type Option } from '../../util/Option.js';
+import { decodePayload, encodePayload } from '../storage/PayloadCodec.js';
 import { assertSafeIdentifier } from '../storage/SqlIdentifier.js';
 import { expandPlaceholders } from './SqlDialect.js';
 import { RelationalStore, type RelationalStoreConfig } from './RelationalStore.js';
@@ -72,7 +73,7 @@ export class RelationalSnapshotStore extends RelationalStore implements Snapshot
     const pool = await this.ensureOpen();
     const now = Date.now();
     try {
-      await pool.query(this.statements.upsert, [persistenceId, seq, JSON.stringify(state), now]);
+      await pool.query(this.statements.upsert, [persistenceId, seq, encodePayload(state, this.serializer), now]);
       if (this.keepN > 0) {
         const { sql, params } = this.statements.prune;
         await pool.query(sql, params(persistenceId, this.keepN));
@@ -108,7 +109,7 @@ export class RelationalSnapshotStore extends RelationalStore implements Snapshot
     return {
       persistenceId: row.persistence_id,
       sequenceNr: Number(row.sequence_nr),
-      state: JSON.parse(row.payload) as S,
+      state: decodePayload(row.payload, this.serializer) as S,
       timestamp: Number(row.timestamp),
     };
   }

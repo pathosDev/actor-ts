@@ -369,6 +369,44 @@ entpackt.  Rückwärtskompatibilität ist die Verantwortung des Actors.
 Siehe [Migration im Überblick](/de/persistence/migration/overview/)
 für die vollständige Migrations-Story.
 
+## Was Events und State enthalten dürfen
+
+Jeder Store — Journal, Snapshot-Store, Durable-State-Store, auf
+jedem Backend — schreibt Payloads im **getaggten
+JSON-Tree-Format** (derselbe Tree, den
+[`JsonSerializer`](/de/serialization/json/) nutzt), sodass reiche
+Typen den Round-Trip ohne Konfiguration überleben.  Die
+In-Memory-Stores wenden denselben Round-Trip an — was im Test
+funktioniert, funktioniert in Produktion und umgekehrt.
+
+| Payload-Inhalt | Round-Trip-Verhalten |
+| --- | --- |
+| Plain-Objekte, Arrays, Strings, endliche Zahlen, Booleans, `null` | Als plain JSON gespeichert — byte-identisch zu vorher. |
+| `Date`, `Map`, `Set`, `bigint`, `Uint8Array` | **Round-trippen als echte Instanzen** über Type-Tags. |
+| `NaN`, `Infinity`, `-Infinity`, `-0` | **Round-trippen exakt** — kein `null` / `0` mehr (#889). |
+| `RegExp` (Source + Flags), `URL` | **Round-trippen als echte Instanzen.** |
+| `Error` (inkl. Subklassen, `cause`, `AggregateError`) | **Round-trippt** Name + Message + Cause — bewusst ohne Stack: ein persistierter Stack würde Dateisystempfade in langlebige Rows leaken. |
+| Typed Arrays (`Int8Array` … `BigUint64Array`), `DataView`, `ArrayBuffer` | **Round-trippen byte-exakt.** |
+| `undefined`-Objekt-Property | Wird verworfen, wie bei `JSON.stringify` — liest sich als `undefined` zurück. |
+| `undefined` in Arrays / `Set` / `Map`-Einträgen | **Bleibt `undefined` erhalten** (#889) — Plain-JSONs `null` wäre dort ein anderer Wert. |
+| `new Number/String/Boolean`-Wrapper | Entpacken zu ihrem Primitiv, wie bei `JSON.stringify`. |
+| Klasseninstanzen | `toJSON()` wird respektiert; sonst als plain `{ ...fields }` gespeichert — Methoden und `instanceof` sind nach dem Recovery weg.  Nutze Plain-Data, einen [Event-Adapter](/de/persistence/migration/overview/) oder einen Per-Store-Serializer (unten). |
+| Funktionen, Symbols, zirkuläre Referenzen, `Promise`, `WeakMap` / `WeakSet` | **Werfen zur Persist-Zeit** (`SerializationError` — laut, statt die gespeicherte Row zu korrumpieren). |
+
+### Eigener Serializer pro Store
+
+Jeder Store-Options-Builder nimmt `withSerializer(serializer)` — der
+Weg, Klassenidentität zu erhalten oder ein Binärformat für Rows zu
+nutzen.  Siehe
+[einen eigenen Serializer für die Persistenz nutzen](/de/serialization/custom/#einen-eigenen-serializer-für-die-persistenz-nutzen)
+für das Framing, das Mixed-History-Verhalten und die
+In-Memory-Ausnahme.
+
+Rows aus früheren actor-ts-Versionen nutzten rohes
+`JSON.stringify`; sie dekodieren unverändert weiter — die Tags
+erscheinen nur in neu geschriebenen Rows, wo plain JSON den Wert
+korrumpieren würde.
+
 ## Häufige Stolperfallen
 
 import { Aside } from '@astrojs/starlight/components';

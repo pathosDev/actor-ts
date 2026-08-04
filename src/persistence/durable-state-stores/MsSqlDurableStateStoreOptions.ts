@@ -1,8 +1,8 @@
-import { OptionsBuilder } from '../../util/OptionsBuilder.js';
+import { StoreSerializerOptionsBuilder, type StoreSerializerOptionsBase } from '../storage/StoreSerializerOptions.js';
 import { OptionsValidator } from '../../util/OptionsValidator.js';
 import type { MsSqlConnection, MsSqlPoolLike } from '../journals/MsSqlClient.js';
 
-export interface MsSqlDurableStateStoreOptionsType extends MsSqlConnection {
+export interface MsSqlDurableStateStoreOptionsType extends MsSqlConnection, StoreSerializerOptionsBase {
   /** Durable-state table name.  Default: `durable_state`. */
   readonly table?: string;
   /** Run the guarded `CREATE TABLE` statement on first use.  Default: true. */
@@ -15,7 +15,7 @@ export interface MsSqlDurableStateStoreOptionsType extends MsSqlConnection {
  *     new MsSqlDurableStateStore(MsSqlDurableStateStoreOptions.create()
  *       .withPoolConfig(config))
  */
-export class MsSqlDurableStateStoreOptionsBuilder extends OptionsBuilder<MsSqlDurableStateStoreOptionsType> {
+export class MsSqlDurableStateStoreOptionsBuilder extends StoreSerializerOptionsBuilder<MsSqlDurableStateStoreOptionsType> {
   /** Start a fresh builder.  Equivalent to `new MsSqlDurableStateStoreOptionsBuilder()`. */
   static create(): MsSqlDurableStateStoreOptionsBuilder {
     return new MsSqlDurableStateStoreOptionsBuilder();

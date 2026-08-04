@@ -1,7 +1,7 @@
-import { OptionsBuilder } from '../../util/OptionsBuilder.js';
+import { StoreSerializerOptionsBuilder, type StoreSerializerOptionsBase } from '../storage/StoreSerializerOptions.js';
 import type { PgPoolLike, PostgresConnection } from '../journals/PostgresClient.js';
 
-export interface PostgresDurableStateStoreOptionsType extends PostgresConnection {
+export interface PostgresDurableStateStoreOptionsType extends PostgresConnection, StoreSerializerOptionsBase {
   /** Table name.  Default: `durable_state`. */
   readonly table?: string;
   /** Run `CREATE TABLE IF NOT EXISTS` on first use.  Default: true. */
@@ -16,7 +16,7 @@ export interface PostgresDurableStateStoreOptionsType extends PostgresConnection
  * The connection fields (`withUrl` / `withPoolConfig` / `withPool`) come
  * from the shared {@link PostgresConnection} mixin.
  */
-export class PostgresDurableStateStoreOptionsBuilder extends OptionsBuilder<PostgresDurableStateStoreOptionsType> {
+export class PostgresDurableStateStoreOptionsBuilder extends StoreSerializerOptionsBuilder<PostgresDurableStateStoreOptionsType> {
   /** Start a fresh builder.  Equivalent to `new PostgresDurableStateStoreOptionsBuilder()`. */
   static create(): PostgresDurableStateStoreOptionsBuilder {
     return new PostgresDurableStateStoreOptionsBuilder();

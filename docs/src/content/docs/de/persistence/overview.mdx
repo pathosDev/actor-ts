@@ -331,6 +331,11 @@ Snapshot Single-Node-Deployments ab; das
 **Cassandra**-Journal deckt Multi-Node-Cluster ab, in denen das
 Journal geteilt werden muss.
 
+Jedes Backend speichert Payloads im selben getaggten
+JSON-Tree-Format, sodass `Date` / `Map` / `Set` / `bigint` /
+`Uint8Array` überall round-trippen — siehe
+[was Events und State enthalten dürfen](/de/persistence/persistent-actor/#was-events-und-state-enthalten-dürfen).
+
 ## Wann NICHT persistieren
 
 import { Aside } from '@astrojs/starlight/components';

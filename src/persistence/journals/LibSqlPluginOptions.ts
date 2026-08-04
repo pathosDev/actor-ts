@@ -1,4 +1,5 @@
 import { OptionsBuilder } from '../../util/OptionsBuilder.js';
+import type { Serializer } from '../../serialization/Serializer.js';
 import type { LibSqlClientLike } from './LibSqlClient.js';
 import type { LibSqlJournalOptions } from './LibSqlJournalOptions.js';
 import type { LibSqlSnapshotStoreOptions } from '../snapshot-stores/LibSqlSnapshotStoreOptions.js';
@@ -19,6 +20,8 @@ export type RegisterLibSqlPluginsOptionsType = {
   readonly url?: string;
   /** Auth token applied to every store that does not set its own. */
   readonly authToken?: string;
+  /** Shared payload serializer applied to every store that does not set its own. */
+  readonly serializer?: Serializer;
   /** Journal-specific options (table names, autoCreate). */
   readonly journal?: LibSqlJournalOptions;
   /** Snapshot-store-specific options (table name, keepN). */
@@ -59,6 +62,11 @@ export class RegisterLibSqlPluginsOptionsBuilder extends OptionsBuilder<Register
   /** Auth token applied to every store that does not set its own. */
   withAuthToken(authToken: string): this {
     return this.set('authToken', authToken);
+  }
+
+  /** Shared payload serializer applied to every store that does not set its own. */
+  withSerializer(serializer: Serializer): this {
+    return this.set('serializer', serializer);
   }
 
   /** Journal-specific options (table names, autoCreate). */

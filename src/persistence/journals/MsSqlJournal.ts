@@ -30,6 +30,7 @@ export class MsSqlJournal extends RelationalJournal {
       eventsTable: resolvedOptions.eventsTable,
       tagsTable: resolvedOptions.tagsTable,
       autoCreateTables: resolvedOptions.autoCreateTables,
+      serializer: resolvedOptions.serializer,
       ownsPool: resolvedOptions.pool === undefined,
       openPool: async () => adaptMsSqlPool(await buildMsSqlPool(resolvedOptions)),
     });

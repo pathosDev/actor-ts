@@ -6,6 +6,8 @@ import {
   JournalError,
   type PersistentEvent,
 } from '../JournalTypes.js';
+import type { Serializer } from '../../serialization/Serializer.js';
+import { decodePayload, encodePayload } from '../storage/PayloadCodec.js';
 import { assertSafeIdentifier } from '../storage/SqlIdentifier.js';
 import { assertValidTags } from '../storage/TagValidator.js';
 import type { SqliteJournalOptions, SqliteJournalOptionsType } from './SqliteJournalOptions.js';
@@ -70,6 +72,9 @@ export class SqliteJournal implements Journal {
     this.table = assertSafeIdentifier(resolvedOptions.eventsTable ?? 'events', 'events table');
   }
 
+  /** The configured payload serializer — read by `SqliteQuery` so tag reads decode like the journal. */
+  get serializer(): Serializer | undefined { return this.options.serializer; }
+
   async append<E>(
     persistenceId: string,
     events: ReadonlyArray<E>,
@@ -93,7 +98,7 @@ export class SqliteJournal implements Journal {
       let seq = actualSeq;
       for (const ev of items as E[]) {
         seq++;
-        const payload = JSON.stringify(ev);
+        const payload = encodePayload(ev, this.options.serializer);
         const tagString = tags && tags.length ? tags.join(',') : null;
         stmts.insert.run(persistenceId, seq, payload, tagString, now);
         // Also populate the tags join table so SqliteQuery's
@@ -151,7 +156,7 @@ export class SqliteJournal implements Journal {
       return rows.map(r => ({
         persistenceId: r.persistence_id,
         sequenceNr: r.sequence_nr,
-        event: JSON.parse(r.payload) as E,
+        event: decodePayload(r.payload, this.options.serializer) as E,
         timestamp: r.timestamp,
         tags: r.tags ? r.tags.split(',') : undefined,
       }));

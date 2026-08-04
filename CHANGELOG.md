@@ -9,6 +9,59 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ## [Unreleased]
 
+## [0.12.2] — 2026-08-04
+
+### Fixed
+
+- **BREAKING — persistence stores no longer silently corrupt rich payload
+  types** (#888).  Every journal, snapshot store and durable-state store wrote
+  payloads with bare `JSON.stringify`, so a persisted `Set`/`Map` recovered as
+  `{}`, a `Date` as a string, a `Uint8Array` as an index-keyed object, and a
+  `bigint` threw — and because the write path folds the original object, the
+  corruption only surfaced on the next recovery.  Payloads now use the tagged
+  JSON tree format `JsonSerializer` already used (`__date__`, `__bytes__`,
+  `__map__`, `__set__`, `__bigint__`, plus a new `__literal__` escape so user
+  data shaped like a tag round-trips as data), on every backend.
+  **Migration:** none for readers — rows written by older versions decode
+  unchanged.  Rows written from this version on carry tag objects where plain
+  JSON would corrupt the value, so *older* framework versions (and
+  non-actor-ts JSON consumers) reading *new* rows see the tag shape instead of
+  a bare value.  `JsonSerializer` also now honours `toJSON()`, reports
+  circular references as a `SerializationError` naming the key path instead of
+  overflowing the stack, and only interprets a tag when it is an object's sole
+  own key.
+
+### Changed
+
+- **The in-memory journal / snapshot store / durable-state store round-trip
+  payloads through the same codec as the real backends** (#888).  Dev/prod
+  parity: an event that cannot be stored fails in the test suite instead of on
+  the first production recovery, and mutating an object after `persist` no
+  longer aliases into the store.  Like the real stores, they still return and
+  publish the caller's original objects.
+
+### Added
+
+- **Full type fidelity for stored payloads and `JsonSerializer`** (#889).
+  `NaN` / `Infinity` / `-Infinity` / `-0`, `undefined` in value positions
+  (array slots, `Set` members, `Map` entries — object properties still drop,
+  matching `JSON.stringify`), `RegExp` (source + flags), `URL`, `Error`
+  (name + message + cause, incl. subclass constructors and
+  `AggregateError.errors` — deliberately no stack, which would leak
+  filesystem paths into long-lived rows) and every typed array / `DataView` /
+  `ArrayBuffer` now round-trip through every store and the JSON serializer.
+  `Number`/`String`/`Boolean` wrapper objects unwrap like `JSON.stringify`;
+  `Promise`, `WeakMap` and `WeakSet` throw a `SerializationError` at persist
+  time instead of being silently stored as `{}`.
+- **Per-store `serializer` option** (#888, the persistence half of #450).
+  Every journal / snapshot store / durable-state store options builder — and
+  every `Register<X>Plugins` bundle — takes `withSerializer(serializer)` to
+  route a custom `Serializer` into stored rows via a self-describing
+  `__serialized__` framing.  Default-format rows and framed rows coexist in
+  one stream; reading a framed row without (or with a mismatching) serializer
+  fails with an actionable `SerializationError`.  Registry auto-binding and
+  the cluster wire remain tracked in #450.
+
 ## [0.12.1] — 2026-08-03
 
 ### Changed

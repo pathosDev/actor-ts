@@ -1,9 +1,9 @@
-import { OptionsBuilder } from '../../util/OptionsBuilder.js';
+import { StoreSerializerOptionsBuilder, type StoreSerializerOptionsBase } from '../storage/StoreSerializerOptions.js';
 import { OptionsValidator } from '../../util/OptionsValidator.js';
 import { assertRemoteLibSqlUrl } from '../journals/LibSqlJournalOptions.js';
 import type { LibSqlClientLike, LibSqlConnection } from '../journals/LibSqlClient.js';
 
-export interface LibSqlSnapshotStoreOptionsType extends LibSqlConnection {
+export interface LibSqlSnapshotStoreOptionsType extends LibSqlConnection, StoreSerializerOptionsBase {
   /** Snapshots table name.  Default: `snapshots`. */
   readonly snapshotsTable?: string;
   /** How many snapshots to keep per persistence id.  Default: 3; `<= 0` keeps all. */
@@ -19,7 +19,7 @@ export interface LibSqlSnapshotStoreOptionsType extends LibSqlConnection {
  *       .withUrl('libsql://my-db.turso.io')
  *       .withAuthToken(process.env.TURSO_AUTH_TOKEN))
  */
-export class LibSqlSnapshotStoreOptionsBuilder extends OptionsBuilder<LibSqlSnapshotStoreOptionsType> {
+export class LibSqlSnapshotStoreOptionsBuilder extends StoreSerializerOptionsBuilder<LibSqlSnapshotStoreOptionsType> {
   /** Start a fresh builder.  Equivalent to `new LibSqlSnapshotStoreOptionsBuilder()`. */
   static create(): LibSqlSnapshotStoreOptionsBuilder {
     return new LibSqlSnapshotStoreOptionsBuilder();

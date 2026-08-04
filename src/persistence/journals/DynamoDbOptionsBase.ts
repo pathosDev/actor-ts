@@ -1,5 +1,5 @@
-import { OptionsBuilder } from '../../util/OptionsBuilder.js';
 import { OptionsError, OptionsValidator } from '../../util/OptionsValidator.js';
+import { StoreSerializerOptionsBuilder, type StoreSerializerOptionsBase } from '../storage/StoreSerializerOptions.js';
 import type { DynamoDbConnection, DynamoDbOperations } from './DynamoDbClient.js';
 
 /** Table provisioning, shared by all three DynamoDB stores. */
@@ -21,7 +21,7 @@ export type DynamoDbTableProvisioning = {
 };
 
 /** Everything the three DynamoDB option families have in common. */
-export type DynamoDbOptionsBaseType = DynamoDbConnection & DynamoDbTableProvisioning;
+export type DynamoDbOptionsBaseType = DynamoDbConnection & DynamoDbTableProvisioning & StoreSerializerOptionsBase;
 
 /**
  * The connection and provisioning half of a DynamoDB options builder.
@@ -32,7 +32,7 @@ export type DynamoDbOptionsBaseType = DynamoDbConnection & DynamoDbTableProvisio
  * snapshots).
  */
 export abstract class DynamoDbOptionsBuilderBase<T extends DynamoDbOptionsBaseType>
-  extends OptionsBuilder<T> {
+  extends StoreSerializerOptionsBuilder<T> {
   /** AWS region, e.g. `eu-central-1`. */
   withRegion(region: string): this {
     return this.set('region' as keyof T, region as T[keyof T]);

@@ -1,12 +1,18 @@
 import { SerializationError, type Serializer } from './Serializer.js';
+import { decodeJsonTree, encodeJsonTree } from './JsonTree.js';
 
 /**
  * JSON serializer — the default fallback.  Handles plain objects, arrays,
- * strings, numbers, booleans, `null`, and — via pre/post-walking the tree
- * before `JSON.stringify` — `Date`, `Uint8Array`, `Map`, `Set`, and
- * `bigint`.  Class identity for custom user types is NOT preserved; the
- * decoded value is a plain object.  Callers that need stronger typing
- * should register a custom serializer via `SerializationExtension`.
+ * strings, numbers, booleans, `null`, and — via the shared tagged tree
+ * walker in `JsonTree.ts` — `Date`, `Uint8Array`, `Map`, `Set`, `bigint`,
+ * `NaN`/`Infinity`/`-0`, `RegExp`, `URL`, `Error` (name/message/cause, no
+ * stack), and every typed array / `DataView` / `ArrayBuffer`.  `toJSON()`
+ * is honoured, circular references are reported as `SerializationError`
+ * instead of overflowing the stack, and user data that happens to look
+ * like a tag round-trips via the `__literal__` escape.  Class identity for
+ * custom user types is NOT preserved; the decoded value is a plain object.
+ * Callers that need stronger typing should register a custom serializer
+ * via `SerializationExtension`.
  */
 export class JsonSerializer implements Serializer<unknown> {
   readonly id = 1;
@@ -17,7 +23,7 @@ export class JsonSerializer implements Serializer<unknown> {
 
   toBinary(obj: unknown): Uint8Array {
     let encoded: unknown;
-    try { encoded = encodeTree(obj); } catch (e) {
+    try { encoded = encodeJsonTree(obj); } catch (e) {
       throw new SerializationError(`JsonSerializer encode failed: ${(e as Error).message}`);
     }
     const json = JSON.stringify(encoded);
@@ -29,91 +35,6 @@ export class JsonSerializer implements Serializer<unknown> {
 
   fromBinary(bytes: Uint8Array, _manifest: string): unknown {
     const text = new TextDecoder().decode(bytes);
-    return decodeTree(JSON.parse(text));
+    return decodeJsonTree(JSON.parse(text));
   }
-}
-
-/* ------------------------- Tagged representations ------------------------- */
-
-const DATE_TAG = '__date__';
-const BYTES_TAG = '__bytes__';
-const MAP_TAG = '__map__';
-const SET_TAG = '__set__';
-const BIGINT_TAG = '__bigint__';
-
-function encodeTree(value: unknown): unknown {
-  if (value === undefined) throw new Error('undefined is not JSON-serialisable');
-  if (value === null) return null;
-  if (typeof value === 'bigint') return { [BIGINT_TAG]: value.toString() };
-  if (value instanceof Date) return { [DATE_TAG]: value.toISOString() };
-  if (value instanceof Uint8Array) return { [BYTES_TAG]: toBase64(value) };
-  if (value instanceof Map) {
-    return {
-      [MAP_TAG]: Array.from(value.entries()).map(([k, v]) => [encodeTree(k), encodeTree(v)]),
-    };
-  }
-  if (value instanceof Set) {
-    return { [SET_TAG]: Array.from(value.values()).map(encodeTree) };
-  }
-  if (Array.isArray(value)) return value.map(encodeTree);
-  if (typeof value === 'object') {
-    const out: Record<string, unknown> = {};
-    for (const [key, entryValue] of Object.entries(value as Record<string, unknown>)) {
-      out[key] = encodeTree(entryValue);
-    }
-    return out;
-  }
-  if (typeof value === 'function' || typeof value === 'symbol') {
-    throw new Error(`Unsupported value of type ${typeof value}`);
-  }
-  return value;
-}
-
-function decodeTree(value: unknown): unknown {
-  if (value === null || typeof value !== 'object') return value;
-  if (Array.isArray(value)) return value.map(decodeTree);
-  const obj = value as Record<string, unknown>;
-  if (DATE_TAG in obj) return new Date(obj[DATE_TAG] as string);
-  if (BYTES_TAG in obj) return fromBase64(obj[BYTES_TAG] as string);
-  if (MAP_TAG in obj) {
-    return new Map(
-      (obj[MAP_TAG] as Array<[unknown, unknown]>).map(([k, v]) => [decodeTree(k), decodeTree(v)]),
-    );
-  }
-  if (SET_TAG in obj) return new Set((obj[SET_TAG] as unknown[]).map(decodeTree));
-  if (BIGINT_TAG in obj) return BigInt(obj[BIGINT_TAG] as string);
-  const out: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(obj)) {
-    // `out.__proto__ = …` would invoke the prototype setter rather than
-    // create a data property, letting a hostile `{"__proto__": …}` payload
-    // change the decoded object's prototype.  Define it explicitly so the
-    // key round-trips as plain data and the prototype stays untouched
-    // (security audit #9).
-    if (key === '__proto__') {
-      Object.defineProperty(out, key, {
-        value: decodeTree(value), enumerable: true, writable: true, configurable: true,
-      });
-    } else {
-      out[key] = decodeTree(value);
-    }
-  }
-  return out;
-}
-
-function toBase64(bytes: Uint8Array): string {
-  if (typeof Buffer !== 'undefined') return Buffer.from(bytes).toString('base64');
-  let binaryString = '';
-  for (let i = 0; i < bytes.byteLength; i++) binaryString += String.fromCharCode(bytes[i]!);
-  return btoa(binaryString);
-}
-
-function fromBase64(s: string): Uint8Array {
-  if (typeof Buffer !== 'undefined') {
-    const buffer = Buffer.from(s, 'base64');
-    return new Uint8Array(buffer.buffer, buffer.byteOffset, buffer.byteLength);
-  }
-  const bin = atob(s);
-  const out = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
-  return out;
 }
