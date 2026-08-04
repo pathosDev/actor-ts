@@ -173,6 +173,17 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   entity named by the next message returned, and the coordinator kept listing
   the rest with `started` events that would never see a `stopped`.  The region
   now asks the coordinator to re-send what it remembers.
+- **`preRestart` never stopped children, whatever its documentation said**
+  (#899).  `Actor.preRestart`'s JSDoc, the `onRecreate` call site and the
+  supervision page all promised the default stops the actor's children.  It only
+  ever called `postStop()` — children belong to the cell, which outlives the
+  instance being replaced.  No behaviour changed here; the documentation now
+  matches, and the consequence it was hiding is spelled out: because
+  `postRestart` re-runs `preStart` with the previous incarnation's children
+  still in place, an actor that spawns a **named** child in `preStart` fails its
+  first restart with `Child name '<name>' is not unique`.  Spawn anonymously, or
+  stop the children yourself in an overridden `preRestart`.  Both the survival
+  and the collision now have tests.
 
 ### Security
 

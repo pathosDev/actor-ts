@@ -907,7 +907,10 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
     this.timers.cancelAll();
     this.deadLetterStash();
 
-    // Let the old instance clean up (stopping children is the default).
+    // Let the old instance clean up.  The default is `postStop()` only —
+    // children are NOT stopped here; they hang off this cell, which outlives
+    // the instance being replaced.  See `Actor.preRestart` for why that matters
+    // to anyone spawning named children in `preStart`.
     try {
       await this.actor.preRestart(cause);
     } catch (e) {
