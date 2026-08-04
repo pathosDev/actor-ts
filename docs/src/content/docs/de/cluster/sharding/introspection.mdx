@@ -38,10 +38,19 @@ type ShardInfo<TMessage = unknown> = {
   readonly node: NodeAddress;      // node currently hosting the shard
   readonly regionPath: string;     // region on that node
   readonly entityCount: number;    // live entities when its region answered
+  readonly resident: boolean;      // shard actor materialised at that moment
   readonly local: boolean;         // hosted by the node that asked
   readonly ref: ActorRef<ShardMessage<TMessage>>;
 };
 ```
+
+`resident` unterscheidet einen Shard, der läuft und gerade leer ist, von
+einem, der
+[leer passiviert wurde](/de/cluster/sharding/overview/#shards-passivieren-ebenfalls)
+— `entityCount: 0` meldet beides. Auf die Erreichbarkeit hat es keinen
+Einfluss: `ref` funktioniert so oder so. Lies es, wenn du
+`shardPassivationIdleMs` einstellst oder zählen willst, wie viele Actors
+ein Node tatsächlich hält.
 
 Der Eintrag trägt eine **lebende Ref**, nicht nur Platzierungsdaten —
 eine Abfrage beantwortet also sowohl "was gibt es da draußen" als auch
@@ -84,19 +93,23 @@ const shard = await cluster.sharding.shardRefFor<CounterCommand>('counter', 7);
 
 Hat Shard 7 noch kein Zuhause, **platziert** dieser Aufruf ihn — genau
 das, was eine erste Nachricht an ihn auch getan hätte — und antwortet,
-sobald der Koordinator entschieden hat. Hat er ein Zuhause hier, aber
-keinen laufenden Actor, weil er
+sobald der Koordinator entschieden hat.
+
+Ein Shard, der
 [leer passiviert wurde](/de/cluster/sharding/overview/#shards-passivieren-ebenfalls),
-holt ihn das Fragen zurück: ein Handle auf einen nicht laufenden Actor
-wäre ein Handle auf nichts. `shards()` tut für die lokalen Shards
-dasselbe — behandle beides als „weck ihn bei Bedarf", nicht als
-passives Beobachten.
+braucht keine Sonderbehandlung: die Ref bleibt über die Lücke hinweg
+gültig, und der Shard wird neu erstellt, sobald etwas für ihn eintrifft.
+Lokal passiert das schon beim Fragen, denn ein Handle auf einen nicht
+laufenden Actor wäre ein Handle auf nichts; bei einem Shard auf einem
+anderen Node stellt die Ref über dessen Region zu, die den Shard vor dem
+Weiterleiten materialisiert. `shardRefFor()` weckt einen lokalen Shard
+also sofort, einen entfernten das erste `tell`.
 
 Die Ref ist das echte Ding. Ein Shard ist ein Actor
-(`/system/cluster/sharding/region-counter/shard-7`), du bekommst also den lokalen
-Shard-Actor zurück, wenn dieser Node ihn hostet, und eine
-`RemoteActorRef` auf denselben Pfad, wenn nicht. `tell` funktioniert
-damit von überall:
+(`/system/cluster/sharding/region-counter/shard-7`), und die Ref trägt diesen Pfad als
+Identität, egal von welchem Node du gefragt hast — was sich unterscheidet,
+ist der Weg: direkt zum Actor, wenn dieser Node ihn hostet, über die
+besitzende Region, wenn nicht. `tell` funktioniert damit von überall:
 
 ```ts
 // Bring an entity up without sending it a message.
