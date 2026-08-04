@@ -85,6 +85,7 @@ class Props<TMessage> {
   withMailboxCapacity(capacity: number): Props<TMessage>;
   withMailbox(factory: () => Mailbox<TMessage>): Props<TMessage>;
   asInternal(): Props<TMessage>;
+  withDisplayName(name: string): Props<TMessage>;
 }
 ```
 
@@ -218,6 +219,32 @@ You need it only when writing a tool that observes the system it runs
 in.  Application actors should not be marked: hiding real work from the
 profiler is how a performance problem stays invisible.
 
+### `withDisplayName`
+
+What the actor is called in log lines and in the DevTools tree — the
+spawn-site counterpart to overriding
+[`Actor.displayName()`](/fundamentals/logging/#naming-an-actor--displayname):
+
+```ts
+const props = Props.create(() => new IngestWorker()).withDisplayName('ingest-worker');
+```
+
+This is the way in for an actor with no subclass of yours to override:
+a sharded entity, a singleton, and above all a
+[`Behaviors`](/typed/behaviors/) actor, which is a `TypedActor` like
+every other one:
+
+```ts
+const props = typedProps(cart(customerId)).withDisplayName(`Cart(${customerId})`);
+system.spawn(props, `entity-${customerId}`);
+```
+
+It outranks the method, exactly as `withSupervisorStrategy` outranks
+`Actor.supervisorStrategy()` — the spawn site is the more specific
+statement, and a `TypedActor` inherits a `displayName()` that always
+answers, so a losing Props value would never surface.  Purely cosmetic:
+the path stays the identity everywhere that routes or correlates.
+
 ## Naming on spawn
 
 The actor *name* is passed to `spawn` / `spawn`, not stored on
@@ -238,6 +265,10 @@ actors that get a unique-name-per-instance.
 
 Omit the name and the framework synthesizes one (`'$1'`, `'$2'`,
 …).
+
+That name is part of the **address** — it becomes a path segment, has
+to be unique among siblings, and is validated.  For a readable label
+that is not, use `withDisplayName` above; the two are independent.
 
 ## Common patterns
 

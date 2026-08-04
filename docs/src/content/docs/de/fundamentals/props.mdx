@@ -85,6 +85,7 @@ class Props<TMessage> {
   withMailboxCapacity(capacity: number): Props<TMessage>;
   withMailbox(factory: () => Mailbox<TMessage>): Props<TMessage>;
   asInternal(): Props<TMessage>;
+  withDisplayName(name: string): Props<TMessage>;
 }
 ```
 
@@ -224,6 +225,33 @@ beobachtet, in dem es selbst läuft. Anwendungs-Actors gehören nicht
 markiert: Echte Arbeit vor dem Profiler zu verstecken ist der Weg, auf
 dem ein Performance-Problem unsichtbar bleibt.
 
+### `withDisplayName`
+
+Wie der Actor in Log-Zeilen und im DevTools-Baum heißt — das
+Spawn-Site-Gegenstück zum Überschreiben von
+[`Actor.displayName()`](/de/fundamentals/logging/#einen-actor-benennen--displayname):
+
+```ts
+const props = Props.create(() => new IngestWorker()).withDisplayName('ingest-worker');
+```
+
+Das ist der Weg für einen Actor, zu dem es keine eigene Subklasse zum
+Überschreiben gibt: eine Sharding-Entity, ein Singleton, und vor allem
+ein [`Behaviors`](/de/typed/behaviors/)-Actor, der ein `TypedActor` ist
+wie jeder andere auch:
+
+```ts
+const props = typedProps(cart(customerId)).withDisplayName(`Cart(${customerId})`);
+system.spawn(props, `entity-${customerId}`);
+```
+
+Es sticht die Methode, genau wie `withSupervisorStrategy`
+`Actor.supervisorStrategy()` sticht — die Spawn-Stelle ist die
+speziellere Aussage, und ein `TypedActor` erbt ein `displayName()`, das
+immer antwortet, also käme ein unterlegener Props-Wert nie zum
+Vorschein.  Rein kosmetisch: der Pfad bleibt überall dort die
+Identität, wo geroutet oder korreliert wird.
+
 ## Naming beim Spawn
 
 Der Actor-*Name* wird an `spawn` / `spawn` übergeben, nicht auf
@@ -245,6 +273,11 @@ bekommen.
 
 Lass den Namen weg, und das Framework synthetisiert einen (`'$1'`,
 `'$2'`, …).
+
+Dieser Name ist Teil der **Adresse** — er wird zum Pfadsegment, muss
+unter Geschwistern eindeutig sein und wird validiert.  Für ein
+lesbares Label, das das alles nicht ist, nimm `withDisplayName` oben;
+die beiden sind unabhängig voneinander.
 
 ## Häufige Muster
 
