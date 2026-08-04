@@ -85,8 +85,12 @@ const child = this.context.spawn(Props.create(() => new Bar()), 'bar');
 // child.path.toString() === 'actor-ts://my-app/user/my-foo/bar'
 ```
 
-Wenn du den Namen weglässt, synthetisiert das Framework einen
-(`'$1'`, `'$2'`, …).  Zwei Regeln gelten beim Namen:
+Wenn du den Namen weglässt, synthetisiert das Framework einen —
+`$anonymous-`, einen Zähler pro Elternteil und zwölf zufällige
+Hex-Zeichen, zum Beispiel `'$anonymous-1-3f9c1a0d7b42'`.  Der Zähler
+hält die Spawn-Reihenfolge lesbar; der Zufallsteil verhindert, dass
+der Pfad von außen erratbar ist — und ein Pfad ist eine Adresse.
+Zwei Regeln gelten beim Namen:
 
 1. **Namen müssen unter Geschwistern eindeutig sein.**  Zweimal
    `context.spawn(props, 'bar')` auf demselben Parent wirft einen

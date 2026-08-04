@@ -347,7 +347,7 @@ describe('system.spawnTyped + ctx.spawnTyped', () => {
     const sys = newSys();
     const behavior = Behaviors.receiveMessage<string>(() => Behaviors.same);
     const ref = sys.spawnTypedAnonymous(behavior);
-    expect(ref.path.name.startsWith('$')).toBe(true);
+    expect(ref.path.name).toMatch(/^\$anonymous-\d+-[0-9a-f]{12}$/);
     expect(ref.path.toString()).toContain('/user/');
     await sys.terminate();
   });
@@ -376,7 +376,7 @@ describe('system.spawnTyped + ctx.spawnTyped', () => {
         if (this.named.path.name !== 'typed-child') {
           throw new Error(`named child path was ${this.named.path.name}`);
         }
-        if (!this.anon.path.name.startsWith('$')) {
+        if (!/^\$anonymous-\d+-[0-9a-f]{12}$/.test(this.anon.path.name)) {
           throw new Error(`anon child path was ${this.anon.path.name}`);
         }
       }

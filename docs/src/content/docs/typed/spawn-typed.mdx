@@ -129,7 +129,11 @@ the child's message type from the Behavior's type parameter.
 
 For the deterministic variants (`spawnTyped`), the `name` parameter
 is required and must be unique among siblings.  For
-`spawnTypedAnonymous`, the framework generates one (`'$1'`, `'$2'`, ...).
+`spawnTypedAnonymous`, the framework generates one — `$anonymous-`,
+a per-parent counter and twelve random hex characters, for example
+`'$anonymous-1-3f9c1a0d7b42'`.  The suffix is random, so the path is
+not stable across runs; use `spawnTyped` whenever you need to
+address the actor by path.
 
 The resulting actor's path follows the standard format:
 
