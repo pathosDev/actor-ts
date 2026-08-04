@@ -110,7 +110,7 @@ this.context.spawn(Worker, 'sub-worker');    // → /user/<this>/sub-worker
 
 Names must be unique among siblings.  For an actor whose path does not
 matter — one-shot async work, throwaway helpers — use
-`spawnAnonymous`, which synthesizes `'$1'`, `'$2'`, …:
+`spawnAnonymous`, which synthesizes `$anonymous-<n>-<random>`:
 
 ```ts
 const ref = system.spawnAnonymous(Counter);

@@ -65,6 +65,7 @@ import type {
 import type { Cancellable } from '../Scheduler.js';
 import { match } from 'ts-pattern';
 import { fromNullable, type Option } from '../util/Option.js';
+import { randomId } from '../util/RandomString.js';
 import { TokenBucket } from '../util/TokenBucket.js';
 
 const DEFAULT_STASH_CAPACITY = 1024;
@@ -281,7 +282,7 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
   }
 
   spawnAnonymous<T>(actor: ActorClassOrFactory<T>, options?: ActorOptions<T>): ActorRef<T> {
-    return this._createChild(actorBlueprintOf(actor, options), `$${++this._anonChildCounter}`);
+    return this._createChild(actorBlueprintOf(actor, options), this._anonymousChildName());
   }
 
   spawnTyped<T>(behavior: Behavior<T>, name: string): ActorRef<T> {
@@ -289,7 +290,27 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
   }
 
   spawnTypedAnonymous<T>(behavior: Behavior<T>): ActorRef<T> {
-    return this._createChild(actorBlueprintOf(typedActor<T>(behavior)), `$${++this._anonChildCounter}`);
+    return this._createChild(actorBlueprintOf(typedActor<T>(behavior)), this._anonymousChildName());
+  }
+
+  /**
+   * @internal Name a child spawned without one.
+   *
+   * Was a bare `$${++counter}`.  That made `/user/$1` the first anonymous actor
+   * of every run — and a path is an address, so anything that can render one can
+   * send to it.  The random half closes that; the counter half stays because it
+   * is the only thing keeping spawn order legible in a log line or a DevTools
+   * row.
+   *
+   * Uniqueness only has to hold among one parent's live children, and that
+   * includes across a restart: children are not stopped there (`Actor.preRestart`
+   * only calls `postStop`), so `preStart` spawns again while the previous
+   * incarnation's anonymous children are still in the child map.  The counter
+   * survives with the cell and rules that out on its own; the random half is
+   * belt-and-braces.
+   */
+  private _anonymousChildName(): string {
+    return `$anonymous-${++this._anonChildCounter}-${randomId(12)}`;
   }
 
   /** @internal — single child-creation path shared by spawn / spawnAnonymous. */

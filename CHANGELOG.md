@@ -112,6 +112,21 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   *forget*, so a remembered fleet left on the default drains over time; decide
   explicitly which of the two you want.  `ShardedDaemonProcess` opts out on
   its own — its daemons are meant to run continuously.
+- **BREAKING — anonymous actors are named `$anonymous-<n>-<random>`, not `$1` /
+  `$2`** (#895).  `spawnAnonymous`, `spawnTypedAnonymous` and
+  `context.spawn(behavior)` without a name drew from a bare per-parent counter,
+  which is both opaque (a DevTools row reading `$1` gives no hint the name is
+  framework-generated) and guessable — `/user/$1` is the first anonymous actor
+  of every run, and an actor path is an address anything that can render one can
+  send to.  The name now carries a per-parent counter *and* twelve random hex
+  characters from `crypto.getRandomValues`; the counter is kept so spawn order
+  stays legible in a log line and in the actor tree.  Same reasoning that moved
+  `ask`'s reply refs off a counter in #120.  Note this is the *path* segment —
+  `Actor.displayName()` above is the cosmetic label and is unaffected.
+  **Migration:** nothing you name yourself changes — only the value the
+  framework picks when you don't.  Code that hard-codes an anonymous path
+  (`actorSelection('/user/$1')`) or parses `$<n>` out of a name must spawn with
+  `spawn(props, name)` and a name of its own.
 
 ### Fixed
 

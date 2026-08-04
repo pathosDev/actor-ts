@@ -63,8 +63,8 @@ describe('spawn shapes', () => {
     system = createTestActorSystem();
     const fromClass = system.spawnAnonymous(Greeter);
     const fromFactory = system.spawnAnonymous(() => new Worker('redis'));
-    expect(fromClass.path.name).toMatch(/^\$\d+$/);
-    expect(fromFactory.path.name).toMatch(/^\$\d+$/);
+    expect(fromClass.path.name).toMatch(/^\$anonymous-\d+-[0-9a-f]+$/);
+    expect(fromFactory.path.name).toMatch(/^\$anonymous-\d+-[0-9a-f]+$/);
     expect(fromClass.path.name).not.toBe(fromFactory.path.name);
   });
 
@@ -120,7 +120,7 @@ describe('spawn shapes', () => {
     system.spawn(Parent, 'parent');
     await Bun.sleep(20);
     expect(Parent.childNames.slice(0, 2)).toEqual(['from-class', 'from-factory']);
-    expect(Parent.childNames[2]).toMatch(/^\$\d+$/);
+    expect(Parent.childNames[2]).toMatch(/^\$anonymous-\d+-[0-9a-f]+$/);
   });
 
   test('a class needing constructor arguments fails loudly, not with undefined deps', () => {

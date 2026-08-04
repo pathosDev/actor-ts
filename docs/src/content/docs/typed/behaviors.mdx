@@ -122,7 +122,7 @@ Without it a whole tree of typed actors reports `TypedActor` as its
 class, which tells you nothing about which is which.  Call it any time,
 not only from `setup` — a name that only settles after the first
 message can be set then.  For a name the spawn site already knows,
-[`typedProps(behavior).withDisplayName(...)`](/fundamentals/props/#withdisplayname)
+[`ActorOptions.withDisplayName(...)`](/fundamentals/spawning/#withdisplayname)
 does the same without entering the behavior.
 
 ## The decorators

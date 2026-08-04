@@ -113,7 +113,7 @@ this.context.spawn(Worker, 'sub-worker');    // → /user/<this>/sub-worker
 
 Namen müssen unter Geschwistern eindeutig sein.  Für einen Actor, dessen
 Pfad egal ist — einmalige asynchrone Arbeit, Wegwerf-Helfer — nimm
-`spawnAnonymous`; es erzeugt `'$1'`, `'$2'`, …:
+`spawnAnonymous`; es erzeugt `$anonymous-<n>-<random>`:
 
 ```ts
 const ref = system.spawnAnonymous(Counter);

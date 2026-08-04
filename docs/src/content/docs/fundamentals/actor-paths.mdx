@@ -83,8 +83,12 @@ const child = this.context.spawn(() => new Bar(), 'bar');
 // child.path.toString() === 'actor-ts://my-app/user/my-foo/bar'
 ```
 
-If you omit the name, the framework synthesizes one (`'$1'`,
-`'$2'`, …).  Two rules govern naming:
+If you omit the name, the framework synthesizes one — `$anonymous-`,
+a per-parent counter and twelve random hex characters, for example
+`'$anonymous-1-3f9c1a0d7b42'`.  The counter keeps spawn order
+legible; the random half keeps the path from being guessable from
+the outside, which matters because a path is an address.  Two rules
+govern naming:
 
 1. **Names must be unique among siblings.**  `context.spawn(props, 'bar')`
    followed by another `context.spawn(props, 'bar')` on the same
