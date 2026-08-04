@@ -39,7 +39,7 @@ class Feed extends WebsocketClientActor<ClientMessage, ServerMessage> {
   }
 }
 
-const feed = system.spawn(Props.create(() => new Feed()), 'feed');
+const feed = system.spawn(() => new Feed(), 'feed');
 ```
 
 The two type parameters read from the client's point of view:

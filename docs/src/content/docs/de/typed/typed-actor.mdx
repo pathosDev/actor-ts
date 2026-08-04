@@ -1,6 +1,6 @@
 ---
 title: TypedActor
-description: Die Runtime, die ein Behavior interpretiert — überbrückt das typed-DSL mit der untyped-Actor-Engine. Interne Klasse; User erreichen sie über `system.spawnTyped`, `ctx.spawnTyped` oder `typedProps`.
+description: Die Runtime, die ein Behavior interpretiert — überbrückt das typed-DSL mit der untyped-Actor-Engine. Interne Klasse; User erreichen sie über `system.spawnTyped`, `ctx.spawnTyped` oder `typedActor`.
 ---
 
 `TypedActor<T>` ist der Runtime-Host, der einen `Behavior<T>`-Wert
@@ -10,7 +10,7 @@ aber sein `onReceive` delegiert an das gerade aktive Behavior.
 
 Du konstruierst `TypedActor` nicht direkt.  Die Spawn-Methoden
 ([`system.spawnTyped` / `context.spawnTyped`](/de/typed/spawn-typed/) und
-[`typedProps`](/de/typed/spawn-typed/)) wickeln es für dich.  Aber
+[`typedActor`](/de/typed/spawn-typed/)) wickeln es für dich.  Aber
 zu wissen, wie es funktioniert, klärt die typed-DSL-Semantik —
 besonders, was "die Runtime interpretiert das Behavior" tatsächlich
 bedeutet.
@@ -27,7 +27,7 @@ const myBehavior = Behaviors.receive<Message>((context, message) => {
 
 const system = ActorSystem.create('demo');
 const ref = system.spawnTypedAnonymous(myBehavior);
-// Unter der Haube: system.spawnAnonymous(Props.create(() => new TypedActor(myBehavior)))
+// Unter der Haube: system.spawnAnonymous(() => new TypedActor(myBehavior))
 ```
 
 Das Framework:
@@ -167,12 +167,12 @@ import { Aside } from '@astrojs/starlight/components';
 <Aside type="caution" title="`TypedActor` nicht direkt instanziieren">
   ```ts
   const actor = new TypedActor<Message>(behavior);   // ← nicht die Spawn-API
-  system.spawnAnonymous(Props.create(() => actor));      // ← verhält sich nicht wie ein frischer Actor
+  system.spawnAnonymous(() => actor);      // ← verhält sich nicht wie ein frischer Actor
   ```
   Wie jeder `Actor` braucht die typed-Runtime bei jedem Restart
   eine frische Instanz.  Die Spawn-Methoden (`system.spawnTyped`,
-  `context.spawnTyped`) und der `typedProps`-Helfer closen über den
-  Behavior-Wert und produzieren bei jedem Lauf der Props-Factory
+  `context.spawnTyped`) und der `typedActor`-Helfer closen über den
+  Behavior-Wert und produzieren bei jedem Lauf der Actor-Factory
   einen neuen `TypedActor`.  Nimm keine Abkürzung.
 </Aside>
 

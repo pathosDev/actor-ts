@@ -92,6 +92,14 @@ const [starlightTypeDoc, typeDocSidebarGroup] = createStarlightTypeDocPlugin();
 
 export default defineConfig({
   site: 'https://actor-ts.dev',
+  // `fundamentals/props` became `fundamentals/spawning` when `Props` was
+  // removed from the API (#547).  The old slug is kept alive because it was
+  // the canonical link for "how do I create an actor" and is linked from
+  // outside the site.
+  redirects: {
+    '/fundamentals/props': '/fundamentals/spawning',
+    '/de/fundamentals/props': '/de/fundamentals/spawning',
+  },
   // Mermaid SSR.  `rehype-mermaid` runs Playwright/Chromium headless at
   // build time to render each ```mermaid``` block into an inline SVG.
   // Result: no client-side JS, no flash-of-unrendered-text, accessible
@@ -380,7 +388,7 @@ export default defineConfig({
                 { label: 'Ask pattern',           slug: 'fundamentals/ask-pattern',           translations: { de: 'Ask-Pattern', es: 'Patrón Ask', fr: 'Ask pattern', ja: 'Ask パターン', ko: 'Ask 패턴', 'pt-BR': 'Padrão ask', ru: 'Паттерн Ask', 'zh-CN': 'Ask 模式' } },
                 { label: 'ActorSystem',           slug: 'fundamentals/actor-system',          translations: { de: 'ActorSystem', es: 'ActorSystem', fr: 'ActorSystem', ja: 'ActorSystem', ko: 'ActorSystem', 'pt-BR': 'ActorSystem', ru: 'ActorSystem', 'zh-CN': 'ActorSystem' } },
                 { label: 'Actor paths',           slug: 'fundamentals/actor-paths',           translations: { de: 'Actor-Pfade', es: 'Rutas de Actor', fr: 'Chemins d’Actor', ja: 'アクターパス', ko: '액터 경로', 'pt-BR': 'Caminhos de atores', ru: 'Пути акторов', 'zh-CN': 'Actor 路径' } },
-                { label: 'Props',                 slug: 'fundamentals/props',                 translations: { de: 'Props', es: 'Props', fr: 'Props', ja: 'Props', ko: 'Props', 'pt-BR': 'Props', ru: 'Props', 'zh-CN': 'Props' } },
+                { label: 'Spawning actors',       slug: 'fundamentals/spawning',              translations: { de: 'Actors erzeugen', es: 'Crear actores', fr: 'Créer des Actors', ja: 'アクターの生成', ko: '액터 생성', 'pt-BR': 'Criando atores', ru: 'Создание акторов', 'zh-CN': '创建 Actor' } },
                 { label: 'Become and stash',     slug: 'fundamentals/become-and-stash',      translations: { de: 'Become und Stash', es: 'Become y Stash', fr: 'Become et Stash', ja: 'Become と Stash', ko: 'Become과 Stash', 'pt-BR': 'Become e Stash', ru: 'Become и Stash', 'zh-CN': 'Become 与 Stash' } },
                 { label: 'Death watch',           slug: 'fundamentals/death-watch',           translations: { de: 'Death Watch', es: 'Death watch', fr: 'Death watch', ja: 'Death watch', ko: 'Death watch', 'pt-BR': 'Death watch', ru: 'Death watch', 'zh-CN': 'Death watch' } },
                 { label: 'Supervision',           slug: 'fundamentals/supervision',           translations: { de: 'Supervision', es: 'Supervisión', fr: 'Supervision', ja: 'スーパービジョン', ko: '슈퍼비전', 'pt-BR': 'Supervisão', ru: 'Супервизия', 'zh-CN': '监督' } },

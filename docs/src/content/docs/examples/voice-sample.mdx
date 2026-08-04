@@ -173,7 +173,7 @@ pubsub topic.
 ```ts
 const singletonOptions = StartSingletonOptions.create()
   .withTypeName('http-ingress')
-  .withProps(httpIngressProps({ host, httpPort, staticDir, /* ...deps */ }));
+  .withActor(httpIngressFactory({ host, httpPort, staticDir, /* ...deps */ }));
 cluster.singleton.start(singletonOptions);
 ```
 

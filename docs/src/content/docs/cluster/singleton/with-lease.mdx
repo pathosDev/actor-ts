@@ -12,7 +12,7 @@ elect their own leader** → two singletons exist.
 The **single-writer lease** prevents this:
 
 ```ts
-import { StartSingletonOptions, KubernetesLease, KubernetesLeaseOptions, Props } from 'actor-ts';
+import { StartSingletonOptions, KubernetesLease, KubernetesLeaseOptions } from 'actor-ts';
 
 const kubernetesLeaseOptions = KubernetesLeaseOptions.create()
   .withName('job-scheduler-singleton')
@@ -21,7 +21,7 @@ const kubernetesLeaseOptions = KubernetesLeaseOptions.create()
   .withNamespace(process.env.K8S_NAMESPACE!);
 const startSingletonOptions = StartSingletonOptions.create()
   .withTypeName('job-scheduler')
-  .withProps(Props.create(() => new JobScheduler()))
+  .withActor(() => new JobScheduler())
   .withLease(new KubernetesLease(
     kubernetesLeaseOptions,
   ));
@@ -60,7 +60,7 @@ eventual-consistency.
 ```ts
 const startSingletonOptions = StartSingletonOptions.create()
   .withTypeName(typeName)
-  .withProps(singletonProps)
+  .withActor(singletonActor)
   .withLease(lease)                        // ← optional Lease
   .withAcquireRetryIntervalMs(5_000);      // default — retry after failed acquire
 cluster.singleton.start(startSingletonOptions);

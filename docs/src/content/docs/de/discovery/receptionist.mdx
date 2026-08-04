@@ -26,7 +26,7 @@ const receptionist = system.extension(ReceptionistId).start(cluster);
 const apiKey = ServiceKey.of<ApiMessage>('api-service');
 
 // 2. Einen Actor unter dem Key registrieren
-const api = system.spawn(Props.create(() => new ApiActor()), 'api');
+const api = system.spawn(() => new ApiActor(), 'api');
 receptionist.tell(new Register(apiKey, api));
 
 // 3. Ein Consumer-Actor empfängt das Listing, mit dem Find / Subscribe antworten
@@ -35,7 +35,7 @@ class Consumer extends Actor<Listing<ApiMessage>> {
     console.log(`${listing.refs.length} API-Actors im Cluster`);
   }
 }
-const consumer = system.spawn(Props.create(() => new Consumer()), 'consumer');
+const consumer = system.spawn(() => new Consumer(), 'consumer');
 
 // 4. Von jedem Node — jeden registrierten Actor finden oder auf Änderungen subscriben
 receptionist.tell(new Find(apiKey, consumer));
@@ -110,7 +110,7 @@ class ApiConsumer extends Actor<Listing<ApiMessage>> {
     console.log(`${listing.refs.length} Actors unter ${listing.key.id}`);
   }
 }
-const consumer = system.spawn(Props.create(() => new ApiConsumer()), 'consumer');
+const consumer = system.spawn(() => new ApiConsumer(), 'consumer');
 
 receptionist.tell(new Find(key, consumer));
 ```

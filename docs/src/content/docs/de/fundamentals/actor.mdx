@@ -35,7 +35,7 @@ Drei Eigenschaften definieren einen Actor in actor-ts:
 
 ```ts
 import { match } from 'ts-pattern';
-import { Actor, ActorSystem, Props } from 'actor-ts';
+import { Actor, ActorSystem } from 'actor-ts';
 
 type IncrementCommand = { kind: 'increment' };
 type ResetCommand = { kind: 'reset' };
@@ -84,14 +84,14 @@ Eltern-Referenz).  Statt einer Instanz übergibst du also eine Factory:
 const system = ActorSystem.create('demo');
 
 // Anonymer Actor — das System wählt einen Namen.
-const counter = system.spawnAnonymous(Props.create(() => new Counter()));
+const counter = system.spawnAnonymous(() => new Counter());
 
 // Benannter Actor — nützlich für Log-Zeilen + Pfad-basiertes Lookup.
-const counter2 = system.spawn(Props.create(() => new Counter()), 'counter');
+const counter2 = system.spawn(() => new Counter(), 'counter');
 ```
 
-`Props.create(...)` packt die Factory + Supervisor-Strategie +
-Dispatcher-Wahl in einen Wert.  Siehe [Props](/de/fundamentals/props/)
+`...` packt die Factory + Supervisor-Strategie +
+Dispatcher-Wahl in einen Wert.  Siehe [Actors erzeugen](/de/fundamentals/spawning/)
 für die volle Schnittstelle.
 
 ## Nachrichten senden
@@ -222,7 +222,7 @@ import { Aside } from '@astrojs/starlight/components';
   Wenn der Supervisor entscheidet, einen abgestürzten Actor neu zu starten
   (**restart**), wirft das Framework die kaputte Instanz komplett weg
   (jeglicher interner Zustand ist also weg) und baut eine neue aus
-  derselben `Props.create`-Factory.  Nachrichten, die während des
+  derselben Actor-Klasse bzw. Factory.  Nachrichten, die während des
   Restart-Fensters ankamen, bleiben in der Mailbox; die neue Instanz
   nimmt sie auf.  Siehe
   [Supervision](/de/fundamentals/supervision/) für den vollen
@@ -238,7 +238,7 @@ Actors können Kinder haben.  Verwende `context.spawn` aus dem
 class Parent extends Actor<{ kind: 'add-child'; name: string }> {
   override onReceive(message: { kind: 'add-child'; name: string }): void {
     const child = this.context.spawn(
-      Props.create(() => new Worker()),
+      () => new Worker(),
       message.name,
     );
     this.log.info(`spawned child ${child.path}`);
@@ -290,9 +290,8 @@ class DbWriterFanout extends Actor<{ row: Row }> {
   override onReceive(message: { row: Row }): void {
     // Spawn-and-forget: Kind erledigt den langsamen DB-Write, Parent
     // bleibt für die nächste Nachricht in der Mailbox verfügbar.
-    this.context.spawnAnonymous(Props.create(() =>
-      new SingleShotWriter(this.db, message.row)
-    ));
+    this.context.spawnAnonymous(() =>
+      new SingleShotWriter(this.db, message.row));
   }
 }
 ```

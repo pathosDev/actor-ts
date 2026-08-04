@@ -77,7 +77,7 @@ denn die interessanten Nachrichten sind die, die schon vorbei sind. Panel
   als Kind-Span, denn seine Probes empfangen Event-Stream-Publishes
   *während* einer Anwendungsnachricht und tauchten sonst mitten in deren
   Route wieder auf. Sie sind mit
-  [`Props.asInternal()`](/de/fundamentals/props/#asinternal) markiert —
+  [`ActorOptions.withInternal()`](/de/fundamentals/spawning/#withinternal) markiert —
   ohne das würde der Hub, der die eben aufgezeichneten Spans publiziert,
   jeden Batch als Payload des nächsten zurückspeisen.
 

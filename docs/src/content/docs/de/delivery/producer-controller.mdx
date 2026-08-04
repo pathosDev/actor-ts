@@ -8,7 +8,7 @@ Senders, vergibt **Sequence Numbers** und hält sie, bis sie vom
 Consumer **geACKt** sind.
 
 ```ts
-import { Props, ProducerController, ProducerControllerOptions } from 'actor-ts';
+import { ProducerController, ProducerControllerOptions } from 'actor-ts';
 
 const producerControllerOptions = ProducerControllerOptions.create<OrderEvent>()
   .withProducerId('orders')                     // stabile Identität
@@ -16,7 +16,7 @@ const producerControllerOptions = ProducerControllerOptions.create<OrderEvent>()
   .withWindowSize(16)                           // Flow-Control-Window
   .withResendTimeout(500);
 const producer = system.spawn(
-  Props.create(() => new ProducerController<OrderEvent>(producerControllerOptions)),
+  () => new ProducerController<OrderEvent>(producerControllerOptions),
   'producer',
 );
 
@@ -126,8 +126,8 @@ du Persistenz darauf.
 
 ```ts
 // Ein Producer pro Consumer:
-const p1 = system.spawnAnonymous(Props.create(() => new ProducerController({ consumer: c1Ref, ... })));
-const p2 = system.spawnAnonymous(Props.create(() => new ProducerController({ consumer: c2Ref, ... })));
+const p1 = system.spawnAnonymous(() => new ProducerController({ consumer: c1Ref, ... }));
+const p2 = system.spawnAnonymous(() => new ProducerController({ consumer: c2Ref, ... }));
 ```
 
 Jeder ProducerController ist **1:1 mit einem ConsumerController**.

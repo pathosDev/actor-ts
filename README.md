@@ -107,7 +107,7 @@ npm install actor-ts                              # Node
 ```
 
 ```ts
-import { Actor, ActorSystem, Props } from 'actor-ts';
+import { Actor, ActorSystem } from 'actor-ts';
 
 class Greeter extends Actor<string> {
   override onReceive(name: string): void {
@@ -116,7 +116,7 @@ class Greeter extends Actor<string> {
 }
 
 const system = ActorSystem.create('hello');
-const ref    = system.spawn(Props.create(() => new Greeter()), 'greeter');
+const ref    = system.spawn(() => new Greeter(), 'greeter');
 
 ref.tell('world');
 
@@ -142,7 +142,7 @@ to `Command` without a matching `with(...)` arm and TypeScript fails the
 build.
 
 ```ts
-import { Actor, ActorSystem, Props, type ActorRef } from 'actor-ts';
+import { Actor, ActorSystem, type ActorRef } from 'actor-ts';
 import { match } from 'ts-pattern';
 
 type IncrementCommand = { kind: 'increment' };
@@ -174,10 +174,10 @@ one-shot reply actor, wires it as both `replyTo` and
 `context.sender`, and resolves the promise when the target replies.
 
 ```ts
-import { ActorSystem, Props } from 'actor-ts';
+import { ActorSystem } from 'actor-ts';
 
 const system  = ActorSystem.create('demo');
-const counter = system.spawnAnonymous(Props.create(() => new Counter()));
+const counter = system.spawnAnonymous(() => new Counter());
 
 counter.tell({ kind: 'increment' });
 counter.tell({ kind: 'increment' });
@@ -193,7 +193,7 @@ mutation, no "did this write commit?" question. Same `Counter` API
 the rest of the app sees, every mutation durable.
 
 ```ts
-import { PersistentActor, ActorSystem, Props } from 'actor-ts';
+import { PersistentActor, ActorSystem } from 'actor-ts';
 import { match } from 'ts-pattern';
 
 type IncrementCommand = { kind: 'increment' };

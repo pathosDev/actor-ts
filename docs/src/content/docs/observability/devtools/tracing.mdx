@@ -76,7 +76,7 @@ past. Open the panel and the recent history is there.
   child one either, since its probes receive event-stream publishes
   *during* an application message and would otherwise reappear in the
   middle of its route. They are marked with
-  [`Props.asInternal()`](/fundamentals/props/#asinternal), without which
+  [`ActorOptions.withInternal()`](/fundamentals/spawning/#withinternal), without which
   the hub publishing the spans it just recorded would feed every batch
   back in as the payload of the next one.
 

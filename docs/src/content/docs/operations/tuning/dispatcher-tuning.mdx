@@ -47,12 +47,11 @@ messages so fast that HTTP handlers wait for a turn.
 **bound the busy actors with a throughput dispatcher per-actor**:
 
 ```ts
-import { ThroughputDispatcher } from 'actor-ts';
+import { ActorOptions, ThroughputDispatcher } from 'actor-ts';
 
-const heavyActor = system.spawn(
-  Props.create(() => new HeavyWorker())
-    .withDispatcher(new ThroughputDispatcher(100)),
-);
+const heavyOptions = ActorOptions.create().withDispatcher(new ThroughputDispatcher(100));
+
+const heavyActor = system.spawnAnonymous(HeavyWorker, heavyOptions);
 ```
 
 The heavy actor processes 100 messages, yields, lets HTTP
@@ -73,12 +72,11 @@ CPU work without I/O, this is wasted.
 **Fix**: use `MicrotaskDispatcher`:
 
 ```ts
-import { MicrotaskDispatcher } from 'actor-ts';
+import { ActorOptions, MicrotaskDispatcher } from 'actor-ts';
 
-const cpuActor = system.spawn(
-  Props.create(() => new CpuIntensive())
-    .withDispatcher(new MicrotaskDispatcher()),
-);
+const cpuOptions = ActorOptions.create().withDispatcher(new MicrotaskDispatcher());
+
+const cpuActor = system.spawnAnonymous(CpuIntensive, cpuOptions);
 ```
 
 Microtasks bypass the event loop, ~50× faster scheduling.
@@ -111,13 +109,14 @@ is a reasonable starting point.
 ## Per-actor dispatcher
 
 ```ts
-const heavy = system.spawn(
-  Props.create(() => new BulkProcessor())
-    .withDispatcher(new ThroughputDispatcher(500)),
-);
+import { ActorOptions } from 'actor-ts';
+
+const bulkOptions = ActorOptions.create().withDispatcher(new ThroughputDispatcher(500));
+
+const heavy = system.spawnAnonymous(BulkProcessor, bulkOptions);
 
 const httpHandler = system.spawn(
-  Props.create(() => new HttpHandler()),
+  () => new HttpHandler(),
   // → uses system's default ImmediateDispatcher
 );
 ```

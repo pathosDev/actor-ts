@@ -1,0 +1,352 @@
+---
+title: Actors erzeugen
+description: Wie ein Actor entsteht — Klasse oder Factory an `spawn` übergeben, Supervision, Dispatcher und Mailbox über `ActorOptions` konfigurieren.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+Zum Erzeugen gehören zwei Dinge: **was gebaut wird**, und — nur wenn
+die Voreinstellungen nicht passen — **wie es laufen soll**.
+
+```ts
+import { ActorSystem } from 'actor-ts';
+
+const system = ActorSystem.create('hello');
+
+system.spawn(Greeter, 'greeter');                       // die Klasse selbst
+system.spawn(() => new Worker(database), 'worker-1');   // eine Factory
+```
+
+Das ist der gesamte Normalfall.  Voreingestellt sind eine beschränkte
+FIFO-Mailbox (Kapazität 10 000, Überlaufstrategie `drop-head`), der
+System-Dispatcher und die Supervision des Elternteils.
+
+## Klassenform und Factory-Form
+
+Übergib die **Klasse**, wenn ihr Konstruktor keine Argumente nimmt.
+Mehr braucht es nicht — das Framework konstruiert selbst eine frische
+Instanz.
+
+```ts
+class Greeter extends Actor<string> {
+  override onReceive(name: string): void { console.log(`hello ${name}`); }
+}
+
+system.spawn(Greeter, 'greeter');
+```
+
+Übergib eine **Factory**, wenn der Actor Abhängigkeiten braucht.  Die
+Closure fängt sie ein, und jeder Neustart sieht dieselbe Verdrahtung:
+
+```ts
+class Worker extends Actor<WorkerMessage> {
+  constructor(
+    private readonly database: ActorRef<DatabaseMessage>,
+    private readonly config: Config,
+  ) { super(); }
+}
+
+system.spawn(() => new Worker(database, config), 'worker-1');
+```
+
+Eine Klasse, deren Konstruktor Argumente *verlangt*, wird an der
+Aufrufstelle abgelehnt — sie allein zu übergeben könnte sie nur mit
+`undefined`-Abhängigkeiten konstruieren:
+
+```ts
+system.spawn(Worker, 'worker-1');
+// Worker needs 2 constructor arguments, so the class alone is not
+// enough to build it — pass a factory that supplies them:
+// () => new Worker(...).
+```
+
+### Warum eine Factory — und niemals eine Instanz
+
+Keine der beiden Formen lässt eine Actor-**Instanz** zu, und das ist
+Absicht: der Actor wird **bei jedem Neustart neu gebaut**.
+
+```ts
+// Abgelehnt — eine Instanz ist weder Klasse noch Factory:
+const counter = new Counter();
+system.spawn(counter, 'counter');
+
+// Richtig, und bei jedem Neustart frisch:
+system.spawn(Counter, 'counter');
+```
+
+Dieselbe Instanz über einen Neustart hinweg weiterzuverwenden heißt,
+dass der Actor sich nie zurücksetzt — er erbt den *kaputten* Zustand
+des gescheiterten Laufs, also genau das Gegenteil dessen, wofür „let it
+crash" da ist.
+
+<Aside type="caution" title="Eine Factory kann trotzdem eine Instanz einschmuggeln">
+  ```ts
+  const counter = new Counter();
+  system.spawn(() => counter, 'counter');   // liefert jedes Mal DIESELBE Instanz
+  ```
+  Diesen Fall kann das Typsystem nicht abfangen — die Closure ist eine
+  vollkommen gültige Factory.  Gib eine `new`-Instanz zurück, oder nimm
+  in Kauf, dass ein Neustart den Zustand nicht räumt.
+</Aside>
+
+<Aside type="caution" title="Keinen veränderlichen Zustand in der Factory-Closure einfangen">
+  ```ts
+  let counter = 0;
+  system.spawn(() => new Worker(++counter), 'worker');
+  ```
+  Beim Neustart läuft die Factory erneut — und `counter` zählt weiter,
+  der neu gestartete Actor sieht also ein anderes Argument als das
+  Original.  Fange unveränderliche Werte ein, oder nimm „das
+  Actor-Argument ändert sich beim Neustart" bewusst in Kauf (selten,
+  meist ein Fehler).
+</Aside>
+
+## Benennung
+
+Der Name geht an `spawn`, er hängt nie am Actor:
+
+```ts
+system.spawn(Worker, 'worker-1');            // → /user/worker-1
+system.spawn(Worker, 'worker-2');            // → /user/worker-2
+this.context.spawn(Worker, 'sub-worker');    // → /user/<this>/sub-worker
+```
+
+Namen müssen unter Geschwistern eindeutig sein.  Für einen Actor, dessen
+Pfad egal ist — einmalige asynchrone Arbeit, Wegwerf-Helfer — nimm
+`spawnAnonymous`; es erzeugt `'$1'`, `'$2'`, …:
+
+```ts
+const ref = system.spawnAnonymous(Counter);
+```
+
+## `ActorOptions`
+
+Alles jenseits der Voreinstellungen steht im dritten Argument.  Gebaut
+wird es mit dem fluenten Builder:
+
+```ts
+import { ActorOptions, stoppingStrategy, MicrotaskDispatcher, BoundedMailbox } from 'actor-ts';
+
+const workerOptions = ActorOptions.create<WorkerMessage>()
+  .withSupervisorStrategy(stoppingStrategy)
+  .withDispatcher(new MicrotaskDispatcher())
+  .withMailbox(() => new BoundedMailbox({ capacity: 100, overflow: 'drop-head' }));
+
+system.spawn(() => new Worker(database), 'worker-1', workerOptions);
+```
+
+Ein einfaches Objekt ist die Kurzform-Alternative und liest sich
+identisch:
+
+```ts
+system.spawn(Worker, 'worker-1', { mailboxCapacity: 500 });
+```
+
+```ts
+class ActorOptionsBuilder<TMessage> {
+  static create<TMessage>(): ActorOptionsBuilder<TMessage>;
+
+  withSupervisorStrategy(strategy: SupervisorStrategy): this;
+  withDispatcher(dispatcher: Dispatcher): this;
+  withMailboxCapacity(capacity: number): this;
+  withMailbox(factory: () => Mailbox<TMessage>): this;
+  withInternal(internal?: boolean): this;
+  withEntity(entity: EntityContext): this;
+}
+```
+
+<Aside type="caution" title="Der Builder verändert sich selbst">
+  ```ts
+  const base = ActorOptions.create<WorkerMessage>().withMailboxCapacity(500);
+  const strict = base.withSupervisorStrategy(stoppingStrategy);
+  // `base` und `strict` sind DASSELBE Objekt — beide tragen jetzt die Strategie.
+  ```
+  `withX` gibt `this` zurück, wie jeder andere Options-Builder im
+  Framework.  Eine Instanz ist eine Konfiguration; bau eine zweite,
+  statt von einer geteilten Basis abzuzweigen.  Beim Spawnen werden die
+  Options *kopiert* — einen Builder danach zu verändern rekonfiguriert
+  also keinen laufenden Actor.
+</Aside>
+
+### `withSupervisorStrategy`
+
+```ts
+import { OneForOneStrategy, Directive, stoppingStrategy } from 'actor-ts';
+
+const workerOptions = ActorOptions.create().withSupervisorStrategy(stoppingStrategy);
+
+const databaseOptions = ActorOptions.create()
+  .withSupervisorStrategy(new OneForOneStrategy(
+    (error) => error instanceof TransientError ? Directive.Resume : Directive.Restart,
+    { maxRetries: 5, withinTimeRangeMs: 60_000 },
+  ));
+```
+
+Die hier gesetzte Strategie entscheidet, **was passiert, wenn DIESER
+Actor scheitert**.  Im Leben jedes Actors sind zwei Strategien im Spiel:
+
+- Die in **den Spawn-Options dieses Actors** — vom Elternteil auf
+  *dessen eigene* Fehler angewandt.
+- Die **in der Klasse dieses Actors** (`override supervisorStrategy`) —
+  auf die Fehler *seiner Kinder* angewandt.
+
+Die meisten Actors brauchen keine von beiden: die Voreinstellung des
+Elternteils (oder `defaultStrategy` an der Systemwurzel) startet mit
+einer Obergrenze von 10 pro Minute neu.  Greif hierzu, wenn das falsch
+ist — etwa bei einem Worker, der eher gestoppt als neu gestartet werden
+soll, weil sein Elternteil ohnehin Ersatz erzeugt.
+
+Der Elternteil löst die Strategie in dieser Reihenfolge auf, der erste
+Treffer gewinnt:
+
+1. Die Spawn-Options des scheiternden Kindes.
+2. Der `supervisorStrategy()`-Override des Eltern-Actors.
+3. `defaultStrategy`.
+
+Ein einzelnes Kind kann sich so aus der Politik des Elternteils
+ausklinken, ohne seine Geschwister zu berühren.  Zwei Details folgen
+daraus, dass die Strategie vom Elternteil angewandt wird: eine
+`all-for-one`-Strategie an einem Kind weitet sich trotzdem auf alle
+Geschwister aus, und das Neustart-Budget (`maxRetries` /
+`withinTimeRangeMs`) wird pro Elternteil gezählt — Geschwister teilen
+sich also ein Kontingent.
+
+Die vollständige Semantik steht unter
+[Supervision](/de/fundamentals/supervision/).
+
+### `withDispatcher`
+
+```ts
+import { MicrotaskDispatcher, ThroughputDispatcher } from 'actor-ts';
+
+const crunchyOptions = ActorOptions.create().withDispatcher(new MicrotaskDispatcher());
+const bulkOptions = ActorOptions.create().withDispatcher(new ThroughputDispatcher(100));
+```
+
+Überschreibt den systemweiten Dispatcher für einen Actor.  Nützlich,
+wenn ein einzelner Actor CPU-lastig ist und von Microtask-Scheduling
+profitiert, oder latenzempfindlich ist, während der Rest des Systems auf
+einem Durchsatz-Dispatcher läuft.  In den meisten Anwendungen gilt der
+System-Dispatcher einheitlich und man braucht das nie — siehe
+[Dispatcher](/de/fundamentals/dispatchers/).
+
+### `withMailboxCapacity`
+
+```ts
+const consumerOptions = ActorOptions.create().withMailboxCapacity(500);
+```
+
+Senkt die Obergrenze der Standard-Mailbox — dieselbe beschränkte
+FIFO-Queue, nur mit kleinerer Decke.  Die voreingestellte
+`drop-head`-Strategie gilt weiter: eine volle Mailbox verwirft die
+**älteste** wartende Nachricht, um Platz zu schaffen, ohne zu werfen.
+Für „der Sender spürt den Druck" — eine volle Mailbox, die an der
+`tell`-Stelle `MailboxFullError` wirft — nimm stattdessen `withMailbox`
+mit expliziter `reject`-Strategie.
+
+### `withMailbox`
+
+```ts
+import { BoundedMailbox, PriorityMailbox } from 'actor-ts';
+
+const telemetryOptions = ActorOptions.create()
+  .withMailbox(() => new BoundedMailbox({ capacity: 1_000, overflow: 'drop-head' }));
+
+const workerOptions = ActorOptions.create<Message>()
+  .withMailbox(() => new PriorityMailbox<Message>({
+    priorityFor: (message) => message.kind === 'urgent' ? 0 : 5,
+  }));
+```
+
+Volle Kontrolle — gib eine beliebige `Mailbox`-Unterklasse zurück.  Die
+Factory wird **einmal** aufgerufen, beim Konstruieren der Zelle des
+Actors; die Mailbox überlebt danach jeden Neustart.  Bei einem Neustart
+wird nur die `Actor`-Instanz neu gebaut — dieselbe Mailbox läuft weiter,
+vor dem Absturz eingereihte Nachrichten sind also noch da.
+
+Die Überlaufstrategien und die Prioritätssemantik stehen unter
+[Mailboxes](/de/fundamentals/mailboxes/).
+
+### `withInternal`
+
+Markiert einen Actor als **Werkzeug** statt als Anwendung, und seine
+Kinder gleich mit.  Systemweite Instrumentierung überspringt ihn: ohne
+die Markierung tracet der DevTools-Hub — der die eben aufgezeichneten
+Spans selbst publiziert — sich selbst, und jeder Batch kommt als Nutzlast
+des nächsten zurück.
+
+```ts
+const probeOptions = ActorOptions.create().withInternal();
+
+system.spawn(MyProbe, 'my-probe', probeOptions);
+```
+
+Man braucht das nur, wenn man ein Werkzeug schreibt, das das System
+beobachtet, in dem es läuft.  Anwendungs-Actors sollten nicht markiert
+werden: echte Arbeit vor dem Profiler zu verstecken ist der Weg, auf dem
+ein Performance-Problem unsichtbar bleibt.
+
+### `withEntity`
+
+Gibt einem Actor eine Sharding-Identität, die über `this.entityId` /
+`this.context.entity` zurücklesbar ist.  `ClusterSharding` setzt sie für
+jede Entity selbst, die ein Shard erzeugt; öffentlich ist sie für den
+Prüfstand, wo eine Entity, die ihre `persistenceId` aus `this.entityId`
+ableitet, sonst ohne dahinterstehenden Cluster gar nicht erzeugbar wäre.
+
+```ts
+const cartOptions = ActorOptions.create()
+  .withEntity({ entityId: 'user-42', typeName: 'cart', shardId: 3 });
+
+const cart = system.spawn(CartEntity, 'cart-under-test', cartOptions);
+```
+
+## Gängige Muster
+
+### Ein Helfer für eine Actor-Familie
+
+```ts
+import { ActorOptions, type ActorFactory } from 'actor-ts';
+
+const workerOptions = ActorOptions.create<WorkerMessage>()
+  .withSupervisorStrategy(stoppingStrategy)
+  .withMailboxCapacity(500);
+
+const worker = (database: ActorRef<DatabaseMessage>): ActorFactory<WorkerMessage> =>
+  () => new Worker(database);
+
+for (let i = 0; i < 8; i++) {
+  this.context.spawn(worker(database), `worker-${i}`, workerOptions);
+}
+```
+
+Das Options-Objekt ist für jeden damit erzeugten Actor wiederverwendbar
+— es wird pro Spawn kopiert, die acht Worker teilen sich also keinen
+Zustand.
+
+### Typisierte Actors
+
+Die typisierte API erzeugt ein `Behavior` statt einer Klasse oder
+Factory:
+
+```ts
+const ref = system.spawnTyped(counter(0), 'counter');
+const anonymous = system.spawnTypedAnonymous(counter(0));
+```
+
+Um ein `Behavior` an eine API zu geben, die einen Actor nimmt — `Router`,
+`ClusterSharding.start` —, wickle es mit `typedActor(behavior)` ein.
+Siehe [Typisierte Actors](/de/typed/typed-actor/).
+
+## Wie geht es weiter
+
+- **[Actor](/de/fundamentals/actor/)** — die Basisklasse, deren
+  Konstruktor aufgerufen wird.
+- **[Supervision](/de/fundamentals/supervision/)** — die Strategie für
+  `withSupervisorStrategy`.
+- **[Dispatcher](/de/fundamentals/dispatchers/)** — der Scheduler für
+  `withDispatcher`.
+- **[Mailboxes](/de/fundamentals/mailboxes/)** — die Queue für
+  `withMailbox` / `withMailboxCapacity`.
+- **[ActorSystem](/de/fundamentals/actor-system/)** — das
+  `system.spawn(actor, name, options?)`, das all das verbraucht.

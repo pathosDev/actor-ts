@@ -34,7 +34,7 @@ counter.Tell("inc");
 ```ts
 // actor-ts:
 import { match } from 'ts-pattern';
-import { Actor, ActorSystem, Props, type ActorRef } from 'actor-ts';
+import { Actor, ActorSystem, type ActorRef } from 'actor-ts';
 
 type IncrementCommand = { kind: 'increment' };
 type GetCommand = { kind: 'get'; replyTo: ActorRef<number> };
@@ -54,7 +54,7 @@ class Counter extends Actor<Command> {
 }
 
 const system = ActorSystem.create('MySystem');
-const counter = system.spawn(Props.create(() => new Counter()), 'counter');
+const counter = system.spawn(() => new Counter(), 'counter');
 counter.tell({ kind: 'increment' });
 ```
 
@@ -164,7 +164,7 @@ var region = ClusterSharding.Get(system).Start(
 // actor-ts:
 const region = cluster.sharding.start<Command>({
   typeName: 'Counter',
-  entityProps: Props.create(() => new CounterActor()),
+  entityActor: () => new CounterActor(),
   extractEntityId: (command) => command.entityId,
   numShards: 100,
 });

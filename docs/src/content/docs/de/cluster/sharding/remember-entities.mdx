@@ -27,7 +27,7 @@ dass Entities **eager neu erstellt** werden:
 ```ts
 const startShardingOptions = StartShardingOptions.create()
   .withTypeName('session')
-  .withEntityProps(Props.create(() => new SessionActor()))
+  .withEntityActor(() => new SessionActor())
   .withExtractEntityId((message) => message.userId)
   .withRememberEntities(true);
 sharding.start(
@@ -87,7 +87,7 @@ konfiguriert hast:
 ```ts
 const startShardingOptions = StartShardingOptions.create()
   .withTypeName('...')
-  .withEntityProps(...)
+  .withEntityActor(...)
   .withExtractEntityId(...)
   .withRememberEntities(true)
   .withRememberEntitiesStore(null);

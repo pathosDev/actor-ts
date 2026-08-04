@@ -80,7 +80,7 @@ und tritt dann dem Cluster bei wie jeder andere Knoten:
 
 ```ts
 // worker-node.ts — läuft in jedem Worker
-import { ActorSystem, Cluster, ClusterOptions, Props, WorkerNode } from 'actor-ts';
+import { ActorSystem, Cluster, ClusterOptions, WorkerNode } from 'actor-ts';
 
 async function main(): Promise<void> {
   const context = await WorkerNode.join<{ seedAddress?: string }>();
@@ -92,7 +92,7 @@ async function main(): Promise<void> {
     .withTransport(context.transport);
   await Cluster.join(system, clusterOptions);
 
-  system.spawn(Props.create(() => new MyActor()), 'worker');
+  system.spawn(() => new MyActor(), 'worker');
   context.ready();   // dem Hauptthread signalisieren, dass der Knoten läuft
 }
 
@@ -236,7 +236,7 @@ Typen (Map, Set, Date etc.).
 // 4-Worker-Mesh; Sharding verteilt Entities über sie:
 const startShardingOptions = StartShardingOptions.create()
   .withTypeName('order')
-  .withEntityProps(...)
+  .withEntityActor(...)
   .withExtractEntityId((message) => message.id)
   .withNumShards(16);
 sharding.start(
@@ -251,7 +251,7 @@ CPU-gebundene Entity-Arbeit parallelisiert über Cores.
 
 ```ts
 // Worker, der GPU-gebundene Jobs handhabt:
-system.spawn(Props.create(() => new GpuJobActor()), 'gpu-jobs');
+system.spawn(() => new GpuJobActor(), 'gpu-jobs');
 
 // Abstürze in diesem Worker bleiben isoliert von main + anderen Workern
 ```

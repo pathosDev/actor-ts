@@ -20,10 +20,10 @@ lassen willst.
 ## `PoisonPill` — sauberer Stop
 
 ```ts
-import { ActorSystem, Props, PoisonPill } from 'actor-ts';
+import { ActorSystem, PoisonPill } from 'actor-ts';
 
 const system = ActorSystem.create('demo');
-const actor = system.spawnAnonymous(Props.create(() => new Worker()));
+const actor = system.spawnAnonymous(() => new Worker());
 
 actor.tell({ kind: 'work', n: 1 });
 actor.tell({ kind: 'work', n: 2 });

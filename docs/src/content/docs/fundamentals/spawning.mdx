@@ -1,0 +1,340 @@
+---
+title: Spawning actors
+description: How an actor gets created — pass the class or a factory to `spawn`, and configure supervision, dispatcher and mailbox through `ActorOptions`.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+Spawning takes two things: **what to build**, and — only when the
+defaults are wrong — **how to run it**.
+
+```ts
+import { ActorSystem } from 'actor-ts';
+
+const system = ActorSystem.create('hello');
+
+system.spawn(Greeter, 'greeter');                       // the class itself
+system.spawn(() => new Worker(database), 'worker-1');   // a factory
+```
+
+That is the whole common case.  Defaults are a bounded FIFO mailbox
+(capacity 10 000, `drop-head` overflow), the system dispatcher, and
+the parent's supervision.
+
+## The class form and the factory form
+
+Pass the **class** when its constructor takes no arguments.  Nothing
+else is needed — the framework constructs a fresh instance itself.
+
+```ts
+class Greeter extends Actor<string> {
+  override onReceive(name: string): void { console.log(`hello ${name}`); }
+}
+
+system.spawn(Greeter, 'greeter');
+```
+
+Pass a **factory** when the actor needs dependencies.  The closure
+captures them, and every restart sees the same wiring:
+
+```ts
+class Worker extends Actor<WorkerMessage> {
+  constructor(
+    private readonly database: ActorRef<DatabaseMessage>,
+    private readonly config: Config,
+  ) { super(); }
+}
+
+system.spawn(() => new Worker(database, config), 'worker-1');
+```
+
+A class whose constructor *does* take arguments is rejected at the
+call site — passing it alone could only construct it with `undefined`
+dependencies:
+
+```ts
+system.spawn(Worker, 'worker-1');
+// Worker needs 2 constructor arguments, so the class alone is not
+// enough to build it — pass a factory that supplies them:
+// () => new Worker(...).
+```
+
+### Why a factory, and never an instance
+
+Neither form lets you hand over an actor **instance**, and that is
+deliberate: the actor is **rebuilt on every restart**.
+
+```ts
+// Rejected — an instance is neither a class nor a factory:
+const counter = new Counter();
+system.spawn(counter, 'counter');
+
+// Fine, and fresh on every restart:
+system.spawn(Counter, 'counter');
+```
+
+Reusing one instance across a restart means the actor never resets —
+it inherits the *broken* state from the failed run, which is the
+opposite of what "let it crash" is for.
+
+<Aside type="caution" title="A factory can still smuggle an instance in">
+  ```ts
+  const counter = new Counter();
+  system.spawn(() => counter, 'counter');   // returns the SAME instance every time
+  ```
+  The type system cannot catch this one — the closure is a perfectly
+  valid factory.  Return a `new` instance, or accept that a restart
+  will not clear the state.
+</Aside>
+
+<Aside type="caution" title="Don't capture mutable state in the factory closure">
+  ```ts
+  let counter = 0;
+  system.spawn(() => new Worker(++counter), 'worker');
+  ```
+  On restart the factory runs again — and `counter` keeps climbing, so
+  the restarted actor sees a different argument than the original.
+  Capture immutable values, or accept that "the actor argument changes
+  on restart" if that is genuinely what you want (rare, usually a bug).
+</Aside>
+
+## Naming
+
+The name is passed to `spawn`, never attached to the actor:
+
+```ts
+system.spawn(Worker, 'worker-1');            // → /user/worker-1
+system.spawn(Worker, 'worker-2');            // → /user/worker-2
+this.context.spawn(Worker, 'sub-worker');    // → /user/<this>/sub-worker
+```
+
+Names must be unique among siblings.  For an actor whose path does not
+matter — one-shot async work, throwaway helpers — use
+`spawnAnonymous`, which synthesizes `'$1'`, `'$2'`, …:
+
+```ts
+const ref = system.spawnAnonymous(Counter);
+```
+
+## `ActorOptions`
+
+Everything beyond the defaults goes in a third argument.  Build it
+with the fluent builder:
+
+```ts
+import { ActorOptions, stoppingStrategy, MicrotaskDispatcher, BoundedMailbox } from 'actor-ts';
+
+const workerOptions = ActorOptions.create<WorkerMessage>()
+  .withSupervisorStrategy(stoppingStrategy)
+  .withDispatcher(new MicrotaskDispatcher())
+  .withMailbox(() => new BoundedMailbox({ capacity: 100, overflow: 'drop-head' }));
+
+system.spawn(() => new Worker(database), 'worker-1', workerOptions);
+```
+
+A plain object is the shorthand alternative and reads identically:
+
+```ts
+system.spawn(Worker, 'worker-1', { mailboxCapacity: 500 });
+```
+
+```ts
+class ActorOptionsBuilder<TMessage> {
+  static create<TMessage>(): ActorOptionsBuilder<TMessage>;
+
+  withSupervisorStrategy(strategy: SupervisorStrategy): this;
+  withDispatcher(dispatcher: Dispatcher): this;
+  withMailboxCapacity(capacity: number): this;
+  withMailbox(factory: () => Mailbox<TMessage>): this;
+  withInternal(internal?: boolean): this;
+  withEntity(entity: EntityContext): this;
+}
+```
+
+<Aside type="caution" title="The builder mutates in place">
+  ```ts
+  const base = ActorOptions.create<WorkerMessage>().withMailboxCapacity(500);
+  const strict = base.withSupervisorStrategy(stoppingStrategy);
+  // `base` and `strict` are the SAME object — both now carry the strategy.
+  ```
+  `withX` returns `this`, like every other options builder in the
+  framework.  One instance is one configuration; build a second one
+  rather than branching off a shared base.  Options *are* snapshotted
+  when the actor is spawned, so mutating a builder afterwards does not
+  reconfigure a running actor.
+</Aside>
+
+### `withSupervisorStrategy`
+
+```ts
+import { OneForOneStrategy, Directive, stoppingStrategy } from 'actor-ts';
+
+const workerOptions = ActorOptions.create().withSupervisorStrategy(stoppingStrategy);
+
+const databaseOptions = ActorOptions.create()
+  .withSupervisorStrategy(new OneForOneStrategy(
+    (error) => error instanceof TransientError ? Directive.Resume : Directive.Restart,
+    { maxRetries: 5, withinTimeRangeMs: 60_000 },
+  ));
+```
+
+The strategy set here decides **what happens when THIS actor fails**.
+Two strategies are involved in every actor's life:
+
+- The one **in this actor's spawn options** — applied to *this actor's*
+  failures, by its parent.
+- The one **inside this actor's class** (`override supervisorStrategy`)
+  — applied to *this actor's children's* failures.
+
+Most actors need neither: the parent's default (or the system root's
+`defaultStrategy`) restarts with a 10-per-minute cap.  Reach for this
+when that is wrong — e.g. a worker that should be stopped rather than
+restarted because its parent will spawn a replacement.
+
+The parent resolves the strategy in this order, first match wins:
+
+1. The failing child's own spawn options.
+2. The parent actor's `supervisorStrategy()` override.
+3. `defaultStrategy`.
+
+So a single child can opt out of its parent's policy without affecting
+its siblings.  Two details fall out of the strategy being applied by
+the parent: an `all-for-one` strategy set on a child still widens to
+every sibling, and the restart budget (`maxRetries` /
+`withinTimeRangeMs`) is counted per parent, so siblings share one
+allowance.
+
+See [Supervision](/fundamentals/supervision/) for the full semantics.
+
+### `withDispatcher`
+
+```ts
+import { MicrotaskDispatcher, ThroughputDispatcher } from 'actor-ts';
+
+const crunchyOptions = ActorOptions.create().withDispatcher(new MicrotaskDispatcher());
+const bulkOptions = ActorOptions.create().withDispatcher(new ThroughputDispatcher(100));
+```
+
+Override the system-wide dispatcher for one actor.  Useful when a
+single actor is CPU-heavy and benefits from microtask scheduling, or
+is latency-sensitive while the rest of the system runs on a
+high-throughput dispatcher.  For most apps the system-level dispatcher
+applies uniformly and you never need this — see
+[Dispatchers](/fundamentals/dispatchers/).
+
+### `withMailboxCapacity`
+
+```ts
+const consumerOptions = ActorOptions.create().withMailboxCapacity(500);
+```
+
+Lowers the default mailbox's cap — the same bounded FIFO queue, just a
+smaller ceiling.  The default `drop-head` overflow applies: a full
+mailbox discards the **oldest** queued message to make room, without
+throwing.  For "the sender feels the pressure" — a full mailbox
+throwing `MailboxFullError` at the `tell` site — use `withMailbox` with
+an explicit `reject` policy instead.
+
+### `withMailbox`
+
+```ts
+import { BoundedMailbox, PriorityMailbox } from 'actor-ts';
+
+const telemetryOptions = ActorOptions.create()
+  .withMailbox(() => new BoundedMailbox({ capacity: 1_000, overflow: 'drop-head' }));
+
+const workerOptions = ActorOptions.create<Message>()
+  .withMailbox(() => new PriorityMailbox<Message>({
+    priorityFor: (message) => message.kind === 'urgent' ? 0 : 5,
+  }));
+```
+
+Full control — return any `Mailbox` subclass.  The factory is called
+**once**, when the actor's cell is constructed; the mailbox then
+outlives every restart.  On restart only the `Actor` instance is
+rebuilt — the same mailbox is resumed in place, so messages queued
+before the crash are still there.
+
+See [Mailboxes](/fundamentals/mailboxes/) for the overflow policies and
+priority semantics.
+
+### `withInternal`
+
+Marks an actor as belonging to **tooling** rather than to the
+application, and its children with it.  Whole-system instrumentation
+skips it: without the mark, DevTools' own hub — which publishes the
+spans it has just recorded — traces itself, and every batch comes back
+as the payload of the next one.
+
+```ts
+const probeOptions = ActorOptions.create().withInternal();
+
+system.spawn(MyProbe, 'my-probe', probeOptions);
+```
+
+You need it only when writing a tool that observes the system it runs
+in.  Application actors should not be marked: hiding real work from the
+profiler is how a performance problem stays invisible.
+
+### `withEntity`
+
+Gives an actor a sharding identity, readable back off `this.entityId` /
+`this.context.entity`.  `ClusterSharding` sets this itself for every
+entity a shard creates; it is public for the test bench, where an
+entity that derives its `persistenceId` from `this.entityId` would
+otherwise be unspawnable without a cluster standing behind it.
+
+```ts
+const cartOptions = ActorOptions.create()
+  .withEntity({ entityId: 'user-42', typeName: 'cart', shardId: 3 });
+
+const cart = system.spawn(CartEntity, 'cart-under-test', cartOptions);
+```
+
+## Common patterns
+
+### A helper for a family of actors
+
+```ts
+import { ActorOptions, type ActorFactory } from 'actor-ts';
+
+const workerOptions = ActorOptions.create<WorkerMessage>()
+  .withSupervisorStrategy(stoppingStrategy)
+  .withMailboxCapacity(500);
+
+const worker = (database: ActorRef<DatabaseMessage>): ActorFactory<WorkerMessage> =>
+  () => new Worker(database);
+
+for (let i = 0; i < 8; i++) {
+  this.context.spawn(worker(database), `worker-${i}`, workerOptions);
+}
+```
+
+The options object is reusable across every actor spawned from it — it
+is snapshotted per spawn, so the eight workers do not share state.
+
+### Typed actors
+
+The typed API spawns a `Behavior` instead of a class or factory:
+
+```ts
+const ref = system.spawnTyped(counter(0), 'counter');
+const anonymous = system.spawnTypedAnonymous(counter(0));
+```
+
+To hand a `Behavior` to an API that takes an actor — `Router`,
+`ClusterSharding.start` — wrap it with `typedActor(behavior)`.  See
+[Typed actors](/typed/typed-actor/).
+
+## Where to next
+
+- **[Actor](/fundamentals/actor/)** — the base class whose constructor
+  is invoked.
+- **[Supervision](/fundamentals/supervision/)** — the strategy you pass
+  to `withSupervisorStrategy`.
+- **[Dispatchers](/fundamentals/dispatchers/)** — the scheduler you
+  pass to `withDispatcher`.
+- **[Mailboxes](/fundamentals/mailboxes/)** — the queue you pass to
+  `withMailbox` / `withMailboxCapacity`.
+- **[ActorSystem](/fundamentals/actor-system/)** — the
+  `system.spawn(actor, name, options?)` that consumes all of this.

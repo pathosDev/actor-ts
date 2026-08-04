@@ -141,7 +141,7 @@ const receptionist = system.extension(ReceptionistId).start(cluster);
 // Den API-Actor dieses Pods registrieren:
 receptionist.tell(new Register(
   ServiceKey.of<ApiMessage>('api'),
-  system.spawn(Props.create(() => new ApiActor()), 'api'),
+  system.spawn(() => new ApiActor(), 'api'),
 ));
 
 // Andere Actors finden ihn — das Listing wird an das Reply-Ziel geliefert:

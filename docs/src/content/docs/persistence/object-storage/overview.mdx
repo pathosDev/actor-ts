@@ -60,7 +60,7 @@ const durableStateOptions = DurableStateOptions.create<State>()
   .withPersistenceId(`cart-${userId}`)
   .withStore(stateStore)
   .withEmptyState(() => ({ items: [] }));
-const cart = system.spawnAnonymous(Props.create(() => new Cart(durableStateOptions)));
+const cart = system.spawnAnonymous(() => new Cart(durableStateOptions));
 ```
 
 `Cart`'s state lives in S3 under `cart-<userId>` as the object

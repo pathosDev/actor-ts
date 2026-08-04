@@ -14,7 +14,7 @@ sind identisch benannt.  Dieser Guide führt durch die
 | --- | --- |
 | `akka.actor.Actor` | `Actor<TMessage>` |
 | `akka.actor.ActorRef` | `ActorRef<T>` |
-| `akka.actor.Props` | `Props<TMessage>` |
+| `akka.actor.Props` | die Actor-Klasse, eine Factory oder `ActorOptions<TMessage>` |
 | `tell(message)` / `!` | `tell(message)` |
 | `ask(message).mapTo[T]` | `ref.ask<TRes>(message, timeoutMs)` |
 | `context.spawnAnonymous(props)` | `context.spawnAnonymous(props)` |
@@ -126,7 +126,7 @@ const cluster = await Cluster.join(system, clusterOptions);
 
 const region = cluster.sharding.start({
   typeName: 'Counter',
-  entityProps: Props.create(() => new Counter()),
+  entityActor: () => new Counter(),
   extractEntityId: (message) => message.id,
   numShards: 100,
 });
