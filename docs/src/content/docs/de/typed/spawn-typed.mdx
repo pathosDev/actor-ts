@@ -133,8 +133,11 @@ Nachrichtentyp des Kindes aus dem Typ-Parameter des Behaviors.
 
 Für die deterministischen Varianten (`spawnTyped`) ist der
 `name`-Parameter Pflicht und muss unter Geschwistern eindeutig
-sein.  Für `spawnTypedAnonymous` generiert das Framework einen
-(`'$1'`, `'$2'`, ...).
+sein.  Für `spawnTypedAnonymous` generiert das Framework einen —
+`$anonymous-`, einen Zähler pro Elternteil und zwölf zufällige
+Hex-Zeichen, zum Beispiel `'$anonymous-1-3f9c1a0d7b42'`.  Der Suffix
+ist zufällig, der Pfad also über Läufe hinweg nicht stabil; nutze
+`spawnTyped`, wenn du den Actor über den Pfad adressieren musst.
 
 Der Pfad des resultierenden Actors folgt dem Standardformat:
 

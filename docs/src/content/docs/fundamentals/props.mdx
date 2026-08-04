@@ -236,8 +236,10 @@ recipe can spawn many actors with different names.  If `name` were
 on `Props`, you'd need a fresh `Props` per actor — a footgun for
 actors that get a unique-name-per-instance.
 
-Omit the name and the framework synthesizes one (`'$1'`, `'$2'`,
-…).
+Omit the name and the framework synthesizes one — `$anonymous-`, a
+per-parent counter and twelve random hex characters, for example
+`'$anonymous-1-3f9c1a0d7b42'`.  The suffix is random: don't build
+anything that depends on the value.
 
 ## Common patterns
 
