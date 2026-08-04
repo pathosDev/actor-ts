@@ -11,6 +11,13 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Added
 
+- **`ShardInfo.resident`** (#901).  `ClusterSharding.shards()` now reports
+  whether each shard actor was materialised when its region answered.
+  `entityCount: 0` cannot say that on its own — a running-but-empty shard and
+  one that passivated report the same count — so this is what to read when
+  tuning `shardPassivationIdleMs` or counting the actors a node really holds.
+  It says nothing about reachability: `ref` works either way.
+
 - **`Actor.displayName()` — a readable name for an actor in logs and DevTools**
   (#891).  A path is an address, not a name: under sharding the log source
   grows to ~120 characters of machine identifier, and the business identity it
@@ -99,6 +106,15 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   trigger a lookup.  On a shard that went quiet after the rebalance, that
   never came.  The region now re-asks for the home whenever its buffer is
   non-empty.
+- **A shard ref for a remote shard no longer drops messages while that shard is
+  passivated** (#901).  `shardRefFor()` and `ShardInfo.ref` handed out a ref
+  addressed at the shard's path on its owning node.  That was safe while an
+  allocated shard always had a running actor; since #892 it does not, and in
+  the gap nothing resolved the path, so the receiving node dropped the message
+  into the envelope catch-all.  Remote shard traffic now goes to the owning
+  region — always up — which materialises the shard before forwarding, the
+  same shape entity traffic has always had.  The ref keeps the shard's path as
+  its identity, so logging, comparison and `ref.path` are unchanged.
 - **Remembered entities return after an unexpected shard death** (#894).  When
   a shard actor died outside a handoff, ownership stayed put — which is what
   lets the next message re-create the shard — but that also meant neither

@@ -396,10 +396,10 @@ beiden Fällen unberührt — sie laufen für die Lebensdauer des Nodes.
 Gestoppt wird immer nur ein *leerer* Shard, es steht also kein
 Entity-State auf dem Spiel, und Nachrichten, die während des Stoppens
 eintreffen, werden genauso gepuffert und nachgespielt wie bei einer
-Entity. Eine Folge ist erwähnenswert: nach der Ref eines passivierten
-Shards mit [`shardRefFor()`](/de/cluster/sharding/introspection/) zu
-fragen, holt ihn zurück — ein Handle auf einen nicht laufenden Actor
-wäre ein Handle auf nichts.
+Entity. Auch eine Shard-Ref bleibt über die Lücke hinweg gültig — siehe
+[Introspection](/de/cluster/sharding/introspection/), wo `ShardInfo`
+zusätzlich ein `resident`-Flag meldet, das einen passivierten Shard von
+einem bloß leeren unterscheidet.
 
 ## Rebalancing
 
