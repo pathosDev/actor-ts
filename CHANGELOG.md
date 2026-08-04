@@ -78,6 +78,16 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   framework picks when you don't.  Code that hard-codes an anonymous path
   (`actorSelection('/user/$1')`) or parses `$<n>` out of a name must spawn with
   `spawn(props, name)` and a name of its own.
+- **BREAKING — unnamed reliable-delivery controllers are
+  `consumer-<n>-<random>` / `producer-<n>-<random>`** (#897).  The fallback name
+  came from a module-global counter, so `/system/delivery/consumer-1` was the
+  first one of every run — a derivable address for an actor that is reachable by
+  path — and two `ActorSystem`s in one process drew from the same sequence.
+  Same shape as the anonymous-actor names above: counter first so spawn order
+  stays legible, random half to close the guessability.
+  **Migration:** passing an explicit `name` to `ReliableDelivery.consumer()` /
+  `.producer()` is unchanged.  Code addressing a generated controller by path
+  must pass a name of its own.
 
 ### Fixed
 
@@ -97,6 +107,27 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   entity named by the next message returned, and the coordinator kept listing
   the rest with `started` events that would never see a `stopped`.  The region
   now asks the coordinator to re-send what it remembers.
+
+### Security
+
+- **Quorum correlation ids in `DistributedData` are no longer guessable**
+  (#896).  `nextPendingId()` returned `p<Date.now()>-<counter>`.  That value
+  travels on the wire and the peer echoes it back on its acknowledgment, so an
+  id that can be guessed is an id whose acknowledgment can be forged —
+  satisfying a quorum write or read that no peer actually confirmed.  A
+  timestamp is observable and the counter starts at 1 in every process, which
+  made guessing arithmetic rather than search.  It is now sixteen random hex
+  characters.  (The counter was also module-global rather than per-system, so
+  two systems in one process shared a sequence.)  Reachable only by something
+  that can already send cluster wire messages, which mTLS on the transport
+  excludes — see *Cluster security* — so this is defence in depth, not an open
+  door on a hardened cluster.
+- **Filesystem object-storage temp paths no longer come from `Math.random()`**
+  (#898).  The atomic-write temp file was named
+  `<key>.tmp.<pid>.<Date.now()>.<Math.random()>`; the clock is observable and
+  `Math.random()` is not a CSPRNG, so a local process sharing the directory
+  could predict the path and pre-create it or plant a symlink there.  The
+  suffix is now drawn from `crypto.getRandomValues`.
 
 ## [0.12.2] — 2026-08-04
 
