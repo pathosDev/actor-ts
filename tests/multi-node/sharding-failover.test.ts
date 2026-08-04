@@ -11,8 +11,8 @@
  *   3. Network partition: shards on the partitioned-away node move
  *      to the surviving side; on heal, the rejoining node re-registers
  *      and the cluster converges.
- *   4. Buffered GetShardHome queries during repeated re-allocation
- *      (we crash the leader *while* asks are still in flight).
+ *   4. Buffered GetShardHome queries during re-allocation — a burst of asks
+ *      spans a *graceful* leave, so shards move under live traffic.
  *   5. ShardedDaemonProcess: crash one node, the daemons it hosted
  *      reappear elsewhere within the rebalance window.
  *
@@ -29,6 +29,7 @@ import { ShardedDaemonProcess } from '../../src/cluster/sharding/ShardedDaemonPr
 import { ShardedDaemonProcessOptions } from '../../src/cluster/sharding/ShardedDaemonProcessOptions.js';
 import { MultiNodeSpec } from '../../src/testkit/MultiNodeSpec.js';
 import { MultiNodeTransport } from '../../src/testkit/internal/MultiNodeTransport.js';
+import { awaitCondition } from '../util/AwaitCondition.js';
 import type { ActorRef } from '../../src/ActorRef.js';
 
 type PingCommand = { id: string; kind: 'ping'; payload?: string };
@@ -247,33 +248,50 @@ describe('multi-node sharding failover', () => {
 
       await Bun.sleep(300);
 
-      // Continuous asks for 1.5 s while the cluster topology shifts
-      // (graceful leave + crash interleaved).
+      // A burst of asks while the cluster topology shifts.  Bounded by a
+      // *count*, not by a wall-clock window: how many asks a window fits is a
+      // property of the scheduler, not of sharding.  This loop used to run for
+      // 1.5 s and assert on the resulting sample count, but `Bun.sleep(5)`
+      // costs a full ~15.6 ms timer quantum on Windows (#477) while the ask
+      // itself is sub-millisecond — so the count was ~100 % timer granularity,
+      // and one stalled event loop turned it into a red build (#902).
+      const totalAsks = 60;
+      let issued = 0;
       let replies = 0;
       let failures = 0;
-      const stopAt = Date.now() + 1_500;
       const driver = (async (): Promise<void> => {
-        let i = 0;
-        while (Date.now() < stopAt) {
+        for (let i = 0; i < totalAsks; i++) {
           try {
-            await regions.a.ask<string>({ id: `churn-${i++ % 16}`, kind: 'ping' }, 4_000);
+            await regions.a.ask<string>({ id: `churn-${i % 16}`, kind: 'ping' }, 4_000);
             replies++;
           } catch { failures++; }
+          issued++;
           await Bun.sleep(5);
         }
       })();
 
-      // Topology churn while asks are in flight.
-      await Bun.sleep(200);
+      // Topology churn while asks are in flight — keyed to the driver's
+      // progress, not to a sleep.  A fixed 200 ms landed the leave after ~13
+      // asks on an idle machine but after the first one on a stalled machine,
+      // which is what made the interleaving machine-dependent; gating on
+      // "8 asks issued" puts the leave mid-burst everywhere.
+      await awaitCondition(() => issued >= 8, {
+        timeoutMs: 5_000,
+        label: 'burst driver issued 8 asks before the graceful leave',
+      });
       await spec.leave('c');                                 // graceful
       await spec.awaitMembers('a', 2, 4_000);
       await driver;
 
-      // Most asks must succeed.  We don't demand 100% because graceful
-      // leave races against in-flight asks at the wire level — the
-      // important property is "survives churn without deadlocking".
+      // The property is "survives churn without deadlocking".  Tolerating a
+      // failed ask is headroom, not an observed race: a probe that fires the
+      // leave at t=0, squarely onto the first in-flight ask, still saw 0
+      // failures across ~1 400 asks (#902).  Kept because a loaded machine can
+      // stall an ask past its own timeout, which is not what this test is for.
       expect(replies).toBeGreaterThan(0);
-      expect(replies + failures).toBeGreaterThan(20);
+      // Exact, not a throughput guess: the burst is a fixed size, so this says
+      // the driver ran to completion instead of exiting early.
+      expect(replies + failures).toBe(totalAsks);
       // …and after the churn settles, asks succeed again.
       await Bun.sleep(300);
       const finalReply = await regions.a.ask<string>({ id: `final`, kind: 'ping' }, 5_000);
