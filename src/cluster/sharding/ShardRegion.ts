@@ -913,6 +913,13 @@ export class ShardRegion<TMessage = unknown> extends Actor<TMessage | ShardingMe
       );
       this.shards.delete(shardId);
       this.forgetShardEntities(shardId);
+      // Deliberately no `EntityStopped`: under `rememberEntities` those
+      // entities are meant to come back, and the coordinator's registry is
+      // still the record of them.  But ownership did not move, so nothing
+      // re-ships that registry on its own (#894) — ask for it.
+      if (this.config.rememberEntities) {
+        this.tellCoordinator({ $t: 'sharding.GetRememberedEntities', shardId });
+      }
       return;
     }
   }
