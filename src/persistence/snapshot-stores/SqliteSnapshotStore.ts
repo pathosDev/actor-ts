@@ -45,7 +45,7 @@ export class SqliteSnapshotStore implements SnapshotStore {
     const stmts = this.stmts!;
     const now = Date.now();
     try {
-      stmts.insert.run(persistenceId, seq, encodePayload(state), now);
+      stmts.insert.run(persistenceId, seq, encodePayload(state, this.options.serializer), now);
       if (this.keepN > 0) {
         stmts.deleteOlderThan.run(persistenceId, persistenceId, this.keepN);
       }
@@ -67,7 +67,7 @@ export class SqliteSnapshotStore implements SnapshotStore {
     return some({
       persistenceId: row.persistence_id,
       sequenceNr: row.sequence_nr,
-      state: decodePayload(row.payload) as S,
+      state: decodePayload(row.payload, this.options.serializer) as S,
       timestamp: row.timestamp,
     });
   }
@@ -84,7 +84,7 @@ export class SqliteSnapshotStore implements SnapshotStore {
     return some({
       persistenceId: row.persistence_id,
       sequenceNr: row.sequence_nr,
-      state: decodePayload(row.payload) as S,
+      state: decodePayload(row.payload, this.options.serializer) as S,
       timestamp: row.timestamp,
     });
   }

@@ -1,4 +1,5 @@
 import { OptionsBuilder } from '../../util/OptionsBuilder.js';
+import type { Serializer } from '../../serialization/Serializer.js';
 import type { MsSqlPoolLike } from './MsSqlClient.js';
 import type { MsSqlJournalOptions } from './MsSqlJournalOptions.js';
 import type { MsSqlSnapshotStoreOptions } from '../snapshot-stores/MsSqlSnapshotStoreOptions.js';
@@ -16,6 +17,8 @@ export type RegisterMsSqlPluginsOptionsType = {
   readonly url?: string;
   /** `mssql` config object applied to every store that does not set its own. */
   readonly poolConfig?: Record<string, unknown>;
+  /** Shared payload serializer applied to every store that does not set its own. */
+  readonly serializer?: Serializer;
   /** Journal-specific options (table names, autoCreate). */
   readonly journal?: MsSqlJournalOptions;
   /** Snapshot-store-specific options (table name, keepN). */
@@ -55,6 +58,11 @@ export class RegisterMsSqlPluginsOptionsBuilder extends OptionsBuilder<RegisterM
   /** `mssql` config object applied to every store that does not set its own. */
   withPoolConfig(poolConfig: Record<string, unknown>): this {
     return this.set('poolConfig', poolConfig);
+  }
+
+  /** Shared payload serializer applied to every store that does not set its own. */
+  withSerializer(serializer: Serializer): this {
+    return this.set('serializer', serializer);
   }
 
   /** Journal-specific options (table names, autoCreate). */

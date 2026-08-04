@@ -1,4 +1,5 @@
 import { OptionsBuilder } from '../../util/OptionsBuilder.js';
+import type { Serializer } from '../../serialization/Serializer.js';
 import type { DynamoDbOperations } from './DynamoDbClient.js';
 import type { DynamoDbJournalOptions } from './DynamoDbJournalOptions.js';
 import type { DynamoDbSnapshotStoreOptions } from '../snapshot-stores/DynamoDbSnapshotStoreOptions.js';
@@ -17,6 +18,8 @@ export type RegisterDynamoDbPluginsOptionsType = {
   readonly endpoint?: string;
   /** `DynamoDBClient` config applied to every store that does not set its own. */
   readonly clientConfig?: Record<string, unknown>;
+  /** Shared payload serializer applied to every store that does not set its own. */
+  readonly serializer?: Serializer;
   /** Journal-specific options (table name). */
   readonly journal?: DynamoDbJournalOptions;
   /** Snapshot-store-specific options (table name, keepN). */
@@ -47,6 +50,11 @@ export class RegisterDynamoDbPluginsOptionsBuilder
   /** Shared operations façade injected into all three stores. */
   withOperations(operations: DynamoDbOperations): this {
     return this.set('operations', operations);
+  }
+
+  /** Shared payload serializer applied to every store that does not set its own. */
+  withSerializer(serializer: Serializer): this {
+    return this.set('serializer', serializer);
   }
 
   /** AWS region applied to every store that does not set its own. */

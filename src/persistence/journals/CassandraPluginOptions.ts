@@ -1,4 +1,5 @@
 import { OptionsBuilder } from '../../util/OptionsBuilder.js';
+import type { Serializer } from '../../serialization/Serializer.js';
 import type { CassandraClientLike } from './CassandraClient.js';
 import type { CassandraJournalOptions } from './CassandraJournalOptions.js';
 import type { CassandraSnapshotStoreOptions } from '../snapshot-stores/CassandraSnapshotStoreOptions.js';
@@ -11,6 +12,8 @@ export type RegisterCassandraPluginsOptionsType = {
    * constructs its own client.
    */
   readonly client?: CassandraClientLike;
+  /** Shared payload serializer injected into both stores (a leaf's own `serializer` wins). */
+  readonly serializer?: Serializer;
   /** Journal-specific overrides. */
   readonly journal: CassandraJournalOptions;
   /** Snapshot-store-specific overrides.  Usually shares keyspace with the journal. */
@@ -41,6 +44,11 @@ export class RegisterCassandraPluginsOptionsBuilder extends OptionsBuilder<Regis
   /** Shared CQL client reused by both plug-ins.  When omitted, each constructs its own. */
   withClient(client: CassandraClientLike): this {
     return this.set('client', client);
+  }
+
+  /** Shared payload serializer injected into both stores (a leaf's own `serializer` wins). */
+  withSerializer(serializer: Serializer): this {
+    return this.set('serializer', serializer);
   }
 
   /** Journal-specific options builder. */

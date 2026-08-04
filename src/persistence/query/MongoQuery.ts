@@ -95,7 +95,7 @@ export class MongoQuery extends InMemoryQuery {
       return {
         persistenceId: document.persistenceId,
         sequenceNr: Number(document.sequenceNr),
-        event: decodePayload(document.payload) as E,
+        event: decodePayload(document.payload, this.mongo.serializer) as E,
         timestamp: Number(document.timestamp),
         tags,
       };

@@ -1,3 +1,4 @@
+import type { Serializer } from '../../serialization/Serializer.js';
 import { LazyStore, type LazyStoreConfig } from '../LazyStore.js';
 import type { SqlDialect } from './SqlDialect.js';
 import type { SqlPool } from './SqlPool.js';
@@ -7,6 +8,8 @@ export interface RelationalStoreConfig extends Omit<LazyStoreConfig<SqlPool>, 'o
   readonly dialect: SqlDialect;
   /** Create tables on first use.  Default `true`. */
   readonly autoCreateTables?: boolean;
+  /** Custom payload serializer — see `storage/StoreSerializerOptions.ts`. */
+  readonly serializer?: Serializer;
   /**
    * Whether this store built the pool itself.  An injected pool — shared
    * across the journal, snapshot and durable-state stores by the register
@@ -25,6 +28,7 @@ export interface RelationalStoreConfig extends Omit<LazyStoreConfig<SqlPool>, 'o
  */
 export abstract class RelationalStore extends LazyStore<SqlPool> {
   protected readonly dialect: SqlDialect;
+  protected readonly serializer?: Serializer;
   private readonly autoCreate: boolean;
 
   protected constructor(config: RelationalStoreConfig) {
@@ -34,6 +38,7 @@ export abstract class RelationalStore extends LazyStore<SqlPool> {
       openResource: () => config.openPool(),
     });
     this.dialect = config.dialect;
+    this.serializer = config.serializer;
     this.autoCreate = config.autoCreateTables ?? true;
   }
 

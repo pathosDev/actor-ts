@@ -1,7 +1,7 @@
 import type { SqliteDriver } from '../../runtime/sqlite/index.js';
-import { OptionsBuilder } from '../../util/OptionsBuilder.js';
+import { StoreSerializerOptionsBuilder, type StoreSerializerOptionsBase } from '../storage/StoreSerializerOptions.js';
 
-export type SqliteJournalOptionsType = {
+export type SqliteJournalOptionsType = StoreSerializerOptionsBase & {
   /** File path (absolute or relative) or ":memory:" for an ephemeral DB. */
   readonly path?: string;
   /** Table name for events.  Default: `events`. */
@@ -22,7 +22,7 @@ export type SqliteJournalOptionsType = {
  *
  *     new SqliteJournal(SqliteJournalOptions.create().withPath(':memory:').withWal(true))
  */
-export class SqliteJournalOptionsBuilder extends OptionsBuilder<SqliteJournalOptionsType> {
+export class SqliteJournalOptionsBuilder extends StoreSerializerOptionsBuilder<SqliteJournalOptionsType> {
   /** Start a fresh builder.  Equivalent to `new SqliteJournalOptionsBuilder()`. */
   static create(): SqliteJournalOptionsBuilder {
     return new SqliteJournalOptionsBuilder();

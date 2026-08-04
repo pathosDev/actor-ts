@@ -1,8 +1,8 @@
-import { OptionsBuilder } from '../../util/OptionsBuilder.js';
+import { StoreSerializerOptionsBuilder, type StoreSerializerOptionsBase } from '../storage/StoreSerializerOptions.js';
 import { OptionsValidator } from '../../util/OptionsValidator.js';
 import type { MsSqlConnection, MsSqlPoolLike } from '../journals/MsSqlClient.js';
 
-export interface MsSqlSnapshotStoreOptionsType extends MsSqlConnection {
+export interface MsSqlSnapshotStoreOptionsType extends MsSqlConnection, StoreSerializerOptionsBase {
   /** Snapshots table name.  Default: `snapshots`. */
   readonly snapshotsTable?: string;
   /** How many snapshots to keep per persistence id.  Default: 3; `<= 0` keeps all. */
@@ -18,7 +18,7 @@ export interface MsSqlSnapshotStoreOptionsType extends MsSqlConnection {
  *       .withPoolConfig(config)
  *       .withKeepN(5))
  */
-export class MsSqlSnapshotStoreOptionsBuilder extends OptionsBuilder<MsSqlSnapshotStoreOptionsType> {
+export class MsSqlSnapshotStoreOptionsBuilder extends StoreSerializerOptionsBuilder<MsSqlSnapshotStoreOptionsType> {
   /** Start a fresh builder.  Equivalent to `new MsSqlSnapshotStoreOptionsBuilder()`. */
   static create(): MsSqlSnapshotStoreOptionsBuilder {
     return new MsSqlSnapshotStoreOptionsBuilder();

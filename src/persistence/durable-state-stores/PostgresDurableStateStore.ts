@@ -19,6 +19,7 @@ export class PostgresDurableStateStore extends RelationalDurableStateStore {
       dialect: postgresDialect,
       table: resolvedOptions.table,
       autoCreateTables: resolvedOptions.autoCreateTables,
+      serializer: resolvedOptions.serializer,
       ownsPool: resolvedOptions.pool === undefined,
       openPool: async () => adaptPgPool(await buildPgPool(resolvedOptions)),
     });

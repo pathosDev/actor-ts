@@ -73,7 +73,7 @@ export class RelationalSnapshotStore extends RelationalStore implements Snapshot
     const pool = await this.ensureOpen();
     const now = Date.now();
     try {
-      await pool.query(this.statements.upsert, [persistenceId, seq, encodePayload(state), now]);
+      await pool.query(this.statements.upsert, [persistenceId, seq, encodePayload(state, this.serializer), now]);
       if (this.keepN > 0) {
         const { sql, params } = this.statements.prune;
         await pool.query(sql, params(persistenceId, this.keepN));
@@ -109,7 +109,7 @@ export class RelationalSnapshotStore extends RelationalStore implements Snapshot
     return {
       persistenceId: row.persistence_id,
       sequenceNr: Number(row.sequence_nr),
-      state: decodePayload(row.payload) as S,
+      state: decodePayload(row.payload, this.serializer) as S,
       timestamp: Number(row.timestamp),
     };
   }

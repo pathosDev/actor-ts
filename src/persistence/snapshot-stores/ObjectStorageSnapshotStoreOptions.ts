@@ -1,5 +1,5 @@
-import { OptionsBuilder } from '../../util/OptionsBuilder.js';
 import { OptionsValidator } from '../../util/OptionsValidator.js';
+import { StoreSerializerOptionsBuilder, type StoreSerializerOptionsBase } from '../storage/StoreSerializerOptions.js';
 import type {
   CompressionConfig,
   CompressionResolver,
@@ -8,7 +8,7 @@ import type {
 } from '../object-storage/PluginConfig.js';
 import type { ObjectStorageBackend } from '../object-storage/ObjectStorageBackend.js';
 
-export type ObjectStorageSnapshotStoreOptionsType = {
+export type ObjectStorageSnapshotStoreOptionsType = StoreSerializerOptionsBase & {
   /** The underlying storage layer (S3 / Filesystem / …). */
   readonly backend: ObjectStorageBackend;
   /**
@@ -45,7 +45,7 @@ export type ObjectStorageSnapshotStoreOptionsType = {
  *       ObjectStorageSnapshotStoreOptions.create().withBackend(backend).withKeepN(2),
  *     )
  */
-export class ObjectStorageSnapshotStoreOptionsBuilder extends OptionsBuilder<ObjectStorageSnapshotStoreOptionsType> {
+export class ObjectStorageSnapshotStoreOptionsBuilder extends StoreSerializerOptionsBuilder<ObjectStorageSnapshotStoreOptionsType> {
   /** Start a fresh builder.  Equivalent to `new ObjectStorageSnapshotStoreOptionsBuilder()`. */
   static create(): ObjectStorageSnapshotStoreOptionsBuilder {
     return new ObjectStorageSnapshotStoreOptionsBuilder();

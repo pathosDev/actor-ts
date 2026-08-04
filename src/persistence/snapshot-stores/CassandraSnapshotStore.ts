@@ -77,7 +77,7 @@ export class CassandraSnapshotStore implements SnapshotStore {
     // Cassandra store has no compression / encryption — options ignored.
     await this.ensureStarted();
     const now = Date.now();
-    const payload = encodePayload(state);
+    const payload = encodePayload(state, this.options.serializer);
     try {
       await this.client.execute(
         `INSERT INTO ${this.qualified()} (persistence_id, sequence_nr, timestamp, payload) VALUES (?, ?, ?, ?)`,
@@ -149,7 +149,7 @@ export class CassandraSnapshotStore implements SnapshotStore {
       persistenceId: row.persistence_id,
       sequenceNr: Number(row.sequence_nr),
       timestamp: Number(row.timestamp),
-      state: decodePayload(row.payload) as S,
+      state: decodePayload(row.payload, this.options.serializer) as S,
     });
   }
 

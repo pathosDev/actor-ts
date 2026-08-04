@@ -1,7 +1,7 @@
 import type { SqliteDriver } from '../../runtime/sqlite/index.js';
-import { OptionsBuilder } from '../../util/OptionsBuilder.js';
+import { StoreSerializerOptionsBuilder, type StoreSerializerOptionsBase } from '../storage/StoreSerializerOptions.js';
 
-export type SqliteSnapshotStoreOptionsType = {
+export type SqliteSnapshotStoreOptionsType = StoreSerializerOptionsBase & {
   /** Path or ":memory:". Defaults to ":memory:". */
   readonly path?: string;
   /** Table name; default `snapshots`. */
@@ -20,7 +20,7 @@ export type SqliteSnapshotStoreOptionsType = {
  *
  *     new SqliteSnapshotStore(SqliteSnapshotStoreOptions.create().withPath(':memory:').withKeepN(2))
  */
-export class SqliteSnapshotStoreOptionsBuilder extends OptionsBuilder<SqliteSnapshotStoreOptionsType> {
+export class SqliteSnapshotStoreOptionsBuilder extends StoreSerializerOptionsBuilder<SqliteSnapshotStoreOptionsType> {
   /** Start a fresh builder.  Equivalent to `new SqliteSnapshotStoreOptionsBuilder()`. */
   static create(): SqliteSnapshotStoreOptionsBuilder {
     return new SqliteSnapshotStoreOptionsBuilder();

@@ -1,9 +1,9 @@
-import { OptionsBuilder } from '../../util/OptionsBuilder.js';
 import { OptionsError, OptionsValidator } from '../../util/OptionsValidator.js';
+import { StoreSerializerOptionsBuilder, type StoreSerializerOptionsBase } from '../storage/StoreSerializerOptions.js';
 import type { D1ClientLike, D1Connection } from './D1Client.js';
 
 /** Everything the three D1 option families have in common. */
-export type D1OptionsBaseType = D1Connection;
+export type D1OptionsBaseType = D1Connection & StoreSerializerOptionsBase;
 
 /**
  * The connection half of a D1 options builder.
@@ -12,7 +12,7 @@ export type D1OptionsBaseType = D1Connection;
  * rather than being copied into three builders — the setters stay `withX` ⇔ field
  * `x` in lockstep, and each concrete builder adds only its own table name.
  */
-export abstract class D1OptionsBuilderBase<T extends D1OptionsBaseType> extends OptionsBuilder<T> {
+export abstract class D1OptionsBuilderBase<T extends D1OptionsBaseType> extends StoreSerializerOptionsBuilder<T> {
   /** Cloudflare account id. */
   withAccountId(accountId: string): this {
     return this.set('accountId' as keyof T, accountId as T[keyof T]);

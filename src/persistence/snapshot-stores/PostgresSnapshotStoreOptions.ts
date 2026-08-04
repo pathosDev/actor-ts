@@ -1,7 +1,7 @@
-import { OptionsBuilder } from '../../util/OptionsBuilder.js';
+import { StoreSerializerOptionsBuilder, type StoreSerializerOptionsBase } from '../storage/StoreSerializerOptions.js';
 import type { PgPoolLike, PostgresConnection } from '../journals/PostgresClient.js';
 
-export interface PostgresSnapshotStoreOptionsType extends PostgresConnection {
+export interface PostgresSnapshotStoreOptionsType extends PostgresConnection, StoreSerializerOptionsBase {
   /** Snapshots table name.  Default: `snapshots`. */
   readonly snapshotsTable?: string;
   /** Keep this many snapshots per persistenceId; older ones pruned on save.  Default: 3.  `<=0` keeps all. */
@@ -18,7 +18,7 @@ export interface PostgresSnapshotStoreOptionsType extends PostgresConnection {
  * The connection fields (`withUrl` / `withPoolConfig` / `withPool`) come
  * from the shared {@link PostgresConnection} mixin.
  */
-export class PostgresSnapshotStoreOptionsBuilder extends OptionsBuilder<PostgresSnapshotStoreOptionsType> {
+export class PostgresSnapshotStoreOptionsBuilder extends StoreSerializerOptionsBuilder<PostgresSnapshotStoreOptionsType> {
   /** Start a fresh builder.  Equivalent to `new PostgresSnapshotStoreOptionsBuilder()`. */
   static create(): PostgresSnapshotStoreOptionsBuilder {
     return new PostgresSnapshotStoreOptionsBuilder();

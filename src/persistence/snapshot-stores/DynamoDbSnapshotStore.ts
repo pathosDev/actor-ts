@@ -12,6 +12,7 @@ import {
   type DynamoDbOperations,
 } from '../journals/DynamoDbClient.js';
 import { DynamoDbStore, type DynamoDbTableSchema } from '../journals/DynamoDbStore.js';
+import type { Serializer } from '../../serialization/Serializer.js';
 import { decodePayload, encodePayload } from '../storage/PayloadCodec.js';
 import {
   DynamoDbSnapshotStoreOptionsValidator,
@@ -38,6 +39,8 @@ export class DynamoDbSnapshotStore extends DynamoDbStore implements SnapshotStor
   private readonly tableName: string;
   private readonly keepN: number;
 
+  private readonly serializer?: Serializer;
+
   constructor(options: DynamoDbSnapshotStoreOptions = {}) {
     const resolvedOptions = (options as DynamoDbSnapshotStoreOptionsType);
     new DynamoDbSnapshotStoreOptionsValidator().validate(resolvedOptions);
@@ -52,6 +55,7 @@ export class DynamoDbSnapshotStore extends DynamoDbStore implements SnapshotStor
     });
     this.tableName = resolvedOptions.snapshotsTable ?? 'actor_ts_snapshots';
     this.keepN = resolvedOptions.keepN ?? 3;
+    this.serializer = resolvedOptions.serializer;
   }
 
   protected tables(): DynamoDbTableSchema[] {
@@ -67,7 +71,7 @@ export class DynamoDbSnapshotStore extends DynamoDbStore implements SnapshotStor
         Item: {
           pid: stringAttribute(persistenceId),
           seq: numberAttribute(seq),
-          payload: stringAttribute(encodePayload(state)),
+          payload: stringAttribute(encodePayload(state, this.serializer)),
           ts: numberAttribute(now),
         },
       });
@@ -88,7 +92,7 @@ export class DynamoDbSnapshotStore extends DynamoDbStore implements SnapshotStor
       Limit: 1,
     });
     const item = found.Items?.[0];
-    return item ? some(toSnapshot<S>(item)) : none;
+    return item ? some(toSnapshot<S>(item, this.serializer)) : none;
   }
 
   async loadBefore<S>(persistenceId: string, seq: number, _options?: PersistenceOptions): Promise<Option<Snapshot<S>>> {
@@ -104,7 +108,7 @@ export class DynamoDbSnapshotStore extends DynamoDbStore implements SnapshotStor
       Limit: 1,
     });
     const item = found.Items?.[0];
-    return item ? some(toSnapshot<S>(item)) : none;
+    return item ? some(toSnapshot<S>(item, this.serializer)) : none;
   }
 
   async delete(persistenceId: string, toSeq: number): Promise<void> {
@@ -186,11 +190,11 @@ export class DynamoDbSnapshotStore extends DynamoDbStore implements SnapshotStor
   }
 }
 
-function toSnapshot<S>(item: DynamoDbItem): Snapshot<S> {
+function toSnapshot<S>(item: DynamoDbItem, serializer?: Serializer): Snapshot<S> {
   return {
     persistenceId: readString(item, 'pid'),
     sequenceNr: readNumber(item, 'seq'),
-    state: decodePayload(readString(item, 'payload')) as S,
+    state: decodePayload(readString(item, 'payload'), serializer) as S,
     timestamp: readNumber(item, 'ts'),
   };
 }

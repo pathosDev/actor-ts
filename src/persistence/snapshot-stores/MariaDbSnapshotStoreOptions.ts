@@ -1,7 +1,7 @@
-import { OptionsBuilder } from '../../util/OptionsBuilder.js';
+import { StoreSerializerOptionsBuilder, type StoreSerializerOptionsBase } from '../storage/StoreSerializerOptions.js';
 import type { MariaDbPoolLike, MariaDbConnection } from '../journals/MariaDbClient.js';
 
-export interface MariaDbSnapshotStoreOptionsType extends MariaDbConnection {
+export interface MariaDbSnapshotStoreOptionsType extends MariaDbConnection, StoreSerializerOptionsBase {
   /** Snapshots table name.  Default: `snapshots`. */
   readonly snapshotsTable?: string;
   /** Keep this many snapshots per persistenceId; older ones pruned on save.  Default: 3.  `<=0` keeps all. */
@@ -18,7 +18,7 @@ export interface MariaDbSnapshotStoreOptionsType extends MariaDbConnection {
  * The connection fields (`withUrl` / `withPoolConfig` / `withPool`) come
  * from the shared {@link MariaDbConnection} mixin.
  */
-export class MariaDbSnapshotStoreOptionsBuilder extends OptionsBuilder<MariaDbSnapshotStoreOptionsType> {
+export class MariaDbSnapshotStoreOptionsBuilder extends StoreSerializerOptionsBuilder<MariaDbSnapshotStoreOptionsType> {
   /** Start a fresh builder.  Equivalent to `new MariaDbSnapshotStoreOptionsBuilder()`. */
   static create(): MariaDbSnapshotStoreOptionsBuilder {
     return new MariaDbSnapshotStoreOptionsBuilder();

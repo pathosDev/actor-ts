@@ -1,7 +1,7 @@
-import { OptionsBuilder } from '../../util/OptionsBuilder.js';
+import { StoreSerializerOptionsBuilder, type StoreSerializerOptionsBase } from '../storage/StoreSerializerOptions.js';
 import type { CassandraClientLike, CassandraConnection } from '../journals/CassandraClient.js';
 
-export interface CassandraSnapshotStoreOptionsType extends CassandraConnection {
+export interface CassandraSnapshotStoreOptionsType extends CassandraConnection, StoreSerializerOptionsBase {
   /** Table name; default `snapshots`. */
   readonly snapshotsTable?: string;
   /** Maximum number of snapshots kept per pid.  `<= 0` = keep all.  Default: 3. */
@@ -25,7 +25,7 @@ export interface CassandraSnapshotStoreOptionsType extends CassandraConnection {
  * Carries `withX` methods for the shared {@link CassandraConnection}
  * fields too — the connection mixin is not built on its own.
  */
-export class CassandraSnapshotStoreOptionsBuilder extends OptionsBuilder<CassandraSnapshotStoreOptionsType> {
+export class CassandraSnapshotStoreOptionsBuilder extends StoreSerializerOptionsBuilder<CassandraSnapshotStoreOptionsType> {
   /** Start a fresh builder.  Equivalent to `new CassandraSnapshotStoreOptionsBuilder()`. */
   static create(): CassandraSnapshotStoreOptionsBuilder {
     return new CassandraSnapshotStoreOptionsBuilder();

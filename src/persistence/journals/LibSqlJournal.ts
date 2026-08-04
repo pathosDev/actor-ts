@@ -37,6 +37,7 @@ export class LibSqlJournal extends RelationalJournal {
       eventsTable: resolvedOptions.eventsTable,
       tagsTable: resolvedOptions.tagsTable,
       autoCreateTables: resolvedOptions.autoCreateTables,
+      serializer: resolvedOptions.serializer,
       // An injected client is shared with the sibling stores and closed by the
       // caller; one we build ourselves is ours to close.
       ownsPool: resolvedOptions.client === undefined,

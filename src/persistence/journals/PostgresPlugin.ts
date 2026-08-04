@@ -44,10 +44,10 @@ export function registerPostgresPlugins(
 ): PostgresPluginHandles {
   const resolvedOptions = (options as RegisterPostgresPluginsOptionsType);
 
-  const { pool } = resolvedOptions;
-  const journal = mergeLeafOptions<Partial<PostgresJournalOptionsType>>(resolvedOptions.journal, { pool });
-  const snapshotStore = mergeLeafOptions<Partial<PostgresSnapshotStoreOptionsType>>(resolvedOptions.snapshotStore, { pool });
-  const durableState = mergeLeafOptions<Partial<PostgresDurableStateStoreOptionsType>>(resolvedOptions.durableStateStore, { pool });
+  const { pool, serializer } = resolvedOptions;
+  const journal = mergeLeafOptions<Partial<PostgresJournalOptionsType>>(resolvedOptions.journal, { pool }, { serializer });
+  const snapshotStore = mergeLeafOptions<Partial<PostgresSnapshotStoreOptionsType>>(resolvedOptions.snapshotStore, { pool }, { serializer });
+  const durableState = mergeLeafOptions<Partial<PostgresDurableStateStoreOptionsType>>(resolvedOptions.durableStateStore, { pool }, { serializer });
 
   ext.registerJournal(
     POSTGRES_JOURNAL_PLUGIN_ID,

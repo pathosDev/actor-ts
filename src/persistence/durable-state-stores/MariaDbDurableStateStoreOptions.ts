@@ -1,7 +1,7 @@
-import { OptionsBuilder } from '../../util/OptionsBuilder.js';
+import { StoreSerializerOptionsBuilder, type StoreSerializerOptionsBase } from '../storage/StoreSerializerOptions.js';
 import type { MariaDbPoolLike, MariaDbConnection } from '../journals/MariaDbClient.js';
 
-export interface MariaDbDurableStateStoreOptionsType extends MariaDbConnection {
+export interface MariaDbDurableStateStoreOptionsType extends MariaDbConnection, StoreSerializerOptionsBase {
   /** Table name.  Default: `durable_state`. */
   readonly table?: string;
   /** Run `CREATE TABLE IF NOT EXISTS` on first use.  Default: true. */
@@ -16,7 +16,7 @@ export interface MariaDbDurableStateStoreOptionsType extends MariaDbConnection {
  * The connection fields (`withUrl` / `withPoolConfig` / `withPool`) come
  * from the shared {@link MariaDbConnection} mixin.
  */
-export class MariaDbDurableStateStoreOptionsBuilder extends OptionsBuilder<MariaDbDurableStateStoreOptionsType> {
+export class MariaDbDurableStateStoreOptionsBuilder extends StoreSerializerOptionsBuilder<MariaDbDurableStateStoreOptionsType> {
   /** Start a fresh builder.  Equivalent to `new MariaDbDurableStateStoreOptionsBuilder()`. */
   static create(): MariaDbDurableStateStoreOptionsBuilder {
     return new MariaDbDurableStateStoreOptionsBuilder();

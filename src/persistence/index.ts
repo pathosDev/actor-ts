@@ -21,6 +21,8 @@ export type {
   MasterKeyRingEntry,
 } from './PersistenceOptions.js';
 export { decodePayload, encodePayload } from './storage/PayloadCodec.js';
+export { StoreSerializerOptionsBuilder } from './storage/StoreSerializerOptions.js';
+export type { StoreSerializerOptionsBase } from './storage/StoreSerializerOptions.js';
 
 export { InMemoryJournal } from './journals/InMemoryJournal.js';
 export { SqliteJournal } from './journals/SqliteJournal.js';

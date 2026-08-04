@@ -25,6 +25,7 @@ export class D1DurableStateStore extends RelationalDurableStateStore {
       dialect: sqliteDialect,
       table: resolvedOptions.table,
       autoCreateTables: resolvedOptions.autoCreateTables,
+      serializer: resolvedOptions.serializer,
       ownsPool: resolvedOptions.client === undefined,
       openPool: async () => adaptD1Client(buildD1Client(resolvedOptions)),
     });

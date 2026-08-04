@@ -38,10 +38,10 @@ export function registerMariaDbPlugins(
   options: RegisterMariaDbPluginsOptions,
 ): MariaDbPluginHandles {
   const resolvedOptions = (options as RegisterMariaDbPluginsOptionsType);
-  const { pool } = resolvedOptions;
-  const journal = mergeLeafOptions<Partial<MariaDbJournalOptionsType>>(resolvedOptions.journal, { pool });
-  const snapshotStore = mergeLeafOptions<Partial<MariaDbSnapshotStoreOptionsType>>(resolvedOptions.snapshotStore, { pool });
-  const durableState = mergeLeafOptions<Partial<MariaDbDurableStateStoreOptionsType>>(resolvedOptions.durableStateStore, { pool });
+  const { pool, serializer } = resolvedOptions;
+  const journal = mergeLeafOptions<Partial<MariaDbJournalOptionsType>>(resolvedOptions.journal, { pool }, { serializer });
+  const snapshotStore = mergeLeafOptions<Partial<MariaDbSnapshotStoreOptionsType>>(resolvedOptions.snapshotStore, { pool }, { serializer });
+  const durableState = mergeLeafOptions<Partial<MariaDbDurableStateStoreOptionsType>>(resolvedOptions.durableStateStore, { pool }, { serializer });
   ext.registerJournal(
     MARIADB_JOURNAL_PLUGIN_ID,
     (_system: ActorSystem) => new MariaDbJournal(journal),

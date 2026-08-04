@@ -8,6 +8,7 @@ import {
   type MongoDatabaseLike,
 } from '../journals/MongoClient.js';
 import { MongoStore } from '../journals/MongoStore.js';
+import type { Serializer } from '../../serialization/Serializer.js';
 import { decodePayload, encodePayload } from '../storage/PayloadCodec.js';
 import {
   MongoSnapshotStoreOptionsValidator,
@@ -39,6 +40,8 @@ export class MongoSnapshotStore extends MongoStore implements SnapshotStore {
   private readonly collectionName: string;
   private readonly keepN: number;
 
+  private readonly serializer?: Serializer;
+
   constructor(options: MongoSnapshotStoreOptions = {}) {
     const resolvedOptions = (options as MongoSnapshotStoreOptionsType);
     new MongoSnapshotStoreOptionsValidator().validate(resolvedOptions);
@@ -50,6 +53,7 @@ export class MongoSnapshotStore extends MongoStore implements SnapshotStore {
     });
     this.collectionName = resolvedOptions.snapshotsCollection ?? 'snapshots';
     this.keepN = resolvedOptions.keepN ?? 3;
+    this.serializer = resolvedOptions.serializer;
   }
 
   protected async createIndexes(database: MongoDatabaseLike): Promise<void> {
@@ -62,7 +66,7 @@ export class MongoSnapshotStore extends MongoStore implements SnapshotStore {
     try {
       await this.snapshots(database).updateOne(
         { persistenceId, sequenceNr: seq },
-        { $set: { payload: encodePayload(state), timestamp: now } },
+        { $set: { payload: encodePayload(state, this.serializer), timestamp: now } },
         { upsert: true },
       );
       if (this.keepN > 0) await this.prune(database, persistenceId);
@@ -79,7 +83,7 @@ export class MongoSnapshotStore extends MongoStore implements SnapshotStore {
       .sort({ sequenceNr: -1 })
       .limit(1)
       .toArray();
-    return document ? some(toSnapshot<S>(document)) : none;
+    return document ? some(toSnapshot<S>(document, this.serializer)) : none;
   }
 
   async loadBefore<S>(persistenceId: string, seq: number, _options?: PersistenceOptions): Promise<Option<Snapshot<S>>> {
@@ -89,7 +93,7 @@ export class MongoSnapshotStore extends MongoStore implements SnapshotStore {
       .sort({ sequenceNr: -1 })
       .limit(1)
       .toArray();
-    return document ? some(toSnapshot<S>(document)) : none;
+    return document ? some(toSnapshot<S>(document, this.serializer)) : none;
   }
 
   async delete(persistenceId: string, toSeq: number): Promise<void> {
@@ -123,11 +127,11 @@ export class MongoSnapshotStore extends MongoStore implements SnapshotStore {
   }
 }
 
-function toSnapshot<S>(document: SnapshotDocument): Snapshot<S> {
+function toSnapshot<S>(document: SnapshotDocument, serializer?: Serializer): Snapshot<S> {
   return {
     persistenceId: document.persistenceId,
     sequenceNr: Number(document.sequenceNr),
-    state: decodePayload(document.payload) as S,
+    state: decodePayload(document.payload, serializer) as S,
     timestamp: Number(document.timestamp),
   };
 }

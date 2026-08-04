@@ -17,6 +17,7 @@ export class PostgresSnapshotStore extends RelationalSnapshotStore {
       snapshotsTable: resolvedOptions.snapshotsTable,
       keepN: resolvedOptions.keepN,
       autoCreateTables: resolvedOptions.autoCreateTables,
+      serializer: resolvedOptions.serializer,
       ownsPool: resolvedOptions.pool === undefined,
       openPool: async () => adaptPgPool(await buildPgPool(resolvedOptions)),
     });

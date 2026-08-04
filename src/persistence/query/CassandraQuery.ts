@@ -1,6 +1,7 @@
 import type { CassandraJournal } from '../journals/CassandraJournal.js';
 import type { CassandraClientLike } from '../journals/CassandraClient.js';
 import { JournalError, type PersistentEvent } from '../JournalTypes.js';
+import type { Serializer } from '../../serialization/Serializer.js';
 import { decodePayload } from '../storage/PayloadCodec.js';
 import { InMemoryQuery } from './InMemoryQuery.js';
 import {
@@ -66,7 +67,7 @@ export class CassandraQuery extends InMemoryQuery {
     // Strategy 1: at least one `all` tag — walk that partition only.
     if (allTags.length > 0) {
       const rows = await this.fetchTagPartition(allTags[0]!, fromOffset.timestamp);
-      return refineAndSort<E>(rows, spec, fromOffset);
+      return refineAndSort<E>(rows, spec, fromOffset, this.cassandra.serializer);
     }
 
     // Strategy 2: any-only — scan one partition per listed tag and
@@ -85,7 +86,7 @@ export class CassandraQuery extends InMemoryQuery {
           merged.push(row);
         }
       }
-      return refineAndSort<E>(merged, spec, fromOffset);
+      return refineAndSort<E>(merged, spec, fromOffset, this.cassandra.serializer);
     }
 
     // Strategy 3: only `not` (or empty) — fall back to the inherited scan.
@@ -119,6 +120,7 @@ function refineAndSort<E>(
   rows: ReadonlyArray<TagIndexRow>,
   spec: TagFilterSpec,
   fromOffset: Offset,
+  serializer?: Serializer,
 ): TaggedEvent<E>[] {
   return refineTaggedRows<TagIndexRow, E>(rows, fromOffset, (row) => {
     // Cassandra hands the tags back as a CQL `set<text>`; an empty set is
@@ -128,7 +130,7 @@ function refineAndSort<E>(
     return {
       persistenceId: row.persistence_id,
       sequenceNr: Number(row.sequence_nr),
-      event: decodePayload(row.payload) as E,
+      event: decodePayload(row.payload, serializer) as E,
       timestamp: Number(row.timestamp),
       tags,
     };

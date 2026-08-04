@@ -11,6 +11,7 @@ import {
   type CassandraConnection,
 } from './CassandraClient.js';
 import { CassandraJournalOptionsValidator } from './CassandraJournalOptions.js';
+import type { Serializer } from '../../serialization/Serializer.js';
 import { decodePayload, encodePayload } from '../storage/PayloadCodec.js';
 import { assertSafeIdentifier } from '../storage/SqlIdentifier.js';
 import { assertValidTags } from '../storage/TagValidator.js';
@@ -61,6 +62,9 @@ export class CassandraJournal implements Journal {
     this.client = this.options.client ?? (undefined as unknown as CassandraClientLike);
     this.ownsClient = !this.options.client;
   }
+
+  /** The configured payload serializer — read by `CassandraQuery` so tag reads decode like the journal. */
+  get serializer(): Serializer | undefined { return this.options.serializer; }
 
   /**
    * Explicitly connect + ensure schema.  Called lazily on first use.
@@ -181,7 +185,7 @@ export class CassandraJournal implements Journal {
         const partition = Math.floor((seq - 1) / partitionSize);
         if (batchPartition !== null && partition !== batchPartition) await flush();
         batchPartition = partition;
-        const payload = encodePayload(ev);
+        const payload = encodePayload(ev, this.options.serializer);
         batchOps.push({
           query:
             `INSERT INTO ${this.qualified(this.eventsTable)} (persistence_id, partition_nr, sequence_nr, timestamp, payload, tags) VALUES (?, ?, ?, ?, ?, ?)`,
@@ -267,7 +271,7 @@ export class CassandraJournal implements Journal {
           out.push({
             persistenceId: row.persistence_id,
             sequenceNr: Number(row.sequence_nr),
-            event: decodePayload(row.payload) as E,
+            event: decodePayload(row.payload, this.options.serializer) as E,
             timestamp: Number(row.timestamp),
             tags: row.tags && row.tags.length > 0 ? row.tags : undefined,
           });

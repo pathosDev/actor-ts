@@ -1,11 +1,11 @@
-import { OptionsBuilder } from '../../util/OptionsBuilder.js';
+import { StoreSerializerOptionsBuilder, type StoreSerializerOptionsBase } from '../storage/StoreSerializerOptions.js';
 import { OptionsError, OptionsValidator } from '../../util/OptionsValidator.js';
 import type { LibSqlClientLike, LibSqlConnection } from './LibSqlClient.js';
 
 /** URL schemes a remote libSQL database can be reached on. */
 export const LIBSQL_URL_PROTOCOLS = ['libsql', 'http', 'https', 'ws', 'wss'] as const;
 
-export interface LibSqlJournalOptionsType extends LibSqlConnection {
+export interface LibSqlJournalOptionsType extends LibSqlConnection, StoreSerializerOptionsBase {
   /** Events table name.  Default: `events`. */
   readonly eventsTable?: string;
   /** Tags join table name.  Default: `${eventsTable}_tags`. */
@@ -24,7 +24,7 @@ export interface LibSqlJournalOptionsType extends LibSqlConnection {
  * Pass a pre-built `withClient(...)` to share ONE client across the journal,
  * snapshot and durable-state stores.
  */
-export class LibSqlJournalOptionsBuilder extends OptionsBuilder<LibSqlJournalOptionsType> {
+export class LibSqlJournalOptionsBuilder extends StoreSerializerOptionsBuilder<LibSqlJournalOptionsType> {
   /** Start a fresh builder.  Equivalent to `new LibSqlJournalOptionsBuilder()`. */
   static create(): LibSqlJournalOptionsBuilder {
     return new LibSqlJournalOptionsBuilder();

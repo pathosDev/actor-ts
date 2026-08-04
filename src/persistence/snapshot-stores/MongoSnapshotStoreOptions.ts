@@ -1,9 +1,9 @@
-import { OptionsBuilder } from '../../util/OptionsBuilder.js';
+import { StoreSerializerOptionsBuilder, type StoreSerializerOptionsBase } from '../storage/StoreSerializerOptions.js';
 import { OptionsValidator } from '../../util/OptionsValidator.js';
 import { assertMongoName, assertMongoUrl } from '../journals/MongoJournalOptions.js';
 import type { MongoClientLike, MongoConnection } from '../journals/MongoClient.js';
 
-export interface MongoSnapshotStoreOptionsType extends MongoConnection {
+export interface MongoSnapshotStoreOptionsType extends MongoConnection, StoreSerializerOptionsBase {
   /** Snapshots collection name.  Default: `snapshots`. */
   readonly snapshotsCollection?: string;
   /** How many snapshots to keep per persistence id.  Default: 3; `<= 0` keeps all. */
@@ -19,7 +19,7 @@ export interface MongoSnapshotStoreOptionsType extends MongoConnection {
  *       .withUrl('mongodb://localhost:27017')
  *       .withKeepN(5))
  */
-export class MongoSnapshotStoreOptionsBuilder extends OptionsBuilder<MongoSnapshotStoreOptionsType> {
+export class MongoSnapshotStoreOptionsBuilder extends StoreSerializerOptionsBuilder<MongoSnapshotStoreOptionsType> {
   /** Start a fresh builder.  Equivalent to `new MongoSnapshotStoreOptionsBuilder()`. */
   static create(): MongoSnapshotStoreOptionsBuilder {
     return new MongoSnapshotStoreOptionsBuilder();
