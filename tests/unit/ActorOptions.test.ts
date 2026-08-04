@@ -65,7 +65,7 @@ describe('ActorOptions', () => {
     expect({ ...options }).toEqual({ dispatcher, mailboxCapacity: 42 });
   });
 
-  test('the builder mutates in place, unlike the Props it replaces', () => {
+  test('the builder mutates in place and returns itself', () => {
     const options = ActorOptions.create<string>();
     const chained = options.withMailboxCapacity(7);
     expect(chained).toBe(options);

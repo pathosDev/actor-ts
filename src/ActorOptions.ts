@@ -1,7 +1,6 @@
 /**
- * Per-actor spawn configuration — the second half of what `Props` used to
- * bundle.  What to construct is the actor class or factory you pass
- * positionally; how to run it is here:
+ * Per-actor spawn configuration.  What to construct is the actor class or
+ * factory you pass positionally; how to run it is here:
  *
  *     const workerOptions = ActorOptions.create<WorkerMessage>()
  *       .withMailboxCapacity(500)
@@ -68,9 +67,10 @@ export type ActorOptionsType<TMessage = unknown> = {
 /**
  * Fluent builder for {@link ActorOptionsType}.
  *
- * Unlike the `Props` it replaces, this mutates in place and returns `this` —
- * the shared `OptionsBuilder` contract.  Two chains off one instance are not
- * two configurations; build a second instance instead.
+ * Mutates in place and returns `this`, per the shared `OptionsBuilder`
+ * contract: two chains off one instance are not two configurations.  Build a
+ * second instance instead.  The settings are snapshotted at spawn time, so a
+ * builder mutated afterwards never reconfigures a running actor.
  */
 export class ActorOptionsBuilder<TMessage = unknown>
   extends OptionsBuilder<ActorOptionsType<TMessage>> {

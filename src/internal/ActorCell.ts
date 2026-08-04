@@ -21,8 +21,6 @@ import type { Span } from '../tracing/Tracer.js';
 import type { ActorClassOrFactory } from '../Actor.js';
 import type { ActorOptions } from '../ActorOptions.js';
 import { actorBlueprintOf, type ActorBlueprint } from './ActorBlueprint.js';
-import { blueprintOf } from './PropsShim.js';
-import type { Props } from '../Props.js';
 import type { Behavior } from '../typed/Behavior.js';
 import { typedActor } from '../typed/spawn.js';
 import {
@@ -207,12 +205,12 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
    */
   get cluster(): Option<Cluster> { return this.system.cluster; }
 
-  spawn<T>(actor: ActorClassOrFactory<T> | Props<T>, name: string, options?: ActorOptions<T>): ActorRef<T> {
-    return this._createChild(blueprintOf(actor, options), name);
+  spawn<T>(actor: ActorClassOrFactory<T>, name: string, options?: ActorOptions<T>): ActorRef<T> {
+    return this._createChild(actorBlueprintOf(actor, options), name);
   }
 
-  spawnAnonymous<T>(actor: ActorClassOrFactory<T> | Props<T>, options?: ActorOptions<T>): ActorRef<T> {
-    return this._createChild(blueprintOf(actor, options), `$${++this._anonChildCounter}`);
+  spawnAnonymous<T>(actor: ActorClassOrFactory<T>, options?: ActorOptions<T>): ActorRef<T> {
+    return this._createChild(actorBlueprintOf(actor, options), `$${++this._anonChildCounter}`);
   }
 
   spawnTyped<T>(behavior: Behavior<T>, name: string): ActorRef<T> {

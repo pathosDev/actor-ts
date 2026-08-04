@@ -15,7 +15,6 @@ import { EventStream } from './EventStream.js';
 import { ConsoleLogger, Logger, LogLevel } from './Logger.js';
 import type { ActorClassOrFactory } from './Actor.js';
 import type { ActorOptions } from './ActorOptions.js';
-import type { Props } from './Props.js';
 import { Scheduler } from './Scheduler.js';
 import type { ActorSystemOptions, ActorSystemOptionsType } from './ActorSystemOptions.js';
 import { ActorCell } from './internal/ActorCell.js';
@@ -232,7 +231,7 @@ export class ActorSystem {
    *     system.spawn(Greeter, 'greeter');                  // zero-arg class
    *     system.spawn(() => new Worker(database), 'worker'); // dependencies
    */
-  spawn<T>(actor: ActorClassOrFactory<T> | Props<T>, name: string, options?: ActorOptions<T>): ActorRef<T> {
+  spawn<T>(actor: ActorClassOrFactory<T>, name: string, options?: ActorOptions<T>): ActorRef<T> {
     if (this._terminating || this._terminated) {
       throw new Error(`Cannot create actors on a terminated ActorSystem '${this.name}'`);
     }
@@ -245,7 +244,7 @@ export class ActorSystem {
    * one-shot async work, throwaway helpers.  For a deterministic
    * name, see {@link spawn}.
    */
-  spawnAnonymous<T>(actor: ActorClassOrFactory<T> | Props<T>, options?: ActorOptions<T>): ActorRef<T> {
+  spawnAnonymous<T>(actor: ActorClassOrFactory<T>, options?: ActorOptions<T>): ActorRef<T> {
     if (this._terminating || this._terminated) {
       throw new Error(`Cannot create actors on a terminated ActorSystem '${this.name}'`);
     }
@@ -286,7 +285,7 @@ export class ActorSystem {
    * and `/user` stays the only place user code can spawn a top-level actor.
    */
   _spawnSystemActor<T>(
-    actor: ActorClassOrFactory<T> | Props<T>,
+    actor: ActorClassOrFactory<T>,
     group: SystemGroup,
     name: string,
     options?: ActorOptions<T>,

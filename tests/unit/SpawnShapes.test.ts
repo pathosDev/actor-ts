@@ -54,7 +54,7 @@ describe('spawn shapes', () => {
     Worker.built = [];
     system.spawn(() => new Worker('postgres'), 'worker');
     // The factory runs on the cell's `create` system message, not at the
-    // spawn call — the same deferral `Props` had.
+    // spawn call.
     await Bun.sleep(20);
     expect(Worker.built).toEqual(['postgres']);
   });

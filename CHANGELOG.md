@@ -9,6 +9,63 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ## [Unreleased]
 
+### Removed
+
+- **BREAKING — `Props` is gone from the public API** (#547).  Spawning takes
+  the actor class or a factory directly, and per-actor configuration is an
+  ordinary options family:
+
+  ```ts
+  // before
+  system.spawn(Props.create(() => new Greeter()), 'greeter');
+  system.spawn(Props.create(() => new Worker(db)).withMailboxCapacity(500), 'w');
+
+  // after
+  system.spawn(Greeter, 'greeter');                      // zero-arg class
+  const workerOptions = ActorOptions.create<WorkerMessage>().withMailboxCapacity(500);
+  system.spawn(() => new Worker(db), 'w', workerOptions);
+  ```
+
+  `Props` bundled two unrelated things — *what* to construct and *how* to run
+  it — and 75 % of its ~970 call sites used only the first.  The second half
+  is now `ActorOptions`, a regular `XOptions` family (`ActorOptionsType` /
+  `ActorOptionsBuilder` / `ActorOptions` / `ActorOptionsValidator`), which is
+  what per-actor configuration should have been all along; it was the one
+  place in the framework that did not follow that convention.
+
+  **Migration:** drop `Props.create(` and its closing `)` — what is left is
+  already a valid factory, and a zero-argument class needs no closure at all.
+  Move each `.withX(…)` into a third `ActorOptions` argument; `asInternal()`
+  becomes `withInternal()`.  Renamed carriers: `entityProps` → `entityActor`
+  (+ `entityOptions`), singleton `props` → `actor` (+ `actorOptions`),
+  `singletonProps` → `singletonActor`, `childProps` → `child`
+  (+ `childOptions`), `routeeProps` → `routee` (+ `routeeOptions`),
+  `behaviorFor` → `actorFor`; `BackoffSupervisor.props` → `.factory`,
+  `ClusterRouter.props` → `.factory`, `typedProps` → `typedActor`.
+
+  Two behavioural notes.  `ActorOptions` **mutates in place** where `Props`
+  was copy-on-write, so a builder is one configuration — sharing one and
+  re-chaining it no longer branches.  The settings are snapshotted at spawn,
+  so mutating a builder afterwards never reconfigures a running actor.  And a
+  class whose constructor takes arguments is now rejected at the spawn call
+  naming the factory form, instead of being constructed with `undefined`
+  dependencies and failing later — this also closes the same hole in the
+  existing `ClusterSharding.start` / `ClusterSingleton.start` shorthands.
+
+### Added
+
+- **`ActorOptions`** (#547) — `withSupervisorStrategy`, `withDispatcher`,
+  `withMailboxCapacity`, `withMailbox`, `withInternal`, `withEntity`, plus an
+  `ActorOptionsValidator` that rejects a non-positive `mailboxCapacity` at the
+  `spawn` call rather than from inside the mailbox constructor.  Accepted as a
+  builder or as a plain object, like every other options family.
+
+### Documentation
+
+- **`fundamentals/props` is now `fundamentals/spawning`** (EN + DE, #547) —
+  rewritten around what the reader is doing rather than around a type.  The
+  old slug redirects.
+
 ## [0.12.2] — 2026-08-04
 
 ### Fixed

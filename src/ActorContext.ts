@@ -4,7 +4,6 @@ import type { ActorSystem } from './ActorSystem.js';
 import type { ActorClassOrFactory } from './Actor.js';
 import type { ActorOptions } from './ActorOptions.js';
 import type { EntityContext } from './EntityContext.js';
-import type { Props } from './Props.js';
 import type { Logger } from './Logger.js';
 import type { Option } from './util/Option.js';
 
@@ -66,7 +65,7 @@ export interface ActorContext<TMessage = unknown> {
    * caller-supplied name.  The name must be unique among siblings.
    * For an auto-generated name, see {@link spawnAnonymous}.
    */
-  spawn<T>(actor: ActorClassOrFactory<T> | Props<T>, name: string, options?: ActorOptions<T>): ActorRef<T>;
+  spawn<T>(actor: ActorClassOrFactory<T>, name: string, options?: ActorOptions<T>): ActorRef<T>;
 
   /**
    * Spawn a child actor under this one with an auto-generated name.
@@ -74,7 +73,7 @@ export interface ActorContext<TMessage = unknown> {
    * the caller doesn't need a stable path.  For a deterministic
    * name, see {@link spawn}.
    */
-  spawnAnonymous<T>(actor: ActorClassOrFactory<T> | Props<T>, options?: ActorOptions<T>): ActorRef<T>;
+  spawnAnonymous<T>(actor: ActorClassOrFactory<T>, options?: ActorOptions<T>): ActorRef<T>;
 
   /**
    * Spawn a typed-Behavior child with a deterministic name — the
