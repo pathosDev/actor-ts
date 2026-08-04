@@ -221,6 +221,30 @@ import { Aside } from '@astrojs/starlight/components';
   decision tree.
 </Aside>
 
+## Naming yourself — `displayName()`
+
+Not a lifecycle hook, but the other method worth overriding.  It is
+what an actor is called in log lines and in the DevTools tree; by
+default, its full path:
+
+```ts
+class UserEntity extends Actor<UserCommand> {
+  override displayName(): string { return `User(${this.entityId})`; }
+
+  override onReceive(command: UserCommand): void {
+    this.log.info('recovery complete');
+    // → [...] INFO  actor-ts://shop/.../entity-da76e1eb-... - User(test-user-590) - recovery complete
+  }
+}
+```
+
+The name is added to the line, not substituted for the path, and it is
+resolved on every record — so it may be derived from state, and it
+follows a restart.  Keep it cheap; a throw falls back to the path.
+`ActorOptions.withDisplayName(...)` at the spawn site outranks it, exactly
+as `withSupervisorStrategy(...)` outranks `supervisorStrategy()`.
+Full story in [Logging](/fundamentals/logging/#naming-an-actor--displayname).
+
 ## Children
 
 Actors can have children.  Use `context.spawn` from inside the parent's

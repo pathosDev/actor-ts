@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import { Actor } from '../../../src/Actor.js';
+import { ActorOptions } from '../../../src/ActorOptions.js';
 import { ActorSystem } from '../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../src/ActorSystemOptions.js';
 import { LogLevel, NoopLogger } from '../../../src/Logger.js';
@@ -32,6 +33,13 @@ class StashingActor extends Actor<string> {
   override onReceive(): void {
     this.context.stash();
   }
+}
+
+/** Names itself, and renames on every message — the display-name path (#891). */
+class NamedActor extends Actor<string> {
+  private label = 'first';
+  override displayName(): string { return this.label; }
+  override onReceive(message: string): void { this.label = message; }
 }
 
 const systems: ActorSystem[] = [];
@@ -115,6 +123,29 @@ describe('ActorTreeTap', () => {
     }
   });
 
+  test('carries the display name, and null when the actor never named itself', async () => {
+    const system = newSystem('tap-tree-display-name');
+    const emitted: DevToolsStreamPayload[] = [];
+    const tap = new ActorTreeTap(system);
+    tap.install((payload) => emitted.push(payload));
+    try {
+      system.spawn(() => new IdleActor(), 'anonymous');
+      system.spawn(IdleActor, 'from-options', ActorOptions.create().withDisplayName('cart'));
+      system.spawn(() => new NamedActor(), 'from-method');
+      await settle();
+
+      const started = emitted.filter((p): p is ActorStartedPayload => p.kind === 'actor-started');
+      const spawned = (name: string) => started.find((p) => p.actor.name === name)!.actor;
+      expect(spawned('anonymous').displayName).toBeNull();
+      expect(spawned('from-options').displayName).toBe('cart');
+      expect(spawned('from-method').displayName).toBe('first');
+      // A label, never a replacement for the key the panel indexes on.
+      expect(spawned('from-options').path).toContain('/from-options');
+    } finally {
+      tap.uninstall();
+    }
+  });
+
   test('stops emitting once uninstalled', async () => {
     const system = newSystem('tap-tree-uninstall');
     const emitted: DevToolsStreamPayload[] = [];
@@ -150,6 +181,32 @@ describe('ActorTreeTap — live state', () => {
       const hoarder = changed.find((p) => p.actor.path.endsWith('/hoarder'));
       expect(hoarder).toBeDefined();
       expect(hoarder!.actor.stashSize).toBe(3);
+    } finally {
+      tap.uninstall();
+    }
+  });
+
+  test('re-emits when only the display name moved', async () => {
+    const system = newSystem('tap-tree-renamed');
+    const tap = new ActorTreeTap(system, 20);
+    const payloads: DevToolsStreamPayload[] = [];
+    tap.install((payload) => payloads.push(payload));
+    try {
+      const ref = system.spawn(() => new NamedActor(), 'renamer');
+      await settle();
+      tap.snapshot();
+      tap.subscribersChanged(1);
+      payloads.length = 0;
+
+      // Handling this leaves every other field exactly where it was, so
+      // the delta can only come from the name comparison in `hasMoved`.
+      ref.tell('second');
+      await settle(120);
+
+      const changed = payloads.filter((p) => p.kind === 'actor-changed');
+      const renamer = changed.find((p) => p.actor.path.endsWith('/renamer'));
+      expect(renamer).toBeDefined();
+      expect(renamer!.actor.displayName).toBe('second');
     } finally {
       tap.uninstall();
     }

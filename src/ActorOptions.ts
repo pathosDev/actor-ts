@@ -53,6 +53,17 @@ export type ActorOptionsType<TMessage = unknown> = {
    */
   readonly internal?: boolean;
   /**
+   * Human-readable name for log lines and the DevTools tree (#891) — the
+   * spawn-site counterpart to overriding `Actor.displayName()`, for a
+   * framework-constructed actor with no subclass of your own: a `Behaviors`
+   * actor, a sharded entity, a singleton.
+   *
+   * Outranks the method, exactly as `supervisorStrategy` outranks
+   * `Actor.supervisorStrategy()`.  Purely cosmetic — the path stays the
+   * identity everywhere that routes or correlates.
+   */
+  readonly displayName?: string;
+  /**
    * Spawn this actor as a sharded entity with the given identity, readable
    * back off `this.entityId` / `this.context.entity`.
    *
@@ -102,6 +113,11 @@ export class ActorOptionsBuilder<TMessage = unknown>
   /** Mark this actor as tooling — see {@link ActorOptionsType.internal}. */
   withInternal(internal = true): this {
     return this.set('internal', internal);
+  }
+
+  /** Name this actor in logs and the DevTools tree — see {@link ActorOptionsType.displayName}. */
+  withDisplayName(displayName: string): this {
+    return this.set('displayName', displayName);
   }
 
   /** Give this actor a sharding identity — see {@link ActorOptionsType.entity}. */

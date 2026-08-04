@@ -120,6 +120,38 @@ export abstract class Actor<TMessage = unknown> {
    * up to 10 times per minute, then stop.
    */
   supervisorStrategy(): SupervisorStrategy { return defaultStrategy; }
+
+  /**
+   * Human-readable name for this actor in log lines and in the DevTools
+   * actor tree (#891).  Defaults to the full path — which is already the
+   * log source, so an actor that doesn't override this logs exactly as it
+   * did before.
+   *
+   *     override displayName(): string { return `User(${this.entityId})`; }
+   *
+   * Purely cosmetic.  The path stays the identity everywhere that routes,
+   * correlates or aggregates — metric labels, tracing attributes, dead
+   * letters, `ActorRef.toString()`, every wire identifier — so a display
+   * name is free to be ambiguous, unstable, or shared between actors.
+   *
+   * **Resolved on every record**, not captured once.  Two consequences:
+   * keep it cheap and side-effect free, and expect it to be called before
+   * `preStart` (hence the optional chain — the context is attached after
+   * construction).  In exchange a name may be derived from state, and it
+   * updates when that state does.  Throwing, or returning anything but a
+   * non-empty string, falls back to the path and warns once: a naming
+   * hook must not be able to take a log line down with it.
+   *
+   * `ActorOptions.withDisplayName(...)` outranks this, for the same reason
+   * `withSupervisorStrategy(...)` outranks {@link supervisorStrategy}
+   * — the spawn site is the more specific statement.  It has to: every
+   * `Behaviors` actor is a `TypedActor` that inherits this default, so a
+   * method that won would silently swallow the spawn-site value for exactly
+   * the actors that have no subclass to override.  For a name that only
+   * becomes known at runtime, `this.context.setDisplayName(...)` outranks
+   * both.
+   */
+  displayName(): string { return this._context?.path.toString() ?? this.constructor.name; }
 }
 
 /**

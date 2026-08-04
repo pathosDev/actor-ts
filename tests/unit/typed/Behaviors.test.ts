@@ -1,8 +1,9 @@
 import { match } from 'ts-pattern';
 import { describe, expect, test } from 'bun:test';
 import { ActorSystem } from '../../../src/ActorSystem.js';
+import { ActorOptions } from '../../../src/ActorOptions.js';
 import { ActorSystemOptions } from '../../../src/ActorSystemOptions.js';
-import { LogLevel, NoopLogger } from '../../../src/Logger.js';
+import { JsonLogger, LogLevel, NoopLogger } from '../../../src/Logger.js';
 import {
   Behaviors,
   typedActor,
@@ -524,5 +525,53 @@ describe('Behaviors.receiveWithSignal — terminated signal (#448)', () => {
 
     expect(seen).toEqual(['terminated-as-message:kid']);
     await sys.terminate();
+  });
+});
+
+describe('TypedActorContext.setDisplayName (#891)', () => {
+  /** JsonLogger keeps `displayName` a named field instead of rendered text. */
+  function recordingSystem(name: string): { system: ActorSystem; names: () => Array<string | undefined> } {
+    const lines: string[] = [];
+    const sysOptions = ActorSystemOptions.create()
+      .withLogger(new JsonLogger(LogLevel.Debug, '', {}, { write: (line) => { lines.push(line); } }));
+    return {
+      system: ActorSystem.create(name, sysOptions),
+      names: () => lines
+        .map((line) => JSON.parse(line) as { msg: string; displayName?: string })
+        .filter((record) => record.msg === 'handled')
+        .map((record) => record.displayName),
+    };
+  }
+
+  test('names a Behaviors actor, which has no subclass to override', async () => {
+    // Every Behavior runs inside the same TypedActor, so `displayName()`
+    // is not reachable from user code here — this is the way in.
+    const { system, names } = recordingSystem('typed-display-name');
+    const behavior: Behavior<string> = Behaviors.setup((context) => {
+      context.setDisplayName('Cart(alice)');
+      return Behaviors.receive((inner, _message) => {
+        inner.log.info('handled');
+        return Behaviors.same;
+      });
+    });
+    system.spawnTyped(behavior, 'entity-7b3f').tell('x');
+    await sleep(30);
+
+    expect(names()).toEqual(['Cart(alice)']);
+    await system.terminate();
+  });
+
+  test('withDisplayName names a typed actor without entering the behavior', async () => {
+    const { system, names } = recordingSystem('typed-display-name-options');
+    const behavior: Behavior<string> = Behaviors.receive((context, _message) => {
+      context.log.info('handled');
+      return Behaviors.same;
+    });
+    const entityOptions = ActorOptions.create<string>().withDisplayName('Cart(bob)');
+    system.spawn(typedActor(behavior), 'entity-9c21', entityOptions).tell('x');
+    await sleep(30);
+
+    expect(names()).toEqual(['Cart(bob)']);
+    await system.terminate();
   });
 });

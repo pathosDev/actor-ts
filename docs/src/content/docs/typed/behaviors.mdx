@@ -105,6 +105,26 @@ initialization that the receive-handler should close over:
 spawning children, capturing `context.self` for the children to know,
 opening external connections.
 
+It is also where a behavior names itself.  Every `Behavior` runs inside
+the same `TypedActor` class, so there is no subclass of yours to
+override [`Actor.displayName()`](/fundamentals/logging/#naming-an-actor--displayname)
+on — `context.setDisplayName` is the way in, and its effect is the same:
+log lines and the DevTools tree gain a readable label beside the path.
+
+```ts
+const cart = (customerId: string): Behavior<Message> => Behaviors.setup((context) => {
+  context.setDisplayName(`Cart(${customerId})`);
+  return Behaviors.receive((_context, message) => { /* ... */ return Behaviors.same; });
+});
+```
+
+Without it a whole tree of typed actors reports `TypedActor` as its
+class, which tells you nothing about which is which.  Call it any time,
+not only from `setup` — a name that only settles after the first
+message can be set then.  For a name the spawn site already knows,
+[`typedProps(behavior).withDisplayName(...)`](/fundamentals/props/#withdisplayname)
+does the same without entering the behavior.
+
 ## The decorators
 
 Three combinators wrap another behavior with extra capabilities:

@@ -57,8 +57,28 @@ export interface ActorContext<TMessage = unknown> {
    */
   readonly entity: Option<EntityContext>;
 
-  /** Logger bound to this actor's path. */
+  /**
+   * Logger bound to this actor's path, and to whatever
+   * `Actor.displayName()` currently resolves to.
+   */
   readonly log: Logger;
+
+  /**
+   * Name this actor in log lines and in the DevTools tree from inside the
+   * running actor (#891) — for a name that only becomes known at runtime
+   * (after recovery, after the first message), and for `Behaviors` actors,
+   * which have no subclass to override `Actor.displayName()` on:
+   *
+   *     Behaviors.setup<Command>((context) => {
+   *       context.setDisplayName(`User(${userId})`);
+   *       return Behaviors.receive(...);
+   *     });
+   *
+   * Takes effect on the very next record, and outranks both
+   * `ActorOptions.withDisplayName(...)` and the method.  Purely cosmetic — the
+   * path stays the identity everywhere that routes or correlates.
+   */
+  setDisplayName(name: string): void;
 
   /**
    * Spawn a child actor under this one with a deterministic

@@ -167,7 +167,7 @@ class ActorOptionsBuilder<TMessage> {
 ### `withSupervisorStrategy`
 
 ```ts
-import { OneForOneStrategy, Directive, stoppingStrategy } from 'actor-ts';
+import { ActorOptions, OneForOneStrategy, Directive, stoppingStrategy } from 'actor-ts';
 
 const workerOptions = ActorOptions.create().withSupervisorStrategy(stoppingStrategy);
 
@@ -209,7 +209,7 @@ See [Supervision](/fundamentals/supervision/) for the full semantics.
 ### `withDispatcher`
 
 ```ts
-import { MicrotaskDispatcher, ThroughputDispatcher } from 'actor-ts';
+import { ActorOptions, MicrotaskDispatcher, ThroughputDispatcher } from 'actor-ts';
 
 const crunchyOptions = ActorOptions.create().withDispatcher(new MicrotaskDispatcher());
 const bulkOptions = ActorOptions.create().withDispatcher(new ThroughputDispatcher(100));
@@ -225,6 +225,8 @@ applies uniformly and you never need this — see
 ### `withMailboxCapacity`
 
 ```ts
+import { ActorOptions } from 'actor-ts';
+
 const consumerOptions = ActorOptions.create().withMailboxCapacity(500);
 ```
 
@@ -238,7 +240,7 @@ an explicit `reject` policy instead.
 ### `withMailbox`
 
 ```ts
-import { BoundedMailbox, PriorityMailbox } from 'actor-ts';
+import { ActorOptions, BoundedMailbox, PriorityMailbox } from 'actor-ts';
 
 const telemetryOptions = ActorOptions.create()
   .withMailbox(() => new BoundedMailbox({ capacity: 1_000, overflow: 'drop-head' }));
@@ -267,6 +269,8 @@ spans it has just recorded — traces itself, and every batch comes back
 as the payload of the next one.
 
 ```ts
+import { ActorOptions } from 'actor-ts';
+
 const probeOptions = ActorOptions.create().withInternal();
 
 system.spawn(MyProbe, 'my-probe', probeOptions);
@@ -285,6 +289,8 @@ entity that derives its `persistenceId` from `this.entityId` would
 otherwise be unspawnable without a cluster standing behind it.
 
 ```ts
+import { ActorOptions } from 'actor-ts';
+
 const cartOptions = ActorOptions.create()
   .withEntity({ entityId: 'user-42', typeName: 'cart', shardId: 3 });
 

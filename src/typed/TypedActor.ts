@@ -238,6 +238,7 @@ class TypedActorContextImplementation<T> implements TypedActorContext<T> {
   get path(): import('../ActorPath.js').ActorPath { return this.oo.path; }
   get system(): import('../ActorSystem.js').ActorSystem { return this.oo.system; }
   get log(): import('../Logger.js').Logger { return this.oo.log; }
+  setDisplayName(name: string): void { this.oo.setDisplayName(name); }
 
   spawn<U>(behavior: Behavior<U>, name?: string): ActorRef<U> {
     const actor = (): TypedActor<U> => new TypedActor<U>(behavior);

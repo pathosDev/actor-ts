@@ -93,7 +93,7 @@ export {
 } from './Dispatcher.js';
 export type { Dispatcher } from './Dispatcher.js';
 export { EventStream } from './EventStream.js';
-export { ConsoleLogger, NoopLogger, JsonLogger, LogLevel } from './Logger.js';
+export { ConsoleLogger, NoopLogger, JsonLogger, LogLevel, DISPLAY_NAME_FIELD } from './Logger.js';
 export type { Logger, JsonLogSink } from './Logger.js';
 export { LogContext } from './LogContext.js';
 export type { LogContextData } from './LogContext.js';

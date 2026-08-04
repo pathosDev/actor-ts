@@ -171,7 +171,7 @@ class ActorOptionsBuilder<TMessage> {
 ### `withSupervisorStrategy`
 
 ```ts
-import { OneForOneStrategy, Directive, stoppingStrategy } from 'actor-ts';
+import { ActorOptions, OneForOneStrategy, Directive, stoppingStrategy } from 'actor-ts';
 
 const workerOptions = ActorOptions.create().withSupervisorStrategy(stoppingStrategy);
 
@@ -217,7 +217,7 @@ Die vollständige Semantik steht unter
 ### `withDispatcher`
 
 ```ts
-import { MicrotaskDispatcher, ThroughputDispatcher } from 'actor-ts';
+import { ActorOptions, MicrotaskDispatcher, ThroughputDispatcher } from 'actor-ts';
 
 const crunchyOptions = ActorOptions.create().withDispatcher(new MicrotaskDispatcher());
 const bulkOptions = ActorOptions.create().withDispatcher(new ThroughputDispatcher(100));
@@ -233,6 +233,8 @@ System-Dispatcher einheitlich und man braucht das nie — siehe
 ### `withMailboxCapacity`
 
 ```ts
+import { ActorOptions } from 'actor-ts';
+
 const consumerOptions = ActorOptions.create().withMailboxCapacity(500);
 ```
 
@@ -247,7 +249,7 @@ mit expliziter `reject`-Strategie.
 ### `withMailbox`
 
 ```ts
-import { BoundedMailbox, PriorityMailbox } from 'actor-ts';
+import { ActorOptions, BoundedMailbox, PriorityMailbox } from 'actor-ts';
 
 const telemetryOptions = ActorOptions.create()
   .withMailbox(() => new BoundedMailbox({ capacity: 1_000, overflow: 'drop-head' }));
@@ -276,6 +278,8 @@ Spans selbst publiziert — sich selbst, und jeder Batch kommt als Nutzlast
 des nächsten zurück.
 
 ```ts
+import { ActorOptions } from 'actor-ts';
+
 const probeOptions = ActorOptions.create().withInternal();
 
 system.spawn(MyProbe, 'my-probe', probeOptions);
@@ -295,6 +299,8 @@ Prüfstand, wo eine Entity, die ihre `persistenceId` aus `this.entityId`
 ableitet, sonst ohne dahinterstehenden Cluster gar nicht erzeugbar wäre.
 
 ```ts
+import { ActorOptions } from 'actor-ts';
+
 const cartOptions = ActorOptions.create()
   .withEntity({ entityId: 'user-42', typeName: 'cart', shardId: 3 });
 

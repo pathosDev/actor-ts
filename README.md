@@ -272,8 +272,12 @@ for (const shard of await cluster.sharding.shards('cart')) {
 class CartActor extends PersistentActor<CartCommand, CartEvent, CartState> {
   override get persistenceId(): string { return `cart-${this.entityId}`; }
 
+  // Names itself once, instead of every message repeating the id.
+  override displayName(): string { return `Cart(${this.entityId})`; }
+
   override preStart(): void {
-    this.log.info(`cart ${this.entityId} on ${this.cluster.selfAddress}`);
+    this.log.info(`starting on ${this.cluster.selfAddress}`);
+    // → [...] INFO  actor-ts://shop/.../entity-user-42 - Cart(user-42) - starting on ...
   }
 }
 ```
@@ -281,6 +285,11 @@ class CartActor extends PersistentActor<CartCommand, CartEvent, CartState> {
 `this.cluster` throws on a system that never joined one; ask
 `this.context.cluster` (an `Option<Cluster>`, matching `system.cluster`)
 when the actor has to work either way.
+
+`displayName()` is a label, not an address: it joins the log line and
+the DevTools tree beside the path, never in place of it, so metrics,
+tracing and every wire identifier stay on the path. It defaults to the
+path, so an actor that doesn't override it logs exactly as before.
 
 ### Cluster singleton — exactly one instance, cluster-wide
 

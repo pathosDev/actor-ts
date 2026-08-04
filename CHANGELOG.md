@@ -60,6 +60,28 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   `spawn` call rather than from inside the mailbox constructor.  Accepted as a
   builder or as a plain object, like every other options family.
 
+- **`Actor.displayName()` — a readable name for an actor in logs and DevTools**
+  (#891).  A path is an address, not a name: under sharding the log source
+  grows to ~120 characters of machine identifier, and the business identity it
+  stands for had to be repeated by hand in every message the entity logged.
+  Override `displayName()` and the actor says it once; the name joins the line
+  as its own segment after the source
+  (`... - User(test-user-590) - recovery complete`), and labels the row in the
+  DevTools actor tree — worth the most for `Behaviors` actors, whose class
+  column reads `TypedActor` on every row.  Also settable from the spawn site
+  with `ActorOptions.withDisplayName(...)` (which outranks the method, as
+  `withSupervisorStrategy` does) and at runtime with
+  `context.setDisplayName(...)` (which outranks both) — the latter being the
+  way in for a `Behaviors` actor, which has no subclass to override, and for a
+  name that only settles after recovery.
+  Resolved on every record rather than captured once, so it may be derived from
+  state and follows a restart; a throw or a non-string falls back to the path
+  and warns once.  Defaults to the path, so **existing log output is unchanged**
+  — and it stays a label: metric labels, tracing attributes, dead letters,
+  `ActorRef.toString()` and every cluster-wire identifier keep using the path.
+  Structured loggers get a separate `displayName` field beside `source`;
+  `interface Logger` is untouched, so third-party implementations keep working.
+
 ### Documentation
 
 - **`fundamentals/props` is now `fundamentals/spawning`** (EN + DE, #547) —
