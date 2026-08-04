@@ -153,7 +153,8 @@ function notAShardedEntity(className: string, path: string | null): Error {
     `${className}${where} is not a sharded entity — `
     + '`entityId` / `entity` are only set on actors ClusterSharding started, '
     + 'and not on an entity\'s own children.  Start it with `sharding.start(...)`, '
-    + 'or give it an identity directly with `Props.create(...).withEntity({ ... })`. '
+    + 'or give it an identity directly with '
+    + '`system.spawn(TheEntity, name, { entity: { entityId, typeName, shardId } })`. '
     + 'Note the context is attached after construction: derive from `entityId` in a '
     + 'getter or in `preStart`, never in a field initializer.',
   );

@@ -79,7 +79,7 @@ export interface ActorContext<TMessage = unknown> {
   /**
    * Spawn a typed-Behavior child with a deterministic name — the
    * Behavior-DSL counterpart to {@link spawn}.  Wraps the Behavior
-   * in `typedProps` internally so callers don't have to.
+   * in `typedActor` internally so callers don't have to.
    *
    *     const child = this.context.spawnTyped(counter(0), 'counter');
    */

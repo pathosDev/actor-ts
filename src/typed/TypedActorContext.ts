@@ -8,7 +8,7 @@ import type { Behavior } from './Behavior.js';
 /**
  * Typed variant of ActorContext — the runtime API exposed to Behaviors.
  * Differs from the untyped ActorContext in two ways:
- *   - `spawn` takes a Behavior instead of Props
+ *   - `spawn` takes a Behavior instead of an actor class or factory
  *   - there is no `become`/`unbecome` — behavior changes happen by returning
  *     a new Behavior from the message handler.
  */

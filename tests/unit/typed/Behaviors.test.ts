@@ -5,7 +5,7 @@ import { ActorSystemOptions } from '../../../src/ActorSystemOptions.js';
 import { LogLevel, NoopLogger } from '../../../src/Logger.js';
 import {
   Behaviors,
-  typedProps,
+  typedActor,
   type Behavior,
 } from '../../../src/typed/index.js';
 import { TestKit } from '../../../src/testkit/TestKit.js';
@@ -292,8 +292,8 @@ describe('Behaviors.empty / Behaviors.ignore', () => {
   });
 });
 
-describe('typedProps — interop with OO Actor API', () => {
-  test('typedProps works through system.spawn', async () => {
+describe('typedActor — interop with OO Actor API', () => {
+  test('typedActor works through system.spawn', async () => {
     const sys = newSys();
     const kitOptions = TestKitOptions.create()
       .withLogger(new NoopLogger())
@@ -302,7 +302,7 @@ describe('typedProps — interop with OO Actor API', () => {
     const probe = kit.createTestProbe<number>();
 
     const behavior = Behaviors.receiveMessage<number>((m) => { probe.tell(m * 2); return Behaviors.same; });
-    const ref = kit.system.spawnAnonymous(typedProps(behavior));
+    const ref = kit.system.spawnAnonymous(typedActor(behavior));
     ref.tell(21);
     expect(await probe.expectMessage(42, 500)).toBe(42);
 
@@ -386,7 +386,7 @@ describe('system.spawnTyped + ctx.spawnTyped', () => {
       }
     }
 
-    const parent = sys.spawn(Props.create(() => new UntypedParent()), 'parent');
+    const parent = sys.spawn(() => new UntypedParent(), 'parent');
     parent.tell({ kind: 'fwd', m: 'hi' });
     await sleep(40);
     // Both children received the same message — order across children is
@@ -417,7 +417,7 @@ describe('Behaviors.receiveWithSignal — terminated signal (#448)', () => {
       );
     });
 
-    sys.spawn(typedProps(parent), 'parent');
+    sys.spawn(typedActor(parent), 'parent');
     await sleep(40);
     child!.stop();
     await sleep(60);
@@ -446,7 +446,7 @@ describe('Behaviors.receiveWithSignal — terminated signal (#448)', () => {
       );
     });
 
-    sys.spawn(typedProps(parent), 'parent');
+    sys.spawn(typedActor(parent), 'parent');
     await sleep(40);
     second!.stop();
     await sleep(60);
@@ -485,7 +485,7 @@ describe('Behaviors.receiveWithSignal — terminated signal (#448)', () => {
       );
     });
 
-    const ref = sys.spawn(typedProps(parent), 'parent');
+    const ref = sys.spawn(typedActor(parent), 'parent');
     await sleep(40);
     child!.stop();
     await sleep(80);
@@ -518,7 +518,7 @@ describe('Behaviors.receiveWithSignal — terminated signal (#448)', () => {
       });
     });
 
-    sys.spawn(typedProps(parent), 'parent');
+    sys.spawn(typedActor(parent), 'parent');
     await sleep(40);
     child!.stop();
     await sleep(60);

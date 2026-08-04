@@ -11,7 +11,6 @@ import {
   NoopLogger,
   OneForOneStrategy,
   PoisonPill,
-  Props,
   Router,
   Terminated,
 } from '../src/index.js';
@@ -31,7 +30,7 @@ test('delivers messages in order, one at a time', async () => {
     override onReceive(n: number): void { received.push(n); }
   }
   const sys = newSystem();
-  const ref = sys.spawn(Props.create(() => new Collect()), 'c');
+  const ref = sys.spawn(() => new Collect(), 'c');
   for (let i = 0; i < 10; i++) ref.tell(i);
   await sleep(80);
   expect(received).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
@@ -48,7 +47,7 @@ test('awaiting onReceive serializes subsequent messages', async () => {
     }
   }
   const sys = newSystem();
-  const ref = sys.spawn(Props.create(() => new S()), 's');
+  const ref = sys.spawn(() => new S(), 's');
   ref.tell(1);
   ref.tell(2);
   ref.tell(3);
@@ -65,7 +64,7 @@ test('preStart runs before first message, postStop runs after', async () => {
     override onReceive(m: string): void { events.push(`recv:${m}`); }
   }
   const sys = newSystem();
-  const ref = sys.spawn(Props.create(() => new Lifecycle()), 'l');
+  const ref = sys.spawn(() => new Lifecycle(), 'l');
   ref.tell('hi');
   await sleep(30);
   ref.stop();
@@ -79,7 +78,7 @@ test('ask resolves with the reply', async () => {
     override onReceive(m: string): void { this.sender.forEach((__s) => __s.tell(`echo:${m}`)); }
   }
   const sys = newSystem();
-  const ref = sys.spawn(Props.create(() => new Echo()), 'echo');
+  const ref = sys.spawn(() => new Echo(), 'echo');
   const reply = await ref.ask<string>('hi', 500);
   expect(reply).toBe('echo:hi');
   await sys.terminate();
@@ -90,7 +89,7 @@ test('ask rejects when target replies with an Error', async () => {
     override onReceive(_: string): void { this.sender.forEach((__s) => __s.tell(new Error('nope'))); }
   }
   const sys = newSystem();
-  const ref = sys.spawn(Props.create(() => new Rejector()), 'r');
+  const ref = sys.spawn(() => new Rejector(), 'r');
   let err: Error | null = null;
   try { await ref.ask('hi', 500); }
   catch (e) { err = e as Error; }
@@ -102,7 +101,7 @@ test('ask rejects when target replies with an Error', async () => {
 test('ask times out', async () => {
   class Silent extends Actor<string> { override onReceive(_: string): void {} }
   const sys = newSystem();
-  const ref = sys.spawn(Props.create(() => new Silent()), 's');
+  const ref = sys.spawn(() => new Silent(), 's');
   await expect(ref.ask('hi', 20)).rejects.toBeInstanceOf(AskTimeoutError);
   await sys.terminate();
 });
@@ -114,7 +113,7 @@ test('supervisor restarts child on exception, default strategy', async () => {
     override onReceive(n: number): void { if (n < 0) throw new Error('neg'); }
   }
   const sys = newSystem();
-  const ref = sys.spawn(Props.create(() => new Flaky()), 'f');
+  const ref = sys.spawn(() => new Flaky(), 'f');
   ref.tell(1);
   ref.tell(-1);
   ref.tell(2);
@@ -134,13 +133,13 @@ test('stoppingStrategy stops a failing child', async () => {
       return new OneForOneStrategy(() => Directive.Stop);
     }
     override preStart(): void {
-      const child = this.context.spawn(Props.create(() => new Failer()), 'c');
+      const child = this.context.spawn(() => new Failer(), 'c');
       child.tell('go');
     }
     override onReceive(_: 'go'): void {}
   }
   const sys = newSystem();
-  sys.spawn(Props.create(() => new Parent()), 'parent');
+  sys.spawn(() => new Parent(), 'parent');
   await sleep(50);
   expect(stopped).toBe(true);
   await sys.terminate();
@@ -153,7 +152,7 @@ test('watch delivers Terminated when target stops', async () => {
   }
   class Watcher extends Actor<string | Terminated> {
     override preStart(): void {
-      const child = this.context.spawn(Props.create(() => new Watched()), 'w');
+      const child = this.context.spawn(() => new Watched(), 'w');
       this.context.watch(child);
       child.tell('die');
     }
@@ -162,7 +161,7 @@ test('watch delivers Terminated when target stops', async () => {
     }
   }
   const sys = newSystem();
-  sys.spawn(Props.create(() => new Watcher()), 'parent');
+  sys.spawn(() => new Watcher(), 'parent');
   await sleep(40);
   expect(seen).toEqual(['w']);
   await sys.terminate();
@@ -177,7 +176,7 @@ test('become swaps behaviour', async () => {
     }
   }
   const sys = newSystem();
-  const ref = sys.spawn(Props.create(() => new B()), 'b');
+  const ref = sys.spawn(() => new B(), 'b');
   ref.tell('1');
   ref.tell('2');
   ref.tell('3');
@@ -195,7 +194,7 @@ test('router.roundRobin distributes evenly', async () => {
     }
   }
   const sys = newSystem();
-  const pool = sys.spawn(Router.roundRobin(3, Props.create(() => new Worker())), 'pool');
+  const pool = sys.spawn(Router.roundRobin(3, () => new Worker()), 'pool');
   for (let i = 0; i < 9; i++) pool.tell('go');
   await sleep(40);
   expect(hits.size).toBe(3);
@@ -209,7 +208,7 @@ test('Broadcast delivers to every routee', async () => {
     override onReceive(_: string): void { count++; }
   }
   const sys = newSystem();
-  const pool = sys.spawn(Router.roundRobin(4, Props.create(() => new W())), 'p');
+  const pool = sys.spawn(Router.roundRobin(4, () => new W()), 'p');
   pool.tell(new Broadcast('hello'));
   await sleep(40);
   expect(count).toBe(4);
@@ -223,7 +222,7 @@ test('PoisonPill stops the actor after processing earlier messages', async () =>
     override postStop(): void { out.push('stopped'); }
   }
   const sys = newSystem();
-  const ref = sys.spawn(Props.create(() => new S()), 's');
+  const ref = sys.spawn(() => new S(), 's');
   ref.tell('a');
   ref.tell('b');
   ref.tell(PoisonPill.instance as unknown as string);
@@ -243,8 +242,8 @@ test('dead-letter event stream sees undeliverable messages', async () => {
     override onReceive(_: string): void {}
   }
   const sys = newSystem();
-  sys.spawn(Props.create(() => new Listener()), 'listener');
-  const ref = sys.spawn(Props.create(() => new Nothing()), 'n');
+  sys.spawn(() => new Listener(), 'listener');
+  const ref = sys.spawn(() => new Nothing(), 'n');
   ref.stop();
   await sleep(30);
   ref.tell('too-late');
@@ -263,7 +262,7 @@ test('setReceiveTimeout fires ReceiveTimeout', async () => {
     }
   }
   const sys = newSystem();
-  sys.spawn(Props.create(() => new T()), 't');
+  sys.spawn(() => new T(), 't');
   await sleep(80);
   expect(fired).toBe(true);
   await sys.terminate();
@@ -272,9 +271,9 @@ test('setReceiveTimeout fires ReceiveTimeout', async () => {
 test('system.terminate() resolves and marks system terminated', async () => {
   const sys = newSystem();
   sys.spawn(
-    Props.create(() => new (class extends Actor<string> {
+    () => new (class extends Actor<string> {
       override onReceive(_: string): void {}
-    })()),
+    })(),
     'x',
   );
   await sys.terminate();

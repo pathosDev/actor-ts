@@ -4,7 +4,7 @@ import { DeadLetter } from '../../src/SystemMessages.js';
 import { ActorSystem } from '../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../src/ActorSystemOptions.js';
 import { LogLevel, NoopLogger } from '../../src/Logger.js';
-import { Props } from '../../src/Props.js';
+import type { ActorFactory } from '../../src/Actor.js';
 import {
   Broadcast,
   broadcastStrategy,
@@ -76,7 +76,7 @@ describe('Router.roundRobin (integration)', () => {
     const hits = new Map<string, number>();
     const sys = newSystem();
     const pool = sys.spawn(
-      Router.roundRobin(3, Props.create(() => new (countingWorker(hits))())),
+      Router.roundRobin(3, () => new (countingWorker(hits))()),
       'pool',
     );
     for (let i = 0; i < 9; i++) pool.tell('go');
@@ -90,7 +90,7 @@ describe('Router.roundRobin (integration)', () => {
     const hits = new Map<string, number>();
     const sys = newSystem();
     const pool = sys.spawn(
-      Router.roundRobin(2, Props.create(() => new (countingWorker(hits))())),
+      Router.roundRobin(2, () => new (countingWorker(hits))()),
       'pool',
     );
     pool.tell('x'); pool.tell('y');
@@ -106,7 +106,7 @@ describe('Router.random (integration)', () => {
     const hits = new Map<string, number>();
     const sys = newSystem();
     const pool = sys.spawn(
-      Router.random(4, Props.create(() => new (countingWorker(hits))())),
+      Router.random(4, () => new (countingWorker(hits))()),
       'pool',
     );
     const total = 30;
@@ -124,7 +124,7 @@ describe('Router.broadcast (explicit Broadcast message)', () => {
     const hits = new Map<string, number>();
     const sys = newSystem();
     const pool = sys.spawn(
-      Router.roundRobin(4, Props.create(() => new (countingWorker(hits))())),
+      Router.roundRobin(4, () => new (countingWorker(hits))()),
       'pool',
     );
     pool.tell(new Broadcast('hello'));
@@ -162,9 +162,9 @@ describe('Router — terminated routees (#449)', () => {
     const refs = new Map<string, ActorRef>();
     const deadLetters: unknown[] = [];
     const sys = newSystem('router-prune');
-    sys.spawn(Props.create(() => new (deadLetterCollector(deadLetters))()), 'dead-letters');
+    sys.spawn(() => new (deadLetterCollector(deadLetters))(), 'dead-letters');
     const pool = sys.spawn(
-      Router.roundRobin(3, Props.create(() => new (registeringWorker(hits, refs))())),
+      Router.roundRobin(3, () => new (registeringWorker(hits, refs))()),
       'pool',
     );
 
@@ -196,9 +196,9 @@ describe('Router — terminated routees (#449)', () => {
     const refs = new Map<string, ActorRef>();
     const deadLetters: unknown[] = [];
     const sys = newSystem('router-broadcast-prune');
-    sys.spawn(Props.create(() => new (deadLetterCollector(deadLetters))()), 'dead-letters');
+    sys.spawn(() => new (deadLetterCollector(deadLetters))(), 'dead-letters');
     const pool = sys.spawn(
-      Router.broadcast(3, Props.create(() => new (registeringWorker(hits, refs))())),
+      Router.broadcast(3, () => new (registeringWorker(hits, refs))()),
       'pool',
     );
 
@@ -222,22 +222,22 @@ describe('Router — terminated routees (#449)', () => {
 });
 
 describe('Router — pool size (#455)', () => {
-  const someProps = (): Props<string> => Props.create(() => new (countingWorker(new Map()))());
+  const someRoutee = (): ActorFactory<string> => () => new (countingWorker(new Map()))();
 
   test('every factory rejects a size that cannot produce a working pool', () => {
     // size <= 0 used to yield an empty pool: preStart's loop never ran, every
     // strategy returned nothing, and all traffic went silently to dead letters.
     for (const size of [0, -1, 2.5, Number.NaN, Number.POSITIVE_INFINITY]) {
-      expect(() => Router.roundRobin(size, someProps())).toThrow(OptionsError);
-      expect(() => Router.random(size, someProps())).toThrow(OptionsError);
-      expect(() => Router.broadcast(size, someProps())).toThrow(OptionsError);
-      expect(() => Router.custom(size, someProps(), roundRobinStrategy())).toThrow(OptionsError);
+      expect(() => Router.roundRobin(size, someRoutee())).toThrow(OptionsError);
+      expect(() => Router.random(size, someRoutee())).toThrow(OptionsError);
+      expect(() => Router.broadcast(size, someRoutee())).toThrow(OptionsError);
+      expect(() => Router.custom(size, someRoutee(), roundRobinStrategy())).toThrow(OptionsError);
     }
   });
 
   test('the error names the field and the rejected value', () => {
     try {
-      Router.roundRobin(0, someProps());
+      Router.roundRobin(0, someRoutee());
       throw new Error('expected Router.roundRobin to reject size 0');
     } catch (e) {
       expect(e).toBeInstanceOf(OptionsError);
@@ -251,7 +251,7 @@ describe('Router — pool size (#455)', () => {
     const hits = new Map<string, number>();
     const sys = newSystem('router-single');
     const pool = sys.spawn(
-      Router.roundRobin(1, Props.create(() => new (countingWorker(hits))())),
+      Router.roundRobin(1, () => new (countingWorker(hits))()),
       'pool',
     );
     pool.tell('x'); pool.tell('y');

@@ -1,7 +1,6 @@
 import type { ActorRef } from '../ActorRef.js';
 import type { ActorSystem } from '../ActorSystem.js';
 import { SystemGroups } from '../internal/SystemPaths.js';
-import { Props } from '../Props.js';
 import { ConsumerController } from './ConsumerController.js';
 import type { ConsumerControllerOptionsType } from './ConsumerControllerOptions.js';
 import type { ConfirmationCallback, Delivery } from './Messages.js';
@@ -45,7 +44,7 @@ export class ReliableDelivery {
     name?: string,
   ): ConsumerHandle {
     const ref = system._spawnSystemActor(
-      Props.create(() => new ConsumerController<T>(options) as unknown as import('../Actor.js').Actor<Delivery<unknown>>),
+      () => new ConsumerController<T>(options) as unknown as import('../Actor.js').Actor<Delivery<unknown>>,
       SystemGroups.delivery,
       name ?? `consumer-${++counter}`,
     );
@@ -59,7 +58,7 @@ export class ReliableDelivery {
     name?: string,
   ): ProducerHandle<T> {
     const ref = system._spawnSystemActor(
-      Props.create(() => new ProducerController<T>(options) as unknown as import('../Actor.js').Actor<ProducerSend<T>>),
+      () => new ProducerController<T>(options) as unknown as import('../Actor.js').Actor<ProducerSend<T>>,
       SystemGroups.delivery,
       name ?? `producer-${++counter}`,
     );

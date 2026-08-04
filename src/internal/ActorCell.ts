@@ -20,11 +20,11 @@ import { tracerOf } from '../tracing/TracingExtension.js';
 import type { Span } from '../tracing/Tracer.js';
 import type { ActorClassOrFactory } from '../Actor.js';
 import type { ActorOptions } from '../ActorOptions.js';
-import type { ActorBlueprint } from './ActorBlueprint.js';
+import { actorBlueprintOf, type ActorBlueprint } from './ActorBlueprint.js';
 import { blueprintOf } from './PropsShim.js';
 import type { Props } from '../Props.js';
 import type { Behavior } from '../typed/Behavior.js';
-import { typedProps } from '../typed/spawn.js';
+import { typedActor } from '../typed/spawn.js';
 import {
   ActorInitializationError,
   defaultStrategy,
@@ -121,7 +121,7 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
   private _explain: ExplainRecorder | null = null;
 
   /**
-   * Tooling actor — see `PropsConfig.internal`.  Inherited, so a
+   * Tooling actor — see `ActorOptionsType.internal`.  Inherited, so a
    * DevTools websocket connection spawned under the DevTools hub counts
    * as tooling without anyone having to say so twice.
    */
@@ -130,8 +130,8 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
   /**
    * Sharding identity when a `Shard` spawned this cell as an entity.
    *
-   * Read off the Props, so it survives a restart for free — the cell keeps
-   * the Props it was created with.  Unlike `_internal` it is deliberately
+   * Read off the blueprint, so it survives a restart for free — the cell
+   * keeps the blueprint it was created with.  Unlike `_internal` it is deliberately
    * NOT inherited: an entity's children are not themselves entities.
    */
   private readonly _entity: EntityContext | null;
@@ -170,7 +170,7 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
     this.mailbox = blueprint.mailbox
       ? blueprint.mailbox()
       // #310 — bounded by default.  Unbounded was the pre-#310 default
-      // and is still available via `Props.withMailbox(() => new Mailbox())`
+      // and is still available via `withMailbox(() => new Mailbox())`
       // for use-cases that need it (deterministic replay, test setups,
       // tightly-controlled throughput).  See `DEFAULT_MAILBOX_CAPACITY`
       // + `DEFAULT_MAILBOX_OVERFLOW` for the chosen ceiling + policy.
@@ -216,11 +216,11 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
   }
 
   spawnTyped<T>(behavior: Behavior<T>, name: string): ActorRef<T> {
-    return this._createChild(typedProps<T>(behavior).config, name);
+    return this._createChild(actorBlueprintOf(typedActor<T>(behavior)), name);
   }
 
   spawnTypedAnonymous<T>(behavior: Behavior<T>): ActorRef<T> {
-    return this._createChild(typedProps<T>(behavior).config, `$${++this._anonChildCounter}`);
+    return this._createChild(actorBlueprintOf(typedActor<T>(behavior)), `$${++this._anonChildCounter}`);
   }
 
   /** @internal — single child-creation path shared by spawn / spawnAnonymous. */
@@ -1014,14 +1014,14 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
     const child = this.findChildByRef(childRef);
     if (!child) return;
 
-    // The failing child's own Props win, then this actor's strategy, then the
-    // framework default.  `Props.withSupervisorStrategy` states how *that*
+    // The failing child's own options win, then this actor's strategy, then
+    // the framework default.  `withSupervisorStrategy` states how *that*
     // actor is supervised, so it has to be read here, on the parent — the
     // child never gets to answer for its own failure.
     //
     // Two consequences of expressing a per-child override through
     // parent-side machinery, both deliberate: an `all-for-one` strategy in a
-    // child's Props still widens to every sibling, and the restart budget in
+    // child's options still widens to every sibling, and the restart budget in
     // `registerRestart` stays per-parent, so siblings share one allowance.
     const strategy: SupervisorStrategy =
       child.blueprint.supervisorStrategy

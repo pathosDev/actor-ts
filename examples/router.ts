@@ -4,7 +4,7 @@
  *
  *   tsx examples/router.ts
  */
-import { Actor, ActorSystem, Broadcast, Props, Router } from '../src/index.js';
+import { Actor, ActorSystem, Broadcast, Router } from '../src/index.js';
 import { attachDevTools } from './devtools.js';
 
 class Worker extends Actor<string> {
@@ -18,7 +18,7 @@ async function main(): Promise<void> {
   const devtools = await attachDevTools(system);
 
   const pool = system.spawn(
-    Router.roundRobin(4, Props.create(() => new Worker())),
+    Router.roundRobin(4, () => new Worker()),
     'pool',
   );
 

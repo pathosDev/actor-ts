@@ -37,7 +37,7 @@ import { PersistenceExtensionId } from './persistence/PersistenceExtension.js';
 import type { HttpServerBackend } from './http/backend/HttpServerBackend.js';
 import { HttpExtensionId, type ServerBuilder } from './http/HttpExtension.js';
 import type { Behavior } from './typed/Behavior.js';
-import { typedProps } from './typed/spawn.js';
+import { typedActor } from './typed/spawn.js';
 
 /**
  * The ActorSystem is the top-level container for actors.  It owns the root
@@ -255,13 +255,13 @@ export class ActorSystem {
   /**
    * Spawn a typed Behavior under `/user` with a deterministic name —
    * the Behavior-DSL counterpart to {@link spawn}.  Wraps the Behavior
-   * in `typedProps(behavior)` so callers don't have to thread Props
+   * in `typedActor(behavior)` so callers don't have to thread a factory
    * through the typed API.
    *
    *     const ref = system.spawnTyped(counter(0), 'counter');
    */
   spawnTyped<T>(behavior: Behavior<T>, name: string): ActorRef<T> {
-    return this.spawn(typedProps<T>(behavior), name);
+    return this.spawn(typedActor<T>(behavior), name);
   }
 
   /**
@@ -270,7 +270,7 @@ export class ActorSystem {
    * doesn't need a stable path.
    */
   spawnTypedAnonymous<T>(behavior: Behavior<T>): ActorRef<T> {
-    return this.spawnAnonymous(typedProps<T>(behavior));
+    return this.spawnAnonymous(typedActor<T>(behavior));
   }
 
   /**

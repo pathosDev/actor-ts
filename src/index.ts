@@ -2,14 +2,14 @@
  * actor-ts — an actor-model framework for TypeScript on Bun.
  *
  *   Quick start:
- *     import { ActorSystem, Actor, Props } from 'actor-ts';
+ *     import { ActorSystem, Actor } from 'actor-ts';
  *
  *     class Hello extends Actor<string> {
  *       onReceive(message: string) { console.log('hello', message); }
  *     }
  *
  *     const system = ActorSystem.create('demo');
- *     const ref = system.spawn(Props.create(() => new Hello()), 'hello');
+ *     const ref = system.spawn(Hello, 'hello');
  *     ref.tell('world');
  *     await system.terminate();
  */
@@ -771,7 +771,7 @@ export type {
 export {
   Behaviors,
   TypedActor,
-  typedProps,
+  typedActor,
   same,
   stopped,
   unhandled,
