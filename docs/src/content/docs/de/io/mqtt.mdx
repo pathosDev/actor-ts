@@ -15,7 +15,7 @@ mit `this.publish(...)`.  Von außen bleibt er per `ref.tell(...)`
 steuerbar.
 
 ```ts
-import { ActorSystem, ActorSystemOptions, MqttActor, MqttOptions, Props, type MqttMessage } from 'actor-ts';
+import { ActorSystem, ActorSystemOptions, MqttActor, MqttOptions, type MqttMessage } from 'actor-ts';
 
 type Reading = { sensor: string; celsius: number };
 
@@ -39,7 +39,7 @@ class TemperatureHub extends MqttActor<Reading> {
 
 const system = ActorSystem.create('demo', actorSystemOptions);
 
-system.spawn(Props.create(() => new TemperatureHub(MqttOptions.create())), 'hub');
+system.spawn(() => new TemperatureHub(MqttOptions.create()), 'hub');
 ```
 
 `T` (hier `Reading`) typisiert das eingehende Payload —

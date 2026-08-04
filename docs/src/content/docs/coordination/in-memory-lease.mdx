@@ -137,17 +137,17 @@ describe('SingletonManager with lease', () => {
       lease2Options,
     );
 
-    // (cluster wiring + singletonProps elided)
+    // (cluster wiring + singletonActor elided)
 
     const singleton1Options = StartSingletonOptions.create()
       .withTypeName('s')
-      .withProps(singletonProps)
+      .withActor(singletonActor)
       .withLease(lease1);
     cluster1.singleton.start(singleton1Options);
 
     const singleton2Options = StartSingletonOptions.create()
       .withTypeName('s')
-      .withProps(singletonProps)
+      .withActor(singletonActor)
       .withLease(lease2);
     cluster2.singleton.start(singleton2Options);
 

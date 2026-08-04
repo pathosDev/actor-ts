@@ -125,7 +125,7 @@ was nichts darüber sagt, welcher welcher ist.  Ruf es jederzeit auf,
 nicht nur aus `setup` — ein Name, der sich erst nach der ersten
 Nachricht ergibt, lässt sich dann setzen.  Für einen Namen, den die
 Spawn-Stelle schon kennt, tut
-[`typedProps(behavior).withDisplayName(...)`](/de/fundamentals/props/#withdisplayname)
+[`ActorOptions.withDisplayName(...)`](/de/fundamentals/spawning/#withdisplayname)
 dasselbe, ohne das Behavior zu betreten.
 
 ## Die Dekoratoren
@@ -336,7 +336,7 @@ import { Aside } from '@astrojs/starlight/components';
 - **[Typed Actor](/de/typed/typed-actor/)** — die Runtime,
   die ein Behavior interpretiert.
 - **[Spawn Typed](/de/typed/spawn-typed/)** — `system.spawnTyped`,
-  `context.spawnTyped`, `typedProps`.
+  `context.spawnTyped`, `typedActor`.
 - **[Supervision](/de/fundamentals/supervision/)** — was
   `Behaviors.supervise(...).onFailure(...)` intern verwendet.
 - **[Become und Stash (untyped)](/de/fundamentals/become-and-stash/)** —

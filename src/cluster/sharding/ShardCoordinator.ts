@@ -70,6 +70,8 @@ type StatsQuery = {
   /** Region keys we are still waiting on. */
   readonly awaiting: Set<string>;
   readonly entityCounts: Map<number, number>;
+  /** Shards whose owning region reported a materialised actor. */
+  readonly residents: Set<number>;
   timer: Cancellable | null;
 };
 
@@ -627,6 +629,7 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
       correlationId: message.correlationId,
       awaiting: new Set(targets.map(([key]) => key)),
       entityCounts: new Map(),
+      residents: new Set(),
       timer: null,
     };
     if (query.awaiting.size === 0) { this.answerStatsQuery(query); return; }
@@ -659,6 +662,7 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
         entry.shardId,
         (query.entityCounts.get(entry.shardId) ?? 0) + entry.entityCount,
       );
+      if (entry.resident) query.residents.add(entry.shardId);
     }
     if (query.awaiting.size > 0) return;
     query.timer?.cancel();
@@ -676,6 +680,10 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
         node: info.node.toJSON(),
         regionPath: info.path,
         entityCount: query.entityCounts.get(shardId) ?? 0,
+        // A region that timed out contributes neither a count nor residency,
+        // so an unanswered shard reads as "allocated, not known to be up" —
+        // the same conservative direction `entityCount: 0` already takes.
+        resident: query.residents.has(shardId),
       });
     }
     shards.sort((a, b) => a.shardId - b.shardId);

@@ -12,7 +12,6 @@ import { StartShardingOptions } from '../../../../../src/cluster/sharding/StartS
 import type { ShardingMessage } from '../../../../../src/cluster/sharding/ShardingProtocol.js';
 import { regionSegments } from '../../../../util/systemPaths.js';
 import { LogLevel, NoopLogger } from '../../../../../src/Logger.js';
-import { Props } from '../../../../../src/Props.js';
 import type { ActorRef } from '../../../../../src/ActorRef.js';
 
 /**
@@ -82,7 +81,7 @@ async function startNode(systemName: string, port: number): Promise<Node> {
 
   const shardingOptions = StartShardingOptions.create<Command>()
     .withTypeName(TYPE_NAME)
-    .withEntityProps(Props.create(() => new Entity()))
+    .withEntityActor(() => new Entity())
     .withExtractEntityId((message) => message.id)
     .withNumShards(NUM_SHARDS)
     // Irrelevant here, and a sweep firing mid-handoff would only add noise.

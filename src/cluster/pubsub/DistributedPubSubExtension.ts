@@ -2,7 +2,6 @@ import type { ActorRef } from '../../ActorRef.js';
 import type { ActorSystem } from '../../ActorSystem.js';
 import { SystemActorNames, SystemGroups, assertSpawnedAt } from '../../internal/SystemPaths.js';
 import { extensionId, type Extension, type ExtensionId } from '../../Extension.js';
-import { Props } from '../../Props.js';
 import type { Cluster } from '../Cluster.js';
 import type { EnvelopeMessage } from '../Protocol.js';
 import {
@@ -44,7 +43,7 @@ export class DistributedPubSub implements Extension {
     // Cluster comes from the positional arg and is authoritative — inject it
     // into the options (builder or plain object) before constructing the mediator.
     const mediator = this.system._spawnSystemActor(
-      Props.create(() => new DistributedPubSubMediator({ ...(options as Partial<DistributedPubSubOptionsType>), cluster })),
+      () => new DistributedPubSubMediator({ ...(options as Partial<DistributedPubSubOptionsType>), cluster }),
       SystemGroups.clusterPubSub,
       SystemActorNames.pubSubMediator,
     );

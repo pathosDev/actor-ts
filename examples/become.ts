@@ -4,7 +4,7 @@
  *
  *   tsx examples/become.ts
  */
-import { Actor, ActorSystem, Props } from '../src/index.js';
+import { Actor, ActorSystem } from '../src/index.js';
 import { attachDevTools } from './devtools.js';
 
 class LampActor extends Actor<'toggle'> {
@@ -36,7 +36,7 @@ class LampActor extends Actor<'toggle'> {
 async function main(): Promise<void> {
   const system = ActorSystem.create('become-demo');
   const devtools = await attachDevTools(system);
-  const lamp = system.spawn(Props.create(() => new LampActor()), 'lamp');
+  const lamp = system.spawn(() => new LampActor(), 'lamp');
 
   for (let i = 0; i < 6; i++) lamp.tell('toggle');
 

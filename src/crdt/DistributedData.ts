@@ -6,9 +6,9 @@ import type { ActorSystem } from '../ActorSystem.js';
 import type { Cancellable } from '../Scheduler.js';
 import { extensionId, type Extension, type ExtensionId } from '../Extension.js';
 import { DEFAULT_ASK_TIMEOUT_MS } from '../util/Constants.js';
+import { randomId } from '../util/RandomString.js';
 import { DistributedDataOptionsValidator } from './DistributedDataOptions.js';
 import type { DistributedDataOptions, DistributedDataOptionsType } from './DistributedDataOptions.js';
-import { Props } from '../Props.js';
 import type { Cluster } from '../cluster/Cluster.js';
 import { MemberRemoved, MemberUp } from '../cluster/ClusterEvents.js';
 import { NodeAddress } from '../cluster/NodeAddress.js';
@@ -249,7 +249,7 @@ export class DistributedData implements Extension {
     // ask().
     const view: SharedView = { state: new Map(), listeners: new Map() };
     const ref = this.system._spawnSystemActor(
-      Props.create(() => new DistributedDataActor({ cluster, options: resolvedOptions, view })),
+      () => new DistributedDataActor({ cluster, options: resolvedOptions, view }),
       SystemGroups.clusterCrdt,
       SystemActorNames.distributedData,
     );
@@ -892,10 +892,23 @@ class DistributedDataActor extends Actor<ActorMessage> {
 
 /* ============================== helpers ============================== */
 
-let _pendingCounter = 0;
+/**
+ * Correlates a quorum read or write with the acknowledgments that answer it.
+ *
+ * Was `p${Date.now()}-${++counter}`.  This value goes onto the wire, and the
+ * peer replies with the same one so the originator can match it up — so a
+ * predictable id is an invitation: guess one that is in flight and a forged
+ * acknowledgment counts toward a quorum that no peer actually gave.  A
+ * timestamp is observable and a counter starts at 1 in every process, which
+ * makes guessing arithmetic rather than search.
+ *
+ * The counter was also module-global rather than per-system, so two systems in
+ * one process drew from the same sequence.  Sixteen hex characters are ~64
+ * bits, far past the number of quorum requests in flight at once — the only
+ * uniqueness that has to hold.
+ */
 function nextPendingId(): string {
-  _pendingCounter = (_pendingCounter + 1) >>> 0;
-  return `p${Date.now()}-${_pendingCounter}`;
+  return `p${randomId(16)}`;
 }
 
 /**

@@ -126,10 +126,10 @@ const startSharding2Options = StartShardingOptions.create<CartCommand>().withExt
 cluster.sharding.start('cart', () => new CartActor(deps),
   startSharding2Options);
 
-// 3. Full-form — explicit Props + every setting:
+// 3. Full-form — every setting via the builder:
 const startSharding3Options = StartShardingOptions.create<CartCommand>()
   .withTypeName('cart')
-  .withEntityProps(Props.create(() => new CartActor()))
+  .withEntityActor(() => new CartActor())
   .withExtractEntityId((m) => m.entityId)
   .withNumShards(16)
   .withRole('cart-host');
@@ -220,9 +220,11 @@ To exercise an entity on its own, hand it an identity directly instead
 of standing up a cluster around it:
 
 ```ts
-const props = Props.create(() => new CartEntity())
+import { ActorOptions } from 'actor-ts';
+
+const cartOptions = ActorOptions.create()
   .withEntity({ entityId: 'user-42', typeName: 'cart', shardId: 3 });
-const cart = system.spawn(props, 'cart-under-test');
+const cart = system.spawn(CartEntity, 'cart-under-test', cartOptions);
 ```
 
 ### Why not read it off the path?
@@ -241,7 +243,8 @@ every character outside `[A-Za-z0-9_-]` to `_` when it names the child.
 ```ts
 type ShardingOptionsType<TMessage> = {
   typeName:                string;
-  entityProps:             Props<TMessage>;
+  entityActor:             ActorClassOrFactory<TMessage>;
+  entityOptions?:          ActorOptions<TMessage>;
   extractEntityId:         (message: TMessage) => string;
   extractEntityMessage?:   (message: TMessage) => unknown;
   numShards?:              number;            // default 64
@@ -370,7 +373,7 @@ shard is empty precisely because its entities went idle.
 ```ts
 const shardingOptions = StartShardingOptions.create<CartCommand>()
   .withTypeName('cart')
-  .withEntityProps(Props.create(() => new CartActor()))
+  .withEntityActor(() => new CartActor())
   .withExtractEntityId((command) => command.entityId)
   .withPassivationIdleMs(120_000)
   // Shards are cheap to keep and cost a respawn to lose — outliving their
@@ -384,10 +387,11 @@ either way — they run for the lifetime of the node.
 
 Only an *empty* shard is ever stopped, so there is no entity state at
 stake, and messages that arrive while a shard is stopping are buffered
-and replayed exactly as they are for an entity.  One consequence worth
-knowing: asking for a passivated shard's ref with
-[`shardRefFor()`](/cluster/sharding/introspection/) brings it back, since
-a handle to an actor that is not running would be a handle to nothing.
+and replayed exactly as they are for an entity.  A shard ref stays valid
+across the gap too — see
+[introspection](/cluster/sharding/introspection/), where `ShardInfo`
+also reports a `resident` flag that tells a passivated shard apart from
+one that is merely empty.
 
 ## Rebalancing
 

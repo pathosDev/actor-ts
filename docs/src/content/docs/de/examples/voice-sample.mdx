@@ -177,7 +177,7 @@ reine CRDT-Mitgliedschaft plus ein PubSub-Topic.
 ```ts
 const singletonOptions = StartSingletonOptions.create()
   .withTypeName('http-ingress')
-  .withProps(httpIngressProps({ host, httpPort, staticDir, /* ...Abhängigkeiten */ }));
+  .withActor(httpIngressFactory({ host, httpPort, staticDir, /* ...Abhängigkeiten */ }));
 cluster.singleton.start(singletonOptions);
 ```
 

@@ -130,16 +130,14 @@ behavior, just add cross-cutting concerns.
 ## Per-actor dispatcher
 
 The actor system has *one* default dispatcher.  Individual actors
-can specify their own via `Props`:
+can specify their own via `ActorOptions`:
 
 ```ts
-import { Props, MicrotaskDispatcher } from 'actor-ts';
+import { ActorOptions, MicrotaskDispatcher } from 'actor-ts';
 
-const fastActor = system.spawn(
-  Props.create(() => new Crunchy())
-    .withDispatcher(new MicrotaskDispatcher()),
-  'crunchy',
-);
+const crunchyOptions = ActorOptions.create().withDispatcher(new MicrotaskDispatcher());
+
+const fastActor = system.spawn(Crunchy, 'crunchy', crunchyOptions);
 ```
 
 Most apps don't need per-actor dispatchers — the system-level one

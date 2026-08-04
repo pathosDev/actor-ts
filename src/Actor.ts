@@ -104,7 +104,28 @@ export abstract class Actor<TMessage = unknown> {
 
   /**
    * Called before a restart, on the instance about to be thrown away.
-   * The default stops children and then calls postStop().
+   * The default calls `postStop()` and nothing else.
+   *
+   * In particular it does **not** stop this actor's children — they belong to
+   * the cell, which survives a restart, and only the `Actor` instance is
+   * replaced.  That has a consequence worth knowing before it bites: because
+   * `postRestart` re-runs `preStart` while the previous incarnation's children
+   * are still in the child map, an actor that spawns a *named* child in
+   * `preStart` throws `Child name '<name>' is not unique` on its first restart.
+   *
+   * Two ways out, depending on what the children are for.  If they are
+   * disposable, spawn them with `context.spawnAnonymous(...)`, whose generated
+   * names never collide.  If the restart is meant to rebuild them from scratch,
+   * override this and stop them explicitly:
+   *
+   *     override preRestart(reason: Error, message?: TMessage): void {
+   *       for (const child of this.context.children) child.stop();
+   *       super.preRestart(reason, message);
+   *     }
+   *
+   * Doing nothing is also a legitimate choice — surviving children keep their
+   * own state and mailboxes across the parent's restart, which is often exactly
+   * what you want.
    */
   preRestart(_reason: Error, _message?: TMessage): void | Promise<void> {
     return this.postStop();
@@ -142,17 +163,37 @@ export abstract class Actor<TMessage = unknown> {
    * non-empty string, falls back to the path and warns once: a naming
    * hook must not be able to take a log line down with it.
    *
-   * `Props.withDisplayName(...)` outranks this, for the same reason
-   * `Props.withSupervisorStrategy(...)` outranks {@link supervisorStrategy}
+   * `ActorOptions.withDisplayName(...)` outranks this, for the same reason
+   * `withSupervisorStrategy(...)` outranks {@link supervisorStrategy}
    * — the spawn site is the more specific statement.  It has to: every
    * `Behaviors` actor is a `TypedActor` that inherits this default, so a
-   * method that won would silently swallow the Props value for exactly
+   * method that won would silently swallow the spawn-site value for exactly
    * the actors that have no subclass to override.  For a name that only
    * becomes known at runtime, `this.context.setDisplayName(...)` outranks
    * both.
    */
   displayName(): string { return this._context?.path.toString() ?? this.constructor.name; }
 }
+
+/**
+ * Builds a fresh actor instance.  A *factory*, not an instance, because the
+ * runtime rebuilds the actor on every restart — handing over one instance
+ * would resurrect the broken state the crash was supposed to discard.
+ */
+export type ActorFactory<TMessage> = () => Actor<TMessage>;
+
+/**
+ * What every spawning API accepts: the actor class itself, or a factory that
+ * builds one.
+ *
+ * The class form covers the common case — a constructor that takes no
+ * arguments needs no closure around it.  The factory form is how dependencies
+ * get in (`() => new Worker(database)`), and it is also the escape hatch for
+ * anything the class form cannot express.
+ */
+export type ActorClassOrFactory<TMessage> =
+  | (new () => Actor<TMessage>)
+  | ActorFactory<TMessage>;
 
 /**
  * Module-level so the getters stay one-liners.  Names both plausible causes
@@ -165,7 +206,8 @@ function notAShardedEntity(className: string, path: string | null): Error {
     `${className}${where} is not a sharded entity — `
     + '`entityId` / `entity` are only set on actors ClusterSharding started, '
     + 'and not on an entity\'s own children.  Start it with `sharding.start(...)`, '
-    + 'or give it an identity directly with `Props.create(...).withEntity({ ... })`. '
+    + 'or give it an identity directly with '
+    + '`system.spawn(TheEntity, name, { entity: { entityId, typeName, shardId } })`. '
     + 'Note the context is attached after construction: derive from `entityId` in a '
     + 'getter or in `preStart`, never in a field initializer.',
   );

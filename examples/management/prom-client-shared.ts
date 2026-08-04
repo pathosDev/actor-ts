@@ -22,7 +22,7 @@
  * running:  `npm install prom-client`.
  */
 import {
-  Actor, ActorSystem, MetricsExtensionId, Props,
+  Actor, ActorSystem, MetricsExtensionId,
   promClientRegistry, PromClientAdapterOptions,
 } from '../../src/index.js';
 import { attachDevTools } from '../devtools.js';
@@ -70,7 +70,7 @@ system.extension(MetricsExtensionId).useRegistry(
 );
 
 // 4. Drive a steady stream so the framework's stock counters tick.
-const worker = system.spawn(Props.create(() => new Worker()), 'worker');
+const worker = system.spawn(() => new Worker(), 'worker');
 let nextId = 0;
 const tick = setInterval(() => {
   for (let i = 0; i < 5; i++) worker.tell({ id: nextId++ });

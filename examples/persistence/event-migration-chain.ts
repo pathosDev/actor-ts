@@ -16,7 +16,6 @@ import {
   InMemoryJournal,
   InMemorySnapshotStore,
   PersistentActor,
-  Props,
   MigrationChain,
   type EventAdapter,
 } from '../../src/index.js';
@@ -88,7 +87,7 @@ async function main(): Promise<void> {
   const sys = ActorSystem.create('migration-chain', sysOptions);
   const devtools = await attachDevTools(sys);
 
-  const acct = sys.spawn(Props.create(() => new Account('alice')), 'alice');
+  const acct = sys.spawn(() => new Account('alice'), 'alice');
   // v1 (1.5 USD = 150 cents) + v2 (2 EUR = 200 cents) + v3 (99 cents) = 449 cents.
   console.log('after recovery (cents) →', await acct.ask({ kind: 'balance' }, 500));
   console.log('deposit 100 cents EUR  →', await acct.ask({ kind: 'deposit', cents: 100 }, 500));

@@ -14,7 +14,7 @@
  * actor already does its own encode/decode via `shared/protocol.ts`.
  */
 import {
-  Props,
+  type ActorFactory,
   type ActorRef,
 } from '../../../../src/index.js';
 import { WebsocketServerActor } from '../../../../src/http/websocket/WebsocketServerActor.js';
@@ -62,7 +62,7 @@ export class WebsocketIngressActor extends WebsocketServerActor<WebsocketFrame, 
       close: () => c.close(),
     };
     const session = this.context.spawn(
-      Props.create(() => new UserSessionActor({ connection, ...this.deps })),
+      () => new UserSessionActor({ connection, ...this.deps }),
       `chat-session-${c.id}`,
     ) as unknown as SessionRef;
     this.sessions.set(c.id, session);
@@ -77,6 +77,6 @@ export class WebsocketIngressActor extends WebsocketServerActor<WebsocketFrame, 
   }
 }
 
-export function webSocketIngressProps(deps: WebsocketIngressDeps): Props<never> {
-  return Props.create(() => new WebsocketIngressActor(deps)) as unknown as Props<never>;
+export function webSocketIngressProps(deps: WebsocketIngressDeps): ActorFactory<never> {
+  return (() => new WebsocketIngressActor(deps)) as unknown as ActorFactory<never>;
 }

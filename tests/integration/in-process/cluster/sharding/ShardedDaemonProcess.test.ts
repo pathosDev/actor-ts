@@ -8,7 +8,7 @@ import { NodeAddress } from '../../../../../src/cluster/NodeAddress.js';
 import { ShardedDaemonProcess } from '../../../../../src/cluster/sharding/ShardedDaemonProcess.js';
 import { ShardedDaemonProcessOptions } from '../../../../../src/cluster/sharding/ShardedDaemonProcessOptions.js';
 import { LogLevel, NoopLogger } from '../../../../../src/Logger.js';
-import { Props } from '../../../../../src/Props.js';
+import type { ActorFactory } from '../../../../../src/Actor.js';
 import { TestKit } from '../../../../../src/testkit/TestKit.js';
 import { TestKitOptions } from '../../../../../src/testkit/TestKitOptions.js';
 
@@ -58,7 +58,7 @@ describe('ShardedDaemonProcess — single node', () => {
     const daemonOptions = ShardedDaemonProcessOptions.create<string>()
       .withName('workers')
       .withNumDaemons(4)
-      .withBehaviorFor((i) => Props.create(() => new Worker(i)));
+      .withActorFor((i) => () => new Worker(i));
     const handle = ShardedDaemonProcess.init<string>(nodeA.system, nodeA.cluster, daemonOptions);
     await sleep(150);
 
@@ -90,26 +90,26 @@ describe('ShardedDaemonProcess — multi-node', () => {
     const hostedByB: Set<number> = new Set();
     const hostedByC: Set<number> = new Set();
 
-    const makeWorker = (i: number, where: Set<number>): Props<string> =>
-      Props.create(() => new class extends Actor<string> {
+    const makeWorker = (i: number, where: Set<number>): ActorFactory<string> =>
+      () => new class extends Actor<string> {
         override preStart(): void { where.add(i); }
         override onReceive(): void {}
-      });
+      };
 
     const aDaemonOptions = ShardedDaemonProcessOptions.create<string>()
       .withName('workers')
       .withNumDaemons(9)
-      .withBehaviorFor((i) => makeWorker(i, hostedByA));
+      .withActorFor((i) => makeWorker(i, hostedByA));
     ShardedDaemonProcess.init<string>(nodeA.system, nodeA.cluster, aDaemonOptions);
     const bDaemonOptions = ShardedDaemonProcessOptions.create<string>()
       .withName('workers')
       .withNumDaemons(9)
-      .withBehaviorFor((i) => makeWorker(i, hostedByB));
+      .withActorFor((i) => makeWorker(i, hostedByB));
     ShardedDaemonProcess.init<string>(nodeB.system, nodeB.cluster, bDaemonOptions);
     const cDaemonOptions = ShardedDaemonProcessOptions.create<string>()
       .withName('workers')
       .withNumDaemons(9)
-      .withBehaviorFor((i) => makeWorker(i, hostedByC));
+      .withActorFor((i) => makeWorker(i, hostedByC));
     ShardedDaemonProcess.init<string>(nodeC.system, nodeC.cluster, cDaemonOptions);
 
     await waitFor(() => hostedByA.size + hostedByB.size + hostedByC.size === 9, 5_000);
@@ -145,7 +145,7 @@ describe('ShardedDaemonProcess — liveness heartbeat', () => {
     const daemonOptions = ShardedDaemonProcessOptions.create<string>()
       .withName('workers')
       .withNumDaemons(2)
-      .withBehaviorFor((i) => Props.create(() => new W(i)))
+      .withActorFor((i) => () => new W(i))
       // Tight livenessIntervalMs so the heartbeat would re-wake daemons
       // every 80 ms while the test runs.  We're not asserting on
       // additional preStart fires (rememberEntities prevents that), but
@@ -182,7 +182,7 @@ describe('ShardedDaemonProcess — liveness heartbeat', () => {
     const daemonOptions = ShardedDaemonProcessOptions.create<string>()
       .withName('workers')
       .withNumDaemons(2)
-      .withBehaviorFor((i) => Props.create(() => new W(i)))
+      .withActorFor((i) => () => new W(i))
       .withLivenessIntervalMs(0);
     const handle = ShardedDaemonProcess.init<string>(nodeA.system, nodeA.cluster, daemonOptions);
 

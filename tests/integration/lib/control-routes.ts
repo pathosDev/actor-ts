@@ -19,7 +19,6 @@ import {
 } from '../../../src/http/index.js';
 import { match } from 'ts-pattern';
 import { Actor } from '../../../src/Actor.js';
-import { Props } from '../../../src/Props.js';
 import type { ActorRef } from '../../../src/ActorRef.js';
 import type { ActorSystem } from '../../../src/ActorSystem.js';
 import type { Cluster } from '../../../src/cluster/Cluster.js';
@@ -282,9 +281,8 @@ export function makeControlRoutes(
   // accumulate updates before any scenario polls it.  Listings are
   // dispatched to the subscriber actor's mailbox; scenarios query
   // its current state via the `GetSnapshot` message.
-  const subscriberRef = system.spawnAnonymous(Props.create<SubscriberMessage>(() =>
-    new ContinuousSubscriber(),
-  )) as ActorRef<SubscriberMessage>;
+  const subscriberRef = system.spawnAnonymous(() =>
+    new ContinuousSubscriber()) as ActorRef<SubscriberMessage>;
   receptionistRef.tell(new Subscribe(
     // Same key the node-runner registered the auto-IdleWorker under.
     new ServiceKey('workers'),
@@ -304,7 +302,7 @@ export function makeControlRoutes(
   // are registered before any peer publishes.
   const pubsubMediator = system.extension(DistributedPubSubId).start(cluster);
   const pubsubReceiver = system.spawnAnonymous(
-    Props.create<PubSubEvent | PubSubSnapshotQuery>(() => new PubSubReceiver()),
+    () => new PubSubReceiver(),
   ) as ActorRef<PubSubEvent | PubSubSnapshotQuery>;
   pubsubMediator.tell(new PubSubSubscribe(
     'events',
@@ -319,7 +317,7 @@ export function makeControlRoutes(
   const ensureSlowSink = (): ActorRef<SlowSinkMessage> => {
     if (slowSinkRef) return slowSinkRef;
     slowSinkRef = system.spawnAnonymous(
-      Props.create<SlowSinkMessage>(() => new SlowSink()),
+      () => new SlowSink(),
     ) as ActorRef<SlowSinkMessage>;
     return slowSinkRef;
   };
@@ -339,12 +337,12 @@ export function makeControlRoutes(
   const ensurePersistentCounter = (id: string): ActorRef<CounterCommand> => {
     const existing = persistentCounters.get(id);
     if (existing) return existing;
-    // spawnAnonymous (auto-incremented name) so a freshly-killed
-    // counter can be re-spawned without a name collision.  The
-    // PersistentActor's `persistenceId` is what binds it to its
-    // journal entries — the actor path doesn't matter.
+    // spawnAnonymous (framework-generated name — a counter plus a random
+    // suffix) so a freshly-killed counter can be re-spawned without a name
+    // collision.  The PersistentActor's `persistenceId` is what binds it to
+    // its journal entries — the actor path doesn't matter.
     const ref = system.spawnAnonymous(
-      Props.create<CounterCommand>(() => new PersistentCounter(id)),
+      () => new PersistentCounter(id),
     ) as ActorRef<CounterCommand>;
     persistentCounters.set(id, ref);
     return ref;
@@ -458,12 +456,11 @@ export function makeControlRoutes(
       try {
         const listing = await new Promise<Listing>((resolve, reject) => {
           const timer = setTimeout(() => reject(new Error('receptionist listing timeout')), 5_000);
-          const collector = system.spawnAnonymous(Props.create<Listing>(() =>
+          const collector = system.spawnAnonymous(() =>
             new ListingCollector((l) => {
               clearTimeout(timer);
               resolve(l);
-            }),
-          ));
+            }));
           receptionistRef.tell(new Find(WORKER_KEY, collector));
         });
         return completeJson(Status.OK, {
@@ -488,12 +485,11 @@ export function makeControlRoutes(
       try {
         const snapshot = await new Promise<SubscriberSnapshot>((resolve, reject) => {
           const timer = setTimeout(() => reject(new Error('subscribed snapshot timeout')), 5_000);
-          const collector = system.spawnAnonymous(Props.create<SubscriberSnapshot>(() =>
+          const collector = system.spawnAnonymous(() =>
             new SnapshotCollector((s) => {
               clearTimeout(timer);
               resolve(s);
-            }),
-          )) as ActorRef<SubscriberSnapshot>;
+            })) as ActorRef<SubscriberSnapshot>;
           subscriberRef.tell(new GetSnapshot(collector));
         });
         return completeJson(Status.OK, {
@@ -517,7 +513,7 @@ export function makeControlRoutes(
       if (extraWorkerRef) {
         receptionistRef.tell(new Deregister(new ServiceKey('workers'), extraWorkerRef));
       }
-      extraWorkerRef = system.spawnAnonymous(Props.create<unknown>(() => new ExtraWorker()));
+      extraWorkerRef = system.spawnAnonymous(() => new ExtraWorker());
       receptionistRef.tell(new Register(new ServiceKey('workers'), extraWorkerRef));
       return completeJson(Status.OK, { registered: extraWorkerRef.toString() });
     }))),
@@ -672,12 +668,11 @@ export function makeControlRoutes(
       try {
         const reply = await new Promise<SingletonWhoReply>((resolve, reject) => {
           const timer = setTimeout(() => reject(new Error('singleton who timeout')), 5_000);
-          const collector = system.spawnAnonymous(Props.create<SingletonWhoReply>(() =>
+          const collector = system.spawnAnonymous(() =>
             new SingletonReplyCollector((r) => {
               clearTimeout(timer);
               resolve(r);
-            }),
-          )) as ActorRef<SingletonWhoReply>;
+            })) as ActorRef<SingletonWhoReply>;
           deps.singletonProxy.tell({ kind: 'who', replyTo: collector });
         });
         return completeJson(Status.OK, {
@@ -711,12 +706,11 @@ export function makeControlRoutes(
       try {
         const reply = await new Promise<ShardedWhoReply>((resolve, reject) => {
           const timer = setTimeout(() => reject(new Error('sharding who timeout')), 10_000);
-          const collector = system.spawnAnonymous(Props.create<ShardedWhoReply>(() =>
+          const collector = system.spawnAnonymous(() =>
             new ShardedReplyCollector((r) => {
               clearTimeout(timer);
               resolve(r);
-            }),
-          )) as ActorRef<ShardedWhoReply>;
+            })) as ActorRef<ShardedWhoReply>;
           deps.shardingRegion.tell({
             entityId: id,
             kind: 'who',
@@ -755,12 +749,11 @@ export function makeControlRoutes(
       try {
         const state = await new Promise<CounterStateReply>((resolve, reject) => {
           const timer = setTimeout(() => reject(new Error('counter get-state timeout')), 5_000);
-          const collector = system.spawnAnonymous(Props.create<CounterStateReply>(() =>
+          const collector = system.spawnAnonymous(() =>
             new CounterStateCollector((s) => {
               clearTimeout(timer);
               resolve(s);
-            }),
-          )) as ActorRef<CounterStateReply>;
+            })) as ActorRef<CounterStateReply>;
           ensurePersistentCounter(id).tell({ kind: 'get-state', replyTo: collector });
         });
         return completeJson(Status.OK, { id, count: state.count });
@@ -807,10 +800,10 @@ export function makeControlRoutes(
         const snapshot = await new Promise<PubSubSnapshot>((resolve, reject) => {
           const timer = setTimeout(() => reject(new Error('pubsub snapshot timeout')), 5_000);
           const collector = system.spawnAnonymous(
-            Props.create<PubSubSnapshot>(() => new PubSubSnapshotCollector((s) => {
+            () => new PubSubSnapshotCollector((s) => {
               clearTimeout(timer);
               resolve(s);
-            })),
+            }),
           ) as ActorRef<PubSubSnapshot>;
           pubsubReceiver.tell({ kind: 'snapshot', replyTo: collector });
         });

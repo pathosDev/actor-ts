@@ -16,7 +16,6 @@ import {
   type PortLike,
 } from '../../../../src/cluster/transports/MessageChannelTransport.js';
 import { LogLevel, NoopLogger } from '../../../../src/Logger.js';
-import { Props } from '../../../../src/Props.js';
 import { WorkerBroker } from '../../../../src/worker/WorkerBroker.js';
 
 const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
@@ -134,7 +133,7 @@ describe('WorkerBroker ↔ MessageChannelTransport end-to-end', () => {
     const nodeA = await startNode('wm-orphan', addrA, broker);
 
     class NoopActor extends Actor<string> { override onReceive(_: string): void {} }
-    const ref = nodeA.system.spawn(Props.create(() => new NoopActor()), 'noop');
+    const ref = nodeA.system.spawn(() => new NoopActor(), 'noop');
     ref.tell('hello');
     await sleep(30);
     // Survived without error.

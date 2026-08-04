@@ -15,14 +15,14 @@ Zustellung.  Er:
   retransmittiert.
 
 ```ts
-import { Props, ConsumerController } from 'actor-ts';
+import { ConsumerController } from 'actor-ts';
 
 const consumer = system.spawn(
-  Props.create(() => new ConsumerController<OrderEvent>({
+  () => new ConsumerController<OrderEvent>({
     handler: async (order) => {
       await processOrder(order);
     },
-  })),
+  }),
 );
 ```
 
@@ -142,16 +142,16 @@ dem Business-State im Handler.
 
 ```ts
 const consumer = system.spawn(
-  Props.create(() => new ConsumerController<OrderEvent>({
+  () => new ConsumerController<OrderEvent>({
     handler: async (order) => { await processOrder(order); },
-  })),
+  }),
 );
 
 // Mehrere Producer senden an denselben Consumer:
-const p1 = system.spawnAnonymous(Props.create(() =>
-  new ProducerController({ consumer, producerId: 'p1' })));
-const p2 = system.spawnAnonymous(Props.create(() =>
-  new ProducerController({ consumer, producerId: 'p2' })));
+const p1 = system.spawnAnonymous(() =>
+  new ProducerController({ consumer, producerId: 'p1' }));
+const p2 = system.spawnAnonymous(() =>
+  new ProducerController({ consumer, producerId: 'p2' }));
 ```
 
 Jeder Producer pflegt seine eigene Seq.  Der Consumer

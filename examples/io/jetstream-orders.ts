@@ -25,7 +25,6 @@
 import {
   Actor,
   ActorSystem,
-  Props,
   JetStreamActor,
   JetStreamOptions,
   type JetStreamCommand,
@@ -72,7 +71,7 @@ async function main(): Promise<void> {
   let js!: ActorRef<JetStreamCommand>;
 
   const processor = system.spawn(
-    Props.create(() => new OrderProcessor(js)),
+    () => new OrderProcessor(js),
     'processor',
   );
 
@@ -92,7 +91,7 @@ async function main(): Promise<void> {
     })
     .withTarget(processor);
   js = system.spawn(
-    Props.create(() => new JetStreamActor(jetStreamOptions)),
+    () => new JetStreamActor(jetStreamOptions),
     'js',
   );
 

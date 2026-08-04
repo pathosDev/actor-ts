@@ -1,11 +1,12 @@
 import { match } from 'ts-pattern';
 import { describe, expect, test } from 'bun:test';
 import { ActorSystem } from '../../../src/ActorSystem.js';
+import { ActorOptions } from '../../../src/ActorOptions.js';
 import { ActorSystemOptions } from '../../../src/ActorSystemOptions.js';
 import { JsonLogger, LogLevel, NoopLogger } from '../../../src/Logger.js';
 import {
   Behaviors,
-  typedProps,
+  typedActor,
   type Behavior,
 } from '../../../src/typed/index.js';
 import { TestKit } from '../../../src/testkit/TestKit.js';
@@ -292,8 +293,8 @@ describe('Behaviors.empty / Behaviors.ignore', () => {
   });
 });
 
-describe('typedProps — interop with OO Actor API', () => {
-  test('typedProps works through system.spawn', async () => {
+describe('typedActor — interop with OO Actor API', () => {
+  test('typedActor works through system.spawn', async () => {
     const sys = newSys();
     const kitOptions = TestKitOptions.create()
       .withLogger(new NoopLogger())
@@ -302,7 +303,7 @@ describe('typedProps — interop with OO Actor API', () => {
     const probe = kit.createTestProbe<number>();
 
     const behavior = Behaviors.receiveMessage<number>((m) => { probe.tell(m * 2); return Behaviors.same; });
-    const ref = kit.system.spawnAnonymous(typedProps(behavior));
+    const ref = kit.system.spawnAnonymous(typedActor(behavior));
     ref.tell(21);
     expect(await probe.expectMessage(42, 500)).toBe(42);
 
@@ -347,7 +348,7 @@ describe('system.spawnTyped + ctx.spawnTyped', () => {
     const sys = newSys();
     const behavior = Behaviors.receiveMessage<string>(() => Behaviors.same);
     const ref = sys.spawnTypedAnonymous(behavior);
-    expect(ref.path.name.startsWith('$')).toBe(true);
+    expect(ref.path.name).toMatch(/^\$anonymous-\d+-[0-9a-f]{12}$/);
     expect(ref.path.toString()).toContain('/user/');
     await sys.terminate();
   });
@@ -356,7 +357,6 @@ describe('system.spawnTyped + ctx.spawnTyped', () => {
     const sys = newSys();
     const seen: string[] = [];
     const { Actor } = await import('../../../src/Actor.js');
-    const { Props } = await import('../../../src/Props.js');
 
     // Parent forwards every received string to its typed-child set,
     // exercising both shapes of `ctx.spawnTyped*`.
@@ -376,7 +376,7 @@ describe('system.spawnTyped + ctx.spawnTyped', () => {
         if (this.named.path.name !== 'typed-child') {
           throw new Error(`named child path was ${this.named.path.name}`);
         }
-        if (!this.anon.path.name.startsWith('$')) {
+        if (!/^\$anonymous-\d+-[0-9a-f]{12}$/.test(this.anon.path.name)) {
           throw new Error(`anon child path was ${this.anon.path.name}`);
         }
       }
@@ -386,7 +386,7 @@ describe('system.spawnTyped + ctx.spawnTyped', () => {
       }
     }
 
-    const parent = sys.spawn(Props.create(() => new UntypedParent()), 'parent');
+    const parent = sys.spawn(() => new UntypedParent(), 'parent');
     parent.tell({ kind: 'fwd', m: 'hi' });
     await sleep(40);
     // Both children received the same message — order across children is
@@ -417,7 +417,7 @@ describe('Behaviors.receiveWithSignal — terminated signal (#448)', () => {
       );
     });
 
-    sys.spawn(typedProps(parent), 'parent');
+    sys.spawn(typedActor(parent), 'parent');
     await sleep(40);
     child!.stop();
     await sleep(60);
@@ -446,7 +446,7 @@ describe('Behaviors.receiveWithSignal — terminated signal (#448)', () => {
       );
     });
 
-    sys.spawn(typedProps(parent), 'parent');
+    sys.spawn(typedActor(parent), 'parent');
     await sleep(40);
     second!.stop();
     await sleep(60);
@@ -485,7 +485,7 @@ describe('Behaviors.receiveWithSignal — terminated signal (#448)', () => {
       );
     });
 
-    const ref = sys.spawn(typedProps(parent), 'parent');
+    const ref = sys.spawn(typedActor(parent), 'parent');
     await sleep(40);
     child!.stop();
     await sleep(80);
@@ -518,7 +518,7 @@ describe('Behaviors.receiveWithSignal — terminated signal (#448)', () => {
       });
     });
 
-    sys.spawn(typedProps(parent), 'parent');
+    sys.spawn(typedActor(parent), 'parent');
     await sleep(40);
     child!.stop();
     await sleep(60);
@@ -561,13 +561,14 @@ describe('TypedActorContext.setDisplayName (#891)', () => {
     await system.terminate();
   });
 
-  test('typedProps().withDisplayName names one without entering the behavior', async () => {
-    const { system, names } = recordingSystem('typed-display-name-props');
+  test('withDisplayName names a typed actor without entering the behavior', async () => {
+    const { system, names } = recordingSystem('typed-display-name-options');
     const behavior: Behavior<string> = Behaviors.receive((context, _message) => {
       context.log.info('handled');
       return Behaviors.same;
     });
-    system.spawn(typedProps(behavior).withDisplayName('Cart(bob)'), 'entity-9c21').tell('x');
+    const entityOptions = ActorOptions.create<string>().withDisplayName('Cart(bob)');
+    system.spawn(typedActor(behavior), 'entity-9c21', entityOptions).tell('x');
     await sleep(30);
 
     expect(names()).toEqual(['Cart(bob)']);

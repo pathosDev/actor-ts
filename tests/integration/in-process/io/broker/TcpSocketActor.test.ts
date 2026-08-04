@@ -3,7 +3,6 @@ import { createServer, type Server } from 'node:net';
 import { ActorSystem } from '../../../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../../../src/ActorSystemOptions.js';
 import { LogLevel, NoopLogger } from '../../../../../src/Logger.js';
-import { Props } from '../../../../../src/Props.js';
 import { Actor } from '../../../../../src/Actor.js';
 import { TcpSocketActor } from '../../../../../src/io/broker/TcpSocketActor.js';
 import { TcpSocketOptions } from '../../../../../src/io/broker/TcpSocketOptions.js';
@@ -49,13 +48,13 @@ describe('TcpSocketActor — bytes framing (default)', () => {
       .withLogLevel(LogLevel.Off);
     const sys = ActorSystem.create('tcp-1', sysOptions);
     const collector = new CollectActor();
-    const target = sys.spawnAnonymous(Props.create(() => collector));
+    const target = sys.spawnAnonymous(() => collector);
 
     let connected = false;
     sys.eventStream.subscribe(
-      sys.spawnAnonymous(Props.create(() => new (class extends Actor<unknown> {
+      sys.spawnAnonymous(() => new (class extends Actor<unknown> {
         override onReceive(_: unknown): void { connected = true; }
-      })())),
+      })()),
       BrokerConnected,
     );
 
@@ -63,7 +62,7 @@ describe('TcpSocketActor — bytes framing (default)', () => {
       .withHost('127.0.0.1')
       .withPort(server.port)
       .withTarget(target);
-    const ref = sys.spawnAnonymous(Props.create(() => new TcpSocketActor(tcpOptions)));
+    const ref = sys.spawnAnonymous(() => new TcpSocketActor(tcpOptions));
     await sleep(40);
     expect(connected).toBe(true);
 
@@ -84,14 +83,14 @@ describe('TcpSocketActor — line framing', () => {
       .withLogLevel(LogLevel.Off);
     const sys = ActorSystem.create('tcp-2', sysOptions);
     const collector = new CollectActor();
-    const target = sys.spawnAnonymous(Props.create(() => collector));
+    const target = sys.spawnAnonymous(() => collector);
 
     const tcpOptions = TcpSocketOptions.create()
       .withHost('127.0.0.1')
       .withPort(server.port)
       .withTarget(target)
       .withFraming({ kind: 'lines' });
-    const ref = sys.spawnAnonymous(Props.create(() => new TcpSocketActor(tcpOptions)));
+    const ref = sys.spawnAnonymous(() => new TcpSocketActor(tcpOptions));
     await sleep(30);
 
     // Send three lines in one chunk; echo returns them.  The framing
@@ -112,13 +111,13 @@ describe('TcpSocketActor — line framing', () => {
       .withLogLevel(LogLevel.Off);
     const sys = ActorSystem.create('tcp-3', sysOptions);
     const collector = new CollectActor();
-    const target = sys.spawnAnonymous(Props.create(() => collector));
+    const target = sys.spawnAnonymous(() => collector);
     const tcpOptions = TcpSocketOptions.create()
       .withHost('127.0.0.1')
       .withPort(server.port)
       .withTarget(target)
       .withFraming({ kind: 'lines' });
-    const ref = sys.spawnAnonymous(Props.create(() => new TcpSocketActor(tcpOptions)));
+    const ref = sys.spawnAnonymous(() => new TcpSocketActor(tcpOptions));
     await sleep(30);
     ref.tell({ kind: 'send', payload: 'partial-' });
     await sleep(20);
@@ -136,13 +135,13 @@ describe('TcpSocketActor — length-prefixed framing', () => {
       .withLogLevel(LogLevel.Off);
     const sys = ActorSystem.create('tcp-4', sysOptions);
     const collector = new CollectActor();
-    const target = sys.spawnAnonymous(Props.create(() => collector));
+    const target = sys.spawnAnonymous(() => collector);
     const tcpOptions = TcpSocketOptions.create()
       .withHost('127.0.0.1')
       .withPort(server.port)
       .withTarget(target)
       .withFraming({ kind: 'length-prefixed' });
-    const ref = sys.spawnAnonymous(Props.create(() => new TcpSocketActor(tcpOptions)));
+    const ref = sys.spawnAnonymous(() => new TcpSocketActor(tcpOptions));
     await sleep(30);
 
     // Build a 5-byte frame with a 4-byte length prefix.
@@ -166,16 +165,16 @@ describe('TcpSocketActor — options validation', () => {
       .withLogLevel(LogLevel.Off);
     const sys = ActorSystem.create('tcp-5', sysOptions);
     const collector = new CollectActor();
-    const target = sys.spawnAnonymous(Props.create(() => collector));
+    const target = sys.spawnAnonymous(() => collector);
     let captured: Error | null = null;
     const tcpOptions = TcpSocketOptions.create()
       .withTarget(target);  // host, port missing
-    sys.spawnAnonymous(Props.create(() => {
+    sys.spawnAnonymous(() => {
       const actor = new TcpSocketActor(tcpOptions);
       const orig = actor.preStart.bind(actor);
       actor.preStart = async () => { try { await orig(); } catch (e) { captured = e as Error; } };
       return actor as unknown as Actor<unknown>;
-    }));
+    });
     await sleep(30);
     expect(captured).not.toBeNull();
     expect((captured as unknown as Error).message).toContain('host');

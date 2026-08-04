@@ -128,10 +128,10 @@ const startSharding2Options = StartShardingOptions.create<CartCommand>().withExt
 cluster.sharding.start('cart', () => new CartActor(deps),
   startSharding2Options);
 
-// 3. Vollform — explizite Props + alle Settings:
+// 3. Vollform — alle Settings über den Builder:
 const startSharding3Options = StartShardingOptions.create<CartCommand>()
   .withTypeName('cart')
-  .withEntityProps(Props.create(() => new CartActor()))
+  .withEntityActor(() => new CartActor())
   .withExtractEntityId((m) => m.entityId)
   .withNumShards(16)
   .withRole('cart-host');
@@ -223,9 +223,11 @@ Um eine Entity isoliert zu testen, gibst du ihr die Identität direkt,
 statt einen Cluster darum herum hochzufahren:
 
 ```ts
-const props = Props.create(() => new CartEntity())
+import { ActorOptions } from 'actor-ts';
+
+const cartOptions = ActorOptions.create()
   .withEntity({ entityId: 'user-42', typeName: 'cart', shardId: 3 });
-const cart = system.spawn(props, 'cart-under-test');
+const cart = system.spawn(CartEntity, 'cart-under-test', cartOptions);
 ```
 
 ### Warum nicht einfach den Pfad auslesen?
@@ -245,7 +247,8 @@ der Wert.
 ```ts
 type ShardingOptionsType<TMessage> = {
   typeName:                string;
-  entityProps:             Props<TMessage>;
+  entityActor:             ActorClassOrFactory<TMessage>;
+  entityOptions?:          ActorOptions<TMessage>;
   extractEntityId:         (message: TMessage) => string;
   extractEntityMessage?:   (message: TMessage) => unknown;
   numShards?:              number;            // Default 64
@@ -380,7 +383,7 @@ Entities idle wurden.
 ```ts
 const shardingOptions = StartShardingOptions.create<CartCommand>()
   .withTypeName('cart')
-  .withEntityProps(Props.create(() => new CartActor()))
+  .withEntityActor(() => new CartActor())
   .withExtractEntityId((command) => command.entityId)
   .withPassivationIdleMs(120_000)
   // Shards sind billig zu halten und kosten einen Respawn, wenn sie gehen —
@@ -396,10 +399,10 @@ beiden Fällen unberührt — sie laufen für die Lebensdauer des Nodes.
 Gestoppt wird immer nur ein *leerer* Shard, es steht also kein
 Entity-State auf dem Spiel, und Nachrichten, die während des Stoppens
 eintreffen, werden genauso gepuffert und nachgespielt wie bei einer
-Entity. Eine Folge ist erwähnenswert: nach der Ref eines passivierten
-Shards mit [`shardRefFor()`](/de/cluster/sharding/introspection/) zu
-fragen, holt ihn zurück — ein Handle auf einen nicht laufenden Actor
-wäre ein Handle auf nichts.
+Entity. Auch eine Shard-Ref bleibt über die Lücke hinweg gültig — siehe
+[Introspection](/de/cluster/sharding/introspection/), wo `ShardInfo`
+zusätzlich ein `resident`-Flag meldet, das einen passivierten Shard von
+einem bloß leeren unterscheidet.
 
 ## Rebalancing
 

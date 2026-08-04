@@ -34,7 +34,7 @@ that has subscribers for that topic.
 ## A minimal example
 
 ```ts
-import { ActorSystem, Cluster, ClusterOptions, Props, Actor } from 'actor-ts';
+import { ActorSystem, Cluster, ClusterOptions, Actor } from 'actor-ts';
 import { DistributedPubSubId, type DistributedPubSubMediator, Publish, Subscribe } from 'actor-ts/cluster/pubsub';
 
 class ChatMessage {
@@ -57,7 +57,7 @@ const ps      = system.extension(DistributedPubSubId);
 ps.start(cluster);
 
 // Subscribe (typically in an actor's preStart):
-const room = system.spawnAnonymous(Props.create(() => new ChatRoom()));
+const room = system.spawnAnonymous(() => new ChatRoom());
 ps.mediator.tell(new Subscribe('chat.room.general', room));
 
 // Publish (anywhere — from any node, in or out of an actor):

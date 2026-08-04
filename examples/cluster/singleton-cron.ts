@@ -18,7 +18,6 @@ import {
   ClusterBootstrapOptions,
   InMemoryTransport,
   NodeAddress,
-  Props,
   SingletonKey,
   type ActorRef,
 } from '../../src/index.js';
@@ -101,7 +100,7 @@ async function main(): Promise<void> {
 
   // Spawn a client on each node and subscribe it via the proxy.
   for (const { sys, cluster, name } of [nodeA, nodeB, nodeC]) {
-    const client = sys.spawnAnonymous(Props.create(() => new CronClient(name)));
+    const client = sys.spawnAnonymous(() => new CronClient(name));
     cluster.singleton.ref(Cron).tell({ kind: 'subscribe', sub: client });
   }
 

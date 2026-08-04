@@ -142,7 +142,6 @@ class ByTagProjectionActor<E> extends BaseProjectionActor<E> {
 
 /* ============================ public API ============================== */
 
-import { Props } from '../../Props.js';
 import type { ActorSystem } from '../../ActorSystem.js';
 
 /**
@@ -185,7 +184,7 @@ export class ProjectionActor {
   ): ActorRef<unknown> {
     const resolvedOptions = options as ByPersistenceIdProjectionOptionsType<E>;
     return system._spawnSystemActor(
-      Props.create(() => new ByPersistenceIdProjectionActor<E>(resolvedOptions) as unknown as Actor<unknown>),
+      () => new ByPersistenceIdProjectionActor<E>(resolvedOptions) as unknown as Actor<unknown>,
       SystemGroups.persistenceProjection,
       `${resolvedOptions.name}-${sanitize(resolvedOptions.persistenceId)}`,
     );
@@ -198,7 +197,7 @@ export class ProjectionActor {
   ): ActorRef<unknown> {
     const resolvedOptions = options as ByTagProjectionOptionsType<E>;
     return system._spawnSystemActor(
-      Props.create(() => new ByTagProjectionActor<E>(resolvedOptions) as unknown as Actor<unknown>),
+      () => new ByTagProjectionActor<E>(resolvedOptions) as unknown as Actor<unknown>,
       SystemGroups.persistenceProjection,
       `${resolvedOptions.name}-tag-${sanitize(tagFilterCursorKey(resolvedOptions.tag))}`,
     );

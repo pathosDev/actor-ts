@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import { ActorSystem } from '../../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../../src/ActorSystemOptions.js';
 import { LogLevel, NoopLogger } from '../../../../src/Logger.js';
-import { Props } from '../../../../src/Props.js';
+import type { ActorFactory } from '../../../../src/Actor.js';
 import {
   DurableStateActor,
   DurableStateConcurrencyError,
@@ -30,14 +30,14 @@ class KVActor extends DurableStateActor<Command, KV> {
   }
 }
 
-const kvProps = (store: DurableStateStore, id: string): Props<Command> =>
-  Props.create(() => {
+const kvProps = (store: DurableStateStore, id: string): ActorFactory<Command> =>
+  () => {
     const durableStateOptions = DurableStateOptions.create<KV>()
       .withPersistenceId(id)
       .withStore(store)
       .withEmptyState(() => ({ map: {} }));
     return new KVActor(durableStateOptions) as unknown as import('../../../../src/Actor.js').Actor<Command>;
-  });
+  };
 
 describe('InMemoryDurableStateStore', () => {
   test('upsert + load round-trip with monotonic revisions', async () => {
@@ -93,7 +93,7 @@ describe('DurableStateActor', () => {
     class Sink extends (await import('../../../../src/Actor.js')).Actor<{ kind: string }> {
       override onReceive(m: { kind: string }): void { reply.push(m); }
     }
-    const sink = sys.spawnAnonymous(Props.create(() => new Sink()));
+    const sink = sys.spawnAnonymous(() => new Sink());
 
     const ref = sys.spawnAnonymous(kvProps(store, 'user-1'));
     ref.tell({ kind: 'set', key: 'name', value: 'alice', replyTo: sink });

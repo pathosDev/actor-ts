@@ -5,7 +5,6 @@ import { Actor } from '../../../../src/Actor.js';
 import { ActorSystem } from '../../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../../src/ActorSystemOptions.js';
 import { JsonLogger, LogLevel } from '../../../../src/Logger.js';
-import { Props } from '../../../../src/Props.js';
 import { NatsActor, type NatsMessage } from '../../../../src/io/broker/NatsActor.js';
 import { NatsOptions } from '../../../../src/io/broker/NatsOptions.js';
 import { waitForPort } from '../lib/wait-for-port.js';
@@ -62,14 +61,14 @@ export function spawnNats(context: NatsContext): ReturnType<ActorSystem['spawnAn
       .withServers([...context.servers])
       .withName(`actor-ts-${Date.now()}-${Math.random().toString(36).slice(2)}`),
   );
-  return context.system.spawnAnonymous(Props.create(() => actor));
+  return context.system.spawnAnonymous(() => actor);
 }
 
 export function spawnInbox(context: NatsContext): {
   ref: ReturnType<ActorSystem['spawnAnonymous']>; inbox: InboxActor;
 } {
   const inbox = new InboxActor();
-  const ref = context.system.spawnAnonymous(Props.create(() => inbox));
+  const ref = context.system.spawnAnonymous(() => inbox);
   return { ref, inbox };
 }
 

@@ -23,7 +23,6 @@
 import { match } from 'ts-pattern';
 import { describe, expect, test } from 'bun:test';
 import { Actor } from '../../src/Actor.js';
-import { Props } from '../../src/Props.js';
 import { ClusterSharding } from '../../src/cluster/sharding/ClusterSharding.js';
 import { StartShardingOptions } from '../../src/cluster/sharding/StartShardingOptions.js';
 import { ShardedDaemonProcess } from '../../src/cluster/sharding/ShardedDaemonProcess.js';
@@ -66,7 +65,7 @@ function startRegion(
 ): ActorRef<Command> {
   const shardingOptions = StartShardingOptions.create<Command>()
     .withTypeName('entity')
-    .withEntityProps(Props.create(() => new Entity()))
+    .withEntityActor(() => new Entity())
     .withExtractEntityId((m) => m.id)
     .withNumShards(16)
     .withRebalanceIntervalMs(200)
@@ -338,7 +337,7 @@ describe('multi-node sharding failover', () => {
         const daemonOptions = ShardedDaemonProcessOptions.create<{ kind: 'noop' }>()
           .withName('workers')
           .withNumDaemons(6)
-          .withBehaviorFor((i) => Props.create(() => new Daemon(i, role)));
+          .withActorFor((i) => () => new Daemon(i, role));
         ShardedDaemonProcess.init(
           spec.systemFor(role), spec.clusterFor(role),
           daemonOptions,

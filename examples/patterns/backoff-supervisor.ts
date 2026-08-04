@@ -20,7 +20,6 @@ import {
   Actor,
   ActorSystem,
   BackoffSupervisor,
-  Props,
 } from '../../src/index.js';
 import { attachDevTools } from '../devtools.js';
 
@@ -56,8 +55,8 @@ async function main(): Promise<void> {
   const devtools = await attachDevTools(system);
 
   const supervisor = system.spawn(
-    BackoffSupervisor.props({
-      childProps: Props.create(() => new FlakyConnector()),
+    BackoffSupervisor.factory({
+      child: () => new FlakyConnector(),
       childName: 'connector',
       minBackoff: 200,
       maxBackoff: 5_000,

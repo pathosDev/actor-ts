@@ -9,7 +9,64 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ## [Unreleased]
 
+### Removed
+
+- **BREAKING — `Props` is gone from the public API** (#547).  Spawning takes
+  the actor class or a factory directly, and per-actor configuration is an
+  ordinary options family:
+
+  ```ts
+  // before
+  system.spawn(Props.create(() => new Greeter()), 'greeter');
+  system.spawn(Props.create(() => new Worker(db)).withMailboxCapacity(500), 'w');
+
+  // after
+  system.spawn(Greeter, 'greeter');                      // zero-arg class
+  const workerOptions = ActorOptions.create<WorkerMessage>().withMailboxCapacity(500);
+  system.spawn(() => new Worker(db), 'w', workerOptions);
+  ```
+
+  `Props` bundled two unrelated things — *what* to construct and *how* to run
+  it — and 75 % of its ~970 call sites used only the first.  The second half
+  is now `ActorOptions`, a regular `XOptions` family (`ActorOptionsType` /
+  `ActorOptionsBuilder` / `ActorOptions` / `ActorOptionsValidator`), which is
+  what per-actor configuration should have been all along; it was the one
+  place in the framework that did not follow that convention.
+
+  **Migration:** drop `Props.create(` and its closing `)` — what is left is
+  already a valid factory, and a zero-argument class needs no closure at all.
+  Move each `.withX(…)` into a third `ActorOptions` argument; `asInternal()`
+  becomes `withInternal()`.  Renamed carriers: `entityProps` → `entityActor`
+  (+ `entityOptions`), singleton `props` → `actor` (+ `actorOptions`),
+  `singletonProps` → `singletonActor`, `childProps` → `child`
+  (+ `childOptions`), `routeeProps` → `routee` (+ `routeeOptions`),
+  `behaviorFor` → `actorFor`; `BackoffSupervisor.props` → `.factory`,
+  `ClusterRouter.props` → `.factory`, `typedProps` → `typedActor`.
+
+  Two behavioural notes.  `ActorOptions` **mutates in place** where `Props`
+  was copy-on-write, so a builder is one configuration — sharing one and
+  re-chaining it no longer branches.  The settings are snapshotted at spawn,
+  so mutating a builder afterwards never reconfigures a running actor.  And a
+  class whose constructor takes arguments is now rejected at the spawn call
+  naming the factory form, instead of being constructed with `undefined`
+  dependencies and failing later — this also closes the same hole in the
+  existing `ClusterSharding.start` / `ClusterSingleton.start` shorthands.
+
 ### Added
+
+- **`ActorOptions`** (#547) — `withSupervisorStrategy`, `withDispatcher`,
+  `withMailboxCapacity`, `withMailbox`, `withInternal`, `withEntity`,
+  `withDisplayName`, plus an `ActorOptionsValidator` that rejects a
+  non-positive `mailboxCapacity` at the `spawn` call rather than from inside
+  the mailbox constructor.  Accepted as a builder or as a plain object, like
+  every other options family.
+
+- **`ShardInfo.resident`** (#901).  `ClusterSharding.shards()` now reports
+  whether each shard actor was materialised when its region answered.
+  `entityCount: 0` cannot say that on its own — a running-but-empty shard and
+  one that passivated report the same count — so this is what to read when
+  tuning `shardPassivationIdleMs` or counting the actors a node really holds.
+  It says nothing about reachability: `ref` works either way.
 
 - **`Actor.displayName()` — a readable name for an actor in logs and DevTools**
   (#891).  A path is an address, not a name: under sharding the log source
@@ -20,7 +77,7 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   (`... - User(test-user-590) - recovery complete`), and labels the row in the
   DevTools actor tree — worth the most for `Behaviors` actors, whose class
   column reads `TypedActor` on every row.  Also settable from the spawn site
-  with `Props.withDisplayName(...)` (which outranks the method, as
+  with `ActorOptions.withDisplayName(...)` (which outranks the method, as
   `withSupervisorStrategy` does) and at runtime with
   `context.setDisplayName(...)` (which outranks both) — the latter being the
   way in for a `Behaviors` actor, which has no subclass to override, and for a
@@ -63,6 +120,31 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   *forget*, so a remembered fleet left on the default drains over time; decide
   explicitly which of the two you want.  `ShardedDaemonProcess` opts out on
   its own — its daemons are meant to run continuously.
+- **BREAKING — anonymous actors are named `$anonymous-<n>-<random>`, not `$1` /
+  `$2`** (#895).  `spawnAnonymous`, `spawnTypedAnonymous` and
+  `context.spawn(behavior)` without a name drew from a bare per-parent counter,
+  which is both opaque (a DevTools row reading `$1` gives no hint the name is
+  framework-generated) and guessable — `/user/$1` is the first anonymous actor
+  of every run, and an actor path is an address anything that can render one can
+  send to.  The name now carries a per-parent counter *and* twelve random hex
+  characters from `crypto.getRandomValues`; the counter is kept so spawn order
+  stays legible in a log line and in the actor tree.  Same reasoning that moved
+  `ask`'s reply refs off a counter in #120.  Note this is the *path* segment —
+  `Actor.displayName()` above is the cosmetic label and is unaffected.
+  **Migration:** nothing you name yourself changes — only the value the
+  framework picks when you don't.  Code that hard-codes an anonymous path
+  (`actorSelection('/user/$1')`) or parses `$<n>` out of a name must spawn with
+  `spawn(props, name)` and a name of its own.
+- **BREAKING — unnamed reliable-delivery controllers are
+  `consumer-<n>-<random>` / `producer-<n>-<random>`** (#897).  The fallback name
+  came from a module-global counter, so `/system/delivery/consumer-1` was the
+  first one of every run — a derivable address for an actor that is reachable by
+  path — and two `ActorSystem`s in one process drew from the same sequence.
+  Same shape as the anonymous-actor names above: counter first so spawn order
+  stays legible, random half to close the guessability.
+  **Migration:** passing an explicit `name` to `ReliableDelivery.consumer()` /
+  `.producer()` is unchanged.  Code addressing a generated controller by path
+  must pass a name of its own.
 
 ### Fixed
 
@@ -74,6 +156,15 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   trigger a lookup.  On a shard that went quiet after the rebalance, that
   never came.  The region now re-asks for the home whenever its buffer is
   non-empty.
+- **A shard ref for a remote shard no longer drops messages while that shard is
+  passivated** (#901).  `shardRefFor()` and `ShardInfo.ref` handed out a ref
+  addressed at the shard's path on its owning node.  That was safe while an
+  allocated shard always had a running actor; since #892 it does not, and in
+  the gap nothing resolved the path, so the receiving node dropped the message
+  into the envelope catch-all.  Remote shard traffic now goes to the owning
+  region — always up — which materialises the shard before forwarding, the
+  same shape entity traffic has always had.  The ref keeps the shard's path as
+  its identity, so logging, comparison and `ref.path` are unchanged.
 - **Remembered entities return after an unexpected shard death** (#894).  When
   a shard actor died outside a handoff, ownership stayed put — which is what
   lets the next message re-create the shard — but that also meant neither
@@ -82,6 +173,17 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   entity named by the next message returned, and the coordinator kept listing
   the rest with `started` events that would never see a `stopped`.  The region
   now asks the coordinator to re-send what it remembers.
+- **`preRestart` never stopped children, whatever its documentation said**
+  (#899).  `Actor.preRestart`'s JSDoc, the `onRecreate` call site and the
+  supervision page all promised the default stops the actor's children.  It only
+  ever called `postStop()` — children belong to the cell, which outlives the
+  instance being replaced.  No behaviour changed here; the documentation now
+  matches, and the consequence it was hiding is spelled out: because
+  `postRestart` re-runs `preStart` with the previous incarnation's children
+  still in place, an actor that spawns a **named** child in `preStart` fails its
+  first restart with `Child name '<name>' is not unique`.  Spawn anonymously, or
+  stop the children yourself in an overridden `preRestart`.  Both the survival
+  and the collision now have tests.
 - **The sharding-failover churn test no longer measures the scheduler**
   (#902).  `tests/multi-node/sharding-failover.test.ts` → "burst of asks
   during repeated coordinator state churn" drove asks for a fixed 1.5 s and
@@ -103,6 +205,33 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   leave does not in fact race in-flight asks at the wire — a probe firing the
   leave at t=0 saw 0 failures across ~1 400 asks.  Test-only change; no
   runtime behaviour changed.
+
+### Security
+
+- **Quorum correlation ids in `DistributedData` are no longer guessable**
+  (#896).  `nextPendingId()` returned `p<Date.now()>-<counter>`.  That value
+  travels on the wire and the peer echoes it back on its acknowledgment, so an
+  id that can be guessed is an id whose acknowledgment can be forged —
+  satisfying a quorum write or read that no peer actually confirmed.  A
+  timestamp is observable and the counter starts at 1 in every process, which
+  made guessing arithmetic rather than search.  It is now sixteen random hex
+  characters.  (The counter was also module-global rather than per-system, so
+  two systems in one process shared a sequence.)  Reachable only by something
+  that can already send cluster wire messages, which mTLS on the transport
+  excludes — see *Cluster security* — so this is defence in depth, not an open
+  door on a hardened cluster.
+- **Filesystem object-storage temp paths no longer come from `Math.random()`**
+  (#898).  The atomic-write temp file was named
+  `<key>.tmp.<pid>.<Date.now()>.<Math.random()>`; the clock is observable and
+  `Math.random()` is not a CSPRNG, so a local process sharing the directory
+  could predict the path and pre-create it or plant a symlink there.  The
+  suffix is now drawn from `crypto.getRandomValues`.
+
+### Documentation
+
+- **`fundamentals/props` is now `fundamentals/spawning`** (EN + DE, #547) —
+  rewritten around what the reader is doing rather than around a type.  The
+  old slug redirects.
 
 ## [0.12.2] — 2026-08-04
 

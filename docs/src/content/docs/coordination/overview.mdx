@@ -133,7 +133,7 @@ Zookeeper).  The interface is small — ~50 lines of glue.
 ## A minimal example
 
 ```ts
-import { StartSingletonOptions, KubernetesLease, KubernetesLeaseOptions, Props } from 'actor-ts';
+import { StartSingletonOptions, KubernetesLease, KubernetesLeaseOptions } from 'actor-ts';
 
 const kubernetesLeaseOptions = KubernetesLeaseOptions.create()
   .withName('my-app-singleton-lease')
@@ -147,7 +147,7 @@ const lease = new KubernetesLease(
 
 const startSingletonOptions = StartSingletonOptions.create()
   .withTypeName('job-scheduler')
-  .withProps(Props.create(() => new JobScheduler()))
+  .withActor(() => new JobScheduler())
   .withLease(lease);        // ← split-brain protection
 cluster.singleton.start(startSingletonOptions);
 ```

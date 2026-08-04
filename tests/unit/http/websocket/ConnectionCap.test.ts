@@ -5,7 +5,7 @@ import { jsonCodec } from '../../../../src/http/websocket/WebsocketCodec.js';
 import type { WebsocketSocketAdapter } from '../../../../src/http/websocket/SocketAdapter.js';
 import type { HttpRequest } from '../../../../src/http/types.js';
 
-// `wireConnection` builds the per-connection actor's Props lazily (the actor
+// `wireConnection` builds the per-connection actor's factory lazily (the actor
 // is only constructed when the hub spawns it), so with a stubbed hub we can
 // exercise the admission cap without a real ActorSystem.
 function fakeSocket() {

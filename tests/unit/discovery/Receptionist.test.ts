@@ -17,7 +17,6 @@ import {
   Unsubscribe,
 } from '../../../src/discovery/index.js';
 import { LogLevel, NoopLogger } from '../../../src/Logger.js';
-import { Props } from '../../../src/Props.js';
 import { TestKit } from '../../../src/testkit/TestKit.js';
 import { TestKitOptions } from '../../../src/testkit/TestKitOptions.js';
 import type { ActorRef } from '../../../src/ActorRef.js';
@@ -45,7 +44,7 @@ describe('Receptionist — local', () => {
     const probe = kit.createTestProbe<Listing<string>>();
     const receptionist = kit.system.extension(ReceptionistId).start(null);
 
-    const svc = kit.system.spawn(Props.create(() => new Service()), 'svc');
+    const svc = kit.system.spawn(() => new Service(), 'svc');
     const key = ServiceKey.of<string>('echo');
     receptionist.tell(new Register(key, svc));
 
@@ -69,12 +68,12 @@ describe('Receptionist — local', () => {
     const l0 = await probe.expectMessageType(Listing, 500) as Listing<string>;
     expect(l0.refs.length).toBe(0);
 
-    const first = kit.system.spawn(Props.create(() => new Service()), 'a');
+    const first = kit.system.spawn(() => new Service(), 'a');
     receptionist.tell(new Register(key, first));
     const l1 = await probe.expectMessageType(Listing, 500) as Listing<string>;
     expect(l1.refs.length).toBe(1);
 
-    const second = kit.system.spawn(Props.create(() => new Service()), 'b');
+    const second = kit.system.spawn(() => new Service(), 'b');
     receptionist.tell(new Register(key, second));
     const l2 = await probe.expectMessageType(Listing, 500) as Listing<string>;
     expect(l2.refs.length).toBe(2);
@@ -91,7 +90,7 @@ describe('Receptionist — local', () => {
     const probe = kit.createTestProbe();
     const receptionist = kit.system.extension(ReceptionistId).start(null);
 
-    const svc = kit.system.spawn(Props.create(() => new Service()), 'svc');
+    const svc = kit.system.spawn(() => new Service(), 'svc');
     const key = ServiceKey.of<string>('ack-key');
     receptionist.tell(new Register(key, svc, probe));
 
@@ -109,7 +108,7 @@ describe('Receptionist — local', () => {
     const probe = kit.createTestProbe<Listing<string>>();
     const receptionist = kit.system.extension(ReceptionistId).start(null);
 
-    const svc = kit.system.spawn(Props.create(() => new Service()), 'svc');
+    const svc = kit.system.spawn(() => new Service(), 'svc');
     const key = ServiceKey.of<string>('temp');
 
     receptionist.tell(new Subscribe(key, probe));
@@ -160,7 +159,7 @@ describe('Receptionist — cluster-wide', () => {
       first.cluster.upMembers().length === 2 && second.cluster.upMembers().length === 2,
     );
 
-    const aSvc = first.system.spawn(Props.create(() => new Service()), 'svc-on-a');
+    const aSvc = first.system.spawn(() => new Service(), 'svc-on-a');
     const key = ServiceKey.of<string>('shared');
     first.receptionist.tell(new Register(key, aSvc) as never);
 
@@ -185,7 +184,7 @@ describe('Receptionist — cluster-wide', () => {
       first.cluster.upMembers().length === 2 && second.cluster.upMembers().length === 2,
     );
 
-    const aSvc = first.system.spawn(Props.create(() => new Service()), 'svc-leave');
+    const aSvc = first.system.spawn(() => new Service(), 'svc-leave');
     const key = ServiceKey.of<string>('leaving');
     first.receptionist.tell(new Register(key, aSvc) as never);
 

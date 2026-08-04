@@ -12,7 +12,6 @@ import {
   ClusterBootstrapOptions,
   InMemoryTransport,
   NodeAddress,
-  Props,
   ShardedDaemonProcess,
   ShardedDaemonProcessOptions,
 } from '../../src/index.js';
@@ -42,7 +41,7 @@ async function main(): Promise<void> {
     ShardedDaemonProcessOptions.create<string>()
       .withName('workers')
       .withNumDaemons(6)
-      .withBehaviorFor((i) => Props.create(() => new Worker(i))));
+      .withActorFor((i) => () => new Worker(i)));
   await Bun.sleep(100);
 
   handle.tell(0, 'job-A');

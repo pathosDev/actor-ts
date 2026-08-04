@@ -24,7 +24,6 @@
 import { match } from 'ts-pattern';
 import {
   Actor,
-  Props,
   ReplicatedEventSourcedActor,
 } from '../../src/index.js';
 import { MultiNodeSpec } from '../../src/testkit/MultiNodeSpec.js';
@@ -92,11 +91,11 @@ async function main(): Promise<void> {
   const instances = new Map<string, ReplicatedCounter>();
   for (const role of ['a', 'b', 'c'] as const) {
     const ref = spec.systemFor(role).spawn(
-      Props.create<Command>(() => {
+      () => {
         const inst = new ReplicatedCounter(role);
         instances.set(role, inst);
         return inst as unknown as Actor<Command>;
-      }),
+      },
       `counter-${role}`,
     );
     // Wait for subscriptions to propagate (push-to-random-peer

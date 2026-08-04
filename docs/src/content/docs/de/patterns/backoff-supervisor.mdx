@@ -17,7 +17,7 @@ plus Jitter, damit eine Herde von Clients sich nicht synchronisiert.
 ## Ein minimales Beispiel
 
 ```ts
-import { ActorSystem, Props, Actor, BackoffSupervisor } from 'actor-ts';
+import { ActorSystem, Actor, BackoffSupervisor } from 'actor-ts';
 
 class Flaky extends Actor<{ kind: 'do-it' }> {
   override preStart(): void {
@@ -32,7 +32,7 @@ const system = ActorSystem.create('demo');
 
 const supervisor = system.spawn(
   BackoffSupervisor.props({
-    childProps: Props.create(() => new Flaky()),
+    child: () => new Flaky(),
     minBackoff: 200,
     maxBackoff: 10_000,
     randomFactor: 0.2,
@@ -94,8 +94,11 @@ Spawns kollidieren.
 Die `BackoffOptions<T>`-Form:
 
 ```ts
+import { ActorOptions } from 'actor-ts';
+
 type BackoffOptions<T> = {
-  childProps:        Props<T>;
+  child:        ActorClassOrFactory<T>;
+  childOptions?: ActorOptions<T>;
   childName?:        string;
   minBackoff:        number;
   maxBackoff:        number;
@@ -183,7 +186,7 @@ Latenz auf dem Happy-Path.
 import { BackoffSupervisor, linearBackoff } from 'actor-ts';
 
 BackoffSupervisor.props({
-  childProps: ...,
+  child: ...,
   minBackoff: 500,
   maxBackoff: 10_000,
   policy: linearBackoff({ minMs: 500, maxMs: 10_000, stepMs: 500 }),

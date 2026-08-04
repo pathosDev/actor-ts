@@ -2,7 +2,6 @@ import { describe, expect, test } from 'bun:test';
 import { Actor } from '../../../src/Actor.js';
 import { ActorSystem } from '../../../src/ActorSystem.js';
 import { LogLevel, NoopLogger } from '../../../src/Logger.js';
-import { Props } from '../../../src/Props.js';
 import { ReliableDelivery, ProducerControllerOptions } from '../../../src/delivery/index.js';
 import type { Delivery } from '../../../src/delivery/index.js';
 import { TestKit } from '../../../src/testkit/TestKit.js';
@@ -117,7 +116,7 @@ describe('ReliableDelivery — resilience', () => {
         d.replyTo.tell({ kind: 'reliable-delivery.ack', producerId: d.producerId, seq: d.seq });
       }
     }
-    const consumerRef = kit.system.spawn(Props.create(() => new Flaky()), 'flaky');
+    const consumerRef = kit.system.spawn(() => new Flaky(), 'flaky');
 
     const producerOptions = ProducerControllerOptions.create<string>()
       .withConsumer(consumerRef)
@@ -210,5 +209,64 @@ describe('ReliableDelivery — shutdown (#451)', () => {
     }
 
     await kit.system.terminate();
+  });
+});
+
+describe('ReliableDelivery — generated controller names', () => {
+  const GENERATED = /^(consumer|producer)-\d+-[0-9a-f]{12}$/;
+
+  const newKit = (name: string): TestKit => TestKit.create(name, TestKitOptions.create()
+    .withLogger(new NoopLogger())
+    .withLogLevel(LogLevel.Off));
+
+  test('an unnamed controller gets a counter and a random suffix', async () => {
+    // These names become actor names under /system/delivery/, so they become
+    // paths — and a path is an address.  `consumer-1` was the first one of
+    // every run; the random half is what stops that being an address anyone
+    // can derive.
+    const kit = newKit('rd-generated');
+
+    const consumer = ReliableDelivery.consumer<string>(kit.system, { handler: () => {} });
+    const producerOptions = ProducerControllerOptions.create<string>()
+      .withConsumer(consumer.ref as never);
+    const producer = ReliableDelivery.producer<string>(kit.system, producerOptions);
+
+    expect(consumer.ref.path.name).toMatch(GENERATED);
+    expect(producer.ref.path.name).toMatch(GENERATED);
+    expect(consumer.ref.path.name.startsWith('consumer-')).toBe(true);
+    expect(producer.ref.path.name.startsWith('producer-')).toBe(true);
+
+    producer.stop(); consumer.stop();
+    await kit.system.terminate();
+  });
+
+  test('an explicit name is still used verbatim', async () => {
+    const kit = newKit('rd-explicit-name');
+    const consumer = ReliableDelivery.consumer<string>(kit.system, { handler: () => {} }, 'my-consumer');
+    expect(consumer.ref.path.name).toBe('my-consumer');
+    consumer.stop();
+    await kit.system.terminate();
+  });
+
+  test('two unnamed consumers do not collide, in one system or across two', async () => {
+    // The counter alone made these unique per process, not per system — two
+    // systems in one process drew from the same sequence.  The random half is
+    // what actually separates them now.
+    const first = newKit('rd-names-a');
+    const second = newKit('rd-names-b');
+
+    const names = [
+      ReliableDelivery.consumer<string>(first.system, { handler: () => {} }).ref.path.name,
+      ReliableDelivery.consumer<string>(first.system, { handler: () => {} }).ref.path.name,
+      ReliableDelivery.consumer<string>(second.system, { handler: () => {} }).ref.path.name,
+    ];
+
+    for (const name of names) expect(name).toMatch(GENERATED);
+    expect(new Set(names).size).toBe(3);
+    // Random halves, not just the counters, must differ.
+    expect(new Set(names.map((n) => n.slice(n.lastIndexOf('-') + 1))).size).toBe(3);
+
+    await first.system.terminate();
+    await second.system.terminate();
   });
 });

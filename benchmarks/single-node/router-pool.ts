@@ -17,7 +17,6 @@ import {
   ActorSystemOptions,
   LogLevel,
   NoopLogger,
-  Props,
   Router,
   type ActorRef,
 } from '../../src/index.js';
@@ -45,10 +44,10 @@ function makeWorker(counter: Counter): Actor<'work'> {
 
 async function runPooled(system: ActorSystem, routees: number): Promise<void> {
   const counter: Counter = { n: 0 };
-  const workerProps = Props.create(() => makeWorker(counter));
+  const workerFactory = () => makeWorker(counter);
   const ref = (routees === 1
-    ? system.spawnAnonymous(workerProps)
-    : system.spawnAnonymous(Router.roundRobin(routees, workerProps))) as ActorRef<'work'>;
+    ? system.spawnAnonymous(workerFactory)
+    : system.spawnAnonymous(Router.roundRobin(routees, workerFactory))) as ActorRef<'work'>;
 
   // Warm-up: run one full batch before the measured loop so the routees
   // have started and the event loop has reached steady state.

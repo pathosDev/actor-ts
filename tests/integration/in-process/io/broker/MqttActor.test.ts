@@ -2,7 +2,6 @@ import { describe, expect, test } from 'bun:test';
 import { ActorSystem } from '../../../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../../../src/ActorSystemOptions.js';
 import { Actor } from '../../../../../src/Actor.js';
-import { Props } from '../../../../../src/Props.js';
 import { LogLevel, NoopLogger } from '../../../../../src/Logger.js';
 import type { ActorRef } from '../../../../../src/ActorRef.js';
 import {
@@ -166,7 +165,7 @@ async function boot<T, TSelf>(
   actor: TestMqttActor<T, TSelf>,
   name = 'mqtt',
 ): Promise<MqttRef<T, TSelf>> {
-  const ref = sys.spawn(Props.create(() => actor), name);
+  const ref = sys.spawn(() => actor, name);
   await sleep(30); // let preStart connect (autoConnect fires on the next tick)
   return ref as MqttRef<T, TSelf>;
 }
@@ -254,7 +253,7 @@ describe('MqttActor inbound routing', () => {
     const sys = makeSystem();
     try {
       const inbox = new InboxActor<unknown>();
-      const inboxRef = sys.spawn(Props.create(() => inbox), 'inbox') as ActorRef<MqttMessage<unknown>>;
+      const inboxRef = sys.spawn(() => inbox, 'inbox') as ActorRef<MqttMessage<unknown>>;
       const mqttOptions = MqttOptions.create()
         .withBrokerUrl('mqtt://x');
       const actor = new TestMqttActor({
@@ -375,7 +374,7 @@ describe('MqttActor deathwatch cleanup (bug #3)', () => {
     const sys = makeSystem();
     try {
       const inbox = new InboxActor<unknown>();
-      const inboxRef = sys.spawn(Props.create(() => inbox), 'inbox-term') as ActorRef<MqttMessage<unknown>>;
+      const inboxRef = sys.spawn(() => inbox, 'inbox-term') as ActorRef<MqttMessage<unknown>>;
       const mqttOptions = MqttOptions.create()
         .withBrokerUrl('mqtt://x');
       const actor = new TestMqttActor({

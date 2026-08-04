@@ -137,6 +137,9 @@ describe('ActorPath — name validation (#126, #134)', () => {
       'user', 'deadLetters', 'nobody', 'routee-1', 'ws-conn-7',
       'singleton-proxy-Counter', 'shard-reply-region-42', 'my_actor',
       'Order.Placed', 'entity#3', 'a b', 'ünïcode', '日本語',
+      // The form `spawnAnonymous` generates.  Listed so that reserving the `$`
+      // prefix later has to delete this line rather than silently break spawning.
+      '$anonymous-1-0123456789ab',
     ]) {
       expect(() => root().child(name), `rejected ${name}`).not.toThrow();
     }

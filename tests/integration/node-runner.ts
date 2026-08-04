@@ -23,7 +23,6 @@ import {
   BearerTokenAuth,
   HttpExtensionId,
   IpAllowlist,
-  Props,
 } from '../../src/index.js';
 import { JsonLogger, LogLevel } from '../../src/Logger.js';
 import { managementRoutes } from '../../src/management/index.js';
@@ -122,7 +121,7 @@ async function main(): Promise<void> {
   class IdleWorker extends Actor<unknown> {
     override onReceive(_m: unknown): void { /* noop */ }
   }
-  const worker = system.spawnAnonymous(Props.create<unknown>(() => new IdleWorker()));
+  const worker = system.spawnAnonymous(() => new IdleWorker());
   receptionistRef.tell(new Register(WORKER_KEY, worker));
   logger.info('Receptionist started + worker registered', { key: WORKER_KEY.id });
 
@@ -141,7 +140,7 @@ async function main(): Promise<void> {
   const singleton = cluster.singleton.start(
     StartSingletonOptions.create()
       .withTypeName('counter-singleton')
-      .withProps(Props.create(() => new CounterSingleton(NODE_NAME))),
+      .withActor(() => new CounterSingleton(NODE_NAME)),
   );
   logger.info('ClusterSingleton manager started', { typeName: 'counter-singleton' });
 
@@ -153,7 +152,7 @@ async function main(): Promise<void> {
   const shardingRegion = ClusterSharding.get(system, cluster).start<ShardedCommand>(
     StartShardingOptions.create<ShardedCommand>()
       .withTypeName(SHARDING_TYPE_NAME)
-      .withEntityProps(Props.create(() => new ShardedCounter(NODE_NAME)))
+      .withEntityActor(() => new ShardedCounter(NODE_NAME))
       .withExtractEntityId((message) => message.entityId)
       .withNumShards(32),
   );
@@ -204,7 +203,7 @@ async function main(): Promise<void> {
   // Echo actor at `/user/echo` so external ClusterClient asks work.
   // The actor's host-node identity is in its reply so the scenario
   // can verify the request actually hit the cluster (not a stub).
-  system.spawn(Props.create<{ kind: 'ping' }>(() => new EchoActor(NODE_NAME)), 'echo');
+  system.spawn(() => new EchoActor(NODE_NAME), 'echo');
   logger.info('ClusterClientReceptionist + /user/echo ready');
 
   // Management HTTP — auth on so the test exercises the #312 path.

@@ -1,6 +1,6 @@
 ---
 title: Spawn typed
-description: Put a `Behavior<T>` into the runtime — `system.spawnTyped` for top-level actors, `ctx.spawnTyped` from inside an untyped parent, `typedProps` for bridging into the OO Props API.
+description: Put a `Behavior<T>` into the runtime — `system.spawnTyped` for top-level actors, `ctx.spawnTyped` from inside an untyped parent, `typedActor` for bridging into the class-or-factory API.
 ---
 
 A `Behavior<T>` is a value.  To put it into the runtime — to get
@@ -12,7 +12,7 @@ method on whichever host you're spawning from:
 | Outside an actor | `system.spawnTyped(behavior, name)` / `system.spawnTypedAnonymous(behavior)` |
 | Inside an untyped `Actor.onReceive` | `this.context.spawnTyped(behavior, name)` / `this.context.spawnTypedAnonymous(behavior)` |
 | Inside a typed `Behaviors.setup` / handler | `context.spawn(behavior, name)` |
-| Anywhere `Props<T>` is accepted | `typedProps(behavior)` |
+| Anywhere an actor class or factory is accepted | `typedActor(behavior)` |
 
 The method form mirrors the standard OO API — `spawn` vs.
 `spawnAnonymous` for whether you supply a name.
@@ -78,30 +78,30 @@ spawn typed workers.  The child is a normal entry in the parent's
 children list — supervisor strategies apply per the parent's
 strategy, death watch works both ways.
 
-## `typedProps` — interop with `Props`
+## `typedActor` — interop with the class-or-factory API
 
 ```ts
-import { typedProps } from 'actor-ts';
+import { typedActor } from 'actor-ts';
 
-const props = typedProps(counter(0))
+const props = typedActor(counter(0))
   .withMailboxCapacity(500)
   .withDispatcher(myDispatcher);
 
 const ref = system.spawn(props, 'counter');
 ```
 
-When you want a typed Behavior but the API takes `Props<T>` (because
+When you want a typed Behavior but the API takes an actor (because
 it's an older entry point, or because you want to chain
-`with…` builders), `typedProps(behavior)` returns the right
-`Props<T>`.
+`with…` builders), `typedActor(behavior)` returns the right
+an `ActorFactory<T>`.
 
 The shape:
 
 ```ts
-function typedProps<T>(behavior: Behavior<T>): Props<T>;
+function typedActor<T>(behavior: Behavior<T>): ActorFactory<T>;
 ```
 
-The returned Props can be passed anywhere `Props<T>` is expected —
+The returned factory can be passed anywhere an actor is expected —
 `system.spawn`, `context.spawn`, `ClusterSingleton.start`, the
 sharding region's entity-props slot.
 
@@ -129,7 +129,11 @@ the child's message type from the Behavior's type parameter.
 
 For the deterministic variants (`spawnTyped`), the `name` parameter
 is required and must be unique among siblings.  For
-`spawnTypedAnonymous`, the framework generates one (`'$1'`, `'$2'`, ...).
+`spawnTypedAnonymous`, the framework generates one — `$anonymous-`,
+a per-parent counter and twelve random hex characters, for example
+`'$anonymous-1-3f9c1a0d7b42'`.  The suffix is random, so the path is
+not stable across runs; use `spawnTyped` whenever you need to
+address the actor by path.
 
 The resulting actor's path follows the standard format:
 
@@ -157,13 +161,13 @@ Caller is inside an untyped Actor.onReceive:
 Caller is inside a typed Behaviors.setup or handler:
     → context.spawn(b, name)
 
-You have a function that takes Props<T> and you want to use a Behavior:
-    → typedProps(b)
+You have a function that takes an actor and you want to use a Behavior:
+    → typedActor(b)
 ```
 
 The methods are deliberately small — each handles one common
-case.  `typedProps` is the escape hatch when you need to plug a
-behavior into Props-shaped APIs.
+case.  `typedActor` is the escape hatch when you need to plug a
+behavior into actor-shaped APIs.
 
 import { Aside } from '@astrojs/starlight/components';
 
@@ -197,7 +201,7 @@ import { Aside } from '@astrojs/starlight/components';
   produces the values you pass to these methods.
 - **[Typed actor](/typed/typed-actor/)** — the runtime
   the spawn methods wrap.
-- **[Props](/fundamentals/props/)** — the untyped
-  configuration `typedProps` returns.
+- **[Spawning actors](/fundamentals/spawning/)** — the untyped
+  configuration `typedActor` returns.
 - **[Actor system](/fundamentals/actor-system/)** — the
   `spawn` API the methods ultimately call.

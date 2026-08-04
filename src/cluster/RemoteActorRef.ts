@@ -23,7 +23,7 @@ export class RemoteActorRef<TMessage = unknown> extends ActorRef<TMessage> {
     private readonly cluster: Cluster,
   ) {
     super();
-    this.path = rebuildPath(targetPath, targetNode.systemName);
+    this.path = remoteActorPath(targetPath, targetNode.systemName);
   }
 
   tell(message: TMessage, sender: ActorRef | null = null): void {
@@ -70,8 +70,12 @@ export class RemoteActorRef<TMessage = unknown> extends ActorRef<TMessage> {
  * shares one system name — so refs to the same path on different members remain
  * equal.  Distinguishing those needs an authority on `ActorPath` itself; until
  * then `toString()` (which prefixes `targetNode`) is the node-aware rendering.
+ *
+ * Exported because a ref does not always deliver to the path it *is*: a
+ * sharding shard ref keeps the shard's path as its identity while sending
+ * through the owning region, and has to build that identity the same way.
  */
-function rebuildPath(targetPath: string, systemName: string): ActorPath {
+export function remoteActorPath(targetPath: string, systemName: string): ActorPath {
   const root = new ActorPath('', null, systemName);
   return parsePathSegments(targetPath).reduce<ActorPath>((path, segment) => path.child(segment), root);
 }

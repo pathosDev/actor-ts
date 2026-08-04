@@ -81,14 +81,14 @@ export const DEFAULT_SNAPSHOT_CACHE_TTL_MS = 5 * 60 * 1_000;
 
 /**
  * Default mailbox capacity for every actor that doesn't pin its own
- * via `Props.withMailbox(...)`.  10 000 is high enough that a
+ * via `withMailbox(...)`.  10 000 is high enough that a
  * well-tuned actor never hits it on a normal traffic spike, low
  * enough that a runaway producer is bounded before the heap explodes.
  *
  * Pre-#310 the default was unbounded — operationally an OOM-or-bust
  * proposition.  The current default trades the worst-case loss-of-
  * messages for a guaranteed memory ceiling.  Opt out per-actor via
- * `Props.withMailbox(() => new Mailbox())` for the unbounded shape.
+ * `withMailbox(() => new Mailbox())` for the unbounded shape.
  */
 export const DEFAULT_MAILBOX_CAPACITY = 10_000;
 

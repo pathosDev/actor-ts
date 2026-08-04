@@ -10,7 +10,6 @@ import {
   ActorSystem,
   Find,
   Listing,
-  Props,
   ReceptionistId,
   Register,
   ServiceKey,
@@ -34,10 +33,10 @@ async function main(): Promise<void> {
   const receptionist = system.extension(ReceptionistId).start(null);
 
   const echoKey = ServiceKey.of<string>('echo');
-  const echo = system.spawn(Props.create(() => new Echo()), 'echo');
+  const echo = system.spawn(() => new Echo(), 'echo');
   receptionist.tell(new Register(echoKey, echo));
 
-  const client = system.spawn(Props.create(() => new Client()), 'client');
+  const client = system.spawn(() => new Client(), 'client');
   receptionist.tell(new Find(echoKey, client));
 
   await Bun.sleep(50);

@@ -53,7 +53,7 @@ describe('ClusterSharding — class-declared shard keys', () => {
     seen.length = 0;
     const node = await startNode('shk-1', 53001);
 
-    // No typeName, no Props, no extractEntityId — all of it is on the class.
+    // No typeName, no entity actor, no extractEntityId — all of it is on the class.
     const users = node.cluster.sharding.start(UserActor);
     users.tell({ kind: 'greet', userId: 'u-1' });
     await waitFor(() => seen.includes('u-1@self'));

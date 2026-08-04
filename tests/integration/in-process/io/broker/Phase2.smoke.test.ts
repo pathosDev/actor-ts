@@ -12,7 +12,6 @@ import { describe, expect, test } from 'bun:test';
 import { ActorSystem } from '../../../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../../../src/ActorSystemOptions.js';
 import { LogLevel, NoopLogger } from '../../../../../src/Logger.js';
-import { Props } from '../../../../../src/Props.js';
 import { Actor } from '../../../../../src/Actor.js';
 import { KafkaActor } from '../../../../../src/io/broker/KafkaActor.js';
 import { KafkaOptions } from '../../../../../src/io/broker/KafkaOptions.js';
@@ -65,7 +64,7 @@ describe('Phase 2 actors — options validation', () => {
   test('KafkaActor without `brokers` raises BrokerOptionsError', async () => {
     const sys = makeSys('kafka-validate');
     let captured: Error | null = null;
-    sys.spawnAnonymous(Props.create(() => {
+    sys.spawnAnonymous(() => {
       const actor = new KafkaActor(KafkaOptions.create());
       const orig = actor.preStart.bind(actor);
       actor.preStart = async (): Promise<void> => {
@@ -73,7 +72,7 @@ describe('Phase 2 actors — options validation', () => {
         catch (e) { captured = e as Error; }
       };
       return actor as unknown as Actor<unknown>;
-    }));
+    });
     await sleep(30);
     expect(captured).toBeInstanceOf(BrokerOptionsError);
     expect((captured as unknown as Error).message).toContain('brokers');
@@ -86,7 +85,7 @@ describe('Phase 2 actors — options validation', () => {
     const grpcClientOptions = GrpcClientOptions.create()
       .withProtoPath('x.proto').withPackageName('x').withServiceName('X');
     // endpoint missing
-    sys.spawnAnonymous(Props.create(() => {
+    sys.spawnAnonymous(() => {
       const actor = new GrpcClientActor(grpcClientOptions);
       const orig = actor.preStart.bind(actor);
       actor.preStart = async (): Promise<void> => {
@@ -94,7 +93,7 @@ describe('Phase 2 actors — options validation', () => {
         catch (e) { captured = e as Error; }
       };
       return actor as unknown as Actor<unknown>;
-    }));
+    });
     await sleep(30);
     expect(captured).toBeInstanceOf(BrokerOptionsError);
     expect((captured as unknown as Error).message).toContain('endpoint');
@@ -116,7 +115,7 @@ describe('Phase 2 actors — options precedence (constructor wins over HOCON)', 
     const ready = new Promise<KafkaActor>((r) => { resolve = r; });
     const kafkaOptions = KafkaOptions.create()
       .withBrokers(['ctor:9092']);  // ctor wins
-    sys.spawnAnonymous(Props.create(() => {
+    sys.spawnAnonymous(() => {
       const actor = new KafkaActor(kafkaOptions);
       // We'll never actually try to connect — kafkajs isn't installed.
       // Override preStart to swallow the connect error after options
@@ -128,7 +127,7 @@ describe('Phase 2 actors — options precedence (constructor wins over HOCON)', 
         resolve(actor);
       };
       return actor as unknown as Actor<unknown>;
-    }));
+    });
     await ready;
     await sleep(20);
     expect(captured).not.toBeNull();

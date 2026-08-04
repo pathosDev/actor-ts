@@ -126,7 +126,7 @@ export type KafkaCommand =
  *     successfully passed through `commit` is committed; a crash or
  *     `nack` re-delivers.
  *
- *   const kafka = system.spawnAnonymous(Props.create(() => new KafkaActor(
+ *   const kafka = system.spawnAnonymous(() => new KafkaActor(
  *     KafkaOptions.create()
  *       .withBrokers(['kafka:9092'])
  *       .withConsumer({ groupId: 'orders', commitMode: 'manual' })
