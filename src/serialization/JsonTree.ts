@@ -5,8 +5,12 @@ import { SerializationError } from './Serializer.js';
  * (HTTP marshalling) and the persistence `PayloadCodec` (every journal /
  * snapshot store / durable-state store).  Values that plain JSON silently
  * corrupts (`Set`/`Map` → `{}`, `Date` → string, `bigint` → throw,
- * `Uint8Array` → index-keyed object) are wrapped in single-key tag objects
- * so they survive the round-trip.
+ * `Uint8Array` → index-keyed object, `NaN`/`Infinity`/`-0` → `null`/`0`,
+ * `RegExp`/`Error` → `{}`, `URL` → string, typed arrays → index objects)
+ * are wrapped in single-key tag objects so they survive the round-trip;
+ * inherently non-serialisable values (functions, symbols, `Promise`,
+ * `WeakMap`/`WeakSet`, cycles) throw a `SerializationError` instead of
+ * degrading silently.
  *
  * The format is append-only stable: rows written with these tags must stay
  * readable by every future version.  Plain JSON written before the tags
@@ -21,6 +25,26 @@ const BYTES_TAG = '__bytes__';
 const MAP_TAG = '__map__';
 const SET_TAG = '__set__';
 const BIGINT_TAG = '__bigint__';
+/** Non-finite numbers and `-0` — plain JSON silently turns them into `null` / `0`. */
+const NUMBER_TAG = '__number__';
+/**
+ * `undefined` in a VALUE position (array slot, `Set` member, `Map` key or
+ * value) under the `'omit'` policy — plain JSON would turn it into `null`,
+ * which is a different value.  Object properties are still dropped, matching
+ * `JSON.stringify`, so ordinary optional-field payloads stay byte-identical.
+ */
+const UNDEFINED_TAG = '__undefined__';
+const REGEXP_TAG = '__regexp__';
+const URL_TAG = '__url__';
+/**
+ * `Error`: name + message + cause (+ `errors` for `AggregateError`).
+ * Deliberately NOT the stack — a persisted stack leaks filesystem layout
+ * into long-lived rows, and a replayed stack would lie about where the
+ * error was thrown.
+ */
+const ERROR_TAG = '__error__';
+/** Every `ArrayBuffer` view except `Uint8Array` (which keeps `__bytes__`), plus `DataView` and `ArrayBuffer`. */
+const TYPEDARRAY_TAG = '__typedarray__';
 /**
  * Escape wrapper: a plain user object whose encoded form would consist of
  * exactly one reserved tag key is wrapped as `{ __literal__: … }` so decode
@@ -37,16 +61,19 @@ const LITERAL_TAG = '__literal__';
 export const SERIALIZED_TAG = '__serialized__';
 
 const RESERVED_TAGS: ReadonlySet<string> = new Set([
-  DATE_TAG, BYTES_TAG, MAP_TAG, SET_TAG, BIGINT_TAG, LITERAL_TAG, SERIALIZED_TAG,
+  DATE_TAG, BYTES_TAG, MAP_TAG, SET_TAG, BIGINT_TAG,
+  NUMBER_TAG, UNDEFINED_TAG, REGEXP_TAG, URL_TAG, ERROR_TAG, TYPEDARRAY_TAG,
+  LITERAL_TAG, SERIALIZED_TAG,
 ]);
 
 /**
  * How `undefined` is handled during encode.  `'reject'` throws (the HTTP
  * marshalling contract — a lossy payload is a bug there); `'omit'` matches
- * `JSON.stringify`: object properties with `undefined` values are dropped
- * and `undefined` in value positions (array slots, `Set` members, `Map`
- * keys/values) becomes `null`.  Persistence uses `'omit'` so existing
- * `persist({ optionalField: undefined })` callers keep working byte-for-byte.
+ * `JSON.stringify` for object properties (an `undefined` value drops the
+ * property, so existing `persist({ optionalField: undefined })` callers keep
+ * working byte-for-byte) while `undefined` in VALUE positions (array slots,
+ * `Set` members, `Map` keys/values) is preserved via `__undefined__` —
+ * plain JSON's `null` there would be a different value.
  */
 export type UndefinedValueHandling = 'reject' | 'omit';
 
@@ -112,16 +139,43 @@ function encodeNode(value: unknown, context: EncodeContext, allowToJson: boolean
     return OMITTED;
   }
   if (value === null) return null;
+  if (typeof value === 'number') return encodeNumber(value);
   if (typeof value === 'bigint') return { [BIGINT_TAG]: value.toString() };
   if (value instanceof Date) return { [DATE_TAG]: value.toISOString() };
   if (value instanceof Uint8Array) return { [BYTES_TAG]: toBase64(value) };
   if (value instanceof Map) return encodeMap(value, context);
   if (value instanceof Set) return encodeSet(value, context);
+  if (ArrayBuffer.isView(value) || value instanceof ArrayBuffer) return encodeBinaryView(value, context);
+  if (value instanceof RegExp) {
+    // lastIndex is a transient cursor, not data — deliberately not carried.
+    return { [REGEXP_TAG]: { source: value.source, flags: value.flags } };
+  }
+  // Before the toJSON probe: URL.prototype.toJSON would collapse it to a string.
+  if (value instanceof URL) return { [URL_TAG]: value.href };
+  if (value instanceof Error) return encodeError(value, context);
+  if (value instanceof Number || value instanceof String || value instanceof Boolean) {
+    // Wrapper objects unwrap like JSON.stringify does.
+    return encodeNode(value.valueOf(), context, false);
+  }
+  if (value instanceof Promise || value instanceof WeakMap || value instanceof WeakSet) {
+    // Inherently non-serialisable — refuse loudly instead of storing `{}`.
+    throw new SerializationError(
+      `Unsupported value of type ${value.constructor.name} at ${formatPath(context.path)}`,
+    );
+  }
   if (Array.isArray(value)) return encodeArray(value, context);
   if (typeof value === 'object') return encodeObject(value, context, allowToJson);
   if (typeof value === 'function' || typeof value === 'symbol') {
     throw new SerializationError(`Unsupported value of type ${typeof value} at ${formatPath(context.path)}`);
   }
+  return value;
+}
+
+function encodeNumber(value: number): unknown {
+  if (Number.isNaN(value)) return { [NUMBER_TAG]: 'nan' };
+  if (value === Infinity) return { [NUMBER_TAG]: 'infinity' };
+  if (value === -Infinity) return { [NUMBER_TAG]: '-infinity' };
+  if (Object.is(value, -0)) return { [NUMBER_TAG]: '-0' };
   return value;
 }
 
@@ -143,8 +197,8 @@ function encodeMap(map: ReadonlyMap<unknown, unknown>, context: EncodeContext): 
       const encodedValue = encodeNode(entryValue, context, true);
       context.path.pop();
       entries.push([
-        encodedKey === OMITTED ? null : encodedKey,
-        encodedValue === OMITTED ? null : encodedValue,
+        encodedKey === OMITTED ? { [UNDEFINED_TAG]: true } : encodedKey,
+        encodedValue === OMITTED ? { [UNDEFINED_TAG]: true } : encodedValue,
       ]);
       index++;
     }
@@ -163,7 +217,7 @@ function encodeSet(set: ReadonlySet<unknown>, context: EncodeContext): unknown {
       context.path.push(index);
       const encoded = encodeNode(member, context, true);
       context.path.pop();
-      values.push(encoded === OMITTED ? null : encoded);
+      values.push(encoded === OMITTED ? { [UNDEFINED_TAG]: true } : encoded);
       index++;
     }
     return { [SET_TAG]: values };
@@ -180,11 +234,77 @@ function encodeArray(values: ReadonlyArray<unknown>, context: EncodeContext): un
       context.path.push(index);
       const encoded = encodeNode(values[index], context, true);
       context.path.pop();
-      out[index] = encoded === OMITTED ? null : encoded;
+      out[index] = encoded === OMITTED ? { [UNDEFINED_TAG]: true } : encoded;
     }
     return out;
   } finally {
     context.ancestors.delete(values);
+  }
+}
+
+/**
+ * The standard `ArrayBuffer` views by their stored `kind` name.
+ * `Float16Array` is reached via `globalThis` — it is ES2025 and absent from
+ * older runtimes and TS lib targets, and the format must not depend on the
+ * writer's runtime having it.
+ */
+const TYPED_ARRAY_CONSTRUCTORS: ReadonlyArray<readonly [string, new (buffer: ArrayBuffer) => ArrayBufferView]> = [
+  ['Int8Array', Int8Array],
+  ['Uint8ClampedArray', Uint8ClampedArray],
+  ['Int16Array', Int16Array],
+  ['Uint16Array', Uint16Array],
+  ['Int32Array', Int32Array],
+  ['Uint32Array', Uint32Array],
+  ['Float32Array', Float32Array],
+  ['Float64Array', Float64Array],
+  ['BigInt64Array', BigInt64Array],
+  ['BigUint64Array', BigUint64Array],
+  ...((): ReadonlyArray<readonly [string, new (buffer: ArrayBuffer) => ArrayBufferView]> => {
+    const float16 = (globalThis as { Float16Array?: new (buffer: ArrayBuffer) => ArrayBufferView }).Float16Array;
+    return float16 ? [['Float16Array', float16]] : [];
+  })(),
+];
+
+function encodeBinaryView(value: ArrayBufferView | ArrayBuffer, context: EncodeContext): unknown {
+  const bytes = value instanceof ArrayBuffer
+    ? new Uint8Array(value)
+    : new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
+  return { [TYPEDARRAY_TAG]: { kind: binaryKind(value, context), data: toBase64(bytes) } };
+}
+
+function binaryKind(value: ArrayBufferView | ArrayBuffer, context: EncodeContext): string {
+  if (value instanceof ArrayBuffer) return 'ArrayBuffer';
+  if (value instanceof DataView) return 'DataView';
+  for (const [kind, constructor] of TYPED_ARRAY_CONSTRUCTORS) {
+    if (value instanceof constructor) return kind;
+  }
+  // An exotic ArrayBuffer view we cannot reconstruct — refuse rather than guess.
+  throw new SerializationError(
+    `Unsupported binary view ${value.constructor?.name ?? 'unknown'} at ${formatPath(context.path)}`,
+  );
+}
+
+function encodeError(error: Error, context: EncodeContext): unknown {
+  enterContainer(error, context);
+  try {
+    const payload: Record<string, unknown> = { name: error.name, message: error.message };
+    const cause = (error as { cause?: unknown }).cause;
+    if (cause !== undefined) {
+      context.path.push('cause');
+      const encoded = encodeNode(cause, context, true);
+      context.path.pop();
+      if (encoded !== OMITTED) payload['cause'] = encoded;
+    }
+    // AggregateError carries its member errors in `errors`.
+    const errors = (error as { errors?: unknown }).errors;
+    if (Array.isArray(errors)) {
+      context.path.push('errors');
+      payload['errors'] = encodeArray(errors, context);
+      context.path.pop();
+    }
+    return { [ERROR_TAG]: payload };
+  } finally {
+    context.ancestors.delete(error);
   }
 }
 
@@ -255,6 +375,35 @@ function decodeTagged(key: string, obj: Record<string, unknown>): unknown {
       if (typeof digits !== 'string') throw malformedTag(BIGINT_TAG, 'a string');
       return BigInt(digits);
     }
+    case NUMBER_TAG: {
+      switch (obj[NUMBER_TAG]) {
+        case 'nan': return NaN;
+        case 'infinity': return Infinity;
+        case '-infinity': return -Infinity;
+        case '-0': return -0;
+        default: throw malformedTag(NUMBER_TAG, "'nan', 'infinity', '-infinity' or '-0'");
+      }
+    }
+    case UNDEFINED_TAG: {
+      if (obj[UNDEFINED_TAG] !== true) throw malformedTag(UNDEFINED_TAG, 'true');
+      return undefined;
+    }
+    case REGEXP_TAG: {
+      const inner = obj[REGEXP_TAG] as { source?: unknown; flags?: unknown } | null;
+      if (inner === null || typeof inner !== 'object' || typeof inner.source !== 'string' || typeof inner.flags !== 'string') {
+        throw malformedTag(REGEXP_TAG, 'a { source, flags } pair of strings');
+      }
+      return new RegExp(inner.source, inner.flags);
+    }
+    case URL_TAG: {
+      const href = obj[URL_TAG];
+      if (typeof href !== 'string') throw malformedTag(URL_TAG, 'a string');
+      return new URL(href);
+    }
+    case ERROR_TAG:
+      return decodeError(obj[ERROR_TAG]);
+    case TYPEDARRAY_TAG:
+      return decodeBinaryView(obj[TYPEDARRAY_TAG]);
     case LITERAL_TAG:
       return decodeLiteral(obj[LITERAL_TAG]);
     default:
@@ -262,6 +411,52 @@ function decodeTagged(key: string, obj: Record<string, unknown>): unknown {
       // the root before this walker runs — anywhere else it is plain data.
       return NOT_TAGGED;
   }
+}
+
+/** The error constructors decode may reconstruct; unknown names fall back to `Error` + `name`. */
+const ERROR_CONSTRUCTORS: Readonly<Record<string, new (message?: string) => Error>> = {
+  Error, TypeError, RangeError, SyntaxError, ReferenceError, EvalError, URIError,
+};
+
+function decodeError(inner: unknown): Error {
+  if (inner === null || typeof inner !== 'object' || Array.isArray(inner)) {
+    throw malformedTag(ERROR_TAG, 'a { name, message } object');
+  }
+  const payload = inner as { name?: unknown; message?: unknown; cause?: unknown; errors?: unknown };
+  if (typeof payload.name !== 'string' || typeof payload.message !== 'string') {
+    throw malformedTag(ERROR_TAG, 'a { name, message } object');
+  }
+  let out: Error;
+  if (payload.name === 'AggregateError' && Array.isArray(payload.errors)) {
+    out = new AggregateError((decodeJsonTree(payload.errors) as unknown[]), payload.message);
+  } else {
+    const constructor = ERROR_CONSTRUCTORS[payload.name] ?? Error;
+    out = new constructor(payload.message);
+    if (out.name !== payload.name) out.name = payload.name;
+  }
+  if ('cause' in payload) (out as { cause?: unknown }).cause = decodeJsonTree(payload.cause);
+  return out;
+}
+
+function decodeBinaryView(inner: unknown): unknown {
+  if (inner === null || typeof inner !== 'object' || Array.isArray(inner)) {
+    throw malformedTag(TYPEDARRAY_TAG, 'a { kind, data } object');
+  }
+  const payload = inner as { kind?: unknown; data?: unknown };
+  if (typeof payload.kind !== 'string' || typeof payload.data !== 'string') {
+    throw malformedTag(TYPEDARRAY_TAG, 'a { kind, data } object');
+  }
+  // Copy out of the base64 result: it may be a view into a shared Buffer
+  // pool at an arbitrary byteOffset — multi-byte views need offset-0
+  // alignment, and handing out a pool-backed buffer would expose unrelated
+  // bytes (#619).  `.slice()` yields a fresh, exact-length buffer.
+  const bytes = fromBase64(payload.data).slice();
+  if (payload.kind === 'ArrayBuffer') return bytes.buffer;
+  if (payload.kind === 'DataView') return new DataView(bytes.buffer);
+  for (const [kind, constructor] of TYPED_ARRAY_CONSTRUCTORS) {
+    if (kind === payload.kind) return new constructor(bytes.buffer);
+  }
+  throw malformedTag(TYPEDARRAY_TAG, `a known binary kind (got '${payload.kind}')`);
 }
 
 function decodeLiteral(inner: unknown): unknown {
