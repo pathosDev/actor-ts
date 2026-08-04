@@ -1,4 +1,5 @@
 import { OptionsBuilder } from '../../util/OptionsBuilder.js';
+import type { Serializer } from '../../serialization/Serializer.js';
 import type { MariaDbPoolLike } from './MariaDbClient.js';
 import type { MariaDbJournalOptions } from './MariaDbJournalOptions.js';
 import type { MariaDbSnapshotStoreOptions } from '../snapshot-stores/MariaDbSnapshotStoreOptions.js';
@@ -11,6 +12,8 @@ export type RegisterMariaDbPluginsOptionsType = {
    * omitted, each store lazily builds its own from its `url` / `poolConfig`.
    */
   readonly pool?: MariaDbPoolLike;
+  /** Shared payload serializer injected into all three stores (a leaf's own `serializer` wins). */
+  readonly serializer?: Serializer;
   /** Journal builder — its `pool` is overridden by the shared `pool` when set. */
   readonly journal?: MariaDbJournalOptions;
   /** Snapshot-store builder — its `pool` is overridden by the shared `pool` when set. */
@@ -40,6 +43,11 @@ export class RegisterMariaDbPluginsOptionsBuilder extends OptionsBuilder<Registe
   /** Shared connection pool reused by all three stores (overrides each leaf's own pool). */
   withPool(pool: MariaDbPoolLike): this {
     return this.set('pool', pool);
+  }
+
+  /** Shared payload serializer injected into all three stores (a leaf's own `serializer` wins). */
+  withSerializer(serializer: Serializer): this {
+    return this.set('serializer', serializer);
   }
 
   /** Journal builder — table names / autoCreate (connection filled from the shared pool). */

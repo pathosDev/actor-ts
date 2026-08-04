@@ -3,6 +3,8 @@ import {
   JournalConcurrencyError,
   type PersistentEvent,
 } from '../JournalTypes.js';
+import type { Serializer } from '../../serialization/Serializer.js';
+import { decodePayload, encodePayload } from '../storage/PayloadCodec.js';
 import { assertValidTags } from '../storage/TagValidator.js';
 import {
   buildMongoResource,
@@ -74,6 +76,8 @@ export class MongoJournal extends MongoStore implements Journal {
   private readonly eventsName: string;
   private readonly metaName: string;
 
+  private readonly _serializer?: Serializer;
+
   constructor(options: MongoJournalOptions = {}) {
     const resolvedOptions = (options as MongoJournalOptionsType);
     new MongoJournalOptionsValidator().validate(resolvedOptions);
@@ -85,7 +89,11 @@ export class MongoJournal extends MongoStore implements Journal {
     });
     this.eventsName = resolvedOptions.eventsCollection ?? 'events';
     this.metaName = `${this.eventsName}_meta`;
+    this._serializer = resolvedOptions.serializer;
   }
+
+  /** The configured payload serializer — read by `MongoQuery` so tag reads decode like the journal. */
+  get serializer(): Serializer | undefined { return this._serializer; }
 
   protected async createIndexes(database: MongoDatabaseLike): Promise<void> {
     // Unique, and load-bearing: this index IS the concurrency backstop.
@@ -118,7 +126,7 @@ export class MongoJournal extends MongoStore implements Journal {
         documents.push({
           persistenceId,
           sequenceNr: seq,
-          payload: JSON.stringify(event),
+          payload: encodePayload(event, this._serializer),
           ...(tags && tags.length ? { tags: [...tags] } : {}),
           timestamp: now,
         });
@@ -157,7 +165,7 @@ export class MongoJournal extends MongoStore implements Journal {
         })
         .sort({ sequenceNr: 1 })
         .toArray();
-      return documents.map((document) => toPersistentEvent<E>(document));
+      return documents.map((document) => toPersistentEvent<E>(document, this._serializer));
     } catch (e) {
       this.fail('read', e);
     }
@@ -241,11 +249,11 @@ export function toPersistentEvent<E>(document: {
   payload: string;
   tags?: ReadonlyArray<string>;
   timestamp: number | unknown;
-}): PersistentEvent<E> {
+}, serializer?: Serializer): PersistentEvent<E> {
   return {
     persistenceId: document.persistenceId,
     sequenceNr: Number(document.sequenceNr),
-    event: JSON.parse(document.payload) as E,
+    event: decodePayload(document.payload, serializer) as E,
     timestamp: Number(document.timestamp),
     // An absent or empty tag array means "untagged", matching every other
     // backend, rather than an empty list.

@@ -158,6 +158,34 @@ MessagePack sits between JSON (size, parse speed) and Protobuf
 (typed schemas).  Useful when you want a CBOR-like format with
 broader cross-language libraries.
 
+## Using a custom serializer for persistence
+
+Every journal, snapshot store and durable-state store accepts a
+`serializer` option — the way a custom serializer reaches stored
+rows.  The store frames each row self-describingly
+(`{"__serialized__":{"id":…,"manifest":…,"data":"<base64>"}}`), so
+rows written before the serializer was configured keep decoding
+through the default tagged-JSON codec, and both formats can coexist
+in one stream:
+
+```ts
+const journalOptions = SqliteJournalOptions.create()
+  .withPath('./journal.db')
+  .withSerializer(new MessagePackSerializer());
+const journal = new SqliteJournal(journalOptions);
+```
+
+The `Register<X>Plugins` bundles take a shared `withSerializer(...)`
+that fans out to all of the backend's stores (a leaf's own
+`serializer` wins).  Two rules to plan around:
+
+- **Reading a framed row requires a serializer with the same `id`**
+  — remove or swap the serializer and reads of old framed rows fail
+  with a `SerializationError` naming the id they need.
+- The **in-memory stores** ignore the option: their round-trip always
+  uses the default codec, which is stricter than a custom serializer
+  can be — the safe direction for a dev/test default.
+
 ## Per-class vs system-wide
 
 ```

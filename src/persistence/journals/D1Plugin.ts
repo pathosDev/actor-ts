@@ -43,11 +43,11 @@ export function registerD1Plugins(
   options: RegisterD1PluginsOptions = {},
 ): D1PluginHandles {
   const resolvedOptions = (options as RegisterD1PluginsOptionsType);
-  const { client, accountId, databaseId, apiToken, baseUrl } = resolvedOptions;
-  // A shared transport overrides a leaf's own; shared credentials only fill in
-  // where the leaf is silent.
+  const { client, accountId, databaseId, apiToken, baseUrl, serializer } = resolvedOptions;
+  // A shared transport overrides a leaf's own; shared credentials and the
+  // serializer only fill in where the leaf is silent.
   const shared = { client };
-  const connection = { accountId, databaseId, apiToken, baseUrl };
+  const connection = { accountId, databaseId, apiToken, baseUrl, serializer };
 
   const journal = mergeLeafOptions<Partial<D1JournalOptionsType>>(resolvedOptions.journal, shared, connection);
   const snapshotStore = mergeLeafOptions<Partial<D1SnapshotStoreOptionsType>>(resolvedOptions.snapshotStore, shared, connection);

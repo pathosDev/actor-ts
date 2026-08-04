@@ -49,6 +49,49 @@ export function journalContractScenarios(): ContractScenario<JournalHarness>[] {
       },
     },
     {
+      name: 'rich payload types survive the store round-trip',
+      async run(harness) {
+        const journal = await harness.make();
+        const persistenceId = harness.pid('rich-types');
+        // The one scenario that would have caught #888: bare JSON.stringify
+        // flattens Set/Map to {}, stringifies Date, and throws on bigint —
+        // and only a real store surfaces it, which is exactly why it lives
+        // in the shared contract and not in a backend-specific suite.
+        type RichEvent = {
+          at: Date;
+          roles: Set<string>;
+          balances: Map<string, bigint>;
+          raw: Uint8Array;
+          nested: { deep: Array<Set<number>> };
+        };
+        try {
+          await journal.append<RichEvent>(persistenceId, [{
+            at: new Date('2024-06-01T12:00:00.000Z'),
+            roles: new Set(['admin', 'auditor']),
+            balances: new Map([['acc-1', 1500n], ['acc-2', -25n]]),
+            raw: new Uint8Array([1, 2, 250]),
+            nested: { deep: [new Set([1, 2])] },
+          }], 0);
+          const read = await journal.read<RichEvent>(persistenceId, 1);
+          const event = read[0]!.event;
+          // instanceof + value checks on purpose: assertEqual JSON-stringifies,
+          // which cannot tell a Set from {} (and throws on bigint).
+          assert(event.at instanceof Date, 'Date survives as a Date instance');
+          assertEqual(event.at.toISOString(), '2024-06-01T12:00:00.000Z', 'Date value is preserved');
+          assert(event.roles instanceof Set, 'Set survives as a Set instance');
+          assertEqual(Array.from(event.roles).sort(), ['admin', 'auditor'], 'Set members are preserved');
+          assert(event.balances instanceof Map, 'Map survives as a Map instance');
+          assert(event.balances.get('acc-1') === 1500n, 'positive bigint Map value is preserved');
+          assert(event.balances.get('acc-2') === -25n, 'negative bigint Map value is preserved');
+          assert(event.raw instanceof Uint8Array, 'Uint8Array survives as bytes');
+          assertEqual(Array.from(event.raw), [1, 2, 250], 'byte values are preserved');
+          assert(event.nested.deep[0] instanceof Set, 'rich types survive arbitrarily nested');
+        } finally {
+          await closeQuietly(journal);
+        }
+      },
+    },
+    {
       name: 'read honours the inclusive fromSeq / toSeq bounds',
       async run(harness) {
         const journal = await harness.make();

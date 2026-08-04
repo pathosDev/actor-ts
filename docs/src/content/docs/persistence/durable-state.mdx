@@ -142,6 +142,11 @@ current revision + 1.  Returns once the store acknowledges.  Inside
 `onCommand`, `await` it before treating the next state as
 authoritative.
 
+State is stored in the tagged JSON tree format on every backend, so
+`Date` / `Map` / `Set` / `bigint` / `Uint8Array` round-trip as real
+instances — see
+[what events and state may contain](/persistence/persistent-actor/#what-events-and-state-may-contain).
+
 ## Optimistic concurrency
 
 ```ts

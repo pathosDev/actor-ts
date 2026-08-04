@@ -22,6 +22,7 @@ export class LibSqlSnapshotStore extends RelationalSnapshotStore {
       snapshotsTable: resolvedOptions.snapshotsTable,
       keepN: resolvedOptions.keepN,
       autoCreateTables: resolvedOptions.autoCreateTables,
+      serializer: resolvedOptions.serializer,
       ownsPool: resolvedOptions.client === undefined,
       openPool: async () => adaptLibSqlClient(await buildLibSqlClient(resolvedOptions)),
     });

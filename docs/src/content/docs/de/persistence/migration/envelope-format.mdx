@@ -146,20 +146,23 @@ Nicht-In-Memory-Backends).
 
 ## Persistenz-Formate
 
-Der Envelope ist ein reguläres JSON-Objekt — serialisiert von
-welchem Serializer auch immer dein Journal verwendet (JSON für
-die SQLite- + In-Memory-Journals, anpassbar für Cassandra).
+Der Envelope ist ein reguläres JSON-Objekt — gespeichert über das
+getaggte JSON-Tree-Format, das jeder Store schreibt (oder über
+einen konfigurierten Per-Store-Serializer).
 
 Das bedeutet:
 
-- **Nur JSON-sichere Typen** in `_e` — keine Funktionen, keine
-  `Symbol`s, keine `BigInt`s ohne benutzerdefinierten
-  Serializer.
+- **Reiche Typen round-trippen innerhalb von `_e`** — `Date`,
+  `Map`, `Set`, `bigint` und `Uint8Array` überleben über
+  Type-Tags; Funktionen, Symbols und zirkuläre Referenzen werfen
+  zur Persist-Zeit.  Siehe
+  [was Events und State enthalten dürfen](/de/persistence/persistent-actor/#was-events-und-state-enthalten-dürfen).
 - **Tief verschachtelte Objekte funktionieren** — der Envelope ist
   eine Ebene tief; `_e` selbst kann beliebig komplex sein.
-- **Binary-freundlich über CBOR** — wenn du
-  CBOR-Serialisierung konfigurierst, serialisiert der Envelope
-  als CBOR (kompakter, binary-freundlich).
+- **Binary-freundlich über einen eigenen Serializer** — ein Store
+  mit konfiguriertem `withSerializer(...)` framt den ganzen
+  Envelope durch diesen Serializer (kompakter,
+  binary-freundlich).
 
 ## Stolperfallen
 

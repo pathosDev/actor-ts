@@ -1,4 +1,5 @@
 import { OptionsBuilder } from '../../util/OptionsBuilder.js';
+import type { Serializer } from '../../serialization/Serializer.js';
 import type { MongoClientLike } from './MongoClient.js';
 import type { MongoJournalOptions } from './MongoJournalOptions.js';
 import type { MongoSnapshotStoreOptions } from '../snapshot-stores/MongoSnapshotStoreOptions.js';
@@ -17,6 +18,8 @@ export type RegisterMongoPluginsOptionsType = {
   readonly databaseName?: string;
   /** `MongoClient` options applied to every store that does not set its own. */
   readonly clientOptions?: Record<string, unknown>;
+  /** Shared payload serializer applied to every store that does not set its own. */
+  readonly serializer?: Serializer;
   /** Journal-specific options (collection name, autoCreateIndexes). */
   readonly journal?: MongoJournalOptions;
   /** Snapshot-store-specific options (collection name, keepN). */
@@ -47,6 +50,11 @@ export class RegisterMongoPluginsOptionsBuilder extends OptionsBuilder<RegisterM
   /** Shared client injected into all three stores. */
   withClient(client: MongoClientLike): this {
     return this.set('client', client);
+  }
+
+  /** Shared payload serializer applied to every store that does not set its own. */
+  withSerializer(serializer: Serializer): this {
+    return this.set('serializer', serializer);
   }
 
   /** Connection string applied to every store that does not set its own. */

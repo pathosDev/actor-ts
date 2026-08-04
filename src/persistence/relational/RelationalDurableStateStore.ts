@@ -6,6 +6,7 @@ import {
 import { JournalError } from '../JournalTypes.js';
 import type { PersistenceOptions } from '../PersistenceOptions.js';
 import { none, some, type Option } from '../../util/Option.js';
+import { decodePayload, encodePayload } from '../storage/PayloadCodec.js';
 import { assertSafeIdentifier } from '../storage/SqlIdentifier.js';
 import { expandPlaceholders } from './SqlDialect.js';
 import { RelationalStore, type RelationalStoreConfig } from './RelationalStore.js';
@@ -88,7 +89,7 @@ export class RelationalDurableStateStore extends RelationalStore implements Dura
     const pool = await this.ensureOpen();
     const now = Date.now();
     const newRevision = expectedRevision + 1;
-    const payload = JSON.stringify(state);
+    const payload = encodePayload(state, this.serializer);
     try {
       if (expectedRevision === 0) {
         await this.insert(pool, persistenceId, newRevision, payload, now, expectedRevision);
@@ -128,7 +129,7 @@ export class RelationalDurableStateStore extends RelationalStore implements Dura
     return some({
       persistenceId,
       revision: Number(row.revision),
-      state: JSON.parse(row.payload) as S,
+      state: decodePayload(row.payload, this.serializer) as S,
       timestamp: Number(row.timestamp),
     });
   }

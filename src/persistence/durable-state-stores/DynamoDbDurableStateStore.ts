@@ -16,6 +16,8 @@ import {
   type DynamoDbOperations,
 } from '../journals/DynamoDbClient.js';
 import { DynamoDbStore, type DynamoDbTableSchema } from '../journals/DynamoDbStore.js';
+import type { Serializer } from '../../serialization/Serializer.js';
+import { decodePayload, encodePayload } from '../storage/PayloadCodec.js';
 import {
   DynamoDbDurableStateStoreOptionsValidator,
   type DynamoDbDurableStateStoreOptions,
@@ -43,6 +45,8 @@ import {
 export class DynamoDbDurableStateStore extends DynamoDbStore implements DurableStateStore {
   private readonly tableName: string;
 
+  private readonly serializer?: Serializer;
+
   constructor(options: DynamoDbDurableStateStoreOptions = {}) {
     const resolvedOptions = (options as DynamoDbDurableStateStoreOptionsType);
     new DynamoDbDurableStateStoreOptionsValidator().validate(resolvedOptions);
@@ -56,6 +60,7 @@ export class DynamoDbDurableStateStore extends DynamoDbStore implements DurableS
       openClient: () => buildDynamoDbOperations(resolvedOptions),
     });
     this.tableName = resolvedOptions.table ?? 'actor_ts_durable_state';
+    this.serializer = resolvedOptions.serializer;
   }
 
   /** One item per persistence id, so the partition key alone is the whole schema. */
@@ -79,7 +84,7 @@ export class DynamoDbDurableStateStore extends DynamoDbStore implements DurableS
     const operations = await this.ensureOpen();
     const now = Date.now();
     const newRevision = expectedRevision + 1;
-    const payload = JSON.stringify(state);
+    const payload = encodePayload(state, this.serializer);
     try {
       if (expectedRevision === 0) {
         await operations.putItem({
@@ -131,7 +136,7 @@ export class DynamoDbDurableStateStore extends DynamoDbStore implements DurableS
     return some({
       persistenceId,
       revision: readNumber(found.Item, 'revision'),
-      state: JSON.parse(readString(found.Item, 'payload')) as S,
+      state: decodePayload(readString(found.Item, 'payload'), this.serializer) as S,
       timestamp: readNumber(found.Item, 'ts'),
     });
   }

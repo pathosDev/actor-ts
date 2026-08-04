@@ -1,9 +1,9 @@
-import { OptionsBuilder } from '../../util/OptionsBuilder.js';
+import { StoreSerializerOptionsBuilder, type StoreSerializerOptionsBase } from '../storage/StoreSerializerOptions.js';
 import { OptionsValidator } from '../../util/OptionsValidator.js';
 import { assertMongoName, assertMongoUrl } from '../journals/MongoJournalOptions.js';
 import type { MongoClientLike, MongoConnection } from '../journals/MongoClient.js';
 
-export interface MongoDurableStateStoreOptionsType extends MongoConnection {
+export interface MongoDurableStateStoreOptionsType extends MongoConnection, StoreSerializerOptionsBase {
   /** Durable-state collection name.  Default: `durable_state`. */
   readonly collection?: string;
 }
@@ -14,7 +14,7 @@ export interface MongoDurableStateStoreOptionsType extends MongoConnection {
  *     new MongoDurableStateStore(MongoDurableStateStoreOptions.create()
  *       .withUrl('mongodb://localhost:27017'))
  */
-export class MongoDurableStateStoreOptionsBuilder extends OptionsBuilder<MongoDurableStateStoreOptionsType> {
+export class MongoDurableStateStoreOptionsBuilder extends StoreSerializerOptionsBuilder<MongoDurableStateStoreOptionsType> {
   /** Start a fresh builder.  Equivalent to `new MongoDurableStateStoreOptionsBuilder()`. */
   static create(): MongoDurableStateStoreOptionsBuilder {
     return new MongoDurableStateStoreOptionsBuilder();

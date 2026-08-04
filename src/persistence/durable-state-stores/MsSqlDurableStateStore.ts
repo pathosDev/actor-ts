@@ -26,6 +26,7 @@ export class MsSqlDurableStateStore extends RelationalDurableStateStore {
       dialect: msSqlDialect,
       table: resolvedOptions.table,
       autoCreateTables: resolvedOptions.autoCreateTables,
+      serializer: resolvedOptions.serializer,
       ownsPool: resolvedOptions.pool === undefined,
       openPool: async () => adaptMsSqlPool(await buildMsSqlPool(resolvedOptions)),
     });

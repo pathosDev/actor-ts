@@ -35,6 +35,7 @@ export class SqliteDurableStateStore extends RelationalDurableStateStore {
       dialect: sqliteDialect,
       table: resolvedOptions.table,
       autoCreateTables: resolvedOptions.autoCreateTables,
+      serializer: resolvedOptions.serializer,
       // A caller-supplied handle is a shared handle — closing it here would
       // pull the database out from under the journal and snapshot store using
       // the same one.

@@ -45,11 +45,11 @@ export function registerMongoPlugins(
   options: RegisterMongoPluginsOptions = {},
 ): MongoPluginHandles {
   const resolvedOptions = (options as RegisterMongoPluginsOptionsType);
-  const { client, url, databaseName, clientOptions } = resolvedOptions;
-  // A shared client overrides a leaf's own; shared connection details only fill
-  // in where the leaf is silent.
+  const { client, url, databaseName, clientOptions, serializer } = resolvedOptions;
+  // A shared client overrides a leaf's own; shared connection details and the
+  // serializer only fill in where the leaf is silent.
   const shared = { client };
-  const connection = { url, databaseName, clientOptions };
+  const connection = { url, databaseName, clientOptions, serializer };
 
   const journal = mergeLeafOptions<Partial<MongoJournalOptionsType>>(resolvedOptions.journal, shared, connection);
   const snapshotStore = mergeLeafOptions<Partial<MongoSnapshotStoreOptionsType>>(resolvedOptions.snapshotStore, shared, connection);

@@ -135,6 +135,11 @@ When the actor recovers, the store returns the **latest** snapshot
 for the actor's `persistenceId`.  Older snapshots aren't loaded
 unless you explicitly ask via the store's lower-level API.
 
+State is stored in the tagged JSON tree format on every backend, so
+`Date` / `Map` / `Set` / `bigint` / `Uint8Array` inside a snapshot
+recover as real instances — see
+[what events and state may contain](/persistence/persistent-actor/#what-events-and-state-may-contain).
+
 ## Recovery flow with snapshots
 
 ```mermaid

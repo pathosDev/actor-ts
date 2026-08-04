@@ -1,5 +1,5 @@
-import { OptionsBuilder } from '../../util/OptionsBuilder.js';
 import { OptionsValidator } from '../../util/OptionsValidator.js';
+import { StoreSerializerOptionsBuilder, type StoreSerializerOptionsBase } from '../storage/StoreSerializerOptions.js';
 import type { ObjectStorageBackend } from '../object-storage/ObjectStorageBackend.js';
 import type {
   CompressionConfig,
@@ -10,7 +10,7 @@ import type {
   IntegrityResolver,
 } from '../object-storage/PluginConfig.js';
 
-export type ObjectStorageDurableStateStoreOptionsType = {
+export type ObjectStorageDurableStateStoreOptionsType = StoreSerializerOptionsBase & {
   readonly backend: ObjectStorageBackend;
   /**
    * Whether `close()` should also close the injected `backend`.  Default
@@ -59,7 +59,7 @@ export type ObjectStorageDurableStateStoreOptionsType = {
  *       ObjectStorageDurableStateStoreOptions.create().withBackend(backend).withPrefix('prod/'),
  *     )
  */
-export class ObjectStorageDurableStateStoreOptionsBuilder extends OptionsBuilder<ObjectStorageDurableStateStoreOptionsType> {
+export class ObjectStorageDurableStateStoreOptionsBuilder extends StoreSerializerOptionsBuilder<ObjectStorageDurableStateStoreOptionsType> {
   /** Start a fresh builder.  Equivalent to `new ObjectStorageDurableStateStoreOptionsBuilder()`. */
   static create(): ObjectStorageDurableStateStoreOptionsBuilder {
     return new ObjectStorageDurableStateStoreOptionsBuilder();

@@ -24,6 +24,7 @@ export class PostgresJournal extends RelationalJournal {
       eventsTable: resolvedOptions.eventsTable,
       tagsTable: resolvedOptions.tagsTable,
       autoCreateTables: resolvedOptions.autoCreateTables,
+      serializer: resolvedOptions.serializer,
       ownsPool: resolvedOptions.pool === undefined,
       openPool: async () => adaptPgPool(await buildPgPool(resolvedOptions)),
     });

@@ -142,19 +142,21 @@ backends).
 
 ## Persistence formats
 
-The envelope is a regular JSON object — serialized by whatever
-serializer your journal uses (JSON for the SQLite + in-memory
-journals, customizable for Cassandra).
+The envelope is a regular JSON object — stored through the tagged
+JSON tree format every store writes (or through a per-store custom
+serializer, when configured).
 
 This means:
 
-- **JSON-safe types only** in `_e` — no functions, no
-  `Symbol`s, no `BigInt`s without a custom serializer.
+- **Rich types round-trip inside `_e`** — `Date`, `Map`, `Set`,
+  `bigint` and `Uint8Array` survive via type tags; functions,
+  symbols and circular references throw at persist time.  See
+  [what events and state may contain](/persistence/persistent-actor/#what-events-and-state-may-contain).
 - **Deeply-nested objects work** — the envelope is one level
   deep; `_e` itself can be arbitrarily complex.
-- **Binary-friendly via CBOR** — if you configure CBOR
-  serialization, the envelope serializes as CBOR (more compact,
-  binary-friendly).
+- **Binary-friendly via a custom serializer** — a store configured
+  with `withSerializer(...)` frames the whole envelope through that
+  serializer (more compact, binary-friendly).
 
 ## Pitfalls
 

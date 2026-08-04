@@ -1,8 +1,10 @@
 /**
  * Pluggable wire codec for journal payloads (#6).
  *
- * The persistence layer serialises everything as JSON — that's the
- * baseline contract.  But user code often wants stronger guarantees
+ * The persistence layer serialises everything as tagged JSON — the
+ * `JsonTree` format applied by `storage/PayloadCodec.ts`, in which
+ * `Date`/`Map`/`Set`/`bigint`/`Uint8Array` round-trip (#888) — that's
+ * the baseline contract.  But user code often wants stronger guarantees
  * about the *shape* of the JSON it stores: every event matches a
  * known schema, every snapshot decodes cleanly, malformed wire
  * data is rejected loud and early instead of crashing somewhere in

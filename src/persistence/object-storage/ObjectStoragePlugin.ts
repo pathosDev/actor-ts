@@ -109,6 +109,7 @@ export async function registerObjectStoragePlugins(
       ...(resolvedOptions.compression !== undefined ? { compression: resolvedOptions.compression } : {}),
       ...(resolvedOptions.encryption !== undefined ? { encryption: resolvedOptions.encryption } : {}),
       ...(resolvedOptions.maxDecompressedBytes !== undefined ? { maxDecompressedBytes: resolvedOptions.maxDecompressedBytes } : {}),
+      ...(resolvedOptions.serializer !== undefined ? { serializer: resolvedOptions.serializer } : {}),
     });
   });
 
@@ -119,6 +120,7 @@ export async function registerObjectStoragePlugins(
     ...(resolvedOptions.compression !== undefined ? { compression: resolvedOptions.compression } : {}),
     ...(resolvedOptions.encryption !== undefined ? { encryption: resolvedOptions.encryption } : {}),
     ...(resolvedOptions.maxDecompressedBytes !== undefined ? { maxDecompressedBytes: resolvedOptions.maxDecompressedBytes } : {}),
+    ...(resolvedOptions.serializer !== undefined ? { serializer: resolvedOptions.serializer } : {}),
   });
 
   // The backend is shared across both stores, so neither owns it.  The plugin

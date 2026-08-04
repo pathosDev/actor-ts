@@ -44,6 +44,7 @@ export class D1Journal extends RelationalJournal {
       eventsTable: resolvedOptions.eventsTable,
       tagsTable: resolvedOptions.tagsTable,
       autoCreateTables: resolvedOptions.autoCreateTables,
+      serializer: resolvedOptions.serializer,
       ownsPool: resolvedOptions.client === undefined,
       openPool: async () => adaptD1Client(buildD1Client(resolvedOptions)),
     });

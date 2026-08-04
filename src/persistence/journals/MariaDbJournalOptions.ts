@@ -1,7 +1,7 @@
-import { OptionsBuilder } from '../../util/OptionsBuilder.js';
+import { StoreSerializerOptionsBuilder, type StoreSerializerOptionsBase } from '../storage/StoreSerializerOptions.js';
 import type { MariaDbPoolLike, MariaDbConnection } from './MariaDbClient.js';
 
-export interface MariaDbJournalOptionsType extends MariaDbConnection {
+export interface MariaDbJournalOptionsType extends MariaDbConnection, StoreSerializerOptionsBase {
   /** Events table name.  Default: `events`. */
   readonly eventsTable?: string;
   /** Tags join table name.  Default: `${eventsTable}_tags`. */
@@ -19,7 +19,7 @@ export interface MariaDbJournalOptionsType extends MariaDbConnection {
  * from the shared {@link MariaDbConnection} mixin; the rest are journal
  * specific.
  */
-export class MariaDbJournalOptionsBuilder extends OptionsBuilder<MariaDbJournalOptionsType> {
+export class MariaDbJournalOptionsBuilder extends StoreSerializerOptionsBuilder<MariaDbJournalOptionsType> {
   /** Start a fresh builder.  Equivalent to `new MariaDbJournalOptionsBuilder()`. */
   static create(): MariaDbJournalOptionsBuilder {
     return new MariaDbJournalOptionsBuilder();

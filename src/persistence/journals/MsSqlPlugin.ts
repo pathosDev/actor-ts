@@ -43,11 +43,11 @@ export function registerMsSqlPlugins(
   options: RegisterMsSqlPluginsOptions = {},
 ): MsSqlPluginHandles {
   const resolvedOptions = (options as RegisterMsSqlPluginsOptionsType);
-  const { pool, url, poolConfig } = resolvedOptions;
-  // A shared pool overrides a leaf's own; a shared url / poolConfig only fills
-  // in where the leaf is silent.
+  const { pool, url, poolConfig, serializer } = resolvedOptions;
+  // A shared pool overrides a leaf's own; a shared url / poolConfig /
+  // serializer only fills in where the leaf is silent.
   const shared = { pool };
-  const connection = { url, poolConfig };
+  const connection = { url, poolConfig, serializer };
 
   const journal = mergeLeafOptions<Partial<MsSqlJournalOptionsType>>(resolvedOptions.journal, shared, connection);
   const snapshotStore = mergeLeafOptions<Partial<MsSqlSnapshotStoreOptionsType>>(resolvedOptions.snapshotStore, shared, connection);

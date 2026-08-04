@@ -158,6 +158,17 @@ ref.tell({ when: Date.now() });
 5. DistributedData — replicated state across the cluster.
 ```
 
+**Persistence (2-4) writes the tagged JSON tree format** — the same
+tree `JsonSerializer` uses — so `Date` / `Map` / `Set` / `bigint` /
+`Uint8Array` round-trip through every journal, snapshot store and
+durable-state store without configuration.  Each store also accepts
+an explicit `withSerializer(...)` option that routes a custom
+`Serializer` into its rows (see
+[custom serializers](/serialization/custom/#using-a-custom-serializer-for-persistence));
+the `SerializationExtension` **registry bindings are still not
+consulted** for persistence or the wire — that wiring is tracked in
+[#450](https://github.com/pathosDev/actor-ts/issues/450).
+
 The cluster wire uses `JSON.stringify` on the envelope directly —
 not the pluggable `Serializer` (see *How it works*).  In-process
 tells **don't** serialize — the receiver gets the exact in-memory

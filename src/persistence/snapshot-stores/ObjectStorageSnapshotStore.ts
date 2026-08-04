@@ -15,6 +15,8 @@ import { resolveCompression, resolveEncryption } from '../object-storage/PluginC
 import type { ObjectStorageBackend } from '../object-storage/ObjectStorageBackend.js';
 import type { PersistenceOptions } from '../PersistenceOptions.js';
 import type { SnapshotStore } from '../SnapshotStore.js';
+import type { Serializer } from '../../serialization/Serializer.js';
+import { decodePayload, encodePayload } from '../storage/PayloadCodec.js';
 import { none, some, type Option } from '../../util/Option.js';
 import { ObjectStorageSnapshotStoreOptionsValidator } from './ObjectStorageSnapshotStoreOptions.js';
 import type { ObjectStorageSnapshotStoreOptions, ObjectStorageSnapshotStoreOptionsType } from './ObjectStorageSnapshotStoreOptions.js';
@@ -44,6 +46,8 @@ export class ObjectStorageSnapshotStore implements SnapshotStore {
   private readonly encryption: EncryptionConfig | EncryptionResolver | undefined;
   private readonly maxDecompressedBytes: number;
 
+  private readonly serializer?: Serializer;
+
   constructor(options: ObjectStorageSnapshotStoreOptions) {
     const resolvedOptions = (options as ObjectStorageSnapshotStoreOptionsType);
     if (resolvedOptions.backend === undefined) throw new Error('ObjectStorageSnapshotStore: backend is required (call withBackend()).');
@@ -55,6 +59,7 @@ export class ObjectStorageSnapshotStore implements SnapshotStore {
     this.compression = resolvedOptions.compression;
     this.encryption = resolvedOptions.encryption;
     this.maxDecompressedBytes = resolvedOptions.maxDecompressedBytes ?? DEFAULT_MAX_DECOMPRESSED_BYTES;
+    this.serializer = resolvedOptions.serializer;
   }
 
   async save<S>(
@@ -76,7 +81,7 @@ export class ObjectStorageSnapshotStore implements SnapshotStore {
       ?? resolveEncryption(this.encryption, persistenceId, { mode: 'none' });
 
     const now = Date.now();
-    const json = JSON.stringify({ persistenceId: persistenceId, sequenceNr: seq, state, timestamp: now });
+    const json = encodePayload({ persistenceId: persistenceId, sequenceNr: seq, state, timestamp: now }, this.serializer);
     let body: Uint8Array;
     try {
       const active = await activeEncryptKey(encryption, persistenceId);
@@ -182,7 +187,7 @@ export class ObjectStorageSnapshotStore implements SnapshotStore {
     });
     const json = utf8Decoder.decode(decoded.payload);
     let parsed: { persistenceId: string; sequenceNr: number; state: S; timestamp: number };
-    try { parsed = JSON.parse(json); }
+    try { parsed = decodePayload(json, this.serializer) as { persistenceId: string; sequenceNr: number; state: S; timestamp: number }; }
     catch (e) {
       throw new JournalError(`ObjectStorageSnapshotStore: malformed JSON at key ${key}`, e);
     }

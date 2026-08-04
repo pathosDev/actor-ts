@@ -1,5 +1,6 @@
 import { JournalError } from '../JournalTypes.js';
 import type { MongoJournal } from '../journals/MongoJournal.js';
+import { decodePayload } from '../storage/PayloadCodec.js';
 import { InMemoryQuery } from './InMemoryQuery.js';
 import {
   eventMatchesTagFilter,
@@ -94,7 +95,7 @@ export class MongoQuery extends InMemoryQuery {
       return {
         persistenceId: document.persistenceId,
         sequenceNr: Number(document.sequenceNr),
-        event: JSON.parse(document.payload) as E,
+        event: decodePayload(document.payload, this.mongo.serializer) as E,
         timestamp: Number(document.timestamp),
         tags,
       };

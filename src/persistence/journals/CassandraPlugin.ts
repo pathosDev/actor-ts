@@ -1,5 +1,6 @@
 import type { ActorSystem } from '../../ActorSystem.js';
 import type { PersistenceExtension } from '../PersistenceExtension.js';
+import { mergeLeafOptions } from '../relational/RelationalPlugin.js';
 import { CassandraJournal } from './CassandraJournal.js';
 import type { CassandraJournalOptionsType } from './CassandraJournalOptions.js';
 import { CassandraSnapshotStore } from '../snapshot-stores/CassandraSnapshotStore.js';
@@ -23,10 +24,12 @@ export function registerCassandraPlugins(
   options: RegisterCassandraPluginsOptions,
 ): void {
   const resolvedOptions = (options as RegisterCassandraPluginsOptionsType);
-  // Resolve each leaf to a plain object and merge the shared client (when
-  // set) onto it, so both plug-ins reuse one connection tree.
-  const journal = { ...((resolvedOptions.journal ?? {}) as Partial<CassandraJournalOptionsType>), ...(resolvedOptions.client ? { client: resolvedOptions.client } : {}) };
-  const snapshotStore = { ...((resolvedOptions.snapshotStore ?? {}) as Partial<CassandraSnapshotStoreOptionsType>), ...(resolvedOptions.client ? { client: resolvedOptions.client } : {}) };
+  // Merge the shared client (when set) onto each leaf so both plug-ins reuse
+  // one connection tree; the shared serializer only fills in where a leaf is
+  // silent (same semantics as the relational register helpers).
+  const { client, serializer } = resolvedOptions;
+  const journal = mergeLeafOptions<Partial<CassandraJournalOptionsType>>(resolvedOptions.journal, { client }, { serializer });
+  const snapshotStore = mergeLeafOptions<Partial<CassandraSnapshotStoreOptionsType>>(resolvedOptions.snapshotStore, { client }, { serializer });
   ext.registerJournal(
     CASSANDRA_JOURNAL_PLUGIN_ID,
     (_system: ActorSystem) => new CassandraJournal(journal),

@@ -26,6 +26,8 @@ import {
   type DurableStateStore,
 } from '../DurableStateStore.js';
 import type { PersistenceOptions } from '../PersistenceOptions.js';
+import type { Serializer } from '../../serialization/Serializer.js';
+import { decodePayload, encodePayload } from '../storage/PayloadCodec.js';
 import { none, some, type Option } from '../../util/Option.js';
 import { ObjectStorageDurableStateStoreOptionsValidator } from './ObjectStorageDurableStateStoreOptions.js';
 import type { ObjectStorageDurableStateStoreOptions, ObjectStorageDurableStateStoreOptionsType } from './ObjectStorageDurableStateStoreOptions.js';
@@ -67,6 +69,8 @@ export class ObjectStorageDurableStateStore implements DurableStateStore {
   private readonly maxDecompressedBytes: number;
   private readonly etagCache = new Map<string, CachedEntry>();
 
+  private readonly serializer?: Serializer;
+
   constructor(options: ObjectStorageDurableStateStoreOptions) {
     const resolvedOptions = (options as ObjectStorageDurableStateStoreOptionsType);
     if (resolvedOptions.backend === undefined) throw new Error('ObjectStorageDurableStateStore: backend is required (call withBackend()).');
@@ -79,6 +83,7 @@ export class ObjectStorageDurableStateStore implements DurableStateStore {
     this.integrity = resolvedOptions.integrity;
     this.requireIntegrity = resolvedOptions.requireIntegrity ?? false;
     this.maxDecompressedBytes = resolvedOptions.maxDecompressedBytes ?? DEFAULT_MAX_DECOMPRESSED_BYTES;
+    this.serializer = resolvedOptions.serializer;
   }
 
   async load<S>(persistenceId: string, options?: PersistenceOptions): Promise<Option<DurableStateRecord<S>>> {
@@ -118,7 +123,7 @@ export class ObjectStorageDurableStateStore implements DurableStateStore {
       );
     }
     let parsed: { revision: number; state: S; timestamp: number };
-    try { parsed = JSON.parse(utf8Decoder.decode(decoded.payload)); }
+    try { parsed = decodePayload(utf8Decoder.decode(decoded.payload), this.serializer) as { revision: number; state: S; timestamp: number }; }
     catch (e) {
       throw new JournalError(`ObjectStorageDurableStateStore.load: malformed JSON for ${persistenceId}`, e);
     }
@@ -154,7 +159,7 @@ export class ObjectStorageDurableStateStore implements DurableStateStore {
 
     const now = Date.now();
     const newRevision = expectedRevision + 1;
-    const json = JSON.stringify({ revision: newRevision, state, timestamp: now });
+    const json = encodePayload({ revision: newRevision, state, timestamp: now }, this.serializer);
     const active = await activeEncryptKey(encryption, persistenceId);
     const stampVersion = active && isVersionedKeyShape(encryption);
     const body = await encodeBody(utf8.encode(json), {
