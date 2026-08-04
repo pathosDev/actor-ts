@@ -2,13 +2,19 @@ import { describe, expect, test } from 'bun:test';
 import { ActorTreeModel } from '../src/panels/actors/actorsTree.js';
 import type { ActorNode } from '../../src/devtools/protocol/index.js';
 
-function node(path: string, parentPath: string | null, className = 'SomeActor'): ActorNode {
+function node(
+  path: string,
+  parentPath: string | null,
+  className = 'SomeActor',
+  displayName: string | null = null,
+): ActorNode {
   return {
     nodeAddress: 'local',
     path,
     parentPath,
     name: path.split('/').pop() ?? path,
     className,
+    displayName,
     cellState: 'running',
     mailboxSize: 0,
     stashSize: 0,
@@ -159,6 +165,19 @@ describe('ActorTreeModel — filtering', () => {
     const paths = sampleTree().rows('betaactor').map((row) => row.node.path);
     expect(paths).toContain('/user/beta');
     expect(paths).not.toContain('/user/alpha/leaf');
+  });
+
+  test('matches on the display name — the label is what the user sees', () => {
+    const model = new ActorTreeModel();
+    model.reset([
+      node('/', null, 'Guardian'),
+      node('/user', '/', 'Guardian'),
+      node('/user/entity-7b3f', '/user', 'TypedActor', 'Cart(alice)'),
+      node('/user/entity-9c21', '/user', 'TypedActor', 'Cart(bob)'),
+    ]);
+    const paths = model.rows('cart(alice)').map((row) => row.node.path);
+    expect(paths).toContain('/user/entity-7b3f');
+    expect(paths).not.toContain('/user/entity-9c21');
   });
 
   test('a filter overrides collapsing, so a match is never hidden', () => {

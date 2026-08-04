@@ -18,6 +18,21 @@ export interface TypedActorContext<T> {
   readonly system: ActorSystem;
   readonly log: Logger;
 
+  /**
+   * Name this actor in log lines and in the DevTools tree (#891).  Every
+   * Behavior runs inside the same `TypedActor` class, so there is no
+   * subclass to override `Actor.displayName()` on — this is the way in:
+   *
+   *     Behaviors.setup<Command>((context) => {
+   *       context.setDisplayName(`User(${userId})`);
+   *       return Behaviors.receive(...);
+   *     });
+   *
+   * Takes effect on the next record.  Purely cosmetic — the path stays
+   * the identity everywhere that routes or correlates.
+   */
+  setDisplayName(name: string): void;
+
   /** Spawn a typed child actor with the given Behavior. */
   spawn<U>(behavior: Behavior<U>, name?: string): ActorRef<U>;
 

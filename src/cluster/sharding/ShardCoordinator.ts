@@ -17,6 +17,7 @@ import type {
   EntityStarted,
   EntityStopped,
   GetClusterShardingStats,
+  GetRememberedEntities,
   GetShardHome,
   HandOffComplete,
   RegionTerminated,
@@ -269,6 +270,7 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
       .with({ $t: 'sharding.RegionTerminated' }, (m) => this.onRegionTerminated(m))
       .with({ $t: 'sharding.EntityStarted' }, (m) => this.onEntityStarted(m))
       .with({ $t: 'sharding.EntityStopped' }, (m) => this.onEntityStopped(m))
+      .with({ $t: 'sharding.GetRememberedEntities' }, (m) => this.onGetRememberedEntities(m))
       .with({ $t: 'sharding.GetClusterShardingStats' }, (m) => this.onGetClusterShardingStats(m))
       .with({ $t: 'sharding.ShardRegionStats' }, (m) => this.onShardRegionStats(m))
       .otherwise(() => this.onUnhandled());
@@ -567,6 +569,18 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
     }
     this.applyRememberEvent({ kind: 'stopped', shardId: message.shardId, entityId: message.entityId });
     this.persistRememberEvent({ kind: 'stopped', shardId: message.shardId, entityId: message.entityId });
+  }
+
+  /**
+   * A region lost a shard's entities without losing the shard itself — its
+   * shard actor died outside a handoff (#894).  Ownership never moved, so the
+   * two paths that normally ship the registry (`onRegister`, `tryAllocate`)
+   * cannot fire, and the shard would come back empty while we still list what
+   * it held.
+   */
+  private onGetRememberedEntities(message: GetRememberedEntities): void {
+    if (!this.options.rememberEntities) return;
+    this.shipRememberedEntities(message.shardId);
   }
 
   /**

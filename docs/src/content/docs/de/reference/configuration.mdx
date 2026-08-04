@@ -64,7 +64,8 @@ actor-ts {
     rebalance-interval  = 2s
     hand-off-timeout    = 10s
     remember-entities   = false
-    passivation-idle    = 0ms   # 0 deaktiviert die Auto-Passivierung
+    passivation-idle    = 5m    # 0 deaktiviert die Auto-Passivierung
+    # shard-passivation-idle    # ungesetzt: folgt passivation-idle
     max-entities        = 0     # 0 = kein Cap pro Node
   }
 }
@@ -218,7 +219,8 @@ Redis- und Memcached-Caches lesen ihre Verbindungs-Settings aus
 | `sharding.rebalance-interval` | `2s` | Abstand zwischen koordinator-getriebenen Rebalance-Passes. |
 | `sharding.hand-off-timeout` | `10s` | Wie lange auf HandOffComplete gewartet wird, bevor zwangsumverteilt wird. |
 | `sharding.remember-entities` | `false` | Persistiere die Menge aktiver Entity-IDs. |
-| `sharding.passivation-idle` | `0ms` | Auto-Passiviere eine Entität nach diesem Idle-Fenster.  `0` = deaktiviert. |
+| `sharding.passivation-idle` | `5m` | Auto-Passiviere eine Entität nach diesem Idle-Fenster.  `0` = deaktiviert.  Eine Entität, die Zustand im Speicher hält und ihn nicht in `preStart` wiederaufbaut, verliert ihn dabei — siehe [Passivierung](/de/cluster/sharding/overview/#passivierung). |
+| `sharding.shard-passivation-idle` | *(ungesetzt)* | Auto-Passiviere einen Shard, nachdem er so lange leer stand.  Ungesetzt folgt er `passivation-idle`; `0` hält leere Shards resident.  Bewusst nicht in der `reference.conf`, denn genau von einem ausgelieferten Wert müsste sich „ungesetzt" unterscheiden lassen. |
 | `sharding.max-entities` | `0` | Entity-Obergrenze pro Node; bei Überlauf wird die am längsten ungenutzte Entität passiviert.  `0` = kein Cap. |
 
 Diese Keys gelten für **jeden** auf dem Node gestarteten Sharded Type.  Sie

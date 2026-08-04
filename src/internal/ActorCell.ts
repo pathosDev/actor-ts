@@ -52,6 +52,7 @@ import {
 import { BoundedMailbox } from '../mailbox/BoundedMailbox.js';
 import { DEFAULT_MAILBOX_CAPACITY, DEFAULT_MAILBOX_OVERFLOW } from '../util/Constants.js';
 import { LocalActorRef } from './LocalActorRef.js';
+import { DisplayNameLogger } from './DisplayNameLogger.js';
 import type {
   ChildTerminatedCommand,
   FailureCommand,
@@ -133,6 +134,21 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
    */
   private readonly _entity: EntityContext | null;
 
+  /**
+   * Display name set from outside the instance — seeded from the Props and
+   * rewritable through `setDisplayName`.  `null` means "nobody said", which
+   * is what hands the question on to `Actor.displayName()`.
+   */
+  private _displayNameOverride: string | null;
+
+  /**
+   * Whether a failing `displayName()` has already been reported.  The hook
+   * runs once per record, so without this one broken override would drown
+   * the log in its own warning.  Reset on restart — a new instance earns a
+   * new warning.
+   */
+  private _displayNameFailed = false;
+
   /** Per-actor timer scheduler. */
   readonly timers: TimerScheduler<TMessage> = new CellTimerScheduler<TMessage>(this);
 
@@ -160,6 +176,7 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
     this._parent = parent;
     this._internal = props.config.internal === true || parent?._internal === true;
     this._entity = props.config.entity ?? null;
+    this._displayNameOverride = props.config.displayName ?? null;
     const uid = parent ? parent._nextChildUid() : 0;
     this.path = parent
       ? parent.path.child(name, uid)
@@ -177,7 +194,12 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
         onDrop: (reason) => this._onMailboxDrop(reason),
       });
     this.self = new LocalActorRef<TMessage>(this);
-    this.log = system.log.withSource(this.path.toString());
+    // Resolved per record rather than bound here: the user's Actor does not
+    // exist yet, and once it does its name may change (state, restart).
+    this.log = new DisplayNameLogger(
+      system.log.withSource(this.path.toString()),
+      () => this._customDisplayName() ?? '',
+    );
     this.enqueueSystem({ kind: 'create' });
   }
 
@@ -203,6 +225,54 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
    * instance.
    */
   get cluster(): Option<Cluster> { return this.system.cluster; }
+
+  setDisplayName(name: string): void {
+    this._displayNameOverride = name;
+  }
+
+  /**
+   * @internal What to call this actor, or `null` for "nothing beyond the
+   * path".  Same precedence as `supervisorStrategy` below — an override
+   * from outside the instance wins over what the instance says about
+   * itself, because the spawn site (and a later `setDisplayName`) is the
+   * more specific statement.
+   *
+   * The path is the floor, and a name equal to it collapses back to
+   * `null`: the path is already the log source and already the DevTools
+   * tooltip, so repeating it would be noise in both.
+   *
+   * Guarded here rather than at either call site, because both of them —
+   * the logging path and the DevTools tick — would rather show a path
+   * than propagate a user hook's failure.
+   */
+  _customDisplayName(): string | null {
+    const name = this._displayNameOverride ?? this._displayNameFromActor();
+    return name === null || name === '' || name === this.path.toString() ? null : name;
+  }
+
+  private _displayNameFromActor(): string | null {
+    const actor = this.actor;
+    if (actor === null) return null;
+    try {
+      const name = actor.displayName();
+      return typeof name === 'string' ? name : null;
+    } catch (e) {
+      this._onDisplayNameFailed(e);
+      return null;
+    }
+  }
+
+  /**
+   * Deliberately not through `this.log`: that logger asks the very hook
+   * that just threw for its display name, so warning through it would
+   * re-enter the failure it is reporting.
+   */
+  private _onDisplayNameFailed(error: unknown): void {
+    if (this._displayNameFailed) return;
+    this._displayNameFailed = true;
+    this.system.log.withSource(this.path.toString())
+      .warn('displayName() threw — falling back to the actor path', error);
+  }
 
   spawn<T>(props: Props<T>, name: string): ActorRef<T> {
     return this._createChild(props, name);
@@ -277,6 +347,7 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
       parentPath: this._parent?.path.toString() ?? null,
       name: this.path.name,
       className: this.actor?.constructor.name ?? '?',
+      displayName: this._customDisplayName(),
       cellState: this.state,
       mailboxSize: this.mailbox.size,
       stashSize: this._stashBuffer.length,
@@ -845,6 +916,8 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
       const next = this.props.config.factory();
       (next as unknown as { _attach(context: ActorContext<TMessage>): void })._attach(this);
       this.actor = next;
+      // Fresh instance, fresh chance to name itself — and to be warned about.
+      this._displayNameFailed = false;
       this.behaviorStack = [(m: TMessage) => next.onReceive(m)];
       await next.postRestart(cause);
       this.mailbox.resume();

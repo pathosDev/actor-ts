@@ -80,7 +80,12 @@ const shard = await cluster.sharding.shardRefFor<CounterCommand>('counter', 7);
 
 If shard 7 has no home yet, this **places it** — exactly what a first
 message for it would have done — and answers once the coordinator has
-decided.
+decided.  If it has a home here but no running actor, because it
+[passivated while empty](/cluster/sharding/overview/#shards-passivate-too),
+asking brings it back: a handle to an actor that is not running would be
+a handle to nothing.  Listing shards with `shards()` does the same for
+the local ones, so treat both as "wake it if needed", not as passive
+observation.
 
 The ref is the real thing.  A shard is an actor
 (`/system/cluster/sharding/region-counter/shard-7`), so what you get back is the local
