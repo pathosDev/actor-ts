@@ -249,7 +249,7 @@ belongs to:
 | `/system/cluster/sharding/coordinator-<typeName>` | A shard coordinator. |
 | `/system/cluster/singleton/manager-<typeName>` | A cluster-singleton manager (the singleton itself is its child). |
 | `/system/persistence/projection/<name>` | A projection. |
-| `/system/delivery/consumer-<n>`, `producer-<n>` | Reliable-delivery controllers. |
+| `/system/delivery/consumer-<n>-<random>`, `producer-<n>-<random>` | Reliable-delivery controllers, when you don't name them yourself. |
 | `/system/devtools/hub` | The DevTools WebSocket hub, with its probes alongside it. |
 
 Two things follow from this that are worth knowing when you read a tree:
