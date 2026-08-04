@@ -9,6 +9,8 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ## [Unreleased]
 
+## [0.12.2] — 2026-08-04
+
 ### Fixed
 
 - **BREAKING — persistence stores no longer silently corrupt rich payload
