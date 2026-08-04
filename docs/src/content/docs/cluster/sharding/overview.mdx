@@ -387,10 +387,11 @@ either way — they run for the lifetime of the node.
 
 Only an *empty* shard is ever stopped, so there is no entity state at
 stake, and messages that arrive while a shard is stopping are buffered
-and replayed exactly as they are for an entity.  One consequence worth
-knowing: asking for a passivated shard's ref with
-[`shardRefFor()`](/cluster/sharding/introspection/) brings it back, since
-a handle to an actor that is not running would be a handle to nothing.
+and replayed exactly as they are for an entity.  A shard ref stays valid
+across the gap too — see
+[introspection](/cluster/sharding/introspection/), where `ShardInfo`
+also reports a `resident` flag that tells a passivated shard apart from
+one that is merely empty.
 
 ## Rebalancing
 

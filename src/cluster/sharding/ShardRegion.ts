@@ -16,7 +16,7 @@ import {
   ShardMapChanged,
 } from '../ClusterEvents.js';
 import { NodeAddress, type NodeAddressData } from '../NodeAddress.js';
-import { RemoteActorRef } from '../RemoteActorRef.js';
+import { RemoteActorRef, remoteActorPath } from '../RemoteActorRef.js';
 import { hashShardId } from './ShardAllocator.js';
 import { Passivate } from './Passivate.js';
 import { Shard, type ShardConfig, type ShardInbox, type ShardMessage } from './Shard.js';
@@ -45,6 +45,7 @@ import {
   type EntityEnvelope,
   type EntityStarted,
   type EntityStopped,
+  type ToShard,
 } from './ShardingProtocol.js';
 
 /** Shard count used when a sharded type doesn't pick one. */
@@ -534,6 +535,8 @@ export class ShardRegion<TMessage = unknown> extends Actor<TMessage | ShardingMe
       .with({ $t: 'sharding.Reply' }, (m) => this.onShardReply(m))
       // An EntityRef addressed one of our entities by id.
       .with({ $t: 'sharding.EntityEnvelope' }, (m) => this.onEntityEnvelope(m))
+      // Someone on another node told a ref to one of our shards.
+      .with({ $t: 'sharding.ToShard' }, (m) => this.onToShard(m))
       // Lifecycle reports coming up from our own shards.
       .with({ $t: 'sharding.EntityStarted' }, (m) => this.onEntityStarted(m))
       .with({ $t: 'sharding.EntityStopped' }, (m) => this.onEntityStopped(m))
@@ -569,6 +572,20 @@ export class ShardRegion<TMessage = unknown> extends Actor<TMessage | ShardingMe
 
   private onEntityEnvelope(message: EntityEnvelope): void {
     this.routeMessage(message, this.sender.toNullable());
+  }
+
+  /**
+   * A {@link RemoteShardRef} on another node was told something.  We own the
+   * shard, so we are the only one who can guarantee an actor exists to take
+   * it — `ensureShard` re-creates a shard that had passivated (#901).
+   *
+   * The sender travels through, so an `ask` against a remote shard ref gets
+   * its reply the same way a local one does.
+   */
+  private onToShard(message: ToShard): void {
+    if (this.config.proxy) return;
+    if (!this.localShards.has(message.shardId)) return;
+    this.ensureShard(message.shardId).tell(message.message as never, this.sender.toNullable());
   }
 
   private onShardReply(message: ShardReply): void {
@@ -684,6 +701,9 @@ export class ShardRegion<TMessage = unknown> extends Actor<TMessage | ShardingMe
     const shards = Array.from(this.localShards).map((shardId) => ({
       shardId,
       entityCount: this.shardEntities.get(shardId)?.size ?? 0,
+      // Allocated here either way; `resident` is what separates a shard that
+      // is running and empty from one that passivated (#901).
+      resident: this.shards.has(shardId),
     }));
     const reply: ShardRegionStats = {
       $t: 'sharding.ShardRegionStats',
@@ -702,6 +722,7 @@ export class ShardRegion<TMessage = unknown> extends Actor<TMessage | ShardingMe
       node,
       regionPath: location.regionPath,
       entityCount: location.entityCount,
+      resident: location.resident,
       local: node.equals(this.config.cluster.selfAddress),
       ref: this.shardRef(location.shardId, node, location.regionPath),
     };
@@ -716,9 +737,12 @@ export class ShardRegion<TMessage = unknown> extends Actor<TMessage | ShardingMe
   }
 
   /**
-   * The real shard actor when we host it, a `RemoteActorRef` at its real path
-   * otherwise — the shard being an actor is what makes the second half work
-   * without any resolution step.
+   * The real shard actor when we host it, a {@link RemoteShardRef} otherwise.
+   *
+   * Both halves have to survive the shard actor not being up at this instant,
+   * because since #892 an empty one is stopped and re-created on demand.  Here
+   * we can simply materialise it; for a shard on another node only its own
+   * region can, which is what `RemoteShardRef` delegates to.
    */
   private shardRef(shardId: number, node: NodeAddress, regionPath: string): ActorRef<ShardMessage> {
     if (node.equals(this.config.cluster.selfAddress)) {
@@ -733,7 +757,7 @@ export class ShardRegion<TMessage = unknown> extends Actor<TMessage | ShardingMe
         return this.ensureShard(shardId) as unknown as ActorRef<ShardMessage>;
       }
     }
-    return new RemoteActorRef<ShardMessage>(node, shardPath(regionPath, shardId), this.config.cluster);
+    return new RemoteShardRef(node, regionPath, shardId, this.config.cluster);
   }
 
   /** Send a sharding message to an arbitrary region/coordinator path. */
@@ -1073,6 +1097,42 @@ function shardIdFromEntityPath(path: string): number | null {
   if (!matched) return null;
   const shardId = Number(matched[1]);
   return Number.isFinite(shardId) ? shardId : null;
+}
+
+/**
+ * A shard hosted on another node.
+ *
+ * Its `path` is the shard's own — that is the identity callers see, compare
+ * and log — but delivery goes to the **owning region**, wrapped in a
+ * {@link ToShard}.  Addressing the shard path directly is what #901 was: since
+ * #892 an empty shard is stopped and re-created on demand, so between those
+ * two moments nothing resolves that path and the receiving node drops the
+ * message.  The region is always up and materialises the shard first.
+ *
+ * This mirrors the entity path, where {@link ShardEnvelope} has likewise
+ * always been addressed to the region rather than to the entity.
+ */
+export class RemoteShardRef extends ActorRef<ShardMessage> {
+  readonly path: ActorPath;
+  private readonly region: RemoteActorRef<ShardingMessage>;
+
+  constructor(
+    node: NodeAddress,
+    regionPath: string,
+    private readonly shardId: number,
+    cluster: Cluster,
+  ) {
+    super();
+    this.path = remoteActorPath(shardPath(regionPath, shardId), node.systemName);
+    this.region = new RemoteActorRef<ShardingMessage>(node, regionPath, cluster);
+  }
+
+  override tell(message: ShardMessage, sender: ActorRef | null = null): void {
+    this.region.tell({ $t: 'sharding.ToShard', shardId: this.shardId, message }, sender);
+  }
+
+  /** The shard's path, not the region's — the region is only the delivery route. */
+  override toString(): string { return this.path.toString(); }
 }
 
 /**
