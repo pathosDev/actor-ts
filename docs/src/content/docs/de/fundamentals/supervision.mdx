@@ -150,8 +150,8 @@ Logik brauchst.
 Wenn `Restart` feuert:
 
 1. Das Framework ruft **`preRestart(reason, message?)`** auf der
-   kurz-vor-dem-Verwerfen-stehenden Instanz auf.  Default: stoppt
-   alle Kinder, ruft `postStop`.  Überschreibe, um Ressourcen
+   kurz-vor-dem-Verwerfen-stehenden Instanz auf.  Default: ruft
+   `postStop`, sonst nichts.  Überschreibe, um Ressourcen
    freizugeben, die außerhalb des Actors gehalten werden
    (File-Handles, offene Sockets, Broker-Verbindungen).
 2. Die Instanz wird verworfen.  Alle Instanzfelder (`this.count`,
@@ -164,12 +164,45 @@ Wenn `Restart` feuert:
 5. Die Mailbox wird **beibehalten**.  Die nächste Nachricht (die
    *nach* der fehlgeschlagenen) wird auf der neuen Instanz
    verarbeitet.
+6. Die **Kinder bleiben erhalten**.  Sie hängen an der Cell, die die
+   ersetzte Instanz überlebt — sie behalten also ihren eigenen
+   Zustand und ihre Mailbox über den Restart des Parents hinweg.
 
 Die fehlgeschlagene Nachricht selbst wird **standardmäßig
 verworfen** — sie bleibt außerhalb der Mailbox.  Überschreibe
 `preRestart`, wenn du andere Semantik brauchst (z.B. die
 fehlgeschlagene Nachricht in eine Dead-Letter-Queue zur Inspektion
 schieben).
+
+<Aside type="caution" title="Ein benanntes Kind in `preStart` spawnen">
+  Punkt 6 hat eine scharfe Kante.  Weil Schritt 4 `preStart` erneut
+  ausführt, während die Kinder der vorigen Inkarnation noch in der
+  Child-Map stehen, wirft ein Actor, der in `preStart` ein
+  **benanntes** Kind spawnt, beim ersten Restart
+  `Child name '<name>' is not unique`.
+
+  Sind die Kinder entbehrlich, spawne sie anonym — die generierten
+  Namen kollidieren nie:
+
+  ```ts
+  override preStart(): void {
+    this.worker = this.context.spawnAnonymous(Props.create(() => new Worker()));
+  }
+  ```
+
+  Soll der Restart sie neu aufbauen, stoppe sie selbst:
+
+  ```ts
+  override preRestart(reason: Error, message?: Command): void {
+    for (const child of this.context.children) child.stop();
+    super.preRestart(reason, message);
+  }
+  ```
+
+  Beides nicht zu tun ist ebenfalls in Ordnung — überlebende Kinder
+  sind oft genau das, was man will, und ein Parent, der neu startet,
+  ohne seinen Teilbaum anzufassen, ist das billigere Ergebnis.
+</Aside>
 
 Wenn du willst, dass **Zustand über Restart hinweg erhalten bleibt**,
 muss der Actor diesen Zustand irgendwo extern persistieren —

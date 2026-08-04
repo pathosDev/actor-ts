@@ -145,8 +145,8 @@ hand-write the decider as a plain function — `(err: Error) => Directive`
 When `Restart` fires:
 
 1. The framework calls **`preRestart(reason, message?)`** on the
-   about-to-be-thrown-away instance.  Default: stops all children,
-   calls `postStop`.  Override to release resources held outside the
+   about-to-be-thrown-away instance.  Default: calls `postStop`, and
+   nothing else.  Override to release resources held outside the
    actor (file handles, open sockets, broker connections).
 2. The instance is dropped.  All instance fields (`this.count`,
    `this.handle`, …) are lost.
@@ -156,11 +156,43 @@ When `Restart` fires:
    resources.
 5. The mailbox is **retained**.  The next message (the one *after*
    the failed one) is processed on the new instance.
+6. The actor's **children are retained**.  They belong to the cell,
+   which outlives the instance being replaced, so they keep their own
+   state and mailboxes right through the parent's restart.
 
 The failed message itself is **dropped by default** — it stays out
 of the mailbox.  Override `preRestart` if you need different
 semantics (e.g. push the failed message into a dead-letter queue
 for inspection).
+
+<Aside type="caution" title="Spawning a named child in `preStart`">
+  Step 6 has a sharp edge.  Because step 4 re-runs `preStart` while
+  the previous incarnation's children are still in the child map, an
+  actor that spawns a **named** child in `preStart` throws
+  `Child name '<name>' is not unique` on its first restart.
+
+  If the children are disposable, spawn them anonymously — the
+  generated names never collide:
+
+  ```ts
+  override preStart(): void {
+    this.worker = this.context.spawnAnonymous(Props.create(() => new Worker()));
+  }
+  ```
+
+  If the restart is meant to rebuild them, stop them yourself:
+
+  ```ts
+  override preRestart(reason: Error, message?: Command): void {
+    for (const child of this.context.children) child.stop();
+    super.preRestart(reason, message);
+  }
+  ```
+
+  Doing neither is also fine — surviving children are often exactly
+  what you want, and a parent that restarts without disturbing its
+  subtree is the cheaper outcome.
+</Aside>
 
 If you want **state preserved across restart**, the actor needs to
 persist that state somewhere external — typically a journal via

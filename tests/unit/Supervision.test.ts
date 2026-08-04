@@ -216,3 +216,89 @@ describe('supervisor strategy on Props', () => {
     expect(seen).not.toContain('ActorRestarted:fragile');
   });
 });
+
+/**
+ * `Actor.preRestart`'s JSDoc and the `onRecreate` call site both used to claim
+ * the default stops children.  It never did — it only calls `postStop()` — and
+ * the docs said otherwise for long enough that these pin the real behaviour.
+ * If someone makes `preRestart` stop children, both of these fail and force the
+ * documentation to move with the code (#899).
+ */
+describe('restart and children', () => {
+  const sys = systemFixture('restart-children-tests');
+
+  test('children survive their parent restarting', async () => {
+    const events: string[] = [];
+    class Child extends Actor<string> {
+      override postStop(): void { events.push('child:postStop'); }
+      override onReceive(m: string): void { events.push(`child:${m}`); }
+    }
+    class Parent extends Actor<string> {
+      private child: import('../../src/ActorRef.js').ActorRef<string> | null = null;
+      override preStart(): void {
+        events.push('parent:preStart');
+        // Anonymous, so the second preStart cannot collide — see the named
+        // case below for what happens when it can.
+        this.child ??= this.context.spawnAnonymous(Props.create(() => new Child()));
+      }
+      override onReceive(m: string): void {
+        if (m === 'boom') throw new FooError();
+        this.child?.tell(m);
+      }
+    }
+
+    const parent = sys().spawn(Props.create(() => new Parent()), 'keeps-children');
+    parent.tell('boom');
+    await awaitCondition(
+      () => events.filter((e) => e === 'parent:preStart').length >= 2,
+      { label: 'the parent restarted' },
+    );
+
+    // The child was never stopped, and the same instance still answers.
+    expect(events).not.toContain('child:postStop');
+    parent.tell('still-here');
+    await awaitCondition(
+      () => events.includes('child:still-here'),
+      { label: 'the surviving child received a message after the restart' },
+    );
+  });
+
+  test('a named child spawned in preStart collides on the restart', async () => {
+    // The sharp edge the supervision docs now call out: preStart runs again
+    // while the previous incarnation's children are still in the child map, so
+    // the second spawn hits the uniqueness check and the restart fails.
+    const failures: string[] = [];
+    class Child extends Actor<string> { override onReceive(_: string): void {} }
+    class Parent extends Actor<string> {
+      override preStart(): void {
+        this.context.spawn(Props.create(() => new Child()), 'fixed-name');
+      }
+      override onReceive(m: string): void { if (m === 'boom') throw new FooError(); }
+    }
+    class Guardian extends Actor<string> {
+      override supervisorStrategy(): SupervisorStrategy {
+        // Restart on the original failure — that is what re-runs preStart and
+        // triggers the collision.  The collision then arrives as a *second*
+        // failure, wrapped in ActorInitializationError, which we stop on so the
+        // test does not loop.
+        return new OneForOneStrategy((error) => {
+          if (!(error instanceof ActorInitializationError)) return Directive.Restart;
+          const cause = error.cause instanceof Error ? error.cause.message : String(error.cause);
+          failures.push(cause);
+          return Directive.Stop;
+        });
+      }
+      override preStart(): void {
+        this.context.spawn(Props.create(() => new Parent()), 'collides').tell('boom');
+      }
+      override onReceive(_: string): void {}
+    }
+
+    sys().spawn(Props.create(() => new Guardian()), 'collision-guardian');
+    await awaitCondition(
+      () => failures.length > 0,
+      { label: 'the restart failed on the duplicate child name' },
+    );
+    expect(failures[0]).toContain('is not unique');
+  });
+});
