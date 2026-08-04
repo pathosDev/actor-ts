@@ -6,7 +6,7 @@
  *
  *   bun run benchmarks/single-node/tell-throughput.ts
  */
-import { Actor, ActorSystem, ActorSystemOptions, LogLevel, NoopLogger, Props } from '../../src/index.js';
+import { Actor, ActorSystem, ActorSystemOptions, LogLevel, NoopLogger } from '../../src/index.js';
 import { runGroup } from '../lib/harness.js';
 
 type Message = { kind: 'increment' } | { kind: 'get' };
@@ -20,7 +20,7 @@ class Counter extends Actor<Message> {
 }
 
 async function drain(system: ActorSystem, batch: number): Promise<void> {
-  const ref = system.spawnAnonymous(Props.create(() => new Counter()));
+  const ref = system.spawnAnonymous(() => new Counter());
   for (let i = 0; i < batch; i++) ref.tell({ kind: 'increment' });
   await ref.ask<number>({ kind: 'get' }, 30_000);
   ref.stop();

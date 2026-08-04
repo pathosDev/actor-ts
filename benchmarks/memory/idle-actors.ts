@@ -5,7 +5,7 @@
  *   bun --smol run benchmarks/memory/idle-actors.ts   (for a more compact RSS)
  *   bun run benchmarks/memory/idle-actors.ts
  */
-import { Actor, ActorSystem, ActorSystemOptions, LogLevel, NoopLogger, Props } from '../../src/index.js';
+import { Actor, ActorSystem, ActorSystemOptions, LogLevel, NoopLogger } from '../../src/index.js';
 import { memoryGroup } from '../lib/harness.js';
 
 class Noop extends Actor<unknown> { override onReceive(): void {} }
@@ -15,7 +15,7 @@ async function main(): Promise<void> {
     .withLogger(new NoopLogger())
     .withLogLevel(LogLevel.Off);
   const system = ActorSystem.create('bench-mem', systemOptions);
-  const props = Props.create(() => new Noop());
+  const props = () => new Noop();
 
   const group = memoryGroup('memory · idle actors');
 

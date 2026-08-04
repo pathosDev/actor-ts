@@ -360,7 +360,11 @@ export class ClusterSingletonManager<T> extends Actor<Inbox> {
     // resources.  `handleTerminated` will retrigger the reconcile
     // once `pendingStop` clears.
     if (this.pendingStop) return;
-    this.child = this.context.spawn(this.options.singletonProps, this.options.typeName);
+    this.child = this.context.spawn(
+      this.options.singletonActor,
+      this.options.typeName,
+      this.options.singletonActorOptions,
+    );
     this.context.watch(this.child);
     this.log.info(`singleton '${this.options.typeName}' started on this node (now leader)`);
   }

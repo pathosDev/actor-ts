@@ -1,8 +1,9 @@
+import type { ActorClassOrFactory } from '../../Actor.js';
+import type { ActorOptions, ActorOptionsType } from '../../ActorOptions.js';
 import { match, P } from 'ts-pattern';
 import { Actor } from '../../Actor.js';
 import { ActorRef } from '../../ActorRef.js';
 import { ActorPath } from '../../ActorPath.js';
-import { Props } from '../../Props.js';
 import type { ShardingOptionsType } from './ShardingOptions.js';
 import type { Cancellable } from '../../Scheduler.js';
 import { Terminated } from '../../SystemMessages.js';
@@ -51,7 +52,8 @@ export const DEFAULT_NUM_SHARDS = 64;
 
 export type ShardRegionConfig<TMessage> = {
   readonly typeName: string;
-  readonly entityProps: Props<TMessage>;
+  readonly entityActor: ActorClassOrFactory<TMessage>;
+  readonly entityOptions?: ActorOptions<TMessage>;
   readonly extractEntityId: (message: TMessage) => string;
   readonly extractEntityMessage: (message: TMessage) => unknown;
   readonly numShards: number;
@@ -146,7 +148,8 @@ export class ShardRegion<TMessage = unknown> extends Actor<TMessage | ShardingMe
   ): ShardRegionConfig<TMessage> {
     return {
       typeName: s.typeName,
-      entityProps: s.entityProps,
+      entityActor: s.entityActor,
+      entityOptions: s.entityOptions,
       extractEntityId: s.extractEntityId,
       extractEntityMessage: s.extractEntityMessage ?? ((m: TMessage) => m as unknown),
       numShards: s.numShards ?? DEFAULT_NUM_SHARDS,
@@ -404,10 +407,11 @@ export class ShardRegion<TMessage = unknown> extends Actor<TMessage | ShardingMe
     const shardConfig: ShardConfig = {
       typeName: this.config.typeName,
       shardId,
-      entityProps: this.config.entityProps as Props<unknown>,
+      entityActor: this.config.entityActor as ActorClassOrFactory<unknown>,
+      entityOptions: this.config.entityOptions as ActorOptions<unknown> | undefined,
     };
-    const ref = this.context.spawn(
-      Props.create<ShardInbox>(() => new Shard(shardConfig)),
+    const ref = this.context.spawn<ShardInbox>(
+      () => new Shard(shardConfig),
       `shard-${shardId}`,
     );
     this.context.watch(ref);

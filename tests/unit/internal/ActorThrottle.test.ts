@@ -12,7 +12,6 @@ import { Actor } from '../../../src/Actor.js';
 import { ActorSystem } from '../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../src/ActorSystemOptions.js';
 import { LogLevel, NoopLogger } from '../../../src/Logger.js';
-import { Props } from '../../../src/Props.js';
 
 const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
 
@@ -58,7 +57,7 @@ class Counter extends Actor<CountMessage> {
 describe('ActorContext.throttle (#83)', () => {
   test('pause mode — burst messages process immediately, excess waits for refill', async () => {
     const counter = new Counter();
-    const ref = sys.spawn(Props.create(() => counter), 'pause-mode');
+    const ref = sys.spawn(() => counter, 'pause-mode');
 
     // Configure throttle from inside the actor (one of the two
     // valid contexts — the other being a behavior-injection wrapper).
@@ -92,7 +91,7 @@ describe('ActorContext.throttle (#83)', () => {
       }
     }
     const dc = new DropCounter();
-    const ref = sys.spawn(Props.create(() => dc), 'drop-mode');
+    const ref = sys.spawn(() => dc, 'drop-mode');
     await sleep(10);
 
     // Fire 20 ticks at once.  Burst=2 means 2 process, the other
@@ -124,7 +123,7 @@ describe('ActorContext.throttle (#83)', () => {
     // post-cancel "no more rate limit" behaviour with a generous
     // upper bound for the through-queue wait.
     const counter = new Counter();
-    const ref = sys.spawn(Props.create(() => counter), 'cancel-throttle');
+    const ref = sys.spawn(() => counter, 'cancel-throttle');
     ref.tell({ kind: 'configure-throttle' }); // qps=10, burst=2
     await sleep(10);
 
@@ -152,7 +151,7 @@ describe('ActorContext.throttle (#83)', () => {
       }
       override onReceive(_m: CountMessage): void { /* noop */ }
     }
-    const ref = sys.spawn(Props.create(() => new Strict()), 'strict');
+    const ref = sys.spawn(() => new Strict(), 'strict');
     await sleep(20);
 
     // Drain the burst.

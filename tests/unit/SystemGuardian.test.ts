@@ -3,7 +3,7 @@ import { Actor } from '../../src/Actor.js';
 import { ActorSystem } from '../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../src/ActorSystemOptions.js';
 import { LogLevel, NoopLogger } from '../../src/Logger.js';
-import { Props } from '../../src/Props.js';
+import type { ActorFactory } from '../../src/Actor.js';
 import { ActorRestarted, ActorStopped } from '../../src/SystemMessages.js';
 import { SystemGroups } from '../../src/internal/SystemPaths.js';
 import { awaitCondition } from '../util/AwaitCondition.js';
@@ -23,7 +23,7 @@ class Boom extends Actor<string> {
   override onReceive(_message: string): void { throw new Error('boom'); }
 }
 
-const idleProps = (): Props<string> => Props.create(() => new Idle());
+const idleProps = (): ActorFactory<string> => () => new Idle();
 
 describe('ActorSystem._spawnSystemActor', () => {
   test('places the actor under /system and the given group', async () => {
@@ -114,18 +114,18 @@ describe('system group policy', () => {
     const sys = newSystem();
     const seen: string[] = [];
     const collector = sys.spawn(
-      Props.create(() => new (class extends Actor<ActorRestarted | ActorStopped> {
+      () => new (class extends Actor<ActorRestarted | ActorStopped> {
         override onReceive(event: ActorRestarted | ActorStopped): void {
           seen.push(`${event.constructor.name}:${event.actor.path.name}`);
         }
-      })()),
+      })(),
       'collector',
     );
     sys.eventStream.subscribe(collector, ActorRestarted);
     sys.eventStream.subscribe(collector, ActorStopped);
 
     const ref = sys._spawnSystemActor(
-      Props.create(() => new Boom()),
+      () => new Boom(),
       SystemGroups.clusterSharding,
       'region-flaky',
     );
@@ -141,18 +141,18 @@ describe('system group policy', () => {
     const sys = newSystem();
     const seen: string[] = [];
     const collector = sys.spawn(
-      Props.create(() => new (class extends Actor<ActorRestarted | ActorStopped> {
+      () => new (class extends Actor<ActorRestarted | ActorStopped> {
         override onReceive(event: ActorRestarted | ActorStopped): void {
           seen.push(`${event.constructor.name}:${event.actor.path.name}`);
         }
-      })()),
+      })(),
       'collector',
     );
     sys.eventStream.subscribe(collector, ActorRestarted);
     sys.eventStream.subscribe(collector, ActorStopped);
 
     const ref = sys._spawnSystemActor(
-      Props.create(() => new Boom()),
+      () => new Boom(),
       SystemGroups.devtools,
       'probe-flaky',
     );

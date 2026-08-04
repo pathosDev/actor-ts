@@ -2,7 +2,6 @@ import { describe, expect, test } from 'bun:test';
 import { Actor } from '../../../src/Actor.js';
 import { ActorSystem } from '../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../src/ActorSystemOptions.js';
-import { Props } from '../../../src/Props.js';
 import { LogLevel, NoopLogger } from '../../../src/Logger.js';
 import {
   ActorLifecycleEvent,
@@ -22,7 +21,7 @@ class LeafActor extends Actor<string> {
 
 class ParentActor extends Actor<string> {
   override preStart(): void {
-    this.context.spawn(Props.create(() => new LeafActor()), 'leaf');
+    this.context.spawn(() => new LeafActor(), 'leaf');
   }
   override supervisorStrategy(): OneForOneStrategy {
     return new OneForOneStrategy(() => Directive.Restart, { maxRetries: 3, withinTimeRangeMs: 1_000 });
@@ -48,7 +47,7 @@ function lifecycleProbe(system: ActorSystem): {
       events.push(event);
     }
   }
-  const ref = system.spawn(Props.create(() => new ProbeActor()), 'lifecycle-probe');
+  const ref = system.spawn(() => new ProbeActor(), 'lifecycle-probe');
   system.eventStream.subscribe(ref, ActorLifecycleEvent);
   return { events, ref };
 }
@@ -60,7 +59,7 @@ describe('actor lifecycle events', () => {
     const system = newSystem('lifecycle-start');
     try {
       const { events } = lifecycleProbe(system);
-      system.spawn(Props.create(() => new LeafActor()), 'solo');
+      system.spawn(() => new LeafActor(), 'solo');
       await settle();
 
       const started = events.filter((e): e is ActorStarted => e instanceof ActorStarted);
@@ -77,7 +76,7 @@ describe('actor lifecycle events', () => {
     const system = newSystem('lifecycle-stop');
     try {
       const { events } = lifecycleProbe(system);
-      const ref = system.spawn(Props.create(() => new LeafActor()), 'transient');
+      const ref = system.spawn(() => new LeafActor(), 'transient');
       await settle();
       system.stop(ref);
       await settle();
@@ -93,7 +92,7 @@ describe('actor lifecycle events', () => {
     const system = newSystem('lifecycle-restart');
     try {
       const { events } = lifecycleProbe(system);
-      const parent = system.spawn(Props.create(() => new ParentActor()), 'parent');
+      const parent = system.spawn(() => new ParentActor(), 'parent');
       await settle();
       parent.tell('break-child');
       await settle();
@@ -114,10 +113,10 @@ describe('actor lifecycle events', () => {
       class StopOnlyActor extends Actor<ActorStopped> {
         override onReceive(event: ActorStopped): void { seen.push(event); }
       }
-      const ref = system.spawn(Props.create(() => new StopOnlyActor()), 'stop-probe');
+      const ref = system.spawn(() => new StopOnlyActor(), 'stop-probe');
       system.eventStream.subscribe(ref, ActorStopped);
 
-      const victim = system.spawn(Props.create(() => new LeafActor()), 'victim');
+      const victim = system.spawn(() => new LeafActor(), 'victim');
       await settle();
       // Several starts have happened by now; none of them may arrive here.
       expect(seen).toHaveLength(0);
@@ -151,7 +150,7 @@ describe('ActorSystem._inspectTree', () => {
   test('lists parents before their children', async () => {
     const system = newSystem('tree-order');
     try {
-      system.spawn(Props.create(() => new ParentActor()), 'parent');
+      system.spawn(() => new ParentActor(), 'parent');
       await settle();
 
       const tree = system._inspectTree();
@@ -168,7 +167,7 @@ describe('ActorSystem._inspectTree', () => {
   test('describes an actor with the fields a debugger renders', async () => {
     const system = newSystem('tree-fields');
     try {
-      system.spawn(Props.create(() => new ParentActor()), 'parent');
+      system.spawn(() => new ParentActor(), 'parent');
       await settle();
 
       const parent = byName(system._inspectTree(), 'parent')!;
@@ -187,7 +186,7 @@ describe('ActorSystem._inspectTree', () => {
   test('drops an actor from the tree once it has stopped', async () => {
     const system = newSystem('tree-shrink');
     try {
-      const ref = system.spawn(Props.create(() => new LeafActor()), 'ephemeral');
+      const ref = system.spawn(() => new LeafActor(), 'ephemeral');
       await settle();
       expect(byName(system._inspectTree(), 'ephemeral')).toBeDefined();
 
@@ -207,7 +206,7 @@ describe('ActorSystem._inspectTree', () => {
           await new Promise((resolve) => setTimeout(resolve, 200));
         }
       }
-      const ref = system.spawn(Props.create(() => new BlockedActor()), 'blocked');
+      const ref = system.spawn(() => new BlockedActor(), 'blocked');
       for (let i = 0; i < 5; i++) ref.tell(`m${i}`);
       await new Promise((resolve) => setTimeout(resolve, 20));
 

@@ -14,7 +14,6 @@ import {
   InMemoryTransport,
   Listing,
   NodeAddress,
-  Props,
   ReceptionistId,
   ReceptionistOptions,
   ReceptionistSubscribe as Subscribe,
@@ -61,13 +60,13 @@ async function main(): Promise<void> {
   for (const { sys, cluster, name } of [nodeA, nodeB, nodeC]) {
     const receptionistOptions = ReceptionistOptions.create().withGossipIntervalMs(80);
     const receptionist = sys.extension(ReceptionistId).start(cluster, receptionistOptions);
-    const worker = sys.spawn(Props.create(() => new Worker(name)), `worker-${name}`);
+    const worker = sys.spawn(() => new Worker(name), `worker-${name}`);
     receptionist.tell(new Register(key, worker));
   }
 
   // Subscribe on node A; expect to see 1, then 2, then 3 workers over time.
   const aReceptionist = nodeA.sys.extension(ReceptionistId).get()!;
-  const client = nodeA.sys.spawn(Props.create(() => new StreamClient()), 'client');
+  const client = nodeA.sys.spawn(() => new StreamClient(), 'client');
   aReceptionist.tell(new Subscribe(key, client));
 
   await Bun.sleep(500);

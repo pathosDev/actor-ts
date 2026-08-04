@@ -17,7 +17,6 @@
 import { describe, expect, test } from 'bun:test';
 import { Actor as _Actor } from '../../src/Actor.js';
 import { ReplicatedEventSourcedActor } from '../../src/persistence/ReplicatedEventSourcedActor.js';
-import { Props } from '../../src/Props.js';
 import { MultiNodeSpec } from '../../src/testkit/MultiNodeSpec.js';
 import { MultiNodeTransport } from '../../src/testkit/internal/MultiNodeTransport.js';
 import type { ActorRef } from '../../src/ActorRef.js';
@@ -64,17 +63,17 @@ describe('Replicated ES — three-node convergence', () => {
       ]);
 
       // Capture each instance via a shared map keyed by role so we can
-      // ask them for their state directly (Props.create returns
+      // ask them for their state directly (the factory returns
       // ActorRef without exposing the underlying instance).
       const instances = new Map<string, ReplicatedCounter>();
       const refs = new Map<string, ActorRef<Command>>();
       for (const role of ['a', 'b', 'c'] as const) {
         const ref = spec.systemFor(role).spawn(
-          Props.create<Command>(() => {
+          () => {
             const inst = new ReplicatedCounter();
             instances.set(role, inst);
             return inst as unknown as _Actor<Command>;
-          }),
+          },
           `counter-${role}`,
         );
         refs.set(role, ref);
@@ -129,11 +128,11 @@ describe('Replicated ES — three-node convergence', () => {
       const refs = new Map<string, ActorRef<Command>>();
       for (const role of ['a', 'b', 'c'] as const) {
         const ref = spec.systemFor(role).spawn(
-          Props.create<Command>(() => {
+          () => {
             const inst = new ReplicatedCounter();
             instances.set(role, inst);
             return inst as unknown as _Actor<Command>;
-          }),
+          },
           `counter-${role}`,
         );
         refs.set(role, ref);

@@ -5,7 +5,6 @@ import { actorFactoryOf } from '../../internal/ActorBlueprint.js';
 import { SystemGroups, assertSpawnedAt, singletonManagerName } from '../../internal/SystemPaths.js';
 import { extensionId, type Extension, type ExtensionId } from '../../Extension.js';
 import type { Logger } from '../../Logger.js';
-import { Props } from '../../Props.js';
 import type { Cluster } from '../Cluster.js';
 import { fromNullable, type Option } from '../../util/Option.js';
 import {
@@ -99,7 +98,7 @@ export class ClusterSingleton implements Extension {
    * const ingress = cluster.singleton.start(
    *   StartSingletonOptions.create<IngressCommand>()
    *     .withTypeName('http-ingress')
-   *     .withProps(Props.create(() => new HttpIngressActor(port))),
+   *     .withActor(() => new HttpIngressActor(port)),
    * );
    * ```
    *
@@ -237,7 +236,7 @@ export class ClusterSingleton implements Extension {
       ...(key.role !== undefined ? { role: key.role } : {}),
       ...explicit,
       typeName: key.typeName,
-      props: Props.create<TCommand>(actorFactoryOf(actor)),
+      actor: actorFactoryOf(actor),
     } as StartSingletonOptionsType<TCommand>;
   }
 
@@ -267,11 +266,12 @@ export class ClusterSingleton implements Extension {
       },
     );
 
-    const managerProps = Props.create(() => {
+    const managerActor = () => {
       const managerOptions = ClusterSingletonManagerOptions.create<TCommand>()
         .withCluster(cluster)
         .withTypeName(typeName)
-        .withSingletonProps(options.props);
+        .withSingletonActor(options.actor);
+      if (options.actorOptions !== undefined) managerOptions.withSingletonActorOptions(options.actorOptions);
       if (options.role !== undefined) managerOptions.withRole(options.role);
       if (options.lease !== undefined) managerOptions.withLease(options.lease);
       if (options.acquireRetryIntervalMs !== undefined) {
@@ -289,10 +289,10 @@ export class ClusterSingleton implements Extension {
         if (this.managers.get(typeName) === managerRef) this.managers.delete(typeName);
       };
       return manager;
-    });
+    };
     try {
       managerRef = this.system._spawnSystemActor(
-        managerProps,
+        managerActor,
         SystemGroups.clusterSingleton,
         singletonManagerName(typeName),
       );

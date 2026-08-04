@@ -11,7 +11,6 @@ import {
 import { InMemoryTransport } from '../../../../../src/cluster/Transport.js';
 import { NodeAddress } from '../../../../../src/cluster/NodeAddress.js';
 import { LogLevel, NoopLogger } from '../../../../../src/Logger.js';
-import { Props } from '../../../../../src/Props.js';
 import { TestKit } from '../../../../../src/testkit/TestKit.js';
 import { TestKitOptions } from '../../../../../src/testkit/TestKitOptions.js';
 
@@ -63,7 +62,7 @@ describe('ClusterSingleton — single node', () => {
 
     const singletonOptions = StartSingletonOptions.create<string>()
       .withTypeName('echo')
-      .withProps(Props.create(() => new Echo()));
+      .withActor(() => new Echo());
     const singletonRef = nodeA.cluster.singleton.start(singletonOptions);
     // Wait until the proxy can locate the leader.
     await waitFor(() => nodeA.cluster.leader().nonEmpty);
@@ -88,7 +87,7 @@ describe('ClusterSingleton — single node', () => {
     }
     const options = (): StartSingletonOptions<string> => StartSingletonOptions.create<string>()
       .withTypeName('echo3')
-      .withProps(Props.create(() => new Echo()));
+      .withActor(() => new Echo());
 
     const first = nodeA.cluster.singleton.start(options());
     await waitFor(() => nodeA.cluster.leader().nonEmpty);
@@ -130,7 +129,7 @@ describe('ClusterSingleton — single node', () => {
     }
     const singletonOptions = StartSingletonOptions.create<string>()
       .withTypeName('idle')
-      .withProps(Props.create(() => new Idle()));
+      .withActor(() => new Idle());
     nodeA.cluster.singleton.start(singletonOptions);
     expect(nodeA.cluster.singleton.isStarted('idle')).toBe(true);
 
@@ -160,7 +159,7 @@ describe('ClusterSingleton — single node', () => {
     }
     const singletonOptions = StartSingletonOptions.create<string>()
       .withTypeName('echo2')
-      .withProps(Props.create(() => new Echo()));
+      .withActor(() => new Echo());
     const singletonRef = nodeA.cluster.singleton.start(singletonOptions);
 
     for (const message of ['a', 'b', 'c']) singletonRef.tell(message);
@@ -190,11 +189,11 @@ describe('ClusterSingleton — two nodes', () => {
 
     const aSingletonOptions = StartSingletonOptions.create<string>()
       .withTypeName('echo')
-      .withProps(Props.create(() => new Echo('a')));
+      .withActor(() => new Echo('a'));
     const aRef = nodeA.cluster.singleton.start(aSingletonOptions);
     const bSingletonOptions = StartSingletonOptions.create<string>()
       .withTypeName('echo')
-      .withProps(Props.create(() => new Echo('b')));
+      .withActor(() => new Echo('b'));
     const bRef = nodeB.cluster.singleton.start(bSingletonOptions);
 
     await sleep(150);
@@ -236,11 +235,11 @@ describe('ClusterSingleton — two nodes', () => {
 
     const aSingletonOptions = StartSingletonOptions.create<string>()
       .withTypeName('marker')
-      .withProps(Props.create(() => new Marker('a')));
+      .withActor(() => new Marker('a'));
     nodeA.cluster.singleton.start(aSingletonOptions);
     const bSingletonOptions = StartSingletonOptions.create<string>()
       .withTypeName('marker')
-      .withProps(Props.create(() => new Marker('b')));
+      .withActor(() => new Marker('b'));
     nodeB.cluster.singleton.start(bSingletonOptions);
 
     // Wait for one of the nodes to host the marker child (preStart fires).
@@ -306,7 +305,7 @@ describe('ClusterSingleton — two nodes', () => {
 
     const bSingletonOptions = StartSingletonOptions.create<string>()
       .withTypeName('marker')
-      .withProps(Props.create(() => new Marker('b')));
+      .withActor(() => new Marker('b'));
     nodeB.cluster.singleton.start(bSingletonOptions);
     await waitFor(() => hosts.includes('b'), 1_500);
     expect(hosts).toEqual(['b']);
@@ -317,7 +316,7 @@ describe('ClusterSingleton — two nodes', () => {
     const nodeA = await startNode(SYS, 'h', 52401, [`${SYS}@h:52402`]);
     const aSingletonOptions = StartSingletonOptions.create<string>()
       .withTypeName('marker')
-      .withProps(Props.create(() => new Marker('a')));
+      .withActor(() => new Marker('a'));
     nodeA.cluster.singleton.start(aSingletonOptions);
     await waitFor(() =>
       nodeA.cluster.upMembers().length === 2 && nodeB.cluster.upMembers().length === 2,
@@ -359,12 +358,12 @@ describe('ClusterSingleton — role filter', () => {
     const aSingletonOptions = StartSingletonOptions.create<string>()
       .withTypeName('only-worker')
       .withRole('worker')
-      .withProps(Props.create(() => new Marker('a')));
+      .withActor(() => new Marker('a'));
     nodeA.cluster.singleton.start(aSingletonOptions);
     const bSingletonOptions = StartSingletonOptions.create<string>()
       .withTypeName('only-worker')
       .withRole('worker')
-      .withProps(Props.create(() => new Marker('b')));
+      .withActor(() => new Marker('b'));
     nodeB.cluster.singleton.start(bSingletonOptions);
 
     // Allow time: if the leader is B (no role), it shouldn't spawn; wait a
@@ -404,12 +403,12 @@ describe('ClusterSingleton — role filter', () => {
     const aSingletonOptions = StartSingletonOptions.create<string>()
       .withTypeName('needs-worker')
       .withRole('worker')
-      .withProps(Props.create(() => new Marker('a')));
+      .withActor(() => new Marker('a'));
     const fromLeader = nodeA.cluster.singleton.start(aSingletonOptions);
     const bSingletonOptions = StartSingletonOptions.create<string>()
       .withTypeName('needs-worker')
       .withRole('worker')
-      .withProps(Props.create(() => new Marker('b')));
+      .withActor(() => new Marker('b'));
     nodeB.cluster.singleton.start(bSingletonOptions);
 
     await waitFor(() => hosts.length > 0);
@@ -473,7 +472,7 @@ describe('ClusterSingleton — proxy buffer bound', () => {
         .withTypeName('unhostable')
         .withRole('role-nobody-carries')
         .withBufferSize(3)
-        .withProps(Props.create(() => new Never()));
+        .withActor(() => new Never());
       const proxy = node.cluster.singleton.start(singletonOptions) as ClusterSingletonProxy<string>;
 
       for (let index = 0; index < 10; index++) proxy.tell(`m${index}`);
@@ -497,7 +496,7 @@ describe('ClusterSingleton — proxy buffer bound', () => {
         .withTypeName('unhostable-2')
         .withRole('role-nobody-carries')
         .withBufferSize(1)
-        .withProps(Props.create(() => new Never()));
+        .withActor(() => new Never());
       const proxy = node.cluster.singleton.start(singletonOptions) as ClusterSingletonProxy<string>;
 
       proxy.tell('kept');

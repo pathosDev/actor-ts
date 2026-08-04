@@ -1,5 +1,6 @@
 import type { Lease } from '../../coordination/Lease.js';
-import type { Props } from '../../Props.js';
+import type { ActorClassOrFactory } from '../../Actor.js';
+import type { ActorOptions } from '../../ActorOptions.js';
 import { OptionsBuilder } from '../../util/OptionsBuilder.js';
 import { OptionsValidator } from '../../util/OptionsValidator.js';
 import type { Cluster } from '../Cluster.js';
@@ -10,7 +11,8 @@ export type ClusterSingletonManagerOptionsType<T> = {
   /** Logical name for this singleton; also used as the child-actor name. */
   readonly typeName: string;
   /** How to construct the singleton actor.  Only instantiated on the leader. */
-  readonly singletonProps: Props<T>;
+  readonly singletonActor: ActorClassOrFactory<T>;
+  readonly singletonActorOptions?: ActorOptions<T>;
   /** Optional role — only nodes with this role will host the singleton. */
   readonly role?: string;
   /** Optional split-brain protection — see {@link StartSingletonOptionsType.lease}. */
@@ -41,9 +43,14 @@ export class ClusterSingletonManagerOptionsBuilder<T> extends OptionsBuilder<Clu
     return this.set('typeName', typeName);
   }
 
-  /** How to construct the singleton actor.  Only instantiated on the leader. */
-  withSingletonProps(props: Props<T>): this {
-    return this.set('singletonProps', props);
+  /** The singleton actor.  Only instantiated on the leader. */
+  withSingletonActor(singletonActor: ActorClassOrFactory<T>): this {
+    return this.set('singletonActor', singletonActor);
+  }
+
+  /** Spawn options for the singleton instance. */
+  withSingletonActorOptions(singletonActorOptions: ActorOptions<T>): this {
+    return this.set('singletonActorOptions', singletonActorOptions);
   }
 
   /** Only nodes carrying this role tag will host the singleton. */
@@ -83,7 +90,7 @@ export class ClusterSingletonManagerOptionsValidator<T>
     // is asserted separately — as in `StartSingletonOptionsValidator`.
     if (s.cluster === undefined) this.fail('cluster', 'is required');
     if (s.typeName === undefined) this.fail('typeName', 'is required');
-    if (s.singletonProps === undefined) this.fail('singletonProps', 'is required');
+    if (s.singletonActor === undefined) this.fail('singletonActor', 'is required');
     this.nonEmptyString('typeName');
     this.nonEmptyString('role');
     this.positiveNumber('acquireRetryIntervalMs');

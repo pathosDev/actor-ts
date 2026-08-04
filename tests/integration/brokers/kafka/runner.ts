@@ -5,7 +5,6 @@ import { Actor } from '../../../../src/Actor.js';
 import { ActorSystem } from '../../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../../src/ActorSystemOptions.js';
 import { JsonLogger, LogLevel } from '../../../../src/Logger.js';
-import { Props } from '../../../../src/Props.js';
 import { KafkaActor, type KafkaRecord } from '../../../../src/io/broker/KafkaActor.js';
 import { KafkaOptions, KafkaOptionsBuilder } from '../../../../src/io/broker/KafkaOptions.js';
 import { waitForPort } from '../lib/wait-for-port.js';
@@ -90,14 +89,14 @@ export function spawnKafka(context: KafkaContext, options: KafkaSpawnOpts = {}):
   if (options.topics) builder.withTopics(options.topics);
   if (options.target) builder.withTarget(options.target as unknown as Parameters<KafkaOptionsBuilder['withTarget']>[0]);
   const actor = new KafkaActor(builder);
-  return context.system.spawnAnonymous(Props.create(() => actor));
+  return context.system.spawnAnonymous(() => actor);
 }
 
 export function spawnInbox(context: KafkaContext): {
   ref: ReturnType<ActorSystem['spawnAnonymous']>; inbox: InboxActor;
 } {
   const inbox = new InboxActor();
-  const ref = context.system.spawnAnonymous(Props.create(() => inbox));
+  const ref = context.system.spawnAnonymous(() => inbox);
   return { ref, inbox };
 }
 

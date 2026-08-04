@@ -15,7 +15,6 @@ import { InMemoryTransport } from '../../../src/cluster/Transport.js';
 import { LogLevel, NoopLogger } from '../../../src/Logger.js';
 import { MetricsExtensionId } from '../../../src/metrics/MetricsExtension.js';
 import type { MetricsRegistry } from '../../../src/metrics/Metrics.js';
-import { Props } from '../../../src/Props.js';
 
 const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
 
@@ -43,9 +42,9 @@ describe('Stock actor metrics', () => {
       // expresses "three more user actors" as a delta.
       await sleep(20);
       const baseline = valueFor(reg, 'actor_created_total') ?? 0;
-      sys.spawn(Props.create(() => new Echo()), 'a');
-      sys.spawn(Props.create(() => new Echo()), 'b');
-      sys.spawn(Props.create(() => new Echo()), 'c');
+      sys.spawn(() => new Echo(), 'a');
+      sys.spawn(() => new Echo(), 'b');
+      sys.spawn(() => new Echo(), 'c');
       await sleep(20);
       expect((valueFor(reg, 'actor_created_total') ?? 0) - baseline).toBe(3);
     } finally {
@@ -60,7 +59,7 @@ describe('Stock actor metrics', () => {
     const sys = ActorSystem.create('m-msgs', sysOptions);
     const reg = sys.extension(MetricsExtensionId).enable();
     try {
-      const actorRef = sys.spawn(Props.create(() => new Echo()), 'a');
+      const actorRef = sys.spawn(() => new Echo(), 'a');
       actorRef.tell('1'); actorRef.tell('2'); actorRef.tell('3');
       await sleep(30);
       expect(valueFor(reg, 'actor_messages_delivered_total')).toBe(3);
@@ -76,7 +75,7 @@ describe('Stock actor metrics', () => {
     const sys = ActorSystem.create('m-term', sysOptions);
     const reg = sys.extension(MetricsExtensionId).enable();
     try {
-      const actorRef = sys.spawn(Props.create(() => new Echo()), 'a');
+      const actorRef = sys.spawn(() => new Echo(), 'a');
       actorRef.stop();
       await sleep(40);
       expect((valueFor(reg, 'actor_terminated_total') ?? 0)).toBeGreaterThanOrEqual(1);
@@ -92,7 +91,7 @@ describe('Stock actor metrics', () => {
     const sys = ActorSystem.create('m-hist', sysOptions);
     const reg = sys.extension(MetricsExtensionId).enable();
     try {
-      const actorRef = sys.spawn(Props.create(() => new Echo()), 'a');
+      const actorRef = sys.spawn(() => new Echo(), 'a');
       actorRef.tell('1'); actorRef.tell('2');
       await sleep(40);
       const sumSample = reg.collect().find(
@@ -145,7 +144,7 @@ describe('MetricsExtension — opt-in', () => {
       .withLogLevel(LogLevel.Off);
     const sys = ActorSystem.create('m-noop', sysOptions);
     try {
-      sys.spawn(Props.create(() => new Echo()), 'a');
+      sys.spawn(() => new Echo(), 'a');
       await sleep(20);
       const reg = sys.extension(MetricsExtensionId).get();
       expect(reg.collect()).toEqual([]);

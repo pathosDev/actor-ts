@@ -1,4 +1,5 @@
-import type { Props } from '../../Props.js';
+import type { ActorClassOrFactory } from '../../Actor.js';
+import type { ActorOptions } from '../../ActorOptions.js';
 import { OptionsBuilder } from '../../util/OptionsBuilder.js';
 import { OptionsValidator } from '../../util/OptionsValidator.js';
 
@@ -10,7 +11,14 @@ import { OptionsValidator } from '../../util/OptionsValidator.js';
  */
 export type ShardingOptionsType<TMessage> = {
   readonly typeName: string;
-  readonly entityProps: Props<TMessage>;
+  /**
+   * The entity actor — its class, or a factory when it needs dependencies.
+   * Distinct from {@link ActorOptionsType.entity}, which is the *identity*
+   * `ClusterSharding` stamps onto each entity it spawns.
+   */
+  readonly entityActor: ActorClassOrFactory<TMessage>;
+  /** Spawn options applied to every entity of this type. */
+  readonly entityOptions?: ActorOptions<TMessage>;
   readonly extractEntityId: (message: TMessage) => string;
   readonly extractEntityMessage?: (message: TMessage) => unknown;
   readonly numShards?: number;
@@ -49,7 +57,7 @@ export type ShardingOptionsType<TMessage> = {
  * fields fall through to HOCON / built-in defaults when the options are
  * normalised by {@link ShardRegion.settingsToConfig}.
  *
- * The whole-object fields — `entityProps` (a {@link Props}), and the
+ * The whole-object fields — `entityActor`, `entityOptions`, and the
  * `extractEntityId` / `extractEntityMessage` extractors — are passed
  * as-is via a single `withX(value)`; no nested builders.
  */
@@ -67,9 +75,14 @@ export class ShardingOptionsBuilder<
     return this.set('typeName', typeName);
   }
 
-  /** Props used to spawn each entity instance. */
-  withEntityProps(entityProps: Props<TMessage>): this {
-    return this.set('entityProps', entityProps);
+  /** The actor each entity instance is built from. */
+  withEntityActor(entityActor: ActorClassOrFactory<TMessage>): this {
+    return this.set('entityActor', entityActor);
+  }
+
+  /** Spawn options applied to every entity of this type. */
+  withEntityOptions(entityOptions: ActorOptions<TMessage>): this {
+    return this.set('entityOptions', entityOptions);
   }
 
   /** Derive the stable entity id from an incoming message. */
@@ -132,13 +145,13 @@ export class ShardingOptionsValidator<
     const options = s as Partial<ShardingOptionsType<TMessage>>;
     // Required-ness is asserted here rather than through the check helpers,
     // which pass on `undefined` by design.  Without these, a region missing
-    // its props or its extractor validates cleanly and then fails deep inside
+    // its entity or its extractor validates cleanly and then fails deep inside
     // `settingsToConfig` or on the first message, far from the call that was
     // actually wrong.  A proxy region is exempt: it hosts nothing, so it needs
     // neither.
     if (options.typeName === undefined) this.fail('typeName', 'is required');
     if (!options.proxy) {
-      if (options.entityProps === undefined) this.fail('entityProps', 'is required');
+      if (options.entityActor === undefined) this.fail('entityActor', 'is required');
       if (options.extractEntityId === undefined) this.fail('extractEntityId', 'is required');
     }
     if (options.typeName !== undefined && (typeof options.typeName !== 'string' || options.typeName.length === 0)) {

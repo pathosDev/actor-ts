@@ -12,7 +12,6 @@ import { describe, expect, test } from 'bun:test';
 import { Actor } from '../../../../../src/Actor.js';
 import type { ActorRef } from '../../../../../src/ActorRef.js';
 import type { ActorSystem } from '../../../../../src/ActorSystem.js';
-import { Props } from '../../../../../src/Props.js';
 import { createTestActorSystem } from '../../../../util/TestActorSystem.js';
 import {
   NatsActor,
@@ -114,7 +113,7 @@ function spawnTarget(
   system: ActorSystem, name: string,
 ): { ref: ActorRef<NatsMessage>; target: CapturingTarget } {
   const target = new CapturingTarget();
-  const ref = system.spawn(Props.create(() => target as unknown as Actor<NatsMessage>), name);
+  const ref = system.spawn(() => target as unknown as Actor<NatsMessage>, name);
   return { ref: ref as ActorRef<NatsMessage>, target };
 }
 
@@ -135,12 +134,12 @@ async function bootActor(
 ): Promise<Booted> {
   let resolveActor!: (actor: MockNatsActor) => void;
   const ready = new Promise<MockNatsActor>((resolve) => { resolveActor = resolve; });
-  const ref = system.spawnAnonymous(Props.create(() => {
+  const ref = system.spawnAnonymous(() => {
     const actor = new MockNatsActor(options);
     beforeStart(actor);
     resolveActor(actor);
     return actor as unknown as Actor<NatsCommand>;
-  }));
+  });
   const actor = await ready;
   await sleep(30);
   return { ref: ref as ActorRef<NatsCommand>, actor };

@@ -3,7 +3,6 @@ import { Actor } from '../../src/Actor.js';
 import { ActorSystem } from '../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../src/ActorSystemOptions.js';
 import { LogLevel, NoopLogger } from '../../src/Logger.js';
-import { Props } from '../../src/Props.js';
 
 const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
 
@@ -22,7 +21,7 @@ describe('Actor lifecycle', () => {
       override onReceive(m: string): void { events.push(`recv:${m}`); }
     }
     const sys = newSystem();
-    const ref = sys.spawn(Props.create(() => new A()), 'a');
+    const ref = sys.spawn(() => new A(), 'a');
     ref.tell('one');
     await sleep(30);
     expect(events).toEqual(['preStart', 'recv:one']);
@@ -36,7 +35,7 @@ describe('Actor lifecycle', () => {
       override postStop(): void { events.push('postStop'); }
     }
     const sys = newSystem();
-    const ref = sys.spawn(Props.create(() => new A()), 'a');
+    const ref = sys.spawn(() => new A(), 'a');
     ref.tell('one');
     ref.tell('two');
     ref.stop();
@@ -57,7 +56,7 @@ describe('Actor lifecycle', () => {
       override onReceive(_: 'fail'): void { throw new Error('boom'); }
     }
     const sys = newSystem();
-    const ref = sys.spawn(Props.create(() => new Parent()), 'p');
+    const ref = sys.spawn(() => new Parent(), 'p');
     ref.tell('fail');
     await sleep(60);
     expect(events).toContain('parent:preRestart:boom');
@@ -80,7 +79,7 @@ describe('Actor lifecycle', () => {
       override onReceive(_: 'fail'): void { throw new Error('x'); }
     }
     const sys = newSystem();
-    const ref = sys.spawn(Props.create(() => new A()), 'a');
+    const ref = sys.spawn(() => new A(), 'a');
     await sleep(20);
     ref.tell('fail');
     await sleep(60);
@@ -110,7 +109,7 @@ describe('Actor lifecycle', () => {
       }
     }
     const sys = newSystem();
-    const ref = sys.spawn(Props.create(() => new A()), 'a');
+    const ref = sys.spawn(() => new A(), 'a');
     ref.tell('hi');
     await sleep(30);
     expect(capturedSelf).toBeDefined();
@@ -129,7 +128,7 @@ describe('Actor lifecycle', () => {
       }
     }
     const sys = newSystem();
-    const ref = sys.spawn(Props.create(() => new A()), 'a');
+    const ref = sys.spawn(() => new A(), 'a');
     ref.tell(1); ref.tell(2); ref.tell(3);
     await sleep(100);
     expect(events).toEqual(['start:1', 'end:1', 'start:2', 'end:2', 'start:3', 'end:3']);

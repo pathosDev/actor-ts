@@ -2,7 +2,6 @@ import { afterEach, describe, expect, test } from 'bun:test';
 import { Actor } from '../../../src/Actor.js';
 import { ActorSystem } from '../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../src/ActorSystemOptions.js';
-import { Props } from '../../../src/Props.js';
 import { LogLevel, NoopLogger } from '../../../src/Logger.js';
 import { InMemoryJournal } from '../../../src/persistence/journals/InMemoryJournal.js';
 import { InMemorySnapshotStore } from '../../../src/persistence/snapshot-stores/InMemorySnapshotStore.js';
@@ -311,7 +310,7 @@ describe('TimeTravelMethods', () => {
     const journal = new InMemoryJournal();
     const snapshots = new InMemorySnapshotStore();
     const system = newSystem('tt-auto', journal, snapshots);
-    const ref = system.spawn(Props.create(() => new CounterActor()), 'counter');
+    const ref = system.spawn(() => new CounterActor(), 'counter');
     ref.tell('add:5');
     ref.tell('add:7');
     await settle(150);
@@ -337,7 +336,7 @@ describe('TimeTravelMethods', () => {
     const journal = new InMemoryJournal();
     const snapshots = new InMemorySnapshotStore();
     const system = newSystem('tt-noauto', journal, snapshots);
-    const ref = system.spawn(Props.create(() => new CounterActor()), 'counter');
+    const ref = system.spawn(() => new CounterActor(), 'counter');
     ref.tell('add:5');
     await settle(150);
 

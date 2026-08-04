@@ -5,7 +5,7 @@
  *
  *   bun run examples/patterns/futures/pipe-to-hello.ts
  */
-import { Actor, ActorSystem, Props, Success, Failure, after, pipeTo } from '../../../src/index.js';
+import { Actor, ActorSystem, Success, Failure, after, pipeTo } from '../../../src/index.js';
 import { attachDevTools } from '../../devtools.js';
 
 class ResultHandler extends Actor<Success<number> | Failure> {
@@ -18,7 +18,7 @@ class ResultHandler extends Actor<Success<number> | Failure> {
 async function main(): Promise<void> {
   const system = ActorSystem.create('pipe-hello');
   const devtools = await attachDevTools(system);
-  const ref = system.spawn(Props.create(() => new ResultHandler()), 'handler');
+  const ref = system.spawn(() => new ResultHandler(), 'handler');
 
   // Promise that resolves to a number — arrives as Success.
   pipeTo(Promise.resolve(42), ref);

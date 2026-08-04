@@ -356,7 +356,6 @@ describe('system.spawnTyped + ctx.spawnTyped', () => {
     const sys = newSys();
     const seen: string[] = [];
     const { Actor } = await import('../../../src/Actor.js');
-    const { Props } = await import('../../../src/Props.js');
 
     // Parent forwards every received string to its typed-child set,
     // exercising both shapes of `ctx.spawnTyped*`.

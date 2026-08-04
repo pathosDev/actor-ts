@@ -20,7 +20,6 @@ import {
   NoopLogger,
   PersistenceExtensionId,
   PersistentActor,
-  Props,
   everyNEvents,
   type SnapshotPolicy,
 } from '../../src/index.js';
@@ -83,7 +82,7 @@ async function main(): Promise<void> {
 
     const persistenceId = `counter-${pol.unit}`;
     const Counter = makeCounterClass(pol.policy);
-    const props = Props.create(() => new Counter(persistenceId));
+    const props = () => new Counter(persistenceId);
     let ref = system.spawnAnonymous(props);
 
     // --- phase 1: write throughput ---
@@ -112,7 +111,7 @@ async function main(): Promise<void> {
         unit: 'recovery',
         iterations: 5,
         run: async () => {
-          const fresh = system.spawnAnonymous(Props.create(() => new Counter(persistenceId)));
+          const fresh = system.spawnAnonymous(() => new Counter(persistenceId));
           // `get` returns the recovered state — blocks until replay finishes.
           await fresh.ask<number>({ kind: 'get' }, 30_000);
           fresh.stop();

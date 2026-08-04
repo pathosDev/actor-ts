@@ -19,7 +19,6 @@ import {
   Actor,
   ActorSystem,
   ActorSystemOptions,
-  Props,
   InMemoryJournal,
   PersistentFSM,
   type FsmStateData,
@@ -92,7 +91,7 @@ async function main(): Promise<void> {
   const sys1 = ActorSystem.create('order-demo-1', sys1Options);
   const devtools = await attachDevTools(sys1);
 
-  const ref1 = sys1.spawn(Props.create(() => new OrderFsm()), 'order');
+  const ref1 = sys1.spawn(() => new OrderFsm(), 'order');
   await pretty(ref1, 'initial');
 
   ref1.tell({ kind: 'ship', carrier: 'fedex' });   // invalid — ignored, state unchanged
@@ -113,7 +112,7 @@ async function main(): Promise<void> {
   const sys2 = ActorSystem.create('order-demo-2', sys2Options);
   const secondDevtools = await attachDevTools(sys2);
 
-  const ref2 = sys2.spawn(Props.create(() => new OrderFsm()), 'order');
+  const ref2 = sys2.spawn(() => new OrderFsm(), 'order');
   await pretty(ref2, 'recovered');
 
   await secondDevtools.holdOpen();

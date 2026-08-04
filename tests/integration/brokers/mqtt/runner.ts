@@ -9,7 +9,6 @@ import { Actor } from '../../../../src/Actor.js';
 import { ActorSystem } from '../../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../../src/ActorSystemOptions.js';
 import { JsonLogger, LogLevel } from '../../../../src/Logger.js';
-import { Props } from '../../../../src/Props.js';
 import { MqttActor, type MqttMessage } from '../../../../src/io/broker/MqttActor.js';
 import { MqttOptions } from '../../../../src/io/broker/MqttOptions.js';
 import type { ActorRef } from '../../../../src/ActorRef.js';
@@ -94,14 +93,14 @@ export function spawnMqtt(context: MqttContext, options: {
       .withProtocolVersion(options.protocolVersion ?? 4)
       .withCleanSession(true),
   );
-  const ref = context.system.spawnAnonymous(Props.create(() => actor));
+  const ref = context.system.spawnAnonymous(() => actor);
   return { ref };
 }
 
 /** Spawn a fresh inbox actor whose received messages are observable. */
 export function spawnInbox(context: MqttContext): { ref: ActorRef<MqttMessage>; inbox: InboxActor } {
   const inbox = new InboxActor();
-  const ref = context.system.spawnAnonymous(Props.create(() => inbox));
+  const ref = context.system.spawnAnonymous(() => inbox);
   return { ref, inbox };
 }
 

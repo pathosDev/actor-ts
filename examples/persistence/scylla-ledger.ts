@@ -21,7 +21,6 @@ import {
   CassandraSnapshotStoreOptions,
   PersistenceExtensionId,
   PersistentActor,
-  Props,
   RegisterCassandraPluginsOptions,
   everyNEvents,
   registerCassandraPlugins,
@@ -134,7 +133,7 @@ async function main(): Promise<void> {
     .withSnapshotStore(snapshotOptions);
   registerCassandraPlugins(ext, cassandraPluginsOptions);
 
-  const alice = system.spawnAnonymous(Props.create(() => new Account('alice')));
+  const alice = system.spawnAnonymous(() => new Account('alice'));
 
   console.log('--- first run ---');
   console.log('deposit 100 →', await alice.ask({ kind: 'deposit', amount: 100 }, 3_000));
@@ -146,7 +145,7 @@ async function main(): Promise<void> {
   alice.stop();
   await Bun.sleep(50);
   console.log('--- second run (state replayed from Scylla) ---');
-  const alice2 = system.spawnAnonymous(Props.create(() => new Account('alice')));
+  const alice2 = system.spawnAnonymous(() => new Account('alice'));
   console.log('balance    →', await alice2.ask({ kind: 'balance' }, 3_000));
 
   await ext.journal.close?.();

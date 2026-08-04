@@ -1,7 +1,6 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import { ActorSystem } from '../../../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../../../src/ActorSystemOptions.js';
-import { Props } from '../../../../../src/Props.js';
 import { LogLevel, NoopLogger } from '../../../../../src/Logger.js';
 import { HttpExtensionId } from '../../../../../src/http/HttpExtension.js';
 import { FastifyBackend } from '../../../../../src/http/backend/FastifyBackend.js';
@@ -70,12 +69,12 @@ describe('WebsocketClientActor', () => {
 
   test('typed client ↔ server round-trip through a real backend', async () => {
     const srvSys = mkSystem('cli-srv');
-    const server = srvSys.spawn(Props.create(() => new PingServer()), 'srv');
+    const server = srvSys.spawn(() => new PingServer(), 'srv');
     const binding = await bindServer(srvSys, websocket('/ws', server));
 
     const rec: Rec = { events: [], messages: [] };
     const cliSys = mkSystem('cli');
-    cliSys.spawn(Props.create(() => new RecordingClient(`ws://127.0.0.1:${binding.port}/ws`, rec)), 'client');
+    cliSys.spawn(() => new RecordingClient(`ws://127.0.0.1:${binding.port}/ws`, rec), 'client');
 
     await waitUntil(() => rec.messages.length >= 1);
     expect(rec.events).toContain('connected');
@@ -84,13 +83,13 @@ describe('WebsocketClientActor', () => {
 
   test('another actor can push a typed send via websocketSend(ref)', async () => {
     const srvSys = mkSystem('cli-srv2');
-    const server = srvSys.spawn(Props.create(() => new PingServer()), 'srv');
+    const server = srvSys.spawn(() => new PingServer(), 'srv');
     const binding = await bindServer(srvSys, websocket('/ws', server));
 
     const rec: Rec = { events: [], messages: [] };
     const cliSys = mkSystem('cli2');
     const clientRef: ActorRef<WebsocketClientMessage<CMessage, SMessage>> =
-      cliSys.spawn(Props.create(() => new RecordingClient(`ws://127.0.0.1:${binding.port}/ws`, rec)), 'client');
+      cliSys.spawn(() => new RecordingClient(`ws://127.0.0.1:${binding.port}/ws`, rec), 'client');
 
     await waitUntil(() => rec.events.includes('connected'));
     clientRef.tell(websocketSend({ kind: 'ping', n: 99 }));
@@ -100,13 +99,13 @@ describe('WebsocketClientActor', () => {
 
   test('reconnects after the server goes away and comes back', async () => {
     const srvSys = mkSystem('cli-srv3');
-    const server = srvSys.spawn(Props.create(() => new PingServer()), 'srv');
+    const server = srvSys.spawn(() => new PingServer(), 'srv');
     const b1 = await bindServer(srvSys, websocket('/ws', server));
     const port = b1.port;
 
     const rec: Rec = { events: [], messages: [] };
     const cliSys = mkSystem('cli3');
-    cliSys.spawn(Props.create(() => new RecordingClient(`ws://127.0.0.1:${port}/ws`, rec)), 'client');
+    cliSys.spawn(() => new RecordingClient(`ws://127.0.0.1:${port}/ws`, rec), 'client');
     await waitUntil(() => rec.events.includes('connected'));
 
     // Take the server down; the client should notice and start reconnecting.
@@ -115,7 +114,7 @@ describe('WebsocketClientActor', () => {
 
     // Bring a fresh server up on the same port; the client should reconnect.
     const srvSys2 = mkSystem('cli-srv3b');
-    const server2 = srvSys2.spawn(Props.create(() => new PingServer()), 'srv');
+    const server2 = srvSys2.spawn(() => new PingServer(), 'srv');
     await bindServer(srvSys2, websocket('/ws', server2), '127.0.0.1', port);
 
     await waitUntil(() => rec.events.filter((e) => e === 'connected').length >= 2, 8000);

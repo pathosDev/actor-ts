@@ -13,7 +13,6 @@ import { hashShardId } from '../../../../../src/cluster/sharding/ShardAllocator.
 import { shardRegionName } from '../../../../../src/internal/SystemPaths.js';
 import { regionSegments } from '../../../../util/systemPaths.js';
 import { LogLevel, NoopLogger } from '../../../../../src/Logger.js';
-import { Props } from '../../../../../src/Props.js';
 import type { ActorRef } from '../../../../../src/ActorRef.js';
 
 type IncrementCommand = { id: string; kind: 'increment' };
@@ -70,7 +69,7 @@ async function startNode(systemName: string, port: number, seeds: string[] = [])
   const cluster = await Cluster.join(system, clusterOptions);
   const shardingOptions = StartShardingOptions.create<Command>()
     .withTypeName(TYPE_NAME)
-    .withEntityProps(Props.create(() => new CounterEntity()))
+    .withEntityActor(() => new CounterEntity())
     .withExtractEntityId((m) => m.id)
     .withNumShards(NUM_SHARDS);
   const region = cluster.sharding.start<Command>(shardingOptions);

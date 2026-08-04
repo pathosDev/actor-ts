@@ -8,7 +8,6 @@
  */
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
 import { Actor } from '../../../src/Actor.js';
-import { Props } from '../../../src/Props.js';
 import { MultiNodeClusterFixture } from '../../../src/testkit/MultiNodeClusterFixture.js';
 import { systemFixture, testKitFixture } from '../__shared__/system-fixture.js';
 
@@ -34,7 +33,7 @@ describe('systemFixture', () => {
       received: number[] = [];
       override onReceive(n: number): void { this.received.push(n); }
     }
-    const ref = sys().spawnAnonymous(Props.create(() => new Counter()));
+    const ref = sys().spawnAnonymous(() => new Counter());
     ref.tell(42);
     expect(ref).toBeDefined();
   });

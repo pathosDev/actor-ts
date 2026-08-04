@@ -20,7 +20,6 @@
  */
 import { describe, expect, test } from 'bun:test';
 import { Actor } from '../../src/Actor.js';
-import { Props } from '../../src/Props.js';
 import { StartSingletonOptions } from '../../src/cluster/singleton/index.js';
 import { MultiNodeSpec } from '../../src/testkit/MultiNodeSpec.js';
 import { MultiNodeTransport } from '../../src/testkit/internal/MultiNodeTransport.js';
@@ -58,7 +57,7 @@ describe('multi-node singleton failover', () => {
       for (const role of ['a', 'b', 'c'] as const) {
         const singletonOptions = StartSingletonOptions.create()
           .withTypeName('marker')
-          .withProps(Props.create(() => new Marker(role)));
+          .withActor(() => new Marker(role));
         spec.clusterFor(role).singleton.start(singletonOptions);
       }
 

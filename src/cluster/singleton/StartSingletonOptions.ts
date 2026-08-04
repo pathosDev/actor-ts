@@ -1,5 +1,6 @@
 import type { Lease } from '../../coordination/Lease.js';
-import type { Props } from '../../Props.js';
+import type { ActorClassOrFactory } from '../../Actor.js';
+import type { ActorOptions } from '../../ActorOptions.js';
 import { OptionsBuilder } from '../../util/OptionsBuilder.js';
 import { OptionsValidator } from '../../util/OptionsValidator.js';
 
@@ -7,8 +8,10 @@ import { OptionsValidator } from '../../util/OptionsValidator.js';
 export type StartSingletonOptionsType<T> = {
   /** Logical name for this singleton — used in the manager/child actor path. */
   readonly typeName: string;
-  /** Props used to construct the singleton on the leader. */
-  readonly props: Props<T>;
+  /** The singleton actor — its class, or a factory when it needs dependencies. */
+  readonly actor: ActorClassOrFactory<T>;
+  /** Spawn options for the singleton instance. */
+  readonly actorOptions?: ActorOptions<T>;
   /** If set, only nodes carrying this role tag will host the singleton. */
   readonly role?: string;
   /**
@@ -51,7 +54,7 @@ export type StartSingletonOptionsType<T> = {
  *       cluster,
  *       StartSingletonOptions.create<Command>()
  *         .withTypeName('counter')
- *         .withProps(Props.create(() => new CounterActor())),
+ *         .withActor(CounterActor),
  *     );
  */
 export class StartSingletonOptionsBuilder<T> extends OptionsBuilder<StartSingletonOptionsType<T>> {
@@ -65,9 +68,14 @@ export class StartSingletonOptionsBuilder<T> extends OptionsBuilder<StartSinglet
     return this.set('typeName', typeName);
   }
 
-  /** Props used to construct the singleton on the leader. */
-  withProps(props: Props<T>): this {
-    return this.set('props', props);
+  /** The actor the singleton is built from.  Only instantiated on the leader. */
+  withActor(actor: ActorClassOrFactory<T>): this {
+    return this.set('actor', actor);
+  }
+
+  /** Spawn options for the singleton instance. */
+  withActorOptions(actorOptions: ActorOptions<T>): this {
+    return this.set('actorOptions', actorOptions);
   }
 
   /** Only nodes carrying this role tag will host the singleton. */
@@ -100,9 +108,9 @@ export class StartSingletonOptionsValidator<T> extends OptionsValidator<StartSin
     // The check helpers pass on `undefined` by design, so the two fields
     // without which `start()` cannot do anything are asserted here.  The
     // alternative is a `Cannot read properties of undefined` raised inside
-    // `Props.create`, several frames from anything the caller wrote.
+    // the spawn, several frames from anything the caller wrote.
     if (s.typeName === undefined) this.fail('typeName', 'is required');
-    if (s.props === undefined) this.fail('props', 'is required');
+    if (s.actor === undefined) this.fail('actor', 'is required');
     this.nonEmptyString('typeName');
     this.nonEmptyString('role');
     this.positiveNumber('acquireRetryIntervalMs');

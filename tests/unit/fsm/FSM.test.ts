@@ -3,7 +3,6 @@ import { ActorSystem } from '../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../src/ActorSystemOptions.js';
 import { FSM, type FsmResult } from '../../../src/fsm/index.js';
 import { LogLevel, NoopLogger } from '../../../src/Logger.js';
-import { Props } from '../../../src/Props.js';
 import { TestKit } from '../../../src/testkit/TestKit.js';
 import { TestKitOptions } from '../../../src/testkit/TestKitOptions.js';
 
@@ -36,7 +35,7 @@ describe('FSM', () => {
       .withLogger(new NoopLogger())
       .withLogLevel(LogLevel.Off);
     const sys = ActorSystem.create('fsm', sysOptions);
-    const ref = sys.spawnAnonymous(Props.create(() => new Door((e) => events.push(e))));
+    const ref = sys.spawnAnonymous(() => new Door((e) => events.push(e)));
 
     ref.tell('open');
     await Bun.sleep(20);
@@ -57,7 +56,7 @@ describe('FSM', () => {
       .withLogger(new NoopLogger())
       .withLogLevel(LogLevel.Off);
     const sys = ActorSystem.create('fsm-2', sysOptions);
-    const ref = sys.spawnAnonymous(Props.create(() => new Door((e) => events.push(e))));
+    const ref = sys.spawnAnonymous(() => new Door((e) => events.push(e)));
 
     ref.tell('open');
     ref.tell('close');
@@ -78,7 +77,7 @@ describe('FSM', () => {
       .withLogger(new NoopLogger())
       .withLogLevel(LogLevel.Off);
     const kit = TestKit.create('fsm-missing', kitOptions);
-    const ref = kit.system.spawnAnonymous(Props.create(() => new Broken()));
+    const ref = kit.system.spawnAnonymous(() => new Broken());
     ref.tell('anything');
     await Bun.sleep(20);
     // The actor is still alive — subsequent tells don't throw.

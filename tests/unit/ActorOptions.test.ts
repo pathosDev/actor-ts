@@ -12,6 +12,13 @@ class MyActor extends Actor<string> {
 
 const IDENTITY = { entityId: 'cart-7', typeName: 'cart', shardId: 3 };
 
+/**
+ * Read a builder the way every consumer does — a builder IS its settings, but
+ * the fields live on the instance, not in the builder's declared type.
+ */
+const read = (options: ActorOptions<string>): Partial<ActorOptionsType<string>> =>
+  ({ ...(options as Partial<ActorOptionsType<string>>) });
+
 describe('ActorOptions', () => {
   test('a fresh builder sets nothing — every field falls through to the defaults', () => {
     const options = ActorOptions.create<string>();
@@ -21,31 +28,31 @@ describe('ActorOptions', () => {
 
   test('withSupervisorStrategy records the strategy', () => {
     const strategy = new OneForOneStrategy(() => Directive.Restart);
-    const options = ActorOptions.create<string>().withSupervisorStrategy(strategy);
-    expect(options.supervisorStrategy).toBe(strategy);
+    expect(read(ActorOptions.create<string>().withSupervisorStrategy(strategy)).supervisorStrategy)
+      .toBe(strategy);
   });
 
   test('withDispatcher records the dispatcher', () => {
     const dispatcher = new ImmediateDispatcher();
-    expect(ActorOptions.create<string>().withDispatcher(dispatcher).dispatcher).toBe(dispatcher);
+    expect(read(ActorOptions.create<string>().withDispatcher(dispatcher)).dispatcher).toBe(dispatcher);
   });
 
   test('withMailboxCapacity records the capacity', () => {
-    expect(ActorOptions.create<string>().withMailboxCapacity(128).mailboxCapacity).toBe(128);
+    expect(read(ActorOptions.create<string>().withMailboxCapacity(128)).mailboxCapacity).toBe(128);
   });
 
   test('withMailbox records the factory', () => {
-    const mailbox = () => new Mailbox<string>();
-    expect(ActorOptions.create<string>().withMailbox(mailbox).mailbox).toBe(mailbox);
+    const mailbox = (): Mailbox<string> => new Mailbox<string>();
+    expect(read(ActorOptions.create<string>().withMailbox(mailbox)).mailbox).toBe(mailbox);
   });
 
   test('withInternal defaults to true and can be set explicitly', () => {
-    expect(ActorOptions.create<string>().withInternal().internal).toBe(true);
-    expect(ActorOptions.create<string>().withInternal(false).internal).toBe(false);
+    expect(read(ActorOptions.create<string>().withInternal()).internal).toBe(true);
+    expect(read(ActorOptions.create<string>().withInternal(false)).internal).toBe(false);
   });
 
   test('withEntity records the sharding identity', () => {
-    expect(ActorOptions.create<string>().withEntity(IDENTITY).entity).toBe(IDENTITY);
+    expect(read(ActorOptions.create<string>().withEntity(IDENTITY)).entity).toBe(IDENTITY);
   });
 
   test('a builder IS its settings — spreading yields the fields, not the methods', () => {
@@ -62,7 +69,7 @@ describe('ActorOptions', () => {
     const options = ActorOptions.create<string>();
     const chained = options.withMailboxCapacity(7);
     expect(chained).toBe(options);
-    expect(options.mailboxCapacity).toBe(7);
+    expect(read(options).mailboxCapacity).toBe(7);
   });
 
   test('a plain object is interchangeable with a builder', () => {

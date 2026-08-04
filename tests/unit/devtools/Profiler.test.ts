@@ -2,7 +2,6 @@ import { afterEach, describe, expect, test } from 'bun:test';
 import { Actor } from '../../../src/Actor.js';
 import { ActorSystem } from '../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../src/ActorSystemOptions.js';
-import { Props } from '../../../src/Props.js';
 import { LogLevel, NoopLogger } from '../../../src/Logger.js';
 import { ProfilerTap } from '../../../src/devtools/taps/ProfilerTap.js';
 import type { DevToolsRequestHandler, DevToolsServer } from '../../../src/devtools/DevToolsServer.js';
@@ -71,7 +70,7 @@ describe('ProfilerTap — wallclock', () => {
     tap.install(() => {});
     tap.installMethods(server);
     try {
-      const ref = system.spawn(Props.create(() => new WorkerActor()), 'worker');
+      const ref = system.spawn(() => new WorkerActor(), 'worker');
       await invoke<ProfilerStartResult>('profiler.start', {});
       ref.tell('a');
       ref.tell('b');
@@ -98,7 +97,7 @@ describe('ProfilerTap — wallclock', () => {
     tap.install(() => {});
     tap.installMethods(server);
     try {
-      const ref = system.spawn(Props.create(() => new WorkerActor()), 'worker');
+      const ref = system.spawn(() => new WorkerActor(), 'worker');
       await invoke('profiler.start', {});
       ref.tell('slow');
       await settle(150);
@@ -116,7 +115,7 @@ describe('ProfilerTap — wallclock', () => {
     tap.install(() => {});
     tap.installMethods(server);
     try {
-      const ref = system.spawn(Props.create(() => new WorkerActor()), 'worker');
+      const ref = system.spawn(() => new WorkerActor(), 'worker');
       await invoke('profiler.start', {});
       ref.tell('boom');
       await settle();
@@ -134,7 +133,7 @@ describe('ProfilerTap — wallclock', () => {
     tap.install(() => {});
     tap.installMethods(server);
     try {
-      const ref = system.spawn(Props.create(() => new WorkerActor()), 'worker');
+      const ref = system.spawn(() => new WorkerActor(), 'worker');
       await invoke('profiler.start', {});
       ref.tell('a');
       await settle();
@@ -168,7 +167,7 @@ describe('ProfilerTap — wallclock', () => {
     tap.install(() => {});
     tap.installMethods(server);
     try {
-      const ref = system.spawn(Props.create(() => new WorkerActor()), 'worker');
+      const ref = system.spawn(() => new WorkerActor(), 'worker');
       await invoke('profiler.start', {});
       ref.tell('a');
       await settle();
@@ -193,7 +192,7 @@ describe('ProfilerTap — lifecycle', () => {
     tap.install(() => {});
     try {
       expect(system._dispatchObserver).toBeNull();
-      const ref = system.spawn(Props.create(() => new WorkerActor()), 'worker');
+      const ref = system.spawn(() => new WorkerActor(), 'worker');
       ref.tell('a');
       await settle();
       expect(system._dispatchObserver).toBeNull();
@@ -282,7 +281,7 @@ describe('ProfilerTap — lifecycle', () => {
     tap.install((payload) => emitted.push(payload));
     tap.installMethods(server);
     try {
-      const ref = system.spawn(Props.create(() => new WorkerActor()), 'worker');
+      const ref = system.spawn(() => new WorkerActor(), 'worker');
       await invoke('profiler.start', {});
       ref.tell('a');
       await settle(700);
