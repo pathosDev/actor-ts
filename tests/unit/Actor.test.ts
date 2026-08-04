@@ -4,7 +4,7 @@ import { ActorSystem } from '../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../src/ActorSystemOptions.js';
 import { LogLevel, NoopLogger } from '../../src/Logger.js';
 import { Props } from '../../src/Props.js';
-import { Behaviors } from '../../src/typed/Behaviors.js';
+import { Behaviors, same } from '../../src/typed/Behaviors.js';
 
 const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
 
@@ -152,7 +152,8 @@ describe('anonymous child names', () => {
 
   test('every entry point that omits a name produces the same shape', async () => {
     const sys = newSystem();
-    const behavior = Behaviors.receiveMessage<string>(() => Behaviors.same);
+    // `same<string>()` rather than `Behaviors.same`, which is `Behavior<never>`.
+    const behavior = Behaviors.receiveMessage<string>(() => same<string>());
 
     const names: string[] = [
       sys.spawnAnonymous(idleProps()).path.name,
@@ -174,7 +175,7 @@ describe('anonymous child names', () => {
       sys.spawnTyped(
         Behaviors.setup<string>((context) => {
           resolve(context.spawn(behavior).path.name);
-          return Behaviors.receiveMessage(() => Behaviors.same);
+          return Behaviors.receiveMessage(() => same<string>());
         }),
         'typed-shapes-parent',
       );
