@@ -49,6 +49,18 @@ import {
 /** Shard count used when a sharded type doesn't pick one. */
 export const DEFAULT_NUM_SHARDS = 64;
 
+/**
+ * How long an entity may sit idle before the region passivates it, when
+ * nothing else says otherwise.  `0` disables the sweep.
+ *
+ * Kept in lockstep with `passivation-idle` in `reference.conf`: HOCON only
+ * reaches a region that came through `ClusterSharding.start`, while a
+ * directly-constructed one falls back to this constant, and the two
+ * disagreeing would make the same options mean different things depending on
+ * which door they came through.
+ */
+export const DEFAULT_PASSIVATION_IDLE_MS = 300_000;
+
 export type ShardRegionConfig<TMessage> = {
   readonly typeName: string;
   readonly entityProps: Props<TMessage>;
@@ -153,7 +165,7 @@ export class ShardRegion<TMessage = unknown> extends Actor<TMessage | ShardingMe
       role: s.role,
       proxy: s.proxy ?? false,
       rememberEntities: s.rememberEntities ?? false,
-      passivationIdleMs: s.passivationIdleMs ?? 0,
+      passivationIdleMs: s.passivationIdleMs ?? DEFAULT_PASSIVATION_IDLE_MS,
       maxEntities: s.maxEntities ?? 0,
       cluster,
       localResolver,

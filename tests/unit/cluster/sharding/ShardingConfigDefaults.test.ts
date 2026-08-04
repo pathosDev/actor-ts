@@ -49,7 +49,7 @@ describe('readShardingOptionsFromConfig', () => {
     expect(readShardingOptionsFromConfig(config)).toEqual({
       numShards: 64,
       rememberEntities: false,
-      passivationIdleMs: 0,
+      passivationIdleMs: 300_000,
       maxEntities: 0,
       rebalanceIntervalMs: 2_000,
       handOffTimeoutMs: 10_000,

@@ -20,7 +20,21 @@ export type ShardingOptionsType<TMessage> = {
   readonly proxy?: boolean;
   /** Track entity lifecycle so entities can be re-created on the new owner. */
   readonly rememberEntities?: boolean;
-  /** Notify the region after an entity has been idle this many ms.  */
+  /**
+   * Passivate an entity after it has been idle this many ms.
+   *
+   * Default: 5 minutes (`passivation-idle` in `reference.conf`).  `0`
+   * disables the sweep and keeps every entity resident until something
+   * else stops it.
+   *
+   * Two consequences worth knowing before turning it down or off.  An
+   * entity that holds state in memory and does not rebuild it in
+   * `preStart` loses that state when it passivates — persistent entities
+   * recover, plain ones do not.  And under `rememberEntities` a
+   * passivation is a *forget*: the region relays `EntityStopped` to the
+   * coordinator, which drops the entity from the registry, so it is no
+   * longer among those revived after a node failure.
+   */
   readonly passivationIdleMs?: number;
   /**
    * Cap the number of locally-hosted entities (#82).  When the region
@@ -102,7 +116,7 @@ export class ShardingOptionsBuilder<
     return this.set('rememberEntities', rememberEntities);
   }
 
-  /** Notify the region after an entity has been idle this many ms. */
+  /** Passivate an entity after it has been idle this many ms.  Default: 5 min; `0` disables. */
   withPassivationIdleMs(passivationIdleMs: number): this {
     return this.set('passivationIdleMs', passivationIdleMs);
   }

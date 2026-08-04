@@ -111,7 +111,7 @@ actor-ts {
     rebalance-interval = 2s
     hand-off-timeout = 10s
     remember-entities = false
-    passivation-idle = 0ms   # 0 disables the idle sweep
+    passivation-idle = 5m    # idle window before an entity passivates; 0 disables the sweep
     max-entities = 0         # 0 = no per-node cap
   }
 
