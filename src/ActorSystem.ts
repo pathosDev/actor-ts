@@ -13,7 +13,9 @@ import {
 } from './Dispatcher.js';
 import { EventStream } from './EventStream.js';
 import { ConsoleLogger, Logger, LogLevel } from './Logger.js';
-import { Props } from './Props.js';
+import type { ActorClassOrFactory } from './Actor.js';
+import type { ActorOptions } from './ActorOptions.js';
+import type { Props } from './Props.js';
 import { Scheduler } from './Scheduler.js';
 import type { ActorSystemOptions, ActorSystemOptionsType } from './ActorSystemOptions.js';
 import { ActorCell } from './internal/ActorCell.js';
@@ -125,19 +127,19 @@ export class ActorSystem {
     // Construct the supervisor chain: /  ->  /user, /system.
     this.rootCell = new ActorCell<unknown>(
       this,
-      Props.create(() => new Guardian()),
+      { factory: () => new Guardian() },
       null,
       '',
     );
 
     const userRef = this.rootCell.spawn(
-      Props.create(() => new Guardian(userGuardianStrategy)),
+      () => new Guardian(userGuardianStrategy),
       USER_GUARDIAN_NAME,
     );
     this.userGuardianCell = (userRef as LocalActorRef<unknown>).getCell();
 
     const systemRef = this.rootCell.spawn(
-      Props.create(() => new Guardian(systemGuardianStrategy)),
+      () => new Guardian(systemGuardianStrategy),
       SYSTEM_GUARDIAN_NAME,
     );
     this.systemGuardianCell = (systemRef as LocalActorRef<unknown>).getCell();
@@ -226,12 +228,15 @@ export class ActorSystem {
    * already exists, the call throws.
    *
    * For an auto-generated name, see {@link spawnAnonymous}.
+   *
+   *     system.spawn(Greeter, 'greeter');                  // zero-arg class
+   *     system.spawn(() => new Worker(database), 'worker'); // dependencies
    */
-  spawn<T>(props: Props<T>, name: string): ActorRef<T> {
+  spawn<T>(actor: ActorClassOrFactory<T> | Props<T>, name: string, options?: ActorOptions<T>): ActorRef<T> {
     if (this._terminating || this._terminated) {
       throw new Error(`Cannot create actors on a terminated ActorSystem '${this.name}'`);
     }
-    return this.userGuardianCell.spawn(props, name);
+    return this.userGuardianCell.spawn(actor, name, options);
   }
 
   /**
@@ -240,11 +245,11 @@ export class ActorSystem {
    * one-shot async work, throwaway helpers.  For a deterministic
    * name, see {@link spawn}.
    */
-  spawnAnonymous<T>(props: Props<T>): ActorRef<T> {
+  spawnAnonymous<T>(actor: ActorClassOrFactory<T> | Props<T>, options?: ActorOptions<T>): ActorRef<T> {
     if (this._terminating || this._terminated) {
       throw new Error(`Cannot create actors on a terminated ActorSystem '${this.name}'`);
     }
-    return this.userGuardianCell.spawnAnonymous(props);
+    return this.userGuardianCell.spawnAnonymous(actor, options);
   }
 
   /**
@@ -280,11 +285,16 @@ export class ActorSystem {
    * Deliberately internal: this is not an extension point for applications,
    * and `/user` stays the only place user code can spawn a top-level actor.
    */
-  _spawnSystemActor<T>(props: Props<T>, group: SystemGroup, name: string): ActorRef<T> {
+  _spawnSystemActor<T>(
+    actor: ActorClassOrFactory<T> | Props<T>,
+    group: SystemGroup,
+    name: string,
+    options?: ActorOptions<T>,
+  ): ActorRef<T> {
     if (this._terminating || this._terminated) {
       throw new Error(`Cannot create actors on a terminated ActorSystem '${this.name}'`);
     }
-    return this._systemGroupCell(group).spawn(props, name);
+    return this._systemGroupCell(group).spawn(actor, name, options);
   }
 
   /**
@@ -313,8 +323,11 @@ export class ActorSystem {
         continue;
       }
       const policy = systemGroupPolicy(walked);
-      const base = Props.create(() => new Guardian(policy.strategy));
-      const groupRef = parent.spawn(policy.internal ? base.asInternal() : base, segment);
+      const groupRef = parent.spawn(
+        () => new Guardian(policy.strategy),
+        segment,
+        policy.internal ? { internal: true } : undefined,
+      );
       const groupCell = (groupRef as LocalActorRef<unknown>).getCell();
       this.systemGroupCells.set(walked, groupCell);
       parent = groupCell;

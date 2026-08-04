@@ -123,6 +123,26 @@ export abstract class Actor<TMessage = unknown> {
 }
 
 /**
+ * Builds a fresh actor instance.  A *factory*, not an instance, because the
+ * runtime rebuilds the actor on every restart — handing over one instance
+ * would resurrect the broken state the crash was supposed to discard.
+ */
+export type ActorFactory<TMessage> = () => Actor<TMessage>;
+
+/**
+ * What every spawning API accepts: the actor class itself, or a factory that
+ * builds one.
+ *
+ * The class form covers the common case — a constructor that takes no
+ * arguments needs no closure around it.  The factory form is how dependencies
+ * get in (`() => new Worker(database)`), and it is also the escape hatch for
+ * anything the class form cannot express.
+ */
+export type ActorClassOrFactory<TMessage> =
+  | (new () => Actor<TMessage>)
+  | ActorFactory<TMessage>;
+
+/**
  * Module-level so the getters stay one-liners.  Names both plausible causes
  * — wrong actor, or right actor asked too early — because the two look
  * identical from the call site.

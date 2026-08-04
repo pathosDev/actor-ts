@@ -1,7 +1,7 @@
-import type { Actor } from '../../Actor.js';
+import type { Actor, ActorClassOrFactory } from '../../Actor.js';
 import type { ActorRef } from '../../ActorRef.js';
 import type { ActorSystem } from '../../ActorSystem.js';
-import { actorFactoryOf, type ActorClassOrFactory } from '../../internal/ActorConstruction.js';
+import { actorFactoryOf } from '../../internal/ActorBlueprint.js';
 import { PersistenceExtensionId } from '../../persistence/PersistenceExtension.js';
 import { Props } from '../../Props.js';
 import { mergeOptions } from '../../util/OptionsMerge.js';

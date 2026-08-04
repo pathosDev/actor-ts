@@ -18,6 +18,10 @@ import type { Logger } from '../Logger.js';
 import { metricsOf } from '../metrics/MetricsExtension.js';
 import { tracerOf } from '../tracing/TracingExtension.js';
 import type { Span } from '../tracing/Tracer.js';
+import type { ActorClassOrFactory } from '../Actor.js';
+import type { ActorOptions } from '../ActorOptions.js';
+import type { ActorBlueprint } from './ActorBlueprint.js';
+import { blueprintOf } from './PropsShim.js';
 import type { Props } from '../Props.js';
 import type { Behavior } from '../typed/Behavior.js';
 import { typedProps } from '../typed/spawn.js';
@@ -152,26 +156,26 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
 
   constructor(
     readonly system: ActorSystem,
-    readonly props: Props<TMessage>,
+    readonly blueprint: ActorBlueprint<TMessage>,
     parent: ActorCell<unknown> | null,
     public readonly name: string,
   ) {
     this._parent = parent;
-    this._internal = props.config.internal === true || parent?._internal === true;
-    this._entity = props.config.entity ?? null;
+    this._internal = blueprint.internal === true || parent?._internal === true;
+    this._entity = blueprint.entity ?? null;
     const uid = parent ? parent._nextChildUid() : 0;
     this.path = parent
       ? parent.path.child(name, uid)
       : new ActorPath(name, null, system.name, uid);
-    this.mailbox = props.config.mailbox
-      ? props.config.mailbox()
+    this.mailbox = blueprint.mailbox
+      ? blueprint.mailbox()
       // #310 — bounded by default.  Unbounded was the pre-#310 default
       // and is still available via `Props.withMailbox(() => new Mailbox())`
       // for use-cases that need it (deterministic replay, test setups,
       // tightly-controlled throughput).  See `DEFAULT_MAILBOX_CAPACITY`
       // + `DEFAULT_MAILBOX_OVERFLOW` for the chosen ceiling + policy.
       : new BoundedMailbox<TMessage>({
-        capacity: props.config.mailboxCapacity ?? DEFAULT_MAILBOX_CAPACITY,
+        capacity: blueprint.mailboxCapacity ?? DEFAULT_MAILBOX_CAPACITY,
         overflow: DEFAULT_MAILBOX_OVERFLOW,
         onDrop: (reason) => this._onMailboxDrop(reason),
       });
@@ -203,31 +207,31 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
    */
   get cluster(): Option<Cluster> { return this.system.cluster; }
 
-  spawn<T>(props: Props<T>, name: string): ActorRef<T> {
-    return this._createChild(props, name);
+  spawn<T>(actor: ActorClassOrFactory<T> | Props<T>, name: string, options?: ActorOptions<T>): ActorRef<T> {
+    return this._createChild(blueprintOf(actor, options), name);
   }
 
-  spawnAnonymous<T>(props: Props<T>): ActorRef<T> {
-    return this._createChild(props, `$${++this._anonChildCounter}`);
+  spawnAnonymous<T>(actor: ActorClassOrFactory<T> | Props<T>, options?: ActorOptions<T>): ActorRef<T> {
+    return this._createChild(blueprintOf(actor, options), `$${++this._anonChildCounter}`);
   }
 
   spawnTyped<T>(behavior: Behavior<T>, name: string): ActorRef<T> {
-    return this._createChild(typedProps<T>(behavior), name);
+    return this._createChild(typedProps<T>(behavior).config, name);
   }
 
   spawnTypedAnonymous<T>(behavior: Behavior<T>): ActorRef<T> {
-    return this._createChild(typedProps<T>(behavior), `$${++this._anonChildCounter}`);
+    return this._createChild(typedProps<T>(behavior).config, `$${++this._anonChildCounter}`);
   }
 
   /** @internal — single child-creation path shared by spawn / spawnAnonymous. */
-  private _createChild<T>(props: Props<T>, name: string): ActorRef<T> {
+  private _createChild<T>(blueprint: ActorBlueprint<T>, name: string): ActorRef<T> {
     if (this.state === 'terminated' || this.state === 'terminating') {
       throw new Error(`Cannot spawn children from terminated actor ${this.path}`);
     }
     if (this._children.has(name)) {
       throw new Error(`Child name '${name}' is not unique under ${this.path}`);
     }
-    const cell = new ActorCell<T>(this.system, props, this as unknown as ActorCell<unknown>, name);
+    const cell = new ActorCell<T>(this.system, blueprint, this as unknown as ActorCell<unknown>, name);
     this._children.set(name, cell);
     return cell.self;
   }
@@ -260,7 +264,7 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
       mailboxSize: this.mailbox.size,
       stashSize: this._stashBuffer.length,
       suspended: this.mailbox.suspended,
-      dispatcher: this.props.config.dispatcher?.id ?? null,
+      dispatcher: this.blueprint.dispatcher?.id ?? null,
       childCount: this._children.size,
       internal: this._internal,
     };
@@ -602,7 +606,7 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
     if (this.processing || this.state === 'terminated') return;
     if (!this.mailbox.hasMessages()) return;
     this.processing = true;
-    const dispatcher = this.props.config.dispatcher ?? this.system.dispatcher;
+    const dispatcher = this.blueprint.dispatcher ?? this.system.dispatcher;
     dispatcher.execute(() => this.run());
   }
 
@@ -680,7 +684,7 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
 
   private async onCreate(): Promise<void> {
     try {
-      const actor = this.props.config.factory();
+      const actor = this.blueprint.factory();
       (actor as unknown as { _attach(context: ActorContext<TMessage>): void })._attach(this);
       this.actor = actor;
       this.behaviorStack = [(m: TMessage) => actor.onReceive(m)];
@@ -821,7 +825,7 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
 
     // Build a new instance.
     try {
-      const next = this.props.config.factory();
+      const next = this.blueprint.factory();
       (next as unknown as { _attach(context: ActorContext<TMessage>): void })._attach(this);
       this.actor = next;
       this.behaviorStack = [(m: TMessage) => next.onReceive(m)];
@@ -1020,7 +1024,7 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
     // child's Props still widens to every sibling, and the restart budget in
     // `registerRestart` stays per-parent, so siblings share one allowance.
     const strategy: SupervisorStrategy =
-      child.props.config.supervisorStrategy
+      child.blueprint.supervisorStrategy
       ?? this.actor?.supervisorStrategy()
       ?? defaultStrategy;
     const directive = strategy.decider(cause);

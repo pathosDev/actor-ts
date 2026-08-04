@@ -1,7 +1,7 @@
-import type { Actor } from '../../Actor.js';
+import type { Actor, ActorClassOrFactory } from '../../Actor.js';
 import type { ActorRef } from '../../ActorRef.js';
 import type { ActorSystem } from '../../ActorSystem.js';
-import { actorFactoryOf, type ActorClassOrFactory } from '../../internal/ActorConstruction.js';
+import { actorFactoryOf } from '../../internal/ActorBlueprint.js';
 import { SystemGroups, assertSpawnedAt, singletonManagerName } from '../../internal/SystemPaths.js';
 import { extensionId, type Extension, type ExtensionId } from '../../Extension.js';
 import type { Logger } from '../../Logger.js';

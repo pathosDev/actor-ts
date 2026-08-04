@@ -63,8 +63,11 @@ export { ActorSystemOptions, ActorSystemOptionsBuilder } from './ActorSystemOpti
 export type { ActorSystemOptionsType } from './ActorSystemOptions.js';
 export type { ActorContext, Receive, TimerScheduler } from './ActorContext.js';
 export { StashOverflowError, StashOutsideHandlerError } from './ActorContext.js';
+export { ActorOptions, ActorOptionsBuilder, ActorOptionsValidator } from './ActorOptions.js';
+export type { ActorOptionsType, MailboxFactory } from './ActorOptions.js';
+export type { ActorClassOrFactory, ActorFactory } from './Actor.js';
 export { Props } from './Props.js';
-export type { ActorFactory, PropsConfig } from './Props.js';
+export type { PropsConfig } from './Props.js';
 export type { EntityContext } from './EntityContext.js';
 
 // Supervision
