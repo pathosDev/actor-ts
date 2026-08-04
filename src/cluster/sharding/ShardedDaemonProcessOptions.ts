@@ -1,4 +1,4 @@
-import type { Props } from '../../Props.js';
+import type { ActorClassOrFactory } from '../../Actor.js';
 import { OptionsBuilder } from '../../util/OptionsBuilder.js';
 import { OptionsValidator } from '../../util/OptionsValidator.js';
 
@@ -8,8 +8,8 @@ export type ShardedDaemonProcessOptionsType<T> = {
   readonly name: string;
   /** Total number of daemons to keep running cluster-wide. */
   readonly numDaemons: number;
-  /** Props factory — gets the daemon's stable index (0..numDaemons-1). */
-  readonly behaviorFor: (daemonIndex: number) => Props<T>;
+  /** The daemon actor, chosen per index — gets the stable index (0..numDaemons-1). */
+  readonly actorFor: (daemonIndex: number) => ActorClassOrFactory<T>;
   /** Optional role — only members carrying the role host daemons. */
   readonly role?: string;
   /**
@@ -26,7 +26,7 @@ export type ShardedDaemonProcessOptionsType<T> = {
 
 /**
  * Fluent builder for {@link ShardedDaemonProcessOptionsType}.  The
- * `behaviorFor` factory is a whole-object field passed via a single
+ * `actorFor` factory is a whole-object field passed via a single
  * `withBehaviorFor(fn)`.
  */
 export class ShardedDaemonProcessOptionsBuilder<T> extends OptionsBuilder<ShardedDaemonProcessOptionsType<T>> {
@@ -45,9 +45,9 @@ export class ShardedDaemonProcessOptionsBuilder<T> extends OptionsBuilder<Sharde
     return this.set('numDaemons', numDaemons);
   }
 
-  /** Props factory — gets the daemon's stable index (0..numDaemons-1). */
-  withBehaviorFor(behaviorFor: (daemonIndex: number) => Props<T>): this {
-    return this.set('behaviorFor', behaviorFor);
+  /** The daemon actor, chosen per index — gets the stable index (0..numDaemons-1). */
+  withActorFor(actorFor: (daemonIndex: number) => ActorClassOrFactory<T>): this {
+    return this.set('actorFor', actorFor);
   }
 
   /** Only members carrying this role host daemons. */

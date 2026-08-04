@@ -3,7 +3,6 @@ import { Actor } from '../../src/Actor.js';
 import { ActorSystem } from '../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../src/ActorSystemOptions.js';
 import { LogLevel, NoopLogger } from '../../src/Logger.js';
-import { Props } from '../../src/Props.js';
 import { DeadLetter } from '../../src/SystemMessages.js';
 
 const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
@@ -24,8 +23,8 @@ describe('DeadLetter routing', () => {
     class Nothing extends Actor<string> { override onReceive(_: string): void {} }
 
     const sys = newSystem();
-    sys.spawn(Props.create(() => new Listener()), 'lst');
-    const dead = sys.spawn(Props.create(() => new Nothing()), 'n');
+    sys.spawn(() => new Listener(), 'lst');
+    const dead = sys.spawn(() => new Nothing(), 'n');
     dead.stop();
     await sleep(30);
 
@@ -47,7 +46,7 @@ describe('DeadLetter routing', () => {
       override onReceive(m: DeadLetter): void { seen.push(m); }
     }
     const sys = newSystem();
-    sys.spawn(Props.create(() => new Listener()), 'lst');
+    sys.spawn(() => new Listener(), 'lst');
     // Import Nobody lazily to avoid unused at top.
     const { Nobody } = await import('../../src/ActorRef.js');
     Nobody.tell('nothing');
@@ -70,8 +69,8 @@ describe('DeadLetter delivery loop', () => {
     class Nothing extends Actor<string> { override onReceive(_: string): void {} }
 
     const sys = newSystem('dl-loop');
-    const listener = sys.spawn(Props.create(() => new Listener()), 'lst');
-    const dead = sys.spawn(Props.create(() => new Nothing()), 'n');
+    const listener = sys.spawn(() => new Listener(), 'lst');
+    const dead = sys.spawn(() => new Nothing(), 'n');
     dead.stop();
     await sleep(30);
 

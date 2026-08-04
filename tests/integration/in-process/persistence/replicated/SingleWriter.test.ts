@@ -14,7 +14,6 @@ import { ClusterOptions } from '../../../../../src/cluster/ClusterOptions.js';
 import { InMemoryTransport } from '../../../../../src/cluster/Transport.js';
 import { NodeAddress } from '../../../../../src/cluster/NodeAddress.js';
 import { LogLevel, NoopLogger } from '../../../../../src/Logger.js';
-import { Props } from '../../../../../src/Props.js';
 import { ReplicatedEventSourcedActor } from '../../../../../src/persistence/ReplicatedEventSourcedActor.js';
 
 type Command = { kind: 'add'; n: number };
@@ -54,7 +53,7 @@ describe('ReplicatedEventSourcedActor — single-writer per pid (#58)', () => {
     try {
       // First actor — succeeds.
       const a1 = sys.spawn(
-        Props.create(() => new Counter() as unknown as Actor<unknown>),
+        () => new Counter() as unknown as Actor<unknown>,
         'a1',
       );
       // Give it time to enter preStart.
@@ -65,7 +64,7 @@ describe('ReplicatedEventSourcedActor — single-writer per pid (#58)', () => {
       // settle and then verify the registry blocked it consistently
       // (every restart attempt re-throws because a1 is still live).
       const a2 = sys.spawn(
-        Props.create(() => new Counter() as unknown as Actor<unknown>),
+        () => new Counter() as unknown as Actor<unknown>,
         'a2',
       );
       await Bun.sleep(150);
@@ -95,7 +94,7 @@ describe('ReplicatedEventSourcedActor — single-writer per pid (#58)', () => {
     const cluster = await Cluster.join(sys, clusterOptions);
     try {
       const a1 = sys.spawn(
-        Props.create(() => new Counter() as unknown as Actor<unknown>),
+        () => new Counter() as unknown as Actor<unknown>,
         'a1',
       );
       await Bun.sleep(50);
@@ -105,7 +104,7 @@ describe('ReplicatedEventSourcedActor — single-writer per pid (#58)', () => {
 
       // Fresh spawn with the same pid — no failure.
       const a2 = sys.spawn(
-        Props.create(() => new Counter() as unknown as Actor<unknown>),
+        () => new Counter() as unknown as Actor<unknown>,
         'a2',
       );
       await Bun.sleep(50);
@@ -147,11 +146,11 @@ describe('ReplicatedEventSourcedActor — single-writer per pid (#58)', () => {
     try {
       // Both spawn with persistenceId='shared-counter' — different systems.
       const a1 = sys1.spawn(
-        Props.create(() => new Counter() as unknown as Actor<unknown>),
+        () => new Counter() as unknown as Actor<unknown>,
         'a-in-sys1',
       );
       const a2 = sys2.spawn(
-        Props.create(() => new Counter() as unknown as Actor<unknown>),
+        () => new Counter() as unknown as Actor<unknown>,
         'a-in-sys2',
       );
       await Bun.sleep(100);
@@ -196,12 +195,12 @@ describe('ReplicatedEventSourcedActor — single-writer per pid (#58)', () => {
     const cluster = await Cluster.join(sys, clusterOptions);
     try {
       const a1 = sys.spawn(
-        Props.create(() => new CapturingCounter() as unknown as Actor<unknown>),
+        () => new CapturingCounter() as unknown as Actor<unknown>,
         'a1',
       );
       await Bun.sleep(50);
       const a2 = sys.spawn(
-        Props.create(() => new CapturingCounter() as unknown as Actor<unknown>),
+        () => new CapturingCounter() as unknown as Actor<unknown>,
         'a2',
       );
       await Bun.sleep(100);

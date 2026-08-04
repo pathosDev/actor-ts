@@ -3,7 +3,7 @@
  *
  *   tsx examples/death-watch.ts
  */
-import { Actor, ActorSystem, Props, Terminated } from '../src/index.js';
+import { Actor, ActorSystem, Terminated } from '../src/index.js';
 import { attachDevTools } from './devtools.js';
 
 class Child extends Actor<'work' | 'die'> {
@@ -22,7 +22,7 @@ class Watcher extends Actor<'start' | 'kill' | Terminated> {
 
   override onReceive(message: 'start' | 'kill' | Terminated): void {
     if (message === 'start') {
-      this.child = this.context.spawn(Props.create(() => new Child()), 'kid');
+      this.child = this.context.spawn(() => new Child(), 'kid');
       this.context.watch(this.child);
       this.child.tell('work');
       return;
@@ -41,7 +41,7 @@ class Watcher extends Actor<'start' | 'kill' | Terminated> {
 async function main(): Promise<void> {
   const system = ActorSystem.create('death-watch');
   const devtools = await attachDevTools(system);
-  const watcher = system.spawn(Props.create(() => new Watcher()), 'watcher');
+  const watcher = system.spawn(() => new Watcher(), 'watcher');
   watcher.tell('start');
   await new Promise(resolve => setTimeout(resolve, 40));
   watcher.tell('kill');

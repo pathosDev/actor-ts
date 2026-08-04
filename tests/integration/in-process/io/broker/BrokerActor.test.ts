@@ -1,6 +1,5 @@
 import { describe, expect, test } from 'bun:test';
 import { ActorSystem } from '../../../../../src/ActorSystem.js';
-import { Props } from '../../../../../src/Props.js';
 import { createTestActorSystem } from '../../../../util/TestActorSystem.js';
 import { BrokerActor, type OutboundEnvelope } from '../../../../../src/io/broker/BrokerActor.js';
 import {
@@ -162,7 +161,7 @@ function makeSystem(name = 'broker-test', config?: Record<string, unknown>): Act
 }
 
 /**
- * Bypass `Props` to keep direct access to a captured FakeBroker.
+ * Bypass the class form to keep direct access to a captured FakeBroker.
  * `configure` runs on the fresh instance *before* `preStart`, which is
  * the only window for anything the first connect must already see
  * (`failNextConnects`, `configuredSubscriptions`).
@@ -174,12 +173,12 @@ function spawnFake(
 ): { ref: ActorRef<FakeCommand>; brokerReady: Promise<FakeBroker> } {
   let resolve!: (broker: FakeBroker) => void;
   const brokerReady = new Promise<FakeBroker>((r) => { resolve = r; });
-  const ref = sys.spawnAnonymous(Props.create(() => {
+  const ref = sys.spawnAnonymous(() => {
     const broker = new FakeBroker(options);
     configure(broker);
     resolve(broker);
     return broker as unknown as Actor<FakeCommand>;
-  }));
+  });
   return { ref: ref as ActorRef<FakeCommand>, brokerReady };
 }
 
@@ -226,7 +225,7 @@ describe('BrokerActor — options resolution', () => {
   test('missing required setting raises BrokerOptionsError', async () => {
     const sys = makeSystem('cfg-4');
     let captured: Error | null = null;
-    sys.spawnAnonymous(Props.create(() => {
+    sys.spawnAnonymous(() => {
       const broker = new FakeBroker();  // no endpoint anywhere
       // Intercept preStart to capture the error.
       const orig = broker.preStart.bind(broker);
@@ -235,7 +234,7 @@ describe('BrokerActor — options resolution', () => {
         catch (e) { captured = e as Error; }
       };
       return broker as unknown as Actor<FakeCommand>;
-    }));
+    });
     await sleep(20);
     expect(captured).toBeInstanceOf(BrokerOptionsError);
     expect((captured as unknown as Error).message).toContain('missing required options');
@@ -251,9 +250,9 @@ describe('BrokerActor — lifecycle', () => {
     const sys = makeSystem('lc-1');
     let connectedCount = 0;
     sys.eventStream.subscribe(
-      sys.spawnAnonymous(Props.create(() => new (class extends Actor<unknown> {
+      sys.spawnAnonymous(() => new (class extends Actor<unknown> {
         override onReceive(_: unknown): void { connectedCount++; }
-      })())),
+      })()),
       BrokerConnected,
     );
     const { brokerReady } = spawnFake(sys, { endpoint: 'host:1' });
@@ -269,9 +268,9 @@ describe('BrokerActor — lifecycle', () => {
     const sys = makeSystem('lc-2');
     let disconnectedCount = 0;
     sys.eventStream.subscribe(
-      sys.spawnAnonymous(Props.create(() => new (class extends Actor<unknown> {
+      sys.spawnAnonymous(() => new (class extends Actor<unknown> {
         override onReceive(_: unknown): void { disconnectedCount++; }
-      })())),
+      })()),
       BrokerDisconnected,
     );
     const { ref, brokerReady } = spawnFake(sys, { endpoint: 'host:1' });
@@ -321,9 +320,9 @@ describe('BrokerActor — reconnect', () => {
     const sys = makeSystem('rc-3');
     let reconnectAttempts = 0;
     sys.eventStream.subscribe(
-      sys.spawnAnonymous(Props.create(() => new (class extends Actor<unknown> {
+      sys.spawnAnonymous(() => new (class extends Actor<unknown> {
         override onReceive(_: unknown): void { reconnectAttempts++; }
-      })())),
+      })()),
       BrokerReconnectAttempt,
     );
     const { brokerReady } = spawnFake(sys, {
@@ -586,9 +585,9 @@ describe('BrokerActor — outbound buffer', () => {
     const sys = makeSystem('ob-2');
     let overflows = 0;
     sys.eventStream.subscribe(
-      sys.spawnAnonymous(Props.create(() => new (class extends Actor<unknown> {
+      sys.spawnAnonymous(() => new (class extends Actor<unknown> {
         override onReceive(_: unknown): void { overflows++; }
-      })())),
+      })()),
       BrokerBufferOverflow,
     );
     const { brokerReady } = spawnFake(sys, {
@@ -612,9 +611,9 @@ describe('BrokerActor — outbound buffer', () => {
     const sys = makeSystem('ob-3');
     let notConnected = 0;
     sys.eventStream.subscribe(
-      sys.spawnAnonymous(Props.create(() => new (class extends Actor<unknown> {
+      sys.spawnAnonymous(() => new (class extends Actor<unknown> {
         override onReceive(_: unknown): void { notConnected++; }
-      })())),
+      })()),
       BrokerNotConnected,
     );
     const { brokerReady } = spawnFake(sys, {
@@ -640,7 +639,7 @@ describe('BrokerActor — subscribers', () => {
     const sys = makeSystem('sub-1');
     const probes = [new ProbeActor(), new ProbeActor()];
     const refs = probes.map((p, i) =>
-      sys.spawn(Props.create(() => p as unknown as Actor<unknown>), `p${i}`),
+      sys.spawn(() => p as unknown as Actor<unknown>, `p${i}`),
     );
     const { brokerReady } = spawnFake(sys, { endpoint: 'h' });
     const broker = await brokerReady;
@@ -659,7 +658,7 @@ describe('BrokerActor — subscribers', () => {
   test('unsubscribe removes from fanOut targets', async () => {
     const sys = makeSystem('sub-2');
     const probe = new ProbeActor();
-    const probeRef = sys.spawnAnonymous(Props.create(() => probe as unknown as Actor<unknown>));
+    const probeRef = sys.spawnAnonymous(() => probe as unknown as Actor<unknown>);
     const { brokerReady } = spawnFake(sys, { endpoint: 'h' });
     const broker = await brokerReady;
     await sleep(20);
@@ -676,7 +675,7 @@ describe('BrokerActor — subscribers', () => {
   test('multiple topics for one ref tracked independently', async () => {
     const sys = makeSystem('sub-3');
     const probe = new ProbeActor();
-    const probeRef = sys.spawnAnonymous(Props.create(() => probe as unknown as Actor<unknown>));
+    const probeRef = sys.spawnAnonymous(() => probe as unknown as Actor<unknown>);
     const { brokerReady } = spawnFake(sys, { endpoint: 'h' });
     const broker = await brokerReady;
     await sleep(20);

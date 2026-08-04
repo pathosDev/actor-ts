@@ -2,7 +2,6 @@ import { afterEach, describe, expect, test } from 'bun:test';
 import { Actor } from '../../../src/Actor.js';
 import { ActorSystem } from '../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../src/ActorSystemOptions.js';
-import { Props } from '../../../src/Props.js';
 import { LogLevel, NoopLogger } from '../../../src/Logger.js';
 import { ExplainMethods } from '../../../src/devtools/taps/ExplainTap.js';
 import type { DevToolsRequestMethod } from '../../../src/devtools/protocol/index.js';
@@ -54,7 +53,7 @@ const settle = (ms = 60): Promise<void> => new Promise((resolve) => setTimeout(r
 describe('ExplainMethods', () => {
   test('enables recording on a named actor', async () => {
     const system = newSystem('rpc-enable');
-    const ref = system.spawn(Props.create(() => new WorkerActor()), 'target');
+    const ref = system.spawn(() => new WorkerActor(), 'target');
     const { server, invoke } = fakeServer();
     new ExplainMethods(system).install(server);
 
@@ -66,7 +65,7 @@ describe('ExplainMethods', () => {
 
   test('records and returns what the actor handled', async () => {
     const system = newSystem('rpc-fetch');
-    const ref = system.spawn(Props.create(() => new WorkerActor()), 'target');
+    const ref = system.spawn(() => new WorkerActor(), 'target');
     const { server, invoke } = fakeServer();
     new ExplainMethods(system).install(server);
 
@@ -87,7 +86,7 @@ describe('ExplainMethods', () => {
 
   test('honours a requested capacity', async () => {
     const system = newSystem('rpc-capacity');
-    const ref = system.spawn(Props.create(() => new WorkerActor()), 'target');
+    const ref = system.spawn(() => new WorkerActor(), 'target');
     const { server, invoke } = fakeServer();
     new ExplainMethods(system).install(server);
 
@@ -103,7 +102,7 @@ describe('ExplainMethods', () => {
 
   test('caps an absurd capacity rather than letting a ring become a log', async () => {
     const system = newSystem('rpc-cap');
-    const ref = system.spawn(Props.create(() => new WorkerActor()), 'target');
+    const ref = system.spawn(() => new WorkerActor(), 'target');
     const { server, invoke } = fakeServer();
     new ExplainMethods(system).install(server);
 
@@ -116,7 +115,7 @@ describe('ExplainMethods', () => {
 
   test('disabling stops recording', async () => {
     const system = newSystem('rpc-disable');
-    const ref = system.spawn(Props.create(() => new WorkerActor()), 'target');
+    const ref = system.spawn(() => new WorkerActor(), 'target');
     const { server, invoke } = fakeServer();
     new ExplainMethods(system).install(server);
 
@@ -136,7 +135,7 @@ describe('ExplainMethods', () => {
     // A ring left running because a browser tab closed is a leak the
     // developer never asked for.
     const system = newSystem('rpc-cleanup');
-    const ref = system.spawn(Props.create(() => new WorkerActor()), 'target');
+    const ref = system.spawn(() => new WorkerActor(), 'target');
     const { server, invoke } = fakeServer();
     const methods = new ExplainMethods(system);
     methods.install(server);
@@ -171,7 +170,7 @@ describe('ExplainMethods', () => {
 
   test('rejects a nonsensical capacity', async () => {
     const system = newSystem('rpc-badcapacity');
-    const ref = system.spawn(Props.create(() => new WorkerActor()), 'target');
+    const ref = system.spawn(() => new WorkerActor(), 'target');
     const { server, invoke } = fakeServer();
     new ExplainMethods(system).install(server);
 

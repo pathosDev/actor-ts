@@ -79,7 +79,6 @@ link is 1:1 per stream).
 
 ```ts
 import {
-  Props,
   ProducerController,
   ProducerControllerOptions,
   ConsumerController,
@@ -87,11 +86,11 @@ import {
 
 // Consumer side — handler function, auto-ack on resolve:
 const consumer = system.spawn(
-  Props.create(() => new ConsumerController<OrderEvent>({
+  () => new ConsumerController<OrderEvent>({
     handler: async (order) => {
       await processOrder(order);
     },
-  })),
+  }),
 );
 
 // Producer side — wraps outgoing messages in seq + ack tracking:
@@ -100,7 +99,7 @@ const producerControllerOptions = ProducerControllerOptions.create<OrderEvent>()
   .withConsumer(consumer)
   .withWindowSize(16);
 const producer = system.spawn(
-  Props.create(() => new ProducerController<OrderEvent>(producerControllerOptions)),
+  () => new ProducerController<OrderEvent>(producerControllerOptions),
 );
 
 producer.tell({

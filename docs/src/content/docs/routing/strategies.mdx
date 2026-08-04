@@ -21,7 +21,7 @@ plus a `custom` slot; the cluster router adds consistent-hashing.
 ## Round-robin
 
 ```ts
-Router.roundRobin(4, routeeProps);
+Router.roundRobin(4, routee);
 ```
 
 Cycles through the routee list — message 1 → routee 1, message 2 →
@@ -58,7 +58,7 @@ times are roughly equal across messages.
 ## Random
 
 ```ts
-Router.random(4, routeeProps);
+Router.random(4, routee);
 ```
 
 ```ts
@@ -91,7 +91,7 @@ Right choice when **statelessness matters more than predictability**.
 ## Broadcast
 
 ```ts
-Router.broadcast(4, routeeProps);
+Router.broadcast(4, routee);
 ```
 
 ```ts
@@ -179,7 +179,7 @@ const warmupStrategy: RoutingStrategy = (routees, state) => {
   return [routees[state.messageIndex % routees.length]];
 };
 
-system.spawnAnonymous(Router.custom(4, workerProps, warmupStrategy));
+system.spawnAnonymous(Router.custom(4, workerFactory, warmupStrategy));
 ```
 
 Anything that satisfies `RoutingStrategy` works.  The state slot
@@ -231,7 +231,7 @@ import { Aside } from '@astrojs/starlight/components';
 ## Where to next
 
 - **[Router](/routing/router/)** — the factories that
-  wrap each strategy in ready-to-spawn Props.
+  wrap each strategy in a ready-to-spawn actor factory.
 - **[Pool vs group](/routing/pool-vs-group/)** — how
   these strategies behave when applied to a fixed pool vs a
   dynamic group of routees.

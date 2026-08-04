@@ -10,7 +10,6 @@ import {
   ActorSystem,
   CircuitBreaker,
   CircuitBreakerOpenError,
-  Props,
 } from '../../src/index.js';
 import { attachDevTools } from '../devtools.js';
 
@@ -27,7 +26,7 @@ class FlakyService extends Actor<Command> {
 async function main(): Promise<void> {
   const system = ActorSystem.create('cb-realistic');
   const devtools = await attachDevTools(system);
-  const svc = system.spawn(Props.create(() => new FlakyService()), 'svc');
+  const svc = system.spawn(() => new FlakyService(), 'svc');
 
   const breaker = new CircuitBreaker({
     maxFailures: 3,

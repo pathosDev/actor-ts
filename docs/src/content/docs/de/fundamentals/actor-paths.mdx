@@ -78,10 +78,10 @@ einen neuen Pfad zurück; es mutiert das Original nicht.
 Du kannst beim Spawnen einen `name` mitgeben:
 
 ```ts
-const ref = system.spawn(Props.create(() => new Foo()), 'my-foo');
+const ref = system.spawn(() => new Foo(), 'my-foo');
 // ref.path.toString() === 'actor-ts://my-app/user/my-foo'
 
-const child = this.context.spawn(Props.create(() => new Bar()), 'bar');
+const child = this.context.spawn(() => new Bar(), 'bar');
 // child.path.toString() === 'actor-ts://my-app/user/my-foo/bar'
 ```
 
@@ -215,8 +215,8 @@ class Worker extends Actor<...> {
     this.cache.tell({ kind: 'put', ... });
   }
 }
-const cache  = system.spawn(Props.create(() => new Cache()), 'cache');
-const worker = system.spawnAnonymous(Props.create(() => new Worker(cache)));
+const cache  = system.spawn(() => new Cache(), 'cache');
+const worker = system.spawnAnonymous(() => new Worker(cache));
 ```
 
 Die Konstruktor-Injection-Variante ist typsicher, hängt nicht von
@@ -323,7 +323,7 @@ wie der host-aware Pfad wire-encoded wird.
 
 ## Wie es weitergeht
 
-- **[Props](/de/fundamentals/props/)** — das
+- **[Actors erzeugen](/de/fundamentals/spawning/)** — das
   Konfigurations-Bundle, das den optionalen `name` für den Pfad des
   Actors enthält.
 - **[Actor-System](/de/fundamentals/actor-system/)** — die

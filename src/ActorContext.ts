@@ -1,8 +1,9 @@
 import type { ActorRef } from './ActorRef.js';
 import type { ActorPath } from './ActorPath.js';
 import type { ActorSystem } from './ActorSystem.js';
+import type { ActorClassOrFactory } from './Actor.js';
+import type { ActorOptions } from './ActorOptions.js';
 import type { EntityContext } from './EntityContext.js';
-import type { Props } from './Props.js';
 import type { Logger } from './Logger.js';
 import type { Option } from './util/Option.js';
 
@@ -74,7 +75,7 @@ export interface ActorContext<TMessage = unknown> {
    *     });
    *
    * Takes effect on the very next record, and outranks both
-   * `Props.withDisplayName(...)` and the method.  Purely cosmetic — the
+   * `ActorOptions.withDisplayName(...)` and the method.  Purely cosmetic — the
    * path stays the identity everywhere that routes or correlates.
    */
   setDisplayName(name: string): void;
@@ -84,7 +85,7 @@ export interface ActorContext<TMessage = unknown> {
    * caller-supplied name.  The name must be unique among siblings.
    * For an auto-generated name, see {@link spawnAnonymous}.
    */
-  spawn<T>(props: Props<T>, name: string): ActorRef<T>;
+  spawn<T>(actor: ActorClassOrFactory<T>, name: string, options?: ActorOptions<T>): ActorRef<T>;
 
   /**
    * Spawn a child actor under this one with an auto-generated name.
@@ -92,12 +93,12 @@ export interface ActorContext<TMessage = unknown> {
    * the caller doesn't need a stable path.  For a deterministic
    * name, see {@link spawn}.
    */
-  spawnAnonymous<T>(props: Props<T>): ActorRef<T>;
+  spawnAnonymous<T>(actor: ActorClassOrFactory<T>, options?: ActorOptions<T>): ActorRef<T>;
 
   /**
    * Spawn a typed-Behavior child with a deterministic name — the
    * Behavior-DSL counterpart to {@link spawn}.  Wraps the Behavior
-   * in `typedProps` internally so callers don't have to.
+   * in `typedActor` internally so callers don't have to.
    *
    *     const child = this.context.spawnTyped(counter(0), 'counter');
    */

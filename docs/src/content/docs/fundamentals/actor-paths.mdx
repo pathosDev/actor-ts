@@ -76,10 +76,10 @@ returns a new path; it doesn't mutate the original.
 You can pass a `name` when spawning:
 
 ```ts
-const ref = system.spawn(Props.create(() => new Foo()), 'my-foo');
+const ref = system.spawn(() => new Foo(), 'my-foo');
 // ref.path.toString() === 'actor-ts://my-app/user/my-foo'
 
-const child = this.context.spawn(Props.create(() => new Bar()), 'bar');
+const child = this.context.spawn(() => new Bar(), 'bar');
 // child.path.toString() === 'actor-ts://my-app/user/my-foo/bar'
 ```
 
@@ -208,8 +208,8 @@ class Worker extends Actor<...> {
     this.cache.tell({ kind: 'put', ... });
   }
 }
-const cache  = system.spawn(Props.create(() => new Cache()), 'cache');
-const worker = system.spawnAnonymous(Props.create(() => new Worker(cache)));
+const cache  = system.spawn(() => new Cache(), 'cache');
+const worker = system.spawnAnonymous(() => new Worker(cache));
 ```
 
 The constructor-injection version is type-safe, doesn't depend on
@@ -313,7 +313,7 @@ how the host-aware path is wire-encoded.
 
 ## Where to next
 
-- **[Props](/fundamentals/props/)** — the configuration
+- **[Spawning actors](/fundamentals/spawning/)** — the configuration
   bundle that includes the optional `name` for the actor's path.
 - **[Actor system](/fundamentals/actor-system/)** — the
   guardian hierarchy (`/user`, `/system`, `/deadLetters`).

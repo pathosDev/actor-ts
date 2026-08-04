@@ -11,7 +11,7 @@ import {
   Actor,
   ActorSystem,
   PriorityMailbox,
-  Props,
+  ActorOptions,
 } from '../../src/index.js';
 import { attachDevTools } from '../devtools.js';
 
@@ -53,9 +53,9 @@ class Dispatcher extends Actor<Message> {
 async function main(): Promise<void> {
   const system = ActorSystem.create('pri-dispatch');
   const devtools = await attachDevTools(system);
-  const props = Props.create(() => new Dispatcher())
+  const dispatcherOptions = ActorOptions.create<Message>()
     .withMailbox(() => new PriorityMailbox<Message>({ priorityFor }) as never);
-  const ref = system.spawnAnonymous(props);
+  const ref = system.spawnAnonymous(Dispatcher, dispatcherOptions);
 
   // Fire a burst: a bunch of logs, a heartbeat, a command, a few more logs.
   for (let i = 0; i < 6; i++) ref.tell({ kind: 'log', line: `bulk-${i}` });

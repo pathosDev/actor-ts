@@ -25,7 +25,6 @@ import {
   type EventAdapter,
   type SnapshotAdapter,
 } from '../../../../../src/persistence/migration/index.js';
-import { Props } from '../../../../../src/Props.js';
 import { awaitCondition } from '../../../../util/AwaitCondition.js';
 
 /* --------------------------- shared types -------------------------------- */
@@ -108,7 +107,7 @@ describe('PersistentActor — adapter round-trip', () => {
   test('writes envelopes to journal and recovers state correctly', async () => {
     const { system, journal } = makeSystem('rt');
     const seen: unknown[] = [];
-    const ref = system.spawn(Props.create(() => new Account('acct-rt', seen)), 'a');
+    const ref = system.spawn(() => new Account('acct-rt', seen), 'a');
     ref.tell({ kind: 'deposit', amount: 10 });
     ref.tell({ kind: 'deposit', amount: 5 });
     await awaitCondition(async () => (await journal.read<unknown>('acct-rt', 1)).length === 2, {
@@ -135,7 +134,7 @@ describe('PersistentActor — adapter round-trip', () => {
     ext2.setJournal(journal);
     ext2.setSnapshotStore(new InMemorySnapshotStore());
     const seen2: unknown[] = [];
-    sys2.spawn(Props.create(() => new Account('acct-rt', seen2)), 'a');
+    sys2.spawn(() => new Account('acct-rt', seen2), 'a');
     await awaitCondition(() => seen2.length > 0, { label: 'restarted actor completed recovery' });
     expect(seen2).toContainEqual({ ready: { balance: 15, currency: 'EUR' } });
     await sys2.terminate();
@@ -154,7 +153,7 @@ describe('PersistentActor — v1 → v2 upcast on recovery', () => {
     ], 0);
 
     const seen: unknown[] = [];
-    system.spawn(Props.create(() => new Account('acct-uc', seen)), 'a');
+    system.spawn(() => new Account('acct-uc', seen), 'a');
     await awaitCondition(() => seen.length > 0, { label: 'recovery from the v1 envelopes completed' });
     // Both events apply — currency defaulted to 'USD' from the adapter.
     expect(seen).toContainEqual({ ready: { balance: 15, currency: 'USD' } });
@@ -170,7 +169,7 @@ describe('PersistentActor — v1 → v2 upcast on recovery', () => {
     ], 0);
 
     const seen: unknown[] = [];
-    system.spawn(Props.create(() => new Account('acct-mix', seen)), 'a');
+    system.spawn(() => new Account('acct-mix', seen), 'a');
     await awaitCondition(() => seen.length > 0, { label: 'recovery from the mixed v1+v2 stream completed' });
     // 10 (USD) + 5 (EUR) + 3 (USD) = 18, last-seen currency = 'USD'.
     expect(seen).toContainEqual({ ready: { balance: 18, currency: 'USD' } });
@@ -195,7 +194,7 @@ describe('PersistentActor — strict mode', () => {
       override onRecoveryFailure(e: Error): void { recoveryError = e; }
       override onRecoveryComplete(s: State): void { recovered = s; }
     }
-    system.spawn(Props.create(() => new StrictAccount('acct-strict', [])), 'a');
+    system.spawn(() => new StrictAccount('acct-strict', []), 'a');
     await awaitCondition(() => recoveryError !== null, {
       label: 'strict-mode recovery reported a failure',
     });
@@ -212,7 +211,7 @@ describe('PersistentActor — snapshot adapter', () => {
   test('saves snapshot envelope and recovers from it', async () => {
     const { system, journal, snapshots } = makeSystem('snap');
     const seen: unknown[] = [];
-    const ref = system.spawn(Props.create(() => new Account('acct-snap', seen)), 'a');
+    const ref = system.spawn(() => new Account('acct-snap', seen), 'a');
     // Three deposits → snapshotPolicy fires after seq=2 (and again after seq=4 if reached).
     ref.tell({ kind: 'deposit', amount: 10 });
     ref.tell({ kind: 'deposit', amount: 20 });
@@ -244,7 +243,7 @@ describe('PersistentActor — snapshot adapter', () => {
     ext2.setJournal(journal);
     ext2.setSnapshotStore(snapshots);
     const seen2: unknown[] = [];
-    sys2.spawn(Props.create(() => new Account('acct-snap', seen2)), 'a');
+    sys2.spawn(() => new Account('acct-snap', seen2), 'a');
     await awaitCondition(() => seen2.length > 0, { label: 'restarted actor recovered from the snapshot' });
     expect(seen2).toContainEqual({ ready: { balance: 60, currency: 'EUR' } });
     await sys2.terminate();
@@ -257,7 +256,7 @@ describe('PersistentActor — snapshot adapter', () => {
       _v: 1, _t: 'BankAccount.State', _e: { balance: 999 } as StateV1,
     });
     const seen: unknown[] = [];
-    system.spawn(Props.create(() => new Account('acct-snap-uc', seen)), 'a');
+    system.spawn(() => new Account('acct-snap-uc', seen), 'a');
     await awaitCondition(() => seen.length > 0, { label: 'recovery from the v1 snapshot envelope completed' });
     expect(seen).toContainEqual({ ready: { balance: 999, currency: 'USD' } });
     await system.terminate();
@@ -303,7 +302,7 @@ describe('PersistentActor — MigrationChain non-additive', () => {
       { _v: 3, _t: 'BankAccount.Deposited', _e: { kind: 'deposited', cents: 250, currency: 'USD' } },
     ], 0);
     const seen: unknown[] = [];
-    system.spawn(Props.create(() => new CentsAccount('acct-chain', seen)), 'a');
+    system.spawn(() => new CentsAccount('acct-chain', seen), 'a');
     await awaitCondition(() => seen.length > 0, { label: 'recovery through the v1→v2→v3 chain completed' });
     // 100 (USD) + 200 (EUR) + 250 (USD) = 550 cents, last currency 'USD'.
     expect(seen).toContainEqual({ ready: { balanceCents: 550, currency: 'USD' } });
@@ -335,7 +334,7 @@ describe('PersistentActor — SQLite e2e with adapter', () => {
     ext.setSnapshotStore(snapshots);
 
     const seen: unknown[] = [];
-    const ref = system.spawn(Props.create(() => new Account('acct-sql', seen)), 'a');
+    const ref = system.spawn(() => new Account('acct-sql', seen), 'a');
     ref.tell({ kind: 'deposit', amount: 7 });
     ref.tell({ kind: 'deposit', amount: 13 });
     await awaitCondition(async () => (await journal.read<unknown>('acct-sql', 1)).length === 2, {
@@ -359,7 +358,7 @@ describe('PersistentActor — SQLite e2e with adapter', () => {
     sys2.extension(PersistenceExtensionId).setJournal(journal2);
     sys2.extension(PersistenceExtensionId).setSnapshotStore(snapshots2);
     const seen2: unknown[] = [];
-    sys2.spawn(Props.create(() => new Account('acct-sql', seen2)), 'a');
+    sys2.spawn(() => new Account('acct-sql', seen2), 'a');
     await awaitCondition(() => seen2.length > 0, { label: 'reopened SQLite journal replayed into recovery' });
     expect(seen2).toContainEqual({ ready: { balance: 20, currency: 'EUR' } });
     await sys2.terminate();
@@ -388,7 +387,7 @@ describe('PersistentActor — no-adapter regression', () => {
     }
     const { system, journal } = makeSystem('raw');
     const seen: unknown[] = [];
-    const ref = system.spawn(Props.create(() => new RawAccount(seen)), 'r');
+    const ref = system.spawn(() => new RawAccount(seen), 'r');
     ref.tell({ kind: 'deposit', amount: 4 });
     await awaitCondition(async () => (await journal.read<unknown>('acct-raw', 1)).length === 1, {
       label: 'the raw event reached the journal',

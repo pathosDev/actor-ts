@@ -22,7 +22,7 @@ Derselbe Counter, zwei Wege:
 
 ```ts
 import { match } from 'ts-pattern';
-import { Actor, Props, ActorSystem } from 'actor-ts';
+import { Actor, ActorSystem } from 'actor-ts';
 
 type IncrementCommand = { kind: 'increment' };
 type DecrementCommand = { kind: 'decrement' };
@@ -42,7 +42,7 @@ class Counter extends Actor<Command> {
 }
 
 const system = ActorSystem.create('demo');
-const counter = system.spawnAnonymous(Props.create(() => new Counter()));
+const counter = system.spawnAnonymous(() => new Counter());
 ```
 
 **Typed:**
@@ -177,6 +177,6 @@ Spawn-Helfer.
 - **[Typed Actor](/de/typed/typed-actor/)** — was ein
   Behavior zur Laufzeit ausführt.
 - **[Spawn Typed](/de/typed/spawn-typed/)** — `system.spawnTyped`,
-  `context.spawnTyped`, `typedProps`.
+  `context.spawnTyped`, `typedActor`.
 - **[Fundamentals-Überblick](/de/fundamentals/overview/)** —
   die untyped Konzeptkarte; viele Ideen übertragen sich.

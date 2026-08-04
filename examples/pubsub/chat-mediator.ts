@@ -6,7 +6,7 @@
  *
  * Expected output: each subscriber logs every message posted to "chat".
  */
-import { Actor, ActorSystem, Cluster, ClusterOptions, InMemoryTransport, NodeAddress, Props } from '../../src/index.js';
+import { Actor, ActorSystem, Cluster, ClusterOptions, InMemoryTransport, NodeAddress } from '../../src/index.js';
 import { DistributedPubSubId, Publish, Subscribe } from '../../src/cluster/pubsub/index.js';
 import { attachDevTools } from '../devtools.js';
 
@@ -32,7 +32,7 @@ async function main(): Promise<void> {
   const mediator = system.extension(DistributedPubSubId).start(cluster);
 
   for (const name of ['alice', 'bob', 'carol']) {
-    const sub = system.spawn(Props.create(() => new Subscriber(name)), name);
+    const sub = system.spawn(() => new Subscriber(name), name);
     mediator.tell(new Subscribe('chat', sub));
   }
 

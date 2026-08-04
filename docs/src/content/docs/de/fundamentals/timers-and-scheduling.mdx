@@ -22,7 +22,7 @@ Fälle, in denen du wirklich willst, dass ein Timer den Actor
 
 ```ts
 import { match } from 'ts-pattern';
-import { Actor, ActorSystem, Props } from 'actor-ts';
+import { Actor, ActorSystem } from 'actor-ts';
 
 type TickMessage = { readonly kind: 'tick' };
 type SetMessage = { readonly kind: 'set'; readonly intervalMs: number };
@@ -53,7 +53,7 @@ class Heartbeat extends Actor<Message> {
 }
 
 const system = ActorSystem.create('demo');
-system.spawnAnonymous(Props.create(() => new Heartbeat()));
+system.spawnAnonymous(() => new Heartbeat());
 ```
 
 Zwei zentrale Beobachtungen:

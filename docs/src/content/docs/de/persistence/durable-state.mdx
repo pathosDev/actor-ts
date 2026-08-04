@@ -47,7 +47,7 @@ Audit-Trail.
 ## Ein minimales Beispiel
 
 ```ts
-import { DurableStateActor, DurableStateOptions, ActorSystem, Props } from 'actor-ts';
+import { DurableStateActor, DurableStateOptions, ActorSystem } from 'actor-ts';
 import { InMemoryDurableStateStore } from 'actor-ts';
 import { match } from 'ts-pattern';
 
@@ -91,7 +91,7 @@ const durableStateOptions = DurableStateOptions.create<State>()
   .withStore(store)
   .withEmptyState(() => ({ items: [] }));
 const cart = system.spawn(
-  Props.create(() => new Cart(durableStateOptions)),
+  () => new Cart(durableStateOptions),
   'cart',
 );
 
@@ -121,7 +121,7 @@ Drei Felder:
   Eintrag existiert (erste Ausführung, gelöschter State).  Stellt
   den Initialwert bereit.
 
-Reiche sie durch die `Props.create(() => new Cart({...}))`-Factory.
+Reiche sie durch die `() => new Cart({...})`-Factory.
 Die Settings können pro Actor-Inkarnation variieren (unterschiedliche
 IDs für unterschiedliche User, derselbe Store).
 

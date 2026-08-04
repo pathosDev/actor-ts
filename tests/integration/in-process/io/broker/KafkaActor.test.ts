@@ -13,7 +13,6 @@ import { ActorRef } from '../../../../../src/ActorRef.js';
 import { ActorSystem } from '../../../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../../../src/ActorSystemOptions.js';
 import { LogLevel, NoopLogger } from '../../../../../src/Logger.js';
-import { Props } from '../../../../../src/Props.js';
 import {
   KafkaActor,
   withAutoHeartbeat,
@@ -189,14 +188,14 @@ async function bootActor(
   target: CapturingTarget; instance: MockKafkaActor;
 }> {
   const target = new CapturingTarget();
-  const targetRef = sys.spawn(Props.create(() => target), 'target');
+  const targetRef = sys.spawn(() => target, 'target');
   const ref = { current: null as MockKafkaActor | null };
   const actor = sys.spawn(
-    Props.create(() => {
+    () => {
       const actor = new MockKafkaActor(options.withTarget(targetRef));
       ref.current = actor;
       return actor;
-    }),
+    },
     'kafka',
   );
   // Wait until preStart has fired connectImplementation + run() registration.

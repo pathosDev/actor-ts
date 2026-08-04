@@ -29,7 +29,7 @@ persisted as an event and replayed on recovery.
 ## A minimal example
 
 ```ts
-import { FSM, Props, ActorSystem } from 'actor-ts';
+import { FSM, ActorSystem } from 'actor-ts';
 
 type State = 'closed' | 'open';
 type Data  = { openedAt?: number };
@@ -56,7 +56,7 @@ class Door extends FSM<State, Data, Message> {
 }
 
 const system = ActorSystem.create('demo');
-const door = system.spawnAnonymous(Props.create(() => new Door()));
+const door = system.spawnAnonymous(() => new Door());
 door.tell('open');
 door.tell('close');
 ```

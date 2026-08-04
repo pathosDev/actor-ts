@@ -1,6 +1,6 @@
-import { Actor } from './Actor.js';
+import { Actor, type ActorClassOrFactory, type ActorFactory } from './Actor.js';
+import type { ActorOptions } from './ActorOptions.js';
 import type { ActorRef } from './ActorRef.js';
-import { Props } from './Props.js';
 import { Terminated } from './SystemMessages.js';
 import { OptionsError } from './util/OptionsValidator.js';
 
@@ -42,7 +42,8 @@ export function broadcastStrategy(): RoutingStrategy {
 
 type RouterConfig<TMessage> = {
   size: number;
-  routeeProps: Props<TMessage>;
+  routee: ActorClassOrFactory<TMessage>;
+  routeeOptions: ActorOptions<TMessage> | undefined;
   strategy: RoutingStrategy;
 };
 
@@ -60,7 +61,7 @@ class RouterActor<TMessage> extends Actor<TMessage | Broadcast<TMessage>> {
 
   override async preStart(): Promise<void> {
     for (let i = 0; i < this.config.size; i++) {
-      const routee = this.context.spawn(this.config.routeeProps, `routee-${i + 1}`);
+      const routee = this.context.spawn(this.config.routee, `routee-${i + 1}`, this.config.routeeOptions);
       this.routees.push(routee as ActorRef<TMessage>);
       this.context.watch(routee);
     }
@@ -131,39 +132,44 @@ function assertPoolSize(size: number): void {
 
 /**
  * Shared by all four factories, so the size guard cannot be forgotten by a
- * fifth.
+ * fifth.  The guard runs *here* and not inside the returned closure: it has
+ * always thrown at the `Router.roundRobin(...)` call that got the size wrong,
+ * and deferring it into the factory would move the failure into `preStart`.
  *
- * The cast is needed because `Props.create` infers the message type from
- * `onReceive`, which accepts the `Terminated` the system delivers for a watched
- * routee.  That is not part of the router's public protocol — callers send
- * `TMessage` or a `Broadcast` — so it is kept out of the type they see.
+ * The cast is needed because the router's `onReceive` accepts the `Terminated`
+ * the system delivers for a watched routee.  That is not part of the router's
+ * public protocol — callers send `TMessage` or a `Broadcast` — so it is kept
+ * out of the type they see.
  */
-function routerProps<TMessage>(config: RouterConfig<TMessage>): Props<TMessage | Broadcast<TMessage>> {
+function routerFactory<TMessage>(config: RouterConfig<TMessage>): ActorFactory<TMessage | Broadcast<TMessage>> {
   assertPoolSize(config.size);
-  return Props.create(() => new RouterActor<TMessage>(config)) as Props<TMessage | Broadcast<TMessage>>;
+  return () => new RouterActor<TMessage>(config) as unknown as Actor<TMessage | Broadcast<TMessage>>;
 }
 
 /**
- * Helpers that return ready-to-spawn Props for pool-style routers.
+ * Helpers that return a ready-to-spawn actor factory for pool-style routers.
  * Example:
- *   const pool = system.spawnAnonymous(Router.roundRobin(5, Props.create(() => new Worker())));
+ *   const pool = system.spawnAnonymous(Router.roundRobin(5, Worker));
  *   pool.tell('work');
  *   pool.tell(new Broadcast('announce'));
+ *
+ * The routee is given the same way any actor is — the class itself, or a
+ * factory when it needs dependencies — with its own optional spawn options.
  */
 export const Router = {
-  roundRobin<TMessage>(size: number, routeeProps: Props<TMessage>): Props<TMessage | Broadcast<TMessage>> {
-    return routerProps({ size, routeeProps, strategy: roundRobinStrategy() });
+  roundRobin<TMessage>(size: number, routee: ActorClassOrFactory<TMessage>, routeeOptions?: ActorOptions<TMessage>): ActorFactory<TMessage | Broadcast<TMessage>> {
+    return routerFactory({ size, routee, routeeOptions, strategy: roundRobinStrategy() });
   },
 
-  random<TMessage>(size: number, routeeProps: Props<TMessage>): Props<TMessage | Broadcast<TMessage>> {
-    return routerProps({ size, routeeProps, strategy: randomStrategy() });
+  random<TMessage>(size: number, routee: ActorClassOrFactory<TMessage>, routeeOptions?: ActorOptions<TMessage>): ActorFactory<TMessage | Broadcast<TMessage>> {
+    return routerFactory({ size, routee, routeeOptions, strategy: randomStrategy() });
   },
 
-  broadcast<TMessage>(size: number, routeeProps: Props<TMessage>): Props<TMessage | Broadcast<TMessage>> {
-    return routerProps({ size, routeeProps, strategy: broadcastStrategy() });
+  broadcast<TMessage>(size: number, routee: ActorClassOrFactory<TMessage>, routeeOptions?: ActorOptions<TMessage>): ActorFactory<TMessage | Broadcast<TMessage>> {
+    return routerFactory({ size, routee, routeeOptions, strategy: broadcastStrategy() });
   },
 
-  custom<TMessage>(size: number, routeeProps: Props<TMessage>, strategy: RoutingStrategy): Props<TMessage | Broadcast<TMessage>> {
-    return routerProps({ size, routeeProps, strategy });
+  custom<TMessage>(size: number, routee: ActorClassOrFactory<TMessage>, strategy: RoutingStrategy, routeeOptions?: ActorOptions<TMessage>): ActorFactory<TMessage | Broadcast<TMessage>> {
+    return routerFactory({ size, routee, routeeOptions, strategy });
   },
 };

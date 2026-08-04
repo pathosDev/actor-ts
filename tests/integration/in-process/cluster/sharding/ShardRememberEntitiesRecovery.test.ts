@@ -11,7 +11,6 @@ import { StartShardingOptions } from '../../../../../src/cluster/sharding/StartS
 import type { StartShardingOptionsBuilder } from '../../../../../src/cluster/sharding/StartShardingOptions.js';
 import { regionSegments } from '../../../../util/systemPaths.js';
 import { LogLevel, NoopLogger } from '../../../../../src/Logger.js';
-import { Props } from '../../../../../src/Props.js';
 import type { ActorRef } from '../../../../../src/ActorRef.js';
 
 /**
@@ -84,7 +83,7 @@ async function startNode(
 
   const shardingOptions = StartShardingOptions.create<Command>()
     .withTypeName(TYPE_NAME)
-    .withEntityProps(Props.create(() => new Entity()))
+    .withEntityActor(() => new Entity())
     .withExtractEntityId((message) => message.id)
     .withNumShards(1)
     // The registry under test is the coordinator's in-memory one; a store

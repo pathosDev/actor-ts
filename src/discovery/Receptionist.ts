@@ -9,7 +9,6 @@ import type { ActorRef } from '../ActorRef.js';
 import type { ActorSystem } from '../ActorSystem.js';
 import type { Cancellable } from '../Scheduler.js';
 import { extensionId, type ExtensionId } from '../Extension.js';
-import { Props } from '../Props.js';
 import type { Cluster } from '../cluster/Cluster.js';
 import { MemberRemoved, MemberUp } from '../cluster/ClusterEvents.js';
 import { NodeAddress } from '../cluster/NodeAddress.js';
@@ -267,8 +266,8 @@ export class ReceptionistExtension {
       ...(options as Partial<ReceptionistOptionsType>),
       cluster: cluster ?? null,
     };
-    const ref = this.system._spawnSystemActor(
-      Props.create<Message>(() => new Receptionist(resolvedOptions)),
+    const ref = this.system._spawnSystemActor<Message>(
+      () => new Receptionist(resolvedOptions),
       SystemGroups.cluster,
       SystemActorNames.receptionist,
     );

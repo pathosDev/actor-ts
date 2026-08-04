@@ -35,7 +35,6 @@ import {
   ObjectStoragePluginOptions,
   PersistenceExtensionId,
   PersistentActor,
-  Props,
   compressionByPrefix,
   everyNEvents,
   registerObjectStoragePlugins,
@@ -174,7 +173,7 @@ async function main(): Promise<void> {
   //   .withEncryption({ mode: 'client-aes256-gcm', masterKey: new Uint8Array(32).fill(0xab) })
   await registerObjectStoragePlugins(sys1.extension(PersistenceExtensionId), snapshotPluginOptions);
 
-  const acct1 = sys1.spawn(Props.create(() => new Account('alice')), 'alice');
+  const acct1 = sys1.spawn(() => new Account('alice'), 'alice');
   for (const amount of [100, 50, 20, 30, 10, 5, 100]) {
     console.log('deposit', amount, '→', await acct1.ask({ kind: 'deposit', amount }, 500));
   }
@@ -199,7 +198,7 @@ async function main(): Promise<void> {
     .withBackend(spec)
     .withPrefix('env-prod/snapshots/');
   await registerObjectStoragePlugins(sys2.extension(PersistenceExtensionId), restartSnapshotPluginOptions);
-  const acct2 = sys2.spawn(Props.create(() => new Account('alice')), 'alice');
+  const acct2 = sys2.spawn(() => new Account('alice'), 'alice');
   console.log('after restart, balance →', await acct2.ask({ kind: 'balance' }, 500));
   await secondDevtools.holdOpen();
   await sys2.terminate();

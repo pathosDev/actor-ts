@@ -87,10 +87,9 @@ für jeden Schlüssel, den das Framework liest.
 Top-Level-Actors werden über `system.spawn` gespawnt:
 
 ```ts
-import { Props } from 'actor-ts';
 
 const root = system.spawn(
-  Props.create(() => new MyRootActor()),
+  () => new MyRootActor(),
   'root',   // optionaler Name; Framework wählt einen, wenn weggelassen
 );
 ```
@@ -105,7 +104,7 @@ gespawnt, nicht über `system.spawn`:
 class Parent extends Actor<...> {
   override onReceive(message) {
     const child = this.context.spawn(
-      Props.create(() => new Child()),
+      () => new Child(),
       'worker',
     );
   }

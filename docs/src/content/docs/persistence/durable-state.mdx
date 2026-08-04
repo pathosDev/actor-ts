@@ -46,7 +46,7 @@ trail.
 ## A minimal example
 
 ```ts
-import { DurableStateActor, DurableStateOptions, ActorSystem, Props } from 'actor-ts';
+import { DurableStateActor, DurableStateOptions, ActorSystem } from 'actor-ts';
 import { InMemoryDurableStateStore } from 'actor-ts';
 import { match } from 'ts-pattern';
 
@@ -90,7 +90,7 @@ const durableStateOptions = DurableStateOptions.create<State>()
   .withStore(store)
   .withEmptyState(() => ({ items: [] }));
 const cart = system.spawn(
-  Props.create(() => new Cart(durableStateOptions)),
+  () => new Cart(durableStateOptions),
   'cart',
 );
 
@@ -119,7 +119,7 @@ Three fields:
 - **`emptyState()`** — factory invoked when no record exists yet
   (first run, deleted state).  Provides the initial value.
 
-Pass them through the `Props.create(() => new Cart({...}))` factory.
+Pass them through the `() => new Cart({...})` factory.
 The settings can vary per actor incarnation (different IDs for
 different users, same store).
 

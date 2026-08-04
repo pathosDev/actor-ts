@@ -3,7 +3,8 @@ import { Actor } from '../../src/Actor.js';
 import { ActorSystem } from '../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../src/ActorSystemOptions.js';
 import { LogLevel, NoopLogger } from '../../src/Logger.js';
-import { Props } from '../../src/Props.js';
+import { ActorOptions } from '../../src/ActorOptions.js';
+import { actorBlueprintOf } from '../../src/internal/ActorBlueprint.js';
 import type { ActorRef } from '../../src/ActorRef.js';
 import type { EntityContext } from '../../src/EntityContext.js';
 import type { Option } from '../../src/util/Option.js';
@@ -51,7 +52,7 @@ class ProbeActor extends Actor<string> {
   private spawnChild(): void {
     const child = new ProbeActor();
     this.child = child;
-    this.context.spawn(Props.create<string>(() => child), 'helper');
+    this.context.spawn(() => child, 'helper');
   }
 }
 
@@ -67,24 +68,32 @@ async function spawnProbe(name: string, entity: EntityContext | null): Promise<H
   const options = ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off);
   const system = ActorSystem.create(name, options);
   const instances: ProbeActor[] = [];
-  const base = Props.create<string>(() => {
+  const base = () => {
     const probe = new ProbeActor();
     instances.push(probe);
     return probe;
-  });
-  const reference = system.spawn(entity === null ? base : base.withEntity(entity), 'probe');
+  };
+  const reference = system.spawn(base, 'probe', entity === null ? undefined : { entity });
   await waitFor(() => instances.length > 0 && instances[0]!.started);
   return { system, reference, instances };
 }
 
-describe('Props.withEntity', () => {
-  test('returns a new Props carrying the identity, leaving the base untouched', () => {
-    const base = Props.create<string>(() => new ProbeActor());
-    const next = base.withEntity(IDENTITY);
-    expect(next).not.toBe(base);
-    expect(next.config.entity).toEqual(IDENTITY);
-    expect(base.config.entity).toBeUndefined();
-    expect(next.config.factory).toBe(base.config.factory);
+describe('ActorOptions.withEntity', () => {
+  test('carries the identity into the blueprint without touching the factory', () => {
+    const base = (): ProbeActor => new ProbeActor();
+    const blueprint = actorBlueprintOf(base, ActorOptions.create().withEntity(IDENTITY));
+    expect(blueprint.entity).toEqual(IDENTITY);
+    expect(blueprint.factory).toBe(base);
+  });
+
+  test('the plain-object form is interchangeable with the builder', () => {
+    const base = (): ProbeActor => new ProbeActor();
+    expect(actorBlueprintOf(base, { entity: IDENTITY }).entity)
+      .toEqual(actorBlueprintOf(base, ActorOptions.create().withEntity(IDENTITY)).entity);
+  });
+
+  test('an actor spawned without options has no identity at all', () => {
+    expect(actorBlueprintOf((): ProbeActor => new ProbeActor()).entity).toBeUndefined();
   });
 });
 

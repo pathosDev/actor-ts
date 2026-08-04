@@ -33,7 +33,6 @@ import type { SnapshotPolicy } from '../../../../../src/persistence/PersistentAc
 import { InMemoryJournal } from '../../../../../src/persistence/journals/InMemoryJournal.js';
 import { InMemorySnapshotStore } from '../../../../../src/persistence/snapshot-stores/InMemorySnapshotStore.js';
 import { PersistenceExtensionId } from '../../../../../src/persistence/PersistenceExtension.js';
-import { Props } from '../../../../../src/Props.js';
 import type { ReplicatedSnapshot } from '../../../../../src/persistence/replicated/ReplicatedSnapshot.js';
 import type { ReplicatedEventEnvelope } from '../../../../../src/persistence/ReplicatedEventSourcedActor.js';
 
@@ -99,11 +98,11 @@ async function startActor(
   const cluster = await Cluster.join(sys, clusterOptions);
   let instance!: CountingCounter;
   const ref = sys.spawn(
-    Props.create<Command>(() => {
+    () => {
       const actorRef = new CountingCounter();
       instance = actorRef;
       return actorRef as unknown as Actor<Command>;
-    }),
+    },
     'counter',
   );
   // Wait for preStart to wire `instance`.

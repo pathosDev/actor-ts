@@ -15,7 +15,6 @@ import {
   LogLevel,
   NoopLogger,
   NodeAddress,
-  Props,
   Publish,
   Subscribe,
 } from '../../src/index.js';
@@ -46,7 +45,7 @@ async function fanout(nSubs: number): Promise<void> {
     }
   }
   for (let i = 0; i < nSubs; i++) {
-    mediator.tell(new Subscribe('topic', sys.spawnAnonymous(Props.create(() => new Subscriber()))));
+    mediator.tell(new Subscribe('topic', sys.spawnAnonymous(() => new Subscriber())));
   }
   await Bun.sleep(20); // settle subscriptions
 

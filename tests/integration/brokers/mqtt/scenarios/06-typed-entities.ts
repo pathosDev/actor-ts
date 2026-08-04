@@ -8,7 +8,6 @@
  *
  * Covers the new API end-to-end where the unit tests use a fake client.
  */
-import { Props } from '../../../../../src/Props.js';
 import { MqttActor, type MqttMessage } from '../../../../../src/io/broker/MqttActor.js';
 import { MqttOptions } from '../../../../../src/io/broker/MqttOptions.js';
 import { spawnInbox, spawnMqtt, type MqttContext } from '../runner.js';
@@ -55,7 +54,7 @@ export const scenario: BrokerScenario<MqttContext> = {
     const rawTopic = `${tag}/raw`;
 
     const reader = new ReadingActor(context.brokerUrl, `${tag}-reader`, subTopic);
-    const readerRef = context.system.spawnAnonymous(Props.create(() => reader));
+    const readerRef = context.system.spawnAnonymous(() => reader);
     const { ref: mqtt } = spawnMqtt(context);
     const { ref: inboxRef, inbox } = spawnInbox(context);
     try {

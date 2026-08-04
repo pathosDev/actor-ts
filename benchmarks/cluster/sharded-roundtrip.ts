@@ -17,7 +17,6 @@ import {
   LogLevel,
   NoopLogger,
   NodeAddress,
-  Props,
   StartShardingOptions,
   type ActorRef,
 } from '../../src/index.js';
@@ -55,7 +54,7 @@ async function startNode(systemName: string, p: number, seeds: string[] = []): P
   const cluster = await Cluster.join(sys, clusterOptions);
   const shardingOptions = StartShardingOptions.create<Command>()
     .withTypeName('entity')
-    .withEntityProps(Props.create(() => new Entity()))
+    .withEntityActor(() => new Entity())
     .withExtractEntityId((m) => m.id)
     .withNumShards(16);
   const region = ClusterSharding.get(sys, cluster).start<Command>(shardingOptions);

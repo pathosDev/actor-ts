@@ -11,7 +11,6 @@
  */
 import type { ActorRef } from '../ActorRef.js';
 import type { ActorSystem } from '../ActorSystem.js';
-import { Props } from '../Props.js';
 import { SystemActorNames, SystemGroups } from '../internal/SystemPaths.js';
 import {
   concat,
@@ -170,8 +169,8 @@ export class DevToolsServer implements DevToolsHubContext {
     // No `.asInternal()` here — the `/system/devtools` group carries the
     // tooling mark and `ActorCell` inherits it, so the hub and every
     // connection it spawns are covered without repeating it.
-    this.hubRef = this.system._spawnSystemActor(
-      Props.create<DevToolsHubCommand>(() => new DevToolsHubActor(this) as never),
+    this.hubRef = this.system._spawnSystemActor<DevToolsHubCommand>(
+      () => new DevToolsHubActor(this) as never,
       SystemGroups.devtools,
       freeActorName(this.system, SystemGroups.devtools, SystemActorNames.devtoolsHub),
     );

@@ -73,10 +73,10 @@ class PersistentEventLog extends PersistentActor<Command, Event, State> {
   // …onCommand / onEvent ausgelassen…
 }
 
-const log = system.spawnAnonymous(Props.create(() => new PersistentEventLog()));
+const log = system.spawnAnonymous(() => new PersistentEventLog());
 
 const consumer = system.spawn(
-  Props.create(() => new ConsumerController<OrderEvent>({
+  () => new ConsumerController<OrderEvent>({
     handler: async (order) => {
       // ask() resolved, sobald der PersistentActor das Event
       // journalt hat.  Crasht der Consumer, bevor das resolved,
@@ -85,7 +85,7 @@ const consumer = system.spawn(
       // oder Seq im Event-Payload) fängt den Re-Run ab.
       await log.ask({ kind: 'append', order }, 30_000);
     },
-  })),
+  }),
 );
 ```
 

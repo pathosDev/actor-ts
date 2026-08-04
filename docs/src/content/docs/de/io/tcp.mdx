@@ -9,16 +9,16 @@ annehmen) lautet das Framework-Muster: "spawne pro eingehender
 Verbindung von einem Listener-Actor genau einen Client-Actor".
 
 ```ts
-import { ActorSystem, Props, TcpSocketActor, TcpSocketOptions } from 'actor-ts';
+import { ActorSystem, TcpSocketActor, TcpSocketOptions } from 'actor-ts';
 
 const tcpSocketOptions = TcpSocketOptions.create()
   .withHost('metrics-collector.example.com')
   .withPort(8125)
   .withTarget(protocolHandler);   // erforderlich: wohin eingehende Frames gehen
 const tcp = system.spawn(
-  Props.create(() => new TcpSocketActor(
+  () => new TcpSocketActor(
     tcpSocketOptions,
-  )),
+  ),
   'tcp-client',
 );
 
@@ -121,7 +121,7 @@ import net from 'node:net';
 
 const server = net.createServer((socket) => {
   const handler = system.spawn(
-    Props.create(() => new IncomingConnectionActor(socket)),
+    () => new IncomingConnectionActor(socket),
   );
 });
 server.listen(port, host);

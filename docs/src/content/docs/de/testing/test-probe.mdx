@@ -13,7 +13,7 @@ sieht eine normale Ref und `tell`t sie wie üblich.
 const tk = TestKit.create();
 const probe = tk.createTestProbe();
 
-const ref = tk.system.spawnAnonymous(Props.create(() => new Worker(probe)));
+const ref = tk.system.spawnAnonymous(() => new Worker(probe));
 //                                                          ^-- Probe anstelle des echten Downstreams
 ref.tell({ kind: 'work' });
 
@@ -190,8 +190,8 @@ class OrderHandler extends Actor<OrderCommand> {
 
 it('leitet Orders an db weiter', async () => {
   const dbProbe = tk.createTestProbe();
-  const handler = tk.system.spawnAnonymous(Props.create(() =>
-    new OrderHandler(dbProbe as ActorRef<DbCommand>)));
+  const handler = tk.system.spawnAnonymous(() =>
+    new OrderHandler(dbProbe as ActorRef<DbCommand>));
 
   handler.tell({ kind: 'place-order', id: 'o-1' });
   await dbProbe.expectMessage({ kind: 'insert', orderId: 'o-1' });
@@ -204,7 +204,7 @@ Call, ohne dass die DB existieren muss.
 ### Probe als Reply-to-Ziel
 
 ```ts
-const counter = tk.system.spawnAnonymous(Props.create(() => new Counter()));
+const counter = tk.system.spawnAnonymous(() => new Counter());
 counter.tell({ kind: 'increment' });
 counter.tell({ kind: 'increment' });
 counter.tell({ kind: 'get', replyTo: probe as ActorRef<number> });

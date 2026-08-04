@@ -12,7 +12,7 @@
  * order) → disconnected.
  */
 import type { ActorRef } from '../../ActorRef.js';
-import type { Props } from '../../Props.js';
+import type { ActorFactory } from '../../Actor.js';
 import type { WebsocketDecodeError } from './WebsocketCodec.js';
 import type { WebsocketConnection } from './WebsocketConnection.js';
 import type { WebsocketCloseInfo } from './types.js';
@@ -22,17 +22,21 @@ import type { WebsocketCloseInfo } from './types.js';
 /**
  * Command — ask the hub to spawn a per-connection actor as its own child.
  * Sent by the wiring layer at upgrade time; the hub does `context.spawn(
- * props, name)` so the connection actor is a genuine sub-actor of the
+ * actor, name)` so the connection actor is a genuine sub-actor of the
  * server.  A command ("do X"), not a lifecycle signal.
+ *
+ * The factory rides along on the message rather than being resolved by the
+ * hub: only the wiring layer has the socket and codec to close over, and the
+ * command never leaves the process.
  */
 export type WebsocketAcceptCommand = {
   readonly kind: 'websocket-accept';
-  readonly props: Props<unknown>;
+  readonly actor: ActorFactory<unknown>;
   readonly name: string;
 };
 /** @internal */
-export function websocketAcceptCommand(props: Props<unknown>, name: string): WebsocketAcceptCommand {
-  return { kind: 'websocket-accept', props, name };
+export function websocketAcceptCommand(actor: ActorFactory<unknown>, name: string): WebsocketAcceptCommand {
+  return { kind: 'websocket-accept', actor, name };
 }
 
 /** Signal — a connection opened. */

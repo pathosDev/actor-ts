@@ -13,7 +13,7 @@ import type { TestProbeOptions } from './TestProbeOptions.js';
  *
  *   const tk = TestKit.create('my-spec');
  *   const probe = tk.createTestProbe();
- *   const ref = tk.system.spawn(Props.create(() => new Worker(probe)), 'worker');
+ *   const ref = tk.system.spawn(() => new Worker(probe), 'worker');
  *   ref.tell('go');
  *   await probe.expectMessage('done');
  *   await tk.shutdown();

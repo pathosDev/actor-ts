@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import { Actor } from '../../../src/Actor.js';
+import { ActorOptions } from '../../../src/ActorOptions.js';
 import { ActorSystem } from '../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../src/ActorSystemOptions.js';
-import { Props } from '../../../src/Props.js';
 import { LogLevel, NoopLogger } from '../../../src/Logger.js';
 import { ActorTreeTap } from '../../../src/devtools/taps/ActorTreeTap.js';
 import { MailboxSamplerTap } from '../../../src/devtools/taps/MailboxSamplerTap.js';
@@ -91,7 +91,7 @@ describe('ActorTreeTap', () => {
     const tap = new ActorTreeTap(system);
     tap.install((payload) => emitted.push(payload));
     try {
-      system.spawn(Props.create(() => new IdleActor()), 'watched');
+      system.spawn(() => new IdleActor(), 'watched');
       await settle();
 
       const started = emitted.filter((p): p is ActorStartedPayload => p.kind === 'actor-started');
@@ -111,7 +111,7 @@ describe('ActorTreeTap', () => {
     const tap = new ActorTreeTap(system);
     tap.install((payload) => emitted.push(payload));
     try {
-      const ref = system.spawn(Props.create(() => new IdleActor()), 'doomed');
+      const ref = system.spawn(() => new IdleActor(), 'doomed');
       await settle();
       system.stop(ref);
       await settle();
@@ -129,18 +129,18 @@ describe('ActorTreeTap', () => {
     const tap = new ActorTreeTap(system);
     tap.install((payload) => emitted.push(payload));
     try {
-      system.spawn(Props.create(() => new IdleActor()), 'anonymous');
-      system.spawn(Props.create(() => new IdleActor()).withDisplayName('cart'), 'from-props');
-      system.spawn(Props.create(() => new NamedActor()), 'from-method');
+      system.spawn(() => new IdleActor(), 'anonymous');
+      system.spawn(IdleActor, 'from-options', ActorOptions.create().withDisplayName('cart'));
+      system.spawn(() => new NamedActor(), 'from-method');
       await settle();
 
       const started = emitted.filter((p): p is ActorStartedPayload => p.kind === 'actor-started');
       const spawned = (name: string) => started.find((p) => p.actor.name === name)!.actor;
       expect(spawned('anonymous').displayName).toBeNull();
-      expect(spawned('from-props').displayName).toBe('cart');
+      expect(spawned('from-options').displayName).toBe('cart');
       expect(spawned('from-method').displayName).toBe('first');
       // A label, never a replacement for the key the panel indexes on.
-      expect(spawned('from-props').path).toContain('/from-props');
+      expect(spawned('from-options').path).toContain('/from-options');
     } finally {
       tap.uninstall();
     }
@@ -153,7 +153,7 @@ describe('ActorTreeTap', () => {
     tap.install((payload) => emitted.push(payload));
     tap.uninstall();
 
-    system.spawn(Props.create(() => new IdleActor()), 'after-uninstall');
+    system.spawn(() => new IdleActor(), 'after-uninstall');
     await settle();
     expect(emitted.filter((p) => p.kind === 'actor-started')
       .some((p) => (p as ActorStartedPayload).actor.name === 'after-uninstall')).toBe(false);
@@ -167,7 +167,7 @@ describe('ActorTreeTap — live state', () => {
     const payloads: DevToolsStreamPayload[] = [];
     tap.install((payload) => payloads.push(payload));
     try {
-      const ref = system.spawn(Props.create(() => new StashingActor()), 'hoarder');
+      const ref = system.spawn(() => new StashingActor(), 'hoarder');
       // Let the actor finish starting first: `actor-started` re-inspects,
       // so anything that happens before it lands is already in that frame
       // and would not prove the ticker did anything.
@@ -192,7 +192,7 @@ describe('ActorTreeTap — live state', () => {
     const payloads: DevToolsStreamPayload[] = [];
     tap.install((payload) => payloads.push(payload));
     try {
-      const ref = system.spawn(Props.create(() => new NamedActor()), 'renamer');
+      const ref = system.spawn(() => new NamedActor(), 'renamer');
       await settle();
       tap.snapshot();
       tap.subscribersChanged(1);
@@ -218,7 +218,7 @@ describe('ActorTreeTap — live state', () => {
     const payloads: DevToolsStreamPayload[] = [];
     tap.install((payload) => payloads.push(payload));
     try {
-      system.spawn(Props.create(() => new IdleActor()), 'still');
+      system.spawn(() => new IdleActor(), 'still');
       await settle();
       tap.snapshot();
       payloads.length = 0;
@@ -245,7 +245,7 @@ describe('MailboxSamplerTap', () => {
     const tap = new MailboxSamplerTap(system, 20, 10);
     tap.install(() => {});
     try {
-      const ref = system.spawn(Props.create(() => new SlowActor()), 'slow');
+      const ref = system.spawn(() => new SlowActor(), 'slow');
       for (let i = 0; i < 4; i++) ref.tell(`m${i}`);
       await settle(20);
 
@@ -293,7 +293,7 @@ describe('StatsTap', () => {
       const first = (tap.snapshot() as [StatsSamplePayload])[0];
       const before = first.actorsStarted;
 
-      const ref = system.spawn(Props.create(() => new IdleActor()), 'counted');
+      const ref = system.spawn(() => new IdleActor(), 'counted');
       await settle();
       const afterStart = (tap.snapshot() as [StatsSamplePayload])[0];
       expect(afterStart.actorsStarted).toBeGreaterThan(before);
@@ -315,7 +315,7 @@ describe('StatsTap', () => {
     const tap = new StatsTap(system, null, 1_000, startedSampler(system));
     tap.install(() => {});
     try {
-      const ref = system.spawn(Props.create(() => new SlowActor()), 'busy');
+      const ref = system.spawn(() => new SlowActor(), 'busy');
       for (let i = 0; i < 3; i++) ref.tell(`m${i}`);
       await settle(20);
 
@@ -347,7 +347,7 @@ describe('StatsTap', () => {
     const tap = new StatsTap(system, null, 1_000, startedSampler(system));
     tap.install(() => {});
     try {
-      const ref = system.spawn(Props.create(() => new IdleActor()), 'gone');
+      const ref = system.spawn(() => new IdleActor(), 'gone');
       system.stop(ref);
       await settle();
       ref.tell('into the void');
@@ -381,7 +381,7 @@ describe('StatsTap', () => {
     const tap = new StatsTap(system, null, 1_000, startedSampler(system));
     tap.install(() => {});
     try {
-      const ref = system.spawn(Props.create(() => new IdleActor()), 'chatty');
+      const ref = system.spawn(() => new IdleActor(), 'chatty');
       for (let i = 0; i < 4; i++) ref.tell(`m${i}`);
       await settle();
 
@@ -419,7 +419,7 @@ describe('StatsTap', () => {
     const tap = new StatsTap(system, null, 1_000, startedSampler(system));
     tap.install(() => {});
     try {
-      const ref = system.spawn(Props.create(() => new StashingActor()), 'hoarder');
+      const ref = system.spawn(() => new StashingActor(), 'hoarder');
       for (let i = 0; i < 3; i++) ref.tell(`m${i}`);
       await settle();
 

@@ -2,7 +2,6 @@ import { afterEach, describe, expect, test } from 'bun:test';
 import { Actor } from '../../../src/Actor.js';
 import { ActorSystem } from '../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../src/ActorSystemOptions.js';
-import { Props } from '../../../src/Props.js';
 import { LogLevel, NoopLogger } from '../../../src/Logger.js';
 import type { ActorContext } from '../../../src/ActorContext.js';
 import type { MessageExplain } from '../../../src/internal/Instrumentation.js';
@@ -63,7 +62,7 @@ async function spawnRecorded(
   systems.push(system);
   let registered: Probe | null = null;
   const ref = system.spawn(
-    Props.create(() => new RecordedActor(capacity, (p) => { registered = p; })),
+    () => new RecordedActor(capacity, (p) => { registered = p; }),
     'recorded',
   );
   while (registered === null) await new Promise((resolve) => setTimeout(resolve, 5));
@@ -111,7 +110,7 @@ describe('explain plan — recording', () => {
       override preStart(): void { ref.tell('hello', this.context.self); }
       override onReceive(): void {}
     }
-    system.spawn(Props.create(() => new SenderActor()), 'sender');
+    system.spawn(() => new SenderActor(), 'sender');
     await settle();
 
     expect(probe.plan()[0]!.senderPath).toContain('/user/sender');
@@ -199,7 +198,7 @@ describe('explain plan — lifecycle', () => {
     class PlainActor extends Actor<string> {
       override onReceive(): void { seen = this.context.explainPlan(); }
     }
-    const ref = system.spawn(Props.create(() => new PlainActor()), 'plain');
+    const ref = system.spawn(() => new PlainActor(), 'plain');
     ref.tell('x');
     await settle();
     expect(seen).toEqual([]);

@@ -5,7 +5,6 @@ import { Actor } from '../../../../src/Actor.js';
 import { ActorSystem } from '../../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../../src/ActorSystemOptions.js';
 import { JsonLogger, LogLevel } from '../../../../src/Logger.js';
-import { Props } from '../../../../src/Props.js';
 import { RedisStreamsActor, type RedisStreamEntry } from '../../../../src/io/broker/RedisStreamsActor.js';
 import { RedisStreamsOptions, RedisStreamsOptionsBuilder } from '../../../../src/io/broker/RedisStreamsOptions.js';
 import { waitForPort } from '../lib/wait-for-port.js';
@@ -69,14 +68,14 @@ export function spawnRedis(context: RedisContext, options: RedisSpawnOpts = {}):
   if (options.consumerGroup) builder.withConsumerGroup({ ...options.consumerGroup, createIfMissing: true });
   if (options.target) builder.withTarget(options.target as unknown as Parameters<RedisStreamsOptionsBuilder['withTarget']>[0]);
   const actor = new RedisStreamsActor(builder);
-  return context.system.spawnAnonymous(Props.create(() => actor));
+  return context.system.spawnAnonymous(() => actor);
 }
 
 export function spawnInbox(context: RedisContext): {
   ref: ReturnType<ActorSystem['spawnAnonymous']>; inbox: InboxActor;
 } {
   const inbox = new InboxActor();
-  const ref = context.system.spawnAnonymous(Props.create(() => inbox));
+  const ref = context.system.spawnAnonymous(() => inbox);
   return { ref, inbox };
 }
 

@@ -3,7 +3,7 @@
  *
  *   bun run examples/testkit/manual-scheduler.ts
  */
-import { Actor, Props, TestKit } from '../../src/index.js';
+import { Actor, TestKit } from '../../src/index.js';
 
 class Heartbeat extends Actor<'tick'> {
   constructor(private readonly probe: import('../../src/index.js').TestProbe) { super(); }
@@ -16,7 +16,7 @@ class Heartbeat extends Actor<'tick'> {
 async function main(): Promise<void> {
   const { kit, scheduler } = TestKit.withManualScheduler('ms-demo');
   const probe = kit.createTestProbe();
-  kit.system.spawn(Props.create(() => new Heartbeat(probe)), 'hb');
+  kit.system.spawn(() => new Heartbeat(probe), 'hb');
 
   // preStart runs on its own dispatcher tick — give it a real micro-sleep.
   await Bun.sleep(5);

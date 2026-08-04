@@ -21,7 +21,7 @@ Instanz aufgehört hat, diese macht weiter.
 ## Ein minimales Beispiel
 
 ```ts
-import { PersistentActor, ActorSystem, ActorSystemOptions, Props, type ActorRef } from 'actor-ts';
+import { PersistentActor, ActorSystem, ActorSystemOptions, type ActorRef } from 'actor-ts';
 import { InMemoryJournal, InMemorySnapshotStore } from 'actor-ts';
 import { match } from 'ts-pattern';
 
@@ -97,7 +97,7 @@ class Account extends PersistentActor<Command, Event, State> {
 // Setup — Journal + Snapshot-Store inline via die Create-Option verdrahten:
 const system = ActorSystem.create('demo', actorSystemOptions);
 
-const account = system.spawn(Props.create(() => new Account()), 'account-42');
+const account = system.spawn(() => new Account(), 'account-42');
 account.tell({ kind: 'deposit',  amount: 100 });
 account.tell({ kind: 'withdraw', amount: 30 });
 // state ist { balance: 70 } — und bleibt das über Neustarts hinweg.
@@ -430,7 +430,7 @@ import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="Commands während der Recovery">
   ```ts
-  const actor = system.spawnAnonymous(Props.create(() => new Account()));
+  const actor = system.spawnAnonymous(() => new Account());
   actor.tell({ kind: 'deposit', amount: 100 });
   // ↑ dieses `tell` kommt an, bevor die Recovery abgeschlossen ist
   ```

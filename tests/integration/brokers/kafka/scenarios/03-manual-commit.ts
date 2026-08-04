@@ -8,7 +8,6 @@
  * deferring the kafka-ref look-up via a callback supplied at spawn.
  */
 import { Actor } from '../../../../../src/Actor.js';
-import { Props } from '../../../../../src/Props.js';
 import type { KafkaCommand, KafkaRecord } from '../../../../../src/io/broker/KafkaActor.js';
 import type { ActorRef } from '../../../../../src/ActorRef.js';
 import { spawnKafka, type KafkaContext } from '../runner.js';
@@ -37,7 +36,7 @@ export const scenario: BrokerScenario<KafkaContext> = {
     const groupId = `${tag}-group`;
 
     const committer = new ManualCommitter();
-    const inboxRef = context.system.spawnAnonymous(Props.create(() => committer));
+    const inboxRef = context.system.spawnAnonymous(() => committer);
     const consumer = spawnKafka(context, {
       groupId, topics: [topic], commitMode: 'manual',
       target: inboxRef,

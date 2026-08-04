@@ -20,7 +20,7 @@ respawned on failover.
 ## A minimal example
 
 ```ts
-import { ActorSystem, Cluster, ClusterOptions, Actor, Props } from 'actor-ts';
+import { ActorSystem, Cluster, ClusterOptions, Actor } from 'actor-ts';
 import { ShardedDaemonProcess, ShardedDaemonProcessOptions } from 'actor-ts';
 
 class Reconciler extends Actor<{ kind: 'check' }> {
@@ -50,7 +50,7 @@ const cluster = await Cluster.join(system, clusterOptions);
 const shardedDaemonProcessOptions = ShardedDaemonProcessOptions.create()
   .withName('reconciler')
   .withNumDaemons(8)
-  .withBehaviorFor((i) => Props.create(() => new Reconciler(i)));
+  .withActorFor((i) => () => new Reconciler(i));
 const handle = ShardedDaemonProcess.init(system, cluster,
   shardedDaemonProcessOptions);
 
@@ -120,7 +120,7 @@ yourself.  The wrapper exists to:
 const shardedDaemonProcessOptions = ShardedDaemonProcessOptions.create()
   .withName('reconciler')
   .withNumDaemons(8)
-  .withBehaviorFor((i) => Props.create(() => new Reconciler(i)))
+  .withActorFor((i) => () => new Reconciler(i))
   .withLivenessIntervalMs(30_000);
 ShardedDaemonProcess.init(system, cluster,
   shardedDaemonProcessOptions);   // default — pings each index every 30s
@@ -145,7 +145,7 @@ cluster events deterministically.
 type ShardedDaemonProcessOptionsType<T> = {
   name:                 string;          // unique daemon-set identifier
   numDaemons:           number;          // total daemons across the cluster
-  behaviorFor:          (i: number) => Props<T>;
+  actorFor:             (i: number) => ActorClassOrFactory<T>;
   role?:                string;          // restrict to specific nodes
   livenessIntervalMs?:  number;          // safety-net ping cadence; default 30s
 };
@@ -155,7 +155,7 @@ type ShardedDaemonProcessOptionsType<T> = {
 | --- | --- |
 | `name` | A unique daemon-set name.  Two `init` calls with the same name conflict. |
 | `numDaemons` | How many daemons to run.  Fixed at init; can't change without restart. |
-| `behaviorFor(i)` | Returns `Props` for daemon `i`.  Use `i` to differentiate per-index logic. |
+| `actorFor(i)` | Returns the actor class or factory for daemon `i`.  Use `i` to differentiate per-index logic. |
 | `role` | Only nodes carrying this role host daemons (passed through to sharding). |
 | `livenessIntervalMs` | Safety-net ping cadence; default 30s. |
 
@@ -200,11 +200,11 @@ import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="Each daemon's behavior must be deterministic by index">
   ```ts
-  behaviorFor: (i) => Props.create(() => new Reconciler(Math.random())),
+  actorFor: (i) => () => new Reconciler(Math.random()),
   // ↑ random differs between leader-changes; daemon 3 on node-A and
   //   daemon 3 on node-B after failover behave differently
   ```
-  The Props factory must produce **the same behavior** for the
+  The factory must produce **the same behavior** for the
   same index — otherwise a failover gives you a different daemon
   3 than before.  Use `i` (and any external lookup keyed by `i`)
   consistently.

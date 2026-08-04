@@ -182,6 +182,6 @@ export type CellInspection = {
   /** Dispatcher id, or `null` when the cell uses the system default. */
   readonly dispatcher: string | null;
   readonly childCount: number;
-  /** Tooling actor — see `PropsConfig.internal`.  Inherited from the parent. */
+  /** Tooling actor — see `ActorOptionsType.internal`.  Inherited from the parent. */
   readonly internal: boolean;
 };

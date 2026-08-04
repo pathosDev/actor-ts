@@ -137,15 +137,17 @@ hinzu.
 ## Per-Actor-Dispatcher
 
 Das Actor-System hat *einen* Default-Dispatcher.  Einzelne Actors
-können ihren eigenen über `Props` spezifizieren:
+können ihren eigenen über `ActorOptions` spezifizieren:
 
 ```ts
-import { Props, MicrotaskDispatcher } from 'actor-ts';
+import { ActorOptions, MicrotaskDispatcher } from 'actor-ts';
+
+const crunchyOptions = ActorOptions.create().withDispatcher(new MicrotaskDispatcher());
 
 const fastActor = system.spawn(
-  Props.create(() => new Crunchy())
-    .withDispatcher(new MicrotaskDispatcher()),
+  Crunchy,
   'crunchy',
+  crunchyOptions,
 );
 ```
 

@@ -5,7 +5,7 @@
  *   tsx examples/ping-pong.ts
  */
 import { match } from 'ts-pattern';
-import { Actor, ActorSystem, Props } from '../src/index.js';
+import { Actor, ActorSystem } from '../src/index.js';
 import { attachDevTools } from './devtools.js';
 
 type PingMessage = { kind: 'ping'; n: number };
@@ -57,8 +57,8 @@ async function main(): Promise<void> {
   const system = ActorSystem.create('ping-pong');
   const devtools = await attachDevTools(system);
 
-  const ponger = system.spawn(Props.create(() => new Ponger()), 'ponger');
-  const pinger = system.spawn(Props.create(() => new Pinger(() => ponger)), 'pinger');
+  const ponger = system.spawn(() => new Ponger(), 'ponger');
+  const pinger = system.spawn(() => new Pinger(() => ponger), 'pinger');
 
   pinger.tell({ kind: 'start' });
 

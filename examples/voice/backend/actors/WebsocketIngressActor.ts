@@ -6,7 +6,6 @@
  * kinds pass through untouched — the session actor owns the wire format.
  */
 import {
-  Props,
   type ActorRef,
 } from '../../../../src/index.js';
 import { WebsocketServerActor } from '../../../../src/http/websocket/WebsocketServerActor.js';
@@ -48,7 +47,7 @@ export class WebsocketIngressActor extends WebsocketServerActor<WebsocketFrame, 
       close: () => c.close(),
     };
     const session = this.context.spawn(
-      Props.create(() => new VoiceSessionActor({ connection, ...this.deps })),
+      () => new VoiceSessionActor({ connection, ...this.deps }),
       `voice-session-${c.id}`,
     ) as unknown as SessionRef;
     this.sessions.set(c.id, session);
