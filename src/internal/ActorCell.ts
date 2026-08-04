@@ -326,6 +326,7 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
       parentPath: this._parent?.path.toString() ?? null,
       name: this.path.name,
       className: this.actor?.constructor.name ?? '?',
+      displayName: this._customDisplayName(),
       cellState: this.state,
       mailboxSize: this.mailbox.size,
       stashSize: this._stashBuffer.length,

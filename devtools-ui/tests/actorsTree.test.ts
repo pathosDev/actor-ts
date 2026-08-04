@@ -2,13 +2,19 @@ import { describe, expect, test } from 'bun:test';
 import { ActorTreeModel } from '../src/panels/actors/actorsTree.js';
 import type { ActorNode } from '../../src/devtools/protocol/index.js';
 
-function node(path: string, parentPath: string | null, className = 'SomeActor'): ActorNode {
+function node(
+  path: string,
+  parentPath: string | null,
+  className = 'SomeActor',
+  displayName: string | null = null,
+): ActorNode {
   return {
     nodeAddress: 'local',
     path,
     parentPath,
     name: path.split('/').pop() ?? path,
     className,
+    displayName,
     cellState: 'running',
     mailboxSize: 0,
     stashSize: 0,
