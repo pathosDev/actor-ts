@@ -63,6 +63,10 @@ export function journalContractScenarios(): ContractScenario<JournalHarness>[] {
           balances: Map<string, bigint>;
           raw: Uint8Array;
           nested: { deep: Array<Set<number>> };
+          ratio: number;
+          missing: number;
+          pattern: RegExp;
+          histogram: Int32Array;
         };
         try {
           await journal.append<RichEvent>(persistenceId, [{
@@ -71,6 +75,10 @@ export function journalContractScenarios(): ContractScenario<JournalHarness>[] {
             balances: new Map([['acc-1', 1500n], ['acc-2', -25n]]),
             raw: new Uint8Array([1, 2, 250]),
             nested: { deep: [new Set([1, 2])] },
+            ratio: Infinity,
+            missing: NaN,
+            pattern: /^ord-\d+$/i,
+            histogram: new Int32Array([1, -2, 3]),
           }], 0);
           const read = await journal.read<RichEvent>(persistenceId, 1);
           const event = read[0]!.event;
@@ -86,6 +94,12 @@ export function journalContractScenarios(): ContractScenario<JournalHarness>[] {
           assert(event.raw instanceof Uint8Array, 'Uint8Array survives as bytes');
           assertEqual(Array.from(event.raw), [1, 2, 250], 'byte values are preserved');
           assert(event.nested.deep[0] instanceof Set, 'rich types survive arbitrarily nested');
+          assert(event.ratio === Infinity, 'Infinity survives instead of becoming null (#889)');
+          assert(Number.isNaN(event.missing), 'NaN survives instead of becoming null (#889)');
+          assert(event.pattern instanceof RegExp, 'RegExp survives as a RegExp instance');
+          assert(event.pattern.test('ORD-42'), 'RegExp source and flags are preserved');
+          assert(event.histogram instanceof Int32Array, 'typed arrays survive as instances');
+          assertEqual(Array.from(event.histogram), [1, -2, 3], 'typed-array values are preserved');
         } finally {
           await closeQuietly(journal);
         }

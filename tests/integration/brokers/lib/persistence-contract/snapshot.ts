@@ -60,6 +60,8 @@ export function snapshotContractScenarios(): ContractScenario<SnapshotHarness>[]
           members: Set<string>;
           counters: Map<string, bigint>;
           digest: Uint8Array;
+          ratio: number;
+          pattern: RegExp;
         };
         try {
           await store.save<RichState>(persistenceId, 4, {
@@ -67,6 +69,8 @@ export function snapshotContractScenarios(): ContractScenario<SnapshotHarness>[]
             members: new Set(['a', 'b']),
             counters: new Map([['hits', 42n]]),
             digest: new Uint8Array([9, 0, 255]),
+            ratio: Infinity,
+            pattern: /^v\d+$/,
           });
           const latest = (await store.loadLatest<RichState>(persistenceId)).toNullable();
           assert(latest !== null, 'snapshot is readable');
@@ -78,6 +82,9 @@ export function snapshotContractScenarios(): ContractScenario<SnapshotHarness>[]
           assert(latest.state.counters.get('hits') === 42n, 'bigint Map value is preserved');
           assert(latest.state.digest instanceof Uint8Array, 'Uint8Array survives as bytes');
           assertEqual(Array.from(latest.state.digest), [9, 0, 255], 'byte values are preserved');
+          assert(latest.state.ratio === Infinity, 'Infinity survives instead of becoming null (#889)');
+          assert(latest.state.pattern instanceof RegExp, 'RegExp survives as a RegExp instance');
+          assert(latest.state.pattern.test('v3'), 'RegExp source is preserved');
         } finally {
           await closeQuietly(store);
         }
