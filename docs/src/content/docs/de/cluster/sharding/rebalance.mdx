@@ -94,15 +94,23 @@ Während Shard `X` `handing-off` ist:
 - Nachrichten an Entities in `X` kommen bei Node A an.
 - Die Region von Node A puffert sie — leitet sie nicht an die
   (jetzt gestoppten) Entity-Actors weiter.
-- Sobald der Handoff abgeschlossen ist und `X` einen neuen
-  Besitzer hat, leiten gepufferte Nachrichten an die neue Region
-  weiter.
+- Sobald der Handoff abgeschlossen ist, fragt Node A den Koordinator,
+  wohin `X` gegangen ist, und leitet den Puffer an den neuen Besitzer
+  weiter, sobald die Antwort da ist.
 - Die neue Region spawnt Entities und verarbeitet die Nachrichten
   in Reihenfolge.
 
 Das bedeutet, dass **eine während des Handoffs gesendete Nachricht
 verzögert ist**, nicht verloren. Die Kosten: Latenzspitzen während
 Rebalance-Fenstern.
+
+Das Nachfragen ist wichtiger, als es aussieht. Ein abgeschlossener
+Handoff löscht das gecachte Shard-Home der alten Region, und der
+Koordinator verkündet eine neue Platzierung nur dem neuen Besitzer und
+Regionen mit offener Anfrage — ohne Nachfrage bliebe die alte Region
+also auf ihrem Puffer sitzen, bis zufällig eine spätere, unabhängige
+Nachricht für denselben Shard ein Lookup auslöst. Bei einem Shard, der
+nach dem Rebalance still wird, kommt die nie.
 
 ## Wenn Entities State haben
 

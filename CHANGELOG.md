@@ -32,6 +32,56 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   `ActorRef.toString()` and every cluster-wire identifier keep using the path.
   Structured loggers get a separate `displayName` field beside `source`;
   `interface Logger` is untouched, so third-party implementations keep working.
+- **Empty shards passivate** (#892).  A shard actor used to outlive its
+  entities indefinitely: it appears when the coordinator allocates it to a
+  node and, apart from a handoff, nothing ever stopped it again.  Since entity
+  ids spread over the hash space, a long-running node accumulated one idle,
+  empty shard actor per `numShards` — 64 of them with the default.  A shard
+  that has stood empty for `shardPassivationIdleMs` is now stopped too.  The
+  region keeps ownership, so the shard stays routable and the next message
+  re-creates it with no coordinator round trip; only an *empty* shard is ever
+  stopped, so no entity state is at stake, and messages arriving mid-stop are
+  buffered and replayed exactly as they are for an entity.
+- **`shardPassivationIdleMs` / `withShardPassivationIdleMs()` /
+  `actor-ts.sharding.shard-passivation-idle`** (#892).  Unset it follows
+  `passivationIdleMs` — a shard stands empty precisely because its entities
+  went idle — and `0` keeps empty shards resident while entities still
+  passivate.  It is deliberately absent from `reference.conf`: a shipped value
+  is exactly what "unset" would have to be distinguishable from.
+
+### Changed
+
+- **BREAKING — idle entities passivate by default, after 5 minutes** (#892).
+  `passivation-idle` shipped as `0ms`, so nothing ever passivated until an
+  operator went looking for the key, and entity sets only grew.  The reference
+  value and the built-in fallback are now `5m`.
+  **Migration:** an entity that keeps state in memory and does not rebuild it
+  in `preStart` now loses that state after five minutes idle — persistent
+  entities recover, plain ones do not.  Set `passivation-idle = 0ms`, or
+  `withPassivationIdleMs(0)` per type, to restore the previous always-resident
+  behaviour.  Note that under `rememberEntities` a passivation is also a
+  *forget*, so a remembered fleet left on the default drains over time; decide
+  explicitly which of the two you want.  `ShardedDaemonProcess` opts out on
+  its own — its daemons are meant to run continuously.
+
+### Fixed
+
+- **Messages buffered during a handoff are no longer stranded** (#893).
+  `completeHandOff` cleared the region's cached shard home without ever
+  replaying the buffer, and the coordinator announces a new placement only to
+  the new owner and to regions with an outstanding query — so the region that
+  had just handed the shard off waited for an unrelated later message to
+  trigger a lookup.  On a shard that went quiet after the rebalance, that
+  never came.  The region now re-asks for the home whenever its buffer is
+  non-empty.
+- **Remembered entities return after an unexpected shard death** (#894).  When
+  a shard actor died outside a handoff, ownership stayed put — which is what
+  lets the next message re-create the shard — but that also meant neither
+  `onRegister` nor `tryAllocate` ever ran again, and those were the only paths
+  that shipped the remembered registry.  The shard came back empty, only the
+  entity named by the next message returned, and the coordinator kept listing
+  the rest with `started` events that would never see a `stopped`.  The region
+  now asks the coordinator to re-send what it remembers.
 
 ## [0.12.2] — 2026-08-04
 
