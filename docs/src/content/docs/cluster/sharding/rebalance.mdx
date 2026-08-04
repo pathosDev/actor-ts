@@ -88,13 +88,21 @@ While shard `X` is `handing-off`:
 - Messages targeting entities in `X` arrive at node A.
 - Node A's region buffers them — doesn't forward to the
   (now-stopped) entity actors.
-- Once handoff completes and `X` has a new owner, buffered
-  messages forward to the new region.
+- Once the handoff completes, node A asks the coordinator where `X`
+  went and forwards the buffer to the new owner as soon as it hears
+  back.
 - The new region spawns entities and processes the messages in
   order.
 
 This means **a message sent during handoff is delayed**, not
 dropped.  The cost: latency spikes during rebalance windows.
+
+The re-ask matters more than it looks.  Completing a handoff clears the
+old region's cached shard home, and the coordinator only announces a new
+placement to the new owner and to regions with an outstanding query — so
+without asking, the old region would sit on its buffer until some
+unrelated later message for the same shard happened to trigger a lookup.
+On a shard that goes quiet after the rebalance, that never comes.
 
 ## When entities have state
 
