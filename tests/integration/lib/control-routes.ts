@@ -339,10 +339,10 @@ export function makeControlRoutes(
   const ensurePersistentCounter = (id: string): ActorRef<CounterCommand> => {
     const existing = persistentCounters.get(id);
     if (existing) return existing;
-    // spawnAnonymous (auto-incremented name) so a freshly-killed
-    // counter can be re-spawned without a name collision.  The
-    // PersistentActor's `persistenceId` is what binds it to its
-    // journal entries — the actor path doesn't matter.
+    // spawnAnonymous (framework-generated name — a counter plus a random
+    // suffix) so a freshly-killed counter can be re-spawned without a name
+    // collision.  The PersistentActor's `persistenceId` is what binds it to
+    // its journal entries — the actor path doesn't matter.
     const ref = system.spawnAnonymous(
       Props.create<CounterCommand>(() => new PersistentCounter(id)),
     ) as ActorRef<CounterCommand>;
