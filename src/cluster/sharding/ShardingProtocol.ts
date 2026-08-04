@@ -80,6 +80,23 @@ export type RememberedEntities = {
   readonly entityIds: string[];
 };
 
+/**
+ * Region → coordinator: "re-send what you remember for this shard".
+ *
+ * Sent when a shard actor dies outside a handoff.  Ownership does not move in
+ * that case, so neither `onRegister` nor `tryAllocate` runs and nothing else
+ * would ever re-ship the registry — the shard comes back empty while the
+ * coordinator still lists its entities.
+ *
+ * It carries no requester: the answer goes to whichever region `shardHome`
+ * says owns the shard, which is the only region that could do anything with
+ * it, and a region that has since lost the shard drops the reply anyway.
+ */
+export type GetRememberedEntities = {
+  readonly $t: 'sharding.GetRememberedEntities';
+  readonly shardId: number;
+};
+
 /* ----------------------- region ↔ shard (node-local) --------------------- */
 
 /**
@@ -269,6 +286,7 @@ export type ShardingMessage =
   | EntityStarted
   | EntityStopped
   | RememberedEntities
+  | GetRememberedEntities
   | ShardEnvelope
   | ShardReply
   | EntityEnvelope

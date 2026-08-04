@@ -181,6 +181,33 @@ The framework's behavior:
 For workloads where you want **eager re-spawn even of recently-idle
 entities**, set `passivationIdleMs: 0` so they stay around.
 
+:::caution[Passivation is on by default, and it forgets]
+`passivationIdleMs` defaults to **5 minutes**, so with
+`rememberEntities: true` and nothing else configured, an entity idle for
+five minutes is stopped *and* dropped from the registry — it will not be
+among those revived after a node failure.  That is usually not what
+someone who turned remembering on wants.  Decide explicitly: keep the
+default if "remembered" should mean "recently active", or set
+`passivationIdleMs: 0` if it should mean "known to exist".
+
+[`ShardedDaemonProcess`](/cluster/sharding/sharded-daemon-process/),
+which forces `rememberEntities: true`, sets `passivationIdleMs: 0` for
+exactly this reason.
+:::
+
+### After an unexpected shard death
+
+A shard actor can die outside a rebalance — past its supervision budget,
+say.  The region keeps ownership (that is how the next message
+re-creates the shard) and asks the coordinator to re-send what it
+remembers for that shard, so the entities come back on their own without
+waiting for traffic.  Nothing is recorded as `stopped` in that case: the
+entities were never meant to go.
+
+Shard *passivation* does not interact with the registry at all — only an
+empty shard is ever passivated, and its entities have already reported
+their own `stopped` events by then.
+
 import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="Cold-start storms">

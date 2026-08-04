@@ -241,8 +241,20 @@ describe('ShardingOptionsValidator', () => {
     expect(() => check({ ...required, maxEntities: -1 })).toThrow(OptionsError);
   });
 
+  test('rejects negative or non-finite passivation windows, at both levels', () => {
+    expect(() => check({ ...required, passivationIdleMs: -1 })).toThrow(/passivationIdleMs/);
+    expect(() => check({ ...required, shardPassivationIdleMs: -1 })).toThrow(/shardPassivationIdleMs/);
+    expect(() => check({ ...required, shardPassivationIdleMs: Number.POSITIVE_INFINITY }))
+      .toThrow(/shardPassivationIdleMs/);
+  });
+
   test('accepts sensible sharding values (0 maxEntities = no cap)', () => {
     expect(() => check({ ...required, numShards: 64, maxEntities: 0, passivationIdleMs: 0 })).not.toThrow();
+  });
+
+  test('accepts both passivation windows set independently, including 0', () => {
+    expect(() => check({ ...required, passivationIdleMs: 30_000, shardPassivationIdleMs: 0 })).not.toThrow();
+    expect(() => check({ ...required, passivationIdleMs: 0, shardPassivationIdleMs: 600_000 })).not.toThrow();
   });
 
   test('rejects a region missing typeName, entityActor or extractEntityId', () => {

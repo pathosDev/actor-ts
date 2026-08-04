@@ -110,7 +110,7 @@ cluster.join(Address("akka", "MySystem", "host", port))
 
 val region = ClusterSharding(system).start(
   typeName = "Counter",
-  entityProps = Props[Counter],
+  entityActor = Props[Counter],
   settings = ClusterShardingSettings(system),
   extractEntityId = ...,
   extractShardId  = ...,

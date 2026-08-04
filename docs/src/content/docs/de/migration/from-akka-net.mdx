@@ -155,7 +155,7 @@ Akka.NETs explizite Address.
 // Akka.NET:
 var region = ClusterSharding.Get(system).Start(
   typeName: "Counter",
-  entityProps: Props.Create<CounterActor>(),
+  entityActor: Props.Create<CounterActor>(),
   settings: ClusterShardingSettings.Create(system),
   messageExtractor: new MessageExtractor()
 );

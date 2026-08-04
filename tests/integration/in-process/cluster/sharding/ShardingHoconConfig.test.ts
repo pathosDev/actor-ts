@@ -125,10 +125,25 @@ describe('ClusterSharding — actor-ts.sharding.* HOCON keys', () => {
     await waitFor(() => created === 2);
   });
 
-  test('with no sharding config the entity stays resident', async () => {
-    // The reference default is `passivation-idle = 0ms` (disabled), so wiring
-    // the block must not start passivating anyone by surprise.
+  test('the reference default leaves an entity resident through a short idle spell', async () => {
+    // `passivation-idle` defaults to 5 minutes, which is also the sweep
+    // interval — so nothing may stop this entity anywhere near a test window.
     const node = await startNode('hocon-default', 45_401, {});
+
+    node.region.tell({ id: 'user-1', kind: 'work' });
+    await waitFor(() => created === 1);
+
+    await sleep(400);
+    expect(stopped).toBe(0);
+  });
+
+  test('passivation-idle = 0ms opts back out of the default sweep', async () => {
+    // The documented migration off the 5-minute default.  `0` is a real value
+    // rather than "unset", so it has to shadow the reference default instead of
+    // falling through to it — the same distinction `mergeOptions` draws.
+    const node = await startNode('hocon-disabled', 45_405, {
+      'actor-ts': { sharding: { 'passivation-idle': '0ms' } },
+    });
 
     node.region.tell({ id: 'user-1', kind: 'work' });
     await waitFor(() => created === 1);

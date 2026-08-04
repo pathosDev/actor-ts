@@ -133,7 +133,7 @@ export class StartShardingOptionsValidator<TMessage>
 }
 
 /**
- * The slice of sharding settings HOCON can supply.  All five are plain
+ * The slice of sharding settings HOCON can supply.  All of them are plain
  * scalars, so the type carries no entity-message parameter — deliberately,
  * since the config file is read once per node and cannot know the type it
  * will be layered under.
@@ -147,6 +147,7 @@ export type ShardingConfigDefaults = Pick<
   | 'numShards'
   | 'rememberEntities'
   | 'passivationIdleMs'
+  | 'shardPassivationIdleMs'
   | 'maxEntities'
   | 'rebalanceIntervalMs'
   | 'handOffTimeoutMs'
@@ -168,6 +169,11 @@ export function readShardingOptionsFromConfig(config: Config): ShardingConfigDef
   if (config.hasPath(keys.numberOfShards)) out.numShards = config.getInt(keys.numberOfShards);
   if (config.hasPath(keys.rememberEntities)) out.rememberEntities = config.getBoolean(keys.rememberEntities);
   if (config.hasPath(keys.passivationIdle)) out.passivationIdleMs = config.getDuration(keys.passivationIdle);
+  // Absent from reference.conf on purpose, so this stays genuinely optional:
+  // leaving it out is what lets the shard window fall through to the entity one.
+  if (config.hasPath(keys.shardPassivationIdle)) {
+    out.shardPassivationIdleMs = config.getDuration(keys.shardPassivationIdle);
+  }
   if (config.hasPath(keys.maxEntities)) out.maxEntities = config.getInt(keys.maxEntities);
   if (config.hasPath(keys.rebalanceInterval)) out.rebalanceIntervalMs = config.getDuration(keys.rebalanceInterval);
   if (config.hasPath(keys.handOffTimeout)) out.handOffTimeoutMs = config.getDuration(keys.handOffTimeout);

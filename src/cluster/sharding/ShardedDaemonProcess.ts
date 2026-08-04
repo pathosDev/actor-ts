@@ -65,6 +65,12 @@ export class ShardedDaemonProcess {
       .withExtractEntityMessage((env) => env.body)
       .withNumShards(resolvedOptions.numDaemons)
       .withRememberEntities(true)
+      // A daemon is supposed to run continuously, so the node-wide idle sweep
+      // must not apply to it: a daemon that only wakes on its own schedule
+      // looks idle, and passivating it would both drop it from the
+      // remember-entities registry and leave `wakeAll` resurrecting it on
+      // every liveness tick.  Explicit, so it beats HOCON as well.
+      .withPassivationIdleMs(0)
       .withAllocationStrategy(new LeastShardAllocationStrategy());
     if (resolvedOptions.role !== undefined) startOptions.withRole(resolvedOptions.role);
     const region = sharding.start<DaemonEnvelope<T>>(startOptions);
