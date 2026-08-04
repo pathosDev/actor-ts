@@ -26,6 +26,23 @@ export interface Logger {
   withFields(fields: LogContextData): Logger;
 }
 
+/**
+ * Reserved static-field key holding an actor's human-readable name — what
+ * `Actor.displayName()` resolved to (#891).
+ *
+ * A field rather than a new `Logger` member, because `Logger` is a
+ * documented extension point: adding a required method would break every
+ * third-party implementation, while a field costs nothing.  It also
+ * carries itself: `JsonLogger` and the OTel adapter already spread the
+ * static fields, so the name lands there as a separate queryable
+ * key/attribute with no code of their own.  Only `ConsoleLogger` treats it
+ * specially, lifting it into the line head where a human reads it.
+ *
+ * The name never replaces `source` — the path stays the identity, and
+ * everything that routes, correlates or aggregates keeps using it.
+ */
+export const DISPLAY_NAME_FIELD = 'displayName';
+
 export class ConsoleLogger implements Logger {
   constructor(
     public level: LogLevel = LogLevel.Info,
@@ -43,13 +60,24 @@ export class ConsoleLogger implements Logger {
    * on key collision because that matches the "innermost scope wins"
    * intuition.  The fields appear as a `{k=v, k2=v2}` suffix when
    * non-empty so they don't clutter records that don't use MDC.
+   *
+   * {@link DISPLAY_NAME_FIELD} is the one exception: it is lifted out of
+   * the suffix and rendered as its own `- name -` segment after the
+   * source, because it is the part a human scans for.  Lifted from the
+   * *static* fields only — a dynamic one arrives over the cluster wire
+   * from a remote peer (#573) and has no business rewriting the head, so
+   * it stays in the suffix where every other MDC key lives.
    */
   private render(tag: string, message: string): string {
     const ts = new Date().toISOString();
-    const head = this.source
-      ? `[${ts}] ${tag} ${this.source} - ${message}`
+    const displayName = displayNameOf(this.staticFields);
+    const prefix = [this.source, displayName].filter((part) => part !== '').join(' - ');
+    const head = prefix
+      ? `[${ts}] ${tag} ${prefix} - ${message}`
       : `[${ts}] ${tag} ${message}`;
-    const merged = { ...this.staticFields, ...LogContext.get() };
+    const dynamic = LogContext.get();
+    const merged: Record<string, string | number | boolean> = { ...this.staticFields, ...dynamic };
+    if (displayName !== '' && !(DISPLAY_NAME_FIELD in dynamic)) delete merged[DISPLAY_NAME_FIELD];
     const keys = Object.keys(merged);
     if (keys.length === 0) return head;
     const tail = keys.map((k) => `${k}=${formatValue(merged[k])}`).join(', ');
@@ -247,6 +275,17 @@ function jsonSafeReplacer(): (this: unknown, key: string, value: unknown) => unk
     }
     return value;
   };
+}
+
+/**
+ * The display name a set of fields carries, or `''` for "none".  Only a
+ * non-empty string counts: `LogContextData` also admits numbers and
+ * booleans, and a `displayName=42` in the head would read as a rendering
+ * bug rather than as the name someone chose.
+ */
+function displayNameOf(fields: LogContextData): string {
+  const value = fields[DISPLAY_NAME_FIELD];
+  return typeof value === 'string' ? value : '';
 }
 
 function formatValue(v: unknown): string {

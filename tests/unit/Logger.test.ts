@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test';
-import { ConsoleLogger, JsonLogger, LogLevel, NoopLogger, type JsonLogSink } from '../../src/Logger.js';
+import {
+  ConsoleLogger, DISPLAY_NAME_FIELD, JsonLogger, LogLevel, NoopLogger, type JsonLogSink,
+} from '../../src/Logger.js';
 import { LogContext } from '../../src/LogContext.js';
 
 describe('LogLevel', () => {
@@ -161,6 +163,74 @@ describe('ConsoleLogger — MDC integration (#53)', () => {
   });
 });
 
+describe('ConsoleLogger — display name (#891)', () => {
+  const originals = { log: console.log };
+  let infoCalls: unknown[][];
+  beforeEach(() => {
+    infoCalls = [];
+    console.log = (...args: unknown[]) => { infoCalls.push(args); };
+  });
+  afterEach(() => { console.log = originals.log; });
+
+  const rendered = (): string => String(infoCalls[0]![0]);
+
+  test('renders as its own segment between the source and the message', () => {
+    new ConsoleLogger(LogLevel.Info, 'actor-ts://app/user/orders')
+      .withFields({ [DISPLAY_NAME_FIELD]: 'Order(42)' })
+      .info('persisted');
+    expect(rendered()).toMatch(
+      /^\[[^\]]+\] INFO {2}actor-ts:\/\/app\/user\/orders - Order\(42\) - persisted$/,
+    );
+  });
+
+  test('is lifted out of the {k=v} suffix, not duplicated into it', () => {
+    new ConsoleLogger(LogLevel.Info, 'actor-ts://app/user/orders')
+      .withFields({ [DISPLAY_NAME_FIELD]: 'Order(42)', region: 'eu' })
+      .info('persisted');
+    expect(rendered()).toContain('{region=eu}');
+    expect(rendered()).not.toContain('displayName=');
+  });
+
+  test('without a source it still takes the segment', () => {
+    new ConsoleLogger().withFields({ [DISPLAY_NAME_FIELD]: 'Order(42)' }).info('persisted');
+    expect(rendered()).toMatch(/^\[[^\]]+\] INFO {2}Order\(42\) - persisted$/);
+  });
+
+  test('an unnamed logger renders exactly as it did before', () => {
+    new ConsoleLogger(LogLevel.Info, 'actor-ts://app/user/orders').info('persisted');
+    expect(rendered()).toMatch(/^\[[^\]]+\] INFO {2}actor-ts:\/\/app\/user\/orders - persisted$/);
+  });
+
+  test('a dynamic MDC display name stays in the suffix and never rewrites the head (#573)', () => {
+    // Dynamic context crosses the cluster wire from a remote peer, so it
+    // must not be able to relabel a local actor.
+    LogContext.run({ [DISPLAY_NAME_FIELD]: 'Injected' }, () => {
+      new ConsoleLogger(LogLevel.Info, 'actor-ts://app/user/orders').info('persisted');
+    });
+    expect(rendered()).toMatch(
+      /^\[[^\]]+\] INFO {2}actor-ts:\/\/app\/user\/orders - persisted \{displayName=Injected\}$/,
+    );
+  });
+
+  test('a remote MDC key cannot displace the local name either', () => {
+    const log = new ConsoleLogger(LogLevel.Info, 'actor-ts://app/user/orders')
+      .withFields({ [DISPLAY_NAME_FIELD]: 'Order(42)' });
+    LogContext.run({ [DISPLAY_NAME_FIELD]: 'Injected' }, () => log.info('persisted'));
+    const line = rendered();
+    expect(line).toContain(' - Order(42) - persisted');
+    expect(line).toContain('{displayName=Injected}');
+  });
+
+  test('a non-string value is not a name — it stays an ordinary field', () => {
+    new ConsoleLogger(LogLevel.Info, 'actor-ts://app/user/orders')
+      .withFields({ [DISPLAY_NAME_FIELD]: 42 })
+      .info('persisted');
+    expect(rendered()).toMatch(
+      /^\[[^\]]+\] INFO {2}actor-ts:\/\/app\/user\/orders - persisted \{displayName=42\}$/,
+    );
+  });
+});
+
 describe('NoopLogger', () => {
   test('all methods are no-ops', () => {
     const log = new NoopLogger();
@@ -222,6 +292,21 @@ describe('JsonLogger — #311 structured logging', () => {
     log.info('done');
     const rec = JSON.parse(lines[0]!);
     expect(Object.hasOwn(rec, 'source')).toBe(false);
+  });
+
+  test('a display name is a plain top-level key beside the source, not folded into it (#891)', () => {
+    // Pinning the deliberate non-change: `JsonLogger` needs no knowledge
+    // of display names, because they ride the ordinary static-field
+    // channel — which is exactly what makes them queryable.
+    const { sink, lines } = capturingSink();
+    const log = new JsonLogger(LogLevel.Debug, '', {}, sink)
+      .withSource('actor-ts://app/user/orders/order-42')
+      .withFields({ [DISPLAY_NAME_FIELD]: 'Order(42)' });
+    log.info('persisted');
+    const rec = JSON.parse(lines[0]!);
+    expect(rec.source).toBe('actor-ts://app/user/orders/order-42');
+    expect(rec.displayName).toBe('Order(42)');
+    expect(rec.msg).toBe('persisted');
   });
 
   test('merges static fields and dynamic MDC; dynamic wins on collision', () => {

@@ -34,6 +34,18 @@ export type ActorNode = {
   readonly name: string;
   /** Constructor name of the actor instance, or `'?'` before creation. */
   readonly className: string;
+  /**
+   * Human-readable label from `Actor.displayName()` (#891), or `null`
+   * when the actor never named itself.  `null` rather than "the path",
+   * because the path is already `path` here and a row deep in the tree
+   * reads better labelled `order-42` than
+   * `actor-ts://system/user/orders/order-42`.
+   *
+   * Cosmetic — `path` stays the key on both sides of the socket.  It is
+   * also the one field here that can change without the actor moving,
+   * since a display name may be derived from state.
+   */
+  readonly displayName: string | null;
   readonly cellState: ActorCellState;
   readonly mailboxSize: number;
   readonly stashSize: number;

@@ -173,6 +173,8 @@ describe('ActorSystem._inspectTree', () => {
 
       const parent = byName(system._inspectTree(), 'parent')!;
       expect(parent.className).toBe('ParentActor');
+      // Nothing custom: the path is already right there in `path`.
+      expect(parent.displayName).toBeNull();
       expect(parent.cellState).toBe('running');
       expect(parent.childCount).toBe(1);
       expect(parent.mailboxSize).toBe(0);

@@ -168,6 +168,12 @@ export type CellInspection = {
   readonly name: string;
   /** Constructor name of the actor instance, or `'?'` before creation. */
   readonly className: string;
+  /**
+   * What `Actor.displayName()` resolved to, or `null` when the actor
+   * never named itself — see `ActorCell._customDisplayName()`.  A label,
+   * not an identity: `path` above stays the key.
+   */
+  readonly displayName: string | null;
   readonly cellState: CellState;
   /** Pending user messages. */
   readonly mailboxSize: number;

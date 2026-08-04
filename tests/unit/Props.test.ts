@@ -53,6 +53,14 @@ describe('Props', () => {
     expect(base.config.mailboxCapacity).toBeUndefined();
   });
 
+  test('withDisplayName returns a new Props with the name set', () => {
+    const base = Props.create(() => new MyActor());
+    const next = base.withDisplayName('ingest-worker');
+    expect(next).not.toBe(base);
+    expect(next.config.displayName).toBe('ingest-worker');
+    expect(base.config.displayName).toBeUndefined();
+  });
+
   test('chained with* calls accumulate without mutating earlier props', () => {
     const base = Props.create(() => new MyActor());
     const strat = new OneForOneStrategy(() => Directive.Stop);
