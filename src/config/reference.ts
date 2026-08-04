@@ -93,6 +93,10 @@ actor-ts {
     hand-off-timeout = 10s
     remember-entities = false
     passivation-idle = 5m    # idle window before an entity passivates; 0 disables the sweep
+    # shard-passivation-idle -- how long a shard may stand empty before it
+    #   stops as well.  Deliberately left unset rather than given a value:
+    #   unset, it follows passivation-idle, which is what "the shard goes
+    #   when its entities do" needs.  Set it (0ms disables) to decouple them.
     max-entities = 0         # 0 = no per-node cap
   }
 

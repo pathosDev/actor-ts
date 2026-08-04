@@ -71,6 +71,7 @@ export type ShardRegionConfig<TMessage> = {
   readonly proxy: boolean;
   readonly rememberEntities: boolean;
   readonly passivationIdleMs: number;
+  readonly shardPassivationIdleMs: number;
   readonly maxEntities: number;
   readonly cluster: Cluster;
   readonly localResolver: (path: string) => ActorRef | null;
@@ -156,6 +157,7 @@ export class ShardRegion<TMessage = unknown> extends Actor<TMessage | ShardingMe
     cluster: Cluster,
     localResolver: (path: string) => ActorRef | null,
   ): ShardRegionConfig<TMessage> {
+    const passivationIdleMs = s.passivationIdleMs ?? DEFAULT_PASSIVATION_IDLE_MS;
     return {
       typeName: s.typeName,
       entityProps: s.entityProps,
@@ -165,7 +167,11 @@ export class ShardRegion<TMessage = unknown> extends Actor<TMessage | ShardingMe
       role: s.role,
       proxy: s.proxy ?? false,
       rememberEntities: s.rememberEntities ?? false,
-      passivationIdleMs: s.passivationIdleMs ?? DEFAULT_PASSIVATION_IDLE_MS,
+      passivationIdleMs,
+      // The one place the "shards follow entities" default lives: a shard
+      // stands empty precisely because its entities went idle, so absent an
+      // explicit window the entity one applies a level up.
+      shardPassivationIdleMs: s.shardPassivationIdleMs ?? passivationIdleMs,
       maxEntities: s.maxEntities ?? 0,
       cluster,
       localResolver,

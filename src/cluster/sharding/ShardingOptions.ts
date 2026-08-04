@@ -37,6 +37,26 @@ export type ShardingOptionsType<TMessage> = {
    */
   readonly passivationIdleMs?: number;
   /**
+   * Stop a shard once it has stood empty this many ms — the shard-level
+   * counterpart to {@link passivationIdleMs} (#892).
+   *
+   * A shard actor appears when the coordinator allocates the shard to this
+   * node and, without this, is only ever stopped again by a handoff.  So once
+   * its last entity passivates it stays resident holding an empty map; and
+   * since entity ids spread over the hash space, a long-running node ends up
+   * with one such shard per `numShards`.
+   *
+   * Unset, it follows `passivationIdleMs`: a shard stands empty precisely
+   * because its entities went idle, so the same window applies one level up.
+   * Set it to decouple the two — a larger value trades memory for fewer
+   * re-creations, `0` keeps empty shards resident while entities still
+   * passivate.
+   *
+   * Only an *empty* shard is ever stopped, and the region keeps ownership, so
+   * the next message re-creates it transparently.
+   */
+  readonly shardPassivationIdleMs?: number;
+  /**
    * Cap the number of locally-hosted entities (#82).  When the region
    * is about to spawn a new entity and the existing count is already
    * `maxEntities`, the entity with the oldest `lastActivity` is
@@ -121,6 +141,11 @@ export class ShardingOptionsBuilder<
     return this.set('passivationIdleMs', passivationIdleMs);
   }
 
+  /** Stop a shard once it has stood empty this many ms.  Default: follows `passivationIdleMs`. */
+  withShardPassivationIdleMs(shardPassivationIdleMs: number): this {
+    return this.set('shardPassivationIdleMs', shardPassivationIdleMs);
+  }
+
   /** Cap the number of locally-hosted entities; LRU-passivate on overflow.  Default: 0 (no cap). */
   withMaxEntities(maxEntities: number): this {
     return this.set('maxEntities', maxEntities);
@@ -166,6 +191,12 @@ export class ShardingOptionsValidator<
       (typeof options.passivationIdleMs !== 'number' || !Number.isFinite(options.passivationIdleMs) || options.passivationIdleMs < 0)
     ) {
       this.fail('passivationIdleMs', 'must be a non-negative finite number', options.passivationIdleMs);
+    }
+    if (
+      options.shardPassivationIdleMs !== undefined &&
+      (typeof options.shardPassivationIdleMs !== 'number' || !Number.isFinite(options.shardPassivationIdleMs) || options.shardPassivationIdleMs < 0)
+    ) {
+      this.fail('shardPassivationIdleMs', 'must be a non-negative finite number', options.shardPassivationIdleMs);
     }
     if (options.maxEntities !== undefined && (!Number.isInteger(options.maxEntities) || options.maxEntities < 0)) {
       this.fail('maxEntities', 'must be an integer >= 0', options.maxEntities);
