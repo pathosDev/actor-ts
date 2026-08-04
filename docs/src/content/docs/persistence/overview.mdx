@@ -325,6 +325,11 @@ For production, the **SQLite** journal+snapshot combo
 covers single-node deployments; the **Cassandra** journal covers
 multi-node clusters where the journal must be shared.
 
+Every backend stores payloads in the same tagged JSON tree format,
+so `Date` / `Map` / `Set` / `bigint` / `Uint8Array` round-trip
+everywhere — see
+[what events and state may contain](/persistence/persistent-actor/#what-events-and-state-may-contain).
+
 ## When NOT to persist
 
 import { Aside } from '@astrojs/starlight/components';

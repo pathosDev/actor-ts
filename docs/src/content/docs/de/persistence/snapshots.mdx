@@ -141,6 +141,12 @@ Snapshot für die `persistenceId` des Actors zurück.  Ältere
 Snapshots werden nicht geladen, es sei denn, du fragst explizit
 über die Lower-Level-API des Stores.
 
+State wird auf jedem Backend im getaggten JSON-Tree-Format
+gespeichert, sodass `Date` / `Map` / `Set` / `bigint` /
+`Uint8Array` in einem Snapshot als echte Instanzen recovern —
+siehe
+[was Events und State enthalten dürfen](/de/persistence/persistent-actor/#was-events-und-state-enthalten-dürfen).
+
 ## Recovery-Flow mit Snapshots
 
 ```mermaid

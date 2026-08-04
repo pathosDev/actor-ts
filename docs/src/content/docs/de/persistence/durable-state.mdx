@@ -144,6 +144,11 @@ aktuellen Revision + 1.  Kehrt zurück, sobald der Store
 bestätigt.  Innerhalb von `onCommand` warte mit `await` darauf,
 bevor du den nächsten State als autoritativ behandelst.
 
+State wird auf jedem Backend im getaggten JSON-Tree-Format
+gespeichert, sodass `Date` / `Map` / `Set` / `bigint` /
+`Uint8Array` als echte Instanzen round-trippen — siehe
+[was Events und State enthalten dürfen](/de/persistence/persistent-actor/#was-events-und-state-enthalten-dürfen).
+
 ## Optimistische Concurrency
 
 ```ts

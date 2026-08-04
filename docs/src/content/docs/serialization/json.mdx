@@ -37,15 +37,28 @@ covers it.
 - Strings, numbers, booleans, `null`.
 - Nested combinations.
 - `Date`, `Uint8Array`, `Map`, `Set`, and `bigint` — round-tripped
-  back into real instances via type tags (`__date__`, `__map__`, …).
+  back into real instances via type tags (`__date__`, `__bytes__`,
+  `__map__`, `__set__`, `__bigint__`).
+- `toJSON()` — honoured like `JSON.stringify` does, so Luxon/Temporal
+  wrappers and your own `toJSON` types encode as their JSON form.
+- User data that *looks* like a tag — an object whose sole key is a
+  reserved tag name — is wrapped in a `__literal__` escape on encode
+  and round-trips as plain data.  A tag is only ever interpreted when
+  it is an object's **sole** own key.
+
+**Persistence uses exactly this tree format**: every journal,
+snapshot store and durable-state store writes its payloads through
+the same tagged tree (see
+[what events and state may contain](/persistence/persistent-actor/#what-events-and-state-may-contain)).
 
 What needs **care**:
 
 | Type | Behavior |
 | --- | --- |
-| `undefined` | **Throws** a `SerializationError` (stricter than raw `JSON.stringify`, which drops it). |
+| `undefined` | **Throws** a `SerializationError` (stricter than raw `JSON.stringify`, which drops it).  The persistence payload codec instead uses `JSON.stringify` semantics — object properties are dropped, array slots become `null`. |
 | `Function` / `Symbol` | **Throw** a `SerializationError`. |
-| Class instances | Decoded as plain `{ ...fields }`; methods + class identity lost. |
+| Circular references | **Throw** a `SerializationError` naming the key path (instead of overflowing the stack). |
+| Class instances | `toJSON()` is used when present; otherwise decoded as plain `{ ...fields }` — methods + class identity lost. |
 | `Date` / `Map` / `Set` / `bigint` / `Uint8Array` | Round-trip as real instances, but the JSON carries an actor-ts-specific tag shape (e.g. `{"__date__":"…"}`) — a plain (non-actor-ts) JSON reader won't see a bare value. |
 
 For **most actor messages**, this is fine — the framework's
