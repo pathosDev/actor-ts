@@ -1,6 +1,6 @@
 ---
 title: Mailboxes
-description: Die Per-Actor-Queue — Default FIFO, BoundedMailbox mit Overflow-Policies, PriorityMailbox, System-Message-Vorrang und wie du eine per Props anhängst.
+description: Die Per-Actor-Queue — Default FIFO, BoundedMailbox mit Overflow-Policies, PriorityMailbox, System-Message-Vorrang und wie du eine per ActorOptions anhängst.
 ---
 
 Jeder Actor hat genau **eine Mailbox** — eine FIFO-Queue von
@@ -38,7 +38,7 @@ Fälle: Telemetrie, Sensor-Readings, Status-Pings, Watch-Events —
 Workloads, bei denen die frischeste Nachricht die einzige ist, die
 zählt, und alte verworfen werden können.  Wenn du andere Semantik
 brauchst (`drop-new` / `reject`) pro Actor, overridest du über
-`Props.withMailbox(...)`.
+`ActorOptions.withMailbox(...)`.
 
 ### Wann den Default überschreiben
 
@@ -48,7 +48,7 @@ brauchst (`drop-new` / `reject`) pro Actor, overridest du über
   (Sender weiß, zu backoffen).
 - Ein Actor mit **deterministischen Replay**-Anforderungen
   (Event Sourcing, Test-Setups).  Nimm
-  `Props.withMailbox(() => new Mailbox())`, um zur unbounded
+  `withMailbox(() => new Mailbox())`, um zur unbounded
   Shape zurückzukehren — eine Nachricht im Replay zu verlieren
   ist nicht akzeptabel.
 - Ein Actor, der eine Mischung aus dringenden und routinemäßigen
@@ -56,13 +56,12 @@ brauchst (`drop-new` / `reject`) pro Actor, overridest du über
   Verwende eine Priority-Mailbox.
 
 ```ts
-import { Mailbox } from 'actor-ts';  // die unbounded Basis-Mailbox
+import { ActorOptions, Mailbox } from 'actor-ts';  // die unbounded Basis-Mailbox
 
-system.spawn(
-  Props.create(() => new MyActor())
-    .withMailbox(() => new Mailbox()),  // explizites Opt-out vom bounded Default
-  'my-actor',
-);
+// explizites Opt-out vom bounded Default
+const myActorOptions = ActorOptions.create().withMailbox(() => new Mailbox());
+
+system.spawn(MyActor, 'my-actor', myActorOptions);
 ```
 
 ### Nur-Kapazitäts-Override
@@ -72,11 +71,12 @@ falsche Zahl für einen spezifischen Actor ist, setze die Kapazität
 einzeilig — die Default-Factory respektiert sie:
 
 ```ts
-system.spawn(
-  Props.create(() => new BurstyActor())
-    .withMailboxCapacity(100_000),     // weiter bounded + drop-head, nur tiefer
-  'bursty',
-);
+import { ActorOptions } from 'actor-ts';
+
+// weiter bounded + drop-head, nur tiefer
+const burstyOptions = ActorOptions.create().withMailboxCapacity(100_000);
+
+system.spawn(BurstyActor, 'bursty', burstyOptions);
 ```
 
 ## System-Nachrichten kommen immer zuerst
@@ -108,7 +108,7 @@ reagiert."
 ## `BoundedMailbox`
 
 ```ts
-import { Actor, ActorSystem, Props, BoundedMailbox } from 'actor-ts';
+import { ActorOptions, Actor, ActorSystem, BoundedMailbox } from 'actor-ts';
 
 class SlowConsumer extends Actor<{ kind: 'work'; n: number }> {
   override async onReceive(message: { kind: 'work'; n: number }): Promise<void> {
@@ -119,10 +119,13 @@ class SlowConsumer extends Actor<{ kind: 'work'; n: number }> {
 
 const system = ActorSystem.create('demo');
 
+const consumerOptions = ActorOptions.create()
+  .withMailbox(() => new BoundedMailbox({ capacity: 1_000, overflow: 'drop-head' }));
+
 const consumer = system.spawn(
-  Props.create(() => new SlowConsumer())
-    .withMailbox(() => new BoundedMailbox({ capacity: 1_000, overflow: 'drop-head' })),
+  SlowConsumer,
   'consumer',
+  consumerOptions,
 );
 ```
 
@@ -175,7 +178,7 @@ import { Aside } from '@astrojs/starlight/components';
 ## `PriorityMailbox`
 
 ```ts
-import { Actor, ActorSystem, Props, PriorityMailbox } from 'actor-ts';
+import { ActorOptions, Actor, ActorSystem, PriorityMailbox } from 'actor-ts';
 
 type Message =
   | { readonly kind: 'urgent'; readonly text: string }
@@ -188,14 +191,17 @@ class Worker extends Actor<Message> {
   }
 }
 
+const workerOptions = ActorOptions.create<Message>()
+  .withMailbox(() => new PriorityMailbox<Message>({
+    priorityFor: (message) => message.kind === 'urgent' ? 0
+                        : message.kind === 'normal' ? 5
+                        : 10,
+  }));
+
 const worker = system.spawn(
-  Props.create(() => new Worker())
-    .withMailbox(() => new PriorityMailbox<Message>({
-      priorityFor: (message) => message.kind === 'urgent' ? 0
-                          : message.kind === 'normal' ? 5
-                          : 10,
-    })),
+  Worker,
   'worker',
+  workerOptions,
 );
 
 worker.tell({ kind: 'bulk',   text: 'batch import row 1' });
@@ -238,18 +244,18 @@ nachhaltigen 10.000-Nachrichten-Backlog hast, bei dem
 Priority-Insertion in Profilen auftaucht, ist die Mailbox offen für
 einen Heap-backed-Swap (siehe den Source).
 
-## Per-Actor-Mailbox via Props
+## Per-Actor-Mailbox via ActorOptions
 
-Zwei Knöpfe auf `Props`:
+Zwei Knöpfe auf `ActorOptions`:
 
 ```ts
-import { Props, BoundedMailbox } from 'actor-ts';
+import { ActorOptions, BoundedMailbox } from 'actor-ts';
 
 // Begrenze einfach das Default-FIFO — Convenience-Helper.
-Props.create(() => new MyActor()).withMailboxCapacity(500);
+const cappedOptions = ActorOptions.create().withMailboxCapacity(500);
 
 // Volle eigene Factory — wähle den Typ und konfiguriere ihn.
-Props.create(() => new MyActor())
+const customOptions = ActorOptions.create()
   .withMailbox(() => new BoundedMailbox({ capacity: 500, overflow: 'drop-head' }));
 ```
 
@@ -262,15 +268,17 @@ brandneue Mailbox-Instanz aus der Factory zurück.  Die Factory wird
 einmal pro Actor-Instanz aufgerufen (inklusive bei Restart), jeder
 neu gestartete Actor bekommt also eine frische, leere
 Mailbox-Datenstruktur.  Es gibt keine systemweite Mailbox-Einstellung
-— Kapazität und Overflow werden pro Actor über `Props`
+— Kapazität und Overflow werden pro Actor über `ActorOptions`
 (`withMailboxCapacity` / `withMailbox`) gewählt; die framework-weiten
 Defaults (Kapazität 10 000, `drop-head`) sind einkompiliert.
 
 <Aside type="caution" title="Teile keine Mailbox-Instanz über Actors hinweg">
   ```ts
+import { ActorOptions } from 'actor-ts';
+
   const shared = new BoundedMailbox({ capacity: 100 });
-  Props.create(() => new A()).withMailbox(() => shared);
-  Props.create(() => new B()).withMailbox(() => shared);  // falsch
+  const aOptions = ActorOptions.create().withMailbox(() => shared);
+  const bOptions = ActorOptions.create().withMailbox(() => shared);  // falsch
   ```
   Jeder Actor braucht seine **eigene** Mailbox.  Dieselbe Instanz
   aus zwei Factories zurückzugeben, pipt die Nachrichten beider

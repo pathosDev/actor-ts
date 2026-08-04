@@ -11,7 +11,6 @@ import { hashShardId } from '../../../../../src/cluster/sharding/ShardAllocator.
 import { StartShardingOptions } from '../../../../../src/cluster/sharding/StartShardingOptions.js';
 import { regionSegments } from '../../../../util/systemPaths.js';
 import { LogLevel, NoopLogger } from '../../../../../src/Logger.js';
-import { Props } from '../../../../../src/Props.js';
 import type { ActorRef } from '../../../../../src/ActorRef.js';
 
 /**
@@ -79,7 +78,7 @@ async function startNode(systemName: string, port: number, seeds: string[] = [])
 
   const shardingOptions = StartShardingOptions.create<Command>()
     .withTypeName(TYPE_NAME)
-    .withEntityProps(Props.create(() => new Entity()))
+    .withEntityActor(() => new Entity())
     .withExtractEntityId((message) => message.id)
     .withNumShards(NUM_SHARDS)
     .withPassivationIdleMs(60)

@@ -10,7 +10,6 @@ behavior — sharding, singletons, gossip convergence,
 failover — without Docker.
 
 ```ts
-import { Props } from 'actor-ts';
 import { MultiNodeSpec, TestProbe } from 'actor-ts/testkit';
 
 // Each role name is one node — and doubles as that node's system name.
@@ -23,7 +22,7 @@ const node2 = spec.systemFor('b');
 
 // Spawn actors on a specific node and assert with a probe:
 const probe = new TestProbe(spec.systemFor('a'));
-const remote = node2.spawnAnonymous(Props.create(() => new Worker()));
+const remote = node2.spawnAnonymous(() => new Worker());
 
 remote.tell({ kind: 'do', replyTo: probe });
 await probe.expectMessage({ kind: 'done' });
@@ -188,7 +187,7 @@ await spec.awaitMembers('a', 3);
 
 const startShardingOptions = StartShardingOptions.create<Command>()
   .withTypeName('entity')
-  .withEntityProps(Props.create(() => new Entity()))
+  .withEntityActor(() => new Entity())
   .withExtractEntityId((message) => message.id);
 const regions = spec.allRoles().map((role) =>
   spec.clusterFor(role).sharding.start(startShardingOptions)

@@ -17,7 +17,7 @@ Deno — das richtige Runtime-Backend wird automatisch gewählt.
 Nach diesem Guide weißt Du:
 
 - Wie Du einen Actor definierst, indem Du `Actor<T>` erweiterst.
-- Wie Du ihn via `system.spawnAnonymous(Props.create(...))` spawnst.
+- Wie Du ihn via `system.spawnAnonymous(...)` spawnst.
 - Den Unterschied zwischen `tell` (fire-and-forget) und dem
   `onReceive`-Handler des Actors.
 - Wie Du das System herunterfährst, ohne Timer oder Sockets zu lecken.
@@ -41,7 +41,7 @@ import { Tabs, TabItem } from '@astrojs/starlight/components';
     Kein Installationsschritt. Direkt von npm importieren:
 
     ```ts
-    import { Actor, ActorSystem, Props } from 'npm:actor-ts';
+    import { Actor, ActorSystem } from 'npm:actor-ts';
     ```
 
     Mit `--allow-net` (für den TCP-Cluster-Transport) und
@@ -59,7 +59,7 @@ Broker-Clients) — siehe die [Installation](/de/intro/installation/)-Seite.
 Erstelle `hello.ts` und füge ein:
 
 ```ts
-import { Actor, ActorSystem, Props } from 'actor-ts';
+import { Actor, ActorSystem } from 'actor-ts';
 
 // 1. Definiere einen Actor.  Der Typparameter `<string>` schränkt
 //    ein, welche Nachrichten dieser Actor akzeptiert — das Typsystem
@@ -74,9 +74,9 @@ class Greeter extends Actor<string> {
 //    Norm; alles andere lebt darin.
 const system = ActorSystem.create('hello');
 
-// 3. Spawne den Actor.  `Props.create(() => new Greeter())` ist die
+// 3. Spawne den Actor.  `() => new Greeter()` ist die
 //    Factory; `'greeter'` ist der Name des Actors in der Hierarchie.
-const ref = system.spawn(Props.create(() => new Greeter()), 'greeter');
+const ref = system.spawn(() => new Greeter(), 'greeter');
 
 // 4. Sende eine Nachricht.  `tell` ist fire-and-forget — es kehrt
 //    sofort zurück, der Actor verarbeitet die Nachricht asynchron
@@ -136,7 +136,7 @@ Die fünf Zeilen bilden auf die fünf Kernideen des Actor-Modells ab:
    Actor-Fehler auffängt), den Scheduler, den Event-Stream. Es
    gibt typischerweise einen pro Prozess.
 
-3. **`system.spawnAnonymous(Props.create(() => new Greeter()))`** — `Props`
+3. **`system.spawnAnonymous(() => new Greeter())`** — die Factory
    ist actor-ts' Art, die Konstruktion aufzuschieben. Das System
    muss kontrollieren, *wann* die Actor-Instanz erstellt wird (auf
    seinem Mailbox-Thread, nicht auf Deinem), also gibst Du ihm eine
@@ -177,7 +177,7 @@ füge ein neues `kind` ohne passenden `with(...)`-Arm hinzu, und
 TypeScript bricht den Build ab.
 
 ```ts
-import { Actor, ActorSystem, Props, type ActorRef } from 'actor-ts';
+import { Actor, ActorSystem, type ActorRef } from 'actor-ts';
 import { match } from 'ts-pattern';
 
 type IncrementCommand = { kind: 'increment' };
@@ -201,7 +201,7 @@ class Counter extends Actor<Command> {
 }
 
 const system  = ActorSystem.create('counters');
-const counter = system.spawnAnonymous(Props.create(() => new Counter()));
+const counter = system.spawnAnonymous(() => new Counter());
 
 counter.tell({ kind: 'increment' });
 counter.tell({ kind: 'increment' });
@@ -221,10 +221,10 @@ Tiefe siehe [Messages](/de/fundamentals/messages/) und
 `ask`-Methode auf der Ref:
 
 ```ts
-import { ActorSystem, Props } from 'actor-ts';
+import { ActorSystem } from 'actor-ts';
 
 const system  = ActorSystem.create('counters');
-const counter = system.spawnAnonymous(Props.create(() => new Counter()));
+const counter = system.spawnAnonymous(() => new Counter());
 
 counter.tell({ kind: 'increment' });
 counter.tell({ kind: 'increment' });
@@ -268,10 +268,10 @@ Doku, je nachdem, was Du tun willst:
   verdrahtet `SIGTERM` / `SIGINT`-Shutdown in einem Call:
 
   ```ts
-  import { Cluster, Props } from 'actor-ts';
+  import { Cluster } from 'actor-ts';
 
   const { system } = await Cluster.bootstrap({ name: 'hello' });
-  const ref = system.spawn(Props.create(() => new Greeter()), 'greeter');
+  const ref = system.spawn(() => new Greeter(), 'greeter');
   ref.tell('world');
   ```
 

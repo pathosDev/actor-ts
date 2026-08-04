@@ -23,7 +23,7 @@ zurück:
 
 | Direktive | Was sie tut |
 | --- | --- |
-| **`Restart`** | Wirf die kaputte Instanz weg.  Baue eine frische aus derselben `Props`-Factory.  Die Mailbox wird beibehalten; die neue Instanz nimmt die nächste Nachricht auf. |
+| **`Restart`** | Wirf die kaputte Instanz weg.  Baue eine frische aus derselben Actor-Klasse bzw. Factory.  Die Mailbox wird beibehalten; die neue Instanz nimmt die nächste Nachricht auf. |
 | **`Resume`** | Behalte den Zustand des Actors.  Überspringe die fehlschlagende Nachricht.  Mache mit der nächsten in der Mailbox weiter. |
 | **`Stop`** | Stoppe den Actor permanent.  Kinder werden zuerst gestoppt.  Weitere Nachrichten gehen in Dead Letters. |
 | **`Escalate`** | Wirf den Fehler erneut bei dem *eigenen* Parent des Supervisors.  Der Supervisor selbst wird dann meist neu gestartet. |
@@ -36,7 +36,7 @@ Restart nicht die richtige Semantik für deine Domäne ist.
 
 ```ts
 import { match } from 'ts-pattern';
-import { Actor, ActorSystem, Props, OneForOneStrategy, Directive } from 'actor-ts';
+import { Actor, ActorSystem, OneForOneStrategy, Directive } from 'actor-ts';
 
 type DoItCommand = { kind: 'do-it' };
 type FailCommand = { kind: 'fail' };
@@ -66,7 +66,7 @@ class Boss extends Actor<{ kind: 'spawn-worker' }> {
   }
 
   override onReceive(message: { kind: 'spawn-worker' }): void {
-    const worker = this.context.spawnAnonymous(Props.create(() => new Worker()));
+    const worker = this.context.spawnAnonymous(() => new Worker());
     worker.tell({ kind: 'do-it' });
     worker.tell({ kind: 'fail' });   // <- throwt
     worker.tell({ kind: 'do-it' });  // <- neue Instanz, nach Restart
@@ -156,7 +156,7 @@ Wenn `Restart` feuert:
    (File-Handles, offene Sockets, Broker-Verbindungen).
 2. Die Instanz wird verworfen.  Alle Instanzfelder (`this.count`,
    `this.handle`, …) sind verloren.
-3. Eine neue Instanz wird aus derselben `Props.create`-Factory
+3. Eine neue Instanz wird aus derselben Actor-Klasse bzw. Factory
    gebaut.
 4. Das Framework ruft **`postRestart(reason)`** auf der frischen
    Instanz auf.  Default: ruft `preStart`.  Überschreibe, um
@@ -186,7 +186,7 @@ schieben).
 
   ```ts
   override preStart(): void {
-    this.worker = this.context.spawnAnonymous(Props.create(() => new Worker()));
+    this.worker = this.context.spawnAnonymous(() => new Worker());
   }
   ```
 
@@ -299,19 +299,23 @@ was wir tun sollen"-Signal.
 Actors, die über `system.spawnAnonymous(...)` gespawnt werden, haben den
 **Root-User-Guardian** als Parent.  Seine Strategie ist
 `defaultStrategy` — Restart bei Fehler, gecappt bei 10/Minute.
-Überschreibe, indem du eine Strategie in `Props` übergibst:
+Überschreibe, indem du eine Strategie in den Spawn-Options übergibst:
 
 ```ts
+import { ActorOptions } from 'actor-ts';
+
+const topActorOptions = ActorOptions.create().withSupervisorStrategy(stoppingStrategy);
+
 const ref = system.spawn(
-  Props.create(() => new MyTopActor())
-    .withSupervisorStrategy(stoppingStrategy),
+  MyTopActor,
   'my-top-actor',
+  topActorOptions,
 );
 ```
 
 …oder indem du dem Actor seine eigene Children-Strategie gibst.  Zwei
 verschiedene Dinge: die Strategie, die die Fehler *dieses* Actors
-*behandelt* (auf `Props` gesetzt) vs. die Strategie, die *dieser
+*behandelt* (in den Spawn-Options gesetzt) vs. die Strategie, die *dieser
 Actor verwendet* für SEINE Kinder (als `override supervisorStrategy`
 auf der Klasse gesetzt).
 

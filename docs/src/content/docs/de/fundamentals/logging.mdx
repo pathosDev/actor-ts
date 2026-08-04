@@ -87,11 +87,15 @@ Drei Wege, ihn zu setzen, in Precedence-Reihenfolge:
 | Wo | Wann du danach greifst |
 | --- | --- |
 | `context.setDisplayName(name)` | Der Name steht erst zur Laufzeit fest — nach der Recovery, nach der ersten Nachricht.  Außerdem der Weg für [`Behaviors`](/de/typed/behaviors/)-Actors, die sich alle eine `TypedActor`-Klasse teilen und keine eigene Subklasse zum Überschreiben haben. |
-| [`Props.withDisplayName(name)`](/de/fundamentals/props/) | Die Spawn-Stelle kennt den Namen und der Actor nicht — eine Sharding-Entity, ein Singleton, alles, was das Framework selbst konstruiert. |
+| [`ActorOptions.withDisplayName(name)`](/de/fundamentals/spawning/#withdisplayname) | Die Spawn-Stelle kennt den Namen und der Actor nicht — eine Sharding-Entity, ein Singleton, alles, was das Framework selbst konstruiert. |
 | `displayName()` | Der Normalfall: der Actor weiß, was er ist. |
 
 ```ts
-const props = Props.create(() => new IngestWorker()).withDisplayName('ingest-worker');
+import { ActorOptions } from 'actor-ts';
+
+const workerOptions = ActorOptions.create().withDisplayName('ingest-worker');
+
+system.spawn(IngestWorker, 'ingest', workerOptions);
 ```
 
 <Aside type="caution" title="Läuft bei jedem Record">

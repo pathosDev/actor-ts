@@ -28,7 +28,7 @@
 import * as path from 'node:path';
 import {
   Actor,
-  Props,
+  type ActorFactory,
   type ActorRef,
   type ActorSystem,
 } from '../../../../src/index.js';
@@ -122,7 +122,7 @@ export class HttpIngressActor extends Actor<never> {
     // @fastify/websocket plugin is registered automatically by the
     // backend when it sees a websocket() route.
     const ingress = system.spawn(
-      Props.create(() => new WebsocketIngressActor({
+      () => new WebsocketIngressActor({
         chatRoomRegion: this.deps.chatRoomRegion,
         directMessageChannelRegion: this.deps.directMessageChannelRegion,
         onlineUsers: this.deps.onlineUsers,
@@ -130,7 +130,7 @@ export class HttpIngressActor extends Actor<never> {
         sessions: this.deps.sessions,
         roomDirectory: this.deps.roomDirectory,
         readReceipts: this.deps.readReceipts,
-      })),
+      }),
       'ws-ingress',
     );
 
@@ -159,12 +159,12 @@ export class HttpIngressActor extends Actor<never> {
 }
 
 /**
- * Convenience: build a `Props<never>` for the singleton manager.
+ * Convenience: build the singleton manager's actor factory.
  * Lives here so `main.ts` doesn't need to know about the actor's
  * dep struct.
  */
-export function httpIngressProps(deps: HttpIngressDeps): Props<never> {
-  return Props.create<never>(() => new HttpIngressActor(deps));
+export function httpIngressProps(deps: HttpIngressDeps): ActorFactory<never> {
+  return (() => new HttpIngressActor(deps)) as unknown as ActorFactory<never>;
 }
 
 void path; // path is imported for callers that pass through __dirname-style paths.

@@ -1,7 +1,7 @@
 /**
  * Worker-side script.  Bun spawns one instance of this file per core.
  */
-import { Actor, ActorSystem, ActorSystemOptions, Cluster, ClusterOptions, Props, WorkerNode } from '../../src/index.js';
+import { Actor, ActorSystem, ActorSystemOptions, Cluster, ClusterOptions, WorkerNode } from '../../src/index.js';
 import { attachDevTools } from '../devtools.js';
 
 class HelloWorker extends Actor<'greet'> {
@@ -26,7 +26,7 @@ async function main(): Promise<void> {
     .withFailureDetector({ heartbeatIntervalMs: 100, unreachableAfterMs: 400, downAfterMs: 800 })
     .withGossipIntervalMs(120);
   const cluster = await Cluster.join(system, clusterOptions);
-  system.spawn(Props.create(() => new HelloWorker(context.initData.workerId)), 'hello');
+  system.spawn(() => new HelloWorker(context.initData.workerId), 'hello');
   context.ready();
   setTimeout(async () => {
     await cluster.leave();

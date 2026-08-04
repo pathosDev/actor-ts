@@ -32,7 +32,6 @@ import {
   MemberRemoved,
   MemberUnreachable,
   MemberUp,
-  Props,
   StartSingletonOptions,
 } from '../../../src/index.js';
 import { DistributedDataId, DistributedDataOptions } from '../../../src/crdt/index.js';
@@ -127,7 +126,7 @@ async function main(): Promise<void> {
 
   // -------- 5. VoicePresenceActor (one per node) --------
   const voicePresence = system.spawn(
-    Props.create(() => new VoicePresenceActor()),
+    () => new VoicePresenceActor(),
     'voice-presence',
   );
 
@@ -135,7 +134,7 @@ async function main(): Promise<void> {
   const staticDir = path.join(import.meta.dirname ?? __dirname, '..', 'static');
   const singletonOptions = StartSingletonOptions.create()
     .withTypeName('http-ingress')
-    .withProps(httpIngressProps({
+    .withActor(httpIngressProps({
       host: config.host,
       httpPort: config.httpPort,
       staticDir,

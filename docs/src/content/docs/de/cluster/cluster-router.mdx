@@ -40,7 +40,7 @@ Unterscheidung zwischen lokalen Pools und Cluster-Groups.
 ## Ein minimales Beispiel
 
 ```ts
-import { ActorSystem, Cluster, ClusterOptions, ClusterRouter, ClusterRouterOptions, Props, Actor } from 'actor-ts';
+import { ActorSystem, Cluster, ClusterOptions, ClusterRouter, ClusterRouterOptions, Actor } from 'actor-ts';
 
 class Worker extends Actor<{ payload: string }> {
   override onReceive(message: { payload: string }): void {
@@ -60,7 +60,7 @@ const cluster = await Cluster.join(
 );
 
 // 1. Jeder Node spawnt seinen eigenen Worker an /user/worker
-system.spawn(Props.create(() => new Worker()), 'worker');
+system.spawn(() => new Worker(), 'worker');
 
 // 2. Jeder Node kann einen Cluster-Router bauen, der diese Worker anspricht
 const clusterRouterOptions = ClusterRouterOptions.create()

@@ -30,7 +30,6 @@ import {
   MemberUnreachable,
   MemberUp,
   PersistenceExtensionId,
-  Props,
   SqliteJournal,
   SqliteJournalOptions,
   SqliteSnapshotStore,
@@ -195,7 +194,7 @@ async function main(): Promise<void> {
 
   // -------- 7. OnlineUsersActor (top-level, runs on every node) --------
   const onlineUsers = system.spawn(
-    Props.create(() => new OnlineUsersActor()),
+    () => new OnlineUsersActor(),
     'online-users',
   );
 
@@ -206,7 +205,7 @@ async function main(): Promise<void> {
   // session subscribes here once per room, the actor maintains a
   // single DD-level subscription on its behalf.
   const readReceipts = system.spawn(
-    Props.create(() => new ReadReceiptsActor()),
+    () => new ReadReceiptsActor(),
     'read-receipts',
   );
 
@@ -219,7 +218,7 @@ async function main(): Promise<void> {
   // and each instance fans out only to its own local subscribers.
   // No singleton needed.
   const roomDirectory = system.spawn(
-    Props.create(() => new ChatRoomDirectoryActor()),
+    () => new ChatRoomDirectoryActor(),
     'chat-room-directory',
   );
 
@@ -251,7 +250,7 @@ async function main(): Promise<void> {
   const staticDir = path.join(import.meta.dirname ?? __dirname, '..', 'static');
   const singletonOptions = StartSingletonOptions.create()
     .withTypeName('http-ingress')
-    .withProps(httpIngressProps({
+    .withActor(httpIngressProps({
       host: config.host,
       httpPort: config.httpPort,
       staticDir,

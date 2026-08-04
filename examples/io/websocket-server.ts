@@ -20,7 +20,6 @@ import {
   concat,
   get,
   HttpExtensionId,
-  Props,
   Status,
   WebsocketServerActor,
   websocket,
@@ -74,7 +73,7 @@ class ChatRoom extends WebsocketServerActor<ServerMessage, ClientMessage> {
 async function main(): Promise<void> {
   const system = ActorSystem.create('ws-server-demo');
   const devtools = await attachDevTools(system);
-  const chat = system.spawn(Props.create(() => new ChatRoom()), 'chat');
+  const chat = system.spawn(() => new ChatRoom(), 'chat');
 
   const routes = concat(
     websocket('/ws', chat),

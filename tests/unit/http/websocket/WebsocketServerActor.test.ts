@@ -1,7 +1,6 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import { ActorSystem } from '../../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../../src/ActorSystemOptions.js';
-import { Props } from '../../../../src/Props.js';
 import { LogLevel, NoopLogger } from '../../../../src/Logger.js';
 import type { HttpRequest } from '../../../../src/http/types.js';
 import { WebsocketServerActor } from '../../../../src/http/websocket/WebsocketServerActor.js';
@@ -120,7 +119,7 @@ afterEach(async () => {
 function setup(name: string): { rec: Rec; hub: WebsocketServerRef<Out, In>; system: ActorSystem } {
   const system = newSystem(name);
   const rec: Rec = { events: [], connections: [], childCounts: [] };
-  const hub = system.spawn(Props.create(() => new RecordingServer(rec)), 'hub') as WebsocketServerRef<Out, In>;
+  const hub = system.spawn(() => new RecordingServer(rec), 'hub') as WebsocketServerRef<Out, In>;
   return { rec, hub, system };
 }
 
@@ -241,7 +240,7 @@ describe('WebsocketServerActor via wireConnection (child-per-connection)', () =>
         invalids.push(`${c.id}:${e.name}`);
       }
     }
-    const hub = system.spawn(Props.create(() => new HookServer()), 'hub') as WebsocketServerRef<Out, In>;
+    const hub = system.spawn(() => new HookServer(), 'hub') as WebsocketServerRef<Out, In>;
     const sock = new MockSocket();
     const policy: ResolvedWebsocketPolicy = { ...DEFAULT_WEBSOCKET_POLICY, onInvalidMessage: 'hook' };
     wireConnection(system, hub, request(), sock, jsonCodec<Out, In>(), policy);

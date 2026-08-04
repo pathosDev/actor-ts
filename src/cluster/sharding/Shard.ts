@@ -1,7 +1,8 @@
+import type { ActorClassOrFactory } from '../../Actor.js';
+import type { ActorOptions, ActorOptionsType } from '../../ActorOptions.js';
 import { match, P } from 'ts-pattern';
 import { Actor } from '../../Actor.js';
 import type { ActorRef } from '../../ActorRef.js';
-import type { Props } from '../../Props.js';
 import { Terminated } from '../../SystemMessages.js';
 import { Passivate } from './Passivate.js';
 import type {
@@ -17,7 +18,8 @@ import type {
 export type ShardConfig = {
   readonly typeName: string;
   readonly shardId: number;
-  readonly entityProps: Props<unknown>;
+  readonly entityActor: ActorClassOrFactory<unknown>;
+  readonly entityOptions?: ActorOptions<unknown>;
 };
 
 /** What a shard accepts from the outside — its region, or a holder of its ref. */
@@ -163,14 +165,13 @@ export class Shard extends Actor<ShardInbox> {
       `[sharding] spawning entity '${entityId}' in shard ${this.config.shardId} of '${this.config.typeName}'`,
     );
     // The child name is a lossy rendering of the id (see `entityName`), so
-    // the identity travels on the Props instead — that is the only copy the
-    // entity can read back verbatim.
-    const props = this.config.entityProps.withEntity({
-      entityId,
-      typeName: this.config.typeName,
-      shardId: this.config.shardId,
+    // the identity travels in the spawn options instead — that is the only
+    // copy the entity can read back verbatim.  A fresh object per entity, and
+    // `entity` last so a caller's own options can never shadow it.
+    const ref = this.context.spawn(this.config.entityActor, entityName(entityId), {
+      ...(this.config.entityOptions as Partial<ActorOptionsType<unknown>> | undefined),
+      entity: { entityId, typeName: this.config.typeName, shardId: this.config.shardId },
     });
-    const ref = this.context.spawn(props, entityName(entityId));
     this.context.watch(ref);
     const state: EntityState = { ref: ref as ActorRef<unknown>, passivating: null };
     this.entities.set(entityId, state);

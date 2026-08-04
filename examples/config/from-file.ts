@@ -7,7 +7,7 @@
  *   POD_IP=10.0.0.5 SEED_HOST_1=10.0.0.1 SEED_PORT=2552 \
  *     bun run examples/config/from-file.ts
  */
-import { Actor, ActorSystem, ActorSystemOptions, Props } from '../../src/index.js';
+import { Actor, ActorSystem, ActorSystemOptions } from '../../src/index.js';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 import { attachDevTools } from '../devtools.js';
@@ -38,7 +38,7 @@ async function main(): Promise<void> {
     .withConfig({ 'actor-ts': { logger: { level: 'info' } } });
   const system = ActorSystem.create('from-file', systemOptions);
   const devtools = await attachDevTools(system);
-  const diag = system.spawn(Props.create(() => new DiagActor()), 'diag');
+  const diag = system.spawn(() => new DiagActor(), 'diag');
   diag.tell('report');
   await new Promise(resolve => setTimeout(resolve, 50));
   await devtools.holdOpen();

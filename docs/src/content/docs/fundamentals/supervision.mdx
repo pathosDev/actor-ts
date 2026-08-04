@@ -21,7 +21,7 @@ When a child throws, the supervisor's decider returns one of:
 
 | Directive | What it does |
 | --- | --- |
-| **`Restart`** | Throw the broken instance away.  Build a fresh one from the same `Props` factory.  Mailbox is retained; the new instance picks up the next message. |
+| **`Restart`** | Throw the broken instance away.  Build a fresh one from the same actor class or factory.  Mailbox is retained; the new instance picks up the next message. |
 | **`Resume`** | Keep the actor's state.  Skip the failing message.  Continue with the next one in the mailbox. |
 | **`Stop`** | Stop the actor permanently.  Children are stopped first.  Further messages go to dead letters. |
 | **`Escalate`** | Re-throw the error at the supervisor's *own* parent.  The supervisor itself usually then gets restarted. |
@@ -34,7 +34,7 @@ the right semantic for your domain.
 
 ```ts
 import { match } from 'ts-pattern';
-import { Actor, ActorSystem, Props, OneForOneStrategy, Directive } from 'actor-ts';
+import { Actor, ActorSystem, OneForOneStrategy, Directive } from 'actor-ts';
 
 type DoItCommand = { kind: 'do-it' };
 type FailCommand = { kind: 'fail' };
@@ -63,7 +63,7 @@ class Boss extends Actor<{ kind: 'spawn-worker' }> {
   }
 
   override onReceive(message: { kind: 'spawn-worker' }): void {
-    const worker = this.context.spawnAnonymous(Props.create(() => new Worker()));
+    const worker = this.context.spawnAnonymous(() => new Worker());
     worker.tell({ kind: 'do-it' });
     worker.tell({ kind: 'fail' });   // <- throws
     worker.tell({ kind: 'do-it' });  // <- new instance, after restart
@@ -150,7 +150,7 @@ When `Restart` fires:
    actor (file handles, open sockets, broker connections).
 2. The instance is dropped.  All instance fields (`this.count`,
    `this.handle`, …) are lost.
-3. A new instance is built from the same `Props.create` factory.
+3. A new instance is built from the same actor class or factory.
 4. The framework calls **`postRestart(reason)`** on the fresh
    instance.  Default: calls `preStart`.  Override to re-acquire
    resources.
@@ -176,7 +176,7 @@ for inspection).
 
   ```ts
   override preStart(): void {
-    this.worker = this.context.spawnAnonymous(Props.create(() => new Worker()));
+    this.worker = this.context.spawnAnonymous(() => new Worker());
   }
   ```
 
@@ -285,19 +285,19 @@ do" signal.
 Actors spawned via `system.spawnAnonymous(...)` have the **root user
 guardian** as their parent.  Its strategy is `defaultStrategy` —
 restart on failure, capped at 10/minute.  Override by passing a
-strategy in `Props`:
+strategy in the spawn options:
 
 ```ts
-const ref = system.spawn(
-  Props.create(() => new MyTopActor())
-    .withSupervisorStrategy(stoppingStrategy),
-  'my-top-actor',
-);
+import { ActorOptions } from 'actor-ts';
+
+const topActorOptions = ActorOptions.create().withSupervisorStrategy(stoppingStrategy);
+
+const ref = system.spawn(MyTopActor, 'my-top-actor', topActorOptions);
 ```
 
 …or by giving the actor its own children-strategy.  Two different
 things: the strategy *handling* this actor's failures (set on
-`Props`) vs. the strategy *this actor uses* for ITS children
+its spawn options) vs. the strategy *this actor uses* for ITS children
 (set as `override supervisorStrategy` on the class).
 
 ## Common pitfalls

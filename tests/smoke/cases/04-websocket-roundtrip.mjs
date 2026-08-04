@@ -16,7 +16,7 @@ export const description = 'client actor ↔ server actor via websocket() route'
 
 export async function run({ actorTs }) {
   const {
-    ActorSystem, ActorSystemOptions, Props, LogLevel, NoopLogger,
+    ActorSystem, ActorSystemOptions, LogLevel, NoopLogger,
     HttpExtensionId, WebsocketServerActor, WebsocketClientActor, WebsocketClientOptions, websocket,
   } = actorTs;
 
@@ -30,7 +30,7 @@ export async function run({ actorTs }) {
   const sys = ActorSystem.create('smoke-ws', sysOptions);
   let binding;
   try {
-    const server = sys.spawn(Props.create(() => new Echo()), 'echo');
+    const server = sys.spawn(() => new Echo(), 'echo');
     try {
       binding = await sys.extension(HttpExtensionId).newServerAt('127.0.0.1', 0).bind(websocket('/ws', server));
     } catch (e) {
@@ -48,7 +48,7 @@ export async function run({ actorTs }) {
       onConnected() { this.send({ n: 7 }); }
       onMessage(m) { received.push(m); }
     }
-    sys.spawn(Props.create(() => new Client(`ws://127.0.0.1:${binding.port}/ws`)), 'client');
+    sys.spawn(() => new Client(`ws://127.0.0.1:${binding.port}/ws`), 'client');
 
     const deadline = Date.now() + 5_000;
     while (received.length === 0 && Date.now() < deadline) {

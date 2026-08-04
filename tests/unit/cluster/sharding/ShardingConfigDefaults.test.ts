@@ -1,6 +1,5 @@
 import { describe, expect, test } from 'bun:test';
 import { Actor } from '../../../../src/Actor.js';
-import { Props } from '../../../../src/Props.js';
 import { Config } from '../../../../src/config/Config.js';
 import { ConfigKeys } from '../../../../src/config/ConfigKeys.js';
 import { ShardRegion } from '../../../../src/cluster/sharding/ShardRegion.js';
@@ -98,7 +97,7 @@ describe('ShardRegion.settingsToConfig — the two passivation windows', () => {
     ShardRegion.settingsToConfig<unknown>(
       {
         typeName: 'entity',
-        entityProps: Props.create(() => new NoopEntity()),
+        entityActor: () => new NoopEntity(),
         extractEntityId: (message: unknown) => String(message),
         ...extra,
       } as ShardingOptionsType<unknown>,

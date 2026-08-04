@@ -16,7 +16,6 @@ import { ClusterOptions } from '../../../../../src/cluster/ClusterOptions.js';
 import { InMemoryTransport } from '../../../../../src/cluster/Transport.js';
 import { NodeAddress } from '../../../../../src/cluster/NodeAddress.js';
 import { LogLevel, NoopLogger } from '../../../../../src/Logger.js';
-import { Props } from '../../../../../src/Props.js';
 import { ReplicatedEventSourcedActor } from '../../../../../src/persistence/ReplicatedEventSourcedActor.js';
 import { InMemoryLease, inMemoryLeaseStore } from '../../../../../src/coordination/leases/InMemoryLease.js';
 import { LeaseOptions } from '../../../../../src/coordination/LeaseOptions.js';
@@ -95,10 +94,10 @@ describe('ReplicatedEventSourcedActor — optional Lease (#89)', () => {
     let actor: LeasedCounter | null = null;
     try {
       sys.spawn(
-        Props.create(() => {
+        () => {
           actor = new LeasedCounter('no-lease', 'r1', null);
           return actor as unknown as Actor<unknown>;
-        }),
+        },
         'a',
       );
       await sleep(80);
@@ -137,18 +136,18 @@ describe('ReplicatedEventSourcedActor — optional Lease (#89)', () => {
         .withTtlMs(30_000);
       const leaseB = new InMemoryLease(leaseBOptions);
       sys.spawn(
-        Props.create(() => {
+        () => {
           a = new LeasedCounter('lease-a', 'r-a', leaseA);
           return a as unknown as Actor<unknown>;
-        }),
+        },
         'a',
       );
       await sleep(60);
       sys.spawn(
-        Props.create(() => {
+        () => {
           b = new LeasedCounter('lease-b', 'r-b', leaseB);
           return b as unknown as Actor<unknown>;
-        }),
+        },
         'b',
       );
       await sleep(60);
@@ -187,10 +186,10 @@ describe('ReplicatedEventSourcedActor — optional Lease (#89)', () => {
         .withTtlMs(200);
       const lease = new InMemoryLease(leaseOptions);
       sys.spawn(
-        Props.create(() => {
+        () => {
           a = new LeasedCounter('lease-loss', 'r-a', lease);
           return a as unknown as Actor<unknown>;
-        }),
+        },
         'a',
       );
       await sleep(60);
@@ -228,10 +227,10 @@ describe('ReplicatedEventSourcedActor — optional Lease (#89)', () => {
       const first = new InMemoryLease(firstOptions);
       let ref1: LeasedCounter | null = null;
       const a1 = sys.spawn(
-        Props.create(() => {
+        () => {
           ref1 = new LeasedCounter('handover-1', 'r-1', first);
           return ref1 as unknown as Actor<unknown>;
-        }),
+        },
         'a1',
       );
       await sleep(60);
@@ -250,10 +249,10 @@ describe('ReplicatedEventSourcedActor — optional Lease (#89)', () => {
       const second = new InMemoryLease(secondOptions);
       let ref2: LeasedCounter | null = null;
       sys.spawn(
-        Props.create(() => {
+        () => {
           ref2 = new LeasedCounter('handover-2', 'r-2', second);
           return ref2 as unknown as Actor<unknown>;
-        }),
+        },
         'a2',
       );
       await sleep(60);

@@ -8,7 +8,7 @@ Brokern).  Unterstützt Exchanges (direct / topic / fanout /
 headers), Queues, Routing-Keys, ACK/NACK-Semantik.
 
 ```ts
-import { ActorSystem, Props, AmqpActor, AmqpOptions } from 'actor-ts';
+import { ActorSystem, AmqpActor, AmqpOptions } from 'actor-ts';
 
 const amqpOptions = AmqpOptions.create()
   .withUrl('amqp://guest:guest@rabbitmq:5672')
@@ -21,9 +21,9 @@ const amqpOptions = AmqpOptions.create()
     { queue: 'order-processor', exchange: 'orders', routingKey: 'placed.#', target: handler },
   ]);
 const amqp = system.spawn(
-  Props.create(() => new AmqpActor(
+  () => new AmqpActor(
     amqpOptions,
-  )),
+  ),
   'amqp',
 );
 

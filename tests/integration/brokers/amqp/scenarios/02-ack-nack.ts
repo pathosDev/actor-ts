@@ -6,7 +6,6 @@
  * is dropped if no DLX is configured).
  */
 import { Actor } from '../../../../../src/Actor.js';
-import { Props } from '../../../../../src/Props.js';
 import type { AmqpCommand, AmqpDelivery } from '../../../../../src/io/broker/AmqpActor.js';
 import type { ActorRef } from '../../../../../src/ActorRef.js';
 import { spawnAmqp, type AmqpContext } from '../runner.js';
@@ -54,7 +53,7 @@ export const scenario: BrokerScenario<AmqpContext> = {
     await declareQueue(context.url, queue);
 
     const handler = new AcknowledgmentOnSecondTry();
-    const inboxRef = context.system.spawnAnonymous(Props.create(() => handler));
+    const inboxRef = context.system.spawnAnonymous(() => handler);
     const amqp = spawnAmqp(context, {
       autoAcknowledge: false,
       bindings: [{

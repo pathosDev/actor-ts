@@ -10,7 +10,6 @@ import {
   PersistenceExtensionId,
   PersistentActor,
 } from '../../../../src/persistence/index.js';
-import { Props } from '../../../../src/Props.js';
 import {
   ActorLifecycleEvent,
   ActorRestarted,
@@ -41,7 +40,7 @@ type Observations = {
   failures: Error[];
   recovered: State[];
   handled: Command[];
-  /** Bumped by the Props factory — the only observable for a restart loop. */
+  /** Bumped by the actor factory — the only observable for a restart loop. */
   incarnations: number;
 };
 
@@ -148,8 +147,8 @@ async function spawnListeners(
   const lifecycle: ActorLifecycleEvent[] = [];
   const deadLetterReady: ListenerReady = { value: false };
   const lifecycleReady: ListenerReady = { value: false };
-  system.spawn(Props.create(() => new DeadLetterListener(deadLetters, deadLetterReady)), 'dead-letters');
-  system.spawn(Props.create(() => new LifecycleListener(lifecycle, lifecycleReady)), 'lifecycle');
+  system.spawn(() => new DeadLetterListener(deadLetters, deadLetterReady), 'dead-letters');
+  system.spawn(() => new LifecycleListener(lifecycle, lifecycleReady), 'lifecycle');
   await awaitCondition(() => deadLetterReady.value && lifecycleReady.value, {
     label: 'both event-stream listeners subscribed',
   });
@@ -166,7 +165,7 @@ describe('PersistentActor — a swallowed recovery failure', () => {
 
     const observations = newObservations();
     const ref = system.spawn(
-      Props.create(() => new SwallowingAccount('acct-dead-letter', observations)),
+      () => new SwallowingAccount('acct-dead-letter', observations),
       'account',
     );
     await awaitCondition(() => observations.failures.length === 1, {
@@ -195,10 +194,10 @@ describe('PersistentActor — a swallowed recovery failure', () => {
 
     const observations = newObservations();
     const ref = system.spawn(
-      Props.create(() => {
+      () => {
         observations.incarnations++;
         return new SwallowingAccount('acct-stops', observations);
-      }),
+      },
       'account',
     );
 
@@ -234,10 +233,10 @@ describe('PersistentActor — a throwing onRecoveryComplete', () => {
       }
     }
     system.spawn(
-      Props.create(() => {
+      () => {
         observations.incarnations++;
         return new ThrowingCompleteAccount('acct-hook', observations);
-      }),
+      },
       'account',
     );
 
@@ -262,10 +261,10 @@ describe('PersistentActor — the default onRecoveryFailure', () => {
     // No override — the default rethrows, so `preStart` rejects and
     // ActorCell turns it into an ActorInitializationError.
     const ref = system.spawn(
-      Props.create(() => {
+      () => {
         observations.incarnations++;
         return new Account('acct-default', observations);
-      }),
+      },
       'account',
     );
 

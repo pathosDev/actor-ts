@@ -3,7 +3,7 @@
  *
  *   tsx examples/scheduler.ts
  */
-import { Actor, ActorSystem, Props } from '../src/index.js';
+import { Actor, ActorSystem } from '../src/index.js';
 import { attachDevTools } from './devtools.js';
 
 class TickActor extends Actor<'tick' | 'once'> {
@@ -25,7 +25,7 @@ class TickActor extends Actor<'tick' | 'once'> {
 async function main(): Promise<void> {
   const system = ActorSystem.create('scheduler');
   const devtools = await attachDevTools(system);
-  const actor = system.spawn(Props.create(() => new TickActor()), 'ticker');
+  const actor = system.spawn(() => new TickActor(), 'ticker');
 
   // Fire once after 100ms.
   system.scheduler.scheduleOnce(100, actor, 'once');

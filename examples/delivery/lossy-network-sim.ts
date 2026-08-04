@@ -9,7 +9,6 @@
 import {
   Actor,
   ActorSystem,
-  Props,
   ReliableDelivery,
   ProducerControllerOptions,
   type Delivery,
@@ -40,7 +39,7 @@ async function main(): Promise<void> {
 
   // Producer talks to the relay, which forwards to the consumer.
   const relay = system.spawn(
-    Props.create(() => new LossyRelay(consumer.ref as never)),
+    () => new LossyRelay(consumer.ref as never),
     'lossy-relay',
   );
 

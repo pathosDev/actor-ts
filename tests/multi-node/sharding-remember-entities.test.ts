@@ -41,7 +41,6 @@ import { StartShardingOptions } from '../../src/cluster/sharding/StartShardingOp
 import { JournalRememberEntitiesStore } from '../../src/cluster/sharding/RememberEntitiesStore.js';
 import { InMemoryJournal } from '../../src/persistence/journals/InMemoryJournal.js';
 import { PersistenceExtensionId } from '../../src/persistence/PersistenceExtension.js';
-import { Props } from '../../src/Props.js';
 import { MultiNodeSpec } from '../../src/testkit/MultiNodeSpec.js';
 import { MultiNodeTransport } from '../../src/testkit/internal/MultiNodeTransport.js';
 import type { ActorRef } from '../../src/ActorRef.js';
@@ -107,7 +106,7 @@ async function startSpec(
 
   const shardingOptions = StartShardingOptions.create<Command>()
     .withTypeName('entity')
-    .withEntityProps(Props.create(() => new Entity()))
+    .withEntityActor(() => new Entity())
     .withExtractEntityId((m) => m.id)
     .withNumShards(1)                         // all entities on one shard
     .withRememberEntities(true)

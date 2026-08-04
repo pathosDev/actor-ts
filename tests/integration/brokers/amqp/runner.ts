@@ -11,7 +11,6 @@ import { Actor } from '../../../../src/Actor.js';
 import { ActorSystem } from '../../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../../src/ActorSystemOptions.js';
 import { JsonLogger, LogLevel } from '../../../../src/Logger.js';
-import { Props } from '../../../../src/Props.js';
 import { AmqpActor, type AmqpDelivery, type AmqpQueueBinding } from '../../../../src/io/broker/AmqpActor.js';
 import { AmqpOptions } from '../../../../src/io/broker/AmqpOptions.js';
 import { waitForPort } from '../lib/wait-for-port.js';
@@ -70,14 +69,14 @@ export function spawnAmqp(context: AmqpContext, options: {
     .withAutoAcknowledge(options.autoAcknowledge ?? true);
   if (options.bindings) builder.withBindings(options.bindings);
   const actor = new AmqpActor(builder);
-  return context.system.spawnAnonymous(Props.create(() => actor));
+  return context.system.spawnAnonymous(() => actor);
 }
 
 export function spawnInbox(context: AmqpContext): {
   ref: ReturnType<ActorSystem['spawnAnonymous']>; inbox: InboxActor;
 } {
   const inbox = new InboxActor();
-  const ref = context.system.spawnAnonymous(Props.create(() => inbox));
+  const ref = context.system.spawnAnonymous(() => inbox);
   return { ref, inbox };
 }
 

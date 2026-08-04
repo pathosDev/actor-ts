@@ -9,7 +9,7 @@ already in your infrastructure and you want streaming without
 deploying Kafka or NATS.
 
 ```ts
-import { ActorSystem, Props, RedisStreamsActor, RedisStreamsOptions } from 'actor-ts';
+import { ActorSystem, RedisStreamsActor, RedisStreamsOptions } from 'actor-ts';
 
 const redisStreamsOptions = RedisStreamsOptions.create()
   .withUrl('redis://localhost:6379')
@@ -19,9 +19,9 @@ const redisStreamsOptions = RedisStreamsOptions.create()
   .withConsumerGroup({ group: 'order-processors', consumer: 'worker-1' })
   .withTarget(orderHandler);
 const redis = system.spawn(
-  Props.create(() => new RedisStreamsActor(
+  () => new RedisStreamsActor(
     redisStreamsOptions,
-  )),
+  ),
   'redis',
 );
 

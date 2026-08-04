@@ -10,7 +10,6 @@ import {
   ActorSystem,
   CoordinatedShutdownId,
   Phases,
-  Props,
   UnknownReason,
 } from '../../src/index.js';
 import { attachDevTools } from '../devtools.js';
@@ -51,7 +50,7 @@ async function main(): Promise<void> {
     console.log('5. closing DB pool, flushing metrics');
   });
 
-  system.spawn(Props.create(() => new Worker()), 'worker');
+  system.spawn(() => new Worker(), 'worker');
   await new Promise(r => setTimeout(r, 150));
 
   // DevTools registers its own ServiceUnbind task, so `cs.run()` below

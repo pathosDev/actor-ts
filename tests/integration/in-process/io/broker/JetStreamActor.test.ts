@@ -11,7 +11,6 @@ import { ActorRef } from '../../../../../src/ActorRef.js';
 import { ActorSystem } from '../../../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../../../src/ActorSystemOptions.js';
 import { LogLevel, NoopLogger } from '../../../../../src/Logger.js';
-import { Props } from '../../../../../src/Props.js';
 import {
   JetStreamActor,
   type JetStreamClientLike,
@@ -206,14 +205,14 @@ async function bootActor(
   sys: ActorSystem, options: JetStreamOptionsBuilder,
 ): Promise<{ actor: ActorRef<JetStreamCommand>; mock: MockJetStreamActor; target: CapturingTarget }> {
   const target = new CapturingTarget();
-  const targetRef = sys.spawn(Props.create(() => target), 'target');
+  const targetRef = sys.spawn(() => target, 'target');
   const ref = { current: null as MockJetStreamActor | null };
   const actor = sys.spawn(
-    Props.create(() => {
+    () => {
       const mockActor = new MockJetStreamActor(options.withTarget(targetRef));
       ref.current = mockActor;
       return mockActor;
-    }),
+    },
     'js',
   );
   // Allow preStart + connect to complete and the pump to enter `for await`.

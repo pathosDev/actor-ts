@@ -11,7 +11,6 @@ import { StartShardingOptions } from '../../../../src/cluster/sharding/StartShar
 import { NodeAddress } from '../../../../src/cluster/NodeAddress.js';
 import { InMemoryTransport } from '../../../../src/cluster/Transport.js';
 import { RemoteActorRef } from '../../../../src/cluster/RemoteActorRef.js';
-import { Props } from '../../../../src/Props.js';
 import { LogLevel, NoopLogger } from '../../../../src/Logger.js';
 
 const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
@@ -92,20 +91,20 @@ describe('ActorRef serialisation across cluster nodes', () => {
     const aShardingOptions = StartShardingOptions.create<Command>()
       .withTypeName('echo')
       .withRole('hoster')
-      .withEntityProps(Props.create(() => new Echo()))
+      .withEntityActor(() => new Echo())
       .withExtractEntityId((m) => m.id)
       .withNumShards(16);
     nodeA.cluster.sharding.start<Command>(aShardingOptions);
     const bShardingOptions = StartShardingOptions.create<Command>()
       .withTypeName('echo')
       .withRole('hoster')
-      .withEntityProps(Props.create(() => new Echo()))
+      .withEntityActor(() => new Echo())
       .withExtractEntityId((m) => m.id)
       .withNumShards(16);
     const bRegion = nodeB.cluster.sharding.start<Command>(bShardingOptions);
 
     // Probe lives on node B — its LocalActorRef is therefore OWNED by B.
-    const probeOnB = nodeB.sys.spawn(Props.create(() => new Probe()), 'probe');
+    const probeOnB = nodeB.sys.spawn(() => new Probe(), 'probe');
 
     // Give sharding a moment to allocate initial shards (the first ask from
     // the non-hoster node otherwise races the coordinator).
@@ -150,14 +149,14 @@ describe('ActorRef serialisation across cluster nodes', () => {
     const aShardingOptions = StartShardingOptions.create<Command>()
       .withTypeName('cap')
       .withRole('hoster')
-      .withEntityProps(Props.create(() => new Capturer()))
+      .withEntityActor(() => new Capturer())
       .withExtractEntityId(() => 'only')
       .withNumShards(4);
     nodeA.cluster.sharding.start<Command>(aShardingOptions);
     const bShardingOptions = StartShardingOptions.create<Command>()
       .withTypeName('cap')
       .withRole('hoster')
-      .withEntityProps(Props.create(() => new Capturer()))
+      .withEntityActor(() => new Capturer())
       .withExtractEntityId(() => 'only')
       .withNumShards(4);
     const bRegion = nodeB.cluster.sharding.start<Command>(bShardingOptions);
@@ -205,14 +204,14 @@ describe('ActorRef serialisation across cluster nodes', () => {
     const aShardingOptions = StartShardingOptions.create<Command>()
       .withTypeName('checker')
       .withRole('hoster')
-      .withEntityProps(Props.create(() => new Checker()))
+      .withEntityActor(() => new Checker())
       .withExtractEntityId(() => 'only')
       .withNumShards(4);
     nodeA.cluster.sharding.start<Command>(aShardingOptions);
     const bShardingOptions = StartShardingOptions.create<Command>()
       .withTypeName('checker')
       .withRole('hoster')
-      .withEntityProps(Props.create(() => new Checker()))
+      .withEntityActor(() => new Checker())
       .withExtractEntityId(() => 'only')
       .withNumShards(4);
     const bRegion = nodeB.cluster.sharding.start<Command>(bShardingOptions);
@@ -249,7 +248,7 @@ describe('ActorRef serialisation across cluster nodes', () => {
       try {
         await waitFor(() => nodeB.cluster.upMembers().length === 2);
 
-        const echo = nodeA.sys.spawn(Props.create(() => new Echo()), 'echo');
+        const echo = nodeA.sys.spawn(() => new Echo(), 'echo');
         const remote = new RemoteActorRef<Command>(
           nodeA.cluster.selfAddress,
           echo.path.toString(),
@@ -276,7 +275,7 @@ describe('ActorRef serialisation across cluster nodes', () => {
       try {
         await waitFor(() => nodeB.cluster.upMembers().length === 2);
 
-        const echo = nodeA.sys.spawn(Props.create(() => new Echo()), 'echo');
+        const echo = nodeA.sys.spawn(() => new Echo(), 'echo');
         const remote = new RemoteActorRef<Command>(
           nodeA.cluster.selfAddress,
           echo.path.toString(),

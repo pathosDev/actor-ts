@@ -11,7 +11,7 @@ commands and no outbound path — SSE is unidirectional, from server
 to client.
 
 ```ts
-import { ActorSystem, Actor, Props } from 'actor-ts';
+import { ActorSystem, Actor } from 'actor-ts';
 import { SseActor, type SseEvent } from 'actor-ts';
 import { SseOptions } from 'actor-ts';
 
@@ -25,15 +25,15 @@ class Collector extends Actor<SseEvent> {
   }
 }
 
-const target = sys.spawnAnonymous(Props.create(() => new Collector()));
+const target = sys.spawnAnonymous(() => new Collector());
 
 const sseOptions = SseOptions.create()
   .withUrl('https://example.com/events')
   .withTarget(target)
   .withHeaders({ authorization: 'Bearer …' });
-sys.spawnAnonymous(Props.create(() => new SseActor(
+sys.spawnAnonymous(() => new SseActor(
   sseOptions,
-)));
+));
 ```
 
 The actor uses the global `fetch` (Bun, Node ≥ 18, and Deno all

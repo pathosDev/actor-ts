@@ -1,6 +1,6 @@
 ---
 title: Router
-description: The local pool-router — `Router.roundRobin`, `.random`, `.broadcast`, `.custom` produce `Props` you spawn like any actor. Plus `Broadcast` to override the strategy per-message.
+description: The local pool-router — `Router.roundRobin`, `.random`, `.broadcast`, `.custom` produce an actor factory you spawn like any other. Plus `Broadcast` to override the strategy per-message.
 ---
 
 `Router` is the local pool-router — the routees are children of the
@@ -9,21 +9,21 @@ router actor, created when the router is spawned, supervised by it.
 The API has four factories:
 
 ```ts
-Router.roundRobin(size, routeeProps)
-Router.random(size, routeeProps)
-Router.broadcast(size, routeeProps)
-Router.custom(size, routeeProps, strategy)
+Router.roundRobin(size, routee)
+Router.random(size, routee)
+Router.broadcast(size, routee)
+Router.custom(size, routee, strategy)
 ```
 
-Each returns a `Props<TMessage | Broadcast<TMessage>>` — pass it to
-`system.spawn` or `context.spawn` like any other Props.  The
-type parameter from `routeeProps` flows through, so the resulting
+Each returns an `ActorFactory<TMessage | Broadcast<TMessage>>` — pass it
+to `system.spawn` or `context.spawn` like any other actor.  The
+type parameter from `routee` flows through, so the resulting
 ref is typed.
 
 ## A minimal example
 
 ```ts
-import { ActorSystem, Props, Router, Actor, Broadcast } from 'actor-ts';
+import { ActorSystem, Router, Actor, Broadcast } from 'actor-ts';
 
 type Message = { payload: string };
 
@@ -36,7 +36,7 @@ class Worker extends Actor<Message> {
 const system = ActorSystem.create('demo');
 
 const pool = system.spawn(
-  Router.roundRobin(4, Props.create(() => new Worker())),
+  Router.roundRobin(4, () => new Worker()),
   'workers',
 );
 
@@ -55,12 +55,12 @@ The pool's path is `actor-ts://demo/user/workers`; the routees are
 
 ## What happens at spawn time
 
-When you `spawn` a router Props, the runtime:
+When you `spawn` a router factory, the runtime:
 
 1. Creates one `RouterActor` instance.  It's the actor with the
    path you provided (`'workers'` in the example).
 2. Inside `RouterActor.preStart`, it spawns `size` children using
-   `routeeProps`, named `routee-1` through `routee-N`.
+   `routee`, named `routee-1` through `routee-N`.
 3. It `watch`es every routee so it can react if one stops.
 
 The router is now ready.  Any `tell` to the router ref runs the
@@ -81,7 +81,7 @@ for occasional fan-out messages (cache invalidation, schema
 update notifications) that don't fit the routine routing pattern.
 
 The router accepts both `TMessage` and `Broadcast<TMessage>` — the type
-parameter on the returned Props reflects that.
+parameter on the returned factory reflects that.
 
 ## `Router.custom` — bring your own strategy
 
@@ -95,7 +95,7 @@ const warmupStrategy: RoutingStrategy = (routees, state) => {
 };
 
 const pool = system.spawn(
-  Router.custom(4, Props.create(() => new Worker()), warmupStrategy),
+  Router.custom(4, () => new Worker(), warmupStrategy),
   'workers',
 );
 ```
@@ -141,7 +141,7 @@ When a routee stops, the router watches it and… does nothing by
 default in the framework's current router.  Its ref stays in the
 pool — the router never prunes it — so round-robin keeps handing it
 roughly 1-in-N messages, which land in dead letters until the whole
-router restarts.  For self-healing pools, wrap the routee Props in a
+router restarts.  For self-healing pools, wrap the routee in a
 supervisor strategy that restarts on Stop (or wrap the whole pool in
 a BackoffSupervisor).
 
@@ -185,7 +185,7 @@ import { Aside } from '@astrojs/starlight/components';
   you want existing routees instead of pool-spawned ones.
 - **[Cluster router](/cluster/cluster-router/)** — the
   membership-driven cluster equivalent.
-- **[Props](/fundamentals/props/)** — the routee Props
+- **[Spawning actors](/fundamentals/spawning/)** — the routee options
   shape; `withSupervisorStrategy`, `withDispatcher`, etc., all
   apply to routees individually.
 

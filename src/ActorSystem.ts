@@ -13,7 +13,8 @@ import {
 } from './Dispatcher.js';
 import { EventStream } from './EventStream.js';
 import { ConsoleLogger, Logger, LogLevel } from './Logger.js';
-import { Props } from './Props.js';
+import type { ActorClassOrFactory } from './Actor.js';
+import type { ActorOptions } from './ActorOptions.js';
 import { Scheduler } from './Scheduler.js';
 import type { ActorSystemOptions, ActorSystemOptionsType } from './ActorSystemOptions.js';
 import { ActorCell } from './internal/ActorCell.js';
@@ -35,7 +36,7 @@ import { PersistenceExtensionId } from './persistence/PersistenceExtension.js';
 import type { HttpServerBackend } from './http/backend/HttpServerBackend.js';
 import { HttpExtensionId, type ServerBuilder } from './http/HttpExtension.js';
 import type { Behavior } from './typed/Behavior.js';
-import { typedProps } from './typed/spawn.js';
+import { typedActor } from './typed/spawn.js';
 
 /**
  * The ActorSystem is the top-level container for actors.  It owns the root
@@ -125,19 +126,19 @@ export class ActorSystem {
     // Construct the supervisor chain: /  ->  /user, /system.
     this.rootCell = new ActorCell<unknown>(
       this,
-      Props.create(() => new Guardian()),
+      { factory: () => new Guardian() },
       null,
       '',
     );
 
     const userRef = this.rootCell.spawn(
-      Props.create(() => new Guardian(userGuardianStrategy)),
+      () => new Guardian(userGuardianStrategy),
       USER_GUARDIAN_NAME,
     );
     this.userGuardianCell = (userRef as LocalActorRef<unknown>).getCell();
 
     const systemRef = this.rootCell.spawn(
-      Props.create(() => new Guardian(systemGuardianStrategy)),
+      () => new Guardian(systemGuardianStrategy),
       SYSTEM_GUARDIAN_NAME,
     );
     this.systemGuardianCell = (systemRef as LocalActorRef<unknown>).getCell();
@@ -226,12 +227,15 @@ export class ActorSystem {
    * already exists, the call throws.
    *
    * For an auto-generated name, see {@link spawnAnonymous}.
+   *
+   *     system.spawn(Greeter, 'greeter');                  // zero-arg class
+   *     system.spawn(() => new Worker(database), 'worker'); // dependencies
    */
-  spawn<T>(props: Props<T>, name: string): ActorRef<T> {
+  spawn<T>(actor: ActorClassOrFactory<T>, name: string, options?: ActorOptions<T>): ActorRef<T> {
     if (this._terminating || this._terminated) {
       throw new Error(`Cannot create actors on a terminated ActorSystem '${this.name}'`);
     }
-    return this.userGuardianCell.spawn(props, name);
+    return this.userGuardianCell.spawn(actor, name, options);
   }
 
   /**
@@ -240,23 +244,23 @@ export class ActorSystem {
    * one-shot async work, throwaway helpers.  For a deterministic
    * name, see {@link spawn}.
    */
-  spawnAnonymous<T>(props: Props<T>): ActorRef<T> {
+  spawnAnonymous<T>(actor: ActorClassOrFactory<T>, options?: ActorOptions<T>): ActorRef<T> {
     if (this._terminating || this._terminated) {
       throw new Error(`Cannot create actors on a terminated ActorSystem '${this.name}'`);
     }
-    return this.userGuardianCell.spawnAnonymous(props);
+    return this.userGuardianCell.spawnAnonymous(actor, options);
   }
 
   /**
    * Spawn a typed Behavior under `/user` with a deterministic name —
    * the Behavior-DSL counterpart to {@link spawn}.  Wraps the Behavior
-   * in `typedProps(behavior)` so callers don't have to thread Props
+   * in `typedActor(behavior)` so callers don't have to thread a factory
    * through the typed API.
    *
    *     const ref = system.spawnTyped(counter(0), 'counter');
    */
   spawnTyped<T>(behavior: Behavior<T>, name: string): ActorRef<T> {
-    return this.spawn(typedProps<T>(behavior), name);
+    return this.spawn(typedActor<T>(behavior), name);
   }
 
   /**
@@ -265,7 +269,7 @@ export class ActorSystem {
    * doesn't need a stable path.
    */
   spawnTypedAnonymous<T>(behavior: Behavior<T>): ActorRef<T> {
-    return this.spawnAnonymous(typedProps<T>(behavior));
+    return this.spawnAnonymous(typedActor<T>(behavior));
   }
 
   /**
@@ -280,11 +284,16 @@ export class ActorSystem {
    * Deliberately internal: this is not an extension point for applications,
    * and `/user` stays the only place user code can spawn a top-level actor.
    */
-  _spawnSystemActor<T>(props: Props<T>, group: SystemGroup, name: string): ActorRef<T> {
+  _spawnSystemActor<T>(
+    actor: ActorClassOrFactory<T>,
+    group: SystemGroup,
+    name: string,
+    options?: ActorOptions<T>,
+  ): ActorRef<T> {
     if (this._terminating || this._terminated) {
       throw new Error(`Cannot create actors on a terminated ActorSystem '${this.name}'`);
     }
-    return this._systemGroupCell(group).spawn(props, name);
+    return this._systemGroupCell(group).spawn(actor, name, options);
   }
 
   /**
@@ -313,8 +322,11 @@ export class ActorSystem {
         continue;
       }
       const policy = systemGroupPolicy(walked);
-      const base = Props.create(() => new Guardian(policy.strategy));
-      const groupRef = parent.spawn(policy.internal ? base.asInternal() : base, segment);
+      const groupRef = parent.spawn(
+        () => new Guardian(policy.strategy),
+        segment,
+        policy.internal ? { internal: true } : undefined,
+      );
       const groupCell = (groupRef as LocalActorRef<unknown>).getCell();
       this.systemGroupCells.set(walked, groupCell);
       parent = groupCell;

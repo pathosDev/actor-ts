@@ -1,7 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import { ActorSystem } from '../../../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../../../src/ActorSystemOptions.js';
-import { Props } from '../../../../../src/Props.js';
 import { LogLevel, NoopLogger } from '../../../../../src/Logger.js';
 import {
   MqttOptions,
@@ -106,7 +105,7 @@ describe('MqttOptions HOCON merge precedence', () => {
       const mqttOptions = MqttOptions.create()
         .withClientId('ctor-client');
       const actor = new ProbeActor(mqttOptions);
-      sys.spawn(Props.create(() => actor), 'probe');
+      sys.spawn(() => actor, 'probe');
       await sleep(30);
       const resolved = actor.resolved;
       expect(resolved.clientId).toBe('ctor-client');            // builder wins
@@ -172,7 +171,7 @@ describe('MqttOptions validation fires at actor start (all input paths)', () => 
         try { await orig(); }
         catch (e) { captured = e as Error; }
       };
-      sys.spawn(Props.create(() => actor), 'probe');
+      sys.spawn(() => actor, 'probe');
       await sleep(30);
     } finally {
       await sys.terminate();

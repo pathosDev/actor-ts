@@ -15,7 +15,6 @@ import {
   NodeAddress,
   Passivate,
   PoisonPill,
-  Props,
   SelfUp,
   SelfRemoved,
   StartShardingOptions,
@@ -160,7 +159,7 @@ test('Role filter: entities only land on members with the matching role', async 
   const spawnRegion = (name: string) => (activeSet: ClusterSharding): ActorRef<CounterCommand> => {
     const startShardingOptions = StartShardingOptions.create<CounterCommand>()
       .withTypeName('counter')
-      .withEntityProps(Props.create(() => new (countingEntity(name))()))
+      .withEntityActor(() => new (countingEntity(name))())
       .withExtractEntityId(message => message.id)
       .withNumShards(8)
       .withRole('backend');
@@ -201,7 +200,7 @@ test('Proxy region routes but never hosts entities', async () => {
     sharding: activeSet => {
       const startShardingOptions = StartShardingOptions.create<CounterCommand>()
         .withTypeName('counter')
-        .withEntityProps(Props.create(backendEntity))
+        .withEntityActor(backendEntity)
         .withExtractEntityId(m => m.id)
         .withNumShards(4);
       return activeSet.start(
@@ -214,7 +213,7 @@ test('Proxy region routes but never hosts entities', async () => {
     sharding: activeSet => {
       const startShardingOptions = StartShardingOptions.create<CounterCommand>()
         .withTypeName('counter')
-        .withEntityProps(Props.create(backendEntity));
+        .withEntityActor(backendEntity);
       return activeSet.startProxy(
       startShardingOptions // unused but required by types
         .withExtractEntityId(m => m.id)
@@ -270,7 +269,7 @@ test('Passivation stops idle entity and buffers next message until re-create', a
     sharding: activeSet => {
       const startShardingOptions = StartShardingOptions.create<PassivationCommand>()
         .withTypeName('passiv')
-        .withEntityProps(Props.create(() => new Entity()))
+        .withEntityActor(() => new Entity())
         .withExtractEntityId(m => m.id)
         .withNumShards(4)
         .withPassivationIdleMs(0);
@@ -305,7 +304,7 @@ test('LeastShardAllocationStrategy balances shards across nodes', async () => {
   const mk = (name: string) => (activeSet: ClusterSharding): ActorRef<CounterCommand> => {
     const startShardingOptions = StartShardingOptions.create<CounterCommand>()
       .withTypeName('counter')
-      .withEntityProps(Props.create(() => entity(name)))
+      .withEntityActor(() => entity(name))
       .withExtractEntityId(m => m.id)
       .withNumShards(12)
       .withAllocationStrategy(new LeastShardAllocationStrategy(1, 3))
@@ -352,7 +351,7 @@ test('rememberEntities re-creates entities on the new owner after node death', a
   const mk = (name: string) => (activeSet: ClusterSharding): ActorRef<CounterCommand> => {
     const startShardingOptions = StartShardingOptions.create<CounterCommand>()
       .withTypeName('counter')
-      .withEntityProps(Props.create(() => entity(name)))
+      .withEntityActor(() => entity(name))
       .withExtractEntityId(m => m.id)
       .withNumShards(8)
       .withRememberEntities(true)

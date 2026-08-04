@@ -13,7 +13,6 @@ import {
   MemberDown,
   MemberUp,
   NoopLogger,
-  Props,
   NodeAddress,
   StartShardingOptions,
   hashShardId,
@@ -77,7 +76,7 @@ async function startNode(
   const sharding = cluster.sharding;
   const startShardingOptions = StartShardingOptions.create<Command>()
     .withTypeName('counter')
-    .withEntityProps(Props.create(() => new CountEntity()))
+    .withEntityActor(() => new CountEntity())
     .withExtractEntityId(message => message.id)
     .withNumShards(8);
   const region = sharding.start<Command>(

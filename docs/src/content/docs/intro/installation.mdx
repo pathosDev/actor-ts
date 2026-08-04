@@ -45,7 +45,7 @@ algorithm and per-runtime caveats.
     No install step needed.  Import directly:
 
     ```ts
-    import { Actor, ActorSystem, Props } from 'npm:actor-ts';
+    import { Actor, ActorSystem } from 'npm:actor-ts';
     ```
 
     Deno fetches the package on first run and caches it.  Add an
@@ -158,7 +158,7 @@ prefer, but you'll lose that safety net.
 Save this as `verify.ts`:
 
 ```ts
-import { Actor, ActorSystem, Props } from 'actor-ts';
+import { Actor, ActorSystem } from 'actor-ts';
 
 class Ping extends Actor<'ping'> {
   override onReceive(message: 'ping'): void {
@@ -167,7 +167,7 @@ class Ping extends Actor<'ping'> {
 }
 
 const system = ActorSystem.create('verify');
-const ref = system.spawnAnonymous(Props.create(() => new Ping()));
+const ref = system.spawnAnonymous(() => new Ping());
 ref.tell('ping');
 await new Promise((r) => setTimeout(r, 20));
 await system.terminate();

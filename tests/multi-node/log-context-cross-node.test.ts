@@ -24,7 +24,6 @@ import { RemoteActorRef } from '../../src/cluster/RemoteActorRef.js';
 import { InMemoryTransport } from '../../src/cluster/Transport.js';
 import { LogContext } from '../../src/LogContext.js';
 import { LogLevel, NoopLogger } from '../../src/Logger.js';
-import { Props } from '../../src/Props.js';
 
 const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
 
@@ -87,9 +86,9 @@ describe('LogContext — cross-node propagation', () => {
       await waitFor(() => nodeA.cluster.upMembers().length === 2);
 
       // Echo lives on B.  Probe lives on A.
-      nodeB.sys.spawn(Props.create(() => new Echo()), 'echo');
+      nodeB.sys.spawn(() => new Echo(), 'echo');
       const probeActor = new Probe();
-      const probeRef = nodeA.sys.spawn(Props.create(() => probeActor), 'probe');
+      const probeRef = nodeA.sys.spawn(() => probeActor, 'probe');
 
       // Build a RemoteActorRef from A pointing at /user/echo on B.
       // ActorSelection won't help here — it resolves only locally.
@@ -128,7 +127,7 @@ describe('LogContext — cross-node propagation', () => {
     const nodeB = await startNode(sysName, 60_012, [`${sysName}@h:60011`]);
     try {
       await waitFor(() => nodeA.cluster.upMembers().length === 2);
-      nodeB.sys.spawn(Props.create(() => new Echo()), 'echo');
+      nodeB.sys.spawn(() => new Echo(), 'echo');
       const echoOnB = new RemoteActorRef<string>(
         nodeB.cluster.selfAddress,
         `actor-ts://${sysName}/user/echo`,

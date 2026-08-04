@@ -24,7 +24,6 @@ import { ClusterClient } from '../../src/cluster/ClusterClient.js';
 import { ClusterClientOptions } from '../../src/cluster/ClusterClientOptions.js';
 import { ClusterClientReceptionistId } from '../../src/cluster/ClusterClientReceptionist.js';
 import { LogLevel, NoopLogger } from '../../src/Logger.js';
-import { Props } from '../../src/Props.js';
 import { SystemGroups } from '../../src/internal/SystemPaths.js';
 
 type CommandEcho = { readonly kind: 'echo'; readonly payload: unknown };
@@ -73,7 +72,7 @@ async function startNode(systemName: string, port: number, seeds: string[] = [])
   const cluster = await Cluster.join(system, clusterOptions);
   const echoImplementation = new EchoActor();
   const echo = system.spawn(
-    Props.create(() => echoImplementation), 'echo',
+    () => echoImplementation, 'echo',
   ) as unknown as NodeHandle['echo'];
   echo.actorImplementation = echoImplementation;
   // Start the receptionist — the cluster-side endpoint for outside-in.
@@ -127,7 +126,7 @@ describe('ClusterClient — outside-in connectivity', () => {
     // a guardian — otherwise this resolves as a *user* actor literally named
     // `system` and the framework side of the tree is unaddressable.
     node.system._spawnSystemActor(
-      Props.create(() => new EchoActor()),
+      () => new EchoActor(),
       SystemGroups.cluster,
       'echo-probe',
     );

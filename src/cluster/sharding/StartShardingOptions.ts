@@ -62,7 +62,7 @@ export interface StartShardingOptionsType<TMessage> extends ShardingOptionsType<
 /**
  * Fluent builder for {@link StartShardingOptionsType} — the argument to
  * {@link ClusterSharding.start}.  Extends {@link ShardingOptionsBuilder} so it
- * carries every region-side `withX` (typeName, entityProps, extractors,
+ * carries every region-side `withX` (typeName, entityActor, extractors,
  * numShards, role, proxy, rememberEntities, …) and adds the
  * coordinator-side fields on top.
  *
@@ -138,7 +138,7 @@ export class StartShardingOptionsValidator<TMessage>
  * since the config file is read once per node and cannot know the type it
  * will be layered under.
  *
- * The polymorphic fields (`entityProps`, the extractors, `allocationStrategy`,
+ * The polymorphic fields (`entityActor`, the extractors, `allocationStrategy`,
  * `lease`, the stores) are absent by nature: HOCON has no way to express a
  * class or a closure, so those stay code-only.
  */

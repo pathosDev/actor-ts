@@ -85,12 +85,12 @@ matching command.
 ```ts
 // my-scenario.ts
 import type { ScenarioModule } from 'actor-ts/testkit';
-import { Props, type ActorRef } from 'actor-ts';
+import { type ActorRef } from 'actor-ts';
 
 export const setup: ScenarioModule['setup'] = (context) => {
   // context = { role, system, cluster, initData, state }
   context.state.counter = context.system.spawnAnonymous(
-    Props.create(() => new Counter()),
+    () => new Counter(),
   );
 };
 

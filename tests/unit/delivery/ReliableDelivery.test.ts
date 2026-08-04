@@ -2,7 +2,6 @@ import { describe, expect, test } from 'bun:test';
 import { Actor } from '../../../src/Actor.js';
 import { ActorSystem } from '../../../src/ActorSystem.js';
 import { LogLevel, NoopLogger } from '../../../src/Logger.js';
-import { Props } from '../../../src/Props.js';
 import { ReliableDelivery, ProducerControllerOptions } from '../../../src/delivery/index.js';
 import type { Delivery } from '../../../src/delivery/index.js';
 import { TestKit } from '../../../src/testkit/TestKit.js';
@@ -117,7 +116,7 @@ describe('ReliableDelivery — resilience', () => {
         d.replyTo.tell({ kind: 'reliable-delivery.ack', producerId: d.producerId, seq: d.seq });
       }
     }
-    const consumerRef = kit.system.spawn(Props.create(() => new Flaky()), 'flaky');
+    const consumerRef = kit.system.spawn(() => new Flaky(), 'flaky');
 
     const producerOptions = ProducerControllerOptions.create<string>()
       .withConsumer(consumerRef)

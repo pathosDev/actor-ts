@@ -42,7 +42,7 @@ import type { JetStreamOptions, JetStreamOptionsType } from './JetStreamOptions.
  *
  * **Example.**
  *
- *   const js = system.spawnAnonymous(Props.create(() => new JetStreamActor(
+ *   const js = system.spawnAnonymous(() => new JetStreamActor(
  *     JetStreamOptions.create()
  *       .withServers(['nats://localhost:4222'])
  *       .withStream({ name: 'ORDERS', subjects: ['orders.*'] })

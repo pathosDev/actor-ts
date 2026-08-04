@@ -9,7 +9,6 @@ import { DEFAULT_ASK_TIMEOUT_MS } from '../util/Constants.js';
 import { randomId } from '../util/RandomString.js';
 import { DistributedDataOptionsValidator } from './DistributedDataOptions.js';
 import type { DistributedDataOptions, DistributedDataOptionsType } from './DistributedDataOptions.js';
-import { Props } from '../Props.js';
 import type { Cluster } from '../cluster/Cluster.js';
 import { MemberRemoved, MemberUp } from '../cluster/ClusterEvents.js';
 import { NodeAddress } from '../cluster/NodeAddress.js';
@@ -250,7 +249,7 @@ export class DistributedData implements Extension {
     // ask().
     const view: SharedView = { state: new Map(), listeners: new Map() };
     const ref = this.system._spawnSystemActor(
-      Props.create(() => new DistributedDataActor({ cluster, options: resolvedOptions, view })),
+      () => new DistributedDataActor({ cluster, options: resolvedOptions, view }),
       SystemGroups.clusterCrdt,
       SystemActorNames.distributedData,
     );

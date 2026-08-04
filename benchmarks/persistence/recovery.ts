@@ -13,7 +13,6 @@ import {
   NoopLogger,
   PersistenceExtensionId,
   PersistentActor,
-  Props,
   everyNEvents,
   type SnapshotPolicy,
 } from '../../src/index.js';
@@ -49,7 +48,7 @@ async function main(): Promise<void> {
   ext.setSnapshotStore(snapshots);
 
   const recovery = (persistenceId: string) => async (): Promise<void> => {
-    const ref = system.spawnAnonymous(Props.create(() => new Counter(persistenceId)));
+    const ref = system.spawnAnonymous(() => new Counter(persistenceId));
     await ref.ask<number>('get', 30_000);
     ref.stop();
   };

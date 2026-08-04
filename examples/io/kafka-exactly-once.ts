@@ -25,7 +25,6 @@
 import {
   Actor,
   ActorSystem,
-  Props,
   KafkaActor,
   KafkaOptions,
   type KafkaCommand,
@@ -89,7 +88,7 @@ async function main(): Promise<void> {
   let kafka!: ActorRef<KafkaCommand>;
 
   const processor = system.spawn(
-    Props.create(() => new OrderProcessor(kafka)),
+    () => new OrderProcessor(kafka),
     'processor',
   );
 
@@ -108,7 +107,7 @@ async function main(): Promise<void> {
     // on the producer side too.
     .withProducer({ idempotent: true, allowAutoTopicCreation: false });
   kafka = system.spawn(
-    Props.create(() => new KafkaActor(kafkaOptions)),
+    () => new KafkaActor(kafkaOptions),
     'kafka',
   );
 

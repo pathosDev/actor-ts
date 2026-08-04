@@ -10,8 +10,8 @@
  *   - `wireConnection` — spawns the per-connection session actor and
  *     attaches listeners synchronously (added with the actor layer).
  */
+import type { ActorFactory } from '../../Actor.js';
 import type { ActorSystem } from '../../ActorSystem.js';
-import { Props } from '../../Props.js';
 import type { HttpRequest } from '../types.js';
 import type { WebsocketSocketAdapter } from './SocketAdapter.js';
 import { websocketAcceptCommand, type WebsocketServerRef } from './WebsocketMessages.js';
@@ -147,7 +147,7 @@ function decrementOnClose(
  * `connect` handler).
  *
  * It does NOT spawn or attach anything itself — instead it tells the hub
- * a {@link WebsocketAcceptCommand} carrying the per-connection actor's `Props`, so
+ * a {@link WebsocketAcceptCommand} carrying the per-connection actor's factory, so
  * the hub spawns that actor as its OWN child (`server → conn-N`).  The
  * child then creates the {@link WebsocketConnection}, reports `connected`, and
  * attaches the socket listeners in its `preStart`.
@@ -192,8 +192,7 @@ export function wireConnection<TOut, TIn, TSelf = never>(
     subprotocol: socket.protocol,
   };
 
-  const props = Props.create(
-    () => new WebsocketConnectionActor<TOut, TIn, TSelf>({ socket, codec, policy, hub, id, upgrade }),
-  );
-  hub.tell(websocketAcceptCommand(props as unknown as Props<unknown>, id), null);
+  const actor = (): WebsocketConnectionActor<TOut, TIn, TSelf> =>
+    new WebsocketConnectionActor<TOut, TIn, TSelf>({ socket, codec, policy, hub, id, upgrade });
+  hub.tell(websocketAcceptCommand(actor as unknown as ActorFactory<unknown>, id), null);
 }

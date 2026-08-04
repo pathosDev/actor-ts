@@ -16,7 +16,6 @@ import {
   CassandraJournalOptions,
   CassandraSnapshotStoreOptions,
   PersistenceExtensionId,
-  Props,
   PersistentActor,
   RegisterCassandraPluginsOptions,
   registerCassandraPlugins,
@@ -78,7 +77,7 @@ async function main(): Promise<void> {
     .withSnapshotStore(snapshotOptions);
   registerCassandraPlugins(ext, cassandraPluginsOptions);
 
-  let counter = system.spawnAnonymous(Props.create(() => new Counter()));
+  let counter = system.spawnAnonymous(() => new Counter());
   counter.tell({ kind: 'increment', amount: 10 });
   counter.tell({ kind: 'increment', amount: 32 });
   await Bun.sleep(60);
@@ -86,7 +85,7 @@ async function main(): Promise<void> {
   // "Crash and restart" — the new actor replays events from the journal.
   counter.stop();
   await Bun.sleep(30);
-  counter = system.spawnAnonymous(Props.create(() => new Counter()));
+  counter = system.spawnAnonymous(() => new Counter());
 
   await Bun.sleep(60);
   // Ask the actor for its state so we see the replay worked.

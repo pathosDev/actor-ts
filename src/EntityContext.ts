@@ -2,7 +2,7 @@
  * Sharding identity of an actor that `ClusterSharding` started as an entity:
  * the id it was routed by, and where that routing put it.
  *
- * It lives in core rather than under `cluster/sharding/` because `Props`
+ * It lives in core rather than under `cluster/sharding/` because `ActorOptions`
  * carries it in and `ActorContext` hands it out — the runtime has to be able
  * to give an actor its own identity without core depending on the cluster
  * layer.

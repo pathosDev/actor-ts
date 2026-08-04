@@ -16,7 +16,6 @@ import {
   ClusterBootstrapOptions,
   InMemoryTransport,
   NodeAddress,
-  Props,
   ShardedDaemonProcess,
   ShardedDaemonProcessOptions,
 } from '../../src/index.js';
@@ -64,7 +63,7 @@ async function main(): Promise<void> {
       ShardedDaemonProcessOptions.create<string>()
         .withName('partitions')
         .withNumDaemons(9)
-        .withBehaviorFor((i) => Props.create(() => new PartitionWorker(i, name))));
+        .withActorFor((i) => () => new PartitionWorker(i, name)));
   }
 
   // Let the daemons poll for a while so the distribution is observable.

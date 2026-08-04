@@ -81,7 +81,6 @@ Routing, aber der Link ist 1:1 pro Stream).
 
 ```ts
 import {
-  Props,
   ProducerController,
   ProducerControllerOptions,
   ConsumerController,
@@ -89,11 +88,11 @@ import {
 
 // Consumer-Seite — Handler-Funktion, Auto-ACK bei Resolve:
 const consumer = system.spawn(
-  Props.create(() => new ConsumerController<OrderEvent>({
+  () => new ConsumerController<OrderEvent>({
     handler: async (order) => {
       await processOrder(order);
     },
-  })),
+  }),
 );
 
 // Producer-Seite — umwickelt ausgehende Nachrichten mit Seq- + ACK-Tracking:
@@ -102,7 +101,7 @@ const producerControllerOptions = ProducerControllerOptions.create<OrderEvent>()
   .withConsumer(consumer)
   .withWindowSize(16);
 const producer = system.spawn(
-  Props.create(() => new ProducerController<OrderEvent>(producerControllerOptions)),
+  () => new ProducerController<OrderEvent>(producerControllerOptions),
 );
 
 producer.tell({

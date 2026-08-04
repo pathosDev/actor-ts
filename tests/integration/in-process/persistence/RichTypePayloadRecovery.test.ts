@@ -13,7 +13,6 @@ import {
   SqliteSnapshotStoreOptions,
   type SnapshotPolicy,
 } from '../../../../src/persistence/index.js';
-import { Props } from '../../../../src/Props.js';
 
 const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
 
@@ -82,7 +81,7 @@ describe('PersistentActor — rich payload types through a real store (#888)', (
     ext.setJournal(journal);
     ext.setSnapshotStore(snapshots);
 
-    const writer = system.spawn(Props.create(() => new Roster('roster-1')), 'writer');
+    const writer = system.spawn(() => new Roster('roster-1'), 'writer');
     writer.tell({ kind: 'addMember', name: 'ada', joinedAt: new Date('2024-01-01T00:00:00.000Z') });
     writer.tell({ kind: 'addMember', name: 'grace', joinedAt: new Date('2024-02-01T00:00:00.000Z') });
     writer.tell({ kind: 'addMember', name: 'linus', joinedAt: new Date('2024-03-01T00:00:00.000Z') });
@@ -97,7 +96,7 @@ describe('PersistentActor — rich payload types through a real store (#888)', (
     await sleep(50);
 
     let recovered: State | undefined;
-    system.spawn(Props.create(() => new Roster('roster-1', (s) => { recovered = s; })), 'reader');
+    system.spawn(() => new Roster('roster-1', (s) => { recovered = s; }), 'reader');
     await sleep(150);
 
     expect(recovered).toBeDefined();

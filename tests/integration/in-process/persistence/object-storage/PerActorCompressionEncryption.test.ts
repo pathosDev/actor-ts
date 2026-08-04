@@ -5,7 +5,6 @@ import { join } from 'node:path';
 import { ActorSystem } from '../../../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../../../src/ActorSystemOptions.js';
 import { LogLevel, NoopLogger } from '../../../../../src/Logger.js';
-import { Props } from '../../../../../src/Props.js';
 import {
   DurableStateActor,
   DurableStateOptions,
@@ -80,7 +79,7 @@ describe('PersistentActor — actor-level compression hook', () => {
     sys.extension(PersistenceExtensionId).setJournal(new InMemoryJournal());
     sys.extension(PersistenceExtensionId).setSnapshotStore(snapshots);
 
-    const ref = sys.spawn(Props.create(() => new CountingActor('a', { algorithm: 'zstd' })), 'a');
+    const ref = sys.spawn(() => new CountingActor('a', { algorithm: 'zstd' }), 'a');
     ref.tell({ kind: 'increment' });
     await awaitCondition(() => seen.length > 0, { label: 'snapshot put observed' });
 
@@ -103,7 +102,7 @@ describe('PersistentActor — actor-level compression hook', () => {
     sys.extension(PersistenceExtensionId).setSnapshotStore(snapshots);
 
     // Actor without hooks → plugin default applies.
-    const ref = sys.spawn(Props.create(() => new CountingActor('a')), 'a');
+    const ref = sys.spawn(() => new CountingActor('a'), 'a');
     ref.tell({ kind: 'increment' });
     await awaitCondition(() => seen.length > 0, { label: 'snapshot put observed' });
 
@@ -128,7 +127,7 @@ describe('PersistentActor — actor-level encryption hook', () => {
     sys.extension(PersistenceExtensionId).setJournal(new InMemoryJournal());
     sys.extension(PersistenceExtensionId).setSnapshotStore(snapshots);
 
-    const ref = sys.spawn(Props.create(() => new CountingActor('a', { algorithm: 'none' }, enc)), 'a');
+    const ref = sys.spawn(() => new CountingActor('a', { algorithm: 'none' }, enc), 'a');
     ref.tell({ kind: 'increment' });
     ref.tell({ kind: 'increment' });
     // Wait for BOTH snapshots, not just the first: recovery below asserts
@@ -159,7 +158,7 @@ describe('PersistentActor — actor-level encryption hook', () => {
     class Recoverer extends CountingActor {
       override onRecoveryComplete(s: State): void { recoveredState = s; }
     }
-    sys2.spawn(Props.create(() => new Recoverer('a', { algorithm: 'none' }, enc)), 'a');
+    sys2.spawn(() => new Recoverer('a', { algorithm: 'none' }, enc), 'a');
     await awaitCondition(() => recoveredState !== null, { label: 'recovery completed' });
     expect(recoveredState).toEqual({ count: 2 });
     await sys2.terminate();
@@ -199,7 +198,7 @@ describe('DurableStateActor — actor-level compression / encryption hooks', () 
       .withLogLevel(LogLevel.Off);
     const sys = ActorSystem.create('ds-comp', sysOptions);
     const probe = makeProbe(sys);
-    const ref = sys.spawn(Props.create(() => {
+    const ref = sys.spawn(() => {
       const durableStateOptions = DurableStateOptions.create<{ v: number }>()
         .withPersistenceId('a')
         .withStore(store)
@@ -208,7 +207,7 @@ describe('DurableStateActor — actor-level compression / encryption hooks', () 
         durableStateOptions,
         { algorithm: 'zstd' },
       ) as unknown as ActorBase<DsCommand>;
-    }), 'a');
+    }, 'a');
     ref.tell({ kind: 'set', v: 7, replyTo: probe.ref });
     await awaitCondition(() => seen.length > 0, { label: 'durable-state put observed' });
     for (const event of seen) expect(event).toBe('zstd');
@@ -227,7 +226,7 @@ describe('DurableStateActor — actor-level compression / encryption hooks', () 
       .withLogLevel(LogLevel.Off);
     const sys = ActorSystem.create('ds-aes', sysOptions);
     const probe = makeProbe(sys);
-    const ref = sys.spawn(Props.create(() => {
+    const ref = sys.spawn(() => {
       const durableStateOptions = DurableStateOptions.create<{ v: number }>()
         .withPersistenceId('b')
         .withStore(store)
@@ -235,7 +234,7 @@ describe('DurableStateActor — actor-level compression / encryption hooks', () 
       return new Counter(
         durableStateOptions,
         { algorithm: 'none' }, enc) as unknown as ActorBase<DsCommand>;
-    }), 'b');
+    }, 'b');
     ref.tell({ kind: 'set', v: 12345, replyTo: probe.ref });
     // The probe reply is sent only after `persist` resolves, so it is a
     // stronger signal than the store write itself having started.
@@ -254,7 +253,7 @@ describe('DurableStateActor — actor-level compression / encryption hooks', () 
       .withLogLevel(LogLevel.Off);
     const sys2 = ActorSystem.create('ds-aes-2', sys2Options);
     const probe2 = makeProbe(sys2);
-    const ref2 = sys2.spawn(Props.create(() => {
+    const ref2 = sys2.spawn(() => {
       const durableStateOptions = DurableStateOptions.create<{ v: number }>()
         .withPersistenceId('b')
         .withStore(store)
@@ -262,7 +261,7 @@ describe('DurableStateActor — actor-level compression / encryption hooks', () 
       return new Counter(
         durableStateOptions,
         { algorithm: 'none' }, enc) as unknown as ActorBase<DsCommand>;
-    }), 'b');
+    }, 'b');
     ref2.tell({ kind: 'get', replyTo: probe2.ref });
     await awaitCondition(() => probe2.received.length > 0, { label: 'recovered state replied' });
     expect(probe2.received).toContainEqual({ v: 12345 });
@@ -293,6 +292,6 @@ function makeProbe(sys: ActorSystem): { ref: ActorRef; received: unknown[] } {
   class P extends (Actor as new () => { onReceive(_: unknown): void }) {
     onReceive(m: unknown): void { received.push(m); }
   }
-  const ref = sys.spawn(Props.create(() => new P() as unknown as ActorBase<unknown>), `p-${Math.random().toString(36).slice(2, 6)}`);
+  const ref = sys.spawn(() => new P() as unknown as ActorBase<unknown>, `p-${Math.random().toString(36).slice(2, 6)}`);
   return { ref, received };
 }
