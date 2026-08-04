@@ -39,6 +39,11 @@ covers it.
 - `Date`, `Uint8Array`, `Map`, `Set`, and `bigint` — round-tripped
   back into real instances via type tags (`__date__`, `__bytes__`,
   `__map__`, `__set__`, `__bigint__`).
+- `NaN` / `Infinity` / `-Infinity` / `-0`, `RegExp` (source + flags),
+  `URL`, `Error` (name + message + cause — no stack), and every typed
+  array / `DataView` / `ArrayBuffer` — round-tripped via type tags
+  too (#889).  `Number`/`String`/`Boolean` wrapper objects unwrap to
+  their primitive, like `JSON.stringify`.
 - `toJSON()` — honoured like `JSON.stringify` does, so Luxon/Temporal
   wrappers and your own `toJSON` types encode as their JSON form.
 - User data that *looks* like a tag — an object whose sole key is a
@@ -55,8 +60,8 @@ What needs **care**:
 
 | Type | Behavior |
 | --- | --- |
-| `undefined` | **Throws** a `SerializationError` (stricter than raw `JSON.stringify`, which drops it).  The persistence payload codec instead uses `JSON.stringify` semantics — object properties are dropped, array slots become `null`. |
-| `Function` / `Symbol` | **Throw** a `SerializationError`. |
+| `undefined` | **Throws** a `SerializationError` (stricter than raw `JSON.stringify`, which drops it).  The persistence payload codec instead drops `undefined` object properties like `JSON.stringify` and **preserves** `undefined` in value positions (array slots, `Set` members, `Map` entries) via a tag (#889). |
+| `Function` / `Symbol` / `Promise` / `WeakMap` / `WeakSet` | **Throw** a `SerializationError` — inherently non-serialisable. |
 | Circular references | **Throw** a `SerializationError` naming the key path (instead of overflowing the stack). |
 | Class instances | `toJSON()` is used when present; otherwise decoded as plain `{ ...fields }` — methods + class identity lost. |
 | `Date` / `Map` / `Set` / `bigint` / `Uint8Array` | Round-trip as real instances, but the JSON carries an actor-ts-specific tag shape (e.g. `{"__date__":"…"}`) — a plain (non-actor-ts) JSON reader won't see a bare value. |

@@ -130,8 +130,12 @@ Die `JsonSerializer`-Klasse behandelt:
 - Verschachtelte Kombinationen davon.
 - `Date`, `Uint8Array`, `Map`, `Set` und `bigint` — über Type-Tags
   als echte Instanzen round-getrippt.
+- `NaN` / `Infinity` / `-0`, `RegExp`, `URL`, `Error` (Name +
+  Message + Cause, ohne Stack) und jedes Typed Array / `DataView` /
+  `ArrayBuffer` (#889).
 
-Sie **wirft** bei Funktionen, Symbolen und `undefined`;
+Sie **wirft** bei Funktionen, Symbolen, `undefined`, zirkulären
+Referenzen, `Promise` und `WeakMap` / `WeakSet`;
 Klasseninstanzen dekodieren zu Plain-Objekten (Methoden +
 Identität verloren).  `CborSerializer` round-trippt ebenfalls
 `Uint8Array`, `Date` und `bigint`, aber — anders als

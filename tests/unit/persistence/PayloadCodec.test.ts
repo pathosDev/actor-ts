@@ -22,9 +22,18 @@ describe('PayloadCodec — default tagged-JSON path', () => {
     expect(Array.from(stored.raw)).toEqual([9, 8, 7]);
   });
 
-  test("undefined follows JSON.stringify semantics ('omit' policy)", () => {
+  test("undefined object properties are dropped, value positions preserved ('omit' policy)", () => {
     expect(encodePayload({ a: undefined, b: 1 })).toBe('{"b":1}');
-    expect(encodePayload([1, undefined])).toBe('[1,null]');
+    expect(decodePayload(encodePayload([1, undefined]))).toEqual([1, undefined]);
+  });
+
+  test('NaN and Infinity survive the store round-trip (#889)', () => {
+    const decoded = decodePayload(encodePayload({ ratio: Infinity, floor: -Infinity, missing: NaN })) as {
+      ratio: number; floor: number; missing: number;
+    };
+    expect(decoded.ratio).toBe(Infinity);
+    expect(decoded.floor).toBe(-Infinity);
+    expect(Number.isNaN(decoded.missing)).toBe(true);
   });
 
   test('a JSON-safe payload is stored byte-identically to bare JSON.stringify', () => {

@@ -374,12 +374,15 @@ works in production and vice versa.
 | --- | --- |
 | Plain objects, arrays, strings, finite numbers, booleans, `null` | Stored as plain JSON — byte-identical to before. |
 | `Date`, `Map`, `Set`, `bigint`, `Uint8Array` | **Round-trip as real instances** via type tags. |
+| `NaN`, `Infinity`, `-Infinity`, `-0` | **Round-trip exactly** — no more `null` / `0` (#889). |
+| `RegExp` (source + flags), `URL` | **Round-trip as real instances.** |
+| `Error` (incl. subclasses, `cause`, `AggregateError`) | **Round-trips** name + message + cause — deliberately without the stack: a persisted stack would leak filesystem paths into long-lived rows. |
+| Typed arrays (`Int8Array` … `BigUint64Array`), `DataView`, `ArrayBuffer` | **Round-trip byte-exactly.** |
 | `undefined` object property | Dropped, like `JSON.stringify` — reads back as `undefined`. |
-| `undefined` in arrays / `Set` / `Map` entries | Becomes `null`, like `JSON.stringify`. |
-| `NaN`, `Infinity` | Become `null` (plain JSON limitation). |
+| `undefined` in arrays / `Set` / `Map` entries | **Preserved as `undefined`** (#889) — plain JSON's `null` there would be a different value. |
+| `new Number/String/Boolean` wrappers | Unwrap to their primitive, like `JSON.stringify`. |
 | Class instances | `toJSON()` is honoured; otherwise stored as plain `{ ...fields }` — methods and `instanceof` are gone after recovery.  Use plain data, an [event adapter](/persistence/migration/overview/), or a per-store serializer (below). |
-| `RegExp`, `Error` | Degrade to `{}` / partial data — avoid in payloads. |
-| Functions, symbols, circular references | **Throw at persist time** (`SerializationError` — loud, instead of corrupting the stored row). |
+| Functions, symbols, circular references, `Promise`, `WeakMap` / `WeakSet` | **Throw at persist time** (`SerializationError` — loud, instead of corrupting the stored row). |
 
 ### Custom serializer per store
 

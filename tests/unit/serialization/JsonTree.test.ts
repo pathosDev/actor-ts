@@ -68,14 +68,17 @@ describe('JsonTree — undefined policy', () => {
     expect(encoded).toEqual({ b: 1 });
   });
 
-  test("'omit' nulls undefined value positions (array slots, Set members, Map entries)", () => {
-    expect(encodeJsonTree([1, undefined, 2], { undefinedValues: 'omit' })).toEqual([1, null, 2]);
-    expect(rt(new Set([undefined]), { undefinedValues: 'omit' })).toEqual(new Set([null]));
+  test("'omit' preserves undefined value positions via the __undefined__ tag (#889)", () => {
+    expect(encodeJsonTree([1, undefined, 2], { undefinedValues: 'omit' }))
+      .toEqual([1, { __undefined__: true }, 2]);
+    expect(rt([1, undefined, 2], { undefinedValues: 'omit' })).toEqual([1, undefined, 2]);
+    expect(rt(new Set([undefined]), { undefinedValues: 'omit' })).toEqual(new Set([undefined]));
     const map = rt(new Map([['k', undefined]]), { undefinedValues: 'omit' }) as Map<string, unknown>;
-    expect(map.get('k')).toBe(null);
+    expect(map.has('k')).toBe(true);
+    expect(map.get('k')).toBeUndefined();
     // Sparse-array holes read as undefined and behave the same way.
     // eslint-disable-next-line no-sparse-arrays
-    expect(encodeJsonTree([1, , 2], { undefinedValues: 'omit' })).toEqual([1, null, 2]);
+    expect(rt([1, , 2], { undefinedValues: 'omit' })).toEqual([1, undefined, 2]);
   });
 
   test("a root-level undefined throws under 'omit' too", () => {
@@ -117,7 +120,7 @@ describe('JsonTree — toJSON', () => {
   test('toJSON() returning undefined behaves like an undefined value', () => {
     const vanishing = { toJSON: () => undefined };
     expect(encodeJsonTree({ a: vanishing, b: 1 }, { undefinedValues: 'omit' })).toEqual({ b: 1 });
-    expect(encodeJsonTree([vanishing], { undefinedValues: 'omit' })).toEqual([null]);
+    expect(rt([vanishing], { undefinedValues: 'omit' })).toEqual([undefined]);
     expect(() => encodeJsonTree({ a: vanishing })).toThrow(SerializationError);
   });
 
@@ -221,6 +224,144 @@ describe('JsonTree — __proto__ hardening (#9)', () => {
     expect(Object.prototype.hasOwnProperty.call(encoded, '__proto__')).toBe(true);
     expect(encoded['x']).toBe(1);
     expect(({} as Record<string, unknown>)['y']).toBeUndefined();
+  });
+});
+
+describe('JsonTree — full type fidelity (#889)', () => {
+  test('NaN, Infinity, -Infinity and -0 round-trip exactly', () => {
+    expect(Number.isNaN(rt(NaN))).toBe(true);
+    expect(rt(Infinity)).toBe(Infinity);
+    expect(rt(-Infinity)).toBe(-Infinity);
+    expect(Object.is(rt(-0), -0)).toBe(true);
+    expect(Object.is(rt(0), 0)).toBe(true);
+    const nested = rt({ stats: [NaN, Infinity], limit: -0 }) as { stats: number[]; limit: number };
+    expect(Number.isNaN(nested.stats[0]!)).toBe(true);
+    expect(nested.stats[1]).toBe(Infinity);
+    expect(Object.is(nested.limit, -0)).toBe(true);
+  });
+
+  test('finite numbers stay bare — no tag overhead', () => {
+    expect(encodeJsonTree(42)).toBe(42);
+    expect(encodeJsonTree(3.14)).toBe(3.14);
+  });
+
+  test('RegExp round-trips source and flags; lastIndex is not carried', () => {
+    const pattern = /order-\d+/gi;
+    pattern.lastIndex = 7;
+    const decoded = rt(pattern) as RegExp;
+    expect(decoded).toBeInstanceOf(RegExp);
+    expect(decoded.source).toBe(pattern.source);
+    expect(decoded.flags).toBe('gi');
+    expect(decoded.lastIndex).toBe(0);
+  });
+
+  test('URL round-trips as a URL instance (toJSON must not flatten it)', () => {
+    const url = rt(new URL('https://example.com/a?b=1#c')) as URL;
+    expect(url).toBeInstanceOf(URL);
+    expect(url.href).toBe('https://example.com/a?b=1#c');
+  });
+
+  test('Error round-trips name, message and cause — never the stack', () => {
+    const cause = new RangeError('too deep');
+    const error = new TypeError('bad shape', { cause });
+    const encoded = encodeJsonTree(error) as { __error__: Record<string, unknown> };
+    expect('stack' in encoded.__error__).toBe(false);
+
+    const decoded = rt(error) as TypeError & { cause: RangeError };
+    expect(decoded).toBeInstanceOf(TypeError);
+    expect(decoded.message).toBe('bad shape');
+    expect(decoded.cause).toBeInstanceOf(RangeError);
+    expect(decoded.cause.message).toBe('too deep');
+  });
+
+  test('an unknown error name reconstructs as Error with that name', () => {
+    const custom = new Error('boom');
+    custom.name = 'PaymentDeclinedError';
+    const decoded = rt(custom) as Error;
+    expect(decoded).toBeInstanceOf(Error);
+    expect(decoded.name).toBe('PaymentDeclinedError');
+    expect(decoded.message).toBe('boom');
+  });
+
+  test('AggregateError round-trips its member errors', () => {
+    const aggregate = new AggregateError([new TypeError('a'), new Error('b')], 'several failed');
+    const decoded = rt(aggregate) as AggregateError;
+    expect(decoded).toBeInstanceOf(AggregateError);
+    expect(decoded.message).toBe('several failed');
+    expect(decoded.errors.length).toBe(2);
+    expect(decoded.errors[0]).toBeInstanceOf(TypeError);
+  });
+
+  test('a self-referencing error cause is a circular-reference error, not a hang', () => {
+    const selfCaused = new Error('loop');
+    (selfCaused as { cause?: unknown }).cause = selfCaused;
+    expect(() => encodeJsonTree(selfCaused)).toThrow(/circular reference/);
+  });
+
+  test('typed arrays round-trip with exact values, including offset views', () => {
+    expect(Array.from(rt(new Int8Array([-1, 2])) as Int8Array)).toEqual([-1, 2]);
+    expect(Array.from(rt(new Uint16Array([65535, 7])) as Uint16Array)).toEqual([65535, 7]);
+    expect(Array.from(rt(new Float64Array([1.5, NaN])) as Float64Array)[0]).toBe(1.5);
+    expect(Number.isNaN(Array.from(rt(new Float64Array([1.5, NaN])) as Float64Array)[1]!)).toBe(true);
+    expect(Array.from(rt(new BigInt64Array([-(2n ** 40n)])) as BigInt64Array)).toEqual([-(2n ** 40n)]);
+    expect(Array.from(rt(new Uint8ClampedArray([300])) as Uint8ClampedArray)).toEqual([255]);
+
+    const int32 = rt(new Int32Array([1, -2, 3])) as Int32Array;
+    expect(int32).toBeInstanceOf(Int32Array);
+    expect(Array.from(int32)).toEqual([1, -2, 3]);
+
+    // An offset view carries only its own window, decoded at offset 0.
+    const backing = new Int32Array([9, 10, 11, 12]);
+    const window = new Int32Array(backing.buffer, 4, 2);
+    expect(Array.from(rt(window) as Int32Array)).toEqual([10, 11]);
+  });
+
+  test('DataView and ArrayBuffer round-trip byte-exactly', () => {
+    const view = new DataView(new ArrayBuffer(4));
+    view.setUint16(0, 513);
+    view.setUint16(2, 7);
+    const decodedView = rt(view) as DataView;
+    expect(decodedView).toBeInstanceOf(DataView);
+    expect(decodedView.getUint16(0)).toBe(513);
+    expect(decodedView.getUint16(2)).toBe(7);
+
+    const buffer = new Uint8Array([5, 6, 7]).buffer;
+    const decodedBuffer = rt(buffer) as ArrayBuffer;
+    expect(decodedBuffer).toBeInstanceOf(ArrayBuffer);
+    expect(Array.from(new Uint8Array(decodedBuffer))).toEqual([5, 6, 7]);
+  });
+
+  test('Uint8Array keeps its dedicated __bytes__ tag (format stability)', () => {
+    const encoded = encodeJsonTree(new Uint8Array([1])) as Record<string, unknown>;
+    expect(Object.keys(encoded)).toEqual(['__bytes__']);
+  });
+
+  test('Number/String/Boolean wrapper objects unwrap like JSON.stringify', () => {
+    expect(rt(new Number(5))).toBe(5);
+    expect(rt(new String('x'))).toBe('x');
+    expect(rt(new Boolean(false))).toBe(false);
+  });
+
+  test('Promise, WeakMap and WeakSet throw instead of storing {}', () => {
+    expect(() => encodeJsonTree({ pending: Promise.resolve(1) })).toThrow(/Unsupported value of type Promise/);
+    expect(() => encodeJsonTree(new WeakMap())).toThrow(/WeakMap/);
+    expect(() => encodeJsonTree(new WeakSet())).toThrow(/WeakSet/);
+  });
+
+  test('user data shaped like the new tags round-trips as plain data', () => {
+    expect(rt({ __number__: 'nan' })).toEqual({ __number__: 'nan' });
+    expect(rt({ __regexp__: 'meta' })).toEqual({ __regexp__: 'meta' });
+    expect(rt({ __error__: { name: 'x' } })).toEqual({ __error__: { name: 'x' } });
+    expect(rt({ __undefined__: true })).toEqual({ __undefined__: true });
+  });
+
+  test('malformed new-tag payloads fail loudly', () => {
+    expect(() => decodeJsonTree({ __number__: 'seven' })).toThrow(SerializationError);
+    expect(() => decodeJsonTree({ __undefined__: false })).toThrow(SerializationError);
+    expect(() => decodeJsonTree({ __regexp__: {} })).toThrow(SerializationError);
+    expect(() => decodeJsonTree({ __url__: 7 })).toThrow(SerializationError);
+    expect(() => decodeJsonTree({ __error__: { name: 'E' } })).toThrow(SerializationError);
+    expect(() => decodeJsonTree({ __typedarray__: { kind: 'Nope', data: '' } })).toThrow(SerializationError);
   });
 });
 

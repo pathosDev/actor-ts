@@ -4,13 +4,15 @@ import { decodeJsonTree, encodeJsonTree } from './JsonTree.js';
 /**
  * JSON serializer — the default fallback.  Handles plain objects, arrays,
  * strings, numbers, booleans, `null`, and — via the shared tagged tree
- * walker in `JsonTree.ts` — `Date`, `Uint8Array`, `Map`, `Set`, and
- * `bigint`.  `toJSON()` is honoured, circular references are reported as
- * `SerializationError` instead of overflowing the stack, and user data that
- * happens to look like a tag round-trips via the `__literal__` escape.
- * Class identity for custom user types is NOT preserved; the decoded value
- * is a plain object.  Callers that need stronger typing should register a
- * custom serializer via `SerializationExtension`.
+ * walker in `JsonTree.ts` — `Date`, `Uint8Array`, `Map`, `Set`, `bigint`,
+ * `NaN`/`Infinity`/`-0`, `RegExp`, `URL`, `Error` (name/message/cause, no
+ * stack), and every typed array / `DataView` / `ArrayBuffer`.  `toJSON()`
+ * is honoured, circular references are reported as `SerializationError`
+ * instead of overflowing the stack, and user data that happens to look
+ * like a tag round-trips via the `__literal__` escape.  Class identity for
+ * custom user types is NOT preserved; the decoded value is a plain object.
+ * Callers that need stronger typing should register a custom serializer
+ * via `SerializationExtension`.
  */
 export class JsonSerializer implements Serializer<unknown> {
   readonly id = 1;
