@@ -823,6 +823,15 @@ export class ShardRegion<TMessage = unknown> extends Actor<TMessage | ShardingMe
       node: this.config.cluster.selfAddress.toJSON(),
     };
     this.tellCoordinator(complete);
+
+    // Anything that arrived while the shard was handing off is still queued,
+    // and clearing `shardHomes` above means nothing will replay it: the
+    // coordinator sends `ShardHome` to the *new* owner and to regions with an
+    // outstanding `GetShardHome`, and we are neither.  Ask, so the reply
+    // flushes the buffer through `onShardHome` like any other placement.
+    // Either ordering works — arriving before the `HandOffComplete` just
+    // parks us in the coordinator's `pending` until it reallocates.
+    if (this.buffer.has(shardId)) this.askCoordinator(shardId);
   }
 
   /**
