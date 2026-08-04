@@ -167,6 +167,19 @@ describe('ActorTreeModel — filtering', () => {
     expect(paths).not.toContain('/user/alpha/leaf');
   });
 
+  test('matches on the display name — the label is what the user sees', () => {
+    const model = new ActorTreeModel();
+    model.reset([
+      node('/', null, 'Guardian'),
+      node('/user', '/', 'Guardian'),
+      node('/user/entity-7b3f', '/user', 'TypedActor', 'Cart(alice)'),
+      node('/user/entity-9c21', '/user', 'TypedActor', 'Cart(bob)'),
+    ]);
+    const paths = model.rows('cart(alice)').map((row) => row.node.path);
+    expect(paths).toContain('/user/entity-7b3f');
+    expect(paths).not.toContain('/user/entity-9c21');
+  });
+
   test('a filter overrides collapsing, so a match is never hidden', () => {
     const model = sampleTree();
     model.toggle('/user/alpha');

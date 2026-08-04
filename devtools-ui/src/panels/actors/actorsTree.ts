@@ -148,6 +148,9 @@ export class ActorTreeModel {
       if (bucket === undefined) childrenByParent.set(parent, [node]);
       else bucket.push(node);
     }
+    // By path segment, deliberately — never by `displayName`, which an
+    // actor can change mid-flight and would make rows jump under the
+    // pointer between two ticks.
     for (const bucket of childrenByParent.values()) {
       bucket.sort((a, b) => a.name.localeCompare(b.name));
     }
@@ -182,7 +185,9 @@ export class ActorTreeModel {
     const keep = new Set<string>();
     for (const node of this.nodes.values()) {
       if (!node.path.toLowerCase().includes(needle)
-        && !node.className.toLowerCase().includes(needle)) continue;
+        && !node.className.toLowerCase().includes(needle)
+        // The label is what the row shows, so it is what a user types.
+        && !(node.displayName?.toLowerCase().includes(needle) ?? false)) continue;
       keep.add(node.path);
       let parent = node.parentPath;
       while (parent !== null && !keep.has(parent)) {

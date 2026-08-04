@@ -308,7 +308,9 @@ function renderRow(
   },
     twisty,
     h('span', { class: `dt-state ${STATE_TOKENS[node.cellState]}`, title: node.cellState }),
-    h('span', { class: 'dt-tree__name' }, node.name === '' ? '/' : node.name),
+    // The actor's own name when it has one, else the path segment.  The
+    // full path stays on the row's `title` either way.
+    h('span', { class: 'dt-tree__name' }, node.displayName ?? (node.name === '' ? '/' : node.name)),
     h('span', { class: 'dt-tree__class' }, node.className),
     depth > 0
       ? h('span', { class: 'dt-badge dt-badge--warn', title: 'messages waiting' }, formatCount(depth))
