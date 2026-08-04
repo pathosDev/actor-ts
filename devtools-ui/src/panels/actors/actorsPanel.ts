@@ -73,7 +73,7 @@ export function mount(host: HTMLElement, context: PanelContext): PanelInstance {
   const search = h('input', {
     class: 'dt-input',
     type: 'search',
-    placeholder: 'Filter by path or class…',
+    placeholder: 'Filter by path, class or name…',
     'aria-label': 'Filter actors',
     oninput: (event: Event) => {
       filter.set((event.target as HTMLInputElement).value);
