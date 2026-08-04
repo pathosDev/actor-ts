@@ -40,6 +40,12 @@ deckt es ab.
 - `Date`, `Uint8Array`, `Map`, `Set` und `bigint` — über Type-Tags
   (`__date__`, `__bytes__`, `__map__`, `__set__`, `__bigint__`)
   zurück in echte Instanzen round-getrippt.
+- `NaN` / `Infinity` / `-Infinity` / `-0`, `RegExp` (Source +
+  Flags), `URL`, `Error` (Name + Message + Cause — ohne Stack) und
+  jedes Typed Array / `DataView` / `ArrayBuffer` — ebenfalls über
+  Type-Tags round-getrippt (#889).
+  `Number`/`String`/`Boolean`-Wrapper-Objekte entpacken zu ihrem
+  Primitiv, wie bei `JSON.stringify`.
 - `toJSON()` — wird wie bei `JSON.stringify` respektiert, sodass
   Luxon/Temporal-Wrapper und eigene `toJSON`-Typen als ihre
   JSON-Form encodieren.
@@ -58,8 +64,8 @@ Worauf du **achten** musst:
 
 | Typ | Verhalten |
 | --- | --- |
-| `undefined` | **Wirft** einen `SerializationError` (strenger als rohes `JSON.stringify`, das es verwirft).  Der Persistenz-Payload-Codec nutzt stattdessen `JSON.stringify`-Semantik — Objekt-Properties werden verworfen, Array-Slots werden `null`. |
-| `Function` / `Symbol` | **Werfen** einen `SerializationError`. |
+| `undefined` | **Wirft** einen `SerializationError` (strenger als rohes `JSON.stringify`, das es verwirft).  Der Persistenz-Payload-Codec verwirft stattdessen `undefined`-Objekt-Properties wie `JSON.stringify` und **erhält** `undefined` in Wertpositionen (Array-Slots, `Set`-Member, `Map`-Einträge) über einen Tag (#889). |
+| `Function` / `Symbol` / `Promise` / `WeakMap` / `WeakSet` | **Werfen** einen `SerializationError` — prinzipiell nicht serialisierbar. |
 | Zirkuläre Referenzen | **Werfen** einen `SerializationError` mit dem Key-Pfad (statt den Stack zu sprengen). |
 | Klasseninstanzen | `toJSON()` wird genutzt, wenn vorhanden; sonst als plain `{ ...fields }` dekodiert — Methoden + Klassenidentität verloren. |
 | `Date` / `Map` / `Set` / `bigint` / `Uint8Array` | Round-trippen als echte Instanzen, aber das JSON trägt eine actor-ts-spezifische Tag-Form (z. B. `{"__date__":"…"}`) — ein einfacher (Nicht-actor-ts-)JSON-Leser sieht keinen blanken Wert. |

@@ -40,6 +40,17 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Added
 
+- **Full type fidelity for stored payloads and `JsonSerializer`** (#889).
+  `NaN` / `Infinity` / `-Infinity` / `-0`, `undefined` in value positions
+  (array slots, `Set` members, `Map` entries — object properties still drop,
+  matching `JSON.stringify`), `RegExp` (source + flags), `URL`, `Error`
+  (name + message + cause, incl. subclass constructors and
+  `AggregateError.errors` — deliberately no stack, which would leak
+  filesystem paths into long-lived rows) and every typed array / `DataView` /
+  `ArrayBuffer` now round-trip through every store and the JSON serializer.
+  `Number`/`String`/`Boolean` wrapper objects unwrap like `JSON.stringify`;
+  `Promise`, `WeakMap` and `WeakSet` throw a `SerializationError` at persist
+  time instead of being silently stored as `{}`.
 - **Per-store `serializer` option** (#888, the persistence half of #450).
   Every journal / snapshot store / durable-state store options builder — and
   every `Register<X>Plugins` bundle — takes `withSerializer(serializer)` to
