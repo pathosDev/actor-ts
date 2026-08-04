@@ -25,6 +25,19 @@ updates:
         update-types:
           - "minor"
           - "patch"
+    # `@types/node` deliberately tracks the `engines` support floor (24),
+    # not latest, so a newer-Node API cannot slip in unnoticed — see
+    # `ac552d5b` and the matching Node leg in multi-runtime.yml.  Nothing
+    # we run catches the violation: with the major bump applied, both
+    # typecheck and the full suite stay green, because the pin's whole
+    # job is to make those APIs unrepresentable at compile time.  Without
+    # this rule the same PR keeps returning (#334, #336, #340, #374,
+    # #481).  Minor/patch inside the pinned major still flow; when the
+    # floor is raised deliberately, pin and rule move together.  #906
+    ignore:
+      - dependency-name: "@types/node"
+        update-types:
+          - "version-update:semver-major"
 
   # GitHub Actions versions used in workflows themselves
   - package-ecosystem: "github-actions"
