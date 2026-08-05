@@ -1,6 +1,7 @@
 import { Lazy } from '../../util/Lazy.js';
-import { listenerTlsOptions } from './TcpBackend.js';
+import { listenerTlsOptions, toPeerCertificate } from './TcpBackend.js';
 import type {
+  PeerCertificate,
   TcpBackend,
   TcpListener,
   TcpSocketHandlers,
@@ -81,6 +82,8 @@ interface NodeSocketLike {
   on(event: 'data', listener: (chunk: Buffer) => void): this;
   on(event: 'error', listener: (err: Error) => void): this;
   readonly remoteAddress?: string;
+  /** Present on `tls.TLSSocket` only — a plain `net.Socket` has no such method. */
+  getPeerCertificate?(): unknown;
 }
 
 interface NodeServerLike {
@@ -120,6 +123,13 @@ function wrapSocket(raw: NodeSocketLike): TcpSocketLike {
     write(data: Uint8Array): void { raw.write(data); },
     end(): void { raw.end(); },
     get remoteAddress(): string | undefined { return raw.remoteAddress; },
+    // Read on demand, not captured at wrap time: a plain `net.Socket` has no
+    // such method at all, and the value is only meaningful once the handshake
+    // has run.  `getPeerCertificate()` returns `{}` when the peer presented
+    // nothing, which `toPeerCertificate` maps to `undefined`.
+    peerCertificate(): PeerCertificate | undefined {
+      return toPeerCertificate(raw.getPeerCertificate?.());
+    },
   };
 }
 

@@ -48,6 +48,28 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Security
 
+- **A cluster `hello` identity is bound to the TLS peer certificate** (#912).
+  mTLS decided *whether* a peer belonged in the cluster; nothing decided
+  *which* member it was.  The `hello` frame carries a `NodeAddress` and no
+  credential, so a single CA-signed node could announce itself under another
+  member's address — and since the gossip-authority rules from #562, #564
+  and #572 all key off the connection's peer, it inherited that member's
+  standing along with the traffic addressed to it.  The duplicate-identity
+  guard did not cover it: a fresh claim, or one made after the real holder's
+  connection dropped, is not a duplicate.
+
+  When a peer presents a certificate, the claimed address must now be one
+  the certificate vouches for — its host, or the full `systemName@host` for
+  deployments that mint per-node identities — with leftmost-label wildcards
+  honoured for the host, as in TLS hostname verification.  Two nodes sharing
+  one host certificate remain indistinguishable, which is documented rather
+  than papered over.
+
+  Clusters with no certificate to read are untouched: plain TCP, one-way
+  TLS, and Deno (whose `TlsConn` exposes no peer certificate at all) behave
+  exactly as before.  There is no new configuration key, so the check cannot
+  be left switched off on a deployment that thinks it has mTLS.
+
 - **The DevTools WebSocket enforces the same-origin default it documented**
   (#566).  `DevToolsOptions` and the DevTools page both promised
   "same-origin only", but `routes()` passed no origin rules when

@@ -36,6 +36,22 @@ export type TlsTransportOptionsType = {
 };
 
 /**
+ * The names a peer's certificate vouches for, normalised across runtimes.
+ *
+ * Only the identity fields are carried.  Whether the certificate *chains* to
+ * the configured `ca` is the TLS stack's job and has already happened by the
+ * time anything can read this — `requestClientCert` plus `rejectUnauthorized`
+ * mean an untrusted peer never reaches the application at all.  What is left
+ * over, and what this exists for, is *which* trusted peer it is.
+ */
+export type PeerCertificate = {
+  /** Subject CN, when the certificate has one. */
+  readonly commonName?: string;
+  /** `subjectAltName` entries, rendered as `DNS:x` / `IP Address:x` are stripped to bare values. */
+  readonly subjectAlternativeNames: readonly string[];
+};
+
+/**
  * Minimal socket shape the transport needs.  Adapters wrap their native
  * socket to present this surface.  Per-connection state is NOT stashed on
  * the socket (Bun's `.data` trick is not portable) — the caller keeps its
@@ -45,6 +61,57 @@ export interface TcpSocketLike {
   write(data: Uint8Array): void;
   end(): void;
   readonly remoteAddress?: string;
+  /**
+   * The peer's TLS certificate, or `undefined` when there is none to read —
+   * a plaintext socket, one-way TLS, or a runtime that does not expose it.
+   *
+   * **Read it lazily, never at `onOpen`.**  On Bun the socket's `open`
+   * callback fires *before* the TLS handshake completes: `authorized` is
+   * still `false` and `getPeerCertificate()` returns nothing.  Node hands
+   * over a socket that is already secure, so it would work there and fail
+   * only on Bun — the worst kind of difference.  Calling this while
+   * handling inbound data is always safe, because encrypted bytes cannot
+   * arrive before the handshake that decrypts them.
+   *
+   * Optional because {@link DenoTcpBackend} has nothing to implement it
+   * with: `Deno.TlsConn` exposes no peer certificate, and `handshake()`
+   * returns only the negotiated ALPN protocol.
+   */
+  peerCertificate?(): PeerCertificate | undefined;
+}
+
+/**
+ * Normalise a Node-style certificate object — which Bun also implements — to
+ * {@link PeerCertificate}.  Exported for the adapters and for tests; not part
+ * of the transport's own surface.
+ *
+ * Both runtimes return `subjectaltname` as one comma-separated string with a
+ * type prefix per entry (`DNS:node-a, IP Address:10.0.0.7`).  The prefix is
+ * dropped: a caller matching an address against these does not care how the
+ * name was typed, and keeping it would push that parsing into every consumer.
+ */
+export function toPeerCertificate(raw: unknown): PeerCertificate | undefined {
+  if (raw === null || typeof raw !== 'object') return undefined;
+  const certificate = raw as { subject?: { CN?: unknown }; subjectaltname?: unknown };
+  // An empty object is how Node reports "no certificate presented".
+  if (Object.keys(certificate).length === 0) return undefined;
+
+  const commonName = typeof certificate.subject?.CN === 'string' ? certificate.subject.CN : undefined;
+  const subjectAlternativeNames = typeof certificate.subjectaltname === 'string'
+    ? certificate.subjectaltname
+      .split(',')
+      .map((entry) => entry.trim())
+      .filter((entry) => entry.length > 0)
+      .map((entry) => {
+        const separator = entry.indexOf(':');
+        return separator < 0 ? entry : entry.slice(separator + 1).trim();
+      })
+    : [];
+
+  if (commonName === undefined && subjectAlternativeNames.length === 0) return undefined;
+  return commonName === undefined
+    ? { subjectAlternativeNames }
+    : { commonName, subjectAlternativeNames };
 }
 
 export interface TcpSocketHandlers {

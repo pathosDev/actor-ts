@@ -65,6 +65,47 @@ Mit einer geteilten `ca` ist der Cluster **mutually
 authenticated** — jede Verbindung verlangt ein Peer-Cert, das von
 der vertrauenswürdigen CA signiert ist, in beide Richtungen.
 
+### Das Zertifikat entscheidet auch, *welcher* Knoten
+
+mTLS beantwortet „darf dieser Peer in den Cluster". Für sich
+genommen hat es nie beantwortet „ist dieser Peer der Knoten, für
+den er sich ausgibt": das `hello`-Frame trägt eine Adresse und
+kein Credential, ein CA-signierter Knoten konnte sich also unter
+der Adresse eines anderen Mitglieds ankündigen. Das ist deshalb
+relevant, weil die Gossip-Autoritätsregeln weiter unten allesamt
+am Peer der Verbindung hängen — sie sind genau so stark wie die
+Identität darunter.
+
+Legt ein Peer also ein Zertifikat vor, muss die im `hello`
+beanspruchte Adresse eine sein, für die das Zertifikat bürgt. Ein
+Anspruch wird akzeptiert, wenn CN oder ein SAN eines von beidem
+abdeckt:
+
+- den **Host** der Adresse — der Normalfall, in dem das
+  Zertifikat jedes Knotens seinen eigenen Hostnamen oder seine IP
+  trägt, oder
+- das vollständige **`systemName@host`** — für Deployments, die
+  eine Identität pro Knoten ausstellen und die engere Bindung
+  wollen.
+
+Wildcards gelten für den Host, nur im äußersten linken Label —
+genau wie bei der TLS-Hostnamensprüfung.
+
+<Aside type="note" title="Was ein geteiltes Zertifikat nicht kann">
+  Zwei Knoten, die dasselbe Host-Zertifikat vorlegen, sind für
+  diese Prüfung nicht unterscheidbar, und keine
+  zertifikatsbasierte Regel könnte sie trennen. Wenn du Identität
+  auf Knotenebene brauchst — damit ein kompromittiertes `node-a`
+  sich nicht als `node-b` auf demselben Host ausgeben kann —
+  stelle Zertifikate pro Knoten aus, die `systemName@host` nennen.
+</Aside>
+
+Für einen Cluster ohne lesbares Peer-Zertifikat ändert sich
+nichts: einfaches TCP, einseitiges TLS und ein Deno-Listener (der
+gar keins melden kann) verhalten sich exakt wie vorher. Die
+Prüfung stärkt mTLS-Deployments, statt einen Schalter
+hinzuzufügen, den man vergessen kann.
+
 <Aside type="caution" title="Einseitiges TLS authentifiziert niemanden">
   Der `hello`-Handshake trägt selbst keinerlei Credential, also
   *ist* auf einem TLS-Cluster das Peer-Zertifikat die
@@ -288,10 +329,13 @@ Erreichbarkeitsbild.
 Die Regeln nehmen die Beliebigkeit heraus — eine Aussage
 braucht jetzt Standing, das dieser Knoten vergeben hat, statt
 einer großen Zahl. Sie machen einen unauthentifizierten Peer
-nicht harmlos: der `hello`-Handshake trägt kein Credential,
-ein Angreifer kann sich also ankündigen, die Beförderung
-abwarten und danach die zweite Regel erfüllen. Fahre mTLS,
-wenn das Netz nicht vollständig vertrauenswürdig ist.
+nicht harmlos: auf einem Cluster ohne Peer-Zertifikate trägt der
+`hello`-Handshake kein Credential, ein Angreifer kann sich also
+ankündigen, die Beförderung abwarten und danach die zweite Regel
+erfüllen. Fahre mTLS, wenn das Netz nicht vollständig
+vertrauenswürdig ist — unter mTLS muss die beanspruchte Adresse
+zum Zertifikat des Peers passen, und genau das gibt diesen Regeln
+ein echtes Subjekt.
 :::
 
 ## Per-Deployment-Rezept

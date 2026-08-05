@@ -7,6 +7,7 @@ import {
   type TlsTransportOptionsType,
 } from '../runtime/tcp/index.js';
 import { NodeAddress } from './NodeAddress.js';
+import { certificateVouchesFor } from './PeerIdentity.js';
 import {
   encodeFrame,
   FrameDecoder,
@@ -304,6 +305,7 @@ export class TcpTransport implements Transport {
   private onMessage(connection: Connection, message: WireMessage): void {
     if (message.kind === 'hello') {
       const peer = NodeAddress.fromJSON(message.self);
+      if (!this.certificateAdmits(connection, peer, 'hello')) return;
       const peerKey = peer.toString();
       // Security: reject a duplicate-identity hello on a different
       // socket.  Without this, a second connection claiming the
@@ -345,6 +347,7 @@ export class TcpTransport implements Transport {
     }
     if (message.kind === 'hello-ack') {
       const peer = NodeAddress.fromJSON(message.self);
+      if (!this.certificateAdmits(connection, peer, 'hello-ack')) return;
       const peerKey = peer.toString();
       const existing = this.byPeer.get(peerKey);
       if (existing && existing !== connection) {
@@ -369,6 +372,47 @@ export class TcpTransport implements Transport {
       return;
     }
     this.handler(connection.peer, message);
+  }
+
+  /**
+   * Whether the peer's TLS certificate vouches for the identity it just
+   * claimed in its handshake frame (#912).
+   *
+   * mTLS decides *whether* a peer belongs in the cluster; nothing decided
+   * *which* member it is.  Every gossip-authority rule since #562 keys off
+   * the connection's peer, so a CA-signed node that announced itself under
+   * another member's address inherited that member's standing — and, because
+   * `byPeer` is keyed on the claimed address, its traffic too.  The
+   * duplicate-identity guard below does not cover it: a fresh claim, or one
+   * made after the real holder's connection dropped, is not a duplicate.
+   *
+   * Skipped entirely when there is no certificate to check.  A plaintext
+   * cluster is documented as unauthenticated, one-way TLS has no client
+   * certificate by design, and Deno cannot report one — in all three the
+   * transport has nothing to verify against, and rejecting on that basis
+   * would break every one of them rather than harden anything.  The check
+   * therefore strengthens mTLS deployments without introducing a new
+   * configuration knob that could be left off.
+   */
+  private certificateAdmits(
+    connection: Connection,
+    claimed: NodeAddress,
+    frame: 'hello' | 'hello-ack',
+  ): boolean {
+    const certificate = connection.socket?.peerCertificate?.();
+    if (certificate === undefined) return true;
+    if (certificateVouchesFor(certificate, claimed)) return true;
+
+    const vouchedFor = [
+      ...(certificate.commonName === undefined ? [] : [certificate.commonName]),
+      ...certificate.subjectAlternativeNames,
+    ].join(', ');
+    this.log.warn(
+      `${frame} rejected: peer claims ${claimed.toString()} but its certificate names `
+      + `${vouchedFor.length === 0 ? '(nothing)' : vouchedFor} — closing the connection`,
+    );
+    this.dropConnection(connection);
+    return false;
   }
 
   private onClose(sock: TcpSocketLike, fallback?: Connection): void {

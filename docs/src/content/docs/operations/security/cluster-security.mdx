@@ -65,6 +65,41 @@ With a shared `ca`, the cluster is **mutually authenticated** —
 every connection requires a peer cert signed by the trusted CA,
 in both directions.
 
+### The certificate also decides *which* node
+
+mTLS answers "may this peer be in the cluster". On its own it
+never answered "is this peer the node it claims to be": the
+`hello` frame carries an address and no credential, so one
+CA-signed node could announce itself under another member's
+address. That matters because the gossip-authority rules below
+all key off the connection's peer — they are exactly as strong
+as the identity underneath them.
+
+So when a peer presents a certificate, the address it claims in
+`hello` must be one the certificate vouches for. A claim is
+accepted when the CN or a SAN covers either:
+
+- the address's **host** — the ordinary case, where each node's
+  certificate carries its own hostname or IP, or
+- the full **`systemName@host`** — for deployments that mint a
+  per-node identity and want the tighter binding.
+
+Wildcards are honoured for the host, in the leftmost label only,
+exactly as TLS hostname verification does.
+
+<Aside type="note" title="What a shared certificate cannot do">
+  Two nodes that present the *same* host certificate are
+  indistinguishable to this check, and no certificate-based rule
+  could separate them. If you need node-level identity — so that
+  a compromised `node-a` cannot claim to be `node-b` on the same
+  host — issue per-node certificates naming `systemName@host`.
+</Aside>
+
+Nothing changes for a cluster with no peer certificate to read:
+plain TCP, one-way TLS, and a Deno listener (which cannot report
+one at all) behave exactly as before. The check strengthens mTLS
+deployments rather than adding a switch that can be left off.
+
 <Aside type="caution" title="One-way TLS authenticates nobody">
   The `hello` handshake carries no credential of its own, so on a
   TLS cluster the peer certificate *is* the admission control.  A
@@ -276,10 +311,12 @@ would leave each node with only its own reachability picture.
 :::caution[This is not authentication]
 These rules remove the free-for-all — a claim now needs
 standing this node granted, rather than a large number. They
-do not make an unauthenticated peer harmless: the `hello`
-handshake carries no credential, so an attacker can announce
-itself, wait to be promoted, and then satisfy the second
-rule. Run mTLS if the network is not fully trusted.
+do not make an unauthenticated peer harmless: on a cluster with
+no peer certificates the `hello` handshake carries no credential,
+so an attacker can announce itself, wait to be promoted, and then
+satisfy the second rule. Run mTLS if the network is not fully
+trusted — under mTLS the claimed address must match the peer's
+certificate, which is what gives these rules a real subject.
 :::
 
 ## Per-deployment recipe
