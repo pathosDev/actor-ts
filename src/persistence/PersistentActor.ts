@@ -18,7 +18,7 @@ import {
 } from './migration/Envelope.js';
 
 /**
- * How often to take snapshots — called after every event apply.  Returning
+ * How often to take snapshots â€” called after every event apply.  Returning
  * true means "snapshot the current state".
  */
 export type SnapshotPolicy<State, Event> = (
@@ -63,13 +63,13 @@ export abstract class PersistentActor<Command, Event, State> extends Actor<Comma
   abstract initialState(): State;
 
   /**
-   * Pure state-update function — MUST be deterministic, and is
+   * Pure state-update function â€” MUST be deterministic, and is
    * deliberately synchronous where `onCommand` is async.
    *
    * A command decides and therefore does I/O (`persist` writes to the
    * journal); an event is already a fact, and folding a fact into state
-   * is arithmetic.  Anything you would want to `await` here — a read, a
-   * notification — is precisely what must NOT run again on recovery.
+   * is arithmetic.  Anything you would want to `await` here â€” a read, a
+   * notification â€” is precisely what must NOT run again on recovery.
    * Put it in the `persist` callback or `onRecoveryComplete`, neither of
    * which replay.
    *
@@ -81,7 +81,7 @@ export abstract class PersistentActor<Command, Event, State> extends Actor<Comma
    */
   abstract onEvent(state: State, event: Event): State;
 
-  /** Handle an incoming command — typically calls `persist(event, cb)`. */
+  /** Handle an incoming command â€” typically calls `persist(event, cb)`. */
   abstract onCommand(state: State, command: Command): void | Promise<void>;
 
   /** Called once recovery finishes, with the final replayed state. */
@@ -90,7 +90,7 @@ export abstract class PersistentActor<Command, Event, State> extends Actor<Comma
   /**
    * Called when recovery itself throws.
    *
-   * A notification, not a decision — recovery failure is terminal either
+   * A notification, not a decision â€” recovery failure is terminal either
    * way.  The default rethrows, so the failure reaches supervision as an
    * `ActorInitializationError`.  An override that returns normally takes
    * the failure as handled, and the actor is then stopped: `state` was
@@ -100,7 +100,7 @@ export abstract class PersistentActor<Command, Event, State> extends Actor<Comma
    */
   onRecoveryFailure(reason: Error): void { throw reason; }
 
-  /** Snapshot policy — return true to snapshot the current state. */
+  /** Snapshot policy â€” return true to snapshot the current state. */
   snapshotPolicy(): SnapshotPolicy<State, Event> { return () => false; }
 
   /** Optional tags attached to every persisted event (for Persistence Query). */
@@ -117,7 +117,7 @@ export abstract class PersistentActor<Command, Event, State> extends Actor<Comma
   eventAdapter(): EventAdapter<Event> | undefined { return undefined; }
 
   /**
-   * Optional snapshot adapter — same semantics as `eventAdapter`, but
+   * Optional snapshot adapter â€” same semantics as `eventAdapter`, but
    * applied to the `state` blob persisted by the snapshot store.  When
    * a snapshot adapter is set and a stored snapshot is not an envelope,
    * recovery throws.
@@ -125,7 +125,7 @@ export abstract class PersistentActor<Command, Event, State> extends Actor<Comma
   snapshotAdapter(): SnapshotAdapter<State> | undefined { return undefined; }
 
   /**
-   * Per-actor compression — overrides the plugin default for THIS actor's
+   * Per-actor compression â€” overrides the plugin default for THIS actor's
    * snapshots.  Stores that don't compress (in-memory, SQLite, Cassandra)
    * ignore the value.  Returning `undefined` (the default) defers to the
    * plugin's resolver / configured default.
@@ -133,7 +133,7 @@ export abstract class PersistentActor<Command, Event, State> extends Actor<Comma
   compression(): CompressionConfig | undefined { return undefined; }
 
   /**
-   * Per-actor encryption — overrides the plugin default for THIS actor's
+   * Per-actor encryption â€” overrides the plugin default for THIS actor's
    * snapshots.  Honoured by stores that encrypt at rest (object-storage);
    * other stores ignore it.  Used on both the write path (encrypt) and
    * the read path (derive subkey from master to decrypt).
@@ -147,11 +147,11 @@ export abstract class PersistentActor<Command, Event, State> extends Actor<Comma
   private _journal!: Journal;
   private _snapshotStore!: SnapshotStore;
   private _recovering = true;
-  /** Set while a persist is in flight — incoming commands get stashed. */
+  /** Set while a persist is in flight â€” incoming commands get stashed. */
   private _persisting = false;
   private _pendingCallbacks: Array<(state: State) => void | Promise<void>> = [];
 
-  /** Current state — only reliable after recovery. */
+  /** Current state â€” only reliable after recovery. */
   protected get state(): State { return this._state; }
 
   /** Highest sequence number reflected in `state`. */
@@ -174,11 +174,11 @@ export abstract class PersistentActor<Command, Event, State> extends Actor<Comma
       // ActorCell.onCreate turns it into an ActorInitializationError and
       // supervision decides.
       this.onRecoveryFailure(reason);
-      // The hook returned, so it owns the failure — but it cannot own the
+      // The hook returned, so it owns the failure â€” but it cannot own the
       // actor.  `_state` was never assigned and `_recovering` is still
       // true, so every command would be stashed, silently, until #1025
       // overflows the 1024-entry stash and throws from inside the handler
-      // — a supervision restart 1024 messages away from its cause, whose
+      // â€” a supervision restart 1024 messages away from its cause, whose
       // recovery fails and gets swallowed again.  Stop instead.
       //
       // `stopSelf` enqueues a system message, and the cell drains those
@@ -187,7 +187,7 @@ export abstract class PersistentActor<Command, Event, State> extends Actor<Comma
       // letters.
       this.log.error(
         `[persistence] '${this.persistenceId}' recovery failed and onRecoveryFailure `
-        + 'returned without rethrowing — stopping the actor',
+        + 'returned without rethrowing â€” stopping the actor',
         reason,
       );
       this.context.stopSelf();
@@ -196,14 +196,14 @@ export abstract class PersistentActor<Command, Event, State> extends Actor<Comma
     // Post-recovery user code, deliberately OUTSIDE the guard above.  A
     // throw in `onRecoveryComplete` is an ordinary actor failure, not a
     // recovery failure: routing it through `onRecoveryFailure` blamed the
-    // journal for a bug in the hook, and — with an override that swallows
-    // — stranded an actor whose state had recovered perfectly.
+    // journal for a bug in the hook, and â€” with an override that swallows
+    // â€” stranded an actor whose state had recovered perfectly.
     this._recovering = false;
     try {
       await this.onRecoveryComplete(this._state);
     } finally {
       // Only reachable when a subclass starts recovery without awaiting
-      // it — on every normal path the commands are still in the mailbox,
+      // it â€” on every normal path the commands are still in the mailbox,
       // never the stash.  Draining in `finally` keeps them across a
       // failing hook instead of letting them die with the instance.
       this.context.unstashAll();
@@ -217,7 +217,7 @@ export abstract class PersistentActor<Command, Event, State> extends Actor<Comma
     // checks all live in `replayState`, shared with the DevTools
     // time-travel panel (#201).  One implementation means a debugger
     // reconstructing state cannot quietly disagree with what the actor
-    // itself recovers — which is the whole reason to look at it.
+    // itself recovers â€” which is the whole reason to look at it.
     const result = await replayState<Event, State>({
       journal: this._journal,
       snapshotStore: this._snapshotStore,
@@ -248,7 +248,7 @@ export abstract class PersistentActor<Command, Event, State> extends Actor<Comma
 
   /**
    * Persist a single event.  The callback runs once the event has been
-   * applied to the state — use it to reply to the sender.  Further
+   * applied to the state â€” use it to reply to the sender.  Further
    * incoming commands are deferred until the callback returns.
    */
   protected async persist(
@@ -266,7 +266,7 @@ export abstract class PersistentActor<Command, Event, State> extends Actor<Comma
     if (events.length === 0) { await cb?.(this._state); return; }
     this._persisting = true;
     try {
-      // Collect tags from the first event — tags are per-event but a single
+      // Collect tags from the first event â€” tags are per-event but a single
       // persistAll keeps them grouped so they share the same tag set.
       const tags = this.tagsFor(events[0]!);
       // If an event adapter is active, wrap each event into a `{_v,_t,_e}`
@@ -281,7 +281,7 @@ export abstract class PersistentActor<Command, Event, State> extends Actor<Comma
         this.persistenceId, wireEvents, this._seq, tags,
       );
       this.log.debug(
-        `[persistence] '${this.persistenceId}' persisted ${written.length} event(s) → seq=${written[written.length - 1]?.sequenceNr ?? this._seq}`,
+        `[persistence] '${this.persistenceId}' persisted ${written.length} event(s) â†’ seq=${written[written.length - 1]?.sequenceNr ?? this._seq}`,
       );
       const policy = this.snapshotPolicy();
       let shouldSnapshot = false;
@@ -333,13 +333,26 @@ export abstract class PersistentActor<Command, Event, State> extends Actor<Comma
     return { compression, encryption };
   }
 
-  /** Delete snapshots and events up to `toSeq` for compaction. */
+  /**
+   * Compact past `toSeq`: drop the events up to and including it, and the
+   * snapshots that came *before* it.
+   *
+   * The snapshot at `toSeq` is deliberately kept.  `SnapshotStore.delete` is
+   * documented as inclusive, so deleting up to `toSeq` destroyed the very
+   * snapshot the compaction is compacting *past* — leaving an actor with no
+   * snapshot and no events, and, before #628, a recovered sequence of 0 that
+   * blocked every later `persist` (#629).
+   *
+   * `toSeq <= 0` prunes nothing, which is what "compact past the beginning"
+   * should mean.
+   */
   protected async deleteHistory(toSeq: number): Promise<void> {
-    await this._snapshotStore.delete(this.persistenceId, toSeq);
+    if (toSeq <= 0) return;
+    await this._snapshotStore.delete(this.persistenceId, toSeq - 1);
     await this._journal.delete(this.persistenceId, toSeq);
   }
 
-  /** Read back the persisted events — handy for tests. */
+  /** Read back the persisted events â€” handy for tests. */
   protected async readEvents(fromSeq = 1, toSeq?: number): Promise<PersistentEvent<Event>[]> {
     return this._journal.read<Event>(this.persistenceId, fromSeq, toSeq);
   }
