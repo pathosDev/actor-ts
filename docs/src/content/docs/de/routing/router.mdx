@@ -114,8 +114,8 @@ Strategie-Typ und eingebaute Implementierungen.
 
 ## Routees selbst spawnen
 
-`Router.roundRobin(size, props)` ist ein Pool — der Router erstellt
-Routees aus `props`.  Wenn du stattdessen an *existierende* Actors
+`Router.roundRobin(size, routee)` ist ein Pool — der Router erstellt
+die Routees selbst aus `routee`.  Wenn du stattdessen an *existierende* Actors
 routen willst (z.B. Shard-Regionen, spezifische benannte Workers),
 unterstützt der lokale `Router` das nicht; du würdest einen eigenen
 Router-Actor schreiben.
@@ -152,7 +152,7 @@ import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="`size = 0` ist ein Bug">
   ```ts
-  Router.roundRobin(0, props);   // ← kompiliert, aber jede Nachricht geht nirgendwohin
+  Router.roundRobin(0, () => new Worker());   // ← kompiliert, aber jede Nachricht geht nirgendwohin
   ```
   Ein Pool mit null Routees gibt aus der Strategie ein leeres
   Iterable zurück, jedes `tell` wird also verworfen (still — kein

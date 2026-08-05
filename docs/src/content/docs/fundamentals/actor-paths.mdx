@@ -90,14 +90,14 @@ legible; the random half keeps the path from being guessable from
 the outside, which matters because a path is an address.  Two rules
 govern naming:
 
-1. **Names must be unique among siblings.**  `context.spawn(props, 'bar')`
-   followed by another `context.spawn(props, 'bar')` on the same
+1. **Names must be unique among siblings.**  `context.spawn(Worker, 'bar')`
+   followed by another `context.spawn(Worker, 'bar')` on the same
    parent throws — that path is already in use.
 2. **The name must be a single path segment.**  The framework enforces
    this and throws on a name that would corrupt the path: a `/` or `\`
    separator, the traversal segments `.` and `..`, an empty name, or any
    control character.  A path is rendered by joining segments with `/`
-   and taken apart again by splitting on it, so `spawn(props, 'a/b')`
+   and taken apart again by splitting on it, so `spawn(Worker, 'a/b')`
    would otherwise produce a path indistinguishable from a child `b` of
    an actor `a` — colliding with, or impersonating, a different actor,
    including across the cluster wire where the remote side re-splits the
