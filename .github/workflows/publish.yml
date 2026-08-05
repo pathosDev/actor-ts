@@ -20,6 +20,18 @@ on:
   # the version guard below makes re-runs safe.
   workflow_dispatch:
 
+# The version guard below (`npm view` → skip if already published) is a
+# check-then-act, so two runs that overlap both see "not published" and both
+# proceed — the loser then dies on npm's E403 for a duplicate version, which
+# reads like a broken release rather than a race.  The release event and the
+# manual fallback can genuinely overlap: the fallback exists to re-attempt a
+# publish, and nothing stops it being dispatched while the original run is
+# still going.  Serialise them instead.  Not `cancel-in-progress` — an
+# in-flight `npm publish` is the last thing to interrupt.
+concurrency:
+  group: publish-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   publish:
     runs-on: ubuntu-latest
