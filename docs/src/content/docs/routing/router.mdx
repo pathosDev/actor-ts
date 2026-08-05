@@ -112,7 +112,7 @@ strategy type and built-in implementations.
 ## Spawning the routees yourself
 
 `Router.roundRobin(size, routee)` is a pool — the router creates
-routees from `routee`.  If you want to route to *existing* actors
+the routees itself from `routee`.  If you want to route to *existing* actors
 instead (e.g. shard regions, specific named workers), the local
 `Router` doesn't support that; you'd write a custom router actor.
 
@@ -149,7 +149,7 @@ import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="`size = 0` is a bug">
   ```ts
-  Router.roundRobin(0, routee);   // ← compiles, but every message goes nowhere
+  Router.roundRobin(0, Worker);   // ← compiles, but every message goes nowhere
   ```
   A zero-routee pool returns an empty iterable from the strategy,
   so every `tell` is dropped (silently — no dead-letter routing).

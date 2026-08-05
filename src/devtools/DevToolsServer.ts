@@ -166,9 +166,9 @@ export class DevToolsServer implements DevToolsHubContext {
   /** Spawn the hub and install the taps.  Idempotent. */
   start(): void {
     if (this.hubRef !== null) return;
-    // No `.asInternal()` here — the `/system/devtools` group carries the
-    // tooling mark and `ActorCell` inherits it, so the hub and every
-    // connection it spawns are covered without repeating it.
+    // No `ActorOptions.withInternal()` here — the `/system/devtools` group
+    // carries the tooling mark and `ActorCell` inherits it, so the hub and
+    // every connection it spawns are covered without repeating it.
     this.hubRef = this.system._spawnSystemActor<DevToolsHubCommand>(
       () => new DevToolsHubActor(this) as never,
       SystemGroups.devtools,

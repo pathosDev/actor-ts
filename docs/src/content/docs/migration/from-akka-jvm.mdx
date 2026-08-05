@@ -16,7 +16,7 @@ named identically.  This guide walks through the translation.
 | `akka.actor.Props` | the actor class, a factory, or `ActorOptions<TMessage>` |
 | `tell(message)` / `!` | `tell(message)` |
 | `ask(message).mapTo[T]` | `ref.ask<TRes>(message, timeoutMs)` |
-| `context.spawnAnonymous(props)` | `context.spawnAnonymous(MyActor)` |
+| `context.spawnAnonymous(props)` | `context.spawnAnonymous(actor)` |
 | `OneForOneStrategy` | `OneForOneStrategy` |
 | `AllForOneStrategy` | `AllForOneStrategy` |
 | `become(receive)` | `context.become(handler)` |
@@ -110,7 +110,7 @@ cluster.join(Address("akka", "MySystem", "host", port))
 
 val region = ClusterSharding(system).start(
   typeName = "Counter",
-  entityActor = Props[Counter],
+  entityProps = Props[Counter],
   settings = ClusterShardingSettings(system),
   extractEntityId = ...,
   extractShardId  = ...,

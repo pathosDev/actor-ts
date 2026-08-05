@@ -145,7 +145,7 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   **Migration:** nothing you name yourself changes — only the value the
   framework picks when you don't.  Code that hard-codes an anonymous path
   (`actorSelection('/user/$1')`) or parses `$<n>` out of a name must spawn with
-  `spawn(props, name)` and a name of its own.
+  `spawn(actor, name)` and a name of its own.
 - **BREAKING — unnamed reliable-delivery controllers are
   `consumer-<n>-<random>` / `producer-<n>-<random>`** (#897).  The fallback name
   came from a module-global counter, so `/system/delivery/consumer-1` was the
@@ -156,6 +156,19 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   **Migration:** passing an explicit `name` to `ReliableDelivery.consumer()` /
   `.producer()` is unchanged.  Code addressing a generated controller by path
   must pass a name of its own.
+- **BREAKING — actor names starting with `$` are reserved for the framework**
+  (#900).  `spawn(actor, name)` and `spawnTyped(behavior, name)` now reject a
+  name beginning with `$`, the prefix `spawnAnonymous` generates
+  (`$anonymous-<n>-<random>`).  Until now anyone could claim it, so a
+  hand-picked `'$anonymous-1-…'` could collide with — or stand in for — a name
+  the framework was entitled to hand out, with spawn order deciding which won.
+  A `$` anywhere other than the first character is unaffected (`'order$42'`
+  still spawns).
+  **Migration:** rename any actor whose name starts with `$`, or let the
+  framework name it with `spawnAnonymous`.  Note the rule sits on the *spawn
+  call*, not on `ActorPath`: paths are also rebuilt from cluster-wire strings,
+  and rejecting `$` there would break every remote reference to an anonymous
+  actor — so receiving, resolving and rendering such a path all still work.
 
 ### Fixed
 
@@ -244,18 +257,13 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   rewritten around what the reader is doing rather than around a type.  The
   old slug redirects.
 
-- **Stale `Props`-era references cleaned out of the docs** (EN + DE, #547) —
-  found while bringing the samples onto the class form.  `quickstart` and
-  `fundamentals/actor` still called the argument "the factory" above a
-  sample passing a class, and `actor.mdx` carried a dangling "`...` wraps
-  the factory + supervisor strategy" sentence.  `ClusterRouter.props(` and
-  `BackoffSupervisor.props(` are `.factory(` — the samples called a method
-  that no longer exists.  `typed/spawn-typed` chained
-  `.withMailboxCapacity()` onto `typedActor(…)`, which returns an
-  `ActorFactory<T>` and has no builder methods; the sample now passes
-  `ActorOptions` as the third `spawn` argument.  `props` also survived as a
-  placeholder identifier in prose (`spawn(props, name)`,
-  `Router.roundRobin(size, props)`, "entity props", "the props position").
+- **The docs lead with the actor class at every spawn site** (EN + DE, #547)
+  — the samples follow the code trees onto `spawn(MyActor)`, and the prose
+  that described them followed.  `quickstart` and `fundamentals/actor` were
+  the sharpest mismatch: both called the argument "the factory" directly
+  above a sample passing a class, and `actor.mdx` carried a dangling "`...`
+  wraps the factory + supervisor strategy" sentence where `Props.create(…)`
+  used to be named.
 
 ## [0.12.2] — 2026-08-04
 

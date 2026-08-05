@@ -77,6 +77,6 @@ export class WebsocketIngressActor extends WebsocketServerActor<WebsocketFrame, 
   }
 }
 
-export function webSocketIngressProps(deps: WebsocketIngressDeps): ActorFactory<never> {
+export function websocketIngressFactory(deps: WebsocketIngressDeps): ActorFactory<never> {
   return (() => new WebsocketIngressActor(deps)) as unknown as ActorFactory<never>;
 }

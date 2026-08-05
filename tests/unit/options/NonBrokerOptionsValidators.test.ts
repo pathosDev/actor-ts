@@ -220,7 +220,7 @@ describe('KubernetesLeaseOptionsValidator', () => {
   });
 });
 
-/** Stand-in for the required `entityActor` / `props` in the cluster validators. */
+/** Stand-in for the required `entityActor` / `actor` in the cluster validators. */
 class NoopEntity extends Actor<unknown> {
   override onReceive(): void {}
 }

@@ -146,7 +146,7 @@ class LifecycleCollector extends Actor<ActorStopped | ActorRestarted> {
 }
 
 describe('supervisor strategy in the spawn options', () => {
-  const sys = systemFixture('supervision-props');
+  const sys = systemFixture('supervision-options');
 
   /** Subscribe a fresh collector to both outcomes and hand back its log. */
   function collectOutcomes(probeName: string): string[] {

@@ -16,15 +16,14 @@ import { pickRendezvous } from './ConsistentHashing.js';
  * `consistent-hashing` sibling that pins messages with the same
  * extracted key to the same node.
  *
+ *   const routerOptions = ClusterRouterOptions.create<{ id: string }>()
+ *     .withCluster(cluster)
+ *     .withRole('compute')                          // optional role filter
+ *     .withRouterType('consistent-hashing')
+ *     .withRouteePath('/user/worker')
+ *     .withExtractKey((message) => message.id);
  *   const router = system.spawn(
- *     ClusterRouter.props(
- *       ClusterRouterOptions.create<{ id: string }>()
- *         .withCluster(cluster)
- *         .withRole('compute')                          // optional role filter
- *         .withRouterType('consistent-hashing')
- *         .withRouteePath('/user/worker')
- *         .withExtractKey((message) => message.id),
- *     ),
+ *     ClusterRouter.factory(routerOptions),
  *     'compute-router',
  *   );
  *   router.tell({ id: 'order-42', op: 'price' });

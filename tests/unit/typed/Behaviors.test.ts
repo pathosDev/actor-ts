@@ -299,7 +299,7 @@ describe('typedActor — interop with OO Actor API', () => {
     const kitOptions = TestKitOptions.create()
       .withLogger(new NoopLogger())
       .withLogLevel(LogLevel.Off);
-    const kit = TestKit.create('typed-props', kitOptions);
+    const kit = TestKit.create('typed-actor', kitOptions);
     const probe = kit.createTestProbe<number>();
 
     const behavior = Behaviors.receiveMessage<number>((m) => { probe.tell(m * 2); return Behaviors.same; });

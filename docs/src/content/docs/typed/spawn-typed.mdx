@@ -83,17 +83,18 @@ strategy, death watch works both ways.
 ```ts
 import { ActorOptions, typedActor } from 'actor-ts';
 
-const counterOptions = ActorOptions.create()
+const counterActor = typedActor(counter(0));
+const counterOptions = ActorOptions.create<Command>()
   .withMailboxCapacity(500)
   .withDispatcher(myDispatcher);
 
-const ref = system.spawn(typedActor(counter(0)), 'counter', counterOptions);
+const ref = system.spawn(counterActor, 'counter', counterOptions);
 ```
 
-When you want a typed Behavior but the API takes an actor class or
-factory (because it's an older entry point, or because you want to
-configure the cell with `ActorOptions`), `typedActor(behavior)` returns
-an `ActorFactory<T>` that fits.
+When you want a typed Behavior but the API takes an actor — an
+entry point that predates the typed layer, or a spawn that needs
+`ActorOptions` of its own — `typedActor(behavior)` returns the
+`ActorFactory<T>` those places accept.
 
 The shape:
 
@@ -101,9 +102,9 @@ The shape:
 function typedActor<T>(behavior: Behavior<T>): ActorFactory<T>;
 ```
 
-The returned factory can be passed anywhere an actor class or factory
-is expected — `system.spawn`, `context.spawn`, `ClusterSingleton.start`,
-the sharding region's entity-actor slot.
+The returned factory can be passed anywhere an actor is expected —
+`system.spawn`, `context.spawn`, `ClusterSingleton.start`, the
+sharding region's `entityActor` slot.
 
 ## Typed-actor-to-typed-child: `ctx.spawn`
 

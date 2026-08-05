@@ -266,6 +266,78 @@ describe('anonymous child names', () => {
   });
 });
 
+/**
+ * The other half of the anonymous-naming rule (#900): the framework generates
+ * `$`-prefixed names, so callers may not choose them.  Enforced at the spawn
+ * call rather than in `ActorPath`, because paths are also rebuilt from
+ * cluster-wire strings — see `RemoteActorRefPath.test.ts`.
+ */
+describe('the reserved `$` name prefix', () => {
+  class Idle extends Actor<string> {
+    override onReceive(_: string): void {}
+  }
+  const idle = (): ActorFactory<string> => () => new Idle();
+  const RESERVED = /reserved for framework-generated names/;
+
+  test('every named spawn entry point refuses a `$` name', async () => {
+    const sys = newSystem();
+    const behavior = Behaviors.receiveMessage<string>(() => same<string>());
+
+    expect(() => sys.spawn(idle(), '$mine')).toThrow(RESERVED);
+    expect(() => sys.spawnTyped(behavior, '$mine')).toThrow(RESERVED);
+
+    const contextErrors: string[] = [];
+    class Parent extends Actor<string> {
+      override preStart(): void {
+        for (const attempt of [
+          (): unknown => this.context.spawn(idle(), '$child'),
+          (): unknown => this.context.spawnTyped(behavior, '$child'),
+        ]) {
+          try { attempt(); } catch (e) { contextErrors.push((e as Error).message); }
+        }
+      }
+      override onReceive(_: string): void {}
+    }
+    sys.spawn(Parent, 'reserved-parent');
+    await sleep(40);
+
+    expect(contextErrors).toHaveLength(2);
+    for (const message of contextErrors) expect(message).toMatch(RESERVED);
+    await sys.terminate();
+  });
+
+  test('the rejection names the offending name and points at spawnAnonymous', () => {
+    const sys = newSystem();
+    // The message has to be actionable: which name, under which parent, and
+    // what to do instead.
+    expect(() => sys.spawn(idle(), '$anonymous-1-0123456789ab'))
+      .toThrow(/"\$anonymous-1-0123456789ab"/);
+    expect(() => sys.spawn(idle(), '$x')).toThrow(/child of actor-ts:\/\//);
+    expect(() => sys.spawn(idle(), '$x')).toThrow(/spawnAnonymous\(\)/);
+    void sys.terminate();
+  });
+
+  test('only the prefix position is reserved — a `$` elsewhere is fine', async () => {
+    const sys = newSystem();
+    // The rule is about the framework's namespace, not about the character.
+    for (const name of ['order$42', 'a$b', 'trailing$']) {
+      expect(() => sys.spawn(idle(), name), `rejected ${name}`).not.toThrow();
+    }
+    await sys.terminate();
+  });
+
+  test('the framework can still name its own actors', async () => {
+    // spawnAnonymous generates exactly what the rule reserves, so it must not
+    // be caught by it — this is the regression the `nameSource` argument on
+    // `_createChild` exists to prevent.
+    const sys = newSystem();
+    expect(() => sys.spawnAnonymous(idle())).not.toThrow();
+    expect(() => sys.spawnTypedAnonymous(Behaviors.receiveMessage<string>(() => same<string>())))
+      .not.toThrow();
+    await sys.terminate();
+  });
+});
+
 /* ------------------------- displayName (#891) ------------------------- */
 
 type LogRecord = {

@@ -55,7 +55,7 @@ class StrictAccount extends Account {
   }
 }
 
-const props = (store: DurableStateStore, id: string, ctor: typeof Account = Account): ActorFactory<Command> =>
+const accountActor = (store: DurableStateStore, id: string, ctor: typeof Account = Account): ActorFactory<Command> =>
   () => {
     const durableStateOptions = DurableStateOptions.create<State>()
       .withPersistenceId(id)
@@ -74,7 +74,7 @@ describe('DurableStateActor — adapter round-trip', () => {
       .withLogLevel(LogLevel.Off);
     const sys = ActorSystem.create('ds-rt', sysOptions);
     const probe = makeProbe(sys);
-    const ref = sys.spawn(props(store, 'acct'), 'a');
+    const ref = sys.spawn(accountActor(store, 'acct'), 'a');
     ref.tell({ kind: 'deposit', amount: 50, replyTo: probe.ref });
     // The reply is sent *after* `persist` resolves, so it is the strongest
     // observable proof that the store write has landed.
@@ -98,7 +98,7 @@ describe('DurableStateActor — adapter round-trip', () => {
       .withLogLevel(LogLevel.Off);
     const sys = ActorSystem.create('ds-restart', sysOptions);
     const probe = makeProbe(sys);
-    const ref = sys.spawn(props(store, 'acct'), 'a');
+    const ref = sys.spawn(accountActor(store, 'acct'), 'a');
     ref.tell({ kind: 'deposit', amount: 100, replyTo: probe.ref });
     await awaitCondition(() => probe.received.length > 0, { label: 'deposit acknowledged after persist' });
     await sys.terminate();
@@ -108,7 +108,7 @@ describe('DurableStateActor — adapter round-trip', () => {
       .withLogLevel(LogLevel.Off);
     const sys2 = ActorSystem.create('ds-restart-2', sys2Options);
     const probe2 = makeProbe(sys2);
-    const ref2 = sys2.spawn(props(store, 'acct'), 'a');
+    const ref2 = sys2.spawn(accountActor(store, 'acct'), 'a');
     ref2.tell({ kind: 'state', replyTo: probe2.ref });
     await awaitCondition(() => probe2.received.length > 0, { label: 'recovered state replied' });
     expect(probe2.received).toContainEqual({ balance: 100, currency: 'EUR' });
@@ -128,7 +128,7 @@ describe('DurableStateActor — v1 → v2 upcast', () => {
       .withLogLevel(LogLevel.Off);
     const sys = ActorSystem.create('ds-upcast', sysOptions);
     const probe = makeProbe(sys);
-    const ref = sys.spawn(props(store, 'acct'), 'a');
+    const ref = sys.spawn(accountActor(store, 'acct'), 'a');
     ref.tell({ kind: 'state', replyTo: probe.ref });
     await awaitCondition(() => probe.received.length > 0, { label: 'up-cast state replied' });
     expect(probe.received).toContainEqual({ balance: 999, currency: 'USD' });

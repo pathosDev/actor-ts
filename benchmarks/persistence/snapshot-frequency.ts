@@ -82,8 +82,8 @@ async function main(): Promise<void> {
 
     const persistenceId = `counter-${pol.unit}`;
     const Counter = makeCounterClass(pol.policy);
-    const props = () => new Counter(persistenceId);
-    let ref = system.spawnAnonymous(props);
+    const counterFactory = () => new Counter(persistenceId);
+    let ref = system.spawnAnonymous(counterFactory);
 
     // --- phase 1: write throughput ---
     await runGroup(`persistence · write (${pol.label})`, [

@@ -98,6 +98,6 @@ export class HttpIngressActor extends Actor<never> {
   override onReceive(_msg: never): void { /* no protocol */ }
 }
 
-export function httpIngressProps(deps: HttpIngressDeps): ActorFactory<never> {
+export function httpIngressFactory(deps: HttpIngressDeps): ActorFactory<never> {
   return (() => new HttpIngressActor(deps)) as unknown as ActorFactory<never>;
 }

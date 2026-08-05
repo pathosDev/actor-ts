@@ -60,7 +60,7 @@ import {
 } from './actors/DirectMessageChannelActor.js';
 import { OnlineUsersActor } from './actors/OnlineUsersActor.js';
 import { ReadReceiptsActor } from './actors/ReadReceiptsActor.js';
-import { httpIngressProps } from './actors/HttpIngressActor.js';
+import { httpIngressFactory } from './actors/HttpIngressActor.js';
 import { attachDevTools } from '../../devtools.js';
 
 async function main(): Promise<void> {
@@ -241,7 +241,7 @@ async function main(): Promise<void> {
   const staticDir = path.join(import.meta.dirname ?? __dirname, '..', 'static');
   const singletonOptions = StartSingletonOptions.create()
     .withTypeName('http-ingress')
-    .withActor(httpIngressProps({
+    .withActor(httpIngressFactory({
       host: config.host,
       httpPort: config.httpPort,
       staticDir,

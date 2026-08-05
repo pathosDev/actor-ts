@@ -23,13 +23,13 @@ class Boom extends Actor<string> {
   override onReceive(_message: string): void { throw new Error('boom'); }
 }
 
-const idleProps = (): ActorFactory<string> => () => new Idle();
+const idleActor = (): ActorFactory<string> => () => new Idle();
 
 describe('ActorSystem._spawnSystemActor', () => {
   test('places the actor under /system and the given group', async () => {
     const sys = newSystem();
 
-    const ref = sys._spawnSystemActor(idleProps(), SystemGroups.clusterSharding, 'region-cart');
+    const ref = sys._spawnSystemActor(idleActor(), SystemGroups.clusterSharding, 'region-cart');
 
     expect(ref.path.toString()).toBe(
       'actor-ts://system-guardian/system/cluster/sharding/region-cart',
@@ -39,7 +39,7 @@ describe('ActorSystem._spawnSystemActor', () => {
 
   test('resolves through _resolvePath and actorSelection', async () => {
     const sys = newSystem();
-    const ref = sys._spawnSystemActor(idleProps(), SystemGroups.clusterPubSub, 'mediator');
+    const ref = sys._spawnSystemActor(idleActor(), SystemGroups.clusterPubSub, 'mediator');
 
     const walked = sys._resolvePath(['system', 'cluster', 'pubsub', 'mediator']);
     const selected = await sys
@@ -55,9 +55,9 @@ describe('ActorSystem._spawnSystemActor', () => {
   test('creates each group level once and shares it across callers', async () => {
     const sys = newSystem();
 
-    sys._spawnSystemActor(idleProps(), SystemGroups.clusterSharding, 'region-cart');
-    sys._spawnSystemActor(idleProps(), SystemGroups.clusterSharding, 'coordinator-cart');
-    sys._spawnSystemActor(idleProps(), SystemGroups.clusterSingleton, 'manager-cron');
+    sys._spawnSystemActor(idleActor(), SystemGroups.clusterSharding, 'region-cart');
+    sys._spawnSystemActor(idleActor(), SystemGroups.clusterSharding, 'coordinator-cart');
+    sys._spawnSystemActor(idleActor(), SystemGroups.clusterSingleton, 'manager-cron');
 
     const paths = sys._inspectTree().map((cell) => cell.path);
     const shardingGroups = paths.filter((p) => p.endsWith('/system/cluster/sharding'));
@@ -86,7 +86,7 @@ describe('ActorSystem._spawnSystemActor', () => {
     const sys = newSystem();
     await sys.terminate();
 
-    expect(() => sys._spawnSystemActor(idleProps(), SystemGroups.delivery, 'consumer-1'))
+    expect(() => sys._spawnSystemActor(idleActor(), SystemGroups.delivery, 'consumer-1'))
       .toThrow(/terminated ActorSystem/);
   });
 });
@@ -95,8 +95,8 @@ describe('system group policy', () => {
   test('marks the DevTools subtree as tooling, and other groups not', async () => {
     const sys = newSystem();
 
-    sys._spawnSystemActor(idleProps(), SystemGroups.devtools, 'hub');
-    sys._spawnSystemActor(idleProps(), SystemGroups.clusterPubSub, 'mediator');
+    sys._spawnSystemActor(idleActor(), SystemGroups.devtools, 'hub');
+    sys._spawnSystemActor(idleActor(), SystemGroups.clusterPubSub, 'mediator');
 
     const byName = (name: string): boolean | undefined =>
       sys._inspectTree().find((cell) => cell.name === name)?.internal;
