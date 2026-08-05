@@ -172,6 +172,28 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Fixed
 
+- **Two nodes that dial each other at the same moment no longer stay split
+  forever** (#697).  `openOutbound` registers a connection in `byPeer` *before*
+  the handshake, with `peer` still unset, and the hello-hijack guard compared
+  identity alone — so in a crossing dial each node held an un-acked outbound
+  under the other's key and rejected the other's perfectly legitimate `hello`.
+  Neither dial then received its `hello-ack`, `peer` stayed `null`, and
+  `onClose` deleted the `byPeer` entry only *if* `peer` was set: the slot was
+  never reclaimed, the address never re-dialled, and every frame for that peer
+  accumulated silently in the handshake buffer.  The pair was partitioned for
+  the lifetime of the process — reachable in the real-network suite, where two
+  nodes logged one hijack rejection naming each other in the same millisecond
+  and cluster-wide receptionist and pub-sub state then converged at 4 of 5 on
+  exactly those two.
+  Cleanup is now keyed on the *dialled* address rather than on `peer`, so a
+  dead dial always gives its slot back and the next send re-dials; a 5 s
+  handshake deadline reclaims a dial that connects but never acks (the
+  accepts-TCP-but-never-speaks case, which had no recovery path at all); the
+  handshake buffer is capped at 1 000 frames, dropping oldest; and a crossing
+  dial is settled by address order, so exactly one of the two survives instead
+  of both standing down.  An **established** peer connection is still never
+  displaced — only a node's own unfinished dial gives way — so the hijack
+  defence the guard exists for is unchanged, and it now has a test saying so.
 - **Messages buffered during a handoff are no longer stranded** (#893).
   `completeHandOff` cleared the region's cached shard home without ever
   replaying the buffer, and the coordinator announces a new placement only to
