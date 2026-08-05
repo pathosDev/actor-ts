@@ -25,5 +25,9 @@
     "@angular/cli": "^22.0.7",
     "@angular/compiler-cli": "^22.0.6",
     "typescript": "~6.0.3"
+  },
+  "overrides": {
+    "@hono/node-server": "^2.1.0",
+    "@modelcontextprotocol/sdk": "^1.30.0"
   }
 }

@@ -1,0 +1,99 @@
+name: examples
+
+# Installs and builds the six bundled example frontends (#903).
+#
+# These directories had no CI coverage at all until now: no workflow
+# carried `examples/**` in a path filter, so a PR touching only the
+# examples produced *zero* checks.  #890 (a six-directory dependency
+# change) is the worked example — it reported an empty check rollup.
+#
+# What that cost: `ts-pattern` was declared in all six example
+# `package.json` files and missing from all six `package-lock.json`
+# files, so `npm ci` failed in every example frontend on `develop` and
+# nothing noticed, because nothing installs them.  Both failure modes
+# this job checks are ones that actually happened:
+#
+#   - `npm ci`        — manifest/lockfile desync (the defect above).
+#                       Deliberately `ci`, not `install`: only `ci`
+#                       treats a desynced lockfile as an error rather
+#                       than quietly rewriting it.
+#   - `npm run build` — a dependency bump that breaks the build.
+#
+# What this job deliberately does NOT do is rebuild the committed
+# bundles under `examples/*/static/**` and diff the bytes.  That is not
+# a judgement call — for four of the six it is impossible.  Two builds
+# from an identical tree were compared:
+#
+#   - Next   — a fresh build id every run (`Kb3j7R17-emTNVLO8IAvl` ->
+#              `BcT-Fi9UF2LGQStSayjG0`), which renames the build-id
+#              directory and rewrites every RSC payload and HTML entry.
+#   - Svelte — `_app/version.json` is a build timestamp, and
+#              `index.html` embeds it.
+#   - Angular — byte-identical, the only deterministic one.
+#
+# So a rebuild-and-diff gate would be permanently red on four legs
+# regardless of staleness, which is the same conclusion `check:ui`
+# reached for `uiAssets.ts` by a different route.  A content-independent
+# freshness gate (a source hash over the inputs, the way `uiAssets.ts`
+# has one) is the open question in #903.
+
+on:
+  # Same path-filter discipline as build.yml / package-health.yml: this
+  # can only change when an example frontend or this workflow changes.
+  push:
+    branches: ['**']
+    paths:
+      - 'examples/**'
+      - '.github/workflows/examples.yml'
+  pull_request:
+    branches: [main, develop]
+    paths:
+      - 'examples/**'
+      - '.github/workflows/examples.yml'
+  workflow_dispatch:
+
+jobs:
+  frontend:
+    runs-on: ubuntu-latest
+    strategy:
+      # fail-fast: false so an Angular-only regression doesn't mask a
+      # Next-only one.  Each frontend gets its own red mark — the same
+      # reasoning as the runtime matrix in multi-runtime.yml.
+      fail-fast: false
+      matrix:
+        # Listed explicitly rather than globbed: a new example frontend
+        # should be a deliberate line in this file, not a directory that
+        # silently joins (or silently doesn't) the matrix.
+        directory:
+          - examples/chat/frontend-angular
+          - examples/chat/frontend-next
+          - examples/chat/frontend-svelte
+          - examples/voice/frontend-angular
+          - examples/voice/frontend-next
+          - examples/voice/frontend-svelte
+    name: ${{ matrix.directory }}
+    steps:
+      - uses: actions/checkout@v7
+
+      # 24 for the same reason multi-runtime.yml pins its Node leg there:
+      # it is the `engines` floor the package claims to support, so the
+      # examples are exercised on the oldest runtime a user might have.
+      #
+      # Note the major alone is load-bearing here: `@angular/cli` 22
+      # declares `^22.22.3 || ^24.15.0 || >=26.0.0`, so the Angular legs
+      # need 24.15 or newer.  `node-version: '24'` resolves to the latest
+      # 24.x and satisfies that; pinning a narrower 24.x would not.
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: ${{ matrix.directory }}/package-lock.json
+
+      - name: Install (npm ci — fails on a desynced lockfile)
+        working-directory: ${{ matrix.directory }}
+        run: npm ci
+
+      - name: Build
+        working-directory: ${{ matrix.directory }}
+        run: npm run build

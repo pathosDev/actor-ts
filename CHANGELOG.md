@@ -145,6 +145,19 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   **Migration:** passing an explicit `name` to `ReliableDelivery.consumer()` /
   `.producer()` is unchanged.  Code addressing a generated controller by path
   must pass a name of its own.
+- **BREAKING — actor names starting with `$` are reserved for the framework**
+  (#900).  `spawn(actor, name)` and `spawnTyped(behavior, name)` now reject a
+  name beginning with `$`, the prefix `spawnAnonymous` generates
+  (`$anonymous-<n>-<random>`).  Until now anyone could claim it, so a
+  hand-picked `'$anonymous-1-…'` could collide with — or stand in for — a name
+  the framework was entitled to hand out, with spawn order deciding which won.
+  A `$` anywhere other than the first character is unaffected (`'order$42'`
+  still spawns).
+  **Migration:** rename any actor whose name starts with `$`, or let the
+  framework name it with `spawnAnonymous`.  Note the rule sits on the *spawn
+  call*, not on `ActorPath`: paths are also rebuilt from cluster-wire strings,
+  and rejecting `$` there would break every remote reference to an anonymous
+  actor — so receiving, resolving and rendering such a path all still work.
 
 ### Fixed
 

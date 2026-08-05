@@ -2,6 +2,12 @@
 const TRAVERSAL_SEGMENTS: ReadonlySet<string> = new Set(['.', '..']);
 
 /**
+ * Prefix the framework keeps for the names it picks itself — today
+ * `$anonymous-<n>-<random>` from `spawnAnonymous`.
+ */
+export const RESERVED_NAME_PREFIX = '$';
+
+/**
  * True when `name` contains a C0 control character or DEL.
  *
  * Deliberately a codepoint scan rather than a regex: a character class for
@@ -56,6 +62,34 @@ function assertValidName(name: string, parent: ActorPath | null): void {
   if (hasControlCharacter(name)) {
     reject('must not contain control characters');
   }
+}
+
+/**
+ * Reject a caller-chosen actor name that trespasses on the framework's own
+ * namespace.
+ *
+ * {@link RESERVED_NAME_PREFIX} marks a name the framework handed out rather
+ * than one the application asked for.  While anyone could claim it, a
+ * `spawn(actor, '$anonymous-1-…')` could collide with — or stand in for — a
+ * name `spawnAnonymous` is entitled to generate, and which of the two got
+ * there first depended on spawn order.
+ *
+ * Deliberately **not** folded into {@link assertValidName}, even though both
+ * are "rules about names".  That one runs on every `ActorPath` ever
+ * constructed, and paths are rebuilt from strings on the receiving side of the
+ * cluster wire — `RemoteActorRef` walks `.child(segment)` across a parsed path
+ * — so enforcing this there would make every remote reference to an anonymous
+ * actor throw on arrival.  The distinction is real and worth keeping:
+ * `assertValidName` says what a path may *contain*, this says who may *choose*
+ * it, and only the second one has a spawn call to attach to.
+ */
+export function assertUserAssignableName(name: string, parent: ActorPath): void {
+  if (!name.startsWith(RESERVED_NAME_PREFIX)) return;
+  throw new Error(
+    `Invalid actor name ${JSON.stringify(name)} (child of ${parent.toString()}): `
+    + `names starting with "${RESERVED_NAME_PREFIX}" are reserved for framework-generated `
+    + 'names — use spawnAnonymous() if you want the framework to name it',
+  );
 }
 
 /**
