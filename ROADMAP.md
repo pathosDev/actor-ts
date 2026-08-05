@@ -15,16 +15,19 @@ This document tracks the planned direction.  Nothing here is committed work — 
   `rememberEntities` losing every entity on a rebalance (#632), and the
   discovery that the documented mTLS recipe never actually requested a peer
   certificate (#565).  Four breaking changes, so a minor — see `CHANGELOG.md`.
-- Next window is open (`[Unreleased]`).  The gossip-trust criticals
-  (#562–#564) landed with the wire-edge hardening, so the obvious heads are
-  now the `severity: high` findings still open from both audit passes — the
-  DevTools socket's missing origin check (#566), the CBOR bignum decode
-  (#567), colliding entity names (#568), the Hono socket leak (#570), and the
-  two CRDT gossip findings (#698, #699) — followed by binding the cluster
-  `hello` identity to the TLS peer certificate (#912), which is what the
-  gossip-authority rules ultimately rest on.  Then `preRestart` actually
-  stopping children (#634) now that #899 has documented the hole, and the
-  `reference.conf` expansion tracked in #887.
+- Next window is open (`[Unreleased]`).  Every `severity: high` finding from
+  both audit passes is now closed — the DevTools origin check (#566), the CBOR
+  bignum decode (#567), colliding entity names (#568), the Hono socket leak
+  (#570) and the two CRDT gossip findings (#698, #699) — along with the
+  cluster `hello` identity binding (#912) the gossip-authority rules rest on,
+  the CRDT wire-authority pass (#719, #723, #725, #768), a set of core
+  resource leaks (#641, #642, #644, #645) and the persistence-compaction pair
+  (#628, #629).  `preRestart` stops children now (#634), and a resumed actor
+  brings its subtree back with it (#635).
+
+  The obvious heads from here: the `reference.conf` expansion tracked in
+  #887, the remaining `severity: medium` security catalogue, and #766 — whose
+  titled fix turns out to be insufficient on its own, see the issue.
 - ~3 930 tests green (unit + multi-node + in-process integration) + 15 real-network multi-node integration scenarios green; open bugs are tracked as `[Bug]` issues in the tracker.
 - A full audit-catalog of follow-up items is tracked in the issue tracker — security findings, framework features, code-quality refactors.  Filter by label `security` + `severity: <tier>` or by title prefix `[Security] ` / `[Feature] `.
 
