@@ -100,6 +100,28 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Security
 
+- **DistributedData credits the connection, not the payload** (#719, #723,
+  #768).  `Cluster._onWire` has always handed its handlers the peer whose
+  connection a frame arrived on; this extension registered a one-parameter
+  arrow and dropped it, then read the payload's self-declared `from`.  So a
+  write- or read-request naming a third party made the node dial that
+  address and queue a full CRDT snapshot in a buffer that is never drained;
+  a quorum counted votes by self-declared name, letting one member ack under
+  every other member's and have its own state accepted as agreed; and a
+  reply was matched on its correlation id alone, with no check that it
+  concerned the same key or came from a node that was asked.  Frames now
+  travel with the authenticated peer, and the handlers take it as a
+  parameter rather than being free to read `from` by accident.
+
+- **A failed durable load no longer wipes the persisted replica** (#725).
+  `DurableDistributedDataStore.load()` adopted the stored revision before
+  decoding, so a decode that threw left the caller with no state and the
+  store holding a valid concurrency token — the next save of the empty view
+  then passed the check and replaced the record.  Since the load failure is
+  only logged as a warning, one undecodable entry silently destroyed the
+  whole durable replica.  The revision is adopted only after every entry has
+  decoded; a save then fails loudly instead of overwriting.
+
 - **CRDT payloads are validated before they are merged** (#699, #720, #722,
   #724, #767).  `src/cluster/WireValidation.ts` forwards frame kinds it does
   not know, on the stated grounds that the extension validates its own

@@ -292,8 +292,8 @@ export class DistributedData implements Extension {
       'ddata-read-request',
       'ddata-read-response',
     ] as const) {
-      unsubscribes.push(cluster._onWire(kind, (message) => {
-        ref.tell(message as unknown as ActorMessage);
+      unsubscribes.push(cluster._onWire(kind, (message, from) => {
+        ref.tell({ kind: 'ddata-wire', peer: from, frame: message as unknown as DDataWireFrame });
       }));
     }
     this._handle = new DistributedDataHandle(ref, view, cluster, unsubscribes);
@@ -361,15 +361,36 @@ type ReadMessage = {
   readonly resolve: (value: Crdt<any> | undefined) => void;
   readonly reject: (err: Error) => void;
 };
-type ActorMessage =
-  | UpdateMessage
-  | DeleteMessage
-  | ReadMessage
+/** Every frame DistributedData registers a wire handler for. */
+type DDataWireFrame =
   | DDataGossipMessage
   | DDataWriteRequestMessage
   | DDataWriteAcknowledgmentMessage
   | DDataReadRequestMessage
   | DDataReadResponseMessage;
+
+/**
+ * A wire frame together with the peer whose connection it arrived on.
+ *
+ * The wrapper exists because the authenticated identity has to survive the
+ * trip through the actor's mailbox.  `Cluster._onWire` hands the handler
+ * that peer, but the handler forwards with `ref.tell(...)` — so registering
+ * a one-parameter arrow, as this extension did, drops the only trustworthy
+ * thing about the frame and leaves the actor with the sender's self-declared
+ * `from` (#719, #723).
+ */
+type WireFrameMessage = {
+  readonly kind: 'ddata-wire';
+  /** Connection-authenticated sender.  Not `frame.from`, which the sender writes. */
+  readonly peer: NodeAddress;
+  readonly frame: DDataWireFrame;
+};
+
+type ActorMessage =
+  | UpdateMessage
+  | DeleteMessage
+  | ReadMessage
+  | WireFrameMessage;
 
 /**
  * Public handle returned from `extension.start(cluster)`.  Holds a
@@ -540,6 +561,12 @@ type PendingWrite = {
   readonly kind: 'write';
   readonly key: string;
   readonly required: number;
+  /**
+   * Peers this request actually went to.  A reply used to be matched on its
+   * correlation id alone, so any member could answer a quorum it was never
+   * part of (#768).
+   */
+  readonly targets: ReadonlySet<string>;
   readonly acks: Set<string>;
   readonly timer: Cancellable;
   readonly resolve: () => void;
@@ -554,6 +581,8 @@ type PendingWrite = {
  * — we treat reads as "best-available" rather than strict.
  */
 type PendingRead = {
+  /** Peers this request actually went to — see {@link PendingWrite.targets}. */
+  readonly targets: ReadonlySet<string>;
   readonly kind: 'read';
   readonly key: string;
   readonly required: number;
@@ -671,11 +700,23 @@ class DistributedDataActor extends Actor<ActorMessage> {
       .with({ kind: 'ddata-update' }, (m) => this.onUpdate(m))
       .with({ kind: 'ddata-delete' }, (m) => this.onDelete(m))
       .with({ kind: 'ddata-read' }, (m) => this.onRead(m))
-      .with({ kind: 'ddata-gossip' }, (m) => this.onGossip(m))
-      .with({ kind: 'ddata-write-request' }, (m) => this.onWriteRequest(m))
-      .with({ kind: 'ddata-write-ack' }, (m) => this.onWriteAcknowledgment(m))
-      .with({ kind: 'ddata-read-request' }, (m) => this.onReadRequest(m))
-      .with({ kind: 'ddata-read-response' }, (m) => this.onReadResponse(m))
+      .with({ kind: 'ddata-wire' }, (m) => this.onWireFrame(m))
+      .exhaustive();
+  }
+
+  /**
+   * Inbound frame from a peer.  Every handler below takes the connection's
+   * peer as a separate argument and must use it in preference to the
+   * frame's own `from` — that field is the one an attacker fully controls.
+   */
+  private onWireFrame(envelope: WireFrameMessage): void {
+    const { peer, frame } = envelope;
+    match(frame)
+      .with({ kind: 'ddata-gossip' }, (m) => this.onGossip(m, peer))
+      .with({ kind: 'ddata-write-request' }, (m) => this.onWriteRequest(m, peer))
+      .with({ kind: 'ddata-write-ack' }, (m) => this.onWriteAcknowledgment(m, peer))
+      .with({ kind: 'ddata-read-request' }, (m) => this.onReadRequest(m, peer))
+      .with({ kind: 'ddata-read-response' }, (m) => this.onReadResponse(m, peer))
       .exhaustive();
   }
 
@@ -708,6 +749,7 @@ class DistributedDataActor extends Actor<ActorMessage> {
     });
     this.pendingWrites.set(message.quorum.pendingId, {
       kind: 'write', key: message.key, required, acks, timer,
+      targets: new Set(peers.map((m) => m.address.toString())),
       resolve: message.quorum.resolve, reject: message.quorum.reject,
     });
     const wire: DDataWriteRequestMessage = {
@@ -745,6 +787,7 @@ class DistributedDataActor extends Actor<ActorMessage> {
     });
     this.pendingReads.set(message.pendingId, {
       kind: 'read', key: message.key, required, responses, timer,
+      targets: new Set(peers.map((m) => m.address.toString())),
       merged: localValue,
       resolve: message.resolve, reject: message.reject,
     });
@@ -759,27 +802,38 @@ class DistributedDataActor extends Actor<ActorMessage> {
     }
   }
 
-  private onWriteRequest(message: DDataWriteRequestMessage): void {
+  private onWriteRequest(message: DDataWriteRequestMessage, peer: NodeAddress): void {
     // Merge the incoming value into our local replica (same merge
     // semantics as gossip) and ack back.
     const incoming = decodeCrdt(message.value);
     const current = this.view.state.get(message.key);
     const merged = current ? current.merge(incoming) : incoming;
     this.applyMerged(message.key, current ?? null, merged);
-    const sender = NodeAddress.fromJSON(message.from);
+    // The ack goes back down the connection the request arrived on.  It used
+    // to go to whatever address the payload named, so a peer could make this
+    // node dial a host of its choosing and queue a full CRDT snapshot in a
+    // `Connection.pending` buffer that is never drained (#723).
     const ack: DDataWriteAcknowledgmentMessage = {
       kind: 'ddata-write-ack',
       from: this.cluster.selfAddress.toJSON(),
       pendingId: message.pendingId,
       key: message.key,
     };
-    this.cluster.transport.send(sender, ack as unknown as WireMessage);
+    this.cluster.transport.send(peer, ack as unknown as WireMessage);
   }
 
-  private onWriteAcknowledgment(message: DDataWriteAcknowledgmentMessage): void {
+  private onWriteAcknowledgment(message: DDataWriteAcknowledgmentMessage, peer: NodeAddress): void {
     const pending = this.pendingWrites.get(message.pendingId);
     if (!pending) return; // late ack after timeout / already resolved
-    const senderAddr = NodeAddress.fromJSON(message.from).toString();
+    // Counted per authenticated peer.  Keyed on the payload's `from`, one
+    // member could forge a whole quorum by acking under other members'
+    // names and have its own CRDT state accepted as agreed (#719).
+    const senderAddr = peer.toString();
+    // The correlation id alone is not enough: it says which request this
+    // claims to answer, not that the answer is about the same key or that
+    // this peer was ever asked (#768).
+    if (message.key !== pending.key) return;
+    if (!pending.targets.has(senderAddr)) return;
     if (pending.acks.has(senderAddr)) return; // dedupe
     pending.acks.add(senderAddr);
     if (pending.acks.size >= pending.required) {
@@ -789,9 +843,8 @@ class DistributedDataActor extends Actor<ActorMessage> {
     }
   }
 
-  private onReadRequest(message: DDataReadRequestMessage): void {
+  private onReadRequest(message: DDataReadRequestMessage, peer: NodeAddress): void {
     const local = this.view.state.get(message.key);
-    const sender = NodeAddress.fromJSON(message.from);
     const response: DDataReadResponseMessage = {
       kind: 'ddata-read-response',
       from: this.cluster.selfAddress.toJSON(),
@@ -799,13 +852,15 @@ class DistributedDataActor extends Actor<ActorMessage> {
       key: message.key,
       value: local ? (local.toJSON() as CrdtJson) : null,
     };
-    this.cluster.transport.send(sender, response as unknown as WireMessage);
+    this.cluster.transport.send(peer, response as unknown as WireMessage);
   }
 
-  private onReadResponse(message: DDataReadResponseMessage): void {
+  private onReadResponse(message: DDataReadResponseMessage, peer: NodeAddress): void {
     const pending = this.pendingReads.get(message.pendingId);
     if (!pending) return;
-    const senderAddr = NodeAddress.fromJSON(message.from).toString();
+    const senderAddr = peer.toString();
+    if (message.key !== pending.key) return;
+    if (!pending.targets.has(senderAddr)) return;
     if (pending.responses.has(senderAddr)) return; // dedupe
     pending.responses.add(senderAddr);
     if (message.value !== null) {
@@ -838,9 +893,8 @@ class DistributedDataActor extends Actor<ActorMessage> {
     }
   }
 
-  private onGossip(message: DDataGossipMessage): void {
-    const sender = NodeAddress.fromJSON(message.from);
-    if (sender.equals(this.cluster.selfAddress)) return; // shouldn't happen but harmless
+  private onGossip(message: DDataGossipMessage, peer: NodeAddress): void {
+    if (peer.equals(this.cluster.selfAddress)) return; // shouldn't happen but harmless
     for (const [key, json] of Object.entries(message.entries)) {
       const incoming = decodeCrdt(json);
       const current = this.view.state.get(key);
