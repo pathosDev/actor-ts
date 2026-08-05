@@ -13,7 +13,8 @@ import type {
   ServerBinding,
   WebsocketRouteRegistration,
 } from './HttpServerBackend.js';
-import type { WebsocketListeners, WebsocketSocketAdapter } from '../websocket/SocketAdapter.js';
+import { bufferWebsocketEvents } from '../websocket/SocketAdapter.js';
+import type { WebsocketSocketAdapter } from '../websocket/SocketAdapter.js';
 import { HonoBackendOptionsValidator } from './HonoBackendOptions.js';
 import type { HonoBackendOptions, HonoBackendOptionsType } from './HonoBackendOptions.js';
 
@@ -327,19 +328,17 @@ export class HonoBackend implements HttpServerBackend {
       const context = raw as HonoContextLike;
       const adapted = this.adaptUpgradeContext(context);
       let ws: WSContextLike | null = null;
-      let listeners: WebsocketListeners | null = null;
-      // Frames that arrive before setListeners runs (defensive — Hono
-      // dispatches onOpen before onMessage, but the buffer makes it
-      // unconditional).
-      const pending: Array<string | Uint8Array> = [];
+      // Events that arrive before setListeners runs.  The connection actor
+      // attaches its listeners from preStart, two mailbox hops after the
+      // upgrade returns, and a client is free to close inside that window —
+      // so close and error have to be held exactly like messages, or the
+      // connection actor never stops and its maxConnections slot never
+      // comes back (#570).
+      const events = bufferWebsocketEvents();
       const adapter: WebsocketSocketAdapter = {
         send: (data) => ws?.send(data),
         close: (code, reason) => ws?.close(code, reason),
-        setListeners: (incoming) => {
-          listeners = incoming;
-          const buffered = pending.splice(0);
-          for (const data of buffered) incoming.onMessage(data);
-        },
+        setListeners: (incoming) => events.attach(incoming),
         get readyState() {
           return (ws?.readyState ?? 1) as 0 | 1 | 2 | 3;
         },
@@ -358,12 +357,10 @@ export class HonoBackend implements HttpServerBackend {
         },
         onMessage: (evt, wsContext) => {
           ws = wsContext;
-          const data = coerceWebsocketData(evt.data);
-          if (listeners) listeners.onMessage(data);
-          else pending.push(data);
+          events.onMessage(coerceWebsocketData(evt.data));
         },
-        onClose: (evt) => listeners?.onClose(evt.code ?? 1005, evt.reason ?? ''),
-        onError: () => listeners?.onError(new Error('websocket error')),
+        onClose: (evt) => events.onClose(evt.code ?? 1005, evt.reason ?? ''),
+        onError: () => events.onError(new Error('websocket error')),
       };
     };
 

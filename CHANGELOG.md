@@ -48,6 +48,56 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Security
 
+- **A CBOR map key can no longer pick the decoded object's prototype**
+  (#581).  Map decoding assigned each pair with `out[key] = value`, and
+  assignment consults the prototype chain — so a 21-byte payload whose key
+  is `"__proto__"` reached `Object.prototype`'s setter and re-parented the
+  decoded object instead of adding a field to it.  Keys are now defined
+  rather than assigned, which ignores setters: `__proto__` becomes an
+  ordinary own property, so the value survives the round-trip instead of
+  being rejected or silently dropped.
+
+- **A CBOR body can no longer stall the event loop** (#567, #618).  Two
+  unbounded paths in `CborDecoder`, both reachable from an ordinary
+  `entity()` route: `Content-Type` alone selects the codec, so an
+  application that only ever meant to accept JSON still handed an
+  attacker's `application/cbor` body to the CBOR decoder.
+
+  Tag 2 / tag 3 bignums were rebuilt one byte at a time with
+  `value = (value << 8n) | BigInt(byte)`, which reallocates the whole
+  accumulated bignum per iteration — quadratic in the declared length, and
+  the only ceiling was the 10 MB body limit.  A few hundred KB bought
+  seconds to tens of seconds of blocked event loop, during which no other
+  request, actor message or cluster heartbeat is served.  The magnitude is
+  now parsed in one pass, and capped at 1024 bytes (8192-bit) as a
+  backstop.
+
+  Separately, `readValue` recursed once per array, map and tag level with
+  no depth bound, so a couple of hundred KB of `0x81` bytes exhausted the
+  JS stack.  Nesting is now capped at 256.
+
+  Journals and snapshots are unaffected — nothing under `src/persistence/`
+  serializes through this codec.
+
+- **A socket that closes during the upgrade window is no longer lost on Hono**
+  (#570).  The per-connection actor attaches its socket listeners from
+  `preStart`, two mailbox hops after the upgrade returns.  The `ws`-package
+  adapter buffers everything that arrives in that window; the Hono adapter
+  buffered messages only, so `close` and `error` hit a null listener and
+  vanished.  Nothing else stops the connection actor — the hub's `_clients`
+  entry, the `ConnectionTracker` entry and the `maxConnections` decrement all
+  hang off that one dropped callback — so every client that closed inside the
+  window leaked an actor and a connection slot for the life of the process.
+  With `maxConnections` configured, the hardening knob became the denial of
+  service: a burst of open-then-close connections exhausted the budget
+  permanently.  Sequential clients almost never hit it, which is why it
+  survived a green suite; concurrency is what widens the window.
+
+  The buffer is now one function, `bufferWebsocketEvents()`, that both
+  adapters share, rather than a per-adapter array each is free to get
+  half-right.  A burst test in the shared backend suite covers all three
+  backends.
+
 - **Extension wire handlers credit the connection, not the payload** (#574,
   #582, #711).  `Cluster._onWire` has always passed the connection's peer to
   every handler; the receptionist, the pub-sub mediator and the
