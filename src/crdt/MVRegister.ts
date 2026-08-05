@@ -2,6 +2,7 @@ import type { Crdt, ReplicaId } from './Crdt.js';
 import {
   assertBoundedArray,
   assertCounterValue,
+  MAX_MV_REGISTER_ENTRIES,
   assertPlainObject,
   safeEntries,
 } from './CrdtWireValidation.js';
@@ -86,13 +87,27 @@ export class MVRegister<V> implements Crdt<MVRegister<V>> {
     const all: MVEntry<V>[] = [...this.entries, ...other.entries];
     const survivors: MVEntry<V>[] = [];
     const seen = new Set<string>();
+    // Entries already known to be dominated are skipped as *dominators*
+    // too.  Domination is transitive — if j dominates i and i dominates k,
+    // then j dominates k — so a dominated entry can never be the only
+    // reason to drop another, and testing against it is wasted work.  The
+    // worst case (all entries mutually concurrent) is still quadratic;
+    // finding the maximal elements of an arbitrary partial order has no
+    // cheaper general form, which is why `fromJSON` bounds the entry count
+    // instead of relying on this (#698).
+    const dominated = new Set<MVEntry<V>>();
     for (const entry of all) {
+      if (dominated.has(entry)) continue;
       // Drop entry if any sibling strictly dominates it (causally
       // newer writes subsume older ones).
       let keep = true;
       for (const other of all) {
-        if (other === entry) continue;
-        if (vcStrictlyDominates(other.vc, entry.vc)) { keep = false; break; }
+        if (other === entry || dominated.has(other)) continue;
+        if (vcStrictlyDominates(other.vc, entry.vc)) {
+          keep = false;
+          dominated.add(entry);
+          break;
+        }
       }
       if (!keep) continue;
       // Dedupe by **full state** (value + vc).  Two entries with the
@@ -130,7 +145,7 @@ export class MVRegister<V> implements Crdt<MVRegister<V>> {
     // `merge` is quadratic in the entry count by nature — finding the
     // causally maximal elements of an arbitrary partial order has no
     // cheaper general form — so the bound has to be on the input (#698).
-    assertBoundedArray(json.entries, 'MVRegister.entries');
+    assertBoundedArray(json.entries, 'MVRegister.entries', MAX_MV_REGISTER_ENTRIES);
     return new MVRegister<V>(
       json.entries.map((e, index) => {
         assertPlainObject(e, `MVRegister.entries[${index}]`);

@@ -48,6 +48,25 @@
 export const MAX_CRDT_ENTRIES = 4_096;
 
 /**
+ * Tighter ceiling for a multi-value register's concurrent entries.
+ *
+ * Separate from {@link MAX_CRDT_ENTRIES} because the two bound different
+ * things.  A set or a counter map legitimately holds thousands of entries and
+ * merges them linearly.  An `MVRegister` entry is a *concurrent write that
+ * has not been superseded*, so the honest bound is the number of replicas
+ * writing without having seen each other — a handful, in any cluster this
+ * framework targets.
+ *
+ * The quadratic scan is what makes the difference matter.  Measured on Bun
+ * against the shipped code, an all-concurrent merge costs ~161 ms at 800
+ * entries, so a 4096 cap would still leave ~4 s of blocked event loop
+ * reachable from one frame.  At 256 the worst case — merging two full
+ * registers, nothing dominating anything — is ~53 ms.  A cap that merely
+ * turns a 33-second freeze into a 4-second one is not a fix.
+ */
+export const MAX_MV_REGISTER_ENTRIES = 256;
+
+/**
  * How far ahead of local time a peer-supplied timestamp may be.
  *
  * Last-writer-wins is only as sound as the clocks feeding it.  A register
@@ -129,13 +148,17 @@ export function assertStringArray(value: unknown, what: string): asserts value i
   }
 }
 
-/** An array, bounded by {@link MAX_CRDT_ENTRIES}. */
-export function assertBoundedArray(value: unknown, what: string): asserts value is unknown[] {
+/** An array, bounded by {@link MAX_CRDT_ENTRIES} unless a tighter cap is given. */
+export function assertBoundedArray(
+  value: unknown,
+  what: string,
+  limit: number = MAX_CRDT_ENTRIES,
+): asserts value is unknown[] {
   if (!Array.isArray(value)) {
     throw new CrdtDecodeError(`${what} must be an array, got ${describe(value)}`);
   }
-  if (value.length > MAX_CRDT_ENTRIES) {
-    throw new CrdtDecodeError(`${what} has ${value.length} entries, over the ${MAX_CRDT_ENTRIES} limit`);
+  if (value.length > limit) {
+    throw new CrdtDecodeError(`${what} has ${value.length} entries, over the ${limit} limit`);
   }
 }
 

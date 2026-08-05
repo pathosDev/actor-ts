@@ -13,7 +13,7 @@
  */
 import { describe, expect, test } from 'bun:test';
 import { decodeCrdt } from '../../../src/crdt/DistributedData.js';
-import { CrdtDecodeError, MAX_CRDT_ENTRIES } from '../../../src/crdt/CrdtWireValidation.js';
+import { CrdtDecodeError, MAX_MV_REGISTER_ENTRIES } from '../../../src/crdt/CrdtWireValidation.js';
 import { GCounter } from '../../../src/crdt/GCounter.js';
 import { LWWRegister } from '../../../src/crdt/LWWRegister.js';
 import { MVRegister } from '../../../src/crdt/MVRegister.js';
@@ -127,7 +127,7 @@ describe('MVRegister entry bounds (#698)', () => {
   test('an entry array over the cap is rejected', () => {
     // `merge` compares every entry against every other to find the causally
     // maximal ones — quadratic by nature, so the bound must be on the input.
-    const entries = Array.from({ length: MAX_CRDT_ENTRIES + 1 }, (_, i) => ({
+    const entries = Array.from({ length: MAX_MV_REGISTER_ENTRIES + 1 }, (_, i) => ({
       value: 0, vc: { [`r${i}`]: 1 },
     }));
     expect(() => MVRegister.fromJSON(wire({ kind: 'MVRegister', entries })))
@@ -137,7 +137,7 @@ describe('MVRegister entry bounds (#698)', () => {
   test('rejection is immediate, not after the quadratic scan', () => {
     // A decoder that built the register first and complained afterwards
     // would satisfy the test above while still burning the CPU.
-    const entries = Array.from({ length: MAX_CRDT_ENTRIES + 1 }, (_, i) => ({
+    const entries = Array.from({ length: MAX_MV_REGISTER_ENTRIES + 1 }, (_, i) => ({
       value: 0, vc: { [`r${i}`]: 1 },
     }));
     const started = performance.now();
