@@ -230,6 +230,23 @@ export abstract class PersistentActor<Command, Event, State> extends Actor<Comma
     });
     this._state = result.state;
     this._seq = result.sequenceNr;
+    if (this._seq === 0) {
+      // Replay found nothing — either a brand-new actor, or a journal
+      // compacted past everything it held.  Only the journal's high-water
+      // mark tells those apart, and `replayState` cannot do it for us: it is
+      // shared with DevTools time travel, where the sequence must stay at
+      // whatever the requested point in history was.
+      //
+      // Getting it wrong is permanent.  Since #379 a backend remembers what
+      // it deleted, so `highestSeq` still reports N after a full compaction
+      // while recovery reported 0 — and the next `persist` sends
+      // expectedSeq=0 into a journal that has seen N, failing with
+      // `JournalConcurrencyError` on every attempt, forever (#628).
+      //
+      // For a new actor `highestSeq` is 0, so this costs one query only when
+      // there was nothing to replay anyway.
+      this._seq = await this._journal.highestSeq(this.persistenceId);
+    }
     if (result.fromSnapshotSequenceNr !== null) {
       this.log.debug(`[persistence] '${this.persistenceId}' loaded snapshot @seq=${result.fromSnapshotSequenceNr}`);
     }
@@ -333,9 +350,22 @@ export abstract class PersistentActor<Command, Event, State> extends Actor<Comma
     return { compression, encryption };
   }
 
-  /** Delete snapshots and events up to `toSeq` for compaction. */
+  /**
+   * Compact past `toSeq`: drop the events up to and including it, and the
+   * snapshots that came *before* it.
+   *
+   * The snapshot at `toSeq` is deliberately kept.  `SnapshotStore.delete` is
+   * documented as inclusive, so deleting up to `toSeq` destroyed the very
+   * snapshot the compaction is compacting *past* — leaving an actor with no
+   * snapshot and no events, and, before #628, a recovered sequence of 0 that
+   * blocked every later `persist` (#629).
+   *
+   * `toSeq <= 0` prunes nothing, which is what "compact past the beginning"
+   * should mean.
+   */
   protected async deleteHistory(toSeq: number): Promise<void> {
-    await this._snapshotStore.delete(this.persistenceId, toSeq);
+    if (toSeq <= 0) return;
+    await this._snapshotStore.delete(this.persistenceId, toSeq - 1);
     await this._journal.delete(this.persistenceId, toSeq);
   }
 
