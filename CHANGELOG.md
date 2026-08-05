@@ -9,6 +9,17 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ## [Unreleased]
 
+### Added
+
+- **DevTools overview: an `actor-ts` tile in the Common section** (#911).
+  The running framework version now sits beside the actor system's name —
+  together they are the identity of what you are looking at — instead of
+  living only in the connection badge's tooltip.  It is the first thing a
+  bug report quotes, and a tooltip does not survive the screenshot people
+  actually paste.  Hovering the tile still gives the tap protocol
+  version.  Read from the existing `welcome.serverVersion`, so no
+  protocol change.
+
 ### Fixed
 
 - **The DevTools handshake reported the wrong framework version** (#657).

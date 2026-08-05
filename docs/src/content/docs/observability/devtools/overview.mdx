@@ -56,9 +56,11 @@ opening their own.
 The overview itself is three sections, in the order you actually ask
 the questions:
 
-- **Common** — actor system, uptime, runtime, cluster status.  Uptime is
-  the *system's*, read from the server, so it survives a page reload and
-  a dropped socket.
+- **Common** — actor system, actor-ts version, uptime, runtime, cluster
+  status.  Uptime is the *system's*, read from the server, so it
+  survives a page reload and a dropped socket.  The version is the
+  running framework's, straight from the handshake — hover it for the
+  tap protocol version.
 - **Numbers** — actors, messages per second, processed messages, spawn
   and stop rates, restarts, mailbox backlog, stashed messages, suspended
   actors, dead letters, mailbox drops, and handler p99.
