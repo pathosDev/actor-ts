@@ -87,22 +87,36 @@ If you omit the name, the framework synthesizes one — `$anonymous-`,
 a per-parent counter and twelve random hex characters, for example
 `'$anonymous-1-3f9c1a0d7b42'`.  The counter keeps spawn order
 legible; the random half keeps the path from being guessable from
-the outside, which matters because a path is an address.  Two rules
+the outside, which matters because a path is an address.  Three rules
 govern naming:
 
-1. **Names must be unique among siblings.**  `context.spawn(props, 'bar')`
-   followed by another `context.spawn(props, 'bar')` on the same
+1. **Names must be unique among siblings.**  `context.spawn(() => new Bar(), 'bar')`
+   followed by another spawn under the same name on the same
    parent throws — that path is already in use.
 2. **The name must be a single path segment.**  The framework enforces
    this and throws on a name that would corrupt the path: a `/` or `\`
    separator, the traversal segments `.` and `..`, an empty name, or any
    control character.  A path is rendered by joining segments with `/`
-   and taken apart again by splitting on it, so `spawn(props, 'a/b')`
+   and taken apart again by splitting on it, so `spawn(() => new Bar(), 'a/b')`
    would otherwise produce a path indistinguishable from a child `b` of
    an actor `a` — colliding with, or impersonating, a different actor,
    including across the cluster wire where the remote side re-splits the
    string.  Control characters are refused because paths are written to
    logs and trace spans.
+
+3. **The name must not start with `$`.**  That prefix is reserved for
+   the names the framework generates itself — `$anonymous-<n>-<random>`
+   from `spawnAnonymous`.  Without the rule a hand-picked
+   `'$anonymous-1-…'` could collide with, or stand in for, a name the
+   framework is entitled to hand out, and which of the two won
+   depended on spawn order.  `$` anywhere *else* in the name is fine
+   (`'order$42'`).
+
+   The rule applies to names **you** choose, so it is enforced at the
+   `spawn` call rather than on `ActorPath` — paths also get rebuilt
+   from strings arriving over the cluster wire, and rejecting `$`
+   there would make every remote reference to an anonymous actor fail
+   on arrival.
 
    Anything else is accepted, including spaces, dots inside the name and
    non-ASCII characters — `'Order.Placed'`, `'entity#3'` and `'日本語'`

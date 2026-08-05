@@ -8,7 +8,7 @@ import {
   StashOutsideHandlerError,
   StashOverflowError,
 } from '../ActorContext.js';
-import { ActorPath } from '../ActorPath.js';
+import { ActorPath, assertUserAssignableName } from '../ActorPath.js';
 import { ActorRef } from '../ActorRef.js';
 import type { ActorSystem } from '../ActorSystem.js';
 import type { Cluster } from '../cluster/Cluster.js';
@@ -278,19 +278,21 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
   }
 
   spawn<T>(actor: ActorClassOrFactory<T>, name: string, options?: ActorOptions<T>): ActorRef<T> {
-    return this._createChild(actorBlueprintOf(actor, options), name);
+    return this._createChild(actorBlueprintOf(actor, options), name, 'caller');
   }
 
   spawnAnonymous<T>(actor: ActorClassOrFactory<T>, options?: ActorOptions<T>): ActorRef<T> {
-    return this._createChild(actorBlueprintOf(actor, options), this._anonymousChildName());
+    return this._createChild(actorBlueprintOf(actor, options), this._anonymousChildName(), 'generated');
   }
 
   spawnTyped<T>(behavior: Behavior<T>, name: string): ActorRef<T> {
-    return this._createChild(actorBlueprintOf(typedActor<T>(behavior)), name);
+    return this._createChild(actorBlueprintOf(typedActor<T>(behavior)), name, 'caller');
   }
 
   spawnTypedAnonymous<T>(behavior: Behavior<T>): ActorRef<T> {
-    return this._createChild(actorBlueprintOf(typedActor<T>(behavior)), this._anonymousChildName());
+    return this._createChild(
+      actorBlueprintOf(typedActor<T>(behavior)), this._anonymousChildName(), 'generated',
+    );
   }
 
   /**
@@ -313,8 +315,21 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
     return `$anonymous-${++this._anonChildCounter}-${randomId(12)}`;
   }
 
-  /** @internal — single child-creation path shared by spawn / spawnAnonymous. */
-  private _createChild<T>(blueprint: ActorBlueprint<T>, name: string): ActorRef<T> {
+  /**
+   * @internal — single child-creation path shared by spawn / spawnAnonymous.
+   *
+   * `nameSource` is spelled out at every call rather than defaulted, because it
+   * decides whether the reserved-prefix rule applies: a name the caller chose
+   * has to clear {@link assertUserAssignableName}, a name `_anonymousChildName`
+   * produced is exactly what that rule reserves.  Making it a required argument
+   * means a future spawn variant cannot quietly inherit the wrong answer.
+   */
+  private _createChild<T>(
+    blueprint: ActorBlueprint<T>,
+    name: string,
+    nameSource: 'caller' | 'generated',
+  ): ActorRef<T> {
+    if (nameSource === 'caller') assertUserAssignableName(name, this.path);
     if (this.state === 'terminated' || this.state === 'terminating') {
       throw new Error(`Cannot spawn children from terminated actor ${this.path}`);
     }
