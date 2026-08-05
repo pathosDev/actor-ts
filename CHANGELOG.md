@@ -48,6 +48,15 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Security
 
+- **A CBOR map key can no longer pick the decoded object's prototype**
+  (#581).  Map decoding assigned each pair with `out[key] = value`, and
+  assignment consults the prototype chain — so a 21-byte payload whose key
+  is `"__proto__"` reached `Object.prototype`'s setter and re-parented the
+  decoded object instead of adding a field to it.  Keys are now defined
+  rather than assigned, which ignores setters: `__proto__` becomes an
+  ordinary own property, so the value survives the round-trip instead of
+  being rejected or silently dropped.
+
 - **A CBOR body can no longer stall the event loop** (#567, #618).  Two
   unbounded paths in `CborDecoder`, both reachable from an ordinary
   `entity()` route: `Content-Type` alone selects the codec, so an

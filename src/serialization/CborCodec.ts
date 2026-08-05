@@ -220,7 +220,18 @@ export class CborDecoder {
           if (typeof key !== 'string') {
             throw new CborDecodeError('Only string keys are supported in maps');
           }
-          out[key] = value;
+          // `defineProperty`, not `out[key] = value`: assignment consults the
+          // prototype chain, so a `"__proto__"` key from the wire would reach
+          // `Object.prototype`'s setter and re-parent the decoded object
+          // instead of becoming a field on it (#581).  Defining the property
+          // ignores setters, so the key stays data — the value survives the
+          // round-trip rather than being rejected or silently dropped.
+          Object.defineProperty(out, key, {
+            value,
+            writable: true,
+            enumerable: true,
+            configurable: true,
+          });
         }
         return out;
       }

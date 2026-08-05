@@ -175,6 +175,26 @@ describe('CBOR hostile input', () => {
   test('ordinary nesting still decodes', () => {
     expect(rt({ a: [{ b: [{ c: 1 }] }] })).toEqual({ a: [{ b: [{ c: 1 }] }] });
   });
+
+  test('a __proto__ map key cannot re-parent the decoded object (#581)', () => {
+    // Map of one pair: "__proto__" -> { polluted: true }.
+    const payload = new Uint8Array([
+      0xa1,                                            // map(1)
+      0x69, ...[...'__proto__'].map((c) => c.charCodeAt(0)), // text(9) "__proto__"
+      0xa1,                                            // map(1)
+      0x68, ...[...'polluted'].map((c) => c.charCodeAt(0)),  // text(8) "polluted"
+      0xf5,                                            // true
+    ]);
+
+    const decoded = dec.decode(payload) as Record<string, unknown>;
+
+    // The key became a field, not a new prototype.
+    expect(Object.getPrototypeOf(decoded)).toBe(Object.prototype);
+    expect(Object.prototype.hasOwnProperty.call(decoded, '__proto__')).toBe(true);
+    expect(decoded['__proto__']).toEqual({ polluted: true });
+    // And nothing leaked onto every other object in the process.
+    expect(({} as Record<string, unknown>)['polluted']).toBeUndefined();
+  });
 });
 
 describe('CBOR error paths', () => {
