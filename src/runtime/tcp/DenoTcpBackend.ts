@@ -67,16 +67,52 @@ export class DenoTcpBackend implements TcpBackend {
 
     const useTls = !!options.tls;
     const connection: DenoConnection = useTls
-      ? await deno.connectTls({
-          hostname: options.host,
-          port: options.port,
-          caCerts: options.tls!.ca !== undefined ? [asString(options.tls!.ca)] : undefined,
-          hostname_: options.tls!.serverName,
-        })
+      ? await deno.connectTls(this.denoConnectTlsOptions(options.host, options.port, options.tls!))
       : await deno.connect({ hostname: options.host, port: options.port, transport: 'tcp' });
 
     const sock = this.attach(connection, options.handlers);
     return sock;
+  }
+
+  /**
+   * Map the runtime-neutral TLS options onto `Deno.connectTls`.
+   *
+   * Two things were wrong here before (#576).  The client certificate was
+   * never passed, although Deno does support it — `connectTls` accepts
+   * `key` + `cert` — so a Deno node could not present a credential to a
+   * listener that (correctly, since #565) demands one, and therefore could not
+   * join an mTLS cluster at all.  And the SNI override was written as
+   * `hostname_`, which is not a Deno option: `ConnectTlsOptions` has no
+   * `serverName` either, because on Deno the SNI name *is* `hostname`.  The
+   * hand-written `DenoGlobal` interface declared the typo, so the compiler
+   * could not see it and the value was silently dropped.
+   *
+   * `rejectUnauthorized` has no Deno equivalent and is deliberately not mapped:
+   * Deno always validates the chain, and its only related knob
+   * (`unsafelyDisableHostnameVerification`) is the inverse and covers hostname
+   * checking alone.  Setting `rejectUnauthorized: false` to reach a
+   * self-signed peer therefore does nothing on Deno — supply the signing CA in
+   * `ca` instead, which is the shape the docs already recommend.
+   */
+  private denoConnectTlsOptions(
+    host: string,
+    port: number,
+    tls: TlsTransportOptionsType,
+  ): DenoConnectTlsOptions {
+    const options: DenoConnectTlsOptions = {
+      // SNI: Deno takes the name to present from `hostname`, so an override
+      // replaces the dial target's name rather than riding alongside it.
+      hostname: tls.serverName ?? host,
+      port,
+    };
+    if (tls.ca !== undefined) options.caCerts = [asString(tls.ca)];
+    // Both halves or neither — a key without its certificate is not a
+    // credential, and Deno's own type pairs them for the same reason.
+    if (tls.cert !== undefined && tls.key !== undefined) {
+      options.cert = asString(tls.cert);
+      options.key = asString(tls.key);
+    }
+    return options;
   }
 
   /** Wrap a Deno.Conn as a TcpSocketLike and drive its async-iterable reads. */
@@ -160,11 +196,38 @@ interface DenoListener extends AsyncIterable<DenoConnection> {
   close(): void;
 }
 
+/**
+ * Mirrors `Deno.ConnectTlsOptions` intersected with `Deno.TlsCertifiedKeyPem`.
+ *
+ * Kept faithful to the real declaration on purpose: the previous version
+ * invented a `hostname_` field, and because this interface is what the
+ * compiler checks against, the typo type-checked and the SNI override was
+ * dropped at runtime with nothing to show for it (#576).  Anything added here
+ * should be verified against `deno types` first.
+ *
+ * Notably absent, and not an oversight: `serverName` (Deno uses `hostname` for
+ * SNI) and `rejectUnauthorized` (no equivalent — see
+ * `denoConnectTlsOptions`).
+ */
+interface DenoConnectTlsOptions {
+  hostname: string;
+  port: number;
+  caCerts?: string[];
+  /** Client certificate chain, PEM. Paired with {@link key}. */
+  cert?: string;
+  /** Private key for {@link cert}, PEM. */
+  key?: string;
+}
+
 interface DenoGlobal {
   listen(options: { hostname: string; port: number; transport: 'tcp' }): DenoListener;
+  /**
+   * `Deno.ListenTlsOptions` genuinely has no `ca` and no client-certificate
+   * request — server-side mTLS is unavailable on Deno, which is why
+   * `assertListenerTlsIsCoherent` refuses that configuration up front rather
+   * than binding a listener that silently authenticates nobody.
+   */
   listenTls(options: { hostname: string; port: number; cert: string; key: string }): DenoListener;
   connect(options: { hostname: string; port: number; transport: 'tcp' }): Promise<DenoConnection>;
-  connectTls(options: {
-    hostname: string; port: number; caCerts?: string[]; hostname_?: string;
-  }): Promise<DenoConnection>;
+  connectTls(options: DenoConnectTlsOptions): Promise<DenoConnection>;
 }
