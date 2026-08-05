@@ -386,7 +386,7 @@ describe('system.spawnTyped + ctx.spawnTyped', () => {
       }
     }
 
-    const parent = sys.spawn(() => new UntypedParent(), 'parent');
+    const parent = sys.spawn(UntypedParent, 'parent');
     parent.tell({ kind: 'fwd', m: 'hi' });
     await sleep(40);
     // Both children received the same message — order across children is

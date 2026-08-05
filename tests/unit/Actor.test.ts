@@ -24,7 +24,7 @@ describe('Actor lifecycle', () => {
       override onReceive(m: string): void { events.push(`recv:${m}`); }
     }
     const sys = newSystem();
-    const ref = sys.spawn(() => new A(), 'a');
+    const ref = sys.spawn(A, 'a');
     ref.tell('one');
     await sleep(30);
     expect(events).toEqual(['preStart', 'recv:one']);
@@ -38,7 +38,7 @@ describe('Actor lifecycle', () => {
       override postStop(): void { events.push('postStop'); }
     }
     const sys = newSystem();
-    const ref = sys.spawn(() => new A(), 'a');
+    const ref = sys.spawn(A, 'a');
     ref.tell('one');
     ref.tell('two');
     ref.stop();
@@ -59,7 +59,7 @@ describe('Actor lifecycle', () => {
       override onReceive(_: 'fail'): void { throw new Error('boom'); }
     }
     const sys = newSystem();
-    const ref = sys.spawn(() => new Parent(), 'p');
+    const ref = sys.spawn(Parent, 'p');
     ref.tell('fail');
     await sleep(60);
     expect(events).toContain('parent:preRestart:boom');
@@ -82,7 +82,7 @@ describe('Actor lifecycle', () => {
       override onReceive(_: 'fail'): void { throw new Error('x'); }
     }
     const sys = newSystem();
-    const ref = sys.spawn(() => new A(), 'a');
+    const ref = sys.spawn(A, 'a');
     await sleep(20);
     ref.tell('fail');
     await sleep(60);
@@ -112,7 +112,7 @@ describe('Actor lifecycle', () => {
       }
     }
     const sys = newSystem();
-    const ref = sys.spawn(() => new A(), 'a');
+    const ref = sys.spawn(A, 'a');
     ref.tell('hi');
     await sleep(30);
     expect(capturedSelf).toBeDefined();
@@ -131,7 +131,7 @@ describe('Actor lifecycle', () => {
       }
     }
     const sys = newSystem();
-    const ref = sys.spawn(() => new A(), 'a');
+    const ref = sys.spawn(A, 'a');
     ref.tell(1); ref.tell(2); ref.tell(3);
     await sleep(100);
     expect(events).toEqual(['start:1', 'end:1', 'start:2', 'end:2', 'start:3', 'end:3']);
@@ -170,7 +170,7 @@ describe('anonymous child names', () => {
       }
       override onReceive(_: string): void {}
     }
-    sys.spawn(() => new Parent(), 'shapes-parent');
+    sys.spawn(Parent, 'shapes-parent');
 
     const viaTypedContext = await new Promise<string>((resolve) => {
       sys.spawnTyped(
@@ -198,7 +198,7 @@ describe('anonymous child names', () => {
       }
       override onReceive(_: string): void {}
     }
-    sys.spawn(() => new Parent(), 'volume-parent');
+    sys.spawn(Parent, 'volume-parent');
     await sleep(60);
 
     expect(names).toHaveLength(200);
@@ -255,7 +255,7 @@ describe('anonymous child names', () => {
       override onReceive(m: string): void { if (m === 'boom') throw new Error('boom'); }
     }
     const sys = newSystem();
-    const ref = sys.spawn(() => new Parent(), 'restarting-parent');
+    const ref = sys.spawn(Parent, 'restarting-parent');
     ref.tell('boom');
     await sleep(80);
 
@@ -300,7 +300,7 @@ class Talker extends Actor<string> {
 describe('Actor.displayName (#891)', () => {
   test('defaults to the path, which the source already is — so nothing is added', async () => {
     const { system, records } = recordingSystem('display-default');
-    const ref = system.spawn(() => new Talker(), 'plain');
+    const ref = system.spawn(Talker, 'plain');
     ref.tell('hello');
     await sleep(30);
 
@@ -315,7 +315,7 @@ describe('Actor.displayName (#891)', () => {
       override displayName(): string { return 'Order(42)'; }
     }
     const { system, records } = recordingSystem('display-override');
-    const ref = system.spawn(() => new Named(), 'named');
+    const ref = system.spawn(Named, 'named');
     ref.tell('hello');
     await sleep(30);
 
@@ -338,7 +338,7 @@ describe('Actor.displayName (#891)', () => {
       override onReceive(message: string): void { this.log.info(message); }
     }
     const { system, records } = recordingSystem('display-late');
-    system.spawn(() => new Late(), 'late').tell('hello');
+    system.spawn(Late, 'late').tell('hello');
     await sleep(30);
 
     // Named already in preStart — the same call that set the state.
@@ -352,7 +352,7 @@ describe('Actor.displayName (#891)', () => {
       override displayName(): string { return this.context.path.toString(); }
     }
     const { system, records } = recordingSystem('display-redundant');
-    system.spawn(() => new Redundant(), 'redundant').tell('hello');
+    system.spawn(Redundant, 'redundant').tell('hello');
     await sleep(30);
 
     expect(Object.hasOwn(said(records(), 'hello')!, 'displayName')).toBe(false);
@@ -396,7 +396,7 @@ describe('Actor.displayName (#891)', () => {
       override displayName(): string { throw new Error('boom'); }
     }
     const { system, records } = recordingSystem('display-throws');
-    const ref = system.spawn(() => new Broken(), 'broken');
+    const ref = system.spawn(Broken, 'broken');
     ref.tell('one'); ref.tell('two'); ref.tell('three');
     await sleep(50);
 

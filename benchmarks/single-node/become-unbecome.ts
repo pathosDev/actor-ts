@@ -39,7 +39,7 @@ async function main(): Promise<void> {
     .withLogger(new NoopLogger())
     .withLogLevel(LogLevel.Off);
   const system = ActorSystem.create('bench-become', systemOptions);
-  const ref = system.spawnAnonymous(() => new Swapper());
+  const ref = system.spawnAnonymous(Swapper);
 
   await runGroup('single-node · become/unbecome', [
     {

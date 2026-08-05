@@ -36,7 +36,7 @@ async function main(): Promise<void> {
       }
     }
 
-    const ref = system.spawnAnonymous(() => new Sleeper());
+    const ref = system.spawnAnonymous(Sleeper);
 
     await group.measure(`enqueue ${n.toLocaleString()} messages to a blocked actor`, async () => {
       ref.tell(payload); // wedges the actor on the latch

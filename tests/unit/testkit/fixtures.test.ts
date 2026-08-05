@@ -33,7 +33,7 @@ describe('systemFixture', () => {
       received: number[] = [];
       override onReceive(n: number): void { this.received.push(n); }
     }
-    const ref = sys().spawnAnonymous(() => new Counter());
+    const ref = sys().spawnAnonymous(Counter);
     ref.tell(42);
     expect(ref).toBeDefined();
   });

@@ -23,7 +23,7 @@ describe('ReceiveTimeout', () => {
       }
     }
     const sys = newSystem();
-    sys.spawn(() => new A(), 'a');
+    sys.spawn(A, 'a');
     await sleep(150);
     expect(fired).toBe(1);
     await sys.terminate();
@@ -38,7 +38,7 @@ describe('ReceiveTimeout', () => {
       }
     }
     const sys = newSystem();
-    const ref = sys.spawn(() => new A(), 'a');
+    const ref = sys.spawn(A, 'a');
     // Keep nudging the actor every 20ms — timeout (50ms) should not elapse.
     for (let i = 0; i < 6; i++) {
       ref.tell('ping');
@@ -63,7 +63,7 @@ describe('ReceiveTimeout', () => {
       }
     }
     const sys = newSystem();
-    sys.spawn(() => new A(), 'a');
+    sys.spawn(A, 'a');
     await sleep(100);
     expect(fired).toBe(0);
     await sys.terminate();

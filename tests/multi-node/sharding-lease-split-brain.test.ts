@@ -112,7 +112,7 @@ describe('multi-node sharding lease — split-brain protection', () => {
         .withRenewalIntervalMs(80);
       const shardingOptionsA = StartShardingOptions.create<Command>()
         .withTypeName('entity')
-        .withEntityActor(() => new Entity())
+        .withEntityActor(Entity)
         .withExtractEntityId((m) => m.id)
         .withNumShards(8)
         .withRebalanceIntervalMs(200)
@@ -125,7 +125,7 @@ describe('multi-node sharding lease — split-brain protection', () => {
         .withRenewalIntervalMs(80);
       const shardingOptionsB = StartShardingOptions.create<Command>()
         .withTypeName('entity')
-        .withEntityActor(() => new Entity())
+        .withEntityActor(Entity)
         .withExtractEntityId((m) => m.id)
         .withNumShards(8)
         .withRebalanceIntervalMs(200)
@@ -138,7 +138,7 @@ describe('multi-node sharding lease — split-brain protection', () => {
         .withRenewalIntervalMs(80);
       const shardingOptionsC = StartShardingOptions.create<Command>()
         .withTypeName('entity')
-        .withEntityActor(() => new Entity())
+        .withEntityActor(Entity)
         .withExtractEntityId((m) => m.id)
         .withNumShards(8)
         .withRebalanceIntervalMs(200)

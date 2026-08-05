@@ -213,6 +213,6 @@ function makeProbe(sys: ActorSystem): Probe {
   class P extends (Actor as new () => { onReceive(_: unknown): void; }) {
     onReceive(m: unknown): void { received.push(m); }
   }
-  const ref = sys.spawn(() => new P() as unknown as Actor<unknown>, `p-${Math.random().toString(36).slice(2, 6)}`);
+  const ref = sys.spawn(P as unknown as new () => Actor<unknown>, `p-${Math.random().toString(36).slice(2, 6)}`);
   return { ref, received };
 }

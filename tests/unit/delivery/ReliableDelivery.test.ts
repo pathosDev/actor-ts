@@ -116,7 +116,7 @@ describe('ReliableDelivery — resilience', () => {
         d.replyTo.tell({ kind: 'reliable-delivery.ack', producerId: d.producerId, seq: d.seq });
       }
     }
-    const consumerRef = kit.system.spawn(() => new Flaky(), 'flaky');
+    const consumerRef = kit.system.spawn(Flaky, 'flaky');
 
     const producerOptions = ProducerControllerOptions.create<string>()
       .withConsumer(consumerRef)

@@ -22,7 +22,7 @@ describe('become / unbecome', () => {
       }
     }
     const sys = newSystem();
-    const ref = sys.spawn(() => new A(), 'a');
+    const ref = sys.spawn(A, 'a');
     ref.tell('1'); ref.tell('2'); ref.tell('3');
     await sleep(40);
     expect(out).toEqual(['initial:1', 'next:2', 'next:3']);
@@ -40,7 +40,7 @@ describe('become / unbecome', () => {
       }
     }
     const sys = newSystem();
-    const ref = sys.spawn(() => new A(), 'a');
+    const ref = sys.spawn(A, 'a');
     ref.tell('x');            // base
     ref.tell('push-top');     // base
     ref.tell('y');            // top
@@ -69,7 +69,7 @@ describe('become / unbecome', () => {
       }
     }
     const sys = newSystem();
-    const ref = sys.spawn(() => new A(), 'a');
+    const ref = sys.spawn(A, 'a');
     ref.tell('x');           // base
     ref.tell('enter-top');   // base (pushes top)
     ref.tell('y');           // top
@@ -93,7 +93,7 @@ describe('become / unbecome', () => {
       }
     }
     const sys = newSystem();
-    const ref = sys.spawn(() => new A(), 'a');
+    const ref = sys.spawn(A, 'a');
     ref.tell('first'); ref.tell('try-pop'); ref.tell('after');
     await sleep(40);
     // base behaviour still functions after the pop attempts.

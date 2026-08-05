@@ -45,7 +45,7 @@ async function fanout(nSubs: number): Promise<void> {
     }
   }
   for (let i = 0; i < nSubs; i++) {
-    mediator.tell(new Subscribe('topic', sys.spawnAnonymous(() => new Subscriber())));
+    mediator.tell(new Subscribe('topic', sys.spawnAnonymous(Subscriber)));
   }
   await Bun.sleep(20); // settle subscriptions
 

@@ -81,7 +81,7 @@ async function startNode(systemName: string, port: number): Promise<Node> {
 
   const shardingOptions = StartShardingOptions.create<Command>()
     .withTypeName(TYPE_NAME)
-    .withEntityActor(() => new Entity())
+    .withEntityActor(Entity)
     .withExtractEntityId((message) => message.id)
     .withNumShards(NUM_SHARDS)
     // Irrelevant here, and a sweep firing mid-handoff would only add noise.

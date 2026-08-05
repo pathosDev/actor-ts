@@ -63,7 +63,7 @@ async function startNode(sysName: string, p: number, seeds: string[] = []): Prom
   const cluster = await Cluster.join(sys, clusterOptions);
   const shardingOptions = StartShardingOptions.create<Command>()
     .withTypeName('entity')
-    .withEntityActor(() => new Entity())
+    .withEntityActor(Entity)
     .withExtractEntityId((m) => m.id)
     .withNumShards(16);
   const region = cluster.sharding.start<Command>(shardingOptions);
@@ -247,7 +247,7 @@ async function startLruNode(
   const cluster = await Cluster.join(sys, clusterOptions);
   const shardingOptions = StartShardingOptions.create<{ id: string; kind: 'ping' }>()
     .withTypeName('lru-entity')
-    .withEntityActor(() => new TaggedEntity())
+    .withEntityActor(TaggedEntity)
     .withExtractEntityId((m) => m.id)
     .withNumShards(16)
     .withMaxEntities(maxEntities);

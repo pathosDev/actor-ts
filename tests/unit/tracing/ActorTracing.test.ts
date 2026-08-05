@@ -39,7 +39,7 @@ describe('Actor tracing — auto-instrumentation', () => {
     }
 
     try {
-      const actorRef = sys.spawn(() => new Recv(), 'r');
+      const actorRef = sys.spawn(Recv, 'r');
       const client = tracer.startSpan('client.handle-request');
       tracer.withActiveSpan(client, () => {
         actorRef.tell('hello');
@@ -79,8 +79,8 @@ describe('Actor tracing — auto-instrumentation', () => {
     }
 
     try {
-      const actorB = sys.spawn(() => new B(), 'b');
-      const actorA = sys.spawn(() => new A(), 'a');
+      const actorB = sys.spawn(B, 'b');
+      const actorA = sys.spawn(A, 'a');
       const client = tracer.startSpan('client');
       tracer.withActiveSpan(client, () => actorA.tell({ message: 'forward', next: actorB }));
       await sleep(60);
@@ -116,7 +116,7 @@ describe('Actor tracing — auto-instrumentation', () => {
     }
 
     try {
-      const actorB = sys.spawn(() => new Bomb(), 'b');
+      const actorB = sys.spawn(Bomb, 'b');
       const root = tracer.startSpan('client');
       tracer.withActiveSpan(root, () => actorB.tell('boom'));
       await sleep(50);
@@ -143,7 +143,7 @@ describe('Actor tracing — auto-instrumentation', () => {
     }
 
     try {
-      const actorRef = sys.spawn(() => new R(), 'r');
+      const actorRef = sys.spawn(R, 'r');
       actorRef.tell('x');
       await sleep(30);
       expect(tracer.recorded()).toEqual([]);
@@ -163,7 +163,7 @@ describe('Actor tracing — tooling actors', () => {
     class Quiet extends Actor<string> {
       override onReceive(): void {}
     }
-    const application = system.spawn(() => new Quiet(), 'application');
+    const application = system.spawn(Quiet, 'application');
     const tooling = system.spawn(Quiet, 'tooling', { internal: true });
 
     const span = tracer.startSpan('client');
@@ -196,7 +196,7 @@ describe('Actor tracing — tooling actors', () => {
     class Root extends Actor<string> {
       child!: ActorRef<string>;
       override preStart(): void {
-        this.child = this.context.spawn(() => new Leaf(), 'leaf');
+        this.child = this.context.spawn(Leaf, 'leaf');
       }
       override onReceive(message: string): void { this.child.tell(message); }
     }

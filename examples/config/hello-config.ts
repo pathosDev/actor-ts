@@ -33,7 +33,7 @@ async function main(): Promise<void> {
   const system = ActorSystem.create('hello-config', systemOptions);
   const devtools = await attachDevTools(system);
 
-  const diag = system.spawn(() => new DiagActor(), 'diag');
+  const diag = system.spawn(DiagActor, 'diag');
   diag.tell('report');
   await new Promise(resolve => setTimeout(resolve, 50));
   await devtools.holdOpen();

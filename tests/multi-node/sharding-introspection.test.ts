@@ -63,7 +63,7 @@ describe('multi-node shard introspection', () => {
 
       const shardingOptions = StartShardingOptions.create<Command>()
         .withTypeName(TYPE_NAME)
-        .withEntityActor(() => new Entity())
+        .withEntityActor(Entity)
         .withExtractEntityId((m) => m.id)
         .withNumShards(NUM_SHARDS);
       const regions: Record<'a' | 'b' | 'c', ActorRef<Command>> = {

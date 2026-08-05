@@ -24,7 +24,7 @@ describe('watch / unwatch', () => {
       private watcher?: ActorRef<'die'>;
       override onReceive(m: 'go' | Terminated): void {
         if (m === 'go') {
-          this.watcher = this.context.spawn(() => new Watched(), 'wd') as ActorRef<'die'>;
+          this.watcher = this.context.spawn(Watched, 'wd') as ActorRef<'die'>;
           this.context.watch(this.watcher);
           this.watcher.tell('die');
         } else if (m instanceof Terminated) {
@@ -33,7 +33,7 @@ describe('watch / unwatch', () => {
       }
     }
     const sys = newSystem();
-    const watched = sys.spawn(() => new Watcher(), 'p');
+    const watched = sys.spawn(Watcher, 'p');
     watched.tell('go');
     await sleep(50);
     expect(seen).toEqual(['wd']);
@@ -49,7 +49,7 @@ describe('watch / unwatch', () => {
       private watcher?: ActorRef<'die'>;
       override onReceive(m: 'go' | 'unwatch' | 'kill' | Terminated): void {
         if (m === 'go') {
-          this.watcher = this.context.spawn(() => new Watched(), 'wd') as ActorRef<'die'>;
+          this.watcher = this.context.spawn(Watched, 'wd') as ActorRef<'die'>;
           this.context.watch(this.watcher);
         } else if (m === 'unwatch') {
           this.context.unwatch(this.watcher!);
@@ -61,7 +61,7 @@ describe('watch / unwatch', () => {
       }
     }
     const sys = newSystem();
-    const watched = sys.spawn(() => new Watcher(), 'p');
+    const watched = sys.spawn(Watcher, 'p');
     watched.tell('go');
     watched.tell('unwatch');
     watched.tell('kill');
@@ -82,12 +82,12 @@ describe('watch / unwatch', () => {
 
     const sys = newSystem();
     // Create target, immediately stop it, wait until terminated.
-    const target = sys.spawn(() => new Target(), 'dead');
+    const target = sys.spawn(Target, 'dead');
     target.stop();
     await sleep(30);
 
     // Now spin up a watcher that receives the (terminated) ref.
-    const watcher = sys.spawn(() => new LateWatcher(), 'w');
+    const watcher = sys.spawn(LateWatcher, 'w');
     watcher.tell(target);
     await sleep(50);
     expect(seen).toEqual(['dead']);
@@ -101,7 +101,7 @@ describe('watch / unwatch', () => {
     class Watcher extends Actor<'go'> {
       returnedSame?: boolean;
       override onReceive(_: 'go'): void {
-        const child = this.context.spawn(() => new X(), 'x');
+        const child = this.context.spawn(X, 'x');
         const watched = this.context.watch(child);
         this.returnedSame = watched === child;
       }

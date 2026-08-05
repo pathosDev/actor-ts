@@ -110,7 +110,7 @@ describe('explain plan — recording', () => {
       override preStart(): void { ref.tell('hello', this.context.self); }
       override onReceive(): void {}
     }
-    system.spawn(() => new SenderActor(), 'sender');
+    system.spawn(SenderActor, 'sender');
     await settle();
 
     expect(probe.plan()[0]!.senderPath).toContain('/user/sender');
@@ -198,7 +198,7 @@ describe('explain plan — lifecycle', () => {
     class PlainActor extends Actor<string> {
       override onReceive(): void { seen = this.context.explainPlan(); }
     }
-    const ref = system.spawn(() => new PlainActor(), 'plain');
+    const ref = system.spawn(PlainActor, 'plain');
     ref.tell('x');
     await settle();
     expect(seen).toEqual([]);

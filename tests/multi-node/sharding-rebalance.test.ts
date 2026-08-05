@@ -76,7 +76,7 @@ describe('multi-node sharding rebalance', () => {
 
       const shardingOptions = StartShardingOptions.create<Command>()
         .withTypeName('entity')
-        .withEntityActor(() => new Entity())
+        .withEntityActor(Entity)
         .withExtractEntityId((m) => m.id)
         .withNumShards(16);
       const regions: Record<'a' | 'b' | 'c', ActorRef<Command>> = {

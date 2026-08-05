@@ -91,20 +91,20 @@ describe('ActorRef serialisation across cluster nodes', () => {
     const aShardingOptions = StartShardingOptions.create<Command>()
       .withTypeName('echo')
       .withRole('hoster')
-      .withEntityActor(() => new Echo())
+      .withEntityActor(Echo)
       .withExtractEntityId((m) => m.id)
       .withNumShards(16);
     nodeA.cluster.sharding.start<Command>(aShardingOptions);
     const bShardingOptions = StartShardingOptions.create<Command>()
       .withTypeName('echo')
       .withRole('hoster')
-      .withEntityActor(() => new Echo())
+      .withEntityActor(Echo)
       .withExtractEntityId((m) => m.id)
       .withNumShards(16);
     const bRegion = nodeB.cluster.sharding.start<Command>(bShardingOptions);
 
     // Probe lives on node B — its LocalActorRef is therefore OWNED by B.
-    const probeOnB = nodeB.sys.spawn(() => new Probe(), 'probe');
+    const probeOnB = nodeB.sys.spawn(Probe, 'probe');
 
     // Give sharding a moment to allocate initial shards (the first ask from
     // the non-hoster node otherwise races the coordinator).
@@ -149,14 +149,14 @@ describe('ActorRef serialisation across cluster nodes', () => {
     const aShardingOptions = StartShardingOptions.create<Command>()
       .withTypeName('cap')
       .withRole('hoster')
-      .withEntityActor(() => new Capturer())
+      .withEntityActor(Capturer)
       .withExtractEntityId(() => 'only')
       .withNumShards(4);
     nodeA.cluster.sharding.start<Command>(aShardingOptions);
     const bShardingOptions = StartShardingOptions.create<Command>()
       .withTypeName('cap')
       .withRole('hoster')
-      .withEntityActor(() => new Capturer())
+      .withEntityActor(Capturer)
       .withExtractEntityId(() => 'only')
       .withNumShards(4);
     const bRegion = nodeB.cluster.sharding.start<Command>(bShardingOptions);
@@ -204,14 +204,14 @@ describe('ActorRef serialisation across cluster nodes', () => {
     const aShardingOptions = StartShardingOptions.create<Command>()
       .withTypeName('checker')
       .withRole('hoster')
-      .withEntityActor(() => new Checker())
+      .withEntityActor(Checker)
       .withExtractEntityId(() => 'only')
       .withNumShards(4);
     nodeA.cluster.sharding.start<Command>(aShardingOptions);
     const bShardingOptions = StartShardingOptions.create<Command>()
       .withTypeName('checker')
       .withRole('hoster')
-      .withEntityActor(() => new Checker())
+      .withEntityActor(Checker)
       .withExtractEntityId(() => 'only')
       .withNumShards(4);
     const bRegion = nodeB.cluster.sharding.start<Command>(bShardingOptions);
@@ -248,7 +248,7 @@ describe('ActorRef serialisation across cluster nodes', () => {
       try {
         await waitFor(() => nodeB.cluster.upMembers().length === 2);
 
-        const echo = nodeA.sys.spawn(() => new Echo(), 'echo');
+        const echo = nodeA.sys.spawn(Echo, 'echo');
         const remote = new RemoteActorRef<Command>(
           nodeA.cluster.selfAddress,
           echo.path.toString(),
@@ -275,7 +275,7 @@ describe('ActorRef serialisation across cluster nodes', () => {
       try {
         await waitFor(() => nodeB.cluster.upMembers().length === 2);
 
-        const echo = nodeA.sys.spawn(() => new Echo(), 'echo');
+        const echo = nodeA.sys.spawn(Echo, 'echo');
         const remote = new RemoteActorRef<Command>(
           nodeA.cluster.selfAddress,
           echo.path.toString(),

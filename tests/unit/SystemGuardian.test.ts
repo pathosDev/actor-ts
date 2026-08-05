@@ -124,11 +124,7 @@ describe('system group policy', () => {
     sys.eventStream.subscribe(collector, ActorRestarted);
     sys.eventStream.subscribe(collector, ActorStopped);
 
-    const ref = sys._spawnSystemActor(
-      () => new Boom(),
-      SystemGroups.clusterSharding,
-      'region-flaky',
-    );
+    const ref = sys._spawnSystemActor(Boom, SystemGroups.clusterSharding, 'region-flaky');
     ref.tell('fail');
 
     await awaitCondition(() => seen.includes('ActorRestarted:region-flaky'), {
@@ -151,11 +147,7 @@ describe('system group policy', () => {
     sys.eventStream.subscribe(collector, ActorRestarted);
     sys.eventStream.subscribe(collector, ActorStopped);
 
-    const ref = sys._spawnSystemActor(
-      () => new Boom(),
-      SystemGroups.devtools,
-      'probe-flaky',
-    );
+    const ref = sys._spawnSystemActor(Boom, SystemGroups.devtools, 'probe-flaky');
     ref.tell('fail');
 
     await awaitCondition(() => seen.includes('ActorStopped:probe-flaky'), {

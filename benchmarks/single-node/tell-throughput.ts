@@ -20,7 +20,7 @@ class Counter extends Actor<Message> {
 }
 
 async function drain(system: ActorSystem, batch: number): Promise<void> {
-  const ref = system.spawnAnonymous(() => new Counter());
+  const ref = system.spawnAnonymous(Counter);
   for (let i = 0; i < batch; i++) ref.tell({ kind: 'increment' });
   await ref.ask<number>({ kind: 'get' }, 30_000);
   ref.stop();

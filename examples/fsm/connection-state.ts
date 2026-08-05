@@ -60,7 +60,7 @@ class ConnectionFsm extends FSM<State, Data, Command> {
 async function main(): Promise<void> {
   const system = ActorSystem.create('fsm-conn');
   const devtools = await attachDevTools(system);
-  const ref = system.spawn(() => new ConnectionFsm(), 'conn');
+  const ref = system.spawn(ConnectionFsm, 'conn');
 
   ref.tell({ kind: 'connect' });
   await Bun.sleep(30);

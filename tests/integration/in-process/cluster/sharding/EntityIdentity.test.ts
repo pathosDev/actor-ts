@@ -64,7 +64,7 @@ beforeAll(async () => {
   cluster = await Cluster.join(system, clusterOptions);
   const shardingOptions = StartShardingOptions.create<Command>()
     .withTypeName(TYPE_NAME)
-    .withEntityActor(() => new IdentityEntity())
+    .withEntityActor(IdentityEntity)
     .withExtractEntityId((message) => message.id)
     .withNumShards(NUM_SHARDS);
   region = cluster.sharding.start<Command>(shardingOptions);

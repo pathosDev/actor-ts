@@ -97,7 +97,7 @@ describe('ShardRegion.settingsToConfig — the two passivation windows', () => {
     ShardRegion.settingsToConfig<unknown>(
       {
         typeName: 'entity',
-        entityActor: () => new NoopEntity(),
+        entityActor: NoopEntity,
         extractEntityId: (message: unknown) => String(message),
         ...extra,
       } as ShardingOptionsType<unknown>,

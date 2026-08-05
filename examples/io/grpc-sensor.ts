@@ -115,8 +115,8 @@ async function main(): Promise<void> {
     const devtools = await attachDevTools(sys);
 
     // Server side.
-    const getHandler = sys.spawn(() => new GetSensorHandler(), 'get');
-    const watchHandler = sys.spawn(() => new WatchSensorHandler(), 'watch');
+    const getHandler = sys.spawn(GetSensorHandler, 'get');
+    const watchHandler = sys.spawn(WatchSensorHandler, 'watch');
     const serverOptions = GrpcServerOptions.create()
       .withProtoPath(protoPath)
       .withPackageName('sensor.v1')
@@ -132,7 +132,7 @@ async function main(): Promise<void> {
     await Bun.sleep(300);  // let the server bind
 
     // Client side.
-    const collector = sys.spawn(() => new ReplyCollector(), 'collector');
+    const collector = sys.spawn(ReplyCollector, 'collector');
     const clientOptions = GrpcClientOptions.create()
       .withProtoPath(protoPath)
       .withPackageName('sensor.v1')

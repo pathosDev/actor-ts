@@ -43,7 +43,7 @@ async function main(): Promise<void> {
   const system = ActorSystem.create('ws-feed-demo');
   const devtools = await attachDevTools(system);
 
-  const server = system.spawn(() => new EchoServer(), 'echo');
+  const server = system.spawn(EchoServer, 'echo');
   const binding = await system.extension(HttpExtensionId).newServerAt('127.0.0.1', 0).bind(websocket('/ws', server));
   console.log(`[server] listening on ws://127.0.0.1:${binding.port}/ws`);
 

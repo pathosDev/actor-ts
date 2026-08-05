@@ -310,7 +310,7 @@ describe('TimeTravelMethods', () => {
     const journal = new InMemoryJournal();
     const snapshots = new InMemorySnapshotStore();
     const system = newSystem('tt-auto', journal, snapshots);
-    const ref = system.spawn(() => new CounterActor(), 'counter');
+    const ref = system.spawn(CounterActor, 'counter');
     ref.tell('add:5');
     ref.tell('add:7');
     await settle(150);
@@ -336,7 +336,7 @@ describe('TimeTravelMethods', () => {
     const journal = new InMemoryJournal();
     const snapshots = new InMemorySnapshotStore();
     const system = newSystem('tt-noauto', journal, snapshots);
-    const ref = system.spawn(() => new CounterActor(), 'counter');
+    const ref = system.spawn(CounterActor, 'counter');
     ref.tell('add:5');
     await settle(150);
 

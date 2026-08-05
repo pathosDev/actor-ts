@@ -37,7 +37,7 @@ class Shaky extends Actor<Command> {
 class Supervisor extends Actor<Command> {
   private child!: ActorRef<Command>;
   override preStart(): void {
-    this.child = this.context.spawn(() => new Shaky(), 'shaky');
+    this.child = this.context.spawn(Shaky, 'shaky');
   }
   override supervisorStrategy(): SupervisorStrategy {
     return new OneForOneStrategy(() => Directive.Restart, { maxRetries: -1 });
@@ -53,7 +53,7 @@ async function main(): Promise<void> {
     .withLogger(new NoopLogger())
     .withLogLevel(LogLevel.Off);
   const system = ActorSystem.create('bench-supervise', systemOptions);
-  const ref = system.spawnAnonymous(() => new Supervisor());
+  const ref = system.spawnAnonymous(Supervisor);
 
   await runGroup('single-node · supervisor-restart', [
     {

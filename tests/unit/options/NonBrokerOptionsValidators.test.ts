@@ -230,7 +230,7 @@ describe('ShardingOptionsValidator', () => {
   // only exercising a different rule.
   const required = {
     typeName: 'entity',
-    entityActor: () => new NoopEntity(),
+    entityActor: NoopEntity,
     extractEntityId: () => 'e-1',
   } satisfies Partial<ShardingOptionsType<unknown>>;
   const check = (s: Partial<ShardingOptionsType<unknown>>): void =>
@@ -289,7 +289,7 @@ describe('StartShardingOptionsValidator', () => {
 
   const required = {
     typeName: 'entity',
-    entityActor: () => new NoopEntity(),
+    entityActor: NoopEntity,
     extractEntityId: () => 'e-1',
   } satisfies Partial<StartShardingOptionsType<unknown>>;
 
@@ -316,7 +316,7 @@ describe('StartSingletonOptionsValidator', () => {
 
   const required = {
     typeName: 'counter',
-    actor: () => new NoopEntity(),
+    actor: NoopEntity,
   } satisfies Partial<StartSingletonOptionsType<unknown>>;
 
   test('rejects empty typeName and non-positive acquireRetryIntervalMs', () => {
@@ -351,7 +351,7 @@ describe('ClusterSingletonManagerOptionsValidator', () => {
   const required = {
     cluster: {} as ClusterSingletonManagerOptionsType<unknown>['cluster'],
     typeName: 'counter',
-    singletonActor: () => new NoopEntity(),
+    singletonActor: NoopEntity,
   } satisfies Partial<ClusterSingletonManagerOptionsType<unknown>>;
 
   test('rejects each missing required field by name', () => {

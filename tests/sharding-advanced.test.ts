@@ -269,7 +269,7 @@ test('Passivation stops idle entity and buffers next message until re-create', a
     sharding: activeSet => {
       const startShardingOptions = StartShardingOptions.create<PassivationCommand>()
         .withTypeName('passiv')
-        .withEntityActor(() => new Entity())
+        .withEntityActor(Entity)
         .withExtractEntityId(m => m.id)
         .withNumShards(4)
         .withPassivationIdleMs(0);

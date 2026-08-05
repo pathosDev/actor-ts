@@ -86,7 +86,7 @@ describe('LogContext — cross-node propagation', () => {
       await waitFor(() => nodeA.cluster.upMembers().length === 2);
 
       // Echo lives on B.  Probe lives on A.
-      nodeB.sys.spawn(() => new Echo(), 'echo');
+      nodeB.sys.spawn(Echo, 'echo');
       const probeActor = new Probe();
       const probeRef = nodeA.sys.spawn(() => probeActor, 'probe');
 
@@ -127,7 +127,7 @@ describe('LogContext — cross-node propagation', () => {
     const nodeB = await startNode(sysName, 60_012, [`${sysName}@h:60011`]);
     try {
       await waitFor(() => nodeA.cluster.upMembers().length === 2);
-      nodeB.sys.spawn(() => new Echo(), 'echo');
+      nodeB.sys.spawn(Echo, 'echo');
       const echoOnB = new RemoteActorRef<string>(
         nodeB.cluster.selfAddress,
         `actor-ts://${sysName}/user/echo`,

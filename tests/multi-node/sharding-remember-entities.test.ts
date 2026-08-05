@@ -106,7 +106,7 @@ async function startSpec(
 
   const shardingOptions = StartShardingOptions.create<Command>()
     .withTypeName('entity')
-    .withEntityActor(() => new Entity())
+    .withEntityActor(Entity)
     .withExtractEntityId((m) => m.id)
     .withNumShards(1)                         // all entities on one shard
     .withRememberEntities(true)

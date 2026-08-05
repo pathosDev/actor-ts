@@ -44,7 +44,7 @@ async function main(): Promise<void> {
   const system = ActorSystem.create('bench-stash', systemOptions);
 
   const run = async (batch: number): Promise<void> => {
-    const ref = system.spawnAnonymous(() => new Staller());
+    const ref = system.spawnAnonymous(Staller);
     for (let i = 0; i < batch; i++) ref.tell({ kind: 'work' });
     ref.tell({ kind: 'go' });
     await ref.ask<number>({ kind: 'count' }, 30_000);

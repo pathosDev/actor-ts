@@ -223,7 +223,7 @@ describe('ActorOptions.withMailbox — end-to-end via actor', () => {
       .withMailbox(
         () => new PriorityMailbox({ priorityFor: (m: { label: string; pri: number }) => m.pri }) as never,
       );
-    const ref = kit.system.spawnAnonymous(() => new Worker(), options);
+    const ref = kit.system.spawnAnonymous(Worker, options);
 
     // Send burst while the actor is still being initialised so multiple
     // messages sit in the mailbox at once.
@@ -257,7 +257,7 @@ describe('ActorOptions.withMailbox — end-to-end via actor', () => {
         // intentionally empty — we only care about the mailbox shape
       }
     }
-    const ref = kit.system.spawnAnonymous(() => new Worker());
+    const ref = kit.system.spawnAnonymous(Worker);
 
     // Reach into the ActorCell's mailbox via the LocalActorRef internal
     // accessor so we can assert the concrete type without exporting it
@@ -286,7 +286,7 @@ describe('ActorOptions.withMailbox — end-to-end via actor', () => {
       override onReceive(_m: number): void { /* noop */ }
     }
     const options = ActorOptions.create<number>().withMailbox(() => new Mailbox<number>());
-    const ref = kit.system.spawnAnonymous(() => new Worker(), options);
+    const ref = kit.system.spawnAnonymous(Worker, options);
 
     const cell = (ref as unknown as { getCell(): { _mailboxForTest(): unknown } }).getCell();
     const mailbox = cell._mailboxForTest();
@@ -311,7 +311,7 @@ describe('ActorOptions.withMailbox — end-to-end via actor', () => {
     }
     const options = ActorOptions.create<number>()
       .withMailbox(() => new BoundedMailbox<number>({ capacity: 3, overflow: 'drop-new' }) as never);
-    const ref = kit.system.spawnAnonymous(() => new Slow(), options);
+    const ref = kit.system.spawnAnonymous(Slow, options);
 
     for (let i = 0; i < 8; i++) ref.tell(i);
     await sleep(200);

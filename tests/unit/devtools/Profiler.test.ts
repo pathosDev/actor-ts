@@ -70,7 +70,7 @@ describe('ProfilerTap — wallclock', () => {
     tap.install(() => {});
     tap.installMethods(server);
     try {
-      const ref = system.spawn(() => new WorkerActor(), 'worker');
+      const ref = system.spawn(WorkerActor, 'worker');
       await invoke<ProfilerStartResult>('profiler.start', {});
       ref.tell('a');
       ref.tell('b');
@@ -97,7 +97,7 @@ describe('ProfilerTap — wallclock', () => {
     tap.install(() => {});
     tap.installMethods(server);
     try {
-      const ref = system.spawn(() => new WorkerActor(), 'worker');
+      const ref = system.spawn(WorkerActor, 'worker');
       await invoke('profiler.start', {});
       ref.tell('slow');
       await settle(150);
@@ -115,7 +115,7 @@ describe('ProfilerTap — wallclock', () => {
     tap.install(() => {});
     tap.installMethods(server);
     try {
-      const ref = system.spawn(() => new WorkerActor(), 'worker');
+      const ref = system.spawn(WorkerActor, 'worker');
       await invoke('profiler.start', {});
       ref.tell('boom');
       await settle();
@@ -133,7 +133,7 @@ describe('ProfilerTap — wallclock', () => {
     tap.install(() => {});
     tap.installMethods(server);
     try {
-      const ref = system.spawn(() => new WorkerActor(), 'worker');
+      const ref = system.spawn(WorkerActor, 'worker');
       await invoke('profiler.start', {});
       ref.tell('a');
       await settle();
@@ -167,7 +167,7 @@ describe('ProfilerTap — wallclock', () => {
     tap.install(() => {});
     tap.installMethods(server);
     try {
-      const ref = system.spawn(() => new WorkerActor(), 'worker');
+      const ref = system.spawn(WorkerActor, 'worker');
       await invoke('profiler.start', {});
       ref.tell('a');
       await settle();
@@ -192,7 +192,7 @@ describe('ProfilerTap — lifecycle', () => {
     tap.install(() => {});
     try {
       expect(system._dispatchObserver).toBeNull();
-      const ref = system.spawn(() => new WorkerActor(), 'worker');
+      const ref = system.spawn(WorkerActor, 'worker');
       ref.tell('a');
       await settle();
       expect(system._dispatchObserver).toBeNull();
@@ -281,7 +281,7 @@ describe('ProfilerTap — lifecycle', () => {
     tap.install((payload) => emitted.push(payload));
     tap.installMethods(server);
     try {
-      const ref = system.spawn(() => new WorkerActor(), 'worker');
+      const ref = system.spawn(WorkerActor, 'worker');
       await invoke('profiler.start', {});
       ref.tell('a');
       await settle(700);

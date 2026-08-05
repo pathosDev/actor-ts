@@ -15,7 +15,7 @@ class Greeter extends Actor<string> {
 async function main(): Promise<void> {
   const system = ActorSystem.create('selection-hello');
   const devtools = await attachDevTools(system);
-  system.spawn(() => new Greeter(), 'greeter');
+  system.spawn(Greeter, 'greeter');
 
   // Tell without resolving — fire-and-forget; delivers or drops to dead letters.
   system.actorSelection('/user/greeter').tell('world');

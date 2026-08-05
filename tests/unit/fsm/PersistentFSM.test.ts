@@ -702,7 +702,7 @@ describe('PersistentFSM — recovery failure', () => {
         }
         override onReceive(event: ActorLifecycleEvent): void { stopped.push(event); }
       }
-      sys.spawn(() => new Listener(), 'lifecycle');
+      sys.spawn(Listener, 'lifecycle');
       await awaitCondition(() => ready.value, { label: 'the lifecycle listener subscribed' });
 
       class SwallowingOrderFsm extends OrderFsm {

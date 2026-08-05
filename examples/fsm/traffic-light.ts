@@ -29,7 +29,7 @@ class TrafficLight extends FSM<Color, Data, Command> {
 async function main(): Promise<void> {
   const system = ActorSystem.create('fsm-hello');
   const devtools = await attachDevTools(system);
-  const ref = system.spawn(() => new TrafficLight(), 'light');
+  const ref = system.spawn(TrafficLight, 'light');
 
   for (let i = 0; i < 6; i++) {
     ref.tell('tick');

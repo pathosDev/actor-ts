@@ -24,7 +24,7 @@ export async function run({ actorTs }) {
     .withLogLevel(LogLevel.Off);
   const sys = ActorSystem.create('smoke-core', sysOptions);
   try {
-    const ref = sys.spawnAnonymous(() => new Counter());
+    const ref = sys.spawnAnonymous(Counter);
     const N = 1_000;
     for (let i = 0; i < N; i++) ref.tell('inc');
     const got = await ref.ask('get', 5_000);

@@ -106,7 +106,7 @@ async function startNode(
       received.push(m.id);
     }
   }
-  sys.spawn(() => new Worker(), 'worker');
+  sys.spawn(Worker, 'worker');
 
   return { role: roles[0] ?? 'no-role', sys, cluster, received };
 }

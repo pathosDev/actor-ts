@@ -62,7 +62,7 @@ async function startNodeWithLease(
   const cluster = await Cluster.join(sys, clusterOptions);
   const shardingOptions = StartShardingOptions.create<Command>()
     .withTypeName('entity')
-    .withEntityActor(() => new Entity())
+    .withEntityActor(Entity)
     .withExtractEntityId((m) => m.id)
     .withNumShards(8)
     .withRebalanceIntervalMs(200)

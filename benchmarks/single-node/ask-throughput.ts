@@ -16,7 +16,7 @@ async function main(): Promise<void> {
     .withLogger(new NoopLogger())
     .withLogLevel(LogLevel.Off);
   const system = ActorSystem.create('bench-ask', systemOptions);
-  const ref = system.spawnAnonymous(() => new Echo());
+  const ref = system.spawnAnonymous(Echo);
 
   await runGroup('single-node · ask-throughput', [
     {
