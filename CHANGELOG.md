@@ -9,6 +9,8 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ## [Unreleased]
 
+## [0.13.0] — 2026-08-05
+
 ### Removed
 
 - **BREAKING — `Props` is gone from the public API** (#547).  Spawning takes

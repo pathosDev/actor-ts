@@ -21,7 +21,12 @@ name: multi-runtime
 
 on:
   push:
-    branches: [develop]
+    # `main` as well as `develop`: `main` moves only via the release merge, and
+    # that merge commit is the one that gets tagged and published.  The
+    # documented release flow merges `--no-ff` directly rather than through a
+    # PR, so the `pull_request` leg below never covers it — without `main` here
+    # the exact commit users install had no Node/Deno signal at all.
+    branches: [develop, main]
     paths:
       - 'src/**'
       - 'tests/**'
