@@ -98,9 +98,30 @@ export class EventStream {
     return this.subs.length !== before;
   }
 
-  /** Publish an event to all matching subscribers. */
+  /**
+   * Publish an event to all matching subscribers.
+   *
+   * **The recipient set is fixed when the publish starts.**  `subscriber.tell`
+   * can run synchronously — a `PromiseActorRef`, a test probe, an actor on an
+   * inline dispatcher — so a handler may subscribe or unsubscribe while the
+   * event is still being delivered.
+   *
+   * The two operations used to disagree about what that meant, because of how
+   * they happened to be written rather than by decision: `unsubscribe`
+   * *reassigns* `subs`, so the loop kept walking the array it started with and
+   * a removed subscriber still got the event, while `subscribe` *pushes* into
+   * that same array, so a subscriber added mid-delivery received an event
+   * published before it existed (#645).
+   *
+   * Iterating a snapshot settles it in the direction that was already true for
+   * unsubscribe: everyone subscribed when `publish` was called receives the
+   * event, and nobody else.  Delivering to a subscriber that did not exist at
+   * publish time is the indefensible half; delivering one last event to a
+   * subscriber on its way out is harmless — it lands in dead letters like any
+   * other message to a stopped actor.
+   */
   publish(event: object): void {
-    for (const { subscriber, channel, predicate } of this.subs) {
+    for (const { subscriber, channel, predicate } of [...this.subs]) {
       if (!(event instanceof channel)) continue;
       if (predicate) {
         let accepted: boolean;

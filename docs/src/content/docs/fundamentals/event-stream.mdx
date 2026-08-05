@@ -152,17 +152,22 @@ import { Aside } from '@astrojs/starlight/components';
   a data pipeline.
 </Aside>
 
-<Aside type="caution" title="The dead-letter case">
+<Aside type="note" title="Stopped subscribers are released">
   ```ts
   eventStream.subscribe(ref, Event);
   ref.stop();
-  eventStream.publish(new Event());   // → goes to dead letters
+  eventStream.publish(new Event());   // → not delivered to ref
   ```
-  The bus doesn't auto-unsubscribe stopped refs.  Subsequent
-  publishes still `tell` the dead ref; the system routes them to
-  `/deadLetters`, which logs a warning.  If a subscriber is
-  short-lived, `unsubscribe` it in `postStop` — or rely on the
-  dead-letter cleanup if you don't mind the noise.
+  A stopping actor drops its subscriptions as part of termination,
+  so a short-lived subscriber needs no `unsubscribe` in `postStop`.
+  Do still unsubscribe when a *live* actor loses interest — the bus
+  cannot know that.
+
+  One event may still reach a subscriber that unsubscribed while
+  that same event was being delivered: the recipient set is fixed
+  when `publish` is called, so a removal takes effect from the next
+  event on.  It lands in `/deadLetters` like any other message to a
+  stopped actor.
 </Aside>
 
 ## Built-in events worth subscribing to

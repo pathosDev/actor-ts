@@ -2,6 +2,10 @@ import { describe, expect, test } from 'bun:test';
 import { ActorPath } from '../../src/ActorPath.js';
 import { ActorRef } from '../../src/ActorRef.js';
 import { EventStream } from '../../src/EventStream.js';
+import { Actor } from '../../src/Actor.js';
+import { ActorSystem } from '../../src/ActorSystem.js';
+import { ActorSystemOptions } from '../../src/ActorSystemOptions.js';
+import { LogLevel, NoopLogger } from '../../src/Logger.js';
 
 /** Minimal ref that records received events and identifies by a given path. */
 class RecordingRef extends ActorRef<unknown> {
@@ -192,5 +196,143 @@ describe('EventStream — predicates (#85)', () => {
     expect(bus.unsubscribe(ref, EventA)).toBe(true);
     bus.publish(new EventA('any'));
     expect(ref.received).toEqual([]);
+  });
+});
+
+// #645 / #763 — `publish` walked the live subscription array while
+// `subscriber.tell` can run synchronously, so a handler that (un)subscribed
+// mid-delivery mutated the list being iterated.
+describe('EventStream.publish is reentrancy-safe', () => {
+  test('a subscription removed during delivery still gets the current event', () => {
+    // The recipient set is decided when publish starts, so a removal that
+    // lands mid-delivery takes effect from the *next* event.  This half was
+    // already true before the fix — `unsubscribe` reassigns the array — and
+    // it is the defensible half: one extra event to a departing subscriber
+    // goes to dead letters like any other message to a stopped actor.
+    const stream = new EventStream();
+    const late = new RecordingRef('late');
+
+    class UnsubscribingRef extends ActorRef<unknown> {
+      readonly path = new ActorPath('', null, 'test-sys').child('early');
+      readonly received: unknown[] = [];
+      tell(message: unknown): void {
+        this.received.push(message);
+        stream.unsubscribe(late);
+      }
+    }
+    const early = new UnsubscribingRef();
+
+    stream.subscribe(early, EventA);
+    stream.subscribe(late, EventA);
+    stream.publish(new EventA('x'));
+    expect(late.received).toHaveLength(1);
+
+    // And it really is gone from the next publish on.
+    stream.publish(new EventA('y'));
+    expect(early.received).toHaveLength(2);
+    expect(late.received).toHaveLength(1);
+  });
+
+  test('a subscription added during delivery does not receive the in-flight event', () => {
+    const stream = new EventStream();
+    const newcomer = new RecordingRef('newcomer');
+
+    class SubscribingRef extends ActorRef<unknown> {
+      readonly path = new ActorPath('', null, 'test-sys').child('first');
+      readonly received: unknown[] = [];
+      tell(message: unknown): void {
+        this.received.push(message);
+        stream.subscribe(newcomer, EventA);
+      }
+    }
+    const first = new SubscribingRef();
+
+    stream.subscribe(first, EventA);
+    stream.publish(new EventA('x'));
+    expect(newcomer.received).toEqual([]);
+
+    // But it is subscribed from the next event on.
+    stream.publish(new EventA('y'));
+    expect(newcomer.received).toHaveLength(1);
+  });
+
+  test('a subscriber that unsubscribes itself still gets the current event', () => {
+    // The snapshot cuts both ways, and this is the correct half: delivery
+    // was already decided when publish started.
+    const stream = new EventStream();
+    class SelfRemoving extends ActorRef<unknown> {
+      readonly path = new ActorPath('', null, 'test-sys').child('self');
+      readonly received: unknown[] = [];
+      tell(message: unknown): void {
+        this.received.push(message);
+        stream.unsubscribe(this);
+      }
+    }
+    const ref = new SelfRemoving();
+    stream.subscribe(ref, EventA);
+
+    stream.publish(new EventA('x'));
+    stream.publish(new EventA('y'));
+
+    expect(ref.received).toHaveLength(1);
+  });
+});
+
+// #645 / #763 — `unsubscribe` had exactly one caller in the whole framework
+// (a DevTools probe), so an actor that subscribed and then stopped stayed on
+// the list forever: the list grew without bound, and every publish paid an
+// O(N) walk that ended in a dead letter per departed subscriber.
+describe('EventStream releases stopped subscribers', () => {
+  test('a stopped actor is removed from the stream', async () => {
+    // `unsubscribe` reports whether it removed anything, which is the probe:
+    // after the actor stops there must be nothing left for it to remove.
+    const system = ActorSystem.create(
+      'es-leak',
+      ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off),
+    );
+
+    class Listener extends Actor<EventA> {
+      override preStart(): void { this.context.system.eventStream.subscribe(this.context.self, EventA); }
+      override onReceive(): void {}
+    }
+
+    const ref = system.spawn(Listener, 'listener');
+    await Bun.sleep(60);
+    // While alive, there is a subscription to remove — so re-subscribe and
+    // carry on, otherwise the probe would be the thing doing the cleanup.
+    expect(system.eventStream.unsubscribe(ref, EventA)).toBe(true);
+    system.eventStream.subscribe(ref, EventA);
+
+    ref.stop();
+    await Bun.sleep(120);
+
+    expect(system.eventStream.unsubscribe(ref, EventA)).toBe(false);
+    await system.terminate();
+  });
+
+  test('a stopped subscriber stops receiving events', async () => {
+    const system = ActorSystem.create(
+      'es-leak-2',
+      ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off),
+    );
+    const seen: string[] = [];
+
+    class Listener extends Actor<EventA> {
+      override preStart(): void { this.context.system.eventStream.subscribe(this.context.self, EventA); }
+      override onReceive(event: EventA): void { seen.push(event.payload); }
+    }
+
+    const ref = system.spawn(Listener, 'listener');
+    await Bun.sleep(40);
+    system.eventStream.publish(new EventA('before'));
+    await Bun.sleep(40);
+
+    ref.stop();
+    await Bun.sleep(80);
+    system.eventStream.publish(new EventA('after'));
+    await Bun.sleep(40);
+
+    expect(seen).toEqual(['before']);
+    await system.terminate();
   });
 });

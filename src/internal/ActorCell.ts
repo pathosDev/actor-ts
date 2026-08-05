@@ -885,6 +885,14 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
 
     this.state = 'terminated';
 
+    // Drop this actor's event-stream subscriptions.  Nothing else did:
+    // `unsubscribe` had exactly one caller in the whole framework, so a
+    // subscriber that stopped stayed on the list forever — the list grew
+    // without bound and every publish paid an O(N) walk that ended in a
+    // dead letter per departed subscriber (#645).  Before the ActorStopped
+    // publish below, so a stopping actor is not handed its own stop event.
+    this.system.eventStream.unsubscribe(this.self);
+
     // Stock metric: count terminations (clean stop OR post-failure path).
     metricsOf(this.system).counter(
       'actor_terminated_total', {},
