@@ -15,6 +15,7 @@ import {
   type HelloAcknowledgmentMessage,
   type WireMessage,
 } from './Protocol.js';
+import { validateWireFrame } from './WireValidation.js';
 
 export type WireHandler = (from: NodeAddress, message: WireMessage) => void;
 export type { TlsTransportOptionsType };
@@ -272,7 +273,32 @@ export class TcpTransport implements Transport {
       this.dropConnection(connection);
       return;
     }
-    for (const message of frames) this.onMessage(connection, message);
+    for (const frame of frames) {
+      // Two tiers, because the two failures mean different things.  A frame
+      // that fails its shape check is *this frame's* problem — skip it and
+      // keep the connection, so one bad frame cannot cost a healthy peer its
+      // link (#705, #711).  A handler that throws is a problem we do not
+      // understand, and until #563 this loop had no guard at all: the throw
+      // left `onData`, left the runtime's socket callback, and took the
+      // process with it.
+      const checked = validateWireFrame(frame);
+      if ('problem' in checked) {
+        this.log.warn(
+          `rejecting malformed frame from ${connection.peer ?? '<unknown peer>'}: ${checked.problem}`,
+        );
+        continue;
+      }
+      try {
+        this.onMessage(connection, checked.message);
+      } catch (err) {
+        this.log.warn(
+          `wire handler threw on a frame from ${connection.peer ?? '<unknown peer>'}; closing`,
+          err as Error,
+        );
+        this.dropConnection(connection);
+        return;
+      }
+    }
   }
 
   private onMessage(connection: Connection, message: WireMessage): void {
@@ -458,7 +484,23 @@ export class InMemoryTransport implements Transport {
     const from = this.self;
     // Decouple sender and receiver via microtask so ordering mirrors TCP.
     queueMicrotask(() => {
-      if (!peer.stopped) peer.handler(from, message);
+      if (peer.stopped) return;
+      // The same two tiers as `TcpTransport.onData`, because the guarantee
+      // belongs to the `Transport` contract and not to one implementation of
+      // it.  Skipping this here would also make it untestable: the cluster's
+      // security tests inject their hostile frames through this transport, so
+      // an unguarded path would report the exploits as still open (#563, #705).
+      //
+      // A microtask has no caller to unwind into — an escaping throw is an
+      // unhandled top-level error, which is how one poisoned gossip frame took
+      // down a second node after the first had re-gossiped it.
+      const checked = validateWireFrame(message);
+      if ('problem' in checked) return;
+      try {
+        peer.handler(from, checked.message);
+      } catch {
+        /* Mirrors dropping the connection; there is no socket to close. */
+      }
     });
   }
 

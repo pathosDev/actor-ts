@@ -9,6 +9,40 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ## [Unreleased]
 
+### Security
+
+- **Wire frames are validated before anything reads them** (#563, #571,
+  #705, #587).  `FrameDecoder` ended in `JSON.parse(json) as WireMessage` —
+  a cast, not a check — and every layer downstream read the frame as if the
+  type were true.  Three things followed from that, all remotely reachable:
+
+  - A `null` frame (8 bytes, `JSON.parse('null')`) was dereferenced by
+    `TcpTransport.onMessage` above the handshake gate, so **no `hello` was
+    needed**: an unauthenticated remote process kill on Node.
+  - A gossiped member `status` outside the seven legal values reached
+    `emitStatusTransition`'s `match(...).exhaustive()`, which throws — from
+    a socket callback, and *after* the member had been written to the map.
+    The node died **and** re-gossiped the poisoned entry, so one frame at one
+    reachable node propagated to the whole cluster.
+  - A `port` arriving as the string `"2552"` keyed every map identically to
+    the number but never compared equal, permanently desyncing a node's view
+    of its own identity.
+
+  Frames now pass shape validation at the decode boundary (`WireValidation.ts`),
+  `NodeAddress.fromJSON` and `Member.fromData` reject impossible values rather
+  than constructing from them, and the frame-dispatch loop is wrapped: a
+  malformed frame is dropped and the connection survives, while a handler that
+  throws drops the connection instead of escaping into the runtime's socket
+  callback.  `ClusterClient` got the same treatment — its `decoder.push` call
+  was unguarded, so one malformed frame from a contact point killed the client
+  process (#587).
+
+  `MemberStatus` is now *derived* from a runtime `MEMBER_STATUSES` list, so the
+  type and the values it is checked against cannot drift apart.
+
+  Extension frame kinds (sharding, pub-sub, receptionist, DistributedData,
+  DevTools) deliberately pass this layer and validate their own payloads.
+
 ### Changed
 
 - **BREAKING — the cluster wire protocol's discriminator is `kind`** (#494).

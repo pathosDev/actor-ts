@@ -23,14 +23,36 @@ import { NodeAddress, type NodeAddressData } from './NodeAddress.js';
  *     to check the status explicitly.  See #75 + the
  *     {@link MemberRemoved} JSDoc.
  */
-export type MemberStatus =
-  | 'joining'
-  | 'weakly-up'
-  | 'up'
-  | 'unreachable'
-  | 'leaving'
-  | 'down'
-  | 'removed';
+export const MEMBER_STATUSES = [
+  'joining',
+  'weakly-up',
+  'up',
+  'unreachable',
+  'leaving',
+  'down',
+  'removed',
+] as const;
+
+/**
+ * The type is *derived* from {@link MEMBER_STATUSES} rather than declared
+ * alongside it.  A status arrives off the wire as an arbitrary string, so the
+ * runtime needs a list to check it against — and a hand-maintained second copy
+ * of the same seven names is exactly the kind of thing that drifts.  Here a new
+ * status cannot be added to one without the other.
+ *
+ * Why it needs checking at all: `Cluster.emitStatusTransition` dispatches on
+ * this value with `match(...).exhaustive()`, which throws for anything outside
+ * the union — and it runs *after* the member has been written to the map, so an
+ * unchecked status both crashed the node and was re-gossiped to its peers
+ * (#563).
+ */
+export type MemberStatus = (typeof MEMBER_STATUSES)[number];
+
+/** Whether an arbitrary value is one of the seven legal member statuses. */
+export function isMemberStatus(value: unknown): value is MemberStatus {
+  return typeof value === 'string'
+    && (MEMBER_STATUSES as readonly string[]).includes(value);
+}
 
 export type MemberData = {
   readonly address: NodeAddressData;

@@ -699,3 +699,121 @@ describe('Cluster — numeric wire-field defenses', () => {
     expect((acks[0] as { seq: number }).seq).toBe(7);
   }, 10_000);
 });
+
+describe('Cluster — the wire edge rejects malformed frames (#563, #705)', () => {
+  /**
+   * These go through the **transport**, not the private `handleWire` the tests
+   * above call, because the transport is where the guard lives — and where the
+   * exploit landed.  An attacker registers an `InMemoryTransport` under its own
+   * address and sends; the victim receives exactly as it would over TCP.
+   */
+  // `InMemoryTransport.registry` is static and shared across the whole test
+  // run, so an attacker left registered shows up as a stray peer in unrelated
+  // suites.  Shut every one of them down.
+  let attackers: InMemoryTransport[] = [];
+
+  afterEach(async () => {
+    for (const transport of attackers) await transport.shutdown();
+    attackers = [];
+  });
+
+  function attackerTransport(systemName: string, port: number): InMemoryTransport {
+    const transport = new InMemoryTransport(new NodeAddress(systemName, 'h', port));
+    void transport.start();
+    attackers.push(transport);
+    return transport;
+  }
+
+  /**
+   * **Exploit walkthrough (pre-fix).**  `Member.fromData` copied `status`
+   * verbatim off the wire, and `mergeMember` stored the member *before*
+   * calling `emitStatusTransition`, whose `match(next.status).exhaustive()`
+   * throws for anything outside the seven legal values.  So one frame both
+   * (a) crashed the node — the throw escaped `handleWire` into the runtime's
+   * socket-data callback, which on Node means process exit — and (b) left the
+   * ghost member in the map, so the *next* gossip tick shipped `status:'pwned'`
+   * to every peer, where the same throw fired again.  One frame at one
+   * reachable node took down the cluster.
+   */
+  test('exploit: a gossiped member status outside the legal set is dropped, not stored', async () => {
+    const port = 54_100 + Math.floor(Math.random() * 400);
+    const victim = await startNode('csecwire', port);
+    nodes = [victim];
+
+    const attacker = attackerTransport('csecwire', port + 1);
+    const ghost = new NodeAddress('csecwire', 'h', port + 900);
+    attacker.send(victim.address, {
+      kind: 'gossip',
+      from: attacker.self.toJSON(),
+      members: [{ address: ghost.toJSON(), status: 'pwned' as never, version: Date.now() }],
+    });
+    await Bun.sleep(60);
+
+    // Survived, and the ghost never entered the member map — so there is
+    // nothing for the next gossip tick to propagate.
+    expect(victim.cluster.getMembers().some(m => m.address.equals(ghost))).toBe(false);
+    expect(victim.cluster.getMembers().some(m => m.address.equals(victim.address))).toBe(true);
+  }, 10_000);
+
+  test('exploit: one malformed member does not discard the well-formed ones around it', async () => {
+    const port = 54_600 + Math.floor(Math.random() * 400);
+    const victim = await startNode('csecwire2', port);
+    nodes = [victim];
+
+    const attacker = attackerTransport('csecwire2', port + 1);
+    const good = new NodeAddress('csecwire2', 'h', port + 800);
+    attacker.send(victim.address, {
+      kind: 'gossip',
+      from: attacker.self.toJSON(),
+      members: [
+        { address: good.toJSON(), status: 'up', version: Date.now() },
+        { address: good.toJSON(), status: 'pwned' as never, version: Date.now() },
+      ],
+    });
+    await Bun.sleep(60);
+
+    // The whole frame is refused — a batch is validated before any of it is
+    // merged, so a poisoned entry cannot be smuggled in behind a valid one.
+    expect(victim.cluster.getMembers().some(m => m.address.equals(good))).toBe(false);
+  }, 10_000);
+
+  /**
+   * **Exploit walkthrough (pre-fix).**  `JSON.parse('null')` yields `null`, and
+   * `FrameDecoder.push` pushed it into the batch unchecked.  `onMessage` then
+   * read `message.kind` — above the handshake gate, so no `hello` was needed
+   * either.  Eight bytes, no preconditions, remote process kill.
+   */
+  test('exploit: a null frame and a bare-string frame are refused without a throw', async () => {
+    const port = 55_100 + Math.floor(Math.random() * 400);
+    const victim = await startNode('csecwire3', port);
+    nodes = [victim];
+
+    const attacker = attackerTransport('csecwire3', port + 1);
+    for (const frame of [null, 'hello', 42, []]) {
+      attacker.send(victim.address, frame as unknown as WireMessage);
+    }
+    await Bun.sleep(60);
+
+    // Still serving: the node knows itself and answers introspection.
+    expect(victim.cluster.getMembers().some(m => m.address.equals(victim.address))).toBe(true);
+  }, 10_000);
+
+  test('exploit: a leave frame naming a node that is not a valid address is refused', async () => {
+    const port = 55_600 + Math.floor(Math.random() * 400);
+    const victim = await startNode('csecwire4', port);
+    nodes = [victim];
+
+    const attacker = attackerTransport('csecwire4', port + 1);
+    // `port` as a string is the #571 desync shape: it stringifies to the same
+    // key but never compares equal.
+    attacker.send(victim.address, {
+      kind: 'leave',
+      node: { systemName: 'csecwire4', host: 'h', port: String(port) as unknown as number },
+    });
+    await Bun.sleep(60);
+
+    const self = victim.cluster.getMembers().find(m => m.address.equals(victim.address));
+    expect(self).toBeDefined();
+    expect(self!.status).not.toBe('removed');
+  }, 10_000);
+});

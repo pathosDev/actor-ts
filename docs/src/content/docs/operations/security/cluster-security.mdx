@@ -178,12 +178,53 @@ Only `app=actor-ts` pods can reach port 2552 on each other.
 | Man-in-the-middle | TLS + cert verification |
 | Unauthorized cluster join | mTLS (CA-signed peer certs) |
 | Insider with stolen cert | Cert rotation + revocation |
+| Malformed or hostile wire frame | Shape validation at the decode boundary |
 | Compromised pod inside the cluster | Application-level auth (out of scope here) |
 
 The cluster transport handles transport-level security.
 Application-level concerns (auth between specific actors,
 per-tenant isolation) remain your job — the cluster
 transport is **trusted within itself**.
+
+## What the wire edge rejects
+
+Frames arrive as JSON and used to be *cast* to the protocol
+type rather than checked against it, so a peer could hand a
+node a value the code then read as if the type were true.
+Every frame is now validated before any handler sees it:
+
+- The frame must be an object carrying a string `kind`.
+  `null`, a bare string and a number are refused — previously
+  `null` alone was an eight-byte remote process kill, and it
+  needed no completed handshake.
+- Node addresses must have a non-empty `systemName` and
+  `host` plus a positive integer `port`. A port that arrives
+  as the *string* `"2552"` is the case worth knowing about:
+  it renders identically in every log line and keys every map
+  the same way, but never compares equal — a node that merged
+  its own address in that shape stopped recognising itself.
+- A gossiped member's `status` must be one of the seven legal
+  values. An unknown one used to reach an exhaustive match
+  that threw *after* the member had been stored, so the node
+  crashed **and** re-gossiped the poisoned entry to its peers.
+- A gossip batch is validated whole. One malformed member
+  refuses the frame, so a bad entry cannot ride in behind a
+  good one.
+
+Two tiers, deliberately: a frame that fails validation is
+dropped and the connection stays up, because one bad frame
+should not cost a healthy peer its link. A handler that
+*throws* drops the connection — that is the case nobody
+understands, and it must not escape into the runtime's socket
+callback.
+
+Frame kinds registered by extensions (sharding, pub-sub, the
+receptionist, DistributedData, DevTools) pass this layer and
+validate their own payloads.
+
+Every rejection is logged at `WARN` naming the peer and the
+offending field, so a dropped frame is diagnosable — a
+version mismatch and a hostile peer look different in the log.
 
 ## Per-deployment recipe
 

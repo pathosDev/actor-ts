@@ -180,12 +180,57 @@ erreichen.
 | Man-in-the-Middle | TLS + Zertifikatsprüfung |
 | Unautorisierter Cluster-Join | mTLS (CA-signierte Peer-Certs) |
 | Insider mit gestohlenem Cert | Cert-Rotation + Revocation |
+| Fehlerhafter oder feindlicher Wire-Frame | Shape-Prüfung an der Decode-Grenze |
 | Kompromittierter Pod im Cluster | Application-Level-Auth (hier nicht abgedeckt) |
 
 Der Cluster-Transport handhabt Transport-Level-Sicherheit.
 Application-Level-Anliegen (Auth zwischen spezifischen Actors,
 Per-Tenant-Isolation) bleiben dein Job — der Cluster-Transport
 ist **in sich selbst vertrauenswürdig**.
+
+## Was der Wire-Rand abweist
+
+Frames kommen als JSON an und wurden früher auf den
+Protokolltyp *gecastet* statt gegen ihn geprüft — ein Peer
+konnte einem Knoten also einen Wert reichen, den der Code
+anschließend las, als stimmte der Typ. Jeder Frame wird jetzt
+geprüft, bevor ihn irgendein Handler sieht:
+
+- Der Frame muss ein Objekt mit einem String-`kind` sein.
+  `null`, ein nackter String und eine Zahl werden abgewiesen —
+  vorher war allein `null` ein Acht-Byte-Remote-Prozesskill,
+  und zwar ohne abgeschlossenen Handshake.
+- Knotenadressen brauchen ein nicht-leeres `systemName` und
+  `host` plus einen positiven ganzzahligen `port`. Der
+  lohnende Fall: ein Port, der als *String* `"2552"` ankommt.
+  Er sieht in jeder Logzeile identisch aus und keyt jede Map
+  gleich, vergleicht sich aber nie gleich — ein Knoten, der
+  seine eigene Adresse in dieser Form mergte, erkannte sich
+  selbst nicht mehr wieder.
+- Der `status` eines gegossipten Members muss einer der sieben
+  legalen Werte sein. Ein unbekannter erreichte ein
+  exhaustives `match`, das warf — *nachdem* der Member schon
+  gespeichert war. Der Knoten stürzte also ab **und**
+  gossipte den vergifteten Eintrag an seine Peers weiter.
+- Ein Gossip-Batch wird als Ganzes geprüft. Ein fehlerhafter
+  Member weist den Frame ab, damit sich ein schlechter
+  Eintrag nicht hinter einem guten einschleichen kann.
+
+Bewusst zwei Stufen: ein Frame, der die Prüfung nicht besteht,
+wird verworfen und die Verbindung bleibt stehen — ein einzelner
+kaputter Frame soll einen gesunden Peer nicht seine Leitung
+kosten. Ein Handler, der *wirft*, kappt die Verbindung: das ist
+der Fall, den niemand versteht, und er darf nicht in den
+Socket-Callback des Runtimes entkommen.
+
+Frame-Kinds, die Extensions registrieren (Sharding, PubSub,
+Receptionist, DistributedData, DevTools), passieren diese
+Schicht und prüfen ihr eigenes Payload selbst.
+
+Jede Abweisung wird auf `WARN` mit Peer und beanstandetem Feld
+geloggt, damit ein verworfener Frame diagnostizierbar bleibt —
+eine Versionsabweichung und ein feindlicher Peer sehen im Log
+unterschiedlich aus.
 
 ## Per-Deployment-Rezept
 
