@@ -147,3 +147,90 @@ describe('Scheduler.scheduleAtFixedRate (message delivery)', () => {
     for (const message of ref.received) expect(message).toBe('tick');
   });
 });
+
+// #641 / #762 — `shutdown()` set a flag and stopped there.  That makes the
+// callbacks no-ops but leaves the native handles armed, and an armed
+// `setInterval` holds the event loop open: a terminated ActorSystem kept the
+// whole process alive.
+describe('Scheduler.shutdown', () => {
+  test('clears the handles it created, not just their callbacks', async () => {
+    const scheduler = new Scheduler();
+    const fired: string[] = [];
+
+    const once = scheduler.scheduleOnceFunction(20, () => fired.push('once'));
+    const repeating = scheduler.scheduleAtFixedRateFunction(10, 10, () => fired.push('tick'));
+
+    scheduler.shutdown();
+
+    // Observable proxy for "the handle is gone": a cleared schedule reports
+    // itself finished, where a suppressed one would still look pending.
+    expect(once.isCancelled).toBe(true);
+    expect(repeating.isCancelled).toBe(true);
+
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    expect(fired).toEqual([]);
+  });
+
+  test('a schedule armed before shutdown cannot fire after it', async () => {
+    const scheduler = new Scheduler();
+    let fired = false;
+    scheduler.scheduleOnceFunction(15, () => { fired = true; });
+    scheduler.shutdown();
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    expect(fired).toBe(false);
+  });
+
+  test('shutdown is idempotent', () => {
+    const scheduler = new Scheduler();
+    scheduler.scheduleOnceFunction(50, () => {});
+    scheduler.shutdown();
+    expect(() => scheduler.shutdown()).not.toThrow();
+  });
+});
+
+// #642 — a fired one-shot never flipped its own cancelled flag, so every
+// consumer that asked "is this still pending?" got the wrong answer forever.
+describe('Cancellable settlement', () => {
+  test('a fired one-shot reports itself finished', async () => {
+    const scheduler = new Scheduler();
+    const handle = scheduler.scheduleOnceFunction(5, () => {});
+    expect(handle.isCancelled).toBe(false);
+
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    expect(handle.isCancelled).toBe(true);
+  });
+
+  test('cancelling an already-fired one-shot returns false', async () => {
+    // "Did I get there before it ran?" was unanswerable: cancel() always
+    // claimed success.
+    const scheduler = new Scheduler();
+    const handle = scheduler.scheduleOnceFunction(5, () => {});
+    await new Promise((resolve) => setTimeout(resolve, 40));
+
+    expect(handle.cancel()).toBe(false);
+  });
+
+  test('cancelling before it fires returns true, and only once', () => {
+    const scheduler = new Scheduler();
+    const handle = scheduler.scheduleOnceFunction(1_000, () => {});
+    expect(handle.cancel()).toBe(true);
+    expect(handle.cancel()).toBe(false);
+    scheduler.shutdown();
+  });
+
+  test('a repeating schedule stays pending across ticks', async () => {
+    // Only cancellation ends a repeating schedule — it must not settle the
+    // way a one-shot does after its first run.
+    const scheduler = new Scheduler();
+    let ticks = 0;
+    const handle = scheduler.scheduleAtFixedRateFunction(5, 5, () => { ticks++; });
+
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    expect(ticks).toBeGreaterThan(1);
+    expect(handle.isCancelled).toBe(false);
+
+    handle.cancel();
+    expect(handle.isCancelled).toBe(true);
+    scheduler.shutdown();
+  });
+});
