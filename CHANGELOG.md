@@ -22,6 +22,39 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Fixed
 
+- **A terminated `ActorSystem` no longer keeps the process alive** (#641,
+  #762).  `Scheduler.shutdown()` set a flag, which suppresses the scheduled
+  callbacks but leaves the underlying `setTimeout` / `setInterval` handles
+  armed — and an armed interval holds the event loop open.  A flag could
+  never have fixed it: each handle lives inside the closure that created it.
+  Schedules now register with the scheduler, so `shutdown()` has something to
+  clear.
+
+- **A fired one-shot timer reports itself finished** (#642).  `Cancellable`
+  only flipped its flag on an explicit `cancel()`, so a timer that simply ran
+  claimed to be pending for the rest of the process: `isCancelled` stayed
+  false, `cancel()` returned `true` for a schedule that had already fired,
+  and `context.timers` listed dead keys as active while its map grew by one
+  entry per key for an actor that cycles through them.  A repeating schedule
+  still ends only when cancelled.
+
+- **`CoordinatedShutdown.removeProcessHooks()` removes only its own
+  listeners** (#644, #764).  It called `process.removeAllListeners(signal)` —
+  every SIGTERM/SIGINT listener in the process, including the application's
+  own graceful shutdown, other libraries', and a second `ActorSystem`'s.
+  `installProcessHooks` recorded only the signal name, so the handler it had
+  just installed was unreachable; the pair is now kept and removed with
+  `process.off`.
+
+- **A stopping actor releases its event-stream subscriptions** (#645, #763).
+  `unsubscribe` had one caller in the entire framework, so the subscriber
+  list only grew — every publish walked entries for long-gone actors and
+  turned each into a dead letter.  `publish` also iterated the live array
+  while a synchronous `tell` could mutate it; it now iterates a snapshot, so
+  the recipient set is fixed when `publish` is called.  The docs' advice to
+  "rely on the dead-letter cleanup" described something that never existed,
+  and is corrected in both languages.
+
 - **A Deno node can join an mTLS cluster** (#576).  `Deno.connectTls` accepts
   a client `key`/`cert` pair, but `DenoTcpBackend.connect` never passed them —
   so a Deno node could not answer a listener that (correctly, since #565)
