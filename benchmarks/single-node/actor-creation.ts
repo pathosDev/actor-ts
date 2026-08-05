@@ -14,7 +14,7 @@ async function main(): Promise<void> {
     .withLogger(new NoopLogger())
     .withLogLevel(LogLevel.Off);
   const system = ActorSystem.create('bench-create', systemOptions);
-  const props = () => new Noop();
+  const noop = () => new Noop();
 
   await runGroup('single-node · actor-creation', [
     {
@@ -22,7 +22,7 @@ async function main(): Promise<void> {
       unit: 'actor',
       iterations: 5_000,
       run: () => {
-        const ref = system.spawnAnonymous(props);
+        const ref = system.spawnAnonymous(noop);
         ref.stop();
       },
     },
@@ -33,7 +33,7 @@ async function main(): Promise<void> {
       opsPerIteration: 100,
       run: () => {
         const refs = [];
-        for (let i = 0; i < 100; i++) refs.push(system.spawnAnonymous(props));
+        for (let i = 0; i < 100; i++) refs.push(system.spawnAnonymous(noop));
         for (const r of refs) r.stop();
       },
     },

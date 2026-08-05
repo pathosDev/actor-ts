@@ -163,7 +163,7 @@ export class HttpIngressActor extends Actor<never> {
  * Lives here so `main.ts` doesn't need to know about the actor's
  * dep struct.
  */
-export function httpIngressProps(deps: HttpIngressDeps): ActorFactory<never> {
+export function httpIngressFactory(deps: HttpIngressDeps): ActorFactory<never> {
   return (() => new HttpIngressActor(deps)) as unknown as ActorFactory<never>;
 }
 
