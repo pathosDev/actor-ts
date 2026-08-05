@@ -1,4 +1,7 @@
 import type { Crdt, ReplicaId } from './Crdt.js';
+import {
+  assertPlausibleTimestamp,
+} from './CrdtWireValidation.js';
 
 /**
  * Last-Writer-Wins register.  A single value with a timestamp; on
@@ -74,6 +77,10 @@ export class LWWRegister<V> implements Crdt<LWWRegister<V>> {
 
   static fromJSON<V>(json: LWWRegisterJson<V>): LWWRegister<V> {
     if (json.kind !== 'LWWRegister') throw new Error(`LWWRegister.fromJSON: unexpected kind ${json.kind}`);
+    // Last-writer-wins is only as sound as the clocks feeding it: a
+    // far-future stamp beats every honest write from here on, and gets
+    // re-gossiped so the whole cluster converges on the wedge (#724).
+    assertPlausibleTimestamp(json.timestamp, 'LWWRegister.timestamp');
     return new LWWRegister<V>(json.value, json.timestamp, json.replica);
   }
 

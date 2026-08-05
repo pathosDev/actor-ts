@@ -1,5 +1,9 @@
 import type { Crdt, ReplicaId } from './Crdt.js';
 import { GCounter, type GCounterJson } from './GCounter.js';
+import {
+  assertPlainObject,
+  safeEntries,
+} from './CrdtWireValidation.js';
 
 /**
  * Map of grow-only counters — `Map<K, GCounter>` with a CRDT merge
@@ -113,11 +117,16 @@ export class GCounterMap<K> implements Crdt<GCounterMap<K>> {
       throw new Error(`GCounterMap.fromJSON: unexpected kind ${json.kind}`);
     }
     const identity = options.identity ?? (defaultIdentity as (k: K) => string);
+    assertPlainObject(json.counters, 'GCounterMap.counters');
     const entries = new Map<string, { key: K; counter: GCounter }>();
-    for (const [id, counterJson] of Object.entries(json.counters)) {
+    for (const [id, counterJson] of safeEntries(json.counters, 'GCounterMap.counters')) {
       const raw = json.keyValues?.[id];
       const key = raw !== undefined ? (JSON.parse(raw) as K) : (JSON.parse(id) as K);
-      entries.set(id, { key, counter: GCounter.fromJSON(counterJson) });
+      // Shape-check before handing it on: `GCounter.fromJSON` reads `.kind`
+      // off it, which throws a bare TypeError on `null` rather than the
+      // decode error the caller can act on.
+      assertPlainObject(counterJson, `GCounterMap.counters['${id}']`);
+      entries.set(id, { key, counter: GCounter.fromJSON(counterJson as unknown as GCounterJson) });
     }
     return new GCounterMap<K>(entries, identity);
   }

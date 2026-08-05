@@ -1,4 +1,10 @@
 import type { Crdt, ReplicaId } from './Crdt.js';
+import {
+  assertCounterValue,
+  assertPlainObject,
+  assertStringArray,
+  safeEntries,
+} from './CrdtWireValidation.js';
 
 /**
  * Observed-Remove Set.  Like a regular set with `add` / `remove` —
@@ -185,8 +191,21 @@ export class ORSet<E> implements Crdt<ORSet<E>> {
   static fromJSON<E>(json: ORSetJson, options: ORSetOptions<E> = {}): ORSet<E> {
     if (json.kind !== 'ORSet') throw new Error(`ORSet.fromJSON: unexpected kind ${json.kind}`);
     const identity = options.identity ?? (defaultIdentity as (e: E) => string);
+    // Tombstones are honoured on merge, so an unvalidated set lets a peer
+    // pre-tombstone tags a victim replica has not issued yet — its future
+    // adds then vanish on the next merge, silently and permanently (#722).
+    assertPlainObject(json.elements, 'ORSet.elements');
+    assertPlainObject(json.tombstones, 'ORSet.tombstones');
+    assertPlainObject(json.counters, 'ORSet.counters');
+    for (const [key, tags] of safeEntries(json.tombstones, 'ORSet.tombstones')) {
+      assertStringArray(tags, `ORSet.tombstones['${key}']`);
+    }
+    for (const [replicaId, count] of safeEntries(json.counters, 'ORSet.counters')) {
+      assertCounterValue(count, `ORSet.counters['${replicaId}']`);
+    }
     const elements = new Map<string, ElementEntry<E>>();
-    for (const [key, tags] of Object.entries(json.elements)) {
+    for (const [key, tags] of safeEntries(json.elements, 'ORSet.elements')) {
+      assertStringArray(tags, `ORSet.elements['${key}']`);
       // Backwards-compat: old wire shape didn't carry
       // `elementValues` — fall back to JSON.parse(key) which is
       // exactly the default-identity round-trip.
