@@ -345,6 +345,35 @@ conservative SemVer.) See `docs/.../reference/version-policy.mdx`.
   with a `Closes #NNN` (or `Fixes #NNN`) line in the commit body. (It
   resolves once the commit reaches `main` on push.)
 - Open an issue before non-trivial work to align on the approach first.
+- **Comment on the issue whenever the work changes course.** If something
+  you find while working changes the diagnosis, the approach, the scope,
+  or your confidence in any of them, say so on the issue *as you find it*
+  — a new comment, not an edit to the body, so the sequence stays
+  readable.
+
+  The commit message records what was done and why; it is a poor place
+  for what turned out to be wrong on the way there, and it is invisible
+  to anyone reading the issue later. What is worth a comment:
+
+  - **The report is inaccurate or stale.** The defect is already fixed,
+    half-fixed, differently caused than described, or reproduces only
+    under a precondition the report omits. Say which part still stands.
+  - **The obvious fix does not work.** Record the attempt and why it
+    failed, so the next person does not spend the same hour. (`Object.assign`
+    reintroducing a prototype-pollution bug verbatim, because it is
+    `[[Set]]` too, is exactly this.)
+  - **A chosen bound, default or name changed after measuring.** Give the
+    numbers that moved it.
+  - **The scope moved.** The fix turns out to need a different layer, a
+    new seam, or an API change the issue never mentioned — or part of it
+    belongs in another issue. Note the split and where the rest went.
+  - **A verification step proved nothing.** If a check you relied on was
+    invalid, that matters more than the result it produced.
+
+  This is the same reasoning as *Issue-first*: the value is traceability
+  for whoever picks the thread up next, including you in six months. A
+  duplicate, a wrong severity, or a fix that was tried and abandoned is
+  worth more written down than re-derived.
 
 ## Labels & security
 
