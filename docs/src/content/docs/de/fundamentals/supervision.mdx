@@ -164,9 +164,9 @@ Wenn `Restart` feuert:
 5. Die Mailbox wird **beibehalten**.  Die nächste Nachricht (die
    *nach* der fehlgeschlagenen) wird auf der neuen Instanz
    verarbeitet.
-6. Die **Kinder bleiben erhalten**.  Sie hängen an der Cell, die die
-   ersetzte Instanz überlebt — sie behalten also ihren eigenen
-   Zustand und ihre Mailbox über den Restart des Parents hinweg.
+6. Die **Kinder werden gestoppt**, und der Restart wartet auf sie,
+   bevor Schritt 3 die neue Instanz baut.  Das `preStart` der frischen
+   Inkarnation startet also mit einer leeren Child-Map.
 
 Die fehlgeschlagene Nachricht selbst wird **standardmäßig
 verworfen** — sie bleibt außerhalb der Mailbox.  Überschreibe
@@ -174,34 +174,35 @@ verworfen** — sie bleibt außerhalb der Mailbox.  Überschreibe
 fehlgeschlagene Nachricht in eine Dead-Letter-Queue zur Inspektion
 schieben).
 
-<Aside type="caution" title="Ein benanntes Kind in `preStart` spawnen">
-  Punkt 6 hat eine scharfe Kante.  Weil Schritt 4 `preStart` erneut
-  ausführt, während die Kinder der vorigen Inkarnation noch in der
-  Child-Map stehen, wirft ein Actor, der in `preStart` ein
-  **benanntes** Kind spawnt, beim ersten Restart
-  `Child name '<name>' is not unique`.
+<Aside type="tip" title="Kinder stattdessen behalten">
+  Kinder werden gestoppt, weil die Alternative ein ganz gewöhnliches
+  Muster unmöglich machte: Schritt 4 führt `preStart` erneut aus, ein
+  Actor, der dort ein **benanntes** Kind spawnt, lief also beim ersten
+  Restart in `Child name '<name>' is not unique` und erholte sich nie
+  davon.
 
-  Sind die Kinder entbehrlich, spawne sie anonym — die generierten
-  Namen kollidieren nie:
+  Wenn die Kinder teuer neu aufzubauen sind, Zustand halten, den der
+  Parent nicht wiederherstellen kann, oder eigenständig überwacht
+  werden — ein Connection-Pool etwa — steig aus:
+
+  ```ts
+  override stopChildrenOnRestart(): boolean { return false; }
+  ```
+
+  Sie überleben den Restart dann mit eigenem Zustand und eigener
+  Mailbox, und es liegt an dir, `preStart` idempotent zu halten:
 
   ```ts
   override preStart(): void {
-    this.worker = this.context.spawnAnonymous(Worker);
+    this.worker ??= this.context.spawn(Worker, 'worker');
   }
   ```
 
-  Soll der Restart sie neu aufbauen, stoppe sie selbst:
-
-  ```ts
-  override preRestart(reason: Error, message?: Command): void {
-    for (const child of this.context.children) child.stop();
-    super.preRestart(reason, message);
-  }
-  ```
-
-  Beides nicht zu tun ist ebenfalls in Ordnung — überlebende Kinder
-  sind oft genau das, was man will, und ein Parent, der neu startet,
-  ohne seinen Teilbaum anzufassen, ist das billigere Ergebnis.
+  Es ist ein eigener Hook und kein `preRestart`-Override, weil auf den
+  Abbau *gewartet* werden muss — die neue Instanz kann nicht gebaut
+  werden, solange die alten Kinder ihre Namen noch halten, und
+  `preRestart` kann dem Framework nicht mitteilen, dass es etwas
+  Wartenswertes angestoßen hat.
 </Aside>
 
 Wenn du willst, dass **Zustand über Restart hinweg erhalten bleibt**,

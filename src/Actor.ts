@@ -106,30 +106,42 @@ export abstract class Actor<TMessage = unknown> {
    * Called before a restart, on the instance about to be thrown away.
    * The default calls `postStop()` and nothing else.
    *
-   * In particular it does **not** stop this actor's children — they belong to
-   * the cell, which survives a restart, and only the `Actor` instance is
-   * replaced.  That has a consequence worth knowing before it bites: because
-   * `postRestart` re-runs `preStart` while the previous incarnation's children
-   * are still in the child map, an actor that spawns a *named* child in
-   * `preStart` throws `Child name '<name>' is not unique` on its first restart.
+   * Override to release what the instance holds outside itself — a file
+   * handle, an open socket, a broker connection — or to do something other
+   * than drop the message that failed.
    *
-   * Two ways out, depending on what the children are for.  If they are
-   * disposable, spawn them with `context.spawnAnonymous(...)`, whose generated
-   * names never collide.  If the restart is meant to rebuild them from scratch,
-   * override this and stop them explicitly:
-   *
-   *     override preRestart(reason: Error, message?: TMessage): void {
-   *       for (const child of this.context.children) child.stop();
-   *       super.preRestart(reason, message);
-   *     }
-   *
-   * Doing nothing is also a legitimate choice — surviving children keep their
-   * own state and mailboxes across the parent's restart, which is often exactly
-   * what you want.
+   * Stopping this actor's children is **not** done here: the framework tears
+   * them down after this hook returns and waits for them before building the
+   * replacement, because `postRestart` re-runs `preStart` and a named child
+   * needs its name back.  To keep the children instead, see
+   * {@link Actor.stopChildrenOnRestart}.
    */
   preRestart(_reason: Error, _message?: TMessage): void | Promise<void> {
     return this.postStop();
   }
+
+  /**
+   * Whether a restart tears this actor's children down before rebuilding it.
+   * Default: `true`.
+   *
+   * A restart replaces the `Actor` instance while the cell — and therefore
+   * the child map — survives.  Keeping the children was the old behaviour and
+   * it made an ordinary pattern impossible: `postRestart` re-runs `preStart`,
+   * so an actor that spawns a *named* child there hit `Child name … is not
+   * unique` on its first restart and never recovered (#634).
+   *
+   * Override to `false` when the children are expensive to rebuild, hold
+   * state the parent cannot restore, or are supervised independently — a
+   * connection pool, say.  They then outlive the restart exactly as before,
+   * and it is on you to make `preStart` idempotent (`this.child ??= …`, or
+   * `context.spawnAnonymous`).
+   *
+   * This is a separate hook rather than a `preRestart` override because the
+   * teardown has to be *awaited*: the new instance cannot be built until the
+   * old children are actually gone, and `preRestart` has no way to tell the
+   * cell that it started something worth waiting for.
+   */
+  stopChildrenOnRestart(): boolean { return true; }
 
   /** Called on the fresh instance after a restart.  Default: call preStart(). */
   postRestart(_reason: Error): void | Promise<void> {
