@@ -194,6 +194,21 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   of both standing down.  An **established** peer connection is still never
   displaced — only a node's own unfinished dial gives way — so the hijack
   defence the guard exists for is unchanged, and it now has a test saying so.
+- **Filesystem object storage stopped recognising its own temp files** (#909).
+  The `Math.random()` removal below (#898) changed the atomic-write temp path
+  from `<key>.tmp.<pid>.<ts>.<rand>` to `<key>.tmp.<pid>.<random>` without
+  updating the pattern `list()` uses to skip them — three all-digit groups
+  against a two-group name whose second half is hexadecimal, so it could not
+  match at all.  A temp file only survives if the process died between the
+  write and the rename, which means it holds a *partial* body; `list()` began
+  reporting those as ordinary objects, so any prefix scan — a sweep, a
+  migration, a durable-state enumeration — saw a key that was never committed.
+  Caught only after release-time review because the test wrote the old shape by
+  hand: that literal still matched the stale pattern, so the assertion passed
+  while the behaviour it guards was broken.  The fixture is now built from the
+  same `randomId` the writer uses, leftovers in the pre-#898 shape are still
+  skipped so an upgrade does not start surfacing them, and there is a test that
+  an ordinary key which merely looks temp-ish is not swallowed.
 - **Messages buffered during a handoff are no longer stranded** (#893).
   `completeHandOff` cleared the region's cached shard home without ever
   replaying the buffer, and the coordinator announces a new placement only to

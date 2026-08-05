@@ -50,7 +50,7 @@ import type { FilesystemObjectStorageOptions, FilesystemObjectStorageOptionsType
  *    single `put` — which shouldn't happen for the small payloads this
  *    backend targets.
  *  - **Atomic body writes.**  `put` writes to a per-process tmp file
- *    (`<key>.tmp.<pid>.<ts>.<rand>`), then renames over the target.  On
+ *    (`<key>.tmp.<pid>.<random>`), then renames over the target.  On
  *    POSIX `rename(2)` is atomic on the same filesystem; on Windows
  *    `MoveFileEx(MOVEFILE_REPLACE_EXISTING)` provides equivalent
  *    behaviour.  Concurrent readers always see either the old body or
@@ -284,7 +284,9 @@ export class FilesystemObjectStorageBackend implements ObjectStorageBackend {
         } else if (ent.isFile() && childRel.startsWith(options.prefix)) {
           if (childRel.endsWith('.meta.json')) continue;        // metadata sidecar
           if (childRel.endsWith('.lock')) continue;             // per-key write lock
-          if (TMP_FILE_RE.test(childRel)) continue;             // crash-leftover temp file
+          // Crash-leftover temp file — a body `put` never got to rename into
+          // place, so it is partial and was never a committed object.
+          if (TMP_FILE_RE.test(childRel) || LEGACY_TMP_FILE_RE.test(childRel)) continue;
           const stat = await fs.stat(path.join(root, childRel));
           out.push({ key: childRel, size: stat.size, lastModified: stat.mtime });
         }
@@ -337,8 +339,22 @@ const fsLazy: Lazy<Promise<FsModule>> = Lazy.of(async () => {
   return { fs, path };
 });
 
-/** Pattern emitted by `put`'s temp-file scheme — recognised by `list` to skip. */
-const TMP_FILE_RE = /\.tmp\.\d+\.\d+\.\d+$/;
+/**
+ * Pattern emitted by `put`'s temp-file scheme — recognised by `list` to skip.
+ *
+ * Must be kept in lockstep with the `tmpPath` template in `put`: the suffix
+ * moved to `randomId` when the predictable `Math.random()` one was replaced,
+ * and this pattern did not follow, so for one release window `list` reported a
+ * crashed writer's partial file as a real object (#909).
+ */
+const TMP_FILE_RE = /\.tmp\.\d+\.[0-9a-f]+$/;
+
+/**
+ * The pre-`randomId` shape, `.tmp.<pid>.<Date.now()>.<Math.random()*1e9>`.
+ * Still skipped: a directory written by an older version can hold leftovers in
+ * that form, and an upgrade must not start surfacing them as objects.
+ */
+const LEGACY_TMP_FILE_RE = /\.tmp\.\d+\.\d+\.\d+$/;
 
 /**
  * Acquire a per-key advisory lock by atomically creating `lockPath` with

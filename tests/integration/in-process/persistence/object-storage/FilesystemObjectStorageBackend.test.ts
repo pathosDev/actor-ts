@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { randomId } from '../../../../../src/util/RandomString.js';
 import { FilesystemObjectStorageBackend } from '../../../../../src/persistence/object-storage/FilesystemObjectStorageBackend.js';
 import { FilesystemObjectStorageOptions } from '../../../../../src/persistence/object-storage/FilesystemObjectStorageOptions.js';
 import { ObjectStorageConcurrencyError } from '../../../../../src/persistence/object-storage/ObjectStorageBackend.js';
@@ -75,11 +76,39 @@ describe('FilesystemObjectStorageBackend — basic CRUD', () => {
     await backend.put('real', bytes('value'));
     // Drop control-file artefacts that any backend operation could leave
     // behind — they must never surface as listed objects.
+    //
+    // The temp name is built from the same `process.pid` + `randomId` the
+    // writer uses rather than being spelled out, because a hand-written
+    // fixture is exactly how this regressed: when `put` moved off
+    // `Math.random()`, the literal `real.tmp.99.1700000000.42` still matched
+    // the (now stale) skip pattern, so the test stayed green while `list`
+    // had stopped recognising the shape `put` actually emits (#909).
     writeFileSync(join(tmpRoot, 'real.lock'), '12345 2024-01-01\n');
-    writeFileSync(join(tmpRoot, 'real.tmp.99.1700000000.42'), 'partial');
+    writeFileSync(join(tmpRoot, `real.tmp.${process.pid}.${randomId(12)}`), 'partial');
     writeFileSync(join(tmpRoot, 'real.meta.json'), '{}');
     const items = await backend.list({ prefix: '' });
     expect(items.map(i => i.key)).toEqual(['real']);
+  });
+
+  test('list still ignores temp files left by an older version', async () => {
+    // A directory written before the `randomId` switch can hold leftovers in
+    // the old `.tmp.<pid>.<ts>.<rand>` form; upgrading must not start
+    // reporting them as objects.
+    await backend.put('real', bytes('value'));
+    writeFileSync(join(tmpRoot, 'real.tmp.99.1700000000.42'), 'partial');
+    const items = await backend.list({ prefix: '' });
+    expect(items.map(i => i.key)).toEqual(['real']);
+  });
+
+  test('a real key that merely looks temp-ish is still listed', () => {
+    // The skip pattern is a filename heuristic, so it has to be tight enough
+    // not to swallow ordinary keys.  `.tmp` alone, or a non-numeric middle
+    // segment, is not the shape `put` emits.
+    writeFileSync(join(tmpRoot, 'notes.tmp'), 'a real object');
+    writeFileSync(join(tmpRoot, 'notes.tmp.draft.beef'), 'also real');
+    return backend.list({ prefix: '' }).then(items => {
+      expect(items.map(i => i.key).sort()).toEqual(['notes.tmp', 'notes.tmp.draft.beef']);
+    });
   });
 });
 
