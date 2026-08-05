@@ -100,6 +100,40 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Security
 
+- **CRDT payloads are validated before they are merged** (#699, #720, #722,
+  #724, #767).  `src/cluster/WireValidation.ts` forwards frame kinds it does
+  not know, on the stated grounds that the extension validates its own
+  payload — and DistributedData did not.  Every `fromJSON` checked `kind`
+  and trusted the rest, so whatever `JSON.parse` produced went into the
+  merge machinery.
+
+  That is worse than a handler throwing, because absorbing a peer's state
+  and keeping it is what a CRDT is for: twelve malformed frames exhausted
+  the DistributedData actor's restart budget and terminated it for good
+  (#699); one bad `GCounter` slot pinned a replica's counter at the ceiling
+  with no way back, since max never decreases (#720); an unvalidated `ORSet`
+  tombstone let a peer pre-tombstone tags a victim had not issued yet, so
+  its future adds vanished (#722); a year-3000 `LWWRegister` timestamp beat
+  every honest write from then on and was re-gossiped (#724); and a
+  `__proto__` key survived decode but was dropped by every re-encode, so it
+  neither gossiped nor persisted while the replica still believed it held
+  the key (#767).
+
+  **BREAKING:** previously-accepted frames are now rejected — in practice,
+  malformed or hostile ones.
+
+- **A gossip frame cannot exhaust the stack or freeze the event loop**
+  (#698, #721).  `decodeCrdt` recursed once per nested `ORMap` level with no
+  depth bound, and `MVRegister.merge` scanned every entry against every
+  other over an unbounded, peer-supplied array: a 442 KiB frame — far under
+  the 16 MiB frame cap — froze the loop for ~33 s, and since none of the
+  entries dominated another they were all kept, so every later merge was
+  slower than the last.  Nesting is capped at 32; multi-value registers get
+  their own tighter entry cap, since an entry there is a concurrent write
+  nobody has superseded rather than ordinary collection data.  Merge also
+  skips already-dominated entries as dominators, which makes the common
+  causal-chain case linear.
+
 - **A cluster `hello` identity is bound to the TLS peer certificate** (#912).
   mTLS decided *whether* a peer belonged in the cluster; nothing decided
   *which* member it was.  The `hello` frame carries a `NodeAddress` and no
