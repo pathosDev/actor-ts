@@ -295,6 +295,20 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   node must present one signed by that CA.  Set `requestClientCert: false` to
   keep one-way TLS.  A Deno cluster configured with `ca` no longer binds; run
   it on Node.js or Bun for mTLS, or opt out explicitly.
+- **A `ClusterClient`'s own wire identity no longer comes from `Math.random()`**
+  (#565 sweep).  A client without an explicit `clientIdentity` names itself
+  `50_000 + Math.floor(Math.random() * 15_000)`, and that port goes straight
+  into the `NodeAddress` it announces on the wire and keys the cluster's
+  `byPeer` map — so it is an address, not a coin flip, and a peer that can
+  predict it can address, impersonate or pre-claim the client's slot.
+  `Math.random()` is not a CSPRNG and its state is recoverable from a handful
+  of observed outputs; the comment above the line claimed hrtime-derived
+  randomness, which the code did not do.  It is now drawn with
+  `crypto.getRandomValues` across the whole IANA ephemeral range — the old
+  15 000-slot window also made an accidental collision likely at a few dozen
+  clients per process, which was a correctness problem on its own.  The last
+  of the generated-identifier findings this release sweeps up (#896, #897,
+  #898, #895).
 - **Quorum correlation ids in `DistributedData` are no longer guessable**
   (#896).  `nextPendingId()` returned `p<Date.now()>-<counter>`.  That value
   travels on the wire and the peer echoes it back on its acknowledgment, so an
