@@ -22,6 +22,25 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Fixed
 
+- **A fully compacted journal no longer blocks every later `persist`**
+  (#628).  Recovery raised its sequence only from a snapshot or from
+  replayed events, so an actor whose journal had been compacted past
+  everything recovered at 0.  That used to be harmless, because the journal
+  said 0 too — but since #379 the backends remember what they deleted, so
+  `highestSeq` correctly reports N while recovery reported 0, and the next
+  `persist` sent `expectedSeq=0` into a journal that had seen N.  The result
+  was a `JournalConcurrencyError` on every attempt, permanently, with no way
+  out short of editing the store.  Recovery now falls back to the journal's
+  high-water mark when there was nothing to replay — one extra query only in
+  that case, and a no-op for a brand-new actor.
+
+- **`deleteHistory(toSeq)` keeps the snapshot it compacts past** (#629).
+  `SnapshotStore.delete` is documented as inclusive, so compacting past a
+  snapshot deleted that snapshot along with the events it replaced — leaving
+  an actor with neither.  It now prunes snapshots strictly before `toSeq`,
+  and `toSeq <= 0` prunes nothing.  This is the first test the method has
+  ever had; it had no caller in the repo either.
+
 - **A terminated `ActorSystem` no longer keeps the process alive** (#641,
   #762).  `Scheduler.shutdown()` set a flag, which suppresses the scheduled
   callbacks but leaves the underlying `setTimeout` / `setInterval` handles

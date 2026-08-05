@@ -1,11 +1,18 @@
 /**
- * Compaction: `deleteHistory` shipped with no caller and no test anywhere in
- * the repo.
+ * Compaction round-trip: persist → snapshot → deleteHistory → recover →
+ * persist again.
  *
- * #629 — `SnapshotStore.delete` is documented as inclusive, so
- * `deleteHistory(N)` destroyed the snapshot *at* N: the one the compaction
- * was compacting past, and the only thing left holding the state the deleted
- * events had built.
+ * `deleteHistory` shipped with no caller and no test anywhere in the repo, and
+ * both halves of it were wrong in ways that only surface after a restart:
+ *
+ * - #629 — `SnapshotStore.delete` is documented inclusive, so
+ *   `deleteHistory(N)` destroyed the snapshot *at* N, the one it was
+ *   compacting past.  The actor was left with no snapshot and no events.
+ * - #628 — recovery seeded its sequence only from a snapshot or replayed
+ *   events, so a fully compacted journal recovered at 0.  Since #379 the
+ *   backends remember what they deleted, so `highestSeq` still reports N —
+ *   and `persist` then sends expectedSeq=0 into a journal that has seen N,
+ *   failing with `JournalConcurrencyError` on every attempt, permanently.
  */
 import { describe, expect, test } from 'bun:test';
 import { ActorSystem } from '../../../../src/ActorSystem.js';
@@ -69,6 +76,95 @@ function makeSystem(name: string): {
   extension.setSnapshotStore(snapshots);
   return { system, journal, snapshots };
 }
+
+describe('compaction round-trip', () => {
+  test('an actor survives a restart after full compaction (#628, #629)', async () => {
+    const { system, journal, snapshots } = makeSystem('compaction-roundtrip');
+    const reports: Report[] = [];
+    const collect = (r: Report): void => { reports.push(r); };
+
+    const first = system.spawn(() => new Ledger('ledger-1', collect), 'first');
+    for (const value of [1, 2, 3]) first.tell({ kind: 'append', value });
+    first.tell({ kind: 'snapshot' });
+    await sleep(120);
+    expect(await journal.highestSeq('ledger-1')).toBe(3);
+
+    // Compact past the snapshot: events 1..3 go, the snapshot at 3 stays.
+    first.tell({ kind: 'compact', toSeq: 3 });
+    await sleep(120);
+    expect((await journal.read('ledger-1', 1)).length).toBe(0);
+    // The journal remembers what it deleted — this is what made the bug
+    // permanent rather than merely lossy.
+    expect(await journal.highestSeq('ledger-1')).toBe(3);
+    // #629: the snapshot the compaction compacted past must still be there.
+    expect((await snapshots.loadLatest('ledger-1')).isSome()).toBe(true);
+
+    first.stop();
+    await sleep(80);
+
+    // Restart: state comes from the snapshot, and the sequence must line up
+    // with what the journal remembers.
+    reports.length = 0;
+    const second = system.spawn(() => new Ledger('ledger-1', collect), 'second');
+    second.tell({ kind: 'report' });
+    await sleep(120);
+    expect(reports).toEqual([{ total: 6 }]);
+
+    // #628: this used to throw JournalConcurrencyError, for good.
+    reports.length = 0;
+    second.tell({ kind: 'append', value: 10 });
+    await sleep(120);
+    expect(reports).toEqual([{ total: 16 }]);
+    expect(await journal.highestSeq('ledger-1')).toBe(4);
+
+    await system.terminate();
+  });
+
+  test('recovery of a compacted journal with no snapshot still advances the sequence (#628)', async () => {
+    // The harsher variant: nothing to recover state from, but the journal
+    // still knows how far it got.  State restarts at zero — that is expected
+    // after deleting the only record of it — while writes must keep working.
+    const { system, journal, snapshots } = makeSystem('compaction-no-snapshot');
+    const reports: Report[] = [];
+    const collect = (r: Report): void => { reports.push(r); };
+
+    const first = system.spawn(() => new Ledger('ledger-2', collect), 'first');
+    for (const value of [5, 5]) first.tell({ kind: 'append', value });
+    await sleep(120);
+    expect(await journal.highestSeq('ledger-2')).toBe(2);
+
+    await journal.delete('ledger-2', 2);
+    await snapshots.delete('ledger-2', 2);
+    first.stop();
+    await sleep(80);
+
+    reports.length = 0;
+    const second = system.spawn(() => new Ledger('ledger-2', collect), 'second');
+    second.tell({ kind: 'append', value: 7 });
+    await sleep(120);
+
+    expect(reports).toEqual([{ total: 7 }]);
+    expect(await journal.highestSeq('ledger-2')).toBe(3);
+
+    await system.terminate();
+  });
+
+  test('a brand-new actor starts at sequence zero', async () => {
+    // The high-water lookup must not invent history for an actor that has
+    // none — `highestSeq` returns 0 and the clamp is a no-op.
+    const { system, journal } = makeSystem('compaction-fresh');
+    const reports: Report[] = [];
+
+    const ref = system.spawn(() => new Ledger('ledger-3', (r) => reports.push(r)), 'fresh');
+    ref.tell({ kind: 'append', value: 4 });
+    await sleep(120);
+
+    expect(reports).toEqual([{ total: 4 }]);
+    expect(await journal.highestSeq('ledger-3')).toBe(1);
+
+    await system.terminate();
+  });
+});
 
 describe('deleteHistory', () => {
   test('keeps the snapshot it compacts past, and drops earlier ones (#629)', async () => {
