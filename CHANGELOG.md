@@ -48,6 +48,28 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Security
 
+- **A CBOR body can no longer stall the event loop** (#567, #618).  Two
+  unbounded paths in `CborDecoder`, both reachable from an ordinary
+  `entity()` route: `Content-Type` alone selects the codec, so an
+  application that only ever meant to accept JSON still handed an
+  attacker's `application/cbor` body to the CBOR decoder.
+
+  Tag 2 / tag 3 bignums were rebuilt one byte at a time with
+  `value = (value << 8n) | BigInt(byte)`, which reallocates the whole
+  accumulated bignum per iteration — quadratic in the declared length, and
+  the only ceiling was the 10 MB body limit.  A few hundred KB bought
+  seconds to tens of seconds of blocked event loop, during which no other
+  request, actor message or cluster heartbeat is served.  The magnitude is
+  now parsed in one pass, and capped at 1024 bytes (8192-bit) as a
+  backstop.
+
+  Separately, `readValue` recursed once per array, map and tag level with
+  no depth bound, so a couple of hundred KB of `0x81` bytes exhausted the
+  JS stack.  Nesting is now capped at 256.
+
+  Journals and snapshots are unaffected — nothing under `src/persistence/`
+  serializes through this codec.
+
 - **A socket that closes during the upgrade window is no longer lost on Hono**
   (#570).  The per-connection actor attaches its socket listeners from
   `preStart`, two mailbox hops after the upgrade returns.  The `ws`-package

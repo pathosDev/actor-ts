@@ -129,6 +129,54 @@ describe('CBOR BigInt (tags 2 / 3)', () => {
   });
 });
 
+describe('CBOR hostile input', () => {
+  /** `tag` (major 6) applied to a byte string of `length` 0xff bytes. */
+  function bignumPayload(tag: 2 | 3, length: number): Uint8Array {
+    const out = new Uint8Array(1 + 5 + length);
+    out[0] = 0xc0 | tag;          // major 6, additional info = tag number
+    out[1] = 0x5a;                // major 2 (bytes), 4-byte length follows
+    new DataView(out.buffer).setUint32(2, length, false);
+    out.fill(0xff, 6);
+    return out;
+  }
+
+  test('an oversize bignum is rejected instead of decoded (#567)', () => {
+    // 200 KB was measured at 5-16 s of blocked event loop before the fix.
+    expect(() => dec.decode(bignumPayload(2, 200_000))).toThrow(CborDecodeError);
+    expect(() => dec.decode(bignumPayload(3, 200_000))).toThrow(CborDecodeError);
+  });
+
+  test('rejecting an oversize bignum is immediate, not merely eventual (#567)', () => {
+    // The point of the fix is that the CPU is never spent.  A decoder that
+    // still ground through the quadratic loop and threw afterwards would
+    // satisfy the test above but not this one.
+    const started = performance.now();
+    expect(() => dec.decode(bignumPayload(2, 400_000))).toThrow(CborDecodeError);
+    expect(performance.now() - started).toBeLessThan(250);
+  });
+
+  test('a bignum at the limit still decodes, and linearly (#567)', () => {
+    // 1024 bytes = 8192-bit, the documented ceiling.  Guards against a fix
+    // that bounds the attack by making legitimate values unreachable.
+    const atLimit = bignumPayload(2, 1024);
+    const started = performance.now();
+    const value = dec.decode(atLimit);
+    expect(typeof value).toBe('bigint');
+    expect(value).toBe((1n << 8192n) - 1n);
+    expect(performance.now() - started).toBeLessThan(250);
+  });
+
+  test('nesting deeper than the cap is rejected before the stack blows (#618)', () => {
+    // 0x81 = array of one element; 100k of them is a 100k-deep structure.
+    const deep = new Uint8Array(100_000).fill(0x81);
+    expect(() => dec.decode(deep)).toThrow(CborDecodeError);
+  });
+
+  test('ordinary nesting still decodes', () => {
+    expect(rt({ a: [{ b: [{ c: 1 }] }] })).toEqual({ a: [{ b: [{ c: 1 }] }] });
+  });
+});
+
 describe('CBOR error paths', () => {
   test('decoder rejects trailing bytes', () => {
     // Encode one value, append an extra byte.

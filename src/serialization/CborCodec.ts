@@ -141,6 +141,22 @@ export class CborEncoder {
 
 /* ================================ Decoder ================================= */
 
+/**
+ * Ceiling on the byte length of a tag 2 / tag 3 bignum magnitude, i.e.
+ * 8192-bit integers.  Comfortably above anything a real message carries — an
+ * RSA-4096 modulus is 512 bytes — and the cost of rebuilding one is now
+ * linear anyway, so this is a backstop rather than the fix.
+ */
+const MAX_BIGNUM_BYTES = 1024;
+
+/**
+ * Ceiling on container nesting.  `readValue` recurses once per array, map and
+ * tag level, so without a bound a couple of hundred KB of `0x81` bytes
+ * exhausts the JS stack (#618).  Real payloads are shallow; anything near
+ * this is malformed or hostile.
+ */
+const MAX_NESTING_DEPTH = 256;
+
 export class CborDecoder {
   private pos = 0;
   private bytes!: Uint8Array;
@@ -150,14 +166,22 @@ export class CborDecoder {
     this.bytes = bytes;
     this.view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
     this.pos = 0;
-    const value = this.readValue();
+    const value = this.readValue(0);
     if (this.pos !== bytes.byteLength) {
       throw new CborDecodeError(`Trailing CBOR bytes at offset ${this.pos}`);
     }
     return value;
   }
 
-  private readValue(): unknown {
+  /**
+   * `depth` is threaded through rather than kept as a field so it unwinds
+   * with the call stack — there is no cleanup to forget on the many early
+   * returns and throws below.
+   */
+  private readValue(depth: number): unknown {
+    if (depth > MAX_NESTING_DEPTH) {
+      throw new CborDecodeError(`CBOR nesting deeper than ${MAX_NESTING_DEPTH} at offset ${this.pos}`);
+    }
     if (this.pos >= this.bytes.byteLength) {
       throw new CborDecodeError(`Unexpected end of input at offset ${this.pos}`);
     }
@@ -184,15 +208,15 @@ export class CborDecoder {
       case 4: {
         const out: unknown[] = [];
         const count = Number(len);
-        for (let i = 0; i < count; i++) out.push(this.readValue());
+        for (let i = 0; i < count; i++) out.push(this.readValue(depth + 1));
         return out;
       }
       case 5: {
         const out: Record<string, unknown> = {};
         const count = Number(len);
         for (let i = 0; i < count; i++) {
-          const key = this.readValue();
-          const value = this.readValue();
+          const key = this.readValue(depth + 1);
+          const value = this.readValue(depth + 1);
           if (typeof key !== 'string') {
             throw new CborDecodeError('Only string keys are supported in maps');
           }
@@ -202,7 +226,7 @@ export class CborDecoder {
       }
       case 6: {
         const tag = Number(len);
-        const inner = this.readValue();
+        const inner = this.readValue(depth + 1);
         return this.applyTag(tag, inner);
       }
       default:
@@ -286,6 +310,11 @@ export class CborDecoder {
         if (!(inner instanceof Uint8Array)) {
           throw new CborDecodeError(`Tag ${tag} expects a byte string`);
         }
+        if (inner.byteLength > MAX_BIGNUM_BYTES) {
+          throw new CborDecodeError(
+            `Tag ${tag} bignum is ${inner.byteLength} bytes, over the ${MAX_BIGNUM_BYTES}-byte limit`,
+          );
+        }
         const magnitude = bytesToBigInt(inner);
         return tag === TAG_UNSIGNED_BIGNUM ? magnitude : -1n - magnitude;
       }
@@ -309,8 +338,17 @@ function bigIntToBytes(n: bigint): Uint8Array {
   return new Uint8Array(bytes.reverse());
 }
 
+/**
+ * Rebuild a bignum magnitude from its big-endian bytes.
+ *
+ * Parses the whole magnitude in one `BigInt('0x…')` rather than shifting a
+ * byte in at a time.  The obvious loop — `value = (value << 8n) | BigInt(b)`
+ * — reallocates and copies the entire accumulated bignum on every iteration,
+ * so it costs O(n²) in the byte count and a few hundred KB of tag-2 payload
+ * blocks the event loop for tens of seconds (#567).
+ */
 function bytesToBigInt(bytes: Uint8Array): bigint {
-  let value = 0n;
-  for (const byte of bytes) value = (value << 8n) | BigInt(byte);
-  return value;
+  if (bytes.byteLength === 0) return 0n;
+  const hex = Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
+  return BigInt(`0x${hex}`);
 }
