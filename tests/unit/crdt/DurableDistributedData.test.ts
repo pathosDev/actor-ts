@@ -226,3 +226,51 @@ describe('DurableDistributedData — actor integration', () => {
     await stopNode(a2);
   }, 10_000);
 });
+
+// #725 — `load()` set `this.revision` before decoding.  A decode that threw
+// then left the caller with no state and the store holding a *valid*
+// revision, so the next save of the now-empty view satisfied the
+// optimistic-concurrency check and overwrote the record.  The load failure
+// is only a warning upstream, so one undecodable entry silently wiped the
+// entire durable replica.
+describe('DurableDistributedDataStore.load failure (#725)', () => {
+  test('a failed decode does not adopt the revision', async () => {
+    const store = new InMemoryDurableStateStore();
+    const durable = new DurableDistributedDataStore(store, 'replica-a');
+
+    await durable.save(new Map([['counter', GCounter.empty().increment('a', 5)]]));
+
+    // A second handle over the same store, as a restart would produce.
+    const restarted = new DurableDistributedDataStore(store, 'replica-a');
+    // Corrupt one entry the way a peer or a version skew could.
+    const raw = await store.load<{ entries: Record<string, unknown> }>('ddata|replica-a');
+    await store.upsert('ddata|replica-a', raw.value.revision, {
+      entries: { counter: { kind: 'GCounter', state: { a: 'not-a-number' } } },
+    });
+
+    await expect(restarted.load()).rejects.toThrow();
+
+    // The record must still be there, and a save from the empty view must
+    // NOT be able to replace it.
+    await expect(restarted.save(new Map())).rejects.toThrow();
+
+    const survived = await store.load<{ entries: Record<string, unknown> }>('ddata|replica-a');
+    expect(survived.isSome()).toBe(true);
+    expect(Object.keys(survived.value.state.entries)).toEqual(['counter']);
+  });
+
+  test('a clean load still adopts the revision and can save', async () => {
+    // The guard must not cost the happy path its concurrency token.
+    const store = new InMemoryDurableStateStore();
+    const durable = new DurableDistributedDataStore(store, 'replica-b');
+    await durable.save(new Map([['counter', GCounter.empty().increment('a', 1)]]));
+
+    const restarted = new DurableDistributedDataStore(store, 'replica-b');
+    const loaded = await restarted.load();
+    expect(loaded.size).toBe(1);
+
+    await restarted.save(new Map([['counter', GCounter.empty().increment('a', 9)]]));
+    const after = await store.load<{ entries: Record<string, { state: Record<string, number> }> }>('ddata|replica-b');
+    expect(after.value.state.entries['counter']!.state['a']).toBe(9);
+  });
+});

@@ -41,11 +41,19 @@ export class DurableDistributedDataStore {
   async load(): Promise<Map<string, Crdt<any>>> {
     const option = await this.store.load<DurableDDataPayload>(this.persistenceId);
     if (option.isNone()) return new Map();
-    this.revision = option.value.revision;
     const out = new Map<string, Crdt<any>>();
+    // Decode first, adopt the revision only once every entry is in.
+    //
+    // Assigning it up front looks harmless but destroys the data: a decode
+    // that throws leaves the caller with no state and this store holding a
+    // *valid* revision, so the next save of the now-empty view satisfies the
+    // optimistic-concurrency check and overwrites the persisted record.  The
+    // failure is swallowed as a warning upstream, so a single undecodable
+    // entry silently wipes the whole durable replica (#725).
     for (const [key, json] of Object.entries(option.value.state.entries)) {
       out.set(key, decodeCrdt(json));
     }
+    this.revision = option.value.revision;
     return out;
   }
 
