@@ -63,9 +63,11 @@ export function websocket<TOut, TIn, TSelf = never>(
     wireConnection<TOut, TIn, TSelf>(system, target, request, socket, codec, policy);
   };
 
-  // CSWSH defence — an Origin allowlist folds into the route's innermost
+  // CSWSH defence — the origin rules fold into the route's innermost
   // upgrade `authorize`, which every backend runs before the handshake.
-  const originGuard = makeOriginGuard(options.allowedOrigins);
+  // It has to be here rather than in middleware: an upgrade is a GET, and
+  // the CSRF middleware treats GET as a safe method and waves it through.
+  const originGuard = makeOriginGuard(options.allowedOrigins, options.requireSameOrigin ?? false);
 
   const node: Route = originGuard
     ? { kind: 'websocket', connect, authorize: originGuard }
@@ -74,21 +76,44 @@ export function websocket<TOut, TIn, TSelf = never>(
 }
 
 /**
- * Build an Origin-allowlist guard for the upgrade handshake, or `undefined`
- * when no origins are configured.  See
- * {@link WebsocketRouteOptionsType.allowedOrigins} and security audit WS-2.
+ * Host of an `Origin` header value, lowercased, or `null` if it does not
+ * parse.  Local to this module rather than shared with `Csrf.ts`: that one
+ * compares two origins, this one compares an origin against a `Host` header,
+ * which carries no scheme — so there is nothing to widen or narrow here.
+ */
+function originHost(origin: string): string | null {
+  try {
+    return new URL(origin).host.toLowerCase();
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Build the Origin guard for the upgrade handshake, or `undefined` when
+ * neither rule is configured.  See
+ * {@link WebsocketRouteOptionsType.allowedOrigins},
+ * {@link WebsocketRouteOptionsType.requireSameOrigin} and security audit WS-2.
  */
 function makeOriginGuard(
   allowedOrigins: ReadonlyArray<string> | undefined,
+  requireSameOrigin: boolean,
 ): ((request: HttpRequest) => HttpResponse | null) | undefined {
-  if (!allowedOrigins || allowedOrigins.length === 0) return undefined;
-  const allow = new Set(allowedOrigins.map((o) => o.toLowerCase()));
+  const allow = new Set((allowedOrigins ?? []).map((o) => o.toLowerCase()));
+  if (allow.size === 0 && !requireSameOrigin) return undefined;
+
   return (request: HttpRequest): HttpResponse | null => {
     const origin = request.headers['origin'];
     // Missing Origin → non-browser client (native WS / server-to-server);
-    // CSWSH can't apply, so allow.  Present-but-unlisted → reject.
+    // CSWSH rides a victim browser's ambient credentials and a browser
+    // always sends one, so it cannot be that attack.  Allow.
     if (origin === undefined) return null;
     if (allow.has(origin.toLowerCase())) return null;
+    if (requireSameOrigin) {
+      const host = request.headers['host'];
+      const from = originHost(origin);
+      if (host !== undefined && from !== null && from === host.toLowerCase()) return null;
+    }
     return { status: Status.Forbidden, body: { error: `websocket origin not allowed: ${origin}` } };
   };
 }
