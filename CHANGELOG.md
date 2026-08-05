@@ -348,6 +348,13 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Changed
 
+- **A resumed actor's children are resumed with it** (#635).  A failure
+  suspends the failing actor's subtree so nothing in it runs while the
+  supervisor decides, but `Directive.Resume` only ever reached the actor that
+  failed.  Its children stayed suspended permanently: mailboxes filled,
+  nothing was processed, and there was no error and no dead letter to notice
+  it by.  `suspend` and `resume` now walk the same tree.
+
 - **BREAKING — a restart stops the actor's children** (#634).  A restart
   replaces the `Actor` instance while the cell, and with it the child map,
   survives.  Children were therefore inherited by the new incarnation — which

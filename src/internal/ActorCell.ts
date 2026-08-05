@@ -773,14 +773,34 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
       .exhaustive();
   }
 
+  /**
+   * Suspend this cell and everything under it.
+   *
+   * The cascade is what makes {@link onResume} able to be symmetric.  A
+   * failure suspends the failing actor's subtree so nothing in it processes
+   * a message while the supervisor decides; the decision then has to be able
+   * to undo exactly that, and it can only do so if both directions walk the
+   * same tree (#635).
+   */
   private onSuspend(): void {
     this.mailbox.suspend();
     if (this.state === 'running') this.state = 'suspended';
+    for (const child of this._children.values()) child.enqueueSystem({ kind: 'suspend' });
   }
 
+  /**
+   * Resume this cell and everything under it.
+   *
+   * Resuming only this cell left the failed actor's children suspended for
+   * good: `failToParent` suspends the subtree, but `Directive.Resume` only
+   * ever reached the actor that failed.  Their mailboxes then filled and
+   * nothing was ever processed again — no error, no dead letters, just a
+   * silently dead branch of the tree (#635).
+   */
   private onResume(): void {
     this.mailbox.resume();
     if (this.state === 'suspended') this.state = 'running';
+    for (const child of this._children.values()) child.enqueueSystem({ kind: 'resume' });
   }
 
   private onWatchNotify(signal: WatchNotifyCommand): void {

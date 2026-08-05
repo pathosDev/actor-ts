@@ -337,3 +337,47 @@ describe('restart and children', () => {
   });
 });
 
+// #635 — a failure suspends the failing actor's subtree so nothing in it runs
+// while the supervisor decides.  `Directive.Resume` then only ever reached the
+// actor that failed, so its children stayed suspended for good: mailboxes
+// filled, nothing was processed, and there was no error and no dead letter to
+// notice it by.
+describe('resume after a failure', () => {
+  const sys = systemFixture('resume-subtree-tests');
+
+  test("a resumed actor's children are resumed with it", async () => {
+    const events: string[] = [];
+    class Grandchild extends Actor<string> {
+      override onReceive(m: string): void { events.push(`grandchild:${m}`); }
+    }
+    class Child extends Actor<string> {
+      private grandchild: import('../../src/ActorRef.js').ActorRef<string> | null = null;
+      override preStart(): void { this.grandchild = this.context.spawnAnonymous(Grandchild); }
+      override onReceive(m: string): void {
+        if (m === 'boom') throw new FooError();
+        events.push(`child:${m}`);
+        this.grandchild?.tell(m);
+      }
+    }
+    class Parent extends Actor<string> {
+      private child: import('../../src/ActorRef.js').ActorRef<string> | null = null;
+      override supervisorStrategy(): SupervisorStrategy {
+        return new OneForOneStrategy(() => Directive.Resume);
+      }
+      override preStart(): void { this.child = this.context.spawnAnonymous(Child); }
+      override onReceive(m: string): void { this.child?.tell(m); }
+    }
+
+    const parent = sys().spawn(Parent, 'resume-subtree');
+    parent.tell('boom');
+    await Bun.sleep(60);
+
+    // The whole branch must still be live — child *and* grandchild.
+    parent.tell('after');
+    await awaitCondition(
+      () => events.includes('grandchild:after'),
+      { label: 'the grandchild processed a message after the resume' },
+    );
+    expect(events).toContain('child:after');
+  });
+});
