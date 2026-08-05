@@ -129,7 +129,7 @@ cluster.sharding.start('cart', () => new CartActor(deps),
 // 3. Full-form — every setting via the builder:
 const startSharding3Options = StartShardingOptions.create<CartCommand>()
   .withTypeName('cart')
-  .withEntityActor(() => new CartActor())
+  .withEntityActor(CartActor)
   .withExtractEntityId((m) => m.entityId)
   .withNumShards(16)
   .withRole('cart-host');
@@ -373,7 +373,7 @@ shard is empty precisely because its entities went idle.
 ```ts
 const shardingOptions = StartShardingOptions.create<CartCommand>()
   .withTypeName('cart')
-  .withEntityActor(() => new CartActor())
+  .withEntityActor(CartActor)
   .withExtractEntityId((command) => command.entityId)
   .withPassivationIdleMs(120_000)
   // Shards are cheap to keep and cost a respawn to lose — outliving their

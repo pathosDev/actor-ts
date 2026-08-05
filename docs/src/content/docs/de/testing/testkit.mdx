@@ -153,7 +153,7 @@ describe('Counter', () => {
   });
 
   it('inkrementiert', async () => {
-    const ref = tk.system.spawnAnonymous(() => new Counter());
+    const ref = tk.system.spawnAnonymous(Counter);
     ref.tell({ kind: 'increment' });
     ref.tell({ kind: 'get', replyTo: probe as ActorRef<number> });
     await probe.expectMessage(1);

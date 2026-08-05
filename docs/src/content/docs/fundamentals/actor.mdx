@@ -75,21 +75,24 @@ You don't `new Counter()` directly.  The framework needs to control
 **when** the instance is created (on its own mailbox-processing thread,
 not on the caller's) and it needs to inject context (the `self` ref,
 the supervisor strategy, the parent reference).  So instead of an
-instance, you hand over a factory:
+instance, you hand over the class itself:
 
 ```ts
 const system = ActorSystem.create('demo');
 
 // Anonymous actor — system picks a name.
-const counter = system.spawnAnonymous(() => new Counter());
+const counter = system.spawnAnonymous(Counter);
 
 // Named actor — useful for log lines + path-based lookup.
-const counter2 = system.spawn(() => new Counter(), 'counter');
+const counter2 = system.spawn(Counter, 'counter');
 ```
 
-`...` wraps the factory + supervisor strategy + dispatcher
-choice into one value.  See [Spawning actors](/fundamentals/spawning/) for
-the full surface.
+A constructor that takes arguments has no zero-argument form to call, so
+that case hands over a factory instead — `system.spawn(() => new
+Counter(database), 'counter')`.  The optional third argument,
+`ActorOptions`, carries the supervisor strategy, dispatcher and mailbox
+choice.  See [Spawning actors](/fundamentals/spawning/) for the full
+surface.
 
 ## Sending messages
 
@@ -253,10 +256,7 @@ Actors can have children.  Use `context.spawn` from inside the parent's
 ```ts
 class Parent extends Actor<{ kind: 'add-child'; name: string }> {
   override onReceive(message: { kind: 'add-child'; name: string }): void {
-    const child = this.context.spawn(
-      () => new Worker(),
-      message.name,
-    );
+    const child = this.context.spawn(Worker, message.name);
     this.log.info(`spawned child ${child.path}`);
   }
 }

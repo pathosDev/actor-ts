@@ -139,7 +139,7 @@ const receptionist = system.extension(ReceptionistId).start(cluster);
 // Register this pod's API actor:
 receptionist.tell(new Register(
   ServiceKey.of<ApiMessage>('api'),
-  system.spawn(() => new ApiActor(), 'api'),
+  system.spawn(ApiActor, 'api'),
 ));
 
 // Other actors find it — the Listing is delivered to the reply target:

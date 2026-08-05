@@ -131,7 +131,7 @@ keep the router non-broadcast and wrap occasional messages in
 ```ts
 import { ClusterRouter } from 'actor-ts';
 
-ClusterRouter.props({
+ClusterRouter.factory({
   cluster,
   routerType: 'consistent-hashing',
   routeePath: '/user/worker',
@@ -179,7 +179,7 @@ const warmupStrategy: RoutingStrategy = (routees, state) => {
   return [routees[state.messageIndex % routees.length]];
 };
 
-system.spawnAnonymous(Router.custom(4, workerFactory, warmupStrategy));
+system.spawnAnonymous(Router.custom(4, Worker, warmupStrategy));
 ```
 
 Anything that satisfies `RoutingStrategy` works.  The state slot

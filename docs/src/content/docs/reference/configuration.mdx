@@ -228,7 +228,7 @@ explicitly, so the usual order holds per field:
 
 const shardingOptions = StartShardingOptions.create<CartCommand>()
   .withTypeName('cart')
-  .withEntityActor(() => new CartEntity())
+  .withEntityActor(CartEntity)
   .withExtractEntityId((command) => command.entityId)
   .withNumShards(256);
 
@@ -238,7 +238,7 @@ cluster.sharding.start(shardingOptions);
 
 A per-type setting therefore belongs in the builder; the config file is for
 the node-wide baseline you want to move between staging and production
-without a rebuild.  The polymorphic options — entity props, the extractors,
+without a rebuild.  The polymorphic options — entity actors, the extractors,
 the allocation strategy, a lease, the stores — have no HOCON form and stay
 in code.
 

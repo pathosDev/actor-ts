@@ -60,7 +60,7 @@ const cluster = await Cluster.join(
 );
 
 // 1. Jeder Node spawnt seinen eigenen Worker an /user/worker
-system.spawn(() => new Worker(), 'worker');
+system.spawn(Worker, 'worker');
 
 // 2. Jeder Node kann einen Cluster-Router bauen, der diese Worker anspricht
 const clusterRouterOptions = ClusterRouterOptions.create()
@@ -69,7 +69,7 @@ const clusterRouterOptions = ClusterRouterOptions.create()
   .withRouteePath('/user/worker')
   .withRole('compute');
 const router = system.spawn(
-  ClusterRouter.props(
+  ClusterRouter.factory(
     clusterRouterOptions,
   ),
   'compute-router',
@@ -126,7 +126,7 @@ const clusterRouterOptions = ClusterRouterOptions.create()
   .withRouterType('consistent-hashing')
   .withRouteePath('/user/cache')
   .withExtractKey((message) => message.userId);
-ClusterRouter.props(
+ClusterRouter.factory(
   clusterRouterOptions,
 );
 ```
@@ -178,7 +178,7 @@ Zähler.
 const clusterRouterOptions = ClusterRouterOptions.create()
   .withCluster(cluster)
   .withRole('compute');
-ClusterRouter.props(
+ClusterRouter.factory(
   clusterRouterOptions
     // ...
 );

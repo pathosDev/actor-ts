@@ -26,7 +26,7 @@ const receptionist = system.extension(ReceptionistId).start(cluster);
 const apiKey = ServiceKey.of<ApiMessage>('api-service');
 
 // 2. Register an actor under the key
-const api = system.spawn(() => new ApiActor(), 'api');
+const api = system.spawn(ApiActor, 'api');
 receptionist.tell(new Register(apiKey, api));
 
 // 3. A consumer actor receives the Listing that Find / Subscribe reply with
@@ -35,7 +35,7 @@ class Consumer extends Actor<Listing<ApiMessage>> {
     console.log(`${listing.refs.length} api actors in the cluster`);
   }
 }
-const consumer = system.spawn(() => new Consumer(), 'consumer');
+const consumer = system.spawn(Consumer, 'consumer');
 
 // 4. From any node — find every registered actor, or subscribe to changes
 receptionist.tell(new Find(apiKey, consumer));
@@ -106,7 +106,7 @@ class ApiConsumer extends Actor<Listing<ApiMessage>> {
     console.log(`${listing.refs.length} actors under ${listing.key.id}`);
   }
 }
-const consumer = system.spawn(() => new ApiConsumer(), 'consumer');
+const consumer = system.spawn(ApiConsumer, 'consumer');
 
 receptionist.tell(new Find(key, consumer));
 ```

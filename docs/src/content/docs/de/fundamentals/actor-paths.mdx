@@ -78,10 +78,10 @@ einen neuen Pfad zurück; es mutiert das Original nicht.
 Du kannst beim Spawnen einen `name` mitgeben:
 
 ```ts
-const ref = system.spawn(() => new Foo(), 'my-foo');
+const ref = system.spawn(Foo, 'my-foo');
 // ref.path.toString() === 'actor-ts://my-app/user/my-foo'
 
-const child = this.context.spawn(() => new Bar(), 'bar');
+const child = this.context.spawn(Bar, 'bar');
 // child.path.toString() === 'actor-ts://my-app/user/my-foo/bar'
 ```
 
@@ -93,14 +93,14 @@ der Pfad von außen erratbar ist — und ein Pfad ist eine Adresse.
 Zwei Regeln gelten beim Namen:
 
 1. **Namen müssen unter Geschwistern eindeutig sein.**  Zweimal
-   `context.spawn(props, 'bar')` auf demselben Parent wirft einen
+   `context.spawn(Worker, 'bar')` auf demselben Parent wirft einen
    Fehler — der Pfad ist bereits in Verwendung.
 2. **Der Name muss ein einzelnes Pfadsegment sein.**  Das Framework
    erzwingt das und wirft bei einem Namen, der den Pfad beschädigen
    würde: ein Trennzeichen `/` oder `\`, die Traversal-Segmente `.` und
    `..`, ein leerer Name oder ein beliebiges Steuerzeichen.  Ein Pfad
    wird durch Verbinden der Segmente mit `/` gerendert und durch Splitten
-   daran wieder zerlegt — `spawn(props, 'a/b')` würde also einen Pfad
+   daran wieder zerlegt — `spawn(Worker, 'a/b')` würde also einen Pfad
    erzeugen, der von einem Kind `b` eines Aktors `a` nicht zu
    unterscheiden ist, und damit mit einem anderen Aktor kollidieren oder
    ihn imitieren, auch über die Cluster-Verbindung, wo die Gegenseite den
@@ -215,7 +215,7 @@ class Worker extends Actor<...> {
     this.cache.tell({ kind: 'put', ... });
   }
 }
-const cache  = system.spawn(() => new Cache(), 'cache');
+const cache  = system.spawn(Cache, 'cache');
 const worker = system.spawnAnonymous(() => new Worker(cache));
 ```
 

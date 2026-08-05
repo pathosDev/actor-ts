@@ -88,7 +88,7 @@ Top-level actors are spawned via `system.spawn`:
 ```ts
 
 const root = system.spawn(
-  () => new MyRootActor(),
+  MyRootActor,
   'root',   // optional name; framework picks one if omitted
 );
 ```
@@ -102,10 +102,7 @@ not `system.spawn`:
 ```ts
 class Parent extends Actor<...> {
   override onReceive(message) {
-    const child = this.context.spawn(
-      () => new Child(),
-      'worker',
-    );
+    const child = this.context.spawn(Child, 'worker');
   }
 }
 ```
@@ -144,7 +141,7 @@ flowchart LR
   class DEAD dead
 ```
 
-When you call `system.spawn(props, name)`, the actor is created under
+When you call `system.spawn(actor, name)`, the actor is created under
 `/user`.  `/user` holds only what your code spawned; everything the
 framework spawns for itself lives under `/system`, one group per
 subsystem — see [Actor paths](/fundamentals/actor-paths/) for the full

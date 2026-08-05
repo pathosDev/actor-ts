@@ -23,7 +23,7 @@ lassen willst.
 import { ActorSystem, PoisonPill } from 'actor-ts';
 
 const system = ActorSystem.create('demo');
-const actor = system.spawnAnonymous(() => new Worker());
+const actor = system.spawnAnonymous(Worker);
 
 actor.tell({ kind: 'work', n: 1 });
 actor.tell({ kind: 'work', n: 2 });

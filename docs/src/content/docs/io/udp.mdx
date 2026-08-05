@@ -28,7 +28,7 @@ class PacketHandler extends Actor<UdpDatagram> {
   }
 }
 
-const target = system.spawnAnonymous(() => new PacketHandler());
+const target = system.spawnAnonymous(PacketHandler);
 
 const udpSocketOptions = UdpSocketOptions.create()
   .withBindPort(41234)   // bind for receiving; 0 lets the OS pick
@@ -96,7 +96,7 @@ class PacketHandler extends Actor<UdpDatagram> {
   }
 }
 
-const target = system.spawnAnonymous(() => new PacketHandler());
+const target = system.spawnAnonymous(PacketHandler);
 
 const udpSocketOptions = UdpSocketOptions.create()
   .withBindPort(41234)

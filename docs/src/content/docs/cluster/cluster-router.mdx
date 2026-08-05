@@ -59,7 +59,7 @@ const cluster = await Cluster.join(
 );
 
 // 1. Every node spawns its own worker at /user/worker
-system.spawn(() => new Worker(), 'worker');
+system.spawn(Worker, 'worker');
 
 // 2. Any node can build a cluster router targeting these workers
 const clusterRouterOptions = ClusterRouterOptions.create()
@@ -68,7 +68,7 @@ const clusterRouterOptions = ClusterRouterOptions.create()
   .withRouteePath('/user/worker')
   .withRole('compute');
 const router = system.spawn(
-  ClusterRouter.props(
+  ClusterRouter.factory(
     clusterRouterOptions,
   ),
   'compute-router',
@@ -124,7 +124,7 @@ const clusterRouterOptions = ClusterRouterOptions.create()
   .withRouterType('consistent-hashing')
   .withRouteePath('/user/cache')
   .withExtractKey((message) => message.userId);
-ClusterRouter.props(
+ClusterRouter.factory(
   clusterRouterOptions,
 );
 ```
@@ -173,7 +173,7 @@ subscribe to `MemberUp` and gate request handling on a counter.
 const clusterRouterOptions = ClusterRouterOptions.create()
   .withCluster(cluster)
   .withRole('compute');
-ClusterRouter.props(
+ClusterRouter.factory(
   clusterRouterOptions
     // ...
 );

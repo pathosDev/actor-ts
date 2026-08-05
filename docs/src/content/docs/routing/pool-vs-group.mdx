@@ -22,7 +22,7 @@ think about lifecycle, supervision, and resize.
 import { Router } from 'actor-ts';
 
 const pool = system.spawn(
-  Router.roundRobin(4, () => new Worker()),
+  Router.roundRobin(4, Worker),
   'workers',
 );
 ```
@@ -78,7 +78,7 @@ workers, all the same, parallelizing one stream of work.
 import { ClusterRouter } from 'actor-ts';
 
 const router = system.spawn(
-  ClusterRouter.props({
+  ClusterRouter.factory({
     cluster,
     routerType: 'round-robin',
     routeePath: '/user/worker',

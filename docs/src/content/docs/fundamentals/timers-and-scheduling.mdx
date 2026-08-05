@@ -52,7 +52,7 @@ class Heartbeat extends Actor<Message> {
 }
 
 const system = ActorSystem.create('demo');
-system.spawnAnonymous(() => new Heartbeat());
+system.spawnAnonymous(Heartbeat);
 ```
 
 Two key observations:

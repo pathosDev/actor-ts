@@ -21,7 +21,7 @@ const kubernetesLeaseOptions = KubernetesLeaseOptions.create()
   .withNamespace(process.env.K8S_NAMESPACE!);
 const startSingletonOptions = StartSingletonOptions.create()
   .withTypeName('job-scheduler')
-  .withActor(() => new JobScheduler())
+  .withActor(JobScheduler)
   .withLease(new KubernetesLease(
     kubernetesLeaseOptions,
   ));

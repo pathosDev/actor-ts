@@ -58,7 +58,7 @@ const ps      = system.extension(DistributedPubSubId);
 ps.start(cluster);
 
 // Subscribe (typischerweise im preStart eines Actors):
-const room = system.spawnAnonymous(() => new ChatRoom());
+const room = system.spawnAnonymous(ChatRoom);
 ps.mediator.tell(new Subscribe('chat.room.general', room));
 
 // Publish (von überall — von jedem Node, in oder außerhalb eines Actors):

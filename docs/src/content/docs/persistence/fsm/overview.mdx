@@ -56,7 +56,7 @@ class Door extends FSM<State, Data, Message> {
 }
 
 const system = ActorSystem.create('demo');
-const door = system.spawnAnonymous(() => new Door());
+const door = system.spawnAnonymous(Door);
 door.tell('open');
 door.tell('close');
 ```

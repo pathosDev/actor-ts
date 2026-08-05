@@ -16,7 +16,7 @@ named identically.  This guide walks through the translation.
 | `akka.actor.Props` | the actor class, a factory, or `ActorOptions<TMessage>` |
 | `tell(message)` / `!` | `tell(message)` |
 | `ask(message).mapTo[T]` | `ref.ask<TRes>(message, timeoutMs)` |
-| `context.spawnAnonymous(props)` | `context.spawnAnonymous(props)` |
+| `context.spawnAnonymous(props)` | `context.spawnAnonymous(MyActor)` |
 | `OneForOneStrategy` | `OneForOneStrategy` |
 | `AllForOneStrategy` | `AllForOneStrategy` |
 | `become(receive)` | `context.become(handler)` |
@@ -125,7 +125,7 @@ const cluster = await Cluster.join(system, clusterOptions);
 
 const region = cluster.sharding.start({
   typeName: 'Counter',
-  entityActor: () => new Counter(),
+  entityActor: Counter,
   extractEntityId: (message) => message.id,
   numShards: 100,
 });

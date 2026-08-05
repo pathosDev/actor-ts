@@ -83,19 +83,19 @@ Richtungen.
 ## `typedActor` — Interop mit der Klassen-oder-Factory-API
 
 ```ts
-import { typedActor } from 'actor-ts';
+import { ActorOptions, typedActor } from 'actor-ts';
 
-const props = typedActor(counter(0))
+const counterOptions = ActorOptions.create()
   .withMailboxCapacity(500)
   .withDispatcher(myDispatcher);
 
-const ref = system.spawn(props, 'counter');
+const ref = system.spawn(typedActor(counter(0)), 'counter', counterOptions);
 ```
 
-Wenn du ein typisiertes Behavior willst, die API aber einen Actor
-nimmt (weil es ein älterer Einstiegspunkt ist oder weil du
-`with…`-Builder verketten willst), gibt `typedActor(behavior)` die
-richtige `ActorFactory<T>` zurück.
+Wenn du ein typisiertes Behavior willst, die API aber eine Actor-Klasse
+oder Factory nimmt (weil es ein älterer Einstiegspunkt ist oder weil du
+die Zelle über `ActorOptions` konfigurieren willst), gibt
+`typedActor(behavior)` eine passende `ActorFactory<T>` zurück.
 
 Die Form:
 
@@ -103,9 +103,9 @@ Die Form:
 function typedActor<T>(behavior: Behavior<T>): ActorFactory<T>;
 ```
 
-Die zurückgegebene Factory kann überall übergeben werden, wo ein
-Actor erwartet wird — `system.spawn`, `context.spawn`,
-`ClusterSingleton.start`, der Entity-Slot der
+Die zurückgegebene Factory kann überall übergeben werden, wo eine
+Actor-Klasse oder Factory erwartet wird — `system.spawn`,
+`context.spawn`, `ClusterSingleton.start`, der Entity-Actor-Slot der
 Sharding-Region.
 
 ## Typed-Actor-zu-Typed-Child: `ctx.spawn`

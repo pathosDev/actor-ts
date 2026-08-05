@@ -26,7 +26,7 @@ entities to be **eagerly recreated**:
 ```ts
 const startShardingOptions = StartShardingOptions.create()
   .withTypeName('session')
-  .withEntityActor(() => new SessionActor())
+  .withEntityActor(SessionActor)
   .withExtractEntityId((message) => message.userId)
   .withRememberEntities(true);
 sharding.start(

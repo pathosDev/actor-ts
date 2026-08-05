@@ -63,7 +63,7 @@ class Boss extends Actor<{ kind: 'spawn-worker' }> {
   }
 
   override onReceive(message: { kind: 'spawn-worker' }): void {
-    const worker = this.context.spawnAnonymous(() => new Worker());
+    const worker = this.context.spawnAnonymous(Worker);
     worker.tell({ kind: 'do-it' });
     worker.tell({ kind: 'fail' });   // <- throws
     worker.tell({ kind: 'do-it' });  // <- new instance, after restart
@@ -176,7 +176,7 @@ for inspection).
 
   ```ts
   override preStart(): void {
-    this.worker = this.context.spawnAnonymous(() => new Worker());
+    this.worker = this.context.spawnAnonymous(Worker);
   }
   ```
 

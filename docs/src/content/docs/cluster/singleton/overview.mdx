@@ -165,7 +165,7 @@ be checked.  A static field is the carrier that works, and it composes
 with any base class — which matters, because a singleton is frequently
 also a `PersistentActor` and TypeScript has single inheritance.
 Enforcement happens at the `start` call site, which infers the message
-type from the key and from the props position at once and reports a
+type from the key and from the actor position at once and reports a
 mismatch between them.
 :::
 
