@@ -294,11 +294,15 @@ export class DevToolsServer implements DevToolsHubContext {
     if (this.hubRef === null) {
       throw new Error('DevToolsServer.routes() called before start()');
     }
+    // Same-origin is the floor, always — a WebSocket upgrade is not subject
+    // to the same-origin policy, so binding to loopback keeps the tap off
+    // the network but does nothing about the page the developer is browsing.
+    // `allowedOrigins` widens this; it does not replace it.
     const socket = websocket(
       this.hubRef as never,
       this.settings.allowedOrigins === undefined
-        ? {}
-        : { allowedOrigins: this.settings.allowedOrigins },
+        ? { requireSameOrigin: true }
+        : { requireSameOrigin: true, allowedOrigins: this.settings.allowedOrigins },
     );
 
     const api = path('api', concat(

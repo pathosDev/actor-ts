@@ -167,9 +167,18 @@ DevTools is a debugger, and the defaults treat it as one.
 - **Gates cover everything.** `auth` and `ipAllowlist` wrap the UI, the
   JSON endpoints *and* the WebSocket upgrade — a gate on only the JSON
   would leave the actual data channel open.
-- **Same-origin sockets.** The tap rejects a WebSocket upgrade from an
-  origin you did not list, so a page you visit cannot dial your local
-  DevTools.
+- **Same-origin sockets.** The tap accepts a WebSocket upgrade whose
+  `Origin` names the tap itself, and rejects any other — so a page you
+  visit cannot dial your local DevTools.  This is on by default and
+  needs no configuration: the UI is served by the tap, so its origin
+  always matches.  `allowedOrigins` *widens* the rule for a UI served
+  from somewhere else; it does not replace it.  A request with no
+  `Origin` at all is allowed, because CSWSH needs a browser and a
+  browser always sends one.
+
+  Binding to loopback is not a substitute for this. A WebSocket
+  handshake is not subject to the same-origin policy, so any page in
+  the developer's browser can reach `127.0.0.1`.
 
 If you do expose it, put it behind the same auth as your management
 endpoints and treat the credentials as production secrets:

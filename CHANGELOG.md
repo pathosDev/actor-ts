@@ -48,6 +48,29 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Security
 
+- **The DevTools WebSocket enforces the same-origin default it documented**
+  (#566).  `DevToolsOptions` and the DevTools page both promised
+  "same-origin only", but `routes()` passed no origin rules when
+  `allowedOrigins` was unset, and an empty allowlist built no upgrade guard
+  at all — so the tap accepted a handshake from any origin.  A WebSocket
+  upgrade is not subject to the same-origin policy, so the loopback bind
+  that makes the default feel private stops nothing: any page the developer
+  visited could open `ws://127.0.0.1:9333/api/ws`, complete the
+  unauthenticated handshake and read the actor tree, mailboxes, spans and —
+  time-travel being on by default — raw persisted events and reconstructed
+  actor state.  `DevTools.mount()` put the same socket on an application's
+  own server, behind whatever ambient auth that server had.
+
+  The tap now always requires the upgrade's `Origin` to name the tap
+  itself.  `allowedOrigins` widens that rule instead of replacing it, so
+  configuring one cannot lock out the tap's own UI, and a request with no
+  `Origin` is still allowed — CSWSH needs a browser, and a browser always
+  sends one.
+
+  Routes get `requireSameOrigin` for the same purpose.  It belongs on the
+  route's upgrade `authorize` rather than in middleware: an upgrade is a
+  GET, and `requireSameOrigin` from `Csrf.ts` waves safe methods through.
+
 - **A CBOR map key can no longer pick the decoded object's prototype**
   (#581).  Map decoding assigned each pair with `out[key] = value`, and
   assignment consults the prototype chain — so a 21-byte payload whose key
