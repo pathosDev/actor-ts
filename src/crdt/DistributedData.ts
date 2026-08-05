@@ -15,6 +15,7 @@ import { NodeAddress } from '../cluster/NodeAddress.js';
 import type { WireMessage } from '../cluster/Protocol.js';
 import type { Crdt } from './Crdt.js';
 import { DurableDistributedDataStore } from './DurableDistributedDataStore.js';
+import { CrdtDecodeError } from './CrdtWireValidation.js';
 import { GCounter, type GCounterJson } from './GCounter.js';
 import { GCounterMap, type GCounterMapJson } from './GCounterMap.js';
 import { PNCounter, type PNCounterJson } from './PNCounter.js';
@@ -76,8 +77,32 @@ export type CrdtJson =
  * **Do not** add a permissive `default` case that returns a stub —
  * it defeats the exhaustiveness check and turns missing variants
  * into silent runtime bugs.
+ *
+ * The switch itself lives in {@link decodeCrdtAtDepth}, which carries the
+ * nesting depth `ORMap` recursion has to bound; this is the entry point that
+ * starts it at zero.
  */
 export function decodeCrdt(json: CrdtJson): Crdt<any> {
+  return decodeCrdtAtDepth(json, 0);
+}
+
+/**
+ * Ceiling on nested `ORMap` levels.
+ *
+ * `decodeCrdt` recurses once per level, so without a bound a few MiB of
+ * nested map headers exhausts the JS stack — inside the DistributedData
+ * actor, from a single gossip frame (#721).  Real data is shallow; anything
+ * approaching this is malformed or hostile.
+ */
+const MAX_CRDT_NESTING_DEPTH = 32;
+
+function decodeCrdtAtDepth(json: CrdtJson, depth: number): Crdt<any> {
+  if (depth > MAX_CRDT_NESTING_DEPTH) {
+    throw new CrdtDecodeError(`CRDT nesting deeper than ${MAX_CRDT_NESTING_DEPTH} levels`);
+  }
+  if (typeof json !== 'object' || json === null) {
+    throw new CrdtDecodeError('CRDT payload must be an object');
+  }
   switch (json.kind) {
     case 'GCounter':    return GCounter.fromJSON(json);
     case 'PNCounter':   return PNCounter.fromJSON(json);
@@ -91,7 +116,7 @@ export function decodeCrdt(json: CrdtJson): Crdt<any> {
       json,
       // Inner CRDTs decode through the same dispatcher — a value can
       // be any of the registered CRDT kinds.
-      (inner) => decodeCrdt(inner as CrdtJson) as Crdt<any>,
+      (inner) => decodeCrdtAtDepth(inner as CrdtJson, depth + 1) as Crdt<any>,
     );
     default: {
       const _exhaustive: never = json;
