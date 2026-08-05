@@ -141,6 +141,15 @@ export class DenoTcpBackend implements TcpBackend {
         if (address && 'hostname' in address && 'port' in address) return `${address.hostname}:${address.port}`;
         return undefined;
       },
+      // No `peerCertificate()`: Deno exposes none.  `Deno.TlsConn` has no
+      // accessor for it and `handshake()` resolves to `{ alpnProtocol }`
+      // alone, so there is nothing to normalise.  Leaving the optional
+      // method off is the honest signal — the transport then skips the
+      // certificate-identity check rather than believing an empty answer
+      // means "no certificate was presented".  This is the same Deno gap
+      // that makes hosting an mTLS *listener* impossible (see
+      // `assertListenerTlsIsCoherent`), so a Deno node can join an mTLS
+      // cluster as a client but cannot enforce peer identity itself.
     };
 
     handlers.onOpen(sock);
