@@ -58,8 +58,24 @@ import { DevToolsNodeAgent } from './cluster/NodeAgent.js';
 import { DevToolsFederation } from './cluster/Federation.js';
 import { ClusterMembership } from './internal/ClusterMembership.js';
 
-/** Version reported in the handshake; kept in step with `package.json`. */
-const DEVTOOLS_SERVER_VERSION = '0.11.0';
+/**
+ * Version reported in the handshake, and shown on the overview's
+ * `actor-ts` tile (#911).
+ *
+ * Hand-maintained, because nothing else in the build can supply it:
+ * `tsc` copies no JSON, and importing `package.json` would drag the
+ * repository root into `rootDir` and rearrange the whole of `dist/`.
+ * It therefore drifted, silently, for two minor releases (#657) — the
+ * field you trust most when triaging a bug report was the one field
+ * nobody was checking.
+ *
+ * `DevToolsServerVersion.test.ts` now asserts it against `package.json`,
+ * so a release that forgets it fails the suite instead of shipping a
+ * lie.  **Bump this together with `package.json` when cutting one.**
+ *
+ * @internal
+ */
+export const DEVTOOLS_SERVER_VERSION = '0.13.0';
 
 /** Panels that can be switched off individually, in dashboard order. */
 const OPTIONAL_PANELS: ReadonlyArray<{

@@ -9,6 +9,16 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ## [Unreleased]
 
+### Fixed
+
+- **The DevTools handshake reported the wrong framework version** (#657).
+  `DEVTOOLS_SERVER_VERSION` is hand-maintained and had said `0.11.0`
+  since that release, so every DevTools session misreported the version
+  through `0.12.0` and `0.13.0` — in the one field you trust when
+  triaging.  It is now correct, and a test asserts it against
+  `package.json`, so a release that forgets the bump fails the suite
+  instead of shipping the lie.
+
 ## [0.13.0] — 2026-08-05
 
 ### Removed
