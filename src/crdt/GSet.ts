@@ -1,4 +1,7 @@
 import type { Crdt } from './Crdt.js';
+import {
+  assertStringArray,
+} from './CrdtWireValidation.js';
 
 /**
  * Grow-only set.  Adds win unconditionally; removes are not supported.
@@ -95,6 +98,7 @@ export class GSet<E> implements Crdt<GSet<E>> {
   static fromJSON<E>(json: GSetJson, options: GSetOptions<E> = {}): GSet<E> {
     if (json.kind !== 'GSet') throw new Error(`GSet.fromJSON: unexpected kind ${json.kind}`);
     const identity = options.identity ?? (defaultIdentity as (e: E) => string);
+    assertStringArray(json.elements, 'GSet.elements');
     const map = new Map<string, E>();
     for (const serialized of json.elements) {
       const element = JSON.parse(serialized) as E;

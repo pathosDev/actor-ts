@@ -1,4 +1,9 @@
 import type { Crdt, ReplicaId } from './Crdt.js';
+import {
+  assertCounterValue,
+  assertPlainObject,
+  safeEntries,
+} from './CrdtWireValidation.js';
 
 /**
  * Grow-only counter.  Each replica tracks its own monotonic count and
@@ -60,7 +65,16 @@ export class GCounter implements Crdt<GCounter> {
 
   static fromJSON(json: GCounterJson): GCounter {
     if (json.kind !== 'GCounter') throw new Error(`GCounter.fromJSON: unexpected kind ${json.kind}`);
-    return new GCounter(new Map(Object.entries(json.state)));
+    // Merge takes a componentwise maximum, so an out-of-range slot is not a
+    // transient error: it becomes that replica's permanent floor across the
+    // whole cluster, and `value()` sums whatever is stored (#720).
+    assertPlainObject(json.state, 'GCounter.state');
+    const state = new Map<string, number>();
+    for (const [replicaId, count] of safeEntries(json.state, 'GCounter.state')) {
+      assertCounterValue(count, `GCounter.state['${replicaId}']`);
+      state.set(replicaId, count);
+    }
+    return new GCounter(state);
   }
 
   /** Equality by value — two counters with the same per-replica counts. */

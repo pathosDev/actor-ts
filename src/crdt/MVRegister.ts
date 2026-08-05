@@ -1,4 +1,10 @@
 import type { Crdt, ReplicaId } from './Crdt.js';
+import {
+  assertBoundedArray,
+  assertCounterValue,
+  assertPlainObject,
+  safeEntries,
+} from './CrdtWireValidation.js';
 
 /**
  * Multi-Value Register.  Like {@link LWWRegister}, but instead of
@@ -121,11 +127,22 @@ export class MVRegister<V> implements Crdt<MVRegister<V>> {
     if (json.kind !== 'MVRegister') {
       throw new Error(`MVRegister.fromJSON: unexpected kind ${json.kind}`);
     }
+    // `merge` is quadratic in the entry count by nature — finding the
+    // causally maximal elements of an arbitrary partial order has no
+    // cheaper general form — so the bound has to be on the input (#698).
+    assertBoundedArray(json.entries, 'MVRegister.entries');
     return new MVRegister<V>(
-      json.entries.map((e) => ({
-        value: e.value,
-        vc: new Map(Object.entries(e.vc)),
-      })),
+      json.entries.map((e, index) => {
+        assertPlainObject(e, `MVRegister.entries[${index}]`);
+        const vc = (e as { vc?: unknown }).vc;
+        assertPlainObject(vc, `MVRegister.entries[${index}].vc`);
+        const clock = new Map<string, number>();
+        for (const [replicaId, count] of safeEntries(vc, `MVRegister.entries[${index}].vc`)) {
+          assertCounterValue(count, `MVRegister.entries[${index}].vc['${replicaId}']`);
+          clock.set(replicaId, count);
+        }
+        return { value: (e as { value: V }).value, vc: clock };
+      }),
     );
   }
 
