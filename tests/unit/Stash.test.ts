@@ -7,7 +7,6 @@ import {
 import { ActorSystem } from '../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../src/ActorSystemOptions.js';
 import { LogLevel, NoopLogger } from '../../src/Logger.js';
-import { Props } from '../../src/Props.js';
 import { DeadLetter } from '../../src/SystemMessages.js';
 import { awaitCondition } from '../util/AwaitCondition.js';
 
@@ -40,7 +39,7 @@ describe('Stash', () => {
     }
 
     const sys = newSystem();
-    const ref = sys.spawn(Props.create(() => new S()), 'a');
+    const ref = sys.spawn(S, 'a');
     ref.tell('a'); ref.tell('b'); ref.tell('c');
     ref.tell('ready');
     await sleep(50);
@@ -65,7 +64,7 @@ describe('Stash', () => {
     }
 
     const sys = newSystem();
-    const ref = sys.spawn(Props.create(() => new S()), 'a');
+    const ref = sys.spawn(S, 'a');
     ref.tell('stashed-1');
     ref.tell('stashed-2');
     ref.tell('ready');
@@ -87,7 +86,7 @@ describe('Stash', () => {
     }
 
     const sys = newSystem();
-    const ref = sys.spawn(Props.create(() => new S()), 'a');
+    const ref = sys.spawn(S, 'a');
     ref.tell('x'); ref.tell('y'); ref.tell('count');
     await sleep(40);
     expect(sizes).toEqual([1, 2, 2]);
@@ -106,7 +105,7 @@ describe('Stash', () => {
     }
 
     const sys = newSystem();
-    sys.spawn(Props.create(() => new S()), 'a');
+    sys.spawn(S, 'a');
     await sleep(30);
     expect(err).toBeInstanceOf(StashOutsideHandlerError);
     await sys.terminate();
@@ -123,7 +122,7 @@ describe('Stash', () => {
     }
 
     const sys = newSystem();
-    const ref = sys.spawn(Props.create(() => new S()), 'a');
+    const ref = sys.spawn(S, 'a');
     ref.tell('flush');
     ref.tell('hi');
     await sleep(40);
@@ -171,7 +170,7 @@ describe('Stash — messages that never get unstashed', () => {
   async function listenForDeadLetters(sys: ActorSystem): Promise<DeadLetter[]> {
     const letters: DeadLetter[] = [];
     const ready = { value: false };
-    sys.spawn(Props.create(() => new DeadLetterListener(letters, ready)), 'dead-letters');
+    sys.spawn(() => new DeadLetterListener(letters, ready), 'dead-letters');
     await awaitCondition(() => ready.value, { label: 'the dead-letter listener subscribed' });
     return letters;
   }
@@ -181,7 +180,7 @@ describe('Stash — messages that never get unstashed', () => {
     const letters = await listenForDeadLetters(sys);
     const stashed: string[] = [];
 
-    const ref = sys.spawn(Props.create(() => new Parking(stashed)), 'a');
+    const ref = sys.spawn(() => new Parking(stashed), 'a');
     ref.tell('a'); ref.tell('b'); ref.tell('c');
     await awaitCondition(() => stashed.length === 3, { label: 'all three messages were stashed' });
 
@@ -201,7 +200,7 @@ describe('Stash — messages that never get unstashed', () => {
     const letters = await listenForDeadLetters(sys);
     const stashed: string[] = [];
 
-    const ref = sys.spawn(Props.create(() => new Parking(stashed)), 'a');
+    const ref = sys.spawn(() => new Parking(stashed), 'a');
     ref.tell('a'); ref.tell('b');
     await awaitCondition(() => stashed.length === 2, { label: 'both messages were stashed' });
 

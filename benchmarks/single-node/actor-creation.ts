@@ -4,7 +4,7 @@
  *
  *   bun run benchmarks/single-node/actor-creation.ts
  */
-import { Actor, ActorSystem, ActorSystemOptions, LogLevel, NoopLogger, Props } from '../../src/index.js';
+import { Actor, ActorSystem, ActorSystemOptions, LogLevel, NoopLogger } from '../../src/index.js';
 import { runGroup } from '../lib/harness.js';
 
 class Noop extends Actor<unknown> { override onReceive(): void {} }
@@ -14,7 +14,6 @@ async function main(): Promise<void> {
     .withLogger(new NoopLogger())
     .withLogLevel(LogLevel.Off);
   const system = ActorSystem.create('bench-create', systemOptions);
-  const props = Props.create(() => new Noop());
 
   await runGroup('single-node · actor-creation', [
     {
@@ -22,7 +21,7 @@ async function main(): Promise<void> {
       unit: 'actor',
       iterations: 5_000,
       run: () => {
-        const ref = system.spawnAnonymous(props);
+        const ref = system.spawnAnonymous(Noop);
         ref.stop();
       },
     },
@@ -33,7 +32,7 @@ async function main(): Promise<void> {
       opsPerIteration: 100,
       run: () => {
         const refs = [];
-        for (let i = 0; i < 100; i++) refs.push(system.spawnAnonymous(props));
+        for (let i = 0; i < 100; i++) refs.push(system.spawnAnonymous(Noop));
         for (const r of refs) r.stop();
       },
     },

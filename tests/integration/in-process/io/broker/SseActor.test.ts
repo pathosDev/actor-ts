@@ -2,7 +2,6 @@ import { describe, expect, test } from 'bun:test';
 import { ActorSystem } from '../../../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../../../src/ActorSystemOptions.js';
 import { LogLevel, NoopLogger } from '../../../../../src/Logger.js';
-import { Props } from '../../../../../src/Props.js';
 import { Actor } from '../../../../../src/Actor.js';
 import { SseActor, type SseEvent } from '../../../../../src/io/broker/SseActor.js';
 import { SseOptions } from '../../../../../src/io/broker/SseOptions.js';
@@ -41,12 +40,12 @@ describe('SseActor — round-trip via Bun.serve', () => {
       .withLogLevel(LogLevel.Off);
     const sys = ActorSystem.create('sse-1', sysOptions);
     const collector = new CollectActor();
-    const target = sys.spawnAnonymous(Props.create(() => collector));
+    const target = sys.spawnAnonymous(() => collector);
     const sseOptions = SseOptions.create()
       .withUrl(`http://localhost:${server.port}/`)
       .withTarget(target)
       .withReconnect(false);  // disable so the test ends predictably
-    sys.spawnAnonymous(Props.create(() => new SseActor(sseOptions)));
+    sys.spawnAnonymous(() => new SseActor(sseOptions));
     await sleep(150);
 
     expect(collector.received.length).toBe(4);

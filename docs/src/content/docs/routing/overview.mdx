@@ -12,7 +12,7 @@ Two shapes ship with the framework:
 
 | Form | Where it lives | Routees are... |
 | --- | --- | --- |
-| **`Router`** (local) | One node, one actor system. | Children of the router, **created at spawn time** with the same `Props`. |
+| **`Router`** (local) | One node, one actor system. | Children of the router, **created at spawn time** from the same actor. |
 | **`ClusterRouter`** | Across cluster nodes. | Up-members of the cluster, **derived from membership** + a routee path. |
 
 Both expose the same external surface: a single `ActorRef<TMessage>`
@@ -38,7 +38,7 @@ Three patterns:
 ## A minimal example
 
 ```ts
-import { ActorSystem, Props, Router, Actor } from 'actor-ts';
+import { ActorSystem, Router, Actor } from 'actor-ts';
 
 class Worker extends Actor<{ payload: string }> {
   override onReceive(message: { payload: string }): void {
@@ -49,7 +49,7 @@ class Worker extends Actor<{ payload: string }> {
 const system = ActorSystem.create('demo');
 
 const pool = system.spawn(
-  Router.roundRobin(4, Props.create(() => new Worker())),
+  Router.roundRobin(4, Worker),
   'workers',
 );
 
@@ -110,13 +110,14 @@ and it `watch`es each routee.  When a routee crashes:
   messages are processed once the routee is running again.
 
 For per-routee supervision strategies, configure them on the
-routee `Props`:
+routee options:
 
 ```ts
-const routeeProps = Props.create(() => new Worker())
-  .withSupervisorStrategy(stoppingStrategy);
+import { ActorOptions } from 'actor-ts';
 
-system.spawn(Router.roundRobin(4, routeeProps), 'workers');
+const routeeOptions = ActorOptions.create().withSupervisorStrategy(stoppingStrategy);
+
+system.spawn(Router.roundRobin(4, Worker, routeeOptions), 'workers');
 ```
 
 Now any worker that throws is **stopped** instead of restarted —

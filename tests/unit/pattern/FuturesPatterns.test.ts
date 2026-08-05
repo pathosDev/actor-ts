@@ -2,7 +2,6 @@ import { describe, expect, test } from 'bun:test';
 import { Actor } from '../../../src/Actor.js';
 import { ActorSystem } from '../../../src/ActorSystem.js';
 import { LogLevel, NoopLogger } from '../../../src/Logger.js';
-import { Props } from '../../../src/Props.js';
 import { after, pipeTo, retry, Success, Failure } from '../../../src/pattern/index.js';
 import { ManualScheduler } from '../../../src/testkit/ManualScheduler.js';
 import { TestKit } from '../../../src/testkit/TestKit.js';
@@ -66,7 +65,7 @@ describe('pipeTo', () => {
         probe.tell({ value: m.value, sender: this.sender.map((s) => s.path.name).toNullable() });
       }
     }
-    const holder = kit.system.spawnAnonymous(Props.create(() => new Holder()));
+    const holder = kit.system.spawnAnonymous(Holder);
     pipeTo(Promise.resolve('hello'), holder, { sender: probe });
 
     const got = await probe.receiveOne(200) as { value: string; sender: string | null };

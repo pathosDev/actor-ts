@@ -21,7 +21,6 @@ import { NodeAddress } from '../../src/cluster/NodeAddress.js';
 import { InMemoryTransport } from '../../src/cluster/Transport.js';
 import { ClusterRouter, ClusterRouterOptions } from '../../src/cluster/router/index.js';
 import { LogLevel, NoopLogger } from '../../src/Logger.js';
-import { Props } from '../../src/Props.js';
 import { Broadcast } from '../../src/Router.js';
 
 const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
@@ -107,7 +106,7 @@ async function startNode(
       received.push(m.id);
     }
   }
-  sys.spawn(Props.create(() => new Worker()), 'worker');
+  sys.spawn(Worker, 'worker');
 
   return { role: roles[0] ?? 'no-role', sys, cluster, received };
 }
@@ -133,7 +132,7 @@ describe('ClusterRouter — multi-node', () => {
         .withRouterType('round-robin')
         .withRouteePath('/user/worker');
       const router = nodeA.sys.spawn(
-        ClusterRouter.props<{ kind: 'work'; id: string }>(routerOptions),
+        ClusterRouter.factory<{ kind: 'work'; id: string }>(routerOptions),
         'rr-router',
       );
       // Wait one tick for the router's preStart to subscribe + rebuild.
@@ -179,7 +178,7 @@ describe('ClusterRouter — multi-node', () => {
         .withRouteePath('/user/worker')
         .withExtractKey((m) => m.id);
       const router = nodeA.sys.spawn(
-        ClusterRouter.props<{ kind: 'work'; id: string }>(routerOptions),
+        ClusterRouter.factory<{ kind: 'work'; id: string }>(routerOptions),
         'ch-router',
       );
       await sleep(50);
@@ -228,7 +227,7 @@ describe('ClusterRouter — multi-node', () => {
         .withRouterType('round-robin')
         .withRouteePath('/user/worker');
       const router = nodeA.sys.spawn(
-        ClusterRouter.props<{ kind: 'work'; id: string }>(routerOptions),
+        ClusterRouter.factory<{ kind: 'work'; id: string }>(routerOptions),
         'role-router',
       );
       await sleep(50);
@@ -264,7 +263,7 @@ describe('ClusterRouter — multi-node', () => {
         .withRouterType('round-robin')
         .withRouteePath('/user/worker');
       const router = nodeA.sys.spawn(
-        ClusterRouter.props<{ kind: 'work'; id: string }>(routerOptions),
+        ClusterRouter.factory<{ kind: 'work'; id: string }>(routerOptions),
         'leave-router',
       );
       await sleep(50);
@@ -327,7 +326,7 @@ describe('ClusterRouter — multi-node', () => {
         .withRouterType('round-robin')
         .withRouteePath('/user/worker');
       const router = nodeA.sys.spawn(
-        ClusterRouter.props<{ kind: 'work'; id: string }>(routerOptions),
+        ClusterRouter.factory<{ kind: 'work'; id: string }>(routerOptions),
         'bc-router',
       );
       await sleep(50);

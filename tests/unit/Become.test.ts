@@ -3,7 +3,6 @@ import { Actor } from '../../src/Actor.js';
 import { ActorSystem } from '../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../src/ActorSystemOptions.js';
 import { LogLevel, NoopLogger } from '../../src/Logger.js';
-import { Props } from '../../src/Props.js';
 
 const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
 const newSystem = (name = 'become-unit'): ActorSystem => {
@@ -23,7 +22,7 @@ describe('become / unbecome', () => {
       }
     }
     const sys = newSystem();
-    const ref = sys.spawn(Props.create(() => new A()), 'a');
+    const ref = sys.spawn(A, 'a');
     ref.tell('1'); ref.tell('2'); ref.tell('3');
     await sleep(40);
     expect(out).toEqual(['initial:1', 'next:2', 'next:3']);
@@ -41,7 +40,7 @@ describe('become / unbecome', () => {
       }
     }
     const sys = newSystem();
-    const ref = sys.spawn(Props.create(() => new A()), 'a');
+    const ref = sys.spawn(A, 'a');
     ref.tell('x');            // base
     ref.tell('push-top');     // base
     ref.tell('y');            // top
@@ -70,7 +69,7 @@ describe('become / unbecome', () => {
       }
     }
     const sys = newSystem();
-    const ref = sys.spawn(Props.create(() => new A()), 'a');
+    const ref = sys.spawn(A, 'a');
     ref.tell('x');           // base
     ref.tell('enter-top');   // base (pushes top)
     ref.tell('y');           // top
@@ -94,7 +93,7 @@ describe('become / unbecome', () => {
       }
     }
     const sys = newSystem();
-    const ref = sys.spawn(Props.create(() => new A()), 'a');
+    const ref = sys.spawn(A, 'a');
     ref.tell('first'); ref.tell('try-pop'); ref.tell('after');
     await sleep(40);
     // base behaviour still functions after the pop attempts.

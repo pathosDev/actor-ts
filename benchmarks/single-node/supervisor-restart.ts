@@ -4,7 +4,7 @@
  *
  * Note: how a child is supervised is decided by its *parent* — either by the
  * parent actor's `supervisorStrategy()` or, per child, by
- * `Props.withSupervisorStrategy` on that child's own Props.  Either way the
+ * `supervisorStrategy` in that child's own spawn options.  Either way the
  * user guardian's default (maxRetries=10) would abort a 1 000-restart run, so
  * `Shaky` runs inside a `Supervisor` whose strategy permits unlimited
  * restarts.  The extra hop through `Supervisor` is part of the measured
@@ -20,7 +20,6 @@ import {
   LogLevel,
   NoopLogger,
   OneForOneStrategy,
-  Props,
   type ActorRef,
   type SupervisorStrategy,
 } from '../../src/index.js';
@@ -38,7 +37,7 @@ class Shaky extends Actor<Command> {
 class Supervisor extends Actor<Command> {
   private child!: ActorRef<Command>;
   override preStart(): void {
-    this.child = this.context.spawn(Props.create(() => new Shaky()), 'shaky');
+    this.child = this.context.spawn(Shaky, 'shaky');
   }
   override supervisorStrategy(): SupervisorStrategy {
     return new OneForOneStrategy(() => Directive.Restart, { maxRetries: -1 });
@@ -54,7 +53,7 @@ async function main(): Promise<void> {
     .withLogger(new NoopLogger())
     .withLogLevel(LogLevel.Off);
   const system = ActorSystem.create('bench-supervise', systemOptions);
-  const ref = system.spawnAnonymous(Props.create(() => new Supervisor()));
+  const ref = system.spawnAnonymous(Supervisor);
 
   await runGroup('single-node · supervisor-restart', [
     {

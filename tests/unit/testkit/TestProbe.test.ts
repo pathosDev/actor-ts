@@ -1,6 +1,5 @@
 import { describe, expect, test } from 'bun:test';
 import { Actor } from '../../../src/Actor.js';
-import { Props } from '../../../src/Props.js';
 import { TestKit } from '../../../src/testkit/TestKit.js';
 import { TestProbeOptions } from '../../../src/testkit/TestProbeOptions.js';
 
@@ -136,7 +135,7 @@ describe('TestProbe integrates with real actors', () => {
     }
     const tk = TestKit.create();
     const probe = tk.createTestProbe();
-    const ref = tk.system.spawn(Props.create(() => new Echo()), 'echo');
+    const ref = tk.system.spawn(Echo, 'echo');
     ref.tell('hi', probe);
     expect(await probe.receiveOne(200)).toBe('echo:hi');
     await tk.shutdown();

@@ -1,9 +1,8 @@
-import type { Actor } from '../../Actor.js';
+import type { Actor, ActorClassOrFactory } from '../../Actor.js';
 import type { ActorRef } from '../../ActorRef.js';
 import type { ActorSystem } from '../../ActorSystem.js';
-import { actorFactoryOf, type ActorClassOrFactory } from '../../internal/ActorConstruction.js';
+import { actorFactoryOf } from '../../internal/ActorBlueprint.js';
 import { PersistenceExtensionId } from '../../persistence/PersistenceExtension.js';
-import { Props } from '../../Props.js';
 import { mergeOptions } from '../../util/OptionsMerge.js';
 import {
   SystemGroups,
@@ -80,7 +79,7 @@ export class ClusterSharding {
    * // Same, but the entity needs dependencies.
    * sharding.start(CartActor, () => new CartActor(deps));
    *
-   * // Shorthand: pass the entity class.  Framework wraps it with Props.create.
+   * // Shorthand: pass the entity class by name.
    * sharding.start('counter', CounterEntity, {
    *   extractEntityId: (message) => message.id,
    * });
@@ -89,11 +88,11 @@ export class ClusterSharding {
    * sharding.start('cart', () => new CartEntity(deps),
    *   StartShardingOptions.create<CartMessage>().withExtractEntityId((message) => message.entityId));
    *
-   * // Full-form: explicit Props + all options via the builder.
+   * // Full-form: every option via the builder.
    * sharding.start(
    *   StartShardingOptions.create<CounterMessage>()
    *     .withTypeName('counter')
-   *     .withEntityProps(Props.create(() => new CounterEntity()))
+   *     .withEntityActor(CounterEntity)
    *     .withExtractEntityId((message) => message.id),
    * );
    * ```
@@ -132,10 +131,10 @@ export class ClusterSharding {
       (path: string) => this.regionsByPath.get(path) ?? null,
     );
     this.numShardsByType.set(options.typeName, config.numShards);
-    const ref = this.system._spawnSystemActor(
+    const ref = this.system._spawnSystemActor<TMessage>(
       // ShardRegion internally handles extra envelope types; cast to Actor<TMessage>
       // so the returned ref presents the user-facing signature.
-      Props.create<TMessage>(() => new ShardRegion<TMessage>(config) as unknown as Actor<TMessage>),
+      () => new ShardRegion<TMessage>(config) as unknown as Actor<TMessage>,
       SystemGroups.clusterSharding,
       shardRegionName(options.typeName),
     );
@@ -219,7 +218,7 @@ export class ClusterSharding {
     );
   }
 
-  /** @internal — wrap the shorthand entity arg into a Props + assemble full options. */
+  /** @internal — normalize the shorthand entity arg + assemble full options. */
   private buildOptionsFromShorthand<TMessage>(
     type: string | ShardKey<TMessage>,
     entity: ActorClassOrFactory<TMessage>,
@@ -233,7 +232,7 @@ export class ClusterSharding {
       ...(key?.extractEntityId ? { extractEntityId: key.extractEntityId } : {}),
       ...partialOptions,
       typeName: key ? key.typeName : type,
-      entityProps: Props.create<TMessage>(actorFactoryOf(entity)),
+      entityActor: actorFactoryOf(entity),
     } as StartShardingOptionsType<TMessage>;
   }
 
@@ -243,9 +242,9 @@ export class ClusterSharding {
    * {@link start}; `proxy` is forced on internally, so any `withProxy(...)` on
    * the passed builder is overridden.
    *
-   * A proxy hosts nothing, so it needs neither entity props nor an extractor —
-   * placeholders stand in for both, which is what lets the key form be a single
-   * argument.
+   * A proxy hosts nothing, so it needs neither an entity actor nor an extractor
+   * — placeholders stand in for both, which is what lets the key form be a
+   * single argument.
    */
   startProxy<TMessage>(
     key: ShardKey<TMessage> | ShardKeyedClass<TMessage>,
@@ -268,9 +267,9 @@ export class ClusterSharding {
   private proxyOptionsFor<TMessage>(key: ShardKey<TMessage>): Partial<StartShardingOptionsType<TMessage>> {
     return {
       typeName: key.typeName,
-      entityProps: Props.create<TMessage>(() => {
+      entityActor: (): never => {
         throw new Error(`shard '${key.typeName}' is a proxy region on this node and never hosts entities`);
-      }),
+      },
       extractEntityId: key.extractEntityId ?? ((): string => {
         throw new Error(
           `shard '${key.typeName}' is a proxy region started from a key with no extractEntityId — `
@@ -416,7 +415,7 @@ export class ClusterSharding {
     if (options.lease !== undefined) coordinatorOptions.withLease(options.lease);
     if (options.acquireRetryIntervalMs !== undefined) coordinatorOptions.withAcquireRetryIntervalMs(options.acquireRetryIntervalMs);
     const ref = this.system._spawnSystemActor(
-      Props.create(() => new ShardCoordinator(coordinatorOptions)),
+      () => new ShardCoordinator(coordinatorOptions),
       SystemGroups.clusterSharding,
       shardCoordinatorName(options.typeName),
     );

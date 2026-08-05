@@ -16,7 +16,6 @@ import { Actor } from '../../../../../src/Actor.js';
 import { ActorSystem } from '../../../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../../../src/ActorSystemOptions.js';
 import { LogLevel, NoopLogger } from '../../../../../src/Logger.js';
-import { Props } from '../../../../../src/Props.js';
 import { defaultsAdapter } from '../../../../../src/persistence/migration/defaultsAdapter.js';
 import { isEnvelope } from '../../../../../src/persistence/migration/Envelope.js';
 import {
@@ -146,7 +145,7 @@ describe('migrateInMemoryJournal — bulk rewrite', () => {
     const sys = ActorSystem.create('migrate-replay', sysOptions);
     sys.extension(PersistenceExtensionId).setJournal(journal);
     try {
-      const ref = sys.spawn(Props.create(() => new Account()), 'acct');
+      const ref = sys.spawn(Account, 'acct');
       // Send a no-op message so we can wait for recovery to complete.
       // (PersistentActor processes the recovery before the first user
       // message lands.)

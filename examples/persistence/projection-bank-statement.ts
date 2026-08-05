@@ -30,7 +30,6 @@ import {
   InMemoryQuery,
   PersistentActor,
   ProjectionActor,
-  Props,
 } from '../../src/index.js';
 import { attachDevTools } from '../devtools.js';
 
@@ -153,8 +152,8 @@ async function main(): Promise<void> {
   const projectionRef = ProjectionActor.byTag<AccountEvent>(sys, projectionOptions);
 
   // Drive a couple of accounts.
-  const alice = sys.spawn(Props.create(() => new Account('alice')), 'alice');
-  const bob = sys.spawn(Props.create(() => new Account('bob')), 'bob');
+  const alice = sys.spawn(() => new Account('alice'), 'alice');
+  const bob = sys.spawn(() => new Account('bob'), 'bob');
   for (const amt of [100, 50, 30]) await alice.ask({ kind: 'deposit', amount: amt }, 500);
   await alice.ask({ kind: 'withdraw', amount: 60 }, 500);
   for (const amt of [200, 75]) await bob.ask({ kind: 'deposit', amount: amt }, 500);

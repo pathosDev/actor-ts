@@ -13,7 +13,7 @@ through the builder — there is no subscribe command.  Sending is a
 (UDP is connectionless, so every packet carries its own address).
 
 ```ts
-import { ActorSystem, Props, UdpSocketActor, UdpSocketOptions } from 'actor-ts';
+import { ActorSystem, UdpSocketActor, UdpSocketOptions } from 'actor-ts';
 import type { UdpDatagram } from 'actor-ts';
 
 const system = ActorSystem.create('udp-demo');
@@ -28,15 +28,15 @@ class PacketHandler extends Actor<UdpDatagram> {
   }
 }
 
-const target = system.spawnAnonymous(Props.create(() => new PacketHandler()));
+const target = system.spawnAnonymous(PacketHandler);
 
 const udpSocketOptions = UdpSocketOptions.create()
   .withBindPort(41234)   // bind for receiving; 0 lets the OS pick
   .withTarget(target);
 const udp = system.spawnAnonymous(
-  Props.create(() => new UdpSocketActor(
+  () => new UdpSocketActor(
     udpSocketOptions,   // required: where inbound packets go
-  )),
+  ),
 );
 
 // Send to a remote endpoint:
@@ -96,15 +96,15 @@ class PacketHandler extends Actor<UdpDatagram> {
   }
 }
 
-const target = system.spawnAnonymous(Props.create(() => new PacketHandler()));
+const target = system.spawnAnonymous(PacketHandler);
 
 const udpSocketOptions = UdpSocketOptions.create()
   .withBindPort(41234)
   .withTarget(target);
 const udp = system.spawnAnonymous(
-  Props.create(() => new UdpSocketActor(
+  () => new UdpSocketActor(
     udpSocketOptions,
-  )),
+  ),
 );
 ```
 

@@ -29,7 +29,6 @@ import {
   ClusterOptions,
   HttpError,
   InMemoryCache,
-  Props,
   RedisCache,
   RedisCacheOptions,
   StartShardingOptions,

@@ -13,7 +13,6 @@ import {
   ActorSystem,
   ActorSystemOptions,
   PersistentActor,
-  Props,
   SqliteJournal,
   SqliteJournalOptions,
   SqliteSnapshotStore,
@@ -98,7 +97,7 @@ async function main(): Promise<void> {
   const sys1 = ActorSystem.create('bank', sys1Options);
   const devtools = await attachDevTools(sys1);
 
-  const acct1 = sys1.spawn(Props.create(() => new Account('alice')), 'alice');
+  const acct1 = sys1.spawn(() => new Account('alice'), 'alice');
   for (const amount of [100, 50, 20, 30, 10, 5, 100]) {
     console.log('deposit', amount, '→', await acct1.ask({ kind: 'deposit', amount }, 500));
   }
@@ -112,7 +111,7 @@ async function main(): Promise<void> {
   const sys2 = ActorSystem.create('bank-restart', sys2Options);
   const secondDevtools = await attachDevTools(sys2);
 
-  const acct2 = sys2.spawn(Props.create(() => new Account('alice')), 'alice');
+  const acct2 = sys2.spawn(() => new Account('alice'), 'alice');
   console.log('after restart, balance →', await acct2.ask({ kind: 'balance' }, 500));
   await secondDevtools.holdOpen();
   await sys2.terminate();

@@ -4,7 +4,7 @@
  * server, composable with `path()` / `concat()` / `withMiddleware()`
  * exactly like `get()` / `post()`.
  *
- *     const server = system.spawn(Props.create(() => new PingServer()), 'ping');
+ *     const server = system.spawn(PingServer, 'ping');
  *     await http.newServerAt('0.0.0.0', 8080).bind(websocket('/ws', server));
  *
  * Middleware wrapping the route runs once, against the HTTP upgrade

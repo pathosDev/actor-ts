@@ -6,7 +6,6 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import { ActorSystem } from '../../../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../../../src/ActorSystemOptions.js';
-import { Props } from '../../../../../src/Props.js';
 import { LogLevel, NoopLogger } from '../../../../../src/Logger.js';
 import { HttpExtensionId } from '../../../../../src/http/HttpExtension.js';
 import type { HttpServerBackend, ServerBinding } from '../../../../../src/http/backend/HttpServerBackend.js';
@@ -133,7 +132,7 @@ export function runWebsocketBackendSuite(label: string, makeBackend: () => HttpS
         .withLogLevel(LogLevel.Off);
       const system = ActorSystem.create(`ws-${label}`, sysOptions);
       systems.push(system);
-      const server = system.spawn(Props.create(() => new TestServer(events)), 'ws-server');
+      const server = system.spawn(() => new TestServer(events), 'ws-server');
       const binding = await system
         .extension(HttpExtensionId)
         .newServerAt('127.0.0.1', 0)

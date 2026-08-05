@@ -7,7 +7,7 @@
  *   tsx examples/bank-account.ts
  */
 import { match } from 'ts-pattern';
-import { Actor, ActorSystem, Props } from '../src/index.js';
+import { Actor, ActorSystem } from '../src/index.js';
 import { attachDevTools } from './devtools.js';
 
 type DepositCommand = { kind: 'deposit'; amount: number };
@@ -53,7 +53,7 @@ class AccountActor extends Actor<Command> {
 async function main(): Promise<void> {
   const system = ActorSystem.create('bank');
   const devtools = await attachDevTools(system);
-  const account = system.spawn(Props.create(() => new AccountActor()), 'alice');
+  const account = system.spawn(AccountActor, 'alice');
 
   console.log('deposit 100 ->', await account.ask({ kind: 'deposit', amount: 100 }, 500));
   console.log('withdraw 30 ->', await account.ask({ kind: 'withdraw', amount: 30 }, 500));

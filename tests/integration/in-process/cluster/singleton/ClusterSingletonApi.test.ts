@@ -9,7 +9,6 @@ import { StartSingletonOptions } from '../../../../../src/cluster/singleton/Star
 import { InMemoryTransport } from '../../../../../src/cluster/Transport.js';
 import { NodeAddress } from '../../../../../src/cluster/NodeAddress.js';
 import { LogLevel, NoopLogger } from '../../../../../src/Logger.js';
-import { Props } from '../../../../../src/Props.js';
 import { DeadLetter } from '../../../../../src/SystemMessages.js';
 import { TestKit } from '../../../../../src/testkit/TestKit.js';
 import { TestKitOptions } from '../../../../../src/testkit/TestKitOptions.js';
@@ -76,9 +75,9 @@ describe('ClusterSingleton — calling shapes', () => {
     // 4. full options — builder
     singleton.start(StartSingletonOptions.create<string>()
       .withTypeName('built')
-      .withProps(Props.create(() => new Plain())));
+      .withActor(Plain));
     // 4b. full options — plain object, which must read identically
-    singleton.start({ typeName: 'plain', props: Props.create(() => new Plain()) });
+    singleton.start({ typeName: 'plain', actor: Plain });
 
     for (const typeName of ['echo', 'labelled', 'bare', 'built', 'plain']) {
       expect(singleton.isStarted(typeName)).toBe(true);
@@ -108,7 +107,7 @@ describe('ClusterSingleton — calling shapes', () => {
     const second = node.cluster.singleton.start(EchoActor);
     expect(second).toBe(first);
 
-    // The repeat call's props are ignored, so the original actor is the one
+    // The repeat call's options are ignored, so the original actor is the one
     // that runs — this is what makes a getOrCreate-style helper safe to call
     // from several modules.
     await waitFor(() => node.cluster.leader().nonEmpty);
@@ -159,9 +158,9 @@ describe('ClusterSingleton — ref()', () => {
     const deadLetters: unknown[] = [];
     const warnings: string[] = [];
     node.system.eventStream.subscribe(
-      node.system.spawnAnonymous(Props.create(() => new (class extends Actor<DeadLetter> {
+      node.system.spawnAnonymous(() => new (class extends Actor<DeadLetter> {
         override onReceive(letter: DeadLetter): void { deadLetters.push(letter.message); }
-      })())),
+      })()),
       DeadLetter,
     );
     node.system.log.warn = ((message: string): void => { warnings.push(message); }) as typeof node.system.log.warn;

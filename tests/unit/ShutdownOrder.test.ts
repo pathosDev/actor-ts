@@ -12,7 +12,6 @@ import { Actor } from '../../src/Actor.js';
 import { ActorSystem } from '../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../src/ActorSystemOptions.js';
 import { LogLevel, NoopLogger } from '../../src/Logger.js';
-import { Props } from '../../src/Props.js';
 import { SystemGroups } from '../../src/internal/SystemPaths.js';
 
 function newSystem(name = 'shutdown-order'): ActorSystem {
@@ -31,7 +30,7 @@ describe('shutdown order', () => {
       override onReceive(message: string): void { received.push(message); }
     }
     const infrastructure = system._spawnSystemActor(
-      Props.create(() => new Infrastructure()),
+      Infrastructure,
       SystemGroups.clusterPubSub,
       'mediator',
     );
@@ -40,7 +39,7 @@ describe('shutdown order', () => {
       override onReceive(_message: string): void {}
       override postStop(): void { infrastructure.tell('goodbye'); }
     }
-    system.spawn(Props.create(() => new Application()), 'application');
+    system.spawn(Application, 'application');
 
     await system.terminate();
 
@@ -64,15 +63,15 @@ describe('shutdown order', () => {
       override postStop(): void { stopped.push(this.label); }
     }
 
-    system.spawn(Props.create(() => new Recorder('user:a')), 'a');
-    system.spawn(Props.create(() => new Recorder('user:b')), 'b');
+    system.spawn(() => new Recorder('user:a'), 'a');
+    system.spawn(() => new Recorder('user:b'), 'b');
     system._spawnSystemActor(
-      Props.create(() => new Recorder('system:consumer')),
+      () => new Recorder('system:consumer'),
       SystemGroups.delivery,
       'consumer',
     );
     system._spawnSystemActor(
-      Props.create(() => new Recorder('system:mediator')),
+      () => new Recorder('system:mediator'),
       SystemGroups.clusterPubSub,
       'mediator',
     );
@@ -96,7 +95,7 @@ describe('shutdown order', () => {
     class Idle extends Actor<string> {
       override onReceive(_message: string): void {}
     }
-    system.spawn(Props.create(() => new Idle()), 'only-user-actor');
+    system.spawn(Idle, 'only-user-actor');
 
     await system.terminate();
 

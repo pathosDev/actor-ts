@@ -22,7 +22,6 @@ import {
 } from '../../../../../src/coordination/leases/InMemoryLease.js';
 import { LeaseOptions } from '../../../../../src/coordination/LeaseOptions.js';
 import { LogLevel, NoopLogger } from '../../../../../src/Logger.js';
-import { Props } from '../../../../../src/Props.js';
 import type { ActorRef } from '../../../../../src/ActorRef.js';
 
 type Command = { id: string; kind: 'ping' };
@@ -63,7 +62,7 @@ async function startNodeWithLease(
   const cluster = await Cluster.join(sys, clusterOptions);
   const shardingOptions = StartShardingOptions.create<Command>()
     .withTypeName('entity')
-    .withEntityProps(Props.create(() => new Entity()))
+    .withEntityActor(Entity)
     .withExtractEntityId((m) => m.id)
     .withNumShards(8)
     .withRebalanceIntervalMs(200)

@@ -137,6 +137,11 @@ describe('ActorPath — name validation (#126, #134)', () => {
       'user', 'deadLetters', 'nobody', 'routee-1', 'ws-conn-7',
       'singleton-proxy-Counter', 'shard-reply-region-42', 'my_actor',
       'Order.Placed', 'entity#3', 'a b', 'ünïcode', '日本語',
+      // The form `spawnAnonymous` generates.  Still legal *as a path segment*
+      // after #900 reserved the `$` prefix — that rule sits at the spawn call,
+      // because paths are also rebuilt from cluster-wire strings and a rule
+      // here would reject every remote reference to an anonymous actor.
+      '$anonymous-1-0123456789ab',
     ]) {
       expect(() => root().child(name), `rejected ${name}`).not.toThrow();
     }

@@ -15,7 +15,6 @@ import {
   Cluster,
   ClusterOptions,
   HttpError,
-  Props,
   StartShardingOptions,
   Status,
   complete,

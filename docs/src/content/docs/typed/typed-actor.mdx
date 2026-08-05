@@ -1,6 +1,6 @@
 ---
 title: TypedActor
-description: The runtime that interprets a Behavior — bridges the typed DSL to the untyped Actor engine. Internal class; users reach it through `system.spawnTyped`, `ctx.spawnTyped`, or `typedProps`.
+description: The runtime that interprets a Behavior — bridges the typed DSL to the untyped Actor engine. Internal class; users reach it through `system.spawnTyped`, `ctx.spawnTyped`, or `typedActor`.
 ---
 
 `TypedActor<T>` is the runtime host that takes a `Behavior<T>` value
@@ -10,7 +10,7 @@ mailbox, same dispatcher, same supervisor tree — but its
 
 You don't construct `TypedActor` directly.  The spawn methods
 ([`system.spawnTyped` / `context.spawnTyped`](/typed/spawn-typed/) and
-[`typedProps`](/typed/spawn-typed/)) wrap it for you.  But knowing
+[`typedActor`](/typed/spawn-typed/)) wrap it for you.  But knowing
 how it works clarifies the typed-DSL semantics — especially what
 "the runtime interprets the Behavior" actually means.
 
@@ -26,7 +26,7 @@ const myBehavior = Behaviors.receive<Message>((context, message) => {
 
 const system = ActorSystem.create('demo');
 const ref = system.spawnTypedAnonymous(myBehavior);
-// Under the hood: system.spawnAnonymous(Props.create(() => new TypedActor(myBehavior)))
+// Under the hood: system.spawnAnonymous(() => new TypedActor(myBehavior))
 ```
 
 The framework:
@@ -160,13 +160,13 @@ import { Aside } from '@astrojs/starlight/components';
 <Aside type="caution" title="Don't instantiate `TypedActor` directly">
   ```ts
   const actor = new TypedActor<Message>(behavior);   // ← not the spawn API
-  system.spawnAnonymous(Props.create(() => actor));      // ← won't behave like a fresh actor
+  system.spawnAnonymous(() => actor);      // ← won't behave like a fresh actor
   ```
   Like any `Actor`, the typed runtime needs a fresh instance on
   every restart.  The spawn methods (`system.spawnTyped`,
-  `context.spawnTyped`) and the `typedProps` helper close over the
+  `context.spawnTyped`) and the `typedActor` helper close over the
   Behavior value and produce a new `TypedActor` each time the
-  Props factory runs.  Don't shortcut.
+  actor factory runs.  Don't shortcut.
 </Aside>
 
 ## Where to next

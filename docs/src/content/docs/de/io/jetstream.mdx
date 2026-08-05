@@ -11,7 +11,7 @@ Streams, Replay und explizite Bestätigung** mit Kafka-artiger
 `acknowledgment` / `negativeAcknowledgment` / `terminate`-Handshake.
 
 ```ts
-import { ActorSystem, Actor, Props, JetStreamActor, JetStreamOptions } from 'actor-ts';
+import { ActorSystem, Actor, JetStreamActor, JetStreamOptions } from 'actor-ts';
 import type { ActorRef, JetStreamMessage, JetStreamCommand } from 'actor-ts';
 
 const jetStreamOptions = JetStreamOptions.create()
@@ -20,9 +20,9 @@ const jetStreamOptions = JetStreamOptions.create()
   .withConsumer({ durable: 'order-processor', ackWaitMs: 30_000 })
   .withTarget(orderProcessor);
 const jetStream = system.spawn(
-  Props.create(() => new JetStreamActor(
+  () => new JetStreamActor(
     jetStreamOptions,
-  )),
+  ),
   'orders-stream',
 );
 

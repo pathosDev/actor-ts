@@ -84,10 +84,19 @@ Noop-Registry zurück — siehe
 
 Der lebende Supervision-Baum, vom Root-Guardian abwärts.
 
-- **Filtern** nach Pfad oder Klassenname. Treffer behalten ihre Vorfahren
-  sichtbar, damit ein Fund tief in einem zugeklappten Ast erreichbar
-  bleibt — und ein Filter hebt das Zuklappen vorübergehend auf, denn ein
-  Treffer, den man nicht sieht, wirkt wie eine gescheiterte Suche.
+- **Filtern** nach Pfad, Klassenname oder Display-Name. Treffer behalten
+  ihre Vorfahren sichtbar, damit ein Fund tief in einem zugeklappten Ast
+  erreichbar bleibt — und ein Filter hebt das Zuklappen vorübergehend
+  auf, denn ein Treffer, den man nicht sieht, wirkt wie eine
+  gescheiterte Suche.
+- **Das Zeilen-Label ist der Eigenname des Actors**, wenn er einen hat —
+  das, worauf
+  [`displayName()`](/de/fundamentals/logging/#einen-actor-benennen--displayname)
+  auflöst — und sonst das letzte Pfadsegment. Vor allem für
+  `Behaviors`-Actors lohnend, deren Klassen-Spalte in jeder Zeile
+  `TypedActor` sagt. Der volle Pfad bleibt in beiden Fällen im Tooltip
+  der Zeile, und die Geschwister-Sortierung bleibt am Pfadsegment —
+  eine Umbenennung lässt also nie Zeilen springen.
 - **Badges** zeigen das Ungewöhnliche: wartende Nachrichten, gestashte
   Nachrichten, eine suspendierte Mailbox. Ein untätiger Actor trägt
   keine.
@@ -109,7 +118,7 @@ Der lebende Supervision-Baum, vom Root-Guardian abwärts.
   und Taps als gewöhnliche Actors; sie existieren wirklich und werden
   deshalb gelistet, sind aber nicht das, wofür du gekommen bist. Sie
   werden beim Spawn mit
-  [`Props.asInternal()`](/de/fundamentals/props/#asinternal) markiert
+  [`ActorOptions.withInternal()`](/de/fundamentals/spawning/#withinternal) markiert
   statt über den Namen erraten — so verschwinden auch ihre Kinder, und
   eine DevTools-Websocket-Verbindung ist ein Kind ihres Hubs.
 

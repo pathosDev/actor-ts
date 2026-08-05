@@ -3,7 +3,7 @@
  *
  *   tsx examples/hello-world.ts
  */
-import { Actor, ActorSystem, Props } from '../src/index.js';
+import { Actor, ActorSystem } from '../src/index.js';
 import { attachDevTools } from './devtools.js';
 
 class GreeterActor extends Actor<string> {
@@ -15,7 +15,7 @@ class GreeterActor extends Actor<string> {
 async function main(): Promise<void> {
   const system = ActorSystem.create('hello');
   const devtools = await attachDevTools(system);
-  const greeter = system.spawn(Props.create(() => new GreeterActor()), 'greeter');
+  const greeter = system.spawn(GreeterActor, 'greeter');
 
   greeter.tell('World');
   greeter.tell('actor-ts');

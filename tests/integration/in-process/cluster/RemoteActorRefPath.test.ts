@@ -138,4 +138,24 @@ describe('decoded wire refs carry an honest path (#515)', () => {
     expect(decoded).toBeInstanceOf(RemoteActorRef);
     expect(decoded.path.toString()).toBe('actor-ts://remote-path-sys/user/service');
   });
+
+  test('a remote path naming an anonymous actor still rebuilds (#900)', () => {
+    // `remoteActorPath` walks `.child(segment)` over a parsed wire path, so any
+    // name rule enforced inside `ActorPath` applies to *received* paths too.
+    // Reserving the `$` prefix therefore had to live at the spawn call, not in
+    // `assertValidName` — otherwise every cross-node reference to an actor
+    // spawned via `spawnAnonymous` would throw here on arrival.
+    const wire: WireActorRef = {
+      $ref: 'actor',
+      path: 'actor-ts://remote-path-sys/user/$anonymous-1-3f9c1a0d7b42',
+      host: 'elsewhere',
+      port: 9999,
+      system: 'remote-path-sys',
+    };
+    const decoded = decodeRefs(wire, cluster) as RemoteActorRef;
+    expect(decoded).toBeInstanceOf(RemoteActorRef);
+    expect(decoded.path.name).toBe('$anonymous-1-3f9c1a0d7b42');
+    expect(decoded.path.toString())
+      .toBe('actor-ts://remote-path-sys/user/$anonymous-1-3f9c1a0d7b42');
+  });
 });

@@ -45,7 +45,7 @@ Erkennungsalgorithmus und die per-Runtime-Vorbehalte.
     Kein Installationsschritt nötig.  Direkt importieren:
 
     ```ts
-    import { Actor, ActorSystem, Props } from 'npm:actor-ts';
+    import { Actor, ActorSystem } from 'npm:actor-ts';
     ```
 
     Deno holt das Paket beim ersten Lauf und cached es.  Füge eine
@@ -162,7 +162,7 @@ dieses Sicherheitsnetz.
 Speichere das als `verify.ts`:
 
 ```ts
-import { Actor, ActorSystem, Props } from 'actor-ts';
+import { Actor, ActorSystem } from 'actor-ts';
 
 class Ping extends Actor<'ping'> {
   override onReceive(message: 'ping'): void {
@@ -171,7 +171,7 @@ class Ping extends Actor<'ping'> {
 }
 
 const system = ActorSystem.create('verify');
-const ref = system.spawnAnonymous(Props.create(() => new Ping()));
+const ref = system.spawnAnonymous(Ping);
 ref.tell('ping');
 await new Promise((r) => setTimeout(r, 20));
 await system.terminate();

@@ -1,7 +1,6 @@
 import { match } from 'ts-pattern';
 import { Actor } from '../Actor.js';
 import type { ActorRef } from '../ActorRef.js';
-import { Props } from '../Props.js';
 import { Directive } from '../Supervision.js';
 import { Terminated } from '../SystemMessages.js';
 import {
@@ -43,7 +42,7 @@ type ResolvedBehavior<T> = ConcreteBehavior<T> | SameBehavior;
  * active, and transitions follow whatever the handler returns.
  *
  * The class is internal; users create actors via `spawn(behavior)` on the
- * typed context or `typedProps(behavior)` at the system level.
+ * typed context or `typedActor(behavior)` at the system level.
  */
 export class TypedActor<T> extends Actor<T> {
   private current!: ConcreteBehavior<T>;
@@ -239,10 +238,11 @@ class TypedActorContextImplementation<T> implements TypedActorContext<T> {
   get path(): import('../ActorPath.js').ActorPath { return this.oo.path; }
   get system(): import('../ActorSystem.js').ActorSystem { return this.oo.system; }
   get log(): import('../Logger.js').Logger { return this.oo.log; }
+  setDisplayName(name: string): void { this.oo.setDisplayName(name); }
 
   spawn<U>(behavior: Behavior<U>, name?: string): ActorRef<U> {
-    const props = Props.create(() => new TypedActor<U>(behavior));
-    return name !== undefined ? this.oo.spawn(props, name) : this.oo.spawnAnonymous(props);
+    const actor = (): TypedActor<U> => new TypedActor<U>(behavior);
+    return name !== undefined ? this.oo.spawn(actor, name) : this.oo.spawnAnonymous(actor);
   }
 
   stop(ref: ActorRef): void { this.oo.stop(ref); }

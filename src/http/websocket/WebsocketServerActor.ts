@@ -134,7 +134,7 @@ export abstract class WebsocketServerActor<TOut, TIn, TSelf = never>
    * server → conn-N and supervision/teardown are automatic.
    */
   private onWebsocketAccept(command: WebsocketAcceptCommand): void {
-    this.context.spawn(command.props, command.name);
+    this.context.spawn(command.actor, command.name);
   }
 
   /*

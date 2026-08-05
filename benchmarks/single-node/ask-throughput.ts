@@ -4,7 +4,7 @@
  *
  *   bun run benchmarks/single-node/ask-throughput.ts
  */
-import { Actor, ActorSystem, ActorSystemOptions, LogLevel, NoopLogger, Props } from '../../src/index.js';
+import { Actor, ActorSystem, ActorSystemOptions, LogLevel, NoopLogger } from '../../src/index.js';
 import { runGroup } from '../lib/harness.js';
 
 class Echo extends Actor<string> {
@@ -16,7 +16,7 @@ async function main(): Promise<void> {
     .withLogger(new NoopLogger())
     .withLogLevel(LogLevel.Off);
   const system = ActorSystem.create('bench-ask', systemOptions);
-  const ref = system.spawnAnonymous(Props.create(() => new Echo()));
+  const ref = system.spawnAnonymous(Echo);
 
   await runGroup('single-node · ask-throughput', [
     {

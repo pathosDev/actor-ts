@@ -16,7 +16,7 @@ backend automatically.
 After this guide you'll know:
 
 - How to define an actor by extending `Actor<T>`.
-- How to spawn it via `system.spawnAnonymous(Props.create(...))`.
+- How to spawn it via `system.spawnAnonymous(...)`.
 - The difference between `tell` (fire-and-forget) and the actor's
   `onReceive` handler.
 - How to shut the system down without leaking timers or sockets.
@@ -40,7 +40,7 @@ import { Tabs, TabItem } from '@astrojs/starlight/components';
     No install step. Import directly from npm:
 
     ```ts
-    import { Actor, ActorSystem, Props } from 'npm:actor-ts';
+    import { Actor, ActorSystem } from 'npm:actor-ts';
     ```
 
     Run with `--allow-net` (for the TCP cluster transport) and
@@ -57,7 +57,7 @@ For a full installation walkthrough — including optional peer dependencies
 Create `hello.ts` and paste:
 
 ```ts
-import { Actor, ActorSystem, Props } from 'actor-ts';
+import { Actor, ActorSystem } from 'actor-ts';
 
 // 1. Define an actor.  The type parameter `<string>` constrains what
 //    messages this actor accepts — the type system catches bad sends
@@ -72,9 +72,9 @@ class Greeter extends Actor<string> {
 //    everything else lives inside it.
 const system = ActorSystem.create('hello');
 
-// 3. Spawn the actor.  `Props.create(() => new Greeter())` is the
-//    factory; `'greeter'` is the actor's name in the hierarchy.
-const ref = system.spawn(Props.create(() => new Greeter()), 'greeter');
+// 3. Spawn the actor.  You pass the class, not an instance — the
+//    system constructs it; `'greeter'` is its name in the hierarchy.
+const ref = system.spawn(Greeter, 'greeter');
 
 // 4. Send a message.  `tell` is fire-and-forget — it returns
 //    immediately, the actor processes the message asynchronously on
@@ -131,12 +131,15 @@ The five lines map to the actor model's five core ideas:
    processing), the supervisor hierarchy (which catches actor failures),
    the scheduler, the event stream. There's typically one per process.
 
-3. **`system.spawnAnonymous(Props.create(() => new Greeter()))`** — `Props` is
-   actor-ts's way to defer construction. The system needs to control
-   *when* the actor instance is created (on its mailbox thread, not on
-   yours), so you hand it a factory rather than a pre-built instance.
-   The returned `ActorRef` is a handle, not the actor itself — you can
-   pass it across the cluster, store it, hand it to other actors.
+3. **`system.spawn(Greeter, 'greeter')`** — you hand over the class,
+   not an instance. The system needs to control *when* the actor is
+   constructed (on its mailbox thread, not on yours) and it rebuilds
+   the actor on every restart, so construction has to stay in its
+   hands. When the constructor takes arguments, pass a factory that
+   supplies them instead: `system.spawn(() => new Greeter(config),
+   'greeter')`. The returned `ActorRef` is a handle, not the actor
+   itself — you can pass it across the cluster, store it, hand it to
+   other actors.
 
 4. **`ref.tell('world')`** — `tell` is the primary actor verb. It
    enqueues the message into the actor's mailbox and returns
@@ -166,7 +169,7 @@ compile-time check that every variant is handled: add a new `kind`
 without a matching `with(...)` arm and TypeScript fails the build.
 
 ```ts
-import { Actor, ActorSystem, Props, type ActorRef } from 'actor-ts';
+import { Actor, ActorSystem, type ActorRef } from 'actor-ts';
 import { match } from 'ts-pattern';
 
 type IncrementCommand = { kind: 'increment' };
@@ -190,7 +193,7 @@ class Counter extends Actor<Command> {
 }
 
 const system  = ActorSystem.create('counters');
-const counter = system.spawnAnonymous(Props.create(() => new Counter()));
+const counter = system.spawnAnonymous(Counter);
 
 counter.tell({ kind: 'increment' });
 counter.tell({ kind: 'increment' });
@@ -211,10 +214,10 @@ for the deep dive.
 method on the ref:
 
 ```ts
-import { ActorSystem, Props } from 'actor-ts';
+import { ActorSystem } from 'actor-ts';
 
 const system  = ActorSystem.create('counters');
-const counter = system.spawnAnonymous(Props.create(() => new Counter()));
+const counter = system.spawnAnonymous(Counter);
 
 counter.tell({ kind: 'increment' });
 counter.tell({ kind: 'increment' });
@@ -257,10 +260,10 @@ what you want to do:
   `SIGINT` shutdown in one call:
 
   ```ts
-  import { Cluster, Props } from 'actor-ts';
+  import { Cluster } from 'actor-ts';
 
   const { system } = await Cluster.bootstrap({ name: 'hello' });
-  const ref = system.spawn(Props.create(() => new Greeter()), 'greeter');
+  const ref = system.spawn(Greeter, 'greeter');
   ref.tell('world');
   ```
 

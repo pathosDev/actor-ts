@@ -111,7 +111,11 @@ actor-ts {
     rebalance-interval = 2s
     hand-off-timeout = 10s
     remember-entities = false
-    passivation-idle = 0ms   # 0 disables the idle sweep
+    passivation-idle = 5m    # idle window before an entity passivates; 0 disables the sweep
+    # shard-passivation-idle -- how long a shard may stand empty before it
+    #   stops as well.  Deliberately left unset rather than given a value:
+    #   unset, it follows passivation-idle, which is what "the shard goes
+    #   when its entities do" needs.  Set it (0ms disables) to decouple them.
     max-entities = 0         # 0 = no per-node cap
   }
 
@@ -139,7 +143,7 @@ their own connection settings from their own subtree —
 defaults for them would mean shipping a configuration for a package you
 may not have installed.  Each is documented on its own page.
 
-**Anything that is not a value.**  Entity props, message extractors,
+**Anything that is not a value.**  The entity actor, message extractors,
 allocation strategies, leases, transports, downing providers, custom
 backends — a config file cannot express a class or a closure, so these
 stay in code and are passed through the relevant `XOptions` builder.

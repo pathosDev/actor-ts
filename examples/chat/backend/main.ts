@@ -30,7 +30,6 @@ import {
   MemberUnreachable,
   MemberUp,
   PersistenceExtensionId,
-  Props,
   SqliteJournal,
   SqliteJournalOptions,
   SqliteSnapshotStore,
@@ -61,7 +60,7 @@ import {
 } from './actors/DirectMessageChannelActor.js';
 import { OnlineUsersActor } from './actors/OnlineUsersActor.js';
 import { ReadReceiptsActor } from './actors/ReadReceiptsActor.js';
-import { httpIngressProps } from './actors/HttpIngressActor.js';
+import { httpIngressFactory } from './actors/HttpIngressActor.js';
 import { attachDevTools } from '../../devtools.js';
 
 async function main(): Promise<void> {
@@ -194,10 +193,7 @@ async function main(): Promise<void> {
       .withNumShards(16));
 
   // -------- 7. OnlineUsersActor (top-level, runs on every node) --------
-  const onlineUsers = system.spawn(
-    Props.create(() => new OnlineUsersActor()),
-    'online-users',
-  );
+  const onlineUsers = system.spawn(OnlineUsersActor, 'online-users');
 
   // -------- 7a. ReadReceiptsActor (top-level, every node) --------
   // Per-room read-up-to pointers, persisted via a DistributedData
@@ -205,10 +201,7 @@ async function main(): Promise<void> {
   // fan-out pattern as `OnlineUsersActor`: each interested local
   // session subscribes here once per room, the actor maintains a
   // single DD-level subscription on its behalf.
-  const readReceipts = system.spawn(
-    Props.create(() => new ReadReceiptsActor()),
-    'read-receipts',
-  );
+  const readReceipts = system.spawn(ReadReceiptsActor, 'read-receipts');
 
   // -------- 7b. ChatRoomDirectoryActor (top-level, every node) --------
   // The directory wraps a DistributedData ORSet that is the actual
@@ -218,10 +211,7 @@ async function main(): Promise<void> {
   // step is idempotent (ORSet.add of an existing element is a no-op),
   // and each instance fans out only to its own local subscribers.
   // No singleton needed.
-  const roomDirectory = system.spawn(
-    Props.create(() => new ChatRoomDirectoryActor()),
-    'chat-room-directory',
-  );
+  const roomDirectory = system.spawn(ChatRoomDirectoryActor, 'chat-room-directory');
 
   // -------- 8. TLS material (optional) --------
   // When `--tls-cert` / `--tls-key` are present we read the PEMs once
@@ -251,7 +241,7 @@ async function main(): Promise<void> {
   const staticDir = path.join(import.meta.dirname ?? __dirname, '..', 'static');
   const singletonOptions = StartSingletonOptions.create()
     .withTypeName('http-ingress')
-    .withProps(httpIngressProps({
+    .withActor(httpIngressFactory({
       host: config.host,
       httpPort: config.httpPort,
       staticDir,

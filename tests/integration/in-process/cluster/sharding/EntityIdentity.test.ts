@@ -9,7 +9,6 @@ import { InMemoryTransport } from '../../../../../src/cluster/Transport.js';
 import { NodeAddress } from '../../../../../src/cluster/NodeAddress.js';
 import { StartShardingOptions } from '../../../../../src/cluster/sharding/StartShardingOptions.js';
 import { LogLevel, NoopLogger } from '../../../../../src/Logger.js';
-import { Props } from '../../../../../src/Props.js';
 import type { ActorRef } from '../../../../../src/ActorRef.js';
 
 const TYPE_NAME = 'identity';
@@ -65,7 +64,7 @@ beforeAll(async () => {
   cluster = await Cluster.join(system, clusterOptions);
   const shardingOptions = StartShardingOptions.create<Command>()
     .withTypeName(TYPE_NAME)
-    .withEntityProps(Props.create(() => new IdentityEntity()))
+    .withEntityActor(IdentityEntity)
     .withExtractEntityId((message) => message.id)
     .withNumShards(NUM_SHARDS);
   region = cluster.sharding.start<Command>(shardingOptions);

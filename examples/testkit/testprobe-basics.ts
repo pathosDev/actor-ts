@@ -3,7 +3,7 @@
  *
  *   bun run examples/testkit/testprobe-basics.ts
  */
-import { Actor, Props, TestKit } from '../../src/index.js';
+import { Actor, TestKit } from '../../src/index.js';
 
 class Counter extends Actor<'inc' | 'report'> {
   private n = 0;
@@ -16,7 +16,7 @@ class Counter extends Actor<'inc' | 'report'> {
 async function main(): Promise<void> {
   const tk = TestKit.create('testprobe-demo');
   const probe = tk.createTestProbe();
-  const counter = tk.system.spawn(Props.create(() => new Counter()), 'counter');
+  const counter = tk.system.spawn(Counter, 'counter');
 
   counter.tell('inc');
   counter.tell('inc');

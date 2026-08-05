@@ -1,6 +1,5 @@
 import { describe, expect, test } from 'bun:test';
 import { Actor } from '../../../src/Actor.js';
-import { Props } from '../../../src/Props.js';
 import { OptionsError } from '../../../src/util/OptionsValidator.js';
 import { FailureDetectorOptionsValidator, type FailureDetectorOptionsType } from '../../../src/cluster/FailureDetectorOptions.js';
 import {
@@ -221,7 +220,7 @@ describe('KubernetesLeaseOptionsValidator', () => {
   });
 });
 
-/** Stand-in for the required `entityProps` / `props` in the cluster validators. */
+/** Stand-in for the required `entityActor` / `actor` in the cluster validators. */
 class NoopEntity extends Actor<unknown> {
   override onReceive(): void {}
 }
@@ -231,7 +230,7 @@ describe('ShardingOptionsValidator', () => {
   // only exercising a different rule.
   const required = {
     typeName: 'entity',
-    entityProps: Props.create(() => new NoopEntity()),
+    entityActor: NoopEntity,
     extractEntityId: () => 'e-1',
   } satisfies Partial<ShardingOptionsType<unknown>>;
   const check = (s: Partial<ShardingOptionsType<unknown>>): void =>
@@ -242,18 +241,30 @@ describe('ShardingOptionsValidator', () => {
     expect(() => check({ ...required, maxEntities: -1 })).toThrow(OptionsError);
   });
 
+  test('rejects negative or non-finite passivation windows, at both levels', () => {
+    expect(() => check({ ...required, passivationIdleMs: -1 })).toThrow(/passivationIdleMs/);
+    expect(() => check({ ...required, shardPassivationIdleMs: -1 })).toThrow(/shardPassivationIdleMs/);
+    expect(() => check({ ...required, shardPassivationIdleMs: Number.POSITIVE_INFINITY }))
+      .toThrow(/shardPassivationIdleMs/);
+  });
+
   test('accepts sensible sharding values (0 maxEntities = no cap)', () => {
     expect(() => check({ ...required, numShards: 64, maxEntities: 0, passivationIdleMs: 0 })).not.toThrow();
   });
 
-  test('rejects a region missing typeName, entityProps or extractEntityId', () => {
+  test('accepts both passivation windows set independently, including 0', () => {
+    expect(() => check({ ...required, passivationIdleMs: 30_000, shardPassivationIdleMs: 0 })).not.toThrow();
+    expect(() => check({ ...required, passivationIdleMs: 0, shardPassivationIdleMs: 600_000 })).not.toThrow();
+  });
+
+  test('rejects a region missing typeName, entityActor or extractEntityId', () => {
     expect(() => check({})).toThrow(/typeName is required/);
-    expect(() => check({ typeName: 'entity' })).toThrow(/entityProps is required/);
-    expect(() => check({ typeName: 'entity', entityProps: required.entityProps }))
+    expect(() => check({ typeName: 'entity' })).toThrow(/entityActor is required/);
+    expect(() => check({ typeName: 'entity', entityActor: required.entityActor }))
       .toThrow(/extractEntityId is required/);
   });
 
-  test('a proxy region needs neither entityProps nor extractEntityId', () => {
+  test('a proxy region needs neither entityActor nor extractEntityId', () => {
     // It routes but never hosts, so both are unreachable there.
     expect(() => check({ typeName: 'entity', proxy: true })).not.toThrow();
   });
@@ -278,7 +289,7 @@ describe('StartShardingOptionsValidator', () => {
 
   const required = {
     typeName: 'entity',
-    entityProps: Props.create(() => new NoopEntity()),
+    entityActor: NoopEntity,
     extractEntityId: () => 'e-1',
   } satisfies Partial<StartShardingOptionsType<unknown>>;
 
@@ -305,7 +316,7 @@ describe('StartSingletonOptionsValidator', () => {
 
   const required = {
     typeName: 'counter',
-    props: Props.create(() => new NoopEntity()),
+    actor: NoopEntity,
   } satisfies Partial<StartSingletonOptionsType<unknown>>;
 
   test('rejects empty typeName and non-positive acquireRetryIntervalMs', () => {
@@ -314,11 +325,11 @@ describe('StartSingletonOptionsValidator', () => {
     expect(() => check({ ...required, role: '' })).toThrow(/role/);
   });
 
-  test('rejects a singleton missing typeName or props', () => {
+  test('rejects a singleton missing typeName or actor', () => {
     // Both used to pass: the check helpers no-op on `undefined`, so a
-    // singleton with no props validated cleanly and blew up in Props.create.
+    // singleton with no actor validated cleanly and blew up at the spawn.
     expect(() => check({})).toThrow(/typeName is required/);
-    expect(() => check({ typeName: 'counter' })).toThrow(/props is required/);
+    expect(() => check({ typeName: 'counter' })).toThrow(/actor is required/);
   });
 
   test('rejects a non-positive or fractional bufferSize', () => {
@@ -340,14 +351,14 @@ describe('ClusterSingletonManagerOptionsValidator', () => {
   const required = {
     cluster: {} as ClusterSingletonManagerOptionsType<unknown>['cluster'],
     typeName: 'counter',
-    singletonProps: Props.create(() => new NoopEntity()),
+    singletonActor: NoopEntity,
   } satisfies Partial<ClusterSingletonManagerOptionsType<unknown>>;
 
   test('rejects each missing required field by name', () => {
     expect(() => check({})).toThrow(/cluster is required/);
     expect(() => check({ cluster: required.cluster })).toThrow(/typeName is required/);
     expect(() => check({ cluster: required.cluster, typeName: 'counter' }))
-      .toThrow(/singletonProps is required/);
+      .toThrow(/singletonActor is required/);
   });
 
   test('rejects empty typeName / role and non-positive acquireRetryIntervalMs', () => {

@@ -67,7 +67,7 @@ export class SingletonKey<TCommand = unknown> {
  * matters because a singleton is frequently also a `PersistentActor` and
  * TypeScript has single inheritance.  Enforcement happens where it counts: at
  * the `start()` call site, which infers `TCommand` from this key and from the
- * `Props<TCommand>` position simultaneously and reports a mismatch between
+ * `ActorClassOrFactory<TCommand>` position simultaneously and reports a mismatch between
  * them.
  */
 export type SingletonKeyedClass<TCommand> = {

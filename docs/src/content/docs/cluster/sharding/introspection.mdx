@@ -37,10 +37,19 @@ type ShardInfo<TMessage = unknown> = {
   readonly node: NodeAddress;      // node currently hosting the shard
   readonly regionPath: string;     // region on that node
   readonly entityCount: number;    // live entities when its region answered
+  readonly resident: boolean;      // shard actor materialised at that moment
   readonly local: boolean;         // hosted by the node that asked
   readonly ref: ActorRef<ShardMessage<TMessage>>;
 };
 ```
+
+`resident` is what separates a shard that is running and happens to be
+empty from one that
+[passivated while empty](/cluster/sharding/overview/#shards-passivate-too)
+— `entityCount: 0` reports both.  It does not affect whether you can talk
+to the shard: `ref` works either way.  Read it when you are tuning
+`shardPassivationIdleMs`, or counting the actors a node is really
+holding.
 
 The entry carries a **live ref**, not just placement data, so one query
 answers both "what is out there" and "how do I talk to it".  The
@@ -82,9 +91,20 @@ If shard 7 has no home yet, this **places it** — exactly what a first
 message for it would have done — and answers once the coordinator has
 decided.
 
+A shard that
+[passivated while empty](/cluster/sharding/overview/#shards-passivate-too)
+needs no special handling: the ref stays valid across the gap and the
+shard is re-created when something arrives for it.  Locally that happens
+as soon as you ask, because a handle to an actor that is not running
+would be a handle to nothing; for a shard on another node the ref
+delivers through that node's region, which materialises the shard before
+forwarding.  So `shardRefFor()` on a local shard wakes it, and on a
+remote one the first `tell` does.
+
 The ref is the real thing.  A shard is an actor
-(`/system/cluster/sharding/region-counter/shard-7`), so what you get back is the local
-shard actor when this node hosts it and a `RemoteActorRef` at that path
+(`/system/cluster/sharding/region-counter/shard-7`), and the ref carries that path as its
+identity whichever node you asked from — what changes is the route:
+directly to the actor when this node hosts it, through the owning region
 when it does not.  `tell` therefore works from anywhere:
 
 ```ts

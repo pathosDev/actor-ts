@@ -17,7 +17,6 @@
 import { match } from 'ts-pattern';
 import { describe, expect, test } from 'bun:test';
 import { Actor } from '../../src/Actor.js';
-import { Props } from '../../src/Props.js';
 import { StartShardingOptions } from '../../src/cluster/sharding/StartShardingOptions.js';
 import { MultiNodeSpec } from '../../src/testkit/MultiNodeSpec.js';
 import { MultiNodeTransport } from '../../src/testkit/internal/MultiNodeTransport.js';
@@ -64,7 +63,7 @@ describe('multi-node shard introspection', () => {
 
       const shardingOptions = StartShardingOptions.create<Command>()
         .withTypeName(TYPE_NAME)
-        .withEntityProps(Props.create(() => new Entity()))
+        .withEntityActor(Entity)
         .withExtractEntityId((m) => m.id)
         .withNumShards(NUM_SHARDS);
       const regions: Record<'a' | 'b' | 'c', ActorRef<Command>> = {

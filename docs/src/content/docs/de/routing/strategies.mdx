@@ -22,7 +22,7 @@ fügt Consistent-Hashing hinzu.
 ## Round-Robin
 
 ```ts
-Router.roundRobin(4, routeeProps);
+Router.roundRobin(4, routee);
 ```
 
 Zykelt durch die Routee-Liste — Nachricht 1 → Routee 1, Nachricht 2
@@ -61,7 +61,7 @@ Nachrichten-Verarbeitungszeiten sind grob gleich über Nachrichten.
 ## Random
 
 ```ts
-Router.random(4, routeeProps);
+Router.random(4, routee);
 ```
 
 ```ts
@@ -96,7 +96,7 @@ Vorhersagbarkeit ist**.
 ## Broadcast
 
 ```ts
-Router.broadcast(4, routeeProps);
+Router.broadcast(4, routee);
 ```
 
 ```ts
@@ -137,7 +137,7 @@ Nachrichten in `Broadcast<T>` — siehe
 ```ts
 import { ClusterRouter } from 'actor-ts';
 
-ClusterRouter.props({
+ClusterRouter.factory({
   cluster,
   routerType: 'consistent-hashing',
   routeePath: '/user/worker',
@@ -186,7 +186,7 @@ const warmupStrategy: RoutingStrategy = (routees, state) => {
   return [routees[state.messageIndex % routees.length]];
 };
 
-system.spawnAnonymous(Router.custom(4, workerProps, warmupStrategy));
+system.spawnAnonymous(Router.custom(4, Worker, warmupStrategy));
 ```
 
 Alles, was `RoutingStrategy` erfüllt, funktioniert.  Der
@@ -239,7 +239,7 @@ import { Aside } from '@astrojs/starlight/components';
 ## Wie es weitergeht
 
 - **[Router](/de/routing/router/)** — die Factories, die
-  jede Strategie in spawn-fertige Props wickeln.
+  jede Strategie in eine spawn-fertige Actor-Factory wickeln.
 - **[Pool vs Group](/de/routing/pool-vs-group/)** — wie
   sich diese Strategien verhalten, wenn sie auf einen festen Pool
   vs eine dynamische Gruppe von Routees angewendet werden.

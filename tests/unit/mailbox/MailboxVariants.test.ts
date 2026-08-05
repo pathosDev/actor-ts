@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import { Actor } from '../../../src/Actor.js';
 import { ActorSystem } from '../../../src/ActorSystem.js';
 import { LogLevel, NoopLogger } from '../../../src/Logger.js';
-import { Props } from '../../../src/Props.js';
+import { ActorOptions } from '../../../src/ActorOptions.js';
 import {
   BoundedMailbox,
   BoundedMailboxOptions,
@@ -208,7 +208,7 @@ describe('PriorityMailbox', () => {
   });
 });
 
-describe('Props.withMailbox — end-to-end via actor', () => {
+describe('ActorOptions.withMailbox — end-to-end via actor', () => {
   test('actor uses the custom priority mailbox', async () => {
     const kitOptions = TestKitOptions.create()
       .withLogger(new NoopLogger())
@@ -219,11 +219,11 @@ describe('Props.withMailbox — end-to-end via actor', () => {
     class Worker extends Actor<{ label: string; pri: number }> {
       override onReceive(m: { label: string; pri: number }): void { probe.tell(m.label); }
     }
-    const props = Props.create(() => new Worker())
-      .withMailbox<{ label: string; pri: number }>(
+    const options = ActorOptions.create<{ label: string; pri: number }>()
+      .withMailbox(
         () => new PriorityMailbox({ priorityFor: (m: { label: string; pri: number }) => m.pri }) as never,
       );
-    const ref = kit.system.spawnAnonymous(props);
+    const ref = kit.system.spawnAnonymous(Worker, options);
 
     // Send burst while the actor is still being initialised so multiple
     // messages sit in the mailbox at once.
@@ -257,7 +257,7 @@ describe('Props.withMailbox — end-to-end via actor', () => {
         // intentionally empty — we only care about the mailbox shape
       }
     }
-    const ref = kit.system.spawnAnonymous(Props.create(() => new Worker()));
+    const ref = kit.system.spawnAnonymous(Worker);
 
     // Reach into the ActorCell's mailbox via the LocalActorRef internal
     // accessor so we can assert the concrete type without exporting it
@@ -275,7 +275,7 @@ describe('Props.withMailbox — end-to-end via actor', () => {
     await kit.system.terminate();
   });
 
-  test('default mailbox can be opted out per-actor via Props.withMailbox(() => new Mailbox())', async () => {
+  test('default mailbox can be opted out per-actor via withMailbox(() => new Mailbox())', async () => {
     const { Mailbox } = await import('../../../src/internal/Mailbox.js');
     const kitOptions = TestKitOptions.create()
       .withLogger(new NoopLogger())
@@ -285,9 +285,8 @@ describe('Props.withMailbox — end-to-end via actor', () => {
     class Worker extends Actor<number> {
       override onReceive(_m: number): void { /* noop */ }
     }
-    const props = Props.create(() => new Worker())
-      .withMailbox<number>(() => new Mailbox<number>());
-    const ref = kit.system.spawnAnonymous(props);
+    const options = ActorOptions.create<number>().withMailbox(() => new Mailbox<number>());
+    const ref = kit.system.spawnAnonymous(Worker, options);
 
     const cell = (ref as unknown as { getCell(): { _mailboxForTest(): unknown } }).getCell();
     const mailbox = cell._mailboxForTest();
@@ -310,9 +309,9 @@ describe('Props.withMailbox — end-to-end via actor', () => {
         received.push(m);
       }
     }
-    const props = Props.create(() => new Slow())
+    const options = ActorOptions.create<number>()
       .withMailbox(() => new BoundedMailbox<number>({ capacity: 3, overflow: 'drop-new' }) as never);
-    const ref = kit.system.spawnAnonymous(props);
+    const ref = kit.system.spawnAnonymous(Slow, options);
 
     for (let i = 0; i < 8; i++) ref.tell(i);
     await sleep(200);

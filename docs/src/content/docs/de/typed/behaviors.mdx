@@ -106,6 +106,28 @@ einmalige Initialisierung, die der Receive-Handler einschließen
 soll: Kinder spawnen, `context.self` für die Kinder zum Wissen
 einfangen, externe Verbindungen öffnen.
 
+Hier benennt sich ein Behavior auch selbst.  Jedes `Behavior` läuft in
+derselben `TypedActor`-Klasse, es gibt also keine eigene Subklasse, auf
+der du [`Actor.displayName()`](/de/fundamentals/logging/#einen-actor-benennen--displayname)
+überschreiben könntest — `context.setDisplayName` ist der Weg dorthin,
+mit derselben Wirkung: Log-Zeilen und der DevTools-Baum bekommen neben
+dem Pfad ein lesbares Label.
+
+```ts
+const cart = (customerId: string): Behavior<Message> => Behaviors.setup((context) => {
+  context.setDisplayName(`Cart(${customerId})`);
+  return Behaviors.receive((_context, message) => { /* ... */ return Behaviors.same; });
+});
+```
+
+Ohne das meldet ein ganzer Baum typed Actors `TypedActor` als Klasse,
+was nichts darüber sagt, welcher welcher ist.  Ruf es jederzeit auf,
+nicht nur aus `setup` — ein Name, der sich erst nach der ersten
+Nachricht ergibt, lässt sich dann setzen.  Für einen Namen, den die
+Spawn-Stelle schon kennt, tut
+[`ActorOptions.withDisplayName(...)`](/de/fundamentals/spawning/#withdisplayname)
+dasselbe, ohne das Behavior zu betreten.
+
 ## Die Dekoratoren
 
 Drei Kombinatoren wickeln ein anderes Behavior mit zusätzlichen
@@ -314,7 +336,7 @@ import { Aside } from '@astrojs/starlight/components';
 - **[Typed Actor](/de/typed/typed-actor/)** — die Runtime,
   die ein Behavior interpretiert.
 - **[Spawn Typed](/de/typed/spawn-typed/)** — `system.spawnTyped`,
-  `context.spawnTyped`, `typedProps`.
+  `context.spawnTyped`, `typedActor`.
 - **[Supervision](/de/fundamentals/supervision/)** — was
   `Behaviors.supervise(...).onFailure(...)` intern verwendet.
 - **[Become und Stash (untyped)](/de/fundamentals/become-and-stash/)** —

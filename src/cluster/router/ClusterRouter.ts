@@ -1,6 +1,6 @@
 import { Actor } from '../../Actor.js';
 import type { ActorRef } from '../../ActorRef.js';
-import { Props } from '../../Props.js';
+import type { ActorFactory } from '../../Actor.js';
 import { Broadcast } from '../../Router.js';
 import { ClusterRouterOptionsValidator } from './ClusterRouterOptions.js';
 import type { ClusterRouterOptions, ClusterRouterOptionsType } from './ClusterRouterOptions.js';
@@ -16,15 +16,14 @@ import { pickRendezvous } from './ConsistentHashing.js';
  * `consistent-hashing` sibling that pins messages with the same
  * extracted key to the same node.
  *
+ *   const routerOptions = ClusterRouterOptions.create<{ id: string }>()
+ *     .withCluster(cluster)
+ *     .withRole('compute')                          // optional role filter
+ *     .withRouterType('consistent-hashing')
+ *     .withRouteePath('/user/worker')
+ *     .withExtractKey((message) => message.id);
  *   const router = system.spawn(
- *     ClusterRouter.props(
- *       ClusterRouterOptions.create<{ id: string }>()
- *         .withCluster(cluster)
- *         .withRole('compute')                          // optional role filter
- *         .withRouterType('consistent-hashing')
- *         .withRouteePath('/user/worker')
- *         .withExtractKey((message) => message.id),
- *     ),
+ *     ClusterRouter.factory(routerOptions),
  *     'compute-router',
  *   );
  *   router.tell({ id: 'order-42', op: 'price' });
@@ -66,19 +65,18 @@ export type ClusterRouterType =
   | 'broadcast';
 
 /**
- * `Props` factory for the cluster router.  See {@link ClusterRouterOptions}
+ * Actor factory for the cluster router.  See {@link ClusterRouterOptions}
  * for the configuration builder and {@link ClusterRouterOptionsType} for the
  * resolved shape.
  */
 export const ClusterRouter = {
-  props<TMessage>(
+  factory<TMessage>(
     options: ClusterRouterOptions<TMessage>,
-  ): Props<TMessage | Broadcast<TMessage>> {
+  ): ActorFactory<TMessage | Broadcast<TMessage>> {
     const resolvedOptions = options as ClusterRouterOptionsType<TMessage>;
     new ClusterRouterOptionsValidator<TMessage>().validate(resolvedOptions);
-    return Props.create(
-      () => new ClusterRouterActor<TMessage>(resolvedOptions) as unknown as Actor<TMessage | Broadcast<TMessage>>,
-    );
+    return () =>
+      new ClusterRouterActor<TMessage>(resolvedOptions) as unknown as Actor<TMessage | Broadcast<TMessage>>;
   },
 };
 

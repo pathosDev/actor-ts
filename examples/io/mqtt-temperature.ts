@@ -29,7 +29,6 @@ import {
   MqttActor,
   MqttOptions,
   MqttOptionsBuilder,
-  Props,
   type MqttMessage,
 } from '../../src/index.js';
 import { attachDevTools } from '../devtools.js';
@@ -93,7 +92,7 @@ async function main(): Promise<void> {
   const devtools = await attachDevTools(system);
 
   system.spawn(
-    Props.create(() => new TemperatureHub(MqttOptions.create())),
+    () => new TemperatureHub(MqttOptions.create()),
     'temperature-hub',
   );
 

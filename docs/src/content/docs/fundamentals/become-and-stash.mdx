@@ -21,7 +21,7 @@ config load.
 
 ```ts
 import { match } from 'ts-pattern';
-import { Actor, ActorSystem, Props } from 'actor-ts';
+import { Actor, ActorSystem } from 'actor-ts';
 
 type OnMessage = { readonly kind: 'on' };
 type OffMessage = { readonly kind: 'off' };
@@ -57,7 +57,7 @@ class Switch extends Actor<Message> {
 }
 
 const system = ActorSystem.create('demo');
-const sw = system.spawnAnonymous(Props.create(() => new Switch()));
+const sw = system.spawnAnonymous(Switch);
 
 sw.tell({ kind: 'press' });   // → "turning on"
 sw.tell({ kind: 'press' });   // → "turning off"
@@ -157,7 +157,7 @@ transition declarations on top of the same engine.
 ## `stash` — park, then replay
 
 ```ts
-import { Actor, ActorSystem, Props } from 'actor-ts';
+import { Actor, ActorSystem } from 'actor-ts';
 import { match } from 'ts-pattern';
 
 type ConfigureMessage = { readonly kind: 'configure'; readonly url: string };

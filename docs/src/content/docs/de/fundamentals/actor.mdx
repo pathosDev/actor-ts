@@ -35,7 +35,7 @@ Drei Eigenschaften definieren einen Actor in actor-ts:
 
 ```ts
 import { match } from 'ts-pattern';
-import { Actor, ActorSystem, Props } from 'actor-ts';
+import { Actor, ActorSystem } from 'actor-ts';
 
 type IncrementCommand = { kind: 'increment' };
 type ResetCommand = { kind: 'reset' };
@@ -78,20 +78,24 @@ Du machst nicht direkt `new Counter()`.  Das Framework muss
 kontrollieren, **wann** die Instanz erstellt wird (auf ihrem eigenen
 Mailbox-Processing-Thread, nicht auf dem des Aufrufers), und es muss
 Context injizieren (die `self`-Ref, die Supervisor-Strategie, die
-Eltern-Referenz).  Statt einer Instanz übergibst du also eine Factory:
+Eltern-Referenz).  Statt einer Instanz übergibst du also die Klasse
+selbst:
 
 ```ts
 const system = ActorSystem.create('demo');
 
 // Anonymer Actor — das System wählt einen Namen.
-const counter = system.spawnAnonymous(Props.create(() => new Counter()));
+const counter = system.spawnAnonymous(Counter);
 
 // Benannter Actor — nützlich für Log-Zeilen + Pfad-basiertes Lookup.
-const counter2 = system.spawn(Props.create(() => new Counter()), 'counter');
+const counter2 = system.spawn(Counter, 'counter');
 ```
 
-`Props.create(...)` packt die Factory + Supervisor-Strategie +
-Dispatcher-Wahl in einen Wert.  Siehe [Props](/de/fundamentals/props/)
+Ein Konstruktor mit Argumenten hat keine Null-Argument-Form, die
+aufgerufen werden könnte — dieser Fall übergibt stattdessen eine Factory:
+`system.spawn(() => new Counter(database), 'counter')`.  Das optionale
+dritte Argument, `ActorOptions`, trägt Supervisor-Strategie, Dispatcher-
+und Mailbox-Wahl.  Siehe [Actors erzeugen](/de/fundamentals/spawning/)
 für die volle Schnittstelle.
 
 ## Nachrichten senden
@@ -222,12 +226,37 @@ import { Aside } from '@astrojs/starlight/components';
   Wenn der Supervisor entscheidet, einen abgestürzten Actor neu zu starten
   (**restart**), wirft das Framework die kaputte Instanz komplett weg
   (jeglicher interner Zustand ist also weg) und baut eine neue aus
-  derselben `Props.create`-Factory.  Nachrichten, die während des
+  derselben Actor-Klasse bzw. Factory.  Nachrichten, die während des
   Restart-Fensters ankamen, bleiben in der Mailbox; die neue Instanz
   nimmt sie auf.  Siehe
   [Supervision](/de/fundamentals/supervision/) für den vollen
   Entscheidungsbaum.
 </Aside>
+
+## Sich selbst benennen — `displayName()`
+
+Kein Lifecycle-Hook, aber die andere Methode, die sich zu überschreiben
+lohnt.  Sie bestimmt, wie ein Actor in Log-Zeilen und im
+DevTools-Baum heißt; per Default sein voller Pfad:
+
+```ts
+class UserEntity extends Actor<UserCommand> {
+  override displayName(): string { return `User(${this.entityId})`; }
+
+  override onReceive(command: UserCommand): void {
+    this.log.info('recovery complete');
+    // → [...] INFO  actor-ts://shop/.../entity-da76e1eb-... - User(test-user-590) - recovery complete
+  }
+}
+```
+
+Der Name kommt zur Zeile dazu, er ersetzt den Pfad nicht, und er wird
+bei jedem Record aufgelöst — er darf also aus Zustand abgeleitet sein
+und folgt einem Restart.  Halt ihn billig; ein Throw fällt auf den Pfad
+zurück.  `ActorOptions.withDisplayName(...)` an der Spawn-Stelle sticht ihn,
+genauso wie `withSupervisorStrategy(...)` `supervisorStrategy()`
+sticht.  Die ganze Geschichte in
+[Logging](/de/fundamentals/logging/#einen-actor-benennen--displayname).
 
 ## Kinder
 
@@ -237,10 +266,7 @@ Actors können Kinder haben.  Verwende `context.spawn` aus dem
 ```ts
 class Parent extends Actor<{ kind: 'add-child'; name: string }> {
   override onReceive(message: { kind: 'add-child'; name: string }): void {
-    const child = this.context.spawn(
-      Props.create(() => new Worker()),
-      message.name,
-    );
+    const child = this.context.spawn(Worker, message.name);
     this.log.info(`spawned child ${child.path}`);
   }
 }
@@ -290,9 +316,8 @@ class DbWriterFanout extends Actor<{ row: Row }> {
   override onReceive(message: { row: Row }): void {
     // Spawn-and-forget: Kind erledigt den langsamen DB-Write, Parent
     // bleibt für die nächste Nachricht in der Mailbox verfügbar.
-    this.context.spawnAnonymous(Props.create(() =>
-      new SingleShotWriter(this.db, message.row)
-    ));
+    this.context.spawnAnonymous(() =>
+      new SingleShotWriter(this.db, message.row));
   }
 }
 ```

@@ -1,8 +1,8 @@
+import type { ActorClassOrFactory } from '../../Actor.js';
 import { match, P } from 'ts-pattern';
 import { Actor } from '../../Actor.js';
 import type { ActorRef } from '../../ActorRef.js';
 import type { ActorSystem } from '../../ActorSystem.js';
-import { Props } from '../../Props.js';
 import type { Cancellable } from '../../Scheduler.js';
 import type { Cluster } from '../Cluster.js';
 import { LeaderChanged, MemberRemoved } from '../ClusterEvents.js';
@@ -60,11 +60,17 @@ export class ShardedDaemonProcess {
 
     const startOptions = StartShardingOptions.create<DaemonEnvelope<T>>()
       .withTypeName(`daemon-${resolvedOptions.name}`)
-      .withEntityProps(Props.create(() => new DaemonHost<T>(resolvedOptions.behaviorFor) as unknown as Actor<DaemonEnvelope<T>>))
+      .withEntityActor(() => new DaemonHost<T>(resolvedOptions.actorFor) as unknown as Actor<DaemonEnvelope<T>>)
       .withExtractEntityId((env) => String(env.index))
       .withExtractEntityMessage((env) => env.body)
       .withNumShards(resolvedOptions.numDaemons)
       .withRememberEntities(true)
+      // A daemon is supposed to run continuously, so the node-wide idle sweep
+      // must not apply to it: a daemon that only wakes on its own schedule
+      // looks idle, and passivating it would both drop it from the
+      // remember-entities registry and leave `wakeAll` resurrecting it on
+      // every liveness tick.  Explicit, so it beats HOCON as well.
+      .withPassivationIdleMs(0)
       .withAllocationStrategy(new LeastShardAllocationStrategy());
     if (resolvedOptions.role !== undefined) startOptions.withRole(resolvedOptions.role);
     const region = sharding.start<DaemonEnvelope<T>>(startOptions);
@@ -128,12 +134,12 @@ export class ShardedDaemonProcess {
 class DaemonHost<T> extends Actor<DaemonEnvelope<T>> {
   private inner: ActorRef<T> | null = null;
 
-  constructor(private readonly behaviorFor: (i: number) => Props<T>) { super(); }
+  constructor(private readonly actorFor: (i: number) => ActorClassOrFactory<T>) { super(); }
 
   override preStart(): void {
     // The entity id IS the daemon index — `extractEntityId` stringifies it.
-    const props = this.behaviorFor(Number.parseInt(this.entityId, 10));
-    this.inner = this.context.spawn(props, 'daemon');
+    const daemon = this.actorFor(Number.parseInt(this.entityId, 10));
+    this.inner = this.context.spawn(daemon, 'daemon');
   }
 
   override onReceive(message: DaemonEnvelope<T> | T | Wakeup): void {

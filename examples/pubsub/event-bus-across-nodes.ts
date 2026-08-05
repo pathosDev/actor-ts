@@ -12,7 +12,7 @@
  *   - both nodes see BROADCAST events
  *   - after B leaves, A's publishes no longer try to reach B
  */
-import { Actor, ActorSystem, Cluster, ClusterOptions, InMemoryTransport, NodeAddress, Props } from '../../src/index.js';
+import { Actor, ActorSystem, Cluster, ClusterOptions, InMemoryTransport, NodeAddress } from '../../src/index.js';
 import { DistributedPubSubId, DistributedPubSubOptions, Publish, Subscribe } from '../../src/cluster/pubsub/index.js';
 import { attachDevTools } from '../devtools.js';
 
@@ -67,15 +67,15 @@ async function main(): Promise<void> {
   console.log('cluster formed with 3 nodes');
 
   // B cares about orders + everything broadcast.
-  const bOrders = nodeB.system.spawnAnonymous(Props.create(() => new TopicListener('nodeB@orders')));
+  const bOrders = nodeB.system.spawnAnonymous(() => new TopicListener('nodeB@orders'));
   nodeB.mediator.tell(new Subscribe('orders', bOrders));
-  const bBroadcast = nodeB.system.spawnAnonymous(Props.create(() => new TopicListener('nodeB@broadcast')));
+  const bBroadcast = nodeB.system.spawnAnonymous(() => new TopicListener('nodeB@broadcast'));
   nodeB.mediator.tell(new Subscribe('broadcast', bBroadcast));
 
   // C cares about shipping + broadcast.
-  const cShipping = nodeC.system.spawnAnonymous(Props.create(() => new TopicListener('nodeC@shipping')));
+  const cShipping = nodeC.system.spawnAnonymous(() => new TopicListener('nodeC@shipping'));
   nodeC.mediator.tell(new Subscribe('shipping', cShipping));
-  const cBroadcast = nodeC.system.spawnAnonymous(Props.create(() => new TopicListener('nodeC@broadcast')));
+  const cBroadcast = nodeC.system.spawnAnonymous(() => new TopicListener('nodeC@broadcast'));
   nodeC.mediator.tell(new Subscribe('broadcast', cBroadcast));
 
   // Let two gossip rounds replicate the topic registry.

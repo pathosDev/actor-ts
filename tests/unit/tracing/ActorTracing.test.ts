@@ -20,7 +20,6 @@ import { ActorSystem } from '../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../src/ActorSystemOptions.js';
 import type { ActorRef } from '../../../src/ActorRef.js';
 import { LogLevel, NoopLogger } from '../../../src/Logger.js';
-import { Props } from '../../../src/Props.js';
 import { RecordingTracer } from '../../../src/tracing/RecordingTracer.js';
 import { TracingExtensionId } from '../../../src/tracing/TracingExtension.js';
 
@@ -40,7 +39,7 @@ describe('Actor tracing — auto-instrumentation', () => {
     }
 
     try {
-      const actorRef = sys.spawn(Props.create(() => new Recv()), 'r');
+      const actorRef = sys.spawn(Recv, 'r');
       const client = tracer.startSpan('client.handle-request');
       tracer.withActiveSpan(client, () => {
         actorRef.tell('hello');
@@ -80,8 +79,8 @@ describe('Actor tracing — auto-instrumentation', () => {
     }
 
     try {
-      const actorB = sys.spawn(Props.create(() => new B()), 'b');
-      const actorA = sys.spawn(Props.create(() => new A()), 'a');
+      const actorB = sys.spawn(B, 'b');
+      const actorA = sys.spawn(A, 'a');
       const client = tracer.startSpan('client');
       tracer.withActiveSpan(client, () => actorA.tell({ message: 'forward', next: actorB }));
       await sleep(60);
@@ -117,7 +116,7 @@ describe('Actor tracing — auto-instrumentation', () => {
     }
 
     try {
-      const actorB = sys.spawn(Props.create(() => new Bomb()), 'b');
+      const actorB = sys.spawn(Bomb, 'b');
       const root = tracer.startSpan('client');
       tracer.withActiveSpan(root, () => actorB.tell('boom'));
       await sleep(50);
@@ -144,7 +143,7 @@ describe('Actor tracing — auto-instrumentation', () => {
     }
 
     try {
-      const actorRef = sys.spawn(Props.create(() => new R()), 'r');
+      const actorRef = sys.spawn(R, 'r');
       actorRef.tell('x');
       await sleep(30);
       expect(tracer.recorded()).toEqual([]);
@@ -164,8 +163,8 @@ describe('Actor tracing — tooling actors', () => {
     class Quiet extends Actor<string> {
       override onReceive(): void {}
     }
-    const application = system.spawn(Props.create(() => new Quiet()), 'application');
-    const tooling = system.spawn(Props.create(() => new Quiet()).asInternal(), 'tooling');
+    const application = system.spawn(Quiet, 'application');
+    const tooling = system.spawn(Quiet, 'tooling', { internal: true });
 
     const span = tracer.startSpan('client');
     await tracer.withActiveSpan(span, async () => {
@@ -197,11 +196,11 @@ describe('Actor tracing — tooling actors', () => {
     class Root extends Actor<string> {
       child!: ActorRef<string>;
       override preStart(): void {
-        this.child = this.context.spawn(Props.create(() => new Leaf()), 'leaf');
+        this.child = this.context.spawn(Leaf, 'leaf');
       }
       override onReceive(message: string): void { this.child.tell(message); }
     }
-    system.spawn(Props.create(() => new Root()).asInternal(), 'root');
+    system.spawn(Root, 'root', { internal: true });
     await sleep(60);
 
     const marked = system._inspectTree()

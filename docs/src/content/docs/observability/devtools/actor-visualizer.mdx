@@ -76,10 +76,17 @@ noop on detach — see [Cost](/observability/devtools/overview/#cost).
 
 The live supervision tree, from the root guardian down.
 
-- **Filter** by path or class name. Matching keeps ancestors visible, so
-  a hit deep in a collapsed branch is still reachable — and a filter
-  temporarily overrides collapsing, because a match you cannot see reads
-  as a search that failed.
+- **Filter** by path, class name or display name. Matching keeps
+  ancestors visible, so a hit deep in a collapsed branch is still
+  reachable — and a filter temporarily overrides collapsing, because a
+  match you cannot see reads as a search that failed.
+- **The row label is the actor's own name** when it has one — whatever
+  [`displayName()`](/fundamentals/logging/#naming-an-actor--displayname)
+  resolves to — and the last path segment otherwise. Worth setting for
+  `Behaviors` actors above all, whose class column reads `TypedActor`
+  for every row. The full path stays in the row's tooltip either way,
+  and sibling order stays on the path segment, so a rename never makes
+  rows jump.
 - **Badges** show what is unusual: messages waiting, stashed messages, a
   suspended mailbox. An idle actor carries none.
 - **The state dot is live.** Green running, amber suspended or
@@ -96,7 +103,7 @@ The live supervision tree, from the root guardian down.
 - **Hide DevTools actors** is on by default. DevTools runs its own hub
   and taps as ordinary actors; they are real, so they are listed, but
   they are not what you came to look at. They are marked at spawn with
-  [`Props.asInternal()`](/fundamentals/props/#asinternal) rather than
+  [`ActorOptions.withInternal()`](/fundamentals/spawning/#withinternal) rather than
   matched by name, so their children — a DevTools websocket connection
   is a child of its hub — are hidden too.
 

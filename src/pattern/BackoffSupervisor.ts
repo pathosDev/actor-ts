@@ -1,7 +1,7 @@
 import { match } from 'ts-pattern';
-import { Actor } from '../Actor.js';
+import { Actor, type ActorClassOrFactory, type ActorFactory } from '../Actor.js';
+import type { ActorOptions } from '../ActorOptions.js';
 import type { ActorRef } from '../ActorRef.js';
-import { Props } from '../Props.js';
 import {
   Directive,
   OneForOneStrategy,
@@ -21,8 +21,8 @@ import {
  * hammer the broken dependency.
  *
  *   const supervisor = system.spawn(
- *     BackoffSupervisor.props({
- *       childProps: Props.create(() => new MyFlaky()),
+ *     BackoffSupervisor.factory({
+ *       child: MyFlaky,
  *       minBackoff: 200,
  *       maxBackoff: 10_000,
  *       randomFactor: 0.2,
@@ -110,8 +110,10 @@ export type ForwardStrategy =
 export type TerminationTrigger = 'any' | 'failure' | 'stop';
 
 export type BackoffOptions<T> = {
-  /** How to construct the child. */
-  readonly childProps: Props<T>;
+  /** The child actor — its class, or a factory when it needs dependencies. */
+  readonly child: ActorClassOrFactory<T>;
+  /** Spawn options for the child.  Its supervision is fixed, see {@link factory}. */
+  readonly childOptions?: ActorOptions<T>;
   /** Name suffix for the child.  The actual child name is
    *  `${childName}-${incarnation}` so successive incarnations don't
    *  collide on names while the previous instance is still tearing down. */
@@ -183,13 +185,13 @@ type StashedMessage = {
 
 export class BackoffSupervisor<T> extends Actor<unknown> {
   /**
-   * Build a `Props` that spawns a `BackoffSupervisor` configured with
-   * the given options.  Apply `withSupervisorStrategy` if you want to
-   * change how the supervisor itself is supervised (the **child** is
-   * always run under `stoppingStrategy` regardless of this).
+   * Build the factory that spawns a `BackoffSupervisor` configured with the
+   * given options.  Pass `supervisorStrategy` in the supervisor's own spawn
+   * options to change how the *supervisor* is supervised — the **child** is
+   * always run under `stoppingStrategy` regardless.
    */
-  static props<T>(options: BackoffOptions<T>): Props<unknown> {
-    return Props.create<unknown>(() => new BackoffSupervisor(options) as unknown as Actor<unknown>);
+  static factory<T>(options: BackoffOptions<T>): ActorFactory<unknown> {
+    return () => new BackoffSupervisor(options) as unknown as Actor<unknown>;
   }
 
   private readonly options: BackoffOptions<T>;
@@ -348,7 +350,7 @@ export class BackoffSupervisor<T> extends Actor<unknown> {
   private spawnChild(): void {
     this.incarnation += 1;
     const name = `${this.childName}-${this.incarnation}`;
-    const child = this.context.spawn(this.options.childProps, name);
+    const child = this.context.spawn(this.options.child, name, this.options.childOptions);
     this.context.watch(child);
     this.currentChild = child;
     this.spawnTs = this.clock();

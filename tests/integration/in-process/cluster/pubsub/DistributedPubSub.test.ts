@@ -4,7 +4,6 @@ import { Cluster } from '../../../../../src/cluster/Cluster.js';
 import { ClusterOptions } from '../../../../../src/cluster/ClusterOptions.js';
 import { InMemoryTransport } from '../../../../../src/cluster/Transport.js';
 import { NodeAddress } from '../../../../../src/cluster/NodeAddress.js';
-import { Props } from '../../../../../src/Props.js';
 import {
   DistributedPubSubId,
   Publish,
@@ -163,17 +162,17 @@ describe('DistributedPubSub — gossip-payload audit (#80)', () => {
     // Single-node setup: no peers means eagerGossip / gossipTick early-
     // return, but the local-state path still runs.  We bypass the
     // extension's auto-spawned mediator so we can capture the actor
-    // instance via the Props factory closure and read its private
+    // instance via the factory closure and read its private
     // `topics` map / `buildGossip()` directly.
     const nodeA = await startNode('ps-audit-cycles', 'h', 51301);
 
     let captured: DistributedPubSubMediator | null = null;
     const mediatorOptions = DistributedPubSubOptions.create().withCluster(nodeA.cluster).withGossipIntervalMs(100);
     const auditMediator = nodeA.system.spawn(
-      Props.create(() => {
+      () => {
         captured = new DistributedPubSubMediator(mediatorOptions);
         return captured;
-      }),
+      },
       'audit-mediator',
     );
     // Wait for preStart to land (the factory ran synchronously, but
@@ -216,10 +215,10 @@ describe('DistributedPubSub — gossip-payload audit (#80)', () => {
     let captured: DistributedPubSubMediator | null = null;
     const mediatorOptions = DistributedPubSubOptions.create().withCluster(nodeA.cluster).withGossipIntervalMs(100);
     const auditMediator = nodeA.system.spawn(
-      Props.create(() => {
+      () => {
         captured = new DistributedPubSubMediator(mediatorOptions);
         return captured;
-      }),
+      },
       'audit-mediator-bytes',
     );
     await sleep(20);
@@ -258,10 +257,10 @@ describe('DistributedPubSub — gossip-payload audit (#80)', () => {
     let captured: DistributedPubSubMediator | null = null;
     const mediatorOptions = DistributedPubSubOptions.create().withCluster(nodeA.cluster).withGossipIntervalMs(100);
     const auditMediator = nodeA.system.spawn(
-      Props.create(() => {
+      () => {
         captured = new DistributedPubSubMediator(mediatorOptions);
         return captured;
-      }),
+      },
       'audit-mediator-schema',
     );
     await sleep(20);

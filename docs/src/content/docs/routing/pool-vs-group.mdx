@@ -1,6 +1,6 @@
 ---
 title: Pool vs group
-description: Two ways routers acquire routees — **pool** routers spawn their routees from a Props (the local Router); **group** routers find existing routees by path (ClusterRouter). The trade-off in lifecycle ownership and the kinds of routees each fits.
+description: Two ways routers acquire routees — **pool** routers spawn their routees from an actor class or factory (the local Router); **group** routers find existing routees by path (ClusterRouter). The trade-off in lifecycle ownership and the kinds of routees each fits.
 ---
 
 A router needs **routees** to forward messages to.  Two ways to
@@ -8,7 +8,7 @@ get them, encoding very different lifecycle relationships:
 
 | Model | Who owns the routees? | Discovery |
 | --- | --- | --- |
-| **Pool** | The router — it spawns the routees from a `Props`. | Static at spawn time; size doesn't change without a router restart. |
+| **Pool** | The router — it spawns the routees itself. | Static at spawn time; size doesn't change without a router restart. |
 | **Group** | Someone else — the routees already exist. | Dynamic (group routers re-discover when needed). |
 
 The local `Router` is **always a pool**.  The cluster `ClusterRouter`
@@ -19,10 +19,10 @@ think about lifecycle, supervision, and resize.
 ## Pool router
 
 ```ts
-import { Router, Props } from 'actor-ts';
+import { Router } from 'actor-ts';
 
 const pool = system.spawn(
-  Router.roundRobin(4, Props.create(() => new Worker())),
+  Router.roundRobin(4, Worker),
   'workers',
 );
 ```
@@ -52,7 +52,7 @@ Consequences:
 - **Lifecycle is coupled.**  Stop the router → all routees stop.
   No leftover orphans.
 - **Supervision is straightforward.**  The router supervises its
-  routees with whatever strategy the routee `Props` declares (or
+  routees with whatever strategy the routee options declare (or
   the default).
 - **Failures are recoverable.**  A crashed routee is restarted by
   the supervisor; the router keeps routing.
@@ -78,7 +78,7 @@ workers, all the same, parallelizing one stream of work.
 import { ClusterRouter } from 'actor-ts';
 
 const router = system.spawn(
-  ClusterRouter.props({
+  ClusterRouter.factory({
     cluster,
     routerType: 'round-robin',
     routeePath: '/user/worker',

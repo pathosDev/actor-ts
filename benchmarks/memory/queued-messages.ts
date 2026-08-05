@@ -8,7 +8,7 @@
  *
  *   bun run benchmarks/memory/queued-messages.ts
  */
-import { Actor, ActorSystem, ActorSystemOptions, LogLevel, NoopLogger, Props } from '../../src/index.js';
+import { Actor, ActorSystem, ActorSystemOptions, LogLevel, NoopLogger } from '../../src/index.js';
 import { memoryGroup } from '../lib/harness.js';
 
 type Message = { payload: string };
@@ -36,7 +36,7 @@ async function main(): Promise<void> {
       }
     }
 
-    const ref = system.spawnAnonymous(Props.create(() => new Sleeper()));
+    const ref = system.spawnAnonymous(Sleeper);
 
     await group.measure(`enqueue ${n.toLocaleString()} messages to a blocked actor`, async () => {
       ref.tell(payload); // wedges the actor on the latch

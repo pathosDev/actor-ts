@@ -132,13 +132,18 @@ export const ConfigKeys = {
   /**
    * Cluster-sharding defaults — `actor-ts.sharding.*`.  Read once per
    * started type by `ClusterSharding.start`, which layers them under the
-   * explicit options; the first four reach the region, the last two the
+   * explicit options; the first five reach the region, the last two the
    * per-type coordinator.
+   *
+   * `shardPassivationIdle` has no leaf in `reference.conf` on purpose — it
+   * must stay absent for "unset means: follow `passivationIdle`" to be
+   * expressible, since a shipped value would make `hasPath` true forever.
    */
   sharding: {
     numberOfShards: 'actor-ts.sharding.number-of-shards',
     rememberEntities: 'actor-ts.sharding.remember-entities',
     passivationIdle: 'actor-ts.sharding.passivation-idle',
+    shardPassivationIdle: 'actor-ts.sharding.shard-passivation-idle',
     maxEntities: 'actor-ts.sharding.max-entities',
     rebalanceInterval: 'actor-ts.sharding.rebalance-interval',
     handOffTimeout: 'actor-ts.sharding.hand-off-timeout',

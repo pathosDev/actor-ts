@@ -17,7 +17,6 @@ import {
   Actor,
   ActorSystem,
   MetricsExtensionId,
-  Props,
   prometheusHandler,
 } from '../../src/index.js';
 import { attachDevTools } from '../devtools.js';
@@ -33,7 +32,7 @@ const system = ActorSystem.create('metrics-demo');
 const devtools = await attachDevTools(system);
 const registry = system.extension(MetricsExtensionId).enable();
 
-const worker = system.spawn(Props.create(() => new Worker()), 'worker');
+const worker = system.spawn(Worker, 'worker');
 let counter = 0;
 const interval = setInterval(() => {
   // Drive a small steady stream so the counters change between scrapes.

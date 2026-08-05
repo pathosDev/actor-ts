@@ -126,10 +126,10 @@ const startSharding2Options = StartShardingOptions.create<CartCommand>().withExt
 cluster.sharding.start('cart', () => new CartActor(deps),
   startSharding2Options);
 
-// 3. Full-form — explicit Props + every setting:
+// 3. Full-form — every setting via the builder:
 const startSharding3Options = StartShardingOptions.create<CartCommand>()
   .withTypeName('cart')
-  .withEntityProps(Props.create(() => new CartActor()))
+  .withEntityActor(CartActor)
   .withExtractEntityId((m) => m.entityId)
   .withNumShards(16)
   .withRole('cart-host');
@@ -159,8 +159,8 @@ perspective.  Behind the scenes:
 
 | Actor | Role |
 | --- | --- |
-| **Region** | One per node.  Routes messages to the right shard's owner, and decides when local entities passivate. |
-| **Shard** | One per shard hosted here, a child of the region.  Owns the entity actors: spawns them, stops them, buffers for one on its way out. |
+| **Region** | One per node.  Routes messages to the right shard's owner, and decides when local entities — and shards left empty — passivate. |
+| **Shard** | One per shard hosted here, a child of the region.  Owns the entity actors: spawns them, stops them, buffers for one on its way out.  Goes away itself once it has stood empty for its window, and comes back with the next message. |
 | **Coordinator** | One per cluster (singleton, on the leader).  Decides which node owns each shard.  Handles rebalancing on membership changes. |
 | **Entity** | One per `entityId`.  A child of its shard, on whichever node currently owns the shard the ID hashes to. |
 
@@ -220,9 +220,11 @@ To exercise an entity on its own, hand it an identity directly instead
 of standing up a cluster around it:
 
 ```ts
-const props = Props.create(() => new CartEntity())
+import { ActorOptions } from 'actor-ts';
+
+const cartOptions = ActorOptions.create()
   .withEntity({ entityId: 'user-42', typeName: 'cart', shardId: 3 });
-const cart = system.spawn(props, 'cart-under-test');
+const cart = system.spawn(CartEntity, 'cart-under-test', cartOptions);
 ```
 
 ### Why not read it off the path?
@@ -240,16 +242,18 @@ every character outside `[A-Za-z0-9_-]` to `_` when it names the child.
 
 ```ts
 type ShardingOptionsType<TMessage> = {
-  typeName:               string;
-  entityProps:            Props<TMessage>;
-  extractEntityId:        (message: TMessage) => string;
-  extractEntityMessage?:  (message: TMessage) => unknown;
-  numShards?:             number;             // default 64
-  role?:                  string;             // restrict to nodes carrying this role
-  proxy?:                 boolean;            // route-only, no local entities
-  rememberEntities?:      boolean;            // re-spawn entities on failover (#)
-  passivationIdleMs?:     number;             // auto-stop idle entities
-  maxEntities?:           number;             // LRU cap per node
+  typeName:                string;
+  entityActor:             ActorClassOrFactory<TMessage>;
+  entityOptions?:          ActorOptions<TMessage>;
+  extractEntityId:         (message: TMessage) => string;
+  extractEntityMessage?:   (message: TMessage) => unknown;
+  numShards?:              number;            // default 64
+  role?:                   string;            // restrict to nodes carrying this role
+  proxy?:                  boolean;           // route-only, no local entities
+  rememberEntities?:       boolean;           // re-spawn entities on failover (#)
+  passivationIdleMs?:      number;            // auto-stop idle entities, default 5 min
+  shardPassivationIdleMs?: number;            // auto-stop empty shards, follows the above
+  maxEntities?:            number;            // LRU cap per node
 };
 ```
 
@@ -262,19 +266,21 @@ type ShardingOptionsType<TMessage> = {
 | `role` | Only members with this role host shards of this type.  Useful for placing compute-heavy entities on dedicated nodes. |
 | `proxy` | This node *forwards* messages to the region but never hosts entities locally.  Used for client nodes in an asymmetric cluster. |
 | `rememberEntities` | Persist the set of *active* entity IDs.  After a coordinator failover (or full cluster restart), those IDs are spawned eagerly so messages don't have to recreate the entire fleet. |
-| `passivationIdleMs` | Stop an entity after this much idle time.  Frees memory; next message for the same ID re-creates the entity. |
+| `passivationIdleMs` | Stop an entity after this much idle time.  Frees memory; next message for the same ID re-creates the entity.  Defaults to **5 minutes**; `0` disables it. |
+| `shardPassivationIdleMs` | Stop a shard after it has stood empty this long.  Unset it follows `passivationIdleMs`; `0` keeps empty shards resident while entities still passivate. |
 | `maxEntities` | Per-node cap.  When exceeded, the LRU entity is passivated. |
 
 The defaults are sensible for small clusters.  For production, you
 usually want `rememberEntities: true` and a `passivationIdleMs`
 matched to your traffic pattern.
 
-Four of these are also HOCON keys — `number-of-shards`,
-`remember-entities`, `passivation-idle` and `max-entities` — as are the
-coordinator's `rebalance-interval` and `hand-off-timeout`.  They set the
-node-wide baseline for every sharded type and sit *under* whatever
-`start(...)` passes explicitly, so a per-type value in the builder still
-wins.  See [Configuration](/reference/configuration/#actor-tssharding).
+Five of these are also HOCON keys — `number-of-shards`,
+`remember-entities`, `passivation-idle`, `shard-passivation-idle` and
+`max-entities` — as are the coordinator's `rebalance-interval` and
+`hand-off-timeout`.  They set the node-wide baseline for every sharded
+type and sit *under* whatever `start(...)` passes explicitly, so a
+per-type value in the builder still wins.  See
+[Configuration](/reference/configuration/#actor-tssharding).
 
 ```hocon
 actor-ts.sharding {
@@ -291,10 +297,18 @@ for the same ID re-creates it.  However it is triggered, the region
 buffers messages that arrive while the entity is stopping and
 replays them to the fresh incarnation, so nothing is lost.
 
-There is **no default idle window** — `passivationIdleMs` is `0`
-(disabled) unless you set it, in code or via
-`actor-ts.sharding.passivation-idle`, and an entity that nobody
-passivates stays resident for the lifetime of its node.
+The default idle window is **5 minutes**.  Set `passivationIdleMs` — in
+code or via `actor-ts.sharding.passivation-idle` — to change it, or `0`
+to switch it off and keep every entity resident for the lifetime of its
+node.
+
+:::caution[In-memory state does not survive it]
+A passivated entity is a stopped actor, so anything it held in fields is
+gone.  A [`PersistentActor`](/persistence/persistent-actor/) replays its
+journal on the way back and notices nothing; a plain actor that built
+state from the messages it received starts over.  Either rebuild in
+`preStart`, or set `passivationIdleMs: 0` for that type.
+:::
 
 **Automatic** — when `passivationIdleMs` elapses with no traffic, or
 `maxEntities` is exceeded (the least-recently-used entity is
@@ -340,6 +354,44 @@ class CartActor extends Actor<CartCommand> {
   }
 }
 ```
+
+### Shards passivate too
+
+Passivating every entity in a shard used to leave the shard itself
+behind — a live actor holding an empty map.  Nothing stopped it short of
+a rebalance, and because entity IDs spread over the hash space, a
+long-running node eventually touched every shard and kept all of them.
+With `numShards = 64` that is 64 idle actors with nothing in them.
+
+So a shard that has stood empty for `shardPassivationIdleMs` is stopped
+as well.  The region keeps *ownership* — only the actor goes — so the
+shard stays routable and the next message for it re-creates the shard
+and the entity together, with no coordinator round trip.  Unset, the
+window follows `passivationIdleMs`, which is usually what you want: a
+shard is empty precisely because its entities went idle.
+
+```ts
+const shardingOptions = StartShardingOptions.create<CartCommand>()
+  .withTypeName('cart')
+  .withEntityActor(CartActor)
+  .withExtractEntityId((command) => command.entityId)
+  .withPassivationIdleMs(120_000)
+  // Shards are cheap to keep and cost a respawn to lose — outliving their
+  // entities by a while is a reasonable trade on a busy node.
+  .withShardPassivationIdleMs(600_000);
+```
+
+Set `shardPassivationIdleMs: 0` to keep empty shards resident while
+entities still passivate.  The region and the coordinator are unaffected
+either way — they run for the lifetime of the node.
+
+Only an *empty* shard is ever stopped, so there is no entity state at
+stake, and messages that arrive while a shard is stopping are buffered
+and replayed exactly as they are for an entity.  A shard ref stays valid
+across the gap too — see
+[introspection](/cluster/sharding/introspection/), where `ShardInfo`
+also reports a `resident` flag that tells a passivated shard apart from
+one that is merely empty.
 
 ## Rebalancing
 

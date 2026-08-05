@@ -16,7 +16,7 @@ sizing.
 ## Default behavior
 
 ```ts
-const ref = system.spawnAnonymous(Props.create(() => new Worker()));
+const ref = system.spawnAnonymous(Worker);
 //  ↑ bounded FIFO mailbox — capacity 10 000, drop-head overflow
 ```
 
@@ -50,14 +50,16 @@ right fit — override capacity, overflow, or both:
 ### 1. Producer/consumer mismatch known in advance
 
 ```ts
+import { ActorOptions } from 'actor-ts';
+
 // Slow consumer: writes to disk at 10/sec; producer pushes 1000/sec
-const slowWriter = system.spawn(
-  Props.create(() => new SlowWriter())
-    .withMailbox(() => new BoundedMailbox({
-      capacity: 1_000,
-      overflow: 'reject',
-    })),
-);
+const writerOptions = ActorOptions.create()
+  .withMailbox(() => new BoundedMailbox({
+    capacity: 1_000,
+    overflow: 'reject',
+  }));
+
+const slowWriter = system.spawnAnonymous(SlowWriter, writerOptions);
 ```
 
 Bound at the worst-case-acceptable buffer.  `reject` propagates
@@ -67,13 +69,15 @@ adapt (retry, drop, alert).
 ### 2. Telemetry-style actors (stale data is wrong)
 
 ```ts
-const telemetry = system.spawn(
-  Props.create(() => new MetricsAggregator())
-    .withMailbox(() => new BoundedMailbox({
-      capacity: 5_000,
-      overflow: 'drop-head',
-    })),
-);
+import { ActorOptions } from 'actor-ts';
+
+const telemetryOptions = ActorOptions.create()
+  .withMailbox(() => new BoundedMailbox({
+    capacity: 5_000,
+    overflow: 'drop-head',
+  }));
+
+const telemetry = system.spawnAnonymous(MetricsAggregator, telemetryOptions);
 ```
 
 For metrics, sensor readings, status pings — **fresher is
@@ -83,13 +87,15 @@ new ones arrive, keeping the queue full of recent data.
 ### 3. Critical actors near limits
 
 ```ts
-const auth = system.spawn(
-  Props.create(() => new AuthActor())
-    .withMailbox(() => new BoundedMailbox({
-      capacity: 10_000,
-      overflow: 'drop-new',
-    })),
-);
+import { ActorOptions } from 'actor-ts';
+
+const authOptions = ActorOptions.create()
+  .withMailbox(() => new BoundedMailbox({
+    capacity: 10_000,
+    overflow: 'drop-new',
+  }));
+
+const auth = system.spawnAnonymous(AuthActor, authOptions);
 ```
 
 `drop-new` discards incoming messages when full — preserves
@@ -161,14 +167,14 @@ There's no "best" — context-dependent.
 For actors with **mixed urgency**:
 
 ```ts
-import { PriorityMailbox } from 'actor-ts';
+import { ActorOptions, PriorityMailbox } from 'actor-ts';
 
-const worker = system.spawn(
-  Props.create(() => new Worker())
-    .withMailbox(() => new PriorityMailbox<Message>({
-      priorityFor: (m) => m.kind === 'urgent' ? 0 : 5,
-    })),
-);
+const workerOptions = ActorOptions.create<Message>()
+  .withMailbox(() => new PriorityMailbox<Message>({
+    priorityFor: (m) => m.kind === 'urgent' ? 0 : 5,
+  }));
+
+const worker = system.spawnAnonymous(Worker, workerOptions);
 ```
 
 Lower numbers = higher priority.  System messages always

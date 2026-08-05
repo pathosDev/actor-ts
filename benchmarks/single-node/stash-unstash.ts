@@ -4,7 +4,7 @@
  *
  *   bun run benchmarks/single-node/stash-unstash.ts
  */
-import { Actor, ActorSystem, ActorSystemOptions, LogLevel, NoopLogger, Props } from '../../src/index.js';
+import { Actor, ActorSystem, ActorSystemOptions, LogLevel, NoopLogger } from '../../src/index.js';
 import { runGroup } from '../lib/harness.js';
 
 type Message = { kind: 'work' } | { kind: 'go' } | { kind: 'count' };
@@ -44,7 +44,7 @@ async function main(): Promise<void> {
   const system = ActorSystem.create('bench-stash', systemOptions);
 
   const run = async (batch: number): Promise<void> => {
-    const ref = system.spawnAnonymous(Props.create(() => new Staller()));
+    const ref = system.spawnAnonymous(Staller);
     for (let i = 0; i < batch; i++) ref.tell({ kind: 'work' });
     ref.tell({ kind: 'go' });
     await ref.ask<number>({ kind: 'count' }, 30_000);

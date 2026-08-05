@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import { ActorSystem } from '../../../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../../../src/ActorSystemOptions.js';
 import { LogLevel, NoopLogger } from '../../../../../src/Logger.js';
-import { Props } from '../../../../../src/Props.js';
+import type { ActorFactory } from '../../../../../src/Actor.js';
 import {
   DurableStateActor,
   DurableStateOptions,
@@ -55,14 +55,14 @@ class StrictAccount extends Account {
   }
 }
 
-const props = (store: DurableStateStore, id: string, ctor: typeof Account = Account): Props<Command> =>
-  Props.create(() => {
+const accountActor = (store: DurableStateStore, id: string, ctor: typeof Account = Account): ActorFactory<Command> =>
+  () => {
     const durableStateOptions = DurableStateOptions.create<State>()
       .withPersistenceId(id)
       .withStore(store)
       .withEmptyState((): State => ({ balance: 0, currency: 'USD' }));
     return new ctor(durableStateOptions) as unknown as Actor<Command>;
-  });
+  };
 
 /* ----------------------------- Tests ------------------------------------ */
 
@@ -74,7 +74,7 @@ describe('DurableStateActor — adapter round-trip', () => {
       .withLogLevel(LogLevel.Off);
     const sys = ActorSystem.create('ds-rt', sysOptions);
     const probe = makeProbe(sys);
-    const ref = sys.spawn(props(store, 'acct'), 'a');
+    const ref = sys.spawn(accountActor(store, 'acct'), 'a');
     ref.tell({ kind: 'deposit', amount: 50, replyTo: probe.ref });
     // The reply is sent *after* `persist` resolves, so it is the strongest
     // observable proof that the store write has landed.
@@ -98,7 +98,7 @@ describe('DurableStateActor — adapter round-trip', () => {
       .withLogLevel(LogLevel.Off);
     const sys = ActorSystem.create('ds-restart', sysOptions);
     const probe = makeProbe(sys);
-    const ref = sys.spawn(props(store, 'acct'), 'a');
+    const ref = sys.spawn(accountActor(store, 'acct'), 'a');
     ref.tell({ kind: 'deposit', amount: 100, replyTo: probe.ref });
     await awaitCondition(() => probe.received.length > 0, { label: 'deposit acknowledged after persist' });
     await sys.terminate();
@@ -108,7 +108,7 @@ describe('DurableStateActor — adapter round-trip', () => {
       .withLogLevel(LogLevel.Off);
     const sys2 = ActorSystem.create('ds-restart-2', sys2Options);
     const probe2 = makeProbe(sys2);
-    const ref2 = sys2.spawn(props(store, 'acct'), 'a');
+    const ref2 = sys2.spawn(accountActor(store, 'acct'), 'a');
     ref2.tell({ kind: 'state', replyTo: probe2.ref });
     await awaitCondition(() => probe2.received.length > 0, { label: 'recovered state replied' });
     expect(probe2.received).toContainEqual({ balance: 100, currency: 'EUR' });
@@ -128,7 +128,7 @@ describe('DurableStateActor — v1 → v2 upcast', () => {
       .withLogLevel(LogLevel.Off);
     const sys = ActorSystem.create('ds-upcast', sysOptions);
     const probe = makeProbe(sys);
-    const ref = sys.spawn(props(store, 'acct'), 'a');
+    const ref = sys.spawn(accountActor(store, 'acct'), 'a');
     ref.tell({ kind: 'state', replyTo: probe.ref });
     await awaitCondition(() => probe.received.length > 0, { label: 'up-cast state replied' });
     expect(probe.received).toContainEqual({ balance: 999, currency: 'USD' });
@@ -148,7 +148,7 @@ describe('DurableStateActor — strict mode', () => {
     let captured: StrictAccount | null = null;
     const probe = makeProbe(sys);
     void probe;
-    sys.spawn(Props.create(() => {
+    sys.spawn(() => {
       const durableStateOptions = DurableStateOptions.create<State>()
         .withPersistenceId('acct')
         .withStore(store)
@@ -156,7 +156,7 @@ describe('DurableStateActor — strict mode', () => {
       const actorRef = new StrictAccount(durableStateOptions);
       captured = actorRef;
       return actorRef as unknown as Actor<Command>;
-    }), 'strict');
+    }, 'strict');
     await awaitCondition(() => captured !== null && captured.recoveryError !== null, {
       label: 'strict-mode preStart reported a failure',
     });
@@ -184,13 +184,13 @@ describe('DurableStateActor — no adapter regression', () => {
       .withLogLevel(LogLevel.Off);
     const sys = ActorSystem.create('ds-raw', sysOptions);
     const probe = makeProbe(sys);
-    const ref = sys.spawn(Props.create(() => {
+    const ref = sys.spawn(() => {
       const durableStateOptions = DurableStateOptions.create<StateV1>()
         .withPersistenceId('r')
         .withStore(store)
         .withEmptyState((): StateV1 => ({ balance: 0 }));
       return new RawAccount(durableStateOptions) as unknown as Actor<Command>;
-    }), 'raw');
+    }, 'raw');
     ref.tell({ kind: 'deposit', amount: 7, replyTo: probe.ref });
     // `RawAccount` does not acknowledge a deposit, so the store is the only
     // thing this test can observe.
@@ -213,6 +213,6 @@ function makeProbe(sys: ActorSystem): Probe {
   class P extends (Actor as new () => { onReceive(_: unknown): void; }) {
     onReceive(m: unknown): void { received.push(m); }
   }
-  const ref = sys.spawn(Props.create(() => new P() as unknown as Actor<unknown>), `p-${Math.random().toString(36).slice(2, 6)}`);
+  const ref = sys.spawn(P as unknown as new () => Actor<unknown>, `p-${Math.random().toString(36).slice(2, 6)}`);
   return { ref, received };
 }

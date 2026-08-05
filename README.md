@@ -5,7 +5,7 @@
 <p align="center">
   <a href="https://github.com/pathosDev/actor-ts/actions/workflows/build.yml"><img alt="build workflow" src="https://github.com/pathosDev/actor-ts/actions/workflows/build.yml/badge.svg?branch=main"/></a>
   <a href="https://github.com/pathosDev/actor-ts/actions/workflows/test.yml"><img alt="tests workflow" src="https://github.com/pathosDev/actor-ts/actions/workflows/test.yml/badge.svg?branch=main"/></a>
-  <a href="#"><img alt="tests" src="https://img.shields.io/badge/tests-3799%20of%203799-22c55e?style=flat-square&logo=bun"/></a>
+  <a href="#"><img alt="tests" src="https://img.shields.io/badge/tests-3925%20of%203925-22c55e?style=flat-square&logo=bun"/></a>
   <a href="#"><img alt="coverage" src="https://img.shields.io/badge/coverage-~91%25-22c55e?style=flat-square"/></a>
 </p>
 
@@ -28,7 +28,7 @@
 > the actor-model stack (actors, supervision, cluster, sharding, persistence,
 > HTTP) to TypeScript, running on Bun, Node.js, and Deno.  Large parts were
 > written with AI pair-programming and **have not been battle-tested in
-> production**.  Test coverage is good (~3799 tests, ~91 % line) but the
+> production**.  Test coverage is good (~3925 tests, ~91 % line) but the
 > surface area is enormous.  **Do not deploy this to anything that matters
 > yet.**  Use it to learn, to prototype, to benchmark ideas — not to handle
 > real money, users, or data.
@@ -107,7 +107,7 @@ npm install actor-ts                              # Node
 ```
 
 ```ts
-import { Actor, ActorSystem, Props } from 'actor-ts';
+import { Actor, ActorSystem } from 'actor-ts';
 
 class Greeter extends Actor<string> {
   override onReceive(name: string): void {
@@ -116,7 +116,7 @@ class Greeter extends Actor<string> {
 }
 
 const system = ActorSystem.create('hello');
-const ref    = system.spawn(Props.create(() => new Greeter()), 'greeter');
+const ref    = system.spawn(Greeter, 'greeter');
 
 ref.tell('world');
 
@@ -142,7 +142,7 @@ to `Command` without a matching `with(...)` arm and TypeScript fails the
 build.
 
 ```ts
-import { Actor, ActorSystem, Props, type ActorRef } from 'actor-ts';
+import { Actor, ActorSystem, type ActorRef } from 'actor-ts';
 import { match } from 'ts-pattern';
 
 type IncrementCommand = { kind: 'increment' };
@@ -174,10 +174,10 @@ one-shot reply actor, wires it as both `replyTo` and
 `context.sender`, and resolves the promise when the target replies.
 
 ```ts
-import { ActorSystem, Props } from 'actor-ts';
+import { ActorSystem } from 'actor-ts';
 
 const system  = ActorSystem.create('demo');
-const counter = system.spawnAnonymous(Props.create(() => new Counter()));
+const counter = system.spawnAnonymous(Counter);
 
 counter.tell({ kind: 'increment' });
 counter.tell({ kind: 'increment' });
@@ -193,7 +193,7 @@ mutation, no "did this write commit?" question. Same `Counter` API
 the rest of the app sees, every mutation durable.
 
 ```ts
-import { PersistentActor, ActorSystem, Props } from 'actor-ts';
+import { PersistentActor, ActorSystem } from 'actor-ts';
 import { match } from 'ts-pattern';
 
 type IncrementCommand = { kind: 'increment' };
@@ -272,8 +272,12 @@ for (const shard of await cluster.sharding.shards('cart')) {
 class CartActor extends PersistentActor<CartCommand, CartEvent, CartState> {
   override get persistenceId(): string { return `cart-${this.entityId}`; }
 
+  // Names itself once, instead of every message repeating the id.
+  override displayName(): string { return `Cart(${this.entityId})`; }
+
   override preStart(): void {
-    this.log.info(`cart ${this.entityId} on ${this.cluster.selfAddress}`);
+    this.log.info(`starting on ${this.cluster.selfAddress}`);
+    // → [...] INFO  actor-ts://shop/.../entity-user-42 - Cart(user-42) - starting on ...
   }
 }
 ```
@@ -281,6 +285,11 @@ class CartActor extends PersistentActor<CartCommand, CartEvent, CartState> {
 `this.cluster` throws on a system that never joined one; ask
 `this.context.cluster` (an `Option<Cluster>`, matching `system.cluster`)
 when the actor has to work either way.
+
+`displayName()` is a label, not an address: it joins the log line and
+the DevTools tree beside the path, never in place of it, so metrics,
+tracing and every wire identifier stay on the path. It defaults to the
+path, so an actor that doesn't override it logs exactly as before.
 
 ### Cluster singleton — exactly one instance, cluster-wide
 

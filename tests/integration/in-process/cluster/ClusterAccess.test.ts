@@ -10,7 +10,6 @@ import { InMemoryTransport } from '../../../../src/cluster/Transport.js';
 import { NodeAddress } from '../../../../src/cluster/NodeAddress.js';
 import { StartShardingOptions } from '../../../../src/cluster/sharding/StartShardingOptions.js';
 import { LogLevel, NoopLogger } from '../../../../src/Logger.js';
-import { Props } from '../../../../src/Props.js';
 import type { ActorRef } from '../../../../src/ActorRef.js';
 
 type ReportCommand = { readonly kind: 'report'; readonly id: string };
@@ -98,7 +97,7 @@ describe('a system that never joined a cluster', () => {
   });
 
   test('an actor gets None from the context and a pointed error from `this.cluster`', async () => {
-    const probe = system.spawn(Props.create(() => new ClusterProbeActor()), 'probe');
+    const probe = system.spawn(ClusterProbeActor, 'probe');
 
     const report = await probe.ask<ClusterReport>({ kind: 'report', id: 'n/a' }, 3_000);
 
@@ -126,7 +125,7 @@ describe('a system that joined a cluster', () => {
     cluster = await Cluster.join(system, clusterOptions(SYSTEM_NAME, 'h', PORT));
     const shardingOptions = StartShardingOptions.create<Command>()
       .withTypeName('probe')
-      .withEntityProps(Props.create(() => new ClusterProbeActor()))
+      .withEntityActor(ClusterProbeActor)
       .withExtractEntityId((message) => message.id)
       .withNumShards(8);
     region = cluster.sharding.start<Command>(shardingOptions);
@@ -143,7 +142,7 @@ describe('a system that joined a cluster', () => {
   });
 
   test('an actor reaches it without being handed anything', async () => {
-    const probe = system.spawn(Props.create(() => new ClusterProbeActor()), 'probe');
+    const probe = system.spawn(ClusterProbeActor, 'probe');
 
     const report = await probe.ask<ClusterReport>({ kind: 'report', id: 'n/a' }, 3_000);
 
@@ -175,7 +174,7 @@ describe('an actor that was already running when the system joined', () => {
 
   beforeAll(async () => {
     system = quietSystem(SYSTEM_NAME);
-    probe = system.spawn(Props.create(() => new ClusterProbeActor()), 'probe');
+    probe = system.spawn(ClusterProbeActor, 'probe');
     // Round-trip first, so `preStart` has demonstrably run and seen no
     // cluster — otherwise the join could win the race and the test would
     // prove nothing.
@@ -226,7 +225,7 @@ describe('rejoining after leave', () => {
   });
 
   test('an actor follows the swap', async () => {
-    const probe = system.spawn(Props.create(() => new ClusterProbeActor()), 'probe');
+    const probe = system.spawn(ClusterProbeActor, 'probe');
 
     const report = await probe.ask<ClusterReport>({ kind: 'report', id: 'n/a' }, 3_000);
 

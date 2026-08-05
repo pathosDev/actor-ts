@@ -79,7 +79,7 @@ wechsle zu [SQLite](/de/persistence/journals/sqlite/) oder
 
 ```ts
 import { describe, it, beforeEach, afterEach } from 'bun:test';
-import { TestKit, Props } from 'actor-ts';
+import { TestKit } from 'actor-ts';
 
 describe('OrderActor', () => {
   let tk: TestKit;
@@ -94,14 +94,14 @@ describe('OrderActor', () => {
     const probe = tk.createTestProbe();
 
     // Anlegen + ein paar Commands senden
-    let order = tk.system.spawnAnonymous(Props.create(() => new OrderActor('order-1')));
+    let order = tk.system.spawnAnonymous(() => new OrderActor('order-1'));
     order.tell({ kind: 'place', sku: 'book-1' });
     order.tell({ kind: 'place', sku: 'book-2' });
     await probe.expectMessage({ kind: 'placed', sku: 'book-2' });
 
     // Stoppen + neu spawnen — gleiche Persistence-ID
     await tk.system.stop(order);
-    order = tk.system.spawnAnonymous(Props.create(() => new OrderActor('order-1')));
+    order = tk.system.spawnAnonymous(() => new OrderActor('order-1'));
     order.tell({ kind: 'view', replyTo: probe });
 
     // Wiederhergestellter State sollte beide platzierten Events widerspiegeln

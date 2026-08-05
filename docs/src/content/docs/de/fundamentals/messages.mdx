@@ -50,7 +50,7 @@ nicht das, was das Framework verwendet.
 ## Ein vollständiges Beispiel
 
 ```ts
-import { Actor, ActorSystem, Props, type ActorRef } from 'actor-ts';
+import { Actor, ActorSystem, type ActorRef } from 'actor-ts';
 import { match } from 'ts-pattern';
 
 type IncrementCommand = { readonly kind: 'increment' };
@@ -75,7 +75,7 @@ class Counter extends Actor<CounterCommand> {
 }
 
 const system = ActorSystem.create('counters');
-const counter = system.spawnAnonymous(Props.create(() => new Counter()));
+const counter = system.spawnAnonymous(Counter);
 
 counter.tell({ kind: 'increment' });
 counter.tell({ kind: 'increment' });

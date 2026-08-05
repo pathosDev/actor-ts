@@ -87,10 +87,9 @@ für jeden Schlüssel, den das Framework liest.
 Top-Level-Actors werden über `system.spawn` gespawnt:
 
 ```ts
-import { Props } from 'actor-ts';
 
 const root = system.spawn(
-  Props.create(() => new MyRootActor()),
+  MyRootActor,
   'root',   // optionaler Name; Framework wählt einen, wenn weggelassen
 );
 ```
@@ -104,10 +103,7 @@ gespawnt, nicht über `system.spawn`:
 ```ts
 class Parent extends Actor<...> {
   override onReceive(message) {
-    const child = this.context.spawn(
-      Props.create(() => new Child()),
-      'worker',
-    );
+    const child = this.context.spawn(Child, 'worker');
   }
 }
 ```
@@ -146,7 +142,7 @@ flowchart LR
   class DEAD dead
 ```
 
-Wenn du `system.spawn(props, name)` aufrufst, wird der Actor unter
+Wenn du `system.spawn(actor, name)` aufrufst, wird der Actor unter
 `/user` erzeugt.  `/user` enthält nur, was dein Code erzeugt hat; alles,
 was das Framework für sich selbst erzeugt, liegt unter `/system` — eine
 Gruppe pro Subsystem, siehe [Actor-Pfade](/de/fundamentals/actor-paths/)

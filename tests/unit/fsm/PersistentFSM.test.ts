@@ -17,7 +17,6 @@ import type { ActorRef } from '../../../src/ActorRef.js';
 import { ActorSystem } from '../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../src/ActorSystemOptions.js';
 import { LogLevel, NoopLogger } from '../../../src/Logger.js';
-import { Props } from '../../../src/Props.js';
 import { ActorLifecycleEvent, ActorStopped } from '../../../src/SystemMessages.js';
 import { awaitCondition } from '../../util/AwaitCondition.js';
 import { PersistenceExtensionId } from '../../../src/persistence/PersistenceExtension.js';
@@ -143,7 +142,7 @@ describe('PersistentFSM — happy path', () => {
   test('drives an order through pending → paid → shipped and persists each event', async () => {
     const { sys, journal } = buildSystem('fsm-happy');
     try {
-      const ref = sys.spawn(Props.create(() => new OrderFsm('order-1')), 'order');
+      const ref = sys.spawn(() => new OrderFsm('order-1'), 'order');
       ref.tell({ kind: 'pay', amount: 100 });
       ref.tell({ kind: 'ship', carrier: 'fedex' });
       await sleep(50);
@@ -163,7 +162,7 @@ describe('PersistentFSM — happy path', () => {
   test('recovery from journal after restart reproduces the final state', async () => {
     const { sys: sys1, journal, snaps } = buildSystem('fsm-recover');
     try {
-      const ref1 = sys1.spawn(Props.create(() => new OrderFsm('order-2')), 'order');
+      const ref1 = sys1.spawn(() => new OrderFsm('order-2'), 'order');
       ref1.tell({ kind: 'pay', amount: 250 });
       ref1.tell({ kind: 'ship', carrier: 'ups' });
       await sleep(50);
@@ -179,7 +178,7 @@ describe('PersistentFSM — happy path', () => {
     sys2.extension(PersistenceExtensionId).setJournal(journal);
     sys2.extension(PersistenceExtensionId).setSnapshotStore(snaps);
     try {
-      const ref2 = sys2.spawn(Props.create(() => new OrderFsm('order-2')), 'order');
+      const ref2 = sys2.spawn(() => new OrderFsm('order-2'), 'order');
       const recovered = await ref2.ask<FsmStateData<OrderState, OrderData>>({ kind: 'getState' }, 1_000,);
       expect(recovered.state).toBe('shipped');
       expect(recovered.data.amountPaid).toBe(250);
@@ -194,7 +193,7 @@ describe('PersistentFSM — invalid transitions', () => {
   test('command with no entry for the current state is dropped — no event persisted', async () => {
     const { sys, journal } = buildSystem('fsm-invalid');
     try {
-      const ref = sys.spawn(Props.create(() => new OrderFsm('order-3')), 'order');
+      const ref = sys.spawn(() => new OrderFsm('order-3'), 'order');
       // `ship` is not a valid transition from `'pending'`.
       ref.tell({ kind: 'ship', carrier: 'fedex' });
       await sleep(40);
@@ -210,7 +209,7 @@ describe('PersistentFSM — invalid transitions', () => {
   test('terminal state ignores further commands (shipped → ship is invalid)', async () => {
     const { sys, journal } = buildSystem('fsm-terminal');
     try {
-      const ref = sys.spawn(Props.create(() => new OrderFsm('order-4')), 'order');
+      const ref = sys.spawn(() => new OrderFsm('order-4'), 'order');
       ref.tell({ kind: 'pay', amount: 50 });
       ref.tell({ kind: 'ship', carrier: 'dhl' });
       ref.tell({ kind: 'ship', carrier: 'second-attempt' }); // invalid in 'shipped'
@@ -229,7 +228,7 @@ describe('PersistentFSM — invalid transitions', () => {
   test('guard rejection drops the command without persisting', async () => {
     const { sys, journal } = buildSystem('fsm-guard');
     try {
-      const ref = sys.spawn(Props.create(() => new OrderFsm('order-5')), 'order');
+      const ref = sys.spawn(() => new OrderFsm('order-5'), 'order');
       // Amount = 0 → guard returns false.
       ref.tell({ kind: 'pay', amount: 0 });
       await sleep(40);
@@ -246,7 +245,7 @@ describe('PersistentFSM — function-style transition events', () => {
   test('event payload is computed from the command at persist time', async () => {
     const { sys, journal } = buildSystem('fsm-fn-event');
     try {
-      const ref = sys.spawn(Props.create(() => new OrderFsm('order-6')), 'order');
+      const ref = sys.spawn(() => new OrderFsm('order-6'), 'order');
       ref.tell({ kind: 'pay', amount: 333 });
       await sleep(40);
       const events = await journal.read('order-6', 0);
@@ -262,7 +261,7 @@ describe('PersistentFSM — alternate paths', () => {
   test('cancel from pending is a valid one-step transition', async () => {
     const { sys } = buildSystem('fsm-cancel');
     try {
-      const ref = sys.spawn(Props.create(() => new OrderFsm('order-7')), 'order');
+      const ref = sys.spawn(() => new OrderFsm('order-7'), 'order');
       ref.tell({ kind: 'cancel', reason: 'changed-mind' });
       await sleep(40);
       const after = await ref.ask<FsmStateData<OrderState, OrderData>>({ kind: 'getState' }, 1_000,);
@@ -276,7 +275,7 @@ describe('PersistentFSM — alternate paths', () => {
   test('cancel from paid leaves amountPaid intact (data carries forward)', async () => {
     const { sys } = buildSystem('fsm-cancel-after-pay');
     try {
-      const ref = sys.spawn(Props.create(() => new OrderFsm('order-8')), 'order');
+      const ref = sys.spawn(() => new OrderFsm('order-8'), 'order');
       ref.tell({ kind: 'pay', amount: 99 });
       ref.tell({ kind: 'cancel', reason: 'refund' });
       await sleep(50);
@@ -374,7 +373,7 @@ describe('PersistentFSM — stateTimeout (#65)', () => {
   test('timer fires when no command transitions out within afterMs', async () => {
     const { sys, journal } = buildSystem('fsm-timeout-fires');
     try {
-      const ref = sys.spawn(Props.create(() => new PaymentFsm('pay-1', 80)), 'pay');
+      const ref = sys.spawn(() => new PaymentFsm('pay-1', 80), 'pay');
       ref.tell({ kind: 'authorize', amount: 100 });
       // Wait > afterMs so the armed timer fires.
       await sleep(200);
@@ -394,7 +393,7 @@ describe('PersistentFSM — stateTimeout (#65)', () => {
   test('command transitions cancel the timer — no expired event persists', async () => {
     const { sys, journal } = buildSystem('fsm-timeout-cancelled');
     try {
-      const ref = sys.spawn(Props.create(() => new PaymentFsm('pay-2', 80)), 'pay');
+      const ref = sys.spawn(() => new PaymentFsm('pay-2', 80), 'pay');
       ref.tell({ kind: 'authorize', amount: 50 });
       // Capture before the timer fires — the FSM must transition to
       // 'captured' and the armed timer must be cancelled.
@@ -420,7 +419,7 @@ describe('PersistentFSM — stateTimeout (#65)', () => {
     // post-transition path.
     const { sys, journal } = buildSystem('fsm-timeout-terminal');
     try {
-      const ref = sys.spawn(Props.create(() => new PaymentFsm('pay-3', 60)), 'pay');
+      const ref = sys.spawn(() => new PaymentFsm('pay-3', 60), 'pay');
       ref.tell({ kind: 'authorize', amount: 10 });
       ref.tell({ kind: 'capture' });
       await sleep(200);
@@ -441,7 +440,7 @@ describe('PersistentFSM — stateTimeout (#65)', () => {
     const { sys, journal } = buildSystem('fsm-timeout-guarded');
     try {
       const ref = sys.spawn(
-        Props.create(() => new PaymentFsm('pay-4', 60, { guarded: true })),
+        () => new PaymentFsm('pay-4', 60, { guarded: true }),
         'pay',
       );
       ref.tell({ kind: 'authorize', amount: 0 });
@@ -464,7 +463,7 @@ describe('PersistentFSM — stateTimeout (#65)', () => {
     // NOT fire during replay (no double-expired event).
     const { sys: sys1, journal, snaps } = buildSystem('fsm-timeout-recovery');
     try {
-      const ref1 = sys1.spawn(Props.create(() => new PaymentFsm('pay-5', 80)), 'pay');
+      const ref1 = sys1.spawn(() => new PaymentFsm('pay-5', 80), 'pay');
       ref1.tell({ kind: 'authorize', amount: 200 });
       await sleep(20);
       // Stop before the timer fires — the persisted state is 'authorized'.
@@ -479,7 +478,7 @@ describe('PersistentFSM — stateTimeout (#65)', () => {
     sys2.extension(PersistenceExtensionId).setJournal(journal);
     sys2.extension(PersistenceExtensionId).setSnapshotStore(snaps);
     try {
-      const ref2 = sys2.spawn(Props.create(() => new PaymentFsm('pay-5', 80)), 'pay');
+      const ref2 = sys2.spawn(() => new PaymentFsm('pay-5', 80), 'pay');
       // After recovery, the timer arms fresh.  Wait > afterMs.
       await sleep(200);
       const final = await ref2.ask<FsmStateData<PayState, PayData>>({ kind: 'getState' }, 1_000,);
@@ -584,7 +583,7 @@ describe('PersistentFSM — multiple events per command (#66)', () => {
     const { sys, journal } = buildSystem('fsm-multi-fn');
     try {
       const ref = sys.spawn(
-        Props.create(() => new AuditingFsm('audit-1', 'fnArray')),
+        () => new AuditingFsm('audit-1', 'fnArray'),
         'audit',
       );
       ref.tell({ kind: 'pay', amount: 250 });
@@ -608,7 +607,7 @@ describe('PersistentFSM — multiple events per command (#66)', () => {
     const { sys, journal } = buildSystem('fsm-multi-literal');
     try {
       const ref = sys.spawn(
-        Props.create(() => new AuditingFsm('audit-2', 'array')),
+        () => new AuditingFsm('audit-2', 'array'),
         'audit',
       );
       ref.tell({ kind: 'pay', amount: 0 });
@@ -628,7 +627,7 @@ describe('PersistentFSM — multiple events per command (#66)', () => {
     const { sys, journal } = buildSystem('fsm-multi-empty');
     try {
       const ref = sys.spawn(
-        Props.create(() => new AuditingFsm('audit-3', 'emptyArray')),
+        () => new AuditingFsm('audit-3', 'emptyArray'),
         'audit',
       );
       ref.tell({ kind: 'pay', amount: 99 }); // resolves to []
@@ -651,7 +650,7 @@ describe('PersistentFSM — multiple events per command (#66)', () => {
     const { sys: sys1, journal, snaps } = buildSystem('fsm-multi-recover');
     try {
       const ref1 = sys1.spawn(
-        Props.create(() => new AuditingFsm('audit-4', 'fnArray')),
+        () => new AuditingFsm('audit-4', 'fnArray'),
         'audit',
       );
       ref1.tell({ kind: 'pay', amount: 500 });
@@ -668,7 +667,7 @@ describe('PersistentFSM — multiple events per command (#66)', () => {
     sys2.extension(PersistenceExtensionId).setSnapshotStore(snaps);
     try {
       const ref2 = sys2.spawn(
-        Props.create(() => new AuditingFsm('audit-4', 'fnArray')),
+        () => new AuditingFsm('audit-4', 'fnArray'),
         'audit',
       );
       const recovered = await ref2.ask<FsmStateData<AuditState, AuditData>>({ kind: 'getState' }, 1_000,);
@@ -703,13 +702,13 @@ describe('PersistentFSM — recovery failure', () => {
         }
         override onReceive(event: ActorLifecycleEvent): void { stopped.push(event); }
       }
-      sys.spawn(Props.create(() => new Listener()), 'lifecycle');
+      sys.spawn(Listener, 'lifecycle');
       await awaitCondition(() => ready.value, { label: 'the lifecycle listener subscribed' });
 
       class SwallowingOrderFsm extends OrderFsm {
         override onRecoveryFailure(reason: Error): void { failures.push(reason); }
       }
-      const ref = sys.spawn(Props.create(() => new SwallowingOrderFsm('order-broken')), 'order');
+      const ref = sys.spawn(() => new SwallowingOrderFsm('order-broken'), 'order');
 
       await awaitCondition(() => failures.length === 1, {
         label: 'the swallowing hook observed the recovery failure',
@@ -782,7 +781,7 @@ describe('PersistentFSM — a state-timeout fire during recovery', () => {
         }
       }
       const ref = sys.spawn(
-        Props.create(() => { incarnations++; return new RacyFsm('order-racy'); }),
+        () => { incarnations++; return new RacyFsm('order-racy'); },
         'order',
       );
       await awaitCondition(() => gated.reading, { label: 'replay parked inside journal.read' });

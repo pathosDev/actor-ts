@@ -18,7 +18,7 @@ Promise that resolves with the first reply or rejects on timeout.
 
 ```ts
 import { match } from 'ts-pattern';
-import { Actor, ActorSystem, Props, type ActorRef } from 'actor-ts';
+import { Actor, ActorSystem, type ActorRef } from 'actor-ts';
 
 type IncrementCommand = { readonly kind: 'increment' };
 type GetCommand = { readonly kind: 'get'; readonly replyTo: ActorRef<number> };
@@ -38,7 +38,7 @@ class Counter extends Actor<Command> {
 }
 
 const system = ActorSystem.create('demo');
-const counter = system.spawnAnonymous(Props.create(() => new Counter()));
+const counter = system.spawnAnonymous(Counter);
 
 counter.tell({ kind: 'increment' });
 counter.tell({ kind: 'increment' });

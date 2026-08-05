@@ -1,5 +1,6 @@
 import { ActorPath } from './ActorPath.js';
 import { AskTimeoutError, PoisonPill, Kill } from './SystemMessages.js';
+import { randomId } from './util/RandomString.js';
 
 /**
  * Drop `replyTo: ActorRef<...>` from any variant of a message union
@@ -22,12 +23,12 @@ export type OmitReplyTo<TMessage> = TMessage extends { replyTo: ActorRef<unknown
  * so two systems in one process hand out the same names — and after a long
  * enough run it wraps into collisions with names still in flight.
  *
- * A random suffix fixes both, and `crypto.randomUUID` is the same primitive
- * `ClusterClient` was moved to for its ask ids (#120).  Twelve hex characters
- * is ~48 bits: far beyond the number of asks that can be in flight at once,
- * which is what has to be unique here.
+ * A random suffix fixes both.  Twelve characters is ~48 bits: far beyond the
+ * number of asks that can be in flight at once, which is what has to be unique
+ * here.  See {@link randomId} for the entropy itself, shared with the other
+ * names the framework generates.
  */
-const nextAskName = (): string => `askResp-${crypto.randomUUID().replace(/-/g, '').slice(0, 12)}`;
+const nextAskName = (): string => `askResp-${randomId(12)}`;
 
 /**
  * Path segment holding the short-lived refs `ask` synthesises.

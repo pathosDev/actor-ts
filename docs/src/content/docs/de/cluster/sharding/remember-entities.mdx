@@ -27,7 +27,7 @@ dass Entities **eager neu erstellt** werden:
 ```ts
 const startShardingOptions = StartShardingOptions.create()
   .withTypeName('session')
-  .withEntityProps(Props.create(() => new SessionActor()))
+  .withEntityActor(SessionActor)
   .withExtractEntityId((message) => message.userId)
   .withRememberEntities(true);
 sharding.start(
@@ -87,7 +87,7 @@ konfiguriert hast:
 ```ts
 const startShardingOptions = StartShardingOptions.create()
   .withTypeName('...')
-  .withEntityProps(...)
+  .withEntityActor(...)
   .withExtractEntityId(...)
   .withRememberEntities(true)
   .withRememberEntitiesStore(null);
@@ -185,6 +185,34 @@ Verhalten des Frameworks:
 Für Workloads, in denen du **eager Re-Spawn auch von kürzlich
 inaktiven Entities** willst, setze `passivationIdleMs: 0`, damit
 sie bleiben.
+
+:::caution[Passivierung ist standardmäßig an — und sie vergisst]
+`passivationIdleMs` steht per Default auf **5 Minuten**. Mit
+`rememberEntities: true` und sonst nichts konfiguriert wird eine fünf
+Minuten inaktive Entity also gestoppt *und* aus der Registry entfernt —
+sie ist nach einem Node-Ausfall nicht mehr unter denen, die
+wiederbelebt werden. Das ist meistens nicht, was jemand will, der das
+Merken eingeschaltet hat. Entscheide bewusst: Default behalten, wenn
+„gemerkt" „kürzlich aktiv" heißen soll, oder `passivationIdleMs: 0`,
+wenn es „existiert bekanntermaßen" heißen soll.
+
+[`ShardedDaemonProcess`](/de/cluster/sharding/sharded-daemon-process/),
+das `rememberEntities: true` erzwingt, setzt aus genau diesem Grund
+`passivationIdleMs: 0`.
+:::
+
+### Nach einem unerwarteten Shard-Tod
+
+Ein Shard-Actor kann außerhalb eines Rebalance sterben — etwa jenseits
+seines Supervision-Budgets. Die Region behält die Ownership (so
+erstellt die nächste Nachricht den Shard neu) und fragt beim
+Koordinator nach, was er sich für diesen Shard merkt, sodass die
+Entities von allein zurückkommen, ohne auf Verkehr zu warten. Es wird
+dabei nichts als `stopped` verzeichnet: die Entities sollten nie gehen.
+
+Shard-*Passivierung* berührt die Registry gar nicht — passiviert wird
+immer nur ein leerer Shard, und seine Entities haben ihre eigenen
+`stopped`-Events zu diesem Zeitpunkt längst gemeldet.
 
 import { Aside } from '@astrojs/starlight/components';
 

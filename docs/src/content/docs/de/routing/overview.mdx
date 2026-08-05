@@ -13,7 +13,7 @@ Zwei Formen liefert das Framework aus:
 
 | Form | Wo es lebt | Routees sind... |
 | --- | --- | --- |
-| **`Router`** (lokal) | Ein Node, ein Actor-System. | Kinder des Routers, **zur Spawn-Zeit erstellt** mit denselben `Props`. |
+| **`Router`** (lokal) | Ein Node, ein Actor-System. | Kinder des Routers, **zur Spawn-Zeit erstellt** aus demselben Actor. |
 | **`ClusterRouter`** | Über Cluster-Nodes hinweg. | Up-Members des Clusters, **aus Mitgliedschaft abgeleitet** + ein Routee-Pfad. |
 
 Beide exponieren dieselbe externe Schnittstelle: eine einzelne
@@ -40,7 +40,7 @@ Drei Patterns:
 ## Ein minimales Beispiel
 
 ```ts
-import { ActorSystem, Props, Router, Actor } from 'actor-ts';
+import { ActorSystem, Router, Actor } from 'actor-ts';
 
 class Worker extends Actor<{ payload: string }> {
   override onReceive(message: { payload: string }): void {
@@ -51,7 +51,7 @@ class Worker extends Actor<{ payload: string }> {
 const system = ActorSystem.create('demo');
 
 const pool = system.spawn(
-  Router.roundRobin(4, Props.create(() => new Worker())),
+  Router.roundRobin(4, Worker),
   'workers',
 );
 
@@ -115,13 +115,14 @@ crashed:
   werden, sobald der Routee wieder läuft.
 
 Für Per-Routee-Supervisor-Strategien konfiguriere sie auf den
-Routee-`Props`:
+Routee-Options:
 
 ```ts
-const routeeProps = Props.create(() => new Worker())
-  .withSupervisorStrategy(stoppingStrategy);
+import { ActorOptions } from 'actor-ts';
 
-system.spawn(Router.roundRobin(4, routeeProps), 'workers');
+const routeeOptions = ActorOptions.create().withSupervisorStrategy(stoppingStrategy);
+
+system.spawn(Router.roundRobin(4, Worker, routeeOptions), 'workers');
 ```
 
 Jetzt wird jeder Worker, der throwt, **gestoppt** statt neu

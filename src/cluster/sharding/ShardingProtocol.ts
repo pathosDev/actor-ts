@@ -80,6 +80,23 @@ export type RememberedEntities = {
   readonly entityIds: string[];
 };
 
+/**
+ * Region → coordinator: "re-send what you remember for this shard".
+ *
+ * Sent when a shard actor dies outside a handoff.  Ownership does not move in
+ * that case, so neither `onRegister` nor `tryAllocate` runs and nothing else
+ * would ever re-ship the registry — the shard comes back empty while the
+ * coordinator still lists its entities.
+ *
+ * It carries no requester: the answer goes to whichever region `shardHome`
+ * says owns the shard, which is the only region that could do anything with
+ * it, and a region that has since lost the shard drops the reply anyway.
+ */
+export type GetRememberedEntities = {
+  readonly $t: 'sharding.GetRememberedEntities';
+  readonly shardId: number;
+};
+
 /* ----------------------- region ↔ shard (node-local) --------------------- */
 
 /**
@@ -106,6 +123,23 @@ export type EntityEnvelope<TMessage = unknown> = {
 export type PassivateEntity = {
   readonly $t: 'sharding.PassivateEntity';
   readonly entityId: string;
+};
+
+/**
+ * Region → region: hand `message` to shard `shardId` on the receiving node.
+ *
+ * A shard is addressable by path, but since #892 the actor behind that path
+ * comes and goes — an empty one is stopped and re-created on demand — so a
+ * path-addressed ref would drop whatever was sent while it was down (#901).
+ * Remote shard traffic therefore goes to the region, which is always up and
+ * materialises the shard before forwarding.  That is the shape the entity path
+ * has always had: {@link ShardEnvelope} is addressed to the region too, never
+ * to the entity itself.
+ */
+export type ToShard = {
+  readonly $t: 'sharding.ToShard';
+  readonly shardId: number;
+  readonly message: unknown;
 };
 
 /** Pre-create remembered entities in a shard after it has been allocated here. */
@@ -157,7 +191,12 @@ export type ShardRegionStats = {
   readonly queryId: number;
   readonly region: string;
   readonly node: NodeAddressData;
-  readonly shards: ReadonlyArray<{ readonly shardId: number; readonly entityCount: number }>;
+  readonly shards: ReadonlyArray<{
+    readonly shardId: number;
+    readonly entityCount: number;
+    /** Whether the shard actor is materialised right now — see {@link ShardLocation}. */
+    readonly resident: boolean;
+  }>;
 };
 
 /**
@@ -181,6 +220,13 @@ export type ShardLocation = {
   readonly node: NodeAddressData;
   readonly regionPath: string;
   readonly entityCount: number;
+  /**
+   * Whether the owning region currently has a shard actor for it.  A shard
+   * that passivated while empty stays allocated and addressable but is `false`
+   * here until something wakes it — which `entityCount: 0` alone cannot tell
+   * you, since a running-but-empty shard reports the same count.
+   */
+  readonly resident: boolean;
 };
 
 export type ClusterShardingStats = {
@@ -269,9 +315,11 @@ export type ShardingMessage =
   | EntityStarted
   | EntityStopped
   | RememberedEntities
+  | GetRememberedEntities
   | ShardEnvelope
   | ShardReply
   | EntityEnvelope
+  | ToShard
   | PassivateEntity
   | StartEntities
   | StartEntity

@@ -92,7 +92,7 @@ import { ClusterSharding } from 'actor-ts';
 
 const region = cluster.sharding.start<Command>({
   typeName: 'user',
-  entityProps: Props.create(() => new UserActor()),
+  entityActor: UserActor,
   extractEntityId: (command) => command.entityId,
 });
 

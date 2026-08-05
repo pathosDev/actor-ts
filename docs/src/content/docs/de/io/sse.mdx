@@ -11,7 +11,7 @@ einen Ziel-Actor weiter.  Es gibt keine Kommandos und keinen
 ausgehenden Pfad — SSE ist einseitig, vom Server zum Client.
 
 ```ts
-import { ActorSystem, Actor, Props } from 'actor-ts';
+import { ActorSystem, Actor } from 'actor-ts';
 import { SseActor, type SseEvent } from 'actor-ts';
 import { SseOptions } from 'actor-ts';
 
@@ -25,15 +25,15 @@ class Collector extends Actor<SseEvent> {
   }
 }
 
-const target = sys.spawnAnonymous(Props.create(() => new Collector()));
+const target = sys.spawnAnonymous(Collector);
 
 const sseOptions = SseOptions.create()
   .withUrl('https://example.com/events')
   .withTarget(target)
   .withHeaders({ authorization: 'Bearer …' });
-sys.spawnAnonymous(Props.create(() => new SseActor(
+sys.spawnAnonymous(() => new SseActor(
   sseOptions,
-)));
+));
 ```
 
 Der Actor nutzt das globale `fetch` (Bun, Node ≥ 18 und Deno bringen

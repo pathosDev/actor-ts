@@ -8,7 +8,7 @@ import {
   StashOutsideHandlerError,
   StashOverflowError,
 } from '../ActorContext.js';
-import { ActorPath } from '../ActorPath.js';
+import { ActorPath, assertUserAssignableName } from '../ActorPath.js';
 import { ActorRef } from '../ActorRef.js';
 import type { ActorSystem } from '../ActorSystem.js';
 import type { Cluster } from '../cluster/Cluster.js';
@@ -18,9 +18,11 @@ import type { Logger } from '../Logger.js';
 import { metricsOf } from '../metrics/MetricsExtension.js';
 import { tracerOf } from '../tracing/TracingExtension.js';
 import type { Span } from '../tracing/Tracer.js';
-import type { Props } from '../Props.js';
+import type { ActorClassOrFactory } from '../Actor.js';
+import type { ActorOptions } from '../ActorOptions.js';
+import { actorBlueprintOf, type ActorBlueprint } from './ActorBlueprint.js';
 import type { Behavior } from '../typed/Behavior.js';
-import { typedProps } from '../typed/spawn.js';
+import { typedActor } from '../typed/spawn.js';
 import {
   ActorInitializationError,
   defaultStrategy,
@@ -52,6 +54,7 @@ import {
 import { BoundedMailbox } from '../mailbox/BoundedMailbox.js';
 import { DEFAULT_MAILBOX_CAPACITY, DEFAULT_MAILBOX_OVERFLOW } from '../util/Constants.js';
 import { LocalActorRef } from './LocalActorRef.js';
+import { DisplayNameLogger } from './DisplayNameLogger.js';
 import type {
   ChildTerminatedCommand,
   FailureCommand,
@@ -62,6 +65,7 @@ import type {
 import type { Cancellable } from '../Scheduler.js';
 import { match } from 'ts-pattern';
 import { fromNullable, type Option } from '../util/Option.js';
+import { randomId } from '../util/RandomString.js';
 import { TokenBucket } from '../util/TokenBucket.js';
 
 const DEFAULT_STASH_CAPACITY = 1024;
@@ -117,7 +121,7 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
   private _explain: ExplainRecorder | null = null;
 
   /**
-   * Tooling actor — see `PropsConfig.internal`.  Inherited, so a
+   * Tooling actor — see `ActorOptionsType.internal`.  Inherited, so a
    * DevTools websocket connection spawned under the DevTools hub counts
    * as tooling without anyone having to say so twice.
    */
@@ -126,11 +130,27 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
   /**
    * Sharding identity when a `Shard` spawned this cell as an entity.
    *
-   * Read off the Props, so it survives a restart for free — the cell keeps
-   * the Props it was created with.  Unlike `_internal` it is deliberately
+   * Read off the blueprint, so it survives a restart for free — the cell
+   * keeps the blueprint it was created with.  Unlike `_internal` it is deliberately
    * NOT inherited: an entity's children are not themselves entities.
    */
   private readonly _entity: EntityContext | null;
+
+  /**
+   * Display name set from outside the instance — seeded from the spawn
+   * options and
+   * rewritable through `setDisplayName`.  `null` means "nobody said", which
+   * is what hands the question on to `Actor.displayName()`.
+   */
+  private _displayNameOverride: string | null;
+
+  /**
+   * Whether a failing `displayName()` has already been reported.  The hook
+   * runs once per record, so without this one broken override would drown
+   * the log in its own warning.  Reset on restart — a new instance earns a
+   * new warning.
+   */
+  private _displayNameFailed = false;
 
   /** Per-actor timer scheduler. */
   readonly timers: TimerScheduler<TMessage> = new CellTimerScheduler<TMessage>(this);
@@ -152,31 +172,37 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
 
   constructor(
     readonly system: ActorSystem,
-    readonly props: Props<TMessage>,
+    readonly blueprint: ActorBlueprint<TMessage>,
     parent: ActorCell<unknown> | null,
     public readonly name: string,
   ) {
     this._parent = parent;
-    this._internal = props.config.internal === true || parent?._internal === true;
-    this._entity = props.config.entity ?? null;
+    this._internal = blueprint.internal === true || parent?._internal === true;
+    this._entity = blueprint.entity ?? null;
+    this._displayNameOverride = blueprint.displayName ?? null;
     const uid = parent ? parent._nextChildUid() : 0;
     this.path = parent
       ? parent.path.child(name, uid)
       : new ActorPath(name, null, system.name, uid);
-    this.mailbox = props.config.mailbox
-      ? props.config.mailbox()
+    this.mailbox = blueprint.mailbox
+      ? blueprint.mailbox()
       // #310 — bounded by default.  Unbounded was the pre-#310 default
-      // and is still available via `Props.withMailbox(() => new Mailbox())`
+      // and is still available via `withMailbox(() => new Mailbox())`
       // for use-cases that need it (deterministic replay, test setups,
       // tightly-controlled throughput).  See `DEFAULT_MAILBOX_CAPACITY`
       // + `DEFAULT_MAILBOX_OVERFLOW` for the chosen ceiling + policy.
       : new BoundedMailbox<TMessage>({
-        capacity: props.config.mailboxCapacity ?? DEFAULT_MAILBOX_CAPACITY,
+        capacity: blueprint.mailboxCapacity ?? DEFAULT_MAILBOX_CAPACITY,
         overflow: DEFAULT_MAILBOX_OVERFLOW,
         onDrop: (reason) => this._onMailboxDrop(reason),
       });
     this.self = new LocalActorRef<TMessage>(this);
-    this.log = system.log.withSource(this.path.toString());
+    // Resolved per record rather than bound here: the user's Actor does not
+    // exist yet, and once it does its name may change (state, restart).
+    this.log = new DisplayNameLogger(
+      system.log.withSource(this.path.toString()),
+      () => this._customDisplayName() ?? '',
+    );
     this.enqueueSystem({ kind: 'create' });
   }
 
@@ -203,31 +229,114 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
    */
   get cluster(): Option<Cluster> { return this.system.cluster; }
 
-  spawn<T>(props: Props<T>, name: string): ActorRef<T> {
-    return this._createChild(props, name);
+  setDisplayName(name: string): void {
+    this._displayNameOverride = name;
   }
 
-  spawnAnonymous<T>(props: Props<T>): ActorRef<T> {
-    return this._createChild(props, `$${++this._anonChildCounter}`);
+  /**
+   * @internal What to call this actor, or `null` for "nothing beyond the
+   * path".  Same precedence as `supervisorStrategy` below — an override
+   * from outside the instance wins over what the instance says about
+   * itself, because the spawn site (and a later `setDisplayName`) is the
+   * more specific statement.
+   *
+   * The path is the floor, and a name equal to it collapses back to
+   * `null`: the path is already the log source and already the DevTools
+   * tooltip, so repeating it would be noise in both.
+   *
+   * Guarded here rather than at either call site, because both of them —
+   * the logging path and the DevTools tick — would rather show a path
+   * than propagate a user hook's failure.
+   */
+  _customDisplayName(): string | null {
+    const name = this._displayNameOverride ?? this._displayNameFromActor();
+    return name === null || name === '' || name === this.path.toString() ? null : name;
+  }
+
+  private _displayNameFromActor(): string | null {
+    const actor = this.actor;
+    if (actor === null) return null;
+    try {
+      const name = actor.displayName();
+      return typeof name === 'string' ? name : null;
+    } catch (e) {
+      this._onDisplayNameFailed(e);
+      return null;
+    }
+  }
+
+  /**
+   * Deliberately not through `this.log`: that logger asks the very hook
+   * that just threw for its display name, so warning through it would
+   * re-enter the failure it is reporting.
+   */
+  private _onDisplayNameFailed(error: unknown): void {
+    if (this._displayNameFailed) return;
+    this._displayNameFailed = true;
+    this.system.log.withSource(this.path.toString())
+      .warn('displayName() threw — falling back to the actor path', error);
+  }
+
+  spawn<T>(actor: ActorClassOrFactory<T>, name: string, options?: ActorOptions<T>): ActorRef<T> {
+    return this._createChild(actorBlueprintOf(actor, options), name, 'caller');
+  }
+
+  spawnAnonymous<T>(actor: ActorClassOrFactory<T>, options?: ActorOptions<T>): ActorRef<T> {
+    return this._createChild(actorBlueprintOf(actor, options), this._anonymousChildName(), 'generated');
   }
 
   spawnTyped<T>(behavior: Behavior<T>, name: string): ActorRef<T> {
-    return this._createChild(typedProps<T>(behavior), name);
+    return this._createChild(actorBlueprintOf(typedActor<T>(behavior)), name, 'caller');
   }
 
   spawnTypedAnonymous<T>(behavior: Behavior<T>): ActorRef<T> {
-    return this._createChild(typedProps<T>(behavior), `$${++this._anonChildCounter}`);
+    return this._createChild(
+      actorBlueprintOf(typedActor<T>(behavior)), this._anonymousChildName(), 'generated',
+    );
   }
 
-  /** @internal — single child-creation path shared by spawn / spawnAnonymous. */
-  private _createChild<T>(props: Props<T>, name: string): ActorRef<T> {
+  /**
+   * @internal Name a child spawned without one.
+   *
+   * Was a bare `$${++counter}`.  That made `/user/$1` the first anonymous actor
+   * of every run — and a path is an address, so anything that can render one can
+   * send to it.  The random half closes that; the counter half stays because it
+   * is the only thing keeping spawn order legible in a log line or a DevTools
+   * row.
+   *
+   * Uniqueness only has to hold among one parent's live children, and that
+   * includes across a restart: children are not stopped there (`Actor.preRestart`
+   * only calls `postStop`), so `preStart` spawns again while the previous
+   * incarnation's anonymous children are still in the child map.  The counter
+   * survives with the cell and rules that out on its own; the random half is
+   * belt-and-braces.
+   */
+  private _anonymousChildName(): string {
+    return `$anonymous-${++this._anonChildCounter}-${randomId(12)}`;
+  }
+
+  /**
+   * @internal — single child-creation path shared by spawn / spawnAnonymous.
+   *
+   * `nameSource` is spelled out at every call rather than defaulted, because it
+   * decides whether the reserved-prefix rule applies: a name the caller chose
+   * has to clear {@link assertUserAssignableName}, a name `_anonymousChildName`
+   * produced is exactly what that rule reserves.  Making it a required argument
+   * means a future spawn variant cannot quietly inherit the wrong answer.
+   */
+  private _createChild<T>(
+    blueprint: ActorBlueprint<T>,
+    name: string,
+    nameSource: 'caller' | 'generated',
+  ): ActorRef<T> {
+    if (nameSource === 'caller') assertUserAssignableName(name, this.path);
     if (this.state === 'terminated' || this.state === 'terminating') {
       throw new Error(`Cannot spawn children from terminated actor ${this.path}`);
     }
     if (this._children.has(name)) {
       throw new Error(`Child name '${name}' is not unique under ${this.path}`);
     }
-    const cell = new ActorCell<T>(this.system, props, this as unknown as ActorCell<unknown>, name);
+    const cell = new ActorCell<T>(this.system, blueprint, this as unknown as ActorCell<unknown>, name);
     this._children.set(name, cell);
     return cell.self;
   }
@@ -256,11 +365,12 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
       parentPath: this._parent?.path.toString() ?? null,
       name: this.path.name,
       className: this.actor?.constructor.name ?? '?',
+      displayName: this._customDisplayName(),
       cellState: this.state,
       mailboxSize: this.mailbox.size,
       stashSize: this._stashBuffer.length,
       suspended: this.mailbox.suspended,
-      dispatcher: this.props.config.dispatcher?.id ?? null,
+      dispatcher: this.blueprint.dispatcher?.id ?? null,
       childCount: this._children.size,
       internal: this._internal,
     };
@@ -602,7 +712,7 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
     if (this.processing || this.state === 'terminated') return;
     if (!this.mailbox.hasMessages()) return;
     this.processing = true;
-    const dispatcher = this.props.config.dispatcher ?? this.system.dispatcher;
+    const dispatcher = this.blueprint.dispatcher ?? this.system.dispatcher;
     dispatcher.execute(() => this.run());
   }
 
@@ -680,7 +790,7 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
 
   private async onCreate(): Promise<void> {
     try {
-      const actor = this.props.config.factory();
+      const actor = this.blueprint.factory();
       (actor as unknown as { _attach(context: ActorContext<TMessage>): void })._attach(this);
       this.actor = actor;
       this.behaviorStack = [(m: TMessage) => actor.onReceive(m)];
@@ -812,7 +922,10 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
     this.timers.cancelAll();
     this.deadLetterStash();
 
-    // Let the old instance clean up (stopping children is the default).
+    // Let the old instance clean up.  The default is `postStop()` only —
+    // children are NOT stopped here; they hang off this cell, which outlives
+    // the instance being replaced.  See `Actor.preRestart` for why that matters
+    // to anyone spawning named children in `preStart`.
     try {
       await this.actor.preRestart(cause);
     } catch (e) {
@@ -821,9 +934,11 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
 
     // Build a new instance.
     try {
-      const next = this.props.config.factory();
+      const next = this.blueprint.factory();
       (next as unknown as { _attach(context: ActorContext<TMessage>): void })._attach(this);
       this.actor = next;
+      // Fresh instance, fresh chance to name itself — and to be warned about.
+      this._displayNameFailed = false;
       this.behaviorStack = [(m: TMessage) => next.onReceive(m)];
       await next.postRestart(cause);
       this.mailbox.resume();
@@ -1010,17 +1125,17 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
     const child = this.findChildByRef(childRef);
     if (!child) return;
 
-    // The failing child's own Props win, then this actor's strategy, then the
-    // framework default.  `Props.withSupervisorStrategy` states how *that*
+    // The failing child's own options win, then this actor's strategy, then
+    // the framework default.  `withSupervisorStrategy` states how *that*
     // actor is supervised, so it has to be read here, on the parent — the
     // child never gets to answer for its own failure.
     //
     // Two consequences of expressing a per-child override through
     // parent-side machinery, both deliberate: an `all-for-one` strategy in a
-    // child's Props still widens to every sibling, and the restart budget in
+    // child's options still widens to every sibling, and the restart budget in
     // `registerRestart` stays per-parent, so siblings share one allowance.
     const strategy: SupervisorStrategy =
-      child.props.config.supervisorStrategy
+      child.blueprint.supervisorStrategy
       ?? this.actor?.supervisorStrategy()
       ?? defaultStrategy;
     const directive = strategy.decider(cause);

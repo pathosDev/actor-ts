@@ -11,7 +11,7 @@ you implement.  For **outbound** client connections, see
 
 ```ts
 import {
-  ActorSystem, Props, HttpExtensionId,
+  ActorSystem, HttpExtensionId,
   WebsocketServerActor, websocket, type WebsocketConnection,
 } from 'actor-ts';
 import { match } from 'ts-pattern';
@@ -46,7 +46,7 @@ class ChatRoom extends WebsocketServerActor<ServerMessage, ClientMessage> {
 }
 
 const system = ActorSystem.create('chat');
-const chat = system.spawn(Props.create(() => new ChatRoom()), 'chat');
+const chat = system.spawn(ChatRoom, 'chat');
 
 await system.extension(HttpExtensionId)
   .newServerAt('0.0.0.0', 8080)

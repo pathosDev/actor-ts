@@ -27,7 +27,6 @@ import {
 } from '../../../../../src/coordination/leases/InMemoryLease.js';
 import { LeaseOptions } from '../../../../../src/coordination/LeaseOptions.js';
 import { LogLevel, NoopLogger } from '../../../../../src/Logger.js';
-import { Props } from '../../../../../src/Props.js';
 import { TestKit } from '../../../../../src/testkit/TestKit.js';
 import { TestKitOptions } from '../../../../../src/testkit/TestKitOptions.js';
 
@@ -77,7 +76,7 @@ describe('ClusterSingleton + Lease', () => {
     const lease = new InMemoryLease(leaseOptions);
     const singletonOptions = StartSingletonOptions.create<string>()
       .withTypeName('echo')
-      .withProps(Props.create(() => new Echo()))
+      .withActor(Echo)
       .withLease(lease);
     const singletonRef = nodeA.cluster.singleton.start(singletonOptions);
     await waitFor(() => nodeA.cluster.leader().nonEmpty);
@@ -110,7 +109,7 @@ describe('ClusterSingleton + Lease', () => {
     const lease = new InMemoryLease(leaseOptions);
     const singletonOptions = StartSingletonOptions.create<string>()
       .withTypeName('echo')
-      .withProps(Props.create(() => new Echo()))
+      .withActor(Echo)
       .withLease(lease)
       .withAcquireRetryIntervalMs(100);   // tighter so the test isn't slow
     const singletonRef = nodeA.cluster.singleton.start(singletonOptions);
@@ -144,7 +143,7 @@ describe('ClusterSingleton + Lease', () => {
     const lease = new InMemoryLease(leaseOptions);
     const singletonOptions = StartSingletonOptions.create<string>()
       .withTypeName('echo')
-      .withProps(Props.create(() => new Echo()))
+      .withActor(Echo)
       .withLease(lease)
       .withAcquireRetryIntervalMs(100);
     const singletonRef = nodeA.cluster.singleton.start(singletonOptions);
@@ -183,7 +182,7 @@ describe('ClusterSingleton + Lease', () => {
     const lease = new InMemoryLease(leaseOptions);
     const singletonOptions = StartSingletonOptions.create<string>()
       .withTypeName('echo')
-      .withProps(Props.create(() => new Echo()))
+      .withActor(Echo)
       .withLease(lease);
     const singletonRef = nodeA.cluster.singleton.start(singletonOptions);
     await probe.expectMessage('started', 1_000);
@@ -211,7 +210,7 @@ describe('ClusterSingleton + Lease', () => {
     // no lease!
     const singletonOptions = StartSingletonOptions.create<string>()
       .withTypeName('echo')
-      .withProps(Props.create(() => new Echo()));
+      .withActor(Echo);
     const singletonRef = nodeA.cluster.singleton.start(singletonOptions);
     await waitFor(() => nodeA.cluster.leader().nonEmpty);
     // No lease → child should be spawned synchronously the moment

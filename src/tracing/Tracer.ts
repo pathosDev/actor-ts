@@ -21,6 +21,8 @@
  *     them automatically.
  */
 
+import { randomHex } from '../util/RandomString.js';
+
 /** Allowed attribute primitive types — matches OTel's spec. */
 export type AttributeValue = string | number | boolean;
 
@@ -125,21 +127,12 @@ export function decodeTraceparent(s: string): SpanContext | null {
 
 /* ------------------------- Span context helpers ------------------------- */
 
-/** Generate a fresh trace id — 16 random bytes hex-encoded. */
+/** Generate a fresh trace id — the 32 hex characters W3C trace-context wants. */
 export function newTraceId(): string {
-  return randomHex(16);
+  return randomHex(32);
 }
 
-/** Generate a fresh span id — 8 random bytes hex-encoded. */
+/** Generate a fresh span id — the 16 hex characters W3C trace-context wants. */
 export function newSpanId(): string {
-  return randomHex(8);
-}
-
-function randomHex(byteLength: number): string {
-  const buffer = new Uint8Array(byteLength);
-  // crypto.getRandomValues is universally available on Bun, Node, Deno.
-  globalThis.crypto.getRandomValues(buffer);
-  let out = '';
-  for (const byte of buffer) out += byte.toString(16).padStart(2, '0');
-  return out;
+  return randomHex(16);
 }

@@ -9,7 +9,7 @@ actor can subscribe to a class of event; any code can publish; the
 bus matches and `tell`s the event to every subscriber.
 
 ```ts
-import { Actor, ActorSystem, Props } from 'actor-ts';
+import { Actor, ActorSystem } from 'actor-ts';
 
 class UserLoggedIn {
   constructor(public readonly userId: string) {}
@@ -34,8 +34,8 @@ class MetricsCollector extends Actor<UserLoggedIn> {
 }
 
 const system = ActorSystem.create('demo');
-system.spawnAnonymous(Props.create(() => new AuditLogger()));
-system.spawnAnonymous(Props.create(() => new MetricsCollector()));
+system.spawnAnonymous(AuditLogger);
+system.spawnAnonymous(MetricsCollector);
 
 // Anywhere — including outside an actor:
 system.eventStream.publish(new UserLoggedIn('user-42'));

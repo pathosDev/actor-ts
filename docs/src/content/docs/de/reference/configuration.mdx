@@ -64,7 +64,8 @@ actor-ts {
     rebalance-interval  = 2s
     hand-off-timeout    = 10s
     remember-entities   = false
-    passivation-idle    = 0ms   # 0 deaktiviert die Auto-Passivierung
+    passivation-idle    = 5m    # 0 deaktiviert die Auto-Passivierung
+    # shard-passivation-idle    # ungesetzt: folgt passivation-idle
     max-entities        = 0     # 0 = kein Cap pro Node
   }
 }
@@ -218,7 +219,8 @@ Redis- und Memcached-Caches lesen ihre Verbindungs-Settings aus
 | `sharding.rebalance-interval` | `2s` | Abstand zwischen koordinator-getriebenen Rebalance-Passes. |
 | `sharding.hand-off-timeout` | `10s` | Wie lange auf HandOffComplete gewartet wird, bevor zwangsumverteilt wird. |
 | `sharding.remember-entities` | `false` | Persistiere die Menge aktiver Entity-IDs. |
-| `sharding.passivation-idle` | `0ms` | Auto-Passiviere eine Entität nach diesem Idle-Fenster.  `0` = deaktiviert. |
+| `sharding.passivation-idle` | `5m` | Auto-Passiviere eine Entität nach diesem Idle-Fenster.  `0` = deaktiviert.  Eine Entität, die Zustand im Speicher hält und ihn nicht in `preStart` wiederaufbaut, verliert ihn dabei — siehe [Passivierung](/de/cluster/sharding/overview/#passivierung). |
+| `sharding.shard-passivation-idle` | *(ungesetzt)* | Auto-Passiviere einen Shard, nachdem er so lange leer stand.  Ungesetzt folgt er `passivation-idle`; `0` hält leere Shards resident.  Bewusst nicht in der `reference.conf`, denn genau von einem ausgelieferten Wert müsste sich „ungesetzt" unterscheiden lassen. |
 | `sharding.max-entities` | `0` | Entity-Obergrenze pro Node; bei Überlauf wird die am längsten ungenutzte Entität passiviert.  `0` = kein Cap. |
 
 Diese Keys gelten für **jeden** auf dem Node gestarteten Sharded Type.  Sie
@@ -230,7 +232,7 @@ dieser Aufruf explizit übergibt — die übliche Reihenfolge gilt also pro Feld
 
 const shardingOptions = StartShardingOptions.create<CartCommand>()
   .withTypeName('cart')
-  .withEntityProps(Props.create(() => new CartEntity()))
+  .withEntityActor(CartEntity)
   .withExtractEntityId((command) => command.entityId)
   .withNumShards(256);
 
@@ -241,7 +243,7 @@ cluster.sharding.start(shardingOptions);
 Ein Setting für genau einen Typ gehört deshalb in den Builder; die
 Config-Datei ist für die node-weite Grundeinstellung, die du ohne Rebuild
 zwischen Staging und Produktion verschieben willst.  Die polymorphen Optionen
-— Entity-Props, die Extraktoren, die Allocation Strategy, ein Lease, die
+— der Entity-Actor, die Extraktoren, die Allocation Strategy, ein Lease, die
 Stores — haben keine HOCON-Form und bleiben im Code.
 
 ### `actor-ts.coordinated-shutdown`

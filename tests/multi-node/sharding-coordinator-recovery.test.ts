@@ -35,7 +35,6 @@ import { ShardCoordinator } from '../../src/cluster/sharding/ShardCoordinator.js
 import { coordinatorSegments } from '../util/systemPaths.js';
 import { DistributedDataId } from '../../src/crdt/DistributedData.js';
 import { DistributedDataOptions } from '../../src/crdt/DistributedDataOptions.js';
-import { Props } from '../../src/Props.js';
 import { MultiNodeSpec } from '../../src/testkit/MultiNodeSpec.js';
 import { MultiNodeTransport } from '../../src/testkit/internal/MultiNodeTransport.js';
 import type { ActorRef } from '../../src/ActorRef.js';
@@ -117,7 +116,7 @@ describe('ShardCoordinator state persistence — leader failover', () => {
         );
         const shardingOptions = StartShardingOptions.create<Command>()
           .withTypeName('entity')
-          .withEntityProps(Props.create(() => new Entity()))
+          .withEntityActor(Entity)
           .withExtractEntityId((m) => m.id)
           .withNumShards(8)
           .withRebalanceIntervalMs(200)

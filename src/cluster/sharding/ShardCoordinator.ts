@@ -17,6 +17,7 @@ import type {
   EntityStarted,
   EntityStopped,
   GetClusterShardingStats,
+  GetRememberedEntities,
   GetShardHome,
   HandOffComplete,
   RegionTerminated,
@@ -69,6 +70,8 @@ type StatsQuery = {
   /** Region keys we are still waiting on. */
   readonly awaiting: Set<string>;
   readonly entityCounts: Map<number, number>;
+  /** Shards whose owning region reported a materialised actor. */
+  readonly residents: Set<number>;
   timer: Cancellable | null;
 };
 
@@ -269,6 +272,7 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
       .with({ $t: 'sharding.RegionTerminated' }, (m) => this.onRegionTerminated(m))
       .with({ $t: 'sharding.EntityStarted' }, (m) => this.onEntityStarted(m))
       .with({ $t: 'sharding.EntityStopped' }, (m) => this.onEntityStopped(m))
+      .with({ $t: 'sharding.GetRememberedEntities' }, (m) => this.onGetRememberedEntities(m))
       .with({ $t: 'sharding.GetClusterShardingStats' }, (m) => this.onGetClusterShardingStats(m))
       .with({ $t: 'sharding.ShardRegionStats' }, (m) => this.onShardRegionStats(m))
       .otherwise(() => this.onUnhandled());
@@ -565,8 +569,27 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
       if (set) { set.delete(message.entityId); if (set.size === 0) this.entitiesPerShard.delete(message.shardId); }
       return;
     }
+    // A shard that is mid-rebalance is not losing entities, it is losing a
+    // *host* — and the registry has to outlive the move for `tryAllocate` to
+    // hand it to the new owner.  The departing region no longer announces its
+    // entities as stopped (#632), but an entity passivating on its own in the
+    // window between `BeginHandOff` and `HandOffComplete` still would, and
+    // that one would be just as wrongly forgotten.
+    if (this.rebalanceInProgress.has(message.shardId)) return;
     this.applyRememberEvent({ kind: 'stopped', shardId: message.shardId, entityId: message.entityId });
     this.persistRememberEvent({ kind: 'stopped', shardId: message.shardId, entityId: message.entityId });
+  }
+
+  /**
+   * A region lost a shard's entities without losing the shard itself — its
+   * shard actor died outside a handoff (#894).  Ownership never moved, so the
+   * two paths that normally ship the registry (`onRegister`, `tryAllocate`)
+   * cannot fire, and the shard would come back empty while we still list what
+   * it held.
+   */
+  private onGetRememberedEntities(message: GetRememberedEntities): void {
+    if (!this.options.rememberEntities) return;
+    this.shipRememberedEntities(message.shardId);
   }
 
   /**
@@ -613,6 +636,7 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
       correlationId: message.correlationId,
       awaiting: new Set(targets.map(([key]) => key)),
       entityCounts: new Map(),
+      residents: new Set(),
       timer: null,
     };
     if (query.awaiting.size === 0) { this.answerStatsQuery(query); return; }
@@ -645,6 +669,7 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
         entry.shardId,
         (query.entityCounts.get(entry.shardId) ?? 0) + entry.entityCount,
       );
+      if (entry.resident) query.residents.add(entry.shardId);
     }
     if (query.awaiting.size > 0) return;
     query.timer?.cancel();
@@ -662,6 +687,10 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
         node: info.node.toJSON(),
         regionPath: info.path,
         entityCount: query.entityCounts.get(shardId) ?? 0,
+        // A region that timed out contributes neither a count nor residency,
+        // so an unanswered shard reads as "allocated, not known to be up" —
+        // the same conservative direction `entityCount: 0` already takes.
+        resident: query.residents.has(shardId),
       });
     }
     shards.sort((a, b) => a.shardId - b.shardId);

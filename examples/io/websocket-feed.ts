@@ -11,7 +11,6 @@
 import {
   ActorSystem,
   HttpExtensionId,
-  Props,
   WebsocketClientActor,
   WebsocketClientOptions,
   WebsocketServerActor,
@@ -44,11 +43,11 @@ async function main(): Promise<void> {
   const system = ActorSystem.create('ws-feed-demo');
   const devtools = await attachDevTools(system);
 
-  const server = system.spawn(Props.create(() => new EchoServer()), 'echo');
+  const server = system.spawn(EchoServer, 'echo');
   const binding = await system.extension(HttpExtensionId).newServerAt('127.0.0.1', 0).bind(websocket('/ws', server));
   console.log(`[server] listening on ws://127.0.0.1:${binding.port}/ws`);
 
-  const client = system.spawn(Props.create(() => new Feed(`ws://127.0.0.1:${binding.port}/ws`)), 'feed');
+  const client = system.spawn(() => new Feed(`ws://127.0.0.1:${binding.port}/ws`), 'feed');
 
   await sleep(200);
   for (let i = 0; i < 5; i++) {

@@ -23,7 +23,6 @@ import {
   pickRendezvous,
 } from '../../../../../src/cluster/router/index.js';
 import { LogLevel, NoopLogger } from '../../../../../src/Logger.js';
-import { Props } from '../../../../../src/Props.js';
 import { Broadcast } from '../../../../../src/Router.js';
 
 const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
@@ -61,14 +60,14 @@ describe('ClusterRouter — single node', () => {
     const { sys, cluster } = await startNode('rr-single', 89_001, ['compute']);
     try {
       // Worker lives at /user/worker on every targeted node.
-      sys.spawn(Props.create(() => new Worker()), 'worker');
+      sys.spawn(Worker, 'worker');
       const routerOptions = ClusterRouterOptions.create<ReceivedMessage>()
         .withCluster(cluster)
         .withRole('compute')
         .withRouterType('round-robin')
         .withRouteePath('/user/worker');
       const router = sys.spawn(
-        ClusterRouter.props<ReceivedMessage>(routerOptions),
+        ClusterRouter.factory<ReceivedMessage>(routerOptions),
         'compute-router',
       );
       // Wait for the cluster to mark self as up.
@@ -88,14 +87,14 @@ describe('ClusterRouter — single node', () => {
     received = [];
     const { sys, cluster } = await startNode('rr-norole', 89_002, ['frontend']);
     try {
-      sys.spawn(Props.create(() => new Worker()), 'worker');
+      sys.spawn(Worker, 'worker');
       const routerOptions = ClusterRouterOptions.create<ReceivedMessage>()
         .withCluster(cluster)
         .withRole('compute')                       // filters out 'frontend'-only node
         .withRouterType('round-robin')
         .withRouteePath('/user/worker');
       const router = sys.spawn(
-        ClusterRouter.props<ReceivedMessage>(routerOptions),
+        ClusterRouter.factory<ReceivedMessage>(routerOptions),
         'role-router',
       );
       await sleep(50);
@@ -113,14 +112,14 @@ describe('ClusterRouter — single node', () => {
     received = [];
     const { sys, cluster } = await startNode('ch-single', 89_003);
     try {
-      sys.spawn(Props.create(() => new Worker()), 'worker');
+      sys.spawn(Worker, 'worker');
       const routerOptions = ClusterRouterOptions.create<ReceivedMessage>()
         .withCluster(cluster)
         .withRouterType('consistent-hashing')
         .withRouteePath('/user/worker')
         .withExtractKey((m) => m.id);
       const router = sys.spawn(
-        ClusterRouter.props<ReceivedMessage>(routerOptions),
+        ClusterRouter.factory<ReceivedMessage>(routerOptions),
         'ch-router',
       );
       await sleep(50);
@@ -142,13 +141,13 @@ describe('ClusterRouter — single node', () => {
     received = [];
     const { sys, cluster } = await startNode('bc-single', 89_004);
     try {
-      sys.spawn(Props.create(() => new Worker()), 'worker');
+      sys.spawn(Worker, 'worker');
       const routerOptions = ClusterRouterOptions.create<ReceivedMessage>()
         .withCluster(cluster)
         .withRouterType('broadcast')
         .withRouteePath('/user/worker');
       const router = sys.spawn(
-        ClusterRouter.props<ReceivedMessage>(routerOptions),
+        ClusterRouter.factory<ReceivedMessage>(routerOptions),
         'bc-router',
       );
       await sleep(50);
@@ -165,13 +164,13 @@ describe('ClusterRouter — single node', () => {
     received = [];
     const { sys, cluster } = await startNode('bc-msg', 89_005);
     try {
-      sys.spawn(Props.create(() => new Worker()), 'worker');
+      sys.spawn(Worker, 'worker');
       const routerOptions = ClusterRouterOptions.create<ReceivedMessage>()
         .withCluster(cluster)
         .withRouterType('round-robin')             // not broadcast type
         .withRouteePath('/user/worker');
       const router = sys.spawn(
-        ClusterRouter.props<ReceivedMessage>(routerOptions),
+        ClusterRouter.factory<ReceivedMessage>(routerOptions),
         'bc-msg-router',
       );
       await sleep(50);
@@ -194,7 +193,7 @@ describe('ClusterRouter — single node', () => {
         .withRouterType('consistent-hashing')
         .withRouteePath('/user/worker');
       // no extractKey
-      ClusterRouter.props<ReceivedMessage>(routerOptions);
+      ClusterRouter.factory<ReceivedMessage>(routerOptions);
     }).toThrow(/extractKey/);
   });
 });

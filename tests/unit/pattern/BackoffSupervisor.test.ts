@@ -24,7 +24,7 @@ import { Actor } from '../../../src/Actor.js';
 import { ActorSystem } from '../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../src/ActorSystemOptions.js';
 import { LogLevel, NoopLogger } from '../../../src/Logger.js';
-import { Props } from '../../../src/Props.js';
+import type { ActorClassOrFactory } from '../../../src/Actor.js';
 import {
   BackoffSupervisor,
   type BackoffOptions,
@@ -89,7 +89,7 @@ function newSystem(name: string): ActorSystem {
 
 function withDefaults<T>(over: Partial<BackoffOptions<T>>): BackoffOptions<T> {
   return {
-    childProps: Props.create(() => new Flaky()) as unknown as Props<T>,
+    child: (() => new Flaky()) as unknown as ActorClassOrFactory<T>,
     minBackoff: 50,
     maxBackoff: 5_000,
     randomFactor: 0,
@@ -107,8 +107,8 @@ describe('BackoffSupervisor — restart cadence', () => {
     const sys = newSystem('backoff-cadence');
     const policy = new RecordingPolicy([40, 80, 160]);
     const supervisor = sys.spawn(
-      BackoffSupervisor.props(withDefaults({
-        childProps: Props.create(() => new Flaky()),
+      BackoffSupervisor.factory(withDefaults({
+        child: Flaky,
         policy,
         // disable the time-based reset so consecutive crashes accumulate
         resetCounter: 'never',
@@ -137,8 +137,8 @@ describe('BackoffSupervisor — restart cadence', () => {
     const sys = newSystem('backoff-reset');
     const policy = new RecordingPolicy([20, 40, 80, 160]);
     const supervisor = sys.spawn(
-      BackoffSupervisor.props(withDefaults({
-        childProps: Props.create(() => new Flaky()),
+      BackoffSupervisor.factory(withDefaults({
+        child: Flaky,
         policy,
         // 'after-min-stable' threshold = minBackoff (50ms).  We let the
         // child run for 200ms before crashing again.
@@ -169,8 +169,8 @@ describe('BackoffSupervisor — message forwarding', () => {
     crashesObserved = 0;
     const sys = newSystem('backoff-stash');
     const supervisor = sys.spawn(
-      BackoffSupervisor.props(withDefaults({
-        childProps: Props.create(() => new Flaky()),
+      BackoffSupervisor.factory(withDefaults({
+        child: Flaky,
         // Slow the respawn down so we have a clear backoff window.
         policy: new RecordingPolicy([120]),
         forward: 'stash',
@@ -198,8 +198,8 @@ describe('BackoffSupervisor — message forwarding', () => {
     crashesObserved = 0;
     const sys = newSystem('backoff-drop');
     const supervisor = sys.spawn(
-      BackoffSupervisor.props(withDefaults({
-        childProps: Props.create(() => new Flaky()),
+      BackoffSupervisor.factory(withDefaults({
+        child: Flaky,
         policy: new RecordingPolicy([100]),
         forward: 'drop',
         resetCounter: 'never',
@@ -233,8 +233,8 @@ describe('BackoffSupervisor — preStart failures', () => {
     const sys = newSystem('backoff-prestart');
     const policy = new RecordingPolicy([40, 80]);
     const supervisor = sys.spawn(
-      BackoffSupervisor.props(withDefaults({
-        childProps: Props.create(() => new FailingPreStart()),
+      BackoffSupervisor.factory(withDefaults({
+        child: FailingPreStart,
         policy,
         resetCounter: 'never',
       })),
@@ -261,8 +261,8 @@ describe('BackoffSupervisor — lifecycle', () => {
     const sys = newSystem('backoff-cancel');
     const policy = new RecordingPolicy([300]);  // long backoff
     const supervisor = sys.spawn(
-      BackoffSupervisor.props(withDefaults({
-        childProps: Props.create(() => new Flaky()),
+      BackoffSupervisor.factory(withDefaults({
+        child: Flaky,
         policy,
       })),
       'sup-cancel',
@@ -282,17 +282,17 @@ describe('BackoffSupervisor — lifecycle', () => {
 
   test('rejects illegal options at construction', () => {
     expect(() => new BackoffSupervisor({
-      childProps: Props.create(() => new Flaky()),
+      child: Flaky,
       minBackoff: 0,
       maxBackoff: 100,
     })).toThrow(/minBackoff/);
     expect(() => new BackoffSupervisor({
-      childProps: Props.create(() => new Flaky()),
+      child: Flaky,
       minBackoff: 100,
       maxBackoff: 50,
     })).toThrow(/maxBackoff/);
     expect(() => new BackoffSupervisor({
-      childProps: Props.create(() => new Flaky()),
+      child: Flaky,
       minBackoff: 100,
       maxBackoff: 1000,
       resetCounter: { kind: 'after-time', ms: -1 },
@@ -333,8 +333,8 @@ describe('BackoffSupervisor — triggerOn modes (#68)', () => {
     lifecycleSpawns = 0; lifecycleStops = 0;
     const sys = newSystem('backoff-trigger-failure');
     const supervisor = sys.spawn(
-      BackoffSupervisor.props({
-        childProps: Props.create(() => new SelfStopChild()),
+      BackoffSupervisor.factory({
+        child: SelfStopChild,
         minBackoff: 30,
         maxBackoff: 200,
         randomFactor: 0,
@@ -365,8 +365,8 @@ describe('BackoffSupervisor — triggerOn modes (#68)', () => {
     lifecycleSpawns = 0; lifecycleStops = 0;
     const sys = newSystem('backoff-trigger-stop');
     const supervisor = sys.spawn(
-      BackoffSupervisor.props({
-        childProps: Props.create(() => new SelfStopChild()),
+      BackoffSupervisor.factory({
+        child: SelfStopChild,
         minBackoff: 30,
         maxBackoff: 200,
         randomFactor: 0,
@@ -400,8 +400,8 @@ describe('BackoffSupervisor — triggerOn modes (#68)', () => {
     const sys = newSystem('backoff-stash-survives');
     const replies: number[] = [];
     const supervisor = sys.spawn(
-      BackoffSupervisor.props<{ kind: 'echo'; value: number }>({
-        childProps: Props.create(() => new FailingPreStart()),
+      BackoffSupervisor.factory<{ kind: 'echo'; value: number }>({
+        child: FailingPreStart,
         minBackoff: 40,
         maxBackoff: 400,
         randomFactor: 0,
@@ -436,8 +436,8 @@ describe('BackoffSupervisor — triggerOn modes (#68)', () => {
     // crash.
     const sys = newSystem('backoff-grace-default');
     const supervisor = sys.spawn(
-      BackoffSupervisor.props<{ kind: 'echo'; value: number }>({
-        childProps: Props.create(() => new Flaky()) as unknown as Props<{ kind: 'echo'; value: number }>,
+      BackoffSupervisor.factory<{ kind: 'echo'; value: number }>({
+        child: (() => new Flaky()) as unknown as ActorClassOrFactory<{ kind: 'echo'; value: number }>,
         minBackoff: 80,
         maxBackoff: 400,
         randomFactor: 0,
@@ -459,8 +459,8 @@ describe('BackoffSupervisor — triggerOn modes (#68)', () => {
     lifecycleSpawns = 0; lifecycleStops = 0;
     const sys = newSystem('backoff-trigger-any');
     const supervisor = sys.spawn(
-      BackoffSupervisor.props({
-        childProps: Props.create(() => new SelfStopChild()),
+      BackoffSupervisor.factory({
+        child: SelfStopChild,
         minBackoff: 30,
         maxBackoff: 200,
         randomFactor: 0,

@@ -31,7 +31,7 @@ Szenarien**.
 ```ts
 import { describe, it, expect } from 'bun:test';
 import { match } from 'ts-pattern';
-import { Actor, Props, ActorRef } from 'actor-ts';
+import { Actor, ActorRef } from 'actor-ts';
 import { TestKit } from 'actor-ts/testkit';
 
 type IncrementCommand = { kind: 'increment' };
@@ -56,7 +56,7 @@ describe('Counter', () => {
     const tk = TestKit.create('counter-spec');
     const probe = tk.createTestProbe();
 
-    const counter = tk.system.spawnAnonymous(Props.create(() => new Counter()));
+    const counter = tk.system.spawnAnonymous(Counter);
     counter.tell({ kind: 'increment' });
     counter.tell({ kind: 'increment' });
     counter.tell({ kind: 'get', replyTo: probe as ActorRef<number> });
@@ -86,7 +86,7 @@ Test-Prozess kann hängen.
 ```ts
 const tk = TestKit.create();
 const probe = tk.createTestProbe();
-const ref = tk.system.spawnAnonymous(Props.create(() => new MyActor(probe)));
+const ref = tk.system.spawnAnonymous(() => new MyActor(probe));
 ref.tell({ kind: 'do' });
 await probe.expectMessage('done');
 await tk.shutdown();
@@ -106,7 +106,7 @@ Das ist die kanonische Form — siehe
 const { kit, scheduler } = TestKit.withManualScheduler();
 const probe = kit.createTestProbe();
 
-const ref = kit.system.spawnAnonymous(Props.create(() => new ScheduledThing(probe)));
+const ref = kit.system.spawnAnonymous(() => new ScheduledThing(probe));
 ref.tell({ kind: 'start' });
 
 scheduler.advance(5_000);   // virtuelle Zeit springt 5 Sekunden
@@ -125,7 +125,6 @@ Siehe [ManualScheduler](/de/testing/manual-scheduler/).
 ### Verteilt — `MultiNodeSpec`
 
 ```ts
-import { Props } from 'actor-ts';
 import { MultiNodeSpec, TestProbe } from 'actor-ts/testkit';
 
 const spec = new MultiNodeSpec({ roles: ['frontend', 'worker-1', 'worker-2'] });
@@ -134,7 +133,7 @@ await spec.awaitMembers('frontend', 3);   // warten, bis alle drei konvergieren
 
 // Jede Rolle ist ein vollständiges ActorSystem — via systemFor(role) erreichen:
 const probe = new TestProbe(spec.systemFor('frontend'));
-const remote = spec.systemFor('worker-1').spawnAnonymous(Props.create(() => new Worker()));
+const remote = spec.systemFor('worker-1').spawnAnonymous(Worker);
 remote.tell({ kind: 'do', replyTo: probe });
 await probe.expectMessage({ kind: 'done' });
 

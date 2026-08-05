@@ -33,7 +33,7 @@ als Event persistiert und bei der Recovery erneut abgespielt.
 ## Ein minimales Beispiel
 
 ```ts
-import { FSM, Props, ActorSystem } from 'actor-ts';
+import { FSM, ActorSystem } from 'actor-ts';
 
 type State = 'closed' | 'open';
 type Data  = { openedAt?: number };
@@ -60,7 +60,7 @@ class Door extends FSM<State, Data, Message> {
 }
 
 const system = ActorSystem.create('demo');
-const door = system.spawnAnonymous(Props.create(() => new Door()));
+const door = system.spawnAnonymous(Door);
 door.tell('open');
 door.tell('close');
 ```

@@ -1,6 +1,6 @@
 {
   "name": "actor-ts",
-  "version": "0.12.2",
+  "version": "0.13.0",
   "description": "An actor-model framework for TypeScript — runs on Bun, Node.js and Deno",
   "author": "pathosDev",
   "repository": {
@@ -118,7 +118,7 @@
     "@fastify/websocket": "^11.3.0",
     "@hono/node-server": "^2.0.9",
     "@hono/node-ws": "^1.3.1",
-    "@types/better-sqlite3": "^7.6.13",
+    "@types/better-sqlite3": "^9.6.0",
     "@types/bun": "^1.3.14",
     "@types/express": "^5.0.6",
     "@types/node": "^24.13.3",

@@ -52,7 +52,7 @@ export type SystemGroupPolicy = {
    */
   readonly strategy: SupervisorStrategy;
   /**
-   * Mark the whole subtree as tooling — see `PropsConfig.internal`.  Set on
+   * Mark the whole subtree as tooling — see `ActorOptionsType.internal`.  Set on
    * the group rather than on each actor because `ActorCell` inherits the mark
    * from the parent, so one flag covers everything the subsystem spawns.
    */

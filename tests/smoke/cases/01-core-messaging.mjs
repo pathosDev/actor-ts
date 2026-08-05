@@ -11,7 +11,7 @@ export const name = 'core actor messaging';
 export const description = '1k tells + ask round-trip';
 
 export async function run({ actorTs }) {
-  const { Actor, ActorSystem, ActorSystemOptions, LogLevel, NoopLogger, Props } = actorTs;
+  const { Actor, ActorSystem, ActorSystemOptions, LogLevel, NoopLogger } = actorTs;
   class Counter extends Actor {
     constructor() { super(); this.n = 0; }
     onReceive(m) {
@@ -24,7 +24,7 @@ export async function run({ actorTs }) {
     .withLogLevel(LogLevel.Off);
   const sys = ActorSystem.create('smoke-core', sysOptions);
   try {
-    const ref = sys.spawnAnonymous(Props.create(() => new Counter()));
+    const ref = sys.spawnAnonymous(Counter);
     const N = 1_000;
     for (let i = 0; i < N; i++) ref.tell('inc');
     const got = await ref.ask('get', 5_000);

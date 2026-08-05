@@ -18,7 +18,6 @@ import { NodeAddress } from '../../src/cluster/NodeAddress.js';
 import { RemoteActorRef } from '../../src/cluster/RemoteActorRef.js';
 import { InMemoryTransport } from '../../src/cluster/Transport.js';
 import { LogLevel, NoopLogger } from '../../src/Logger.js';
-import { Props } from '../../src/Props.js';
 import { RecordingTracer } from '../../src/tracing/RecordingTracer.js';
 import { TracingExtensionId } from '../../src/tracing/TracingExtension.js';
 
@@ -72,7 +71,7 @@ describe('Distributed tracing — cross-node propagation', () => {
       class Echo extends Actor<string> {
         override onReceive(_m: string): void { /* span recorded automatically */ }
       }
-      nodeB.sys.spawn(Props.create(() => new Echo()), 'echo');
+      nodeB.sys.spawn(Echo, 'echo');
       const echoOnB = new RemoteActorRef<string>(
         nodeB.cluster.selfAddress,
         `actor-ts://${sysName}/user/echo`,
@@ -135,7 +134,7 @@ describe('Distributed tracing — cross-node propagation', () => {
       class Echo extends Actor<string> {
         override onReceive(_m: string): void { /* */ }
       }
-      sysB.spawn(Props.create(() => new Echo()), 'echo');
+      sysB.spawn(Echo, 'echo');
       const echoOnB = new RemoteActorRef<string>(
         clusterB.selfAddress,
         `actor-ts://${sysName}/user/echo`,

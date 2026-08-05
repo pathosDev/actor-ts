@@ -1,3 +1,4 @@
+import { assertListenerTlsIsCoherent } from './TcpBackend.js';
 import type {
   TcpBackend,
   TcpListener,
@@ -26,6 +27,7 @@ export class DenoTcpBackend implements TcpBackend {
     if (!deno) throw new Error('DenoTcpBackend: globalThis.Deno is not defined');
 
     const useTls = !!(options.tls && options.tls.cert && options.tls.key);
+    if (useTls) assertListenerTlsIsCoherent(options.tls!, 'Deno');
     const listener: DenoListener = useTls
       ? deno.listenTls({
           hostname: options.host,

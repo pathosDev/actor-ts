@@ -380,6 +380,193 @@ describe('Transport — hello-handshake hijack defense', () => {
   });
 });
 
+/* -------------------- crossing dials and dead dials -------------------- */
+
+/**
+ * **Failure walkthrough (pre-fix, #697).**  `openOutbound` registers the
+ * connection in `byPeer` *before* the handshake, with `peer` still `null`.
+ * The hijack guard above compares identity only, so when two healthy nodes
+ * dialled each other in the same instant, each held an un-acked outbound
+ * under the other's key and rejected the other's perfectly legitimate
+ * `hello`.  Neither dial then received a `hello-ack`, so `peer` stayed
+ * `null` — and `onClose` deleted the `byPeer` entry only *if* `peer` was
+ * set.  The slot was never reclaimed, the address never re-dialled, and
+ * every frame for that peer accumulated silently in `pending`.
+ *
+ * The two nodes were split for the lifetime of the process.  This is what
+ * turned the real-network `integration` suite red: node-b and node-d each
+ * logged one "hello hijack rejected" naming the other in the same
+ * millisecond, and the receptionist then converged at 4 of 5 refs on
+ * exactly those two nodes.
+ *
+ * Fix: cleanup is keyed on the *dialled* address, not on `peer`, so a dead
+ * dial always gives its slot back; a handshake deadline reclaims a dial
+ * that connects but never acks; and a crossing dial is resolved by address
+ * order so exactly one of the two survives.  An *established* peer
+ * connection is still never displaced — that part is the hijack defence and
+ * is asserted below too.
+ */
+describe('Transport — crossing dials and dead dials (#697)', () => {
+  interface MockSock {
+    ended: boolean;
+    writes: Uint8Array[];
+    write(d: Uint8Array): void;
+    end(): void;
+  }
+
+  const mkSock = (): MockSock => ({
+    ended: false, writes: [],
+    write(d) { this.writes.push(d); },
+    end() { this.ended = true; },
+  });
+
+  const frameOf = (message: unknown): Uint8Array => {
+    const payload = new TextEncoder().encode(JSON.stringify(message));
+    const frame = new Uint8Array(4 + payload.byteLength);
+    new DataView(frame.buffer).setUint32(0, payload.byteLength, false);
+    frame.set(payload, 4);
+    return frame;
+  };
+
+  type RawTransport = {
+    backend: unknown;
+    attachInbound(s: unknown): void;
+    onData(s: unknown, chunk: Uint8Array): void;
+    onClose(s: unknown, fallback?: unknown): void;
+    openOutbound(to: NodeAddress): { socket: unknown; peer: unknown; pending: unknown[] };
+    onHandshakeTimeout(connection: unknown): void;
+    byPeer: Map<string, { socket: unknown; peer: unknown }>;
+  };
+
+  /**
+   * A transport whose dials resolve to a mock socket instead of a real one,
+   * so a crossing dial can be staged deterministically.  Returns the socket
+   * each `connect` handed out, in call order.
+   */
+  function transportWithFakeDialer(self: NodeAddress): {
+    raw: RawTransport;
+    dialled: MockSock[];
+  } {
+    const transport = new TcpTransport(self, new NoopLogger());
+    const raw = transport as unknown as RawTransport;
+    const dialled: MockSock[] = [];
+    raw.backend = {
+      listen: () => Promise.resolve({ port: self.port, close: () => {} }),
+      connect: (options: { handlers: { onOpen(s: unknown): void } }) => {
+        const sock = mkSock();
+        dialled.push(sock);
+        options.handlers.onOpen(sock);
+        return Promise.resolve(sock);
+      },
+    };
+    return { raw, dialled };
+  }
+
+  const nodeA = new NodeAddress('sim', '10.0.0.1', 5000);
+  const nodeB = new NodeAddress('sim', '10.0.0.2', 5000);
+  // The tie-break is "the dial from the lexicographically smaller address
+  // wins", and these two addresses differ only in that octet — so A's dial
+  // is the one that must survive, on both sides.
+  const helloFromA = frameOf({ t: 'hello', self: nodeA.toJSON() });
+  const helloFromB = frameOf({ t: 'hello', self: nodeB.toJSON() });
+
+  test('exploit: two nodes dialling each other at once still converge', async () => {
+    // --- node A dials B, and B's hello arrives before A's ack ---
+    const a = transportWithFakeDialer(nodeA);
+    a.raw.openOutbound(nodeB);
+    await Promise.resolve();                       // let the dial install its socket
+    const aOutbound = a.dialled[0]!;
+
+    const bInboundAtA = mkSock();
+    a.raw.attachInbound(bInboundAtA);
+    a.raw.onData(bInboundAtA, helloFromB);
+
+    // A holds the winning dial, so it defends its own outbound and closes
+    // B's inbound — the pre-existing hijack behaviour, and correct here.
+    expect(bInboundAtA.ended).toBe(true);
+    expect(a.raw.byPeer.get(nodeB.toString())?.socket).toBe(aOutbound);
+
+    // --- node B dials A at the same moment, and A's hello arrives ---
+    const b = transportWithFakeDialer(nodeB);
+    b.raw.openOutbound(nodeA);
+    await Promise.resolve();
+    const bOutbound = b.dialled[0]!;
+
+    const aInboundAtB = mkSock();
+    b.raw.attachInbound(aInboundAtB);
+    b.raw.onData(aInboundAtB, helloFromA);
+
+    // B is on the losing side of the tie-break: it retires its own dial and
+    // accepts A's connection.  Pre-fix it rejected A here, which is what
+    // deadlocked the pair.
+    expect(aInboundAtB.ended).toBe(false);
+    expect(bOutbound.ended).toBe(true);
+    expect(b.raw.byPeer.get(nodeA.toString())?.socket).toBe(aInboundAtB);
+    expect(aInboundAtB.writes.length).toBe(1);     // hello-ack went back to A
+
+    // B's retired dial must not leave its slot behind when the socket's
+    // close event lands afterwards — the surviving connection stays.
+    b.raw.onClose(bOutbound);
+    expect(b.raw.byPeer.get(nodeA.toString())?.socket).toBe(aInboundAtB);
+
+    // --- A completes its handshake on the surviving connection ---
+    a.raw.onData(aOutbound, frameOf({ t: 'hello-ack', self: nodeB.toJSON() }));
+    expect(a.raw.byPeer.get(nodeB.toString())?.peer).not.toBeNull();
+  });
+
+  test('an established peer is still never displaced by a crossing-dial claim', async () => {
+    // The tie-break must only ever retire our own *unfinished* dial.  Here
+    // the slot is held by a fully handshaked connection, and the loser-side
+    // address ordering that made B yield above must NOT apply.
+    const b = transportWithFakeDialer(nodeB);
+
+    const established = mkSock();
+    b.raw.attachInbound(established);
+    b.raw.onData(established, helloFromA);
+    expect(b.raw.byPeer.get(nodeA.toString())?.peer).not.toBeNull();
+
+    const attacker = mkSock();
+    b.raw.attachInbound(attacker);
+    b.raw.onData(attacker, helloFromA);
+
+    expect(attacker.ended).toBe(true);
+    expect(established.ended).toBe(false);
+    expect(b.raw.byPeer.get(nodeA.toString())?.socket).toBe(established);
+  });
+
+  test('a dial that dies before the handshake gives its slot back', async () => {
+    // Pre-fix, `onClose` skipped the delete because `peer` was null, so the
+    // address was unreachable *and* un-redialable for the process's life.
+    const a = transportWithFakeDialer(nodeA);
+    a.raw.openOutbound(nodeB);
+    await Promise.resolve();
+    const outbound = a.dialled[0]!;
+    expect(a.raw.byPeer.has(nodeB.toString())).toBe(true);
+
+    a.raw.onClose(outbound);
+    expect(a.raw.byPeer.has(nodeB.toString())).toBe(false);
+
+    // …and the next dial genuinely re-opens rather than reusing a corpse.
+    a.raw.openOutbound(nodeB);
+    await Promise.resolve();
+    expect(a.dialled.length).toBe(2);
+  });
+
+  test('a dial that connects but never acks is reclaimed by the deadline', async () => {
+    const a = transportWithFakeDialer(nodeA);
+    const connection = a.raw.openOutbound(nodeB);
+    await Promise.resolve();
+    connection.pending.push({ t: 'ping' });
+
+    // What the handshake timer invokes once HANDSHAKE_TIMEOUT_MS elapses.
+    a.raw.onHandshakeTimeout(connection);
+
+    expect(a.raw.byPeer.has(nodeB.toString())).toBe(false);
+    expect(connection.pending.length).toBe(0);
+    expect(a.dialled[0]!.ended).toBe(true);
+  });
+});
+
 /* ----- injection for any wire frame, not just gossip ----- */
 
 interface ClusterWirePrivate {

@@ -16,7 +16,6 @@
  */
 import { Actor } from '../src/Actor.js';
 import { ActorSystem } from '../src/ActorSystem.js';
-import { Props } from '../src/Props.js';
 import type { ActorRef } from '../src/ActorRef.js';
 import { Cluster } from '../src/cluster/Cluster.js';
 import { ClusterOptions } from '../src/cluster/ClusterOptions.js';
@@ -74,9 +73,9 @@ class SupervisorActor extends Actor<TickMessage> {
 
   override async preStart(): Promise<void> {
     for (let i = 0; i < 4; i++) {
-      this.context.spawn(Props.create(() => new WorkerActor()), `worker-${i}`);
+      this.context.spawn(() => new WorkerActor(), `worker-${i}`);
     }
-    this.context.spawn(Props.create(() => new LedgerActor()), 'ledger');
+    this.context.spawn(() => new LedgerActor(), 'ledger');
     this.context.timers.startTimerWithFixedDelay('tick', { kind: 'tick', index: 0 }, 500, 500);
   }
 
@@ -108,7 +107,7 @@ class SupervisorActor extends Actor<TickMessage> {
     // their sparklines actually move; a static tree tells you nothing
     // about whether the panels are live.
     const ephemeral = this.context.spawn(
-      Props.create(() => new WorkerActor()),
+      () => new WorkerActor(),
       `ephemeral-${this.index}`,
     );
     ephemeral.tell({ kind: 'work', payload: 'short-lived' } as never);
@@ -129,7 +128,7 @@ class SupervisorActor extends Actor<TickMessage> {
 }
 
 const system = ActorSystem.create('devtools-playground');
-system.spawn(Props.create(() => new SupervisorActor()), 'supervisor');
+system.spawn(() => new SupervisorActor(), 'supervisor');
 
 // A single-node cluster over the in-memory transport, so the cluster
 // panel has real membership to render without needing a second process.

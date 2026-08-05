@@ -20,7 +20,6 @@ import {
   InMemoryJournal,
   InMemorySnapshotStore,
   PersistentActor,
-  Props,
   defaultsAdapter,
   type EventAdapter,
 } from '../../src/index.js';
@@ -82,7 +81,7 @@ async function main(): Promise<void> {
   const sys = ActorSystem.create('migration-additive', sysOptions);
   const devtools = await attachDevTools(sys);
 
-  const acct = sys.spawn(Props.create(() => new Account('alice')), 'alice');
+  const acct = sys.spawn(() => new Account('alice'), 'alice');
   console.log('after recovery →', await acct.ask({ kind: 'balance' }, 500));
   console.log('deposit 50 EUR →', await acct.ask({ kind: 'deposit', amount: 50 }, 500));
   console.log('balance        →', await acct.ask({ kind: 'balance' }, 500));

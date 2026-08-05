@@ -9,6 +9,380 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ## [Unreleased]
 
+## [0.13.0] — 2026-08-05
+
+### Removed
+
+- **BREAKING — `Props` is gone from the public API** (#547).  Spawning takes
+  the actor class or a factory directly, and per-actor configuration is an
+  ordinary options family:
+
+  ```ts
+  // before
+  system.spawn(Props.create(() => new Greeter()), 'greeter');
+  system.spawn(Props.create(() => new Worker(db)).withMailboxCapacity(500), 'w');
+
+  // after
+  system.spawn(Greeter, 'greeter');                      // zero-arg class
+  const workerOptions = ActorOptions.create<WorkerMessage>().withMailboxCapacity(500);
+  system.spawn(() => new Worker(db), 'w', workerOptions);
+  ```
+
+  `Props` bundled two unrelated things — *what* to construct and *how* to run
+  it — and 75 % of its ~970 call sites used only the first.  The second half
+  is now `ActorOptions`, a regular `XOptions` family (`ActorOptionsType` /
+  `ActorOptionsBuilder` / `ActorOptions` / `ActorOptionsValidator`), which is
+  what per-actor configuration should have been all along; it was the one
+  place in the framework that did not follow that convention.
+
+  **Migration:** drop `Props.create(` and its closing `)` — what is left is
+  already a valid factory, and a zero-argument class needs no closure at all.
+  Move each `.withX(…)` into a third `ActorOptions` argument; `asInternal()`
+  becomes `withInternal()`.  Renamed carriers: `entityProps` → `entityActor`
+  (+ `entityOptions`), singleton `props` → `actor` (+ `actorOptions`),
+  `singletonProps` → `singletonActor`, `childProps` → `child`
+  (+ `childOptions`), `routeeProps` → `routee` (+ `routeeOptions`),
+  `behaviorFor` → `actorFor`; `BackoffSupervisor.props` → `.factory`,
+  `ClusterRouter.props` → `.factory`, `typedProps` → `typedActor`.
+
+  Two behavioural notes.  `ActorOptions` **mutates in place** where `Props`
+  was copy-on-write, so a builder is one configuration — sharing one and
+  re-chaining it no longer branches.  The settings are snapshotted at spawn,
+  so mutating a builder afterwards never reconfigures a running actor.  And a
+  class whose constructor takes arguments is now rejected at the spawn call
+  naming the factory form, instead of being constructed with `undefined`
+  dependencies and failing later — this also closes the same hole in the
+  existing `ClusterSharding.start` / `ClusterSingleton.start` shorthands.
+
+### Added
+
+- **`ActorOptions`** (#547) — `withSupervisorStrategy`, `withDispatcher`,
+  `withMailboxCapacity`, `withMailbox`, `withInternal`, `withEntity`,
+  `withDisplayName`, plus an `ActorOptionsValidator` that rejects a
+  non-positive `mailboxCapacity` at the `spawn` call rather than from inside
+  the mailbox constructor.  Accepted as a builder or as a plain object, like
+  every other options family.
+
+- **`ShardInfo.resident`** (#901).  `ClusterSharding.shards()` now reports
+  whether each shard actor was materialised when its region answered.
+  `entityCount: 0` cannot say that on its own — a running-but-empty shard and
+  one that passivated report the same count — so this is what to read when
+  tuning `shardPassivationIdleMs` or counting the actors a node really holds.
+  It says nothing about reachability: `ref` works either way.
+
+- **`Actor.displayName()` — a readable name for an actor in logs and DevTools**
+  (#891).  A path is an address, not a name: under sharding the log source
+  grows to ~120 characters of machine identifier, and the business identity it
+  stands for had to be repeated by hand in every message the entity logged.
+  Override `displayName()` and the actor says it once; the name joins the line
+  as its own segment after the source
+  (`... - User(test-user-590) - recovery complete`), and labels the row in the
+  DevTools actor tree — worth the most for `Behaviors` actors, whose class
+  column reads `TypedActor` on every row.  Also settable from the spawn site
+  with `ActorOptions.withDisplayName(...)` (which outranks the method, as
+  `withSupervisorStrategy` does) and at runtime with
+  `context.setDisplayName(...)` (which outranks both) — the latter being the
+  way in for a `Behaviors` actor, which has no subclass to override, and for a
+  name that only settles after recovery.
+  Resolved on every record rather than captured once, so it may be derived from
+  state and follows a restart; a throw or a non-string falls back to the path
+  and warns once.  Defaults to the path, so **existing log output is unchanged**
+  — and it stays a label: metric labels, tracing attributes, dead letters,
+  `ActorRef.toString()` and every cluster-wire identifier keep using the path.
+  Structured loggers get a separate `displayName` field beside `source`;
+  `interface Logger` is untouched, so third-party implementations keep working.
+- **Empty shards passivate** (#892).  A shard actor used to outlive its
+  entities indefinitely: it appears when the coordinator allocates it to a
+  node and, apart from a handoff, nothing ever stopped it again.  Since entity
+  ids spread over the hash space, a long-running node accumulated one idle,
+  empty shard actor per `numShards` — 64 of them with the default.  A shard
+  that has stood empty for `shardPassivationIdleMs` is now stopped too.  The
+  region keeps ownership, so the shard stays routable and the next message
+  re-creates it with no coordinator round trip; only an *empty* shard is ever
+  stopped, so no entity state is at stake, and messages arriving mid-stop are
+  buffered and replayed exactly as they are for an entity.
+- **`shardPassivationIdleMs` / `withShardPassivationIdleMs()` /
+  `actor-ts.sharding.shard-passivation-idle`** (#892).  Unset it follows
+  `passivationIdleMs` — a shard stands empty precisely because its entities
+  went idle — and `0` keeps empty shards resident while entities still
+  passivate.  It is deliberately absent from `reference.conf`: a shipped value
+  is exactly what "unset" would have to be distinguishable from.
+
+### Changed
+
+- **Spawning an actor class is the standard form across the whole repo**
+  (#547).  `spawn(() => new MyActor())` was the shape every call site had
+  copied from the `Props` era; the ~500 zero-argument closures in `src/`,
+  `tests/`, `examples/`, `benchmarks/` and the docs are now
+  `spawn(MyActor)`.  The sweep covers every slot that takes an
+  `ActorClassOrFactory` — `spawn` / `spawnAnonymous`, `withEntityActor` /
+  `withActor` / `withSingletonActor`, the `entityActor` / `singletonActor` /
+  `actor` / `child` fields, and the `Router.*` routee position.  No API
+  change: the closure form still works, and is still the way to pass
+  constructor arguments (`() => new Worker(database)`).
+
+- **BREAKING — idle entities passivate by default, after 5 minutes** (#892).
+  `passivation-idle` shipped as `0ms`, so nothing ever passivated until an
+  operator went looking for the key, and entity sets only grew.  The reference
+  value and the built-in fallback are now `5m`.
+  **Migration:** an entity that keeps state in memory and does not rebuild it
+  in `preStart` now loses that state after five minutes idle — persistent
+  entities recover, plain ones do not.  Set `passivation-idle = 0ms`, or
+  `withPassivationIdleMs(0)` per type, to restore the previous always-resident
+  behaviour.  Note that under `rememberEntities` a passivation is also a
+  *forget*, so a remembered fleet left on the default drains over time; decide
+  explicitly which of the two you want.  `ShardedDaemonProcess` opts out on
+  its own — its daemons are meant to run continuously.
+- **BREAKING — anonymous actors are named `$anonymous-<n>-<random>`, not `$1` /
+  `$2`** (#895).  `spawnAnonymous`, `spawnTypedAnonymous` and
+  `context.spawn(behavior)` without a name drew from a bare per-parent counter,
+  which is both opaque (a DevTools row reading `$1` gives no hint the name is
+  framework-generated) and guessable — `/user/$1` is the first anonymous actor
+  of every run, and an actor path is an address anything that can render one can
+  send to.  The name now carries a per-parent counter *and* twelve random hex
+  characters from `crypto.getRandomValues`; the counter is kept so spawn order
+  stays legible in a log line and in the actor tree.  Same reasoning that moved
+  `ask`'s reply refs off a counter in #120.  Note this is the *path* segment —
+  `Actor.displayName()` above is the cosmetic label and is unaffected.
+  **Migration:** nothing you name yourself changes — only the value the
+  framework picks when you don't.  Code that hard-codes an anonymous path
+  (`actorSelection('/user/$1')`) or parses `$<n>` out of a name must spawn with
+  `spawn(actor, name)` and a name of its own.
+- **BREAKING — unnamed reliable-delivery controllers are
+  `consumer-<n>-<random>` / `producer-<n>-<random>`** (#897).  The fallback name
+  came from a module-global counter, so `/system/delivery/consumer-1` was the
+  first one of every run — a derivable address for an actor that is reachable by
+  path — and two `ActorSystem`s in one process drew from the same sequence.
+  Same shape as the anonymous-actor names above: counter first so spawn order
+  stays legible, random half to close the guessability.
+  **Migration:** passing an explicit `name` to `ReliableDelivery.consumer()` /
+  `.producer()` is unchanged.  Code addressing a generated controller by path
+  must pass a name of its own.
+- **BREAKING — actor names starting with `$` are reserved for the framework**
+  (#900).  `spawn(actor, name)` and `spawnTyped(behavior, name)` now reject a
+  name beginning with `$`, the prefix `spawnAnonymous` generates
+  (`$anonymous-<n>-<random>`).  Until now anyone could claim it, so a
+  hand-picked `'$anonymous-1-…'` could collide with — or stand in for — a name
+  the framework was entitled to hand out, with spawn order deciding which won.
+  A `$` anywhere other than the first character is unaffected (`'order$42'`
+  still spawns).
+  **Migration:** rename any actor whose name starts with `$`, or let the
+  framework name it with `spawnAnonymous`.  Note the rule sits on the *spawn
+  call*, not on `ActorPath`: paths are also rebuilt from cluster-wire strings,
+  and rejecting `$` there would break every remote reference to an anonymous
+  actor — so receiving, resolving and rendering such a path all still work.
+
+### Fixed
+
+- **Two nodes that dial each other at the same moment no longer stay split
+  forever** (#697).  `openOutbound` registers a connection in `byPeer` *before*
+  the handshake, with `peer` still unset, and the hello-hijack guard compared
+  identity alone — so in a crossing dial each node held an un-acked outbound
+  under the other's key and rejected the other's perfectly legitimate `hello`.
+  Neither dial then received its `hello-ack`, `peer` stayed `null`, and
+  `onClose` deleted the `byPeer` entry only *if* `peer` was set: the slot was
+  never reclaimed, the address never re-dialled, and every frame for that peer
+  accumulated silently in the handshake buffer.  The pair was partitioned for
+  the lifetime of the process — reachable in the real-network suite, where two
+  nodes logged one hijack rejection naming each other in the same millisecond
+  and cluster-wide receptionist and pub-sub state then converged at 4 of 5 on
+  exactly those two.
+  Cleanup is now keyed on the *dialled* address rather than on `peer`, so a
+  dead dial always gives its slot back and the next send re-dials; a 5 s
+  handshake deadline reclaims a dial that connects but never acks (the
+  accepts-TCP-but-never-speaks case, which had no recovery path at all); the
+  handshake buffer is capped at 1 000 frames, dropping oldest; and a crossing
+  dial is settled by address order, so exactly one of the two survives instead
+  of both standing down.  An **established** peer connection is still never
+  displaced — only a node's own unfinished dial gives way — so the hijack
+  defence the guard exists for is unchanged, and it now has a test saying so.
+- **`rememberEntities` no longer forgets every entity when a shard rebalances**
+  (#632).  `ShardRegion.onHandOff` announced an `EntityStopped` to the
+  coordinator for *every* entity of the departing shard.  The coordinator
+  applied and persisted those as `stopped`, which deleted the shard's whole
+  entry from its registry — so when `onHandOffComplete` reallocated the shard
+  and went to ship the remembered set to the new owner, there was nothing left
+  to ship.  The new owner started empty, only the entity named by the next
+  message ever came back, and the coordinator went on listing the rest with
+  `started` events that would never see a `stopped`.  A rebalance is the
+  ordinary path, so this was `rememberEntities` failing at precisely the thing
+  it exists for; it survived because the only coverage was a cold restart,
+  which reloads the registry from the journal and never exercises a live
+  handoff.
+  A stopping entity and a moving entity look identical on the wire, so the fix
+  is on both sides: the departing region no longer reports the move as a stop
+  (the same way an unexpected shard death already reported none, #894), and the
+  coordinator ignores an `EntityStopped` for a shard that is mid-rebalance —
+  which also covers an entity that passivates on its own inside the handoff
+  window, newly likely now that passivation is on by default.  Note this is
+  distinct from an ordinary passivation, which under `rememberEntities` is
+  still deliberately a forget.
+- **Filesystem object storage stopped recognising its own temp files** (#909).
+  The `Math.random()` removal below (#898) changed the atomic-write temp path
+  from `<key>.tmp.<pid>.<ts>.<rand>` to `<key>.tmp.<pid>.<random>` without
+  updating the pattern `list()` uses to skip them — three all-digit groups
+  against a two-group name whose second half is hexadecimal, so it could not
+  match at all.  A temp file only survives if the process died between the
+  write and the rename, which means it holds a *partial* body; `list()` began
+  reporting those as ordinary objects, so any prefix scan — a sweep, a
+  migration, a durable-state enumeration — saw a key that was never committed.
+  Caught only after release-time review because the test wrote the old shape by
+  hand: that literal still matched the stale pattern, so the assertion passed
+  while the behaviour it guards was broken.  The fixture is now built from the
+  same `randomId` the writer uses, leftovers in the pre-#898 shape are still
+  skipped so an upgrade does not start surfacing them, and there is a test that
+  an ordinary key which merely looks temp-ish is not swallowed.
+- **Messages buffered during a handoff are no longer stranded** (#893).
+  `completeHandOff` cleared the region's cached shard home without ever
+  replaying the buffer, and the coordinator announces a new placement only to
+  the new owner and to regions with an outstanding query — so the region that
+  had just handed the shard off waited for an unrelated later message to
+  trigger a lookup.  On a shard that went quiet after the rebalance, that
+  never came.  The region now re-asks for the home whenever its buffer is
+  non-empty.
+- **A shard ref for a remote shard no longer drops messages while that shard is
+  passivated** (#901).  `shardRefFor()` and `ShardInfo.ref` handed out a ref
+  addressed at the shard's path on its owning node.  That was safe while an
+  allocated shard always had a running actor; since #892 it does not, and in
+  the gap nothing resolved the path, so the receiving node dropped the message
+  into the envelope catch-all.  Remote shard traffic now goes to the owning
+  region — always up — which materialises the shard before forwarding, the
+  same shape entity traffic has always had.  The ref keeps the shard's path as
+  its identity, so logging, comparison and `ref.path` are unchanged.
+- **Remembered entities return after an unexpected shard death** (#894).  When
+  a shard actor died outside a handoff, ownership stayed put — which is what
+  lets the next message re-create the shard — but that also meant neither
+  `onRegister` nor `tryAllocate` ever ran again, and those were the only paths
+  that shipped the remembered registry.  The shard came back empty, only the
+  entity named by the next message returned, and the coordinator kept listing
+  the rest with `started` events that would never see a `stopped`.  The region
+  now asks the coordinator to re-send what it remembers.
+- **`preRestart` never stopped children, whatever its documentation said**
+  (#899).  `Actor.preRestart`'s JSDoc, the `onRecreate` call site and the
+  supervision page all promised the default stops the actor's children.  It only
+  ever called `postStop()` — children belong to the cell, which outlives the
+  instance being replaced.  No behaviour changed here; the documentation now
+  matches, and the consequence it was hiding is spelled out: because
+  `postRestart` re-runs `preStart` with the previous incarnation's children
+  still in place, an actor that spawns a **named** child in `preStart` fails its
+  first restart with `Child name '<name>' is not unique`.  Spawn anonymously, or
+  stop the children yourself in an overridden `preRestart`.  Both the survival
+  and the collision now have tests.
+- **The sharding-failover churn test no longer measures the scheduler**
+  (#902).  `tests/multi-node/sharding-failover.test.ts` → "burst of asks
+  during repeated coordinator state churn" drove asks for a fixed 1.5 s and
+  then asserted on how many it had managed (`replies > 0`, `replies +
+  failures > 20`) — a **count** bounded by a **wall clock**.  Instrumenting
+  the loop in a full-suite run showed the ask costing p50 0 ms and max 4 ms
+  while `Bun.sleep(5)` cost 15–16 ms, one full Windows timer quantum (#477):
+  the sample count was ~100 % timer granularity, leaving `> 20` a mere 4.6×
+  over a floor that says nothing about sharding.  One stalled event loop then
+  reds the build two ways — the window yields under 21 iterations, or the
+  first ask hits its own 4 s timeout and, 4 s being longer than the 1.5 s
+  window, the loop exits with `replies` still 0.  The burst is now bounded by
+  a fixed count, and the graceful leave is keyed to the driver's progress
+  rather than to a sleep — which also fixes an interleaving that was
+  machine-dependent, landing the leave after ~13 asks on an idle machine but
+  after the first one on a stalled machine.  Ruled out along the way: the
+  #892 passivation defaults cannot fire here (both sweeps share one timer
+  whose first tick is at 300 s, against a 30 s test timeout), and graceful
+  leave does not in fact race in-flight asks at the wire — a probe firing the
+  leave at t=0 saw 0 failures across ~1 400 asks.  Test-only change; no
+  runtime behaviour changed.
+
+### Security
+
+- **BREAKING — the cluster TLS listener actually requests a client certificate
+  now** (#565).  `requestCert` hard-defaulted to `false` in both the Node and
+  the Bun adapter, and `requestClientCert` was never set to `true` anywhere in
+  `src/`, `examples/` or `docs/`.  On a server, `rejectUnauthorized` does
+  nothing unless `requestCert` is on — so the mTLS recipe the *Cluster
+  security* page documents, `{cert, key, ca, rejectUnauthorized: true}`,
+  produced server-authenticated TLS only.  Since the `hello` handshake carries
+  no credential of its own, that left the peer certificate — the cluster's only
+  admission control — unrequested: anyone who could reach the remoting port
+  completed the handshake with no certificate at all and then claimed whatever
+  node identity they liked.  This is also the mitigation the #896 note below
+  leans on, so until now that note promised more than the transport delivered.
+  `requestClientCert` now **defaults to `ca !== undefined`** — a trust bundle
+  on a cluster listener has no other purpose — and the option object both
+  adapters hand to the runtime is built in one shared place, since the defect
+  survived review by being spelled out identically twice.
+  Two configurations are now refused at bind time rather than started in a
+  weaker state than they read as: `requestClientCert: true` with no `ca`, and
+  **mutual TLS on Deno**, where `Deno.listenTls` cannot request a client
+  certificate and the dialer sends none, so peers would be unauthenticated in
+  both directions.
+  **Migration:** a Node or Bun cluster already passing `ca` starts demanding
+  peer certificates — which is what its configuration always claimed — so every
+  node must present one signed by that CA.  Set `requestClientCert: false` to
+  keep one-way TLS.  A Deno cluster configured with `ca` no longer binds; run
+  it on Node.js or Bun for mTLS, or opt out explicitly.
+- **A `ClusterClient`'s own wire identity no longer comes from `Math.random()`**
+  (#565 sweep).  A client without an explicit `clientIdentity` names itself
+  `50_000 + Math.floor(Math.random() * 15_000)`, and that port goes straight
+  into the `NodeAddress` it announces on the wire and keys the cluster's
+  `byPeer` map — so it is an address, not a coin flip, and a peer that can
+  predict it can address, impersonate or pre-claim the client's slot.
+  `Math.random()` is not a CSPRNG and its state is recoverable from a handful
+  of observed outputs; the comment above the line claimed hrtime-derived
+  randomness, which the code did not do.  It is now drawn with
+  `crypto.getRandomValues` across the whole IANA ephemeral range — the old
+  15 000-slot window also made an accidental collision likely at a few dozen
+  clients per process, which was a correctness problem on its own.  The last
+  of the generated-identifier findings this release sweeps up (#896, #897,
+  #898, #895).
+- **Quorum correlation ids in `DistributedData` are no longer guessable**
+  (#896).  `nextPendingId()` returned `p<Date.now()>-<counter>`.  That value
+  travels on the wire and the peer echoes it back on its acknowledgment, so an
+  id that can be guessed is an id whose acknowledgment can be forged —
+  satisfying a quorum write or read that no peer actually confirmed.  A
+  timestamp is observable and the counter starts at 1 in every process, which
+  made guessing arithmetic rather than search.  It is now sixteen random hex
+  characters.  (The counter was also module-global rather than per-system, so
+  two systems in one process shared a sequence.)  Reachable only by something
+  that can already send cluster wire messages, which mTLS on the transport
+  excludes — see *Cluster security* — so this is defence in depth, not an open
+  door on a hardened cluster.
+- **Filesystem object-storage temp paths no longer come from `Math.random()`**
+  (#898).  The atomic-write temp file was named
+  `<key>.tmp.<pid>.<Date.now()>.<Math.random()>`; the clock is observable and
+  `Math.random()` is not a CSPRNG, so a local process sharing the directory
+  could predict the path and pre-create it or plant a symlink there.  The
+  suffix is now drawn from `crypto.getRandomValues`.
+
+### Documentation
+
+- **`fundamentals/spawning` no longer contradicts itself about constructor
+  arguments** (EN + DE, #907).  The page declared `Worker` with two required
+  constructor arguments, showed `system.spawn(Worker, 'worker-1')` as the form
+  that is *rejected* — and then used that identical line fifty lines later as
+  the correct naming example, with three further samples calling
+  `new Worker(database)` one-armed against the two-argument class.  A reader
+  copying the naming example got exactly the error quoted above it.  `Worker`
+  now takes the one dependency every other sample on the page passes it, and
+  the sections that are not about arity use the zero-argument `Greeter`.
+- **The docs API-drift guard covers the `Props` removal** (#907).
+  `docs/scripts/check-api-drift.mjs` runs in CI and its own header says to add
+  a pattern whenever an API is renamed or removed — the largest removal the
+  project has made added none, which is how a broken call shape survived in the
+  docs long enough to be filed.  It now rejects `Props.create`, `Props.empty`,
+  `spawn(props`, `entityProps`, `singletonProps`, `childProps`, `routeeProps`,
+  `typedProps`, `behaviorFor`, `asInternal(`, `BackoffSupervisor.props` and
+  `ClusterRouter.props`, with a per-pattern allowlist so the Akka migration
+  pages keep Akka's own spelling in their `scala` / `csharp` fences.
+- **`fundamentals/props` is now `fundamentals/spawning`** (EN + DE, #547) —
+  rewritten around what the reader is doing rather than around a type.  The
+  old slug redirects.
+
+- **The docs lead with the actor class at every spawn site** (EN + DE, #547)
+  — the samples follow the code trees onto `spawn(MyActor)`, and the prose
+  that described them followed.  `quickstart` and `fundamentals/actor` were
+  the sharpest mismatch: both called the argument "the factory" directly
+  above a sample passing a class, and `actor.mdx` carried a dangling "`...`
+  wraps the factory + supervisor strategy" sentence where `Props.create(…)`
+  used to be named.
+
 ## [0.12.2] — 2026-08-04
 
 ### Fixed

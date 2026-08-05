@@ -10,7 +10,6 @@ import { Actor } from '../../../../src/Actor.js';
 import { ActorSystem } from '../../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../../src/ActorSystemOptions.js';
 import { JsonLogger, LogLevel } from '../../../../src/Logger.js';
-import { Props } from '../../../../src/Props.js';
 import { GrpcClientActor, type GrpcInbound } from '../../../../src/io/broker/GrpcClientActor.js';
 import { GrpcClientOptions } from '../../../../src/io/broker/GrpcClientOptions.js';
 import {
@@ -95,12 +94,12 @@ async function main(): Promise<void> {
   process.on('SIGTERM', () => { void system.terminate(); });
 
   // Spawn the server-side handlers and the server actor.
-  const unaryHandler = system.spawnAnonymous(Props.create(() => new UnaryEchoHandler()));
-  const streamHandler = system.spawnAnonymous(Props.create(() => new ServerStreamHandler()));
-  const bidiHandler = system.spawnAnonymous(Props.create(() => new BidiHandler()));
+  const unaryHandler = system.spawnAnonymous(UnaryEchoHandler);
+  const streamHandler = system.spawnAnonymous(ServerStreamHandler);
+  const bidiHandler = system.spawnAnonymous(BidiHandler);
 
   const server = system.spawnAnonymous(
-    Props.create(() => new GrpcServerActor(
+    () => new GrpcServerActor(
       GrpcServerOptions.create()
         .withProtoPath(protoPath)
         .withPackageName('echo.v1')
@@ -111,7 +110,7 @@ async function main(): Promise<void> {
           ServerStream: { kind: 'serverStream', target: streamHandler as unknown as ActorRef<GrpcServerStreamCall> },
           Bidi: { kind: 'bidi', target: bidiHandler as unknown as ActorRef<GrpcBidiCall> },
         }),
-    )),
+    ),
   );
 
   // Give the server a moment to bind.  GrpcServerActor's preStart
@@ -121,14 +120,14 @@ async function main(): Promise<void> {
 
   // Spawn the client actor.
   const client = system.spawnAnonymous(
-    Props.create(() => new GrpcClientActor(
+    () => new GrpcClientActor(
       GrpcClientOptions.create()
         .withProtoPath(protoPath)
         .withPackageName('echo.v1')
         .withServiceName('EchoService')
         .withEndpoint(endpoint)
         .withCredentials({ kind: 'insecure' }),
-    )),
+    ),
   );
   await new Promise((r) => setTimeout(r, 500));
 
@@ -169,7 +168,7 @@ export function spawnCollector(context: GrpcContext): {
   ref: ReturnType<ActorSystem['spawnAnonymous']>; collector: CollectorActor;
 } {
   const collector = new CollectorActor();
-  const ref = context.system.spawnAnonymous(Props.create(() => collector));
+  const ref = context.system.spawnAnonymous(() => collector);
   return { ref, collector };
 }
 

@@ -62,7 +62,7 @@ export interface StartShardingOptionsType<TMessage> extends ShardingOptionsType<
 /**
  * Fluent builder for {@link StartShardingOptionsType} — the argument to
  * {@link ClusterSharding.start}.  Extends {@link ShardingOptionsBuilder} so it
- * carries every region-side `withX` (typeName, entityProps, extractors,
+ * carries every region-side `withX` (typeName, entityActor, extractors,
  * numShards, role, proxy, rememberEntities, …) and adds the
  * coordinator-side fields on top.
  *
@@ -133,12 +133,12 @@ export class StartShardingOptionsValidator<TMessage>
 }
 
 /**
- * The slice of sharding settings HOCON can supply.  All five are plain
+ * The slice of sharding settings HOCON can supply.  All of them are plain
  * scalars, so the type carries no entity-message parameter — deliberately,
  * since the config file is read once per node and cannot know the type it
  * will be layered under.
  *
- * The polymorphic fields (`entityProps`, the extractors, `allocationStrategy`,
+ * The polymorphic fields (`entityActor`, the extractors, `allocationStrategy`,
  * `lease`, the stores) are absent by nature: HOCON has no way to express a
  * class or a closure, so those stay code-only.
  */
@@ -147,6 +147,7 @@ export type ShardingConfigDefaults = Pick<
   | 'numShards'
   | 'rememberEntities'
   | 'passivationIdleMs'
+  | 'shardPassivationIdleMs'
   | 'maxEntities'
   | 'rebalanceIntervalMs'
   | 'handOffTimeoutMs'
@@ -168,6 +169,11 @@ export function readShardingOptionsFromConfig(config: Config): ShardingConfigDef
   if (config.hasPath(keys.numberOfShards)) out.numShards = config.getInt(keys.numberOfShards);
   if (config.hasPath(keys.rememberEntities)) out.rememberEntities = config.getBoolean(keys.rememberEntities);
   if (config.hasPath(keys.passivationIdle)) out.passivationIdleMs = config.getDuration(keys.passivationIdle);
+  // Absent from reference.conf on purpose, so this stays genuinely optional:
+  // leaving it out is what lets the shard window fall through to the entity one.
+  if (config.hasPath(keys.shardPassivationIdle)) {
+    out.shardPassivationIdleMs = config.getDuration(keys.shardPassivationIdle);
+  }
   if (config.hasPath(keys.maxEntities)) out.maxEntities = config.getInt(keys.maxEntities);
   if (config.hasPath(keys.rebalanceInterval)) out.rebalanceIntervalMs = config.getDuration(keys.rebalanceInterval);
   if (config.hasPath(keys.handOffTimeout)) out.handOffTimeoutMs = config.getDuration(keys.handOffTimeout);

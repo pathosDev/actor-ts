@@ -17,7 +17,7 @@
  */
 import {
   Actor,
-  Props,
+  type ActorFactory,
   type ActorRef,
   type ActorSystem,
 } from '../../../../src/index.js';
@@ -67,12 +67,12 @@ export class HttpIngressActor extends Actor<never> {
     // @fastify/websocket plugin is registered automatically by the
     // backend when it sees a websocket() route.
     const ingress = system.spawn(
-      Props.create(() => new WebsocketIngressActor({
+      () => new WebsocketIngressActor({
         receptionist: this.deps.receptionist,
         mediator: this.deps.mediator,
         voicePresence: this.deps.voicePresence,
         sessions: this.deps.sessions,
-      })),
+      }),
       'ws-ingress',
     );
 
@@ -98,6 +98,6 @@ export class HttpIngressActor extends Actor<never> {
   override onReceive(_msg: never): void { /* no protocol */ }
 }
 
-export function httpIngressProps(deps: HttpIngressDeps): Props<never> {
-  return Props.create<never>(() => new HttpIngressActor(deps));
+export function httpIngressFactory(deps: HttpIngressDeps): ActorFactory<never> {
+  return (() => new HttpIngressActor(deps)) as unknown as ActorFactory<never>;
 }

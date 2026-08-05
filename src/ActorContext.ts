@@ -1,8 +1,9 @@
 import type { ActorRef } from './ActorRef.js';
 import type { ActorPath } from './ActorPath.js';
 import type { ActorSystem } from './ActorSystem.js';
+import type { ActorClassOrFactory } from './Actor.js';
+import type { ActorOptions } from './ActorOptions.js';
 import type { EntityContext } from './EntityContext.js';
-import type { Props } from './Props.js';
 import type { Logger } from './Logger.js';
 import type { Option } from './util/Option.js';
 
@@ -56,15 +57,35 @@ export interface ActorContext<TMessage = unknown> {
    */
   readonly entity: Option<EntityContext>;
 
-  /** Logger bound to this actor's path. */
+  /**
+   * Logger bound to this actor's path, and to whatever
+   * `Actor.displayName()` currently resolves to.
+   */
   readonly log: Logger;
+
+  /**
+   * Name this actor in log lines and in the DevTools tree from inside the
+   * running actor (#891) — for a name that only becomes known at runtime
+   * (after recovery, after the first message), and for `Behaviors` actors,
+   * which have no subclass to override `Actor.displayName()` on:
+   *
+   *     Behaviors.setup<Command>((context) => {
+   *       context.setDisplayName(`User(${userId})`);
+   *       return Behaviors.receive(...);
+   *     });
+   *
+   * Takes effect on the very next record, and outranks both
+   * `ActorOptions.withDisplayName(...)` and the method.  Purely cosmetic — the
+   * path stays the identity everywhere that routes or correlates.
+   */
+  setDisplayName(name: string): void;
 
   /**
    * Spawn a child actor under this one with a deterministic
    * caller-supplied name.  The name must be unique among siblings.
    * For an auto-generated name, see {@link spawnAnonymous}.
    */
-  spawn<T>(props: Props<T>, name: string): ActorRef<T>;
+  spawn<T>(actor: ActorClassOrFactory<T>, name: string, options?: ActorOptions<T>): ActorRef<T>;
 
   /**
    * Spawn a child actor under this one with an auto-generated name.
@@ -72,12 +93,12 @@ export interface ActorContext<TMessage = unknown> {
    * the caller doesn't need a stable path.  For a deterministic
    * name, see {@link spawn}.
    */
-  spawnAnonymous<T>(props: Props<T>): ActorRef<T>;
+  spawnAnonymous<T>(actor: ActorClassOrFactory<T>, options?: ActorOptions<T>): ActorRef<T>;
 
   /**
    * Spawn a typed-Behavior child with a deterministic name — the
    * Behavior-DSL counterpart to {@link spawn}.  Wraps the Behavior
-   * in `typedProps` internally so callers don't have to.
+   * in `typedActor` internally so callers don't have to.
    *
    *     const child = this.context.spawnTyped(counter(0), 'counter');
    */

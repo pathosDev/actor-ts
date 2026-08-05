@@ -1,7 +1,6 @@
 import type { ActorRef } from '../ActorRef.js';
 import type { ActorSystem } from '../ActorSystem.js';
 import { SystemGroups } from '../internal/SystemPaths.js';
-import { Props } from '../Props.js';
 import { ConsumerController } from './ConsumerController.js';
 import type { ConsumerControllerOptionsType } from './ConsumerControllerOptions.js';
 import type { ConfirmationCallback, Delivery } from './Messages.js';
@@ -10,6 +9,7 @@ import {
   type ProducerSend,
 } from './ProducerController.js';
 import type { ProducerControllerOptions } from './ProducerControllerOptions.js';
+import { randomId } from '../util/RandomString.js';
 
 /**
  * Handle returned to the publishing user code.  `tell` enqueues a message
@@ -45,9 +45,9 @@ export class ReliableDelivery {
     name?: string,
   ): ConsumerHandle {
     const ref = system._spawnSystemActor(
-      Props.create(() => new ConsumerController<T>(options) as unknown as import('../Actor.js').Actor<Delivery<unknown>>),
+      () => new ConsumerController<T>(options) as unknown as import('../Actor.js').Actor<Delivery<unknown>>,
       SystemGroups.delivery,
-      name ?? `consumer-${++counter}`,
+      name ?? generatedName('consumer', ++counter),
     );
     return { ref, stop(): void { ref.stop(); } };
   }
@@ -59,9 +59,9 @@ export class ReliableDelivery {
     name?: string,
   ): ProducerHandle<T> {
     const ref = system._spawnSystemActor(
-      Props.create(() => new ProducerController<T>(options) as unknown as import('../Actor.js').Actor<ProducerSend<T>>),
+      () => new ProducerController<T>(options) as unknown as import('../Actor.js').Actor<ProducerSend<T>>,
       SystemGroups.delivery,
-      name ?? `producer-${++counter}`,
+      name ?? generatedName('producer', ++counter),
     );
     return {
       ref,
@@ -72,5 +72,21 @@ export class ReliableDelivery {
     };
   }
 }
+
+/**
+ * Names a controller the caller did not name.
+ *
+ * Was `${role}-${++counter}` on a module-global counter, which had both
+ * problems the `ask` reply refs were moved off in #120.  These names become
+ * actor names under `/system/delivery/`, so they become paths — and a path is
+ * an address: `/system/delivery/consumer-1` is the first one of every run.  And
+ * the counter was per *module*, not per system, so two `ActorSystem`s in one
+ * process drew from the same sequence.
+ *
+ * The counter is kept ahead of the random half, as anonymous actor names do
+ * (#895), so spawn order stays legible in a log line and in the actor tree.
+ */
+const generatedName = (role: string, ordinal: number): string =>
+  `${role}-${ordinal}-${randomId(12)}`;
 
 let counter = 0;

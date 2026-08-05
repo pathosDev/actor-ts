@@ -16,7 +16,7 @@ event that any other actor can subscribe to.
 
 ```ts
 import { match, P } from 'ts-pattern';
-import { Actor, ActorSystem, Props, Terminated, type ActorRef } from 'actor-ts';
+import { Actor, ActorSystem, Terminated, type ActorRef } from 'actor-ts';
 
 type WatchCommand = { kind: 'watch'; ref: ActorRef };
 type WatcherMessage = Terminated | WatchCommand;
@@ -40,8 +40,8 @@ class Watcher extends Actor<WatcherMessage> {
 
 const system = ActorSystem.create('demo');
 
-const observed = system.spawnAnonymous(Props.create(() => new SomeActor()));
-const watcher  = system.spawnAnonymous(Props.create(() => new Watcher()));
+const observed = system.spawnAnonymous(SomeActor);
+const watcher  = system.spawnAnonymous(Watcher);
 
 watcher.tell({ kind: 'watch', ref: observed });
 observed.stop();   // → watcher logs "watched actor stopped: ..."
@@ -148,7 +148,7 @@ class Manager extends Actor<Command | Terminated> {
 
   override preStart(): void {
     for (let i = 0; i < 4; i++) {
-      const child = this.context.spawn(Props.create(() => new Worker()), `worker-${i}`);
+      const child = this.context.spawn(Worker, `worker-${i}`);
       this.alive.add(child.path.name);
       this.context.watch(child);
     }

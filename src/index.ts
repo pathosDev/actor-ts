@@ -2,14 +2,14 @@
  * actor-ts — an actor-model framework for TypeScript on Bun.
  *
  *   Quick start:
- *     import { ActorSystem, Actor, Props } from 'actor-ts';
+ *     import { ActorSystem, Actor } from 'actor-ts';
  *
  *     class Hello extends Actor<string> {
  *       onReceive(message: string) { console.log('hello', message); }
  *     }
  *
  *     const system = ActorSystem.create('demo');
- *     const ref = system.spawn(Props.create(() => new Hello()), 'hello');
+ *     const ref = system.spawn(Hello, 'hello');
  *     ref.tell('world');
  *     await system.terminate();
  */
@@ -63,8 +63,9 @@ export { ActorSystemOptions, ActorSystemOptionsBuilder } from './ActorSystemOpti
 export type { ActorSystemOptionsType } from './ActorSystemOptions.js';
 export type { ActorContext, Receive, TimerScheduler } from './ActorContext.js';
 export { StashOverflowError, StashOutsideHandlerError } from './ActorContext.js';
-export { Props } from './Props.js';
-export type { ActorFactory, PropsConfig } from './Props.js';
+export { ActorOptions, ActorOptionsBuilder, ActorOptionsValidator } from './ActorOptions.js';
+export type { ActorOptionsType, MailboxFactory } from './ActorOptions.js';
+export type { ActorClassOrFactory, ActorFactory } from './Actor.js';
 export type { EntityContext } from './EntityContext.js';
 
 // Supervision
@@ -92,7 +93,7 @@ export {
 } from './Dispatcher.js';
 export type { Dispatcher } from './Dispatcher.js';
 export { EventStream } from './EventStream.js';
-export { ConsoleLogger, NoopLogger, JsonLogger, LogLevel } from './Logger.js';
+export { ConsoleLogger, NoopLogger, JsonLogger, LogLevel, DISPLAY_NAME_FIELD } from './Logger.js';
 export type { Logger, JsonLogSink } from './Logger.js';
 export { LogContext } from './LogContext.js';
 export type { LogContextData } from './LogContext.js';
@@ -768,7 +769,7 @@ export type {
 export {
   Behaviors,
   TypedActor,
-  typedProps,
+  typedActor,
   same,
   stopped,
   unhandled,

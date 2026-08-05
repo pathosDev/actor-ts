@@ -57,7 +57,7 @@ cluster.singleton.start(JobScheduler, singletonOptions);
 ```
 
 The manager's own `ClusterSingletonManagerOptions` — `cluster`,
-`typeName`, `singletonProps` and the three above — are assembled from
+`typeName`, `singletonActor` and the three above — are assembled from
 these by the extension.  The fields are documented here because they
 are what the manager acts on, not because you construct them:
 
@@ -65,7 +65,7 @@ are what the manager acts on, not because you construct them:
 | --- | --- | --- |
 | `cluster` | Yes | The cluster the manager watches. |
 | `typeName` | Yes | Logical name for this singleton; the child actor's name. |
-| `singletonProps` | Yes | How to construct the singleton.  Only invoked on the host. |
+| `singletonActor` | Yes | How to construct the singleton.  Only invoked on the host. |
 | `role` | No | Restrict hosting to nodes carrying this role.  Other nodes' managers stay passive. |
 | `lease` | No | If set, the host must acquire this lease before spawning the singleton. |
 | `acquireRetryIntervalMs` | No (default 5s) | Retry cadence after a failed lease acquisition. |

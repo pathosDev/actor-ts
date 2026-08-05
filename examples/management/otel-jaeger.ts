@@ -31,7 +31,7 @@
  * writes the W3C `traceparent` header on every envelope.
  */
 import {
-  Actor, ActorSystem, Props,
+  Actor, ActorSystem,
   TracingExtensionId,
   otelTracer, OtelAdapterOptions,
 } from '../../src/index.js';
@@ -56,7 +56,7 @@ class Worker extends Actor<{ id: number }> {
     await Bun.sleep(2 + Math.random() * 5);
   }
 }
-const worker = system.spawn(Props.create(() => new Worker()), 'worker');
+const worker = system.spawn(Worker, 'worker');
 
 let nextId = 0;
 const tick = setInterval(() => {

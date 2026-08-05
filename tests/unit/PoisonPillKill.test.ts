@@ -3,7 +3,6 @@ import { Actor } from '../../src/Actor.js';
 import { ActorSystem } from '../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../src/ActorSystemOptions.js';
 import { LogLevel, NoopLogger } from '../../src/Logger.js';
-import { Props } from '../../src/Props.js';
 
 const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
 const newSystem = (name = 'pp-unit'): ActorSystem => {
@@ -21,7 +20,7 @@ describe('PoisonPill', () => {
       override postStop(): void { trace.push('stopped'); }
     }
     const sys = newSystem();
-    const ref = sys.spawn(Props.create(() => new A()), 'a');
+    const ref = sys.spawn(A, 'a');
     ref.tell('a'); ref.tell('b');
     ref.stop();          // PoisonPill
     ref.tell('c');       // should not be delivered
@@ -37,7 +36,7 @@ describe('PoisonPill', () => {
       override postStop(): void { stopped = true; }
     }
     const sys = newSystem();
-    const ref = sys.spawn(Props.create(() => new A()), 'a');
+    const ref = sys.spawn(A, 'a');
     ref.stop();
     await sleep(30);
     expect(stopped).toBe(true);
@@ -53,7 +52,7 @@ describe('Kill', () => {
       override onReceive(_: string): void {}
     }
     const sys = newSystem();
-    const ref = sys.spawn(Props.create(() => new A()), 'a');
+    const ref = sys.spawn(A, 'a');
     await sleep(20);
     ref.kill();
     await sleep(60);

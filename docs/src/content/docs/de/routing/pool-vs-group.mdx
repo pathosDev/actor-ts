@@ -1,6 +1,6 @@
 ---
 title: Pool vs Group
-description: Zwei Wege, wie Router Routees erwerben — **Pool**-Router spawnen ihre Routees aus einem Props (der lokale Router); **Group**-Router finden existierende Routees per Pfad (ClusterRouter). Der Trade-off in Lifecycle-Besitz und welche Routees jedes passt.
+description: Zwei Wege, wie Router Routees erwerben — **Pool**-Router spawnen ihre Routees aus einer Actor-Klasse oder Factory (der lokale Router); **Group**-Router finden existierende Routees per Pfad (ClusterRouter). Der Trade-off in Lifecycle-Besitz und welche Routees jedes passt.
 ---
 
 Ein Router braucht **Routees**, an die er Nachrichten weiterleitet.
@@ -9,7 +9,7 @@ Lifecycle-Beziehungen kodieren:
 
 | Modell | Wer besitzt die Routees? | Discovery |
 | --- | --- | --- |
-| **Pool** | Der Router — er spawnt die Routees aus einem `Props`. | Statisch zur Spawn-Zeit; Größe ändert sich nicht ohne Router-Restart. |
+| **Pool** | Der Router — er spawnt die Routees selbst. | Statisch zur Spawn-Zeit; Größe ändert sich nicht ohne Router-Restart. |
 | **Group** | Jemand anderes — die Routees existieren bereits. | Dynamisch (Group-Router re-discovern bei Bedarf). |
 
 Der lokale `Router` ist **immer ein Pool**.  Der
@@ -21,10 +21,10 @@ und Resize denkst.
 ## Pool-Router
 
 ```ts
-import { Router, Props } from 'actor-ts';
+import { Router } from 'actor-ts';
 
 const pool = system.spawn(
-  Router.roundRobin(4, Props.create(() => new Worker())),
+  Router.roundRobin(4, Worker),
   'workers',
 );
 ```
@@ -54,7 +54,7 @@ Konsequenzen:
 - **Lifecycle ist gekoppelt.**  Stoppe den Router → alle Routees
   stoppen.  Keine zurückbleibenden Waisen.
 - **Supervision ist unkompliziert.**  Der Router supervised seine
-  Routees mit der Strategie, die die Routee-`Props` deklarieren
+  Routees mit der Strategie, die die Routee-Options deklarieren
   (oder dem Default).
 - **Fehler sind wiederherstellbar.**  Ein abgestürzter Routee wird
   vom Supervisor neu gestartet; der Router routet weiter.
@@ -81,7 +81,7 @@ Workers, alle gleich, die einen Stream von Arbeit parallelisieren.
 import { ClusterRouter } from 'actor-ts';
 
 const router = system.spawn(
-  ClusterRouter.props({
+  ClusterRouter.factory({
     cluster,
     routerType: 'round-robin',
     routeePath: '/user/worker',

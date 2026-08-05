@@ -10,7 +10,6 @@ import { NodeAddress } from '../../../../../src/cluster/NodeAddress.js';
 import { ClusterSharding } from '../../../../../src/cluster/sharding/ClusterSharding.js';
 import { StartShardingOptions } from '../../../../../src/cluster/sharding/StartShardingOptions.js';
 import { LogLevel, NoopLogger } from '../../../../../src/Logger.js';
-import { Props } from '../../../../../src/Props.js';
 import type { ActorRef } from '../../../../../src/ActorRef.js';
 
 type PingCommand = { id: string; kind: 'ping'; payload?: string };
@@ -64,7 +63,7 @@ async function startNode(sysName: string, p: number, seeds: string[] = []): Prom
   const cluster = await Cluster.join(sys, clusterOptions);
   const shardingOptions = StartShardingOptions.create<Command>()
     .withTypeName('entity')
-    .withEntityProps(Props.create(() => new Entity()))
+    .withEntityActor(Entity)
     .withExtractEntityId((m) => m.id)
     .withNumShards(16);
   const region = cluster.sharding.start<Command>(shardingOptions);
@@ -248,7 +247,7 @@ async function startLruNode(
   const cluster = await Cluster.join(sys, clusterOptions);
   const shardingOptions = StartShardingOptions.create<{ id: string; kind: 'ping' }>()
     .withTypeName('lru-entity')
-    .withEntityProps(Props.create(() => new TaggedEntity()))
+    .withEntityActor(TaggedEntity)
     .withExtractEntityId((m) => m.id)
     .withNumShards(16)
     .withMaxEntities(maxEntities);
@@ -319,7 +318,7 @@ describe('ClusterSharding — LRU passivation (#82)', () => {
 
   test('passivated entity is recreated transparently on next message', async () => {
     // Shape from issue body: send to a passivated entity → it's
-    // re-spawned via `entityProps`.  The user-visible behaviour
+    // re-spawned via `entityActor`.  The user-visible behaviour
     // (round-trip ask succeeds) must hold even after eviction.
     const node = await startLruNode('lru-recreate', 46_201, 2);
     try {

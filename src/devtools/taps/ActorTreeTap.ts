@@ -171,6 +171,8 @@ export class ActorTreeTap implements DevToolsTap {
       parentPath: event.parentPath,
       name: event.actor.path.name,
       className: event.className,
+      // No cell to ask — the next `actor-changed` delta fills it in.
+      displayName: null,
       cellState: 'running',
       mailboxSize: 0,
       stashSize: 0,
@@ -210,14 +212,17 @@ export class ActorTreeTap implements DevToolsTap {
  *
  * Only the mutable fields are compared — path, parent, name, class and
  * dispatcher are fixed for a cell's lifetime, so reading them would only
- * cost time.
+ * cost time.  `displayName` is not one of the fixed ones: it is resolved
+ * per read, so it moves when the state it derives from moves, and again
+ * on a restart.
  */
 function hasMoved(previous: ActorNode, current: ActorNode): boolean {
   return previous.cellState !== current.cellState
     || previous.mailboxSize !== current.mailboxSize
     || previous.stashSize !== current.stashSize
     || previous.suspended !== current.suspended
-    || previous.childCount !== current.childCount;
+    || previous.childCount !== current.childCount
+    || previous.displayName !== current.displayName;
 }
 
 /**
@@ -233,6 +238,7 @@ function toActorNode(cell: CellInspection, nodeAddress: string): ActorNode {
     parentPath: cell.parentPath,
     name: cell.name,
     className: cell.className,
+    displayName: cell.displayName,
     cellState: cell.cellState,
     mailboxSize: cell.mailboxSize,
     stashSize: cell.stashSize,

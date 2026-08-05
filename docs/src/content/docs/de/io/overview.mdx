@@ -166,7 +166,7 @@ subscribierten Topic landet) liefert der Broker-Actor jede einzelne an
 eine **Target**-Actor-Ref, die du vorab über `withTarget` festlegst:
 
 ```ts
-const handler = system.spawnAnonymous(Props.create(() => new OrderHandler()));
+const handler = system.spawnAnonymous(OrderHandler);
 
 const kafkaOptions = KafkaOptions.create()
   .withBrokers('localhost:9092')
@@ -174,7 +174,7 @@ const kafkaOptions = KafkaOptions.create()
   .withTopics(['orders'])
   .withTarget(handler);
 const kafka = system.spawnAnonymous(
-  Props.create(() => new KafkaActor(kafkaOptions)),
+  () => new KafkaActor(kafkaOptions),
 );
 // Jeder eingehende Order-Record wird jetzt an `handler` gesendet.
 

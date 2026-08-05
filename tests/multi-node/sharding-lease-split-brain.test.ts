@@ -28,7 +28,6 @@
 import { match } from 'ts-pattern';
 import { describe, expect, test } from 'bun:test';
 import { Actor } from '../../src/Actor.js';
-import { Props } from '../../src/Props.js';
 import { ClusterSharding } from '../../src/cluster/sharding/ClusterSharding.js';
 import { StartShardingOptions } from '../../src/cluster/sharding/StartShardingOptions.js';
 import { ShardCoordinator } from '../../src/cluster/sharding/ShardCoordinator.js';
@@ -113,7 +112,7 @@ describe('multi-node sharding lease — split-brain protection', () => {
         .withRenewalIntervalMs(80);
       const shardingOptionsA = StartShardingOptions.create<Command>()
         .withTypeName('entity')
-        .withEntityProps(Props.create(() => new Entity()))
+        .withEntityActor(Entity)
         .withExtractEntityId((m) => m.id)
         .withNumShards(8)
         .withRebalanceIntervalMs(200)
@@ -126,7 +125,7 @@ describe('multi-node sharding lease — split-brain protection', () => {
         .withRenewalIntervalMs(80);
       const shardingOptionsB = StartShardingOptions.create<Command>()
         .withTypeName('entity')
-        .withEntityProps(Props.create(() => new Entity()))
+        .withEntityActor(Entity)
         .withExtractEntityId((m) => m.id)
         .withNumShards(8)
         .withRebalanceIntervalMs(200)
@@ -139,7 +138,7 @@ describe('multi-node sharding lease — split-brain protection', () => {
         .withRenewalIntervalMs(80);
       const shardingOptionsC = StartShardingOptions.create<Command>()
         .withTypeName('entity')
-        .withEntityProps(Props.create(() => new Entity()))
+        .withEntityActor(Entity)
         .withExtractEntityId((m) => m.id)
         .withNumShards(8)
         .withRebalanceIntervalMs(200)

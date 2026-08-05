@@ -6,7 +6,7 @@
  *
  *   bun run examples/selection/lookup-named-workers.ts
  */
-import { Actor, ActorSystem, Props } from '../../src/index.js';
+import { Actor, ActorSystem } from '../../src/index.js';
 import { attachDevTools } from '../devtools.js';
 
 type Job = { readonly kind: string; readonly payload: unknown; };
@@ -43,14 +43,14 @@ async function main(): Promise<void> {
   // Spawn workers under a shared "workers" parent so the path prefix is stable.
   class WorkersRoot extends Actor<never> {
     override preStart(): void {
-      this.context.spawn(Props.create(() => new ImageWorker()), 'images');
-      this.context.spawn(Props.create(() => new EmailWorker()), 'email');
-      this.context.spawn(Props.create(() => new AuditWorker()), 'audit');
+      this.context.spawn(ImageWorker, 'images');
+      this.context.spawn(EmailWorker, 'email');
+      this.context.spawn(AuditWorker, 'audit');
     }
     override onReceive(): void {}
   }
-  system.spawn(Props.create(() => new WorkersRoot()), 'workers');
-  const dispatcher = system.spawn(Props.create(() => new Dispatcher()), 'dispatcher');
+  system.spawn(WorkersRoot, 'workers');
+  const dispatcher = system.spawn(Dispatcher, 'dispatcher');
 
   // Let the workers finish preStart (they were spawned asynchronously).
   await Bun.sleep(20);

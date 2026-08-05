@@ -49,12 +49,11 @@ beschäftigten Actors mit einem Throughput-Dispatcher pro Actor
 bounden**:
 
 ```ts
-import { ThroughputDispatcher } from 'actor-ts';
+import { ActorOptions, ThroughputDispatcher } from 'actor-ts';
 
-const heavyActor = system.spawn(
-  Props.create(() => new HeavyWorker())
-    .withDispatcher(new ThroughputDispatcher(100)),
-);
+const heavyOptions = ActorOptions.create().withDispatcher(new ThroughputDispatcher(100));
+
+const heavyActor = system.spawnAnonymous(HeavyWorker, heavyOptions);
 ```
 
 Der schwere Actor verarbeitet 100 Nachrichten, yieldet, lässt
@@ -75,12 +74,11 @@ ohne I/O ist das Verschwendung.
 **Fix**: `MicrotaskDispatcher` nutzen:
 
 ```ts
-import { MicrotaskDispatcher } from 'actor-ts';
+import { ActorOptions, MicrotaskDispatcher } from 'actor-ts';
 
-const cpuActor = system.spawn(
-  Props.create(() => new CpuIntensive())
-    .withDispatcher(new MicrotaskDispatcher()),
-);
+const cpuOptions = ActorOptions.create().withDispatcher(new MicrotaskDispatcher());
+
+const cpuActor = system.spawnAnonymous(CpuIntensive, cpuOptions);
 ```
 
 Microtasks umgehen die Event Loop, ~50× schnelleres Scheduling.
@@ -114,13 +112,14 @@ Für einen Batch-Prozessor, der Broker-Nachrichten verarbeitet:
 ## Per-Actor-Dispatcher
 
 ```ts
-const heavy = system.spawn(
-  Props.create(() => new BulkProcessor())
-    .withDispatcher(new ThroughputDispatcher(500)),
-);
+import { ActorOptions } from 'actor-ts';
+
+const bulkOptions = ActorOptions.create().withDispatcher(new ThroughputDispatcher(500));
+
+const heavy = system.spawnAnonymous(BulkProcessor, bulkOptions);
 
 const httpHandler = system.spawn(
-  Props.create(() => new HttpHandler()),
+  HttpHandler,
   // → nutzt den ImmediateDispatcher-Default des Systems
 );
 ```

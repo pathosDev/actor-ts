@@ -5,7 +5,7 @@
  *
  *   bun run examples/selection/hello-selection.ts
  */
-import { Actor, ActorSystem, Props } from '../../src/index.js';
+import { Actor, ActorSystem } from '../../src/index.js';
 import { attachDevTools } from '../devtools.js';
 
 class Greeter extends Actor<string> {
@@ -15,7 +15,7 @@ class Greeter extends Actor<string> {
 async function main(): Promise<void> {
   const system = ActorSystem.create('selection-hello');
   const devtools = await attachDevTools(system);
-  system.spawn(Props.create(() => new Greeter()), 'greeter');
+  system.spawn(Greeter, 'greeter');
 
   // Tell without resolving — fire-and-forget; delivers or drops to dead letters.
   system.actorSelection('/user/greeter').tell('world');

@@ -10,7 +10,7 @@ abonnieren; jeder Code kann publishen; der Bus matcht und `tell`t das
 Event an jeden Subscriber.
 
 ```ts
-import { Actor, ActorSystem, Props } from 'actor-ts';
+import { Actor, ActorSystem } from 'actor-ts';
 
 class UserLoggedIn {
   constructor(public readonly userId: string) {}
@@ -35,8 +35,8 @@ class MetricsCollector extends Actor<UserLoggedIn> {
 }
 
 const system = ActorSystem.create('demo');
-system.spawnAnonymous(Props.create(() => new AuditLogger()));
-system.spawnAnonymous(Props.create(() => new MetricsCollector()));
+system.spawnAnonymous(AuditLogger);
+system.spawnAnonymous(MetricsCollector);
 
 // Überall — auch außerhalb eines Actors:
 system.eventStream.publish(new UserLoggedIn('user-42'));

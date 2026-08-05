@@ -1,6 +1,5 @@
 import { describe, expect, test } from 'bun:test';
 import { Actor } from '../../src/Actor.js';
-import { Props } from '../../src/Props.js';
 import { ActorRestarted, ActorStopped } from '../../src/SystemMessages.js';
 import {
   ActorInitializationError,
@@ -146,13 +145,13 @@ class LifecycleCollector extends Actor<ActorStopped | ActorRestarted> {
   }
 }
 
-describe('supervisor strategy on Props', () => {
-  const sys = systemFixture('supervision-props');
+describe('supervisor strategy in the spawn options', () => {
+  const sys = systemFixture('supervision-options');
 
   /** Subscribe a fresh collector to both outcomes and hand back its log. */
   function collectOutcomes(probeName: string): string[] {
     const seen: string[] = [];
-    const probe = sys().spawn(Props.create(() => new LifecycleCollector(seen)), probeName);
+    const probe = sys().spawn(() => new LifecycleCollector(seen), probeName);
     sys().eventStream.subscribe(probe, ActorStopped);
     sys().eventStream.subscribe(probe, ActorRestarted);
     return seen;
@@ -160,24 +159,21 @@ describe('supervisor strategy on Props', () => {
 
   test('overrides the guardian that would otherwise restart the child', async () => {
     const seen = collectOutcomes('collector-stop');
-    const ref = sys().spawn(
-      Props.create(() => new Boom()).withSupervisorStrategy(stoppingStrategy),
-      'stops-by-props',
-    );
+    const ref = sys().spawn(Boom, 'stops-by-options', { supervisorStrategy: stoppingStrategy });
 
     ref.tell('fail');
 
-    await awaitCondition(() => seen.includes('ActorStopped:stops-by-props'), {
-      label: 'the Props strategy stopped the actor',
+    await awaitCondition(() => seen.includes('ActorStopped:stops-by-options'), {
+      label: 'the per-child strategy stopped the actor',
     });
     // The user guardian restarts by default.  Since exactly one outcome
     // follows a failure, seeing the stop proves the restart never happened.
-    expect(seen).not.toContain('ActorRestarted:stops-by-props');
+    expect(seen).not.toContain('ActorRestarted:stops-by-options');
   });
 
-  test('falls through to the guardian when the Props carry no strategy', async () => {
+  test('falls through to the guardian when the options carry no strategy', async () => {
     const seen = collectOutcomes('collector-restart');
-    const ref = sys().spawn(Props.create(() => new Boom()), 'restarts-by-guardian');
+    const ref = sys().spawn(Boom, 'restarts-by-guardian');
 
     ref.tell('fail');
 
@@ -191,11 +187,8 @@ describe('supervisor strategy on Props', () => {
 
     class Parent extends Actor<string> {
       override preStart(): void {
-        this.context.spawn(
-          Props.create(() => new Boom()).withSupervisorStrategy(stoppingStrategy),
-          'fragile',
-        );
-        this.context.spawn(Props.create(() => new Boom()), 'resilient');
+        this.context.spawn(Boom, 'fragile', { supervisorStrategy: stoppingStrategy });
+        this.context.spawn(Boom, 'resilient');
       }
       override supervisorStrategy(): SupervisorStrategy {
         return new OneForOneStrategy(() => Directive.Restart, { maxRetries: -1 });
@@ -205,7 +198,7 @@ describe('supervisor strategy on Props', () => {
       }
     }
 
-    const parent = sys().spawn(Props.create(() => new Parent()), 'sibling-parent');
+    const parent = sys().spawn(Parent, 'sibling-parent');
     parent.tell('fragile');
     parent.tell('resilient');
 
@@ -214,5 +207,91 @@ describe('supervisor strategy on Props', () => {
       { label: 'the fragile child stopped while its sibling restarted' },
     );
     expect(seen).not.toContain('ActorRestarted:fragile');
+  });
+});
+
+/**
+ * `Actor.preRestart`'s JSDoc and the `onRecreate` call site both used to claim
+ * the default stops children.  It never did — it only calls `postStop()` — and
+ * the docs said otherwise for long enough that these pin the real behaviour.
+ * If someone makes `preRestart` stop children, both of these fail and force the
+ * documentation to move with the code (#899).
+ */
+describe('restart and children', () => {
+  const sys = systemFixture('restart-children-tests');
+
+  test('children survive their parent restarting', async () => {
+    const events: string[] = [];
+    class Child extends Actor<string> {
+      override postStop(): void { events.push('child:postStop'); }
+      override onReceive(m: string): void { events.push(`child:${m}`); }
+    }
+    class Parent extends Actor<string> {
+      private child: import('../../src/ActorRef.js').ActorRef<string> | null = null;
+      override preStart(): void {
+        events.push('parent:preStart');
+        // Anonymous, so the second preStart cannot collide — see the named
+        // case below for what happens when it can.
+        this.child ??= this.context.spawnAnonymous(Child);
+      }
+      override onReceive(m: string): void {
+        if (m === 'boom') throw new FooError();
+        this.child?.tell(m);
+      }
+    }
+
+    const parent = sys().spawn(Parent, 'keeps-children');
+    parent.tell('boom');
+    await awaitCondition(
+      () => events.filter((e) => e === 'parent:preStart').length >= 2,
+      { label: 'the parent restarted' },
+    );
+
+    // The child was never stopped, and the same instance still answers.
+    expect(events).not.toContain('child:postStop');
+    parent.tell('still-here');
+    await awaitCondition(
+      () => events.includes('child:still-here'),
+      { label: 'the surviving child received a message after the restart' },
+    );
+  });
+
+  test('a named child spawned in preStart collides on the restart', async () => {
+    // The sharp edge the supervision docs now call out: preStart runs again
+    // while the previous incarnation's children are still in the child map, so
+    // the second spawn hits the uniqueness check and the restart fails.
+    const failures: string[] = [];
+    class Child extends Actor<string> { override onReceive(_: string): void {} }
+    class Parent extends Actor<string> {
+      override preStart(): void {
+        this.context.spawn(Child, 'fixed-name');
+      }
+      override onReceive(m: string): void { if (m === 'boom') throw new FooError(); }
+    }
+    class Guardian extends Actor<string> {
+      override supervisorStrategy(): SupervisorStrategy {
+        // Restart on the original failure — that is what re-runs preStart and
+        // triggers the collision.  The collision then arrives as a *second*
+        // failure, wrapped in ActorInitializationError, which we stop on so the
+        // test does not loop.
+        return new OneForOneStrategy((error) => {
+          if (!(error instanceof ActorInitializationError)) return Directive.Restart;
+          const cause = error.cause instanceof Error ? error.cause.message : String(error.cause);
+          failures.push(cause);
+          return Directive.Stop;
+        });
+      }
+      override preStart(): void {
+        this.context.spawn(Parent, 'collides').tell('boom');
+      }
+      override onReceive(_: string): void {}
+    }
+
+    sys().spawn(Guardian, 'collision-guardian');
+    await awaitCondition(
+      () => failures.length > 0,
+      { label: 'the restart failed on the duplicate child name' },
+    );
+    expect(failures[0]).toContain('is not unique');
   });
 });

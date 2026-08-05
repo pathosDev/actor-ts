@@ -3,7 +3,6 @@ import { Actor } from '../../src/Actor.js';
 import { ActorSystem } from '../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../src/ActorSystemOptions.js';
 import { LogLevel, NoopLogger } from '../../src/Logger.js';
-import { Props } from '../../src/Props.js';
 import { AskTimeoutError } from '../../src/SystemMessages.js';
 
 const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
@@ -20,7 +19,7 @@ describe('ref.ask()', () => {
       override onReceive(m: string): void { this.sender.forEach((__s) => __s.tell(`echo:${m}`)); }
     }
     const sys = newSystem();
-    const ref = sys.spawn(Props.create(() => new Echo()), 'echo');
+    const ref = sys.spawn(Echo, 'echo');
     const reply = await ref.ask<string>('hi', 500);
     expect(reply).toBe('echo:hi');
     await sys.terminate();
@@ -29,7 +28,7 @@ describe('ref.ask()', () => {
   test('rejects with AskTimeoutError after the timeout', async () => {
     class Silent extends Actor<string> { override onReceive(_: string): void {} }
     const sys = newSystem();
-    const ref = sys.spawn(Props.create(() => new Silent()), 's');
+    const ref = sys.spawn(Silent, 's');
     let caught: unknown = null;
     try { await ref.ask('hi', 20); } catch (e) { caught = e; }
     expect(caught).toBeInstanceOf(AskTimeoutError);
@@ -45,7 +44,7 @@ describe('ref.ask()', () => {
       }
     }
     const sys = newSystem();
-    const ref = sys.spawn(Props.create(() => new Peek()), 'p');
+    const ref = sys.spawn(Peek, 'p');
     await ref.ask('x', 100);
     expect(senderName).toBeDefined();
     expect(senderName!.startsWith('askResp-')).toBe(true);
@@ -59,7 +58,7 @@ describe('ref.ask()', () => {
       }
     }
     const sys = newSystem();
-    const ref = sys.spawn(Props.create(() => new Rejector()), 'r');
+    const ref = sys.spawn(Rejector, 'r');
     let err: Error | null = null;
     try { await ref.ask('hi', 500); } catch (e) { err = e as Error; }
     expect(err).not.toBeNull();
@@ -75,7 +74,7 @@ describe('ref.ask()', () => {
       }
     }
     const sys = newSystem();
-    const ref = sys.spawn(Props.create(() => new DoubleReply()), 'd');
+    const ref = sys.spawn(DoubleReply, 'd');
     const reply = await ref.ask<string>('x', 500);
     expect(reply).toBe('first');
     // Give the second tell a chance — it must not blow up anything.
@@ -88,7 +87,7 @@ describe('ref.ask()', () => {
       override onReceive(m: string): void { this.sender.forEach((__s) => __s.tell(m)); }
     }
     const sys = newSystem();
-    const ref = sys.spawn(Props.create(() => new Echo()), 'e');
+    const ref = sys.spawn(Echo, 'e');
     const reply = await ref.ask<string>('hi', 0);
     expect(reply).toBe('hi');
     await sys.terminate();
@@ -103,7 +102,7 @@ describe('ref.ask()', () => {
       }
     }
     const sys = newSystem();
-    const ref = sys.spawn(Props.create(() => new ExplicitReplier()), 'er');
+    const ref = sys.spawn(ExplicitReplier, 'er');
     // `replyTo` is omitted from the call site by OmitReplyTo.
     const reply = await ref.ask<string>({ kind: 'reply' }, 500);
     expect(reply).toBe('via-replyTo');
@@ -124,7 +123,7 @@ describe('ask — reply-ref naming (#119)', () => {
       }
     }
     const sys = newSystem();
-    const ref = sys.spawn(Props.create(() => new Peek()), 'p');
+    const ref = sys.spawn(Peek, 'p');
     for (let i = 0; i < 50; i++) await ref.ask('x', 200);
 
     expect(names).toHaveLength(50);
@@ -156,8 +155,8 @@ describe('ask — reply-ref naming (#119)', () => {
     }
     const first = newSystem('ask-names-a');
     const second = newSystem('ask-names-b');
-    const refA = first.spawn(Props.create(() => new Peek()), 'p');
-    const refB = second.spawn(Props.create(() => new Peek()), 'p');
+    const refA = first.spawn(Peek, 'p');
+    const refB = second.spawn(Peek, 'p');
     await refA.ask('x', 200);
     await refB.ask('x', 200);
 

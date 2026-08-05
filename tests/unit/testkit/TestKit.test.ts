@@ -1,6 +1,5 @@
 import { describe, expect, test } from 'bun:test';
 import { Actor } from '../../../src/Actor.js';
-import { Props } from '../../../src/Props.js';
 import { TestKit } from '../../../src/testkit/TestKit.js';
 
 describe('TestKit', () => {
@@ -23,7 +22,7 @@ describe('TestKit', () => {
       class Loud extends Actor<string> {
         override onReceive(m: string): void { this.log.info('hello', m); }
       }
-      const ref = tk.system.spawn(Props.create(() => new Loud()), 'loud');
+      const ref = tk.system.spawn(Loud, 'loud');
       ref.tell('world');
       await Bun.sleep(30);
       expect(lines).toEqual([]);
@@ -49,7 +48,7 @@ describe('TestKit', () => {
       }
       override onReceive(m: string): void { this.probe.tell(m); }
     }
-    kit.system.spawn(Props.create(() => new T(probe)), 't');
+    kit.system.spawn(() => new T(probe), 't');
 
     await Bun.sleep(10); // let preStart run
     // No wall-clock elapsed — without advance the timer stays pending.

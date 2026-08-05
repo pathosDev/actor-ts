@@ -25,7 +25,6 @@
 import { match } from 'ts-pattern';
 import { describe, expect, test } from 'bun:test';
 import { Actor } from '../../src/Actor.js';
-import { Props } from '../../src/Props.js';
 import { ClusterSharding } from '../../src/cluster/sharding/ClusterSharding.js';
 import { StartShardingOptions } from '../../src/cluster/sharding/StartShardingOptions.js';
 import { MultiNodeSpec } from '../../src/testkit/MultiNodeSpec.js';
@@ -77,7 +76,7 @@ describe('multi-node sharding rebalance', () => {
 
       const shardingOptions = StartShardingOptions.create<Command>()
         .withTypeName('entity')
-        .withEntityProps(Props.create(() => new Entity()))
+        .withEntityActor(Entity)
         .withExtractEntityId((m) => m.id)
         .withNumShards(16);
       const regions: Record<'a' | 'b' | 'c', ActorRef<Command>> = {

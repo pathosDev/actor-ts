@@ -78,7 +78,7 @@ transport, and `initData`, then joins the cluster like any other node:
 
 ```ts
 // worker-node.ts — runs inside each worker
-import { ActorSystem, Cluster, ClusterOptions, Props, WorkerNode } from 'actor-ts';
+import { ActorSystem, Cluster, ClusterOptions, WorkerNode } from 'actor-ts';
 
 async function main(): Promise<void> {
   const context = await WorkerNode.join<{ seedAddress?: string }>();
@@ -90,7 +90,7 @@ async function main(): Promise<void> {
     .withTransport(context.transport);
   await Cluster.join(system, clusterOptions);
 
-  system.spawn(Props.create(() => new MyActor()), 'worker');
+  system.spawn(MyActor, 'worker');
   context.ready();   // tell the main thread this node is up
 }
 
@@ -232,7 +232,7 @@ Messages between worker systems go through **structured clone**
 // 4-worker mesh; sharding distributes entities across them:
 const startShardingOptions = StartShardingOptions.create()
   .withTypeName('order')
-  .withEntityProps(...)
+  .withEntityActor(...)
   .withExtractEntityId((message) => message.id)
   .withNumShards(16);
 sharding.start(
@@ -247,7 +247,7 @@ CPU-bound entity work parallelizes across cores.
 
 ```ts
 // Worker that handles GPU-bound jobs:
-system.spawn(Props.create(() => new GpuJobActor()), 'gpu-jobs');
+system.spawn(GpuJobActor, 'gpu-jobs');
 
 // Crashes within this worker stay isolated from main + other workers
 ```

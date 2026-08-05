@@ -36,7 +36,7 @@
  */
 import {
   Actor, ActorSystem, Cluster, ClusterOptions, InMemoryTransport,
-  NodeAddress, Props, StartSingletonOptions,
+  NodeAddress, StartSingletonOptions,
 } from '../../src/index.js';
 import { KubernetesLease } from '../../src/coordination/leases/KubernetesLease.js';
 import { KubernetesLeaseOptions } from '../../src/coordination/leases/KubernetesLeaseOptions.js';
@@ -94,7 +94,7 @@ async function main(): Promise<void> {
   // child on lease loss, release on graceful shutdown.
   const singletonOptions = StartSingletonOptions.create<{ kind: 'tick' }>()
     .withTypeName('cron')
-    .withProps(Props.create(() => new CronActor()))
+    .withActor(CronActor)
     .withLease(lease)
     .withAcquireRetryIntervalMs(5_000);
   // The returned ref goes unused here — this actor self-ticks via setInterval

@@ -3,7 +3,6 @@ import { Actor } from '../../src/Actor.js';
 import { ActorSystem } from '../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../src/ActorSystemOptions.js';
 import { LogLevel, NoopLogger } from '../../src/Logger.js';
-import { Props } from '../../src/Props.js';
 import { ReceiveTimeout } from '../../src/SystemMessages.js';
 
 const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
@@ -24,7 +23,7 @@ describe('ReceiveTimeout', () => {
       }
     }
     const sys = newSystem();
-    sys.spawn(Props.create(() => new A()), 'a');
+    sys.spawn(A, 'a');
     await sleep(150);
     expect(fired).toBe(1);
     await sys.terminate();
@@ -39,7 +38,7 @@ describe('ReceiveTimeout', () => {
       }
     }
     const sys = newSystem();
-    const ref = sys.spawn(Props.create(() => new A()), 'a');
+    const ref = sys.spawn(A, 'a');
     // Keep nudging the actor every 20ms — timeout (50ms) should not elapse.
     for (let i = 0; i < 6; i++) {
       ref.tell('ping');
@@ -64,7 +63,7 @@ describe('ReceiveTimeout', () => {
       }
     }
     const sys = newSystem();
-    sys.spawn(Props.create(() => new A()), 'a');
+    sys.spawn(A, 'a');
     await sleep(100);
     expect(fired).toBe(0);
     await sys.terminate();

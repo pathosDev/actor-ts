@@ -32,7 +32,6 @@ import {
   MemberRemoved,
   MemberUnreachable,
   MemberUp,
-  Props,
   StartSingletonOptions,
 } from '../../../src/index.js';
 import { DistributedDataId, DistributedDataOptions } from '../../../src/crdt/index.js';
@@ -50,7 +49,7 @@ import {
 } from './discovery/sameHostScan.js';
 import { SessionStore } from './auth/sessionStore.js';
 import { VoicePresenceActor } from './actors/VoicePresenceActor.js';
-import { httpIngressProps } from './actors/HttpIngressActor.js';
+import { httpIngressFactory } from './actors/HttpIngressActor.js';
 import { attachDevTools } from '../../devtools.js';
 
 async function main(): Promise<void> {
@@ -126,16 +125,13 @@ async function main(): Promise<void> {
   const sessions = new SessionStore(ddHandle);
 
   // -------- 5. VoicePresenceActor (one per node) --------
-  const voicePresence = system.spawn(
-    Props.create(() => new VoicePresenceActor()),
-    'voice-presence',
-  );
+  const voicePresence = system.spawn(VoicePresenceActor, 'voice-presence');
 
   // -------- 6. HTTP front door — ClusterSingleton --------
   const staticDir = path.join(import.meta.dirname ?? __dirname, '..', 'static');
   const singletonOptions = StartSingletonOptions.create()
     .withTypeName('http-ingress')
-    .withProps(httpIngressProps({
+    .withActor(httpIngressFactory({
       host: config.host,
       httpPort: config.httpPort,
       staticDir,

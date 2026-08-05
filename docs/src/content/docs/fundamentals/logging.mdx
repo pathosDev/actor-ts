@@ -1,7 +1,9 @@
 ---
 title: Logging
-description: The framework's logger — every actor gets a `this.log` bound to its path, with debug/info/warn/error levels, structured fields via `withFields`, and an MDC (`LogContext`) that propagates across `tell` hops and cluster nodes.
+description: The framework's logger — every actor gets a `this.log` bound to its path, with an overridable `displayName()` for a readable label, debug/info/warn/error levels, structured fields via `withFields`, and an MDC (`LogContext`) that propagates across `tell` hops and cluster nodes.
 ---
+
+import { Aside } from '@astrojs/starlight/components';
 
 Every actor has a logger at `this.log`, automatically bound to the
 actor's path:
@@ -52,6 +54,64 @@ Or via the env / config file (`actor-ts.logger.level = "debug"` in
 `application.conf`).  Five levels: `debug` / `info` / `warn` /
 `error` / `off`.  Default is `info`.
 
+## Naming an actor — `displayName()`
+
+A path is an address, not a name.  Under sharding it grows into
+something no one reads twice:
+
+```
+[2026-08-04T16:50:13.356Z] INFO  actor-ts://shop/system/cluster/sharding/region-user/shard-13/entity-da76e1eb-a99a-4852-8e14-d5750c20343b - recovery complete
+```
+
+Override `displayName()` and the actor says who it is, once, instead of
+you repeating it in every message:
+
+```ts
+class UserEntity extends PersistentActor<UserCommand, UserEvent, UserState> {
+  override displayName(): string { return `User(${this.entityId})`; }
+}
+```
+
+```
+[2026-08-04T16:50:13.450Z] INFO  actor-ts://shop/.../entity-da76e1eb-... - User(test-user-590) - recovery complete
+```
+
+The name is **added**, not substituted: `source` stays the path, so
+nothing you correlate on moves.  It defaults to the path, and a name
+equal to the path is dropped rather than printed twice — an actor that
+doesn't override this logs exactly as it always did.
+
+Three ways to set it, in precedence order:
+
+| Where | When to reach for it |
+| --- | --- |
+| `context.setDisplayName(name)` | The name is only known at runtime — after recovery, after the first message.  Also the way in for [`Behaviors`](/typed/behaviors/) actors, which all share one `TypedActor` class and have no subclass of yours to override. |
+| [`ActorOptions.withDisplayName(name)`](/fundamentals/spawning/#withdisplayname) | The spawn site knows the name and the actor doesn't — a sharded entity, a singleton, anything the framework constructs. |
+| `displayName()` | The usual case: the actor knows what it is. |
+
+```ts
+import { ActorOptions } from 'actor-ts';
+
+const workerOptions = ActorOptions.create().withDisplayName('ingest-worker');
+
+system.spawn(IngestWorker, 'ingest', workerOptions);
+```
+
+<Aside type="caution" title="It runs on every record">
+`displayName()` is resolved per log call, not captured once — which is
+what lets it read state and follow a restart.  Keep it cheap and free of
+side effects.  If it throws, or returns anything but a non-empty string,
+the logger falls back to the path and warns once; it can't take a log
+line down with it.
+</Aside>
+
+The name is a **label for humans**, never an identity.  Metric labels,
+tracing attributes, dead letters, `ActorRef.toString()` and every
+cluster-wire identifier keep using the path — so a display name is free
+to be ambiguous, shared between actors, or to change mid-flight.
+[DevTools](/observability/devtools/actor-visualizer/) shows it as the
+row label, with the path still in the tooltip.
+
 ## Structured JSON logs — built-in `JsonLogger`
 
 For log-aggregation pipelines (Loki, ELK, Datadog, CloudWatch,
@@ -82,6 +142,17 @@ from `LogContext.run`, with dynamic winning on key collision).
 Extra positional `...args` from `log.info(message, extra1, extra2)`
 land under an `args` array — log aggregators index nested keys
 automatically.
+
+An actor that named itself adds a `displayName` key beside `source`,
+where it is filterable on its own — `ConsoleLogger` folds the two into
+one line, structured output keeps them apart:
+
+```json
+{"ts":"2026-08-04T16:50:13.450Z","level":"info",
+ "source":"actor-ts://shop/.../entity-da76e1eb-...",
+ "displayName":"User(test-user-590)",
+ "msg":"recovery complete"}
+```
 
 `Error` instances serialise as `{ name, message, stack }`
 instead of the default `"{}"` (Error's enumerable surface is
@@ -235,8 +306,6 @@ of that snapshot.  This means:
 - The `correlationId` shows up in every log line in the trail,
   letting your aggregator stitch a multi-actor, multi-node request
   into one searchable thread.
-
-import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="MDC values must be JSON-safe">
   ```ts

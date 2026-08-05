@@ -36,7 +36,6 @@ nicht in der Map steht, wird als `UNIMPLEMENTED` gemeldet.
 ```ts
 import {
   Actor,
-  Props,
   GrpcServerActor,
   GrpcServerOptions,
   type GrpcUnaryCall,
@@ -62,8 +61,8 @@ class WatchSensorHandler extends Actor<GrpcServerStreamCall> {
   }
 }
 
-const getHandler = system.spawn(Props.create(() => new GetSensorHandler()), 'get');
-const watchHandler = system.spawn(Props.create(() => new WatchSensorHandler()), 'watch');
+const getHandler = system.spawn(GetSensorHandler, 'get');
+const watchHandler = system.spawn(WatchSensorHandler, 'watch');
 
 const grpcServerOptions = GrpcServerOptions.create()
   .withProtoPath(protoPath)
@@ -75,9 +74,9 @@ const grpcServerOptions = GrpcServerOptions.create()
     WatchSensor: { kind: 'serverStream', target: watchHandler },
   });
 const server = system.spawn(
-  Props.create(() => new GrpcServerActor(
+  () => new GrpcServerActor(
     grpcServerOptions,
-  )),
+  ),
   'grpc-server',
 );
 ```
@@ -109,7 +108,6 @@ numerischen Status-Code, der auf `13` (INTERNAL) fällt.
 import { match, P } from 'ts-pattern';
 import {
   Actor,
-  Props,
   GrpcClientActor,
   GrpcClientOptions,
   type GrpcInbound,
@@ -125,9 +123,9 @@ const grpcClientOptions = GrpcClientOptions.create()
   .withServiceName('SensorService')
   .withEndpoint('127.0.0.1:50051');
 const client = system.spawn(
-  Props.create(() => new GrpcClientActor(
+  () => new GrpcClientActor(
     grpcClientOptions,
-  )),
+  ),
   'sensor-client',
 );
 
@@ -160,7 +158,7 @@ class ReplyCollector extends Actor<GrpcInbound> {
   }
 }
 
-const collector = system.spawn(Props.create(() => new ReplyCollector()), 'collector');
+const collector = system.spawn(ReplyCollector, 'collector');
 
 // Make a unary call — the reply is delivered to `target`.
 client.tell({ kind: 'unary', method: 'GetSensor', request: { id: 'rt-7' }, target: collector });

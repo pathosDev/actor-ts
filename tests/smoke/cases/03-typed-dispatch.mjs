@@ -8,7 +8,7 @@ export const name = 'typed dispatch';
 export const description = 'discriminated-union message dispatch via ts-pattern';
 
 export async function run({ actorTs }) {
-  const { Actor, ActorSystem, ActorSystemOptions, LogLevel, NoopLogger, Props } = actorTs;
+  const { Actor, ActorSystem, ActorSystemOptions, LogLevel, NoopLogger } = actorTs;
   const { match } = await import('ts-pattern');
 
   class Greeter extends Actor {
@@ -30,7 +30,7 @@ export async function run({ actorTs }) {
     .withLogLevel(LogLevel.Off);
   const sys = ActorSystem.create('smoke-typed', sysOptions);
   try {
-    const ref = sys.spawnAnonymous(Props.create(() => new Greeter()));
+    const ref = sys.spawnAnonymous(Greeter);
     ref.tell({ kind: 'greet', name: 'World' });
     let got = await ref.ask({ kind: 'ask' }, 5_000);
     if (got !== 'Hello, World!') throw new Error(`greet mismatch: ${got}`);

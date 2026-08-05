@@ -1,11 +1,10 @@
-import type { Actor } from '../../Actor.js';
+import type { Actor, ActorClassOrFactory } from '../../Actor.js';
 import type { ActorRef } from '../../ActorRef.js';
 import type { ActorSystem } from '../../ActorSystem.js';
-import { actorFactoryOf, type ActorClassOrFactory } from '../../internal/ActorConstruction.js';
+import { actorFactoryOf } from '../../internal/ActorBlueprint.js';
 import { SystemGroups, assertSpawnedAt, singletonManagerName } from '../../internal/SystemPaths.js';
 import { extensionId, type Extension, type ExtensionId } from '../../Extension.js';
 import type { Logger } from '../../Logger.js';
-import { Props } from '../../Props.js';
 import type { Cluster } from '../Cluster.js';
 import { fromNullable, type Option } from '../../util/Option.js';
 import {
@@ -99,12 +98,12 @@ export class ClusterSingleton implements Extension {
    * const ingress = cluster.singleton.start(
    *   StartSingletonOptions.create<IngressCommand>()
    *     .withTypeName('http-ingress')
-   *     .withProps(Props.create(() => new HttpIngressActor(port))),
+   *     .withActor(() => new HttpIngressActor(port)),
    * );
    * ```
    *
    * Idempotent per `typeName` on this node: a repeat call returns the same ref
-   * and ignores the new props.  Every node that may host the singleton has to
+   * and ignores the new options.  Every node that may host the singleton has to
    * call this — {@link ref} alone never hosts.
    */
   start<TCommand>(
@@ -237,7 +236,7 @@ export class ClusterSingleton implements Extension {
       ...(key.role !== undefined ? { role: key.role } : {}),
       ...explicit,
       typeName: key.typeName,
-      props: Props.create<TCommand>(actorFactoryOf(actor)),
+      actor: actorFactoryOf(actor),
     } as StartSingletonOptionsType<TCommand>;
   }
 
@@ -247,8 +246,8 @@ export class ClusterSingleton implements Extension {
     if (this.managers.has(typeName)) {
       // First call wins.  Worth saying out loud: with the key declared on the
       // actor class it is easy for two modules to start the same singleton with
-      // different dependencies, and the second one's props are dropped.
-      this.log.debug(`singleton '${typeName}' is already started on this node — ignoring these props`);
+      // different dependencies, and the second one's options are dropped.
+      this.log.debug(`singleton '${typeName}' is already started on this node — ignoring these options`);
       return;
     }
     const cluster = this.clusterOrThrow();
@@ -267,11 +266,12 @@ export class ClusterSingleton implements Extension {
       },
     );
 
-    const managerProps = Props.create(() => {
+    const managerActor = () => {
       const managerOptions = ClusterSingletonManagerOptions.create<TCommand>()
         .withCluster(cluster)
         .withTypeName(typeName)
-        .withSingletonProps(options.props);
+        .withSingletonActor(options.actor);
+      if (options.actorOptions !== undefined) managerOptions.withSingletonActorOptions(options.actorOptions);
       if (options.role !== undefined) managerOptions.withRole(options.role);
       if (options.lease !== undefined) managerOptions.withLease(options.lease);
       if (options.acquireRetryIntervalMs !== undefined) {
@@ -289,10 +289,10 @@ export class ClusterSingleton implements Extension {
         if (this.managers.get(typeName) === managerRef) this.managers.delete(typeName);
       };
       return manager;
-    });
+    };
     try {
       managerRef = this.system._spawnSystemActor(
-        managerProps,
+        managerActor,
         SystemGroups.clusterSingleton,
         singletonManagerName(typeName),
       );

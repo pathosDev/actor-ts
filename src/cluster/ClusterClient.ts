@@ -80,6 +80,32 @@ function nextAskId(): string {
 export const _nextAskIdForTest = nextAskId;
 
 /**
+ * The synthetic port a client without an explicit `clientIdentity` addresses
+ * itself by.  It has to be unique per `ClusterClient` in a process so the
+ * cluster's `byPeer` map does not collide — but it is also the client's
+ * **wire identity**: it goes into the `NodeAddress` the client announces, and
+ * a peer that can predict it can address, impersonate or pre-claim that
+ * client's slot.  Same reasoning that moved `ask`'s reply refs and the
+ * anonymous-actor names off counters and `Math.random()`.
+ *
+ * Drawn from the CSPRNG rather than `Math.random()`, whose output is
+ * predictable from a handful of observed values, and spread across the whole
+ * ephemeral range rather than 15 000 slots — at a few dozen clients per
+ * process the narrower range made an accidental collision likely enough to
+ * matter on its own.
+ */
+function syntheticClientPort(): number {
+  const EPHEMERAL_FIRST = 49_152;                    // IANA dynamic/private range
+  const EPHEMERAL_COUNT = 65_535 - EPHEMERAL_FIRST + 1;
+  const draw = new Uint16Array(1);
+  globalThis.crypto.getRandomValues(draw);
+  return EPHEMERAL_FIRST + (draw[0]! % EPHEMERAL_COUNT);
+}
+
+/** @internal — test-only handle for the predictability regression. */
+export const _syntheticClientPortForTest = syntheticClientPort;
+
+/**
  * Connect to a cluster via one of the listed contact-points and exchange
  * messages with actors on the cluster.  See the file header for scope.
  */
@@ -111,10 +137,7 @@ export class ClusterClient {
     });
     const id = resolvedOptions.clientIdentity ?? {
       host: '127.0.0.1',
-      // Synthetic port — must be unique per ClusterClient instance in the
-      // same process so the cluster's byPeer map doesn't collide.  Use
-      // hrtime-derived randomness within the ephemeral range.
-      port: 50_000 + Math.floor(Math.random() * 15_000),
+      port: syntheticClientPort(),
     };
     this.identity = new NodeAddress(sysName, id.host, id.port);
     this.tls = resolvedOptions.tls ?? null;

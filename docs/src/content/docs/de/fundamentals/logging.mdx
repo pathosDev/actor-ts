@@ -1,7 +1,9 @@
 ---
 title: Logging
-description: Der Logger des Frameworks — jeder Actor bekommt ein `this.log`, gebunden an seinen Pfad, mit Debug/Info/Warn/Error-Leveln, strukturierten Feldern via `withFields` und einer MDC (`LogContext`), die über `tell`-Hops und Cluster-Nodes hinweg propagiert.
+description: Der Logger des Frameworks — jeder Actor bekommt ein `this.log`, gebunden an seinen Pfad, mit überschreibbarem `displayName()` für ein lesbares Label, Debug/Info/Warn/Error-Leveln, strukturierten Feldern via `withFields` und einer MDC (`LogContext`), die über `tell`-Hops und Cluster-Nodes hinweg propagiert.
 ---
+
+import { Aside } from '@astrojs/starlight/components';
 
 Jeder Actor hat einen Logger unter `this.log`, automatisch an den
 Pfad des Actors gebunden:
@@ -52,6 +54,66 @@ Oder über die Env- / Config-Datei (`actor-ts.logger.level = "debug"` in
 `application.conf`).  Fünf Level: `debug` / `info` / `warn` /
 `error` / `off`.  Default ist `info`.
 
+## Einen Actor benennen — `displayName()`
+
+Ein Pfad ist eine Adresse, kein Name.  Unter Sharding wächst er zu
+etwas, das niemand zweimal liest:
+
+```
+[2026-08-04T16:50:13.356Z] INFO  actor-ts://shop/system/cluster/sharding/region-user/shard-13/entity-da76e1eb-a99a-4852-8e14-d5750c20343b - recovery complete
+```
+
+Überschreib `displayName()`, und der Actor sagt einmal, wer er ist,
+statt dass du es in jeder Nachricht wiederholst:
+
+```ts
+class UserEntity extends PersistentActor<UserCommand, UserEvent, UserState> {
+  override displayName(): string { return `User(${this.entityId})`; }
+}
+```
+
+```
+[2026-08-04T16:50:13.450Z] INFO  actor-ts://shop/.../entity-da76e1eb-... - User(test-user-590) - recovery complete
+```
+
+Der Name kommt **dazu**, er ersetzt nichts: `source` bleibt der Pfad,
+also verschiebt sich nichts, worüber du korrelierst.  Der Default ist
+der Pfad, und ein Name, der dem Pfad entspricht, fällt weg statt
+doppelt gedruckt zu werden — ein Actor ohne Override loggt exakt wie
+bisher.
+
+Drei Wege, ihn zu setzen, in Precedence-Reihenfolge:
+
+| Wo | Wann du danach greifst |
+| --- | --- |
+| `context.setDisplayName(name)` | Der Name steht erst zur Laufzeit fest — nach der Recovery, nach der ersten Nachricht.  Außerdem der Weg für [`Behaviors`](/de/typed/behaviors/)-Actors, die sich alle eine `TypedActor`-Klasse teilen und keine eigene Subklasse zum Überschreiben haben. |
+| [`ActorOptions.withDisplayName(name)`](/de/fundamentals/spawning/#withdisplayname) | Die Spawn-Stelle kennt den Namen und der Actor nicht — eine Sharding-Entity, ein Singleton, alles, was das Framework selbst konstruiert. |
+| `displayName()` | Der Normalfall: der Actor weiß, was er ist. |
+
+```ts
+import { ActorOptions } from 'actor-ts';
+
+const workerOptions = ActorOptions.create().withDisplayName('ingest-worker');
+
+system.spawn(IngestWorker, 'ingest', workerOptions);
+```
+
+<Aside type="caution" title="Läuft bei jedem Record">
+`displayName()` wird pro Log-Aufruf aufgelöst, nicht einmal gemerkt —
+genau das lässt ihn Zustand lesen und einem Restart folgen.  Halt ihn
+billig und seiteneffektfrei.  Wirft er, oder liefert er etwas anderes
+als einen nicht-leeren String, fällt der Logger auf den Pfad zurück und
+warnt einmal; er kann eine Log-Zeile nicht mit sich reißen.
+</Aside>
+
+Der Name ist ein **Label für Menschen**, nie eine Identität.
+Metrik-Labels, Tracing-Attribute, Dead Letters, `ActorRef.toString()`
+und jeder Cluster-Wire-Identifier benutzen weiter den Pfad — ein
+Display-Name darf also mehrdeutig sein, von mehreren Actors geteilt
+werden oder sich im Betrieb ändern.  Die
+[DevTools](/de/observability/devtools/actor-visualizer/) zeigen ihn als
+Zeilen-Label, den Pfad weiterhin im Tooltip.
+
 ## Strukturierte JSON-Logs — eingebauter `JsonLogger`
 
 Für Log-Aggregator-Pipelines (Loki, ELK, Datadog, CloudWatch,
@@ -82,6 +144,17 @@ gemergten statischen + dynamischen MDC-Felder (statisch aus
 bei Key-Kollision).  Zusätzliche positionale `...args` aus
 `log.info(message, extra1, extra2)` landen unter einem `args`-Array
 — Log-Aggregators indexieren verschachtelte Keys automatisch.
+
+Ein Actor, der sich benannt hat, ergänzt einen `displayName`-Key neben
+`source`, wo er eigenständig filterbar ist — der `ConsoleLogger` faltet
+beide in eine Zeile, strukturierte Ausgabe hält sie getrennt:
+
+```json
+{"ts":"2026-08-04T16:50:13.450Z","level":"info",
+ "source":"actor-ts://shop/.../entity-da76e1eb-...",
+ "displayName":"User(test-user-590)",
+ "msg":"recovery complete"}
+```
 
 `Error`-Instanzen werden als `{ name, message, stack }`
 serialisiert statt als Default-`"{}"` (Errors enumerierbare
@@ -238,8 +311,6 @@ einem frischen `LogContext.run` dieses Snapshots.  Das bedeutet:
 - Die `correlationId` taucht in jeder Log-Zeile der Spur auf,
   damit dein Aggregator einen Multi-Actor-, Multi-Node-Request zu
   einem durchsuchbaren Thread zusammenfügen kann.
-
-import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="MDC-Werte müssen JSON-sicher sein">
   ```ts
