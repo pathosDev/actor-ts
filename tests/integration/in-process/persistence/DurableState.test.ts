@@ -30,7 +30,7 @@ class KVActor extends DurableStateActor<Command, KV> {
   }
 }
 
-const kvProps = (store: DurableStateStore, id: string): ActorFactory<Command> =>
+const kvActor = (store: DurableStateStore, id: string): ActorFactory<Command> =>
   () => {
     const durableStateOptions = DurableStateOptions.create<KV>()
       .withPersistenceId(id)
@@ -95,13 +95,13 @@ describe('DurableStateActor', () => {
     }
     const sink = sys.spawnAnonymous(() => new Sink());
 
-    const ref = sys.spawnAnonymous(kvProps(store, 'user-1'));
+    const ref = sys.spawnAnonymous(kvActor(store, 'user-1'));
     ref.tell({ kind: 'set', key: 'name', value: 'alice', replyTo: sink });
     await sleep(40);
     ref.stop();
     await sleep(30);
 
-    const restarted = sys.spawnAnonymous(kvProps(store, 'user-1'));
+    const restarted = sys.spawnAnonymous(kvActor(store, 'user-1'));
     restarted.tell({ kind: 'get', key: 'name', replyTo: sink });
     await sleep(40);
 

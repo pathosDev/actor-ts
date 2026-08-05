@@ -49,7 +49,7 @@ import {
 } from './discovery/sameHostScan.js';
 import { SessionStore } from './auth/sessionStore.js';
 import { VoicePresenceActor } from './actors/VoicePresenceActor.js';
-import { httpIngressProps } from './actors/HttpIngressActor.js';
+import { httpIngressFactory } from './actors/HttpIngressActor.js';
 import { attachDevTools } from '../../devtools.js';
 
 async function main(): Promise<void> {
@@ -134,7 +134,7 @@ async function main(): Promise<void> {
   const staticDir = path.join(import.meta.dirname ?? __dirname, '..', 'static');
   const singletonOptions = StartSingletonOptions.create()
     .withTypeName('http-ingress')
-    .withActor(httpIngressProps({
+    .withActor(httpIngressFactory({
       host: config.host,
       httpPort: config.httpPort,
       staticDir,

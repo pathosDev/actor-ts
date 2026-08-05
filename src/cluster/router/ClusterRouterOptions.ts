@@ -3,7 +3,7 @@ import { OptionsValidator } from '../../util/OptionsValidator.js';
 import type { Cluster } from '../Cluster.js';
 import type { ClusterRouterType } from './ClusterRouter.js';
 
-/** Plain options-object shape consumed by {@link ClusterRouter.props}. */
+/** Plain options-object shape consumed by {@link ClusterRouter.factory}. */
 export type ClusterRouterOptionsType<TMessage> = {
   /** The cluster the router lives in.  Used for membership + transport. */
   readonly cluster: Cluster;
@@ -30,13 +30,12 @@ export type ClusterRouterOptionsType<TMessage> = {
 /**
  * Fluent builder for {@link ClusterRouterOptionsType}:
  *
- *     ClusterRouter.props(
- *       ClusterRouterOptions.create<Command>()
- *         .withCluster(cluster)
- *         .withRouterType('consistent-hashing')
- *         .withRouteePath('/user/worker')
- *         .withExtractKey((m) => m.id),
- *     );
+ *     const routerOptions = ClusterRouterOptions.create<Command>()
+ *       .withCluster(cluster)
+ *       .withRouterType('consistent-hashing')
+ *       .withRouteePath('/user/worker')
+ *       .withExtractKey((m) => m.id);
+ *     ClusterRouter.factory(routerOptions);
  */
 export class ClusterRouterOptionsBuilder<TMessage> extends OptionsBuilder<ClusterRouterOptionsType<TMessage>> {
   /** Start a fresh builder. */
@@ -89,7 +88,7 @@ export class ClusterRouterOptionsValidator<TMessage> extends OptionsValidator<Cl
 }
 
 /**
- * Accepted input for {@link ClusterRouter.props}: the fluent
+ * Accepted input for {@link ClusterRouter.factory}: the fluent
  * {@link ClusterRouterOptionsBuilder} OR a plain (partial)
  * {@link ClusterRouterOptionsType} object.
  */

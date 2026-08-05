@@ -81,7 +81,7 @@ Workers, alle gleich, die einen Stream von Arbeit parallelisieren.
 import { ClusterRouter } from 'actor-ts';
 
 const router = system.spawn(
-  ClusterRouter.props({
+  ClusterRouter.factory({
     cluster,
     routerType: 'round-robin',
     routeePath: '/user/worker',

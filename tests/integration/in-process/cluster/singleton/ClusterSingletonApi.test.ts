@@ -107,7 +107,7 @@ describe('ClusterSingleton — calling shapes', () => {
     const second = node.cluster.singleton.start(EchoActor);
     expect(second).toBe(first);
 
-    // The repeat call's props are ignored, so the original actor is the one
+    // The repeat call's options are ignored, so the original actor is the one
     // that runs — this is what makes a getOrCreate-style helper safe to call
     // from several modules.
     await waitFor(() => node.cluster.leader().nonEmpty);

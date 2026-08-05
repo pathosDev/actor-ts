@@ -190,7 +190,7 @@ Drop a file anywhere under a group directory (e.g. `single-node/my-bench.ts`)
 and the discovery driver picks it up.  Minimum shape:
 
 ```ts
-import { Actor, ActorSystem, LogLevel, NoopLogger, Props } from '../../src/index.js';
+import { Actor, ActorSystem, LogLevel, NoopLogger } from '../../src/index.js';
 import { runGroup } from '../lib/harness.js';
 
 class Noop extends Actor<unknown> { override onReceive(): void {} }
