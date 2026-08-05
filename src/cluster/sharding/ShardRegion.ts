@@ -819,11 +819,14 @@ export class ShardRegion<TMessage = unknown> extends Actor<TMessage | ShardingMe
     const ack: BeginHandOffAcknowledgment = { $t: 'sharding.BeginHandOffAcknowledgment', shardId };
     this.tellCoordinator(ack);
 
-    if (this.config.rememberEntities) {
-      for (const entityId of entityIds) {
-        this.tellCoordinator({ $t: 'sharding.EntityStopped', shardId, entityId });
-      }
-    }
+    // Deliberately no `EntityStopped`, the same way an unexpected shard death
+    // sends none (#894).  These entities are not being forgotten — they are
+    // moving, and the coordinator's registry is the record that has to survive
+    // the move so `tryAllocate` can ship it to the new owner.  Announcing them
+    // as stopped emptied that registry mid-rebalance, so the new owner started
+    // with nothing and `rememberEntities` lost precisely what it exists to
+    // keep (#632).  Local bookkeeping still goes, below: those entities really
+    // are gone *from this node*.
     this.forgetShardEntities(shardId);
 
     const shard = this.shards.get(shardId);
