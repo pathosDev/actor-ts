@@ -86,6 +86,11 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
   private actor: Actor<TMessage> | null = null;
   private _parent: ActorCell<unknown> | null;
   private _children = new Map<string, ActorCell<any>>();
+  /**
+   * A restart waiting for the outgoing instance's children to finish
+   * stopping.  See {@link onRecreate} for why this cannot simply be awaited.
+   */
+  private _pendingRecreate: RecreateCommand | null = null;
   private _anonChildCounter = 0;
   private _childUidCounter = 0;
 
@@ -930,16 +935,38 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
     this.timers.cancelAll();
     this.deadLetterStash();
 
-    // Let the old instance clean up.  The default is `postStop()` only —
-    // children are NOT stopped here; they hang off this cell, which outlives
-    // the instance being replaced.  See `Actor.preRestart` for why that matters
-    // to anyone spawning named children in `preStart`.
+    // Let the old instance clean up.  The default is `postStop()`.
     try {
       await this.actor.preRestart(cause);
     } catch (e) {
       this.log.error('preRestart threw', e);
     }
 
+    // Tear the children down unless the actor opted out.  This lives here
+    // rather than in `preRestart` because it has to be *awaited*: the new
+    // instance cannot be built while the old children still hold their names,
+    // and an override has no way to tell the cell it started something worth
+    // waiting for (#634).
+    if (this.actor.stopChildrenOnRestart() && this._children.size > 0) {
+      for (const child of Array.from(this._children.values())) {
+        child.enqueueSystem({ kind: 'terminate' });
+      }
+      // Children report back with `childTerminated`, which THIS loop
+      // delivers — `run()` drains system messages one at a time and awaits
+      // each, so awaiting them here would block the very message that would
+      // unblock it.  Park instead; `onChildTerminated` resumes the restart
+      // once the last one is gone.
+      this._pendingRecreate = signal;
+      return;
+    }
+    await this.completeRecreate(cause);
+  }
+
+  /**
+   * Second half of a restart: everything that must happen after the outgoing
+   * instance's children are gone.
+   */
+  private async completeRecreate(cause: Error): Promise<void> {
     // Build a new instance.
     try {
       const next = this.blueprint.factory();
@@ -1199,6 +1226,17 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
     if (this._children.has(key)) this._children.delete(key);
     // Any Terminated(childRef) owed to us was already delivered via the
     // child's watcher set in finalizeTermination — no double delivery here.
+
+    // A restart parked here waiting for exactly this.  Checked before the
+    // `terminating` guard below: a restarting cell is `restarting`, not
+    // `terminating`, so the guard would return first and the restart would
+    // never resume.
+    if (this._pendingRecreate !== null && this._children.size === 0) {
+      const parked = this._pendingRecreate;
+      this._pendingRecreate = null;
+      await this.completeRecreate(parked.cause);
+      return;
+    }
 
     if (this.state !== 'terminating') return;
     if (this._terminationOrder) {
