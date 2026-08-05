@@ -93,14 +93,34 @@ describe('a sharded entity knows its own id', () => {
     expect(report.seenInPreStart).toBe('user-2');
   });
 
-  test('the id survives characters the child name folds away (#568)', async () => {
-    // `entityName()` maps anything outside [A-Za-z0-9_-] to '_', so the path
-    // cannot be parsed back into the id — this is the case that makes a real
-    // accessor necessary rather than merely convenient.
+  test('the id survives characters the child name has to escape (#568)', async () => {
+    // `entityName()` escapes anything an actor name cannot carry, so the path
+    // does not read back as the id — this is the case that makes a real
+    // accessor necessary rather than merely convenient.  The escape is
+    // injective, so two ids can no longer land on one child name; what it is
+    // *not* is a second way to spell the id.
     const report = await region.ask<IdentityReport>({ id: 'user:42/eu', kind: 'who-am-i' }, 3_000);
 
     expect(report.entityId).toBe('user:42/eu');
-    expect(report.path.endsWith('/entity-user_42_eu')).toBe(true);
+    // ':' is carried literally, '/' cannot be — it would split the path.
+    expect(report.path.endsWith('/entity-user:42~002Feu')).toBe(true);
+  });
+
+  test('two ids that differ only in punctuation get their own entity (#568)', async () => {
+    // The regression: both of these used to fold to `entity-a_b_x_com`.  When
+    // they also hashed into one shard, the second missed the shard's id-keyed
+    // map, spawned a child under a name already taken, and the throw killed
+    // the shard along with every unrelated entity in it.
+    const dotted = await region.ask<IdentityReport>({ id: 'a.b@x.com', kind: 'who-am-i' }, 3_000);
+    const dashed = await region.ask<IdentityReport>({ id: 'a-b@x.com', kind: 'who-am-i' }, 3_000);
+
+    expect(dotted.entityId).toBe('a.b@x.com');
+    expect(dashed.entityId).toBe('a-b@x.com');
+    expect(dotted.path).not.toBe(dashed.path);
+
+    // And both are still reachable afterwards — the shard survived.
+    const again = await region.ask<IdentityReport>({ id: 'a.b@x.com', kind: 'who-am-i' }, 3_000);
+    expect(again.entityId).toBe('a.b@x.com');
   });
 
   test('every entity gets its own id, not the shard\'s or a neighbour\'s', async () => {

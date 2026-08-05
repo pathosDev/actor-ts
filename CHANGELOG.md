@@ -218,6 +218,33 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Changed
 
+- **BREAKING — a sharded entity's child name escapes its id injectively**
+  (#568).  `entityName()` folded every character outside `[A-Za-z0-9_-]` to
+  `_`, which is many-to-one.  Two ids that differed only in punctuation
+  produced the same child name, and when they also hashed into the same
+  shard the second one missed the shard's id-keyed map, called
+  `createEntity`, and `_createChild` threw `Child name … is not unique`.
+  That throw kills the Shard actor — and with it every unrelated entity
+  living in that shard, including other tenants'.  It needed no attacker:
+  `a.b@x.com` and `a-b@x.com` collided, and `extractEntityId` is documented
+  as reading the id straight off an inbound message.
+
+  A code unit outside `[A-Za-z0-9_-.@:+]` is now escaped as `~` plus four
+  hex digits.  Ordinary ids are unchanged — `user-42`, `a.b@x.com` and
+  `tenant:eu` all read as themselves — and the escape works per UTF-16 code
+  unit rather than percent-encoding UTF-8, so it is total: a lone surrogate
+  cannot make it throw inside the shard, which would recreate the very
+  failure being fixed.
+
+  **Migration:** entity actor *paths* change shape for ids containing
+  escaped characters — visible in the DevTools tree, in log lines, and in
+  remote path rendering.  Nothing persists a path (remembered entities store
+  ids), so there is no data migration.  Code that recovered an id by slicing
+  the `entity-` prefix off `context.path.name` must read `this.entityId`
+  instead; that accessor has existed since #832 and is the supported route.
+  Nothing decodes a path segment, and `parsePathSegments` now says so — the
+  escape is injective only while it stays escaped end to end.
+
 - **BREAKING — the cluster wire protocol's discriminator is `kind`** (#494).
   The framework had three spellings for the same concept: `t` on the cluster
   wire (`hello`, `gossip`, `envelope`, `leave`, …) and on the internal

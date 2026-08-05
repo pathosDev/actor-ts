@@ -50,7 +50,9 @@ const startedOn = new Map<string, string[]>();
 
 class Entity extends Actor<Command> {
   override preStart(): void {
-    const id = this.context.path.name.replace(/^entity-/, '');
+    // `this.entityId`, not a slice off the path: the child name escapes the
+    // id (#568), so the path is a label rather than a second spelling of it.
+    const id = this.entityId;
     const seen = startedOn.get(id) ?? [];
     seen.push(this.context.system.name);
     startedOn.set(id, seen);
