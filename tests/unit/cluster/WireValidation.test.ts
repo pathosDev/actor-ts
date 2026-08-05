@@ -12,6 +12,7 @@ import {
   isNodeAddressData,
   isWireFrame,
   validateWireFrame,
+  sanitizeWireLogContext,
 } from '../../../src/cluster/WireValidation.js';
 
 describe('isWireFrame — the floor every frame must clear', () => {
@@ -145,5 +146,51 @@ describe('validateWireFrame — per-kind shapes', () => {
     // every one of them — they validate their own payloads instead.
     expect(validateWireFrame({ kind: 'ddata-gossip', anything: true }))
       .toHaveProperty('message');
+  });
+});
+
+describe('sanitizeWireLogContext — a peer may add context, not rewrite the record (#573)', () => {
+  test('drops the fields JsonLogger writes itself', () => {
+    // JsonLogger spreads the MDC LAST, so before the guard these did not add
+    // fields — they replaced the real ones, and the forged record was
+    // indistinguishable from a genuine one downstream.
+    const safe = sanitizeWireLogContext({
+      ts: 'yesterday', level: 'DEBUG', source: 'somewhere-else', msg: 'nothing happened',
+      args: 'x', correlationId: 'abc-123',
+    });
+    expect(safe).toEqual({ correlationId: 'abc-123' });
+  });
+
+  test('drops values containing a line break', () => {
+    // ConsoleLogger writes one line per record, so a newline in a value forges
+    // as many extra log lines as the sender likes, each looking genuine.
+    for (const evil of ['a\nb', 'a\rb', 'a\u2028b', 'a\u2029b', 'a\u0085b', 'a\u0000b']) {
+      expect(sanitizeWireLogContext({ evil, ok: 'fine' })).toEqual({ ok: 'fine' });
+    }
+  });
+
+  test('drops a key containing a line break', () => {
+    expect(sanitizeWireLogContext({ 'bad\nkey': 'v', ok: 'fine' })).toEqual({ ok: 'fine' });
+  });
+
+  test('keeps the primitives LogContextData actually admits', () => {
+    expect(sanitizeWireLogContext({ s: 'x', n: 42, b: true }))
+      .toEqual({ s: 'x', n: 42, b: true });
+  });
+
+  test('drops non-primitive values and non-finite numbers', () => {
+    const context = { obj: {}, arr: [], nil: null, nan: NaN, inf: Infinity, ok: 1 };
+    expect(sanitizeWireLogContext(context as never)).toEqual({ ok: 1 });
+  });
+
+  test('bounds how much a peer may staple onto every log line', () => {
+    // The context rides on every envelope and is stamped onto every line the
+    // receiving actor emits — an oversized one is a standing tax, not one big
+    // record.
+    const many = Object.fromEntries(Array.from({ length: 100 }, (_, i) => [`k${i}`, 'v']));
+    expect(Object.keys(sanitizeWireLogContext(many)).length).toBeLessThanOrEqual(32);
+
+    const long = { huge: 'x'.repeat(5_000), ok: 'fine' };
+    expect(sanitizeWireLogContext(long)).toEqual({ ok: 'fine' });
   });
 });

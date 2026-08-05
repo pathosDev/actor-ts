@@ -127,7 +127,84 @@ export function validateWireFrame(value: unknown): { message: WireMessage } | { 
   return problem === null ? { message: value as unknown as WireMessage } : { problem };
 }
 
+/**
+ * Fields `JsonLogger` writes itself.  Its record spreads the MDC **last**, so
+ * before this guard a peer that put `msg` or `level` in an envelope's context
+ * did not add a field — it replaced the real one, and the forged record was
+ * indistinguishable from a genuine one downstream (#573).
+ */
+const RESERVED_LOG_FIELDS = new Set(['ts', 'level', 'source', 'msg', 'args']);
+
+/**
+ * How many keys a remote peer may contribute, and how long each value may be.
+ * A context rides on *every* envelope and is stamped onto *every* log line the
+ * receiving actor emits, so an oversized one is not a single large record —
+ * it is a permanent tax on the node's log volume.
+ */
+const MAX_CONTEXT_KEYS = 32;
+const MAX_CONTEXT_VALUE_LENGTH = 1_024;
+
+/**
+ * Make a wire-supplied MDC safe to install.
+ *
+ * `Cluster.onEnvelope` hands `message.context` straight to `LogContext.run`,
+ * from where both shipped loggers read it. Two things had to be taken away
+ * from the sender: the ability to overwrite a log record's own fields, and the
+ * ability to put a line break in a value — `ConsoleLogger` writes one line per
+ * record, so a `\n` in a value forges as many additional log lines as the
+ * attacker likes, each looking exactly like the real thing. U+2028/U+2029 are
+ * included because plenty of log processors split on them too.
+ *
+ * Offending entries are dropped rather than escaped: an MDC value is
+ * diagnostic context, and a sender that puts a newline in one is not doing
+ * diagnostics.
+ */
+export function sanitizeWireLogContext(
+  context: Readonly<Record<string, string | number | boolean>>,
+): Readonly<Record<string, string | number | boolean>> {
+  const safe: Record<string, string | number | boolean> = {};
+  let kept = 0;
+  for (const [key, value] of Object.entries(context)) {
+    if (kept >= MAX_CONTEXT_KEYS) break;
+    if (RESERVED_LOG_FIELDS.has(key) || hasControlCharacters(key)) continue;
+    if (typeof value === 'number') {
+      if (!Number.isFinite(value)) continue;
+    } else if (typeof value === 'string') {
+      if (value.length > MAX_CONTEXT_VALUE_LENGTH || hasControlCharacters(value)) continue;
+    } else if (typeof value !== 'boolean') {
+      continue;  // objects, arrays, null — not a `LogContextData` value
+    }
+    safe[key] = value;
+    kept += 1;
+  }
+  return safe;
+}
+
 /* ------------------------------- internals ------------------------------- */
+
+/**
+ * Any C0/C1 control character, plus the Unicode line and paragraph separators.
+ *
+ * CR and LF are the ones that matter: ConsoleLogger writes one line per record,
+ * so a value containing either forges additional log lines that read exactly
+ * like genuine ones.  The rest of the control range is in because none of it
+ * belongs in a diagnostic value, and U+2028/U+2029 because enough log
+ * processors treat them as line breaks too.
+ */
+const LINE_SEPARATOR = 0x2028;
+const PARAGRAPH_SEPARATOR = 0x2029;
+const NEXT_LINE = 0x85;
+const DELETE = 0x7f;
+const LAST_C0_CONTROL = 0x1f;
+
+function hasControlCharacters(value: string): boolean {
+  for (let i = 0; i < value.length; i += 1) {
+    const code = value.charCodeAt(i);
+    if (code <= LAST_C0_CONTROL || code === DELETE || code === NEXT_LINE
+      || code === LINE_SEPARATOR || code === PARAGRAPH_SEPARATOR) return true;
+  }
+  return false;
+}
 
 /**
  * A positive integer, deliberately *not* the TCP range — see

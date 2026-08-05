@@ -490,7 +490,24 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
     this.scheduleShardMapPublish();
   }
 
+  /**
+   * A shard id is `hash(entityId) % numShards`, so no honest region can ask
+   * for one outside the range.  Nothing checked that: the coordinator
+   * allocated, recorded and *persisted* whatever id it was handed, and the
+   * allocation map is durable state replayed at every coordinator start — so a
+   * peer could grow it without limit, and the growth survived restarts (#583).
+   */
+  private isKnownShardId(shardId: number): boolean {
+    if (Number.isInteger(shardId) && shardId >= 0 && shardId < this.options.numShards) return true;
+    this.log.warn(
+      `ignoring a shard request for id ${shardId} — outside 0..${this.options.numShards - 1} `
+      + `for type "${this.options.typeName}"`,
+    );
+    return false;
+  }
+
   private onGetShardHome(message: GetShardHome): void {
+    if (!this.isKnownShardId(message.shardId)) return;
     const home = this.shardHome.get(message.shardId);
     if (home && this.regions.has(home)) {
       const info = this.regions.get(home)!;

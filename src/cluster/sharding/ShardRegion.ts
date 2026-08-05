@@ -602,7 +602,25 @@ export class ShardRegion<TMessage = unknown> extends Actor<TMessage | ShardingMe
     this.registerTimer = null;
   }
 
+  /**
+   * A shard id is `hash(entityId) % numShards`, so anything outside the range
+   * did not come from an honest allocation.  It matters here more than
+   * elsewhere because `ensureShard` turns the id into a **child actor name**:
+   * an out-of-range or non-integer id minted a permanent child under an
+   * attacker-chosen name, and the region has no way to tell it apart from a
+   * real shard afterwards (#569).
+   */
+  private isKnownShardId(shardId: number): boolean {
+    if (Number.isInteger(shardId) && shardId >= 0 && shardId < this.config.numShards) return true;
+    this.log.warn(
+      `[sharding] ignoring shard id ${shardId} for '${this.config.typeName}' — `
+      + `outside 0..${this.config.numShards - 1}`,
+    );
+    return false;
+  }
+
   private onShardHome(message: ShardHome): void {
+    if (!this.isKnownShardId(message.shardId)) return;
     const node = NodeAddress.fromJSON(message.node);
     const local = node.equals(this.config.cluster.selfAddress) && message.region === this.self.path.toString();
     this.log.debug(

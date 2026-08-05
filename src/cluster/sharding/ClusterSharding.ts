@@ -401,6 +401,7 @@ export class ClusterSharding {
       .withTypeName(options.typeName)
       .withCluster(this.cluster)
       .withAllocationStrategy(options.allocationStrategy ?? new HashAllocationStrategy())
+      .withNumShards(this.numShardsByType.get(options.typeName) ?? DEFAULT_NUM_SHARDS)
       .withLocalResolver((path) =>
         this.regionsByPath.get(path)
         ?? this.coordinators.get(this.typeNameFromCoordinatorPath(path) ?? '')

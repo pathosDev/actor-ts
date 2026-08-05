@@ -203,7 +203,20 @@ export class ClusterSingletonManager<T> extends Actor<Inbox> {
       .with({ kind: 'lease-acquire-result' }, (m) => this.onLeaseAcquireResult(m))
       .with({ kind: 'lease-lost' }, (m) => this.onLeaseLost(m))
       .with({ kind: 'acquire-retry' }, () => this.onAcquireRetry())
-      .exhaustive();
+      .otherwise((m) => this.onUnhandled(m));
+  }
+
+  /**
+   * The manager sits at a resolvable path, so anything a peer addresses to it
+   * lands here — and `.exhaustive()` turned an unrecognised body into an actor
+   * failure, taking the singleton's supervision with it (#713).  A message we
+   * do not understand is not a reason to fall over.
+   */
+  private onUnhandled(message: unknown): Promise<void> | void {
+    this.log.warn(
+      `singleton manager: dropping an unrecognised message `
+      + `(${(message as { kind?: string })?.kind ?? typeof message})`,
+    );
   }
 
   private onReconcile(): Promise<void> {

@@ -21,6 +21,16 @@ import { NodeAddress } from '../../src/cluster/NodeAddress.js';
 import { Member } from '../../src/cluster/Member.js';
 import type { GossipMessage, MemberData, WireMessage } from '../../src/cluster/Protocol.js';
 import { LogLevel, NoopLogger } from '../../src/Logger.js';
+import { Actor } from '../../src/Actor.js';
+import type { ActorRef } from '../../src/ActorRef.js';
+import { ReceptionistId } from '../../src/discovery/Receptionist.js';
+import { Find, Listing, Register } from '../../src/discovery/ReceptionistMessages.js';
+import { ServiceKey } from '../../src/discovery/ServiceKey.js';
+
+/** Stand-in for a registered service — it only has to exist and have a path. */
+class ProbeActor extends Actor {
+  override onReceive(): void { /* never receives anything in these tests */ }
+}
 
 type NodeHandle = {
   readonly system: ActorSystem;
@@ -815,5 +825,165 @@ describe('Cluster — the wire edge rejects malformed frames (#563, #705)', () =
     const self = victim.cluster.getMembers().find(m => m.address.equals(victim.address));
     expect(self).toBeDefined();
     expect(self!.status).not.toBe('removed');
+  }, 10_000);
+});
+
+describe('Cluster — a claim needs authority, not just a big version (#562, #564, #572)', () => {
+  /**
+   * **Exploit walkthrough (pre-fix).**  The merge was decided purely by version
+   * magnitude, and versions are seeded from `Date.now()` — so an attacker could
+   * always pick a winning number.  There was no rule about *who* may say what:
+   * one frame set the receiving node's own record to `removed`, which dropped
+   * it out of its own active set and flipped `isLeader()` to false, so the
+   * cluster could no longer admit new members.
+   */
+  test('exploit: a peer cannot rewrite our own member record', async () => {
+    const port = 56_100 + Math.floor(Math.random() * 400);
+    const { node } = await startRecordingNode('csecauth', port);
+    nodes = [node];
+    await waitFor(() => node.cluster.upMembers().length === 1);
+
+    const attacker = new NodeAddress('csecauth', 'h', port + 500);
+    injectWire(node.cluster, attacker, {
+      kind: 'gossip',
+      from: attacker.toJSON(),
+      members: [{
+        address: node.address.toJSON(),
+        status: 'removed',
+        version: Date.now() + 60_000,
+        removedAt: Date.now(),
+      }],
+    });
+
+    const self = node.cluster.getMembers().find(m => m.address.equals(node.address));
+    expect(self?.status).toBe('up');
+    expect(node.cluster.isLeader()).toBe(true);
+  }, 10_000);
+
+  test('a promotion to up is still accepted — it is the leader\'s call, not ours', async () => {
+    // The one legitimate outside claim about our own record. Refusing it would
+    // leave every joining node stuck in `joining` forever, so the rule carves
+    // it out explicitly; this pins that the carve-out exists and is narrow.
+    const port = 56_600 + Math.floor(Math.random() * 400);
+    const { node } = await startRecordingNode('csecauth2', port);
+    nodes = [node];
+    await waitFor(() => node.cluster.upMembers().length === 1);
+
+    // Already `up`, so a *downgrade* dressed as a promotion is still refused.
+    const peer = new NodeAddress('csecauth2', 'h', port + 500);
+    injectWire(node.cluster, peer, {
+      kind: 'gossip',
+      from: peer.toJSON(),
+      members: [{ address: node.address.toJSON(), status: 'down', version: Date.now() + 60_000 }],
+    });
+    expect(node.cluster.getMembers().find(m => m.address.equals(node.address))?.status).toBe('up');
+  }, 10_000);
+
+  test('exploit: a stranger cannot make claims about a third node', async () => {
+    const port = 57_100 + Math.floor(Math.random() * 400);
+    const { node } = await startRecordingNode('csecauth3', port);
+    nodes = [node];
+    await waitFor(() => node.cluster.upMembers().length === 1);
+
+    // The attacker is not a member this node considers active, so its claim
+    // about an unrelated address carries no authority.
+    const attacker = new NodeAddress('csecauth3', 'h', port + 500);
+    const victim = new NodeAddress('csecauth3', 'h', port + 600);
+    injectWire(node.cluster, attacker, {
+      kind: 'gossip',
+      from: attacker.toJSON(),
+      members: [{ address: victim.toJSON(), status: 'down', version: Date.now() }],
+    });
+
+    expect(node.cluster.getMembers().some(m => m.address.equals(victim))).toBe(false);
+  }, 10_000);
+
+  /**
+   * **Exploit walkthrough (pre-fix).**  `onLeave` read the departing node from
+   * `message.node` rather than from the connection, and writes a tombstone at
+   * `version + 2` — above anything the victim can say about itself.  One
+   * 120-byte frame evicted any member cluster-wide for the 24-hour tombstone
+   * TTL, and the victim could not gossip its way back.
+   */
+  test('exploit: a leave frame cannot retire a node other than its sender', async () => {
+    const portA = 57_600 + Math.floor(Math.random() * 300);
+    const portB = portA + 1;
+    const nodeA = await startNode('csecleave', portA);
+    const nodeB = await startNode('csecleave', portB, [`csecleave@h:${portA}`]);
+    nodes = [nodeA, nodeB];
+    await waitFor(() => {
+      const member = nodeA.cluster.getMembers().find(x => x.address.equals(nodeB.address));
+      return !!member && member.status === 'up';
+    });
+
+    const attacker = new NodeAddress('csecleave', 'h', portA + 500);
+    injectWire(nodeA.cluster, attacker, { kind: 'leave', node: nodeB.address.toJSON() });
+
+    const victim = nodeA.cluster.getMembers().find(x => x.address.equals(nodeB.address));
+    expect(victim?.status).toBe('up');
+  }, 15_000);
+
+  /**
+   * **Exploit walkthrough (pre-fix).**  `onHeartbeat` took the peer from
+   * `message.from` and both refreshed the failure detector for that address and
+   * *sent the acknowledgment to it*.  So a peer could keep a dead node looking
+   * healthy — blocking singleton and shard failover — and could make the
+   * receiver dial any host:port it named.
+   */
+  test('exploit: a heartbeat is credited to the connection, not to the address it names', async () => {
+    const port = 58_100 + Math.floor(Math.random() * 300);
+    const { node, sent } = await startRecordingNode('csechb3', port);
+    nodes = [node];
+
+    const realPeer = new NodeAddress('csechb3', 'h', port + 100);
+    const impersonated = new NodeAddress('csechb3', 'h', port + 200);
+
+    sent.length = 0;
+    injectWire(node.cluster, realPeer, {
+      kind: 'heartbeat', from: impersonated.toJSON(), seq: 1, ts: Date.now(),
+    });
+
+    // The acknowledgment names us and goes back to the connection's peer; the
+    // impersonated address is never contacted.
+    const acks = sent.filter(m => m.kind === 'heartbeat-ack');
+    expect(acks).toHaveLength(1);
+    expect((acks[0] as { from: { port: number } }).from.port).toBe(port);
+  }, 10_000);
+});
+
+describe('Extensions survive what a peer can address to them (#713)', () => {
+  /**
+   * **Exploit walkthrough (pre-fix).**  `Receptionist.onReceive` ended in
+   * `.exhaustive()` and every arm matches on `instanceof`.  A body delivered
+   * over the cluster wire arrives as a plain JSON object — it is not an
+   * instance of anything — so it matched no arm, `.exhaustive()` threw, and one
+   * remotely-delivered envelope failed the actor that holds the node's whole
+   * service registry.
+   */
+  test('exploit: a plain-object message does not fail the receptionist', async () => {
+    const port = 59_100 + Math.floor(Math.random() * 400);
+    const node = await startNode('csecexh', port);
+    nodes = [node];
+
+    const serviceKey = ServiceKey.of('svc');
+    const receptionist = node.system.extension(ReceptionistId).start(node.cluster);
+    const probe = node.system.spawnAnonymous(ProbeActor);
+    receptionist.tell(new Register(serviceKey, probe));
+    await Bun.sleep(40);
+
+    // Exactly the shape a remote peer's envelope body has: no class identity.
+    receptionist.tell({ kind: 'not-a-receptionist-message' } as never);
+    receptionist.tell(null as never);
+    await Bun.sleep(60);
+
+    // Still alive and still holding the registration — the actor did not fail,
+    // so its state survived and it keeps answering.
+    const found = await new Promise<readonly ActorRef[]>((resolve) => {
+      const collector = node.system.spawnAnonymous(class extends Actor<Listing> {
+        override onReceive(message: Listing): void { resolve(message.refs); }
+      });
+      receptionist.tell(new Find(serviceKey, collector));
+    });
+    expect(found.length).toBe(1);
   }, 10_000);
 });

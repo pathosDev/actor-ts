@@ -68,8 +68,8 @@ export class DistributedPubSubMediator extends Actor<
 
   override preStart(): void {
     const cluster = this.options.cluster;
-    this.unsubscribeWire = cluster._onWire('pubsub-gossip', (message) =>
-      this.handleGossip(message as unknown as PubSubGossipMessage),
+    this.unsubscribeWire = cluster._onWire('pubsub-gossip', (message, from) =>
+      this.handleGossip(message as unknown as PubSubGossipMessage, from),
     );
     // Remote publishes arrive via the envelope handler, not the wire hook.
     this.unsubscribeCluster = cluster.subscribe((evt) =>
@@ -239,8 +239,15 @@ export class DistributedPubSubMediator extends Actor<
     };
   }
 
-  private handleGossip(message: PubSubGossipMessage): void {
-    const senderAddr = NodeAddress.fromJSON(message.from).toString();
+  /**
+   * Keyed on the connection's peer, not on `message.from`.  The gossip
+   * *replaces* the sender's contribution wholesale — that is how a node's
+   * unsubscribes propagate — so trusting the payload's self-declared address
+   * let any peer name another node and wipe every topic subscription that node
+   * had registered cluster-wide (#582).
+   */
+  private handleGossip(message: PubSubGossipMessage, from: NodeAddress): void {
+    const senderAddr = from.toString();
     // First, clear any remote-node claims this sender used to have — we
     // always replace its contribution wholesale to stay in sync.
     for (const [topic, set] of this.topics) {

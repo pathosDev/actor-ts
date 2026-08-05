@@ -79,10 +79,20 @@ in a weaker state than they read as:
 
 - `requestClientCert: true` with no `ca` — there would be nothing
   to validate peer certificates against.
-- Mutual TLS **on Deno** — `Deno.listenTls` cannot request a
-  client certificate and the Deno dialer sends none, so peers
-  would go unauthenticated in both directions.  Run the cluster on
-  Node.js or Bun for mTLS.
+- An mTLS **listener on Deno** — `Deno.listenTls` takes only a
+  cert and a key, with no way to request or verify a client
+  certificate, so the listener would authenticate nobody.
+
+A Deno node can still **join** an mTLS cluster: it presents its
+own `cert` / `key` when dialling, so the listener (on Node.js or
+Bun) authenticates it like any other peer.  Only *hosting* the
+listener is unavailable — in a mixed deployment, keep the seed
+nodes on Node.js or Bun.
+
+One Deno difference worth knowing: `rejectUnauthorized` has no
+equivalent there and is not mapped.  Deno always validates the
+chain, so reaching a self-signed peer means supplying its signing
+CA in `ca` — which is the shape recommended here anyway.
 
 ## Certificate management
 
@@ -225,6 +235,52 @@ validate their own payloads.
 Every rejection is logged at `WARN` naming the peer and the
 offending field, so a dropped frame is diagnosable — a
 version mismatch and a hostile peer look different in the log.
+
+## Who may say what
+
+Passing the shape check does not make a frame believable.
+Gossip merges used to be decided purely by version magnitude,
+and versions are seeded from `Date.now()` — so an attacker
+could always pick a winning number and rewrite any member's
+status, **including the receiving node's own**. Two rules now
+sit in front of the merge:
+
+- **Nobody downgrades us.** A claim about this node's own
+  address is refused. The one exception is promotion out of
+  `joining`/`weakly-up` into `up`, which has to come from
+  outside because it is the leader's decision — and which is
+  harmless to accept, since a joining node is already trying
+  to become `up`. Everything else about our own record we
+  decide ourselves.
+- **Third-party claims need a sender with standing.** Saying
+  something about *another* node requires the connection's
+  peer to be a member this node already considers active. A
+  sender may always announce its own record — that is how
+  joining works.
+
+Both rules key on the **connection's** peer, not on the
+payload's `from` field, since that field is the one thing an
+attacker fully controls. The same reasoning covers two
+neighbours: a `leave` is only accepted from the node that is
+leaving, and a heartbeat refreshes the failure detector for
+the peer that sent it rather than the address it names — the
+latter previously let a peer keep a dead node looking healthy
+and made the receiver dial an attacker-chosen host.
+
+Unreachability is deliberately **not** covered by these
+rules: "I cannot reach C" is inherently a third-party
+observation, and every node must converge on the same view
+before a downing provider decides. Refusing those claims
+would leave each node with only its own reachability picture.
+
+:::caution[This is not authentication]
+These rules remove the free-for-all — a claim now needs
+standing this node granted, rather than a large number. They
+do not make an unauthenticated peer harmless: the `hello`
+handshake carries no credential, so an attacker can announce
+itself, wait to be promoted, and then satisfy the second
+rule. Run mTLS if the network is not fully trusted.
+:::
 
 ## Per-deployment recipe
 

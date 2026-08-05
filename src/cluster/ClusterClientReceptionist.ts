@@ -97,9 +97,15 @@ export class ClusterClientReceptionist implements Extension {
     const askTimeoutMs = resolvedOptions.askTimeoutMs ?? DEFAULT_ASK_TIMEOUT_MS;
     const log = this.system.log.withSource(`cluster-client-receptionist@${cluster.selfAddress}`);
 
-    this._unsubscribe = cluster._onWire('cluster-client-envelope', (message) => {
+    this._unsubscribe = cluster._onWire('cluster-client-envelope', (message, peer) => {
       const env = message as unknown as ClusterClientEnvelopeMessage;
-      const from = NodeAddress.fromJSON(env.from);
+      // The reply goes back down the connection the request arrived on, not to
+      // the address the payload names.  `NodeAddress.fromJSON(env.from)` threw
+      // outright when `from` was absent — a TypeError from inside the
+      // frame-dispatch loop (#711) — and when present but forged it made this
+      // node send the reply, and open a connection, to an address of the
+      // sender's choosing.
+      const from = peer;
 
       // Resolve the target locally.  We use the synchronous `_resolvePath`
       // rather than `actorSelection().resolveOne()` because the client

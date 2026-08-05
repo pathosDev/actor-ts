@@ -331,6 +331,23 @@ const peek = (cluster: Cluster): ClusterInternals =>
   cluster as unknown as ClusterInternals;
 
 /**
+ * Merge a synthesized member record as if it had arrived from `sender` over an
+ * established connection, with the sender already an active member.
+ *
+ * `mergeMember` takes the connection's peer and that peer's standing because a
+ * claim about a *third* node is only accepted from a member this node already
+ * considers active (#562).  Tests that are about the merge rules themselves —
+ * tombstone TTLs, version monotonicity — need to clear that gate first, or
+ * they pass because the frame was refused rather than because the rule under
+ * test worked.
+ */
+function mergeAsPeer(cluster: Cluster, sender: NodeAddress, data: unknown): void {
+  (cluster as unknown as {
+    mergeMember(from: NodeAddress, senderStatus: string, data: unknown): void;
+  }).mergeMember(sender, 'up', data);
+}
+
+/**
  * Variant of `startNode` that exposes the tombstone knobs.  All other
  * timing parameters mirror the default test setup.
  */
@@ -406,6 +423,10 @@ describe('Cluster tombstone pruning (#75)', () => {
     await waitFor(() => nodeA.cluster.upMembers().length === 1, 1000);
 
     // Drive the private mergeMember via a synthesized gossip frame.
+    // The sender is given standing on purpose: without it the authority rule
+    // (#562) refuses the frame first, and this test would pass without ever
+    // reaching the TTL guard it exists to pin.
+    const gossipSender = new NodeAddress(SYS, '10.0.6.98', 6098);
     const stalePeer = new NodeAddress(SYS, '10.0.6.99', 6099);
     const staleData = {
       address: stalePeer.toJSON(),
@@ -414,8 +435,7 @@ describe('Cluster tombstone pruning (#75)', () => {
       roles: [] as string[],
       removedAt: Date.now() - 10_000, // way past the 200ms TTL
     };
-    (nodeA.cluster as unknown as { mergeMember(d: unknown): void })
-      .mergeMember(staleData);
+    mergeAsPeer(nodeA.cluster, gossipSender, staleData);
 
     expect(peek(nodeA.cluster).members.has(stalePeer.toString())).toBe(false);
 
@@ -437,6 +457,7 @@ describe('Cluster tombstone pruning (#75)', () => {
     );
     await waitFor(() => nodeA.cluster.upMembers().length === 1, 1000);
 
+    const gossipSender = new NodeAddress(SYS, '10.0.6.22', 6022);
     const oldPeer = new NodeAddress(SYS, '10.0.6.21', 6021);
     const noAgeTombstone = {
       address: oldPeer.toJSON(),
@@ -445,8 +466,7 @@ describe('Cluster tombstone pruning (#75)', () => {
       roles: [] as string[],
       // removedAt deliberately omitted.
     };
-    (nodeA.cluster as unknown as { mergeMember(d: unknown): void })
-      .mergeMember(noAgeTombstone);
+    mergeAsPeer(nodeA.cluster, gossipSender, noAgeTombstone);
 
     // Tombstone is in the map — `mergeMember`'s expired-tombstone
     // guard only triggers when `removedAt` IS set.
