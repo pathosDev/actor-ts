@@ -56,7 +56,7 @@ describe('Counter', () => {
     const tk = TestKit.create('counter-spec');
     const probe = tk.createTestProbe();
 
-    const counter = tk.system.spawnAnonymous(() => new Counter());
+    const counter = tk.system.spawnAnonymous(Counter);
     counter.tell({ kind: 'increment' });
     counter.tell({ kind: 'increment' });
     counter.tell({ kind: 'get', replyTo: probe as ActorRef<number> });
@@ -133,7 +133,7 @@ await spec.awaitMembers('frontend', 3);   // warten, bis alle drei konvergieren
 
 // Jede Rolle ist ein vollständiges ActorSystem — via systemFor(role) erreichen:
 const probe = new TestProbe(spec.systemFor('frontend'));
-const remote = spec.systemFor('worker-1').spawnAnonymous(() => new Worker());
+const remote = spec.systemFor('worker-1').spawnAnonymous(Worker);
 remote.tell({ kind: 'do', replyTo: probe });
 await probe.expectMessage({ kind: 'done' });
 

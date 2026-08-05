@@ -94,9 +94,9 @@ async function main(): Promise<void> {
   process.on('SIGTERM', () => { void system.terminate(); });
 
   // Spawn the server-side handlers and the server actor.
-  const unaryHandler = system.spawnAnonymous(() => new UnaryEchoHandler());
-  const streamHandler = system.spawnAnonymous(() => new ServerStreamHandler());
-  const bidiHandler = system.spawnAnonymous(() => new BidiHandler());
+  const unaryHandler = system.spawnAnonymous(UnaryEchoHandler);
+  const streamHandler = system.spawnAnonymous(ServerStreamHandler);
+  const bidiHandler = system.spawnAnonymous(BidiHandler);
 
   const server = system.spawnAnonymous(
     () => new GrpcServerActor(

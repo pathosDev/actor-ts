@@ -69,7 +69,7 @@ describe('WebsocketClientActor', () => {
 
   test('typed client ↔ server round-trip through a real backend', async () => {
     const srvSys = mkSystem('cli-srv');
-    const server = srvSys.spawn(() => new PingServer(), 'srv');
+    const server = srvSys.spawn(PingServer, 'srv');
     const binding = await bindServer(srvSys, websocket('/ws', server));
 
     const rec: Rec = { events: [], messages: [] };
@@ -83,7 +83,7 @@ describe('WebsocketClientActor', () => {
 
   test('another actor can push a typed send via websocketSend(ref)', async () => {
     const srvSys = mkSystem('cli-srv2');
-    const server = srvSys.spawn(() => new PingServer(), 'srv');
+    const server = srvSys.spawn(PingServer, 'srv');
     const binding = await bindServer(srvSys, websocket('/ws', server));
 
     const rec: Rec = { events: [], messages: [] };
@@ -99,7 +99,7 @@ describe('WebsocketClientActor', () => {
 
   test('reconnects after the server goes away and comes back', async () => {
     const srvSys = mkSystem('cli-srv3');
-    const server = srvSys.spawn(() => new PingServer(), 'srv');
+    const server = srvSys.spawn(PingServer, 'srv');
     const b1 = await bindServer(srvSys, websocket('/ws', server));
     const port = b1.port;
 
@@ -114,7 +114,7 @@ describe('WebsocketClientActor', () => {
 
     // Bring a fresh server up on the same port; the client should reconnect.
     const srvSys2 = mkSystem('cli-srv3b');
-    const server2 = srvSys2.spawn(() => new PingServer(), 'srv');
+    const server2 = srvSys2.spawn(PingServer, 'srv');
     await bindServer(srvSys2, websocket('/ws', server2), '127.0.0.1', port);
 
     await waitUntil(() => rec.events.filter((e) => e === 'connected').length >= 2, 8000);

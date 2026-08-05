@@ -151,7 +151,7 @@ describe('ActorContext.throttle (#83)', () => {
       }
       override onReceive(_m: CountMessage): void { /* noop */ }
     }
-    const ref = sys.spawn(() => new Strict(), 'strict');
+    const ref = sys.spawn(Strict, 'strict');
     await sleep(20);
 
     // Drain the burst.

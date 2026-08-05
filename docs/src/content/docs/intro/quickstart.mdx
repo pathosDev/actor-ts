@@ -72,9 +72,9 @@ class Greeter extends Actor<string> {
 //    everything else lives inside it.
 const system = ActorSystem.create('hello');
 
-// 3. Spawn the actor.  `() => new Greeter()` is the
-//    factory; `'greeter'` is the actor's name in the hierarchy.
-const ref = system.spawn(() => new Greeter(), 'greeter');
+// 3. Spawn the actor.  You pass the class, not an instance — the
+//    system constructs it; `'greeter'` is its name in the hierarchy.
+const ref = system.spawn(Greeter, 'greeter');
 
 // 4. Send a message.  `tell` is fire-and-forget — it returns
 //    immediately, the actor processes the message asynchronously on
@@ -131,12 +131,15 @@ The five lines map to the actor model's five core ideas:
    processing), the supervisor hierarchy (which catches actor failures),
    the scheduler, the event stream. There's typically one per process.
 
-3. **`system.spawnAnonymous(() => new Greeter())`** — the factory is
-   actor-ts's way to defer construction. The system needs to control
-   *when* the actor instance is created (on its mailbox thread, not on
-   yours), so you hand it a factory rather than a pre-built instance.
-   The returned `ActorRef` is a handle, not the actor itself — you can
-   pass it across the cluster, store it, hand it to other actors.
+3. **`system.spawn(Greeter, 'greeter')`** — you hand over the class,
+   not an instance. The system needs to control *when* the actor is
+   constructed (on its mailbox thread, not on yours) and it rebuilds
+   the actor on every restart, so construction has to stay in its
+   hands. When the constructor takes arguments, pass a factory that
+   supplies them instead: `system.spawn(() => new Greeter(config),
+   'greeter')`. The returned `ActorRef` is a handle, not the actor
+   itself — you can pass it across the cluster, store it, hand it to
+   other actors.
 
 4. **`ref.tell('world')`** — `tell` is the primary actor verb. It
    enqueues the message into the actor's mailbox and returns
@@ -190,7 +193,7 @@ class Counter extends Actor<Command> {
 }
 
 const system  = ActorSystem.create('counters');
-const counter = system.spawnAnonymous(() => new Counter());
+const counter = system.spawnAnonymous(Counter);
 
 counter.tell({ kind: 'increment' });
 counter.tell({ kind: 'increment' });
@@ -214,7 +217,7 @@ method on the ref:
 import { ActorSystem } from 'actor-ts';
 
 const system  = ActorSystem.create('counters');
-const counter = system.spawnAnonymous(() => new Counter());
+const counter = system.spawnAnonymous(Counter);
 
 counter.tell({ kind: 'increment' });
 counter.tell({ kind: 'increment' });
@@ -260,7 +263,7 @@ what you want to do:
   import { Cluster } from 'actor-ts';
 
   const { system } = await Cluster.bootstrap({ name: 'hello' });
-  const ref = system.spawn(() => new Greeter(), 'greeter');
+  const ref = system.spawn(Greeter, 'greeter');
   ref.tell('world');
   ```
 

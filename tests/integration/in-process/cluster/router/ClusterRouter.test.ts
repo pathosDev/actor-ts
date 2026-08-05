@@ -60,7 +60,7 @@ describe('ClusterRouter — single node', () => {
     const { sys, cluster } = await startNode('rr-single', 89_001, ['compute']);
     try {
       // Worker lives at /user/worker on every targeted node.
-      sys.spawn(() => new Worker(), 'worker');
+      sys.spawn(Worker, 'worker');
       const routerOptions = ClusterRouterOptions.create<ReceivedMessage>()
         .withCluster(cluster)
         .withRole('compute')
@@ -87,7 +87,7 @@ describe('ClusterRouter — single node', () => {
     received = [];
     const { sys, cluster } = await startNode('rr-norole', 89_002, ['frontend']);
     try {
-      sys.spawn(() => new Worker(), 'worker');
+      sys.spawn(Worker, 'worker');
       const routerOptions = ClusterRouterOptions.create<ReceivedMessage>()
         .withCluster(cluster)
         .withRole('compute')                       // filters out 'frontend'-only node
@@ -112,7 +112,7 @@ describe('ClusterRouter — single node', () => {
     received = [];
     const { sys, cluster } = await startNode('ch-single', 89_003);
     try {
-      sys.spawn(() => new Worker(), 'worker');
+      sys.spawn(Worker, 'worker');
       const routerOptions = ClusterRouterOptions.create<ReceivedMessage>()
         .withCluster(cluster)
         .withRouterType('consistent-hashing')
@@ -141,7 +141,7 @@ describe('ClusterRouter — single node', () => {
     received = [];
     const { sys, cluster } = await startNode('bc-single', 89_004);
     try {
-      sys.spawn(() => new Worker(), 'worker');
+      sys.spawn(Worker, 'worker');
       const routerOptions = ClusterRouterOptions.create<ReceivedMessage>()
         .withCluster(cluster)
         .withRouterType('broadcast')
@@ -164,7 +164,7 @@ describe('ClusterRouter — single node', () => {
     received = [];
     const { sys, cluster } = await startNode('bc-msg', 89_005);
     try {
-      sys.spawn(() => new Worker(), 'worker');
+      sys.spawn(Worker, 'worker');
       const routerOptions = ClusterRouterOptions.create<ReceivedMessage>()
         .withCluster(cluster)
         .withRouterType('round-robin')             // not broadcast type

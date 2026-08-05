@@ -149,7 +149,7 @@ describe('PersistentActor — stash during persist', () => {
       }
     }
 
-    const ref = system.spawn(() => new Slow(), 'slow');
+    const ref = system.spawn(Slow, 'slow');
     ref.tell('ping');
     ref.tell('fast');
     ref.tell('fast');
@@ -175,7 +175,7 @@ describe('PersistentActor — snapshots', () => {
       }
     }
 
-    const ref = system.spawn(() => new Counter(), 'c');
+    const ref = system.spawn(Counter, 'c');
     for (let i = 0; i < 7; i++) ref.tell('inc');
     await sleep(40);
 
@@ -198,7 +198,7 @@ describe('PersistentActor — persistAll atomic batch', () => {
         await this.persistAll([1, 2, 3]);
       }
     }
-    const ref = system.spawn(() => new Batch(), 'b');
+    const ref = system.spawn(Batch, 'b');
     ref.tell('go');
     await sleep(30);
     const events = await journal.read<number>('batch', 1);
@@ -219,7 +219,7 @@ describe('PersistentActor — tagsFor', () => {
       override tagsFor(): readonly string[] { return ['orders']; }
       async onCommand(): Promise<void> { await this.persist({ op: 'x' }); }
     }
-    const ref = system.spawn(() => new Tagged(), 'tg');
+    const ref = system.spawn(Tagged, 'tg');
     ref.tell('go');
     await sleep(30);
     const [evt] = await journal.read('tagged', 1);

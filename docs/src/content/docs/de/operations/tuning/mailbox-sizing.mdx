@@ -16,7 +16,7 @@ Diese Seite ist der **Entscheidungs-Guide** für Produktions-Mailbox-Sizing.
 ## Default-Verhalten
 
 ```ts
-const ref = system.spawnAnonymous(() => new Worker());
+const ref = system.spawnAnonymous(Worker);
 //  ↑ bounded FIFO-Mailbox — Kapazität 10 000, drop-head-Overflow
 ```
 

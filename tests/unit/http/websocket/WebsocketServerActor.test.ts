@@ -240,7 +240,7 @@ describe('WebsocketServerActor via wireConnection (child-per-connection)', () =>
         invalids.push(`${c.id}:${e.name}`);
       }
     }
-    const hub = system.spawn(() => new HookServer(), 'hub') as WebsocketServerRef<Out, In>;
+    const hub = system.spawn(HookServer, 'hub') as WebsocketServerRef<Out, In>;
     const sock = new MockSocket();
     const policy: ResolvedWebsocketPolicy = { ...DEFAULT_WEBSOCKET_POLICY, onInvalidMessage: 'hook' };
     wireConnection(system, hub, request(), sock, jsonCodec<Out, In>(), policy);

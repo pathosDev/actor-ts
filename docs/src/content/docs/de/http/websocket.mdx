@@ -46,7 +46,7 @@ class ChatRoom extends WebsocketServerActor<ServerMessage, ClientMessage> {
 }
 
 const system = ActorSystem.create('chat');
-const chat = system.spawn(() => new ChatRoom(), 'chat');
+const chat = system.spawn(ChatRoom, 'chat');
 
 await system.extension(HttpExtensionId)
   .newServerAt('0.0.0.0', 8080)

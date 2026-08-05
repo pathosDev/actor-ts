@@ -50,7 +50,7 @@ async function main(): Promise<void> {
     console.log('5. closing DB pool, flushing metrics');
   });
 
-  system.spawn(() => new Worker(), 'worker');
+  system.spawn(Worker, 'worker');
   await new Promise(r => setTimeout(r, 150));
 
   // DevTools registers its own ServiceUnbind task, so `cs.run()` below

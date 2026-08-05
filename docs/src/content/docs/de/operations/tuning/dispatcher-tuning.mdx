@@ -119,7 +119,7 @@ const bulkOptions = ActorOptions.create().withDispatcher(new ThroughputDispatche
 const heavy = system.spawnAnonymous(BulkProcessor, bulkOptions);
 
 const httpHandler = system.spawn(
-  () => new HttpHandler(),
+  HttpHandler,
   // → nutzt den ImmediateDispatcher-Default des Systems
 );
 ```

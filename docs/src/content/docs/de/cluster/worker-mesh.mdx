@@ -92,7 +92,7 @@ async function main(): Promise<void> {
     .withTransport(context.transport);
   await Cluster.join(system, clusterOptions);
 
-  system.spawn(() => new MyActor(), 'worker');
+  system.spawn(MyActor, 'worker');
   context.ready();   // dem Hauptthread signalisieren, dass der Knoten läuft
 }
 
@@ -251,7 +251,7 @@ CPU-gebundene Entity-Arbeit parallelisiert über Cores.
 
 ```ts
 // Worker, der GPU-gebundene Jobs handhabt:
-system.spawn(() => new GpuJobActor(), 'gpu-jobs');
+system.spawn(GpuJobActor, 'gpu-jobs');
 
 // Abstürze in diesem Worker bleiben isoliert von main + anderen Workern
 ```

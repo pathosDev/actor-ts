@@ -73,7 +73,7 @@ class PersistentEventLog extends PersistentActor<Command, Event, State> {
   // …onCommand / onEvent ausgelassen…
 }
 
-const log = system.spawnAnonymous(() => new PersistentEventLog());
+const log = system.spawnAnonymous(PersistentEventLog);
 
 const consumer = system.spawn(
   () => new ConsumerController<OrderEvent>({

@@ -63,7 +63,7 @@ async function startNode(sysName: string, p: number, seeds: string[] = []): Prom
   const cluster = await Cluster.join(sys, clusterOptions);
   const shardingOptions = StartShardingOptions.create<Command>()
     .withTypeName('entity')
-    .withEntityActor(() => new Entity())
+    .withEntityActor(Entity)
     .withExtractEntityId((m) => m.id)
     .withNumShards(16);
   const region = ClusterSharding.get(sys, cluster).start<Command>(shardingOptions);

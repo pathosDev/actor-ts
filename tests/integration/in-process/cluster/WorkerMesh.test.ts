@@ -133,7 +133,7 @@ describe('WorkerBroker ↔ MessageChannelTransport end-to-end', () => {
     const nodeA = await startNode('wm-orphan', addrA, broker);
 
     class NoopActor extends Actor<string> { override onReceive(_: string): void {} }
-    const ref = nodeA.system.spawn(() => new NoopActor(), 'noop');
+    const ref = nodeA.system.spawn(NoopActor, 'noop');
     ref.tell('hello');
     await sleep(30);
     // Survived without error.

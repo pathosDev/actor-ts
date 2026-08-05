@@ -30,7 +30,7 @@ export async function run({ actorTs }) {
   const sys = ActorSystem.create('smoke-ws', sysOptions);
   let binding;
   try {
-    const server = sys.spawn(() => new Echo(), 'echo');
+    const server = sys.spawn(Echo, 'echo');
     try {
       binding = await sys.extension(HttpExtensionId).newServerAt('127.0.0.1', 0).bind(websocket('/ws', server));
     } catch (e) {

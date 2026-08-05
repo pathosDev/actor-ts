@@ -77,7 +77,7 @@ describe('FSM', () => {
       .withLogger(new NoopLogger())
       .withLogLevel(LogLevel.Off);
     const kit = TestKit.create('fsm-missing', kitOptions);
-    const ref = kit.system.spawnAnonymous(() => new Broken());
+    const ref = kit.system.spawnAnonymous(Broken);
     ref.tell('anything');
     await Bun.sleep(20);
     // The actor is still alive — subsequent tells don't throw.

@@ -75,7 +75,7 @@ import { ActorSystem, ... } from 'actor-ts';
 
 // 1. Set up the system + actors.
 const system = ActorSystem.create('demo');
-const ref = system.spawnAnonymous(() => new MyActor());
+const ref = system.spawnAnonymous(MyActor);
 
 // 2. Send some messages.
 ref.tell({ ... });

@@ -6,7 +6,6 @@
  * writes.
  */
 import { describe, expect, test } from 'bun:test';
-import { Actor } from '../../../../../src/Actor.js';
 import { ActorSystem } from '../../../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../../../src/ActorSystemOptions.js';
 import { Cluster } from '../../../../../src/cluster/Cluster.js';
@@ -52,10 +51,7 @@ describe('ReplicatedEventSourcedActor — single-writer per pid (#58)', () => {
     const cluster = await Cluster.join(sys, clusterOptions);
     try {
       // First actor — succeeds.
-      const a1 = sys.spawn(
-        () => new Counter() as unknown as Actor<unknown>,
-        'a1',
-      );
+      const a1 = sys.spawn(Counter, 'a1');
       // Give it time to enter preStart.
       await Bun.sleep(50);
 
@@ -63,10 +59,7 @@ describe('ReplicatedEventSourcedActor — single-writer per pid (#58)', () => {
       // The actor goes into supervision-restart loop; we let it
       // settle and then verify the registry blocked it consistently
       // (every restart attempt re-throws because a1 is still live).
-      const a2 = sys.spawn(
-        () => new Counter() as unknown as Actor<unknown>,
-        'a2',
-      );
+      const a2 = sys.spawn(Counter, 'a2');
       await Bun.sleep(150);
 
       expect(preStartFailures).toBeGreaterThanOrEqual(1);
@@ -93,20 +86,14 @@ describe('ReplicatedEventSourcedActor — single-writer per pid (#58)', () => {
       .withGossipIntervalMs(30);
     const cluster = await Cluster.join(sys, clusterOptions);
     try {
-      const a1 = sys.spawn(
-        () => new Counter() as unknown as Actor<unknown>,
-        'a1',
-      );
+      const a1 = sys.spawn(Counter, 'a1');
       await Bun.sleep(50);
       a1.stop();
       // Wait for postStop to release the registration.
       await Bun.sleep(50);
 
       // Fresh spawn with the same pid — no failure.
-      const a2 = sys.spawn(
-        () => new Counter() as unknown as Actor<unknown>,
-        'a2',
-      );
+      const a2 = sys.spawn(Counter, 'a2');
       await Bun.sleep(50);
       expect(preStartFailures).toBe(0);
 
@@ -145,14 +132,8 @@ describe('ReplicatedEventSourcedActor — single-writer per pid (#58)', () => {
     const cluster2 = await Cluster.join(sys2, cluster2Options);
     try {
       // Both spawn with persistenceId='shared-counter' — different systems.
-      const a1 = sys1.spawn(
-        () => new Counter() as unknown as Actor<unknown>,
-        'a-in-sys1',
-      );
-      const a2 = sys2.spawn(
-        () => new Counter() as unknown as Actor<unknown>,
-        'a-in-sys2',
-      );
+      const a1 = sys1.spawn(Counter, 'a-in-sys1');
+      const a2 = sys2.spawn(Counter, 'a-in-sys2');
       await Bun.sleep(100);
       // Neither preStart should have failed — the registry is per-system.
       expect(preStartFailures).toBe(0);
@@ -194,15 +175,9 @@ describe('ReplicatedEventSourcedActor — single-writer per pid (#58)', () => {
       .withGossipIntervalMs(30);
     const cluster = await Cluster.join(sys, clusterOptions);
     try {
-      const a1 = sys.spawn(
-        () => new CapturingCounter() as unknown as Actor<unknown>,
-        'a1',
-      );
+      const a1 = sys.spawn(CapturingCounter, 'a1');
       await Bun.sleep(50);
-      const a2 = sys.spawn(
-        () => new CapturingCounter() as unknown as Actor<unknown>,
-        'a2',
-      );
+      const a2 = sys.spawn(CapturingCounter, 'a2');
       await Bun.sleep(100);
       expect(errors.some((m) => m.includes("'capture-pid'"))).toBe(true);
       a1.stop();

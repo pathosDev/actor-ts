@@ -36,7 +36,7 @@ describe('LogContext — actor-to-actor propagation', () => {
       .withLogLevel(LogLevel.Off);
     const sys = ActorSystem.create('mdc-1', sysOptions);
     try {
-      const actorRef = sys.spawn(() => new Receiver(), 'r');
+      const actorRef = sys.spawn(Receiver, 'r');
       LogContext.run({ correlationId: 'abc-123' }, () => {
         actorRef.tell('hello');
       });
@@ -70,8 +70,8 @@ describe('LogContext — actor-to-actor propagation', () => {
       .withLogLevel(LogLevel.Off);
     const sys = ActorSystem.create('mdc-chain', sysOptions);
     try {
-      const bottom = sys.spawn(() => new Bottom(), 'b');
-      const middle = sys.spawn(() => new Middle(), 'm');
+      const bottom = sys.spawn(Bottom, 'b');
+      const middle = sys.spawn(Middle, 'm');
       LogContext.run({ requestId: 'req-9', user: 'u-1' }, () => {
         middle.tell({ message: 'forward', bottom });
       });
@@ -95,7 +95,7 @@ describe('LogContext — actor-to-actor propagation', () => {
       .withLogLevel(LogLevel.Off);
     const sys = ActorSystem.create('mdc-none', sysOptions);
     try {
-      const actorRef = sys.spawn(() => new R(), 'r');
+      const actorRef = sys.spawn(R, 'r');
       actorRef.tell('plain');
       await sleep(30);
       expect(observed).toEqual([{}]);
@@ -116,7 +116,7 @@ describe('LogContext — actor-to-actor propagation', () => {
       .withLogLevel(LogLevel.Off);
     const sys = ActorSystem.create('mdc-parallel', sysOptions);
     try {
-      const actorRef = sys.spawn(() => new R(), 'r');
+      const actorRef = sys.spawn(R, 'r');
       LogContext.run({ branch: 'A' }, () => actorRef.tell({ id: 'a' }));
       LogContext.run({ branch: 'B' }, () => actorRef.tell({ id: 'b' }));
       await sleep(50);

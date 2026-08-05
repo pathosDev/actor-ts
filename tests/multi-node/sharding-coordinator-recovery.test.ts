@@ -116,7 +116,7 @@ describe('ShardCoordinator state persistence — leader failover', () => {
         );
         const shardingOptions = StartShardingOptions.create<Command>()
           .withTypeName('entity')
-          .withEntityActor(() => new Entity())
+          .withEntityActor(Entity)
           .withExtractEntityId((m) => m.id)
           .withNumShards(8)
           .withRebalanceIntervalMs(200)

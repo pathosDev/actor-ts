@@ -121,7 +121,7 @@ async function main(): Promise<void> {
   class IdleWorker extends Actor<unknown> {
     override onReceive(_m: unknown): void { /* noop */ }
   }
-  const worker = system.spawnAnonymous(() => new IdleWorker());
+  const worker = system.spawnAnonymous(IdleWorker);
   receptionistRef.tell(new Register(WORKER_KEY, worker));
   logger.info('Receptionist started + worker registered', { key: WORKER_KEY.id });
 

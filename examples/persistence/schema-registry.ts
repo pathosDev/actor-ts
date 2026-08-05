@@ -121,7 +121,7 @@ async function main(): Promise<void> {
     _v: 1, _t: 'BankAccount.Deposited', _e: { kind: 'deposited', amount: 50 },
   }], 0);
 
-  const ref = sys.spawn(() => new Account(), 'acct');
+  const ref = sys.spawn(Account, 'acct');
   // Recovery: replays the v1 event through the registry's upcasters
   // (v1 → v2 fills currency=USD, v2 → v3 multiplies amount × 100).
   let state = await ref.ask<AccountState>({ kind: 'deposit', cents: 750 }, 1_000);

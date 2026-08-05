@@ -125,11 +125,7 @@ describe('ClusterClient — outside-in connectivity', () => {
     // Bare paths are relative to `/user`, so `system` has to be recognised as
     // a guardian — otherwise this resolves as a *user* actor literally named
     // `system` and the framework side of the tree is unaddressable.
-    node.system._spawnSystemActor(
-      () => new EchoActor(),
-      SystemGroups.cluster,
-      'echo-probe',
-    );
+    node.system._spawnSystemActor(EchoActor, SystemGroups.cluster, 'echo-probe');
     const clientOptions = ClusterClientOptions.create()
       .withContactPoints([node.contactPoint]);
     client = new ClusterClient(clientOptions);

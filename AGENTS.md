@@ -224,6 +224,15 @@ conservative SemVer.) See `docs/.../reference/version-policy.mdx`.
 - **The discriminant field is always `kind`** (never `type` or `tag`) — including
   the WebSocket/wire protocols of the examples. `type` collides with the `type`
   keyword; `kind` is the single project-wide convention.
+- **Pass the actor class, not a closure around it.** Every slot typed
+  `ActorClassOrFactory` — `spawn` / `spawnAnonymous`, `withEntityActor` /
+  `withActor` / `withSingletonActor`, the `entityActor` / `singletonActor` /
+  `actor` / `child` fields, the `Router.*` routee — takes `MyActor` directly;
+  `actorFactoryOf` does the wrapping. `spawn(() => new MyActor(), 'x')` is a
+  leftover from the `Props` era and reads as noise. The **factory form is for
+  constructor arguments** (`() => new Worker(database)`) and for anything the
+  class form cannot express — nothing else. Per-actor configuration is the
+  third argument, `ActorOptions`, never a closure.
 - **Spell out abbreviations in identifiers** — types, classes, files, aliases,
   generic type parameters, methods, fields, **and** locals/params, plus the `kind`
   **string-literal values**. Full words: `Command`/`Message`/`Acknowledgment`/

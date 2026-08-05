@@ -33,7 +33,7 @@ async function main(): Promise<void> {
     .withLogger(new NoopLogger())
     .withLogLevel(LogLevel.Off);
   const system = ActorSystem.create('bench-payload', systemOptions);
-  const ref = system.spawnAnonymous(() => new Echo());
+  const ref = system.spawnAnonymous(Echo);
 
   console.log('\n  Payload-size sensitivity — ask round-trip for increasing body sizes\n');
 

@@ -83,7 +83,7 @@ async function startNode(
 
   const shardingOptions = StartShardingOptions.create<Command>()
     .withTypeName(TYPE_NAME)
-    .withEntityActor(() => new Entity())
+    .withEntityActor(Entity)
     .withExtractEntityId((message) => message.id)
     .withNumShards(1)
     // The registry under test is the coordinator's in-memory one; a store

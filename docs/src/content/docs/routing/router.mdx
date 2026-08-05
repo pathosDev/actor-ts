@@ -36,7 +36,7 @@ class Worker extends Actor<Message> {
 const system = ActorSystem.create('demo');
 
 const pool = system.spawn(
-  Router.roundRobin(4, () => new Worker()),
+  Router.roundRobin(4, Worker),
   'workers',
 );
 
@@ -95,7 +95,7 @@ const warmupStrategy: RoutingStrategy = (routees, state) => {
 };
 
 const pool = system.spawn(
-  Router.custom(4, () => new Worker(), warmupStrategy),
+  Router.custom(4, Worker, warmupStrategy),
   'workers',
 );
 ```
@@ -149,7 +149,7 @@ import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="`size = 0` is a bug">
   ```ts
-  Router.roundRobin(0, () => new Worker());   // ← compiles, but every message goes nowhere
+  Router.roundRobin(0, Worker);   // ← compiles, but every message goes nowhere
   ```
   A zero-routee pool returns an empty iterable from the strategy,
   so every `tell` is dropped (silently — no dead-letter routing).

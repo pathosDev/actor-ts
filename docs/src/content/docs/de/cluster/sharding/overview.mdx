@@ -131,7 +131,7 @@ cluster.sharding.start('cart', () => new CartActor(deps),
 // 3. Vollform — alle Settings über den Builder:
 const startSharding3Options = StartShardingOptions.create<CartCommand>()
   .withTypeName('cart')
-  .withEntityActor(() => new CartActor())
+  .withEntityActor(CartActor)
   .withExtractEntityId((m) => m.entityId)
   .withNumShards(16)
   .withRole('cart-host');
@@ -383,7 +383,7 @@ Entities idle wurden.
 ```ts
 const shardingOptions = StartShardingOptions.create<CartCommand>()
   .withTypeName('cart')
-  .withEntityActor(() => new CartActor())
+  .withEntityActor(CartActor)
   .withExtractEntityId((command) => command.entityId)
   .withPassivationIdleMs(120_000)
   // Shards sind billig zu halten und kosten einen Respawn, wenn sie gehen —

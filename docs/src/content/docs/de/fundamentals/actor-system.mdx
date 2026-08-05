@@ -89,7 +89,7 @@ Top-Level-Actors werden über `system.spawn` gespawnt:
 ```ts
 
 const root = system.spawn(
-  () => new MyRootActor(),
+  MyRootActor,
   'root',   // optionaler Name; Framework wählt einen, wenn weggelassen
 );
 ```
@@ -103,10 +103,7 @@ gespawnt, nicht über `system.spawn`:
 ```ts
 class Parent extends Actor<...> {
   override onReceive(message) {
-    const child = this.context.spawn(
-      () => new Child(),
-      'worker',
-    );
+    const child = this.context.spawn(Child, 'worker');
   }
 }
 ```

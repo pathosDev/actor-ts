@@ -56,7 +56,7 @@ async function main(): Promise<void> {
 
   const supervisor = system.spawn(
     BackoffSupervisor.factory({
-      child: () => new FlakyConnector(),
+      child: FlakyConnector,
       childName: 'connector',
       minBackoff: 200,
       maxBackoff: 5_000,

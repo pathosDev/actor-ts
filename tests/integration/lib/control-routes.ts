@@ -281,8 +281,7 @@ export function makeControlRoutes(
   // accumulate updates before any scenario polls it.  Listings are
   // dispatched to the subscriber actor's mailbox; scenarios query
   // its current state via the `GetSnapshot` message.
-  const subscriberRef = system.spawnAnonymous(() =>
-    new ContinuousSubscriber()) as ActorRef<SubscriberMessage>;
+  const subscriberRef = system.spawnAnonymous(ContinuousSubscriber) as ActorRef<SubscriberMessage>;
   receptionistRef.tell(new Subscribe(
     // Same key the node-runner registered the auto-IdleWorker under.
     new ServiceKey('workers'),
@@ -302,7 +301,7 @@ export function makeControlRoutes(
   // are registered before any peer publishes.
   const pubsubMediator = system.extension(DistributedPubSubId).start(cluster);
   const pubsubReceiver = system.spawnAnonymous(
-    () => new PubSubReceiver(),
+    PubSubReceiver,
   ) as ActorRef<PubSubEvent | PubSubSnapshotQuery>;
   pubsubMediator.tell(new PubSubSubscribe(
     'events',
@@ -316,9 +315,7 @@ export function makeControlRoutes(
   let slowSinkRef: ActorRef<SlowSinkMessage> | null = null;
   const ensureSlowSink = (): ActorRef<SlowSinkMessage> => {
     if (slowSinkRef) return slowSinkRef;
-    slowSinkRef = system.spawnAnonymous(
-      () => new SlowSink(),
-    ) as ActorRef<SlowSinkMessage>;
+    slowSinkRef = system.spawnAnonymous(SlowSink) as ActorRef<SlowSinkMessage>;
     return slowSinkRef;
   };
 
@@ -513,7 +510,7 @@ export function makeControlRoutes(
       if (extraWorkerRef) {
         receptionistRef.tell(new Deregister(new ServiceKey('workers'), extraWorkerRef));
       }
-      extraWorkerRef = system.spawnAnonymous(() => new ExtraWorker());
+      extraWorkerRef = system.spawnAnonymous(ExtraWorker);
       receptionistRef.tell(new Register(new ServiceKey('workers'), extraWorkerRef));
       return completeJson(Status.OK, { registered: extraWorkerRef.toString() });
     }))),

@@ -22,7 +22,7 @@ const node2 = spec.systemFor('b');
 
 // Actor auf einem bestimmten Node spawnen und mit einer Probe asserten:
 const probe = new TestProbe(spec.systemFor('a'));
-const remote = node2.spawnAnonymous(() => new Worker());
+const remote = node2.spawnAnonymous(Worker);
 
 remote.tell({ kind: 'do', replyTo: probe });
 await probe.expectMessage({ kind: 'done' });
@@ -189,7 +189,7 @@ await spec.awaitMembers('a', 3);
 
 const startShardingOptions = StartShardingOptions.create<Command>()
   .withTypeName('entity')
-  .withEntityActor(() => new Entity())
+  .withEntityActor(Entity)
   .withExtractEntityId((message) => message.id);
 const regions = spec.allRoles().map((role) =>
   spec.clusterFor(role).sharding.start(startShardingOptions)

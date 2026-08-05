@@ -70,7 +70,7 @@ system.extension(MetricsExtensionId).useRegistry(
 );
 
 // 4. Drive a steady stream so the framework's stock counters tick.
-const worker = system.spawn(() => new Worker(), 'worker');
+const worker = system.spawn(Worker, 'worker');
 let nextId = 0;
 const tick = setInterval(() => {
   for (let i = 0; i < 5; i++) worker.tell({ id: nextId++ });

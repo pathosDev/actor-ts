@@ -125,10 +125,7 @@ async function main(): Promise<void> {
   const sessions = new SessionStore(ddHandle);
 
   // -------- 5. VoicePresenceActor (one per node) --------
-  const voicePresence = system.spawn(
-    () => new VoicePresenceActor(),
-    'voice-presence',
-  );
+  const voicePresence = system.spawn(VoicePresenceActor, 'voice-presence');
 
   // -------- 6. HTTP front door — ClusterSingleton --------
   const staticDir = path.join(import.meta.dirname ?? __dirname, '..', 'static');

@@ -39,7 +39,7 @@ describe('Stash', () => {
     }
 
     const sys = newSystem();
-    const ref = sys.spawn(() => new S(), 'a');
+    const ref = sys.spawn(S, 'a');
     ref.tell('a'); ref.tell('b'); ref.tell('c');
     ref.tell('ready');
     await sleep(50);
@@ -64,7 +64,7 @@ describe('Stash', () => {
     }
 
     const sys = newSystem();
-    const ref = sys.spawn(() => new S(), 'a');
+    const ref = sys.spawn(S, 'a');
     ref.tell('stashed-1');
     ref.tell('stashed-2');
     ref.tell('ready');
@@ -86,7 +86,7 @@ describe('Stash', () => {
     }
 
     const sys = newSystem();
-    const ref = sys.spawn(() => new S(), 'a');
+    const ref = sys.spawn(S, 'a');
     ref.tell('x'); ref.tell('y'); ref.tell('count');
     await sleep(40);
     expect(sizes).toEqual([1, 2, 2]);
@@ -105,7 +105,7 @@ describe('Stash', () => {
     }
 
     const sys = newSystem();
-    sys.spawn(() => new S(), 'a');
+    sys.spawn(S, 'a');
     await sleep(30);
     expect(err).toBeInstanceOf(StashOutsideHandlerError);
     await sys.terminate();
@@ -122,7 +122,7 @@ describe('Stash', () => {
     }
 
     const sys = newSystem();
-    const ref = sys.spawn(() => new S(), 'a');
+    const ref = sys.spawn(S, 'a');
     ref.tell('flush');
     ref.tell('hi');
     await sleep(40);

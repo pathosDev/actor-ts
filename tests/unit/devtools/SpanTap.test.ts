@@ -240,7 +240,7 @@ describe('SpanTap — recording every message', () => {
     tap.install((payload) => payloads.push(payload));
     tap.subscribersChanged(1);
     try {
-      const ref = system.spawn(() => new EchoActor(), 'echo');
+      const ref = system.spawn(EchoActor, 'echo');
       // The framework is propagate-only — no active span, no trace — so
       // this only produces anything because the tap seeds roots itself.
       ref.tell('hello');
@@ -270,7 +270,7 @@ describe('SpanTap — recording every message', () => {
       // buffer the next panel is supposed to open onto.
       expect(tracing.isRecordingRootSpans()).toBe(true);
 
-      const ref = system.spawn(() => new EchoActor(), 'echo');
+      const ref = system.spawn(EchoActor, 'echo');
       ref.tell('unobserved');
       await settle(80);
       expect(spansOf(tap.snapshot()).length).toBeGreaterThan(0);
@@ -352,7 +352,7 @@ describe('SpanTap — sender and payload', () => {
     tap.install((payload) => payloads.push(payload));
     tap.subscribersChanged(1);          // also switches payload capture on
     try {
-      const ref = system.spawn(() => new OrderActor(), 'orders');
+      const ref = system.spawn(OrderActor, 'orders');
       ref.tell({ kind: 'place', id: 7 });
       await settle(80);
 

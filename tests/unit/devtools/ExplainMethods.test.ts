@@ -53,7 +53,7 @@ const settle = (ms = 60): Promise<void> => new Promise((resolve) => setTimeout(r
 describe('ExplainMethods', () => {
   test('enables recording on a named actor', async () => {
     const system = newSystem('rpc-enable');
-    const ref = system.spawn(() => new WorkerActor(), 'target');
+    const ref = system.spawn(WorkerActor, 'target');
     const { server, invoke } = fakeServer();
     new ExplainMethods(system).install(server);
 
@@ -65,7 +65,7 @@ describe('ExplainMethods', () => {
 
   test('records and returns what the actor handled', async () => {
     const system = newSystem('rpc-fetch');
-    const ref = system.spawn(() => new WorkerActor(), 'target');
+    const ref = system.spawn(WorkerActor, 'target');
     const { server, invoke } = fakeServer();
     new ExplainMethods(system).install(server);
 
@@ -86,7 +86,7 @@ describe('ExplainMethods', () => {
 
   test('honours a requested capacity', async () => {
     const system = newSystem('rpc-capacity');
-    const ref = system.spawn(() => new WorkerActor(), 'target');
+    const ref = system.spawn(WorkerActor, 'target');
     const { server, invoke } = fakeServer();
     new ExplainMethods(system).install(server);
 
@@ -102,7 +102,7 @@ describe('ExplainMethods', () => {
 
   test('caps an absurd capacity rather than letting a ring become a log', async () => {
     const system = newSystem('rpc-cap');
-    const ref = system.spawn(() => new WorkerActor(), 'target');
+    const ref = system.spawn(WorkerActor, 'target');
     const { server, invoke } = fakeServer();
     new ExplainMethods(system).install(server);
 
@@ -115,7 +115,7 @@ describe('ExplainMethods', () => {
 
   test('disabling stops recording', async () => {
     const system = newSystem('rpc-disable');
-    const ref = system.spawn(() => new WorkerActor(), 'target');
+    const ref = system.spawn(WorkerActor, 'target');
     const { server, invoke } = fakeServer();
     new ExplainMethods(system).install(server);
 
@@ -135,7 +135,7 @@ describe('ExplainMethods', () => {
     // A ring left running because a browser tab closed is a leak the
     // developer never asked for.
     const system = newSystem('rpc-cleanup');
-    const ref = system.spawn(() => new WorkerActor(), 'target');
+    const ref = system.spawn(WorkerActor, 'target');
     const { server, invoke } = fakeServer();
     const methods = new ExplainMethods(system);
     methods.install(server);
@@ -170,7 +170,7 @@ describe('ExplainMethods', () => {
 
   test('rejects a nonsensical capacity', async () => {
     const system = newSystem('rpc-badcapacity');
-    const ref = system.spawn(() => new WorkerActor(), 'target');
+    const ref = system.spawn(WorkerActor, 'target');
     const { server, invoke } = fakeServer();
     new ExplainMethods(system).install(server);
 

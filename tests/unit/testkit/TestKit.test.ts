@@ -22,7 +22,7 @@ describe('TestKit', () => {
       class Loud extends Actor<string> {
         override onReceive(m: string): void { this.log.info('hello', m); }
       }
-      const ref = tk.system.spawn(() => new Loud(), 'loud');
+      const ref = tk.system.spawn(Loud, 'loud');
       ref.tell('world');
       await Bun.sleep(30);
       expect(lines).toEqual([]);

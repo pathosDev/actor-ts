@@ -159,11 +159,7 @@ describe('supervisor strategy in the spawn options', () => {
 
   test('overrides the guardian that would otherwise restart the child', async () => {
     const seen = collectOutcomes('collector-stop');
-    const ref = sys().spawn(
-      () => new Boom(),
-      'stops-by-options',
-      { supervisorStrategy: stoppingStrategy },
-    );
+    const ref = sys().spawn(Boom, 'stops-by-options', { supervisorStrategy: stoppingStrategy });
 
     ref.tell('fail');
 
@@ -177,7 +173,7 @@ describe('supervisor strategy in the spawn options', () => {
 
   test('falls through to the guardian when the options carry no strategy', async () => {
     const seen = collectOutcomes('collector-restart');
-    const ref = sys().spawn(() => new Boom(), 'restarts-by-guardian');
+    const ref = sys().spawn(Boom, 'restarts-by-guardian');
 
     ref.tell('fail');
 
@@ -191,12 +187,8 @@ describe('supervisor strategy in the spawn options', () => {
 
     class Parent extends Actor<string> {
       override preStart(): void {
-        this.context.spawn(
-          () => new Boom(),
-          'fragile',
-          { supervisorStrategy: stoppingStrategy },
-        );
-        this.context.spawn(() => new Boom(), 'resilient');
+        this.context.spawn(Boom, 'fragile', { supervisorStrategy: stoppingStrategy });
+        this.context.spawn(Boom, 'resilient');
       }
       override supervisorStrategy(): SupervisorStrategy {
         return new OneForOneStrategy(() => Directive.Restart, { maxRetries: -1 });
@@ -206,7 +198,7 @@ describe('supervisor strategy in the spawn options', () => {
       }
     }
 
-    const parent = sys().spawn(() => new Parent(), 'sibling-parent');
+    const parent = sys().spawn(Parent, 'sibling-parent');
     parent.tell('fragile');
     parent.tell('resilient');
 
@@ -240,7 +232,7 @@ describe('restart and children', () => {
         events.push('parent:preStart');
         // Anonymous, so the second preStart cannot collide — see the named
         // case below for what happens when it can.
-        this.child ??= this.context.spawnAnonymous(() => new Child());
+        this.child ??= this.context.spawnAnonymous(Child);
       }
       override onReceive(m: string): void {
         if (m === 'boom') throw new FooError();
@@ -248,7 +240,7 @@ describe('restart and children', () => {
       }
     }
 
-    const parent = sys().spawn(() => new Parent(), 'keeps-children');
+    const parent = sys().spawn(Parent, 'keeps-children');
     parent.tell('boom');
     await awaitCondition(
       () => events.filter((e) => e === 'parent:preStart').length >= 2,
@@ -272,7 +264,7 @@ describe('restart and children', () => {
     class Child extends Actor<string> { override onReceive(_: string): void {} }
     class Parent extends Actor<string> {
       override preStart(): void {
-        this.context.spawn(() => new Child(), 'fixed-name');
+        this.context.spawn(Child, 'fixed-name');
       }
       override onReceive(m: string): void { if (m === 'boom') throw new FooError(); }
     }
@@ -290,12 +282,12 @@ describe('restart and children', () => {
         });
       }
       override preStart(): void {
-        this.context.spawn(() => new Parent(), 'collides').tell('boom');
+        this.context.spawn(Parent, 'collides').tell('boom');
       }
       override onReceive(_: string): void {}
     }
 
-    sys().spawn(() => new Guardian(), 'collision-guardian');
+    sys().spawn(Guardian, 'collision-guardian');
     await awaitCondition(
       () => failures.length > 0,
       { label: 'the restart failed on the duplicate child name' },

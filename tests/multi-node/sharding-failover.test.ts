@@ -65,7 +65,7 @@ function startRegion(
 ): ActorRef<Command> {
   const shardingOptions = StartShardingOptions.create<Command>()
     .withTypeName('entity')
-    .withEntityActor(() => new Entity())
+    .withEntityActor(Entity)
     .withExtractEntityId((m) => m.id)
     .withNumShards(16)
     .withRebalanceIntervalMs(200)

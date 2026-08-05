@@ -69,7 +69,7 @@ async function startNode(systemName: string, port: number, seeds: string[] = [])
   const cluster = await Cluster.join(system, clusterOptions);
   const shardingOptions = StartShardingOptions.create<Command>()
     .withTypeName(TYPE_NAME)
-    .withEntityActor(() => new CounterEntity())
+    .withEntityActor(CounterEntity)
     .withExtractEntityId((m) => m.id)
     .withNumShards(NUM_SHARDS);
   const region = cluster.sharding.start<Command>(shardingOptions);

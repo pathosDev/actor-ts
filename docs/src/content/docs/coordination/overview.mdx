@@ -147,7 +147,7 @@ const lease = new KubernetesLease(
 
 const startSingletonOptions = StartSingletonOptions.create()
   .withTypeName('job-scheduler')
-  .withActor(() => new JobScheduler())
+  .withActor(JobScheduler)
   .withLease(lease);        // ← split-brain protection
 cluster.singleton.start(startSingletonOptions);
 ```

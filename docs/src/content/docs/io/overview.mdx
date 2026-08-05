@@ -163,7 +163,7 @@ topic), the broker actor delivers each one to a **target** actor ref
 you designate up front via `withTarget`:
 
 ```ts
-const handler = system.spawnAnonymous(() => new OrderHandler());
+const handler = system.spawnAnonymous(OrderHandler);
 
 const kafkaOptions = KafkaOptions.create()
   .withBrokers('localhost:9092')

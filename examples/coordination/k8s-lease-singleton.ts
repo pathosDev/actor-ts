@@ -94,7 +94,7 @@ async function main(): Promise<void> {
   // child on lease loss, release on graceful shutdown.
   const singletonOptions = StartSingletonOptions.create<{ kind: 'tick' }>()
     .withTypeName('cron')
-    .withActor(() => new CronActor())
+    .withActor(CronActor)
     .withLease(lease)
     .withAcquireRetryIntervalMs(5_000);
   // The returned ref goes unused here — this actor self-ticks via setInterval

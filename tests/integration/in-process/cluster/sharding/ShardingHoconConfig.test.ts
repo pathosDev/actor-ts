@@ -87,7 +87,7 @@ async function startNode(
 
   const shardingOptions = StartShardingOptions.create<Command>()
     .withTypeName('entity')
-    .withEntityActor(() => new Entity())
+    .withEntityActor(Entity)
     .withExtractEntityId((message) => message.id);
   options?.(shardingOptions);
 

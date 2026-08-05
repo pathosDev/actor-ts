@@ -30,7 +30,7 @@ describe('shutdown order', () => {
       override onReceive(message: string): void { received.push(message); }
     }
     const infrastructure = system._spawnSystemActor(
-      () => new Infrastructure(),
+      Infrastructure,
       SystemGroups.clusterPubSub,
       'mediator',
     );
@@ -39,7 +39,7 @@ describe('shutdown order', () => {
       override onReceive(_message: string): void {}
       override postStop(): void { infrastructure.tell('goodbye'); }
     }
-    system.spawn(() => new Application(), 'application');
+    system.spawn(Application, 'application');
 
     await system.terminate();
 
@@ -95,7 +95,7 @@ describe('shutdown order', () => {
     class Idle extends Actor<string> {
       override onReceive(_message: string): void {}
     }
-    system.spawn(() => new Idle(), 'only-user-actor');
+    system.spawn(Idle, 'only-user-actor');
 
     await system.terminate();
 

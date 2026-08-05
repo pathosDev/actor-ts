@@ -24,7 +24,7 @@ und Resize denkst.
 import { Router } from 'actor-ts';
 
 const pool = system.spawn(
-  Router.roundRobin(4, () => new Worker()),
+  Router.roundRobin(4, Worker),
   'workers',
 );
 ```

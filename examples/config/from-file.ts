@@ -38,7 +38,7 @@ async function main(): Promise<void> {
     .withConfig({ 'actor-ts': { logger: { level: 'info' } } });
   const system = ActorSystem.create('from-file', systemOptions);
   const devtools = await attachDevTools(system);
-  const diag = system.spawn(() => new DiagActor(), 'diag');
+  const diag = system.spawn(DiagActor, 'diag');
   diag.tell('report');
   await new Promise(resolve => setTimeout(resolve, 50));
   await devtools.holdOpen();

@@ -69,7 +69,7 @@ describe('RefCodec — encodeRefs', () => {
   });
 
   test('local refs carry the sender node address', () => {
-    const ref = system.spawn(() => new Noop(), 'foo');
+    const ref = system.spawn(Noop, 'foo');
     const encoded = encodeRefs(ref, cluster) as WireActorRef;
     expect(isWireActorRef(encoded)).toBe(true);
     expect(encoded.path).toContain('foo');
@@ -92,8 +92,8 @@ describe('RefCodec — encodeRefs', () => {
   });
 
   test('nested refs inside arrays and objects all get encoded', () => {
-    const refA = system.spawn(() => new Noop(), 'a');
-    const refB = system.spawn(() => new Noop(), 'b');
+    const refA = system.spawn(Noop, 'a');
+    const refB = system.spawn(Noop, 'b');
     const message = {
       kind: 'introduce',
       peers: [refA, refB],
@@ -194,7 +194,7 @@ describe('RefCodec — decodeRefs', () => {
   });
 
   test('marker pointing at a live local actor resolves to that local ref', () => {
-    const local = system.spawn(() => new Noop(), 'target');
+    const local = system.spawn(Noop, 'target');
     const self = cluster.selfAddress;
     const wire: WireActorRef = {
       $ref: 'actor',
@@ -236,7 +236,7 @@ describe('RefCodec — decodeRefs', () => {
   });
 
   test('nested markers inside arrays and objects are all restored', () => {
-    const local = system.spawn(() => new Noop(), 'nested-target');
+    const local = system.spawn(Noop, 'nested-target');
     const self = cluster.selfAddress;
     const mkWire = (path: string): WireActorRef => ({
       $ref: 'actor', path, host: self.host, port: self.port, system: self.systemName,
@@ -258,7 +258,7 @@ describe('RefCodec — round-trip through JSON.stringify', () => {
   test('encoded refs survive JSON.stringify → JSON.parse and decode back', async () => {
     const { system, cluster } = await buildCluster('rt-test', 51_300);
     try {
-      const local = system.spawn(() => new Noop(), 'rt-actor');
+      const local = system.spawn(Noop, 'rt-actor');
       const message = { kind: 'ping', replyTo: local, bag: [local, Nobody] };
 
       // Simulate the wire path: encode, JSON round-trip, decode.

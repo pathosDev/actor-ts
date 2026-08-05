@@ -53,14 +53,14 @@ async function startEverything(): Promise<{ system: ActorSystem; cluster: Cluste
 
   const shardingOptions = StartShardingOptions.create<EntityCommand>()
     .withTypeName('cart')
-    .withEntityActor(() => new Entity())
+    .withEntityActor(Entity)
     .withExtractEntityId((message) => message.id)
     .withNumShards(4);
   cluster.sharding.start<EntityCommand>(shardingOptions);
 
   const singletonOptions = StartSingletonOptions.create<string>()
     .withTypeName('cron')
-    .withActor(() => new Plain());
+    .withActor(Plain);
   cluster.singleton.start(singletonOptions);
 
   // Named explicitly: the auto-generated `consumer-N` counter is module-global,
@@ -76,7 +76,7 @@ describe('framework actors live under /system', () => {
     try {
       // A user actor, so the assertion below is about placement and not about
       // an empty `/user`.
-      system.spawn(() => new Plain(), 'my-actor');
+      system.spawn(Plain, 'my-actor');
 
       const userChildren = system._inspectTree()
         .filter((cell) => cell.parentPath === `actor-ts://${SYSTEM_NAME}/user`)
@@ -119,7 +119,7 @@ describe('freeActorName', () => {
     try {
       expect(freeActorName(system, SystemGroups.devtools, 'hub')).toBe('hub');
 
-      system._spawnSystemActor(() => new Plain(), SystemGroups.devtools, 'hub');
+      system._spawnSystemActor(Plain, SystemGroups.devtools, 'hub');
 
       // Re-attaching before the previous hub has finished terminating must
       // step aside rather than throw "Child name 'hub' is not unique".  A
@@ -128,7 +128,7 @@ describe('freeActorName', () => {
       expect(freeActorName(system, SystemGroups.devtools, 'hub')).toBe('hub-2');
 
       // A same-named actor in a *different* group is not a collision.
-      system._spawnSystemActor(() => new Plain(), SystemGroups.delivery, 'hub');
+      system._spawnSystemActor(Plain, SystemGroups.delivery, 'hub');
       expect(freeActorName(system, SystemGroups.devtools, 'hub')).toBe('hub-2');
     } finally {
       await system.terminate();

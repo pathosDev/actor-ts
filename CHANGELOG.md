@@ -108,6 +108,17 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Changed
 
+- **Spawning an actor class is the standard form across the whole repo**
+  (#547).  `spawn(() => new MyActor())` was the shape every call site had
+  copied from the `Props` era; the ~500 zero-argument closures in `src/`,
+  `tests/`, `examples/`, `benchmarks/` and the docs are now
+  `spawn(MyActor)`.  The sweep covers every slot that takes an
+  `ActorClassOrFactory` — `spawn` / `spawnAnonymous`, `withEntityActor` /
+  `withActor` / `withSingletonActor`, the `entityActor` / `singletonActor` /
+  `actor` / `child` fields, and the `Router.*` routee position.  No API
+  change: the closure form still works, and is still the way to pass
+  constructor arguments (`() => new Worker(database)`).
+
 - **BREAKING — idle entities passivate by default, after 5 minutes** (#892).
   `passivation-idle` shipped as `0ms`, so nothing ever passivated until an
   operator went looking for the key, and entity sets only grew.  The reference
@@ -245,6 +256,14 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 - **`fundamentals/props` is now `fundamentals/spawning`** (EN + DE, #547) —
   rewritten around what the reader is doing rather than around a type.  The
   old slug redirects.
+
+- **The docs lead with the actor class at every spawn site** (EN + DE, #547)
+  — the samples follow the code trees onto `spawn(MyActor)`, and the prose
+  that described them followed.  `quickstart` and `fundamentals/actor` were
+  the sharpest mismatch: both called the argument "the factory" directly
+  above a sample passing a class, and `actor.mdx` carried a dangling "`...`
+  wraps the factory + supervisor strategy" sentence where `Props.create(…)`
+  used to be named.
 
 ## [0.12.2] — 2026-08-04
 

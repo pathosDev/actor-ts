@@ -32,7 +32,7 @@ class Monitor extends Actor<Message> {
 async function main(): Promise<void> {
   const system = ActorSystem.create('timers-demo');
   const devtools = await attachDevTools(system);
-  system.spawn(() => new Monitor(), 'monitor');
+  system.spawn(Monitor, 'monitor');
   await new Promise(r => setTimeout(r, 400));
   await devtools.holdOpen();
   await system.terminate();

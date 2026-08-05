@@ -76,7 +76,7 @@ async function startNode(
   const sharding = cluster.sharding;
   const startShardingOptions = StartShardingOptions.create<Command>()
     .withTypeName('counter')
-    .withEntityActor(() => new CountEntity())
+    .withEntityActor(CountEntity)
     .withExtractEntityId(message => message.id)
     .withNumShards(8);
   const region = sharding.start<Command>(

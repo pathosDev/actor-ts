@@ -15,14 +15,13 @@ async function main(): Promise<void> {
     .withLogger(new NoopLogger())
     .withLogLevel(LogLevel.Off);
   const system = ActorSystem.create('bench-mem', systemOptions);
-  const noop = () => new Noop();
 
   const group = memoryGroup('memory · idle actors');
 
   for (const n of [1_000, 10_000, 100_000] as const) {
     await group.measure(`spawn ${n.toLocaleString()} idle actors`, async () => {
       const refs = new Array(n);
-      for (let i = 0; i < n; i++) refs[i] = system.spawnAnonymous(noop);
+      for (let i = 0; i < n; i++) refs[i] = system.spawnAnonymous(Noop);
       // Hold refs so GC keeps cells alive.
       void refs;
     });

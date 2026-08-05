@@ -108,7 +108,7 @@ describe('BackoffSupervisor — restart cadence', () => {
     const policy = new RecordingPolicy([40, 80, 160]);
     const supervisor = sys.spawn(
       BackoffSupervisor.factory(withDefaults({
-        child: () => new Flaky(),
+        child: Flaky,
         policy,
         // disable the time-based reset so consecutive crashes accumulate
         resetCounter: 'never',
@@ -138,7 +138,7 @@ describe('BackoffSupervisor — restart cadence', () => {
     const policy = new RecordingPolicy([20, 40, 80, 160]);
     const supervisor = sys.spawn(
       BackoffSupervisor.factory(withDefaults({
-        child: () => new Flaky(),
+        child: Flaky,
         policy,
         // 'after-min-stable' threshold = minBackoff (50ms).  We let the
         // child run for 200ms before crashing again.
@@ -170,7 +170,7 @@ describe('BackoffSupervisor — message forwarding', () => {
     const sys = newSystem('backoff-stash');
     const supervisor = sys.spawn(
       BackoffSupervisor.factory(withDefaults({
-        child: () => new Flaky(),
+        child: Flaky,
         // Slow the respawn down so we have a clear backoff window.
         policy: new RecordingPolicy([120]),
         forward: 'stash',
@@ -199,7 +199,7 @@ describe('BackoffSupervisor — message forwarding', () => {
     const sys = newSystem('backoff-drop');
     const supervisor = sys.spawn(
       BackoffSupervisor.factory(withDefaults({
-        child: () => new Flaky(),
+        child: Flaky,
         policy: new RecordingPolicy([100]),
         forward: 'drop',
         resetCounter: 'never',
@@ -234,7 +234,7 @@ describe('BackoffSupervisor — preStart failures', () => {
     const policy = new RecordingPolicy([40, 80]);
     const supervisor = sys.spawn(
       BackoffSupervisor.factory(withDefaults({
-        child: () => new FailingPreStart(),
+        child: FailingPreStart,
         policy,
         resetCounter: 'never',
       })),
@@ -262,7 +262,7 @@ describe('BackoffSupervisor — lifecycle', () => {
     const policy = new RecordingPolicy([300]);  // long backoff
     const supervisor = sys.spawn(
       BackoffSupervisor.factory(withDefaults({
-        child: () => new Flaky(),
+        child: Flaky,
         policy,
       })),
       'sup-cancel',
@@ -282,17 +282,17 @@ describe('BackoffSupervisor — lifecycle', () => {
 
   test('rejects illegal options at construction', () => {
     expect(() => new BackoffSupervisor({
-      child: () => new Flaky(),
+      child: Flaky,
       minBackoff: 0,
       maxBackoff: 100,
     })).toThrow(/minBackoff/);
     expect(() => new BackoffSupervisor({
-      child: () => new Flaky(),
+      child: Flaky,
       minBackoff: 100,
       maxBackoff: 50,
     })).toThrow(/maxBackoff/);
     expect(() => new BackoffSupervisor({
-      child: () => new Flaky(),
+      child: Flaky,
       minBackoff: 100,
       maxBackoff: 1000,
       resetCounter: { kind: 'after-time', ms: -1 },
@@ -334,7 +334,7 @@ describe('BackoffSupervisor — triggerOn modes (#68)', () => {
     const sys = newSystem('backoff-trigger-failure');
     const supervisor = sys.spawn(
       BackoffSupervisor.factory({
-        child: () => new SelfStopChild(),
+        child: SelfStopChild,
         minBackoff: 30,
         maxBackoff: 200,
         randomFactor: 0,
@@ -366,7 +366,7 @@ describe('BackoffSupervisor — triggerOn modes (#68)', () => {
     const sys = newSystem('backoff-trigger-stop');
     const supervisor = sys.spawn(
       BackoffSupervisor.factory({
-        child: () => new SelfStopChild(),
+        child: SelfStopChild,
         minBackoff: 30,
         maxBackoff: 200,
         randomFactor: 0,
@@ -401,7 +401,7 @@ describe('BackoffSupervisor — triggerOn modes (#68)', () => {
     const replies: number[] = [];
     const supervisor = sys.spawn(
       BackoffSupervisor.factory<{ kind: 'echo'; value: number }>({
-        child: () => new FailingPreStart(),
+        child: FailingPreStart,
         minBackoff: 40,
         maxBackoff: 400,
         randomFactor: 0,
@@ -460,7 +460,7 @@ describe('BackoffSupervisor — triggerOn modes (#68)', () => {
     const sys = newSystem('backoff-trigger-any');
     const supervisor = sys.spawn(
       BackoffSupervisor.factory({
-        child: () => new SelfStopChild(),
+        child: SelfStopChild,
         minBackoff: 30,
         maxBackoff: 200,
         randomFactor: 0,

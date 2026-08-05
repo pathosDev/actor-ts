@@ -76,10 +76,10 @@ returns a new path; it doesn't mutate the original.
 You can pass a `name` when spawning:
 
 ```ts
-const ref = system.spawn(() => new Foo(), 'my-foo');
+const ref = system.spawn(Foo, 'my-foo');
 // ref.path.toString() === 'actor-ts://my-app/user/my-foo'
 
-const child = this.context.spawn(() => new Bar(), 'bar');
+const child = this.context.spawn(Bar, 'bar');
 // child.path.toString() === 'actor-ts://my-app/user/my-foo/bar'
 ```
 
@@ -90,14 +90,14 @@ legible; the random half keeps the path from being guessable from
 the outside, which matters because a path is an address.  Three rules
 govern naming:
 
-1. **Names must be unique among siblings.**  `context.spawn(() => new Bar(), 'bar')`
+1. **Names must be unique among siblings.**  `context.spawn(Bar, 'bar')`
    followed by another spawn under the same name on the same
    parent throws — that path is already in use.
 2. **The name must be a single path segment.**  The framework enforces
    this and throws on a name that would corrupt the path: a `/` or `\`
    separator, the traversal segments `.` and `..`, an empty name, or any
    control character.  A path is rendered by joining segments with `/`
-   and taken apart again by splitting on it, so `spawn(() => new Bar(), 'a/b')`
+   and taken apart again by splitting on it, so `spawn(Bar, 'a/b')`
    would otherwise produce a path indistinguishable from a child `b` of
    an actor `a` — colliding with, or impersonating, a different actor,
    including across the cluster wire where the remote side re-splits the
@@ -222,7 +222,7 @@ class Worker extends Actor<...> {
     this.cache.tell({ kind: 'put', ... });
   }
 }
-const cache  = system.spawn(() => new Cache(), 'cache');
+const cache  = system.spawn(Cache, 'cache');
 const worker = system.spawnAnonymous(() => new Worker(cache));
 ```
 

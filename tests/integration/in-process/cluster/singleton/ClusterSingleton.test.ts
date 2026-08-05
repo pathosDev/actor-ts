@@ -62,7 +62,7 @@ describe('ClusterSingleton — single node', () => {
 
     const singletonOptions = StartSingletonOptions.create<string>()
       .withTypeName('echo')
-      .withActor(() => new Echo());
+      .withActor(Echo);
     const singletonRef = nodeA.cluster.singleton.start(singletonOptions);
     // Wait until the proxy can locate the leader.
     await waitFor(() => nodeA.cluster.leader().nonEmpty);
@@ -87,7 +87,7 @@ describe('ClusterSingleton — single node', () => {
     }
     const options = (): StartSingletonOptions<string> => StartSingletonOptions.create<string>()
       .withTypeName('echo3')
-      .withActor(() => new Echo());
+      .withActor(Echo);
 
     const first = nodeA.cluster.singleton.start(options());
     await waitFor(() => nodeA.cluster.leader().nonEmpty);
@@ -129,7 +129,7 @@ describe('ClusterSingleton — single node', () => {
     }
     const singletonOptions = StartSingletonOptions.create<string>()
       .withTypeName('idle')
-      .withActor(() => new Idle());
+      .withActor(Idle);
     nodeA.cluster.singleton.start(singletonOptions);
     expect(nodeA.cluster.singleton.isStarted('idle')).toBe(true);
 
@@ -159,7 +159,7 @@ describe('ClusterSingleton — single node', () => {
     }
     const singletonOptions = StartSingletonOptions.create<string>()
       .withTypeName('echo2')
-      .withActor(() => new Echo());
+      .withActor(Echo);
     const singletonRef = nodeA.cluster.singleton.start(singletonOptions);
 
     for (const message of ['a', 'b', 'c']) singletonRef.tell(message);
@@ -472,7 +472,7 @@ describe('ClusterSingleton — proxy buffer bound', () => {
         .withTypeName('unhostable')
         .withRole('role-nobody-carries')
         .withBufferSize(3)
-        .withActor(() => new Never());
+        .withActor(Never);
       const proxy = node.cluster.singleton.start(singletonOptions) as ClusterSingletonProxy<string>;
 
       for (let index = 0; index < 10; index++) proxy.tell(`m${index}`);
@@ -496,7 +496,7 @@ describe('ClusterSingleton — proxy buffer bound', () => {
         .withTypeName('unhostable-2')
         .withRole('role-nobody-carries')
         .withBufferSize(1)
-        .withActor(() => new Never());
+        .withActor(Never);
       const proxy = node.cluster.singleton.start(singletonOptions) as ClusterSingletonProxy<string>;
 
       proxy.tell('kept');

@@ -54,7 +54,7 @@ export function subscribeToEventStream<T extends object>(
   // The `/system/devtools` group is marked tooling and `ActorCell` inherits
   // the mark, so the probe needs no `withInternal()` of its own.
   const ref: ActorRef<T> = system._spawnSystemActor(
-    () => new ProbeActor(),
+    ProbeActor,
     SystemGroups.devtools,
     freeActorName(system, SystemGroups.devtools, name),
   );

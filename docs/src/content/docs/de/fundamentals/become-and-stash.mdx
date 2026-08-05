@@ -59,7 +59,7 @@ class Switch extends Actor<Message> {
 }
 
 const system = ActorSystem.create('demo');
-const sw = system.spawnAnonymous(() => new Switch());
+const sw = system.spawnAnonymous(Switch);
 
 sw.tell({ kind: 'press' });   // → "turning on"
 sw.tell({ kind: 'press' });   // → "turning off"

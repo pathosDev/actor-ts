@@ -25,7 +25,7 @@ class Collector extends Actor<SseEvent> {
   }
 }
 
-const target = sys.spawnAnonymous(() => new Collector());
+const target = sys.spawnAnonymous(Collector);
 
 const sseOptions = SseOptions.create()
   .withUrl('https://example.com/events')

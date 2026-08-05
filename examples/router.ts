@@ -18,7 +18,7 @@ async function main(): Promise<void> {
   const devtools = await attachDevTools(system);
 
   const pool = system.spawn(
-    Router.roundRobin(4, () => new Worker()),
+    Router.roundRobin(4, Worker),
     'pool',
   );
 

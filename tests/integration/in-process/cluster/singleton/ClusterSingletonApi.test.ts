@@ -75,9 +75,9 @@ describe('ClusterSingleton — calling shapes', () => {
     // 4. full options — builder
     singleton.start(StartSingletonOptions.create<string>()
       .withTypeName('built')
-      .withActor(() => new Plain()));
+      .withActor(Plain));
     // 4b. full options — plain object, which must read identically
-    singleton.start({ typeName: 'plain', actor: () => new Plain() });
+    singleton.start({ typeName: 'plain', actor: Plain });
 
     for (const typeName of ['echo', 'labelled', 'bare', 'built', 'plain']) {
       expect(singleton.isStarted(typeName)).toBe(true);

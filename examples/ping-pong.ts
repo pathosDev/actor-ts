@@ -57,7 +57,7 @@ async function main(): Promise<void> {
   const system = ActorSystem.create('ping-pong');
   const devtools = await attachDevTools(system);
 
-  const ponger = system.spawn(() => new Ponger(), 'ponger');
+  const ponger = system.spawn(Ponger, 'ponger');
   const pinger = system.spawn(() => new Pinger(() => ponger), 'pinger');
 
   pinger.tell({ kind: 'start' });

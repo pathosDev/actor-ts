@@ -16,7 +16,7 @@ sizing.
 ## Default behavior
 
 ```ts
-const ref = system.spawnAnonymous(() => new Worker());
+const ref = system.spawnAnonymous(Worker);
 //  ↑ bounded FIFO mailbox — capacity 10 000, drop-head overflow
 ```
 

@@ -32,7 +32,7 @@ const system = ActorSystem.create('demo');
 
 const supervisor = system.spawn(
   BackoffSupervisor.factory({
-    child: () => new Flaky(),
+    child: Flaky,
     minBackoff: 200,
     maxBackoff: 10_000,
     randomFactor: 0.2,

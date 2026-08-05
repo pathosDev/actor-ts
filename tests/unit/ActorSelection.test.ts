@@ -19,7 +19,7 @@ describe('ActorSelection — basics', () => {
   test('resolveOne returns a ref for an existing actor', async () => {
     const sys = newSys();
     class Noop extends Actor<unknown> { override onReceive(): void {} }
-    const ref = sys.spawn(() => new Noop(), 'foo');
+    const ref = sys.spawn(Noop, 'foo');
 
     const sel = sys.actorSelection('/user/foo');
     const resolved = await sel.resolveOne(500);
@@ -30,7 +30,7 @@ describe('ActorSelection — basics', () => {
   test('resolveOne works with a fully-qualified URI', async () => {
     const sys = newSys('uri-sys');
     class Noop extends Actor<unknown> { override onReceive(): void {} }
-    sys.spawn(() => new Noop(), 'foo');
+    sys.spawn(Noop, 'foo');
 
     const sel = sys.actorSelection(`actor-ts://uri-sys/user/foo`);
     const resolved = await sel.resolveOne(500);
@@ -56,7 +56,7 @@ describe('ActorSelection — basics', () => {
     const probe = kit.createTestProbe<string>();
 
     class Echo extends Actor<string> { override onReceive(m: string): void { probe.tell(m); } }
-    kit.system.spawn(() => new Echo(), 'echo');
+    kit.system.spawn(Echo, 'echo');
 
     kit.system.actorSelection('/user/echo').tell('hello');
     expect(await probe.expectMessage('hello', 500)).toBe('hello');
@@ -90,11 +90,11 @@ describe('ActorSelection — nested paths', () => {
     class Leaf extends Actor<string> { override onReceive(m: string): void { probe.tell(m); } }
     class Parent extends Actor<string> {
       override preStart(): void {
-        this.context.spawn(() => new Leaf(), 'leaf');
+        this.context.spawn(Leaf, 'leaf');
       }
       override onReceive(): void {}
     }
-    kit.system.spawn(() => new Parent(), 'parent');
+    kit.system.spawn(Parent, 'parent');
 
     await sleep(20);
     kit.system.actorSelection('/user/parent/leaf').tell('hi');
@@ -116,7 +116,7 @@ describe('ActorSelection — parseSelectionPath edge cases', () => {
   test('leading-slash and no-leading-slash parse the same', async () => {
     const sys = newSys();
     class Noop extends Actor<unknown> { override onReceive(): void {} }
-    sys.spawn(() => new Noop(), 'x');
+    sys.spawn(Noop, 'x');
     const selectionA = sys.actorSelection('/user/x');
     const selectionB = sys.actorSelection('user/x');
     expect((await selectionA.resolveOne(500)).path.toString()).toBe((await selectionB.resolveOne(500)).path.toString());

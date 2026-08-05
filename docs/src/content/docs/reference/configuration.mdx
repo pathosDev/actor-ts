@@ -228,7 +228,7 @@ explicitly, so the usual order holds per field:
 
 const shardingOptions = StartShardingOptions.create<CartCommand>()
   .withTypeName('cart')
-  .withEntityActor(() => new CartEntity())
+  .withEntityActor(CartEntity)
   .withExtractEntityId((command) => command.entityId)
   .withNumShards(256);
 
