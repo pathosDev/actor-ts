@@ -58,9 +58,12 @@ seine eigene öffnet.
 Die Übersicht selbst besteht aus drei Abschnitten, in der Reihenfolge,
 in der man die Fragen tatsächlich stellt:
 
-- **Common** — Actor-System, Uptime, Runtime, Cluster-Status. Die Uptime
-  ist die *des Systems*, vom Server gelesen — sie übersteht damit einen
-  Reload der Seite und eine abgerissene Verbindung.
+- **Common** — Actor-System, actor-ts-Version, Uptime, Runtime,
+  Cluster-Status. Die Uptime ist die *des Systems*, vom Server gelesen —
+  sie übersteht damit einen Reload der Seite und eine abgerissene
+  Verbindung. Die Version ist die des laufenden Frameworks, direkt aus
+  dem Handshake; beim Überfahren erscheint die Version des
+  Tap-Protokolls.
 - **Numbers** — Aktoren, Nachrichten pro Sekunde, verarbeitete
   Nachrichten, Spawn- und Stop-Raten, Restarts, Mailbox-Rückstau,
   gestashte Nachrichten, suspendierte Aktoren, Dead Letters,

@@ -9,6 +9,17 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ## [Unreleased]
 
+### Added
+
+- **DevTools overview: an `actor-ts` tile in the Common section** (#911).
+  The running framework version now sits beside the actor system's name —
+  together they are the identity of what you are looking at — instead of
+  living only in the connection badge's tooltip.  It is the first thing a
+  bug report quotes, and a tooltip does not survive the screenshot people
+  actually paste.  Hovering the tile still gives the tap protocol
+  version.  Read from the existing `welcome.serverVersion`, so no
+  protocol change.
+
 ### Fixed
 
 - **A Deno node can join an mTLS cluster** (#576).  `Deno.connectTls` accepts
@@ -26,6 +37,14 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   state weaker than it reads as.  The error now says which half is
   unavailable.  `rejectUnauthorized` has no Deno equivalent and is documented
   as unmapped rather than silently ignored.
+
+- **The DevTools handshake reported the wrong framework version** (#657).
+  `DEVTOOLS_SERVER_VERSION` is hand-maintained and had said `0.11.0`
+  since that release, so every DevTools session misreported the version
+  through `0.12.0` and `0.13.0` — in the one field you trust when
+  triaging.  It is now correct, and a test asserts it against
+  `package.json`, so a release that forgets the bump fails the suite
+  instead of shipping the lie.
 
 ### Security
 
