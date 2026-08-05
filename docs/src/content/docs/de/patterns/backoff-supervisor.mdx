@@ -31,7 +31,7 @@ class Flaky extends Actor<{ kind: 'do-it' }> {
 const system = ActorSystem.create('demo');
 
 const supervisor = system.spawn(
-  BackoffSupervisor.props({
+  BackoffSupervisor.factory({
     child: () => new Flaky(),
     minBackoff: 200,
     maxBackoff: 10_000,
@@ -185,7 +185,7 @@ Latenz auf dem Happy-Path.
 ```ts
 import { BackoffSupervisor, linearBackoff } from 'actor-ts';
 
-BackoffSupervisor.props({
+BackoffSupervisor.factory({
   child: ...,
   minBackoff: 500,
   maxBackoff: 10_000,

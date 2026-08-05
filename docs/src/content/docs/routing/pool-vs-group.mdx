@@ -78,7 +78,7 @@ workers, all the same, parallelizing one stream of work.
 import { ClusterRouter } from 'actor-ts';
 
 const router = system.spawn(
-  ClusterRouter.props({
+  ClusterRouter.factory({
     cluster,
     routerType: 'round-robin',
     routeePath: '/user/worker',
