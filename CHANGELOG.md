@@ -269,6 +269,32 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Security
 
+- **BREAKING — the cluster TLS listener actually requests a client certificate
+  now** (#565).  `requestCert` hard-defaulted to `false` in both the Node and
+  the Bun adapter, and `requestClientCert` was never set to `true` anywhere in
+  `src/`, `examples/` or `docs/`.  On a server, `rejectUnauthorized` does
+  nothing unless `requestCert` is on — so the mTLS recipe the *Cluster
+  security* page documents, `{cert, key, ca, rejectUnauthorized: true}`,
+  produced server-authenticated TLS only.  Since the `hello` handshake carries
+  no credential of its own, that left the peer certificate — the cluster's only
+  admission control — unrequested: anyone who could reach the remoting port
+  completed the handshake with no certificate at all and then claimed whatever
+  node identity they liked.  This is also the mitigation the #896 note below
+  leans on, so until now that note promised more than the transport delivered.
+  `requestClientCert` now **defaults to `ca !== undefined`** — a trust bundle
+  on a cluster listener has no other purpose — and the option object both
+  adapters hand to the runtime is built in one shared place, since the defect
+  survived review by being spelled out identically twice.
+  Two configurations are now refused at bind time rather than started in a
+  weaker state than they read as: `requestClientCert: true` with no `ca`, and
+  **mutual TLS on Deno**, where `Deno.listenTls` cannot request a client
+  certificate and the dialer sends none, so peers would be unauthenticated in
+  both directions.
+  **Migration:** a Node or Bun cluster already passing `ca` starts demanding
+  peer certificates — which is what its configuration always claimed — so every
+  node must present one signed by that CA.  Set `requestClientCert: false` to
+  keep one-way TLS.  A Deno cluster configured with `ca` no longer binds; run
+  it on Node.js or Bun for mTLS, or opt out explicitly.
 - **Quorum correlation ids in `DistributedData` are no longer guessable**
   (#896).  `nextPendingId()` returned `p<Date.now()>-<counter>`.  That value
   travels on the wire and the peer echoes it back on its acknowledgment, so an

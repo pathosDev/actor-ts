@@ -1,3 +1,4 @@
+import { listenerTlsOptions } from './TcpBackend.js';
 import type {
   TcpBackend,
   TcpListener,
@@ -32,13 +33,7 @@ export class BunTcpBackend implements TcpBackend {
       },
     };
     if (options.tls?.cert && options.tls.key) {
-      listenOptions.tls = {
-        cert: options.tls.cert,
-        key: options.tls.key,
-        ca: options.tls.ca,
-        requestCert: options.tls.requestClientCert ?? false,
-        rejectUnauthorized: options.tls.rejectUnauthorized ?? true,
-      };
+      listenOptions.tls = listenerTlsOptions(options.tls, 'Bun');
     }
     const server = bun.listen(listenOptions);
     return {

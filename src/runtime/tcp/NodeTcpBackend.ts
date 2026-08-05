@@ -1,4 +1,5 @@
 import { Lazy } from '../../util/Lazy.js';
+import { listenerTlsOptions } from './TcpBackend.js';
 import type {
   TcpBackend,
   TcpListener,
@@ -29,14 +30,9 @@ export class NodeTcpBackend implements TcpBackend {
       options.handlers.onOpen(sock);
     };
     if (useTls) {
+      const serverTlsOptions = listenerTlsOptions(options.tls!, 'Node.js');
       const tls = await loadTls();
-      const server = tls.createServer({
-        cert: options.tls!.cert,
-        key: options.tls!.key,
-        ca: options.tls!.ca,
-        requestCert: options.tls!.requestClientCert ?? false,
-        rejectUnauthorized: options.tls!.rejectUnauthorized ?? true,
-      }, attach);
+      const server = tls.createServer(serverTlsOptions, attach);
       return startServer(server, options.host, options.port);
     }
     const net = await loadNet();
