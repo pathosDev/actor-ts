@@ -235,10 +235,20 @@ const cart = system.spawn(CartEntity, 'cart-under-test', cartOptions);
 `.../shard-7/entity-user-42` sieht aus, als trüge er die ID, und für
 einfache IDs funktioniert das Abschneiden des `entity-`-Präfixes auch.
 Es *ist* aber nicht die ID: Actor-Namen haben ein eingeschränktes
-Alphabet, deshalb faltet der Shard beim Benennen des Kindes jedes Zeichen
-außerhalb von `[A-Za-z0-9_-]` auf `_`. `user:42` und `user/42` landen
-beide auf `entity-user_42`. Der Pfad ist ein *Etikett*; `entityId` ist
-der Wert.
+Alphabet, deshalb maskiert der Shard beim Benennen des Kindes alles, was
+ein Name nicht tragen kann — eine Code-Unit außerhalb von
+`[A-Za-z0-9_-.@:+]` wird zu `~` plus vier Hex-Ziffern, `user/42` heißt
+also `entity-user~002F42`.
+
+Die Maskierung ist *injektiv*: zwei verschiedene IDs landen nie auf
+einem Namen. Das ist eine Korrektheitseigenschaft, keine Feinheit — ein
+geteilter Name bedeutet, dass die zweite Entity unter einem schon
+vergebenen Namen startet, und der resultierende Fehler reißt den Shard
+mitsamt allen anderen Entities darin mit.
+
+Was sie *nicht* ist: eine zweite Schreibweise der ID. Nichts dekodiert
+ein Pfadsegment, bewusst, und die Maskierung ist kein Teil der API. Der
+Pfad ist ein *Etikett*; `entityId` ist der Wert.
 
 ## Konfiguration
 

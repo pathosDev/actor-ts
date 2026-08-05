@@ -188,6 +188,14 @@ export class ActorPath {
  *
  * Empty segments are dropped, so a doubled or trailing separator collapses; a
  * string that isn't a path at all yields `[]`.
+ *
+ * **A segment is returned verbatim — nothing here unescapes it, and nothing
+ * should start.** Sharding builds entity child names by escaping the
+ * user-supplied entity id (`entityName` in `cluster/sharding/Shard.ts`), and
+ * that escape is only injective as long as the name stays escaped everywhere.
+ * Decoding a segment on the way back in would make two distinct entity ids
+ * resolve to one path again — the collision #568 was filed for. A path is an
+ * opaque address; the id is carried in the message and on the entity context.
  */
 export function parsePathSegments(path: string): string[] {
   const match = /^actor-ts:\/\/[^/]+\/?(.*)$/.exec(path);

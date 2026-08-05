@@ -231,10 +231,19 @@ const cart = system.spawn(CartEntity, 'cart-under-test', cartOptions);
 
 `.../shard-7/entity-user-42` looks like it carries the id, and for
 simple ids slicing off the `entity-` prefix does work.  It is not the
-id, though: actor names have a restricted alphabet, so the shard folds
-every character outside `[A-Za-z0-9_-]` to `_` when it names the child.
-`user:42` and `user/42` both land on `entity-user_42`.  The path is a
-*label*; `entityId` is the value.
+id, though: actor names have a restricted alphabet, so the shard escapes
+anything a name cannot carry when it names the child — a code unit
+outside `[A-Za-z0-9_-.@:+]` becomes `~` plus four hex digits, so
+`user/42` is named `entity-user~002F42`.
+
+The escape is *injective*: two different ids never land on one name.
+That is a correctness property, not a nicety — a shared name means the
+second entity spawns under a name already taken, and the resulting throw
+kills the shard along with every other entity living in it.
+
+What it is not is a second way to spell the id.  Nothing decodes a path
+segment, deliberately, and the escape is not part of the API.  The path
+is a *label*; `entityId` is the value.
 
 ## Configuration
 

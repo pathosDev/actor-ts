@@ -190,10 +190,47 @@ export class Shard extends Actor<ShardInbox> {
 }
 
 /**
+ * Characters an entity id may carry into a child name unchanged.  Everything
+ * an actor name forbids is excluded (`/`, `\`, control characters), as is `~`,
+ * which introduces an escape below.  The set is otherwise deliberately wide:
+ * ordinary ids — `user-42`, `a.b@x.com`, `tenant:eu` — should read as
+ * themselves in the DevTools tree and in log lines.
+ */
+const NAME_LITERAL = /[A-Za-z0-9_\-.@:+]/;
+
+/**
  * Child name of the entity actor for `entityId` under its shard.  Entity ids
- * are user-supplied and actor names are not allowed to be, so anything outside
- * `[A-Za-z0-9_-]` is folded to `_`.
+ * are user-supplied; actor names are not allowed to be, so the id is escaped.
+ *
+ * The escape is **injective**, and that is the whole point.  This used to fold
+ * everything outside `[A-Za-z0-9_-]` to `_`, which is many-to-one: `user!31`
+ * and `user#31` produced the same name, and — when they also hashed to the
+ * same shard — the second one missed the shard's id-keyed `entities` map,
+ * called `createEntity`, and `_createChild` threw `Child name … is not
+ * unique`.  That throw takes down the Shard actor and every unrelated entity
+ * living under it.  No attacker required: `a.b@x.com` and `a-b@x.com` collided
+ * the same way (#568).
+ *
+ * A code unit outside {@link NAME_LITERAL} becomes `~` followed by four hex
+ * digits.  Escaping per UTF-16 code unit rather than percent-encoding UTF-8
+ * keeps the function **total**: `encodeURIComponent` throws `URIError` on a
+ * lone surrogate, and a throw here lands inside `createEntity` — the very
+ * failure this fix exists to remove.
+ *
+ * Nothing decodes this.  The path is a label; `entityId` on the entity context
+ * is the value (see `EntityContext`).  That matters for more than style:
+ * `parsePathSegments` deliberately does not percent-decode, and every remote
+ * path consumer goes through it, so the name survives a round trip over the
+ * wire byte-for-byte.  A future "improvement" that decodes a path segment
+ * would reintroduce the collision.
  */
 export function entityName(entityId: string): string {
-  return `entity-${entityId.replace(/[^A-Za-z0-9_\-]/g, '_')}`;
+  let escaped = '';
+  for (let i = 0; i < entityId.length; i++) {
+    const char = entityId[i]!;
+    escaped += NAME_LITERAL.test(char)
+      ? char
+      : `~${entityId.charCodeAt(i).toString(16).toUpperCase().padStart(4, '0')}`;
+  }
+  return `entity-${escaped}`;
 }

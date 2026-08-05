@@ -62,7 +62,9 @@ let currentRound: 1 | 2 = 1;
 
 class Entity extends Actor<Command> {
   override preStart(): void {
-    const id = this.context.path.name.replace(/^entity-/, '');
+    // `this.entityId`, not a slice off the path: the child name escapes the
+    // id (#568), so the path is a label rather than a second spelling of it.
+    const id = this.entityId;
     if (currentRound === 1) preStartedRound1.add(id);
     else preStartedRound2.add(id);
   }
