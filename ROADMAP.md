@@ -4,22 +4,50 @@ This document tracks the planned direction.  Nothing here is committed work — 
 
 ## Status
 
-- Post-v0.11.0, preparing the next minor (`[Unreleased]` window): the naming
-  sweep extended to every identifier (locals, generic parameters, the `kind`
-  discriminant) + TypeScript 7 native compiler (#361) + raised runtime floors
-  (Node ≥ 24, Bun ≥ 1.3) + dependency bumps.  The window's headline additions
-  are the **DevTools suite** (#445), **five more persistence backends** (#438)
-  on the new relational base layer (#389), and a **cluster-addressing pass** —
-  a shard is a real actor with introspection (#511, #512, #151), singletons and
-  sharded types carry typed keys behind `cluster.singleton` / `cluster.sharding`
-  (#523), and framework actors moved to grouped `/system` paths (#509) — plus a
-  **core-correctness pass** over the 2026 audit's findings.  See *Done*, below.
-- ~3 586 tests green (unit + multi-node + in-process integration) + 15 real-network multi-node integration scenarios green; open bugs are tracked as `[Bug]` issues in the tracker.
+- **v0.13.0 is out** — the *names and lifecycle* release.  `Props` is gone
+  (#547): spawning takes the actor class, and per-actor configuration became
+  `ActorOptions`, an ordinary options family.  Sharded entities passivate by
+  default and empty shards stop with them (#892), `Actor.displayName()` gives
+  an actor a readable name in logs and DevTools (#891), and the names the
+  framework generates for itself are no longer guessable (#895, #897, #900).
+  Underneath: a cluster-transport bug where two nodes dialling each other at
+  the same moment stayed partitioned for the life of the process (#697),
+  `rememberEntities` losing every entity on a rebalance (#632), and the
+  discovery that the documented mTLS recipe never actually requested a peer
+  certificate (#565).  Four breaking changes, so a minor — see `CHANGELOG.md`.
+- Next window is open (`[Unreleased]`).  The obvious heads: the remaining
+  gossip-trust criticals (#562–#564), `preRestart` actually stopping children
+  (#634) now that #899 has documented the hole, and the `reference.conf`
+  expansion tracked in #887.
+- ~3 930 tests green (unit + multi-node + in-process integration) + 15 real-network multi-node integration scenarios green; open bugs are tracked as `[Bug]` issues in the tracker.
 - A full audit-catalog of follow-up items is tracked in the issue tracker — security findings, framework features, code-quality refactors.  Filter by label `security` + `severity: <tier>` or by title prefix `[Security] ` / `[Feature] `.
 
 ## Done since the last roadmap update
 
-- **Current `[Unreleased]` window:**
+- **v0.13.0 — names and lifecycle:**
+  - **`Props` removed (#547)** — `spawn(MyActor, name)`; per-actor
+    configuration is `ActorOptions`, a regular `XOptions` family.  The one
+    place in the framework that did not follow that convention
+  - **Sharding lifecycle (#892)** — idle entities passivate after 5 minutes by
+    default, empty shards stop with them, `shardPassivationIdleMs`;
+    plus `ShardInfo.resident` (#901)
+  - **`Actor.displayName()` (#891)** — a readable name in log lines and the
+    DevTools tree, settable from the spawn site or at runtime; the path stays
+    the identity everywhere it is an address
+  - **Generated names hardened** — anonymous actors (#895), reliable-delivery
+    controllers (#897), the reserved `$` prefix (#900), DistributedData quorum
+    ids (#896), object-storage temp paths (#898), `ClusterClient` identity
+    (#910)
+  - **Cluster correctness** — a crossing dial no longer partitions two healthy
+    nodes forever (#697), `rememberEntities` survives a rebalance handoff
+    (#632), handoff buffers are replayed (#893), remembered entities return
+    after an unexpected shard death (#894), remote shard refs route through the
+    owning region (#901)
+  - **The TLS listener actually requests a client certificate (#565)** — the
+    documented mTLS recipe had been server-authenticated only, and the `hello`
+    handshake carries no credential of its own
+
+- **v0.12.x window:**
   - **DevTools suite (#445)** — embeddable web UI for a running system, seven
     panels on one versioned tap protocol behind a `./devtools` export.  Absorbed
     the separately-listed live cluster visualizer (#204)
