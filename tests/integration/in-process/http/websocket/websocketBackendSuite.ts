@@ -204,6 +204,36 @@ export function runWebsocketBackendSuite(label: string, makeBackend: () => HttpS
       expect(events.some((e) => e.startsWith('disconnect:'))).toBe(true);
     });
 
+    test('a burst of open-then-close connections all disconnect (#570)', async () => {
+      // The connection actor attaches its socket listeners from preStart —
+      // two mailbox hops after the upgrade returns — and a client may close
+      // inside that window.  An adapter that buffers messages but drops
+      // close never stops the actor, never frees its maxConnections slot,
+      // and reports one disconnect for the whole burst.
+      //
+      // The sequential test above cannot catch that: `await wsOpen(...)`
+      // hands the server enough time to attach before the close arrives, so
+      // it wins the race every time.  Concurrency is what widens the window.
+      const events: string[] = [];
+      const { base } = await bindServer(events, (s) => websocket('/ws', s));
+      const burst = 20;
+
+      await Promise.all(
+        Array.from({ length: burst }, () => new Promise<void>((resolve) => {
+          const ws = new WebSocket(`${base}/ws`);
+          const done = (): void => { ws.onopen = null; ws.onerror = null; resolve(); };
+          ws.onopen = () => { ws.close(); done(); };
+          ws.onerror = () => done();
+        })),
+      );
+      await sleep(1000);
+
+      const connects = events.filter((e) => e.startsWith('connect:')).length;
+      const disconnects = events.filter((e) => e.startsWith('disconnect:')).length;
+      expect(connects).toBe(burst);
+      expect(disconnects).toBe(connects);
+    });
+
     test('unbind with open connections resolves promptly (no hang)', async () => {
       const { base, binding } = await bindServer([], (s) => websocket('/ws', s));
       await wsOpen(`${base}/ws`);

@@ -48,6 +48,25 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Security
 
+- **A socket that closes during the upgrade window is no longer lost on Hono**
+  (#570).  The per-connection actor attaches its socket listeners from
+  `preStart`, two mailbox hops after the upgrade returns.  The `ws`-package
+  adapter buffers everything that arrives in that window; the Hono adapter
+  buffered messages only, so `close` and `error` hit a null listener and
+  vanished.  Nothing else stops the connection actor — the hub's `_clients`
+  entry, the `ConnectionTracker` entry and the `maxConnections` decrement all
+  hang off that one dropped callback — so every client that closed inside the
+  window leaked an actor and a connection slot for the life of the process.
+  With `maxConnections` configured, the hardening knob became the denial of
+  service: a burst of open-then-close connections exhausted the budget
+  permanently.  Sequential clients almost never hit it, which is why it
+  survived a green suite; concurrency is what widens the window.
+
+  The buffer is now one function, `bufferWebsocketEvents()`, that both
+  adapters share, rather than a per-adapter array each is free to get
+  half-right.  A burst test in the shared backend suite covers all three
+  backends.
+
 - **Extension wire handlers credit the connection, not the payload** (#574,
   #582, #711).  `Cluster._onWire` has always passed the connection's peer to
   every handler; the receptionist, the pub-sub mediator and the
