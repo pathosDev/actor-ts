@@ -113,11 +113,11 @@ besitzende Region, wenn nicht. `tell` funktioniert damit von überall:
 
 ```ts
 // Bring an entity up without sending it a message.
-shard.tell({ $t: 'sharding.StartEntity', entityId: 'user-42' });
+shard.tell({ kind: 'sharding.StartEntity', entityId: 'user-42' });
 
 // Address one entity through the shard.
 shard.tell({
-  $t: 'sharding.EntityEnvelope',
+  kind: 'sharding.EntityEnvelope',
   entityId: 'user-42',
   message: { id: 'user-42', kind: 'increment' },
 });
@@ -126,7 +126,7 @@ shard.tell({
 Und um zu fragen, was ein Shard hält:
 
 ```ts
-const stats = await shard.ask<ShardStats>({ $t: 'sharding.GetShardStats' });
+const stats = await shard.ask<ShardStats>({ kind: 'sharding.GetShardStats' });
 // { shardId: 7, entityCount: 2, entityIds: ['user-42', 'user-99'] }
 ```
 

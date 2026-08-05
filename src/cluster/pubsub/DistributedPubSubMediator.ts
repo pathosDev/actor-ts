@@ -98,7 +98,7 @@ export class DistributedPubSubMediator extends Actor<
       .with(P.instanceOf(Publish), (m) => this.onPublish(m))
       .with(P.instanceOf(GetTopics), (m) => this.onGetTopics(m))
       // Remote Publish forwarded from another mediator (plain envelope, not a class instance).
-      .with({ t: 'pubsub-publish' }, (m) => this.onPubSubPublish(m))
+      .with({ kind: 'pubsub-publish' }, (m) => this.onPubSubPublish(m))
       .otherwise(() => this.onUnhandled());
   }
 
@@ -164,7 +164,7 @@ export class DistributedPubSubMediator extends Actor<
     );
     this.deliverLocal(message.topic, message.message);
     if (!set) return;
-    const payload: PubSubPublishMessage = { t: 'pubsub-publish', topic: message.topic, body: message.message };
+    const payload: PubSubPublishMessage = { kind: 'pubsub-publish', topic: message.topic, body: message.message };
     for (const nodeStr of set.remoteNodes) {
       const node = NodeAddress.parse(nodeStr);
       if (node.equals(this.options.cluster.selfAddress)) continue;
@@ -232,7 +232,7 @@ export class DistributedPubSubMediator extends Actor<
       entries.push(topic);
     }
     return {
-      t: 'pubsub-gossip',
+      kind: 'pubsub-gossip',
       from: this.options.cluster.selfAddress.toJSON(),
       entries,
       version: this.version,
@@ -285,11 +285,11 @@ export class DistributedPubSubMediator extends Actor<
   }
 
   private sendWire(to: NodeAddress, message: PubSubWireMessage): void {
-    if (message.t === 'pubsub-publish') {
+    if (message.kind === 'pubsub-publish') {
       // Wrap in envelope so the receiver's Cluster routes it into the
       // mediator actor.  Publishes are "user" messages from the wire POV.
       this.options.cluster._sendEnvelope(to, {
-        t: 'envelope',
+        kind: 'envelope',
         to: mediatorPath(this.options.cluster.system.name),
         from: null,
         body: message,

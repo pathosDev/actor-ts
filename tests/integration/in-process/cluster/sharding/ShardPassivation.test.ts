@@ -219,7 +219,7 @@ describe('ClusterSharding — shard passivation (#892)', () => {
     // path while the shard is down — so asking for one has to materialise it.
     const shardId = hashShardId('user-1', NUM_SHARDS);
     const ref = await node.cluster.sharding.shardRefFor<Command>(TYPE_NAME, shardId);
-    const stats = await ref.ask<ShardStats>({ $t: 'sharding.GetShardStats' }, 2_000);
+    const stats = await ref.ask<ShardStats>({ kind: 'sharding.GetShardStats' }, 2_000);
 
     expect(stats.shardId).toBe(shardId);
     expect(stats.entityCount).toBe(0);

@@ -49,7 +49,7 @@ export class EntityRef<TMessage = unknown> extends ActorRef<TMessage> {
 
   override tell(message: TMessage, sender: ActorRef | null = null): void {
     const envelope: EntityEnvelope = {
-      $t: 'sharding.EntityEnvelope',
+      kind: 'sharding.EntityEnvelope',
       entityId: this.entityId,
       message,
     };

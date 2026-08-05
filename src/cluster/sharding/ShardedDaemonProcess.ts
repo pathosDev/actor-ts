@@ -16,8 +16,8 @@ import type { ShardedDaemonProcessOptions, ShardedDaemonProcessOptionsType } fro
 type DaemonEnvelope<T> = { readonly index: number; readonly body: T | Wakeup; };
 
 /** Internal no-op message used to materialize a daemon on startup. */
-type Wakeup = { readonly t: 'sharded-daemon.wakeup'; };
-const WAKEUP: Wakeup = { t: 'sharded-daemon.wakeup' };
+type Wakeup = { readonly kind: 'sharded-daemon.wakeup'; };
+const WAKEUP: Wakeup = { kind: 'sharded-daemon.wakeup' };
 
 export interface ShardedDaemonProcessHandle<T> {
   /**
@@ -167,5 +167,5 @@ function onTopologyChanged(wakeAll: () => void): void {
 function onOtherClusterEvent(): void {}
 
 function isWakeup(x: unknown): x is Wakeup {
-  return !!x && typeof x === 'object' && (x as { t?: string }).t === 'sharded-daemon.wakeup';
+  return !!x && typeof x === 'object' && (x as { kind?: string }).kind === 'sharded-daemon.wakeup';
 }

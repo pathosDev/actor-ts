@@ -325,10 +325,10 @@ Implemented since v1:
   so the client needs no per-channel subscription bookkeeping.  Click
   any user in the Online panel to open a DM.
 - **Typing indicators** (#103, slice 1).  Demonstrates ephemeral
-  PubSub: `{ type: 'typing', room }` is fan-out via the room's
+  PubSub: `{ kind: 'typing', room }` is fan-out via the room's
   existing topic (no persistence, no actor in between) as a
   `TypingBroadcast { from }`; subscribers translate to
-  `{ type: 'user-typing', room, username }` for the client.  Server
+  `{ kind: 'user-typing', room, username }` for the client.  Server
   filters self-echoes; client side debounces outbound to 1/2 s and
   auto-clears stale indicators 3 s after the last frame.  For DM
   rooms the broadcast targets the recipient's inbox topic, pre-keyed
@@ -341,10 +341,10 @@ Implemented since v1:
 - **Read receipts** (#103, slice 2).  Demonstrates DistributedData
   LWWMap: each room has a `read-up-to.<room>` DD entry mapping
   username → highest message timestamp the user has acknowledged.
-  Clients send `{ type: 'read-up-to', room, ts }` on focus + new
+  Clients send `{ kind: 'read-up-to', room, ts }` on focus + new
   arrivals; the server's `ReadReceiptsActor` writes via LWWMap with
   a monotonic guard (a stale write can't roll a user's pointer
-  backwards), then fans out `{ type: 'read-receipts', room,
+  backwards), then fans out `{ kind: 'read-receipts', room,
   receipts }` to every local subscriber.  For DMs the DD entry is
   keyed on the canonical pair-id so both participants share the same
   view.  UI: ✓ next to own messages (sent), ✓✓ when at least one

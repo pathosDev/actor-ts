@@ -262,7 +262,7 @@ export class ClusterSingleton implements Extension {
       (env) => {
         // Route inbound envelopes through the manager's own mailbox so the
         // manager processes them on its own dispatcher thread.
-        if (managerRef) managerRef.tell({ t: 'singleton-deliver', body: env.body } as SingletonDeliver as never);
+        if (managerRef) managerRef.tell({ kind: 'singleton-deliver', body: env.body } as SingletonDeliver as never);
       },
     );
 

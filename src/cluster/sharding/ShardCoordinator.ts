@@ -37,16 +37,16 @@ import type {
  * `ClusterSingletonManager` (#38).
  */
 type CoordinatorEvent =
-  | { t: 'reconcile' }
-  | { t: 'lease-acquire-result'; got: boolean; error?: Error }
-  | { t: 'lease-lost'; reason: string }
-  | { t: 'acquire-retry' };
+  | { kind: 'reconcile' }
+  | { kind: 'lease-acquire-result'; got: boolean; error?: Error }
+  | { kind: 'lease-lost'; reason: string }
+  | { kind: 'acquire-retry' };
 
 type CoordinatorInbox = ShardingMessage | CoordinatorEvent;
 
 function isCoordinatorEvent(message: CoordinatorInbox): message is CoordinatorEvent {
   if (!message || typeof message !== 'object') return false;
-  const discriminator = (message as { t?: unknown; $t?: unknown }).t;
+  const discriminator = (message as { kind?: unknown }).kind;
   return discriminator === 'reconcile' || discriminator === 'lease-acquire-result'
     || discriminator === 'lease-lost' || discriminator === 'acquire-retry';
 }
@@ -196,11 +196,11 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
     );
     if (this.options.lease) {
       this.unsubscribeLeaseLost = this.options.lease.onLost((reason) => {
-        this.self.tell({ t: 'lease-lost', reason } satisfies CoordinatorEvent);
+        this.self.tell({ kind: 'lease-lost', reason } satisfies CoordinatorEvent);
       });
       // Kick the initial reconcile through the mailbox so the lease
       // path serialises with subsequent cluster events.
-      this.self.tell({ t: 'reconcile' } satisfies CoordinatorEvent);
+      this.self.tell({ kind: 'reconcile' } satisfies CoordinatorEvent);
     }
     this.rebalanceTimer = this.system.scheduler.scheduleAtFixedRateFunction(
       this.options.rebalanceIntervalMs ?? 2_000,
@@ -265,16 +265,16 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
 
   private dispatchShardingMessage(message: ShardingMessage): void {
     match(message)
-      .with({ $t: 'sharding.Register' }, (m) => this.onRegister(m))
-      .with({ $t: 'sharding.GetShardHome' }, (m) => this.onGetShardHome(m))
-      .with({ $t: 'sharding.HandOffComplete' }, (m) => this.onHandOffComplete(m))
-      .with({ $t: 'sharding.BeginHandOffAcknowledgment' }, () => this.onBeginHandOffAcknowledgment())
-      .with({ $t: 'sharding.RegionTerminated' }, (m) => this.onRegionTerminated(m))
-      .with({ $t: 'sharding.EntityStarted' }, (m) => this.onEntityStarted(m))
-      .with({ $t: 'sharding.EntityStopped' }, (m) => this.onEntityStopped(m))
-      .with({ $t: 'sharding.GetRememberedEntities' }, (m) => this.onGetRememberedEntities(m))
-      .with({ $t: 'sharding.GetClusterShardingStats' }, (m) => this.onGetClusterShardingStats(m))
-      .with({ $t: 'sharding.ShardRegionStats' }, (m) => this.onShardRegionStats(m))
+      .with({ kind: 'sharding.Register' }, (m) => this.onRegister(m))
+      .with({ kind: 'sharding.GetShardHome' }, (m) => this.onGetShardHome(m))
+      .with({ kind: 'sharding.HandOffComplete' }, (m) => this.onHandOffComplete(m))
+      .with({ kind: 'sharding.BeginHandOffAcknowledgment' }, () => this.onBeginHandOffAcknowledgment())
+      .with({ kind: 'sharding.RegionTerminated' }, (m) => this.onRegionTerminated(m))
+      .with({ kind: 'sharding.EntityStarted' }, (m) => this.onEntityStarted(m))
+      .with({ kind: 'sharding.EntityStopped' }, (m) => this.onEntityStopped(m))
+      .with({ kind: 'sharding.GetRememberedEntities' }, (m) => this.onGetRememberedEntities(m))
+      .with({ kind: 'sharding.GetClusterShardingStats' }, (m) => this.onGetClusterShardingStats(m))
+      .with({ kind: 'sharding.ShardRegionStats' }, (m) => this.onShardRegionStats(m))
       .otherwise(() => this.onUnhandled());
   }
 
@@ -295,10 +295,10 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
 
   private handleCoordinatorEvent(evt: CoordinatorEvent): void {
     match(evt)
-      .with({ t: 'reconcile' }, () => this.onReconcile())
-      .with({ t: 'lease-acquire-result' }, (m) => this.onLeaseAcquireResult(m))
-      .with({ t: 'lease-lost' }, (m) => this.onLeaseLost(m))
-      .with({ t: 'acquire-retry' }, () => this.onAcquireRetry())
+      .with({ kind: 'reconcile' }, () => this.onReconcile())
+      .with({ kind: 'lease-acquire-result' }, (m) => this.onLeaseAcquireResult(m))
+      .with({ kind: 'lease-lost' }, (m) => this.onLeaseLost(m))
+      .with({ kind: 'acquire-retry' }, () => this.onAcquireRetry())
       .exhaustive();
   }
 
@@ -343,10 +343,10 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
   private async runAcquire(): Promise<void> {
     try {
       const got = await this.options.lease!.acquire();
-      this.self.tell({ t: 'lease-acquire-result', got } satisfies CoordinatorEvent);
+      this.self.tell({ kind: 'lease-acquire-result', got } satisfies CoordinatorEvent);
     } catch (error) {
       this.self.tell({
-        t: 'lease-acquire-result', got: false, error: error as Error,
+        kind: 'lease-acquire-result', got: false, error: error as Error,
       } satisfies CoordinatorEvent);
     }
   }
@@ -408,14 +408,14 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
     // self-correct via the standard "remote send fails →
     // MemberRemoved → invalidateHomesOnNode" flow on the regions.
     // Re-enter the acquire loop in case we're still the leader.
-    this.self.tell({ t: 'reconcile' } satisfies CoordinatorEvent);
+    this.self.tell({ kind: 'reconcile' } satisfies CoordinatorEvent);
   }
 
   private scheduleAcquireRetry(): void {
     const interval = this.options.acquireRetryIntervalMs ?? 5_000;
     this.acquireRetryTimer?.cancel();
     this.acquireRetryTimer = this.system.scheduler.scheduleOnceFunction(interval, () => {
-      this.self.tell({ t: 'acquire-retry' } satisfies CoordinatorEvent);
+      this.self.tell({ kind: 'acquire-retry' } satisfies CoordinatorEvent);
     });
   }
 
@@ -467,7 +467,7 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
       this.shardHome.set(shardId, key);
     }
     const ack: RegisterAcknowledgment = {
-      $t: 'sharding.RegisterAcknowledgment',
+      kind: 'sharding.RegisterAcknowledgment',
       coordinator: this.self.path.toString(),
     };
     this.replyTo(message.region, message.node, ack);
@@ -495,7 +495,7 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
     if (home && this.regions.has(home)) {
       const info = this.regions.get(home)!;
       this.replyTo(message.requester, message.requesterNode, {
-        $t: 'sharding.ShardHome',
+        kind: 'sharding.ShardHome',
         shardId: message.shardId,
         region: info.path,
         node: info.node.toJSON(),
@@ -525,7 +525,7 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
     // to know they are now responsible for the shard (and, when remembering
     // entities, need that knowledge before RememberedEntities arrives).
     this.sendToRegion(key, {
-      $t: 'sharding.ShardHome',
+      kind: 'sharding.ShardHome',
       shardId,
       region: info.path,
       node: info.node.toJSON(),
@@ -651,7 +651,7 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
     });
     for (const [key] of targets) {
       this.sendToRegion(key, {
-        $t: 'sharding.GetShardRegionStats',
+        kind: 'sharding.GetShardRegionStats',
         queryId,
         requester: this.self.path.toString(),
         requesterNode: this.options.cluster.selfAddress.toJSON(),
@@ -695,7 +695,7 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
     }
     shards.sort((a, b) => a.shardId - b.shardId);
     const reply: ClusterShardingStats = {
-      $t: 'sharding.ClusterShardingStats',
+      kind: 'sharding.ClusterShardingStats',
       correlationId: query.correlationId,
       shards,
     };
@@ -725,7 +725,7 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
     for (const [_key, info] of Array.from(this.regions.entries())) {
       if (info.node.equals(addr)) {
         this.onRegionTerminated({
-          $t: 'sharding.RegionTerminated',
+          kind: 'sharding.RegionTerminated',
           region: info.path,
           node: addr.toJSON(),
         });
@@ -764,7 +764,7 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
     // route through the mailbox so the state machine serialises with
     // any in-flight acquire result.
     if (this.options.lease) {
-      this.self.tell({ t: 'reconcile' } satisfies CoordinatorEvent);
+      this.self.tell({ kind: 'reconcile' } satisfies CoordinatorEvent);
     }
   }
 
@@ -877,7 +877,7 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
   private publishShardMap(): void {
     if (!this.isActive()) return;
     const update: ShardMapUpdate = {
-      $t: 'sharding.ShardMapUpdate',
+      kind: 'sharding.ShardMapUpdate',
       typeName: this.options.typeName,
       version: ++this.shardMapVersion,
       shards: Array.from(this.shardHome.entries()),
@@ -943,7 +943,7 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
       }
     });
     this.rebalanceInProgress.set(shardId, { from: ownerKey, timer });
-    this.sendToRegion(ownerKey, { $t: 'sharding.HandOff', shardId });
+    this.sendToRegion(ownerKey, { kind: 'sharding.HandOff', shardId });
   }
 
   /* --------------------------------- Helpers ------------------------------- */
@@ -964,7 +964,7 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
     if (!info) return;
     for (const pendingQuery of pending) {
       this.replyTo(pendingQuery.requester, pendingQuery.requesterNode, {
-        $t: 'sharding.ShardHome',
+        kind: 'sharding.ShardHome',
         shardId,
         region: info.path,
         node: info.node.toJSON(),
@@ -979,7 +979,7 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
     const home = this.shardHome.get(shardId);
     if (!home) return;
     this.sendToRegion(home, {
-      $t: 'sharding.RememberedEntities',
+      kind: 'sharding.RememberedEntities',
       shardId,
       entityIds: Array.from(set),
     });

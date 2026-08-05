@@ -51,7 +51,7 @@ export type MemberData = {
 };
 
 /**
- * Every wire message carries a discriminator `t`.  Payload types that contain
+ * Every wire message carries a discriminator `kind`.  Payload types that contain
  * user messages use `body` which is assumed to be JSON-safe.
  */
 export type WireMessage =
@@ -65,36 +65,36 @@ export type WireMessage =
   | LeaveMessage;
 
 export type HelloMessage = {
-  t: 'hello';
+  kind: 'hello';
   self: NodeAddressData;
 };
 
 export type HelloAcknowledgmentMessage = {
-  t: 'hello-ack';
+  kind: 'hello-ack';
   self: NodeAddressData;
 };
 
 export type HeartbeatMessage = {
-  t: 'heartbeat';
+  kind: 'heartbeat';
   from: NodeAddressData;
   seq: number;
   ts: number;
 };
 
 export type HeartbeatAcknowledgmentMessage = {
-  t: 'heartbeat-ack';
+  kind: 'heartbeat-ack';
   from: NodeAddressData;
   seq: number;
 };
 
 export type GossipMessage = {
-  t: 'gossip';
+  kind: 'gossip';
   from: NodeAddressData;
   members: MemberData[];
 };
 
 export type EnvelopeMessage = {
-  t: 'envelope';
+  kind: 'envelope';
   /** Full actor path string of the recipient on the target node. */
   to: string;
   /** Full actor path string of the sender, or null. */
@@ -120,14 +120,14 @@ export type EnvelopeMessage = {
 };
 
 export type ShardMapMessage = {
-  t: 'shard-map';
+  kind: 'shard-map';
   type: string;
   shards: Record<number, NodeAddressData>;
   version: number;
 };
 
 export type LeaveMessage = {
-  t: 'leave';
+  kind: 'leave';
   node: NodeAddressData;
 };
 

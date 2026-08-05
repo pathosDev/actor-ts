@@ -83,7 +83,7 @@ export class DevToolsFederation {
       const address = member.address.toString();
       if (address === self) continue;
       this.cluster._sendEnvelope(member.address, {
-        t: 'envelope',
+        kind: 'envelope',
         to: DEVTOOLS_AGENT_PATH,
         from: DEVTOOLS_COLLECTOR_PATH,
         body: query,

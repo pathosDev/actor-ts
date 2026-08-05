@@ -158,7 +158,7 @@ export class ClusterClient {
   async send(targetPath: string, message: unknown): Promise<void> {
     await this.ensureConnected();
     const env: ClusterClientEnvelopeMessage = {
-      t: 'cluster-client-envelope',
+      kind: 'cluster-client-envelope',
       from: this.identity.toJSON(),
       to: targetPath,
       body: message,
@@ -179,7 +179,7 @@ export class ClusterClient {
     await this.ensureConnected();
     const askId = nextAskId();
     const env: ClusterClientEnvelopeMessage = {
-      t: 'cluster-client-envelope',
+      kind: 'cluster-client-envelope',
       from: this.identity.toJSON(),
       to: targetPath,
       askId,
@@ -251,7 +251,7 @@ export class ClusterClient {
               onOpen: (s) => {
                 openSock = s;
                 // Send hello.
-                const hello: HelloMessage = { t: 'hello', self: this.identity.toJSON() };
+                const hello: HelloMessage = { kind: 'hello', self: this.identity.toJSON() };
                 try { s.write(encodeFrame(hello)); } catch (e) {
                   clearTimeout(timer);
                   reject(e as Error);
@@ -299,12 +299,12 @@ export class ClusterClient {
   ): void {
     const frames = this.decoder.push(chunk);
     for (const frame of frames) {
-      if (frame.t === 'hello-ack') {
+      if (frame.kind === 'hello-ack') {
         const ack = frame as HelloAcknowledgmentMessage;
         onHelloAcknowledgment(NodeAddress.fromJSON(ack.self));
         continue;
       }
-      const frameType = (frame as { t: string }).t;
+      const frameType = (frame as { kind: string }).kind;
       if (frameType === 'cluster-client-reply') {
         // Contained on purpose.  `push` returns a *batch* of frames, so a throw
         // from one reply used to abandon the rest of the batch — every later

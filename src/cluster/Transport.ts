@@ -227,7 +227,7 @@ export class TcpTransport implements Transport {
           handlers: {
             onOpen: (s) => {
               // Send hello; remote will ack and we'll flush `pending` then.
-              const hello: HelloMessage = { t: 'hello', self: this.self.toJSON() };
+              const hello: HelloMessage = { kind: 'hello', self: this.self.toJSON() };
               s.write(encodeFrame(hello));
             },
             onData: (s, chunk) => this.onData(s, chunk),
@@ -276,7 +276,7 @@ export class TcpTransport implements Transport {
   }
 
   private onMessage(connection: Connection, message: WireMessage): void {
-    if (message.t === 'hello') {
+    if (message.kind === 'hello') {
       const peer = NodeAddress.fromJSON(message.self);
       const peerKey = peer.toString();
       // Security: reject a duplicate-identity hello on a different
@@ -313,11 +313,11 @@ export class TcpTransport implements Transport {
       }
       connection.peer = peer;
       this.byPeer.set(peerKey, connection);
-      const ack: HelloAcknowledgmentMessage = { t: 'hello-ack', self: this.self.toJSON() };
+      const ack: HelloAcknowledgmentMessage = { kind: 'hello-ack', self: this.self.toJSON() };
       connection.socket?.write(encodeFrame(ack));
       return;
     }
-    if (message.t === 'hello-ack') {
+    if (message.kind === 'hello-ack') {
       const peer = NodeAddress.fromJSON(message.self);
       const peerKey = peer.toString();
       const existing = this.byPeer.get(peerKey);

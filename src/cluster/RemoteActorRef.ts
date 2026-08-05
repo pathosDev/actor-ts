@@ -34,7 +34,7 @@ export class RemoteActorRef<TMessage = unknown> extends ActorRef<TMessage> {
     const context = LogContext.get();
     const trace = tracerOf(this.cluster.system).injectContext();
     const envelope: EnvelopeMessage = {
-      t: 'envelope',
+      kind: 'envelope',
       to: this.targetPath,
       from: sender ? sender.path.toString() : null,
       body: message as unknown,

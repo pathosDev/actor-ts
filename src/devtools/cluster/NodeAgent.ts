@@ -67,7 +67,7 @@ export class DevToolsNodeAgent {
     const to = parseAddress(body.from);
     if (to === null) return;
     this.cluster._sendEnvelope(to, {
-      t: 'envelope',
+      kind: 'envelope',
       to: DEVTOOLS_COLLECTOR_PATH,
       from: DEVTOOLS_AGENT_PATH,
       body: report,

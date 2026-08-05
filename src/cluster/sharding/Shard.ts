@@ -71,11 +71,11 @@ export class Shard extends Actor<ShardInbox> {
    */
   override onReceive(message: ShardInbox): void {
     match(message)
-      .with({ $t: 'sharding.EntityEnvelope' }, (m) => this.onEntityEnvelope(m))
-      .with({ $t: 'sharding.PassivateEntity' }, (m) => this.onPassivateEntity(m))
-      .with({ $t: 'sharding.StartEntities' }, (m) => this.onStartEntities(m))
-      .with({ $t: 'sharding.StartEntity' }, (m) => this.onStartEntity(m))
-      .with({ $t: 'sharding.GetShardStats' }, (m) => this.onGetShardStats(m))
+      .with({ kind: 'sharding.EntityEnvelope' }, (m) => this.onEntityEnvelope(m))
+      .with({ kind: 'sharding.PassivateEntity' }, (m) => this.onPassivateEntity(m))
+      .with({ kind: 'sharding.StartEntities' }, (m) => this.onStartEntities(m))
+      .with({ kind: 'sharding.StartEntity' }, (m) => this.onStartEntity(m))
+      .with({ kind: 'sharding.GetShardStats' }, (m) => this.onGetShardStats(m))
       .with(P.instanceOf(Terminated), (m) => this.onEntityTerminated(m))
       .with(P.instanceOf(Passivate), (m) => this.onPassivate(m))
       .otherwise(() => this.onUnhandled());
@@ -113,7 +113,7 @@ export class Shard extends Actor<ShardInbox> {
 
   private onGetShardStats(message: GetShardStats): void {
     message.replyTo.tell({
-      $t: 'sharding.ShardStats',
+      kind: 'sharding.ShardStats',
       shardId: this.config.shardId,
       entityCount: this.entities.size,
       entityIds: Array.from(this.entities.keys()),
@@ -137,7 +137,7 @@ export class Shard extends Actor<ShardInbox> {
       if (!state.ref.equals(message.actor)) continue;
       const buffered = state.passivating ?? [];
       this.entities.delete(entityId);
-      this.notifyRegion({ $t: 'sharding.EntityStopped', shardId: this.config.shardId, entityId });
+      this.notifyRegion({ kind: 'sharding.EntityStopped', shardId: this.config.shardId, entityId });
       // Recreates the entity and hands it everything that arrived while it
       // was shutting down — same contract the region used to provide.
       for (const pending of buffered) this.deliver(entityId, pending, null);
@@ -175,7 +175,7 @@ export class Shard extends Actor<ShardInbox> {
     this.context.watch(ref);
     const state: EntityState = { ref: ref as ActorRef<unknown>, passivating: null };
     this.entities.set(entityId, state);
-    this.notifyRegion({ $t: 'sharding.EntityStarted', shardId: this.config.shardId, entityId });
+    this.notifyRegion({ kind: 'sharding.EntityStarted', shardId: this.config.shardId, entityId });
     return state;
   }
 

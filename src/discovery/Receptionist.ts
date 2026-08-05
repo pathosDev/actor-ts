@@ -168,7 +168,7 @@ export class Receptionist extends Actor<Message> {
       entries[id] = Array.from(entry.local.keys());
     }
     const gossip: ReceptionistGossipMessage = {
-      t: 'receptionist-gossip',
+      kind: 'receptionist-gossip',
       from: this.clusterRef.selfAddress.toJSON(),
       entries,
       version: this.version,

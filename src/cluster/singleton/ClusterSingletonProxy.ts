@@ -162,7 +162,7 @@ export class ClusterSingletonProxy<TCommand> extends ActorRef<TCommand> {
   private deliver(message: TCommand, hostAddress: NodeAddress): void {
     if (!hostAddress.equals(this.cluster.selfAddress)) {
       this.cluster._sendEnvelope(hostAddress, {
-        t: 'envelope',
+        kind: 'envelope',
         to: singletonManagerPath(this.cluster.system.name, this.key.typeName),
         from: null,
         body: message,
@@ -172,7 +172,7 @@ export class ClusterSingletonProxy<TCommand> extends ActorRef<TCommand> {
     }
     const manager = this.localManager();
     if (manager) {
-      const payload: SingletonDeliver = { t: 'singleton-deliver', body: message };
+      const payload: SingletonDeliver = { kind: 'singleton-deliver', body: message };
       manager.tell(payload as never);
       return;
     }

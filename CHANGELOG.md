@@ -9,6 +9,26 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ## [Unreleased]
 
+### Changed
+
+- **BREAKING — the cluster wire protocol's discriminator is `kind`** (#494).
+  The framework had three spellings for the same concept: `t` on the cluster
+  wire (`hello`, `gossip`, `envelope`, `leave`, …) and on the internal
+  coordinator/singleton event unions, `$t` on the sharding protocol
+  (`sharding.Register`, `sharding.ShardHome`, …), and `kind` everywhere else —
+  which is the one AGENTS.md prescribes. All three are now `kind`.
+
+  **Migration:** a rolling upgrade is not possible. A v0.13.0 node and a
+  v0.14.0 node cannot talk to each other — the discriminator they read is
+  absent in the other's frames, so every frame is unrecognised. Stop the
+  whole cluster, then start it again on the new version. Nothing in the
+  public API changes; this affects only the bytes on the wire between nodes
+  (and anything speaking that protocol directly, e.g. a hand-rolled
+  `ClusterClient` peer or a test that constructs raw frames).
+
+  The DevTools tap protocol already used `kind` and is untouched, so the
+  embedded UI bundle and any tap client keep working across the upgrade.
+
 ## [0.13.0] — 2026-08-05
 
 ### Removed

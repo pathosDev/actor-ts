@@ -62,7 +62,7 @@ async function waitFor(pred: () => boolean, timeoutMs = 2000): Promise<void> {
 /* ----- access helper: invoke the private handleWire via type cast ----- */
 
 interface ClusterPrivate {
-  handleWire(from: NodeAddress, message: { t: 'gossip'; from: ReturnType<NodeAddress['toJSON']>; members: MemberData[] }): void;
+  handleWire(from: NodeAddress, message: { kind: 'gossip'; from: ReturnType<NodeAddress['toJSON']>; members: MemberData[] }): void;
 }
 
 function inject(cluster: Cluster, from: NodeAddress, message: GossipMessage): void {
@@ -82,7 +82,7 @@ describe('Cluster — gossip exploit defenses', () => {
    * filter on the `version` field was `incoming.version > existing.version`.
    * A malicious peer that could speak the gossip protocol could send
    *
-   *   { t: 'gossip', members: [{ address: <target>,
+   *   { kind: 'gossip', members: [{ address: <target>,
    *                              status: 'down',
    *                              version: Number.MAX_SAFE_INTEGER }] }
    *
@@ -114,7 +114,7 @@ describe('Cluster — gossip exploit defenses', () => {
     // node — just a synthetic NodeAddress to source the frame).
     const attacker = new NodeAddress('csec', 'h', 65_535);
     const evil: GossipMessage = {
-      t: 'gossip',
+      kind: 'gossip',
       from: attacker.toJSON(),
       members: [{
         address: nodeB.address.toJSON(),
@@ -144,7 +144,7 @@ describe('Cluster — gossip exploit defenses', () => {
 
     const attacker = new NodeAddress('csec', 'h', 65_534);
     const evil: GossipMessage = {
-      t: 'gossip',
+      kind: 'gossip',
       from: attacker.toJSON(),
       members: [{
         address: nodeB.address.toJSON(),
@@ -167,7 +167,7 @@ describe('Cluster — gossip exploit defenses', () => {
     const ghost = new NodeAddress('csec', 'h', 60_000);
     const attacker = new NodeAddress('csec', 'h', 65_533);
     const evil: GossipMessage = {
-      t: 'gossip',
+      kind: 'gossip',
       from: attacker.toJSON(),
       members: [{
         address: ghost.toJSON(),
@@ -202,7 +202,7 @@ describe('Cluster — gossip exploit defenses', () => {
     // can legitimately bump the member's recorded version.
     const futureVersion = Date.now() + 5 * 60 * 1000;
     const evil: GossipMessage = {
-      t: 'gossip',
+      kind: 'gossip',
       from: nodeB.address.toJSON(),
       members: [{
         address: nodeB.address.toJSON(),
@@ -313,7 +313,7 @@ describe('Transport — hello-handshake hijack defense', () => {
 
     // First hello on conn1 — legitimate, accepted.
     const helloFrame = (): Uint8Array => {
-      const message = JSON.stringify({ t: 'hello', self: claimedPeer.toJSON() });
+      const message = JSON.stringify({ kind: 'hello', self: claimedPeer.toJSON() });
       const payload = new TextEncoder().encode(message);
       const frame = new Uint8Array(4 + payload.byteLength);
       new DataView(frame.buffer).setUint32(0, payload.byteLength, false);
@@ -356,7 +356,7 @@ describe('Transport — hello-handshake hijack defense', () => {
 
     const peer = new NodeAddress('hijack', '10.0.0.99', 5001);
     const helloFrame = (): Uint8Array => {
-      const message = JSON.stringify({ t: 'hello', self: peer.toJSON() });
+      const message = JSON.stringify({ kind: 'hello', self: peer.toJSON() });
       const payload = new TextEncoder().encode(message);
       const frame = new Uint8Array(4 + payload.byteLength);
       new DataView(frame.buffer).setUint32(0, payload.byteLength, false);
@@ -467,8 +467,8 @@ describe('Transport — crossing dials and dead dials (#697)', () => {
   // The tie-break is "the dial from the lexicographically smaller address
   // wins", and these two addresses differ only in that octet — so A's dial
   // is the one that must survive, on both sides.
-  const helloFromA = frameOf({ t: 'hello', self: nodeA.toJSON() });
-  const helloFromB = frameOf({ t: 'hello', self: nodeB.toJSON() });
+  const helloFromA = frameOf({ kind: 'hello', self: nodeA.toJSON() });
+  const helloFromB = frameOf({ kind: 'hello', self: nodeB.toJSON() });
 
   test('exploit: two nodes dialling each other at once still converge', async () => {
     // --- node A dials B, and B's hello arrives before A's ack ---
@@ -510,7 +510,7 @@ describe('Transport — crossing dials and dead dials (#697)', () => {
     expect(b.raw.byPeer.get(nodeA.toString())?.socket).toBe(aInboundAtB);
 
     // --- A completes its handshake on the surviving connection ---
-    a.raw.onData(aOutbound, frameOf({ t: 'hello-ack', self: nodeB.toJSON() }));
+    a.raw.onData(aOutbound, frameOf({ kind: 'hello-ack', self: nodeB.toJSON() }));
     expect(a.raw.byPeer.get(nodeB.toString())?.peer).not.toBeNull();
   });
 
@@ -556,7 +556,7 @@ describe('Transport — crossing dials and dead dials (#697)', () => {
     const a = transportWithFakeDialer(nodeA);
     const connection = a.raw.openOutbound(nodeB);
     await Promise.resolve();
-    connection.pending.push({ t: 'ping' });
+    connection.pending.push({ kind: 'ping' });
 
     // What the handshake timer invokes once HANDSHAKE_TIMEOUT_MS elapses.
     a.raw.onHandshakeTimeout(connection);
@@ -626,7 +626,7 @@ describe('Cluster — numeric wire-field defenses', () => {
     const attacker = new NodeAddress('csec', 'h', 65_533);
     const victim = new NodeAddress('csec', 'h', 64_000);
     const forge = (removedAt: number): GossipMessage => ({
-      t: 'gossip',
+      kind: 'gossip',
       from: attacker.toJSON(),
       members: [{
         address: victim.toJSON(),
@@ -650,7 +650,7 @@ describe('Cluster — numeric wire-field defenses', () => {
 
     const peer = new NodeAddress('csec', 'h', 64_001);
     inject(nodeA.cluster, peer, {
-      t: 'gossip',
+      kind: 'gossip',
       from: peer.toJSON(),
       members: [{
         address: peer.toJSON(),
@@ -680,8 +680,8 @@ describe('Cluster — numeric wire-field defenses', () => {
       [1, Date.now() + 400 * 24 * 3_600_000],
     ]) {
       sent.length = 0;
-      injectWire(node.cluster, peer, { t: 'heartbeat', from: peer.toJSON(), seq: seq!, ts: ts! });
-      const acks = sent.filter(m => m.t === 'heartbeat-ack');
+      injectWire(node.cluster, peer, { kind: 'heartbeat', from: peer.toJSON(), seq: seq!, ts: ts! });
+      const acks = sent.filter(m => m.kind === 'heartbeat-ack');
       expect(acks, `seq=${seq} ts=${ts} produced an ack`).toEqual([]);
     }
   }, 10_000);
@@ -692,9 +692,9 @@ describe('Cluster — numeric wire-field defenses', () => {
     const peer = new NodeAddress('csechb2', 'h', 64_003);
 
     sent.length = 0;
-    injectWire(node.cluster, peer, { t: 'heartbeat', from: peer.toJSON(), seq: 7, ts: Date.now() });
+    injectWire(node.cluster, peer, { kind: 'heartbeat', from: peer.toJSON(), seq: 7, ts: Date.now() });
 
-    const acks = sent.filter(m => m.t === 'heartbeat-ack');
+    const acks = sent.filter(m => m.kind === 'heartbeat-ack');
     expect(acks).toHaveLength(1);
     expect((acks[0] as { seq: number }).seq).toBe(7);
   }, 10_000);

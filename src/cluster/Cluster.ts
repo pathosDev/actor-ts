@@ -415,7 +415,7 @@ export class Cluster {
     if (me) {
       this.updateMember(me.withStatus('leaving'));
     }
-    const leaveMessage: LeaveMessage = { t: 'leave', node: this.selfAddress.toJSON() };
+    const leaveMessage: LeaveMessage = { kind: 'leave', node: this.selfAddress.toJSON() };
     const peers = this.reachableMembers().filter((member) => !member.address.equals(this.selfAddress));
     this.log.debug(`leaving — sending leave to ${peers.length} reachable peer(s)`);
     for (const member of peers) this.transport.send(member.address, leaveMessage);
@@ -513,7 +513,7 @@ export class Cluster {
     for (const seed of this.seedAddrs) {
       this.failureDetector.register(seed);
       const initialGossip: GossipMessage = {
-        t: 'gossip',
+        kind: 'gossip',
         from: this.selfAddress.toJSON(),
         members: [me.toData()],
       };
@@ -525,11 +525,11 @@ export class Cluster {
     this.failureDetector.heartbeat(from);
 
     match(message)
-      .with({ t: 'heartbeat' }, (m) => this.onHeartbeat(from, m))
-      .with({ t: 'heartbeat-ack' }, () => this.onHeartbeatAcknowledgment())
-      .with({ t: 'gossip' }, (m) => this.onGossip(m))
-      .with({ t: 'envelope' }, (m) => this.onEnvelope(from, m))
-      .with({ t: 'leave' }, (m) => this.onLeave(m))
+      .with({ kind: 'heartbeat' }, (m) => this.onHeartbeat(from, m))
+      .with({ kind: 'heartbeat-ack' }, () => this.onHeartbeatAcknowledgment())
+      .with({ kind: 'gossip' }, (m) => this.onGossip(m))
+      .with({ kind: 'envelope' }, (m) => this.onEnvelope(from, m))
+      .with({ kind: 'leave' }, (m) => this.onLeave(m))
       .otherwise((m) => this.onUnhandledWire(m, from));
   }
 
@@ -540,7 +540,7 @@ export class Cluster {
   private onUnhandledWire(message: WireMessage, from: NodeAddress): void {
     // 'shard-map' and any custom extension wire-msgs handled by the
     // registry; we intentionally fall through when no handler is set.
-    const custom = this.wireHandlers.get(message.t);
+    const custom = this.wireHandlers.get(message.kind);
     if (custom) custom(message, from);
   }
 
@@ -577,7 +577,7 @@ export class Cluster {
     this.failureDetector.heartbeat(peer);
     // Reply isn't strictly needed because send() also bumps the detector,
     // but it keeps symmetric latency information.
-    this.transport.send(peer, { t: 'heartbeat-ack', from: this.selfAddress.toJSON(), seq: message.seq });
+    this.transport.send(peer, { kind: 'heartbeat-ack', from: this.selfAddress.toJSON(), seq: message.seq });
 
     // If the peer was unreachable and we see traffic again, flip it back.
     const existing = this.members.get(peer.toString());
@@ -716,7 +716,7 @@ export class Cluster {
     // Push to one random reachable peer each tick — epidemic style.
     const target = targets[Math.floor(Math.random() * targets.length)]!;
     const gossip: GossipMessage = {
-      t: 'gossip',
+      kind: 'gossip',
       from: this.selfAddress.toJSON(),
       members: Array.from(this.members.values()).map(member => member.toData()),
     };
@@ -731,7 +731,7 @@ export class Cluster {
   private heartbeatTick(): void {
     this.heartbeatSeq++;
     const hb: HeartbeatMessage = {
-      t: 'heartbeat',
+      kind: 'heartbeat',
       from: this.selfAddress.toJSON(),
       seq: this.heartbeatSeq,
       ts: Date.now(),
