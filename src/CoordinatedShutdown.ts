@@ -85,7 +85,16 @@ export class CoordinatedShutdown implements Extension {
   private _completed = false;
   private _runPromise: Promise<void> | null = null;
   private _processHooksInstalled = false;
-  private _processHookSignals: NodeJS.Signals[] = [];
+  /**
+   * The handlers this instance installed, paired with their signal.
+   *
+   * Only the signal *names* were recorded before, which left no way to
+   * remove the right listener — so `removeProcessHooks` fell back to
+   * `removeAllListeners`, tearing out the application's own SIGTERM
+   * handling along with every other library's and any second
+   * `ActorSystem`'s (#644).
+   */
+  private _processHooks: { signal: NodeJS.Signals; handler: () => void }[] = [];
 
   /**
    * Default per-phase timeout in ms.  Can be changed globally or per-phase
@@ -229,7 +238,7 @@ export class CoordinatedShutdown implements Extension {
         void this.run(new ProcessTerminateReason(sig));
       };
       process.on(sig, handler);
-      this._processHookSignals.push(sig);
+      this._processHooks.push({ signal: sig, handler });
     }
     this._processHooksInstalled = true;
   }
@@ -237,11 +246,13 @@ export class CoordinatedShutdown implements Extension {
   removeProcessHooks(): void {
     if (!this._processHooksInstalled) return;
     if (typeof process === 'undefined') return;
-    for (const sig of this._processHookSignals) {
-      process.removeAllListeners(sig);
+    // Remove exactly what was installed.  A shutdown hook has no business
+    // deciding that nobody else may listen for SIGTERM.
+    for (const { signal, handler } of this._processHooks) {
+      process.off(signal, handler);
     }
     this._processHooksInstalled = false;
-    this._processHookSignals = [];
+    this._processHooks = [];
   }
 
   /* ------------------------------- Internal ------------------------------ */
