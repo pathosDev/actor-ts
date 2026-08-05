@@ -351,6 +351,24 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Documentation
 
+- **`fundamentals/spawning` no longer contradicts itself about constructor
+  arguments** (EN + DE, #907).  The page declared `Worker` with two required
+  constructor arguments, showed `system.spawn(Worker, 'worker-1')` as the form
+  that is *rejected* — and then used that identical line fifty lines later as
+  the correct naming example, with three further samples calling
+  `new Worker(database)` one-armed against the two-argument class.  A reader
+  copying the naming example got exactly the error quoted above it.  `Worker`
+  now takes the one dependency every other sample on the page passes it, and
+  the sections that are not about arity use the zero-argument `Greeter`.
+- **The docs API-drift guard covers the `Props` removal** (#907).
+  `docs/scripts/check-api-drift.mjs` runs in CI and its own header says to add
+  a pattern whenever an API is renamed or removed — the largest removal the
+  project has made added none, which is how a broken call shape survived in the
+  docs long enough to be filed.  It now rejects `Props.create`, `Props.empty`,
+  `spawn(props`, `entityProps`, `singletonProps`, `childProps`, `routeeProps`,
+  `typedProps`, `behaviorFor`, `asInternal(`, `BackoffSupervisor.props` and
+  `ClusterRouter.props`, with a per-pattern allowlist so the Akka migration
+  pages keep Akka's own spelling in their `scala` / `csharp` fences.
 - **`fundamentals/props` is now `fundamentals/spawning`** (EN + DE, #547) —
   rewritten around what the reader is doing rather than around a type.  The
   old slug redirects.

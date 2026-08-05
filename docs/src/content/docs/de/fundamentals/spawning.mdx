@@ -40,13 +40,10 @@ Closure fängt sie ein, und jeder Neustart sieht dieselbe Verdrahtung:
 
 ```ts
 class Worker extends Actor<WorkerMessage> {
-  constructor(
-    private readonly database: ActorRef<DatabaseMessage>,
-    private readonly config: Config,
-  ) { super(); }
+  constructor(private readonly database: ActorRef<DatabaseMessage>) { super(); }
 }
 
-system.spawn(() => new Worker(database, config), 'worker-1');
+system.spawn(() => new Worker(database), 'worker-1');
 ```
 
 Eine Klasse, deren Konstruktor Argumente *verlangt*, wird an der
@@ -55,9 +52,9 @@ Aufrufstelle abgelehnt — sie allein zu übergeben könnte sie nur mit
 
 ```ts
 system.spawn(Worker, 'worker-1');
-// Worker needs 2 constructor arguments, so the class alone is not
-// enough to build it — pass a factory that supplies them:
-// () => new Worker(...).
+// ✗ Worker braucht ein Konstruktorargument, die Klasse allein reicht
+//   also nicht — übergib eine Factory, die es liefert:
+//   () => new Worker(database).
 ```
 
 ### Warum eine Factory — und niemals eine Instanz
@@ -106,9 +103,9 @@ crash" da ist.
 Der Name geht an `spawn`, er hängt nie am Actor:
 
 ```ts
-system.spawn(Worker, 'worker-1');            // → /user/worker-1
-system.spawn(Worker, 'worker-2');            // → /user/worker-2
-this.context.spawn(Worker, 'sub-worker');    // → /user/<this>/sub-worker
+system.spawn(Greeter, 'greeter-1');           // → /user/greeter-1
+system.spawn(Greeter, 'greeter-2');           // → /user/greeter-2
+this.context.spawn(Greeter, 'sub-greeter');   // → /user/<this>/sub-greeter
 ```
 
 Namen müssen unter Geschwistern eindeutig sein.  Für einen Actor, dessen
@@ -139,7 +136,7 @@ Ein einfaches Objekt ist die Kurzform-Alternative und liest sich
 identisch:
 
 ```ts
-system.spawn(Worker, 'worker-1', { mailboxCapacity: 500 });
+system.spawn(() => new Worker(database), 'worker-1', { mailboxCapacity: 500 });
 ```
 
 ```ts
