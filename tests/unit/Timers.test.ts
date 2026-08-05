@@ -157,3 +157,88 @@ describe('context.timers lifecycle integration', () => {
     await sys.terminate();
   });
 });
+
+// #642 — a fired one-shot left its entry in the cell's timer map forever, so
+// every question the map answers was wrong once a timer had run: it listed
+// dead keys as active, claimed to cancel schedules that were already over,
+// and grew for the life of an actor that cycles through keys.
+describe('timer bookkeeping after a one-shot fires', () => {
+  test('a fired key is no longer active', async () => {
+    let activeBefore = false;
+    let activeAfter = true;
+    let keysAfter: string[] = ['unset'];
+
+    class T extends Actor<'tick' | 'check'> {
+      override preStart(): void {
+        this.context.timers.startSingleTimer('once', 'tick', 10);
+        activeBefore = this.context.timers.isTimerActive('once');
+      }
+      override onReceive(m: 'tick' | 'check'): void {
+        if (m === 'check') {
+          activeAfter = this.context.timers.isTimerActive('once');
+          keysAfter = [...this.context.timers.activeKeys()];
+        }
+      }
+    }
+    const sys = newSystem();
+    const ref = sys.spawn(T, 'fired');
+    await sleep(60);
+    ref.tell('check');
+    await sleep(30);
+
+    expect(activeBefore).toBe(true);
+    expect(activeAfter).toBe(false);
+    expect(keysAfter).toEqual([]);
+    await sys.terminate();
+  });
+
+  test('cancelling a fired timer reports that there was nothing to cancel', async () => {
+    let cancelledPending: boolean | null = null;
+    let cancelledFired: boolean | null = null;
+
+    class T extends Actor<'tick' | 'check'> {
+      override preStart(): void {
+        this.context.timers.startSingleTimer('gone', 'tick', 10);
+        this.context.timers.startSingleTimer('waiting', 'tick', 10_000);
+      }
+      override onReceive(m: 'tick' | 'check'): void {
+        if (m === 'check') {
+          cancelledPending = this.context.timers.cancel('waiting');
+          cancelledFired = this.context.timers.cancel('gone');
+        }
+      }
+    }
+    const sys = newSystem();
+    const ref = sys.spawn(T, 'cancel-fired');
+    await sleep(60);
+    ref.tell('check');
+    await sleep(30);
+
+    expect(cancelledPending).toBe(true);
+    expect(cancelledFired).toBe(false);
+    await sys.terminate();
+  });
+
+  test('cycling through timer keys does not grow the map', async () => {
+    // The leak: an actor that starts a fresh single timer per message kept
+    // one dead entry per key, forever.
+    let keyCount = -1;
+
+    class T extends Actor<'work' | 'check'> {
+      private nextIndex = 0;
+      override onReceive(m: 'work' | 'check'): void {
+        if (m === 'work') this.context.timers.startSingleTimer(`k${this.nextIndex++}`, 'work', 5);
+        else keyCount = this.context.timers.activeKeys().length;
+      }
+    }
+    const sys = newSystem();
+    const ref = sys.spawn(T, 'churn');
+    for (let i = 0; i < 25; i++) ref.tell('work');
+    await sleep(80);
+    ref.tell('check');
+    await sleep(30);
+
+    expect(keyCount).toBe(0);
+    await sys.terminate();
+  });
+});

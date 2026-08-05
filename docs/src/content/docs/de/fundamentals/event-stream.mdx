@@ -155,18 +155,24 @@ import { Aside } from '@astrojs/starlight/components';
   keine Daten-Pipeline.
 </Aside>
 
-<Aside type="caution" title="Der Dead-Letter-Fall">
+<Aside type="note" title="Gestoppte Subscriber werden freigegeben">
   ```ts
   eventStream.subscribe(ref, Event);
   ref.stop();
-  eventStream.publish(new Event());   // → geht zu Dead Letters
+  eventStream.publish(new Event());   // → wird ref nicht zugestellt
   ```
-  Der Bus unsubscribed nicht automatisch gestoppte Refs.
-  Nachfolgende Publishes `tell`en immer noch die tote Ref; das
-  System leitet sie an `/deadLetters`, das eine Warnung loggt.
-  Wenn ein Subscriber kurzlebig ist, `unsubscribe`e ihn in
-  `postStop` — oder verlasse dich auf das Dead-Letter-Cleanup,
-  wenn dir der Lärm nichts ausmacht.
+  Ein stoppender Actor gibt seine Subscriptions im Zuge der
+  Terminierung ab, ein kurzlebiger Subscriber braucht also kein
+  `unsubscribe` in `postStop`. Melde trotzdem ab, wenn ein
+  *lebender* Actor das Interesse verliert — das kann der Bus nicht
+  wissen.
+
+  Ein Event kann einen Subscriber noch erreichen, der sich während
+  der Zustellung genau dieses Events abgemeldet hat: die
+  Empfängermenge steht fest, wenn `publish` aufgerufen wird, eine
+  Abmeldung wirkt also ab dem nächsten Event. Es landet in
+  `/deadLetters` wie jede andere Nachricht an einen gestoppten
+  Actor.
 </Aside>
 
 ## Eingebaute Events, die abonniert werden können

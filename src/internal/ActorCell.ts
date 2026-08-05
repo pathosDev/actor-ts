@@ -885,6 +885,14 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
 
     this.state = 'terminated';
 
+    // Drop this actor's event-stream subscriptions.  Nothing else did:
+    // `unsubscribe` had exactly one caller in the whole framework, so a
+    // subscriber that stopped stayed on the list forever — the list grew
+    // without bound and every publish paid an O(N) walk that ended in a
+    // dead letter per departed subscriber (#645).  Before the ActorStopped
+    // publish below, so a stopping actor is not handed its own stop event.
+    this.system.eventStream.unsubscribe(this.self);
+
     // Stock metric: count terminations (clean stop OR post-failure path).
     metricsOf(this.system).counter(
       'actor_terminated_total', {},
@@ -1251,9 +1259,11 @@ class CellTimerScheduler<TMessage> implements TimerScheduler<TMessage> {
   cancel(key: string): boolean {
     const handle = this.handles.get(key);
     if (!handle) return false;
-    handle.cancel();
     this.handles.delete(key);
-    return true;
+    // The handle's own answer, not `true` unconditionally: a one-shot that
+    // already fired has nothing left to cancel, and reporting otherwise made
+    // "did I get there in time?" unanswerable (#642).
+    return handle.cancel();
   }
 
   cancelAll(): void {
@@ -1262,11 +1272,28 @@ class CellTimerScheduler<TMessage> implements TimerScheduler<TMessage> {
   }
 
   isTimerActive(key: string): boolean {
-    const handle = this.handles.get(key);
-    return !!handle && !handle.isCancelled;
+    this.pruneSettled();
+    return this.handles.has(key);
   }
 
   activeKeys(): string[] {
+    this.pruneSettled();
     return Array.from(this.handles.keys());
+  }
+
+  /**
+   * Drop handles whose schedule is over.
+   *
+   * A fired one-shot leaves its entry behind — nothing calls back into this
+   * map when a timer runs — so `activeKeys()` listed timers that were long
+   * gone and, for an actor that cycles through timer keys, the map grew for
+   * the life of the actor.  Pruning on read rather than on a timer callback
+   * keeps the scheduler unaware of its callers; the map is small and these
+   * are not hot paths.
+   */
+  private pruneSettled(): void {
+    for (const [key, handle] of this.handles) {
+      if (handle.isCancelled) this.handles.delete(key);
+    }
   }
 }
