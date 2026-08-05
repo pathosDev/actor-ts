@@ -3,6 +3,8 @@ title: Cluster security
 description: TLS + authentication on the cluster transport — encrypt traffic, authenticate peers, prevent unauthorized cluster joins. Mandatory for clusters that cross untrusted networks.
 ---
 
+import { Aside } from '@astrojs/starlight/components';
+
 The cluster transport defaults to **plain TCP without
 authentication** — fast, simple, fine for a private network.
 **Not fine** for any cluster that crosses an untrusted boundary
@@ -54,10 +56,33 @@ The TLS settings:
   certificates.
 - **`rejectUnauthorized: true`** — fail handshakes where the
   peer's cert isn't signed by `ca`.
+- **`requestClientCert`** — whether the *listener* demands a
+  certificate from whoever connects to it.  You will not normally
+  set this: it defaults to `true` whenever `ca` is present, since
+  a trust bundle on a cluster listener has no other purpose.
 
-With `rejectUnauthorized: true` + a shared CA, the cluster
-becomes **mutually authenticated** — every connection requires
-a peer cert signed by the trusted CA.
+With a shared `ca`, the cluster is **mutually authenticated** —
+every connection requires a peer cert signed by the trusted CA,
+in both directions.
+
+<Aside type="caution" title="One-way TLS authenticates nobody">
+  The `hello` handshake carries no credential of its own, so on a
+  TLS cluster the peer certificate *is* the admission control.  A
+  listener that does not request one will complete a handshake
+  with any client — which may then claim any node identity it
+  likes.  Set `requestClientCert: false` only when something else
+  (a service mesh, a private L2) is doing the authenticating.
+</Aside>
+
+Two configurations are refused at bind time rather than started
+in a weaker state than they read as:
+
+- `requestClientCert: true` with no `ca` — there would be nothing
+  to validate peer certificates against.
+- Mutual TLS **on Deno** — `Deno.listenTls` cannot request a
+  client certificate and the Deno dialer sends none, so peers
+  would go unauthenticated in both directions.  Run the cluster on
+  Node.js or Bun for mTLS.
 
 ## Certificate management
 
@@ -185,8 +210,6 @@ await Cluster.join(system, clusterOptions);
 
 Env vars carry paths; the cert-manager / vault mounts the
 files.  Code stays generic across environments.
-
-import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="Self-signed certs in production">
   ```ts
