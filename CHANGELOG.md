@@ -134,7 +134,7 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   **Migration:** nothing you name yourself changes — only the value the
   framework picks when you don't.  Code that hard-codes an anonymous path
   (`actorSelection('/user/$1')`) or parses `$<n>` out of a name must spawn with
-  `spawn(props, name)` and a name of its own.
+  `spawn(actor, name)` and a name of its own.
 - **BREAKING — unnamed reliable-delivery controllers are
   `consumer-<n>-<random>` / `producer-<n>-<random>`** (#897).  The fallback name
   came from a module-global counter, so `/system/delivery/consumer-1` was the
