@@ -23,7 +23,7 @@ function hasControlCharacter(name: string): boolean {
  * A path is rendered as `actor-ts://<system>/<segment>/<segment>…` and taken
  * apart again by splitting on `/` ({@link parsePathSegments}).  A name
  * containing a separator therefore does not merely look wrong — it changes the
- * *structure*: `spawn(props, 'a/b')` yields a path indistinguishable from a
+ * *structure*: `spawn(actor, 'a/b')` yields a path indistinguishable from a
  * child `b` of an actor `a`, so it collides with, or impersonates, a different
  * actor — including across the cluster wire, where the remote side re-splits
  * the string.  `.` and `..` carry the same risk through traversal meaning

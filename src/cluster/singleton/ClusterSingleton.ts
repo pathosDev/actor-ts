@@ -103,7 +103,7 @@ export class ClusterSingleton implements Extension {
    * ```
    *
    * Idempotent per `typeName` on this node: a repeat call returns the same ref
-   * and ignores the new props.  Every node that may host the singleton has to
+   * and ignores the new options.  Every node that may host the singleton has to
    * call this — {@link ref} alone never hosts.
    */
   start<TCommand>(
@@ -246,8 +246,8 @@ export class ClusterSingleton implements Extension {
     if (this.managers.has(typeName)) {
       // First call wins.  Worth saying out loud: with the key declared on the
       // actor class it is easy for two modules to start the same singleton with
-      // different dependencies, and the second one's props are dropped.
-      this.log.debug(`singleton '${typeName}' is already started on this node — ignoring these props`);
+      // different dependencies, and the second one's options are dropped.
+      this.log.debug(`singleton '${typeName}' is already started on this node — ignoring these options`);
       return;
     }
     const cluster = this.clusterOrThrow();
