@@ -151,6 +151,7 @@ class ActorOptionsBuilder<TMessage> {
   withMailboxCapacity(capacity: number): this;
   withMailbox(factory: () => Mailbox<TMessage>): this;
   withInternal(internal?: boolean): this;
+  withDisplayName(displayName: string): this;
   withEntity(entity: EntityContext): this;
 }
 ```
@@ -289,6 +290,28 @@ Man braucht das nur, wenn man ein Werkzeug schreibt, das das System
 beobachtet, in dem es läuft.  Anwendungs-Actors sollten nicht markiert
 werden: echte Arbeit vor dem Profiler zu verstecken ist der Weg, auf dem
 ein Performance-Problem unsichtbar bleibt.
+
+### `withDisplayName`
+
+Benennt den Actor in Logzeilen und im DevTools-Actor-Baum.  Das Gegenstück
+an der Spawn-Stelle zum Überschreiben von `Actor.displayName()` — dafür da,
+wenn der Actor keine eigene Unterklasse hat, die man überschreiben könnte:
+ein `Behaviors`-Actor, eine Sharding-Entity, ein Singleton.
+
+```ts
+const workerOptions = ActorOptions.create().withDisplayName('ingest-worker');
+
+system.spawn(IngestWorker, 'ingest', workerOptions);
+```
+
+Sticht die Methode, genau wie `withSupervisorStrategy` `Actor.supervisorStrategy()`
+sticht; `context.setDisplayName(...)` zur Laufzeit sticht beide.  Rein
+kosmetisch — der Pfad bleibt überall dort die Identität, wo geroutet oder
+korreliert wird, Metrik-Labels, Tracing-Attribute und jeder Cluster-Wire-Bezeichner
+bleiben also unberührt.
+
+Wie der Name in einen Log-Record gelangt, steht unter
+[Logging](/de/fundamentals/logging/).
 
 ### `withEntity`
 

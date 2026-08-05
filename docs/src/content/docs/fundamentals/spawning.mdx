@@ -147,6 +147,7 @@ class ActorOptionsBuilder<TMessage> {
   withMailboxCapacity(capacity: number): this;
   withMailbox(factory: () => Mailbox<TMessage>): this;
   withInternal(internal?: boolean): this;
+  withDisplayName(displayName: string): this;
   withEntity(entity: EntityContext): this;
 }
 ```
@@ -279,6 +280,27 @@ system.spawn(MyProbe, 'my-probe', probeOptions);
 You need it only when writing a tool that observes the system it runs
 in.  Application actors should not be marked: hiding real work from the
 profiler is how a performance problem stays invisible.
+
+### `withDisplayName`
+
+Names the actor in log lines and in the DevTools actor tree.  The spawn-site
+counterpart to overriding `Actor.displayName()` — reach for it when the actor
+has no subclass of yours to override: a `Behaviors` actor, a sharded entity,
+a singleton.
+
+```ts
+const workerOptions = ActorOptions.create().withDisplayName('ingest-worker');
+
+system.spawn(IngestWorker, 'ingest', workerOptions);
+```
+
+Outranks the method, exactly as `withSupervisorStrategy` outranks
+`Actor.supervisorStrategy()`; `context.setDisplayName(...)` at runtime
+outranks both.  Purely cosmetic — the path stays the identity everywhere that
+routes or correlates, so metric labels, tracing attributes and every
+cluster-wire identifier are unaffected.
+
+See [Logging](/fundamentals/logging/) for how the name reaches a log record.
 
 ### `withEntity`
 
