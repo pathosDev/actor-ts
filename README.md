@@ -116,7 +116,7 @@ class Greeter extends Actor<string> {
 }
 
 const system = ActorSystem.create('hello');
-const ref    = system.spawn(() => new Greeter(), 'greeter');
+const ref    = system.spawn(Greeter, 'greeter');
 
 ref.tell('world');
 
@@ -177,7 +177,7 @@ one-shot reply actor, wires it as both `replyTo` and
 import { ActorSystem } from 'actor-ts';
 
 const system  = ActorSystem.create('demo');
-const counter = system.spawnAnonymous(() => new Counter());
+const counter = system.spawnAnonymous(Counter);
 
 counter.tell({ kind: 'increment' });
 counter.tell({ kind: 'increment' });
