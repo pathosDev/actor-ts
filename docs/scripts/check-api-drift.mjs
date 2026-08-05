@@ -16,6 +16,21 @@ import { fileURLToPath } from 'node:url';
 
 const DOCS_ROOT = fileURLToPath(new URL('../src/content/docs/', import.meta.url));
 
+/**
+ * Pages that legitimately spell an old name because they are *about* another
+ * framework's API.  The migration guides contrast Akka's own `Props`,
+ * `entityProps` and friends against the actor-ts equivalent, inside `scala` /
+ * `csharp` fences — renaming those would make the comparison nonsense.
+ *
+ * Matched as a path suffix, so one entry covers a page and its translations.
+ */
+const ALLOWED_IN = {
+  'Props.create': ['migration/from-akka-jvm.mdx', 'migration/from-akka-net.mdx'],
+  entityProps: ['migration/from-akka-jvm.mdx', 'migration/from-akka-net.mdx'],
+  singletonProps: ['migration/from-akka-jvm.mdx', 'migration/from-akka-net.mdx'],
+  childProps: ['migration/from-akka-jvm.mdx', 'migration/from-akka-net.mdx'],
+};
+
 /** { pattern, reason } — `pattern` is matched literally against each line. */
 const FORBIDDEN = [
   { pattern: 'new DefaultAdapter', reason: 'removed — use defaultsAdapter({ ... })' },
@@ -24,6 +39,21 @@ const FORBIDDEN = [
   { pattern: 'MigrationChain.start', reason: 'renamed — use MigrationChain.for(name, v).add(...)' },
   { pattern: 'SqliteOffsetStore', reason: 'no such class — use InMemoryOffsetStore or DurableStateOffsetStore(store)' },
   { pattern: 'new SqliteQuery({', reason: 'SqliteQuery takes a SqliteJournal instance, not an options object' },
+  // The Props removal (#547) is the largest API removal the project has made,
+  // and it shipped without a single entry here — which is exactly how four
+  // pages went on showing `spawn(props, name)` until a human read them (#907).
+  { pattern: 'Props.create', reason: 'removed — pass the actor class: spawn(MyActor, name)' },
+  { pattern: 'Props.empty', reason: 'removed — pass the actor class: spawn(MyActor, name)' },
+  { pattern: 'spawn(props', reason: 'Props is gone — spawn(MyActor, name), or spawn(() => new MyActor(dep), name)' },
+  { pattern: 'entityProps', reason: 'renamed — withEntityActor(...) / the entityActor field' },
+  { pattern: 'singletonProps', reason: 'renamed — withSingletonActor(...) / the singletonActor field' },
+  { pattern: 'childProps', reason: 'renamed — the child field (+ childOptions)' },
+  { pattern: 'routeeProps', reason: 'renamed — the routee field (+ routeeOptions)' },
+  { pattern: 'typedProps', reason: 'renamed — typedActor' },
+  { pattern: 'behaviorFor', reason: 'renamed — actorFor' },
+  { pattern: 'asInternal(', reason: 'renamed — ActorOptions.withInternal()' },
+  { pattern: 'BackoffSupervisor.props', reason: 'renamed — BackoffSupervisor.factory' },
+  { pattern: 'ClusterRouter.props', reason: 'renamed — ClusterRouter.factory' },
 ];
 
 function* walk(dir) {
@@ -34,14 +64,21 @@ function* walk(dir) {
   }
 }
 
+/** Is `pattern` allowed to appear in `relative` (a doc-root-relative path)? */
+function isAllowed(pattern, relative) {
+  const normalised = relative.replace(/\\/g, '/');
+  return (ALLOWED_IN[pattern] ?? []).some((suffix) => normalised.endsWith(suffix));
+}
+
 const hits = [];
 for (const file of walk(DOCS_ROOT)) {
+  const relative = file.replace(DOCS_ROOT, '');
   const lines = readFileSync(file, 'utf8').split('\n');
   lines.forEach((line, i) => {
     for (const { pattern, reason } of FORBIDDEN) {
-      if (line.includes(pattern)) {
-        hits.push({ file: file.replace(DOCS_ROOT, ''), line: i + 1, pattern, reason, text: line.trim() });
-      }
+      if (!line.includes(pattern)) continue;
+      if (isAllowed(pattern, relative)) continue;
+      hits.push({ file: relative, line: i + 1, pattern, reason, text: line.trim() });
     }
   });
 }
