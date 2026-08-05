@@ -9,6 +9,141 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ## [Unreleased]
 
+### Fixed
+
+- **A Deno node can join an mTLS cluster** (#576).  `Deno.connectTls` accepts
+  a client `key`/`cert` pair, but `DenoTcpBackend.connect` never passed them —
+  so a Deno node could not answer a listener that (correctly, since #565)
+  demands a certificate, and could not join at all.  The same call passed the
+  SNI override as `hostname_`, which is not a Deno option; the adapter's
+  hand-written `DenoGlobal` interface declared the typo, so the compiler could
+  not see it and the value was silently dropped.  Deno takes the SNI name from
+  `hostname`.
+
+  Hosting an mTLS *listener* on Deno remains impossible — `Deno.listenTls`
+  takes only a cert and key, with no way to request or verify a peer
+  certificate — and is still refused at bind time rather than started in a
+  state weaker than it reads as.  The error now says which half is
+  unavailable.  `rejectUnauthorized` has no Deno equivalent and is documented
+  as unmapped rather than silently ignored.
+
+### Security
+
+- **Extension wire handlers credit the connection, not the payload** (#574,
+  #582, #711).  `Cluster._onWire` has always passed the connection's peer to
+  every handler; the receptionist, the pub-sub mediator and the
+  cluster-client receptionist each ignored it and read the payload's
+  self-declared `from` instead.  Both gossip handlers *replace* a sender's
+  contribution wholesale — that is how deregistrations propagate — so any peer
+  could name another node and wipe what that node had registered cluster-wide.
+  The cluster-client receptionist additionally threw a `TypeError` out of the
+  frame-dispatch loop when `from` was absent, and sent its reply to whatever
+  address the payload named.
+
+- **Shard ids are bounded by `numShards`** (#583, #569).  A shard id is
+  `hash(entityId) % numShards`, so no honest region can ask for one outside the
+  range — but neither side checked.  The coordinator allocated, recorded and
+  *persisted* whatever id it was handed, and the allocation map is durable
+  state replayed at every coordinator start, so the growth survived restarts.
+  On the region side the id becomes a **child actor name**, minting a permanent
+  child under an attacker-chosen name.  `ShardCoordinatorOptions` gained
+  `numShards` (`withNumShards`) for the coordinator half.
+
+- **Two `.exhaustive()` matchers no longer fail their actor on an unrecognised
+  message** (#713).  `Receptionist` and `ClusterSingletonManager` both sit at
+  resolvable paths, so anything a peer addresses to them lands in their
+  matcher.  The receptionist's arms all match on `instanceof`, and a body
+  delivered over the wire arrives as a plain JSON object — so one remotely
+  delivered envelope failed the actor holding the node's whole service
+  registry.  Both now drop the message through an `otherwise` arm and log it.
+
+- **Gossip claims need authority, not just a high version number** (#562,
+  #564, #572, #573).  The merge was decided purely by version magnitude, and
+  versions are seeded from `Date.now()` — so an attacker could always pick a
+  winning number.  Nothing checked *who* was entitled to say what:
+
+  - One frame set the receiving node's **own** record to `removed`, which
+    dropped it out of its own active set and flipped `isLeader()` to false, so
+    the cluster stopped admitting new members (#562).
+  - `onLeave` read the departing node from `message.node` instead of the
+    connection, and writes a tombstone at `version + 2` — above anything the
+    victim can say about itself.  One 120-byte frame evicted any member
+    cluster-wide for the 24-hour tombstone TTL (#564).
+  - `onHeartbeat` credited liveness to `message.from` and sent the
+    acknowledgment there, so a peer could keep a dead node looking healthy —
+    blocking singleton and shard failover — and make the receiver dial an
+    attacker-chosen `host:port` (#572).
+  - The envelope's MDC went unfiltered into `LogContext.run`, letting a peer
+    overwrite `JsonLogger`'s own `ts`/`level`/`source`/`msg` (its record
+    spreads the context last) and inject newlines into `ConsoleLogger`'s
+    one-line-per-record output, forging whole log lines (#573).
+
+  Claims are now keyed on the **connection's** peer rather than the payload's
+  self-declared `from`.  A node is the author of its own status — except for
+  promotion into `up`, which is the leader's call and is therefore carved out
+  explicitly.  Claims about a *third* node require the sender to be a member
+  this node already considers active.
+
+  Unreachability is deliberately still merged from third parties: "I cannot
+  reach C" is inherently a third-party observation, and every node must
+  converge on the same view before a downing provider decides.
+
+  This is not authentication — `hello` still carries no credential, so an
+  unauthenticated peer can announce itself and wait to be promoted.  It removes
+  the free-for-all; mTLS remains the control for untrusted networks.
+
+- **Wire frames are validated before anything reads them** (#563, #571,
+  #705, #587).  `FrameDecoder` ended in `JSON.parse(json) as WireMessage` —
+  a cast, not a check — and every layer downstream read the frame as if the
+  type were true.  Three things followed from that, all remotely reachable:
+
+  - A `null` frame (8 bytes, `JSON.parse('null')`) was dereferenced by
+    `TcpTransport.onMessage` above the handshake gate, so **no `hello` was
+    needed**: an unauthenticated remote process kill on Node.
+  - A gossiped member `status` outside the seven legal values reached
+    `emitStatusTransition`'s `match(...).exhaustive()`, which throws — from
+    a socket callback, and *after* the member had been written to the map.
+    The node died **and** re-gossiped the poisoned entry, so one frame at one
+    reachable node propagated to the whole cluster.
+  - A `port` arriving as the string `"2552"` keyed every map identically to
+    the number but never compared equal, permanently desyncing a node's view
+    of its own identity.
+
+  Frames now pass shape validation at the decode boundary (`WireValidation.ts`),
+  `NodeAddress.fromJSON` and `Member.fromData` reject impossible values rather
+  than constructing from them, and the frame-dispatch loop is wrapped: a
+  malformed frame is dropped and the connection survives, while a handler that
+  throws drops the connection instead of escaping into the runtime's socket
+  callback.  `ClusterClient` got the same treatment — its `decoder.push` call
+  was unguarded, so one malformed frame from a contact point killed the client
+  process (#587).
+
+  `MemberStatus` is now *derived* from a runtime `MEMBER_STATUSES` list, so the
+  type and the values it is checked against cannot drift apart.
+
+  Extension frame kinds (sharding, pub-sub, receptionist, DistributedData,
+  DevTools) deliberately pass this layer and validate their own payloads.
+
+### Changed
+
+- **BREAKING — the cluster wire protocol's discriminator is `kind`** (#494).
+  The framework had three spellings for the same concept: `t` on the cluster
+  wire (`hello`, `gossip`, `envelope`, `leave`, …) and on the internal
+  coordinator/singleton event unions, `$t` on the sharding protocol
+  (`sharding.Register`, `sharding.ShardHome`, …), and `kind` everywhere else —
+  which is the one AGENTS.md prescribes. All three are now `kind`.
+
+  **Migration:** a rolling upgrade is not possible. A v0.13.0 node and a
+  v0.14.0 node cannot talk to each other — the discriminator they read is
+  absent in the other's frames, so every frame is unrecognised. Stop the
+  whole cluster, then start it again on the new version. Nothing in the
+  public API changes; this affects only the bytes on the wire between nodes
+  (and anything speaking that protocol directly, e.g. a hand-rolled
+  `ClusterClient` peer or a test that constructs raw frames).
+
+  The DevTools tap protocol already used `kind` and is untouched, so the
+  embedded UI bundle and any tap client keep working across the upgrade.
+
 ## [0.13.0] — 2026-08-05
 
 ### Removed

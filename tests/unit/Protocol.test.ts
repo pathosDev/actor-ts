@@ -3,7 +3,7 @@ import { FrameDecoder, encodeFrame, type WireMessage } from '../../src/cluster/P
 import { NodeAddress } from '../../src/cluster/NodeAddress.js';
 
 const sampleHello: WireMessage = {
-  t: 'hello',
+  kind: 'hello',
   self: new NodeAddress('demo', '127.0.0.1', 9001).toJSON(),
 };
 
@@ -34,7 +34,7 @@ describe('FrameDecoder', () => {
 
   test('decodes multiple frames in a single chunk', () => {
     const hb: WireMessage = {
-      t: 'heartbeat',
+      kind: 'heartbeat',
       from: new NodeAddress('demo', 'h', 1).toJSON(),
       seq: 7,
       ts: 1_700_000_000,
@@ -131,7 +131,7 @@ describe('FrameDecoder', () => {
 
     test('cap is configurable — larger caps allow larger frames', () => {
       const big = 'x'.repeat(200_000); // ~200 KB JSON
-      const payload = JSON.stringify({ t: 'envelope', to: 'foo', from: null, body: big });
+      const payload = JSON.stringify({ kind: 'envelope', to: 'foo', from: null, body: big });
       const bytes = new TextEncoder().encode(payload);
       const frame = new Uint8Array(4 + bytes.byteLength);
       new DataView(frame.buffer).setUint32(0, bytes.byteLength, false);
@@ -161,31 +161,31 @@ describe('FrameDecoder', () => {
 
   test('round-trips each wire message variant', () => {
     const variants: WireMessage[] = [
-      { t: 'hello', self: new NodeAddress('s', 'h', 1).toJSON() },
-      { t: 'hello-ack', self: new NodeAddress('s', 'h', 1).toJSON() },
+      { kind: 'hello', self: new NodeAddress('s', 'h', 1).toJSON() },
+      { kind: 'hello-ack', self: new NodeAddress('s', 'h', 1).toJSON() },
       {
-        t: 'heartbeat',
+        kind: 'heartbeat',
         from: new NodeAddress('s', 'h', 1).toJSON(),
         seq: 42,
         ts: 1_700_000_000,
       },
       {
-        t: 'heartbeat-ack',
+        kind: 'heartbeat-ack',
         from: new NodeAddress('s', 'h', 1).toJSON(),
         seq: 42,
       },
       {
-        t: 'gossip',
+        kind: 'gossip',
         from: new NodeAddress('s', 'h', 1).toJSON(),
         members: [
           { address: new NodeAddress('s', 'h', 1).toJSON(), status: 'up', version: 3, roles: ['backend'] },
         ],
       },
-      { t: 'envelope', to: 'path', from: null, body: { hello: 'world' } },
-      { t: 'envelope', to: 'path', from: 'sender', body: 'str', tag: 'Str' },
-      { t: 'leave', node: new NodeAddress('s', 'h', 1).toJSON() },
+      { kind: 'envelope', to: 'path', from: null, body: { hello: 'world' } },
+      { kind: 'envelope', to: 'path', from: 'sender', body: 'str', tag: 'Str' },
+      { kind: 'leave', node: new NodeAddress('s', 'h', 1).toJSON() },
       {
-        t: 'shard-map',
+        kind: 'shard-map',
         type: 'counter',
         shards: { 0: new NodeAddress('s', 'h', 1).toJSON() },
         version: 1,

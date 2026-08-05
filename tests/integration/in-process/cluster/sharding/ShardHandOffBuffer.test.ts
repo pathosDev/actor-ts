@@ -120,7 +120,7 @@ describe('ClusterSharding — handoff buffer (#893)', () => {
     // Begin the handoff, then queue behind it. The region is single-threaded,
     // so by the time it reads this second message the shard is already marked
     // `'handing-off'` and the message can only be buffered.
-    regionRef(node).tell({ $t: 'sharding.HandOff', shardId });
+    regionRef(node).tell({ kind: 'sharding.HandOff', shardId });
     node.region.tell({ id: ENTITY_ID, kind: 'work' });
 
     // Single node, so the coordinator hands the shard straight back — the only
@@ -138,7 +138,7 @@ describe('ClusterSharding — handoff buffer (#893)', () => {
     node.region.tell({ id: ENTITY_ID, kind: 'work' });
     await waitFor(() => delivered === 1);
 
-    regionRef(node).tell({ $t: 'sharding.HandOff', shardId });
+    regionRef(node).tell({ kind: 'sharding.HandOff', shardId });
     await sleep(200);
 
     // Nothing was queued, so nothing may be delivered — and the shard stays

@@ -101,10 +101,11 @@ export function assertListenerTlsIsCoherent(
   }
   if (runtime === 'Deno' && requiresClientCertificate(tls)) {
     throw new Error(
-      'TLS transport: mutual TLS is not available on Deno — `Deno.listenTls` cannot request ' +
-      'a client certificate, and `Deno.connectTls` here sends none, so peers would not be ' +
-      'authenticated in either direction. Run the cluster on Node.js or Bun for mTLS, or set ' +
-      'requestClientCert: false to accept one-way TLS with no peer authentication.',
+      'TLS transport: this node cannot HOST an mTLS listener on Deno — `Deno.listenTls` takes ' +
+      'only a cert and key, with no way to request or verify a client certificate, so the ' +
+      'listener would authenticate nobody. A Deno node can still JOIN an mTLS cluster: it ' +
+      'presents its own `cert`/`key` when dialling. Host the listener on Node.js or Bun, or ' +
+      'set requestClientCert: false to accept one-way TLS with no peer authentication.',
     );
   }
 }

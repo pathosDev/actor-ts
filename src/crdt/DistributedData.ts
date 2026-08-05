@@ -123,7 +123,7 @@ export type CrdtFactory<C extends Crdt<C>> = () => C;
  * for the small-to-medium stores DistributedData is meant for.
  */
 type DDataGossipMessage = {
-  readonly t: 'ddata-gossip';
+  readonly kind: 'ddata-gossip';
   readonly from: ReturnType<NodeAddress['toJSON']>;
   /** Keyed by user-key; payload is the CRDT's own JSON discriminator. */
   readonly entries: Record<string, CrdtJson>;
@@ -140,7 +140,7 @@ type DDataGossipMessage = {
  * can match it to the pending write.
  */
 type DDataWriteRequestMessage = {
-  readonly t: 'ddata-write-request';
+  readonly kind: 'ddata-write-request';
   readonly from: ReturnType<NodeAddress['toJSON']>;
   readonly pendingId: string;
   readonly key: string;
@@ -148,7 +148,7 @@ type DDataWriteRequestMessage = {
 };
 
 type DDataWriteAcknowledgmentMessage = {
-  readonly t: 'ddata-write-ack';
+  readonly kind: 'ddata-write-ack';
   readonly from: ReturnType<NodeAddress['toJSON']>;
   readonly pendingId: string;
   readonly key: string;
@@ -162,14 +162,14 @@ type DDataWriteAcknowledgmentMessage = {
  * responses and return the result.
  */
 type DDataReadRequestMessage = {
-  readonly t: 'ddata-read-request';
+  readonly kind: 'ddata-read-request';
   readonly from: ReturnType<NodeAddress['toJSON']>;
   readonly pendingId: string;
   readonly key: string;
 };
 
 type DDataReadResponseMessage = {
-  readonly t: 'ddata-read-response';
+  readonly kind: 'ddata-read-response';
   readonly from: ReturnType<NodeAddress['toJSON']>;
   readonly pendingId: string;
   readonly key: string;
@@ -306,7 +306,7 @@ type SharedView = {
 };
 
 type UpdateMessage = {
-  readonly t: 'ddata-update';
+  readonly kind: 'ddata-update';
   readonly key: string;
   readonly factory: CrdtFactory<Crdt<any>>;
   readonly fn: (c: Crdt<any>) => Crdt<any>;
@@ -325,10 +325,10 @@ type UpdateMessage = {
     readonly reject: (err: Error) => void;
   };
 };
-type DeleteMessage = { readonly t: 'ddata-delete'; readonly key: string };
+type DeleteMessage = { readonly kind: 'ddata-delete'; readonly key: string };
 /** Out-of-mailbox: a quorum-read user call.  See {@link DistributedDataHandle.getAsync}. */
 type ReadMessage = {
-  readonly t: 'ddata-read';
+  readonly kind: 'ddata-read';
   readonly key: string;
   readonly pendingId: string;
   readonly consistency: ReadConsistency;
@@ -379,7 +379,7 @@ export class DistributedDataHandle {
     key: string, factory: CrdtFactory<C>, fn: (current: C) => C,
   ): void {
     this.ref.tell({
-      t: 'ddata-update', key,
+      kind: 'ddata-update', key,
       factory: factory as unknown as CrdtFactory<Crdt<any>>,
       fn: fn as unknown as (c: Crdt<any>) => Crdt<any>,
     });
@@ -414,7 +414,7 @@ export class DistributedDataHandle {
       const pendingId = nextPendingId();
       const timeoutMs = options.timeoutMs ?? DEFAULT_ASK_TIMEOUT_MS;
       this.ref.tell({
-        t: 'ddata-update', key,
+        kind: 'ddata-update', key,
         factory: factory as unknown as CrdtFactory<Crdt<any>>,
         fn: fn as unknown as (c: Crdt<any>) => Crdt<any>,
         quorum: {
@@ -448,7 +448,7 @@ export class DistributedDataHandle {
       const pendingId = nextPendingId();
       const timeoutMs = options.timeoutMs ?? DEFAULT_ASK_TIMEOUT_MS;
       this.ref.tell({
-        t: 'ddata-read', key, pendingId,
+        kind: 'ddata-read', key, pendingId,
         consistency: options.consistency, timeoutMs,
         resolve: resolve as (v: Crdt<any> | undefined) => void,
         reject,
@@ -462,7 +462,7 @@ export class DistributedDataHandle {
    * tombstone story.
    */
   delete(key: string): void {
-    this.ref.tell({ t: 'ddata-delete', key });
+    this.ref.tell({ kind: 'ddata-delete', key });
   }
 
   /**
@@ -643,14 +643,14 @@ class DistributedDataActor extends Actor<ActorMessage> {
 
   override onReceive(message: ActorMessage): void {
     match(message)
-      .with({ t: 'ddata-update' }, (m) => this.onUpdate(m))
-      .with({ t: 'ddata-delete' }, (m) => this.onDelete(m))
-      .with({ t: 'ddata-read' }, (m) => this.onRead(m))
-      .with({ t: 'ddata-gossip' }, (m) => this.onGossip(m))
-      .with({ t: 'ddata-write-request' }, (m) => this.onWriteRequest(m))
-      .with({ t: 'ddata-write-ack' }, (m) => this.onWriteAcknowledgment(m))
-      .with({ t: 'ddata-read-request' }, (m) => this.onReadRequest(m))
-      .with({ t: 'ddata-read-response' }, (m) => this.onReadResponse(m))
+      .with({ kind: 'ddata-update' }, (m) => this.onUpdate(m))
+      .with({ kind: 'ddata-delete' }, (m) => this.onDelete(m))
+      .with({ kind: 'ddata-read' }, (m) => this.onRead(m))
+      .with({ kind: 'ddata-gossip' }, (m) => this.onGossip(m))
+      .with({ kind: 'ddata-write-request' }, (m) => this.onWriteRequest(m))
+      .with({ kind: 'ddata-write-ack' }, (m) => this.onWriteAcknowledgment(m))
+      .with({ kind: 'ddata-read-request' }, (m) => this.onReadRequest(m))
+      .with({ kind: 'ddata-read-response' }, (m) => this.onReadResponse(m))
       .exhaustive();
   }
 
@@ -686,7 +686,7 @@ class DistributedDataActor extends Actor<ActorMessage> {
       resolve: message.quorum.resolve, reject: message.quorum.reject,
     });
     const wire: DDataWriteRequestMessage = {
-      t: 'ddata-write-request',
+      kind: 'ddata-write-request',
       from: this.cluster.selfAddress.toJSON(),
       pendingId: message.quorum.pendingId,
       key: message.key,
@@ -724,7 +724,7 @@ class DistributedDataActor extends Actor<ActorMessage> {
       resolve: message.resolve, reject: message.reject,
     });
     const wire: DDataReadRequestMessage = {
-      t: 'ddata-read-request',
+      kind: 'ddata-read-request',
       from: this.cluster.selfAddress.toJSON(),
       pendingId: message.pendingId,
       key: message.key,
@@ -743,7 +743,7 @@ class DistributedDataActor extends Actor<ActorMessage> {
     this.applyMerged(message.key, current ?? null, merged);
     const sender = NodeAddress.fromJSON(message.from);
     const ack: DDataWriteAcknowledgmentMessage = {
-      t: 'ddata-write-ack',
+      kind: 'ddata-write-ack',
       from: this.cluster.selfAddress.toJSON(),
       pendingId: message.pendingId,
       key: message.key,
@@ -768,7 +768,7 @@ class DistributedDataActor extends Actor<ActorMessage> {
     const local = this.view.state.get(message.key);
     const sender = NodeAddress.fromJSON(message.from);
     const response: DDataReadResponseMessage = {
-      t: 'ddata-read-response',
+      kind: 'ddata-read-response',
       from: this.cluster.selfAddress.toJSON(),
       pendingId: message.pendingId,
       key: message.key,
@@ -881,7 +881,7 @@ class DistributedDataActor extends Actor<ActorMessage> {
     }
     if (Object.keys(entries).length === 0) return;
     const payload: DDataGossipMessage = {
-      t: 'ddata-gossip',
+      kind: 'ddata-gossip',
       from: this.cluster.selfAddress.toJSON(),
       entries,
     };

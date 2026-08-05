@@ -69,7 +69,7 @@ export class Listing<T = unknown> {
 
 /** Wire message gossiped between receptionists. */
 export type ReceptionistGossipMessage = {
-  readonly t: 'receptionist-gossip';
+  readonly kind: 'receptionist-gossip';
   readonly from: import('../cluster/NodeAddress.js').NodeAddressData;
   /** key-id → list of actor paths on the sender node */
   readonly entries: Record<string, string[]>;

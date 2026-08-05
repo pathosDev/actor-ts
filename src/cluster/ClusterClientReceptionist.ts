@@ -20,7 +20,7 @@
  * Wire format — symmetric on both directions:
  *
  *   {
- *     t: 'cluster-client-envelope',
+ *     kind: 'cluster-client-envelope',
  *     from: NodeAddressData,          // synthetic client address
  *     to: '/user/some/actor',          // actor path on the cluster
  *     askId: 'a-42' | undefined,       // present for ask
@@ -28,7 +28,7 @@
  *   }
  *
  *   {
- *     t: 'cluster-client-reply',
+ *     kind: 'cluster-client-reply',
  *     askId: 'a-42',
  *     ok: true | false,
  *     body: unknown,                   // the reply, or error.message if !ok
@@ -53,7 +53,7 @@ import type { ClusterClientReceptionistOptions, ClusterClientReceptionistOptions
 
 /** Inbound: a client wants to deliver `body` to actor at `to`. */
 export type ClusterClientEnvelopeMessage = {
-  readonly t: 'cluster-client-envelope';
+  readonly kind: 'cluster-client-envelope';
   readonly from: NodeAddressData;
   readonly to: string;
   readonly askId?: string;
@@ -62,7 +62,7 @@ export type ClusterClientEnvelopeMessage = {
 
 /** Outbound: reply to a client ask. */
 export type ClusterClientReplyMessage = {
-  readonly t: 'cluster-client-reply';
+  readonly kind: 'cluster-client-reply';
   readonly askId: string;
   readonly ok: boolean;
   readonly body: unknown;
@@ -97,9 +97,15 @@ export class ClusterClientReceptionist implements Extension {
     const askTimeoutMs = resolvedOptions.askTimeoutMs ?? DEFAULT_ASK_TIMEOUT_MS;
     const log = this.system.log.withSource(`cluster-client-receptionist@${cluster.selfAddress}`);
 
-    this._unsubscribe = cluster._onWire('cluster-client-envelope', (message) => {
+    this._unsubscribe = cluster._onWire('cluster-client-envelope', (message, peer) => {
       const env = message as unknown as ClusterClientEnvelopeMessage;
-      const from = NodeAddress.fromJSON(env.from);
+      // The reply goes back down the connection the request arrived on, not to
+      // the address the payload names.  `NodeAddress.fromJSON(env.from)` threw
+      // outright when `from` was absent — a TypeError from inside the
+      // frame-dispatch loop (#711) — and when present but forged it made this
+      // node send the reply, and open a connection, to an address of the
+      // sender's choosing.
+      const from = peer;
 
       // Resolve the target locally.  We use the synchronous `_resolvePath`
       // rather than `actorSelection().resolveOne()` because the client
@@ -162,7 +168,7 @@ export class ClusterClientReceptionist implements Extension {
     body: unknown,
   ): void {
     const reply: ClusterClientReplyMessage = {
-      t: 'cluster-client-reply', askId, ok, body,
+      kind: 'cluster-client-reply', askId, ok, body,
     };
     cluster.transport.send(to, reply as unknown as WireMessage);
   }

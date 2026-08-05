@@ -353,7 +353,7 @@ export class ClusterSharding {
     // Leave the coordinator's fan-out a shorter fuse than our own ask, so a
     // slow region degrades into a partial answer instead of no answer at all.
     const fanOutTimeoutMs = Math.max(250, Math.floor(timeoutMs * 0.6));
-    const query: GetShards = { $t: 'sharding.GetShards', timeoutMs: fanOutTimeoutMs };
+    const query: GetShards = { kind: 'sharding.GetShards', timeoutMs: fanOutTimeoutMs };
     return await region.ask<ReadonlyArray<ShardInfo<TMessage>>>(query as never, timeoutMs);
   }
 
@@ -378,7 +378,7 @@ export class ClusterSharding {
     timeoutMs = 5_000,
   ): Promise<ActorRef<ShardMessage<TMessage>>> {
     const region = this.regionOrThrow(typeName);
-    const query: GetShardLocation = { $t: 'sharding.GetShardLocation', shardId };
+    const query: GetShardLocation = { kind: 'sharding.GetShardLocation', shardId };
     return await region.ask<ActorRef<ShardMessage<TMessage>>>(query as never, timeoutMs);
   }
 
@@ -401,6 +401,7 @@ export class ClusterSharding {
       .withTypeName(options.typeName)
       .withCluster(this.cluster)
       .withAllocationStrategy(options.allocationStrategy ?? new HashAllocationStrategy())
+      .withNumShards(this.numShardsByType.get(options.typeName) ?? DEFAULT_NUM_SHARDS)
       .withLocalResolver((path) =>
         this.regionsByPath.get(path)
         ?? this.coordinators.get(this.typeNameFromCoordinatorPath(path) ?? '')

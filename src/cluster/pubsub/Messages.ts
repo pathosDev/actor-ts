@@ -49,7 +49,7 @@ export class CurrentTopics { constructor(public readonly topics: ReadonlyArray<s
  * rather than to total subscriber count.
  */
 export type PubSubGossipMessage = {
-  readonly t: 'pubsub-gossip';
+  readonly kind: 'pubsub-gossip';
   readonly from: NodeAddressData;
   /** Topic names hosted locally on the sender. */
   readonly entries: ReadonlyArray<string>;
@@ -61,7 +61,7 @@ export type PubSubGossipMessage = {
  * Remote mediator decodes and fans out to its local subscribers.
  */
 export type PubSubPublishMessage = {
-  readonly t: 'pubsub-publish';
+  readonly kind: 'pubsub-publish';
   readonly topic: string;
   readonly body: unknown;
 };

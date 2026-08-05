@@ -69,8 +69,8 @@ export class Receptionist extends Actor<Message> {
 
   override preStart(): void {
     if (this.clusterRef) {
-      this.unsubscribeWire = this.clusterRef._onWire('receptionist-gossip', (message) =>
-        this.handleGossip(message as unknown as ReceptionistGossipMessage),
+      this.unsubscribeWire = this.clusterRef._onWire('receptionist-gossip', (message, from) =>
+        this.handleGossip(message as unknown as ReceptionistGossipMessage, from),
       );
       this.unsubscribeCluster = this.clusterRef.subscribe((evt) =>
         match(evt)
@@ -97,10 +97,25 @@ export class Receptionist extends Actor<Message> {
       .with(P.instanceOf(Find), (m) => this.onFind(m))
       .with(P.instanceOf(Subscribe), (m) => this.onSubscribe(m))
       .with(P.instanceOf(Unsubscribe), (m) => this.onUnsubscribe(m))
-      .exhaustive();
+      .otherwise((m) => this.onUnhandled(m));
   }
 
   /* ---------------- handlers ---------------- */
+
+  /**
+   * Every arm above matches on `instanceof`, and the receptionist sits at a
+   * resolvable path — so a body delivered over the cluster wire arrives as a
+   * plain JSON object, matches nothing, and used to fail the actor through
+   * `.exhaustive()`.  One remotely-delivered envelope was enough to take out
+   * the node's service discovery (#713).  Drop it and say so instead.
+   */
+  private onUnhandled(message: Message): void {
+    this.log.warn(
+      `receptionist: dropping an unrecognised message `
+      + `(${(message as { kind?: string })?.kind ?? typeof message}) — `
+      + `remote senders must address the receptionist through its own protocol`,
+    );
+  }
 
   private onRegister(message: Register): void {
     const entry = this.getOrCreate(message.key);
@@ -168,7 +183,7 @@ export class Receptionist extends Actor<Message> {
       entries[id] = Array.from(entry.local.keys());
     }
     const gossip: ReceptionistGossipMessage = {
-      t: 'receptionist-gossip',
+      kind: 'receptionist-gossip',
       from: this.clusterRef.selfAddress.toJSON(),
       entries,
       version: this.version,
@@ -177,9 +192,16 @@ export class Receptionist extends Actor<Message> {
     this.clusterRef.transport.send(target.address, gossip as unknown as never);
   }
 
-  private handleGossip(message: ReceptionistGossipMessage): void {
+  /**
+   * `from` is the peer the connection belongs to.  This used to key on
+   * `message.from` instead, which a sender fills in itself — so any peer could
+   * name another node and replace *its* whole service-registry contribution,
+   * poisoning cluster-wide discovery (#574).  Every entry a node contributes
+   * is now filed under the address that actually sent it.
+   */
+  private handleGossip(message: ReceptionistGossipMessage, from: NodeAddress): void {
     if (!this.clusterRef) return;
-    const senderAddr = NodeAddress.fromJSON(message.from).toString();
+    const senderAddr = from.toString();
     // Replace this sender's remote contribution wholesale so diff-to-notify
     // works per-key.
     const affected = new Set<string>();

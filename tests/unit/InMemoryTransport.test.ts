@@ -10,7 +10,7 @@ function newTransport(port: number): InMemoryTransport {
 }
 
 function helloFrom(port: number): HelloMessage {
-  return { t: 'hello', self: new NodeAddress('imt', 'localhost', port).toJSON() };
+  return { kind: 'hello', self: new NodeAddress('imt', 'localhost', port).toJSON() };
 }
 
 describe('InMemoryTransport', () => {
@@ -41,7 +41,7 @@ describe('InMemoryTransport', () => {
       await sleep(20);
       expect(receivedOnB.length).toBe(1);
       expect(receivedOnB[0]!.from.equals(transportA.self)).toBe(true);
-      expect(receivedOnB[0]!.message.t).toBe('hello');
+      expect(receivedOnB[0]!.message.kind).toBe('hello');
     } finally {
       await transportA.shutdown(); await transportB.shutdown();
     }

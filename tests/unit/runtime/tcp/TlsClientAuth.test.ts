@@ -97,10 +97,10 @@ describe('DenoTcpBackend — mTLS is refused rather than silently skipped', () =
   afterEach(() => { setDeno(realDeno); });
 
   test('a CA-configured listener fails closed on Deno', async () => {
-    // `Deno.listenTls` cannot request a client certificate and the adapter's
-    // `connectTls` sends none, so mTLS is unavailable in both directions.
-    // Binding anyway would hand the operator the exact false assurance #565 is
-    // about, so the bind is refused instead.
+    // `Deno.ListenTlsOptions` takes only a cert and a key — there is no way to
+    // request or verify a client certificate, so a listener bound here would
+    // authenticate nobody.  Binding anyway would hand the operator the exact
+    // false assurance #565 is about, so the bind is refused instead.
     let bound = false;
     setDeno({
       listenTls: () => { bound = true; throw new Error('unreachable'); },
@@ -110,7 +110,65 @@ describe('DenoTcpBackend — mTLS is refused rather than silently skipped', () =
       host: '127.0.0.1', port: 0,
       tls: { cert: CERT, key: KEY, ca: CA },
       handlers: noopHandlers,
-    })).rejects.toThrow(/mutual TLS is not available on Deno/);
+    })).rejects.toThrow(/cannot HOST an mTLS listener on Deno/);
     expect(bound).toBe(false);
+  });
+});
+
+describe('DenoTcpBackend — the dialling half of mTLS (#576)', () => {
+  const realDeno = (globalThis as { Deno?: unknown }).Deno;
+  const setDeno = (value: unknown): void => {
+    Object.defineProperty(globalThis, 'Deno', { value, configurable: true, writable: true });
+  };
+  afterEach(() => { setDeno(realDeno); });
+
+  /** Capture what the adapter hands `Deno.connectTls`, then abort the dial. */
+  async function captureConnectTlsOptions(
+    tls: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    let seen: Record<string, unknown> = {};
+    setDeno({
+      connectTls: (options: Record<string, unknown>) => {
+        seen = options;
+        throw new Error('stop here — the options are what this test is about');
+      },
+    });
+    await new DenoTcpBackend().connect({
+      host: '10.0.0.1', port: 2552, tls: tls as never, handlers: noopHandlers,
+    }).catch(() => { /* expected */ });
+    return seen;
+  }
+
+  test('the client certificate is presented', async () => {
+    // Deno supports this — `connectTls` accepts `key` + `cert` — but the
+    // adapter never passed them.  So a Deno node could not answer a listener
+    // that (correctly, since #565) demands a certificate, which meant it could
+    // not join an mTLS cluster at all.
+    const seen = await captureConnectTlsOptions({ cert: CERT, key: KEY, ca: CA });
+    expect(seen['cert']).toBe(CERT);
+    expect(seen['key']).toBe(KEY);
+    expect(seen['caCerts']).toEqual([CA]);
+  });
+
+  test('a key without its certificate is not sent as a credential', async () => {
+    const seen = await captureConnectTlsOptions({ key: KEY, ca: CA });
+    expect(seen['key']).toBeUndefined();
+    expect(seen['cert']).toBeUndefined();
+  });
+
+  test('serverName overrides the SNI hostname instead of vanishing', async () => {
+    // It used to be passed as `hostname_`, which is not a Deno option — and
+    // the adapter's hand-written interface declared the typo, so the compiler
+    // could not see it and the value was silently dropped.
+    const seen = await captureConnectTlsOptions({ ca: CA, serverName: 'cluster.internal' });
+    expect(seen['hostname']).toBe('cluster.internal');
+    expect(seen).not.toHaveProperty('hostname_');
+    expect(seen).not.toHaveProperty('serverName');
+  });
+
+  test('without an override the dial target is the SNI name', async () => {
+    const seen = await captureConnectTlsOptions({ ca: CA });
+    expect(seen['hostname']).toBe('10.0.0.1');
+    expect(seen['port']).toBe(2552);
   });
 });

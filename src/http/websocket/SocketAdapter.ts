@@ -85,9 +85,9 @@ function coerceText(data: unknown): string {
 }
 
 type BufferedEvent =
-  | { readonly t: 'message'; readonly data: string | Uint8Array }
-  | { readonly t: 'close'; readonly code: number; readonly reason: string }
-  | { readonly t: 'error'; readonly err: Error };
+  | { readonly kind: 'message'; readonly data: string | Uint8Array }
+  | { readonly kind: 'close'; readonly code: number; readonly reason: string }
+  | { readonly kind: 'error'; readonly err: Error };
 
 /**
  * Adapt a `ws`-package socket (already upgraded) to a
@@ -108,18 +108,18 @@ export function websocketPackageAdapter(
   socket.on('message', (data, isBinary) => {
     const norm = isBinary ? coerceBinary(data) : coerceText(data);
     if (listeners) listeners.onMessage(norm);
-    else pending.push({ t: 'message', data: norm });
+    else pending.push({ kind: 'message', data: norm });
   });
   socket.on('close', (code, reason) => {
     const closeCode = typeof code === 'number' ? code : 1005;
     const reasonText = reason == null ? '' : String(reason);
     if (listeners) listeners.onClose(closeCode, reasonText);
-    else pending.push({ t: 'close', code: closeCode, reason: reasonText });
+    else pending.push({ kind: 'close', code: closeCode, reason: reasonText });
   });
   socket.on('error', (err) => {
     const error = err instanceof Error ? err : new Error(String(err));
     if (listeners) listeners.onError(error);
-    else pending.push({ t: 'error', err: error });
+    else pending.push({ kind: 'error', err: error });
   });
 
   return {
@@ -129,8 +129,8 @@ export function websocketPackageAdapter(
     setListeners: (l) => {
       listeners = l;
       for (const ev of pending.splice(0)) {
-        if (ev.t === 'message') l.onMessage(ev.data);
-        else if (ev.t === 'close') l.onClose(ev.code, ev.reason);
+        if (ev.kind === 'message') l.onMessage(ev.data);
+        else if (ev.kind === 'close') l.onClose(ev.code, ev.reason);
         else l.onError(ev.err);
       }
     },

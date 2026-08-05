@@ -141,7 +141,7 @@ describe('ClusterSharding — remote shard refs across passivation (#901)', () =
     // anywhere.  Before #901 this message went to a path nothing resolved.
     const shardId = hashShardId(ENTITY_ID, NUM_SHARDS);
     const shard = await asker.cluster.sharding.shardRefFor<Command>(TYPE_NAME, shardId);
-    shard.tell({ $t: 'sharding.StartEntity', entityId: ENTITY_ID });
+    shard.tell({ kind: 'sharding.StartEntity', entityId: ENTITY_ID });
 
     await waitFor(() => created === 2);
     await waitFor(() => nodesHostingEntity([host], ENTITY_ID).length === 1);

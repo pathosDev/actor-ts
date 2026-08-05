@@ -80,10 +80,22 @@ schwächeren Zustand zu starten, als sie sich lesen:
 
 - `requestClientCert: true` ohne `ca` — es gäbe nichts, wogegen
   Peer-Zertifikate validiert werden könnten.
-- Mutual TLS **auf Deno** — `Deno.listenTls` kann kein
-  Client-Zertifikat anfordern und der Deno-Dialer sendet keines,
-  Peers blieben also in beide Richtungen unauthentifiziert.  Für
-  mTLS den Cluster auf Node.js oder Bun betreiben.
+- Ein mTLS-**Listener auf Deno** — `Deno.listenTls` nimmt nur
+  Zertifikat und Key entgegen und kann ein Client-Zertifikat weder
+  anfordern noch prüfen; der Listener würde also niemanden
+  authentifizieren.
+
+Einem mTLS-Cluster **beitreten** kann ein Deno-Knoten sehr wohl:
+er präsentiert beim Wählen sein eigenes `cert`/`key`, und der
+Listener (auf Node.js oder Bun) authentifiziert ihn wie jeden
+anderen Peer.  Nur das *Hosten* des Listeners fällt aus — halte in
+einem gemischten Deployment die Seed-Knoten auf Node.js oder Bun.
+
+Ein Deno-Unterschied, den man kennen sollte: `rejectUnauthorized`
+hat dort kein Äquivalent und wird nicht abgebildet.  Deno prüft
+die Kette immer; einen self-signed Peer erreicht man also, indem
+man dessen signierende CA in `ca` mitgibt — die Form, die hier
+ohnehin empfohlen wird.
 
 ## Zertifikatsmanagement
 
@@ -180,12 +192,107 @@ erreichen.
 | Man-in-the-Middle | TLS + Zertifikatsprüfung |
 | Unautorisierter Cluster-Join | mTLS (CA-signierte Peer-Certs) |
 | Insider mit gestohlenem Cert | Cert-Rotation + Revocation |
+| Fehlerhafter oder feindlicher Wire-Frame | Shape-Prüfung an der Decode-Grenze |
 | Kompromittierter Pod im Cluster | Application-Level-Auth (hier nicht abgedeckt) |
 
 Der Cluster-Transport handhabt Transport-Level-Sicherheit.
 Application-Level-Anliegen (Auth zwischen spezifischen Actors,
 Per-Tenant-Isolation) bleiben dein Job — der Cluster-Transport
 ist **in sich selbst vertrauenswürdig**.
+
+## Was der Wire-Rand abweist
+
+Frames kommen als JSON an und wurden früher auf den
+Protokolltyp *gecastet* statt gegen ihn geprüft — ein Peer
+konnte einem Knoten also einen Wert reichen, den der Code
+anschließend las, als stimmte der Typ. Jeder Frame wird jetzt
+geprüft, bevor ihn irgendein Handler sieht:
+
+- Der Frame muss ein Objekt mit einem String-`kind` sein.
+  `null`, ein nackter String und eine Zahl werden abgewiesen —
+  vorher war allein `null` ein Acht-Byte-Remote-Prozesskill,
+  und zwar ohne abgeschlossenen Handshake.
+- Knotenadressen brauchen ein nicht-leeres `systemName` und
+  `host` plus einen positiven ganzzahligen `port`. Der
+  lohnende Fall: ein Port, der als *String* `"2552"` ankommt.
+  Er sieht in jeder Logzeile identisch aus und keyt jede Map
+  gleich, vergleicht sich aber nie gleich — ein Knoten, der
+  seine eigene Adresse in dieser Form mergte, erkannte sich
+  selbst nicht mehr wieder.
+- Der `status` eines gegossipten Members muss einer der sieben
+  legalen Werte sein. Ein unbekannter erreichte ein
+  exhaustives `match`, das warf — *nachdem* der Member schon
+  gespeichert war. Der Knoten stürzte also ab **und**
+  gossipte den vergifteten Eintrag an seine Peers weiter.
+- Ein Gossip-Batch wird als Ganzes geprüft. Ein fehlerhafter
+  Member weist den Frame ab, damit sich ein schlechter
+  Eintrag nicht hinter einem guten einschleichen kann.
+
+Bewusst zwei Stufen: ein Frame, der die Prüfung nicht besteht,
+wird verworfen und die Verbindung bleibt stehen — ein einzelner
+kaputter Frame soll einen gesunden Peer nicht seine Leitung
+kosten. Ein Handler, der *wirft*, kappt die Verbindung: das ist
+der Fall, den niemand versteht, und er darf nicht in den
+Socket-Callback des Runtimes entkommen.
+
+Frame-Kinds, die Extensions registrieren (Sharding, PubSub,
+Receptionist, DistributedData, DevTools), passieren diese
+Schicht und prüfen ihr eigenes Payload selbst.
+
+Jede Abweisung wird auf `WARN` mit Peer und beanstandetem Feld
+geloggt, damit ein verworfener Frame diagnostizierbar bleibt —
+eine Versionsabweichung und ein feindlicher Peer sehen im Log
+unterschiedlich aus.
+
+## Wer was sagen darf
+
+Die Shape-Prüfung zu bestehen macht einen Frame noch nicht
+glaubwürdig. Gossip-Merges entschied früher allein die
+Versionsgröße, und Versionen werden aus `Date.now()` gesät —
+ein Angreifer konnte sich also immer eine Gewinnerzahl
+aussuchen und jeden Member-Status umschreiben, **auch den des
+empfangenden Knotens selbst**. Vor dem Merge stehen jetzt zwei
+Regeln:
+
+- **Niemand stuft uns herab.** Eine Aussage über die eigene
+  Adresse dieses Knotens wird abgewiesen. Die einzige Ausnahme
+  ist die Beförderung von `joining`/`weakly-up` nach `up` — die
+  muss von außen kommen, weil sie die Entscheidung des Leaders
+  ist, und sie anzunehmen ist harmlos, denn ein joinender
+  Knoten will ohnehin `up` werden. Alles andere über den
+  eigenen Record entscheiden wir selbst.
+- **Aussagen über Dritte brauchen einen Absender mit Standing.**
+  Etwas über einen *anderen* Knoten zu behaupten setzt voraus,
+  dass der Peer der Verbindung ein Member ist, den dieser
+  Knoten bereits als aktiv führt. Seinen eigenen Record darf
+  ein Absender immer ankündigen — so funktioniert der Join.
+
+Beide Regeln hängen am Peer der **Verbindung**, nicht am
+`from`-Feld des Payloads: genau dieses Feld kontrolliert ein
+Angreifer vollständig. Dieselbe Überlegung deckt zwei Nachbarn
+mit ab: ein `leave` wird nur vom scheidenden Knoten selbst
+akzeptiert, und ein Heartbeat frischt den Failure Detector für
+den *sendenden* Peer auf statt für die Adresse, die er nennt —
+letzteres ließ vorher einen Peer einen toten Knoten dauerhaft
+gesund erscheinen und brachte den Empfänger dazu, einen
+angreiferbestimmten Host anzuwählen.
+
+Unerreichbarkeit ist bewusst **nicht** von diesen Regeln
+erfasst: „Ich erreiche C nicht" ist naturgemäß eine
+Drittbeobachtung, und alle Knoten müssen auf dieselbe Sicht
+konvergieren, bevor ein Downing-Provider entscheidet. Solche
+Aussagen abzuweisen ließe jedem Knoten nur sein eigenes
+Erreichbarkeitsbild.
+
+:::caution[Das ist keine Authentifizierung]
+Die Regeln nehmen die Beliebigkeit heraus — eine Aussage
+braucht jetzt Standing, das dieser Knoten vergeben hat, statt
+einer großen Zahl. Sie machen einen unauthentifizierten Peer
+nicht harmlos: der `hello`-Handshake trägt kein Credential,
+ein Angreifer kann sich also ankündigen, die Beförderung
+abwarten und danach die zweite Regel erfüllen. Fahre mTLS,
+wenn das Netz nicht vollständig vertrauenswürdig ist.
+:::
 
 ## Per-Deployment-Rezept
 

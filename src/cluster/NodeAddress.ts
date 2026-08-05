@@ -26,8 +26,38 @@ export class NodeAddress {
     return { systemName: this.systemName, host: this.host, port: this.port };
   }
 
+  /**
+   * Rebuild an address from its wire form.
+   *
+   * The declared parameter type is a promise the wire cannot keep: every caller
+   * on the receive path hands this whatever `JSON.parse` produced.  A port that
+   * arrives as the *string* `"2552"` is the sharp case — `toString()` renders
+   * it identically to the number, so it keys every map the same way, but
+   * `equals()` compares `===` and never matches.  A node that reads its own
+   * address back in that shape stops recognising itself, permanently (#571).
+   *
+   * Throwing rather than coercing is deliberate: a well-behaved peer never
+   * sends this, so there is no shape worth repairing, and the transport's
+   * frame guard rejects malformed addresses before they get here. This is the
+   * backstop for the paths that reach it another way.
+   *
+   * `port` is checked as a **positive integer, not a TCP port** — the same rule
+   * `ClusterOptionsValidator` states and for the same reason: under
+   * `InMemoryTransport` the port is a synthetic node discriminator (tests use
+   * five-digit values), and an address is transport-agnostic.  Whether a port
+   * is dialable is `TcpTransport`'s business.
+   */
   static fromJSON(data: NodeAddressData): NodeAddress {
-    return new NodeAddress(data.systemName, data.host, data.port);
+    const { systemName, host, port } = data ?? {};
+    if (typeof systemName !== 'string' || systemName.length === 0
+      || typeof host !== 'string' || host.length === 0
+      || typeof port !== 'number' || !Number.isInteger(port) || port <= 0) {
+      throw new Error(
+        `Invalid node address: expected { systemName: string, host: string, port: positive integer }, `
+        + `got ${JSON.stringify(data)}`,
+      );
+    }
+    return new NodeAddress(systemName, host, port);
   }
 
   /** Parse a string of the form `system@host:port`. */

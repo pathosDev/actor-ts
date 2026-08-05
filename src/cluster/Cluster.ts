@@ -53,6 +53,7 @@ import type {
   WireMessage,
 } from './Protocol.js';
 import { decodeRefs, encodeRefs } from './RefCodec.js';
+import { sanitizeWireLogContext } from './WireValidation.js';
 import { InMemoryTransport, TcpTransport, type Transport } from './Transport.js';
 import type {
   ClusterPartitionView,
@@ -415,7 +416,7 @@ export class Cluster {
     if (me) {
       this.updateMember(me.withStatus('leaving'));
     }
-    const leaveMessage: LeaveMessage = { t: 'leave', node: this.selfAddress.toJSON() };
+    const leaveMessage: LeaveMessage = { kind: 'leave', node: this.selfAddress.toJSON() };
     const peers = this.reachableMembers().filter((member) => !member.address.equals(this.selfAddress));
     this.log.debug(`leaving — sending leave to ${peers.length} reachable peer(s)`);
     for (const member of peers) this.transport.send(member.address, leaveMessage);
@@ -513,7 +514,7 @@ export class Cluster {
     for (const seed of this.seedAddrs) {
       this.failureDetector.register(seed);
       const initialGossip: GossipMessage = {
-        t: 'gossip',
+        kind: 'gossip',
         from: this.selfAddress.toJSON(),
         members: [me.toData()],
       };
@@ -525,11 +526,11 @@ export class Cluster {
     this.failureDetector.heartbeat(from);
 
     match(message)
-      .with({ t: 'heartbeat' }, (m) => this.onHeartbeat(from, m))
-      .with({ t: 'heartbeat-ack' }, () => this.onHeartbeatAcknowledgment())
-      .with({ t: 'gossip' }, (m) => this.onGossip(m))
-      .with({ t: 'envelope' }, (m) => this.onEnvelope(from, m))
-      .with({ t: 'leave' }, (m) => this.onLeave(m))
+      .with({ kind: 'heartbeat' }, (m) => this.onHeartbeat(from, m))
+      .with({ kind: 'heartbeat-ack' }, () => this.onHeartbeatAcknowledgment())
+      .with({ kind: 'gossip' }, (m) => this.onGossip(from, m))
+      .with({ kind: 'envelope' }, (m) => this.onEnvelope(from, m))
+      .with({ kind: 'leave' }, (m) => this.onLeave(from, m))
       .otherwise((m) => this.onUnhandledWire(m, from));
   }
 
@@ -540,7 +541,7 @@ export class Cluster {
   private onUnhandledWire(message: WireMessage, from: NodeAddress): void {
     // 'shard-map' and any custom extension wire-msgs handled by the
     // registry; we intentionally fall through when no handler is set.
-    const custom = this.wireHandlers.get(message.t);
+    const custom = this.wireHandlers.get(message.kind);
     if (custom) custom(message, from);
   }
 
@@ -571,13 +572,22 @@ export class Cluster {
     return false;
   }
 
+  /**
+   * The liveness signal is *"traffic arrived on this connection"*, so it is the
+   * connection's peer that is demonstrably alive — not whoever `message.from`
+   * names.  Reading the payload field instead had two consequences (#572):
+   * a peer could keep a node it had never contacted looking healthy forever,
+   * which blocks the failure detector and with it singleton and shard
+   * failover; and the acknowledgment was *sent* to that address, so a frame
+   * naming an attacker-chosen `host:port` made the receiver dial it.
+   */
   private onHeartbeat(from: NodeAddress, message: HeartbeatMessage): void {
     if (!this.isPlausibleHeartbeat(from, message)) return;
-    const peer = NodeAddress.fromJSON(message.from);
+    const peer = from;
     this.failureDetector.heartbeat(peer);
     // Reply isn't strictly needed because send() also bumps the detector,
     // but it keeps symmetric latency information.
-    this.transport.send(peer, { t: 'heartbeat-ack', from: this.selfAddress.toJSON(), seq: message.seq });
+    this.transport.send(peer, { kind: 'heartbeat-ack', from: this.selfAddress.toJSON(), seq: message.seq });
 
     // If the peer was unreachable and we see traffic again, flip it back.
     const existing = this.members.get(peer.toString());
@@ -587,13 +597,24 @@ export class Cluster {
     }
   }
 
-  private onGossip(message: GossipMessage): void {
+  /**
+   * `from` is the peer the *connection* belongs to; `message.from` is what the
+   * payload says about itself.  They are only the same thing when nobody is
+   * lying, so the connection identity is what the authority rules are keyed on
+   * — see {@link maySpeakFor} (#562).
+   */
+  private onGossip(from: NodeAddress, message: GossipMessage): void {
     const sender = NodeAddress.fromJSON(message.from);
     this.failureDetector.heartbeat(sender);
     this.log.debug(`gossip from ${sender}: ${message.members.length} member(s)`);
 
+    // Snapshot the sender's standing *before* merging: this frame may be the
+    // one that introduces the sender, and a claim must not be authorised by a
+    // membership the same frame just created.
+    const senderStatus = this.members.get(from.toString())?.status;
+
     for (const data of message.members) {
-      this.mergeMember(data);
+      this.mergeMember(from, senderStatus, data);
     }
 
     // Ensure we know about the sender itself.
@@ -649,8 +670,14 @@ export class Cluster {
       }
     }
 
-    if (message.context && Object.keys(message.context).length > 0) {
-      LogContext.run(message.context, dispatch);
+    // The MDC arrives from a remote peer and is installed for the whole
+    // dispatch, from where both shipped loggers read it.  Unfiltered, a peer
+    // could overwrite JsonLogger's own `ts`/`level`/`source`/`msg` — its record
+    // spreads the context last — and put a newline in any value, which forges
+    // whole extra lines in ConsoleLogger's one-line-per-record output (#573).
+    const context = message.context ? sanitizeWireLogContext(message.context) : undefined;
+    if (context && Object.keys(context).length > 0) {
+      LogContext.run(context, dispatch);
     } else {
       dispatch();
     }
@@ -689,8 +716,27 @@ export class Cluster {
     }
   }
 
-  private onLeave(message: LeaveMessage): void {
+  /**
+   * A `leave` is a node saying *"I am going away"* — a statement only that
+   * node can truthfully make.  It was read from `message.node` instead of the
+   * connection, and it writes a `removed` tombstone at `version + 2`, which
+   * out-versions anything the victim can say about itself.  So one 120-byte
+   * frame from anyone who could open a socket evicted any member, the eviction
+   * gossiped to the whole cluster, and the victim could not argue its way back
+   * — its own gossip stayed at its start epoch, below the tombstone.  Recovery
+   * meant a restart, or waiting out the 24-hour tombstone TTL (#564).
+   *
+   * `handleWire` had the socket identity in hand the whole time and passed it
+   * to the heartbeat and envelope handlers; this one just never asked for it.
+   */
+  private onLeave(from: NodeAddress, message: LeaveMessage): void {
     const peer = NodeAddress.fromJSON(message.node);
+    if (!peer.equals(from)) {
+      this.log.warn(
+        `leave: refusing ${from}'s attempt to retire ${peer} — a node may only announce its own leave`,
+      );
+      return;
+    }
     const existing = this.members.get(peer.toString());
     if (!existing) return;
     this.log.debug(`peer ${peer} sent leave — tombstoning (was ${existing.status} v${existing.version})`);
@@ -716,7 +762,7 @@ export class Cluster {
     // Push to one random reachable peer each tick — epidemic style.
     const target = targets[Math.floor(Math.random() * targets.length)]!;
     const gossip: GossipMessage = {
-      t: 'gossip',
+      kind: 'gossip',
       from: this.selfAddress.toJSON(),
       members: Array.from(this.members.values()).map(member => member.toData()),
     };
@@ -731,7 +777,7 @@ export class Cluster {
   private heartbeatTick(): void {
     this.heartbeatSeq++;
     const hb: HeartbeatMessage = {
-      t: 'heartbeat',
+      kind: 'heartbeat',
       from: this.selfAddress.toJSON(),
       seq: this.heartbeatSeq,
       ts: Date.now(),
@@ -848,8 +894,90 @@ export class Cluster {
     }
   }
 
-  private mergeMember(data: MemberData): void {
+  /**
+   * Whether `from` is allowed to make this claim.
+   *
+   * Gossip is epidemic — A learns about C from B — so "only C may speak for C"
+   * cannot be the rule without ending convergence.  What was missing was any
+   * rule at all: the merge was decided purely by version magnitude, and
+   * versions are seeded from `Date.now()`, so an attacker could always pick a
+   * winning number and rewrite any member's status, **including the receiving
+   * node's own** (#562).
+   *
+   * Two rules, chosen to close that without touching how the cluster
+   * converges:
+   *
+   * 1. **Nobody downgrades us.** A record about `selfAddress` is refused,
+   *    with one exception: promotion out of `joining`/`weakly-up` into `up`.
+   *    That one has to come from outside — it is the *leader's* decision, and
+   *    a node cannot promote itself — so refusing it outright leaves every
+   *    joining node stuck in `joining` forever. Every other claim about our
+   *    own record is refused, which is what closes the exploit: it set our
+   *    record to `removed`, and no version is high enough to earn that right.
+   *    Accepting a forged promotion costs nothing, because a node that is
+   *    `joining` is already trying to become `up`.
+   * 2. **Third-party claims need a sender with standing.** Asserting something
+   *    about *another* node requires the connection's peer to be a member this
+   *    node already considers active. A sender may always assert its own
+   *    record — that is the join announcement, and refusing it would mean no
+   *    node could ever join.
+   *
+   * Rule 2 deliberately keys on the connection, not on `message.from`: a
+   * payload field is the one thing an attacker fully controls.
+   *
+   * **What this is not.** It does not make an unauthenticated peer harmless.
+   * `hello` carries no credential, so an attacker can announce itself, wait to
+   * be promoted, and then satisfy rule 2. Closing that needs the handshake
+   * bound to the TLS peer certificate — tracked separately. What these rules
+   * do is remove the free-for-all: a claim now needs standing this node
+   * granted, rather than a large number.
+   *
+   * **What it deliberately leaves alone:** `unreachable` still merges from
+   * third parties. Unreachability is inherently a third-party observation —
+   * "I cannot reach C" — and every peer must converge on the same view before
+   * a downing provider decides. Refusing those claims would leave each node
+   * with only its own reachability picture, and `KeepMajority` would compute a
+   * different answer on every node.
+   */
+  private maySpeakFor(
+    from: NodeAddress,
+    senderStatus: MemberStatus | undefined,
+    subject: NodeAddress,
+    incomingStatus: MemberStatus,
+  ): boolean {
+    if (subject.equals(this.selfAddress)) {
+      if (this.isOwnPromotion(incomingStatus)) return true;
+      this.log.warn(
+        `merge: refusing ${from}'s claim that we are "${incomingStatus}" — `
+        + `this node is the author of its own status, promotion aside`,
+      );
+      return false;
+    }
+    if (subject.equals(from)) return true;      // a node announcing itself
+    if (senderStatus === 'up' || senderStatus === 'weakly-up' || senderStatus === 'leaving') return true;
+    this.log.debug(
+      `merge: ignoring ${from}'s claim about ${subject} — sender is `
+      + `${senderStatus ?? 'not a member'}, not an active one`,
+    );
+    return false;
+  }
+
+  /**
+   * The one transition on our own record that legitimately originates
+   * elsewhere: the leader moving us out of `joining`/`weakly-up` into `up`
+   * (see the promotion loop in `onGossip`).  Anything else about us — and in
+   * particular any downgrade — we decide ourselves.
+   */
+  private isOwnPromotion(incomingStatus: MemberStatus): boolean {
+    if (incomingStatus !== 'up') return false;
+    const current = this.members.get(this.selfAddress.toString())?.status;
+    return current === 'joining' || current === 'weakly-up';
+  }
+
+  private mergeMember(from: NodeAddress, senderStatus: MemberStatus | undefined, data: MemberData): void {
     const incoming = Member.fromData(data);
+
+    if (!this.maySpeakFor(from, senderStatus, incoming.address, incoming.status)) return;
 
     // Security: reject versions that are absurdly far in the future.
     //

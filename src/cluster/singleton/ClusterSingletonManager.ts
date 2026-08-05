@@ -47,7 +47,7 @@ export function singletonHost(cluster: Cluster, role?: string): Option<Member> {
 
 /** Internal delivery wrapper — body is the user's typed message. */
 export type SingletonDeliver = {
-  readonly t: 'singleton-deliver';
+  readonly kind: 'singleton-deliver';
   readonly body: unknown;
 };
 
@@ -59,10 +59,10 @@ export type SingletonDeliver = {
  * single message in this manager's own mailbox.
  */
 type ManagerEvent =
-  | { t: 'reconcile' }
-  | { t: 'lease-acquire-result'; got: boolean; error?: Error }
-  | { t: 'lease-lost'; reason: string }
-  | { t: 'acquire-retry' };
+  | { kind: 'reconcile' }
+  | { kind: 'lease-acquire-result'; got: boolean; error?: Error }
+  | { kind: 'lease-lost'; reason: string }
+  | { kind: 'acquire-retry' };
 
 type Inbox = SingletonDeliver | ManagerEvent | Terminated;
 
@@ -152,10 +152,10 @@ export class ClusterSingletonManager<T> extends Actor<Inbox> {
 
     if (this.options.lease) {
       this.unsubscribeLeaseLost = this.options.lease.onLost((reason) => {
-        this.self.tell({ t: 'lease-lost', reason } satisfies ManagerEvent);
+        this.self.tell({ kind: 'lease-lost', reason } satisfies ManagerEvent);
       });
       // Lease path: kick the initial reconcile via the mailbox.
-      this.self.tell({ t: 'reconcile' } satisfies ManagerEvent);
+      this.self.tell({ kind: 'reconcile' } satisfies ManagerEvent);
     } else {
       this.reconcileSync();
     }
@@ -163,7 +163,7 @@ export class ClusterSingletonManager<T> extends Actor<Inbox> {
 
   private onClusterMembershipChanged(): void {
     if (this.options.lease) {
-      this.self.tell({ t: 'reconcile' } satisfies ManagerEvent);
+      this.self.tell({ kind: 'reconcile' } satisfies ManagerEvent);
     } else {
       this.reconcileSync();
     }
@@ -198,12 +198,25 @@ export class ClusterSingletonManager<T> extends Actor<Inbox> {
       return;
     }
     return match(message)
-      .with({ t: 'singleton-deliver' }, (m) => this.onSingletonDeliver(m))
-      .with({ t: 'reconcile' }, () => this.onReconcile())
-      .with({ t: 'lease-acquire-result' }, (m) => this.onLeaseAcquireResult(m))
-      .with({ t: 'lease-lost' }, (m) => this.onLeaseLost(m))
-      .with({ t: 'acquire-retry' }, () => this.onAcquireRetry())
-      .exhaustive();
+      .with({ kind: 'singleton-deliver' }, (m) => this.onSingletonDeliver(m))
+      .with({ kind: 'reconcile' }, () => this.onReconcile())
+      .with({ kind: 'lease-acquire-result' }, (m) => this.onLeaseAcquireResult(m))
+      .with({ kind: 'lease-lost' }, (m) => this.onLeaseLost(m))
+      .with({ kind: 'acquire-retry' }, () => this.onAcquireRetry())
+      .otherwise((m) => this.onUnhandled(m));
+  }
+
+  /**
+   * The manager sits at a resolvable path, so anything a peer addresses to it
+   * lands here — and `.exhaustive()` turned an unrecognised body into an actor
+   * failure, taking the singleton's supervision with it (#713).  A message we
+   * do not understand is not a reason to fall over.
+   */
+  private onUnhandled(message: unknown): Promise<void> | void {
+    this.log.warn(
+      `singleton manager: dropping an unrecognised message `
+      + `(${(message as { kind?: string })?.kind ?? typeof message})`,
+    );
   }
 
   private onReconcile(): Promise<void> {
@@ -230,7 +243,7 @@ export class ClusterSingletonManager<T> extends Actor<Inbox> {
       // Re-trigger the appropriate reconcile path; either branch is
       // safe to call when the singleton state is "no child running".
       if (this.options.lease) {
-        this.self.tell({ t: 'reconcile' } satisfies ManagerEvent);
+        this.self.tell({ kind: 'reconcile' } satisfies ManagerEvent);
       } else {
         this.reconcileSync();
       }
@@ -240,7 +253,7 @@ export class ClusterSingletonManager<T> extends Actor<Inbox> {
   /* -------------------------- handlers -------------------------- */
 
   private onSingletonDeliver(message: SingletonDeliver): void {
-    if (message.t !== 'singleton-deliver') return;
+    if (message.kind !== 'singleton-deliver') return;
     if (!this.child) {
       this.log.warn(
         `singleton '${this.options.typeName}' not currently hosted on this node — dropping message`,
@@ -296,10 +309,10 @@ export class ClusterSingletonManager<T> extends Actor<Inbox> {
   private async runAcquire(): Promise<void> {
     try {
       const got = await this.options.lease!.acquire();
-      this.self.tell({ t: 'lease-acquire-result', got } satisfies ManagerEvent);
+      this.self.tell({ kind: 'lease-acquire-result', got } satisfies ManagerEvent);
     } catch (error) {
       this.self.tell({
-        t: 'lease-acquire-result', got: false, error: error as Error,
+        kind: 'lease-acquire-result', got: false, error: error as Error,
       } satisfies ManagerEvent);
     }
   }
@@ -340,7 +353,7 @@ export class ClusterSingletonManager<T> extends Actor<Inbox> {
     // If we're still the elected leader, kick a fresh reconcile so we
     // try to re-acquire.  Cluster events would eventually do this on
     // their own, but a missed re-acquire here is annoying.
-    this.self.tell({ t: 'reconcile' } satisfies ManagerEvent);
+    this.self.tell({ kind: 'reconcile' } satisfies ManagerEvent);
   }
 
   /* -------------------------- helpers -------------------------- */
@@ -384,7 +397,7 @@ export class ClusterSingletonManager<T> extends Actor<Inbox> {
     const interval = this.options.acquireRetryIntervalMs ?? 5_000;
     this.retryTimer?.cancel();
     this.retryTimer = this.system.scheduler.scheduleOnceFunction(interval, () => {
-      this.self.tell({ t: 'acquire-retry' } satisfies ManagerEvent);
+      this.self.tell({ kind: 'acquire-retry' } satisfies ManagerEvent);
     });
   }
 }

@@ -1,4 +1,5 @@
 import { NodeAddress } from './NodeAddress.js';
+import { isMemberStatus, MEMBER_STATUSES } from './Protocol.js';
 import type { MemberData, MemberStatus } from './Protocol.js';
 
 /**
@@ -49,7 +50,24 @@ export class Member {
       : data;
   }
 
+  /**
+   * Rebuild a member from its gossiped form.
+   *
+   * `status` used to be copied through verbatim, which is how an arbitrary
+   * string off the wire reached `Cluster.emitStatusTransition`'s
+   * `match(...).exhaustive()` — thrown from a socket callback, and thrown
+   * *after* the member had been written to the map, so the poisoned entry was
+   * re-gossiped to every peer from the node that had just crashed on it
+   * (#563).  The transport rejects such a frame before it gets here now; this
+   * check is what makes the guarantee local to the type it protects.
+   */
   static fromData(data: MemberData): Member {
+    if (!isMemberStatus(data.status)) {
+      throw new Error(
+        `Invalid member status "${String(data.status)}" for ${JSON.stringify(data.address)} `
+        + `— expected one of ${MEMBER_STATUSES.join(', ')}`,
+      );
+    }
     return new Member(
       NodeAddress.fromJSON(data.address),
       data.status,

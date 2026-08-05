@@ -29,7 +29,7 @@ describe('MessageChannelTransport', () => {
     brokerPort.onmessage = (e) => { received.push(e.data as BrokeredMessage); };
     brokerPort.start?.();
 
-    const wire: WireMessage = { t: 'heartbeat', from: nodeA.toJSON(), seq: 1, ts: 0 };
+    const wire: WireMessage = { kind: 'heartbeat', from: nodeA.toJSON(), seq: 1, ts: 0 };
     transport.send(nodeB, wire);
     await sleep(10);
 
@@ -55,14 +55,14 @@ describe('MessageChannelTransport', () => {
     const env: BrokeredMessage = {
       from: peer.toJSON(),
       to: self.toJSON(),
-      payload: { t: 'heartbeat', from: peer.toJSON(), seq: 42, ts: 0 },
+      payload: { kind: 'heartbeat', from: peer.toJSON(), seq: 42, ts: 0 },
     };
     brokerPort.postMessage(env);
     await sleep(10);
 
     expect(seen.length).toBe(1);
     expect(seen[0]!.from).toBe(peer.toString());
-    expect(seen[0]!.payload.t).toBe('heartbeat');
+    expect(seen[0]!.payload.kind).toBe('heartbeat');
 
     await transport.shutdown();
   });
@@ -79,7 +79,7 @@ describe('MessageChannelTransport', () => {
 
     await transport.shutdown();
 
-    transport.send(new NodeAddress('sys', 'h', 2), { t: 'heartbeat', from: self.toJSON(), seq: 1, ts: 0 });
+    transport.send(new NodeAddress('sys', 'h', 2), { kind: 'heartbeat', from: self.toJSON(), seq: 1, ts: 0 });
     await sleep(10);
     expect(captured.length).toBe(0);
   });
@@ -95,11 +95,11 @@ describe('MessageChannelTransport', () => {
 
     brokerPort.postMessage({
       from: peer1.toJSON(), to: self.toJSON(),
-      payload: { t: 'heartbeat', from: peer1.toJSON(), seq: 1, ts: 0 },
+      payload: { kind: 'heartbeat', from: peer1.toJSON(), seq: 1, ts: 0 },
     });
     brokerPort.postMessage({
       from: peer2.toJSON(), to: self.toJSON(),
-      payload: { t: 'heartbeat', from: peer2.toJSON(), seq: 2, ts: 0 },
+      payload: { kind: 'heartbeat', from: peer2.toJSON(), seq: 2, ts: 0 },
     });
     await sleep(10);
 
@@ -130,11 +130,11 @@ describe('WorkerBroker', () => {
     tA.setHandler(() => {});
     await tA.start(); await tB.start();
 
-    tA.send(addrB, { t: 'heartbeat', from: addrA.toJSON(), seq: 7, ts: 0 });
+    tA.send(addrB, { kind: 'heartbeat', from: addrA.toJSON(), seq: 7, ts: 0 });
     await sleep(15);
 
     expect(seenB.length).toBe(1);
-    expect(seenB[0]!.t).toBe('heartbeat');
+    expect(seenB[0]!.kind).toBe('heartbeat');
 
     await tA.shutdown(); await tB.shutdown();
     broker.close();
@@ -148,7 +148,7 @@ describe('WorkerBroker', () => {
     const tA = new MessageChannelTransport(addrA, wpA);
     await tA.start();
     expect(() => tA.send(new NodeAddress('sys', 'w', 99), {
-      t: 'heartbeat', from: addrA.toJSON(), seq: 1, ts: 0,
+      kind: 'heartbeat', from: addrA.toJSON(), seq: 1, ts: 0,
     })).not.toThrow();
     await tA.shutdown();
     broker.close();
@@ -180,7 +180,7 @@ describe('WorkerBroker', () => {
     await tA.start(); await tB.start();
 
     broker.unregister(addrB);
-    tA.send(addrB, { t: 'heartbeat', from: addrA.toJSON(), seq: 1, ts: 0 });
+    tA.send(addrB, { kind: 'heartbeat', from: addrA.toJSON(), seq: 1, ts: 0 });
     await sleep(10);
     expect(seen.length).toBe(0);
 
