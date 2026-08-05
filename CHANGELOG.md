@@ -194,6 +194,27 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   of both standing down.  An **established** peer connection is still never
   displaced — only a node's own unfinished dial gives way — so the hijack
   defence the guard exists for is unchanged, and it now has a test saying so.
+- **`rememberEntities` no longer forgets every entity when a shard rebalances**
+  (#632).  `ShardRegion.onHandOff` announced an `EntityStopped` to the
+  coordinator for *every* entity of the departing shard.  The coordinator
+  applied and persisted those as `stopped`, which deleted the shard's whole
+  entry from its registry — so when `onHandOffComplete` reallocated the shard
+  and went to ship the remembered set to the new owner, there was nothing left
+  to ship.  The new owner started empty, only the entity named by the next
+  message ever came back, and the coordinator went on listing the rest with
+  `started` events that would never see a `stopped`.  A rebalance is the
+  ordinary path, so this was `rememberEntities` failing at precisely the thing
+  it exists for; it survived because the only coverage was a cold restart,
+  which reloads the registry from the journal and never exercises a live
+  handoff.
+  A stopping entity and a moving entity look identical on the wire, so the fix
+  is on both sides: the departing region no longer reports the move as a stop
+  (the same way an unexpected shard death already reported none, #894), and the
+  coordinator ignores an `EntityStopped` for a shard that is mid-rebalance —
+  which also covers an entity that passivates on its own inside the handoff
+  window, newly likely now that passivation is on by default.  Note this is
+  distinct from an ordinary passivation, which under `rememberEntities` is
+  still deliberately a forget.
 - **Filesystem object storage stopped recognising its own temp files** (#909).
   The `Math.random()` removal below (#898) changed the atomic-write temp path
   from `<key>.tmp.<pid>.<ts>.<rand>` to `<key>.tmp.<pid>.<random>` without

@@ -569,6 +569,13 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
       if (set) { set.delete(message.entityId); if (set.size === 0) this.entitiesPerShard.delete(message.shardId); }
       return;
     }
+    // A shard that is mid-rebalance is not losing entities, it is losing a
+    // *host* — and the registry has to outlive the move for `tryAllocate` to
+    // hand it to the new owner.  The departing region no longer announces its
+    // entities as stopped (#632), but an entity passivating on its own in the
+    // window between `BeginHandOff` and `HandOffComplete` still would, and
+    // that one would be just as wrongly forgotten.
+    if (this.rebalanceInProgress.has(message.shardId)) return;
     this.applyRememberEvent({ kind: 'stopped', shardId: message.shardId, entityId: message.entityId });
     this.persistRememberEvent({ kind: 'stopped', shardId: message.shardId, entityId: message.entityId });
   }
