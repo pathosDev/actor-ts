@@ -101,13 +101,19 @@ export class GCounterMap<K> implements Crdt<GCounterMap<K>> {
   }
 
   toJSON(): GCounterMapJson {
-    const counters: Record<string, GCounterJson> = {};
-    const keyValues: Record<string, string> = {};
-    for (const [id, entry] of this.entries) {
-      counters[id] = entry.counter.toJSON();
-      keyValues[id] = JSON.stringify(entry.key);
-    }
-    return { kind: 'GCounterMap', counters, keyValues };
+    // `Object.fromEntries`, not assignment: entry ids are identity-fn output,
+    // so a custom identity can yield `__proto__`, which an assignment feeds to
+    // the inherited setter instead of storing — the entry then leaves the
+    // replica's state invisibly on the way out (#767).
+    return {
+      kind: 'GCounterMap',
+      counters: Object.fromEntries(
+        Array.from(this.entries, ([id, entry]) => [id, entry.counter.toJSON()] as const),
+      ),
+      keyValues: Object.fromEntries(
+        Array.from(this.entries, ([id, entry]) => [id, JSON.stringify(entry.key)] as const),
+      ),
+    };
   }
 
   static fromJSON<K>(

@@ -1000,11 +1000,15 @@ class DistributedDataActor extends Actor<ActorMessage> {
     const peers = this.cluster.upMembers()
       .filter((m) => !m.address.equals(this.cluster.selfAddress));
     if (peers.length === 0) return;
-    const entries: Record<string, CrdtJson> = {};
-    for (const [key, crdt] of this.view.state) {
-      entries[key] = crdt.toJSON() as CrdtJson;
-    }
-    if (Object.keys(entries).length === 0) return;
+    if (this.view.state.size === 0) return;
+    // `Object.fromEntries`, not `out[key] = …`: a store key is an application
+    // string, and for the one value `__proto__` an assignment invokes the
+    // inherited setter instead of creating a property.  The key vanished from
+    // every outbound frame while `get`/`keys` still reported it locally — a
+    // replica diverging from the cluster with nothing logged anywhere (#767).
+    const entries = Object.fromEntries(
+      Array.from(this.view.state, ([key, crdt]) => [key, crdt.toJSON() as CrdtJson] as const),
+    ) as Record<string, CrdtJson>;
     const payload: DDataGossipMessage = {
       kind: 'ddata-gossip',
       from: this.cluster.selfAddress.toJSON(),

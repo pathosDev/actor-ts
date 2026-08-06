@@ -1,4 +1,5 @@
 import type { Crdt, ReplicaId } from './Crdt.js';
+import { assertPlainObject, safeEntries } from './CrdtWireValidation.js';
 import { LWWRegister, type LWWRegisterJson } from './LWWRegister.js';
 
 /**
@@ -144,13 +145,19 @@ export class LWWMap<K, V> implements Crdt<LWWMap<K, V>> {
   }
 
   toJSON(): LWWMapJson<V> {
-    const registers: Record<string, LWWRegisterJson<V>> = {};
-    const keyValues: Record<string, string> = {};
-    for (const [id, entry] of this.entries) {
-      registers[id] = entry.register.toJSON();
-      keyValues[id] = JSON.stringify(entry.key);
-    }
-    return { kind: 'LWWMap', registers, keyValues };
+    // `Object.fromEntries`, not assignment: entry ids are identity-fn output,
+    // so a custom identity can yield `__proto__` — which an assignment feeds
+    // to the inherited setter instead of storing, dropping the entry from
+    // every frame and every snapshot with nothing logged (#767).
+    return {
+      kind: 'LWWMap',
+      registers: Object.fromEntries(
+        Array.from(this.entries, ([id, entry]) => [id, entry.register.toJSON()] as const),
+      ),
+      keyValues: Object.fromEntries(
+        Array.from(this.entries, ([id, entry]) => [id, JSON.stringify(entry.key)] as const),
+      ),
+    };
   }
 
   static fromJSON<K, V>(
@@ -160,11 +167,18 @@ export class LWWMap<K, V> implements Crdt<LWWMap<K, V>> {
       throw new Error(`LWWMap.fromJSON: unexpected kind ${json.kind}`);
     }
     const identity = options.identity ?? (defaultIdentity as (k: K) => string);
+    assertPlainObject(json.registers, 'LWWMap.registers');
     const entries = new Map<string, Entry<K, V>>();
-    for (const [id, regJson] of Object.entries(json.registers)) {
+    // `safeEntries` rather than `Object.entries`: this decoder is a peer-facing
+    // boundary like `ORSet`'s, and was missing both of its guards — the entry
+    // ceiling and the `__proto__` rejection (#698, #767).
+    for (const [id, regJson] of safeEntries(json.registers, 'LWWMap.registers')) {
       const raw = json.keyValues?.[id];
       const key = raw !== undefined ? (JSON.parse(raw) as K) : (JSON.parse(id) as K);
-      entries.set(id, { key, register: LWWRegister.fromJSON<V>(regJson) });
+      // `LWWRegister.fromJSON` reads `.kind` off its argument, which throws a
+      // bare TypeError on `null` rather than the decode error callers act on.
+      assertPlainObject(regJson, `LWWMap.registers['${id}']`);
+      entries.set(id, { key, register: LWWRegister.fromJSON<V>(regJson as unknown as LWWRegisterJson<V>) });
     }
     return new LWWMap<K, V>(entries, identity);
   }

@@ -68,10 +68,14 @@ export class DurableDistributedDataStore {
    * own mailbox).
    */
   async save(map: ReadonlyMap<string, Crdt<any>>): Promise<void> {
-    const entries: Record<string, CrdtJson> = {};
-    for (const [key, crdt] of map) {
-      entries[key] = crdt.toJSON() as CrdtJson;
-    }
+    // Same reason as `gossipTick`: assigning into an object literal loses the
+    // key `__proto__` to the inherited setter, so a store key an application
+    // derived from untrusted input was absent from every snapshot and
+    // disappeared across a restart the replica had reported it surviving
+    // (#767).  `Object.fromEntries` defines the property instead.
+    const entries = Object.fromEntries(
+      Array.from(map, ([key, crdt]) => [key, crdt.toJSON() as CrdtJson] as const),
+    ) as Record<string, CrdtJson>;
     const written = await this.store.upsert<DurableDDataPayload>(
       this.persistenceId, this.revision, { entries },
     );
