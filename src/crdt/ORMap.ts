@@ -1,4 +1,5 @@
 import type { Crdt, ReplicaId } from './Crdt.js';
+import { assertPlainObject, safeEntries } from './CrdtWireValidation.js';
 import { ORSet, type ORSetJson } from './ORSet.js';
 
 /**
@@ -174,18 +175,21 @@ export class ORMap<K, V extends Crdt<V>> implements Crdt<ORMap<K, V>> {
   }
 
   toJSON(): ORMapJson {
-    const values: Record<string, unknown> = {};
-    const keyValues: Record<string, string> = {};
-    for (const [id, entry] of this.entries) {
-      // Each value is a CRDT — its toJSON is the standard discriminated shape.
-      values[id] = entry.value.toJSON();
-      keyValues[id] = JSON.stringify(entry.key);
-    }
+    // Each value is a CRDT — its toJSON is the standard discriminated shape.
+    //
+    // `Object.fromEntries`, not assignment: entry ids are identity-fn output,
+    // so a custom identity can yield `__proto__`, and an assignment hands that
+    // to the inherited setter instead of storing it — the entry silently never
+    // reaches a peer or the durable record (#767).
     return {
       kind: 'ORMap',
       keyset: this.keyset.toJSON(),
-      values,
-      keyValues,
+      values: Object.fromEntries(
+        Array.from(this.entries, ([id, entry]) => [id, entry.value.toJSON()] as const),
+      ),
+      keyValues: Object.fromEntries(
+        Array.from(this.entries, ([id, entry]) => [id, JSON.stringify(entry.key)] as const),
+      ),
     };
   }
 
@@ -205,8 +209,12 @@ export class ORMap<K, V extends Crdt<V>> implements Crdt<ORMap<K, V>> {
     }
     const identity = options.identity ?? (defaultIdentity as (k: K) => string);
     const keyset = ORSet.fromJSON<string>(json.keyset);
+    assertPlainObject(json.values, 'ORMap.values');
     const entries = new Map<string, Entry<K, V>>();
-    for (const [id, valueJson] of Object.entries(json.values)) {
+    // `safeEntries` rather than `Object.entries`: this decoder is a peer-facing
+    // boundary like the keyset's, and was missing both of its guards — the
+    // entry ceiling and the `__proto__` rejection (#698, #767).
+    for (const [id, valueJson] of safeEntries(json.values, 'ORMap.values')) {
       const raw = json.keyValues?.[id];
       const key = raw !== undefined ? (JSON.parse(raw) as K) : (JSON.parse(id) as K);
       entries.set(id, { key, value: decodeValue(valueJson) });

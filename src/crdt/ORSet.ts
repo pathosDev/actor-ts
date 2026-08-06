@@ -173,16 +173,20 @@ export class ORSet<E> implements Crdt<ORSet<E>> {
     // change the wire shape: callers must pass the same `identity`
     // option to `fromJSON` to reconstruct a set with the same
     // dedup rule.
-    const elements: Record<string, string[]> = {};
-    const elementValues: Record<string, string> = {};
-    for (const [key, entry] of this.elements) {
-      elements[key] = Array.from(entry.tags);
-      elementValues[key] = JSON.stringify(entry.element);
-    }
+    //
+    // Built with `Object.fromEntries` rather than by assignment: an element
+    // key is identity-fn output, so a custom identity can produce the one
+    // string an assignment cannot store — `__proto__` hits the inherited
+    // setter and the entry never reaches the wire at all (#767).  Defining
+    // the property keeps the encode honest; the decoder is what rejects it.
     return {
       kind: 'ORSet',
-      elements,
-      elementValues,
+      elements: Object.fromEntries(
+        Array.from(this.elements, ([key, entry]) => [key, Array.from(entry.tags)] as const),
+      ),
+      elementValues: Object.fromEntries(
+        Array.from(this.elements, ([key, entry]) => [key, JSON.stringify(entry.element)] as const),
+      ),
       tombstones: mapOfSetsToObject(this.tombstones),
       counters: Object.fromEntries(this.counters),
     };
@@ -267,9 +271,10 @@ function mapOfSetsEqual(
 function mapOfSetsToObject(
   map: ReadonlyMap<string, ReadonlySet<string>>,
 ): Record<string, string[]> {
-  const out: Record<string, string[]> = {};
-  for (const [key, tagSet] of map) out[key] = Array.from(tagSet);
-  return out;
+  // See `toJSON` — assignment would silently drop a `__proto__` element key.
+  return Object.fromEntries(
+    Array.from(map, ([key, tagSet]) => [key, Array.from(tagSet)] as const),
+  );
 }
 
 function objectToMapOfSets(
