@@ -130,19 +130,77 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   merge machinery.
 
   That is worse than a handler throwing, because absorbing a peer's state
-  and keeping it is what a CRDT is for: twelve malformed frames exhausted
-  the DistributedData actor's restart budget and terminated it for good
-  (#699); one bad `GCounter` slot pinned a replica's counter at the ceiling
-  with no way back, since max never decreases (#720); an unvalidated `ORSet`
-  tombstone let a peer pre-tombstone tags a victim had not issued yet, so
-  its future adds vanished (#722); a year-3000 `LWWRegister` timestamp beat
-  every honest write from then on and was re-gossiped (#724); and a
-  `__proto__` key survived decode but was dropped by every re-encode, so it
-  neither gossiped nor persisted while the replica still believed it held
-  the key (#767).
+  and keeping it is what a CRDT is for.  Each decoder now checks the shape,
+  the types and the plausibility of what it is handed: a `GCounter` slot must
+  be a non-negative safe integer, so `value(): number` can no longer return a
+  string (#720); `ORSet` tombstone and element lists must be bounded arrays
+  of strings (#722); an `LWWRegister` timestamp must be finite,
+  non-negative and within five minutes of local time, so a year-3000 stamp
+  no longer beats every honest write from then on (#724); and the
+  CRDT-internal maps — the replica-id and tag keyed ones — reject a
+  `__proto__` key rather than accept one no re-encode can carry (#767).
+
+  What validation does **not** settle is a defect whose payload is
+  well-formed, and three of the issues above are exactly that.  Each needed a
+  second change, listed separately below: a value that will not decode has to
+  be *dropped* rather than thrown out of a wire handler (#699); an `ORSet`
+  tag has to be unguessable, because a forged tombstone is a well-formed
+  string and passes every check here (#722); and a store key has to survive
+  re-encoding, which is a defect in the encoder that no decoder can reject
+  its way out of (#767).
+
+  Still open, and deliberately not claimed here: `Number.MAX_SAFE_INTEGER`
+  *is* a non-negative safe integer, so a peer can still write it into another
+  replica's `GCounter` slot and pin it there, since max never decreases
+  (#720).  The own-slot authority rule that issue proposes is not the answer
+  — a replica legitimately relearns its own slot from peers after restarting
+  without a durable store, and refusing that leaves two replicas permanently
+  disagreeing about the same key.  Nor does it close the inflation itself: a
+  peer can reach the same ceiling through `increment` on its own slot, which
+  is a legal local operation.
 
   **BREAKING:** previously-accepted frames are now rejected — in practice,
   malformed or hostile ones.
+
+- **A malformed peer value is dropped, not escalated** (#699, #721).
+  Validating means `decodeCrdt` *throws*, and every call site is a wire
+  handler — so the checks above made the reachable throw paths more numerous
+  rather than fewer, and an exception out of one is an actor failure: twelve
+  of them exhausted the DistributedData actor's restart budget and terminated
+  it for the life of the process, taking every unsettled read and write
+  promise with it.  A value that will not decode is now dropped and logged
+  with the peer and the key it came from, per entry rather than per frame —
+  entries that travel in one frame are independent CRDTs that merely share a
+  ride, and a state-based replica re-sends everything on the next tick, so a
+  dropped entry costs a gossip round and nothing else.
+
+- **A `__proto__` store key gossips and persists like any other** (#767).
+  `JSON.parse` makes `__proto__` an own enumerable property and every decode
+  target is a `Map`, so the key went in fine — but every re-encode built an
+  object literal and assigned into it, and for that one key an assignment
+  invokes `Object.prototype`'s inherited setter instead of creating a
+  property.  The entry vanished from every outbound frame and every durable
+  snapshot while `get`/`keys` still reported it locally, with nothing logged
+  anywhere; when it was the only key, the empty-payload short-circuit
+  suppressed the gossip tick outright.  Store keys are the exposed layer
+  because they are raw application strings — a key derived from untrusted
+  input, a username or a tenant id, is the realistic trigger rather than a
+  planted frame.  Payloads are now built with `Object.fromEntries`, which
+  defines the property, in `gossipTick`, in the durable save, and in the four
+  collection encoders whose keys are identity-fn output.  Same remedy as the
+  CBOR map decoder under #581.
+
+- **A decoded `LWWRegister` replica id must be a string** (#724).  `ReplicaId`
+  is a bare `type ReplicaId = string`, so nothing at runtime kept the wire
+  from carrying something `assign` could never produce — and the field is
+  compared, not merely carried.  `>` between a string and a number is false
+  in *both* directions, so a numeric replica id makes a same-timestamp merge
+  non-commutative and the two replicas never converge on that key; an array
+  is the mirror image, coercing to its single element so that one holding a
+  high code point wins every tie while not being a string at all.  A
+  legitimately typed id that sorts above every real `system@host:port` still
+  wins those ties — that is what a deterministic tie-break costs, and the
+  timestamp bound is what keeps it from mattering.
 
 - **A gossip frame cannot exhaust the stack or freeze the event loop**
   (#698, #721).  `decodeCrdt` recursed once per nested `ORMap` level with no
