@@ -180,13 +180,21 @@ for inspection).
   ```
 
   They then outlive the restart with their own state and mailboxes
-  intact, and it is on you to keep `preStart` idempotent:
+  intact, and it is on you to keep `preStart` idempotent — by adopting
+  the survivor from the cell rather than from a field:
 
   ```ts
   override preStart(): void {
-    this.worker ??= this.context.spawn(Worker, 'worker');
+    this.worker = this.context.child('worker').toNullable() as ActorRef<Job>
+      ?? this.context.spawn(Worker, 'worker');
   }
   ```
+
+  An instance field cannot do this. `preStart` runs on a *fresh*
+  instance after every restart, so `this.worker ??= …` is always unset
+  and re-spawns into the name the surviving child still holds — the
+  spawn then fails with `Child name 'worker' is not unique`, which
+  restarts the actor, which runs `preStart` again.
 
   It is a separate hook rather than a `preRestart` override because
   the teardown has to be *awaited* — the new instance cannot be built

@@ -70,6 +70,21 @@ import { TokenBucket } from '../util/TokenBucket.js';
 
 const DEFAULT_STASH_CAPACITY = 1024;
 
+/**
+ * Key a death-watch registration by incarnation, not by address.
+ *
+ * `ActorPath.toString()` is the canonical *address* and deliberately omits the
+ * uid — location transparency depends on it staying stable across a restart.
+ * Watch bookkeeping needs the opposite: a name that is re-spawned (a restarted
+ * parent recreating a named child, a router pool rebuilding its routees) must
+ * be a *different* subject, or the previous incarnation's pending `Terminated`
+ * is delivered against its successor and the successor is never registered at
+ * all, because the address is already in the map.
+ */
+function watchKeyOf(ref: ActorRef): string {
+  return `${ref.path.toString()}#${ref.path.uid}`;
+}
+
 /** Messages kept by an explain plan when the caller names no capacity. */
 const DEFAULT_EXPLAIN_CAPACITY = 100;
 
@@ -497,7 +512,7 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
   }
 
   watch(ref: ActorRef): ActorRef {
-    const key = ref.path.toString();
+    const key = watchKeyOf(ref);
     if (this._watching.has(key)) return ref;
     this._watching.set(key, ref);
     if (ref instanceof LocalActorRef) {
@@ -507,7 +522,7 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
   }
 
   unwatch(ref: ActorRef): ActorRef {
-    const key = ref.path.toString();
+    const key = watchKeyOf(ref);
     if (!this._watching.delete(key)) return ref;
     if (ref instanceof LocalActorRef) {
       ref.getCell()._removeWatcher(this.self);
@@ -997,6 +1012,12 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
       this.behaviorStack = [(m: TMessage) => next.onReceive(m)];
       await next.postRestart(cause);
       this.mailbox.resume();
+      // `failToParent` suspended this cell's children along with it.  On the
+      // stop-children path they are gone by now and this is a no-op; on the
+      // `stopChildrenOnRestart() === false` path they are still here and still
+      // suspended, and nothing else would ever resume them — the opt-out would
+      // keep the child alive but frozen, with its mailbox filling.
+      for (const child of this._children.values()) child.enqueueSystem({ kind: 'resume' });
       this.state = 'running';
       // Stock metric: count restarts.
       metricsOf(this.system).counter(
@@ -1066,7 +1087,7 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
       try {
         if (message instanceof Terminated) {
           // Only deliver when we are actually watching.
-          const key = message.actor.path.toString();
+          const key = watchKeyOf(message.actor);
           if (!this._watching.has(key)) {
             this._currentSender = null;
             this._currentEnvelope = null;
@@ -1254,8 +1275,15 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
     if (this._pendingRecreate !== null && this._children.size === 0) {
       const parked = this._pendingRecreate;
       this._pendingRecreate = null;
-      await this.completeRecreate(parked.cause);
-      return;
+      // A `terminate` that arrived while the restart was parked wins.  Both
+      // halves of that matter: rebuilding here revives an actor that has been
+      // ordered to stop, and — because `onTerminate` returns early on a cell
+      // that is already `terminating` — the final stop then becomes a no-op,
+      // so `finalizeTermination` never runs and `terminate()` never settles.
+      if (this.state !== 'terminating' && this.state !== 'terminated') {
+        await this.completeRecreate(parked.cause);
+        return;
+      }
     }
 
     if (this.state !== 'terminating') return;

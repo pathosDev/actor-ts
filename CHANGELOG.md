@@ -367,8 +367,12 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   starts from an empty child map.
 
   **Migration:** an actor whose children should outlive a restart overrides
-  the new `Actor.stopChildrenOnRestart()` to return `false`, and keeps its
-  `preStart` idempotent (`this.child ??= …`).  It is a hook rather than a
+  the new `Actor.stopChildrenOnRestart()` to return `false`, and adopts the
+  survivor in `preStart` — `this.child = this.context.child('name')
+  .toNullable() ?? this.context.spawn(Child, 'name')`.  An instance field
+  cannot carry that across a restart: `preStart` runs on a fresh instance, so
+  `this.child ??= …` is always unset and re-spawns into the name the surviving
+  child still holds.  It is a hook rather than a
   `preRestart` override because the teardown has to be awaited, and
   `preRestart` cannot tell the framework it started something worth waiting
   for.
