@@ -190,13 +190,22 @@ schieben).
   ```
 
   Sie überleben den Restart dann mit eigenem Zustand und eigener
-  Mailbox, und es liegt an dir, `preStart` idempotent zu halten:
+  Mailbox, und es liegt an dir, `preStart` idempotent zu halten —
+  indem du das überlebende Kind aus der Zelle übernimmst statt aus
+  einem Feld:
 
   ```ts
   override preStart(): void {
-    this.worker ??= this.context.spawn(Worker, 'worker');
+    this.worker = this.context.child('worker').toNullable() as ActorRef<Job>
+      ?? this.context.spawn(Worker, 'worker');
   }
   ```
+
+  Ein Instanzfeld kann das nicht leisten: `preStart` läuft nach jedem
+  Restart auf einer *frischen* Instanz, `this.worker ??= …` ist also
+  immer ungesetzt und spawnt erneut in den Namen, den das überlebende
+  Kind noch hält — der Spawn scheitert mit `Child name 'worker' is not
+  unique`, was den Actor neu startet, der `preStart` erneut ausführt.
 
   Es ist ein eigener Hook und kein `preRestart`-Override, weil auf den
   Abbau *gewartet* werden muss — die neue Instanz kann nicht gebaut

@@ -133,8 +133,13 @@ export abstract class Actor<TMessage = unknown> {
    * Override to `false` when the children are expensive to rebuild, hold
    * state the parent cannot restore, or are supervised independently — a
    * connection pool, say.  They then outlive the restart exactly as before,
-   * and it is on you to make `preStart` idempotent (`this.child ??= …`, or
-   * `context.spawnAnonymous`).
+   * and it is on you to make `preStart` idempotent — by adopting the survivor
+   * from the cell, `this.child = this.context.child('name').toNullable() ??
+   * this.context.spawn(Child, 'name')`, or with `context.spawnAnonymous`.
+   * An instance field cannot do it: `preStart` runs on a *fresh* instance
+   * after every restart, so `this.child ??= …` is always unset and re-spawns
+   * into the name the surviving child still holds, which fails the spawn and
+   * restarts the actor again.
    *
    * This is a separate hook rather than a `preRestart` override because the
    * teardown has to be *awaited*: the new instance cannot be built until the

@@ -94,7 +94,13 @@ class RouterActor<TMessage> extends Actor<TMessage | Broadcast<TMessage>> {
    * so a routee never saw its sibling's.
    */
   private onTerminated(message: Terminated): void {
-    const index = this.routees.findIndex(routee => routee.equals(message.actor));
+    // Identity, not `equals`.  `ActorRef.equals` compares addresses, and a
+    // restarted pool re-spawns its routees at exactly the same addresses — so
+    // an address match lets the *previous* incarnation's notification, still
+    // queued from before the restart, prune the live routee that now occupies
+    // that name, leaving the pool silently empty.  The router owns the refs it
+    // spawned, so the ref it was handed is the one that actually died.
+    const index = this.routees.indexOf(message.actor as ActorRef<TMessage>);
     if (index >= 0) this.routees.splice(index, 1);
   }
 
