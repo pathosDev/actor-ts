@@ -94,7 +94,7 @@ describe('LWWRegister timestamps (#724)', () => {
 describe('ORSet tombstones and tags (#722)', () => {
   test('a non-array tombstone list is rejected', () => {
     expect(() => ORSet.fromJSON(wire({
-      kind: 'ORSet', elements: {}, tombstones: { a: 'not-an-array' }, counters: {},
+      kind: 'ORSet', elements: {}, tombstones: { a: 'not-an-array' },
     }))).toThrow(CrdtDecodeError);
   });
 
@@ -102,13 +102,7 @@ describe('ORSet tombstones and tags (#722)', () => {
     // Tombstones are honoured on merge, so a malformed one is not inert —
     // it decides which of a peer's adds survive.
     expect(() => ORSet.fromJSON(wire({
-      kind: 'ORSet', elements: {}, tombstones: { a: ['ok', 7] }, counters: {},
-    }))).toThrow(CrdtDecodeError);
-  });
-
-  test('an out-of-range counter is rejected', () => {
-    expect(() => ORSet.fromJSON(wire({
-      kind: 'ORSet', elements: {}, tombstones: {}, counters: { a: -3 },
+      kind: 'ORSet', elements: {}, tombstones: { a: ['ok', 7] },
     }))).toThrow(CrdtDecodeError);
   });
 
@@ -118,9 +112,23 @@ describe('ORSet tombstones and tags (#722)', () => {
       elements: { '"x"': ['a#1'] },
       elementValues: { '"x"': '"x"' },
       tombstones: {},
+    }));
+    expect(set.has('x')).toBe(true);
+  });
+
+  test("a pre-#722 peer's `counters` field is ignored, not rejected", () => {
+    // Tags are minted from entropy now, so the sequence a legacy peer ships
+    // has nothing to feed.  Dropping the whole set over an unread field would
+    // stall a rolling upgrade in the one direction that still works.
+    const set = ORSet.fromJSON<string>(wire({
+      kind: 'ORSet',
+      elements: { '"x"': ['a#1'] },
+      elementValues: { '"x"': '"x"' },
+      tombstones: {},
       counters: { a: 1 },
     }));
     expect(set.has('x')).toBe(true);
+    expect('counters' in set.toJSON()).toBe(false);
   });
 });
 
@@ -183,7 +191,7 @@ describe('decodeCrdt nesting (#721)', () => {
     for (let i = 0; i < 200; i++) {
       payload = {
         kind: 'ORMap',
-        keyset: { kind: 'ORSet', elements: { '"k"': ['a#1'] }, elementValues: { '"k"': '"k"' }, tombstones: {}, counters: { a: 1 } },
+        keyset: { kind: 'ORSet', elements: { '"k"': ['a#1'] }, elementValues: { '"k"': '"k"' }, tombstones: {} },
         values: { '"k"': payload },
       };
     }

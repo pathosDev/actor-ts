@@ -346,6 +346,36 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   Extension frame kinds (sharding, pub-sub, receptionist, DistributedData,
   DevTools) deliberately pass this layer and validate their own payloads.
 
+- **`ORSet` tags are minted from entropy instead of a counter** (#722).  A tag
+  was `${replica}#${seq}` off a per-replica sequence that travelled in the
+  payload, so both halves were readable from any gossip frame and the tags a
+  replica had not issued yet were arithmetic.  Tombstones veto by tag on
+  merge, are unioned unconditionally and are never pruned — so one frame of
+  forged tombstones made a victim's next writes vanish on the following merge,
+  indistinguishable from a concurrent remove and with no API to take a
+  tombstone back.  Tags now carry 96 bits from the platform's cryptographic
+  random source, which is the conclusion #120 already reached for
+  `ClusterClient` ask ids and #896 for quorum correlation ids.
+
+  The two other parts of the reported fix are deliberately not implemented:
+  requiring a tombstone's tag to name the sending peer stops removes from
+  propagating at all, because `remove` legitimately tombstones tags other
+  replicas minted; and dropping tombstones for tags no side has observed
+  resurrects removed elements under out-of-order gossip.
+
+  **BREAKING:** the `counters` field is gone from the `ORSet` wire shape,
+  since nothing mints from it any more.  A frame — or a durable record — from
+  an older peer still carries it and is accepted; an older peer *requires* it
+  and rejects one without it.
+
+  **Migration:** upgrade every node.  During a rolling upgrade `ORSet` values
+  flow only from old nodes to new ones, and the not-yet-upgraded side logs one
+  dropped value per gossip round; nothing is lost, because a dropped entry
+  does not mutate state and state-based gossip re-sends everything, so
+  convergence resumes once the last node is up.  Tags minted by either version
+  keep working on both — a tag is an opaque string to every comparison it
+  takes part in, and the two formats cannot collide.
+
 ### Changed
 
 - **A resumed actor's children are resumed with it** (#635).  A failure

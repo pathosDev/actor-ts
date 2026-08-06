@@ -1,6 +1,6 @@
 import type { Crdt, ReplicaId } from './Crdt.js';
+import { randomId } from '../util/RandomString.js';
 import {
-  assertCounterValue,
   assertPlainObject,
   assertStringArray,
   safeEntries,
@@ -26,9 +26,9 @@ import {
  *   a1.merge(b1).value()                            // → ['apple'] (add wins)
  *
  * **Tag generation**: each add takes a `replicaId` and combines it
- * with a per-replica monotonic counter so tags are unique even
- * across calls in the same millisecond.  The counter is part of the
- * CRDT state; we keep one counter per replica and bump it on every add.
+ * with {@link TAG_ENTROPY_CHARACTERS} random hex characters, so a tag
+ * is unique across calls in the same millisecond and — the part that
+ * matters on an open wire — unguessable ahead of being issued.
  *
  * **Element identity**.  By default elements are deduplicated by
  * `JSON.stringify(element)` — same caveats as `GSet`: BigInt throws,
@@ -44,6 +44,27 @@ export type ORSetOptions<E> = {
 };
 
 const defaultIdentity = (e: unknown): string => JSON.stringify(e);
+
+/**
+ * Random hex characters in a tag suffix — 96 bits.
+ *
+ * A tag used to be `${replica}#${seq}` off a monotonic counter, and the
+ * counter travelled in the payload.  Tombstones veto by tag on merge and are
+ * never pruned, so a peer that could *predict* a tag could tombstone one the
+ * victim had not issued yet: the victim's next adds then vanished on the very
+ * next merge, silently, with no API to undo a tombstone (#722).  Guessing a
+ * tag is the whole attack, which is why this draws from `crypto` — the same
+ * conclusion #120 reached for `ClusterClient` ask ids and #896 for quorum
+ * correlation ids.
+ *
+ * Longer than the 12–16 characters those two use, because the uniqueness that
+ * has to hold is different: an ask id only has to be distinct among the
+ * requests in flight, whereas a tag is compared against every tag its replica
+ * has ever minted for the element and against tombstones that outlive them
+ * all.  At 96 bits a replica making 10^9 adds has a collision chance around
+ * 6e-12 — below the rate at which the hardware underneath miscounts.
+ */
+const TAG_ENTROPY_CHARACTERS = 24;
 
 type ElementEntry<E> = {
   readonly element: E;
@@ -61,26 +82,26 @@ export class ORSet<E> implements Crdt<ORSet<E>> {
    * `tombstones` — tags removed for an element-key.  Veto on merge
    *                so a stale state from a slow peer can't resurrect
    *                an already-removed tag.
-   * `counters`   — per-replica monotonic seq used to mint fresh tags.
    */
   private constructor(
     private readonly elements: ReadonlyMap<string, ElementEntry<E>>,
     private readonly tombstones: ReadonlyMap<string, ReadonlySet<string>>,
-    private readonly counters: ReadonlyMap<ReplicaId, number>,
     private readonly identity: (e: E) => string,
   ) {}
 
   static empty<E>(options: ORSetOptions<E> = {}): ORSet<E> {
     return new ORSet<E>(
-      new Map(), new Map(), new Map(),
+      new Map(), new Map(),
       options.identity ?? (defaultIdentity as (e: E) => string),
     );
   }
 
   add(replica: ReplicaId, element: E): ORSet<E> {
     const key = this.identity(element);
-    const seq = (this.counters.get(replica) ?? 0) + 1;
-    const tag = `${replica}#${seq}`;
+    // Minted here and nowhere else: a tag has to survive merges and
+    // serialization byte-identical, since every comparison it takes part in —
+    // tombstone veto, tag-set union, `equals` — is string equality.
+    const tag = `${replica}#${randomId(TAG_ENTROPY_CHARACTERS)}`;
 
     const nextElements = new Map(this.elements);
     const existing = nextElements.get(key);
@@ -88,10 +109,7 @@ export class ORSet<E> implements Crdt<ORSet<E>> {
     tagsForKey.add(tag);
     nextElements.set(key, { element, tags: tagsForKey });
 
-    const nextCounters = new Map(this.counters);
-    nextCounters.set(replica, seq);
-
-    return new ORSet<E>(nextElements, this.tombstones, nextCounters, this.identity);
+    return new ORSet<E>(nextElements, this.tombstones, this.identity);
   }
 
   /**
@@ -112,7 +130,7 @@ export class ORSet<E> implements Crdt<ORSet<E>> {
     for (const tag of existing.tags) tombstoneTags.add(tag);
     nextTombstones.set(key, tombstoneTags);
 
-    return new ORSet<E>(nextElements, nextTombstones, this.counters, this.identity);
+    return new ORSet<E>(nextElements, nextTombstones, this.identity);
   }
 
   has(element: E): boolean {
@@ -156,15 +174,9 @@ export class ORSet<E> implements Crdt<ORSet<E>> {
       }
     }
 
-    // 3. Counters: per-replica max so the next-issued tag is fresh
-    //    no matter which replica the merged state is used on.
-    const mergedCounters = new Map(this.counters);
-    for (const [replica, seq] of other.counters) {
-      const ours = mergedCounters.get(replica) ?? 0;
-      if (seq > ours) mergedCounters.set(replica, seq);
-    }
-
-    return new ORSet<E>(mergedElements, mergedTombstones, mergedCounters, this.identity);
+    // No third step: tags carry their own entropy, so nothing has to be
+    // carried across a merge to keep the next-issued one fresh.
+    return new ORSet<E>(mergedElements, mergedTombstones, this.identity);
   }
 
   toJSON(): ORSetJson {
@@ -188,7 +200,6 @@ export class ORSet<E> implements Crdt<ORSet<E>> {
         Array.from(this.elements, ([key, entry]) => [key, JSON.stringify(entry.element)] as const),
       ),
       tombstones: mapOfSetsToObject(this.tombstones),
-      counters: Object.fromEntries(this.counters),
     };
   }
 
@@ -200,12 +211,8 @@ export class ORSet<E> implements Crdt<ORSet<E>> {
     // adds then vanish on the next merge, silently and permanently (#722).
     assertPlainObject(json.elements, 'ORSet.elements');
     assertPlainObject(json.tombstones, 'ORSet.tombstones');
-    assertPlainObject(json.counters, 'ORSet.counters');
     for (const [key, tags] of safeEntries(json.tombstones, 'ORSet.tombstones')) {
       assertStringArray(tags, `ORSet.tombstones['${key}']`);
-    }
-    for (const [replicaId, count] of safeEntries(json.counters, 'ORSet.counters')) {
-      assertCounterValue(count, `ORSet.counters['${replicaId}']`);
     }
     const elements = new Map<string, ElementEntry<E>>();
     for (const [key, tags] of safeEntries(json.elements, 'ORSet.elements')) {
@@ -219,12 +226,7 @@ export class ORSet<E> implements Crdt<ORSet<E>> {
         : (JSON.parse(key) as E);
       elements.set(key, { element, tags: new Set(tags) });
     }
-    return new ORSet<E>(
-      elements,
-      objectToMapOfSets(json.tombstones),
-      new Map(Object.entries(json.counters)),
-      identity,
-    );
+    return new ORSet<E>(elements, objectToMapOfSets(json.tombstones), identity);
   }
 
   equals(other: ORSet<E>): boolean {
@@ -285,6 +287,17 @@ function objectToMapOfSets(
   return out;
 }
 
+/**
+ * Wire shape.
+ *
+ * A `counters` field used to sit here, carrying the per-replica sequence the
+ * old tags were minted from.  Tags no longer come off a counter, so it is gone
+ * rather than kept empty — a field nothing maintains reads as state and is
+ * one refactor away from being trusted again.  A frame from a pre-#722 peer
+ * still carries it; it is simply not read.  The reverse does not hold: such a
+ * peer requires the field and rejects a frame without it, which is what makes
+ * this a breaking wire change rather than an additive one.
+ */
 export type ORSetJson = {
   readonly kind: 'ORSet';
   /** Per-element-key tag list. */
@@ -293,5 +306,4 @@ export type ORSetJson = {
    *  backwards-compat with v0 wire shape (default identity only). */
   readonly elementValues?: Record<string, string>;
   readonly tombstones: Record<string, string[]>;
-  readonly counters: Record<ReplicaId, number>;
 };
