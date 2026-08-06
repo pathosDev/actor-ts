@@ -350,9 +350,15 @@ conservative SemVer.) See `docs/.../reference/version-policy.mdx`.
 
 - Label taxonomy: `priority: {high,medium,low}`,
   `severity: {critical,high,medium,low}`, `security`, `i18n`,
-  `infrastructure`, `dependencies`, plus the standard `bug` /
-  `enhancement` / `documentation`. Audit-catalog items use the title
-  prefixes `[Security] ` / `[Feature] `.
+  `infrastructure`, `dependencies`, `production-goal`, plus the standard
+  `bug` / `enhancement` / `documentation`. Audit-catalog items use the
+  title prefixes `[Security] ` / `[Feature] `.
+- **`production-goal` marks the path to production readiness** — it is a
+  gate, not a batch marker, so it belongs on any issue that blocks or
+  defines that path regardless of which review found it, including ones
+  filed long before. Filtering on it should answer "what is still between
+  us and running this for real", which is why it is applied to existing
+  issues rather than duplicating them.
 - **Security-first posture:** cap untrusted input (e.g. WebSocket /
   wire-frame size limits), never trust client-supplied integrity fields,
   use crypto-grade randomness for wire identifiers. A security-relevant
