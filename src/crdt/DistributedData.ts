@@ -608,6 +608,13 @@ class DistributedDataActor extends Actor<ActorMessage> {
   private readonly pendingWrites = new Map<string, PendingWrite>();
   /** Outstanding quorum-read requests, keyed by pendingId. */
   private readonly pendingReads = new Map<string, PendingRead>();
+  /**
+   * Peer-supplied values this replica refused to decode.  A plain counter
+   * rather than a metric so it costs nothing when metrics are disabled; it is
+   * carried in the warn line so an operator can tell one garbled frame from a
+   * peer that is producing them steadily.
+   */
+  private droppedFrames = 0;
 
   constructor(public readonly options: {
     cluster: Cluster;
@@ -805,7 +812,8 @@ class DistributedDataActor extends Actor<ActorMessage> {
   private onWriteRequest(message: DDataWriteRequestMessage, peer: NodeAddress): void {
     // Merge the incoming value into our local replica (same merge
     // semantics as gossip) and ack back.
-    const incoming = decodeCrdt(message.value);
+    const incoming = this.decodeOrDrop(message.value, message.key, peer);
+    if (incoming === null) return;
     const current = this.view.state.get(message.key);
     const merged = current ? current.merge(incoming) : incoming;
     this.applyMerged(message.key, current ?? null, merged);
@@ -864,8 +872,13 @@ class DistributedDataActor extends Actor<ActorMessage> {
     if (pending.responses.has(senderAddr)) return; // dedupe
     pending.responses.add(senderAddr);
     if (message.value !== null) {
-      const incoming = decodeCrdt(message.value);
-      pending.merged = pending.merged ? pending.merged.merge(incoming) : incoming;
+      const incoming = this.decodeOrDrop(message.value, message.key, peer);
+      // A garbled response counts as an answer — the peer replied, it just
+      // replied with something unusable.  Dropping the value rather than the
+      // whole response keeps the quorum from stalling on one bad replica.
+      if (incoming !== null) {
+        pending.merged = pending.merged ? pending.merged.merge(incoming) : incoming;
+      }
     }
     if (pending.responses.size >= pending.required) {
       pending.timer.cancel();
@@ -896,10 +909,43 @@ class DistributedDataActor extends Actor<ActorMessage> {
   private onGossip(message: DDataGossipMessage, peer: NodeAddress): void {
     if (peer.equals(this.cluster.selfAddress)) return; // shouldn't happen but harmless
     for (const [key, json] of Object.entries(message.entries)) {
-      const incoming = decodeCrdt(json);
+      // Per key, not per frame: one unusable entry must not cost the sender's
+      // other entries, which are independent CRDTs that happen to travel
+      // together.
+      const incoming = this.decodeOrDrop(json, key, peer);
+      if (incoming === null) continue;
       const current = this.view.state.get(key);
       const merged = current ? current.merge(incoming) : incoming;
       this.applyMerged(key, current ?? null, merged);
+    }
+  }
+
+  /**
+   * Decode a peer-supplied CRDT, or drop it.
+   *
+   * `decodeCrdt` validates and therefore *throws* on a malformed or hostile
+   * payload.  Every call site here is a wire handler, and an exception out of
+   * one is an actor failure: twelve of them exhausted this actor's restart
+   * budget and terminated DistributedData for the life of the process, taking
+   * every unsettled read and write promise with it (#699, #721).
+   *
+   * Dropping is the right answer for a state-based CRDT — a lost gossip entry
+   * is re-sent on the next tick, so a transient garble costs a round and
+   * nothing else.  It is logged rather than silent because the only thing that
+   * produces one is a peer that is broken or hostile, and neither should be
+   * invisible; the log names the peer and the key so it can be traced back.
+   */
+  private decodeOrDrop(json: CrdtJson, key: string, peer: NodeAddress): Crdt<any> | null {
+    try {
+      return decodeCrdt(json);
+    } catch (e) {
+      this.droppedFrames++;
+      this.log.warn(
+        `DistributedData: dropping an undecodable value for "${key}" from ${peer.toString()} `
+        + `(${this.droppedFrames} dropped so far)`,
+        e,
+      );
+      return null;
     }
   }
 
