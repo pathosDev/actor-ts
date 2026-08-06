@@ -342,8 +342,12 @@ conservative SemVer.) See `docs/.../reference/version-policy.mdx`.
   first** — for traceability — using the matching template in
   `.github/ISSUE_TEMPLATE/` (bug / feature / documentation / security).
 - **Close via the commit body:** when the work lands, close the issue
-  with a `Closes #NNN` (or `Fixes #NNN`) line in the commit body. (It
-  resolves once the commit reaches `main` on push.)
+  with a `Closes #NNN` (or `Fixes #NNN`) line in the commit body. GitHub
+  resolves it once the commit reaches the repository's **default** branch
+  — here `develop`, not `main` — so the issue closes on the next
+  `develop` push rather than at release time. There is no release-window
+  in which to reconsider: only add the line when the issue is genuinely
+  finished.
 - Open an issue before non-trivial work to align on the approach first.
 - **Comment on the issue whenever the work changes course.** If something
   you find while working changes the diagnosis, the approach, the scope,
