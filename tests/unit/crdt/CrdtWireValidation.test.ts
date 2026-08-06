@@ -15,6 +15,7 @@ import { describe, expect, test } from 'bun:test';
 import { decodeCrdt } from '../../../src/crdt/DistributedData.js';
 import { CrdtDecodeError, MAX_MV_REGISTER_ENTRIES } from '../../../src/crdt/CrdtWireValidation.js';
 import { GCounter } from '../../../src/crdt/GCounter.js';
+import { LWWMap } from '../../../src/crdt/LWWMap.js';
 import { LWWRegister } from '../../../src/crdt/LWWRegister.js';
 import { MVRegister } from '../../../src/crdt/MVRegister.js';
 import { ORSet } from '../../../src/crdt/ORSet.js';
@@ -197,5 +198,52 @@ describe('decodeCrdt nesting (#721)', () => {
   test('ordinary nesting still decodes', () => {
     const decoded = decodeCrdt(wire({ kind: 'GCounter', state: { a: 2 } }));
     expect((decoded as GCounter).value()).toBe(2);
+  });
+});
+
+describe('LWWRegister replica ids (#724)', () => {
+  const now = Date.now();
+
+  test('a non-string replica id is rejected', () => {
+    // `ReplicaId` is a bare `type ReplicaId = string`, so nothing at runtime
+    // stopped the wire from carrying something else into the tie-break.
+    for (const replica of [5, null, { id: 'a' }, ['\uFFFF'], true]) {
+      expect(() => LWWRegister.fromJSON(wire({
+        kind: 'LWWRegister', value: 'x', timestamp: now, replica,
+      }))).toThrow(CrdtDecodeError);
+    }
+  });
+
+  test('the two failures it closes are opposite, and both reachable', () => {
+    // A number: `>` between a string and a number is false in BOTH
+    // directions, so `a.merge(b)` and `b.merge(a)` each keep their own value
+    // and the replicas never converge on that key.
+    expect(5 > 'sys@a:1').toBe(false);
+    expect('sys@a:1' > (5 as unknown as string)).toBe(false);
+    // An array: coerces to its single element, so it wins every tie while
+    // not being a string — exploit step 3, delivered past a `typeof` check
+    // that was never there.
+    expect((['\uFFFF'] as unknown as string) > 'sys@a:1').toBe(true);
+  });
+
+  test('an LWWMap entry inherits the check', () => {
+    // Every map entry funnels through `LWWRegister.fromJSON`, and a map is
+    // the realistic carrier — feature flags, per-user settings.
+    expect(() => LWWMap.fromJSON(wire({
+      kind: 'LWWMap',
+      registers: { '"flag"': { kind: 'LWWRegister', value: false, timestamp: now, replica: 7 } },
+      keyValues: { '"flag"': '"flag"' },
+    }))).toThrow(CrdtDecodeError);
+  });
+
+  test('a well-formed register, and an empty one, still decode', () => {
+    const register = LWWRegister.fromJSON<string>(wire({
+      kind: 'LWWRegister', value: 'x', timestamp: now, replica: 'sys@a:1',
+    }));
+    expect(register.value()).toBe('x');
+    // `LWWRegister.empty()` stamps `replica: ''` — a string, and it has to
+    // keep round-tripping or every never-assigned register stops decoding.
+    expect(LWWRegister.fromJSON<string>(wire(LWWRegister.empty<string>().toJSON())).value())
+      .toBeNull();
   });
 });

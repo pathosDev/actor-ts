@@ -1,6 +1,7 @@
 import type { Crdt, ReplicaId } from './Crdt.js';
 import {
   assertPlausibleTimestamp,
+  assertString,
 } from './CrdtWireValidation.js';
 
 /**
@@ -81,6 +82,14 @@ export class LWWRegister<V> implements Crdt<LWWRegister<V>> {
     // far-future stamp beats every honest write from here on, and gets
     // re-gossiped so the whole cluster converges on the wedge (#724).
     assertPlausibleTimestamp(json.timestamp, 'LWWRegister.timestamp');
+    // The tie-break reads `replica` with `>`, and `>` between a string and a
+    // number is false in *both* directions — so a numeric replica id makes
+    // `a.merge(b)` and `b.merge(a)` each keep their own value and the two
+    // replicas never converge.  An array is the opposite failure: it coerces
+    // to its single element, so one holding a high code point wins every tie
+    // while not being a string at all.  `assign` can produce neither; only
+    // the wire could.
+    assertString(json.replica, 'LWWRegister.replica');
     return new LWWRegister<V>(json.value, json.timestamp, json.replica);
   }
 

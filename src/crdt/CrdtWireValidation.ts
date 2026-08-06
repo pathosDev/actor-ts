@@ -19,8 +19,10 @@
  * - `ORSet` tombstones are honoured on merge, so a peer can pre-tombstone
  *   tags a victim replica has not issued yet and its future adds vanish
  *   silently (#722);
- * - `LWWRegister` resolves by timestamp, so a far-future stamp wedges that
- *   register against every honest write, permanently (#724);
+ * - `LWWRegister` resolves by timestamp and, on a tie, by replica id — so a
+ *   far-future stamp wedges that register against every honest write,
+ *   permanently, and a replica id of the wrong *type* makes the tie-break
+ *   answer differently on each side (#724);
  * - a `__proto__` key survives decode but is dropped by every
  *   `Record`-building re-encode, so the entry neither gossips nor persists —
  *   divergence with no error anywhere (#767).
@@ -131,6 +133,22 @@ export function assertCounterValue(value: unknown, what: string): asserts value 
   assertFiniteNumber(value, what);
   if (!Number.isSafeInteger(value) || value < 0) {
     throw new CrdtDecodeError(`${what} must be a non-negative safe integer, got ${describe(value)}`);
+  }
+}
+
+/**
+ * A string — a replica id, or anything else the wire declares as one.
+ *
+ * `ReplicaId` is a bare `type ReplicaId = string`, so nothing at runtime kept
+ * a decoder from producing what the local API never can.  It matters wherever
+ * the field is *compared* rather than merely carried: `>` between a string and
+ * a number is `false` in both directions, which makes a merge that resolves by
+ * replica id return each side's own value — the two replicas then never
+ * converge (#724).
+ */
+export function assertString(value: unknown, what: string): asserts value is string {
+  if (typeof value !== 'string') {
+    throw new CrdtDecodeError(`${what} must be a string, got ${describe(value)}`);
   }
 }
 
