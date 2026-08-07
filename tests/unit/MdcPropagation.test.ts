@@ -12,11 +12,13 @@
  *     it matches the one set at the top.
  */
 import { describe, expect, test } from 'bun:test';
+import { match } from 'ts-pattern';
 import { Actor } from '../../src/Actor.js';
 import { ActorSystem } from '../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../src/ActorSystemOptions.js';
 import type { ActorRef } from '../../src/ActorRef.js';
 import { LogContext } from '../../src/LogContext.js';
+import type { LogContextEntry } from '../../src/LogContext.js';
 import { LogLevel, NoopLogger } from '../../src/Logger.js';
 import { awaitCondition } from '../util/AwaitCondition.js';
 
@@ -137,6 +139,178 @@ describe('LogContext — actor-to-actor propagation', () => {
       });
       expect(observed.get('a')).toEqual({ branch: 'A' });
       expect(observed.get('b')).toEqual({ branch: 'B' });
+    } finally {
+      await sys.terminate();
+    }
+  });
+});
+
+/* ---------------- Deferred work across tenant boundaries (#129) ------------- */
+
+type BufferMessage = { kind: 'buffer'; item: string };
+type DrainMessage = { kind: 'drain' };
+type CollectorMessage = BufferMessage | DrainMessage;
+
+/** Records the context each item was delivered under. */
+class ContextRecordingSink extends Actor<string> {
+  constructor(private readonly observed: Map<string, Record<string, unknown>>) { super(); }
+
+  override onReceive(item: string): void {
+    this.observed.set(item, { ...LogContext.get() });
+  }
+}
+
+/**
+ * Buffers items and drains them from a promise nobody awaits — the shape
+ * the issue describes.  `AsyncLocalStorage` binds a store when the promise
+ * is *created*, so the continuation keeps the draining turn's context and
+ * `LocalActorRef.tell` stamps it onto every envelope it produces.
+ */
+class LeakingCollector extends Actor<CollectorMessage> {
+  private readonly buffered: string[] = [];
+
+  constructor(private readonly sink: ActorRef<string>) { super(); }
+
+  override onReceive(message: CollectorMessage): void {
+    match(message)
+      .with({ kind: 'buffer' }, (m) => this.onBuffer(m))
+      .with({ kind: 'drain' }, () => this.onDrain())
+      .exhaustive();
+  }
+
+  private onBuffer(m: BufferMessage): void {
+    this.buffered.push(m.item);
+  }
+
+  private onDrain(): void {
+    void (async () => {
+      for (const item of this.buffered.splice(0)) {
+        await sleep(1);
+        this.sink.tell(item);
+      }
+    })();
+  }
+}
+
+/** The same collector, with each item's context captured at enqueue time. */
+class IsolatingCollector extends Actor<CollectorMessage> {
+  private readonly buffered: Array<LogContextEntry<string>> = [];
+
+  constructor(private readonly sink: ActorRef<string>) { super(); }
+
+  override onReceive(message: CollectorMessage): void {
+    match(message)
+      .with({ kind: 'buffer' }, (m) => this.onBuffer(m))
+      .with({ kind: 'drain' }, () => this.onDrain())
+      .exhaustive();
+  }
+
+  private onBuffer(m: BufferMessage): void {
+    // The enqueueing turn is the only moment this item's own context is
+    // still current.
+    this.buffered.push({ context: LogContext.get(), item: m.item });
+  }
+
+  private onDrain(): void {
+    void LogContext.runEach(this.buffered.splice(0), async (item) => {
+      await sleep(1);
+      this.sink.tell(item);
+    });
+  }
+}
+
+/** Starts detached background work that must not inherit the turn's context. */
+class DetachedWorker extends Actor<string> {
+  constructor(private readonly observed: Array<Record<string, unknown>>) { super(); }
+
+  override onReceive(_m: string): void {
+    void LogContext.runFresh(async () => {
+      await sleep(1);
+      this.observed.push({ ...LogContext.get() });
+    });
+  }
+}
+
+describe('LogContext — deferred work across tenant boundaries (#129)', () => {
+  const quietSystem = (name: string): ActorSystem => {
+    const sysOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off);
+    return ActorSystem.create(name, sysOptions);
+  };
+
+  test('an un-awaited drain stamps the draining turn\'s context on every buffered item', async () => {
+    const observed = new Map<string, Record<string, unknown>>();
+    const sys = quietSystem('mdc-leak');
+    try {
+      const sink = sys.spawn(() => new ContextRecordingSink(observed), 'sink');
+      const collector = sys.spawn(() => new LeakingCollector(sink), 'collector');
+
+      LogContext.run({ tenant: 'acme' }, () => {
+        collector.tell({ kind: 'buffer', item: 'invoice-acme' });
+      });
+      LogContext.run({ tenant: 'globex' }, () => {
+        collector.tell({ kind: 'buffer', item: 'invoice-globex' });
+      });
+      LogContext.run({ tenant: 'initech' }, () => {
+        collector.tell({ kind: 'drain' });
+      });
+
+      await awaitCondition(() => observed.size === 2, {
+        timeoutMs: 4_000,
+        label: 'both buffered items reached the sink',
+      });
+      // This is the defect, pinned so a fix elsewhere cannot land silently:
+      // acme's and globex's items both arrive labelled initech.
+      expect(observed.get('invoice-acme')).toEqual({ tenant: 'initech' });
+      expect(observed.get('invoice-globex')).toEqual({ tenant: 'initech' });
+    } finally {
+      await sys.terminate();
+    }
+  });
+
+  test('runEach delivers each buffered item under its own captured context', async () => {
+    const observed = new Map<string, Record<string, unknown>>();
+    const sys = quietSystem('mdc-runeach');
+    try {
+      const sink = sys.spawn(() => new ContextRecordingSink(observed), 'sink');
+      const collector = sys.spawn(() => new IsolatingCollector(sink), 'collector');
+
+      LogContext.run({ tenant: 'acme' }, () => {
+        collector.tell({ kind: 'buffer', item: 'invoice-acme' });
+      });
+      LogContext.run({ tenant: 'globex' }, () => {
+        collector.tell({ kind: 'buffer', item: 'invoice-globex' });
+      });
+      // Drained by a third tenant's request, as in the leaking case.
+      LogContext.run({ tenant: 'initech' }, () => {
+        collector.tell({ kind: 'drain' });
+      });
+
+      await awaitCondition(() => observed.size === 2, {
+        timeoutMs: 4_000,
+        label: 'both buffered items reached the sink',
+      });
+      expect(observed.get('invoice-acme')).toEqual({ tenant: 'acme' });
+      expect(observed.get('invoice-globex')).toEqual({ tenant: 'globex' });
+    } finally {
+      await sys.terminate();
+    }
+  });
+
+  test('runFresh keeps detached background work from inheriting the turn\'s context', async () => {
+    const observed: Array<Record<string, unknown>> = [];
+    const sys = quietSystem('mdc-runfresh');
+    try {
+      const worker = sys.spawn(() => new DetachedWorker(observed), 'worker');
+      LogContext.run({ tenant: 'acme', requestId: 'r-1' }, () => {
+        worker.tell('start');
+      });
+      await awaitCondition(() => observed.length === 1, {
+        timeoutMs: 4_000,
+        label: 'the detached work ran',
+      });
+      expect(observed).toEqual([{}]);
     } finally {
       await sys.terminate();
     }
