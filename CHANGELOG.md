@@ -11,6 +11,16 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Added
 
+- **Death watch with a custom termination message** (#159).
+  `context.watchWith(ref, message)` — and its `TypedActorContext`
+  counterpart — registers a death watch that delivers a message of the
+  watcher's own protocol instead of `Terminated(ref)`, so an actor that
+  watches several kinds of actor no longer has to carry the signal in its
+  message union and tell the deaths apart by ref identity.  Last call wins
+  over a previous `watch`/`watchWith` of the same ref, `unwatch` removes
+  either, and the registration is keyed by incarnation — a re-spawned name
+  is a fresh subject that needs its own call.
+
 - **Typed `Behaviors.intercept` / `monitor` / `logMessages`** (#152).  Three
   combinators for the concerns that cut across an actor's own logic: a
   generic interceptor that observes, transforms, drops or short-circuits
@@ -176,6 +186,103 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   instead of shipping the lie.
 
 ### Security
+
+- **Ambiguous master-key rings are now rejected** (#111).  A `MasterKeyRing`
+  whose `active` and `retired` entries claimed the same version was accepted
+  and then resolved silently in favour of `active` — bodies written under
+  the older of the two keys decrypted with the newer one and failed on the
+  AES-GCM authentication tag with an error that named nothing.
+  `validateMasterKeyRing` refuses duplicate versions, versions outside `[0,
+  255]`, and keys that are not 32 bytes, at plugin registration, at the
+  store's own encrypt/decrypt entry points, and at the start of
+  `reEncryptObjectStorage` (where it replaces a range check that covered
+  only `active`).  Reaching this state needed no exotic key history —
+  promoting a key without renumbering it is enough — so a deployment
+  carrying such a ring today will now fail loudly at startup instead of
+  corrupting reads.
+- **Warning when the master-key version space runs low** (#111).  From
+  active version 240 on, `registerObjectStoragePlugins` warns and points at
+  the remedy.  The single manifest byte is not a cap on how often a
+  deployment may rotate: it caps how many versions may be live in one corpus
+  at once, and a completed re-encryption sweep frees every other number for
+  reuse.  The proposed wide-version wire flag was deliberately not reserved
+  — bit 4 is `FLAG_INTEGRITY_HMAC` since #116, and the case it would address
+  is one the sweep already resolves.
+- **Prometheus-Kardinalitaet pro Metrik-Familie gedeckelt** (#131).  A label
+  value derived from user-controlled input — a URL path, a header, an id —
+  used to mint one time series per distinct value with nothing bounding it,
+  growing the exposing process's resident memory (prom-client never expires
+  a series) until the Prometheus server OOMed ingesting them.
+  `DefaultMetricsRegistry` and the `promClientRegistry` bridge now stop
+  minting at `maxSeriesPerFamily` (default 10 000, `0` disables) and fold
+  every further tuple into a single overflow series, so a family gains at
+  most one extra series no matter how many distinct tuples arrive; the first
+  overflow logs one warning naming the family and the rejected tuple.
+  Configure it with
+  `MetricsRegistryOptions.create().withMaxSeriesPerFamily(n)` passed to
+  `MetricsExtension.enable(...)`, or `withMaxSeriesPerFamily(n)` on
+  `PromClientAdapterOptions`.  The default is 10 000 rather than a lower
+  round number because `actor_mailbox_dropped_total` carries a
+  per-actor-path label, so a node hosting a few thousand sharded entities
+  under back-pressure legitimately crosses 1 000 series and a tighter cap
+  would discard real operating data.  Deployments already producing more
+  than 10 000 tuples in one family see those folded into the overflow series
+  — raise the cap or bound the label to keep them separate.
+- **`bucketize(value, allowed)` exported** (#131).  Maps a
+  possibly-unbounded label value onto a fixed allow-list, returning
+  `'other'` for anything outside it, so a family can never hold more than
+  `allowed.length + 1` series.  This is the fix for a high-cardinality
+  label; the registry cap is only the backstop for the labels nobody
+  bounded.
+- **Cluster membership is capped** (#138).  The local member map grew
+  without bound from gossip: both paths that create an entry —
+  `mergeMember`'s first-sighting branch and the sender fallback in
+  `onGossip` — set unconditionally, and every guard in front of them decides
+  whether a claim is *believable*, never how many believable claims one peer
+  may make.  Two caps now bound it, `actor-ts.cluster.max-members` (default
+  `1000`) and `actor-ts.cluster.max-tombstones` (default `10000`), settable
+  in code as `withMaxMembers(…)` / `withMaxTombstones(…)` and disabled with
+  `0`.  The tombstone cap is the load-bearing one, which inverts how the
+  issue ranked its tracks: a phantom in an active status is reclaimed by the
+  failure detector within `down-after`, while a gossiped `removed` record is
+  reclaimed by nothing until `tombstone.time-to-live` a day later — so it is
+  the only variant that accumulates.  The practical damage arrives well
+  before an out-of-memory kill: gossip carries the whole member list, so at
+  roughly 110 000 entries a node's own frame outgrows the 16 MiB wire cap
+  and every peer terminates the connection on the length prefix.  Tombstones
+  a node mints itself (`leave`, a downing decision, `down()`) convert an
+  existing entry and bypass the cap, and the failure detector's sample map
+  is bounded on the same path so the leak does not simply move one map to
+  the left.
+
+- **Membership housekeeping is configurable from HOCON** (#841).
+  `weakly-up-after` and `tombstone.{time-to-live, prune-interval,
+  min-retention}` under `actor-ts.cluster` were code-only `ClusterOptions`
+  fields with no config form at all; a deployment can now move them into
+  `application.conf`, where they layer under explicit options as usual.
+  `min-retention = 0s` means *derive the floor from
+  `failure-detector.down-after`* — the same thing an unset field means — so
+  a file that spells the default out behaves like one that omits it, and
+  `ClusterOptionsValidator` accepts `0` where it used to reject it.
+- **A TLS cluster listener no longer binds in plaintext when only half the
+  credential is configured** (#144).  All three TCP adapters decided for
+  themselves whether to bind TLS by testing `cert && key`, so a `tls` option
+  carrying only one of the two made the listener conclude "no TLS" and bind
+  **in the clear** — while the dialing half of the very same options object
+  treats any `tls` value as TLS, so the cluster still formed and the node
+  still looked TLS-configured.  A half-applied secret rotation or one typo'd
+  environment variable was enough.  The rule now sits in
+  `assertListenerTlsIsCoherent` beside the existing #565/#576 guards, and
+  every adapter reaches it through a new `listenerUsesTls` that welds the
+  check to the decision — after this, "plaintext" can only mean "no `tls`
+  was supplied at all"; anything else either binds TLS or throws.  Empty
+  material counts as absent, since that is what an unset variable or a
+  mis-mounted secret looks like on arrival.  The dial path is deliberately
+  untouched: `{ ca }` with no client certificate is ordinary one-way TLS and
+  `ClusterClient`, which never listens, depends on it.  **Operator note:** a
+  node that has been quietly serving plaintext this way now fails at bind
+  instead of starting mis-secured, so a rolling restart can take such a node
+  down — intended, but check for a half-set `cert`/`key` before rolling.
 
 - **BREAKING — the HKDF `info` parameter is now required for client-side
   encryption** (#108).  `EncryptionConfig.info` was optional and
