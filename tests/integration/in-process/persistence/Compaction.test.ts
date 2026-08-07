@@ -24,8 +24,22 @@ import {
   PersistenceExtensionId,
   PersistentActor,
 } from '../../../../src/persistence/index.js';
+import { awaitCondition } from '../../../util/AwaitCondition.js';
 
 const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
+
+/**
+ * `Ledger` replies to every command, so the reply count *is* the
+ * mailbox's progress marker — waiting on it is what the fixed 120 ms
+ * sleeps were approximating (#418).  Timeouts here are a failure
+ * budget: a healthy run returns on the first poll.
+ */
+function awaitReports(reports: ReadonlyArray<Report>, count: number, what: string): Promise<void> {
+  return awaitCondition(() => reports.length === count, {
+    timeoutMs: 4_000,
+    label: `${what} (${count} ledger replies)`,
+  });
+}
 
 type AppendCommand = { kind: 'append'; value: number };
 type CompactCommand = { kind: 'compact'; toSeq: number };
@@ -86,12 +100,12 @@ describe('compaction round-trip', () => {
     const first = system.spawn(() => new Ledger('ledger-1', collect), 'first');
     for (const value of [1, 2, 3]) first.tell({ kind: 'append', value });
     first.tell({ kind: 'snapshot' });
-    await sleep(120);
+    await awaitReports(reports, 4, 'three appends and the snapshot completed');
     expect(await journal.highestSeq('ledger-1')).toBe(3);
 
     // Compact past the snapshot: events 1..3 go, the snapshot at 3 stays.
     first.tell({ kind: 'compact', toSeq: 3 });
-    await sleep(120);
+    await awaitReports(reports, 5, 'deleteHistory(3) completed');
     expect((await journal.read('ledger-1', 1)).length).toBe(0);
     // The journal remembers what it deleted — this is what made the bug
     // permanent rather than merely lossy.
@@ -100,6 +114,8 @@ describe('compaction round-trip', () => {
     expect((await snapshots.loadLatest('ledger-1')).isSome()).toBe(true);
 
     first.stop();
+    // Precondition, not an assertion: nothing downstream reads state that
+    // `postStop` produces, so there is no condition to poll for (#418).
     await sleep(80);
 
     // Restart: state comes from the snapshot, and the sequence must line up
@@ -107,13 +123,13 @@ describe('compaction round-trip', () => {
     reports.length = 0;
     const second = system.spawn(() => new Ledger('ledger-1', collect), 'second');
     second.tell({ kind: 'report' });
-    await sleep(120);
+    await awaitReports(reports, 1, 'the restarted ledger reported its recovered state');
     expect(reports).toEqual([{ total: 6 }]);
 
     // #628: this used to throw JournalConcurrencyError, for good.
     reports.length = 0;
     second.tell({ kind: 'append', value: 10 });
-    await sleep(120);
+    await awaitReports(reports, 1, 'the post-compaction append was answered');
     expect(reports).toEqual([{ total: 16 }]);
     expect(await journal.highestSeq('ledger-1')).toBe(4);
 
@@ -130,7 +146,7 @@ describe('compaction round-trip', () => {
 
     const first = system.spawn(() => new Ledger('ledger-2', collect), 'first');
     for (const value of [5, 5]) first.tell({ kind: 'append', value });
-    await sleep(120);
+    await awaitReports(reports, 2, 'both appends reached the journal');
     expect(await journal.highestSeq('ledger-2')).toBe(2);
 
     await journal.delete('ledger-2', 2);
@@ -141,7 +157,7 @@ describe('compaction round-trip', () => {
     reports.length = 0;
     const second = system.spawn(() => new Ledger('ledger-2', collect), 'second');
     second.tell({ kind: 'append', value: 7 });
-    await sleep(120);
+    await awaitReports(reports, 1, 'the append after a snapshot-less compaction was answered');
 
     expect(reports).toEqual([{ total: 7 }]);
     expect(await journal.highestSeq('ledger-2')).toBe(3);
@@ -157,7 +173,7 @@ describe('compaction round-trip', () => {
 
     const ref = system.spawn(() => new Ledger('ledger-3', (r) => reports.push(r)), 'fresh');
     ref.tell({ kind: 'append', value: 4 });
-    await sleep(120);
+    await awaitReports(reports, 1, 'the first append of a fresh ledger was answered');
 
     expect(reports).toEqual([{ total: 4 }]);
     expect(await journal.highestSeq('ledger-3')).toBe(1);
@@ -177,10 +193,10 @@ describe('deleteHistory', () => {
     ref.tell({ kind: 'snapshot' });          // snapshot @1
     ref.tell({ kind: 'append', value: 1 });
     ref.tell({ kind: 'snapshot' });          // snapshot @2
-    await sleep(150);
+    await awaitReports(reports, 4, 'both appends and both snapshots completed');
 
     ref.tell({ kind: 'compact', toSeq: 2 });
-    await sleep(120);
+    await awaitReports(reports, 5, 'deleteHistory(2) completed');
 
     const latest = await snapshots.loadLatest<State>('ledger-4');
     expect(latest.isSome()).toBe(true);
@@ -198,10 +214,10 @@ describe('deleteHistory', () => {
     const ref = system.spawn(() => new Ledger('ledger-5', (r) => reports.push(r)), 'a');
     ref.tell({ kind: 'append', value: 3 });
     ref.tell({ kind: 'snapshot' });
-    await sleep(120);
+    await awaitReports(reports, 2, 'the append and the snapshot completed');
 
     ref.tell({ kind: 'compact', toSeq: 0 });
-    await sleep(120);
+    await awaitReports(reports, 3, 'deleteHistory(0) completed');
 
     expect((await journal.read('ledger-5', 1)).length).toBe(1);
     expect((await snapshots.loadLatest('ledger-5')).isSome()).toBe(true);

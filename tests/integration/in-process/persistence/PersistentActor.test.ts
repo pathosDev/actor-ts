@@ -10,6 +10,7 @@ import {
   PersistenceExtensionId,
   PersistentActor,
 } from '../../../../src/persistence/index.js';
+import { awaitCondition } from '../../../util/AwaitCondition.js';
 
 const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
 
@@ -83,7 +84,12 @@ describe('PersistentActor — write + recover', () => {
     ref.tell({ kind: 'deposit', amount: 50 });
     ref.tell({ kind: 'withdraw', amount: 30 });
     ref.tell({ kind: 'balance' });
-    await sleep(50);
+    // One reply per command plus the recovery-complete one: five replies is
+    // exactly "the mailbox has drained", which is what the 50 ms stood for.
+    await awaitCondition(() => seen.length === 5, {
+      timeoutMs: 4_000,
+      label: 'all four commands replied after recovery',
+    });
     expect(seen).toEqual([
       { ready: 0 },
       { balance: 100 },
@@ -105,7 +111,10 @@ describe('PersistentActor — write + recover', () => {
 
     const seen: unknown[] = [];
     system.spawn(() => new Account('acct-7', m => seen.push(m)), 'a');
-    await sleep(30);
+    await awaitCondition(() => seen.length > 0, {
+      timeoutMs: 4_000,
+      label: 'recovery from the journal completed',
+    });
     expect(seen).toContainEqual({ ready: 12 });
     void snapshots; // snapshot path not used in this test
     await system.terminate();
@@ -122,7 +131,10 @@ describe('PersistentActor — write + recover', () => {
     ], 0);
     const seen: unknown[] = [];
     system.spawn(() => new Account('acct-snap', m => seen.push(m)), 'a');
-    await sleep(30);
+    await awaitCondition(() => seen.length > 0, {
+      timeoutMs: 4_000,
+      label: 'recovery from the snapshot completed',
+    });
     expect(seen).toContainEqual({ ready: 550 });
     await system.terminate();
   });
@@ -153,9 +165,12 @@ describe('PersistentActor — stash during persist', () => {
     ref.tell('ping');
     ref.tell('fast');
     ref.tell('fast');
-    await sleep(40);
-
-    // The two "fast" commands must wait for the persist to finish.
+    // Four entries is every command having run; the *order* of those four is
+    // the actual claim, so wait for the count and assert the sequence.
+    await awaitCondition(() => order.length === 4, {
+      timeoutMs: 4_000,
+      label: 'the persist and both stashed commands ran',
+    });
     expect(order).toEqual(['persist-start', 'persist-done', 'fast-ran', 'fast-ran']);
     await system.terminate();
   });
@@ -163,7 +178,7 @@ describe('PersistentActor — stash during persist', () => {
 
 describe('PersistentActor — snapshots', () => {
   test('snapshot policy every N events triggers a snapshot at the right seq', async () => {
-    const { system, snapshots } = makeSystem();
+    const { system, journal, snapshots } = makeSystem();
 
     class Counter extends PersistentActor<'inc', 'ticked', { n: number }> {
       readonly persistenceId = 'ctr';
@@ -177,7 +192,16 @@ describe('PersistentActor — snapshots', () => {
 
     const ref = system.spawn(Counter, 'c');
     for (let i = 0; i < 7; i++) ref.tell('inc');
-    await sleep(40);
+    // Wait on the *events*, not on the snapshot.  `persistAll` awaits the
+    // snapshot write before it returns, and commands are stashed while a
+    // persist is in flight — so the 7th event landing proves the snapshot at
+    // 6 is already durable.  Polling the snapshot directly would instead
+    // accept a transient seq-6 write from a policy that snapshots on every
+    // event, i.e. it would pass for the bug this test exists to catch.
+    await awaitCondition(async () => (await journal.read('ctr', 1)).length === 7, {
+      timeoutMs: 4_000,
+      label: 'all seven ticks persisted',
+    });
 
     const latest = (await snapshots.loadLatest<{ n: number }>('ctr')).toNullable();
     // After 7 events, the newest snapshot should be at seq 6 (most recent multiple of 3).
@@ -200,7 +224,10 @@ describe('PersistentActor — persistAll atomic batch', () => {
     }
     const ref = system.spawn(Batch, 'b');
     ref.tell('go');
-    await sleep(30);
+    await awaitCondition(async () => (await journal.read('batch', 1)).length === 3, {
+      timeoutMs: 4_000,
+      label: 'the batch of three events reached the journal',
+    });
     const events = await journal.read<number>('batch', 1);
     expect(events.map(e => e.event)).toEqual([1, 2, 3]);
     expect(events.map(e => e.sequenceNr)).toEqual([1, 2, 3]);
@@ -221,7 +248,10 @@ describe('PersistentActor — tagsFor', () => {
     }
     const ref = system.spawn(Tagged, 'tg');
     ref.tell('go');
-    await sleep(30);
+    await awaitCondition(async () => (await journal.read('tagged', 1)).length === 1, {
+      timeoutMs: 4_000,
+      label: 'the tagged event reached the journal',
+    });
     const [evt] = await journal.read('tagged', 1);
     expect(evt?.tags).toEqual(['orders']);
     await system.terminate();
@@ -265,9 +295,10 @@ describe('PersistentActor — snapshot integrity hardening', () => {
     // recover with the attacker's state.
     const events: unknown[] = [];
     const ref = system.spawn(() => new Account('tampered-1', (m) => events.push(m)), 't1');
-    // Wait briefly — recovery error should bubble up; the actor will
-    // be terminated by the supervisor.  We assert by checking the
-    // actor never reached recovery-complete (which would emit `ready`).
+    // A fixed wait on purpose (#418): the claim is that `ready` *never*
+    // arrives, and there is no state whose appearance would prove a
+    // negative.  The four `tampered-*` tests below wait for the same
+    // reason — polling has nothing to poll for.
     await sleep(150);
     const ready = events.find((e) => (e as { ready?: number }).ready !== undefined);
     expect(ready).toBeUndefined();
@@ -324,7 +355,10 @@ describe('PersistentActor — snapshot integrity hardening', () => {
 
     const events: unknown[] = [];
     const ref = system.spawn(() => new Account('legit-1', (m) => events.push(m)), 'l1');
-    await sleep(150);
+    await awaitCondition(() => events.length > 0, {
+      timeoutMs: 4_000,
+      label: 'recovery from the legitimate snapshot completed',
+    });
     expect(events).toContainEqual({ ready: 150 });
     void ref;
     await system.terminate();
@@ -341,7 +375,10 @@ describe('PersistentActor — snapshot integrity hardening', () => {
 
     const events: unknown[] = [];
     system.spawn(() => new Account('legit-2', (m) => events.push(m)), 'l2');
-    await sleep(150);
+    await awaitCondition(() => events.length > 0, {
+      timeoutMs: 4_000,
+      label: 'recovery replayed the events after the snapshot',
+    });
     expect(events).toContainEqual({ ready: 175 });   // 100 + 50 + 25
     await system.terminate();
   });
