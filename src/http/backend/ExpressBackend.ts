@@ -6,12 +6,14 @@ import { Lazy } from '../../util/Lazy.js';
 import { HttpError, type HttpMethod, type HttpRequest, type HttpResponse } from '../types.js';
 import { ExpressBackendOptionsValidator } from './ExpressBackendOptions.js';
 import type { ExpressBackendOptions, ExpressBackendOptionsType } from './ExpressBackendOptions.js';
+import { DEFAULT_RESPONSE_SECURITY_HEADERS } from './HttpServerBackend.js';
 import type {
   HttpServerBackend,
   RouteRegistration,
   ServerBinding,
   WebsocketRouteRegistration,
 } from './HttpServerBackend.js';
+import { applyHeaders } from '../middleware/headers.js';
 import { websocketPackageAdapter, type WebsocketPackageSocket } from '../websocket/SocketAdapter.js';
 import { matchWebsocketPattern } from '../websocket/matchPattern.js';
 import { writeRawHttpResponse } from '../websocket/rawResponse.js';
@@ -131,6 +133,7 @@ export class ExpressBackend implements HttpServerBackend {
   private wss: WebsocketServerLike | null = null;
   private notFoundHandler: ((request: HttpRequest) => Promise<HttpResponse> | HttpResponse) | null = null;
   private errorHandler: ((err: unknown, request: HttpRequest) => Promise<HttpResponse> | HttpResponse) | null = null;
+  private defaultResponseHeaders: Readonly<Record<string, string>> = DEFAULT_RESPONSE_SECURITY_HEADERS;
 
   constructor(options: ExpressBackendOptions = {}) {
     const resolvedOptions = (options as ExpressBackendOptionsType);
@@ -163,6 +166,10 @@ export class ExpressBackend implements HttpServerBackend {
 
   setErrorHandler(handler: (err: unknown, request: HttpRequest) => Promise<HttpResponse> | HttpResponse): void {
     this.errorHandler = handler;
+  }
+
+  setDefaultResponseHeaders(headers: Readonly<Record<string, string>>): void {
+    this.defaultResponseHeaders = headers;
   }
 
   async listen(host: string, port: number): Promise<ServerBinding> {
@@ -252,7 +259,7 @@ export class ExpressBackend implements HttpServerBackend {
           if (params) { hit = { reg, params }; break; }
         }
         if (!hit) {
-          writeRawHttpResponse(socket, { status: 404, body: 'Not Found' });
+          this.rejectUpgrade(socket, { status: 404, body: 'Not Found' });
           return;
         }
         const adapted = this.adaptUpgradeRequest(req, url, hit.params);
@@ -263,7 +270,7 @@ export class ExpressBackend implements HttpServerBackend {
           reject = { status: 500, body: 'Internal Server Error' };
         }
         if (reject) {
-          writeRawHttpResponse(socket, reject);
+          this.rejectUpgrade(socket, reject);
           return;
         }
         wss.handleUpgrade(req, socket, head, (ws) => {
@@ -278,6 +285,23 @@ export class ExpressBackend implements HttpServerBackend {
         try { socket.destroy(); } catch { /* already gone */ }
       });
     });
+  }
+
+  /**
+   * Reject a WebSocket upgrade with a plain HTTP response on the raw socket.
+   * There is no Express `res` on this path, so the server-wide defaults are
+   * merged into the response object instead — `applyHeaders` leaves anything
+   * the rejecting `authorize` guard set itself untouched.
+   *
+   * Whether the peer ever reads it is a separate matter: measured on Bun
+   * 1.3.1, *nothing* written to a `node:http` `'upgrade'` socket reaches the
+   * client (write, end and destroy all deliver zero bytes), while the same
+   * probe under Node 26 delivers the full response.  So under Bun a rejected
+   * client sees a bare connection close instead of the guard's 401 — tracked
+   * separately; this path stays correct for the runtimes that do deliver it.
+   */
+  private rejectUpgrade(socket: Duplex, response: HttpResponse): void {
+    writeRawHttpResponse(socket, applyHeaders(response, this.defaultResponseHeaders));
   }
 
   private adaptUpgradeRequest(req: IncomingMessage, url: URL, params: Record<string, string>): HttpRequest {
@@ -355,6 +379,7 @@ export class ExpressBackend implements HttpServerBackend {
           const buffer = chunk as Buffer;
           total += buffer.length;
           if (total > cap) {
+            this.applyDefaultResponseHeaders(res);
             res.status(413).setHeader('content-type', 'text/plain; charset=utf-8');
             res.end('Payload Too Large');
             return;
@@ -372,6 +397,7 @@ export class ExpressBackend implements HttpServerBackend {
 
   private makeErrorMiddleware(): ExpressErrorHandler {
     return async (err, req, res, _next) => {
+      this.applyDefaultResponseHeaders(res);
       const adapted = this.adaptRequest(req);
       if (this.errorHandler) {
         try {
@@ -428,8 +454,17 @@ export class ExpressBackend implements HttpServerBackend {
     return out;
   }
 
+  /**
+   * Write the server-wide defaults first — `setHeader` replaces (and matches
+   * case-insensitively), so anything set afterwards overrides them.
+   */
+  private applyDefaultResponseHeaders(res: ExpressResponseLike): void {
+    for (const [key, value] of Object.entries(this.defaultResponseHeaders)) res.setHeader(key, value);
+  }
+
   private writeResponse(res: ExpressResponseLike, response: HttpResponse): void {
     res.status(response.status);
+    this.applyDefaultResponseHeaders(res);
     if (response.headers) for (const [key, value] of Object.entries(response.headers)) res.setHeader(key, value);
     if (response.contentType) res.setHeader('content-type', response.contentType);
 

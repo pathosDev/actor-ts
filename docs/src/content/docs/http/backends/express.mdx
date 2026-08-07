@@ -38,6 +38,24 @@ new ExpressBackend(
 
 Express-style settings.
 
+## Security headers
+
+Every response this backend writes carries
+`X-Content-Type-Options: nosniff` — its error mapping, the `fallback` 404
+and the body-too-large 413 included, none of which a middleware sees.
+A response's own header still wins.
+
+Configure it **per server, not per backend** — one surface instead of three:
+
+```ts
+await http.newServerAt('0.0.0.0', 8080)
+  .useBackend(new ExpressBackend())
+  .withSecurityHeaders(false)      // or a SecurityHeadersOptions bundle
+  .bind(routes);
+```
+
+See [Security best practices](/http/security/).
+
 ## Adding Express middleware
 
 ```ts
