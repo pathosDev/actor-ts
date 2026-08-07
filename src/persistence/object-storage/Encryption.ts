@@ -101,9 +101,46 @@ export async function deriveSubkey(
 }
 
 /**
- * AES-256-GCM encrypt — returns the ciphertext (with appended auth tag,
- * the standard WebCrypto layout).  The IV is supplied by the caller so
- * `BodyCodec` can put it in the manifest header.
+ * What {@link aesGcmEncryptSafe} produces: the ciphertext (auth tag
+ * appended, the standard WebCrypto layout) plus the IV it was sealed
+ * under, which the caller has to record — `BodyCodec` writes it into
+ * the manifest header — because decryption cannot recover it.
+ */
+export type AesGcmSealed = {
+  readonly iv: Uint8Array;
+  readonly ciphertext: Uint8Array;
+};
+
+/**
+ * AES-256-GCM encrypt with a freshly generated IV — the form callers
+ * should reach for (#110).
+ *
+ * GCM does not survive an IV being reused under one key: two messages
+ * sealed with the same (key, IV) leak the XOR of their plaintexts, and
+ * the authentication tag's forgery resistance is lost for that key
+ * altogether, not merely for the two colliding messages.  Nothing in
+ * the type system tells a fresh IV from a recycled one, so the durable
+ * defence is to leave the caller no IV to recycle: it is generated
+ * here, per call, and handed back for the caller to store.
+ */
+export async function aesGcmEncryptSafe(
+  subkey: Uint8Array,
+  plaintext: Uint8Array,
+): Promise<AesGcmSealed> {
+  const iv = randomIv();
+  return { iv, ciphertext: await aesGcmEncrypt(subkey, iv, plaintext) };
+}
+
+/**
+ * AES-256-GCM encrypt with a caller-supplied IV — returns the
+ * ciphertext (with appended auth tag, the standard WebCrypto layout).
+ *
+ * @internal Prefer {@link aesGcmEncryptSafe}.  This form puts IV
+ * uniqueness in the caller's hands, and a caller that holds an IV can
+ * reuse one; it stays exported only because {@link aesGcmEncryptSafe}
+ * is built on it and because the decrypt-side tests need to pin a known
+ * IV.  Nothing re-exports it from an `index.ts`, so it is an in-tree
+ * contract rather than public API.
  */
 export async function aesGcmEncrypt(
   subkey: Uint8Array,
@@ -150,7 +187,14 @@ export async function aesGcmDecrypt(
   return new Uint8Array(plaintext);
 }
 
-/** Generate a fresh random IV. */
+/**
+ * Generate a fresh random IV.
+ *
+ * @internal Paired with {@link aesGcmEncrypt}: leaving the IV generator
+ * public while the IV-taking encrypt is internal would be incoherent,
+ * since a caller who reaches for this has nowhere non-internal to put
+ * the result.
+ */
 export function randomIv(): Uint8Array {
   const iv = new Uint8Array(IV_LENGTH);
   globalThis.crypto.getRandomValues(iv);
