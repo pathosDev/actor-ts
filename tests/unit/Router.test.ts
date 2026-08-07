@@ -14,8 +14,12 @@ import {
 } from '../../src/Router.js';
 import type { ActorRef } from '../../src/ActorRef.js';
 import { OptionsError } from '../../src/util/OptionsValidator.js';
+import { awaitCondition } from '../util/AwaitCondition.js';
 
 const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
+/** Total deliveries recorded by the counting/registering routees. */
+const totalHits = (hits: Map<string, number>): number =>
+  Array.from(hits.values()).reduce((sum, count) => sum + count, 0);
 const newSystem = (name = 'router-unit'): ActorSystem => {
   const sysOptions = ActorSystemOptions.create()
     .withLogger(new NoopLogger())
@@ -80,7 +84,10 @@ describe('Router.roundRobin (integration)', () => {
       'pool',
     );
     for (let i = 0; i < 9; i++) pool.tell('go');
-    await sleep(40);
+    await awaitCondition(() => totalHits(hits) === 9, {
+      timeoutMs: 4_000,
+      label: 'all nine messages reached a routee',
+    });
     expect(hits.size).toBe(3);
     for (const hitCount of hits.values()) expect(hitCount).toBe(3);
     await sys.terminate();
@@ -94,7 +101,10 @@ describe('Router.roundRobin (integration)', () => {
       'pool',
     );
     pool.tell('x'); pool.tell('y');
-    await sleep(30);
+    await awaitCondition(() => totalHits(hits) === 2, {
+      timeoutMs: 4_000,
+      label: 'both messages reached a routee',
+    });
     const names = Array.from(hits.keys()).sort();
     expect(names).toEqual(['routee-1', 'routee-2']);
     await sys.terminate();
@@ -111,7 +121,10 @@ describe('Router.random (integration)', () => {
     );
     const total = 30;
     for (let i = 0; i < total; i++) pool.tell('x');
-    await sleep(80);
+    await awaitCondition(() => totalHits(hits) >= total, {
+      timeoutMs: 4_000,
+      label: 'every message reached a routee',
+    });
     let sum = 0;
     for (const hitCount of hits.values()) sum += hitCount;
     expect(sum).toBe(total);
@@ -128,7 +141,10 @@ describe('Router.broadcast (explicit Broadcast message)', () => {
       'pool',
     );
     pool.tell(new Broadcast('hello'));
-    await sleep(40);
+    await awaitCondition(() => totalHits(hits) === 4, {
+      timeoutMs: 4_000,
+      label: 'the broadcast reached all four routees',
+    });
     expect(hits.size).toBe(4);
     for (const hitCount of hits.values()) expect(hitCount).toBe(1);
     await sys.terminate();
@@ -136,7 +152,11 @@ describe('Router.broadcast (explicit Broadcast message)', () => {
 });
 
 /** Routee that also records its own ref, so a test can stop one by name. */
-function registeringWorker(hits: Map<string, number>, refs: Map<string, ActorRef>) {
+function registeringWorker(
+  hits: Map<string, number>,
+  refs: Map<string, ActorRef>,
+  stopped: Set<string> = new Set(),
+) {
   return class extends Actor<string> {
     override preStart(): void {
       refs.set(this.self.path.name, this.self as unknown as ActorRef);
@@ -145,6 +165,7 @@ function registeringWorker(hits: Map<string, number>, refs: Map<string, ActorRef
       const name = this.self.path.name;
       hits.set(name, (hits.get(name) ?? 0) + 1);
     }
+    override postStop(): void { stopped.add(this.self.path.name); }
   };
 }
 
@@ -160,25 +181,44 @@ describe('Router — terminated routees (#449)', () => {
   test('a stopped routee is pruned instead of keeping its share of the traffic', async () => {
     const hits = new Map<string, number>();
     const refs = new Map<string, ActorRef>();
+    const stopped = new Set<string>();
     const deadLetters: unknown[] = [];
     const sys = newSystem('router-prune');
     sys.spawn(() => new (deadLetterCollector(deadLetters))(), 'dead-letters');
     const pool = sys.spawn(
-      Router.roundRobin(3, () => new (registeringWorker(hits, refs))()),
+      Router.roundRobin(3, () => new (registeringWorker(hits, refs, stopped))()),
       'pool',
     );
 
     for (let i = 0; i < 3; i++) pool.tell('warmup');
-    await sleep(40);
+    await awaitCondition(() => refs.size === 3, {
+      timeoutMs: 4_000,
+      label: 'all three routees registered themselves',
+    });
     expect(refs.size).toBe(3);
 
     refs.get('routee-2')!.stop();
-    await sleep(60);
+    // The router's `routees` array is private, so the prune itself is not
+    // observable; the routee stopping is, and the Terminated that triggers the
+    // prune is sent from the same `finalizeTermination`.  The short settle
+    // covers only that one hop rather than the whole stop.
+    await awaitCondition(() => stopped.has('routee-2'), {
+      timeoutMs: 4_000,
+      label: 'the routee being removed stopped',
+    });
+    await sleep(30);
 
     hits.clear();
     deadLetters.length = 0;
     for (let i = 0; i < 6; i++) pool.tell('go');
-    await sleep(60);
+    // Every message ends up either delivered or dead-lettered, so this waits
+    // for all six to be accounted for whether or not the prune worked — the
+    // assertions below then say which it was, instead of the wait timing out
+    // with no diagnosis.
+    await awaitCondition(() => totalHits(hits) + deadLetters.length >= 6, {
+      timeoutMs: 4_000,
+      label: 'all six messages were accounted for',
+    });
 
     // The router has always watched its routees, but nothing consumed the
     // Terminated — so the dead ref stayed in the pool and kept being chosen.
@@ -194,23 +234,36 @@ describe('Router — terminated routees (#449)', () => {
   test('a broadcast no longer tells the pruned routee', async () => {
     const hits = new Map<string, number>();
     const refs = new Map<string, ActorRef>();
+    const stopped = new Set<string>();
     const deadLetters: unknown[] = [];
     const sys = newSystem('router-broadcast-prune');
     sys.spawn(() => new (deadLetterCollector(deadLetters))(), 'dead-letters');
     const pool = sys.spawn(
-      Router.broadcast(3, () => new (registeringWorker(hits, refs))()),
+      Router.broadcast(3, () => new (registeringWorker(hits, refs, stopped))()),
       'pool',
     );
 
     pool.tell('warmup');
-    await sleep(40);
+    await awaitCondition(() => totalHits(hits) === 3, {
+      timeoutMs: 4_000,
+      label: 'the warm-up broadcast reached all three routees',
+    });
     refs.get('routee-3')!.stop();
-    await sleep(60);
+    // Same as above: the prune is private state, the stop is not.
+    await awaitCondition(() => stopped.has('routee-3'), {
+      timeoutMs: 4_000,
+      label: 'the routee being removed stopped',
+    });
+    await sleep(30);
 
     hits.clear();
     deadLetters.length = 0;
     pool.tell(new Broadcast('go') as never);
-    await sleep(40);
+    await awaitCondition(() => totalHits(hits) + deadLetters.length >= 2, {
+      timeoutMs: 4_000,
+      label: 'the broadcast reached the surviving routees',
+    });
+    await sleep(20);
 
     // A broadcast reaches every routee in the pool, so a stale member is one
     // guaranteed dead letter per broadcast rather than a probabilistic share.
@@ -255,7 +308,10 @@ describe('Router — pool size (#455)', () => {
       'pool',
     );
     pool.tell('x'); pool.tell('y');
-    await sleep(40);
+    await awaitCondition(() => hits.get('routee-1') === 2, {
+      timeoutMs: 4_000,
+      label: 'the single routee handled both messages',
+    });
     expect(hits.get('routee-1')).toBe(2);
     await sys.terminate();
   });

@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import { ActorRef } from '../../src/ActorRef.js';
 import { ActorPath } from '../../src/ActorPath.js';
 import { Scheduler } from '../../src/Scheduler.js';
+import { awaitCondition } from '../util/AwaitCondition.js';
 
 const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
 
@@ -18,7 +19,12 @@ describe('Scheduler.scheduleOnceFunction', () => {
     let fired = false;
     scheduler.scheduleOnceFunction(20, () => { fired = true; });
     expect(fired).toBe(false);
-    await sleep(60);
+    // The 20 ms lower bound is asserted by the `false` above; this half only
+    // has to see the callback land.
+    await awaitCondition(() => fired, {
+      timeoutMs: 4_000,
+      label: 'the one-shot callback fired',
+    });
     expect(fired).toBe(true);
   });
 
@@ -67,7 +73,13 @@ describe('Scheduler.scheduleOnce (message to actor)', () => {
     const scheduler = new Scheduler();
     const ref = new RecordingRef<string>();
     scheduler.scheduleOnce(10, ref, 'hi');
-    await sleep(40);
+    await awaitCondition(() => ref.received.length === 1, {
+      timeoutMs: 4_000,
+      label: 'the scheduled message was delivered',
+    });
+    // "exactly once" is the other half of the claim, and polling returns on
+    // the first delivery — so the settle is what would catch a second.
+    await sleep(30);
     expect(ref.received).toEqual(['hi']);
   });
 
@@ -86,7 +98,10 @@ describe('Scheduler.scheduleAtFixedRateFunction', () => {
     const scheduler = new Scheduler();
     let count = 0;
     const cancellable = scheduler.scheduleAtFixedRateFunction(0, 20, () => { count++; });
-    await sleep(110);
+    await awaitCondition(() => count >= 3, {
+      timeoutMs: 4_000,
+      label: 'the fixed-rate callback fired at least three times',
+    });
     cancellable.cancel();
     const snapshot = count;
     await sleep(50);
@@ -99,9 +114,12 @@ describe('Scheduler.scheduleAtFixedRateFunction', () => {
     const scheduler = new Scheduler();
     let count = 0;
     const cancellable = scheduler.scheduleAtFixedRateFunction(40, 20, () => { count++; });
-    await sleep(10); // inside initial delay
+    await sleep(10); // inside initial delay — the elapsed time *is* the claim
     expect(count).toBe(0);
-    await sleep(80);
+    await awaitCondition(() => count >= 1, {
+      timeoutMs: 4_000,
+      label: 'the schedule fired once the initial delay elapsed',
+    });
     cancellable.cancel();
     expect(count).toBeGreaterThanOrEqual(1);
   });
@@ -110,7 +128,12 @@ describe('Scheduler.scheduleAtFixedRateFunction', () => {
     const scheduler = new Scheduler();
     let count = 0;
     scheduler.scheduleAtFixedRateFunction(0, 20, () => { count++; });
-    await sleep(50);
+    // Without this the shutdown could land before the first firing and the
+    // assertion would compare 0 against 0.
+    await awaitCondition(() => count >= 1, {
+      timeoutMs: 4_000,
+      label: 'the schedule fired before the shutdown',
+    });
     scheduler.shutdown();
     const snapshot = count;
     await sleep(80);
@@ -127,7 +150,10 @@ describe('Scheduler.scheduleAtFixedRateFunction', () => {
         count++;
         if (count === 2) throw new Error('transient');
       });
-      await sleep(100);
+      await awaitCondition(() => count >= 3, {
+        timeoutMs: 4_000,
+        label: 'the schedule kept firing past the throwing tick',
+      });
       cancellable.cancel();
       expect(count).toBeGreaterThanOrEqual(3);
     } finally {
@@ -141,7 +167,10 @@ describe('Scheduler.scheduleAtFixedRate (message delivery)', () => {
     const scheduler = new Scheduler();
     const ref = new RecordingRef<string>();
     const cancellable = scheduler.scheduleAtFixedRate(0, 20, ref, 'tick');
-    await sleep(90);
+    await awaitCondition(() => ref.received.length >= 3, {
+      timeoutMs: 4_000,
+      label: 'the repeating schedule delivered at least three messages',
+    });
     cancellable.cancel();
     expect(ref.received.length).toBeGreaterThanOrEqual(3);
     for (const message of ref.received) expect(message).toBe('tick');
@@ -193,10 +222,17 @@ describe('Scheduler.shutdown', () => {
 describe('Cancellable settlement', () => {
   test('a fired one-shot reports itself finished', async () => {
     const scheduler = new Scheduler();
-    const handle = scheduler.scheduleOnceFunction(5, () => {});
+    // The callback records the firing so the wait has an anchor that is not
+    // `isCancelled` itself — that flag is the assertion, and polling it would
+    // make the test pass by definition.
+    let ran = false;
+    const handle = scheduler.scheduleOnceFunction(5, () => { ran = true; });
     expect(handle.isCancelled).toBe(false);
 
-    await new Promise((resolve) => setTimeout(resolve, 40));
+    await awaitCondition(() => ran, {
+      timeoutMs: 4_000,
+      label: 'the one-shot ran',
+    });
     expect(handle.isCancelled).toBe(true);
   });
 
@@ -204,8 +240,12 @@ describe('Cancellable settlement', () => {
     // "Did I get there before it ran?" was unanswerable: cancel() always
     // claimed success.
     const scheduler = new Scheduler();
-    const handle = scheduler.scheduleOnceFunction(5, () => {});
-    await new Promise((resolve) => setTimeout(resolve, 40));
+    let ran = false;
+    const handle = scheduler.scheduleOnceFunction(5, () => { ran = true; });
+    await awaitCondition(() => ran, {
+      timeoutMs: 4_000,
+      label: 'the one-shot ran',
+    });
 
     expect(handle.cancel()).toBe(false);
   });
@@ -225,7 +265,10 @@ describe('Cancellable settlement', () => {
     let ticks = 0;
     const handle = scheduler.scheduleAtFixedRateFunction(5, 5, () => { ticks++; });
 
-    await new Promise((resolve) => setTimeout(resolve, 60));
+    await awaitCondition(() => ticks > 1, {
+      timeoutMs: 4_000,
+      label: 'the repeating schedule ticked more than once',
+    });
     expect(ticks).toBeGreaterThan(1);
     expect(handle.isCancelled).toBe(false);
 
