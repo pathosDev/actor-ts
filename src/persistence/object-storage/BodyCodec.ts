@@ -1,6 +1,6 @@
 import { match } from 'ts-pattern';
 import { compressorFor, type CompressionAlgo } from './Compression.js';
-import { aesGcmDecrypt, aesGcmEncrypt, IV_LENGTH, MAX_KEY_VERSION, randomIv } from './Encryption.js';
+import { aesGcmDecrypt, aesGcmEncryptSafe, IV_LENGTH, MAX_KEY_VERSION } from './Encryption.js';
 import { constantTimeEqual, HMAC_TAG_LENGTH, hmacSha256 } from './Integrity.js';
 
 /**
@@ -184,8 +184,10 @@ export async function encodeBody(jsonBytes: Uint8Array, options: EncodeOptions =
         );
       }
     }
-    const iv = randomIv();
-    const ciphertext = await aesGcmEncrypt(subKey, iv, compressed);
+    // The IV is generated inside `aesGcmEncryptSafe`, not here, so this
+    // path has no IV of its own to accidentally hoist out of the call
+    // and reuse across bodies (#110).
+    const { iv, ciphertext } = await aesGcmEncryptSafe(subKey, compressed);
     const versioned = keyVersion !== undefined;
     let flags = encodeCompression(algo) | FLAG_ENCRYPTED;
     if (versioned) flags |= FLAG_KEY_VERSIONED;

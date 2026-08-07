@@ -7,6 +7,7 @@ import {
   decodeBody,
   encodeBody,
 } from '../../../../../src/persistence/object-storage/BodyCodec.js';
+import { IV_LENGTH } from '../../../../../src/persistence/object-storage/Encryption.js';
 
 const utf8 = (s: string): Uint8Array => new TextEncoder().encode(s);
 const fromUtf8 = (b: Uint8Array): string => new TextDecoder().decode(b);
@@ -102,6 +103,33 @@ describe('BodyCodec — encryption round-trip', () => {
   test('decode rejects encrypted bodies that are too short to contain an IV', async () => {
     const fake = new Uint8Array([...ATS1_MAGIC, 0b100]); // header + flag, no IV
     await expect(decodeBody(fake, { encryption: { subKey } })).rejects.toThrow(/IV/);
+  });
+
+  /*
+   * #110 — the manifest IV has to be fresh on every encode.  Saving one
+   * unchanged body repeatedly under one subkey is the ordinary case here
+   * (a periodic snapshot of an idle entity, a re-encryption sweep passing
+   * over a body that did not change), and a recycled IV in exactly that
+   * case is textbook AES-GCM nonce reuse.
+   */
+  test('every encode stamps a fresh IV into the manifest, even for byte-identical input', async () => {
+    const plain = utf8('{"balance":42}');
+    const rounds = 64;
+    const unversionedIvs = new Set<string>();
+    const versionedIvs = new Set<string>();
+    for (let i = 0; i < rounds; i++) {
+      const legacy = await encodeBody(plain, { encryption: { subKey } });
+      unversionedIvs.add(legacy.subarray(5, 5 + IV_LENGTH).join(','));
+
+      const rotated = await encodeBody(plain, { encryption: { subKey, keyVersion: 3 } });
+      // Pin the offset this reads from: the version byte sits between
+      // flags and IV, so a window one byte short would still look
+      // distinct while measuring partly the wrong bytes.
+      expect(rotated[5]).toBe(3);
+      versionedIvs.add(rotated.subarray(6, 6 + IV_LENGTH).join(','));
+    }
+    expect(unversionedIvs.size).toBe(rounds);
+    expect(versionedIvs.size).toBe(rounds);
   });
 });
 
