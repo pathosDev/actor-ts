@@ -6,12 +6,46 @@ import { LogLevel, NoopLogger } from '../../../../../src/Logger.js';
 import { Actor } from '../../../../../src/Actor.js';
 import { UdpSocketActor, type UdpDatagram } from '../../../../../src/io/broker/UdpSocketActor.js';
 import { UdpSocketOptions } from '../../../../../src/io/broker/UdpSocketOptions.js';
+import { BrokerConnected } from '../../../../../src/io/broker/BrokerEvents.js';
+import { awaitCondition } from '../../../../util/AwaitCondition.js';
 
 const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
+
+/** See `TcpSocketActor.test.ts` — the count assertions need an upper bound too. */
+const SETTLE_MS = 20;
 
 class CollectActor extends Actor<UdpDatagram> {
   received: UdpDatagram[] = [];
   override onReceive(m: UdpDatagram): void { this.received.push(m); }
+}
+
+/**
+ * UDP drops what it cannot deliver, so a `send` issued before the socket
+ * has bound is lost silently and the assertion below reads an empty
+ * collector.  `BrokerConnected` fires once the bind completes — wait for
+ * that rather than for 30 ms of wall clock (#418).
+ */
+function boundWatcher(sys: ActorSystem): { bound: boolean } {
+  const state = { bound: false };
+  sys.eventStream.subscribe(
+    sys.spawnAnonymous(() => new (class extends Actor<unknown> {
+      override onReceive(_: unknown): void { state.bound = true; }
+    })()),
+    BrokerConnected,
+  );
+  return state;
+}
+
+function awaitBound(state: { bound: boolean }, what: string): Promise<void> {
+  return awaitCondition(() => state.bound, {
+    timeoutMs: 4_000, label: `${what}: the UDP socket finished binding`,
+  });
+}
+
+function awaitDatagrams(collector: CollectActor, count: number, what: string): Promise<void> {
+  return awaitCondition(() => collector.received.length >= count, {
+    timeoutMs: 4_000, label: `${what}: ${count} datagram(s) echoed back`,
+  });
 }
 
 interface UdpEcho {
@@ -52,14 +86,17 @@ describe('UdpSocketActor', () => {
 
     const udpOptions = UdpSocketOptions.create()
       .withTarget(target);
+    const bound = boundWatcher(sys);
     const ref = sys.spawnAnonymous(() => new UdpSocketActor(udpOptions));
-    await sleep(30);
+    await awaitBound(bound, 'single datagram');
 
     ref.tell({
       kind: 'send',
       datagram: { payload: 'ping', host: '127.0.0.1', port: echo.port },
     });
-    await sleep(40);
+    await awaitDatagrams(collector, 1, 'single datagram');
+    // "exactly one" is half the claim — give a duplicate a chance to appear.
+    await sleep(SETTLE_MS);
 
     expect(collector.received.length).toBe(1);
     const got = collector.received[0]!;
@@ -80,12 +117,14 @@ describe('UdpSocketActor', () => {
     const target = sys.spawnAnonymous(() => collector);
     const udpOptions = UdpSocketOptions.create()
       .withTarget(target);
+    const bound = boundWatcher(sys);
     const ref = sys.spawnAnonymous(() => new UdpSocketActor(udpOptions));
-    await sleep(30);
+    await awaitBound(bound, 'two destinations');
 
     ref.tell({ kind: 'send', datagram: { payload: 'a', host: '127.0.0.1', port: echo.port } });
     ref.tell({ kind: 'send', datagram: { payload: 'b', host: '127.0.0.1', port: echo2.port } });
-    await sleep(40);
+    await awaitDatagrams(collector, 2, 'two destinations');
+    await sleep(SETTLE_MS);
 
     expect(collector.received.length).toBe(2);
     const ports = collector.received.map((d) => d.remotePort).sort();
@@ -103,11 +142,12 @@ describe('UdpSocketActor', () => {
     const target = sys.spawnAnonymous(() => collector);
     const udpOptions = UdpSocketOptions.create()
       .withTarget(target);
+    const bound = boundWatcher(sys);
     const ref = sys.spawnAnonymous(() => new UdpSocketActor(udpOptions));
-    await sleep(30);
+    await awaitBound(bound, 'verbatim bytes');
     const bytes = new Uint8Array([0xde, 0xad, 0xbe, 0xef]);
     ref.tell({ kind: 'send', datagram: { payload: bytes, host: '127.0.0.1', port: echo.port } });
-    await sleep(40);
+    await awaitDatagrams(collector, 1, 'verbatim bytes');
     expect(Array.from(collector.received[0]!.payload)).toEqual([0xde, 0xad, 0xbe, 0xef]);
     await sys.terminate();
   });

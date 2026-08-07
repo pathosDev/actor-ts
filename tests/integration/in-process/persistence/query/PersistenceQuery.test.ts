@@ -21,7 +21,14 @@ import {
   offsetGreaterOrEqual,
   offsetStart,
 } from '../../../../../src/persistence/query/PersistenceQuery.js';
+import { awaitCondition } from '../../../../util/AwaitCondition.js';
 
+/**
+ * The `sleep(2)` calls between appends are deliberate and stay: the
+ * offset comparator orders by millisecond timestamp, so the gap is the
+ * fixture, not a wait for something to finish.  Load only ever makes
+ * them longer, which is harmless (#418).
+ */
 const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
 
 describe('Offset comparator', () => {
@@ -119,8 +126,13 @@ describe('InMemoryQuery — eventsByPersistenceId (live)', () => {
       }
     })();
 
-    // Append two more after the consumer is reading.
-    await sleep(80);
+    // Append two more after the consumer is reading.  The wait has to be for
+    // the consumer having drained the *past* events: appending before that
+    // makes all four arrive as one batch, and the test — whose whole claim is
+    // "past first, then new" — passes without ever exercising the live path.
+    await awaitCondition(() => got.length === 2, {
+      timeoutMs: 4_000, label: 'the consumer drained the two pre-existing events',
+    });
     await journal.append('a', [{ n: 3 }, { n: 4 }], 2);
     await consumer;
     expect(got).toEqual([1, 2, 3, 4]);

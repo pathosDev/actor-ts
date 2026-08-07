@@ -26,8 +26,9 @@ import {
 } from '../../../../../src/persistence/projection/OffsetStore.js';
 import { InMemoryQuery } from '../../../../../src/persistence/query/InMemoryQuery.js';
 import { tagFilterCursorKey } from '../../../../../src/persistence/query/PersistenceQuery.js';
-import { offsetStart } from '../../../../../src/persistence/query/PersistenceQuery.js';
+import { offsetGreater, offsetStart } from '../../../../../src/persistence/query/PersistenceQuery.js';
 import { InMemoryDurableStateStore } from '../../../../../src/persistence/durable-state-stores/InMemoryDurableStateStore.js';
+import { awaitCondition } from '../../../../util/AwaitCondition.js';
 
 const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
 
@@ -93,7 +94,12 @@ describe('ProjectionActor — by persistence id', () => {
     const ref1 = ProjectionActor.byPersistenceId<{ n: number }>(sys1, projectionOptions);
     await waitFor(() => seen1.length === 3);
     ref1.stop();
-    await sleep(80);   // give postStop time to flush
+    // The resumption below is only meaningful once the cursor is durable —
+    // that, not a wall-clock margin, is what the 80 ms stood for (#418).
+    await awaitCondition(
+      async () => (await offsetStore.loadSequence('counter-proj', 'counter')) === 3,
+      { timeoutMs: 4_000, label: 'the by-pid cursor was persisted at sequence 3' },
+    );
 
     // Append fresh events while no projection is running.
     await journal.append('counter', [{ n: 4 }, { n: 5 }], 3);
@@ -200,7 +206,10 @@ describe('ProjectionActor — by tag', () => {
     const ref1 = ProjectionActor.byTag<{ s: string }>(sys1, projectionOptions);
     await waitFor(() => seen1.length === 2);
     ref1.stop();
-    await sleep(80);
+    await awaitCondition(
+      async () => offsetGreater(await offsetStore.loadOffset('tag-resume', 't'), offsetStart),
+      { timeoutMs: 4_000, label: 'the by-tag cursor advanced past the start sentinel' },
+    );
     await sys1.terminate();
 
     // While the projection is down, append more.
