@@ -1,6 +1,6 @@
 ---
 title: Death watch
-description: How an actor observes when another actor stops — `context.watch(ref)` triggers a `Terminated(ref)` system message in the watcher when `ref` terminates. Symmetric to supervision but for sibling and cross-tree observation.
+description: How an actor observes when another actor stops — `context.watch(ref)` triggers a `Terminated(ref)` system message in the watcher when `ref` terminates, and `context.watchWith(ref, message)` swaps that signal for a message of the watcher's own protocol. Symmetric to supervision but for sibling and cross-tree observation.
 ---
 
 Supervision catches *failure* — what to do when a child actor's
@@ -93,14 +93,136 @@ always `false`: the framework does not yet raise node-level
 `Terminated` notifications.  See [Cluster](/cluster/overview/) for
 the membership story.
 
+## Custom termination messages — `watchWith`
+
+`watch` always delivers the same thing.  That is enough when one
+death matters, but a watcher that observes several *kinds* of actor
+— a pool of workers, a database connection, a cluster peer — gets one
+message type for all of them and has to work out from
+`Terminated.actor` which relationship just ended.  The signal also has
+to live in the watcher's message union, where it says nothing about
+what the actor is for.
+
+`watchWith` moves that decision to registration time.  You say what a
+death *means* when you start watching, and the watcher receives a
+message of its own protocol:
+
+```ts
+import { match } from 'ts-pattern';
+import { Actor, type ActorRef } from 'actor-ts';
+
+type StartCommand = { kind: 'start' };
+type WorkerLostMessage = { kind: 'workerLost'; name: string };
+type DatabaseLostMessage = { kind: 'databaseLost' };
+type PoolMessage = StartCommand | WorkerLostMessage | DatabaseLostMessage;
+
+class Pool extends Actor<PoolMessage> {
+  constructor(private readonly database: ActorRef) {
+    super();
+  }
+
+  override preStart(): void {
+    this.context.watchWith(this.database, { kind: 'databaseLost' });
+  }
+
+  override onReceive(message: PoolMessage): void {
+    match(message)
+      .with({ kind: 'start' }, () => this.onStart())
+      .with({ kind: 'workerLost' }, (m) => this.onWorkerLost(m))
+      .with({ kind: 'databaseLost' }, () => this.onDatabaseLost())
+      .exhaustive();
+  }
+
+  private onStart(): void {
+    for (let i = 0; i < 4; i++) this.hire(`worker-${i}`);
+  }
+
+  private onWorkerLost(message: WorkerLostMessage): void {
+    this.log.warn(`${message.name} died — respawning`);
+    this.hire(message.name);
+  }
+
+  private onDatabaseLost(): void {
+    this.log.warn('database gone — winding down');
+    this.context.stopSelf();
+  }
+
+  private hire(name: string): void {
+    const worker = this.context.spawn(Worker, name);
+    this.context.watchWith(worker, { kind: 'workerLost', name });
+  }
+}
+```
+
+`Terminated` does not appear in `PoolMessage` at all.  The union stays
+a description of what this actor does, `match(...).exhaustive()` still
+covers it, and the two deaths that mean completely different things
+are handled in two different places.
+
+### The rules
+
+| Call | Effect |
+| --- | --- |
+| `watchWith(ref, message)` | On `ref`'s termination, `message` is delivered to this actor instead of `Terminated(ref)`. |
+| `watchWith(ref, other)` again | Replaces the message — last call wins. |
+| `watch(ref)` after a `watchWith(ref, …)` | Drops the custom message; the death delivers `Terminated(ref)` again. |
+| `unwatch(ref)` | Removes the registration, whichever of the two made it. |
+
+Everything else is unchanged: the message arrives through the mailbox
+with the same ordering guarantees, watching an already-stopped ref
+delivers immediately, and a watcher that stops has its registrations
+cleaned up for it.
+
+### One registration, one death
+
+The registration is consumed by the death it describes.  A name that
+is re-spawned is a *different* actor as far as death watch is
+concerned — the bookkeeping is keyed by incarnation, not by path — so
+a replacement child needs its own `watchWith`, which is why `hire()`
+above registers every time it spawns.  That is deliberate: it is what
+stops a pending notification for the previous incarnation from being
+delivered against its successor.
+
+### The message never travels
+
+`watchWith` records `message` in the **watcher**.  The watched actor
+is not involved — it still does not know it is being observed, and the
+message is neither sent to it nor routed through it.  So there is no
+serializer to register and nothing new on the wire: the substitution
+happens in the watcher's own cell, at the moment the death is
+dispatched to its handler.
+
+### With typed Behaviors
+
+`TypedActorContext` has the same method:
+
+```ts
+const pool = Behaviors.setup<PoolMessage>((context) => {
+  const worker = context.spawn(workerBehavior, 'worker-0');
+  context.watchWith(worker, { kind: 'workerLost', name: 'worker-0' });
+  return Behaviors.receiveMessage<PoolMessage>((message) => {
+    // ... 'workerLost' arrives here, like any other message
+    return Behaviors.same;
+  });
+});
+```
+
+`watchWith` deliberately bypasses `onSignal`.  A plain `watch`
+delivers a `{ kind: 'terminated' }` **Signal**, which
+`Behaviors.receiveWithSignal` routes to its signal handler; a
+`watchWith` message is a value of `T` and goes to the ordinary receive
+handler even when a signal handler is registered.  Registering one
+does not quietly reroute the message you asked for.
+
 ## `unwatch`
 
 ```ts
 context.unwatch(ref);
 ```
 
-Stop receiving `Terminated` for this ref.  Idempotent — calling
-`unwatch` on a ref you weren't watching is a no-op.
+Stop receiving termination notifications for this ref — whether the
+registration came from `watch` or from `watchWith`.  Idempotent —
+calling `unwatch` on a ref you weren't watching is a no-op.
 
 When an actor stops, its watch registrations are cleaned up
 automatically; you don't have to `unwatch` everything before

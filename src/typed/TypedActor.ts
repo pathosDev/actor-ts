@@ -84,6 +84,12 @@ export class TypedActor<T> extends Actor<T> {
   override onReceive(message: T): void {
     // A watched actor's death arrives as a user message, but it is a lifecycle
     // signal — route it to `onSignal` before the behavior sees it.
+    //
+    // A `watchWith` death never reaches this branch: the cell has already
+    // swapped the `Terminated` for the caller's own message, which is the
+    // whole point — the caller asked for a protocol message, so sending it to
+    // the signal handler instead would defeat the registration.  Keep the test
+    // for `Terminated` as the gate; do not widen it to "was this a death".
     if (message instanceof Terminated && this.signalHandler) {
       this.onTerminatedSignal(message);
       return;
@@ -333,6 +339,7 @@ class TypedActorContextImplementation<T> implements TypedActorContext<T> {
 
   stop(ref: ActorRef): void { this.oo.stop(ref); }
   watch(ref: ActorRef): void { this.oo.watch(ref); }
+  watchWith(ref: ActorRef, message: T): void { this.oo.watchWith(ref, message); }
   unwatch(ref: ActorRef): void { this.oo.unwatch(ref); }
   get timers(): TimerScheduler<T> { return this.oo.timers; }
 }

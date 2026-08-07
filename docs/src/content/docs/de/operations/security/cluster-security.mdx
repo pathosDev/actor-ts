@@ -52,6 +52,12 @@ await Cluster.join(system, clusterOptions);
 Die TLS-Einstellungen:
 
 - **`cert`** + **`key`** — Zertifikat + Private Key dieses Nodes.
+  Beide tragen **das Material selbst**, keinen Pfad darauf: nichts
+  im Transport liest von der Platte, und auch keine der drei
+  Runtimes akzeptiert in diesen Feldern einen Dateinamen. Lies es
+  selbst ein, so wie es das Beispiel oben tut. Auf einem Listener
+  sind beide Hälften nur gemeinsam gültig — siehe die Ablehnungen
+  weiter unten.
 - **`ca`** — vertrauenswürdiges CA-Bundle. Nutze, um die
   Zertifikate der Peers zu verifizieren.
 - **`rejectUnauthorized: true`** — Handshakes scheitern lassen,
@@ -116,15 +122,37 @@ hinzuzufügen, den man vergessen kann.
   Service-Mesh, ein privates L2) die Authentifizierung übernimmt.
 </Aside>
 
-Zwei Konfigurationen werden beim Bind abgelehnt, statt in einem
+Drei Konfigurationen werden beim Bind abgelehnt, statt in einem
 schwächeren Zustand zu starten, als sie sich lesen:
 
+- **Ein unvollständiges Server-Credential** — `cert` ohne `key`,
+  `key` ohne `cert`, oder ein `tls`-Objekt, das keines von beidem
+  trägt (eine `ca` allein sagt, welchen Peers beim *Wählen* zu
+  trauen ist; dem Listener gibt sie nichts zum Vorzeigen). Leer
+  zählt als nicht gesetzt — genau so sieht eine nicht gesetzte
+  Umgebungsvariable oder ein falsch gemountetes Secret aus, wenn es
+  hier ankommt.
 - `requestClientCert: true` ohne `ca` — es gäbe nichts, wogegen
   Peer-Zertifikate validiert werden könnten.
 - Ein mTLS-**Listener auf Deno** — `Deno.listenTls` nimmt nur
   Zertifikat und Key entgegen und kann ein Client-Zertifikat weder
   anfordern noch prüfen; der Listener würde also niemanden
   authentifizieren.
+
+<Aside type="caution" title="Das unvollständige Credential lauschte bisher im Klartext">
+  Dieser Fall war kein Fehler, sondern eine **stille Degradierung**.
+  Der Listener entschied anhand von „habe ich Zertifikat *und*
+  Key?", ob er TLS spricht; mit nur einem von beidem schloss er auf
+  „kein TLS" und lauschte im **Klartext** — während dieselbe
+  Konfiguration weiterhin über TLS *hinaus*wählte, der Cluster sich
+  also bildete und der Knoten TLS-konfiguriert aussah. Eine halb
+  angewendete Secret-Rotation genügte dafür.
+
+  Jetzt wirft er beim Bind. Das heißt: ein Knoten, der bislang
+  unbemerkt Klartext ausgeliefert hat, **startet nach dieser
+  Änderung nicht mehr**, statt fehlgesichert hochzukommen — so
+  gewollt, aber vor einem Rolling Restart gut zu wissen.
+</Aside>
 
 Einem mTLS-Cluster **beitreten** kann ein Deno-Knoten sehr wohl:
 er präsentiert beim Wählen sein eigenes `cert`/`key`, und der
@@ -297,11 +325,23 @@ der Empfänger legte dafür früher 100 000 Map-Einträge an — kein
 lokales `Subscribe`, kein fehlerhaftes Feld, keine Logzeile. Der
 Receptionist hatte auf seinem eigenen Gossip-Pfad dieselbe Form.
 
-Beide Registries sind jetzt begrenzt, und die Grenzen gelten für
+**Die Mitgliedschaft selbst hatte dieselbe Form** — und sie ist
+die eine Registry, in die niemand erst hineinoptieren muss: jeder
+geclusterte Knoten hält eine Mitgliederkarte, und Gossip ist das,
+was sie füllt. Die Regeln weiter unten entscheiden, ob ein
+Anspruch *glaubhaft* ist; keine von ihnen begrenzte, wie viele
+glaubhafte Ansprüche ein Peer erheben darf. Ein Sender, der seine
+eigene Adresse ankündigt, wird bewusst durchgewunken — das zu
+verweigern hieße, dass kein Knoten je joinen könnte — also legte
+eine frisch benannte Adresse pro Frame einen Eintrag pro Namen an.
+
+Diese Registries sind jetzt begrenzt, und die Grenzen gelten für
 den Gossip-Pfad genauso wie für lokale Aufrufe:
 
 | Registry | Begrenzt durch | Default |
 | --- | --- | --- |
+| Lebende Cluster-Mitglieder | `cluster.max-members` | `1000` |
+| `removed`-Tombstones | `cluster.max-tombstones` | `10000` |
 | PubSub-Subscriber pro Topic | `cluster.pub-sub.max-subscribers-per-topic` | `10000` |
 | PubSub-Topics | `cluster.pub-sub.max-topics` | `10000` |
 | PubSub-Remote-Ansprüche pro Topic | `cluster.pub-sub.max-remote-nodes-per-topic` | `1000` |
@@ -313,14 +353,57 @@ auf der Wire abgewiesen zu werden — der Frame ist wohlgeformt,
 und die Verbindung deswegen zu kappen ließe einen lauten Peer
 eine gesunde Leitung kosten. Ein *lokales* `Subscribe` über einer
 Grenze wird stattdessen mit `SubscribeRejected` beantwortet, denn
-der Aufrufer kann etwas dagegen tun. Beide Registries watchen
-außerdem ihre Subscriber, sodass die andere Hälfte des alten
-Wachstums — Refs, die stoppten, ohne je zu unsubscriben —
+der Aufrufer kann etwas dagegen tun. Beide PubSub-Registries
+watchen außerdem ihre Subscriber, sodass die andere Hälfte des
+alten Wachstums — Refs, die stoppten, ohne je zu unsubscriben —
 zurückgewonnen statt begrenzt wird.
 
 Senke die Defaults für ein Deployment, dessen legitime Zahlen
 weit darunter liegen: eine Obergrenze begrenzt nur den Schaden,
 und eine weit über der echten Nutzung begrenzt sehr wenig.
+
+### Warum die Mitgliedschaft zwei Grenzen braucht — und warum die zweite die eigentliche ist
+
+Mitglieder und Tombstones zu trennen ist keine Ordnungsliebe. Ein
+Phantom-Mitglied in `up` / `joining` / `unreachable` ist ein
+Mitglied, das der Failure Detector beobachtet: es wird
+`failure-detector.down-after` nach dem letzten Nachschub gedownt
+und gelöscht — im Default fünf Sekunden. Ein als **`removed`**
+gegossipter Eintrag wird von nichts beobachtet; nur
+`cluster.tombstone.time-to-live` holt ihn zurück, einen Tag
+später. Die Flut, die bleibt, ist also die Tombstone-Flut, und
+`max-tombstones` ist die Grenze, die die Arbeit macht. Einen
+solchen Eintrag abzulehnen kostet auch nichts: ein Tombstone für
+eine Adresse, zu der dieser Knoten keinen Eintrag hat, unterdrückt
+nichts, was existiert — während ein abgelehnter *lebender*
+Eintrag ein legitimes Mitglied eine Gossip-Runde kostet und mit
+einem `WARN` samt Namen der Grenze kommt.
+
+Tombstones, die der Knoten selbst erzeugt — das `leave` eines
+Peers, eine Downing-Entscheidung, ein `down()` des Operators —
+wandeln einen Eintrag um, den er ohnehin schon hält, und
+unterliegen der Grenze nie. Die eigene Buchführung zu begrenzen
+würde die Unterdrückung wegnehmen, die verhindert, dass altes
+Gossip eine geräumte Adresse wiederbelebt — ein Liveness-Bug im
+Kostüm eines Security-Fixes.
+
+Die Decke, die man kennen sollte, ist nicht der Heap. Gossip
+trägt die vollständige Mitgliederliste, also überschreitet der
+eigene Frame eines Knotens bei rund 110 000 Einträgen
+`remote.max-frame-bytes`, und jeder Peer beendet die Verbindung
+schon am Längen-Präfix — der Knoten wirft sich selbst aus dem
+Cluster, während er noch läuft, lange bevor irgendwo der
+Speicher ausgeht.
+
+:::note[Die Reihenfolge, in der das gelandet ist, zählt]
+Heute ist die `down → delete`-Kaskade des Failure Detectors das,
+was Phantom-Mitglieder in *lebenden* Status auf Sekunden
+begrenzt. Eine Downing-Strategie, die dieses Löschen hinter einen
+konfigurierten `DowningProvider` hängt, nähme diese implizite
+Schranke weg und ließe die 24-Stunden-Rechnung für *jeden* Status
+gelten, nicht nur für Tombstones — diese Grenzen sind also eine
+Voraussetzung für jene Änderung und keine unabhängige Härtung.
+:::
 
 ## Wer was sagen darf
 

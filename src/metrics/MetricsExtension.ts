@@ -5,6 +5,7 @@ import {
   NoopMetricsRegistry,
   type MetricsRegistry,
 } from './Metrics.js';
+import type { MetricsRegistryOptions } from './MetricsRegistryOptions.js';
 
 /**
  * `MetricsExtension` — the `system.extension(MetricsExtensionId)`
@@ -15,6 +16,9 @@ import {
  * Opt in:
  *
  *   const metrics = system.extension(MetricsExtensionId).enable();
+ *   // ... or raise / disable the per-family cardinality cap:
+ *   const metricsOptions = MetricsRegistryOptions.create().withMaxSeriesPerFamily(50_000);
+ *   system.extension(MetricsExtensionId).enable(metricsOptions);
  *   // ... or pre-register a custom registry:
  *   system.extension(MetricsExtensionId).useRegistry(myCustomRegistry);
  *
@@ -34,11 +38,12 @@ export class MetricsExtension implements Extension {
    * Replace the noop registry with a real one.  Returns the live
    * registry so callers can wire counters / gauges immediately.
    * Idempotent — repeated calls return the same instance once a real
-   * registry is in place.
+   * registry is in place, so `options` only takes effect on the call
+   * that actually installs the registry.
    */
-  enable(): MetricsRegistry {
+  enable(options?: MetricsRegistryOptions): MetricsRegistry {
     if (this.registry instanceof NoopMetricsRegistry) {
-      this.registry = new DefaultMetricsRegistry();
+      this.registry = new DefaultMetricsRegistry(options);
     }
     return this.registry;
   }

@@ -32,6 +32,19 @@ Mutually-authenticated TLS between cluster nodes.  See
 [cluster security](/operations/security/cluster-security/)
 for the full discussion.
 
+Every field here takes **the certificate material**, never a path
+to it — which is why the example reads the files itself.  Nothing
+in the transport touches the filesystem, and none of Bun, Node or
+Deno accepts a filename in these fields.
+
+`cert` and `key` are required **together** on a listener.  A `tls`
+object with only one of them used to make the listener conclude
+"no TLS" and bind in **plaintext**, while still dialling out over
+TLS — so the cluster formed and nothing looked wrong.  That
+combination is now refused at bind time, which also means a node
+mis-configured this way stops silently downgrading and starts
+failing loudly.
+
 **Don't skip this** — even on internal networks, defense in
 depth applies.
 

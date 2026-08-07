@@ -44,6 +44,12 @@ export type ClusterOptionsType = {
    * gives a few failure-detector rounds of breathing room so peers
    * that haven't fully converged still see the tombstone before it
    * vanishes.  Mostly relevant for tests that set a very low TTL.
+   *
+   * `0` means the same thing as leaving it unset — derive the floor from
+   * the failure detector — rather than "no floor at all".  The distinction
+   * matters because the HOCON leaf ships with `0s` as its documented
+   * default, and a config file that spells a default out must behave like
+   * one that omits it (#841).
    */
   readonly tombstoneMinRetentionMs?: number;
   /**
@@ -94,6 +100,42 @@ export type ClusterOptionsType = {
    * on a network that crosses a semi-trusted boundary.
    */
   readonly maxFrameBytes?: number;
+  /**
+   * Cap on **live** (non-tombstone) entries in the local member map — the
+   * addresses gossip is allowed to introduce.  `0` disables the cap.
+   *
+   * {@link maxFrameBytes} bounds one frame; this bounds what a sequence of
+   * well-formed frames can accumulate.  Membership is filled from
+   * unauthenticated gossip, so a peer with standing can name addresses this
+   * node has never seen and get an entry allocated for each, with no join
+   * involved (#138).  Phantom entries in an active status are reclaimed by
+   * the failure detector after `downAfterMs`, which makes this the narrower
+   * of the two caps: it bounds the burst, not the residue.
+   *
+   * Default: 1000 — far above any cluster this framework is built for, and
+   * far below the ~110 000 entries at which this node's *own* gossip frame
+   * outgrows {@link maxFrameBytes} and its peers start dropping the
+   * connection.  Lower it where the legitimate node count is known: a cap
+   * set far above real usage bounds very little.
+   */
+  readonly maxMembers?: number;
+  /**
+   * Cap on `removed` tombstones in the local member map.  `0` disables it.
+   *
+   * The load-bearing half of the pair.  A tombstone carries no liveness, so
+   * the failure detector never reclaims it — only {@link tombstoneTtlMs}
+   * does, a day later.  A peer that gossips `removed` records for addresses
+   * this node has never seen therefore parks entries here for 24 h, which is
+   * the only variant of #138 that actually accumulates.
+   *
+   * Refusing one costs nothing: a tombstone for an address with no local
+   * record suppresses nothing that exists.  Locally-minted tombstones
+   * (`leave`, a downing decision, `down()`) convert an entry that is already
+   * present and are never subject to the cap.
+   *
+   * Default: 10 000.
+   */
+  readonly maxTombstones?: number;
 };
 
 /**
@@ -191,6 +233,16 @@ export class ClusterOptionsBuilder extends OptionsBuilder<ClusterOptionsType> {
   withMaxFrameBytes(maxFrameBytes: number): this {
     return this.set('maxFrameBytes', maxFrameBytes);
   }
+
+  /** Cap on live member entries gossip may introduce.  0 disables.  Default: 1000. */
+  withMaxMembers(maxMembers: number): this {
+    return this.set('maxMembers', maxMembers);
+  }
+
+  /** Cap on `removed` tombstones gossip may introduce.  0 disables.  Default: 10000. */
+  withMaxTombstones(maxTombstones: number): this {
+    return this.set('maxTombstones', maxTombstones);
+  }
 }
 
 /** Validates resolved {@link ClusterOptionsType} settings. */
@@ -209,13 +261,21 @@ export class ClusterOptionsValidator extends OptionsValidator<ClusterOptionsType
     this.positiveNumber('seedRetryIntervalMs');
     this.positiveNumber('tombstoneTtlMs');
     this.positiveNumber('tombstonePruneIntervalMs');
-    this.positiveNumber('tombstoneMinRetentionMs');
+    // Non-negative, not positive: 0 is the documented HOCON default and reads
+    // as "derive the floor from the failure detector", the same thing an unset
+    // field means — not as "no floor" (#841).
+    this.nonNegativeNumber('tombstoneMinRetentionMs');
     // Positive, with no "0 disables" escape hatch: the cap has no off switch
     // any more than the 24 h one it narrows, and 0 would read as "disabled"
     // while actually meaning "no skew at all tolerated".
     this.positiveInt('firstSightMaxVersionSkewMs');
     this.nonNegativeNumber('weaklyUpAfterMs'); // 0 disables auto weakly-up
     this.positiveInt('maxFrameBytes');
+    // `0 = off` rather than `Infinity`: a count needs an integer opt-out, and
+    // `positiveInt` would reject `Infinity` anyway.  Same shape as the
+    // sharding entity cap.
+    this.nonNegativeInt('maxMembers');
+    this.nonNegativeInt('maxTombstones');
   }
 }
 
@@ -231,6 +291,8 @@ export class ClusterOptionsValidator extends OptionsValidator<ClusterOptionsType
 export type ClusterConfigDefaults = Partial<Pick<
   ClusterOptionsType,
   'host' | 'port' | 'gossipIntervalMs' | 'seedRetryIntervalMs' | 'failureDetector' | 'maxFrameBytes'
+  | 'weaklyUpAfterMs' | 'tombstoneTtlMs' | 'tombstonePruneIntervalMs' | 'tombstoneMinRetentionMs'
+  | 'maxMembers' | 'maxTombstones'
 >>;
 
 /**
@@ -243,6 +305,12 @@ export type ClusterConfigDefaults = Partial<Pick<
  * entirely when none of them is set — an empty object here would still
  * count as "set" and shadow nothing, but it would make the merge in
  * `Cluster.join` harder to reason about than it needs to be.
+ *
+ * The HOCON tree and this shape are deliberately not isomorphic: the
+ * housekeeping durations sit under a `tombstone { … }` group because that is
+ * how an operator reads them (#841), while the fields stay flat because that
+ * is how `Cluster` consumes them.  The same translation already applies to
+ * `remote.tcp.host` → `host`.
  */
 export function readClusterOptionsFromConfig(config: Config): ClusterConfigDefaults {
   const keys = ConfigKeys.cluster;
@@ -255,6 +323,17 @@ export function readClusterOptionsFromConfig(config: Config): ClusterConfigDefau
   if (config.hasPath(keys.gossipInterval)) out.gossipIntervalMs = config.getDuration(keys.gossipInterval);
   if (config.hasPath(keys.seedRetryInterval)) {
     out.seedRetryIntervalMs = config.getDuration(keys.seedRetryInterval);
+  }
+  if (config.hasPath(keys.weaklyUpAfter)) out.weaklyUpAfterMs = config.getDuration(keys.weaklyUpAfter);
+  if (config.hasPath(keys.maxMembers)) out.maxMembers = config.getInt(keys.maxMembers);
+  if (config.hasPath(keys.maxTombstones)) out.maxTombstones = config.getInt(keys.maxTombstones);
+  const tombstone = keys.tombstone;
+  if (config.hasPath(tombstone.timeToLive)) out.tombstoneTtlMs = config.getDuration(tombstone.timeToLive);
+  if (config.hasPath(tombstone.pruneInterval)) {
+    out.tombstonePruneIntervalMs = config.getDuration(tombstone.pruneInterval);
+  }
+  if (config.hasPath(tombstone.minRetention)) {
+    out.tombstoneMinRetentionMs = config.getDuration(tombstone.minRetention);
   }
   const failureDetector = readFailureDetectorFromConfig(config);
   if (Object.keys(failureDetector).length > 0) out.failureDetector = failureDetector;

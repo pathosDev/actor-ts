@@ -72,6 +72,17 @@ weiterkommt.
 langsamen Gossip-Runden befördern; mehr und die Erholung des
 stockenden Joins ist schleppend.
 
+Die Verzögerung ist auch aus der Config setzbar — für ein
+Deployment, das sie lieber pro Umgebung als pro Build einstellt:
+
+```hocon
+actor-ts.cluster.weakly-up-after = 3s   # 0 deaktiviert
+```
+
+`withWeaklyUpAfterMs(…)` gewinnt weiterhin, wo beides gesetzt ist
+— die übliche Reihenfolge **explizite Optionen > HOCON >
+eingebaute Defaults**.
+
 ## Was Weakly-up-Mitglieder können und nicht können
 
 | Fähigkeit | `weakly-up` |

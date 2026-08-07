@@ -39,6 +39,50 @@ const keyring: MasterKeyRing = {
 };
 ```
 
+### Jede Version kommt genau einmal vor
+
+Versionen laufen von `0` bis `255` — ein Byte des
+Payload-Manifests trägt eine, und mehr hat ein Leser nicht, um
+den Key zu bestimmen.  Zwei Einträge dürfen deshalb nie dieselbe
+Version beanspruchen.  Ein Ring, der das verletzt, wird
+abgelehnt: bei der Plugin-Registrierung, am Store und beim Start
+eines Sweeps.
+
+```ts
+// abgelehnt: active und retired[0] beanspruchen beide Version 1
+const ambiguous: MasterKeyRing = {
+  active:  { version: 1, key: newKey },
+  retired: [{ version: 1, key: oldKey }],
+};
+```
+
+Ohne die Prüfung löst der Lookup die Kollision über die
+Reihenfolge auf — `active` wird zuerst geprüft.  Payloads, die
+unter dem *älteren* Key geschrieben wurden, werden dann mit dem
+*neueren* entschlüsselt und scheitern an einem Auth-Tag-Fehler,
+der die Ursache nicht nennt.  Einen Key zu promoten, ohne ihn
+umzunummerieren, reicht dafür aus — bei der zweiten Rotation
+genauso wie bei der zweihundertsten.
+
+Die 32-Byte-Key-Länge wird im selben Durchgang geprüft, aus
+demselben Grund: ein zu kurzer `retired`-Key fällt sonst erst
+auf, wenn irgendwann ein Payload dieser Version gelesen wird.
+
+### 255 ist kein Lebenszeit-Budget
+
+Die Zahl begrenzt, wie viele Versionen **gleichzeitig in einem
+Bestand leben** dürfen, nicht wie oft du rotieren darfst.  Ein
+abgeschlossener Sweep bringt jedes Payload auf die active-Version;
+die `retired`-Einträge fallen danach weg und jede andere Nummer
+ist wieder frei.
+
+Ab Version 240 loggt die Registrierung eine Warnung, die genau
+das sagt — Sweep über jeden Prefix laufen lassen, die
+retired-Einträge entfernen, bei `0` neu nummerieren.  Ein
+breiteres Versionsfeld gibt es bewusst nicht: das
+Ein-Byte-Manifest bleibt, weil der Sweep die einzige Situation,
+in der ein breiteres helfen würde, ohnehin auflöst.
+
 ## Der Sweep
 
 ```ts

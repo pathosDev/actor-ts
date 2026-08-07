@@ -107,6 +107,27 @@ export const ConfigKeys = {
   cluster: {
     gossipInterval: 'actor-ts.cluster.gossip-interval',
     seedRetryInterval: 'actor-ts.cluster.seed-retry-interval',
+    /** Auto-promotion `joining` → `weakly-up`; `0` keeps it opt-in (#841). */
+    weaklyUpAfter: 'actor-ts.cluster.weakly-up-after',
+    /**
+     * The two membership caps (#138).  They bound what unauthenticated gossip
+     * can make the local member map hold — `maxFrameBytes` bounds one frame,
+     * these bound what a sequence of well-formed frames accumulates.  `0`
+     * disables either.
+     */
+    maxMembers: 'actor-ts.cluster.max-members',
+    maxTombstones: 'actor-ts.cluster.max-tombstones',
+    /**
+     * Tombstone housekeeping — `actor-ts.cluster.tombstone.*` (#841).  Grouped
+     * in HOCON because an operator tunes the three together; the matching
+     * `ClusterOptions` fields stay flat (`tombstoneTtlMs`, …), the same
+     * translation `remote.tcp.host` → `host` already makes.
+     */
+    tombstone: {
+      timeToLive: 'actor-ts.cluster.tombstone.time-to-live',
+      pruneInterval: 'actor-ts.cluster.tombstone.prune-interval',
+      minRetention: 'actor-ts.cluster.tombstone.min-retention',
+    },
     failureDetector: {
       heartbeatInterval: 'actor-ts.cluster.failure-detector.heartbeat-interval',
       unreachableAfter: 'actor-ts.cluster.failure-detector.unreachable-after',

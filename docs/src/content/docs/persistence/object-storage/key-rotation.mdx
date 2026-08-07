@@ -38,6 +38,47 @@ const keyring: MasterKeyRing = {
 };
 ```
 
+### Every version is used once
+
+Versions run `0…255` — one byte of the payload manifest holds
+one, and that byte is all a reader has to identify the key with.
+So no two entries may claim the same version.  A ring that breaks
+that is refused, at plugin registration, at the store, and at the
+start of a sweep:
+
+```ts
+// rejected: active and retired[0] both claim version 1
+const ambiguous: MasterKeyRing = {
+  active:  { version: 1, key: newKey },
+  retired: [{ version: 1, key: oldKey }],
+};
+```
+
+Without the check, the lookup resolves the collision by
+precedence — `active` is matched first — so payloads written
+under the *older* key are decrypted with the *newer* one and fail
+with an authentication-tag error that names nothing.  Promoting a
+key without renumbering it is enough to produce that, on the
+second rotation as easily as the two-hundredth.
+
+The 32-byte key length is checked in the same pass, for the same
+reason: a short `retired` key is otherwise invisible until some
+payload at that version is finally read.
+
+### 255 is not a lifetime budget
+
+It bounds how many versions may be **live in one corpus at once**,
+not how often you may rotate.  A completed sweep puts every
+payload on the active version; the `retired` entries then go away
+and every other number is free to use again.
+
+From version 240 on, registration logs a warning that says so —
+run the sweep over every prefix, drop the retired entries, and
+restart numbering from `0`.  There is no wider version field to
+switch to, by design: the one-byte manifest stays, because the
+sweep already resolves the only situation a wider one would help
+with.
+
 ## The sweep
 
 ```ts

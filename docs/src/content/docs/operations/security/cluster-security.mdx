@@ -52,6 +52,11 @@ await Cluster.join(system, clusterOptions);
 The TLS settings:
 
 - **`cert`** + **`key`** — this node's certificate + private key.
+  Both carry **the material itself**, not a path to it: nothing in
+  the transport reads from disk, and none of the three runtimes
+  accepts a filename in these fields either.  Load it yourself, as
+  the example above does.  Both halves are required together on a
+  listener — see the refusals below.
 - **`ca`** — trusted CA bundle.  Use to verify peers'
   certificates.
 - **`rejectUnauthorized: true`** — fail handshakes where the
@@ -109,14 +114,35 @@ deployments rather than adding a switch that can be left off.
   (a service mesh, a private L2) is doing the authenticating.
 </Aside>
 
-Two configurations are refused at bind time rather than started
+Three configurations are refused at bind time rather than started
 in a weaker state than they read as:
 
+- **An incomplete server credential** — `cert` without `key`, `key`
+  without `cert`, or a `tls` object carrying neither (a `ca` alone
+  says which peers to trust when *dialling*; it gives the listener
+  nothing to present).  Empty counts as absent, which is what an
+  unset environment variable or a mis-mounted secret looks like by
+  the time it arrives.
 - `requestClientCert: true` with no `ca` — there would be nothing
   to validate peer certificates against.
 - An mTLS **listener on Deno** — `Deno.listenTls` takes only a
   cert and a key, with no way to request or verify a client
   certificate, so the listener would authenticate nobody.
+
+<Aside type="caution" title="The incomplete credential used to bind plaintext">
+  This one was a **silent downgrade** rather than an error.  The
+  listener decided whether to speak TLS by checking that it had
+  both a cert and a key; with only one it concluded "no TLS" and
+  bound in **plaintext** — while the same options object still
+  dialled *out* over TLS, so the cluster formed and the node
+  looked TLS-configured.  A half-applied secret rotation was
+  enough.
+
+  It now throws at bind.  Which means a node that has been quietly
+  serving plaintext will **fail to start** after this change
+  rather than come up mis-secured — deliberately, but worth
+  knowing before a rolling restart.
+</Aside>
 
 A Deno node can still **join** an mTLS cluster: it presents its
 own `cert` / `key` when dialling, so the listener (on Node.js or
@@ -283,11 +309,22 @@ entries for it — no local `Subscribe`, no malformed field, no
 log line. The receptionist had the same shape on its own gossip
 path.
 
-Both registries are capped now, and the caps apply to the gossip
+**Membership itself had the same shape**, and it is the one
+registry nobody has to opt into: every clustered node keeps a map
+of members, and gossip is what fills it. The rules below decide
+whether a claim is *believable*; none of them bounded how many
+believable claims one peer may make. A sender announcing its own
+address is waved through by design — refusing that would mean no
+node could ever join — so naming a fresh address per frame
+allocated an entry per name.
+
+These registries are capped now, and the caps apply to the gossip
 path as much as to local calls:
 
 | Registry | Capped by | Default |
 | --- | --- | --- |
+| Live cluster members | `cluster.max-members` | `1000` |
+| `removed` tombstones | `cluster.max-tombstones` | `10000` |
 | Pub-sub subscribers per topic | `cluster.pub-sub.max-subscribers-per-topic` | `10000` |
 | Pub-sub topics | `cluster.pub-sub.max-topics` | `10000` |
 | Pub-sub remote claimants per topic | `cluster.pub-sub.max-remote-nodes-per-topic` | `1000` |
@@ -299,13 +336,52 @@ the wire — the frame is well-formed, and dropping the connection
 over it would let one noisy peer cost a healthy link. A *local*
 `Subscribe` over a cap is answered with `SubscribeRejected`
 instead, because the caller is in a position to do something
-about it. Both registries also watch their subscribers, so the
-other half of the old growth — refs that stopped without ever
-unsubscribing — is reclaimed rather than capped.
+about it. Both pub-sub registries also watch their subscribers,
+so the other half of the old growth — refs that stopped without
+ever unsubscribing — is reclaimed rather than capped.
 
 Lower the defaults for a deployment where the legitimate numbers
 are far below them: a cap is only a bound on the damage, and one
 set far above real usage bounds very little.
+
+### Why membership needs two caps, and why the second is the real one
+
+Splitting members from tombstones is not tidiness. A phantom
+member in `up` / `joining` / `unreachable` is a member the
+failure detector is watching, so it is downed and dropped
+`failure-detector.down-after` after the attacker stops feeding it
+— five seconds, at the default. A record gossiped as **`removed`**
+is watched by nothing: only `cluster.tombstone.time-to-live`
+reclaims it, a day later. So the flood that persists is the
+tombstone flood, and `max-tombstones` is the cap doing the work.
+Refusing one costs nothing either, because a tombstone for an
+address this node holds no record of suppresses nothing that
+exists — while a refused *live* record costs a legitimate member
+one gossip round, and comes with a `WARN` naming the cap.
+
+Tombstones this node mints itself — a peer's `leave`, a downing
+decision, an operator `down()` — convert a record it already
+holds and are never subject to the cap. Capping its own
+bookkeeping would drop the suppression that stops stale gossip
+resurrecting an evicted address, which is a liveness bug wearing
+a security fix's clothes.
+
+The ceiling worth knowing is not the heap. Gossip carries the
+whole member list, so at roughly 110 000 entries a node's own
+frame outgrows `remote.max-frame-bytes` and every peer terminates
+the connection on the length prefix — the node evicts itself from
+the cluster while still running, long before anything runs out of
+memory.
+
+:::note[The order these landed in matters]
+Today the failure detector's `down → delete` cascade is what
+bounds phantom *live* members to seconds. A downing strategy
+that gates that deletion behind a configured `DowningProvider`
+would remove the implicit bound and make the 24-hour arithmetic
+apply to every status, not just to tombstones — so these caps are
+a precondition for that change rather than an independent
+hardening step.
+:::
 
 ## Who may say what
 

@@ -1,5 +1,5 @@
 import { Lazy } from '../../util/Lazy.js';
-import { listenerTlsOptions, toPeerCertificate } from './TcpBackend.js';
+import { listenerTlsOptions, listenerUsesTls, toPeerCertificate } from './TcpBackend.js';
 import type {
   PeerCertificate,
   TcpBackend,
@@ -22,7 +22,6 @@ export class NodeTcpBackend implements TcpBackend {
   async listen(options: {
     host: string; port: number; tls?: TlsTransportOptionsType; handlers: TcpSocketHandlers;
   }): Promise<TcpListener> {
-    const useTls = !!(options.tls && options.tls.cert && options.tls.key);
     const attach = (raw: NodeSocketLike): void => {
       const sock = wrapSocket(raw);
       raw.on('data', (chunk: Buffer) => options.handlers.onData(sock, toUint8(chunk)));
@@ -30,8 +29,10 @@ export class NodeTcpBackend implements TcpBackend {
       raw.on('error', (err: Error) => options.handlers.onError(sock, err));
       options.handlers.onOpen(sock);
     };
-    if (useTls) {
-      const serverTlsOptions = listenerTlsOptions(options.tls!, 'Node.js');
+    // `listenerUsesTls` both decides and validates — a half-configured `tls`
+    // throws here instead of falling through to a plaintext bind (#144).
+    if (listenerUsesTls(options.tls, 'Node.js')) {
+      const serverTlsOptions = listenerTlsOptions(options.tls, 'Node.js');
       const tls = await loadTls();
       const server = tls.createServer(serverTlsOptions, attach);
       return startServer(server, options.host, options.port);

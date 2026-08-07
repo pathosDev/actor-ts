@@ -580,6 +580,43 @@ describe('Behaviors.receiveWithSignal — terminated signal (#448)', () => {
   });
 });
 
+describe('TypedActorContext.watchWith — custom termination message (#159)', () => {
+  test('the custom message reaches the receive handler, not onSignal', async () => {
+    // The signal detour is what makes this worth a test of its own: with an
+    // onSignal handler registered, *every* Terminated is rerouted away from the
+    // receive handler.  A watchWith message must not take that path — the
+    // caller asked for a message of the protocol, so the protocol's handler is
+    // where it belongs.  It works because the cell substitutes the message
+    // before TypedActor sees it, and that is exactly what could regress.
+    const sys = newSys('typed-watch-with');
+    const seen: string[] = [];
+    let child: ActorRef<string> | null = null;
+
+    const parent: Behavior<string> = Behaviors.setup<string>((context) => {
+      child = context.spawn(Behaviors.receiveMessage<string>(() => Behaviors.same), 'kid');
+      context.watchWith(child, 'kid-died');
+      return Behaviors.receiveWithSignal<string>(
+        (_context, message) => { seen.push(`message:${message}`); return Behaviors.same; },
+        (_context, signal) => { seen.push(`signal:${signal.kind}`); return Behaviors.same; },
+      );
+    });
+
+    sys.spawn(typedActor(parent), 'parent');
+    await awaitCondition(() => child !== null, {
+      timeoutMs: 4_000,
+      label: 'the parent behavior spawned its child',
+    });
+    child!.stop();
+    await awaitCondition(() => seen.length === 1, {
+      timeoutMs: 4_000,
+      label: 'the parent was told about the death',
+    });
+
+    expect(seen).toEqual(['message:kid-died']);
+    await sys.terminate();
+  });
+});
+
 describe('TypedActorContext.setDisplayName (#891)', () => {
   /** JsonLogger keeps `displayName` a named field instead of rendered text. */
   function recordingSystem(name: string): { system: ActorSystem; names: () => Array<string | undefined> } {

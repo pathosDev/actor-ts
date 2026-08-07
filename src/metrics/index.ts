@@ -2,7 +2,16 @@ export {
   DefaultMetricsRegistry,
   NoopMetricsRegistry,
   DEFAULT_HISTOGRAM_BUCKETS,
+  METRICS_OVERFLOW_LABEL_VALUE,
+  bucketize,
 } from './Metrics.js';
+export {
+  DEFAULT_MAX_SERIES_PER_FAMILY,
+  MetricsRegistryOptions,
+  MetricsRegistryOptionsBuilder,
+  MetricsRegistryOptionsValidator,
+} from './MetricsRegistryOptions.js';
+export type { MetricsRegistryOptionsType } from './MetricsRegistryOptions.js';
 export type {
   MetricsRegistry,
   Counter,
@@ -25,7 +34,11 @@ export {
   prometheusHandler,
 } from './PrometheusExporter.js';
 export { promClientRegistry } from './PromClientAdapter.js';
-export { PromClientAdapterOptions, PromClientAdapterOptionsBuilder } from './PromClientAdapterOptions.js';
+export {
+  PromClientAdapterOptions,
+  PromClientAdapterOptionsBuilder,
+  PromClientAdapterOptionsValidator,
+} from './PromClientAdapterOptions.js';
 export type { PromClientAdapterOptionsType } from './PromClientAdapterOptions.js';
 export type {
   PromClientLike,

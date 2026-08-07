@@ -1,4 +1,4 @@
-import { listenerTlsOptions, toPeerCertificate } from './TcpBackend.js';
+import { listenerTlsOptions, listenerUsesTls, toPeerCertificate } from './TcpBackend.js';
 import type {
   PeerCertificate,
   TcpBackend,
@@ -35,7 +35,9 @@ export class BunTcpBackend implements TcpBackend {
         error: (s: BunSocketNative, err: Error) => options.handlers.onError(wrapSocket(s), err),
       },
     };
-    if (options.tls?.cert && options.tls.key) {
+    // `listenerUsesTls` both decides and validates — a half-configured `tls`
+    // throws here instead of falling through to a plaintext bind (#144).
+    if (listenerUsesTls(options.tls, 'Bun')) {
       listenOptions.tls = listenerTlsOptions(options.tls, 'Bun');
     }
     const server = bun.listen(listenOptions);
