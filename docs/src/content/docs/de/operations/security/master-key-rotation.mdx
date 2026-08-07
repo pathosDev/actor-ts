@@ -107,12 +107,19 @@ import { reEncryptObjectStorage } from 'actor-ts';
 // `backend` ist das ObjectStorageBackend, durch das dein Store
 // schreibt (ein FilesystemObjectStorageBackend, S3ObjectStorageBackend, …).
 const result = await reEncryptObjectStorage(backend, {
-  keyPrefix: 'snapshots/',   // welche Objekte gesweept werden
-  keyring:   keyRing,        // active = v2, retired = [v1]
+  keyPrefix: 'snapshots/',            // welche Objekte gesweept werden
+  keyring:   keyRing,                 // active = v2, retired = [v1]
+  info:      'acme/prod/snapshot/v1', // der HKDF-Kontext des Stores
 });
 
 console.log(`re-encrypted ${result.rewrote} of ${result.scanned} objects`);
 ```
+
+`info` ist Pflicht und muss exakt der Wert sein, den der
+schreibende Store verwendet.  Es ist der HKDF-Kontext, also die
+Hälfte dessen, woraus der Subkey abgeleitet wird — ein falscher
+Wert lässt jede Entschlüsselung fehlschlagen, statt still
+falsche Ausgaben zu erzeugen.
 
 Der Sweep listet jedes Objekt unter `keyPrefix` und entschlüsselt +
 verschlüsselt jedes, das noch nicht auf der `active`-Version des Rings
@@ -132,6 +139,9 @@ Nützliche Optionen:
 - **`verifyKeyringCompleteness`** — standardmäßig an: sampelt einige
   Blobs und verweigert den Start, wenn eines eine Version referenziert,
   die im Ring fehlt.
+- **`newInfo`** — rotiert den HKDF-Kontext statt (oder zusätzlich zu)
+  dem Schlüssel; siehe
+  [HKDF-Kontext rotieren](/de/persistence/object-storage/key-rotation/#hkdf-kontext-rotieren).
 
 Der Sweep ist **idempotent + wiederaufnehmbar** — ein Objekt, das
 bereits auf der `active`-Version ist, wird ohne Write übersprungen,

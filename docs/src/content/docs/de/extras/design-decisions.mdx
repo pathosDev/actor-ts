@@ -136,11 +136,18 @@ HOCON hat Features, die YAML / TOML nicht haben:
 - **Environment-Variable-Substitution** — `${?ENV_VAR}`.
 - **Duration-Typen** — `1s`, `5m`, `2h` nativ verstanden.
 - **Size-Typen** — `64K`, `1M`, `2G`.
-- **File Includes** — `include "shared.conf"`.
 - **Object Merging** — additive Overlays.
 
 YAML ist breiter bekannt, aber es fehlen einige davon.  TOML ist
 ähnlich ausgestattet, aber weniger ökosystem-unterstützt.
+
+Der Parser ist unser eigener und deckt eine Teilmenge des Formats ab.
+Die eine Auslassung, die hier genannt gehört, sind **`include`-Direktiven**:
+sie einzulösen hieße, demjenigen, der eine Config-Quelle schreibt, die Wahl
+zu überlassen, welche weiteren Dateien und URLs der Prozess liest.  [Setze
+die Quellen stattdessen im Code
+zusammen](/de/reference/configuration/#includes-werden-nicht-unterstützt) —
+der Parser lehnt ein `include` ab und sagt auch, warum.
 
 ## Warum explizite replyTo Refs
 

@@ -53,15 +53,37 @@ const utf8 = new TextEncoder();
 /**
  * Derive a 32-byte subkey from `masterKey` using HKDF-SHA256.  The
  * `persistenceId` is used as the HKDF `salt` so two different pids
- * produce two different subkeys; `info` is a domain-separator string.
+ * produce two different subkeys; `info` is the context-binding string
+ * (RFC 5869 §3.2) that separates one deployment / payload kind from
+ * the next.
+ *
+ * `info` is a **required** parameter (#108).  It used to default to a
+ * framework constant, which made the subkey for a given pid identical
+ * across every deployment sharing a master key — staging and
+ * production derived byte-for-byte the same key and nothing said so.
+ * See {@link EncryptionConfig} for how to choose a value.
+ *
+ * The emptiness guard below is not redundant with the type: `info`
+ * reaches here from `EncryptionConfig`, which crosses the package
+ * boundary into JavaScript callers and `as any` call sites.  Without
+ * it, a missing `info` would be encoded as the literal string
+ * `"undefined"` — the exact deployment-wide constant this change
+ * exists to remove, only harder to spot.
  */
 export async function deriveSubkey(
   masterKey: Uint8Array,
   persistenceId: string,
-  info: string = 'actor-ts/snapshot/v1',
+  info: string,
 ): Promise<Uint8Array> {
   if (masterKey.byteLength !== KEY_LENGTH) {
     throw new Error(`encryption masterKey must be ${KEY_LENGTH} bytes, got ${masterKey.byteLength}`);
+  }
+  if (typeof info !== 'string' || info.length === 0) {
+    throw new Error(
+      'encryption info must be a non-empty string — it is the HKDF context '
+      + 'that separates one deployment from another.  Set it explicitly on the '
+      + "encryption config, e.g. info: 'acme/prod/snapshot/v1'.",
+    );
   }
   const subtle = getSubtle();
   const baseKey = await subtle.importKey('raw', masterKey as unknown as BufferSource, 'HKDF', false, ['deriveBits']);

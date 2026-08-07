@@ -74,6 +74,17 @@ type EnvelopeHandler = (env: EnvelopeMessage, from: NodeAddress) => void;
 const MAX_VERSION_SKEW_MS = 24 * 60 * 60 * 1_000;
 
 /**
+ * Default cap on how far ahead of the local wall-clock a gossip version may
+ * be **when it introduces an address this node has never seen** — 5 minutes,
+ * against the 24 hours of {@link MAX_VERSION_SKEW_MS} that governs every
+ * other merge.  Overridable per node via
+ * `ClusterOptions.withFirstSightMaxVersionSkewMs`; the full reasoning for
+ * both the rule and the number is on
+ * {@link Cluster.admitsFirstSightVersion}.
+ */
+const DEFAULT_FIRST_SIGHT_MAX_VERSION_SKEW_MS = 5 * 60 * 1_000;
+
+/**
  * The Cluster is a single-instance "extension" attached to an ActorSystem.
  * It owns a Transport, a gossip-based membership view, a failure detector
  * and the plumbing that dispatches inbound envelope messages to local actors.
@@ -93,6 +104,7 @@ export class Cluster {
   private readonly tombstoneTtlMs: number;
   private readonly tombstonePruneIntervalMs: number;
   private readonly tombstoneMinRetentionMs: number;
+  private readonly firstSightMaxVersionSkewMs: number;
 
   private heartbeatSeq = 0;
   private gossipTimer: Cancellable | null = null;
@@ -146,6 +158,8 @@ export class Cluster {
     this.tombstonePruneIntervalMs = options.tombstonePruneIntervalMs ?? DEFAULT_TOMBSTONE_PRUNE_INTERVAL_MS;
     this.tombstoneMinRetentionMs =
       options.tombstoneMinRetentionMs ?? 6 * fdOptions.downAfterMs;
+    this.firstSightMaxVersionSkewMs =
+      options.firstSightMaxVersionSkewMs ?? DEFAULT_FIRST_SIGHT_MAX_VERSION_SKEW_MS;
   }
 
   /**
@@ -974,6 +988,64 @@ export class Cluster {
     return current === 'joining' || current === 'weakly-up';
   }
 
+  /**
+   * The second, much tighter version cap — it applies only where gossip
+   * introduces an address this node has **never seen** (#114).
+   *
+   * {@link MAX_VERSION_SKEW_MS} is deliberately generous because it guards
+   * records that already exist: rejecting one freezes a member the cluster is
+   * already using, so it errs towards tolerating a badly skewed clock.  First
+   * sight is the opposite trade.  There is nothing to freeze yet, and a
+   * far-future version buys exactly one thing — a claim staked on an address
+   * that does not exist yet.
+   *
+   * {@link maySpeakFor} waves a self-announcement through unconditionally
+   * (`subject.equals(from)`), because refusing it would mean no node could
+   * ever join — and without per-node certificates the `hello` frame that
+   * decides who a connection belongs to carries no credential (#562, #912).
+   * So an attacker can announce itself under an address that is *about* to
+   * exist — the next pod of a StatefulSet, a node being replaced — with a
+   * version up to a day ahead and roles of its own choosing, and then drop the
+   * connection.  The squatted record outlives it: `onGossip`'s promotion loop
+   * lifts anything `joining` to `up` on the next leader tick, so the phantom
+   * enters the active set carrying **the attacker's roles** — and roles are
+   * what routing, sharding placement, singleton hosting and downing quorums
+   * are computed from.  The real node, when it finally starts, seeds its
+   * version from its own `Date.now()`, which is below the squat, so the
+   * monotonicity check in {@link mergeMember} drops its record and the phantom
+   * stays.
+   *
+   * Capping first sight bounds that window to `firstSightMaxVersionSkewMs`
+   * instead of a day.  It authenticates nobody; it removes the ability to
+   * pre-date a claim so far that its legitimate owner cannot out-version it.
+   *
+   * **Why the default is minutes rather than seconds.**  A legitimate
+   * first-sight version is the announcing node's own wall-clock, so this cap
+   * is a clock-skew budget — the same quantity the 24 h cap measures, priced
+   * for the one case that can afford to be strict.  Five minutes is the
+   * long-standing convention for exactly that judgement (Kerberos has used it
+   * as its skew tolerance for decades), and the regimes either side of it are
+   * far apart: an NTP-disciplined host sits milliseconds from true, while a
+   * host that never synced at all is hours out — and that one is still served,
+   * because the 24 h cap governs every merge after the first.
+   *
+   * **Why a rejection here is cheap.**  It is not exclusion.  A node
+   * announcing itself is still recorded by `onGossip`'s sender fallback, at
+   * version 1 with no roles, so its very next frame merges through the normal
+   * path and carries the real record in.  The worst case is a member that
+   * shows no roles for one gossip round, not one that never appears.
+   */
+  private admitsFirstSightVersion(incoming: Member): boolean {
+    const maxAcceptableVersion = Date.now() + this.firstSightMaxVersionSkewMs;
+    if (incoming.version <= maxAcceptableVersion) return true;
+    this.log.warn(
+      `merge: refusing to create ${incoming.address} from gossip with version ` +
+      `${incoming.version} (max acceptable on a first sighting ${maxAcceptableVersion}) — ` +
+      'a version this far ahead pre-empts the record of whoever really owns that address',
+    );
+    return false;
+  }
+
   private mergeMember(from: NodeAddress, senderStatus: MemberStatus | undefined, data: MemberData): void {
     const incoming = Member.fromData(data);
 
@@ -1040,6 +1112,7 @@ export class Cluster {
     }
     const existing = this.members.get(incoming.address.toString());
     if (!existing) {
+      if (!this.admitsFirstSightVersion(incoming)) return;
       this.members.set(incoming.address.toString(), incoming);
       this.failureDetector.register(incoming.address);
       this.emit(new MemberJoined(incoming));

@@ -633,3 +633,358 @@ describe('TypedActorContext.setDisplayName (#891)', () => {
     await system.terminate();
   });
 });
+
+/* ---------- intercept / monitor / logMessages combinators (#152) ---------- */
+
+type TickMessage = { readonly kind: 'tick' };
+type ResetMessage = { readonly kind: 'reset' };
+type CounterMessage = TickMessage | ResetMessage;
+
+/** Records every message the wrapped behavior handled, staying as it is. */
+const recordingInto = (sink: number[]): Behavior<number> =>
+  Behaviors.receiveMessage<number>((message) => {
+    sink.push(message);
+    return Behaviors.same;
+  });
+
+describe('Behaviors.intercept (#152)', () => {
+  test('an interceptor keeps running after the inner behavior swaps itself out', async () => {
+    // The interpreter case: `resolve()` collapses every other wrapper into the
+    // leaf it produced, and a transition replaces `current` wholesale — so an
+    // interceptor that is not re-installed survives exactly one message of a
+    // behavior that returns a fresh receive each time, which is the normal
+    // shape of a state machine.
+    const sys = newSys('typed-intercept-survives');
+    const intercepted: number[] = [];
+    const totals: number[] = [];
+
+    const counting = (total: number): Behavior<number> =>
+      Behaviors.receiveMessage<number>((message) => {
+        totals.push(total + message);
+        return counting(total + message);
+      });
+
+    const behavior = Behaviors.intercept<number>(counting(0), (context, message, next) => {
+      intercepted.push(message);
+      return next(context, message);
+    });
+
+    const ref = sys.spawnTypedAnonymous(behavior);
+    ref.tell(1); ref.tell(2); ref.tell(3);
+    await awaitCondition(() => totals.length === 3, {
+      timeoutMs: 4_000,
+      label: 'all three messages ran through the inner behavior',
+    });
+
+    expect(intercepted).toEqual([1, 2, 3]);
+    expect(totals).toEqual([1, 3, 6]);
+    await sys.terminate();
+  });
+
+  test('an interceptor transforms the message the inner behavior sees', async () => {
+    const sys = newSys('typed-intercept-transform');
+    const seen: number[] = [];
+    const behavior = Behaviors.intercept<number>(
+      recordingInto(seen),
+      (context, message, next) => next(context, message * 2),
+    );
+
+    const ref = sys.spawnTypedAnonymous(behavior);
+    ref.tell(1); ref.tell(2); ref.tell(3);
+    await awaitCondition(() => seen.length === 3, {
+      timeoutMs: 4_000,
+      label: 'all three transformed messages arrived',
+    });
+
+    expect(seen).toEqual([2, 4, 6]);
+    await sys.terminate();
+  });
+
+  test('an interceptor that never delegates short-circuits the inner behavior', async () => {
+    const sys = newSys('typed-intercept-veto');
+    const seen: number[] = [];
+    const behavior = Behaviors.intercept<number>(recordingInto(seen), (context, message, next) =>
+      message % 2 === 0 ? next(context, message) : Behaviors.same);
+
+    const ref = sys.spawnTypedAnonymous(behavior);
+    ref.tell(1); ref.tell(2); ref.tell(3); ref.tell(4);
+    await awaitCondition(() => seen.length === 2, {
+      timeoutMs: 4_000,
+      label: 'both even messages arrived',
+    });
+    expect(seen).toEqual([2, 4]);
+
+    // A veto is not a transition — the wrapper is still in place afterwards.
+    ref.tell(6);
+    await awaitCondition(() => seen.length === 3, {
+      timeoutMs: 4_000,
+      label: 'the behavior still works after a vetoed message',
+    });
+    expect(seen).toEqual([2, 4, 6]);
+    await sys.terminate();
+  });
+
+  test('nested interceptors run outermost-first and all survive a transition', async () => {
+    const sys = newSys('typed-intercept-nested');
+    const order: string[] = [];
+
+    // Transitions on every message, so the second round proves both wrappers
+    // were re-installed rather than merely surviving the first delivery.
+    const leaf = (): Behavior<number> =>
+      Behaviors.receiveMessage<number>(() => { order.push('leaf'); return leaf(); });
+
+    const nearest = Behaviors.intercept<number>(leaf(), (context, message, next) => {
+      order.push('nearest');
+      return next(context, message);
+    });
+    const behavior = Behaviors.intercept<number>(nearest, (context, message, next) => {
+      order.push('outermost');
+      return next(context, message);
+    });
+
+    const ref = sys.spawnTypedAnonymous(behavior);
+    ref.tell(1); ref.tell(2);
+    await awaitCondition(() => order.filter((entry) => entry === 'leaf').length === 2, {
+      timeoutMs: 4_000,
+      label: 'both messages reached the leaf behavior',
+    });
+
+    expect(order).toEqual(['outermost', 'nearest', 'leaf', 'outermost', 'nearest', 'leaf']);
+    await sys.terminate();
+  });
+
+  test('stopping from inside an intercepted behavior really stops the actor', async () => {
+    // `stopped` is the one behavior the wrapper must not survive: it has to
+    // reach the top as a bare sentinel or the actor would keep running.
+    const sys = newSys('typed-intercept-stop');
+    const events: string[] = [];
+    let child: ActorRef<string> | null = null;
+
+    const parent: Behavior<string> = Behaviors.setup<string>((context) => {
+      const inner = Behaviors.receiveMessage<string>((message) =>
+        message === 'stop' ? Behaviors.stopped : Behaviors.same);
+      child = context.spawn(
+        Behaviors.intercept<string>(inner, (innerContext, message, next) => {
+          events.push(`saw:${message}`);
+          return next(innerContext, message);
+        }),
+        'kid',
+      );
+      context.watch(child);
+      return Behaviors.receiveWithSignal<string>(
+        () => Behaviors.same,
+        (_context, signal) => {
+          if (signal.kind === 'terminated') events.push('kid-stopped');
+          return Behaviors.same;
+        },
+      );
+    });
+
+    sys.spawn(typedActor(parent), 'parent');
+    await awaitCondition(() => child !== null, {
+      timeoutMs: 4_000,
+      label: 'the parent behavior spawned its child',
+    });
+    child!.tell('stop');
+    await awaitCondition(() => events.includes('kid-stopped'), {
+      timeoutMs: 4_000,
+      label: 'the intercepted child stopped itself',
+    });
+
+    expect(events).toEqual(['saw:stop', 'kid-stopped']);
+    await sys.terminate();
+  });
+
+  test('an error thrown by the interceptor reaches an enclosing supervise', async () => {
+    const sys = newSys('typed-intercept-supervise');
+    const seen: number[] = [];
+    const failures: string[] = [];
+
+    const strategy = new OneForOneStrategy((error) => {
+      failures.push(error.message);
+      return Directive.Resume;
+    });
+    const behavior = Behaviors.supervise(
+      Behaviors.intercept<number>(recordingInto(seen), (context, message, next) => {
+        if (message === 13) throw new Error('unlucky');
+        return next(context, message);
+      }),
+    ).onFailure(strategy);
+
+    const ref = sys.spawnTypedAnonymous(behavior);
+    ref.tell(1); ref.tell(13); ref.tell(2);
+    await awaitCondition(() => seen.length === 2, {
+      timeoutMs: 4_000,
+      label: 'both survivable messages were handled',
+    });
+
+    expect(seen).toEqual([1, 2]);
+    expect(failures).toEqual(['unlucky']);
+    await sys.terminate();
+  });
+});
+
+describe('Behaviors.monitor (#152)', () => {
+  const kitOptions = (): TestKitOptions => TestKitOptions.create()
+    .withLogger(new NoopLogger())
+    .withLogLevel(LogLevel.Off);
+
+  test('forwards every message to the observer and still delivers to the inner behavior', async () => {
+    const kit = TestKit.create('typed-monitor', kitOptions());
+    const probe = kit.createTestProbe();
+    const seen: number[] = [];
+
+    const ref = kit.system.spawnTypedAnonymous(
+      Behaviors.monitor<number>(probe as ActorRef<number>, recordingInto(seen)),
+    );
+    for (let i = 1; i <= 5; i++) ref.tell(i);
+
+    expect(await probe.receiveN(5, 1_000)).toEqual([1, 2, 3, 4, 5]);
+    await awaitCondition(() => seen.length === 5, {
+      timeoutMs: 4_000,
+      label: 'the inner behavior saw all five messages too',
+    });
+    expect(seen).toEqual([1, 2, 3, 4, 5]);
+    await kit.system.terminate();
+  });
+
+  test('a throwing observer never disturbs the inner behavior', async () => {
+    // A tap is best-effort: an observer that is gone, full, or simply broken
+    // must not turn into a failure of the actor being observed.
+    const sys = newSys('typed-monitor-broken');
+    const seen: number[] = [];
+    const failures: string[] = [];
+    const brokenObserver = {
+      tell(): void { throw new Error('the monitor is down'); },
+    } as unknown as ActorRef<number>;
+
+    const strategy = new OneForOneStrategy((error) => {
+      failures.push(error.message);
+      return Directive.Resume;
+    });
+    const behavior = Behaviors.supervise(
+      Behaviors.monitor<number>(brokenObserver, recordingInto(seen)),
+    ).onFailure(strategy);
+
+    const ref = sys.spawnTypedAnonymous(behavior);
+    ref.tell(1); ref.tell(2); ref.tell(3);
+    await awaitCondition(() => seen.length === 3, {
+      timeoutMs: 4_000,
+      label: 'every message reached the inner behavior',
+    });
+
+    expect(seen).toEqual([1, 2, 3]);
+    expect(failures).toEqual([]);
+    await sys.terminate();
+  });
+});
+
+describe('Behaviors.logMessages (#152)', () => {
+  type LogRecord = { readonly level: string; readonly msg: string };
+
+  /** A system whose logger keeps every record, so the lines can be asserted. */
+  function loggingSystem(name: string, level = LogLevel.Debug): {
+    system: ActorSystem;
+    records: () => LogRecord[];
+  } {
+    const lines: string[] = [];
+    const sysOptions = ActorSystemOptions.create()
+      .withLogger(new JsonLogger(level, '', {}, { write: (line) => { lines.push(line); } }));
+    return {
+      system: ActorSystem.create(name, sysOptions),
+      records: () => lines
+        .map((line) => JSON.parse(line) as LogRecord)
+        .filter((record) => record.msg.startsWith('received') || record.msg.startsWith('audit')),
+    };
+  }
+
+  const handlingInto = (sink: string[]): Behavior<CounterMessage> =>
+    Behaviors.receiveMessage<CounterMessage>((message) => {
+      sink.push(message.kind);
+      return Behaviors.same;
+    });
+
+  test('logs one debug line per message, naming the message by its kind', async () => {
+    const { system, records } = loggingSystem('typed-log-messages');
+    const handled: string[] = [];
+
+    const ref = system.spawnTyped(Behaviors.logMessages(handlingInto(handled)), 'logged');
+    ref.tell({ kind: 'tick' });
+    ref.tell({ kind: 'tick' });
+    ref.tell({ kind: 'reset' });
+    await awaitCondition(() => handled.length === 3, {
+      timeoutMs: 4_000,
+      label: 'all three messages were handled',
+    });
+
+    expect(records().map((record) => record.msg)).toEqual([
+      'received tick', 'received tick', 'received reset',
+    ]);
+    expect(records().map((record) => record.level)).toEqual(['debug', 'debug', 'debug']);
+    await system.terminate();
+  });
+
+  test('a custom formatter owns the whole line', async () => {
+    const { system, records } = loggingSystem('typed-log-messages-formatter');
+    const handled: string[] = [];
+    const options = { formatter: (message: CounterMessage) => `audit ${message.kind}` };
+
+    const ref = system.spawnTyped(Behaviors.logMessages(handlingInto(handled), options), 'logged');
+    ref.tell({ kind: 'tick' });
+    ref.tell({ kind: 'reset' });
+    await awaitCondition(() => handled.length === 2, {
+      timeoutMs: 4_000,
+      label: 'both messages were handled',
+    });
+
+    expect(records().map((record) => record.msg)).toEqual(['audit tick', 'audit reset']);
+    await system.terminate();
+  });
+
+  test('a throwing formatter falls back to the built-in line', async () => {
+    const { system, records } = loggingSystem('typed-log-messages-bad-formatter');
+    const handled: string[] = [];
+    const options = { formatter: (): string => { throw new Error('bad formatter'); } };
+
+    const ref = system.spawnTyped(Behaviors.logMessages(handlingInto(handled), options), 'logged');
+    ref.tell({ kind: 'tick' });
+    await awaitCondition(() => handled.length === 1, {
+      timeoutMs: 4_000,
+      label: 'the message was handled despite the formatter',
+    });
+
+    expect(records().map((record) => record.msg)).toEqual(['received tick (formatter threw)']);
+    await system.terminate();
+  });
+
+  test("level: 'info' reports at info", async () => {
+    const { system, records } = loggingSystem('typed-log-messages-info');
+    const handled: string[] = [];
+    const options = { level: 'info' as const };
+
+    const ref = system.spawnTyped(Behaviors.logMessages(handlingInto(handled), options), 'logged');
+    ref.tell({ kind: 'tick' });
+    await awaitCondition(() => handled.length === 1, {
+      timeoutMs: 4_000,
+      label: 'the message was handled',
+    });
+
+    expect(records().map((record) => `${record.level}:${record.msg}`)).toEqual(['info:received tick']);
+    await system.terminate();
+  });
+
+  test('emits nothing when the logger would drop the line anyway', async () => {
+    const { system, records } = loggingSystem('typed-log-messages-off', LogLevel.Warn);
+    const handled: string[] = [];
+
+    const ref = system.spawnTyped(Behaviors.logMessages(handlingInto(handled)), 'logged');
+    ref.tell({ kind: 'tick' });
+    await awaitCondition(() => handled.length === 1, {
+      timeoutMs: 4_000,
+      label: 'the message was handled',
+    });
+
+    expect(records()).toEqual([]);
+    await system.terminate();
+  });
+});

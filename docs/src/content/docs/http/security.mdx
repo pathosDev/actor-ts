@@ -70,6 +70,18 @@ request id. Keep `403`/`404` responses unspecific — the static-file layer
 returns a uniform `404` for every rejected path so it never reveals what
 exists.
 
+## Redirects
+
+`redirect(target)` takes **same-origin targets only** — a relative
+reference. An absolute URL, a protocol-relative `//host`, or a control
+character throws `HttpError(400)`, so forwarding a `?next=` parameter
+straight into a redirect fails closed instead of becoming an open redirect.
+When leaving the origin is the intent, say so: `redirectExternal(...)` is
+the same helper without the origin rule, and being a separate name makes
+every deliberate off-origin hop greppable in one command. Hand it a
+constant or a target you allowlisted — never a raw request parameter. See
+the [Route DSL](/http/route-dsl/).
+
 ## Capping untrusted input
 
 - **Request bodies** are capped by the backend (Fastify 1 MiB default;
@@ -99,6 +111,7 @@ so it gates the handshake.
 | Cross-origin controlled | `cors(...)` |
 | CSRF (browser forms) | `csrfProtection(...)` |
 | No internal error leaks | `withErrorHandler` + generic bodies |
+| No open redirects | `redirect(...)` — same-origin by default |
 | Request correlation | `requestId()` |
 | Bounded latency | `requestTimeout(...)` |
 | Safe file serving | `getFromDirectory` defaults (dotfiles deny, symlink confinement) |

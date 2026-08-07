@@ -47,11 +47,18 @@ import { reEncryptObjectStorage } from 'actor-ts';
 const result = await reEncryptObjectStorage(backend, {
   keyPrefix: 'snapshots/',                      // welche Keys verarbeitet werden
   keyring,                                      // active + retired Keys
+  info: 'acme/prod/snapshot/v1',                // der HKDF-Kontext des Stores
   skip: (key) => key.endsWith('.manifest'),     // optional: Keys ausschließen
   onProgress: (e) => console.log(`${e.index}/${e.total} ${e.key}`),
 });
 console.log(`re-encrypted ${result.rewrote} of ${result.scanned}`);
 ```
+
+`info` ist Pflicht und muss exakt dem
+[`EncryptionConfig.info`](/de/persistence/object-storage/encryption/#info-wählen)
+des schreibenden Stores entsprechen — es ist die Hälfte der
+Subkey-Ableitung, eine Abweichung lässt jede Entschlüsselung im
+Sweep fehlschlagen.
 
 Der Sweep listet jedes Objekt unter `keyPrefix` und für jedes:
 
@@ -78,9 +85,50 @@ import { InMemoryReEncryptProgressStore } from 'actor-ts';
 await reEncryptObjectStorage(backend, {
   keyPrefix: 'snapshots/',
   keyring,
+  info: 'acme/prod/snapshot/v1',
   progress: new InMemoryReEncryptProgressStore(),   // oder ein dauerhafter Store
 });
 ```
+
+## HKDF-Kontext rotieren
+
+Der Master-Key ist ein Eingang der Subkey-Ableitung, der
+HKDF-Kontext [`info`](/de/persistence/object-storage/encryption/#info-wählen)
+ist der andere.  Ihn zu rotieren — etwa ein gemeinsames
+`'actor-ts/snapshot/v1'` in Kontexte pro Umgebung aufzuteilen —
+läuft über denselben Sweep mit `newInfo`: Bodies werden unter
+`info` entschlüsselt und unter `newInfo` neu geschrieben.
+
+```ts
+await reEncryptObjectStorage(backend, {
+  keyPrefix: 'snapshots/',
+  keyring,
+  info:    'actor-ts/snapshot/v1',     // worunter der Bestand geschrieben wurde
+  newInfo: 'acme/prod/snapshot/v1',    // worunter er ab jetzt liegen soll
+});
+```
+
+Beide Achsen sind unabhängig: rotiere den Key, den Kontext oder
+beides in einem Durchlauf.  Roll das neue `info` in der
+`EncryptionConfig` der Anwendung erst **nach** dem Sweep aus —
+bis dahin liegt der Bestand noch unter dem alten Kontext.
+
+Eine Konsequenz solltest du vorher kennen.  Die Schlüsselversion
+steht im Body-Manifest, **der Kontext nicht** — der Sweep kann
+einen umgeschriebenen Body also nicht am Header von einem noch
+offenen unterscheiden.  Solange `newInfo` von `info` abweicht,
+ist der Versions-Fast-Path deshalb abgeschaltet und jedes Objekt
+wird entschlüsselt, um das herauszufinden: der Sweep kostet einen
+vollen Lesedurchlauf über den Prefix statt eines Header-Scans.
+(Ohne das würde eine reine Kontext-Rotation jedes Objekt als
+`skipped-current` melden und nichts ändern.)
+
+Ein erneuter Lauf bleibt sicher: ein Objekt, das sich unter
+`info` nicht entschlüsseln lässt, wird unter `newInfo` erneut
+versucht; gelingt das, zählt es als `skippedCurrent`.  Lässt es
+sich unter keinem von beiden entschlüsseln, wird der
+ursprüngliche Entschlüsselungsfehler geworfen — ein wirklich
+defekter Bestand wird also nicht stillschweigend übersprungen.
 
 ## Teilrotation mit `skip`
 
@@ -92,6 +140,7 @@ alles andere überspringst:
 await reEncryptObjectStorage(backend, {
   keyPrefix: 'state/',
   keyring,
+  info: 'acme/prod/durable-state/v1',
   skip: (key) => !key.startsWith('state/account-'),   // nur account-*
 });
 ```
@@ -116,7 +165,9 @@ Lies die zurückgegebenen Zähler — ein vollständiger Sweep hat
 skippedNonAts1`, und ein *zweiter* Lauf meldet `rewrote === 0`:
 
 ```ts
-const result = await reEncryptObjectStorage(backend, { keyPrefix: 'state/', keyring });
+const result = await reEncryptObjectStorage(backend, {
+  keyPrefix: 'state/', keyring, info: 'acme/prod/durable-state/v1',
+});
 if (result.rewrote === 0) {
   // alles ist bereits auf dem active-Key — das Retiren des alten kann geplant werden
 }

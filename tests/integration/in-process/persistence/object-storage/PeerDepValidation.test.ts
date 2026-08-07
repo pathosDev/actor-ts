@@ -204,3 +204,64 @@ describe('eager peer-dep validation (#18, #59)', () => {
     await sys.terminate();
   });
 });
+
+/**
+ * #108 — the same eager-validation idea applied to the HKDF context.
+ *
+ * TypeScript already requires `info`, so these cases can only arise from
+ * JavaScript consumers or a config deserialised at runtime.  That is
+ * exactly where the failure is worst: a subkey derived from a missing
+ * `info` is a deployment-wide constant, and it would surface only as
+ * staging being able to read production's blobs.  Registration is the
+ * right place to say so, for the same reason the peer-dep probes are.
+ */
+describe('#108 — encryption info is validated at plugin-init', () => {
+  const masterKey = new Uint8Array(32).fill(0xab);
+
+  async function registerWith(encryption: unknown): Promise<unknown> {
+    const sysOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off);
+    const sys = ActorSystem.create('peerdep-info', sysOptions);
+    const ext = sys.extension(PersistenceExtensionId);
+    const pluginOptions = ObjectStoragePluginOptions.create()
+      .withBackend({ kind: 'filesystem', dir })
+      // The cast is the point: this models a JavaScript caller.
+      .withEncryption(encryption as never);
+    try {
+      return await registerObjectStoragePlugins(ext, pluginOptions);
+    } finally {
+      await sys.terminate();
+    }
+  }
+
+  test('a flat config with no info is rejected', async () => {
+    await expect(registerWith({ mode: 'client-aes256-gcm', masterKey }))
+      .rejects.toThrow(/encryption info is required/);
+  });
+
+  test('an empty info is rejected', async () => {
+    await expect(registerWith({ mode: 'client-aes256-gcm', masterKey, info: '' }))
+      .rejects.toThrow(/encryption info is required/);
+  });
+
+  test('a config hidden behind an encryptionByPrefix resolver is still caught', async () => {
+    // `knownConfigsOf` is what makes the resolver case reachable — the
+    // same metadata the peer-dep probes rely on.
+    const resolver = encryptionByPrefix({
+      'tenant-a/': { mode: 'client-aes256-gcm', masterKey, info: 'acme/prod/snapshot/v1' },
+      default: { mode: 'client-aes256-gcm', masterKey } as never,
+    });
+    await expect(registerWith(resolver)).rejects.toThrow(/encryption info is required/);
+  });
+
+  test('a well-formed info registers cleanly', async () => {
+    await expect(registerWith({ mode: 'client-aes256-gcm', masterKey, info: 'acme/prod/snapshot/v1' }))
+      .resolves.toBeDefined();
+  });
+
+  test('server-side modes are unaffected — they never derive a subkey', async () => {
+    await expect(registerWith({ mode: 'sse-s3' })).resolves.toBeDefined();
+    await expect(registerWith({ mode: 'none' })).resolves.toBeDefined();
+  });
+});

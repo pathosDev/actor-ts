@@ -22,13 +22,16 @@ const masterKey = Buffer.from(process.env.MASTER_KEY_V1!, 'base64'); // 32 Bytes
 
 const objectStorageDurableStateStoreOptions = ObjectStorageDurableStateStoreOptions.create()
   .withBackend(new S3ObjectStorageBackend(S3ObjectStorageOptions.create() /* .withRegion(...).withBucket(...) */))
-  .withEncryption({ mode: 'client-aes256-gcm', masterKey });
+  .withEncryption({ mode: 'client-aes256-gcm', masterKey, info: 'acme/prod/durable-state/v1' });
 const store = new ObjectStorageDurableStateStore(objectStorageDurableStateStoreOptions);
 ```
 
 Jetzt wird jeder persistierte State vor dem Upload mit AES-GCM
 verschlüsselt — unter einem Per-`persistenceId`-Subkey, der aus
 dem Master-Key abgeleitet wird.  Reads entschlüsseln transparent.
+
+`info` ist **Pflicht** und deployment-spezifisch.  Es ist keine
+Dekoration — siehe [`info` wählen](#info-wählen) weiter unten.
 
 ## Warum Client-Side-Verschlüsselung
 
@@ -55,8 +58,8 @@ type EncryptionConfig =
   | { mode: 'none' }
   | { mode: 'sse-s3' }                                    // serverseitig, S3-verwaltet
   | { mode: 'sse-kms'; kmsKeyId: string }                // serverseitig, KMS-verwaltet
-  | { mode: 'client-aes256-gcm'; masterKey: Uint8Array; info?: string }
-  | { mode: 'client-aes256-gcm'; masterKeys: MasterKeyRing; info?: string };
+  | { mode: 'client-aes256-gcm'; masterKey: Uint8Array; info: string }
+  | { mode: 'client-aes256-gcm'; masterKeys: MasterKeyRing; info: string };
 
 type MasterKeyRing = {
   active: MasterKeyRingEntry;                // neue Writes verschlüsseln hierunter
@@ -80,6 +83,46 @@ mitgeführt, damit die Entschlüsselung den passenden Schlüssel
 wählen kann.  Den aktiven Schlüssel plus die retired Schlüssel
 zu führen, ist das Fundament der
 [Schlüsselrotation](/de/persistence/object-storage/key-rotation/).
+
+## `info` wählen
+
+`info` ist der **Kontext-Bindungs**-Eingang von HKDF (RFC 5869
+§3.2).  Der Subkey eines Blobs wird aus drei Dingen abgeleitet:
+dem Master-Key, der `persistenceId` (als HKDF-Salt) und `info`.
+Ändert sich eines davon, entsteht ein völlig anderer Schlüssel.
+
+Das Feld ist Pflicht, und es gibt bewusst keinen Default.  Ein
+gemeinsamer Default hätte bedeutet, dass zwei Deployments mit
+demselben Master-Key für dieselbe `persistenceId` **Byte für Byte
+denselben Subkey** ableiten — ein Staging-System, das aus einem
+Produktions-Dump wiederhergestellt wurde, oder eine DR-Region
+hätte damit Produktions-Blobs lesen können, ohne dass die
+Konfiguration das irgendwo erwähnt.  Das ist eine Entscheidung,
+die nur der Betreiber treffen kann — also erzwingt das Framework
+sie.
+
+Kodiere **Umgebung + Zweck + Version**, das Spezifischste zuerst:
+
+```ts
+'acme/prod/snapshot/v1'
+'acme/staging/snapshot/v1'
+'acme/prod/durable-state/v1'
+```
+
+- **Verschiedene Umgebungen MÜSSEN sich unterscheiden**, auch bei
+  identischem Master-Key.  Genau darum geht es.
+- **Verschiedene Payload-Arten SOLLTEN sich unterscheiden**
+  (Snapshots vs. Durable State), damit ein kompromittierter
+  Ableitungskontext nicht auf den anderen übergreift.
+- **Eine angehängte Version** gibt einer späteren
+  Kontext-Rotation ein Ziel.
+
+**`info` steht nicht auf der Wire.**  Anders als die
+Schlüsselversion hält kein Manifest-Byte fest, unter welchem
+`info` ein Blob geschrieben wurde.  Eine Änderung macht jeden
+bestehenden Blob unlesbar, bis ein Sweep ihn neu schreibt — siehe
+[Kontext rotieren](/de/persistence/object-storage/key-rotation/#hkdf-kontext-rotieren).
+Wähle den Wert **vor dem ersten Write**.
 
 ## Wie es funktioniert
 
@@ -121,7 +164,7 @@ Die Master-Key-Bytes kommen irgendwoher.  Häufige Muster:
 
 ```ts
 const masterKey = Buffer.from(process.env.MASTER_KEY_V1!, 'base64'); // 32 Bytes
-// → .withEncryption({ mode: 'client-aes256-gcm', masterKey })
+// → .withEncryption({ mode: 'client-aes256-gcm', masterKey, info: 'acme/prod/snapshot/v1' })
 ```
 
 Am einfachsten.  Jeder Schlüssel ist ein 32-Byte-Buffer (für
@@ -143,7 +186,7 @@ const decrypted = await kms.decrypt({
 });
 
 const masterKey = decrypted.Plaintext!; // 32 Bytes, im Speicher gehalten
-// → .withEncryption({ mode: 'client-aes256-gcm', masterKey })
+// → .withEncryption({ mode: 'client-aes256-gcm', masterKey, info: 'acme/prod/snapshot/v1' })
 ```
 
 Der Master-Key wird **verschlüsselt unter einem Cloud-KMS-Key
@@ -224,9 +267,9 @@ import { Aside } from '@astrojs/starlight/components';
 <Aside type="tip" title="Per-Tenant-Schlüssel bilden auf persistenceId ab">
   ```ts
   .withEncryption(encryptionByPrefix({
-    'tenant-a/': { mode: 'client-aes256-gcm', masterKey: keyA },
-    'tenant-b/': { mode: 'client-aes256-gcm', masterKey: keyB },
-    default:     { mode: 'client-aes256-gcm', masterKey: keyShared },
+    'tenant-a/': { mode: 'client-aes256-gcm', masterKey: keyA, info },
+    'tenant-b/': { mode: 'client-aes256-gcm', masterKey: keyB, info },
+    default:     { mode: 'client-aes256-gcm', masterKey: keyShared, info },
   }))
   ```
   `withEncryption` akzeptiert einen **Per-`persistenceId`-Resolver**,

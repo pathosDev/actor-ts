@@ -8,6 +8,9 @@ import { ObjectStorageSnapshotStore } from '../../../../../src/persistence/snaps
 import { ObjectStorageSnapshotStoreOptions } from '../../../../../src/persistence/snapshot-stores/ObjectStorageSnapshotStoreOptions.js';
 import { compressionByPrefix } from '../../../../../src/persistence/object-storage/PluginConfig.js';
 
+/** HKDF context — required on every client-side encryption config (#108). */
+const info = 'acme/test/snapshot/v1';
+
 let dir: string;
 let backend: FilesystemObjectStorageBackend;
 
@@ -162,7 +165,7 @@ describe('ObjectStorageSnapshotStore — encryption (client-aes256-gcm)', () => 
     const storeOptions = ObjectStorageSnapshotStoreOptions.create()
       .withBackend(backend)
       .withCompression({ algorithm: 'none' }) // disable compression for clearer plaintext check
-      .withEncryption({ mode: 'client-aes256-gcm', masterKey });
+      .withEncryption({ mode: 'client-aes256-gcm', masterKey, info });
     const store = new ObjectStorageSnapshotStore(storeOptions);
     await store.save('p', 1, { secret: 'attack-at-dawn-zero-zero' });
     const fetched = await backend.get('p/00000000000000000001.json');
@@ -180,7 +183,9 @@ describe('ObjectStorageSnapshotStore — encryption (client-aes256-gcm)', () => 
     const storeOptions = ObjectStorageSnapshotStoreOptions.create()
       .withBackend(backend)
       .withCompression({ algorithm: 'none' })
-      .withEncryption((persistenceId) => persistenceId.startsWith('tenant-')? { mode: 'client-aes256-gcm', masterKey }: { mode: 'none' });
+      .withEncryption((persistenceId) => persistenceId.startsWith('tenant-')
+        ? { mode: 'client-aes256-gcm', masterKey, info }
+        : { mode: 'none' });
     const store = new ObjectStorageSnapshotStore(storeOptions);
     await store.save('tenant-acme/x', 1, { who: 'acme' });
     await store.save('tenant-bigcorp/x', 1, { who: 'bigcorp' });

@@ -225,6 +225,7 @@ Only `app=actor-ts` pods can reach port 2552 on each other.
 | Insider with stolen cert | Cert rotation + revocation |
 | Malformed or hostile wire frame | Shape validation at the decode boundary |
 | Peer growing a node's registries without bound | Per-registry caps on pub-sub and the receptionist |
+| Address claimed before the node that owns it exists | Tight version-skew cap on a first sighting |
 | Compromised pod inside the cluster | Application-level auth (out of scope here) |
 
 The cluster transport handles transport-level security.
@@ -353,6 +354,44 @@ satisfy the second rule. Run mTLS if the network is not fully
 trusted — under mTLS the claimed address must match the peer's
 certificate, which is what gives these rules a real subject.
 :::
+
+### A version cannot claim an address in advance
+
+Version is a logical clock seeded from `Date.now()`, so
+"highest version wins" also decides what happens the *first*
+time an address is mentioned at all. That made an address
+claimable before the node owning it exists. A stranger
+announces itself under the address the next pod is about to
+get — announcing your own record is the claim the rules above
+never refuse — dates it close to the 24 h skew cap, and
+attaches whatever roles it likes. The leader's promotion loop
+lifts the record into the active set, and the node that
+really owns the address loses every merge afterwards, because
+it seeds its version from its own clock and that is lower.
+Roles are what routing, sharding placement, singleton hosting
+and downing quorums are computed from, so the phantom is not a
+cosmetic row in a member list.
+
+A record that *introduces* an address is therefore held to a
+much tighter clock-skew budget than one that updates an
+address already on file — **5 minutes** by default, against
+the 24 hours that governs every later merge:
+
+```ts
+const clusterOptions = ClusterOptions.create()
+  .withHost('10.0.0.5')
+  .withPort(2552)
+  .withFirstSightMaxVersionSkewMs(30 * 60 * 1000);
+```
+
+Raise it for a deployment whose clocks are known to run loose;
+`24 * 60 * 60 * 1000` restores the old single-cap behaviour.
+There is little reason to lower it, and none to fear it:
+a refusal here is not exclusion. A node announcing itself is
+still recorded, at version 1 and without roles, so its next
+gossip frame merges through the normal path and carries the
+real record in. A rejected first sighting costs one gossip
+round, not a node that never appears.
 
 ## Per-deployment recipe
 

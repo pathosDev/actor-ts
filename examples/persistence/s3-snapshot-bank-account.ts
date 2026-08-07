@@ -69,7 +69,14 @@ class Account extends PersistentActor<Command, Event, State> {
   override compression(): CompressionConfig { return { algorithm: 'zstd' }; }
   // To enable client-side AES encryption per actor, return:
   //   override encryption(): EncryptionConfig {
-  //     return { mode: 'client-aes256-gcm', masterKey: this.tenantKey() };
+  //     return {
+  //       mode: 'client-aes256-gcm',
+  //       masterKey: this.tenantKey(),
+  //       // Required (#108) — the HKDF context.  Encode environment +
+  //       // purpose + version so two deployments sharing a master key
+  //       // never derive the same subkey.
+  //       info: 'acme/prod/snapshot/v1',
+  //     };
   //   }
   // Marker just to silence the unused-import lint for the type below.
   protected _enc(): EncryptionConfig | undefined { return undefined; }
@@ -170,7 +177,11 @@ async function main(): Promise<void> {
       'large/': { algorithm: 'zstd' },
     }));
   // To enable client-side encryption, add to the chain above:
-  //   .withEncryption({ mode: 'client-aes256-gcm', masterKey: new Uint8Array(32).fill(0xab) })
+  //   .withEncryption({
+  //     mode: 'client-aes256-gcm',
+  //     masterKey: new Uint8Array(32).fill(0xab),
+  //     info: 'acme/prod/snapshot/v1',   // required — see EncryptionConfig
+  //   })
   await registerObjectStoragePlugins(sys1.extension(PersistenceExtensionId), snapshotPluginOptions);
 
   const acct1 = sys1.spawn(() => new Account('alice'), 'alice');

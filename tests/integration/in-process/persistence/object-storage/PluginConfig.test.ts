@@ -6,6 +6,9 @@ import {
   resolveEncryption,
 } from '../../../../../src/persistence/object-storage/PluginConfig.js';
 
+/** HKDF context — required on every client-side encryption config (#108). */
+const info = 'acme/test/snapshot/v1';
+
 describe('resolveCompression / resolveEncryption', () => {
   test('flat config is returned verbatim', () => {
     const result = resolveCompression({ algorithm: 'gzip' }, 'whatever', { algorithm: 'none' });
@@ -33,7 +36,7 @@ describe('resolveCompression / resolveEncryption', () => {
   test('encryption resolver returning a config is honoured', () => {
     const masterKey = new Uint8Array(32);
     const result = resolveEncryption(
-      (persistenceId) => (persistenceId === 'pii' ? { mode: 'client-aes256-gcm', masterKey } : undefined),
+      (persistenceId) => (persistenceId === 'pii' ? { mode: 'client-aes256-gcm', masterKey, info } : undefined),
       'pii',
       { mode: 'none' },
     );
@@ -63,8 +66,8 @@ describe('compressionByPrefix / encryptionByPrefix', () => {
     const big = new Uint8Array(32).fill(2);
     const result = encryptionByPrefix({
       default: { mode: 'sse-s3' },
-      'tenant-acme/':    { mode: 'client-aes256-gcm', masterKey: acme },
-      'tenant-bigcorp/': { mode: 'client-aes256-gcm', masterKey: big },
+      'tenant-acme/':    { mode: 'client-aes256-gcm', masterKey: acme, info },
+      'tenant-bigcorp/': { mode: 'client-aes256-gcm', masterKey: big, info },
     });
     const acmeRes = result('tenant-acme/order-1');
     const bigRes  = result('tenant-bigcorp/x');
@@ -72,7 +75,14 @@ describe('compressionByPrefix / encryptionByPrefix', () => {
     expect(acmeRes?.mode).toBe('client-aes256-gcm');
     expect(bigRes?.mode).toBe('client-aes256-gcm');
     expect(otherRes?.mode).toBe('sse-s3');
-    if (acmeRes?.mode === 'client-aes256-gcm') expect(acmeRes.masterKey).toBe(acme);
-    if (bigRes?.mode === 'client-aes256-gcm') expect(bigRes.masterKey).toBe(big);
+    // Both `client-aes256-gcm` arms of `EncryptionConfig` carry the same
+    // `mode` value, so `mode` never narrows to the single-key shape — only
+    // probing for the property does, the same check `Encryption.ts` makes.
+    // Asserting the probe instead of guarding on it keeps the key
+    // comparison from being silently skipped if a ring came back instead.
+    if (!acmeRes || !('masterKey' in acmeRes)) throw new Error('acme did not resolve to a single-key config');
+    if (!bigRes || !('masterKey' in bigRes)) throw new Error('bigcorp did not resolve to a single-key config');
+    expect(acmeRes.masterKey).toBe(acme);
+    expect(bigRes.masterKey).toBe(big);
   });
 });

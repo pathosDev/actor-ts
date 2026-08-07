@@ -235,6 +235,7 @@ erreichen.
 | Insider mit gestohlenem Cert | Cert-Rotation + Revocation |
 | Fehlerhafter oder feindlicher Wire-Frame | Shape-Prüfung an der Decode-Grenze |
 | Peer lässt die Registries eines Knotens unbegrenzt wachsen | Obergrenzen pro Registry in PubSub und Receptionist |
+| Adresse beansprucht, bevor der zugehörige Knoten existiert | Enge Versions-Skew-Grenze bei der Erstsichtung |
 | Kompromittierter Pod im Cluster | Application-Level-Auth (hier nicht abgedeckt) |
 
 Der Cluster-Transport handhabt Transport-Level-Sicherheit.
@@ -373,6 +374,46 @@ vertrauenswürdig ist — unter mTLS muss die beanspruchte Adresse
 zum Zertifikat des Peers passen, und genau das gibt diesen Regeln
 ein echtes Subjekt.
 :::
+
+### Eine Version kann keine Adresse im Voraus beanspruchen
+
+Die Version ist eine logische Uhr, gesät aus `Date.now()` — und
+„höchste Version gewinnt" entscheidet damit auch, was beim
+*ersten* Auftauchen einer Adresse überhaupt passiert. Genau das
+machte eine Adresse beanspruchbar, bevor der Knoten existiert,
+dem sie gehört. Ein Fremder kündigt sich unter der Adresse an,
+die der nächste Pod bekommen wird — den eigenen Record
+anzukündigen ist die eine Aussage, die die Regeln oben nie
+abweisen —, datiert sie dicht an die 24-h-Skew-Grenze und hängt
+beliebige Rollen daran. Die Beförderungsschleife des Leaders hebt
+den Record in die aktive Menge, und der Knoten, dem die Adresse
+wirklich gehört, verliert danach jeden Merge: er sät seine
+Version aus der eigenen Uhr, und die ist niedriger. Aus Rollen
+werden Routing, Sharding-Platzierung, Singleton-Hosting und
+Downing-Quoren berechnet — das Phantom ist also keine kosmetische
+Zeile in einer Member-Liste.
+
+Ein Record, der eine Adresse *einführt*, unterliegt deshalb einem
+deutlich engeren Uhrabweichungs-Budget als einer, der eine
+bereits geführte Adresse aktualisiert — standardmäßig **5
+Minuten** gegenüber den 24 Stunden für jeden späteren Merge:
+
+```ts
+const clusterOptions = ClusterOptions.create()
+  .withHost('10.0.0.5')
+  .withPort(2552)
+  .withFirstSightMaxVersionSkewMs(30 * 60 * 1000);
+```
+
+Erhöhe den Wert für ein Deployment, dessen Uhren bekanntermaßen
+lose laufen; `24 * 60 * 60 * 1000` stellt das alte Verhalten mit
+einer einzigen Grenze wieder her. Ihn zu senken lohnt kaum, und
+zu fürchten ist er nicht: eine Abweisung hier ist kein
+Ausschluss. Ein Knoten, der sich selbst ankündigt, wird trotzdem
+erfasst — mit Version 1 und ohne Rollen —, sodass sein nächster
+Gossip-Frame über den normalen Pfad merged und den echten Record
+mitbringt. Eine abgewiesene Erstsichtung kostet eine
+Gossip-Runde, nicht einen Knoten, der nie auftaucht.
 
 ## Per-Deployment-Rezept
 
