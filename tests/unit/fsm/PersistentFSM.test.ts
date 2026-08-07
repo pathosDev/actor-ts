@@ -23,6 +23,7 @@ import { PersistenceExtensionId } from '../../../src/persistence/PersistenceExte
 import type { Journal } from '../../../src/persistence/Journal.js';
 import { InMemoryJournal } from '../../../src/persistence/journals/InMemoryJournal.js';
 import { InMemorySnapshotStore } from '../../../src/persistence/snapshot-stores/InMemorySnapshotStore.js';
+import { ManualScheduler } from '../../../src/testkit/ManualScheduler.js';
 import {
   PersistentFSM,
   type FsmStateData,
@@ -821,6 +822,248 @@ describe('PersistentFSM — a state-timeout fire during recovery', () => {
       const state = await ref.ask<FsmStateData<OrderState, OrderData>>({ kind: 'getState' }, 2_000);
       expect(state.state).toBe('pending');
       expect(incarnations).toBe(1);
+    } finally {
+      await sys.terminate();
+    }
+  });
+});
+
+/* ============================================================== */
+/* State-timeout superseded by a re-arm (#143)                    */
+/* ============================================================== */
+
+/**
+ * Idle-session domain — the canonical `_timeout` use case.  The FSM sits
+ * in `active` with an idle timeout and a `heartbeat` that keeps it there.
+ * The heartbeat staying in the *same* state is the whole point: it is the
+ * shape a `_timeout` typically guards, and the one where confirming the
+ * state name cannot tell a live fire from a superseded one.
+ */
+type SessionState = 'active' | 'paused' | 'expired';
+type SessionCommand =
+  | { kind: 'heartbeat' }
+  | { kind: 'pause' }
+  | { kind: 'resume' }
+  | { kind: 'getState' };
+type SessionEvent =
+  | { kind: 'touched' }
+  | { kind: 'paused' }
+  | { kind: 'resumed' }
+  | { kind: 'timedOut' };
+type SessionData = { touches: number };
+
+class SessionFsm extends PersistentFSM<SessionCommand, SessionEvent, SessionState, SessionData> {
+  readonly persistenceId: string;
+  private readonly afterMs: number;
+
+  constructor(persistenceId: string, afterMs: number) {
+    super();
+    this.persistenceId = persistenceId;
+    this.afterMs = afterMs;
+  }
+
+  initialFsmState(): SessionState { return 'active'; }
+  initialData(): SessionData { return { touches: 0 }; }
+
+  get transitions(): FsmTransitionMap<SessionState, SessionCommand, SessionEvent, SessionData> {
+    return {
+      active: {
+        // Same-state transition — "keep the session alive".
+        heartbeat: { event: { kind: 'touched' } as const, next: 'active' },
+        pause: { event: { kind: 'paused' } as const, next: 'paused' },
+        _timeout: {
+          afterMs: this.afterMs,
+          event: { kind: 'timedOut' } as const,
+          next: 'expired',
+        },
+      },
+      // A paused session does not idle out — no `_timeout` here, which is
+      // what lets the A→B→A round trip leave the state name untouched.
+      paused: {
+        resume: { event: { kind: 'resumed' } as const, next: 'active' },
+      },
+    };
+  }
+  set transitions(_v: FsmTransitionMap<SessionState, SessionCommand, SessionEvent, SessionData>) { /* noop — getter is canonical */ }
+
+  applyEvent(state: SessionState, data: SessionData, event: SessionEvent): FsmStateData<SessionState, SessionData> {
+    if (event.kind === 'touched') return { state: 'active', data: { touches: data.touches + 1 } };
+    if (event.kind === 'paused')  return { state: 'paused', data };
+    if (event.kind === 'resumed') return { state: 'active', data };
+    return { state: 'expired', data };
+  }
+
+  override async onCommand(curr: FsmStateData<SessionState, SessionData>, command: SessionCommand): Promise<void> {
+    if (command.kind === 'getState') {
+      this.sender.toNullable()?.tell(curr);
+      return;
+    }
+    return super.onCommand(curr, command);
+  }
+}
+
+describe('PersistentFSM — a state-timeout fire superseded by a re-arm (#143)', () => {
+  /**
+   * Parks the actor inside one chosen `append` so the timer can be fired
+   * while a command is provably mid-persist.  The fire then queues up
+   * *behind* that command — the ordering the race needs, and the one
+   * thing a sleep cannot pin down.
+   */
+  class AppendGatedJournal implements Journal {
+    private release: (() => void) | null = null;
+    private gate: Promise<void> | null = null;
+    /** True once an append has actually parked — the point of no ambiguity. */
+    parked = false;
+    constructor(private readonly inner: InMemoryJournal) {}
+
+    /** Arm the gate: the next `append` blocks until `open()` releases it. */
+    parkNextAppend(): void {
+      this.gate = new Promise<void>((resolve) => { this.release = resolve; });
+    }
+
+    open(): void {
+      this.release?.();
+      this.release = null;
+      this.gate = null;
+    }
+
+    async append<E>(persistenceId: string, events: ReadonlyArray<E>, expectedSeq: number, tags?: ReadonlyArray<string>) {
+      const gate = this.gate;
+      if (gate) {
+        this.parked = true;
+        await gate;
+      }
+      return this.inner.append<E>(persistenceId, events, expectedSeq, tags);
+    }
+    read<E>(persistenceId: string, fromSeq: number, toSeq?: number) {
+      return this.inner.read<E>(persistenceId, fromSeq, toSeq);
+    }
+    highestSeq(persistenceId: string): Promise<number> { return this.inner.highestSeq(persistenceId); }
+    delete(persistenceId: string, toSeq: number): Promise<void> { return this.inner.delete(persistenceId, toSeq); }
+    persistenceIds(): Promise<string[]> { return this.inner.persistenceIds(); }
+  }
+
+  test('a same-state heartbeat invalidates the fire already sitting in the mailbox', async () => {
+    const scheduler = new ManualScheduler();
+    const sysOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off)
+      .withScheduler(scheduler);
+    const sys = ActorSystem.create('fsm-timeout-rearm-race', sysOptions);
+    const inner = new InMemoryJournal();
+    const gated = new AppendGatedJournal(inner);
+    sys.extension(PersistenceExtensionId).setJournal(gated);
+    sys.extension(PersistenceExtensionId).setSnapshotStore(new InMemorySnapshotStore());
+
+    try {
+      const ref = sys.spawn(() => new SessionFsm('session-1', 1_000), 'session');
+      // Stashed until recovery completes, so an answer proves
+      // `onRecoveryComplete` ran — i.e. the first timer is armed.
+      const initial = await ref.ask<FsmStateData<SessionState, SessionData>>({ kind: 'getState' }, 2_000);
+      expect(initial.state).toBe('active');
+
+      // Park the heartbeat inside its persist.  While it sits there the
+      // actor dequeues nothing, so whatever arrives next stacks up behind
+      // it instead of racing it.
+      gated.parkNextAppend();
+      ref.tell({ kind: 'heartbeat' });
+      await awaitCondition(() => gated.parked, { label: 'the heartbeat parked inside journal.append' });
+
+      // Virtual time crosses afterMs right here: the armed timer fires and
+      // self-tells, so the fire is in the mailbox behind the heartbeat.
+      scheduler.advance(1_000);
+
+      // Heartbeat completes → same state, timer re-armed → the queued fire
+      // is stale.  Pre-fix the fire carried only `stateAtArm`, so
+      // `curr.state === stateAtArm` still held (both 'active') and the
+      // session expired despite the heartbeat.
+      gated.open();
+
+      // Queued behind the fire, so an answer proves the fire was handled.
+      const after = await ref.ask<FsmStateData<SessionState, SessionData>>({ kind: 'getState' }, 2_000);
+      expect(after.state).toBe('active');
+      expect(after.data.touches).toBe(1);
+
+      const events = await inner.read('session-1', 0);
+      expect(events.map((e) => (e.event as { kind: string }).kind)).toEqual(['touched']);
+    } finally {
+      await sys.terminate();
+    }
+  });
+
+  test('an A→B→A round trip invalidates it too, though the state name comes back', async () => {
+    // The reproduction the issue reports.  `pause` then `resume` puts the
+    // FSM back in 'active', so `stateAtArm` matches again by the time the
+    // fire is dequeued — the state name simply cannot express "this
+    // window was replaced".
+    const scheduler = new ManualScheduler();
+    const sysOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off)
+      .withScheduler(scheduler);
+    const sys = ActorSystem.create('fsm-timeout-rearm-roundtrip', sysOptions);
+    const inner = new InMemoryJournal();
+    const gated = new AppendGatedJournal(inner);
+    sys.extension(PersistenceExtensionId).setJournal(gated);
+    sys.extension(PersistenceExtensionId).setSnapshotStore(new InMemorySnapshotStore());
+
+    try {
+      const ref = sys.spawn(() => new SessionFsm('session-3', 1_000), 'session');
+      const initial = await ref.ask<FsmStateData<SessionState, SessionData>>({ kind: 'getState' }, 2_000);
+      expect(initial.state).toBe('active');
+
+      // Park inside `pause`'s persist; `resume` then queues behind it, and
+      // the fire behind that — so both commands are processed before the
+      // fire is ever looked at.
+      gated.parkNextAppend();
+      ref.tell({ kind: 'pause' });
+      await awaitCondition(() => gated.parked, { label: 'the pause parked inside journal.append' });
+      ref.tell({ kind: 'resume' });
+      scheduler.advance(1_000);
+      gated.open();
+
+      const after = await ref.ask<FsmStateData<SessionState, SessionData>>({ kind: 'getState' }, 2_000);
+      expect(after.state).toBe('active');
+      const events = await inner.read('session-3', 0);
+      expect(events.map((e) => (e.event as { kind: string }).kind))
+        .toEqual(['paused', 'resumed']);
+    } finally {
+      await sys.terminate();
+    }
+  });
+
+  test('an undisturbed fire still fires — the generation check is not a blanket suppressor', async () => {
+    // The mirror image of the test above, and the one that would catch a
+    // fix that invalidates the generation from inside the timer callback:
+    // nothing supersedes this fire, so it must go through.
+    const scheduler = new ManualScheduler();
+    const sysOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off)
+      .withScheduler(scheduler);
+    const sys = ActorSystem.create('fsm-timeout-rearm-clean', sysOptions);
+    const journal = new InMemoryJournal();
+    sys.extension(PersistenceExtensionId).setJournal(journal);
+    sys.extension(PersistenceExtensionId).setSnapshotStore(new InMemorySnapshotStore());
+
+    try {
+      const ref = sys.spawn(() => new SessionFsm('session-2', 1_000), 'session');
+      const initial = await ref.ask<FsmStateData<SessionState, SessionData>>({ kind: 'getState' }, 2_000);
+      expect(initial.state).toBe('active');
+
+      // One heartbeat, fully settled — the re-arm it triggers is the
+      // generation the next fire must be measured against.
+      ref.tell({ kind: 'heartbeat' });
+      await awaitJournalLength(journal, 'session-2', 1);
+
+      scheduler.advance(1_000);
+      await awaitJournalLength(journal, 'session-2', 2);
+
+      const after = await ref.ask<FsmStateData<SessionState, SessionData>>({ kind: 'getState' }, 2_000);
+      expect(after.state).toBe('expired');
+      const events = await journal.read('session-2', 0);
+      expect(events.map((e) => (e.event as { kind: string }).kind))
+        .toEqual(['touched', 'timedOut']);
     } finally {
       await sys.terminate();
     }

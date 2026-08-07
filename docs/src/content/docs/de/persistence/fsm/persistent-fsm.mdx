@@ -193,11 +193,34 @@ authorized: {
 },
 ```
 
-Der Timer wird bei jedem Übergang neu scharf gestellt und abgebrochen,
-wenn die FSM den Zustand verlässt (oder stoppt).  Bei der Recovery wird
-er **relativ zur Wall-Clock beim Recovery-Abschluss neu scharf
-gestellt** — eine lange gestoppte FSM bekommt ein frisches
-`afterMs`-Fenster statt eines sofortigen „bereits abgelaufen"-Feuerns.
+Der Timer wird bei **jedem** Übergang neu scharf gestellt — auch bei
+einem, der im selben Zustand bleibt — und abgebrochen, wenn die FSM den
+Zustand verlässt (oder stoppt).  Genau das lässt die Idle-Session-Form
+funktionieren:
+
+```ts
+active: {
+  // Each heartbeat renews the window instead of racing it.
+  heartbeat: { event: { kind: 'touched' }, next: 'active' },
+  _timeout: {
+    afterMs: 30 * 60 * 1000,
+    event: { kind: 'timedOut' },
+    next: 'expired',
+  },
+},
+```
+
+Ein gefeuertes Timeout läuft wie jede andere Nachricht durch die Mailbox
+und kann dort deshalb bereits hinter einem noch nicht ausgeführten
+Command warten.  Das erneute Scharfstellen entwertet ein so
+eingereihtes Feuern: Das Command läuft zuerst, erneuert das Fenster, und
+das überholte Feuern wird verworfen, statt die Session trotzdem ablaufen
+zu lassen (#143).
+
+Bei der Recovery wird der Timer **relativ zur Wall-Clock beim
+Recovery-Abschluss neu scharf gestellt** — eine lange gestoppte FSM
+bekommt ein frisches `afterMs`-Fenster statt eines sofortigen „bereits
+abgelaufen"-Feuerns.
 
 ## Seiteneffekte
 
