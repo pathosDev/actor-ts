@@ -24,8 +24,23 @@ import {
 } from '../../../../../src/cluster/router/index.js';
 import { LogLevel, NoopLogger } from '../../../../../src/Logger.js';
 import { Broadcast } from '../../../../../src/Router.js';
+import { awaitCondition } from '../../../../util/AwaitCondition.js';
 
 const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
+
+/**
+ * The router builds its routee set in `preStart` and rebuilds it on
+ * `MemberUp`, and it *drops* — never queues — anything that arrives with
+ * an empty set.  So "self is Up" has to hold before the router is
+ * spawned, not merely before the first `tell`: that ordering is what the
+ * 50 ms sleep was buying, and buying it with a clock is what makes the
+ * suite fail under load (#418).
+ */
+function awaitSelfUp(cluster: Cluster, what: string): Promise<void> {
+  return awaitCondition(() => cluster.upMembers().length === 1, {
+    timeoutMs: 4_000, label: `${what}: self reached Up`,
+  });
+}
 
 type ReceivedMessage = { kind: 'work'; id: string };
 
@@ -66,16 +81,17 @@ describe('ClusterRouter — single node', () => {
         .withRole('compute')
         .withRouterType('round-robin')
         .withRouteePath('/user/worker');
+      await awaitSelfUp(cluster, 'round-robin');
       const router = sys.spawn(
         ClusterRouter.factory<ReceivedMessage>(routerOptions),
         'compute-router',
       );
-      // Wait for the cluster to mark self as up.
-      await sleep(50);
       router.tell({ kind: 'work', id: '1' });
       router.tell({ kind: 'work', id: '2' });
       router.tell({ kind: 'work', id: '3' });
-      await sleep(80);
+      await awaitCondition(() => received.length === 3, {
+        timeoutMs: 4_000, label: 'all three work messages reached the routee',
+      });
       expect(received).toEqual(['1', '2', '3']);
     } finally {
       await cluster.leave();
@@ -93,12 +109,16 @@ describe('ClusterRouter — single node', () => {
         .withRole('compute')                       // filters out 'frontend'-only node
         .withRouterType('round-robin')
         .withRouteePath('/user/worker');
+      // Self must be Up before the router builds its set, or "no routee
+      // matched the role" is indistinguishable from "no member was Up yet".
+      await awaitSelfUp(cluster, 'role filter');
       const router = sys.spawn(
         ClusterRouter.factory<ReceivedMessage>(routerOptions),
         'role-router',
       );
-      await sleep(50);
       router.tell({ kind: 'work', id: 'lost' });
+      // Fixed wait on purpose: the claim is that nothing is delivered, and an
+      // absence has nothing to poll for.
       await sleep(80);
       // No routee — the message should be dropped, not delivered.
       expect(received).toEqual([]);
@@ -118,18 +138,20 @@ describe('ClusterRouter — single node', () => {
         .withRouterType('consistent-hashing')
         .withRouteePath('/user/worker')
         .withExtractKey((m) => m.id);
+      await awaitSelfUp(cluster, 'consistent-hashing');
       const router = sys.spawn(
         ClusterRouter.factory<ReceivedMessage>(routerOptions),
         'ch-router',
       );
-      await sleep(50);
       // With a single routee everything pins to it; the consistency
       // property is more interesting in the multi-node test.  Here we
       // verify the message arrives intact and `extractKey` is invoked
       // (no errors thrown).
       router.tell({ kind: 'work', id: 'order-42' });
       router.tell({ kind: 'work', id: 'order-43' });
-      await sleep(80);
+      await awaitCondition(() => received.length === 2, {
+        timeoutMs: 4_000, label: 'both hashed messages reached the routee',
+      });
       expect(received.sort()).toEqual(['order-42', 'order-43']);
     } finally {
       await cluster.leave();
@@ -146,13 +168,15 @@ describe('ClusterRouter — single node', () => {
         .withCluster(cluster)
         .withRouterType('broadcast')
         .withRouteePath('/user/worker');
+      await awaitSelfUp(cluster, 'broadcast routerType');
       const router = sys.spawn(
         ClusterRouter.factory<ReceivedMessage>(routerOptions),
         'bc-router',
       );
-      await sleep(50);
       router.tell({ kind: 'work', id: 'hello' });
-      await sleep(80);
+      await awaitCondition(() => received.length === 1, {
+        timeoutMs: 4_000, label: 'the broadcast reached the routee',
+      });
       expect(received).toEqual(['hello']);
     } finally {
       await cluster.leave();
@@ -169,13 +193,15 @@ describe('ClusterRouter — single node', () => {
         .withCluster(cluster)
         .withRouterType('round-robin')             // not broadcast type
         .withRouteePath('/user/worker');
+      await awaitSelfUp(cluster, 'Broadcast<T> wrapping');
       const router = sys.spawn(
         ClusterRouter.factory<ReceivedMessage>(routerOptions),
         'bc-msg-router',
       );
-      await sleep(50);
       router.tell(new Broadcast({ kind: 'work', id: 'announce' }));
-      await sleep(80);
+      await awaitCondition(() => received.length === 1, {
+        timeoutMs: 4_000, label: 'the wrapped broadcast reached the routee',
+      });
       // Single routee → seen once.  In a 3-node cluster this would land
       // 3× — the multi-node test covers that.
       expect(received).toEqual(['announce']);
