@@ -38,7 +38,7 @@ import {
   type DecodedBody,
   type SubKeyResolver,
 } from './BodyCodec.js';
-import { deriveSubkey } from './Encryption.js';
+import { deriveSubkey, validateMasterKeyRing } from './Encryption.js';
 import type { ObjectStorageBackend } from './ObjectStorageBackend.js';
 import { makeKeyValidator } from '../storage/KeyValidator.js';
 
@@ -263,12 +263,13 @@ export async function reEncryptObjectStorage(
     skippedNonAts1: 0,
     skippedMalformedKey: 0,
   };
+  // Validates the whole ring, not just `active` (#111).  The sweep's own
+  // resolver below matches `active` before `retired`, so a version that
+  // appears on both would decide silently which key a historical body is
+  // read with — and the sweep then *rewrites* that body, turning a bad
+  // read into a bad write.
+  validateMasterKeyRing(options.keyring, 'reEncryptObjectStorage');
   const activeVersion = options.keyring.active.version;
-  if (!Number.isInteger(activeVersion) || activeVersion < 0 || activeVersion > 255) {
-    throw new Error(
-      `reEncryptObjectStorage: keyring.active.version must be an integer in [0, 255], got ${activeVersion}`,
-    );
-  }
 
   // Decrypt under the corpus's current context, re-encrypt under the
   // target one.  They coincide for a plain key rotation (#70/#109); they

@@ -31,6 +31,19 @@ used for **new writes**.  Reads dispatch on the version byte
 stored in each blob's manifest, matching it against `active` or
 one of the `retired` entries.
 
+Because that byte is the reader's only handle on the key, **each
+entry needs its own version number**.  A ring with the same
+version on two entries is rejected — at registration, at the
+store, and at the start of a sweep — rather than left to be
+resolved by lookup order.  See
+[every version is used once](/persistence/object-storage/key-rotation/#every-version-is-used-once).
+
+The one-byte field caps how many versions can be *live at once*,
+not how often you may rotate: once a sweep has moved the whole
+corpus onto the active version, the `retired` entries go away and
+their numbers become reusable.  Registration warns from version
+240 on so there is time to schedule that.
+
 ## When to rotate
 
 Three triggers:
@@ -202,6 +215,19 @@ import { Aside } from '@astrojs/starlight/components';
   before it starts, but nothing guards the live read path —
   always finish the sweep + retain the old key for a rollback
   window before retiring.
+</Aside>
+
+<Aside type="caution" title="Re-using a version number that is still live">
+  ```ts
+  // promoted a new key but kept the old number
+  // active: { version: 1, key: v2 }, retired: [{ version: 1, key: v1 }]
+  ```
+  Two entries at one version make the manifest ambiguous, so the
+  ring is refused up front.  Fix it by giving the promoted key
+  the next free number — not by dropping the `retired` entry,
+  which would make everything written under it unreadable.  A
+  number becomes free again only after a sweep has moved every
+  blob off it.
 </Aside>
 
 <Aside type="caution" title="The sweep has no built-in throttle">
