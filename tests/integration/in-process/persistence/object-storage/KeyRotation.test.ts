@@ -33,6 +33,7 @@ afterEach(() => { try { rmSync(dir, { recursive: true, force: true }); } catch {
 const v0 = new Uint8Array(32).fill(0xa0);
 const v1 = new Uint8Array(32).fill(0xa1);
 const v2 = new Uint8Array(32).fill(0xa2);
+const info = 'acme/test/snapshot/v1';
 
 describe('SnapshotStore — master-key rotation', () => {
   test('snapshot written with v0 active is still readable when v1 is now active and v0 retired', async () => {
@@ -44,6 +45,7 @@ describe('SnapshotStore — master-key rotation', () => {
     const phase1: EncryptionConfig = {
       mode: 'client-aes256-gcm',
       masterKeys: { active: { version: 0, key: v0 } },
+      info,
     };
     const phase1StoreOptions = ObjectStorageSnapshotStoreOptions.create()
       .withBackend(backend)
@@ -58,6 +60,7 @@ describe('SnapshotStore — master-key rotation', () => {
         active: { version: 1, key: v1 },
         retired: [{ version: 0, key: v0 }],
       },
+      info,
     };
     const phase2StoreOptions = ObjectStorageSnapshotStoreOptions.create()
       .withBackend(backend)
@@ -79,7 +82,7 @@ describe('SnapshotStore — master-key rotation', () => {
 
     // Write with the legacy single-key shape (#8 backwards-compat path).
     const legacyConfig: EncryptionConfig = {
-      mode: 'client-aes256-gcm', masterKey: v0,
+      mode: 'client-aes256-gcm', masterKey: v0, info,
     };
     const legacyStoreOptions = ObjectStorageSnapshotStoreOptions.create()
       .withBackend(backend)
@@ -90,7 +93,7 @@ describe('SnapshotStore — master-key rotation', () => {
     // Read with the new keyring shape that has v0 as active.
     const ringStoreOptions = ObjectStorageSnapshotStoreOptions.create()
       .withBackend(backend)
-      .withEncryption({mode: 'client-aes256-gcm',masterKeys: { active: { version: 0, key: v0 } },});
+      .withEncryption({ mode: 'client-aes256-gcm', masterKeys: { active: { version: 0, key: v0 } }, info });
     const ringStore = new ObjectStorageSnapshotStore(ringStoreOptions);
     const loaded = await ringStore.loadLatest<{ message: string }>('legacy-1');
     expect(loaded.toNullable()?.state).toEqual({ message: 'old data' });
@@ -104,6 +107,7 @@ describe('SnapshotStore — master-key rotation', () => {
     const v2Config: EncryptionConfig = {
       mode: 'client-aes256-gcm',
       masterKeys: { active: { version: 2, key: v2 } },
+      info,
     };
     const writeStoreOptions = ObjectStorageSnapshotStoreOptions.create()
       .withBackend(backend)
@@ -114,7 +118,11 @@ describe('SnapshotStore — master-key rotation', () => {
     // Read with a config that has only v0 + v1 — no v2 anywhere.
     const readStoreOptions = ObjectStorageSnapshotStoreOptions.create()
       .withBackend(backend)
-      .withEncryption({mode: 'client-aes256-gcm',masterKeys: {active: { version: 0, key: v0 },retired: [{ version: 1, key: v1 }],},});
+      .withEncryption({
+        mode: 'client-aes256-gcm',
+        masterKeys: { active: { version: 0, key: v0 }, retired: [{ version: 1, key: v1 }] },
+        info,
+      });
     const readStore = new ObjectStorageSnapshotStore(readStoreOptions);
     await expect(readStore.loadLatest<{ x: number }>('user-x'))
       .rejects.toThrow(/no master key registered for version 2/);
@@ -130,6 +138,7 @@ describe('DurableStateStore — master-key rotation', () => {
     const v0Cfg: EncryptionConfig = {
       mode: 'client-aes256-gcm',
       masterKeys: { active: { version: 0, key: v0 } },
+      info,
     };
     const phase1Options = ObjectStorageDurableStateStoreOptions.create()
       .withBackend(backend)
@@ -143,6 +152,7 @@ describe('DurableStateStore — master-key rotation', () => {
         active: { version: 1, key: v1 },
         retired: [{ version: 0, key: v0 }],
       },
+      info,
     };
     const phase2Options = ObjectStorageDurableStateStoreOptions.create()
       .withBackend(backend)
