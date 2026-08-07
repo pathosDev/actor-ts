@@ -153,6 +153,9 @@ A handful of building blocks:
 | `Behaviors.withTimers(timers => behavior)` | Capture the per-actor `TimerScheduler` in a closure. |
 | `Behaviors.withStash(capacity, stash => behavior)` | Capture a `StashBuffer<T>` with the given capacity. |
 | `Behaviors.supervise(behavior).onFailure(strategy)` | Wrap a behavior with a supervisor strategy. |
+| `Behaviors.intercept(behavior, interceptor)` | Run an interceptor before every message — observe, transform, or drop it. |
+| `Behaviors.monitor(observer, behavior)` | Forward every message to another actor before handling it. |
+| `Behaviors.logMessages(behavior, options?)` | Log every message before handling it. |
 | `Behaviors.same` | Sentinel: keep the current behavior. |
 | `Behaviors.stopped` | Sentinel: stop the actor. |
 | `Behaviors.unhandled` | Sentinel: this message is unhandled (goes to dead letters). |
