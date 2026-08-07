@@ -25,6 +25,7 @@ import { ClusterClientOptions } from '../../src/cluster/ClusterClientOptions.js'
 import { ClusterClientReceptionistId } from '../../src/cluster/ClusterClientReceptionist.js';
 import { LogLevel, NoopLogger } from '../../src/Logger.js';
 import { SystemGroups } from '../../src/internal/SystemPaths.js';
+import { awaitCondition } from '../util/AwaitCondition.js';
 
 type CommandEcho = { readonly kind: 'echo'; readonly payload: unknown };
 type CommandRing = { readonly kind: 'ring' };
@@ -111,13 +112,15 @@ describe('ClusterClient — outside-in connectivity', () => {
       .withContactPoints([node.contactPoint]);
     client = new ClusterClient(clientOptions);
     await client.send('echo', { kind: 'ring' });
-    // No reply path; wait a beat for the message to land on the mailbox.
-    const deadline = Date.now() + 2_000;
-    while (Date.now() < deadline) {
-      if (node.echo.actorImplementation.rings === 1) break;
-      await Bun.sleep(20);
-    }
-    expect(node.echo.actorImplementation.rings).toBe(1);
+    // No reply path, so the actor's own counter is the only observable there
+    // is — wait on it rather than on a beat.  The budget bounds a message
+    // that never arrives; a delivered one returns on the first poll.
+    const echoActor = node.echo.actorImplementation;
+    await awaitCondition(
+      () => echoActor.rings === 1,
+      { timeoutMs: 5_000, intervalMs: 10, label: 'the fire-and-forget send reached the actor' },
+    );
+    expect(echoActor.rings).toBe(1);
   }, 10_000);
 
   test('ask reaches a framework actor by its absolute /system path', async () => {
