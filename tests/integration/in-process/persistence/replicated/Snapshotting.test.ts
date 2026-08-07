@@ -35,6 +35,7 @@ import { InMemorySnapshotStore } from '../../../../../src/persistence/snapshot-s
 import { PersistenceExtensionId } from '../../../../../src/persistence/PersistenceExtension.js';
 import type { ReplicatedSnapshot } from '../../../../../src/persistence/replicated/ReplicatedSnapshot.js';
 import type { ReplicatedEventEnvelope } from '../../../../../src/persistence/ReplicatedEventSourcedActor.js';
+import { awaitCondition } from '../../../../util/AwaitCondition.js';
 
 type Command = { kind: 'add'; n: number };
 type Event = { kind: 'added'; n: number };
@@ -64,13 +65,24 @@ class CountingCounter extends ReplicatedEventSourcedActor<Command, Event, State>
 
 const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
 
-async function waitFor(pred: () => boolean, timeoutMs = 3_000): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (pred()) return;
-    await sleep(20);
-  }
-  if (!pred()) throw new Error(`waitFor timeout after ${timeoutMs}ms`);
+const WAIT = { timeoutMs: 4_000, intervalMs: 10 } as const;
+
+/**
+ * The replicated actor's snapshot save is deliberately fire-and-forget
+ * (`_maybeSaveSnapshot`), so "state converged" says nothing about the
+ * store having been written — which is what the tests that restart an
+ * actor actually depend on.  Wait for the snapshot itself (#418).
+ */
+async function awaitSnapshot(
+  store: InMemorySnapshotStore,
+  persistenceId: string,
+  holds: (snapshot: ReplicatedSnapshot<Event, State>) => boolean,
+  label: string,
+): Promise<void> {
+  await awaitCondition(async () => {
+    const stored = (await store.loadLatest<ReplicatedSnapshot<Event, State>>(persistenceId)).toNullable();
+    return stored !== null && holds(stored.state);
+  }, { ...WAIT, label });
 }
 
 type Setup = {
@@ -106,7 +118,7 @@ async function startActor(
     'counter',
   );
   // Wait for preStart to wire `instance`.
-  await waitFor(() => !!instance);
+  await awaitCondition(() => !!instance, { ...WAIT, label: `${systemName}: the actor instance was wired` });
   return { sys, cluster, ref, instance };
 }
 
@@ -126,13 +138,20 @@ describe('ReplicatedEventSourcedActor — snapshotting', () => {
     for (let i = 0; i < 12; i++) actorRef.ref.tell({ kind: 'add', n: 1 });
 
     // Wait for state to converge.
-    await waitFor(() => actorRef.instance.getValue() === 12);
-
-    // Allow the (fire-and-forget) snapshot save to settle.
-    await sleep(80);
+    await awaitCondition(() => actorRef.instance.getValue() === 12, {
+      ...WAIT, label: 'all twelve events folded into the state',
+    });
 
     // 12 events, every 5 → snapshots at observedCount=5 and observedCount=10.
-    // (At 15 we'd save again but we only fired 12 events.)
+    // (At 15 we'd save again but we only fired 12 events.)  The save is
+    // fire-and-forget, so wait for the second one to land rather than
+    // guessing at how long it takes; 10 is terminal here, the intermediate
+    // save carries 5, so this cannot return on a half-written history.
+    await awaitSnapshot(
+      snapshotStore, actorRef.instance.persistenceId,
+      (snapshot) => snapshot.events.length === 10,
+      'the snapshot at observedCount=10 reached the store',
+    );
     const stored = await snapshotStore.loadLatest<ReplicatedSnapshot<Event, State>>(
       actorRef.instance.persistenceId,
     );
@@ -154,8 +173,16 @@ describe('ReplicatedEventSourcedActor — snapshotting', () => {
     const a1 = await startActor('snap-2', 70_011, journal, snapshotStore);
     // 7 events: snapshot saved at #5; events #6 and #7 only in journal.
     for (let i = 0; i < 7; i++) a1.ref.tell({ kind: 'add', n: 1 });
-    await waitFor(() => a1.instance.getValue() === 7);
-    await sleep(80);
+    await awaitCondition(() => a1.instance.getValue() === 7, {
+      ...WAIT, label: 'all seven events folded into the state',
+    });
+    // The restart below recovers *from this snapshot*, so it has to be in
+    // the store before we shut the first actor down.
+    await awaitSnapshot(
+      snapshotStore, a1.instance.persistenceId,
+      (snapshot) => snapshot.events.length === 5,
+      'the snapshot at observedCount=5 reached the store',
+    );
     const callsDuringFirst = CountingCounter.onEventCallCount;
     expect(callsDuringFirst).toBe(7);
     await shutdown(a1);
@@ -196,8 +223,17 @@ describe('ReplicatedEventSourcedActor — snapshotting', () => {
 
     // Trigger a snapshot.
     for (let i = 0; i < 3; i++) a1.ref.tell({ kind: 'add', n: 1 });
-    await waitFor(() => a1.instance.getValue() === 103);
-    await sleep(80);
+    await awaitCondition(() => a1.instance.getValue() === 103, {
+      ...WAIT, label: 'the three local adds folded on top of the peer event',
+    });
+    // The whole test hinges on the snapshot carrying the peer event in its
+    // `seenIds` — that is what makes the re-broadcast below a no-op after
+    // recovery.  Waiting for "a snapshot exists" would not say that.
+    await awaitSnapshot(
+      snapshotStore, a1.instance.persistenceId,
+      (snapshot) => snapshot.seenIds.some((id) => id.includes('peer-x')),
+      "the snapshot carries peer-x's event in seenIds",
+    );
     await shutdown(a1);
 
     // Restart — recovery loads snapshot (seenIds includes 'peer-x#1').
@@ -225,7 +261,11 @@ describe('ReplicatedEventSourcedActor — snapshotting', () => {
 
     const a1 = await startActor('snap-4', 70_031, journal, snapshotStore);
     for (let i = 0; i < 10; i++) a1.ref.tell({ kind: 'add', n: 1 });
-    await waitFor(() => a1.instance.getValue() === 10);
+    await awaitCondition(() => a1.instance.getValue() === 10, {
+      ...WAIT, label: 'all ten events folded into the state',
+    });
+    // Fixed wait on purpose (#418): the claim is that *no* snapshot is ever
+    // written, and an absence has nothing to poll for.
     await sleep(80);
 
     // No snapshot was ever saved.

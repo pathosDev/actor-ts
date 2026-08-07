@@ -14,6 +14,7 @@ import { InMemoryTransport } from '../../../../../src/cluster/Transport.js';
 import { NodeAddress } from '../../../../../src/cluster/NodeAddress.js';
 import { LogLevel, NoopLogger } from '../../../../../src/Logger.js';
 import { ReplicatedEventSourcedActor } from '../../../../../src/persistence/ReplicatedEventSourcedActor.js';
+import { awaitCondition } from '../../../../util/AwaitCondition.js';
 
 type Command = { kind: 'add'; n: number };
 type Event = { kind: 'added'; n: number };
@@ -22,6 +23,13 @@ type State = { value: number };
 /** Static counter so the test can assert preStart actually ran on
  *  the surviving actor and threw on the duplicate. */
 let preStartFailures = 0;
+/**
+ * Its counterpart: the tests whose claim is "no failure" need a signal
+ * that preStart *ran at all*, otherwise a wait that ends too early reads
+ * `preStartFailures === 0` from an actor that never started and passes
+ * for the wrong reason (#418).
+ */
+let preStartSuccesses = 0;
 
 class Counter extends ReplicatedEventSourcedActor<Command, Event, State> {
   readonly persistenceId = 'shared-counter';
@@ -31,7 +39,7 @@ class Counter extends ReplicatedEventSourcedActor<Command, Event, State> {
     if (c.kind === 'add') await this.persist({ kind: 'added', n: c.n });
   }
   override async preStart(): Promise<void> {
-    try { await super.preStart(); }
+    try { await super.preStart(); preStartSuccesses += 1; }
     catch (err) { preStartFailures += 1; throw err; }
   }
 }
@@ -39,6 +47,7 @@ class Counter extends ReplicatedEventSourcedActor<Command, Event, State> {
 describe('ReplicatedEventSourcedActor — single-writer per pid (#58)', () => {
   test('spawning two actors with the same persistenceId on one node — second fails loudly', async () => {
     preStartFailures = 0;
+    preStartSuccesses = 0;
     const sysOptions = ActorSystemOptions.create()
       .withLogger(new NoopLogger())
       .withLogLevel(LogLevel.Off);
@@ -50,17 +59,21 @@ describe('ReplicatedEventSourcedActor — single-writer per pid (#58)', () => {
       .withGossipIntervalMs(30);
     const cluster = await Cluster.join(sys, clusterOptions);
     try {
-      // First actor — succeeds.
+      // First actor — succeeds.  It has to own the registration *before*
+      // the duplicate is spawned, or there is nothing to conflict with.
       const a1 = sys.spawn(Counter, 'a1');
-      // Give it time to enter preStart.
-      await Bun.sleep(50);
+      await awaitCondition(() => preStartSuccesses === 1, {
+        timeoutMs: 4_000, label: 'the first actor registered its persistenceId',
+      });
 
       // Second actor with the SAME pid — its preStart should throw.
       // The actor goes into supervision-restart loop; we let it
       // settle and then verify the registry blocked it consistently
       // (every restart attempt re-throws because a1 is still live).
       const a2 = sys.spawn(Counter, 'a2');
-      await Bun.sleep(150);
+      await awaitCondition(() => preStartFailures >= 1, {
+        timeoutMs: 4_000, label: 'the duplicate persistenceId was refused at preStart',
+      });
 
       expect(preStartFailures).toBeGreaterThanOrEqual(1);
 
@@ -75,6 +88,7 @@ describe('ReplicatedEventSourcedActor — single-writer per pid (#58)', () => {
 
   test('after a clean stop, a fresh actor with the same pid can be spawned', async () => {
     preStartFailures = 0;
+    preStartSuccesses = 0;
     const sysOptions = ActorSystemOptions.create()
       .withLogger(new NoopLogger())
       .withLogLevel(LogLevel.Off);
@@ -87,14 +101,21 @@ describe('ReplicatedEventSourcedActor — single-writer per pid (#58)', () => {
     const cluster = await Cluster.join(sys, clusterOptions);
     try {
       const a1 = sys.spawn(Counter, 'a1');
-      await Bun.sleep(50);
+      await awaitCondition(() => preStartSuccesses === 1, {
+        timeoutMs: 4_000, label: 'the first actor registered its persistenceId',
+      });
       a1.stop();
-      // Wait for postStop to release the registration.
+      // Precondition: postStop releases the registration and publishes no
+      // state of its own, so there is nothing to poll for here (#418).
       await Bun.sleep(50);
 
-      // Fresh spawn with the same pid — no failure.
+      // Fresh spawn with the same pid — no failure.  Waiting for the *second*
+      // success is what makes `preStartFailures === 0` mean anything; a wait
+      // that ended early would read zero from an actor that never started.
       const a2 = sys.spawn(Counter, 'a2');
-      await Bun.sleep(50);
+      await awaitCondition(() => preStartSuccesses === 2, {
+        timeoutMs: 4_000, label: 'the re-spawned actor registered the freed persistenceId',
+      });
       expect(preStartFailures).toBe(0);
 
       a2.stop();
@@ -110,6 +131,7 @@ describe('ReplicatedEventSourcedActor — single-writer per pid (#58)', () => {
     // other's registrations.  Pin this — a future bug that promotes
     // the registry to a module-level Set would break test isolation.
     preStartFailures = 0;
+    preStartSuccesses = 0;
     const sys1Options = ActorSystemOptions.create()
       .withLogger(new NoopLogger())
       .withLogLevel(LogLevel.Off);
@@ -134,7 +156,9 @@ describe('ReplicatedEventSourcedActor — single-writer per pid (#58)', () => {
       // Both spawn with persistenceId='shared-counter' — different systems.
       const a1 = sys1.spawn(Counter, 'a-in-sys1');
       const a2 = sys2.spawn(Counter, 'a-in-sys2');
-      await Bun.sleep(100);
+      await awaitCondition(() => preStartSuccesses === 2, {
+        timeoutMs: 4_000, label: 'both systems registered the same persistenceId',
+      });
       // Neither preStart should have failed — the registry is per-system.
       expect(preStartFailures).toBe(0);
       a1.stop();
@@ -153,13 +177,14 @@ describe('ReplicatedEventSourcedActor — single-writer per pid (#58)', () => {
     // silently degrade debuggability.
     preStartFailures = 0;
     const errors: string[] = [];
+    let registered = 0;
     class CapturingCounter extends ReplicatedEventSourcedActor<Command, Event, State> {
       readonly persistenceId = 'capture-pid';
       initialState(): State { return { value: 0 }; }
       onEvent(s: State, e: Event): State { return { value: s.value + e.n }; }
       async onCommand(): Promise<void> { /* noop */ }
       override async preStart(): Promise<void> {
-        try { await super.preStart(); }
+        try { await super.preStart(); registered += 1; }
         catch (err) { errors.push((err as Error).message); throw err; }
       }
     }
@@ -176,9 +201,13 @@ describe('ReplicatedEventSourcedActor — single-writer per pid (#58)', () => {
     const cluster = await Cluster.join(sys, clusterOptions);
     try {
       const a1 = sys.spawn(CapturingCounter, 'a1');
-      await Bun.sleep(50);
+      await awaitCondition(() => registered === 1, {
+        timeoutMs: 4_000, label: "the first actor registered 'capture-pid'",
+      });
       const a2 = sys.spawn(CapturingCounter, 'a2');
-      await Bun.sleep(100);
+      await awaitCondition(() => errors.length > 0, {
+        timeoutMs: 4_000, label: 'the duplicate preStart threw and was captured',
+      });
       expect(errors.some((m) => m.includes("'capture-pid'"))).toBe(true);
       a1.stop();
       a2.stop();
