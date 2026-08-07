@@ -7,8 +7,7 @@ import { NodeAddress } from '../../../../src/cluster/NodeAddress.js';
 import { LogLevel, NoopLogger } from '../../../../src/Logger.js';
 import { ActorSystem } from '../../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../../src/ActorSystemOptions.js';
-
-const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
+import { awaitCondition } from '../../../util/AwaitCondition.js';
 
 describe('Cluster — WeaklyUp', () => {
   test('joining member gets promoted to weakly-up after the timeout when no leader is present', async () => {
@@ -32,7 +31,13 @@ describe('Cluster — WeaklyUp', () => {
       if (evt instanceof MemberWeaklyUp) events.push(`weaklyUp:${evt.member.address}`);
     });
 
-    await sleep(220);
+    // 220 ms was one promotion window (120 ms) plus change — no margin at all
+    // once the gossip and seed-retry timers are competing for a loaded event
+    // loop.  Waiting for the event itself keeps the lower bound the config
+    // already enforces and removes the upper one (#418).
+    await awaitCondition(() => events.some(e => e.startsWith('weaklyUp:wup@h:55001')), {
+      timeoutMs: 4_000, intervalMs: 20, label: 'the joining member was promoted to weakly-up',
+    });
     expect(events.some(e => e.startsWith('weaklyUp:wup@h:55001'))).toBe(true);
 
     await cluster.leave();
@@ -68,7 +73,13 @@ describe('Cluster — WeaklyUp', () => {
 
     nodeB.subscribe((evt) => eventsB.push(evt.constructor.name));
 
-    await sleep(500);
+    // `MemberUp` is the anchor for both halves: weakly-up is an *earlier*
+    // state, so if the promotion had happened it would already be recorded
+    // by the time Up arrives.  That makes the negative assertion sound
+    // without a second fixed window.
+    await awaitCondition(() => eventsB.includes('MemberUp'), {
+      timeoutMs: 4_000, intervalMs: 20, label: 'B reached Up via leader convergence',
+    });
     expect(eventsB.includes('MemberUp')).toBe(true);
     expect(eventsB.includes('MemberWeaklyUp')).toBe(false);
 
