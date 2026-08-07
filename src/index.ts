@@ -641,6 +641,7 @@ export * from './io/index.js';
 // Cache abstraction (in-memory / Redis / Memcached) + extension.
 export {
   CacheError,
+  acquireLock,
   InMemoryCache,
   InMemoryCacheOptions,
   RedisCache,
@@ -655,6 +656,7 @@ export {
 } from './cache/index.js';
 export type {
   Cache,
+  CacheLock,
   InMemoryCacheOptionsType,
   RedisCacheOptionsType,
   RedisClientLike,

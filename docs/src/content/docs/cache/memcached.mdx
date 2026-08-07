@@ -132,6 +132,32 @@ import { Aside } from '@astrojs/starlight/components';
   spike when the cluster topology changes.
 </Aside>
 
+<Aside type="caution" title="ADD is atomic per server, not per cluster">
+  ```ts
+  servers: 'm1:11211,m2:11211';
+  // 'lock:job' hashes to m1 — ADD there is atomic, so one caller wins
+  // Add m3: the key may rehash to a server that has never seen it
+  // → setIfAbsent('lock:job') succeeds a second time, while the first
+  //   holder still believes it holds the lock
+  ```
+  Memcached has no cluster-wide coordination.  `ADD` is atomic on
+  **the one server a key hashes to**, which is what makes
+  `setIfAbsent` and `acquireLock` correct in steady state — every
+  contender for a given key reaches the same server.  A **topology
+  change breaks that assumption**: `memjs` rehashes the keyspace,
+  the key can land on a different server with no entry for it, and
+  the lock is handed out twice.
+
+  There is no client-side fix — the framework cannot detect a
+  rehash without reaching into memjs's internal hashring, which is
+  precisely the detail memjs exists to hide.  If you use
+  `acquireLock` on Memcached, either keep the server list fixed for
+  the lifetime of the lock, or treat a double-grant as possible and
+  guard the resource with a fencing token.  **Redis is the better
+  backend for locking**; Memcached locks are best kept to
+  optimisations where a duplicate run costs time, not correctness.
+</Aside>
+
 ## Where to next
 
 - **[Cache overview](/cache/overview/)** — the bigger

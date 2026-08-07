@@ -40,6 +40,38 @@ export interface Cache {
    * Set only if the key does not yet exist.  Returns true on success
    * (the value was stored), false on collision (someone else got there
    * first).  Used as the kernel of idempotency-key dedup.
+   *
+   * **Atomicity is a hard guarantee, not best effort.**  Every backend
+   * maps this onto a single native compare-and-set primitive — Redis
+   * `SET … NX`, Memcached `ADD`, and a `Map` read/write pair that the
+   * single-threaded event loop cannot interleave.  No backend may
+   * implement it as `get`-then-`set`: that pair has a window in which
+   * two callers both observe the key absent and both write, and every
+   * caller of this method is relying on exactly one of them winning.
+   * Contention is therefore safe by construction — with N concurrent
+   * callers, precisely one sees `true`.
+   *
+   * The atomicity is **per key on one server**.  It does not survive a
+   * Memcached cluster whose topology changes mid-flight, where a key can
+   * be rehashed onto a server that has never seen it (see the Memcached
+   * page); nor does it coordinate across Redis instances that are not
+   * the same logical keyspace.
+   *
+   * `ttlMs` is applied **only on the write that wins** — a losing call
+   * leaves the incumbent entry's expiry untouched, so a retry loop can
+   * never extend someone else's hold.  Sub-second precision is
+   * backend-dependent: Memcached's protocol is second-granular and
+   * rounds up, with a 1 s floor.
+   *
+   * **Pass a `ttlMs` whenever this is used as a lock.**  The pair
+   * "acquire, then release by deleting" has no owner-side recovery: if
+   * the holder crashes, is paused past its deadline, or loses the
+   * network before it deletes the key, nothing else will ever remove
+   * that entry.  Without a TTL the lock is wedged until an operator
+   * intervenes; with one, the TTL *is* the recovery mechanism and its
+   * length is the maximum stall.  See `acquireLock` in `CacheLock.ts`
+   * for a helper that wraps this in a token-checked release, so a
+   * holder whose TTL already lapsed cannot free the next owner's lock.
    */
   setIfAbsent<V = unknown>(key: string, value: V, ttlMs?: number): Promise<boolean>;
 
