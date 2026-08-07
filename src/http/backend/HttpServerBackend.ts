@@ -35,6 +35,28 @@ export interface ServerBinding {
 }
 
 /**
+ * Headers every shipped backend writes **before** a response's own, so an
+ * explicit header from a handler still wins.
+ *
+ * `nosniff` and nothing else.  It is the one header of the helmet-style
+ * bundle that cannot change how an existing application is embedded, framed
+ * or referred to, so shipping it on by default breaks nobody while closing
+ * the MIME-sniffing hole in every response the framework writes (#127).
+ * `X-Frame-Options`, `Cross-Origin-Resource-Policy` and friends *would*
+ * break iframes, cross-origin embedding and OAuth popups, so they stay
+ * opt-in — `newServerAt(…).withSecurityHeaders(…)` for the whole server, or
+ * the `securityHeaders()` middleware for a route subtree.
+ *
+ * This lives on the backend rather than in a middleware because a
+ * middleware only decorates responses that flow back through it: the
+ * backend's own 404, its body-parse 413 and every error short-circuit never
+ * do.  The backend is the single point every response passes.
+ */
+export const DEFAULT_RESPONSE_SECURITY_HEADERS: Readonly<Record<string, string>> = Object.freeze({
+  'x-content-type-options': 'nosniff',
+});
+
+/**
  * Pluggable HTTP server abstraction.  Backends translate our generic
  * route registrations to their native framework (Fastify, Bun.serve,
  * Express, …).  The DSL only ever talks to this interface.
@@ -70,4 +92,17 @@ export interface HttpServerBackend {
    * `HttpExtension.bind` and reported as a clear error.
    */
   registerWebSocket?(reg: WebsocketRouteRegistration): void;
+
+  /**
+   * Optional: replace the header map the backend writes ahead of every
+   * response it emits — including the error, not-found and upgrade-reject
+   * responses no middleware ever sees.  A response's own header must still
+   * win, so these are written first and overwritten, not merged over.
+   *
+   * `HttpExtension` wires `withSecurityHeaders(...)` here and passes `{}`
+   * for the opt-out.  It is only called when that was configured: a backend
+   * comes with its own default ({@link DEFAULT_RESPONSE_SECURITY_HEADERS}
+   * for the shipped ones), so an untouched builder must not overwrite it.
+   */
+  setDefaultResponseHeaders?(headers: Readonly<Record<string, string>>): void;
 }

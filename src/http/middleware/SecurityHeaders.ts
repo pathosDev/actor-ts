@@ -27,8 +27,15 @@ function serializePermissionsPolicy(policy: Readonly<Record<string, readonly str
   return parts.join(', ');
 }
 
-/** Build a middleware that adds the configured security headers to every response. */
-export function securityHeaders(options: SecurityHeadersOptions = {}): Middleware {
+/**
+ * Resolve the bundle to the concrete header map it stamps.
+ *
+ * Split out of {@link securityHeaders} because the server-wide
+ * `newServerAt(…).withSecurityHeaders(…)` seam applies the very same set at
+ * the backend's response chokepoint instead of as a middleware: one
+ * definition of what each option means, two layers that can enforce it.
+ */
+export function resolveSecurityHeaders(options: SecurityHeadersOptions = {}): Record<string, string> {
   const resolvedOptions = options as Partial<SecurityHeadersOptionsType>;
   const headers: Record<string, string> = {};
 
@@ -57,5 +64,11 @@ export function securityHeaders(options: SecurityHeadersOptions = {}): Middlewar
   const hstsOpt = resolvedOptions.hsts ?? false;
   if (hstsOpt !== false) headers['strict-transport-security'] = hstsHeaderValue(resolveHsts(hstsOpt));
 
+  return headers;
+}
+
+/** Build a middleware that adds the configured security headers to every response. */
+export function securityHeaders(options: SecurityHeadersOptions = {}): Middleware {
+  const headers = resolveSecurityHeaders(options);
   return async (_req, next) => applyHeaders(await next(), headers);
 }

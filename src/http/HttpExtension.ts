@@ -8,6 +8,8 @@ import { extensionId, type Extension, type ExtensionId } from '../Extension.js';
 import type { HttpServerBackend, ServerBinding } from './backend/HttpServerBackend.js';
 import { FastifyBackend } from './backend/FastifyBackend.js';
 import { HttpClient } from './HttpClient.js';
+import { resolveSecurityHeaders } from './middleware/SecurityHeaders.js';
+import type { SecurityHeadersOptions } from './middleware/SecurityHeadersOptions.js';
 import { compile, defaultErrorResponse, type Route } from './Route.js';
 import type { HttpRequest, HttpResponse } from './types.js';
 import { ConnectionTracker, trackSocket } from './websocket/ConnectionWiring.js';
@@ -15,6 +17,26 @@ import { ConnectionTracker, trackSocket } from './websocket/ConnectionWiring.js'
 export interface ServerBuilder {
   /** Override the default Fastify backend (or use Express / Hono). */
   useBackend(backend: HttpServerBackend): ServerBuilder;
+  /**
+   * Security response headers for **this whole server**, stamped by the
+   * backend onto every response it writes — including the error, not-found
+   * and WebSocket upgrade-reject paths that never flow back through a
+   * middleware, and the throw short-circuits that skip one.
+   *
+   * Left alone, a server sends `X-Content-Type-Options: nosniff` and nothing
+   * else: it is the only header of the bundle that cannot change how an
+   * existing application is embedded, framed or referred to.  Passing
+   * options opts into the **full** {@link securityHeaders} bundle — its own
+   * defaults included, so `X-Frame-Options: DENY` and
+   * `Cross-Origin-Resource-Policy: same-origin` come along and will break
+   * iframes and cross-origin embedding if that is how the app is used.
+   * `false` turns the mechanism off entirely.
+   *
+   * A response's own header always wins, whatever is configured here.
+   * Requires a backend that supports `setDefaultResponseHeaders` (all
+   * shipped backends do).
+   */
+  withSecurityHeaders(options: SecurityHeadersOptions | false): ServerBuilder;
   /**
    * Last-resort handler for errors that escape every route-level
    * `handleErrors(...)`, plus backend-internal errors (body-parse
@@ -43,10 +65,18 @@ export class HttpExtension implements Extension {
   newServerAt(host: string, port: number): ServerBuilder {
     let backend: HttpServerBackend | null = null;
     let errorHandler: ((err: unknown, request: HttpRequest) => Promise<HttpResponse> | HttpResponse) | null = null;
+    // `undefined` is "never configured" and must stay distinguishable from
+    // `false`: the backends ship with their own default header set, so an
+    // untouched builder has to leave it alone rather than overwrite it.
+    let securityHeadersOptions: SecurityHeadersOptions | false | undefined;
     const system = this.system;
     return {
       useBackend(b: HttpServerBackend): ServerBuilder {
         backend = b;
+        return this;
+      },
+      withSecurityHeaders(options: SecurityHeadersOptions | false): ServerBuilder {
+        securityHeadersOptions = options;
         return this;
       },
       withErrorHandler(handler: (err: unknown, request: HttpRequest) => Promise<HttpResponse> | HttpResponse): ServerBuilder {
@@ -149,6 +179,19 @@ export class HttpExtension implements Extension {
               return defaultErrorResponse(err);
             }
           });
+        }
+
+        // Server-wide response headers.  Only pushed when the builder was
+        // actually configured — see the declaration of the local above.
+        if (securityHeadersOptions !== undefined) {
+          if (typeof active.setDefaultResponseHeaders !== 'function') {
+            throw new Error(
+              `HTTP backend "${active.name}" does not support withSecurityHeaders (no setDefaultResponseHeaders hook).`,
+            );
+          }
+          active.setDefaultResponseHeaders(
+            securityHeadersOptions === false ? {} : resolveSecurityHeaders(securityHeadersOptions),
+          );
         }
 
         // Server-wide error handler.  Backends consult it before their
