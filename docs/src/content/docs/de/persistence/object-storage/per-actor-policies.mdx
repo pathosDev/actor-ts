@@ -18,7 +18,11 @@ bestimmte Actors **andere Einstellungen**:
 ```ts
 class SensitiveActor extends DurableStateActor<Command, State> {
   protected encryption() {
-    return { mode: 'client-aes256-gcm' as const, masterKeys: sensitiveKeyRing };
+    return {
+      mode: 'client-aes256-gcm' as const,
+      masterKeys: sensitiveKeyRing,
+      info: 'acme/prod/sensitive/v1',
+    };
   }
 
   protected compression() {
@@ -37,7 +41,7 @@ die zurückgegebene Config an.
 const objectStorageDurableStateStoreOptions = ObjectStorageDurableStateStoreOptions.create()
   .withBackend(backend)
   .withCompression({ algorithm: 'gzip', level: 6 })
-  .withEncryption({ mode: 'client-aes256-gcm', masterKeys: defaultKeyRing });
+  .withEncryption({ mode: 'client-aes256-gcm', masterKeys: defaultKeyRing, info: 'acme/prod/durable-state/v1' });
 const store = new ObjectStorageDurableStateStore(objectStorageDurableStateStoreOptions);
 
 // Per-Actor: Override
@@ -61,7 +65,12 @@ Jede Methode ist **unabhängig überschreibbar**:
 ```ts
 class CreditCardActor extends DurableStateActor<...> {
   protected encryption() {
-    return { mode: 'client-aes256-gcm' as const, masterKeys: pciKeyRing };   // separater Key Ring für PCI-Scope
+    // Separater Key Ring UND separater HKDF-Kontext für den PCI-Scope.
+    return {
+      mode: 'client-aes256-gcm' as const,
+      masterKeys: pciKeyRing,
+      info: 'acme/prod/pci/v1',
+    };
   }
 }
 
@@ -144,7 +153,11 @@ sind.
 // Neu: Verschlüsselung unter pciKeyRing.
 class CreditCardActor extends DurableStateActor<...> {
   protected encryption() {
-    return { mode: 'client-aes256-gcm' as const, masterKeys: pciKeyRing };
+    return {
+      mode: 'client-aes256-gcm' as const,
+      masterKeys: pciKeyRing,
+      info: 'acme/prod/pci/v1',
+    };
   }
 }
 ```
@@ -168,7 +181,11 @@ class Account extends PersistentActor<Command, Event, State> {
 
   // Per-Actor-Verschlüsselung für Snapshots:
   override encryption() {
-    return { mode: 'client-aes256-gcm' as const, masterKeys: accountKeyRing };
+    return {
+      mode: 'client-aes256-gcm' as const,
+      masterKeys: accountKeyRing,
+      info: 'acme/prod/snapshot/v1',
+    };
   }
 }
 ```

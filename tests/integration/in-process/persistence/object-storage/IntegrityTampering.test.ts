@@ -31,6 +31,9 @@ import {
 let dir: string;
 let backend: FilesystemObjectStorageBackend;
 
+/** HKDF context — required on every client-side encryption config (#108). */
+const info = 'acme/test/snapshot/v1';
+
 const INTEGRITY_KEY = new Uint8Array(32).fill(7);
 const OTHER_KEY     = new Uint8Array(32).fill(8);
 
@@ -217,7 +220,7 @@ describe('#116 — encrypted body is already protected by AES-GCM', () => {
     const storeOptions = ObjectStorageDurableStateStoreOptions.create()
       .withBackend(backend)
       .withCompression({ algorithm: 'none' })
-      .withEncryption({ mode: 'client-aes256-gcm', masterKey });
+      .withEncryption({ mode: 'client-aes256-gcm', masterKey, info });
     const store = new ObjectStorageDurableStateStore(storeOptions);
     await store.upsert('a', 0, { balance: 100 });
 

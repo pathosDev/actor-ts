@@ -85,6 +85,42 @@ export type MasterKeyRing = {
  * implicitly version 0 — backwards compatible with bodies written
  * before rotation support landed) or a `masterKeys` ring with one
  * `active` entry plus optional `retired` entries (#8).
+ *
+ * ### Why `info` is mandatory (#108)
+ *
+ * `info` is HKDF's context-binding input (RFC 5869 §3.2): it is mixed
+ * into the key-derivation alongside the salt, so two derivations that
+ * differ only in `info` yield unrelated subkeys.  It used to be
+ * optional, defaulting to a constant baked into the framework — which
+ * meant every deployment that shared a master key (staging restored
+ * from a production dump, a DR region, a per-tenant fan-out that reuses
+ * one master) also shared **the exact same subkey per `persistenceId`**.
+ * Cross-environment key separation silently did not exist, and nothing
+ * in the config hinted at it.
+ *
+ * Making the field required moves that decision to the operator, where
+ * it belongs.  A compile error is a far better outcome than a default
+ * that quietly collapses two security domains into one.
+ *
+ * **Choosing a value.**  Encode *environment + purpose + version*, most
+ * specific first, and treat it as immutable once data exists:
+ *
+ *   - `'acme/prod/snapshot/v1'`
+ *   - `'acme/staging/snapshot/v1'`
+ *   - `'acme/prod/durable-state/v1'`
+ *
+ * Different environments MUST get different strings even when they run
+ * on the same master key.  Different payload kinds (snapshots vs.
+ * durable state) SHOULD, so a compromise of one derivation context does
+ * not extend to the other.  The trailing version is there so a future
+ * derivation-context rotation has somewhere to go.
+ *
+ * **`info` is not recorded on the wire.**  Unlike the master-key
+ * version, no manifest byte says which `info` a body was written under,
+ * so changing it makes every existing body undecryptable until a
+ * re-encryption sweep rewrites them — pass `newInfo` to
+ * `reEncryptObjectStorage` for that.  Pick the value before the first
+ * write.
  */
 export type EncryptionConfig =
   | { readonly mode: 'none' }
@@ -92,11 +128,11 @@ export type EncryptionConfig =
   | { readonly mode: 'sse-kms'; readonly kmsKeyId: string }
   | { readonly mode: 'client-aes256-gcm';
       readonly masterKey: Uint8Array;       // 32 bytes — single-key shorthand (version 0)
-      readonly info?: string;               // HKDF "info" string
+      readonly info: string;                // HKDF "info" string — deployment-specific, see above
     }
   | { readonly mode: 'client-aes256-gcm';
       readonly masterKeys: MasterKeyRing;   // multi-version (rotation)
-      readonly info?: string;
+      readonly info: string;
     };
 
 /**
