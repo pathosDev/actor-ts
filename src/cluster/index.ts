@@ -118,11 +118,16 @@ export {
   Publish,
   Subscribe,
   SubscribeAcknowledgment,
+  SubscribeRejected,
   Unsubscribe,
   UnsubscribeAcknowledgment,
   UnsubscribeAll,
 } from './pubsub/index.js';
-export type { DistributedPubSubOptionsType } from './pubsub/index.js';
+export type {
+  DistributedPubSubOptionsType,
+  PubSubSubscriberRef,
+  PubSubSubscribeRejectionReason,
+} from './pubsub/index.js';
 
 // Sharding.
 export { ClusterSharding } from './sharding/ClusterSharding.js';

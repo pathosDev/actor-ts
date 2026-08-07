@@ -18,7 +18,12 @@ export {
   ReceptionistExtension,
   ReceptionistId,
 } from './Receptionist.js';
-export { ReceptionistOptions, ReceptionistOptionsBuilder, ReceptionistOptionsValidator } from './ReceptionistOptions.js';
+export {
+  ReceptionistOptions,
+  ReceptionistOptionsBuilder,
+  ReceptionistOptionsValidator,
+  readReceptionistOptionsFromConfig,
+} from './ReceptionistOptions.js';
 export type { ReceptionistOptionsType } from './ReceptionistOptions.js';
 export {
   Register,
@@ -26,7 +31,12 @@ export {
   Deregister,
   Find,
   Subscribe,
+  SubscribeRejected,
   Unsubscribe,
   Listing,
 } from './ReceptionistMessages.js';
-export type { ReceptionistGossipMessage } from './ReceptionistMessages.js';
+export type {
+  ReceptionistGossipMessage,
+  ReceptionistSubscriberRef,
+  ReceptionistSubscribeRejectionReason,
+} from './ReceptionistMessages.js';

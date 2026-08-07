@@ -234,6 +234,7 @@ erreichen.
 | Unautorisierter Cluster-Join | mTLS (CA-signierte Peer-Certs) |
 | Insider mit gestohlenem Cert | Cert-Rotation + Revocation |
 | Fehlerhafter oder feindlicher Wire-Frame | Shape-Prüfung an der Decode-Grenze |
+| Peer lässt die Registries eines Knotens unbegrenzt wachsen | Obergrenzen pro Registry in PubSub und Receptionist |
 | Kompromittierter Pod im Cluster | Application-Level-Auth (hier nicht abgedeckt) |
 
 Der Cluster-Transport handhabt Transport-Level-Sicherheit.
@@ -284,6 +285,41 @@ Jede Abweisung wird auf `WARN` mit Peer und beanstandetem Feld
 geloggt, damit ein verworfener Frame diagnostizierbar bleibt —
 eine Versionsabweichung und ein feindlicher Peer sehen im Log
 unterschiedlich aus.
+
+## Was ein wohlgeformter Frame trotzdem nicht wachsen lassen kann
+
+Die Shape-Prüfung sagt, dass ein Frame *lesbar* ist — nicht,
+dass es umsonst ist, auf ihn zu reagieren. PubSub-Gossip ist das
+saubere Beispiel: ein Peer, der 100 000 Topics nennt, für die er
+Subscriber beansprucht, schickt einen völlig legalen Frame, und
+der Empfänger legte dafür früher 100 000 Map-Einträge an — kein
+lokales `Subscribe`, kein fehlerhaftes Feld, keine Logzeile. Der
+Receptionist hatte auf seinem eigenen Gossip-Pfad dieselbe Form.
+
+Beide Registries sind jetzt begrenzt, und die Grenzen gelten für
+den Gossip-Pfad genauso wie für lokale Aufrufe:
+
+| Registry | Begrenzt durch | Default |
+| --- | --- | --- |
+| PubSub-Subscriber pro Topic | `cluster.pub-sub.max-subscribers-per-topic` | `10000` |
+| PubSub-Topics | `cluster.pub-sub.max-topics` | `10000` |
+| PubSub-Remote-Ansprüche pro Topic | `cluster.pub-sub.max-remote-nodes-per-topic` | `1000` |
+| Receptionist-Subscriber pro Key | `cluster.receptionist.max-subscribers-per-key` | `1000` |
+| Receptionist-Subscriber insgesamt | `cluster.receptionist.max-subscribers-total` | `10000` |
+
+Ein Anspruch über einer Grenze wird verworfen und geloggt, statt
+auf der Wire abgewiesen zu werden — der Frame ist wohlgeformt,
+und die Verbindung deswegen zu kappen ließe einen lauten Peer
+eine gesunde Leitung kosten. Ein *lokales* `Subscribe` über einer
+Grenze wird stattdessen mit `SubscribeRejected` beantwortet, denn
+der Aufrufer kann etwas dagegen tun. Beide Registries watchen
+außerdem ihre Subscriber, sodass die andere Hälfte des alten
+Wachstums — Refs, die stoppten, ohne je zu unsubscriben —
+zurückgewonnen statt begrenzt wird.
+
+Senke die Defaults für ein Deployment, dessen legitime Zahlen
+weit darunter liegen: eine Obergrenze begrenzt nur den Schaden,
+und eine weit über der echten Nutzung begrenzt sehr wenig.
 
 ## Wer was sagen darf
 

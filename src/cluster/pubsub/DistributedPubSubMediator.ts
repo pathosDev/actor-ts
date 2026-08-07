@@ -2,6 +2,7 @@ import { match, P } from 'ts-pattern';
 import { Actor } from '../../Actor.js';
 import { ActorRef } from '../../ActorRef.js';
 import type { Cancellable } from '../../Scheduler.js';
+import { DeadLetter, Terminated } from '../../SystemMessages.js';
 import { DEFAULT_GOSSIP_INTERVAL_MS } from '../../util/Constants.js';
 import { SystemActorNames, SystemGroups, systemActorPath } from '../../internal/SystemPaths.js';
 import { DistributedPubSubOptionsValidator } from './DistributedPubSubOptions.js';
@@ -16,8 +17,10 @@ import {
   Publish,
   Subscribe,
   SubscribeAcknowledgment,
+  SubscribeRejected,
   type PubSubGossipMessage,
   type PubSubPublishMessage,
+  type PubSubSubscribeRejectionReason,
   type PubSubWireMessage,
   Unsubscribe,
   UnsubscribeAcknowledgment,
@@ -33,11 +36,41 @@ export function mediatorPath(systemName: string): string {
   return systemActorPath(systemName, SystemGroups.clusterPubSub, SystemActorNames.pubSubMediator);
 }
 
+/** What the mediator accepts — from local actors and from remote mediators. */
+export type MediatorMessage =
+  | Subscribe
+  | Unsubscribe
+  | UnsubscribeAll
+  | Publish
+  | GetTopics
+  | PubSubPublishMessage;
+
+/**
+ * Everything the mediator can find in its mailbox, including system traffic.
+ * `Terminated` is in the union because the mediator watches its subscribers:
+ * without the arm it would fall through to `onUnhandled` and a stopped
+ * subscriber would never be removed (the shape of #709).
+ */
+export type MediatorInbox = MediatorMessage | Terminated;
+
+/** Local subscribers per topic when nothing else is configured. */
+const DEFAULT_MAX_SUBSCRIBERS_PER_TOPIC = 10_000;
+/** Distinct topics per mediator when nothing else is configured. */
+const DEFAULT_MAX_TOPICS = 10_000;
+/** Remote claimants per topic when nothing else is configured. */
+const DEFAULT_MAX_REMOTE_NODES_PER_TOPIC = 1_000;
+
 type SubscriberSet = {
   /** Locally-registered subscribers — receive direct Publish deliveries. */
   readonly local: Map<string, ActorRef>;
   /** Remote node addresses with at least one subscriber for this topic. */
   readonly remoteNodes: Set<string>;
+};
+
+/** The cap a {@link Subscribe} ran into, and the value that cap was set to. */
+type CapRefusal = {
+  readonly reason: PubSubSubscribeRejectionReason;
+  readonly limit: number;
 };
 
 /**
@@ -48,22 +81,44 @@ type SubscriberSet = {
  *
  * Simple delta model: each mediator periodically gossips its local
  * topic set to one random peer.  Peers merge into their view.
+ *
+ * Every registry the mediator keeps is **bounded and watched**.  Three
+ * axes grew without limit before: local subscribers per topic, distinct
+ * topics (reachable from a peer's gossip, not just from local calls), and
+ * remote claimants per topic.  Publish fan-out walks all three, so an
+ * unbounded registry is a publish-latency problem as much as a memory one
+ * (#139).
  */
-export class DistributedPubSubMediator extends Actor<
-  Subscribe | Unsubscribe | UnsubscribeAll | Publish | GetTopics | PubSubPublishMessage
-> {
+export class DistributedPubSubMediator extends Actor<MediatorInbox> {
   private readonly topics = new Map<string, SubscriberSet>();
   private gossipTimer: Cancellable | null = null;
   private unsubscribeWire: (() => void) | null = null;
   private unsubscribeCluster: (() => void) | null = null;
   private version = 0;
 
+  /**
+   * Topics each local subscriber is registered for.  `Terminated` carries
+   * only a ref, and deciding whether a ref may be unwatched otherwise means
+   * scanning every topic — both O(topics) on paths a subscriber controls
+   * the rate of.
+   */
+  private readonly topicsBySubscriber = new Map<string, Set<string>>();
+
   readonly options: DistributedPubSubOptionsType;
+
+  private readonly maxSubscribersPerTopic: number;
+  private readonly maxTopics: number;
+  private readonly maxRemoteNodesPerTopic: number;
+  private readonly sendToDeadLettersWhenNoSubscribers: boolean;
 
   constructor(options: DistributedPubSubOptions) {
     super();
     this.options = options as DistributedPubSubOptionsType;
     new DistributedPubSubOptionsValidator().validate(this.options);
+    this.maxSubscribersPerTopic = this.options.maxSubscribersPerTopic ?? DEFAULT_MAX_SUBSCRIBERS_PER_TOPIC;
+    this.maxTopics = this.options.maxTopics ?? DEFAULT_MAX_TOPICS;
+    this.maxRemoteNodesPerTopic = this.options.maxRemoteNodesPerTopic ?? DEFAULT_MAX_REMOTE_NODES_PER_TOPIC;
+    this.sendToDeadLettersWhenNoSubscribers = this.options.sendToDeadLettersWhenNoSubscribers ?? true;
   }
 
   override preStart(): void {
@@ -90,13 +145,14 @@ export class DistributedPubSubMediator extends Actor<
     this.gossipTimer?.cancel();
   }
 
-  override onReceive(message: Subscribe | Unsubscribe | UnsubscribeAll | Publish | GetTopics | PubSubPublishMessage): void {
+  override onReceive(message: MediatorInbox): void {
     match(message)
       .with(P.instanceOf(Subscribe), (m) => this.onSubscribe(m))
       .with(P.instanceOf(Unsubscribe), (m) => this.onUnsubscribe(m))
       .with(P.instanceOf(UnsubscribeAll), (m) => this.onUnsubscribeAll(m))
       .with(P.instanceOf(Publish), (m) => this.onPublish(m))
       .with(P.instanceOf(GetTopics), (m) => this.onGetTopics(m))
+      .with(P.instanceOf(Terminated), (m) => this.onTerminated(m))
       // Remote Publish forwarded from another mediator (plain envelope, not a class instance).
       .with({ kind: 'pubsub-publish' }, (m) => this.onPubSubPublish(m))
       .otherwise(() => this.onUnhandled());
@@ -105,18 +161,31 @@ export class DistributedPubSubMediator extends Actor<
   /* ----------------------------- Command handlers ----------------------------- */
 
   private onSubscribe(message: Subscribe): void {
-    const set = this.getOrCreateSet(message.topic);
     const key = message.ref.path.toString();
+    const existing = this.topics.get(message.topic);
+    if (!existing?.local.has(key)) {
+      const refusal = this.capRefusal(existing);
+      if (refusal) {
+        this.log.warn(
+          `[pubsub] refusing a subscription to '${message.topic}' by ${key} — `
+          + `${refusal.reason} (${refusal.limit}) is full`,
+        );
+        this.replyToSubscriber(message, new SubscribeRejected(message.topic, refusal.reason, refusal.limit));
+        return;
+      }
+    }
+    const set = this.getOrCreateSet(message.topic);
     let changed = false;
     if (!set.local.has(key)) {
       set.local.set(key, message.ref);
+      this.rememberSubscription(message.ref, message.topic);
       this.version++;
       changed = true;
     }
     this.log.debug(
       `[pubsub] subscribe '${message.topic}' by ${key} (local subs now: ${set.local.size}; ${changed ? 'new' : 'duplicate'})`,
     );
-    this.sender.forEach((s) => s.tell(new SubscribeAcknowledgment(message)));
+    this.replyToSubscriber(message, new SubscribeAcknowledgment(message));
     // Eager broadcast: peers learn about the new subscription within
     // one hop, deterministically.  Without this the random-peer-per-
     // tick gossip leaves a probabilistic gap (~1/2^N for N ticks)
@@ -130,6 +199,7 @@ export class DistributedPubSubMediator extends Actor<
     const key = message.ref.path.toString();
     let changed = false;
     if (set?.local.delete(key)) {
+      this.forgetSubscription(message.ref, message.topic);
       this.version++;
       changed = true;
       if (set.local.size === 0 && set.remoteNodes.size === 0) this.topics.delete(message.topic);
@@ -142,13 +212,17 @@ export class DistributedPubSubMediator extends Actor<
   }
 
   private onUnsubscribeAll(message: UnsubscribeAll): void {
-    const key = message.ref.path.toString();
-    let changed = false;
-    for (const [topic, set] of this.topics) {
-      if (set.local.delete(key)) { this.version++; changed = true; }
-      if (set.local.size === 0 && set.remoteNodes.size === 0) this.topics.delete(topic);
-    }
-    if (changed) this.eagerGossip();
+    if (this.dropSubscriber(message.ref)) this.eagerGossip();
+  }
+
+  /**
+   * A watched subscriber stopped.  `Unsubscribe` is caller-cooperative and a
+   * stopped actor cannot send one, so without this arm every subscriber that
+   * dies mid-subscription stays in its topics, keeps them alive against the
+   * topic cap, and costs a dead-lettered `tell` on every publish.
+   */
+  private onTerminated(message: Terminated): void {
+    if (this.dropSubscriber(message.actor)) this.eagerGossip();
   }
 
   private onGetTopics(message: GetTopics): void {
@@ -162,32 +236,59 @@ export class DistributedPubSubMediator extends Actor<
     this.log.debug(
       `[pubsub] publish '${message.topic}' → ${localCount} local + ${remoteCount} remote node(s)`,
     );
-    this.deliverLocal(message.topic, message.message);
-    if (!set) return;
-    const payload: PubSubPublishMessage = { kind: 'pubsub-publish', topic: message.topic, body: message.message };
-    for (const nodeStr of set.remoteNodes) {
-      const node = NodeAddress.parse(nodeStr);
-      if (node.equals(this.options.cluster.selfAddress)) continue;
-      this.sendWire(node, payload);
+    const delivered = this.deliverLocal(message.topic, message.message);
+    let forwarded = 0;
+    if (set) {
+      const payload: PubSubPublishMessage = { kind: 'pubsub-publish', topic: message.topic, body: message.message };
+      for (const nodeStr of set.remoteNodes) {
+        const node = NodeAddress.parse(nodeStr);
+        if (node.equals(this.options.cluster.selfAddress)) continue;
+        this.sendWire(node, payload);
+        forwarded++;
+      }
     }
+    if (delivered === 0 && forwarded === 0) this.deadLetter(message.topic, message.message);
   }
 
   private onPubSubPublish(message: PubSubPublishMessage): void {
-    this.deliverLocal(message.topic, message.body);
+    // Zero local subscribers here means the sending node acted on a topic
+    // claim we no longer honour — the message travelled a hop and reached
+    // nobody, which is exactly what dead letters are for.
+    if (this.deliverLocal(message.topic, message.body) === 0) {
+      this.deadLetter(message.topic, message.body);
+    }
   }
 
   private onUnhandled(): void {
     /* unknown message */
   }
 
-  private deliverLocal<T>(topic: string, body: T): void {
+  /** Fan out to local subscribers; returns how many actually got the body. */
+  private deliverLocal<T>(topic: string, body: T): number {
     const set = this.topics.get(topic);
-    if (!set) return;
+    if (!set) return 0;
+    let delivered = 0;
     for (const ref of set.local.values()) {
-      try { ref.tell(body as never); } catch (e) {
+      try { ref.tell(body as never); delivered++; } catch (e) {
         this.log.warn(`pubsub: subscriber ${ref} threw on delivery`, e);
       }
     }
+    return delivered;
+  }
+
+  /**
+   * Route a publish that reached nobody to the system's dead letters.
+   *
+   * Silence was the old behaviour and it hides the single most common
+   * pub-sub mistake — a typo in a topic name looks identical to a topic
+   * whose subscribers have not gossiped in yet.  The `recipient` is the
+   * mediator rather than a subscriber because there was none; the topic
+   * travels in the `DeadLetter`'s message via the log line below it.
+   */
+  private deadLetter<T>(topic: string, body: T): void {
+    if (!this.sendToDeadLettersWhenNoSubscribers) return;
+    this.log.debug(`[pubsub] publish '${topic}' reached no subscriber → dead letters`);
+    this.system.deadLetters.tell(new DeadLetter(body, this.sender.toNullable(), this.self));
   }
 
   /* --------------------------------- Gossip ---------------------------------- */
@@ -245,6 +346,13 @@ export class DistributedPubSubMediator extends Actor<
    * unsubscribes propagate — so trusting the payload's self-declared address
    * let any peer name another node and wipe every topic subscription that node
    * had registered cluster-wide (#582).
+   *
+   * The caps apply here too, and that is the half that matters most: a peer
+   * naming 100 000 topics it "has subscribers for" allocates 100 000 entries
+   * on every receiver, and no local `Subscribe` had to be involved.  A claim
+   * over a cap is dropped and logged rather than refused on the wire — the
+   * frame is otherwise well-formed, and dropping the connection over it
+   * would let one noisy peer cost a healthy link.
    */
   private handleGossip(message: PubSubGossipMessage, from: NodeAddress): void {
     const senderAddr = from.toString();
@@ -254,9 +362,18 @@ export class DistributedPubSubMediator extends Actor<
       set.remoteNodes.delete(senderAddr);
       if (set.local.size === 0 && set.remoteNodes.size === 0) this.topics.delete(topic);
     }
+    let refused = 0;
     for (const topic of message.entries) {
-      const set = this.getOrCreateSet(topic);
-      set.remoteNodes.add(senderAddr);
+      const existing = this.topics.get(topic);
+      if (!existing && this.topics.size >= this.maxTopics) { refused++; continue; }
+      if (existing && existing.remoteNodes.size >= this.maxRemoteNodesPerTopic) { refused++; continue; }
+      this.getOrCreateSet(topic).remoteNodes.add(senderAddr);
+    }
+    if (refused > 0) {
+      this.log.warn(
+        `[pubsub] dropped ${refused} topic claim(s) gossiped by ${senderAddr} — `
+        + `maxTopics (${this.maxTopics}) / maxRemoteNodesPerTopic (${this.maxRemoteNodesPerTopic}) is full`,
+      );
     }
   }
 
@@ -289,6 +406,92 @@ export class DistributedPubSubMediator extends Actor<
       this.topics.set(topic, subscriberSet);
     }
     return subscriberSet;
+  }
+
+  /**
+   * The cap a fresh local subscription would breach, or `null` when there is
+   * room.  `existing` is the topic's set, or `undefined` when the topic does
+   * not exist yet — in which case the topic cap is the one at stake.
+   */
+  private capRefusal(existing: SubscriberSet | undefined): CapRefusal | null {
+    if (!existing && this.topics.size >= this.maxTopics) {
+      return { reason: 'maxTopics', limit: this.maxTopics };
+    }
+    if (existing && existing.local.size >= this.maxSubscribersPerTopic) {
+      return { reason: 'maxSubscribersPerTopic', limit: this.maxSubscribersPerTopic };
+    }
+    return null;
+  }
+
+  /**
+   * Answer a `Subscribe` on its `replyTo`, falling back to the sender.
+   *
+   * Neither is guaranteed: `mediator.tell(new Subscribe(…))` from outside an
+   * actor has no sender, and `replyTo` is optional.  A refusal that reaches
+   * nobody is worth a log line — an acknowledgment that does is not.
+   */
+  private replyToSubscriber(
+    message: Subscribe,
+    reply: SubscribeAcknowledgment | SubscribeRejected,
+  ): void {
+    const target = message.replyTo ?? this.sender.toNullable();
+    if (target) { target.tell(reply as never); return; }
+    if (reply instanceof SubscribeRejected) {
+      this.log.warn(
+        `[pubsub] ${reply} could not be delivered — the Subscribe carried no replyTo `
+        + 'and arrived without a sender',
+      );
+    }
+  }
+
+  /** Book a local subscription and start watching the subscriber. */
+  private rememberSubscription(ref: ActorRef, topic: string): void {
+    const key = ref.path.toString();
+    let subscribed = this.topicsBySubscriber.get(key);
+    if (!subscribed) {
+      subscribed = new Set();
+      this.topicsBySubscriber.set(key, subscribed);
+      this.context.watch(ref);
+    }
+    subscribed.add(topic);
+  }
+
+  /** Drop one subscription, and the death watch with the subscriber's last one. */
+  private forgetSubscription(ref: ActorRef, topic: string): void {
+    const key = ref.path.toString();
+    const subscribed = this.topicsBySubscriber.get(key);
+    if (!subscribed) return;
+    subscribed.delete(topic);
+    if (subscribed.size === 0) {
+      this.topicsBySubscriber.delete(key);
+      this.context.unwatch(ref);
+    }
+  }
+
+  /**
+   * Remove `ref` from every topic it subscribed to — the shared body of
+   * `UnsubscribeAll` and `Terminated`.  Returns whether anything changed, so
+   * the caller only pays for an eager gossip round when it did.
+   *
+   * Walks the subscriber's own topic set rather than the whole map: every
+   * `local` insertion goes through `rememberSubscription`, so the index is
+   * authoritative, and a mass termination of per-request subscribers would
+   * otherwise cost O(topics) each.
+   */
+  private dropSubscriber(ref: ActorRef): boolean {
+    const key = ref.path.toString();
+    const subscribed = this.topicsBySubscriber.get(key);
+    if (!subscribed) return false;
+    this.topicsBySubscriber.delete(key);
+    this.context.unwatch(ref);
+    let changed = false;
+    for (const topic of subscribed) {
+      const set = this.topics.get(topic);
+      if (!set) continue;
+      if (set.local.delete(key)) { this.version++; changed = true; }
+      if (set.local.size === 0 && set.remoteNodes.size === 0) this.topics.delete(topic);
+    }
+    return changed;
   }
 
   private sendWire(to: NodeAddress, message: PubSubWireMessage): void {
