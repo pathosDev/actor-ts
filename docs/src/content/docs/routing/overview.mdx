@@ -63,18 +63,26 @@ pool.tell({ payload: 'e' });   // → worker-1 (round-robin wraps)
 The `pool` ref looks like a single actor to callers; under the hood
 the routing actor cycles through four `Worker` children.
 
-## The four strategies
+## The five strategies
 
 | Strategy | What it does | Best for |
 | --- | --- | --- |
 | **`round-robin`** | One routee per message, cycling.  Even distribution by message count. | Homogeneous workloads. |
 | **`random`** | One routee per message, uniformly random. | Same as round-robin, but stateless. |
 | **`broadcast`** | Every routee gets every message. | Notifications, cache invalidations. |
+| **`smallest-mailbox`** *(local only)* | One routee per message, the one with the shortest queue. | Uneven per-message cost. |
 | **`consistent-hashing`** *(cluster only)* | One routee per message, key-pinned. | Per-key state (sharding-lite). |
 
-A fifth "smallest-mailbox" strategy (route to the routee with the
-shortest queue) is **not** implemented in the local router; it's a
-roadmap item for the cluster router.
+`smallest-mailbox` is the one that balances by **backlog** instead of
+by message count.  Round-robin hands out turns blindly, so a routee
+that drew an expensive message still gets its next 1-in-N on schedule
+and falls behind; smallest-mailbox reads each routee's queue depth and
+picks the shallowest, so a busy routee stops being chosen until it
+catches up.  It pays for that with one depth read per routee per
+message, which is why round-robin remains the default.
+
+It is **local only**: a cluster router cannot see how deep a remote
+routee's mailbox is, so `ClusterRouter` has no equivalent.
 
 See [Strategies](/routing/strategies/) for the deep dive,
 plus the `Broadcast` message wrapper that overrides the strategy
@@ -148,7 +156,8 @@ reach for something else.
 ## Where to next
 
 - **[Router](/routing/router/)** — the `Router.roundRobin(...)`,
-  `.random(...)`, `.broadcast(...)`, `.custom(...)` factories.
+  `.random(...)`, `.broadcast(...)`, `.smallestMailbox(...)`,
+  `.custom(...)` factories.
 - **[Strategies](/routing/strategies/)** — what each
   strategy does, plus writing your own.
 - **[Pool vs group](/routing/pool-vs-group/)** — when to

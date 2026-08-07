@@ -1,17 +1,18 @@
 ---
 title: Router
-description: The local pool-router — `Router.roundRobin`, `.random`, `.broadcast`, `.custom` produce an actor factory you spawn like any other. Plus `Broadcast` to override the strategy per-message.
+description: The local pool-router — `Router.roundRobin`, `.random`, `.broadcast`, `.smallestMailbox`, `.custom` produce an actor factory you spawn like any other. Plus `Broadcast` to override the strategy per-message.
 ---
 
 `Router` is the local pool-router — the routees are children of the
 router actor, created when the router is spawned, supervised by it.
 
-The API has four factories:
+The API has five factories:
 
 ```ts
 Router.roundRobin(size, routee)
 Router.random(size, routee)
 Router.broadcast(size, routee)
+Router.smallestMailbox(size, routee)
 Router.custom(size, routee, strategy)
 ```
 
@@ -82,6 +83,40 @@ update notifications) that don't fit the routine routing pattern.
 
 The router accepts both `TMessage` and `Broadcast<TMessage>` — the type
 parameter on the returned factory reflects that.
+
+## `Router.smallestMailbox` — balance by backlog
+
+```ts
+const pool = system.spawn(
+  Router.smallestMailbox(4, Worker),
+  'workers',
+);
+```
+
+Each message goes to the routee with the **shortest queue** at that
+moment.  Reach for it when per-message cost varies a lot: round-robin
+keeps feeding a routee that is still grinding through a heavy job,
+while smallest-mailbox skips it until it catches back up.
+
+Three things worth knowing before you switch the default:
+
+- **It costs a depth read per routee per message.**  With a 4-routee
+  pool that is four reads; with a 200-routee pool it is two hundred.
+  Round-robin is one modulo.  For uniform workloads the extra work
+  buys nothing.
+- **Ties rotate.**  An idle pool has every mailbox at zero, so the
+  strategy falls back to round-robin order rather than pinning
+  everything to `routee-1`.
+- **A full pool is just another tie.**  When every routee's bounded
+  mailbox sits at capacity all depths are equal again, so the overflow
+  spreads evenly instead of piling onto one routee.  The strategy does
+  not refuse to route — what happens to a message that does not fit is
+  the mailbox's own overflow policy (`drop-head` / `drop-new` /
+  `reject`), not the router's call to make.
+
+Local only.  Mailbox depth is in-process state, so `ClusterRouter` has
+no smallest-mailbox mode — see
+[Cluster router](/cluster/cluster-router/).
 
 ## `Router.custom` — bring your own strategy
 
@@ -179,7 +214,7 @@ import { Aside } from '@astrojs/starlight/components';
 ## Where to next
 
 - **[Strategies](/routing/strategies/)** — round-robin,
-  random, broadcast, custom; plus the
+  random, broadcast, smallest-mailbox, custom; plus the
   cluster-only consistent-hashing.
 - **[Pool vs group](/routing/pool-vs-group/)** — when
   you want existing routees instead of pool-spawned ones.

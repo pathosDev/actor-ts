@@ -379,6 +379,21 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
   }
 
   /**
+   * @internal Pending user messages, without building a whole snapshot.
+   *
+   * `_inspect()` already reports this number, but it allocates a full
+   * `CellInspection` to do so — far too much for `smallestMailboxStrategy`,
+   * which reads the depth of every routee on every routed message.  This is
+   * the cheap read; `_inspect` reuses it so the two cannot drift apart.
+   *
+   * Deliberately *not* lifted onto `ActorRef` or `ActorContext`: mailbox depth
+   * is a property of the runtime's queueing, and a public accessor would turn
+   * it into a permanent API promise about a number callers would branch on.
+   * Only code that lives inside the framework may look.
+   */
+  get mailboxSize(): number { return this.mailbox.size; }
+
+  /**
    * @internal Describe this cell for introspection tooling.
    *
    * A snapshot of what a debugger wants to show, taken from fields that
@@ -394,7 +409,7 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
       className: this.actor?.constructor.name ?? '?',
       displayName: this._customDisplayName(),
       cellState: this.state,
-      mailboxSize: this.mailbox.size,
+      mailboxSize: this.mailboxSize,
       stashSize: this._stashBuffer.length,
       suspended: this.mailbox.suspended,
       dispatcher: this.blueprint.dispatcher?.id ?? null,

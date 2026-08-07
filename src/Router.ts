@@ -1,6 +1,7 @@
 import { Actor, type ActorClassOrFactory, type ActorFactory } from './Actor.js';
 import type { ActorOptions } from './ActorOptions.js';
 import type { ActorRef } from './ActorRef.js';
+import { LocalActorRef } from './internal/LocalActorRef.js';
 import { Terminated } from './SystemMessages.js';
 import { OptionsError } from './util/OptionsValidator.js';
 
@@ -38,6 +39,69 @@ export function randomStrategy(): RoutingStrategy {
 /** Broadcast: every routee gets every message. */
 export function broadcastStrategy(): RoutingStrategy {
   return (routees) => routees;
+}
+
+/**
+ * Queued user messages for a routee, or `null` when the depth is unreadable.
+ *
+ * Only a locally-hosted actor has a mailbox this process can look into, and
+ * the depth lives on the cell rather than on `ActorRef` on purpose — see
+ * `ActorCell.mailboxSize`.  A pool router spawns its own children, so inside
+ * `Router.smallestMailbox` this never returns `null`; the guard is here
+ * because {@link smallestMailboxStrategy} is exported on its own and
+ * `RoutingStrategy` is handed a plain `ActorRef`.
+ */
+function mailboxDepthOf(routee: ActorRef): number | null {
+  return routee instanceof LocalActorRef ? routee.getCell().mailboxSize : null;
+}
+
+/**
+ * Smallest mailbox: one routee per message, the one with the shortest queue.
+ *
+ * Balances by *backlog* instead of by message count, which is the thing
+ * round-robin cannot do — one expensive message no longer parks the next
+ * 1-in-N arrivals behind it, because a routee that is still working stops
+ * being the shallowest and drops out of the running until it catches up.
+ * The cost is a read of every routee's depth per message, so the pool size
+ * is now a per-message factor; round-robin remains the cheaper default for
+ * workloads whose per-message cost is roughly uniform.
+ *
+ * **Ties rotate.**  An idle pool has every depth at `0`, so a plain
+ * "first minimum wins" scan would pin every message to `routee-1` whenever
+ * the pool drains between arrivals.  Starting the scan at
+ * `messageIndex % routees.length` and keeping the comparison strict (`<`)
+ * makes an all-equal pool behave exactly like round-robin.
+ *
+ * That is also the answer for a **saturated** pool: when every bounded
+ * mailbox sits at its capacity the depths are equal again, so the rotation
+ * takes over and the overflow spreads evenly rather than piling onto one
+ * routee.  The strategy has no notion of "full" and deliberately does not
+ * grow one — refusing to route would invent back-pressure the caller never
+ * configured, and what should happen to a message that does not fit is
+ * already decided by the mailbox's own overflow policy (`drop-head` /
+ * `drop-new` / `reject`).
+ *
+ * If no depth is readable at all the scan falls back to the rotation, so the
+ * strategy still routes rather than dropping when it is used outside a local
+ * pool.
+ */
+export function smallestMailboxStrategy(): RoutingStrategy {
+  return (routees, state) => {
+    if (routees.length === 0) return [];
+    const start = state.messageIndex % routees.length;
+    let shallowest: ActorRef | null = null;
+    let shallowestDepth = 0;
+    for (let offset = 0; offset < routees.length; offset++) {
+      const routee = routees[(start + offset) % routees.length];
+      const depth = mailboxDepthOf(routee);
+      if (depth === null) continue;
+      if (shallowest === null || depth < shallowestDepth) {
+        shallowest = routee;
+        shallowestDepth = depth;
+      }
+    }
+    return [shallowest ?? routees[start]];
+  };
 }
 
 type RouterConfig<TMessage> = {
@@ -137,8 +201,8 @@ function assertPoolSize(size: number): void {
 }
 
 /**
- * Shared by all four factories, so the size guard cannot be forgotten by a
- * fifth.  The guard runs *here* and not inside the returned closure: it has
+ * Shared by all five factories, so the size guard cannot be forgotten by a
+ * sixth.  The guard runs *here* and not inside the returned closure: it has
  * always thrown at the `Router.roundRobin(...)` call that got the size wrong,
  * and deferring it into the factory would move the failure into `preStart`.
  *
@@ -173,6 +237,10 @@ export const Router = {
 
   broadcast<TMessage>(size: number, routee: ActorClassOrFactory<TMessage>, routeeOptions?: ActorOptions<TMessage>): ActorFactory<TMessage | Broadcast<TMessage>> {
     return routerFactory({ size, routee, routeeOptions, strategy: broadcastStrategy() });
+  },
+
+  smallestMailbox<TMessage>(size: number, routee: ActorClassOrFactory<TMessage>, routeeOptions?: ActorOptions<TMessage>): ActorFactory<TMessage | Broadcast<TMessage>> {
+    return routerFactory({ size, routee, routeeOptions, strategy: smallestMailboxStrategy() });
   },
 
   custom<TMessage>(size: number, routee: ActorClassOrFactory<TMessage>, strategy: RoutingStrategy, routeeOptions?: ActorOptions<TMessage>): ActorFactory<TMessage | Broadcast<TMessage>> {
