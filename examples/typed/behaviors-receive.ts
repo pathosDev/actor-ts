@@ -19,17 +19,17 @@ type CounterCommand = IncrementCommand | GetCommand;
 /**
  * Behavior holds its state by currying — `n` is captured in the closure.
  *
- * The cast is on `Behaviors.same` / `Behaviors.stopped`: they are
- * `Behavior<never>` sentinels, which TypeScript only unified with
- * `Behavior<CounterCommand>` while the arms were inline and it could infer
- * `receive`'s type parameter across them.  One cast here beats one per arm.
+ * Arms may mix a real transition with a sentinel freely: `Behaviors.same` and
+ * `Behaviors.stopped` are payload-free types that belong to `Behavior<T>` for
+ * every `T`, so the union of the arms reduces to `Behavior<CounterCommand>`
+ * without a cast.
  */
 const counter = (n: number, limit: number): Behavior<CounterCommand> =>
   Behaviors.receive((context, command) =>
     match(command)
       .with({ kind: 'increment' }, () => onIncrement(context, n, limit))
       .with({ kind: 'get' }, () => onGet(context, n))
-      .exhaustive() as Behavior<CounterCommand>);
+      .exhaustive());
 
 function onIncrement(context: TypedActorContext<CounterCommand>, n: number, limit: number) {
   const next = n + 1;

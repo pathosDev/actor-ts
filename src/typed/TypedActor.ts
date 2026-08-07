@@ -7,8 +7,10 @@ import {
   StashOverflowError,
   type TimerScheduler,
 } from '../ActorContext.js';
+import { Behaviors } from './Behaviors.js';
 import type {
   Behavior,
+  BehaviorInterceptor,
   ReceiveBehavior,
   SameBehavior,
   StashBuffer,
@@ -25,13 +27,30 @@ import type { TypedActorContext } from './TypedActorContext.js';
  * The "resolved" shape a Behavior collapses to — setup/supervise/withTimers
  * wrappers are unwrapped into one of these leaf nodes.  `same` is never a
  * valid current value (it means "keep whatever we had"), so it's excluded.
+ *
+ * `intercept` is the one wrapper that is *not* collapsed: it has to run on
+ * every message, so it stays in the resolved tree around its already-resolved
+ * inner behavior.
  */
 type ConcreteBehavior<T> =
   | ReceiveBehavior<T>
+  | ConcreteInterceptBehavior<T>
   | StoppedBehavior
   | UnhandledBehavior
   | EmptyBehavior
   | IgnoreBehavior;
+
+/**
+ * An `InterceptBehavior` whose inner behavior is itself already resolved.
+ * Structurally an `InterceptBehavior<T>`, but with the stronger `inner` type
+ * the interpreter relies on to descend a nest of interceptors without
+ * re-resolving on every message.
+ */
+type ConcreteInterceptBehavior<T> = {
+  readonly kind: 'intercept';
+  readonly inner: ConcreteBehavior<T>;
+  readonly interceptor: BehaviorInterceptor<T>;
+};
 
 /** Kept for resolve()'s return when it does encounter a bare `same`. */
 type ResolvedBehavior<T> = ConcreteBehavior<T> | SameBehavior;
@@ -70,24 +89,14 @@ export class TypedActor<T> extends Actor<T> {
       return;
     }
 
-    // Sentinels that short-circuit without running a handler:
-    const shortCircuit = match(this.current)
-      .with({ kind: 'ignore' }, () => true as const)
-      .with({ kind: 'empty' }, () => true as const)
-      .with({ kind: 'unhandled' }, () => { this.forwardToDeadLetters(message); return true as const; })
-      .with({ kind: 'stopped' }, () => { this.forwardToDeadLetters(message); return true as const; })
-      .with({ kind: 'receive' }, () => false as const)
-      .exhaustive();
-    if (shortCircuit) return;
-
-    // `current` is narrowed to ReceiveBehavior by the match above, but TS
-    // can't carry that across the branch — re-narrow locally.
-    const receiveBehavior = this.current;
-    if (receiveBehavior.kind !== 'receive') return;
+    // The behavior that handles this message is also the one whose interceptor
+    // stack the transition below re-installs — and that transition overwrites
+    // `current`, so hold on to it first.
+    const active = this.current;
 
     let next: Behavior<T>;
     try {
-      next = receiveBehavior.handler(this.typedContext, message);
+      next = this.deliver(active, this.typedContext, message);
     } catch (err) {
       if (this.handleSupervise(err as Error)) return;
       throw err;
@@ -98,7 +107,7 @@ export class TypedActor<T> extends Actor<T> {
 
     const resolved = this.resolve(next);
     if (resolved.kind === 'same') return; // defensive — resolve shouldn't produce 'same'
-    this.current = resolved;
+    this.current = this.reinstallInterceptors(active, resolved);
     this.maybeHandleTerminalSentinel();
   }
 
@@ -119,6 +128,56 @@ export class TypedActor<T> extends Actor<T> {
   }
 
   /* ---------------- internal ---------------- */
+
+  /**
+   * Run one message against an already-resolved behavior and answer what its
+   * handler returned — an unresolved `Behavior<T>`, exactly as user code wrote
+   * it.  The caller resolves it and decides what becomes current.
+   *
+   * Interceptors are descended outermost-first: each one is handed a `next`
+   * that continues into the behavior it wraps, so an interceptor that never
+   * calls `next` short-circuits everything below it.  The context is a
+   * parameter rather than a field read because an interceptor may hand a
+   * different one down.
+   *
+   * The sentinels answer for themselves, which is what makes them work
+   * *inside* a wrapper too: an interceptor over `Behaviors.empty` still runs
+   * and can still veto, it just has nothing to delegate to.  `stopped` answers
+   * `unhandled` because a message that arrives after the actor decided to stop
+   * belongs in dead letters, and the caller already routes `unhandled` there.
+   */
+  private deliver(behavior: ConcreteBehavior<T>, context: TypedActorContext<T>, message: T): Behavior<T> {
+    return match(behavior)
+      .with({ kind: 'receive' }, (b) => b.handler(context, message))
+      .with({ kind: 'intercept' }, (b) => b.interceptor(
+        context,
+        message,
+        (innerContext, innerMessage) => this.deliver(b.inner, innerContext, innerMessage),
+      ))
+      .with({ kind: 'ignore' }, () => Behaviors.same)
+      .with({ kind: 'empty' }, () => Behaviors.same)
+      .with({ kind: 'unhandled' }, () => Behaviors.unhandled)
+      .with({ kind: 'stopped' }, () => Behaviors.unhandled)
+      .exhaustive();
+  }
+
+  /**
+   * Put the interceptors that were wrapped around `previous` back around the
+   * behavior it became.
+   *
+   * This is what makes `Behaviors.intercept` a decorator rather than a one-shot
+   * hook.  `resolve()` collapses every other wrapper into the leaf it produced,
+   * and a transition replaces `current` wholesale — so without re-wrapping, an
+   * interceptor would survive exactly until the behavior underneath it first
+   * swapped itself out, which for a state-machine actor is the very first
+   * message.
+   *
+   * The walk rebuilds the whole stack, so nested interceptors keep their order.
+   */
+  private reinstallInterceptors(previous: ConcreteBehavior<T>, next: ConcreteBehavior<T>): ConcreteBehavior<T> {
+    if (previous.kind !== 'intercept') return next;
+    return wrapIntercepted(previous.interceptor, this.reinstallInterceptors(previous.inner, next));
+  }
 
   /**
    * Deliver a watched actor's termination to `onSignal` as
@@ -142,6 +201,7 @@ export class TypedActor<T> extends Actor<T> {
    * fire for an unrelated actor's death.
    */
   private onTerminatedSignal(message: Terminated): void {
+    const active = this.current;
     let next: Behavior<T>;
     try {
       next = this.signalHandler!(this.typedContext, { kind: 'terminated', ref: message.actor });
@@ -153,7 +213,7 @@ export class TypedActor<T> extends Actor<T> {
     if (next.kind === 'same' || next.kind === 'unhandled') return;
     const resolved = this.resolve(next);
     if (resolved.kind === 'same') return;
-    this.current = resolved;
+    this.current = this.reinstallInterceptors(active, resolved);
     this.maybeHandleTerminalSentinel();
   }
 
@@ -165,7 +225,10 @@ export class TypedActor<T> extends Actor<T> {
       .with(Directive.Resume, () => true)
       .with(Directive.Restart, () => {
         const resolved = this.resolve(supervise.child);
-        this.current = resolved.kind === 'same' ? { kind: 'empty' } : resolved;
+        const restarted: ConcreteBehavior<T> = resolved.kind === 'same' ? { kind: 'empty' } : resolved;
+        // Interceptors installed *outside* the supervise wrapper are not part
+        // of what restarts — they keep observing the fresh behavior.
+        this.current = this.reinstallInterceptors(this.current, restarted);
         this.maybeHandleTerminalSentinel();
         return true;
       })
@@ -204,6 +267,11 @@ export class TypedActor<T> extends Actor<T> {
           this.activeSupervise = n;
           return { step: 'continue', next: n.child };
         })
+        // The one wrapper that does not collapse: resolve what it wraps (its
+        // own hop budget) and keep the interceptor around the result.
+        .with({ kind: 'intercept' }, (n): ResolveStep => ({
+          step: 'done', final: wrapIntercepted(n.interceptor, this.resolve(n.inner)),
+        }))
         .with({ kind: 'receive' }, (n): ResolveStep => {
           if (n.onSignal) this.signalHandler = n.onSignal;
           return { step: 'done', final: n };
@@ -228,6 +296,24 @@ export class TypedActor<T> extends Actor<T> {
   private forwardToDeadLetters(message: T): void {
     this.system.deadLetters.tell(message as never);
   }
+}
+
+/**
+ * Wrap an already-resolved behavior back into its interceptor.
+ *
+ * Two inners are special.  `stopped` drops the wrapper: the actor is on its way
+ * out, `maybeHandleTerminalSentinel` has to see the sentinel at the top, and
+ * there is nothing left to intercept anyway.  A bare `same` is a user error
+ * (`intercept(Behaviors.same, …)` wraps nothing) and becomes `empty`, the same
+ * reading `preStart` gives a `same` initial behavior: the actor exists and
+ * drops messages, so the mistake surfaces as silence rather than as a crash.
+ */
+function wrapIntercepted<T>(
+  interceptor: BehaviorInterceptor<T>,
+  inner: ResolvedBehavior<T>,
+): ConcreteBehavior<T> {
+  if (inner.kind === 'stopped') return inner;
+  return { kind: 'intercept', interceptor, inner: inner.kind === 'same' ? { kind: 'empty' } : inner };
 }
 
 /* ---------------- Context ---------------- */
