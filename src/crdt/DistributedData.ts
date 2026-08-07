@@ -6,8 +6,13 @@ import type { ActorSystem } from '../ActorSystem.js';
 import type { Cancellable } from '../Scheduler.js';
 import { extensionId, type Extension, type ExtensionId } from '../Extension.js';
 import { DEFAULT_ASK_TIMEOUT_MS } from '../util/Constants.js';
+import { mergeOptions } from '../util/OptionsMerge.js';
+import { metricsOf } from '../metrics/MetricsExtension.js';
 import { randomId } from '../util/RandomString.js';
-import { DistributedDataOptionsValidator } from './DistributedDataOptions.js';
+import {
+  DistributedDataOptionsValidator,
+  readDistributedDataOptionsFromConfig,
+} from './DistributedDataOptions.js';
 import type { DistributedDataOptions, DistributedDataOptionsType } from './DistributedDataOptions.js';
 import type { Cluster } from '../cluster/Cluster.js';
 import { MemberRemoved, MemberUp } from '../cluster/ClusterEvents.js';
@@ -265,7 +270,15 @@ export class DistributedData implements Extension {
       throw new Error('DistributedData is already bound to a different cluster');
     }
     this._cluster = cluster;
-    const resolvedOptions = (options as Partial<DistributedDataOptionsType>);
+    // The documented precedence: explicit options beat
+    // `actor-ts.distributed-data.*`, which beats the actor's built-ins.
+    // Validation runs once here, on the merged settings, so a bad value is
+    // caught whether it came from the builder, a plain object or HOCON.
+    const resolvedOptions = mergeOptions<DistributedDataOptionsType>(
+      {},
+      readDistributedDataOptionsFromConfig(this.system.config),
+      options as Partial<DistributedDataOptionsType>,
+    );
     new DistributedDataOptionsValidator().validate(resolvedOptions);
 
     // The extension exposes a synchronous API; the internal actor owns
@@ -444,6 +457,11 @@ export class DistributedDataHandle {
    * and will continue to gossip; the rejection only signals "I'm not
    * sure enough replicas saw it".
    *
+   * Two settings bound the wait: `timeoutMs` is clamped to
+   * `maxQuorumTimeout`, and the call rejects immediately — again without
+   * undoing the local write — when `maxPendingQuorumRequests` unsettled
+   * quorum requests are already in flight.
+   *
    *   await dd.updateAsync<GCounter>('hits', GCounter.empty,
    *     (c) => c.increment(dd.selfReplicaId(), 1),
    *     { consistency: 'majority' });
@@ -478,8 +496,11 @@ export class DistributedDataHandle {
    * `undefined` if no replica knows the key.
    *
    * Self always counts as the first response — `'local'` returns
-   * immediately with whatever's in the local view.  Timeout default is
-   * the same as {@link updateAsync}.
+   * immediately with whatever's in the local view.  Timeout default,
+   * `maxQuorumTimeout` clamping and the `maxPendingQuorumRequests`
+   * rejection are all the same as {@link updateAsync}; unlike a write,
+   * a read that *does* get tracked resolves best-effort on timeout with
+   * whatever merged so far.
    *
    *   const cart = await dd.getAsync<ORSet<string>>('cart-42',
    *     { consistency: 'majority' });
@@ -593,9 +614,27 @@ type PendingRead = {
   readonly reject: (err: Error) => void;
 };
 
+/**
+ * Default ceiling on unsettled quorum requests — see
+ * {@link DistributedDataOptionsType.maxPendingQuorumRequests} for why it has
+ * to sit an order of magnitude below `DEFAULT_MAILBOX_CAPACITY` (10 000) to
+ * be worth anything at all.
+ */
+const DEFAULT_MAX_PENDING_QUORUM_REQUESTS = 1_000;
+
+/** Default ceiling on a caller-supplied quorum `timeoutMs`. */
+const DEFAULT_MAX_QUORUM_TIMEOUT_MS = 30_000;
+
+/** Which of the two quorum flavours a metric series belongs to. */
+type QuorumOperation = 'write' | 'read';
+
 class DistributedDataActor extends Actor<ActorMessage> {
   private readonly view: SharedView;
   private readonly gossipIntervalMs: number;
+  /** `0` disables the cap.  See the options field for the mailbox argument. */
+  private readonly maxPendingQuorumRequests: number;
+  /** `0` disables the ceiling. */
+  private readonly maxQuorumTimeoutMs: number;
   private readonly durable: DurableDistributedDataStore | null;
   private gossipTimer: Cancellable | null = null;
   private unsubscribeCluster: (() => void) | null = null;
@@ -609,10 +648,11 @@ class DistributedDataActor extends Actor<ActorMessage> {
   /** Outstanding quorum-read requests, keyed by pendingId. */
   private readonly pendingReads = new Map<string, PendingRead>();
   /**
-   * Peer-supplied values this replica refused to decode.  A plain counter
-   * rather than a metric so it costs nothing when metrics are disabled; it is
-   * carried in the warn line so an operator can tell one garbled frame from a
-   * peer that is producing them steadily.
+   * Peer-supplied values this replica refused to decode.  Kept as a plain
+   * field *in addition to* `distributed_data_dropped_values_total` because it
+   * is what the warn line carries: a running total in the log lets an
+   * operator tell one garbled frame from a peer producing them steadily,
+   * without a metrics backend being wired up at all.
    */
   private droppedFrames = 0;
 
@@ -624,6 +664,9 @@ class DistributedDataActor extends Actor<ActorMessage> {
     super();
     this.view = options.view;
     this.gossipIntervalMs = options.options.gossipInterval ?? 1_000;
+    this.maxPendingQuorumRequests =
+      options.options.maxPendingQuorumRequests ?? DEFAULT_MAX_PENDING_QUORUM_REQUESTS;
+    this.maxQuorumTimeoutMs = options.options.maxQuorumTimeout ?? DEFAULT_MAX_QUORUM_TIMEOUT_MS;
     this.durable = options.options.durableStore
       ? new DurableDistributedDataStore(
           options.options.durableStore,
@@ -700,6 +743,94 @@ class DistributedDataActor extends Actor<ActorMessage> {
       pendingRead.reject(new Error(`DistributedData stopped before quorum read on "${pendingRead.key}" completed`));
     }
     this.pendingReads.clear();
+    this.syncPendingQuorumGauge();
+  }
+
+  /* ----------------------------- quorum caps ---------------------------- */
+
+  /**
+   * True when another pending quorum request would exceed the cap.
+   *
+   * Writes and reads share one budget rather than getting one each: what the
+   * cap bounds is unsettled promises and armed timers, and the two flavours
+   * cost the same.  Two half-sized budgets would only make the reachable
+   * total harder to state.
+   */
+  private isPendingQuorumCapReached(): boolean {
+    if (this.maxPendingQuorumRequests === 0) return false;
+    return this.pendingQuorumCount() >= this.maxPendingQuorumRequests;
+  }
+
+  private pendingQuorumCount(): number {
+    return this.pendingWrites.size + this.pendingReads.size;
+  }
+
+  /**
+   * Clamp a caller's `timeoutMs` to the configured ceiling.  Clamping rather
+   * than rejecting, for the same reason `clampQuorum` clamps `{ from: K }`:
+   * the request is well-formed and runnable, only its deadline is out of
+   * range, and a shorter deadline costs the caller a rejection they already
+   * handle instead of one they don't.
+   */
+  private cappedQuorumTimeout(requestedMs: number): number {
+    if (this.maxQuorumTimeoutMs === 0) return requestedMs;
+    return Math.min(requestedMs, this.maxQuorumTimeoutMs);
+  }
+
+  /**
+   * The error a request over the cap is rejected with.  It names the knob:
+   * the entire point of the cap is that the failure is legible, since the
+   * alternative it replaces — a `ddata-update` envelope dropped by the
+   * mailbox's `drop-head` policy, taking `resolve`/`reject` with it — leaves
+   * the caller awaiting a promise that can never settle (#140).
+   */
+  private quorumOverflowError(operation: QuorumOperation, key: string): Error {
+    return new Error(
+      `DistributedData refused a quorum ${operation} on "${key}": `
+      + `${this.pendingQuorumCount()} quorum requests are already pending `
+      + `(max-pending-quorum-requests = ${this.maxPendingQuorumRequests})`,
+    );
+  }
+
+  /* ------------------------------- metrics ------------------------------ */
+
+  /**
+   * Publish the current pending-quorum depth.  Read fresh from the extension
+   * on every call rather than cached, because `MetricsExtension.enable()` may
+   * land after this actor started and a cached registry would pin the noop —
+   * the same reason `Cluster` resolves it per call site.
+   *
+   * Label sets across this file are deliberately tiny: `operation` has two
+   * values and the gauge has none, so DistributedData contributes a fixed
+   * handful of series and cannot push a family into the registry's
+   * cardinality cap (#131).
+   */
+  private syncPendingQuorumGauge(): void {
+    metricsOf(this.system).gauge(
+      'distributed_data_quorum_pending', {},
+      { help: 'Quorum reads and writes currently awaiting peer replies on this replica.' },
+    ).set(this.pendingQuorumCount());
+  }
+
+  private countQuorumTimeout(operation: QuorumOperation): void {
+    metricsOf(this.system).counter(
+      'distributed_data_quorum_timeouts_total', { operation },
+      { help: 'Quorum requests that hit their deadline before enough replicas replied.' },
+    ).inc();
+  }
+
+  private countQuorumRejected(operation: QuorumOperation): void {
+    metricsOf(this.system).counter(
+      'distributed_data_quorum_rejected_total', { operation },
+      { help: 'Quorum requests refused because the pending-request cap was reached.' },
+    ).inc();
+  }
+
+  private countDroppedFrame(): void {
+    metricsOf(this.system).counter(
+      'distributed_data_dropped_values_total', {},
+      { help: 'Peer-supplied CRDT values this replica refused to decode.' },
+    ).inc();
   }
 
   override onReceive(message: ActorMessage): void {
@@ -745,12 +876,20 @@ class DistributedDataActor extends Actor<ActorMessage> {
       message.quorum.resolve();
       return;
     }
-    const timer = this.system.scheduler.scheduleOnceFunction(message.quorum.timeoutMs, () => {
+    if (this.isPendingQuorumCapReached()) {
+      message.quorum.reject(this.quorumOverflowError('write', message.key));
+      this.countQuorumRejected('write');
+      return;
+    }
+    const timeoutMs = this.cappedQuorumTimeout(message.quorum.timeoutMs);
+    const timer = this.system.scheduler.scheduleOnceFunction(timeoutMs, () => {
       const pending = this.pendingWrites.get(message.quorum!.pendingId);
       if (!pending) return;
       this.pendingWrites.delete(message.quorum!.pendingId);
+      this.syncPendingQuorumGauge();
+      this.countQuorumTimeout('write');
       pending.reject(new Error(
-        `DistributedData quorum write on "${message.key}" timed out after ${message.quorum!.timeoutMs}ms ` +
+        `DistributedData quorum write on "${message.key}" timed out after ${timeoutMs}ms ` +
         `(${pending.acks.size}/${pending.required} acks)`,
       ));
     });
@@ -759,6 +898,7 @@ class DistributedDataActor extends Actor<ActorMessage> {
       targets: new Set(peers.map((m) => m.address.toString())),
       resolve: message.quorum.resolve, reject: message.quorum.reject,
     });
+    this.syncPendingQuorumGauge();
     const wire: DDataWriteRequestMessage = {
       kind: 'ddata-write-request',
       from: this.cluster.selfAddress.toJSON(),
@@ -782,10 +922,22 @@ class DistributedDataActor extends Actor<ActorMessage> {
       message.resolve(localValue);
       return;
     }
-    const timer = this.system.scheduler.scheduleOnceFunction(message.timeoutMs, () => {
+    if (this.isPendingQuorumCapReached()) {
+      // Rejected rather than best-effort-resolved: a read the replica never
+      // issued has not been degraded by slow peers, it has not happened at
+      // all, and answering it with the local value would report a quorum
+      // read that no peer contributed to.
+      message.reject(this.quorumOverflowError('read', message.key));
+      this.countQuorumRejected('read');
+      return;
+    }
+    const timeoutMs = this.cappedQuorumTimeout(message.timeoutMs);
+    const timer = this.system.scheduler.scheduleOnceFunction(timeoutMs, () => {
       const pending = this.pendingReads.get(message.pendingId);
       if (!pending) return;
       this.pendingReads.delete(message.pendingId);
+      this.syncPendingQuorumGauge();
+      this.countQuorumTimeout('read');
       // Best-effort: resolve with whatever we've merged so far rather
       // than rejecting outright.  Reads are forgiving — a partial
       // answer is more useful than no answer for most workloads.  If
@@ -798,6 +950,7 @@ class DistributedDataActor extends Actor<ActorMessage> {
       merged: localValue,
       resolve: message.resolve, reject: message.reject,
     });
+    this.syncPendingQuorumGauge();
     const wire: DDataReadRequestMessage = {
       kind: 'ddata-read-request',
       from: this.cluster.selfAddress.toJSON(),
@@ -847,6 +1000,7 @@ class DistributedDataActor extends Actor<ActorMessage> {
     if (pending.acks.size >= pending.required) {
       pending.timer.cancel();
       this.pendingWrites.delete(message.pendingId);
+      this.syncPendingQuorumGauge();
       pending.resolve();
     }
   }
@@ -883,6 +1037,7 @@ class DistributedDataActor extends Actor<ActorMessage> {
     if (pending.responses.size >= pending.required) {
       pending.timer.cancel();
       this.pendingReads.delete(message.pendingId);
+      this.syncPendingQuorumGauge();
       // Also apply the merged value locally so the next sync `get`
       // sees the freshest view — a quorum read effectively pulls the
       // latest state to this replica without waiting for gossip.
@@ -940,6 +1095,7 @@ class DistributedDataActor extends Actor<ActorMessage> {
       return decodeCrdt(json);
     } catch (e) {
       this.droppedFrames++;
+      this.countDroppedFrame();
       this.log.warn(
         `DistributedData: dropping an undecodable value for "${key}" from ${peer.toString()} `
         + `(${this.droppedFrames} dropped so far)`,
