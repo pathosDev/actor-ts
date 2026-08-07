@@ -6,6 +6,8 @@ import { Actor } from '../../src/Actor.js';
 import { ActorSystem } from '../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../src/ActorSystemOptions.js';
 import { LogLevel, NoopLogger } from '../../src/Logger.js';
+import { ActorStopped } from '../../src/SystemMessages.js';
+import { awaitCondition, sleep } from '../util/AwaitCondition.js';
 
 /** Minimal ref that records received events and identifies by a given path. */
 class RecordingRef extends ActorRef<unknown> {
@@ -291,20 +293,41 @@ describe('EventStream releases stopped subscribers', () => {
       ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off),
     );
 
+    const subscribed = { value: false };
     class Listener extends Actor<EventA> {
-      override preStart(): void { this.context.system.eventStream.subscribe(this.context.self, EventA); }
+      override preStart(): void {
+        this.context.system.eventStream.subscribe(this.context.self, EventA);
+        subscribed.value = true;
+      }
       override onReceive(): void {}
     }
 
+    // The cell drops its subscriptions *before* publishing `ActorStopped`, so
+    // that event is the exact point after which the probe below is meaningful.
+    // Polling `unsubscribe` itself would be wrong: a poll that returned true
+    // would be the thing doing the cleanup the assertion is checking for.
+    const stopped: ActorStopped[] = [];
+    class StopWatcher extends Actor<ActorStopped> {
+      override preStart(): void { this.system.eventStream.subscribe(this.self, ActorStopped); }
+      override onReceive(event: ActorStopped): void { stopped.push(event); }
+    }
+    system.spawn(StopWatcher, 'stops');
+
     const ref = system.spawn(Listener, 'listener');
-    await Bun.sleep(60);
+    await awaitCondition(() => subscribed.value, {
+      timeoutMs: 4_000,
+      label: 'the listener subscribed in preStart',
+    });
     // While alive, there is a subscription to remove — so re-subscribe and
     // carry on, otherwise the probe would be the thing doing the cleanup.
     expect(system.eventStream.unsubscribe(ref, EventA)).toBe(true);
     system.eventStream.subscribe(ref, EventA);
 
     ref.stop();
-    await Bun.sleep(120);
+    await awaitCondition(() => stopped.some((event) => event.actor.equals(ref)), {
+      timeoutMs: 4_000,
+      label: 'the listener reached the terminated state',
+    });
 
     expect(system.eventStream.unsubscribe(ref, EventA)).toBe(false);
     await system.terminate();
@@ -316,21 +339,38 @@ describe('EventStream releases stopped subscribers', () => {
       ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off),
     );
     const seen: string[] = [];
+    const subscribed = { value: false };
+    const stopped = { value: false };
 
     class Listener extends Actor<EventA> {
-      override preStart(): void { this.context.system.eventStream.subscribe(this.context.self, EventA); }
+      override preStart(): void {
+        this.context.system.eventStream.subscribe(this.context.self, EventA);
+        subscribed.value = true;
+      }
       override onReceive(event: EventA): void { seen.push(event.payload); }
+      override postStop(): void { stopped.value = true; }
     }
 
     const ref = system.spawn(Listener, 'listener');
-    await Bun.sleep(40);
+    await awaitCondition(() => subscribed.value, {
+      timeoutMs: 4_000,
+      label: 'the listener subscribed in preStart',
+    });
     system.eventStream.publish(new EventA('before'));
-    await Bun.sleep(40);
+    await awaitCondition(() => seen.includes('before'), {
+      timeoutMs: 4_000,
+      label: 'the live subscriber received the first event',
+    });
 
     ref.stop();
-    await Bun.sleep(80);
+    await awaitCondition(() => stopped.value, {
+      timeoutMs: 4_000,
+      label: 'the subscriber stopped',
+    });
     system.eventStream.publish(new EventA('after'));
-    await Bun.sleep(40);
+    // Nothing to poll for: the property is that `after` never arrives, so this
+    // one stays a plain sleep.
+    await sleep(40);
 
     expect(seen).toEqual(['before']);
     await system.terminate();

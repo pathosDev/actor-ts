@@ -12,6 +12,7 @@ import {
 import { OptionsError } from '../../../src/util/OptionsValidator.js';
 import { TestKit } from '../../../src/testkit/TestKit.js';
 import { TestKitOptions } from '../../../src/testkit/TestKitOptions.js';
+import { awaitCondition } from '../../util/AwaitCondition.js';
 
 const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
 
@@ -234,8 +235,14 @@ describe('ActorOptions.withMailbox — end-to-end via actor', () => {
       { label: 'b', pri: 3 },
     ]) ref.tell(m);
 
-    // Give the scheduler time to drain.
-    await sleep(50);
+    // Wait for the actor to have drained all four into the probe.  The loop
+    // below then reads them out with a short per-item timeout, which was the
+    // real hazard: a slow run could truncate `got` and the ordering assertion
+    // would fail on a short array rather than on a wrong order.
+    await awaitCondition(() => probe.messageCount === 4, {
+      timeoutMs: 4_000,
+      label: 'all four prioritised messages reached the probe',
+    });
     const got: string[] = [];
     while (true) {
       try { got.push(await probe.receiveOne(100) as string); }

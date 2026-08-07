@@ -14,6 +14,7 @@ import type {
 } from '../../../../src/http/websocket/SocketAdapter.js';
 import type { WebsocketConnection } from '../../../../src/http/websocket/WebsocketConnection.js';
 import type { WebsocketServerRef } from '../../../../src/http/websocket/WebsocketMessages.js';
+import { awaitCondition } from '../../../util/AwaitCondition.js';
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
@@ -133,7 +134,10 @@ describe('WebsocketServerActor via wireConnection (child-per-connection)', () =>
     const sock = new MockSocket();
     wire(system, hub, sock);
     sock.emit(JSON.stringify({ kind: 'ping', n: 5 }));
-    await sleep(80);
+    await awaitCondition(() => rec.events.some((e) => e.startsWith('ping:')), {
+      timeoutMs: 4_000,
+      label: 'the ping was recorded',
+    });
 
     expect(rec.connections).toHaveLength(1);
     expect(rec.events).toContain(`connect:${rec.connections[0]!.id}`);
@@ -148,7 +152,10 @@ describe('WebsocketServerActor via wireConnection (child-per-connection)', () =>
     // adapter until the child attaches its listeners.
     wire(system, hub, sock);
     sock.emit(JSON.stringify({ kind: 'ping', n: 1 }));
-    await sleep(80);
+    await awaitCondition(() => rec.events.some((e) => e.startsWith('ping:')), {
+      timeoutMs: 4_000,
+      label: 'the ping was recorded',
+    });
 
     const connectIndex = rec.events.findIndex((e) => e.startsWith('connect:'));
     const pingIndex = rec.events.findIndex((e) => e.startsWith('ping:'));
@@ -162,10 +169,16 @@ describe('WebsocketServerActor via wireConnection (child-per-connection)', () =>
     const socketB = new MockSocket();
     wire(system, hub, socketA);
     wire(system, hub, socketB);
-    await sleep(60);
+    await awaitCondition(() => rec.connections.length === 2, {
+      timeoutMs: 4_000,
+      label: 'both sockets connected',
+    });
 
     socketA.emit(JSON.stringify({ kind: 'shout', text: 'hi' }));
-    await sleep(60);
+    await awaitCondition(() => socketA.textSent.length >= 1 && socketB.textSent.length >= 1, {
+      timeoutMs: 4_000,
+      label: 'the broadcast reached both sockets',
+    });
 
     const expected = JSON.stringify({ kind: 'msg', text: 'hi' });
     expect(rec.connections).toHaveLength(2);
@@ -179,16 +192,27 @@ describe('WebsocketServerActor via wireConnection (child-per-connection)', () =>
     const socketB = new MockSocket();
     wire(system, hub, socketA);
     wire(system, hub, socketB);
-    await sleep(60);
+    await awaitCondition(() => rec.connections.length === 2, {
+      timeoutMs: 4_000,
+      label: 'both sockets connected',
+    });
     const connectionA = rec.connections[0]!;
 
     socketA.close(1000, 'bye');
-    await sleep(80);
+    await awaitCondition(() => rec.events.includes(`disconnect:${connectionA.id}`), {
+      timeoutMs: 4_000,
+      label: 'the closed socket was recorded as disconnected',
+    });
     expect(rec.events).toContain(`disconnect:${connectionA.id}`);
 
     // Broadcast now reaches only B.
     socketB.emit(JSON.stringify({ kind: 'shout', text: 'after' }));
-    await sleep(60);
+    await awaitCondition(() => socketB.textSent.length >= 1, {
+      timeoutMs: 4_000,
+      label: 'the second broadcast reached B',
+    });
+    // A must not have received it — nothing to poll for, so a short settle.
+    await sleep(30);
     const expected = JSON.stringify({ kind: 'msg', text: 'after' });
     expect(socketB.textSent).toContain(expected);
     expect(socketA.textSent).not.toContain(expected);
@@ -202,7 +226,10 @@ describe('WebsocketServerActor via wireConnection (child-per-connection)', () =>
 
     const big = 'x'.repeat(DEFAULT_WEBSOCKET_MAX_FRAME_BYTES + 16);
     sock.emit(JSON.stringify({ kind: 'shout', text: big }));
-    await sleep(60);
+    await awaitCondition(() => sock.closeCalls.some((c) => c.code === 1009), {
+      timeoutMs: 4_000,
+      label: 'the oversize frame closed the socket with 1009',
+    });
 
     expect(sock.closeCalls.some((c) => c.code === 1009)).toBe(true);
     expect(rec.events.some((e) => e.startsWith('shout:'))).toBe(false);
@@ -215,7 +242,12 @@ describe('WebsocketServerActor via wireConnection (child-per-connection)', () =>
     await sleep(40);
 
     sock.emit(JSON.stringify({ kind: 'shout', text: 'small' }));
-    await sleep(60);
+    await awaitCondition(() => rec.events.includes('shout:small'), {
+      timeoutMs: 4_000,
+      label: 'the in-limit frame was delivered',
+    });
+    // The socket must stay open, which only a settle can show.
+    await sleep(30);
     expect(rec.events).toContain('shout:small');
     expect(sock.closeCalls).toHaveLength(0);
   });
@@ -227,7 +259,10 @@ describe('WebsocketServerActor via wireConnection (child-per-connection)', () =>
     await sleep(40);
 
     sock.emit('not json {');
-    await sleep(60);
+    await awaitCondition(() => sock.closeCalls.some((c) => c.code === 1003), {
+      timeoutMs: 4_000,
+      label: 'the malformed frame closed the socket with 1003',
+    });
     expect(sock.closeCalls.some((c) => c.code === 1003)).toBe(true);
   });
 
@@ -247,7 +282,12 @@ describe('WebsocketServerActor via wireConnection (child-per-connection)', () =>
     await sleep(40);
 
     sock.emit('garbage{');
-    await sleep(60);
+    await awaitCondition(() => invalids.some((entry) => entry.endsWith(':WebsocketDecodeError')), {
+      timeoutMs: 4_000,
+      label: 'the decode error reached the hook',
+    });
+    // The hook policy must not close the socket — that half needs a settle.
+    await sleep(30);
     expect(invalids.some((system) => system.endsWith(':WebsocketDecodeError'))).toBe(true);
     expect(sock.closeCalls).toHaveLength(0);
   });
@@ -256,11 +296,17 @@ describe('WebsocketServerActor via wireConnection (child-per-connection)', () =>
     const { rec, hub, system } = setup('ws-hub-afterclose');
     const sock = new MockSocket();
     wire(system, hub, sock);
-    await sleep(40);
+    await awaitCondition(() => rec.connections.length === 1, {
+      timeoutMs: 4_000,
+      label: 'the socket connected',
+    });
     const connection = rec.connections[0]!;
 
     sock.close(1000, 'gone');
-    await sleep(40);
+    await awaitCondition(() => rec.events.some((e) => e.startsWith('disconnect:')), {
+      timeoutMs: 4_000,
+      label: 'the close was recorded as a disconnect',
+    });
     const before = sock.sent.length;
     expect(() => connection.tell({ kind: 'pong', n: 1 })).not.toThrow();
     await sleep(40);
@@ -273,7 +319,10 @@ describe('WebsocketServerActor via wireConnection (child-per-connection)', () =>
     const socketB = new MockSocket();
     wire(system, hub, socketA);
     wire(system, hub, socketB);
-    await sleep(80);
+    await awaitCondition(() => rec.connections.length === 2, {
+      timeoutMs: 4_000,
+      label: 'both sockets connected',
+    });
 
     // Two connections → the hub had 2 children by the second connect.
     expect(rec.connections).toHaveLength(2);
@@ -281,7 +330,10 @@ describe('WebsocketServerActor via wireConnection (child-per-connection)', () =>
 
     // Closing one stops its child → the hub's child count drops.
     socketA.close(1000, 'bye');
-    await sleep(80);
+    await awaitCondition(() => rec.childCounts[rec.childCounts.length - 1] === 1, {
+      timeoutMs: 4_000,
+      label: 'the hub child count dropped back to one',
+    });
     expect(rec.events.some((e) => e.startsWith('disconnect:'))).toBe(true);
     const afterDisconnect = rec.childCounts[rec.childCounts.length - 1]!;
     expect(afterDisconnect).toBe(1);
@@ -291,7 +343,10 @@ describe('WebsocketServerActor via wireConnection (child-per-connection)', () =>
     const { rec, hub, system } = setup('ws-hub-upgrade');
     const sock = new MockSocket();
     wire(system, hub, sock, request({ path: '/room/42', params: { id: '42' }, query: { token: 'abc' } }));
-    await sleep(60);
+    await awaitCondition(() => rec.connections.length === 1, {
+      timeoutMs: 4_000,
+      label: 'the socket connected',
+    });
 
     const connection = rec.connections[0]!;
     expect(connection.upgrade.path).toBe('/room/42');

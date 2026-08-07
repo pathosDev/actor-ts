@@ -6,6 +6,7 @@ import { ActorSystemOptions } from '../../src/ActorSystemOptions.js';
 import { LogLevel, NoopLogger } from '../../src/Logger.js';
 import { TestKit } from '../../src/testkit/TestKit.js';
 import { TestKitOptions } from '../../src/testkit/TestKitOptions.js';
+import { awaitCondition } from '../util/AwaitCondition.js';
 
 const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
 const newSys = (n = 'sel'): ActorSystem => {
@@ -88,15 +89,23 @@ describe('ActorSelection — nested paths', () => {
     const probe = kit.createTestProbe<string>();
 
     class Leaf extends Actor<string> { override onReceive(m: string): void { probe.tell(m); } }
+    const leafSpawned = { value: false };
     class Parent extends Actor<string> {
       override preStart(): void {
         this.context.spawn(Leaf, 'leaf');
+        leafSpawned.value = true;
       }
       override onReceive(): void {}
     }
     kit.system.spawn(Parent, 'parent');
 
-    await sleep(20);
+    // The selection resolves against the live tree, so the child has to exist
+    // before the tell — otherwise it goes to dead letters and the probe waits
+    // out its own timeout instead.
+    await awaitCondition(() => leafSpawned.value, {
+      timeoutMs: 4_000,
+      label: 'the parent spawned its leaf child',
+    });
     kit.system.actorSelection('/user/parent/leaf').tell('hi');
     expect(await probe.expectMessage('hi', 500)).toBe('hi');
     await kit.system.terminate();

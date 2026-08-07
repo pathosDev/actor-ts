@@ -5,6 +5,7 @@ import {
   MicrotaskDispatcher,
   ThroughputDispatcher,
 } from '../../src/Dispatcher.js';
+import { awaitCondition } from '../util/AwaitCondition.js';
 
 const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
 
@@ -15,7 +16,10 @@ describe('MicrotaskDispatcher', () => {
     dispatcher.execute(() => { trace.push('work'); });
     trace.push('after-execute');
     expect(trace).toEqual(['after-execute']);
-    await sleep(10);
+    await awaitCondition(() => trace.length === 2, {
+      timeoutMs: 4_000,
+      label: 'the dispatched unit ran',
+    });
     expect(trace).toEqual(['after-execute', 'work']);
   });
 
@@ -44,7 +48,10 @@ describe('MicrotaskDispatcher', () => {
       expect(() => {
         dispatcher.execute(async () => { ran = true; throw new Error('boom'); });
       }).not.toThrow();
-      await sleep(10);
+      await awaitCondition(() => ran, {
+        timeoutMs: 4_000,
+        label: 'the rejecting unit ran',
+      });
       expect(ran).toBe(true);
     } finally {
       console.error = original;
@@ -57,7 +64,10 @@ describe('ImmediateDispatcher', () => {
     const dispatcher = new ImmediateDispatcher();
     let ran = false;
     dispatcher.execute(() => { ran = true; });
-    await sleep(10);
+    await awaitCondition(() => ran, {
+      timeoutMs: 4_000,
+      label: 'the dispatched unit ran',
+    });
     expect(ran).toBe(true);
   });
 
@@ -69,7 +79,10 @@ describe('ImmediateDispatcher', () => {
     const dispatcher = new ImmediateDispatcher();
     const order: number[] = [];
     for (let i = 0; i < 10; i++) dispatcher.execute(() => { order.push(i); });
-    await sleep(30);
+    await awaitCondition(() => order.length === 10, {
+      timeoutMs: 4_000,
+      label: 'all ten units ran',
+    });
     expect(order).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
   });
 });
@@ -83,7 +96,10 @@ describe('ThroughputDispatcher', () => {
     const dispatcher = new ThroughputDispatcher(3);
     let count = 0;
     for (let i = 0; i < 20; i++) dispatcher.execute(() => { count++; });
-    await sleep(50);
+    await awaitCondition(() => count === 20, {
+      timeoutMs: 4_000,
+      label: 'all twenty queued units ran',
+    });
     expect(count).toBe(20);
   });
 
@@ -97,7 +113,10 @@ describe('ThroughputDispatcher', () => {
     // After first drain we must see at most `throughput` entries.
     await sleep(0); // allow setImmediate
     // All 4 eventually execute; at a macro level the order is FIFO.
-    await sleep(30);
+    await awaitCondition(() => trace.length === 4, {
+      timeoutMs: 4_000,
+      label: 'all four units ran across the throughput yields',
+    });
     expect(trace).toEqual(['a', 'b', 'c', 'd']);
   });
 
@@ -105,12 +124,18 @@ describe('ThroughputDispatcher', () => {
     const dispatcher = new ThroughputDispatcher(5);
     let calls = 0;
     dispatcher.execute(() => { calls++; });
-    await sleep(5);
+    await awaitCondition(() => calls === 1, {
+      timeoutMs: 4_000,
+      label: 'the first unit ran',
+    });
     expect(calls).toBe(1);
 
     // Submit again after idle — must run, not hang.
     dispatcher.execute(() => { calls++; });
-    await sleep(5);
+    await awaitCondition(() => calls === 2, {
+      timeoutMs: 4_000,
+      label: 'the re-scheduled drain ran the second unit',
+    });
     expect(calls).toBe(2);
   });
 

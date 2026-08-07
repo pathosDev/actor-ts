@@ -18,6 +18,7 @@ import { ActorSystemOptions } from '../../src/ActorSystemOptions.js';
 import type { ActorRef } from '../../src/ActorRef.js';
 import { LogContext } from '../../src/LogContext.js';
 import { LogLevel, NoopLogger } from '../../src/Logger.js';
+import { awaitCondition } from '../util/AwaitCondition.js';
 
 const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
 
@@ -40,7 +41,10 @@ describe('LogContext — actor-to-actor propagation', () => {
       LogContext.run({ correlationId: 'abc-123' }, () => {
         actorRef.tell('hello');
       });
-      await sleep(40);
+      await awaitCondition(() => observed.length === 1, {
+        timeoutMs: 4_000,
+        label: 'the receiver handled the message',
+      });
       expect(observed).toEqual([{ correlationId: 'abc-123' }]);
     } finally {
       await sys.terminate();
@@ -75,7 +79,12 @@ describe('LogContext — actor-to-actor propagation', () => {
       LogContext.run({ requestId: 'req-9', user: 'u-1' }, () => {
         middle.tell({ message: 'forward', bottom });
       });
-      await sleep(60);
+      // Two hops, so the wait is for the far end — the near one cannot have
+      // been skipped.
+      await awaitCondition(() => observed.length === 2, {
+        timeoutMs: 4_000,
+        label: 'the context reached the bottom actor',
+      });
       expect(observed).toEqual([
         { requestId: 'req-9', user: 'u-1' },   // middle saw it
         { requestId: 'req-9', user: 'u-1' },   // bottom saw the same
@@ -97,7 +106,10 @@ describe('LogContext — actor-to-actor propagation', () => {
     try {
       const actorRef = sys.spawn(R, 'r');
       actorRef.tell('plain');
-      await sleep(30);
+      await awaitCondition(() => observed.length === 1, {
+        timeoutMs: 4_000,
+        label: 'the receiver handled the context-free message',
+      });
       expect(observed).toEqual([{}]);
     } finally {
       await sys.terminate();
@@ -119,7 +131,10 @@ describe('LogContext — actor-to-actor propagation', () => {
       const actorRef = sys.spawn(R, 'r');
       LogContext.run({ branch: 'A' }, () => actorRef.tell({ id: 'a' }));
       LogContext.run({ branch: 'B' }, () => actorRef.tell({ id: 'b' }));
-      await sleep(50);
+      await awaitCondition(() => observed.size === 2, {
+        timeoutMs: 4_000,
+        label: 'both messages were handled',
+      });
       expect(observed.get('a')).toEqual({ branch: 'A' });
       expect(observed.get('b')).toEqual({ branch: 'B' });
     } finally {

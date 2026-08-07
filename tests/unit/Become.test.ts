@@ -3,8 +3,8 @@ import { Actor } from '../../src/Actor.js';
 import { ActorSystem } from '../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../src/ActorSystemOptions.js';
 import { LogLevel, NoopLogger } from '../../src/Logger.js';
+import { awaitCondition } from '../util/AwaitCondition.js';
 
-const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
 const newSystem = (name = 'become-unit'): ActorSystem => {
   const sysOptions = ActorSystemOptions.create()
     .withLogger(new NoopLogger())
@@ -24,7 +24,10 @@ describe('become / unbecome', () => {
     const sys = newSystem();
     const ref = sys.spawn(A, 'a');
     ref.tell('1'); ref.tell('2'); ref.tell('3');
-    await sleep(40);
+    await awaitCondition(() => out.length === 3, {
+      timeoutMs: 4_000,
+      label: 'all three messages were handled',
+    });
     expect(out).toEqual(['initial:1', 'next:2', 'next:3']);
     await sys.terminate();
   });
@@ -44,7 +47,10 @@ describe('become / unbecome', () => {
     ref.tell('x');            // base
     ref.tell('push-top');     // base
     ref.tell('y');            // top
-    await sleep(40);
+    await awaitCondition(() => out.length === 3, {
+      timeoutMs: 4_000,
+      label: 'all three messages were handled',
+    });
     expect(out).toEqual(['base:x', 'base:push-top', 'top:y']);
     await sys.terminate();
   });
@@ -75,7 +81,10 @@ describe('become / unbecome', () => {
     ref.tell('y');           // top
     ref.tell('leave');       // top (pops)
     ref.tell('z');           // base
-    await sleep(40);
+    await awaitCondition(() => out.length === 5, {
+      timeoutMs: 4_000,
+      label: 'all five messages were handled',
+    });
     expect(out).toEqual(['base:x', 'pushed', 'top:y', 'left', 'base:z']);
     await sys.terminate();
   });
@@ -95,7 +104,12 @@ describe('become / unbecome', () => {
     const sys = newSystem();
     const ref = sys.spawn(A, 'a');
     ref.tell('first'); ref.tell('try-pop'); ref.tell('after');
-    await sleep(40);
+    // `try-pop` records nothing, so two entries means `after` came back to the
+    // base behaviour — exactly the property under test.
+    await awaitCondition(() => out.length === 2, {
+      timeoutMs: 4_000,
+      label: 'the base behaviour handled the message after the pop attempts',
+    });
     // base behaviour still functions after the pop attempts.
     expect(out).toEqual(['base:first', 'base:after']);
     await sys.terminate();

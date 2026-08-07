@@ -3,7 +3,8 @@ import { Actor } from '../../src/Actor.js';
 import { ActorSystem } from '../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../src/ActorSystemOptions.js';
 import { LogLevel, NoopLogger } from '../../src/Logger.js';
-import { DeadLetter } from '../../src/SystemMessages.js';
+import { ActorStopped, DeadLetter } from '../../src/SystemMessages.js';
+import { awaitCondition } from '../util/AwaitCondition.js';
 
 const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
 const newSystem = (name = 'dl-unit'): ActorSystem => {
@@ -16,20 +17,45 @@ const newSystem = (name = 'dl-unit'): ActorSystem => {
 describe('DeadLetter routing', () => {
   test('a message sent to a terminated actor is published as DeadLetter on the event stream', async () => {
     const seen: DeadLetter[] = [];
-    class Listener extends Actor<DeadLetter> {
-      override preStart(): void { this.system.eventStream.subscribe(this.self, DeadLetter); }
-      override onReceive(m: DeadLetter): void { seen.push(m); }
+    const stopped: ActorStopped[] = [];
+    const subscribed = { value: false };
+    // Subscribed to `ActorStopped` as well, because both halves of this test
+    // are races the old fixed sleeps papered over: the listener has to be on
+    // the stream before anything is published, and `dead` has to be genuinely
+    // terminated before the tell — otherwise `too-late` is simply delivered
+    // and no dead letter is ever produced.  `ActorStopped` is published after
+    // the cell flips to `terminated`, so it is the exact signal.
+    class Listener extends Actor<DeadLetter | ActorStopped> {
+      override preStart(): void {
+        this.system.eventStream.subscribe(this.self, DeadLetter);
+        this.system.eventStream.subscribe(this.self, ActorStopped);
+        subscribed.value = true;
+      }
+      override onReceive(m: DeadLetter | ActorStopped): void {
+        if (m instanceof ActorStopped) stopped.push(m); else seen.push(m);
+      }
     }
     class Nothing extends Actor<string> { override onReceive(_: string): void {} }
 
     const sys = newSystem();
     sys.spawn(Listener, 'lst');
+    await awaitCondition(() => subscribed.value, {
+      timeoutMs: 4_000,
+      label: 'the listener subscribed to the event stream',
+    });
+
     const dead = sys.spawn(Nothing, 'n');
     dead.stop();
-    await sleep(30);
+    await awaitCondition(() => stopped.some((e) => e.actor.equals(dead)), {
+      timeoutMs: 4_000,
+      label: 'the target actor reached the terminated state',
+    });
 
     dead.tell('too-late');
-    await sleep(30);
+    await awaitCondition(() => seen.some((d) => d.message === 'too-late'), {
+      timeoutMs: 4_000,
+      label: 'the message to the terminated actor reached dead letters',
+    });
 
     expect(seen.length).toBeGreaterThan(0);
     const messages = seen.map(d => d.message);
@@ -41,12 +67,25 @@ describe('DeadLetter routing', () => {
 
   test('messages sent to Nobody are dropped without hitting dead letters', async () => {
     const seen: DeadLetter[] = [];
+    const subscribed = { value: false };
     class Listener extends Actor<DeadLetter> {
-      override preStart(): void { this.system.eventStream.subscribe(this.self, DeadLetter); }
+      override preStart(): void {
+        this.system.eventStream.subscribe(this.self, DeadLetter);
+        subscribed.value = true;
+      }
       override onReceive(m: DeadLetter): void { seen.push(m); }
     }
     const sys = newSystem();
     sys.spawn(Listener, 'lst');
+    // The subscription is the precondition that keeps the assertion from
+    // passing vacuously — without it "no dead letter arrived" is guaranteed
+    // for the wrong reason.  The settle afterwards stays a plain sleep: the
+    // property under test is that nothing happens, and there is no state to
+    // poll for that.
+    await awaitCondition(() => subscribed.value, {
+      timeoutMs: 4_000,
+      label: 'the listener subscribed to the event stream',
+    });
     // Import Nobody lazily to avoid unused at top.
     const { Nobody } = await import('../../src/ActorRef.js');
     Nobody.tell('nothing');
@@ -62,21 +101,33 @@ describe('DeadLetter delivery loop', () => {
     // unsubscribing routes it BACK to dead letters, which used to
     // republish it to the same dead subscriber until the stack blew.
     // The nested wrap is the loop signature and is dropped.
+    const listenerStopped = { value: false };
+    const targetStopped = { value: false };
     class Listener extends Actor<DeadLetter> {
       override preStart(): void { this.system.eventStream.subscribe(this.self, DeadLetter); }
       override onReceive(_: DeadLetter): void {}
+      override postStop(): void { listenerStopped.value = true; }
     }
-    class Nothing extends Actor<string> { override onReceive(_: string): void {} }
+    class Nothing extends Actor<string> {
+      override onReceive(_: string): void {}
+      override postStop(): void { targetStopped.value = true; }
+    }
 
     const sys = newSystem('dl-loop');
     const listener = sys.spawn(Listener, 'lst');
     const dead = sys.spawn(Nothing, 'n');
     dead.stop();
-    await sleep(30);
+    await awaitCondition(() => targetStopped.value, {
+      timeoutMs: 4_000,
+      label: 'the dead-letter target stopped',
+    });
 
     // Stop the subscriber but leave the subscription in place.
     listener.stop();
-    await sleep(30);
+    await awaitCondition(() => listenerStopped.value, {
+      timeoutMs: 4_000,
+      label: 'the dead-letter subscriber stopped',
+    });
 
     // Must return rather than recurse; the assertion is that we get here.
     expect(() => dead.tell('trigger')).not.toThrow();

@@ -14,6 +14,7 @@ import { TestKitOptions } from '../../../src/testkit/TestKitOptions.js';
 import { Directive, OneForOneStrategy } from '../../../src/Supervision.js';
 import { Terminated } from '../../../src/SystemMessages.js';
 import type { ActorRef } from '../../../src/ActorRef.js';
+import { awaitCondition } from '../../util/AwaitCondition.js';
 
 const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
 const newSys = (name = 'typed-unit'): ActorSystem => {
@@ -33,7 +34,10 @@ describe('Behaviors.receive — basic handler', () => {
     });
     const ref = sys.spawnTyped(behavior, 'r');
     ref.tell('a'); ref.tell('b'); ref.tell('c');
-    await sleep(20);
+    await awaitCondition(() => seen.length === 3, {
+      timeoutMs: 4_000,
+      label: 'all three messages reached the handler',
+    });
     expect(seen).toEqual(['a', 'b', 'c']);
     await sys.terminate();
   });
@@ -44,7 +48,10 @@ describe('Behaviors.receive — basic handler', () => {
     const behavior = Behaviors.receiveMessage<number>((m) => { seen.push(m); return Behaviors.same; });
     const ref = sys.spawnTypedAnonymous(behavior);
     ref.tell(1); ref.tell(2);
-    await sleep(20);
+    await awaitCondition(() => seen.length === 2, {
+      timeoutMs: 4_000,
+      label: 'both messages reached the handler',
+    });
     expect(seen).toEqual([1, 2]);
     await sys.terminate();
   });
@@ -104,11 +111,12 @@ describe('Behaviors.setup', () => {
     const kit = TestKit.create('typed-setup', kitOptions);
     const probe = kit.createTestProbe<string>();
     let setupCalls = 0;
+    let handled = 0;
 
     const behavior = Behaviors.setup<string>((context) => {
       setupCalls++;
       probe.tell(`path=${context.path.toString()}`);
-      return Behaviors.receiveMessage(() => Behaviors.same);
+      return Behaviors.receiveMessage(() => { handled++; return Behaviors.same; });
     });
 
     const ref = kit.system.spawnTyped(behavior, 'withSetup');
@@ -116,7 +124,13 @@ describe('Behaviors.setup', () => {
     expect(typeof first).toBe('string');
     expect((first as string).startsWith('path=')).toBe(true);
     ref.tell('anything'); ref.tell('more');
-    await sleep(30);
+    // "exactly once" only means something once both messages have gone
+    // through — the old sleep could expire before either was dequeued and the
+    // assertion would then hold for the wrong reason.
+    await awaitCondition(() => handled === 2, {
+      timeoutMs: 4_000,
+      label: 'both messages ran through the behavior setup produced',
+    });
     expect(setupCalls).toBe(1);
     await kit.system.terminate();
     await sys.terminate();
@@ -203,7 +217,12 @@ describe('Behaviors.withStash', () => {
     );
     const ref = sys.spawnTypedAnonymous(behavior);
     ref.tell('a'); ref.tell('b'); ref.tell('c');
-    await sleep(30);
+    // Capacity 2, three messages — exactly one overflow, so the count cannot
+    // run past the value being waited for.
+    await awaitCondition(() => errors.length === 1, {
+      timeoutMs: 4_000,
+      label: 'the third stash attempt overflowed',
+    });
     expect(errors.length).toBe(1);
     expect((errors[0] as Error).name).toBe('StashOverflowError');
     await sys.terminate();
@@ -388,7 +407,10 @@ describe('system.spawnTyped + ctx.spawnTyped', () => {
 
     const parent = sys.spawn(UntypedParent, 'parent');
     parent.tell({ kind: 'fwd', m: 'hi' });
-    await sleep(40);
+    await awaitCondition(() => seen.length === 2, {
+      timeoutMs: 4_000,
+      label: 'both typed children received the forwarded message',
+    });
     // Both children received the same message — order across children is
     // not deterministic, so sort.
     expect(seen.sort()).toEqual(['hi', 'hi']);
@@ -418,9 +440,17 @@ describe('Behaviors.receiveWithSignal — terminated signal (#448)', () => {
     });
 
     sys.spawn(typedActor(parent), 'parent');
-    await sleep(40);
+    // `child` is assigned inside `setup`, so its presence is what says the
+    // parent is up — not 40 ms of hoping.
+    await awaitCondition(() => child !== null, {
+      timeoutMs: 4_000,
+      label: 'the parent behavior spawned its child',
+    });
     child!.stop();
-    await sleep(60);
+    await awaitCondition(() => seen.length === 1, {
+      timeoutMs: 4_000,
+      label: 'the terminated signal reached the parent',
+    });
 
     expect(seen).toEqual(['terminated:kid']);
     await sys.terminate();
@@ -447,13 +477,22 @@ describe('Behaviors.receiveWithSignal — terminated signal (#448)', () => {
     });
 
     sys.spawn(typedActor(parent), 'parent');
-    await sleep(40);
+    await awaitCondition(() => first !== null && second !== null, {
+      timeoutMs: 4_000,
+      label: 'the parent behavior spawned both children',
+    });
     second!.stop();
-    await sleep(60);
+    await awaitCondition(() => stopped.length === 1, {
+      timeoutMs: 4_000,
+      label: 'the first terminated signal arrived',
+    });
     expect(stopped).toEqual(['second']);
 
     first!.stop();
-    await sleep(60);
+    await awaitCondition(() => stopped.length === 2, {
+      timeoutMs: 4_000,
+      label: 'the second terminated signal arrived',
+    });
     expect(stopped).toEqual(['second', 'first']);
 
     await sys.terminate();
@@ -486,12 +525,19 @@ describe('Behaviors.receiveWithSignal — terminated signal (#448)', () => {
     });
 
     const ref = sys.spawn(typedActor(parent), 'parent');
-    await sleep(40);
+    await awaitCondition(() => child !== null, {
+      timeoutMs: 4_000,
+      label: 'the parent behavior spawned its child',
+    });
     child!.stop();
-    await sleep(80);
-
     // Stopping in response to the signal also fires post-stop, which shows the
-    // transition really happened rather than the signal merely being observed.
+    // transition really happened rather than the signal merely being observed
+    // — so post-stop is the end of the sequence and the thing to wait for.
+    await awaitCondition(() => seen.length === 2, {
+      timeoutMs: 4_000,
+      label: 'the parent stopped itself in response to the signal',
+    });
+
     expect(seen).toEqual(['watched-child-died', 'post-stop']);
 
     ref.tell('ignored — the parent stopped itself');
@@ -519,9 +565,15 @@ describe('Behaviors.receiveWithSignal — terminated signal (#448)', () => {
     });
 
     sys.spawn(typedActor(parent), 'parent');
-    await sleep(40);
+    await awaitCondition(() => child !== null, {
+      timeoutMs: 4_000,
+      label: 'the parent behavior spawned its child',
+    });
     child!.stop();
-    await sleep(60);
+    await awaitCondition(() => seen.length === 1, {
+      timeoutMs: 4_000,
+      label: 'the Terminated arrived at the receive handler',
+    });
 
     expect(seen).toEqual(['terminated-as-message:kid']);
     await sys.terminate();
@@ -555,7 +607,10 @@ describe('TypedActorContext.setDisplayName (#891)', () => {
       });
     });
     system.spawnTyped(behavior, 'entity-7b3f').tell('x');
-    await sleep(30);
+    await awaitCondition(() => names().length === 1, {
+      timeoutMs: 4_000,
+      label: 'the behavior logged its handled message',
+    });
 
     expect(names()).toEqual(['Cart(alice)']);
     await system.terminate();
@@ -569,7 +624,10 @@ describe('TypedActorContext.setDisplayName (#891)', () => {
     });
     const entityOptions = ActorOptions.create<string>().withDisplayName('Cart(bob)');
     system.spawn(typedActor(behavior), 'entity-9c21', entityOptions).tell('x');
-    await sleep(30);
+    await awaitCondition(() => names().length === 1, {
+      timeoutMs: 4_000,
+      label: 'the behavior logged its handled message',
+    });
 
     expect(names()).toEqual(['Cart(bob)']);
     await system.terminate();

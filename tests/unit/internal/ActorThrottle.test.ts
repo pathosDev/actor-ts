@@ -12,6 +12,7 @@ import { Actor } from '../../../src/Actor.js';
 import { ActorSystem } from '../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../src/ActorSystemOptions.js';
 import { LogLevel, NoopLogger } from '../../../src/Logger.js';
+import { awaitCondition } from '../../util/AwaitCondition.js';
 
 const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
 
@@ -74,9 +75,15 @@ describe('ActorContext.throttle (#83)', () => {
     await sleep(50);
     expect(counter.count).toBeLessThanOrEqual(3); // 2 burst + maybe 1 timing edge
 
-    // Wait long enough for the rest to drain.  qps=10 means the
-    // remaining 8 take 800 ms; add 200 ms slack.
-    await sleep(1_100);
+    // The lower bound — that the throttle really held messages back — is the
+    // assertion above.  This half only waits for the queue to drain, which at
+    // qps=10 takes ~800 ms on an idle machine; the 1.1 s it used to sleep left
+    // 300 ms of slack and paid the full second on every passing run.
+    await awaitCondition(() => counter.count === 10, {
+      timeoutMs: 4_000,
+      intervalMs: 20,
+      label: 'the throttled queue drained all ten ticks',
+    });
     expect(counter.count).toBe(10);
   }, 5_000);
 
@@ -110,7 +117,10 @@ describe('ActorContext.throttle (#83)', () => {
 
     // Now send 1 more tick — bucket has tokens, processes immediately.
     ref.tell({ kind: 'tick' });
-    await sleep(20);
+    await awaitCondition(() => dc.count === 3, {
+      timeoutMs: 4_000,
+      label: 'the tick against a refilled bucket was processed',
+    });
     expect(dc.count).toBe(3);
   }, 5_000);
 
@@ -137,7 +147,14 @@ describe('ActorContext.throttle (#83)', () => {
     // and another ~0 ms to drain the (zero) remainder.  500 ms slack
     // covers CI variance.
     ref.tell({ kind: 'cancel-throttle' });
-    await sleep(500);
+    // Only four ticks were ever sent, so the count cannot overshoot — waiting
+    // for it beats guessing at 500 ms, which was already only 2.5× the ~200 ms
+    // the walk through the pending queue actually needs.
+    await awaitCondition(() => counter.count === 4, {
+      timeoutMs: 4_000,
+      intervalMs: 20,
+      label: 'the queue drained once the throttle was cancelled',
+    });
     expect(counter.count).toBe(4);
   }, 5_000);
 
@@ -145,11 +162,13 @@ describe('ActorContext.throttle (#83)', () => {
     // The actor sets a tight throttle, then we kill it.  The
     // system-side `terminate` command must NOT be gated by the
     // throttle — the actor stops promptly, no token-wait.
+    const stopped = { value: false };
     class Strict extends Actor<CountMessage> {
       override preStart(): void {
         this.context.throttle({ qps: 1, burst: 1 });
       }
       override onReceive(_m: CountMessage): void { /* noop */ }
+      override postStop(): void { stopped.value = true; }
     }
     const ref = sys.spawn(Strict, 'strict');
     await sleep(20);
@@ -158,14 +177,18 @@ describe('ActorContext.throttle (#83)', () => {
     ref.tell({ kind: 'tick' });
     await sleep(20);
 
-    // Stop — system messages are not subject to the bucket.  Actor
-    // should be gone within the next dispatch tick, well before
-    // the qps=1 bucket would otherwise let anything through.
+    // Stop — system messages are not subject to the bucket.  `postStop` is the
+    // observable that says so; before, the test asserted only that
+    // `sys.deadLetters` had a path and leaned entirely on `afterEach` not
+    // hanging.  The budget stays generous rather than tuned just below the
+    // 1 s the bucket would impose: a tight bound here would be the same trade
+    // this change is removing everywhere else.
     ref.stop();
-    await sleep(50);
-    expect(sys.deadLetters.path.toString()).toBeDefined(); // sanity
-    // No way to directly assert "actor is terminated" from outside —
-    // the test passes if `sys.terminate()` in afterEach doesn't hang.
+    await awaitCondition(() => stopped.value, {
+      timeoutMs: 4_000,
+      label: 'the throttled actor stopped',
+    });
+    expect(stopped.value).toBe(true);
   }, 5_000);
 
 });
