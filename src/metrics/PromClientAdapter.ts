@@ -26,11 +26,13 @@
  */
 
 import type { PromClientAdapterOptions, PromClientAdapterOptionsType } from './PromClientAdapterOptions.js';
+import { PromClientAdapterOptionsValidator } from './PromClientAdapterOptions.js';
 import type {
   Counter, CounterOptions, Gauge, GaugeOptions, Histogram, HistogramOptions,
   Labels, LabelValue, MetricSample, MetricsRegistry,
 } from './Metrics.js';
-import { DEFAULT_HISTOGRAM_BUCKETS } from './Metrics.js';
+import { DEFAULT_HISTOGRAM_BUCKETS, overflowLabelsOf, warnCardinalityOverflow } from './Metrics.js';
+import { DEFAULT_MAX_SERIES_PER_FAMILY } from './MetricsRegistryOptions.js';
 
 /* ----------------------- prom-client surface ----------------------- */
 /* Structural — keep in sync with prom-client v15.x.  We only use the */
@@ -90,22 +92,31 @@ type PromConstructorOpts = {
 
 /* --------------------------- adapter --------------------------- */
 
-type CounterEntry = {
-  readonly kind: 'counter';
+/**
+ * Per-family bookkeeping.  `series` is the bridge's own label-tuple
+ * counter and exists because `families` is keyed by metric *name* only:
+ * the series itself is minted inside prom-client by
+ * `entry.impl.labels(...)`, where we can neither count nor evict it.
+ * Without a local tally there is nothing to compare against the cap.
+ * `overflowed` is the one-shot flag for the warning.
+ */
+type EntryBase = {
   readonly help: string;
   readonly labelNames: ReadonlyArray<string>;
+  readonly series: Set<string>;
+  overflowed: boolean;
+};
+
+type CounterEntry = EntryBase & {
+  readonly kind: 'counter';
   readonly impl: PromClientCounter;
 };
-type GaugeEntry = {
+type GaugeEntry = EntryBase & {
   readonly kind: 'gauge';
-  readonly help: string;
-  readonly labelNames: ReadonlyArray<string>;
   readonly impl: PromClientGauge;
 };
-type HistogramEntry = {
+type HistogramEntry = EntryBase & {
   readonly kind: 'histogram';
-  readonly help: string;
-  readonly labelNames: ReadonlyArray<string>;
   readonly buckets: ReadonlyArray<number>;
   readonly impl: PromClientHistogram;
 };
@@ -126,7 +137,13 @@ type Entry = CounterEntry | GaugeEntry | HistogramEntry;
 export function promClientRegistry(
   options: PromClientAdapterOptions,
 ): MetricsRegistry {
-  const { client, registry, namePrefix = '' } = options as PromClientAdapterOptionsType;
+  const settings = options as PromClientAdapterOptionsType;
+  new PromClientAdapterOptionsValidator().validate(settings);
+  const {
+    client, registry,
+    namePrefix = '',
+    maxSeriesPerFamily = DEFAULT_MAX_SERIES_PER_FAMILY,
+  } = settings;
   const families = new Map<string, Entry>();
 
   function fullName(name: string): string {
@@ -151,7 +168,8 @@ export function promClientRegistry(
     for (const [k, v] of Object.entries(labels)) {
       // prom-client's `LabelValues` only takes string | number.  Booleans
       // and other primitives are coerced via `String(...)` so we don't
-      // silently drop them.  Cardinality discipline is the user's job.
+      // silently drop them.  The tuple has already been through
+      // `seriesLabelsOf`, so the cardinality cap holds regardless.
       if (typeof v === 'string' || typeof v === 'number') out[k] = v;
       else out[k] = String(v as LabelValue);
     }
@@ -174,7 +192,10 @@ export function promClientRegistry(
       labelNames: labelNames.length > 0 ? labelNames : undefined,
       registers: [registry],
     });
-    const entry: CounterEntry = { kind: 'counter', help: options2?.help ?? fullN, labelNames, impl };
+    const entry: CounterEntry = {
+      kind: 'counter', help: options2?.help ?? fullN, labelNames, impl,
+      series: new Set(), overflowed: false,
+    };
     families.set(fullN, entry);
     return entry;
   }
@@ -195,7 +216,10 @@ export function promClientRegistry(
       labelNames: labelNames.length > 0 ? labelNames : undefined,
       registers: [registry],
     });
-    const entry: GaugeEntry = { kind: 'gauge', help: options2?.help ?? fullN, labelNames, impl };
+    const entry: GaugeEntry = {
+      kind: 'gauge', help: options2?.help ?? fullN, labelNames, impl,
+      series: new Set(), overflowed: false,
+    };
     families.set(fullN, entry);
     return entry;
   }
@@ -221,22 +245,48 @@ export function promClientRegistry(
     const entry: HistogramEntry = {
       kind: 'histogram', help: options2?.help ?? fullN, labelNames,
       buckets: [...buckets], impl,
+      series: new Set(), overflowed: false,
     };
     families.set(fullN, entry);
     return entry;
   }
 
+  /**
+   * The label tuple this call is allowed to write to — `labels` while the
+   * family is under its cap, the family's overflow tuple once it is not
+   * (#131).
+   *
+   * The overflow tuple is built from the family's *declared* `labelNames`
+   * rather than from a synthetic marker label, because prom-client fixes
+   * a metric's label names at construction and throws on a `.labels(...)`
+   * carrying a name outside that set — so a `{__overflow__: '1'}` tuple
+   * would blow up the very call that is supposed to contain the damage.
+   */
+  function seriesLabelsOf(entry: Entry, name: string, labels: Labels | undefined): Labels {
+    if (maxSeriesPerFamily <= 0) return labels ?? {};
+    const key = labelKey(labels);
+    if (entry.series.has(key)) return labels ?? {};
+    if (entry.series.size >= maxSeriesPerFamily) {
+      if (!entry.overflowed) {
+        entry.overflowed = true;
+        warnCardinalityOverflow(name, maxSeriesPerFamily, labels ?? {});
+      }
+      return overflowLabelsOf(entry.labelNames);
+    }
+    entry.series.add(key);
+    return labels ?? {};
+  }
+
   return {
     counter(name, labels, options2): Counter {
       const entry = getOrCreateCounter(name, labels, options2);
-      const promLabels = asPromLabels(labels);
+      const promLabels = asPromLabels(seriesLabelsOf(entry, fullName(name), labels));
       // Local mirror of the value so the framework's `Counter.value`
       // contract (read for testing) keeps working without poking the
       // prom-client side.
       let mirror = 0;
       // Prefix-bound inc on the prom-client side.
       const child = entry.impl.labels(promLabels);
-      void labelKey(labels); // namespace-disambig debug — kept for symmetry with PrometheusExporter
       return {
         inc(delta = 1): void {
           if (delta < 0) throw new Error('Counter.inc requires delta >= 0');
@@ -250,7 +300,7 @@ export function promClientRegistry(
 
     gauge(name, labels, options2): Gauge {
       const entry = getOrCreateGauge(name, labels, options2);
-      const promLabels = asPromLabels(labels);
+      const promLabels = asPromLabels(seriesLabelsOf(entry, fullName(name), labels));
       let mirror = 0;
       const child = entry.impl.labels(promLabels);
       return {
@@ -275,7 +325,7 @@ export function promClientRegistry(
 
     histogram(name, labels, options2): Histogram {
       const entry = getOrCreateHistogram(name, labels, options2);
-      const promLabels = asPromLabels(labels);
+      const promLabels = asPromLabels(seriesLabelsOf(entry, fullName(name), labels));
       const child = entry.impl.labels(promLabels);
       // Mirror the bucket counts + sum + count locally so the
       // framework's `Histogram.{counts,sum,count}` contract keeps
