@@ -78,9 +78,14 @@ import { Aside } from '@astrojs/starlight/components';
   ```
   `actor_mailbox_dropped_total` carries a `path` label, which can be
   high-cardinality for sharded entities (one path per actor).  The
-  framework does **not** cap or aggregate these series — cardinality
-  discipline is entirely your responsibility.  Re-aggregate or drop
-  the label downstream if the series count grows unbounded.
+  series count is **bounded but not small**: the registry's
+  [cardinality cap](/observability/metrics/core-metrics/#the-cardinality-cap)
+  stops the family at 10 000 series and folds the rest into
+  `path="__overflow__"`, so the process cannot be memory-exhausted
+  through this label — but 10 000 series in one family is still a lot
+  to scrape.  Re-aggregate or drop the label downstream if you run
+  enough entities to approach that, and treat the appearance of an
+  `__overflow__` series as the signal that you have.
 </Aside>
 
 <Aside type="caution" title="Counters reset on restart">

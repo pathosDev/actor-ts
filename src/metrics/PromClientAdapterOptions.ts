@@ -1,4 +1,5 @@
 import { OptionsBuilder } from '../util/OptionsBuilder.js';
+import { OptionsValidator } from '../util/OptionsValidator.js';
 import type {
   PromClientLike,
   PromClientRegistryLike,
@@ -15,6 +16,19 @@ export type PromClientAdapterOptionsType = {
    * name registered through the adapter.  Default: empty.
    */
   readonly namePrefix?: string;
+  /**
+   * Cap on distinct label tuples per metric family, mirroring the
+   * `DefaultMetricsRegistry` cap on the bridge (#131).  prom-client mints
+   * a series inside its own `Counter`/`Gauge`/`Histogram` on every
+   * `.labels(...)` call and never expires one, so without a cap here the
+   * bridge is the *more* exposed of the two paths.  Past the cap the
+   * bridge folds further tuples into a single overflow series, leaving
+   * prom-client with at most `maxSeriesPerFamily + 1` tuples per family.
+   *
+   * Default: `DEFAULT_MAX_SERIES_PER_FAMILY`, the same 10 000 the
+   * in-process registry uses; `0` disables the cap.
+   */
+  readonly maxSeriesPerFamily?: number;
 };
 
 /**
@@ -49,6 +63,22 @@ export class PromClientAdapterOptionsBuilder extends OptionsBuilder<PromClientAd
   /** Name prefix, e.g. `'actor_ts_'`, applied to every registered metric name.  Default: empty. */
   withNamePrefix(namePrefix: string): this {
     return this.set('namePrefix', namePrefix);
+  }
+
+  /** Cap on distinct label tuples per metric family.  `0` disables the cap. */
+  withMaxSeriesPerFamily(maxSeriesPerFamily: number): this {
+    return this.set('maxSeriesPerFamily', maxSeriesPerFamily);
+  }
+}
+
+/** Validates resolved {@link PromClientAdapterOptionsType} settings. */
+export class PromClientAdapterOptionsValidator extends OptionsValidator<PromClientAdapterOptionsType> {
+  constructor() {
+    super('PromClientAdapterOptions');
+  }
+  protected rules(): void {
+    // `>= 0` rather than `>= 1`: 0 is the documented cap opt-out.
+    this.nonNegativeInt('maxSeriesPerFamily');
   }
 }
 
