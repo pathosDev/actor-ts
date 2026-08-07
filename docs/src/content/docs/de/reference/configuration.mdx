@@ -5,8 +5,9 @@ description: Jeder HOCON-Key, den das Framework liest, gruppiert nach Modul — 
 
 actor-ts verwendet **HOCON** zur Konfiguration — eine Obermenge von
 JSON, die in JVM-Config-Dateien üblich ist, mit Substitutionen,
-Durations, Sizes und Includes.  Drei Schichten, von oben nach unten
-aufgelöst:
+Durations und Sizes.  ([`include`-Direktiven werden
+abgelehnt](#includes-werden-nicht-unterstützt) — setze die Quellen im
+Code zusammen.)  Drei Schichten, von oben nach unten aufgelöst:
 
 1. **Konstruktor-Argumente** an `ActorSystem.create(name, settings)`
    — explizite Code-Overrides.
@@ -379,16 +380,34 @@ fallback-port = ${fallback-port:-2552}  # default-if-empty Syntax
 
 Verwende `${?ENV}` für optional, `${ENV}` für required.
 
-### Includes
+### Includes werden nicht unterstützt
 
 ```hocon
-include "shared-cluster.conf"
-
-actor-ts.cluster.failure-detector.heartbeat-interval = 250ms
+include "shared-cluster.conf"   # Fehler: `include` wird nicht unterstützt
 ```
 
-Lädt `shared-cluster.conf` und legt Deinen lokalen Abschnitt
-darüber.
+Eine Config-Quelle kann keine weitere Datei und keine URL benennen, die
+hinzugeladen wird.  Das ist eine Entscheidung, keine Lücke: ein
+aufgelöstes `include` überließe demjenigen, der die Config schreibt, die
+Wahl, welche Pfade der Prozess liest — relativ zu einer Wurzel, die der
+Parser gar nicht kennen kann.  Das Zusammenführen im Code belässt diese
+Wahl beim Aufrufer.
+
+```ts
+import { Config } from 'actor-ts';
+
+const shared = Config.parseFile('shared-cluster.conf');
+const application = Config.parseFile('application.conf');
+const config = shared.merge(application);
+```
+
+`merge` legt sein Argument obenauf, die lokale Datei gewinnt also — genau
+die Reihenfolge, auf die das `include` oben hinauswollte.  Den geteilten
+Inhalt in eine Datei zu kopieren funktioniert ebenfalls.
+
+Der Parser sagt all das, wenn er auf ein `include` trifft, und zitiert
+dabei Zeile und Ziel — eine aus Akka oder Pekko portierte Config
+scheitert damit mit einer Antwort statt mit einem Rätsel.
 
 ### Reservierte Schlüssel
 

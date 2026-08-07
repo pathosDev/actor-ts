@@ -4,8 +4,9 @@ description: Every HOCON key the framework reads, grouped by module — defaults
 ---
 
 actor-ts uses **HOCON** for configuration — a superset of JSON
-common in JVM config files, with substitutions, durations, sizes,
-and includes.  Three layers, resolved highest-first:
+common in JVM config files, with substitutions, durations and
+sizes.  ([`include` directives are refused](#includes-are-not-supported)
+— compose the sources in code.)  Three layers, resolved highest-first:
 
 1. **Constructor arguments** to `ActorSystem.create(name, settings)`
    — explicit code overrides.
@@ -371,15 +372,33 @@ fallback-port = ${fallback-port:-2552}  # default-if-empty syntax
 
 Use `${?ENV}` for optional, `${ENV}` for required.
 
-### Includes
+### Includes are not supported
 
 ```hocon
-include "shared-cluster.conf"
-
-actor-ts.cluster.failure-detector.heartbeat-interval = 250ms
+include "shared-cluster.conf"   # error: `include` is not supported
 ```
 
-Loads `shared-cluster.conf` and overlays your local section on top.
+A config source cannot name another file or URL to pull in.  That is a
+decision, not a gap: resolving an include would let whoever writes the
+config choose which paths the process reads, relative to a root the
+parser has no way to know.  Merging in code leaves that choice with the
+caller.
+
+```ts
+import { Config } from 'actor-ts';
+
+const shared = Config.parseFile('shared-cluster.conf');
+const application = Config.parseFile('application.conf');
+const config = shared.merge(application);
+```
+
+`merge` layers its argument on top, so the local file wins — the same
+order the `include` above was reaching for.  Pasting the shared content
+into one file works too.
+
+The parser says all of this when it meets an `include`, quoting the line
+and the target, so a config ported from Akka or Pekko fails with an
+answer rather than a puzzle.
 
 ### Reserved keys
 
