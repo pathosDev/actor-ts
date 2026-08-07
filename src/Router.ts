@@ -84,6 +84,12 @@ function mailboxDepthOf(routee: ActorRef): number | null {
  * If no depth is readable at all the scan falls back to the rotation, so the
  * strategy still routes rather than dropping when it is used outside a local
  * pool.
+ *
+ * The scan stops at the first empty mailbox, which is what keeps the `O(N)`
+ * worst case off the healthy path: a pool that is keeping up with its load
+ * hits a zero on the first routee it looks at, so the common case is one read
+ * regardless of pool size.  Only a pool that is genuinely behind pays for the
+ * full sweep — and that is the pool the strategy exists for.
  */
 export function smallestMailboxStrategy(): RoutingStrategy {
   return (routees, state) => {
@@ -98,6 +104,10 @@ export function smallestMailboxStrategy(): RoutingStrategy {
       if (shallowest === null || depth < shallowestDepth) {
         shallowest = routee;
         shallowestDepth = depth;
+        // A depth is never negative, so nothing later in the scan could win
+        // under the strict `<` above.  Breaking here is an optimisation, not
+        // a behaviour change — the rotation already picked this routee.
+        if (depth === 0) break;
       }
     }
     return [shallowest ?? routees[start]];
