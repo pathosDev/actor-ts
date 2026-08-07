@@ -8,19 +8,17 @@ import { actorBlueprintOf } from '../../src/internal/ActorBlueprint.js';
 import type { ActorRef } from '../../src/ActorRef.js';
 import type { EntityContext } from '../../src/EntityContext.js';
 import type { Option } from '../../src/util/Option.js';
+import { awaitCondition } from '../util/AwaitCondition.js';
 
 const IDENTITY: EntityContext = { entityId: 'cart:42', typeName: 'cart', shardId: 7 };
 
-const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
-
-async function waitFor(pred: () => boolean, timeoutMs = 2_000, stepMs = 5): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (pred()) return;
-    await sleep(stepMs);
-  }
-  if (!pred()) throw new Error(`waitFor timed out after ${timeoutMs}ms`);
-}
+/**
+ * Thin wrapper over the shared helper (#418) — this file predates it and had
+ * its own polling loop, whose timeout message named neither the condition nor
+ * how long it actually waited.
+ */
+const waitFor = (pred: () => boolean, label: string): Promise<void> =>
+  awaitCondition(pred, { timeoutMs: 4_000, label });
 
 /**
  * Reports its own sharding identity back to the test.  `entityId`/`entity`
@@ -74,7 +72,7 @@ async function spawnProbe(name: string, entity: EntityContext | null): Promise<H
     return probe;
   };
   const reference = system.spawn(base, 'probe', entity === null ? undefined : { entity });
-  await waitFor(() => instances.length > 0 && instances[0]!.started);
+  await waitFor(() => instances.length > 0 && instances[0]!.started, 'the entity actor started');
   return { system, reference, instances };
 }
 
@@ -121,7 +119,7 @@ describe('sharding identity on the actor', () => {
     const harness = await spawnProbe('entity-restart', IDENTITY);
 
     harness.reference.tell('fail');
-    await waitFor(() => harness.instances.length === 2);
+    await waitFor(() => harness.instances.length === 2, 'both entity actors started');
 
     const restarted = harness.instances[1]!;
     expect(restarted).not.toBe(harness.instances[0]);
@@ -148,7 +146,7 @@ describe('sharding identity on the actor', () => {
     const parent = harness.instances[0]!;
 
     harness.reference.tell('spawn-child');
-    await waitFor(() => parent.child !== null && parent.child.started);
+    await waitFor(() => parent.child !== null && parent.child.started, 'the child entity actor started');
 
     expect(parent.child!.readEntityOption().isEmpty).toBe(true);
     expect(() => parent.child!.readEntityId()).toThrow(/is not a sharded entity/);

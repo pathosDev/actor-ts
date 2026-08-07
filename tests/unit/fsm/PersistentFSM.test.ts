@@ -52,6 +52,25 @@ type OrderData = {
 
 const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
 
+/**
+ * Wait until the journal holds exactly `count` events for `persistenceId`.
+ *
+ * The journal is the strongest thing these tests can observe: a transition is
+ * not complete until its events are written, and every assertion here reads
+ * either the journal or a state derived from it.  A `getState` ask is ordered
+ * behind the tells that precede it, so where the *only* assertion is on state
+ * the ask is itself the synchronisation point and no wait is needed at all.
+ */
+const awaitJournalLength = (
+  journal: InMemoryJournal,
+  persistenceId: string,
+  count: number,
+): Promise<void> =>
+  awaitCondition(async () => (await journal.read(persistenceId, 0)).length === count, {
+    timeoutMs: 4_000,
+    label: `${persistenceId} reached ${count} persisted event(s)`,
+  });
+
 class OrderFsm extends PersistentFSM<OrderCommand, OrderEvent, OrderState, OrderData> {
   readonly persistenceId: string;
 
@@ -145,7 +164,7 @@ describe('PersistentFSM — happy path', () => {
       const ref = sys.spawn(() => new OrderFsm('order-1'), 'order');
       ref.tell({ kind: 'pay', amount: 100 });
       ref.tell({ kind: 'ship', carrier: 'fedex' });
-      await sleep(50);
+      await awaitJournalLength(journal, 'order-1', 2);
 
       const finalState = await ref.ask<FsmStateData<OrderState, OrderData>>({ kind: 'getState' }, 1_000,);
       expect(finalState.state).toBe('shipped');
@@ -165,7 +184,9 @@ describe('PersistentFSM — happy path', () => {
       const ref1 = sys1.spawn(() => new OrderFsm('order-2'), 'order');
       ref1.tell({ kind: 'pay', amount: 250 });
       ref1.tell({ kind: 'ship', carrier: 'ups' });
-      await sleep(50);
+      // The events have to be on disk before the system goes away — a
+      // terminate that races the persist drains the mailbox to dead letters.
+      await awaitJournalLength(journal, 'order-2', 2);
     } finally {
       await sys1.terminate();
     }
@@ -196,7 +217,8 @@ describe('PersistentFSM — invalid transitions', () => {
       const ref = sys.spawn(() => new OrderFsm('order-3'), 'order');
       // `ship` is not a valid transition from `'pending'`.
       ref.tell({ kind: 'ship', carrier: 'fedex' });
-      await sleep(40);
+      // No wait: the ask below is queued behind the tell, so it cannot answer
+      // before the command has been through the FSM.
       const after = await ref.ask<FsmStateData<OrderState, OrderData>>({ kind: 'getState' }, 1_000,);
       expect(after.state).toBe('pending');     // unchanged
       expect(after.data.carrier).toBeNull();   // unchanged
@@ -214,7 +236,6 @@ describe('PersistentFSM — invalid transitions', () => {
       ref.tell({ kind: 'ship', carrier: 'dhl' });
       ref.tell({ kind: 'ship', carrier: 'second-attempt' }); // invalid in 'shipped'
       ref.tell({ kind: 'cancel', reason: 'too late' });      // also invalid
-      await sleep(60);
       const after = await ref.ask<FsmStateData<OrderState, OrderData>>({ kind: 'getState' }, 1_000,);
       expect(after.state).toBe('shipped');
       expect(after.data.carrier).toBe('dhl');
@@ -231,7 +252,6 @@ describe('PersistentFSM — invalid transitions', () => {
       const ref = sys.spawn(() => new OrderFsm('order-5'), 'order');
       // Amount = 0 → guard returns false.
       ref.tell({ kind: 'pay', amount: 0 });
-      await sleep(40);
       const after = await ref.ask<FsmStateData<OrderState, OrderData>>({ kind: 'getState' }, 1_000,);
       expect(after.state).toBe('pending');
       expect(await journal.read('order-5', 0)).toHaveLength(0);
@@ -247,7 +267,7 @@ describe('PersistentFSM — function-style transition events', () => {
     try {
       const ref = sys.spawn(() => new OrderFsm('order-6'), 'order');
       ref.tell({ kind: 'pay', amount: 333 });
-      await sleep(40);
+      await awaitJournalLength(journal, 'order-6', 1);
       const events = await journal.read('order-6', 0);
       expect(events).toHaveLength(1);
       expect(events[0]!.event).toEqual({ kind: 'paid', amount: 333 });
@@ -263,7 +283,6 @@ describe('PersistentFSM — alternate paths', () => {
     try {
       const ref = sys.spawn(() => new OrderFsm('order-7'), 'order');
       ref.tell({ kind: 'cancel', reason: 'changed-mind' });
-      await sleep(40);
       const after = await ref.ask<FsmStateData<OrderState, OrderData>>({ kind: 'getState' }, 1_000,);
       expect(after.state).toBe('cancelled');
       expect(after.data.cancelReason).toBe('changed-mind');
@@ -278,7 +297,6 @@ describe('PersistentFSM — alternate paths', () => {
       const ref = sys.spawn(() => new OrderFsm('order-8'), 'order');
       ref.tell({ kind: 'pay', amount: 99 });
       ref.tell({ kind: 'cancel', reason: 'refund' });
-      await sleep(50);
       const after = await ref.ask<FsmStateData<OrderState, OrderData>>({ kind: 'getState' }, 1_000,);
       expect(after.state).toBe('cancelled');
       expect(after.data.amountPaid).toBe(99);     // preserved across transition
@@ -375,8 +393,9 @@ describe('PersistentFSM — stateTimeout (#65)', () => {
     try {
       const ref = sys.spawn(() => new PaymentFsm('pay-1', 80), 'pay');
       ref.tell({ kind: 'authorize', amount: 100 });
-      // Wait > afterMs so the armed timer fires.
-      await sleep(200);
+      // The 80 ms window is the FSM's to honour; what this waits for is the
+      // 'expired' event it produces.
+      await awaitJournalLength(journal, 'pay-1', 2);
 
       const final = await ref.ask<FsmStateData<PayState, PayData>>({ kind: 'getState' }, 1_000,);
       expect(final.state).toBe('expired');
@@ -397,7 +416,6 @@ describe('PersistentFSM — stateTimeout (#65)', () => {
       ref.tell({ kind: 'authorize', amount: 50 });
       // Capture before the timer fires — the FSM must transition to
       // 'captured' and the armed timer must be cancelled.
-      await sleep(20);
       ref.tell({ kind: 'capture' });
       // Wait long enough that the original 80ms timer would have
       // fired if it weren't cancelled.
@@ -422,7 +440,10 @@ describe('PersistentFSM — stateTimeout (#65)', () => {
       const ref = sys.spawn(() => new PaymentFsm('pay-3', 60), 'pay');
       ref.tell({ kind: 'authorize', amount: 10 });
       ref.tell({ kind: 'capture' });
-      await sleep(200);
+      await awaitJournalLength(journal, 'pay-3', 2);
+      // The 60 ms timer must not refire on top of the terminal state, so the
+      // settle outlives it — that half cannot be expressed by polling.
+      await sleep(100);
 
       const events = await journal.read('pay-3', 0);
       expect(events).toHaveLength(2);
@@ -465,7 +486,7 @@ describe('PersistentFSM — stateTimeout (#65)', () => {
     try {
       const ref1 = sys1.spawn(() => new PaymentFsm('pay-5', 80), 'pay');
       ref1.tell({ kind: 'authorize', amount: 200 });
-      await sleep(20);
+      await awaitJournalLength(journal, 'pay-5', 1);
       // Stop before the timer fires — the persisted state is 'authorized'.
     } finally {
       await sys1.terminate();
@@ -479,8 +500,9 @@ describe('PersistentFSM — stateTimeout (#65)', () => {
     sys2.extension(PersistenceExtensionId).setSnapshotStore(snaps);
     try {
       const ref2 = sys2.spawn(() => new PaymentFsm('pay-5', 80), 'pay');
-      // After recovery, the timer arms fresh.  Wait > afterMs.
-      await sleep(200);
+      // After recovery the timer arms fresh; the 'expired' event is what says
+      // it fired, and the journal length says it fired exactly once.
+      await awaitJournalLength(journal, 'pay-5', 2);
       const final = await ref2.ask<FsmStateData<PayState, PayData>>({ kind: 'getState' }, 1_000,);
       expect(final.state).toBe('expired');
 
@@ -587,7 +609,7 @@ describe('PersistentFSM — multiple events per command (#66)', () => {
         'audit',
       );
       ref.tell({ kind: 'pay', amount: 250 });
-      await sleep(50);
+      await awaitJournalLength(journal, 'audit-1', 2);
 
       const final = await ref.ask<FsmStateData<AuditState, AuditData>>({ kind: 'getState' }, 1_000,);
       expect(final.state).toBe('paid');
@@ -611,7 +633,7 @@ describe('PersistentFSM — multiple events per command (#66)', () => {
         'audit',
       );
       ref.tell({ kind: 'pay', amount: 0 });
-      await sleep(50);
+      await awaitJournalLength(journal, 'audit-2', 2);
 
       const final = await ref.ask<FsmStateData<AuditState, AuditData>>({ kind: 'getState' }, 1_000,);
       expect(final.state).toBe('paid');
@@ -631,7 +653,6 @@ describe('PersistentFSM — multiple events per command (#66)', () => {
         'audit',
       );
       ref.tell({ kind: 'pay', amount: 99 }); // resolves to []
-      await sleep(50);
 
       const final = await ref.ask<FsmStateData<AuditState, AuditData>>({ kind: 'getState' }, 1_000,);
       // Stayed in 'pending' — no events persisted.
@@ -654,7 +675,7 @@ describe('PersistentFSM — multiple events per command (#66)', () => {
         'audit',
       );
       ref1.tell({ kind: 'pay', amount: 500 });
-      await sleep(50);
+      await awaitJournalLength(journal, 'audit-4', 2);
     } finally {
       await sys1.terminate();
     }
