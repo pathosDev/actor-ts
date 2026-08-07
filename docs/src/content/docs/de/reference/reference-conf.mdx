@@ -51,6 +51,28 @@ actor-ts {
       unreachable-after = 2s
       down-after = 5s     # measured from the last heartbeat, so > unreachable-after
     }
+
+    # Cluster-wide publish/subscribe (DistributedPubSub).  The caps bound what
+    # one mediator can be made to hold -- by local subscribers and by a peer's
+    # gossiped topic claims alike.  A Subscribe over a cap is answered with
+    # SubscribeRejected, never silently dropped.
+    pub-sub {
+      gossip-interval = 1s
+      max-subscribers-per-topic = 10000
+      max-topics = 10000
+      max-remote-nodes-per-topic = 1000
+      # A publish that reached no subscriber goes to system.deadLetters, so a
+      # mistyped topic is observable instead of silent.  off = discard it.
+      send-to-dead-letters-when-no-subscribers = on
+    }
+
+    # Cluster-wide service registry (Receptionist).  Subscribers are watched,
+    # so a stopped one is dropped; the caps bound the ones that are still alive.
+    receptionist {
+      gossip-interval = 1s
+      max-subscribers-per-key = 1000
+      max-subscribers-total = 10000
+    }
   }
 
   remote {

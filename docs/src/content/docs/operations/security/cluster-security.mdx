@@ -224,6 +224,7 @@ Only `app=actor-ts` pods can reach port 2552 on each other.
 | Unauthorized cluster join | mTLS (CA-signed peer certs) |
 | Insider with stolen cert | Cert rotation + revocation |
 | Malformed or hostile wire frame | Shape validation at the decode boundary |
+| Peer growing a node's registries without bound | Per-registry caps on pub-sub and the receptionist |
 | Compromised pod inside the cluster | Application-level auth (out of scope here) |
 
 The cluster transport handles transport-level security.
@@ -270,6 +271,40 @@ validate their own payloads.
 Every rejection is logged at `WARN` naming the peer and the
 offending field, so a dropped frame is diagnosable — a
 version mismatch and a hostile peer look different in the log.
+
+## What a well-formed frame still cannot grow
+
+Shape validation says a frame is *readable*, not that acting on
+it is free. Pub-sub gossip is the clean example: a peer naming
+100 000 topics it claims subscribers for sends one perfectly
+legal frame, and the receiver used to allocate 100 000 map
+entries for it — no local `Subscribe`, no malformed field, no
+log line. The receptionist had the same shape on its own gossip
+path.
+
+Both registries are capped now, and the caps apply to the gossip
+path as much as to local calls:
+
+| Registry | Capped by | Default |
+| --- | --- | --- |
+| Pub-sub subscribers per topic | `cluster.pub-sub.max-subscribers-per-topic` | `10000` |
+| Pub-sub topics | `cluster.pub-sub.max-topics` | `10000` |
+| Pub-sub remote claimants per topic | `cluster.pub-sub.max-remote-nodes-per-topic` | `1000` |
+| Receptionist subscribers per key | `cluster.receptionist.max-subscribers-per-key` | `1000` |
+| Receptionist subscribers total | `cluster.receptionist.max-subscribers-total` | `10000` |
+
+A claim over a cap is dropped and logged rather than refused on
+the wire — the frame is well-formed, and dropping the connection
+over it would let one noisy peer cost a healthy link. A *local*
+`Subscribe` over a cap is answered with `SubscribeRejected`
+instead, because the caller is in a position to do something
+about it. Both registries also watch their subscribers, so the
+other half of the old growth — refs that stopped without ever
+unsubscribing — is reclaimed rather than capped.
+
+Lower the defaults for a deployment where the legitimate numbers
+are far below them: a cap is only a bound on the damage, and one
+set far above real usage bounds very little.
 
 ## Who may say what
 

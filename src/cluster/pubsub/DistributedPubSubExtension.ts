@@ -4,20 +4,17 @@ import { SystemActorNames, SystemGroups, assertSpawnedAt } from '../../internal/
 import { extensionId, type Extension, type ExtensionId } from '../../Extension.js';
 import type { Cluster } from '../Cluster.js';
 import type { EnvelopeMessage } from '../Protocol.js';
+import { mergeOptions } from '../../util/OptionsMerge.js';
 import {
   DistributedPubSubMediator,
   mediatorPath,
+  type MediatorMessage,
 } from './DistributedPubSubMediator.js';
-import { DistributedPubSubOptions, type DistributedPubSubOptionsType } from './DistributedPubSubOptions.js';
-import type {
-  GetTopics,
-  Publish,
-  Subscribe,
-  Unsubscribe,
-  UnsubscribeAll,
-} from './Messages.js';
-
-type MediatorMessage = Subscribe | Unsubscribe | UnsubscribeAll | Publish | GetTopics;
+import {
+  DistributedPubSubOptions,
+  readDistributedPubSubOptionsFromConfig,
+  type DistributedPubSubOptionsType,
+} from './DistributedPubSubOptions.js';
 
 /**
  * System-wide access to the DistributedPubSubMediator for a given Cluster.
@@ -41,9 +38,19 @@ export class DistributedPubSub implements Extension {
     this._cluster = cluster;
 
     // Cluster comes from the positional arg and is authoritative — inject it
-    // into the options (builder or plain object) before constructing the mediator.
+    // into the options (builder or plain object) before constructing the
+    // mediator.  The tunables layer in the documented order: explicit options
+    // beat `actor-ts.cluster.pub-sub.*`, which beats the mediator's built-ins.
+    const resolvedOptions: DistributedPubSubOptionsType = {
+      ...mergeOptions<DistributedPubSubOptionsType>(
+        {},
+        readDistributedPubSubOptionsFromConfig(this.system.config),
+        options as Partial<DistributedPubSubOptionsType>,
+      ),
+      cluster,
+    };
     const mediator = this.system._spawnSystemActor(
-      () => new DistributedPubSubMediator({ ...(options as Partial<DistributedPubSubOptionsType>), cluster }),
+      () => new DistributedPubSubMediator(resolvedOptions),
       SystemGroups.clusterPubSub,
       SystemActorNames.pubSubMediator,
     );

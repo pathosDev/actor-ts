@@ -73,7 +73,7 @@ Node den Publisher hostet.
 
 | Nachricht | Was |
 | --- | --- |
-| `Subscribe(topic, ref)` | Registriert `ref` als Subscriber auf `topic`. Antwortet mit `SubscribeAcknowledgment`. |
+| `Subscribe(topic, ref, replyTo?)` | Registriert `ref` als Subscriber auf `topic`. Antwortet `replyTo` (oder dem Sender) mit `SubscribeAcknowledgment` — oder mit `SubscribeRejected`, wenn eine Grenze voll ist. |
 | `Unsubscribe(topic, ref)` | Entfernt `ref` aus den Subscribern von `topic`. |
 | `UnsubscribeAll(ref)` | Entfernt `ref` aus jedem Topic. |
 | `Publish(topic, message)` | Schickt `message` an jeden Subscriber von `topic`. |
@@ -85,6 +85,16 @@ du das Ack brauchst:
 import {} from 'actor-ts';
 
 await ps.mediator.ask(new Subscribe('chat.room.general', room));
+```
+
+`Subscribe` nimmt ein optionales drittes Argument, `replyTo`, das
+benennt, wohin Bestätigung oder Ablehnung gehen. Ohne es folgt die
+Antwort `context.sender` — und der ist bei der obigen Form
+`mediator.tell(…)`, aufgerufen außerhalb eines Actors, **leer**.
+Benenne ein `replyTo`, wann immer du die Antwort sehen willst:
+
+```ts
+ps.mediator.tell(new Subscribe('chat.room.general', room, room));
 ```
 
 ## Topics
@@ -135,13 +145,14 @@ vernünftig.
 
 ## Wenn Subscriber stoppen
 
-Der Mediator **unsubscribet gestoppte Refs nicht automatisch**.
-Wenn ein Subscriber-Actor stoppt, ohne `Unsubscribe` zu senden,
-versucht der Mediator weiter `tell` auf ihn — Nachrichten landen
-in Dead Letters, das System loggt Warnungen.
+Der Mediator **watcht jeden lokalen Subscriber**. Ein Subscriber,
+der stoppt, ohne `Unsubscribe` zu senden — Crash, vergessenes
+Cleanup, ein pro Request gespawnter Actor —, wird entfernt, sobald
+das `Terminated` ankommt; mit seinem letzten Subscriber fällt auch
+das Topic weg.
 
-Best Practice: im `postStop` des Subscribers `Unsubscribe` oder
-`UnsubscribeAll` senden:
+Explizit zu unsubscriben bleibt der schnellere Weg und ist die
+einzige Möglichkeit, ein Topic zu verlassen, ohne zu stoppen:
 
 ```ts
 class Subscriber extends Actor<...> {
@@ -154,9 +165,64 @@ class Subscriber extends Actor<...> {
 }
 ```
 
-Das Cleanup ist nicht strikt notwendig — Dead-Letter-Routing ist
-für die Publisher still — aber es vermeidet Log-Rauschen und
-ungenutzten State im Mediator.
+## Begrenzte Registries
+
+Der Mediator hält drei Dinge, die ein Subscriber — oder der Gossip
+eines Peers — sonst unbegrenzt wachsen lassen könnte, und der
+Publish-Fan-out läuft über alle drei. Jedes hat eine Obergrenze:
+
+| Option | HOCON-Leaf | Default | Begrenzt |
+| --- | --- | --- | --- |
+| `maxSubscribersPerTopic` | `cluster.pub-sub.max-subscribers-per-topic` | `10000` | Lokale Subscriber auf einem Topic |
+| `maxTopics` | `cluster.pub-sub.max-topics` | `10000` | Verschiedene Topics auf diesem Mediator |
+| `maxRemoteNodesPerTopic` | `cluster.pub-sub.max-remote-nodes-per-topic` | `1000` | Peers, die Subscriber für ein Topic beanspruchen |
+
+```ts
+const distributedPubSubOptions = DistributedPubSubOptions.create()
+  .withMaxSubscribersPerTopic(500)
+  .withMaxTopics(1_000);
+system.extension(DistributedPubSubId).start(cluster, distributedPubSubOptions);
+```
+
+Ein `Subscribe` über `maxSubscribersPerTopic` oder `maxTopics` wird
+**abgelehnt, nicht verworfen** — die Antwort ist ein
+`SubscribeRejected` mit der Grenze, die es abgelehnt hat:
+
+```ts
+import { SubscribeRejected } from 'actor-ts';
+
+// message.reason: 'maxSubscribersPerTopic' | 'maxTopics'
+// message.limit:  der Wert, auf den diese Grenze gesetzt ist
+```
+
+`maxTopics` und `maxRemoteNodesPerTopic` gelten auch für
+**Gossip**, und das ist die Hälfte, die man kennen sollte: ein Peer,
+der 100 000 Topics ankündigt, für die er angeblich Subscriber hat,
+hat früher auf jedem empfangenden Node 100 000 Einträge angelegt —
+ganz ohne ein lokales `Subscribe`. Ansprüche über einer Grenze
+werden verworfen und geloggt; die Verbindung bleibt bestehen, denn
+ein lauter Peer soll keine gesunde Verbindung kosten.
+
+## Publishes, die niemanden erreichen
+
+Ein `Publish` auf ein Topic ohne lokale Subscriber und ohne
+Remote-Ansprüche geht an `system.deadLetters` — genauso wie eines,
+das einen Hop zurückgelegt hat und am anderen Ende keinen
+Subscriber fand.
+
+```ts
+system.eventStream.subscribe(monitor, DeadLetter);
+```
+
+Das ist standardmäßig an. Ein vertippter Topic-Name und ein Topic,
+dessen Subscriber noch nicht durchgegossipt sind, sehen von der
+Publisher-Seite identisch aus — und genau das unterscheidet die
+beiden. Für ein Deployment, in dem unzustellbare Publishes erwartet
+werden und die Menge nur Rauschen wäre, schaltest du es ab:
+
+```hocon
+actor-ts.cluster.pub-sub.send-to-dead-letters-when-no-subscribers = off
+```
 
 ## Wann DistributedPubSub einsetzen
 

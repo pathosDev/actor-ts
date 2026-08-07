@@ -72,7 +72,7 @@ publisher.
 
 | Message | What |
 | --- | --- |
-| `Subscribe(topic, ref)` | Register `ref` as a subscriber to `topic`.  Replies with `SubscribeAcknowledgment`. |
+| `Subscribe(topic, ref, replyTo?)` | Register `ref` as a subscriber to `topic`.  Answers `replyTo` (or the sender) with `SubscribeAcknowledgment` — or `SubscribeRejected` when a cap is full. |
 | `Unsubscribe(topic, ref)` | Remove `ref` from `topic`'s subscribers. |
 | `UnsubscribeAll(ref)` | Remove `ref` from every topic. |
 | `Publish(topic, message)` | Send `message` to every subscriber of `topic`. |
@@ -84,6 +84,16 @@ need the ack:
 import {} from 'actor-ts';
 
 await ps.mediator.ask(new Subscribe('chat.room.general', room));
+```
+
+`Subscribe` takes an optional third argument, `replyTo`, naming
+where the acknowledgment or the refusal goes.  Without it the
+answer follows `context.sender` — which is **empty** for the
+`mediator.tell(…)` shape above, called from outside an actor.  Name
+a `replyTo` whenever you want to see the answer:
+
+```ts
+ps.mediator.tell(new Subscribe('chat.room.general', room, room));
 ```
 
 ## Topics
@@ -132,13 +142,14 @@ more chatter.  500 ms is reasonable for chat-style use cases.
 
 ## When subscribers stop
 
-The mediator **doesn't automatically unsubscribe** stopped refs.
-If a subscriber actor stops without sending `Unsubscribe`, the
-mediator keeps trying to `tell` it — messages go to dead letters,
-the system logs warnings.
+The mediator **watches every local subscriber**.  A subscriber that
+stops without sending `Unsubscribe` — a crash, a forgotten cleanup,
+an actor spawned per request — is removed as soon as the
+`Terminated` lands, and the topic is dropped with its last
+subscriber.
 
-Best practice: in the subscriber's `postStop`, send `Unsubscribe`
-or `UnsubscribeAll`:
+Unsubscribing explicitly is still the faster path, and it is the
+only way to leave a topic without stopping:
 
 ```ts
 class Subscriber extends Actor<...> {
@@ -151,9 +162,63 @@ class Subscriber extends Actor<...> {
 }
 ```
 
-The cleanup isn't strictly necessary — dead-letter routing is
-silent on the publishers — but it prevents log noise and unused
-state in the mediator.
+## Bounded registries
+
+The mediator holds three things that a subscriber — or a peer's
+gossip — could otherwise grow without end, and publish fan-out
+walks all three.  Each has a cap:
+
+| Option | HOCON leaf | Default | Bounds |
+| --- | --- | --- | --- |
+| `maxSubscribersPerTopic` | `cluster.pub-sub.max-subscribers-per-topic` | `10000` | Local subscribers on one topic |
+| `maxTopics` | `cluster.pub-sub.max-topics` | `10000` | Distinct topics on this mediator |
+| `maxRemoteNodesPerTopic` | `cluster.pub-sub.max-remote-nodes-per-topic` | `1000` | Peers claiming subscribers for one topic |
+
+```ts
+const distributedPubSubOptions = DistributedPubSubOptions.create()
+  .withMaxSubscribersPerTopic(500)
+  .withMaxTopics(1_000);
+system.extension(DistributedPubSubId).start(cluster, distributedPubSubOptions);
+```
+
+A `Subscribe` over `maxSubscribersPerTopic` or `maxTopics` is
+**refused, not dropped** — the reply is a `SubscribeRejected`
+carrying the cap that refused it:
+
+```ts
+import { SubscribeRejected } from 'actor-ts';
+
+// message.reason: 'maxSubscribersPerTopic' | 'maxTopics'
+// message.limit:  the value that cap is set to
+```
+
+`maxTopics` and `maxRemoteNodesPerTopic` apply to **gossip** as
+well, and that is the half worth knowing about: a peer announcing
+100 000 topics it claims to have subscribers for used to allocate
+100 000 entries on every receiving node, with no local `Subscribe`
+involved anywhere.  Claims over a cap are dropped and logged; the
+connection stays up, because one noisy peer should not cost a
+healthy link.
+
+## Publishes that reach nobody
+
+A `Publish` to a topic with no local subscribers and no remote
+claimants goes to `system.deadLetters` — as does one that crossed
+a hop and found no subscriber at the far end.
+
+```ts
+system.eventStream.subscribe(monitor, DeadLetter);
+```
+
+This is on by default.  A mistyped topic name and a topic whose
+subscribers have not gossiped in yet look identical from the
+publisher's side, and this is what tells them apart.  Turn it off
+for a deployment where unrouted publishes are expected and the
+volume would be noise:
+
+```hocon
+actor-ts.cluster.pub-sub.send-to-dead-letters-when-no-subscribers = off
+```
 
 ## When to use DistributedPubSub
 

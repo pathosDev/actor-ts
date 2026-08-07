@@ -741,6 +741,10 @@ export {
   Find,
   Subscribe as ReceptionistSubscribe,
   Unsubscribe as ReceptionistUnsubscribe,
+  // The cluster block above re-exports pub-sub's own `SubscribeRejected`
+  // with `export *`; both refusals carry a different payload (`key` vs
+  // `topic`), so the discovery one is aliased exactly like `Subscribe` is.
+  SubscribeRejected as ReceptionistSubscribeRejected,
   Listing,
   ConfigSeedProvider,
   ConfigSeedProviderOptions,
@@ -758,6 +762,8 @@ export {
 export type {
   ReceptionistOptionsType,
   ReceptionistGossipMessage,
+  ReceptionistSubscriberRef,
+  ReceptionistSubscribeRejectionReason,
   SeedProvider,
   ConfigSeedProviderOptionsType,
   DnsSeedProviderOptionsType,

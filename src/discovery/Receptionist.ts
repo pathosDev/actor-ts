@@ -2,12 +2,14 @@ import { match, P } from 'ts-pattern';
 import { Actor } from '../Actor.js';
 import { SystemActorNames, SystemGroups } from '../internal/SystemPaths.js';
 import { DEFAULT_GOSSIP_INTERVAL_MS } from '../util/Constants.js';
-import { ReceptionistOptionsValidator } from './ReceptionistOptions.js';
+import { ReceptionistOptionsValidator, readReceptionistOptionsFromConfig } from './ReceptionistOptions.js';
 import type { ReceptionistOptions, ReceptionistOptionsType } from './ReceptionistOptions.js';
+import { mergeOptions } from '../util/OptionsMerge.js';
 import { fromNullable, type Option } from '../util/Option.js';
 import type { ActorRef } from '../ActorRef.js';
 import type { ActorSystem } from '../ActorSystem.js';
 import type { Cancellable } from '../Scheduler.js';
+import { Terminated } from '../SystemMessages.js';
 import { extensionId, type ExtensionId } from '../Extension.js';
 import type { Cluster } from '../cluster/Cluster.js';
 import { MemberRemoved, MemberUp } from '../cluster/ClusterEvents.js';
@@ -20,11 +22,15 @@ import {
   Register,
   Registered,
   Subscribe,
+  SubscribeRejected,
   Unsubscribe,
   type ReceptionistGossipMessage,
+  type ReceptionistSubscriberRef,
+  type ReceptionistSubscribeRejectionReason,
 } from './ReceptionistMessages.js';
 import { ServiceKey } from './ServiceKey.js';
 
+/** What the receptionist accepts from the outside — its own protocol. */
 type Message =
   | Register
   | Deregister
@@ -32,13 +38,45 @@ type Message =
   | Subscribe
   | Unsubscribe;
 
+/**
+ * Everything the receptionist can find in its mailbox, including system
+ * traffic.  `Terminated` is in the union because the actor watches its
+ * subscribers: without the arm it would fall through to `onUnhandled` and
+ * every dead subscriber would log a warning instead of being cleaned up
+ * (the shape of #709).
+ */
+type ReceptionistInbox = Message | Terminated;
+
+/** Subscribers per key when nothing else is configured. */
+const DEFAULT_MAX_SUBSCRIBERS_PER_KEY = 1_000;
+/** Subscribers across every key when nothing else is configured. */
+const DEFAULT_MAX_SUBSCRIBERS_TOTAL = 10_000;
+
 type KeyEntry = {
   /** Locally registered refs — treated as authoritative on this node. */
   readonly local: Map<string, ActorRef>; // pathString → ref
   /** Remote nodes that claim to host at least one ref under the key. */
   readonly remote: Map<string, string[]>; // nodeAddrString → pathStrings
-  /** Subscribers wanting change notifications. */
-  readonly subscribers: Set<ActorRef<Listing>>;
+  /**
+   * Subscribers wanting change notifications, keyed by path like `local`.
+   * A `Set` keyed on ref *identity* was the older shape and does not survive
+   * death watch: `Terminated` carries the cell's own `self` ref, which need
+   * not be the object the caller subscribed with — a path is the one identity
+   * both sides agree on.
+   */
+  readonly subscribers: Map<string, ReceptionistSubscriberRef>; // pathString → ref
+};
+
+/** What one subscriber holds — its ref, and every key it is registered under. */
+type SubscriberState = {
+  readonly ref: ReceptionistSubscriberRef;
+  readonly keyIds: Set<string>;
+};
+
+/** The cap a {@link Subscribe} ran into, and the value that cap was set to. */
+type CapRefusal = {
+  readonly reason: ReceptionistSubscribeRejectionReason;
+  readonly limit: number;
 };
 
 /**
@@ -48,11 +86,28 @@ type KeyEntry = {
  *
  * When a peer node leaves, every key entry it contributed is removed and
  * subscribers are notified with an updated Listing.
+ *
+ * Subscriptions are **bounded and watched**.  Both matter: `Unsubscribe` is
+ * caller-cooperative, so a crashed or adversarial subscriber used to sit in
+ * the set forever, and `notifySubscribers` walks that set on every
+ * registration change — an unbounded set is a memory leak *and* an O(N)
+ * cost on the hot path (#137).
  */
-export class Receptionist extends Actor<Message> {
+export class Receptionist extends Actor<ReceptionistInbox> {
   private readonly keys = new Map<string, KeyEntry>();
   private readonly clusterRef: Cluster | null;
   private readonly gossipIntervalMs: number;
+  private readonly maxSubscribersPerKey: number;
+  private readonly maxSubscribersTotal: number;
+
+  /**
+   * Every subscriber this receptionist holds, keyed by path.  Redundant with
+   * the per-entry maps, and worth it twice over: `Terminated` carries only a
+   * ref, and deciding whether a ref may be unwatched otherwise means scanning
+   * every key.  Both would be O(keys) on a path whose rate an attacker sets.
+   */
+  private readonly subscriberStates = new Map<string, SubscriberState>();
+  private totalSubscribers = 0;
 
   private version = 0;
   private gossipTimer: Cancellable | null = null;
@@ -65,6 +120,8 @@ export class Receptionist extends Actor<Message> {
     new ReceptionistOptionsValidator().validate(resolvedOptions);
     this.clusterRef = resolvedOptions.cluster ?? null;
     this.gossipIntervalMs = resolvedOptions.gossipIntervalMs ?? DEFAULT_GOSSIP_INTERVAL_MS;
+    this.maxSubscribersPerKey = resolvedOptions.maxSubscribersPerKey ?? DEFAULT_MAX_SUBSCRIBERS_PER_KEY;
+    this.maxSubscribersTotal = resolvedOptions.maxSubscribersTotal ?? DEFAULT_MAX_SUBSCRIBERS_TOTAL;
   }
 
   override preStart(): void {
@@ -90,8 +147,18 @@ export class Receptionist extends Actor<Message> {
     this.gossipTimer?.cancel();
   }
 
-  override onReceive(message: Message): void {
+  /**
+   * `Terminated` is matched first, ahead of the protocol arms, and that order
+   * is load-bearing rather than stylistic: `Subscribe` and `Unsubscribe` are
+   * structurally identical (`key` + `replyTo`), so once `Terminated` sits
+   * behind them in the union `ts-pattern` can no longer tell which of the
+   * three an `instanceOf` arm extracts, and it hands the handler the wrong
+   * type.  Taking the system message out of the union up front leaves the
+   * remaining arms exactly the shape they had before death watch existed.
+   */
+  override onReceive(message: ReceptionistInbox): void {
     match(message)
+      .with(P.instanceOf(Terminated), (m) => this.onTerminated(m))
       .with(P.instanceOf(Register), (m) => this.onRegister(m))
       .with(P.instanceOf(Deregister), (m) => this.onDeregister(m))
       .with(P.instanceOf(Find), (m) => this.onFind(m))
@@ -109,7 +176,7 @@ export class Receptionist extends Actor<Message> {
    * `.exhaustive()`.  One remotely-delivered envelope was enough to take out
    * the node's service discovery (#713).  Drop it and say so instead.
    */
-  private onUnhandled(message: Message): void {
+  private onUnhandled(message: ReceptionistInbox): void {
     this.log.warn(
       `receptionist: dropping an unrecognised message `
       + `(${(message as { kind?: string })?.kind ?? typeof message}) — `
@@ -146,7 +213,24 @@ export class Receptionist extends Actor<Message> {
 
   private onSubscribe(message: Subscribe): void {
     const entry = this.getOrCreate(message.key);
-    entry.subscribers.add(message.replyTo);
+    const pathStr = message.replyTo.path.toString();
+    if (!entry.subscribers.has(pathStr)) {
+      const refusal = this.capRefusal(entry);
+      if (refusal) {
+        // Undo the entry this Subscribe just created — otherwise a flood of
+        // rejected subscribes to fresh keys grows `keys` instead, which is
+        // the same leak one level up.
+        this.maybeDrop(message.key.id, entry);
+        this.log.warn(
+          `receptionist: refusing a subscription to '${message.key.id}' — `
+          + `${refusal.reason} (${refusal.limit}) is full`,
+        );
+        message.replyTo.tell(new SubscribeRejected(message.key, refusal.reason, refusal.limit));
+        return;
+      }
+      entry.subscribers.set(pathStr, message.replyTo);
+      this.rememberSubscription(message.replyTo, message.key.id);
+    }
     // Replay current listing to the new subscriber.
     message.replyTo.tell(new Listing(message.key, this.collectRefs(entry)));
   }
@@ -154,8 +238,30 @@ export class Receptionist extends Actor<Message> {
   private onUnsubscribe(message: Unsubscribe): void {
     const entry = this.keys.get(message.key.id);
     if (!entry) return;
-    entry.subscribers.delete(message.replyTo);
+    const pathStr = message.replyTo.path.toString();
+    if (entry.subscribers.delete(pathStr)) {
+      this.forgetSubscription(pathStr, message.key.id);
+    }
     this.maybeDrop(message.key.id, entry);
+  }
+
+  /**
+   * A watched subscriber stopped.  `Unsubscribe` is caller-cooperative and a
+   * stopped actor cannot send one, so without this arm every subscriber that
+   * dies mid-subscription stays in the map and keeps costing a `tell` into
+   * dead letters on every registration change.
+   */
+  private onTerminated(message: Terminated): void {
+    const pathStr = message.actor.path.toString();
+    const state = this.subscriberStates.get(pathStr);
+    if (!state) return;
+    this.subscriberStates.delete(pathStr);
+    for (const id of state.keyIds) {
+      const entry = this.keys.get(id);
+      if (!entry) continue;
+      if (entry.subscribers.delete(pathStr)) this.totalSubscribers--;
+      this.maybeDrop(id, entry);
+    }
   }
 
   /* ---------------- cluster plumbing ---------------- */
@@ -216,10 +322,7 @@ export class Receptionist extends Actor<Message> {
       entry.remote.set(senderAddr, paths.slice());
       affected.add(id);
     }
-    for (const id of affected) {
-      const entry = this.keys.get(id);
-      if (entry) this.notifySubscribers(new ServiceKey(id), entry);
-    }
+    this.notifyAndCompact(affected);
   }
 
   private forgetNode(addr: NodeAddress): void {
@@ -228,9 +331,24 @@ export class Receptionist extends Actor<Message> {
     for (const [id, entry] of this.keys) {
       if (entry.remote.delete(key)) affected.add(id);
     }
+    this.notifyAndCompact(affected);
+  }
+
+  /**
+   * Notify the subscribers of every touched key, then drop the entries that
+   * ended up empty.  The compaction is the half that used to be missing: a
+   * peer's contribution is replaced wholesale on every gossip round, so a key
+   * that only ever existed because that peer named it left behind an empty
+   * `KeyEntry` that nothing removed — `keys` grew for the lifetime of the
+   * node, and the subscriber caps above would only have bounded what each
+   * leftover entry held, not how many there were.
+   */
+  private notifyAndCompact(affected: ReadonlySet<string>): void {
     for (const id of affected) {
       const entry = this.keys.get(id);
-      if (entry) this.notifySubscribers(new ServiceKey(id), entry);
+      if (!entry) continue;
+      this.notifySubscribers(new ServiceKey(id), entry);
+      this.maybeDrop(id, entry);
     }
   }
 
@@ -239,7 +357,7 @@ export class Receptionist extends Actor<Message> {
   private getOrCreate(key: ServiceKey): KeyEntry {
     let entry = this.keys.get(key.id);
     if (!entry) {
-      entry = { local: new Map(), remote: new Map(), subscribers: new Set() };
+      entry = { local: new Map(), remote: new Map(), subscribers: new Map() };
       this.keys.set(key.id, entry);
     }
     return entry;
@@ -248,6 +366,46 @@ export class Receptionist extends Actor<Message> {
   private maybeDrop(id: string, entry: KeyEntry): void {
     if (entry.local.size === 0 && entry.remote.size === 0 && entry.subscribers.size === 0) {
       this.keys.delete(id);
+    }
+  }
+
+  /** The cap a fresh subscriber would breach, or `null` when there is room. */
+  private capRefusal(entry: KeyEntry): CapRefusal | null {
+    if (entry.subscribers.size >= this.maxSubscribersPerKey) {
+      return { reason: 'maxSubscribersPerKey', limit: this.maxSubscribersPerKey };
+    }
+    if (this.totalSubscribers >= this.maxSubscribersTotal) {
+      return { reason: 'maxSubscribersTotal', limit: this.maxSubscribersTotal };
+    }
+    return null;
+  }
+
+  /**
+   * Book a new subscription and start watching the subscriber.  A subscriber
+   * on several keys is watched once, and the single `Terminated` that follows
+   * cleans up all of them.
+   */
+  private rememberSubscription(subscriber: ReceptionistSubscriberRef, keyId: string): void {
+    const pathStr = subscriber.path.toString();
+    let state = this.subscriberStates.get(pathStr);
+    if (!state) {
+      state = { ref: subscriber, keyIds: new Set() };
+      this.subscriberStates.set(pathStr, state);
+      this.context.watch(subscriber);
+    }
+    state.keyIds.add(keyId);
+    this.totalSubscribers++;
+  }
+
+  /** Drop one subscription, and the death watch with the subscriber's last one. */
+  private forgetSubscription(pathStr: string, keyId: string): void {
+    this.totalSubscribers--;
+    const state = this.subscriberStates.get(pathStr);
+    if (!state) return;
+    state.keyIds.delete(keyId);
+    if (state.keyIds.size === 0) {
+      this.subscriberStates.delete(pathStr);
+      this.context.unwatch(state.ref);
     }
   }
 
@@ -267,7 +425,7 @@ export class Receptionist extends Actor<Message> {
   private notifySubscribers(key: ServiceKey, entry: KeyEntry): void {
     if (entry.subscribers.size === 0) return;
     const listing = new Listing(key, this.collectRefs(entry));
-    for (const sub of entry.subscribers) sub.tell(listing);
+    for (const subscriber of entry.subscribers.values()) subscriber.tell(listing);
   }
 }
 
@@ -284,15 +442,23 @@ export class ReceptionistExtension {
     if (this.started) return this.started;
     // `cluster` stays a positional arg (it's identity/wiring, not a tunable);
     // fold it onto the resolved options so the actor sees a single object.
+    // The tunables layer in the documented order — explicit options beat
+    // `actor-ts.cluster.receptionist.*`, which beats the actor's built-ins.
     const resolvedOptions: Partial<ReceptionistOptionsType> = {
-      ...(options as Partial<ReceptionistOptionsType>),
+      ...mergeOptions<ReceptionistOptionsType>(
+        {},
+        readReceptionistOptionsFromConfig(this.system.config),
+        options as Partial<ReceptionistOptionsType>,
+      ),
       cluster: cluster ?? null,
     };
-    const ref = this.system._spawnSystemActor<Message>(
+    // Spawned as its full inbox, handed out as the protocol: `Terminated`
+    // reaches the actor through death watch, not from a holder of this ref.
+    const ref = this.system._spawnSystemActor<ReceptionistInbox>(
       () => new Receptionist(resolvedOptions),
       SystemGroups.cluster,
       SystemActorNames.receptionist,
-    );
+    ) as ActorRef<Message>;
     this.started = ref;
     return ref;
   }

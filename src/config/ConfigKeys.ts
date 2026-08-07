@@ -112,6 +112,33 @@ export const ConfigKeys = {
       unreachableAfter: 'actor-ts.cluster.failure-detector.unreachable-after',
       downAfter: 'actor-ts.cluster.failure-detector.down-after',
     },
+
+    /**
+     * DistributedPubSub mediator tuning — `actor-ts.cluster.pub-sub.*`.
+     * Read once per `DistributedPubSub.start`, which layers them under the
+     * explicit options.  The three caps bound what one mediator can be made
+     * to hold; they are config rather than constants because the right value
+     * depends on the deployment's subscriber-to-node ratio (#139, #857).
+     */
+    pubSub: {
+      gossipInterval: 'actor-ts.cluster.pub-sub.gossip-interval',
+      maxSubscribersPerTopic: 'actor-ts.cluster.pub-sub.max-subscribers-per-topic',
+      maxTopics: 'actor-ts.cluster.pub-sub.max-topics',
+      maxRemoteNodesPerTopic: 'actor-ts.cluster.pub-sub.max-remote-nodes-per-topic',
+      sendToDeadLettersWhenNoSubscribers:
+        'actor-ts.cluster.pub-sub.send-to-dead-letters-when-no-subscribers',
+    },
+
+    /**
+     * Receptionist tuning — `actor-ts.cluster.receptionist.*`.  Read once per
+     * `ReceptionistExtension.start`, which layers them under the explicit
+     * options (#137, #857).
+     */
+    receptionist: {
+      gossipInterval: 'actor-ts.cluster.receptionist.gossip-interval',
+      maxSubscribersPerKey: 'actor-ts.cluster.receptionist.max-subscribers-per-key',
+      maxSubscribersTotal: 'actor-ts.cluster.receptionist.max-subscribers-total',
+    },
   },
 
   /**
