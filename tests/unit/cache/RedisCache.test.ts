@@ -3,6 +3,7 @@ import { RedisCache, type RedisClientLike } from '../../../src/cache/RedisCache.
 import { RedisCacheOptions } from '../../../src/cache/RedisCacheOptions.js';
 import { CacheError } from '../../../src/cache/Cache.js';
 import { OptionsError } from '../../../src/util/OptionsValidator.js';
+import { runCacheContractTests } from './_Contract.js';
 
 /**
  * Mock ioredis client — captures the calls and lets the tests assert on
@@ -12,16 +13,26 @@ import { OptionsError } from '../../../src/util/OptionsValidator.js';
  */
 class FakeRedis implements RedisClientLike {
   store = new Map<string, string>();
-  ttls = new Map<string, number>();
+  /**
+   * Absolute deadline in epoch ms; no entry means "no expiry".  Kept
+   * separate from `store` and honoured by every read so the fake
+   * actually expires keys — a fake that accepts `PX` and then serves
+   * the value forever would pass a TTL test that proves nothing.
+   */
+  expiresAt = new Map<string, number>();
   log: Array<{ op: string; args: unknown[] }> = [];
 
   async get(key: string): Promise<string | null> {
     this.log.push({ op: 'get', args: [key] });
-    return this.store.get(key) ?? null;
+    return this.isLive(key) ? this.store.get(key)! : null;
   }
-  async set(...args: unknown[]): Promise<unknown> {
-    this.log.push({ op: 'set', args });
-    const [key, value, ...rest] = args as [string, string, ...unknown[]];
+  // Signature mirrors the widest of `RedisClientLike`'s four `set`
+  // overloads: leading key/value, then the optional PX/NX flag tail.
+  // A bare `(...args: unknown[])` does not satisfy an overloaded
+  // property type, which is why every `withClient(new FakeRedis())`
+  // used to report TS2345.
+  async set(key: string, value: string, ...rest: unknown[]): Promise<string | null> {
+    this.log.push({ op: 'set', args: [key, value, ...rest] });
     let ttlMs: number | undefined;
     let nx = false;
     for (let i = 0; i < rest.length; i++) {
@@ -29,38 +40,44 @@ class FakeRedis implements RedisClientLike {
       if (flag === 'PX') ttlMs = rest[++i] as number;
       else if (flag === 'NX') nx = true;
     }
-    if (nx && this.store.has(key)) return null;
+    // An elapsed key is absent for NX purposes, exactly as on the server.
+    if (nx && this.isLive(key)) return null;
     this.store.set(key, value);
-    if (ttlMs !== undefined) this.ttls.set(key, ttlMs);
+    if (ttlMs === undefined) this.expiresAt.delete(key);   // SET clears any TTL
+    else this.expiresAt.set(key, Date.now() + ttlMs);
     return 'OK';
   }
   async incr(key: string): Promise<number> {
     this.log.push({ op: 'incr', args: [key] });
-    const cur = Number(this.store.get(key) ?? '0');
-    const next = cur + 1;
+    const current = this.isLive(key) ? Number(this.store.get(key)) : 0;
+    const next = current + 1;
     this.store.set(key, String(next));
     return next;
   }
   async pexpire(key: string, ttlMs: number): Promise<number> {
     this.log.push({ op: 'pexpire', args: [key, ttlMs] });
-    if (!this.store.has(key)) return 0;
-    this.ttls.set(key, ttlMs);
+    if (!this.isLive(key)) return 0;
+    this.expiresAt.set(key, Date.now() + ttlMs);
     return 1;
   }
   async del(...keys: string[]): Promise<number> {
     this.log.push({ op: 'del', args: keys });
     let deleted = 0;
-    for (const key of keys) if (this.store.delete(key)) deleted++;
+    for (const key of keys) {
+      this.expiresAt.delete(key);
+      if (this.store.delete(key)) deleted++;
+    }
     return deleted;
   }
   async mget(...keys: string[]): Promise<Array<string | null>> {
     this.log.push({ op: 'mget', args: keys });
-    return keys.map((key) => this.store.get(key) ?? null);
+    return keys.map((key) => (this.isLive(key) ? this.store.get(key)! : null));
   }
-  async mset(...kv: string[]): Promise<unknown> {
-    this.log.push({ op: 'mset', args: kv });
-    for (let i = 0; i < kv.length; i += 2) {
-      this.store.set(kv[i]!, kv[i + 1]!);
+  async mset(...keyValuePairs: string[]): Promise<unknown> {
+    this.log.push({ op: 'mset', args: keyValuePairs });
+    for (let i = 0; i < keyValuePairs.length; i += 2) {
+      this.store.set(keyValuePairs[i]!, keyValuePairs[i + 1]!);
+      this.expiresAt.delete(keyValuePairs[i]!);            // MSET clears any TTL
     }
     return 'OK';
   }
@@ -68,7 +85,32 @@ class FakeRedis implements RedisClientLike {
     this.log.push({ op: 'quit', args: [] });
     return 'OK';
   }
+
+  /** Lazy expiry, like the real server: an elapsed key reads as absent. */
+  private isLive(key: string): boolean {
+    if (!this.store.has(key)) return false;
+    const deadline = this.expiresAt.get(key);
+    if (deadline !== undefined && deadline <= Date.now()) {
+      this.store.delete(key);
+      this.expiresAt.delete(key);
+      return false;
+    }
+    return true;
+  }
 }
+
+// Backend-agnostic contract.  The fake is stateful, so the factory mints
+// a fresh one per call — `beforeEach` invokes it once per test, which is
+// what keeps the runs isolated.
+describe('RedisCache — contract', () => {
+  runCacheContractTests({
+    name: 'RedisCache',
+    factory: async () => {
+      const redisOptions = RedisCacheOptions.create().withClient(new FakeRedis());
+      return new RedisCache(redisOptions);
+    },
+  });
+});
 
 describe('RedisCache — wire-protocol shape', () => {
   test('set with TTL emits PX command', async () => {
@@ -167,6 +209,8 @@ describe('RedisCache — failure tolerance', () => {
       async incr() { return 0; },
       async pexpire() { return 0; },
       async del() { return 0; },
+      async mget() { return []; },
+      async mset() { return 'OK'; },
       async quit() { return 'OK'; },
     };
     const redisOptions = RedisCacheOptions.create()

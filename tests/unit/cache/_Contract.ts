@@ -24,10 +24,11 @@
  * Memcached) can do it lazily.  Cleanup is handled per-test via the
  * suite's internal afterEach — no resources leaked.
  *
- * NOTE: Adding new backends (e.g. Redis/Memcached parameterised over
- * mock clients) requires a small adapter to feed a fresh mock client
- * per test — they're not stateless like InMemoryCache.  Document the
- * pattern in the backend's per-file test once added.
+ * All three backends run this suite.  Redis and Memcached are not
+ * stateless the way InMemoryCache is, so their factories construct a
+ * *fresh* mock client per call — `beforeEach` invokes the factory once
+ * per test, which is what keeps the runs isolated.  See the `— contract`
+ * describe block in each backend's test file for the shape.
  */
 
 import { afterEach, beforeEach, expect, test } from 'bun:test';
@@ -100,6 +101,24 @@ export function runCacheContractTests(spec: CacheContractSpec): void {
     expect(await cache.setIfAbsent('k', 'first')).toBe(true);
     expect(await cache.setIfAbsent('k', 'second')).toBe(false);
     expect((await cache.get<string>('k')).toNullable()).toBe('first');
+  });
+
+  test(`${spec.name} contract: setIfAbsent — first writer wins under contention`, async () => {
+    // The sequential test above passes even for a `get`-then-`set`
+    // implementation, so it does not actually pin the atomicity the
+    // interface promises.  This one does: every call suspends at its
+    // first `await` before reaching the backend, so all 100 are in
+    // flight together and a check-then-act implementation would let
+    // several observe the key absent and all report `true`.
+    const contenders = 100;
+    const results = await Promise.all(
+      Array.from({ length: contenders }, (_, i) => cache.setIfAbsent('lock', `writer-${i}`, 30_000)),
+    );
+
+    expect(results.filter((won) => won)).toHaveLength(1);
+    // ...and the survivor in the cache is the caller that was told it won.
+    const winner = results.indexOf(true);
+    expect((await cache.get<string>('lock')).toNullable()).toBe(`writer-${winner}`);
   });
 
   test(`${spec.name} contract: incr seeds at 1 and counts up`, async () => {
