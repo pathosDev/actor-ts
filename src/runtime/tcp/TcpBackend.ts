@@ -12,12 +12,25 @@
  * Bun and Node share most field names (`cert`, `key`, `ca`,
  * `requestCert`/`requestClientCert`, `rejectUnauthorized`); Deno wraps
  * everything in its `Deno.listenTls` / `Deno.connectTls` shape.
+ *
+ * Every certificate field carries **the material itself**, never a path to
+ * it — no layer here or below reads from disk, and none of the three runtimes
+ * accepts a filename in these fields either.  Load it yourself
+ * (`readFileSync(path, 'utf8')`, a mounted secret, a KMS fetch) and pass what
+ * you loaded.
  */
 
 export type TlsTransportOptionsType = {
-  /** Server cert (PEM string or DER bytes).  If omitted, TLS is disabled on the listener. */
+  /**
+   * Server certificate — PEM contents or DER bytes, not a file path.
+   *
+   * On a **listener** this is mandatory whenever `tls` is supplied at all, and
+   * so is {@link key}: see {@link assertListenerTlsIsCoherent}.  On an
+   * outbound dial it is the client certificate, and omitting it is ordinary —
+   * that is one-way TLS, where only the server is authenticated.
+   */
   readonly cert?: string | Uint8Array;
-  /** Private key matching `cert`. */
+  /** Private key matching `cert` — PEM contents or DER bytes, not a file path. */
   readonly key?: string | Uint8Array;
   /** Trusted CA bundle — for client-auth validation and peer-cert validation. */
   readonly ca?: string | Uint8Array;
@@ -149,16 +162,77 @@ export function requiresClientCertificate(tls: TlsTransportOptionsType): boolean
 }
 
 /**
- * Reject a TLS listener configuration that reads as mutually authenticated but
- * cannot be.  Called by each adapter before it hands the options to the
- * runtime, because failing closed at bind time is the only way a
- * misconfiguration becomes visible — an under-secured listener behaves exactly
- * like a correct one until someone attacks it.
+ * The same options with the server credential proven present — what
+ * {@link listenerUsesTls} narrows to, so an adapter that is about to bind TLS
+ * reads `cert` / `key` without a non-null assertion.
+ */
+export type CredentialedTlsTransportOptionsType = TlsTransportOptionsType & {
+  readonly cert: string | Uint8Array;
+  readonly key: string | Uint8Array;
+};
+
+/**
+ * Whether a field carries usable certificate material.
+ *
+ * Empty is treated as absent on purpose: an empty string or a zero-length
+ * buffer is what a mis-mounted secret or an unset environment variable looks
+ * like by the time it arrives here, and calling that "configured" would push
+ * the failure down into the TLS stack, where it surfaces as a PEM parse error
+ * that says nothing about which field was wrong.
+ */
+function carriesMaterial(pem: string | Uint8Array | undefined): boolean {
+  return pem !== undefined && pem.length > 0;
+}
+
+/**
+ * Reject a TLS listener configuration that reads as secured but cannot be.
+ * Called by each adapter before it hands the options to the runtime, because
+ * failing closed at bind time is the only way a misconfiguration becomes
+ * visible — an under-secured listener behaves exactly like a correct one until
+ * someone attacks it.
+ *
+ * The credential rule below closes a **fail-open** (#144).  Every adapter
+ * decided whether to bind TLS by testing `cert && key`, so a listener
+ * configured with only one of the two — the shape a rotated-but-half-applied
+ * secret produces — quietly bound in **plaintext**.  Nothing announced it: the
+ * dialing half of the very same options object treats any `tls` value as TLS,
+ * so the operator saw a node that had "TLS configured" and a cluster that
+ * formed.  Refusing the bind converts a silent downgrade into a startup
+ * failure.
+ *
+ * This is a **listener-only** rule and deliberately not applied to
+ * {@link TcpBackend.connect}.  A dialer given `{ ca }` alone is the ordinary,
+ * correct configuration for one-way TLS — authenticate the server, present no
+ * client certificate — and `ClusterClient`, which never listens, relies on
+ * exactly that.  On a listener the same shape has no reading under which it
+ * works: without a certificate there is nothing to present, so there is no
+ * handshake to have.
  */
 export function assertListenerTlsIsCoherent(
   tls: TlsTransportOptionsType,
   runtime: 'Node.js' | 'Bun' | 'Deno',
 ): void {
+  const hasCertificate = carriesMaterial(tls.cert);
+  const hasKey = carriesMaterial(tls.key);
+  if (hasCertificate !== hasKey) {
+    const present = hasCertificate ? 'cert' : 'key';
+    const absent = hasCertificate ? 'key' : 'cert';
+    throw new Error(
+      `TLS transport: \`${present}\` is set on this listener but \`${absent}\` is not, so there ` +
+      'is no usable server credential and the listener would bind in PLAINTEXT while the same ' +
+      'configuration still dials out over TLS. Supply both halves, or omit `tls` entirely for a ' +
+      'deliberately plaintext listener. Both fields take the certificate material itself — PEM ' +
+      'contents or DER bytes — not a path to a file.',
+    );
+  }
+  if (!hasCertificate) {
+    throw new Error(
+      'TLS transport: a `tls` option was supplied to this listener but it carries no `cert` and ' +
+      'no `key`, so the listener has nothing to present and would bind in PLAINTEXT. A `ca` ' +
+      'authenticates the peers this node dials; it cannot serve inbound connections. Supply the ' +
+      'server certificate and its key, or omit `tls` entirely for a plaintext listener.',
+    );
+  }
   if (tls.requestClientCert === true && tls.ca === undefined) {
     throw new Error(
       'TLS transport: requestClientCert is true but no `ca` was supplied, so there is ' +
@@ -175,6 +249,26 @@ export function assertListenerTlsIsCoherent(
       'set requestClientCert: false to accept one-way TLS with no peer authentication.',
     );
   }
+}
+
+/**
+ * Whether the listener must bind TLS — and the single place that decision is
+ * made, for all three runtimes.
+ *
+ * The check is welded to the decision rather than sitting beside it because
+ * that is precisely how #144 survived: each adapter answered "should I bind
+ * TLS?" with its own `cert && key` test, and a `false` answer therefore
+ * *skipped* validation instead of triggering it.  Anything that can return
+ * `false` here has already been through {@link assertListenerTlsIsCoherent},
+ * so "plaintext" can now only mean "no `tls` was supplied at all".
+ */
+export function listenerUsesTls(
+  tls: TlsTransportOptionsType | undefined,
+  runtime: 'Node.js' | 'Bun' | 'Deno',
+): tls is CredentialedTlsTransportOptionsType {
+  if (tls === undefined) return false;
+  assertListenerTlsIsCoherent(tls, runtime);
+  return true;
 }
 
 /**

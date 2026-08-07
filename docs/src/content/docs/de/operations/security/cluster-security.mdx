@@ -52,6 +52,12 @@ await Cluster.join(system, clusterOptions);
 Die TLS-Einstellungen:
 
 - **`cert`** + **`key`** — Zertifikat + Private Key dieses Nodes.
+  Beide tragen **das Material selbst**, keinen Pfad darauf: nichts
+  im Transport liest von der Platte, und auch keine der drei
+  Runtimes akzeptiert in diesen Feldern einen Dateinamen. Lies es
+  selbst ein, so wie es das Beispiel oben tut. Auf einem Listener
+  sind beide Hälften nur gemeinsam gültig — siehe die Ablehnungen
+  weiter unten.
 - **`ca`** — vertrauenswürdiges CA-Bundle. Nutze, um die
   Zertifikate der Peers zu verifizieren.
 - **`rejectUnauthorized: true`** — Handshakes scheitern lassen,
@@ -116,15 +122,37 @@ hinzuzufügen, den man vergessen kann.
   Service-Mesh, ein privates L2) die Authentifizierung übernimmt.
 </Aside>
 
-Zwei Konfigurationen werden beim Bind abgelehnt, statt in einem
+Drei Konfigurationen werden beim Bind abgelehnt, statt in einem
 schwächeren Zustand zu starten, als sie sich lesen:
 
+- **Ein unvollständiges Server-Credential** — `cert` ohne `key`,
+  `key` ohne `cert`, oder ein `tls`-Objekt, das keines von beidem
+  trägt (eine `ca` allein sagt, welchen Peers beim *Wählen* zu
+  trauen ist; dem Listener gibt sie nichts zum Vorzeigen). Leer
+  zählt als nicht gesetzt — genau so sieht eine nicht gesetzte
+  Umgebungsvariable oder ein falsch gemountetes Secret aus, wenn es
+  hier ankommt.
 - `requestClientCert: true` ohne `ca` — es gäbe nichts, wogegen
   Peer-Zertifikate validiert werden könnten.
 - Ein mTLS-**Listener auf Deno** — `Deno.listenTls` nimmt nur
   Zertifikat und Key entgegen und kann ein Client-Zertifikat weder
   anfordern noch prüfen; der Listener würde also niemanden
   authentifizieren.
+
+<Aside type="caution" title="Das unvollständige Credential lauschte bisher im Klartext">
+  Dieser Fall war kein Fehler, sondern eine **stille Degradierung**.
+  Der Listener entschied anhand von „habe ich Zertifikat *und*
+  Key?", ob er TLS spricht; mit nur einem von beidem schloss er auf
+  „kein TLS" und lauschte im **Klartext** — während dieselbe
+  Konfiguration weiterhin über TLS *hinaus*wählte, der Cluster sich
+  also bildete und der Knoten TLS-konfiguriert aussah. Eine halb
+  angewendete Secret-Rotation genügte dafür.
+
+  Jetzt wirft er beim Bind. Das heißt: ein Knoten, der bislang
+  unbemerkt Klartext ausgeliefert hat, **startet nach dieser
+  Änderung nicht mehr**, statt fehlgesichert hochzukommen — so
+  gewollt, aber vor einem Rolling Restart gut zu wissen.
+</Aside>
 
 Einem mTLS-Cluster **beitreten** kann ein Deno-Knoten sehr wohl:
 er präsentiert beim Wählen sein eigenes `cert`/`key`, und der

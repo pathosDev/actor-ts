@@ -52,6 +52,11 @@ await Cluster.join(system, clusterOptions);
 The TLS settings:
 
 - **`cert`** + **`key`** — this node's certificate + private key.
+  Both carry **the material itself**, not a path to it: nothing in
+  the transport reads from disk, and none of the three runtimes
+  accepts a filename in these fields either.  Load it yourself, as
+  the example above does.  Both halves are required together on a
+  listener — see the refusals below.
 - **`ca`** — trusted CA bundle.  Use to verify peers'
   certificates.
 - **`rejectUnauthorized: true`** — fail handshakes where the
@@ -109,14 +114,35 @@ deployments rather than adding a switch that can be left off.
   (a service mesh, a private L2) is doing the authenticating.
 </Aside>
 
-Two configurations are refused at bind time rather than started
+Three configurations are refused at bind time rather than started
 in a weaker state than they read as:
 
+- **An incomplete server credential** — `cert` without `key`, `key`
+  without `cert`, or a `tls` object carrying neither (a `ca` alone
+  says which peers to trust when *dialling*; it gives the listener
+  nothing to present).  Empty counts as absent, which is what an
+  unset environment variable or a mis-mounted secret looks like by
+  the time it arrives.
 - `requestClientCert: true` with no `ca` — there would be nothing
   to validate peer certificates against.
 - An mTLS **listener on Deno** — `Deno.listenTls` takes only a
   cert and a key, with no way to request or verify a client
   certificate, so the listener would authenticate nobody.
+
+<Aside type="caution" title="The incomplete credential used to bind plaintext">
+  This one was a **silent downgrade** rather than an error.  The
+  listener decided whether to speak TLS by checking that it had
+  both a cert and a key; with only one it concluded "no TLS" and
+  bound in **plaintext** — while the same options object still
+  dialled *out* over TLS, so the cluster formed and the node
+  looked TLS-configured.  A half-applied secret rotation was
+  enough.
+
+  It now throws at bind.  Which means a node that has been quietly
+  serving plaintext will **fail to start** after this change
+  rather than come up mis-secured — deliberately, but worth
+  knowing before a rolling restart.
+</Aside>
 
 A Deno node can still **join** an mTLS cluster: it presents its
 own `cert` / `key` when dialling, so the listener (on Node.js or
