@@ -279,7 +279,7 @@ class OrderActor extends Actor<...> {
 ```
 
 `LogContext` is backed by `AsyncLocalStorage` — the context
-propagates across `await`s, `tell`s, and cluster hops.  Three
+propagates across `await`s, `tell`s, and cluster hops.  The
 operations:
 
 | Method | What it does |
@@ -287,6 +287,15 @@ operations:
 | `LogContext.run(context, fn)` | Runs `fn` with `context` as the current context. |
 | `LogContext.with(extra, fn)` | Runs `fn` with `{ ...current, ...extra }` as the context. |
 | `LogContext.get()` | Reads the current context (empty object if none active). |
+| `LogContext.snapshot()` | Copies the current context into a fresh, mutable plain object. |
+| `LogContext.runFresh(fn)` | Runs `fn` with the context emptied, ignoring whatever is ambient. |
+| `LogContext.runEach(entries, fn)` | Runs `fn` once per entry, each under the context captured with it. |
+
+`get()` returns the live readonly context — the same reference for
+the whole scope, so never hold onto it past the scope or hand it to
+something that might mutate it.  `snapshot()` is the one to reach
+for at a boundary: it returns a **fresh copy on every call**, safe
+to keep, mutate, or feed to a serialiser.
 
 **Static fields (`withFields`) and dynamic MDC merge at emit
 time**; dynamic wins on key collision (innermost-scope-wins
@@ -319,19 +328,26 @@ of that snapshot.  This means:
   the user if it needs more.
 </Aside>
 
-<Aside type="caution" title="Logging inside `onReceive` ≠ logging inside a setTimeout">
+<Aside type="caution" title="Deferred work keeps the MDC — that is the hazard, not the loss">
   ```ts
   override onReceive(message) {
     this.log.info('handling');               // ✓ MDC present
     setTimeout(() => {
-      this.log.info('later');                 // ✗ MDC may be lost
-    }, 1_000);
+      this.log.info('later');                 // ✓ MDC still present —
+    }, 1_000);                                //   the turn's, not the caller's
   }
   ```
-  Raw `setTimeout` runs outside the actor's message-processing
-  turn — and `AsyncLocalStorage` may have cleared by then.  Use
-  `context.timers` for actor-bound timers; they keep MDC
-  propagation working.
+  `AsyncLocalStorage` binds a store when an async resource is
+  **created**, not when it runs, so a `setTimeout` armed inside the
+  turn still sees the turn's MDC when it fires — even though `run()`
+  returned long before.  `context.timers` behaves the same way: it
+  delegates to the system scheduler, whose callback does a normal
+  `tell`, and that `tell` snapshots the context current at fire time.
+
+  The failure mode is therefore the opposite of losing context —
+  deferred work *inherits* the context of whichever turn happened to
+  start it.  When that work serves someone else, see
+  [Deferred work and tenant isolation](#deferred-work-and-tenant-isolation).
 </Aside>
 
 <Aside type="caution" title="`info` calls that allocate big objects">
@@ -347,6 +363,102 @@ of that snapshot.  This means:
     this.log.debug('snapshot:', this.expensiveSnapshot());
   }
   ```
+</Aside>
+
+## Deferred work and tenant isolation
+
+Inheriting the context is exactly what you want for a request that
+flows straight through: one `correlationId`, every hop. It stops
+being what you want the moment work **outlives the turn that started
+it** — an un-awaited promise, a buffer flushed later, a queue drained
+in a batch, a retry armed for the future.
+
+`AsyncLocalStorage` binds a store when the async resource is
+*created*. So a promise started inside a turn keeps that turn's
+context forever, and every `tell` its continuation makes stamps that
+context onto the envelope. If the deferred work serves a different
+principal than the turn that triggered it, one tenant's identifiers
+travel with another tenant's messages — a data leak, not just a
+confusing log line:
+
+```ts
+// ✗ Leaks: the drain inherits whichever request triggered the flush.
+override onReceive(message: CollectorMessage): void {
+  match(message)
+    .with({ kind: 'buffer' }, (m) => this.onBuffer(m))
+    .with({ kind: 'drain' }, () => this.onDrain())
+    .exhaustive();
+}
+
+private onDrain(): void {
+  void (async () => {                       // nobody awaits this
+    for (const item of this.buffered.splice(0)) {
+      await this.flush(item);
+      this.sink.tell(item);                 // ← stamped with the DRAINING
+    }                                       //   turn's tenant, for every item
+  })();
+}
+```
+
+Two primitives close the hole. Which one fits depends on whom the
+deferred work belongs to.
+
+### `runFresh` — the work belongs to nobody
+
+Use it at the seam where work stops being attributable to the caller
+that happened to start it: a background loop, a maintenance sweep, a
+retry timer.
+
+```ts
+override onReceive(_message: string): void {
+  void LogContext.runFresh(async () => {
+    await this.rebuildIndex();
+    this.sink.tell('index-rebuilt');        // ← carries no tenant fields
+  });
+}
+```
+
+It is the inverse of `with()`: where `with` inherits and adds,
+`runFresh` deliberately starts from empty. That fails safe — a field
+nobody set cannot leak — and it is easier to reason about than
+remembering which keys to strip.
+
+### `runEach` — each item belongs to someone different
+
+Use it when the batch is a mix: a mailbox drained in one turn, a
+flush of buffered writes, requests coalesced across tenants. Capture
+each item's context **at enqueue time** — that is the only moment it
+is still current — then replay it at drain time:
+
+```ts
+private onBuffer(m: BufferMessage): void {
+  // Capture now; the draining turn is far too late.
+  this.buffered.push({ context: LogContext.get(), item: m.item });
+}
+
+private onDrain(): void {
+  void LogContext.runEach(this.buffered.splice(0), async (item) => {
+    await this.flush(item);
+    this.sink.tell(item);                   // ← each item's OWN tenant
+  });
+}
+```
+
+Entries are processed **sequentially**, each inside its own scope, and
+the context ambient at drain time is ignored rather than merged.
+
+<Aside type="note" title="Why `runEach` returns `Promise<void>`">
+  It resolves when the last entry is done and yields nothing. Handing
+  back results would make it read like `Promise.all` and invite use as
+  a concurrency helper, which it is not — the ordering and the
+  one-scope-per-item guarantee are the product, and each call's payload
+  is a side effect (a log line, a downstream `tell`).
+
+  An error **propagates immediately** and abandons the remaining
+  entries. Swallowing it would be a supervision decision, and that does
+  not belong to a diagnostics primitive; if you want per-item
+  isolation, put the `try`/`catch` inside the callback, where it still
+  runs under the right context.
 </Aside>
 
 ## Structured logging — `withFields` + MDC together
