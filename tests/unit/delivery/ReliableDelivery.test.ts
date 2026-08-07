@@ -6,6 +6,7 @@ import { ReliableDelivery, ProducerControllerOptions } from '../../../src/delive
 import type { Delivery } from '../../../src/delivery/index.js';
 import { TestKit } from '../../../src/testkit/TestKit.js';
 import { TestKitOptions } from '../../../src/testkit/TestKitOptions.js';
+import { awaitCondition } from '../../util/AwaitCondition.js';
 
 const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
 
@@ -29,7 +30,10 @@ describe('ReliableDelivery — happy path', () => {
     );
 
     for (const s of ['a', 'b', 'c']) producer.tell(s);
-    await sleep(80);
+    await awaitCondition(() => received.length === 3, {
+      timeoutMs: 4_000,
+      label: 'all three messages reached the consumer',
+    });
 
     expect(received).toEqual(['a', 'b', 'c']);
     producer.stop(); consumer.stop();
@@ -54,7 +58,10 @@ describe('ReliableDelivery — happy path', () => {
       producer.tell(s, (err) => confirmed.push({ body: s, err }));
     }
 
-    await sleep(80);
+    await awaitCondition(() => confirmed.length === 3, {
+      timeoutMs: 4_000,
+      label: 'all three sends were confirmed',
+    });
     expect(confirmed).toHaveLength(3);
     expect(confirmed.every(c => c.err === null)).toBe(true);
     producer.stop(); consumer.stop();
@@ -83,9 +90,19 @@ describe('ReliableDelivery — resilience', () => {
       replyTo: selfProbe as never,
     };
     consumer.ref.tell(dup1 as never);
-    await sleep(20);
+    // The duplicate only exercises dedup if the original was handled first —
+    // it carries a different body, so an early second delivery would be
+    // recorded and the test would fail on the wrong thing.
+    await awaitCondition(() => received.length === 1, {
+      timeoutMs: 4_000,
+      label: 'the first delivery was handled',
+    });
     consumer.ref.tell({ ...dup1, body: 'twice-but-same-seq' } as never);
-    await sleep(20);
+    // Both deliveries acknowledge, so two acks is the end of the sequence.
+    await awaitCondition(() => selfProbe.messageCount === 2, {
+      timeoutMs: 4_000,
+      label: 'both deliveries were acknowledged',
+    });
 
     expect(received).toEqual(['once']); // second was deduped
     // Both deliveries should have produced an Acknowledgment message to selfProbe.
@@ -126,8 +143,12 @@ describe('ReliableDelivery — resilience', () => {
     );
     producer.tell('persistent-message');
 
-    // Give the producer time to resend until the 3rd attempt succeeds.
-    await sleep(200);
+    // Wait for the third attempt to land rather than budgeting 200 ms for a
+    // 40 ms resend timer to fire five times.
+    await awaitCondition(() => delivered !== null, {
+      timeoutMs: 4_000,
+      label: 'a resend finally got through to the flaky consumer',
+    });
     expect(seen).toBeGreaterThanOrEqual(3);
     expect(delivered).toBe('persistent-message');
     producer.stop();
@@ -160,8 +181,11 @@ describe('ReliableDelivery — flow control', () => {
     for (let i = 0; i < N; i++) producer.tell(`m-${i}`);
 
     // Even with a tiny window, all messages eventually arrive in order.
-    const deadline = Date.now() + 1_500;
-    while (received.length < N && Date.now() < deadline) await sleep(20);
+    await awaitCondition(() => received.length === N, {
+      timeoutMs: 4_000,
+      intervalMs: 20,
+      label: 'every message drained through the two-message window',
+    });
     expect(received).toEqual(['m-0', 'm-1', 'm-2', 'm-3', 'm-4', 'm-5']);
 
     producer.stop(); consumer.stop();
@@ -190,14 +214,23 @@ describe('ReliableDelivery — shutdown (#451)', () => {
     for (const s of ['a', 'b', 'c', 'd']) {
       producer.tell(s, (err) => confirmed.push({ body: s, err }));
     }
-    await sleep(40);
+    // The window is two, so two arrive and stop — waiting for the third that
+    // must not come is what the settle below is for.
+    await awaitCondition(() => neverAcknowledges.messageCount === 2, {
+      timeoutMs: 4_000,
+      label: 'the window-sized batch reached the consumer',
+    });
+    await sleep(30);
 
     // Two delivered and awaiting an ack that never comes, two still queued.
     expect(neverAcknowledges.messageCount).toBe(2);
     expect(confirmed).toHaveLength(0);
 
     producer.stop();
-    await sleep(40);
+    await awaitCondition(() => confirmed.length === 4, {
+      timeoutMs: 4_000,
+      label: 'every send — queued and in-flight — was called back',
+    });
 
     // Before the fix this was 2 — the queued sends only.  The two in-flight
     // callers were never called back at all and waited forever.

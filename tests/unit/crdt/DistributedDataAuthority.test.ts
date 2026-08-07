@@ -21,6 +21,7 @@ import { NodeAddress } from '../../../src/cluster/NodeAddress.js';
 import { LogLevel, NoopLogger } from '../../../src/Logger.js';
 import { DistributedDataId, GCounter } from '../../../src/crdt/index.js';
 import type { WireMessage } from '../../../src/cluster/Protocol.js';
+import { awaitCondition } from '../../util/AwaitCondition.js';
 
 const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
 
@@ -82,7 +83,13 @@ describe('DistributedData wire authority', () => {
       key: 'k',
       value: GCounter.empty().increment('a', 1).toJSON(),
     } as unknown as WireMessage);
-    await sleep(200);
+    // The reply going to the sender is the positive half; the settle covers
+    // the negative one, that it did not also go to the impersonated node.
+    await awaitCondition(() => receivedByEvil.includes('ddata-write-ack'), {
+      timeoutMs: 4_000,
+      label: 'the write-ack came back to the sender',
+    });
+    await sleep(40);
 
     expect(receivedByEvil).toContain('ddata-write-ack');
     expect(receivedByInnocent).toEqual([]);
@@ -106,7 +113,11 @@ describe('DistributedData wire authority', () => {
       pendingId: 'p1',
       key: 'k',
     } as unknown as WireMessage);
-    await sleep(200);
+    await awaitCondition(() => receivedByEvil.includes('ddata-read-response'), {
+      timeoutMs: 4_000,
+      label: 'the read-response came back to the sender',
+    });
+    await sleep(40);
 
     expect(receivedByEvil).toContain('ddata-read-response');
     expect(receivedByInnocent).toEqual([]);
@@ -125,7 +136,11 @@ describe('DistributedData wire authority', () => {
     // ignore without disturbing the genuine quorum.
     const a = await startNode('qa', 47_121);
     const b = await startNode('qb', 47_122, ['qa@h:47121']);
-    await sleep(400);
+    await awaitCondition(() => a.upMembers().length >= 2, {
+      timeoutMs: 4_000,
+      intervalMs: 25,
+      label: 'the two-node cluster converged',
+    });
     expect(a.upMembers().length).toBeGreaterThanOrEqual(2);
 
     const handle = a.system.extension(DistributedDataId).start(a);

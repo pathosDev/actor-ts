@@ -166,7 +166,9 @@ describe('DistributedData ORSet over the wire (#722)', () => {
 
     // The same tombstones again — one more merge is all it took.
     evil.send(victim.selfAddress, hostileFrame);
-    await sleep(200);
+    // Nothing must change, so there is no state to poll for; the wait only has
+    // to outlive the merge the frame would have triggered.
+    await sleep(120);
     expect(data.get<ORSet<string>>('cart-42')?.value()).toEqual(['apple']);
   });
 });
