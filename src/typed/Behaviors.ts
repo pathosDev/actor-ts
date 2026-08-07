@@ -18,8 +18,9 @@ import type { TypedActorContext } from './TypedActorContext.js';
 
 /*
  * Singleton sentinels — identity-compared at runtime so users can use
- * `Behaviors.same` directly without wrapping.  Type-cast to Behavior<T> on
- * access so each usage site can pin T.
+ * `Behaviors.same` directly without wrapping.  Each is exposed as its own
+ * payload-free type rather than as `Behavior<T>`; see the accessors below for
+ * why that is what makes them usable without a cast.
  */
 const SAME: SameBehavior = { kind: 'same' };
 const STOPPED: StoppedBehavior = { kind: 'stopped' };
@@ -190,20 +191,40 @@ export const Behaviors = {
     });
   },
 
+  /*
+   * The sentinels answer with their own payload-free type, never `Behavior<T>`
+   * for some particular `T`.
+   *
+   * They used to be typed `Behavior<never>`, on the reasoning that a value
+   * carrying no message fits every message type.  That is the wrong direction
+   * for this union: `ReceiveBehavior<T>` and friends hold `T` in *parameter*
+   * position, so they are contravariant, and `Behavior<never>` is assignable
+   * to no other instantiation at all.  Any handler that mixed a real
+   * transition with `Behaviors.same` inferred `Behavior<T> | Behavior<never>`
+   * and was rejected, which is why callers ended up writing `Behaviors.same as
+   * Behavior<T>` per arm, or casting the whole match.
+   *
+   * `SameBehavior` and the rest are non-generic, so each is a constituent of
+   * `Behavior<T>` for *every* `T`: the mixed union now reduces back to
+   * `Behavior<T>` by itself and the casts are unnecessary.  Narrowing a return
+   * type this way is source-compatible — anything that accepted
+   * `Behavior<never>` accepts these.
+   */
+
   /** Sentinel: keep the current behavior. */
-  get same(): Behavior<never> { return SAME as Behavior<never>; },
+  get same(): SameBehavior { return SAME; },
 
   /** Sentinel: stop the actor. */
-  get stopped(): Behavior<never> { return STOPPED as Behavior<never>; },
+  get stopped(): StoppedBehavior { return STOPPED; },
 
   /** Sentinel: mark the message as unhandled (goes to dead letters). */
-  get unhandled(): Behavior<never> { return UNHANDLED as Behavior<never>; },
+  get unhandled(): UnhandledBehavior { return UNHANDLED; },
 
   /** Sentinel: accept messages but do nothing — useful as a placeholder. */
-  get empty(): Behavior<never> { return EMPTY as Behavior<never>; },
+  get empty(): EmptyBehavior { return EMPTY; },
 
   /** Sentinel: drop every incoming message silently. */
-  get ignore(): Behavior<never> { return IGNORE as Behavior<never>; },
+  get ignore(): IgnoreBehavior { return IGNORE; },
 };
 
 /**
@@ -235,9 +256,13 @@ function describeMessage(message: unknown): string {
   return className !== undefined && className !== 'Object' ? className : 'object';
 }
 
-/** Re-exports for callers that prefer named imports. */
-export const same = <T>(): Behavior<T> => Behaviors.same as Behavior<T>;
-export const stopped = <T>(): Behavior<T> => Behaviors.stopped as Behavior<T>;
-export const unhandled = <T>(): Behavior<T> => Behaviors.unhandled as Behavior<T>;
-export const empty = <T>(): Behavior<T> => Behaviors.empty as Behavior<T>;
-export const ignore = <T>(): Behavior<T> => Behaviors.ignore as Behavior<T>;
+/*
+ * Re-exports for callers that prefer named imports.  These predate the
+ * sentinels being assignable on their own and exist to pin `T` explicitly
+ * (`same<string>()`); they no longer need a cast to do it.
+ */
+export const same = <T>(): Behavior<T> => SAME;
+export const stopped = <T>(): Behavior<T> => STOPPED;
+export const unhandled = <T>(): Behavior<T> => UNHANDLED;
+export const empty = <T>(): Behavior<T> => EMPTY;
+export const ignore = <T>(): Behavior<T> => IGNORE;

@@ -644,7 +644,7 @@ type CounterMessage = TickMessage | ResetMessage;
 const recordingInto = (sink: number[]): Behavior<number> =>
   Behaviors.receiveMessage<number>((message) => {
     sink.push(message);
-    return Behaviors.same as Behavior<number>;
+    return Behaviors.same;
   });
 
 describe('Behaviors.intercept (#152)', () => {
@@ -704,7 +704,7 @@ describe('Behaviors.intercept (#152)', () => {
     const sys = newSys('typed-intercept-veto');
     const seen: number[] = [];
     const behavior = Behaviors.intercept<number>(recordingInto(seen), (context, message, next) =>
-      message % 2 === 0 ? next(context, message) : (Behaviors.same as Behavior<number>));
+      message % 2 === 0 ? next(context, message) : Behaviors.same);
 
     const ref = sys.spawnTypedAnonymous(behavior);
     ref.tell(1); ref.tell(2); ref.tell(3); ref.tell(4);
@@ -762,7 +762,7 @@ describe('Behaviors.intercept (#152)', () => {
 
     const parent: Behavior<string> = Behaviors.setup<string>((context) => {
       const inner = Behaviors.receiveMessage<string>((message) =>
-        message === 'stop' ? (Behaviors.stopped as Behavior<string>) : (Behaviors.same as Behavior<string>));
+        message === 'stop' ? Behaviors.stopped : Behaviors.same);
       child = context.spawn(
         Behaviors.intercept<string>(inner, (innerContext, message, next) => {
           events.push(`saw:${message}`);
@@ -772,10 +772,10 @@ describe('Behaviors.intercept (#152)', () => {
       );
       context.watch(child);
       return Behaviors.receiveWithSignal<string>(
-        () => Behaviors.same as Behavior<string>,
+        () => Behaviors.same,
         (_context, signal) => {
           if (signal.kind === 'terminated') events.push('kid-stopped');
-          return Behaviors.same as Behavior<string>;
+          return Behaviors.same;
         },
       );
     });
@@ -901,7 +901,7 @@ describe('Behaviors.logMessages (#152)', () => {
   const handlingInto = (sink: string[]): Behavior<CounterMessage> =>
     Behaviors.receiveMessage<CounterMessage>((message) => {
       sink.push(message.kind);
-      return Behaviors.same as Behavior<CounterMessage>;
+      return Behaviors.same;
     });
 
   test('logs one debug line per message, naming the message by its kind', async () => {

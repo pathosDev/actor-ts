@@ -154,10 +154,10 @@ export class TypedActor<T> extends Actor<T> {
         message,
         (innerContext, innerMessage) => this.deliver(b.inner, innerContext, innerMessage),
       ))
-      .with({ kind: 'ignore' }, () => Behaviors.same as Behavior<T>)
-      .with({ kind: 'empty' }, () => Behaviors.same as Behavior<T>)
-      .with({ kind: 'unhandled' }, () => Behaviors.unhandled as Behavior<T>)
-      .with({ kind: 'stopped' }, () => Behaviors.unhandled as Behavior<T>)
+      .with({ kind: 'ignore' }, () => Behaviors.same)
+      .with({ kind: 'empty' }, () => Behaviors.same)
+      .with({ kind: 'unhandled' }, () => Behaviors.unhandled)
+      .with({ kind: 'stopped' }, () => Behaviors.unhandled)
       .exhaustive();
   }
 
