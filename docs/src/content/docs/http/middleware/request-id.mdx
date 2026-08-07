@@ -20,6 +20,25 @@ An incoming id is accepted only if it is well-formed
 (`^[A-Za-z0-9._-]{1,64}$`) — a hostile value never reaches a response
 header; otherwise a fresh `crypto.randomUUID()` is generated.
 
+## Reading the id back
+
+`requestIdOf(request)` returns the id the request carries, or `undefined`
+when it carries none — or when what it carries fails the same shape check.
+Prefer it over a raw header read anywhere the value reaches a log line: a
+client-controlled string can forge whole log records through an embedded
+newline, and the check is what stops it.
+
+```ts
+import { requestIdOf } from 'actor-ts/http';
+
+system.log.error(`[http] ${req.method} ${req.path} (${requestIdOf(req) ?? '-'})`, err);
+```
+
+It reports what the *request* claimed, so under `trustIncoming: false` — where
+the middleware substitutes its own id downstream — name the header rather than
+presenting the value as the id. Pass the header name as a second argument if
+you renamed it.
+
 ## Configuration
 
 | Builder method | Field | Default |

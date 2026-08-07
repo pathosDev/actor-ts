@@ -5,11 +5,13 @@ import { ConfigError } from '../config/Config.js';
 import { ConfigKeys } from '../config/ConfigKeys.js';
 import { CoordinatedShutdownId, Phases } from '../CoordinatedShutdown.js';
 import { extensionId, type Extension, type ExtensionId } from '../Extension.js';
+import type { Logger } from '../Logger.js';
 import type { HttpServerBackend, ServerBinding } from './backend/HttpServerBackend.js';
 import { FastifyBackend } from './backend/FastifyBackend.js';
 import { HttpClient } from './HttpClient.js';
+import { requestIdOf } from './middleware/RequestId.js';
 import { compile, defaultErrorResponse, type Route } from './Route.js';
-import type { HttpRequest, HttpResponse } from './types.js';
+import { HttpError, type HttpRequest, type HttpResponse } from './types.js';
 import { ConnectionTracker, trackSocket } from './websocket/ConnectionWiring.js';
 
 export interface ServerBuilder {
@@ -102,9 +104,7 @@ export class HttpExtension implements Extension {
                 );
                 return out;
               } catch (err) {
-                system.log.debug(
-                  `[http] ${request.method} ${request.path} → error after ${Date.now() - start} ms: ${(err as Error).message}`,
-                );
+                logRouteFailure(system.log, request, err, Date.now() - start);
                 throw err;
               }
             },
@@ -142,10 +142,15 @@ export class HttpExtension implements Extension {
           }
           const fb = fallbacks[0]!;
           active.setNotFound(async (request: HttpRequest): Promise<HttpResponse> => {
+            const start = Date.now();
             system.log.debug(`[http] (fallback) ${request.method} ${request.path}`);
             try {
               return await fb.handler(request);
             } catch (err) {
+              // This branch answers with `defaultErrorResponse` instead of
+              // re-throwing, so nothing downstream ever sees the error — the
+              // log below is the only place it can survive at all.
+              logRouteFailure(system.log, request, err, Date.now() - start);
               return defaultErrorResponse(err);
             }
           });
@@ -214,6 +219,46 @@ export class HttpExtension implements Extension {
 
   /** Fire-and-forget request via the shared client. */
   singleRequest = this.client.singleRequest.bind(this.client);
+}
+
+/**
+ * Record a throw that escaped every `handleErrors(...)`, on the way to the
+ * response the client will actually get.
+ *
+ * The level split is the point.  An `HttpError` is a response the handler
+ * *chose* — a 404, a 401 — and its message is mapped straight into the body,
+ * so it is ordinary traffic and belongs on the same debug line as a success.
+ * Anything else becomes the generic 500 that deliberately withholds the
+ * thrown text (#130), because that text routinely carries file paths, SQL
+ * fragments or driver internals.  Redaction only works if the detail
+ * survives on the server, and at `debug` it did not: nothing runs at debug
+ * in production, so a redacted 500 was the sole trace of the failure
+ * anywhere.  Hence `error`, and the error value itself — the `Logger`
+ * contract passes it through to the sink, which is what preserves a stack.
+ *
+ * The id is reported as the header it came from rather than as "the" request
+ * id: it is whatever the caller sent, and `requestId({ trustIncoming: false })`
+ * would have replaced it downstream.  `requestIdOf` bounds it to a
+ * well-formed id first — a raw client string on a log line can forge records
+ * with an embedded newline.  Only the default header is consulted; a server
+ * that renames it should log its own id from `withErrorHandler`.
+ */
+function logRouteFailure(
+  log: Logger,
+  request: HttpRequest,
+  err: unknown,
+  elapsedMs: number,
+): void {
+  if (err instanceof HttpError) {
+    log.debug(`[http] ${request.method} ${request.path} → ${err.status} (${elapsedMs} ms)`);
+    return;
+  }
+  const correlation = requestIdOf(request);
+  log.error(
+    `[http] ${request.method} ${request.path} → 500 after ${elapsedMs} ms`
+    + `${correlation ? ` [x-request-id=${correlation}]` : ''}`,
+    err,
+  );
 }
 
 /**
