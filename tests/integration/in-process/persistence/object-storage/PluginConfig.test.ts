@@ -75,7 +75,14 @@ describe('compressionByPrefix / encryptionByPrefix', () => {
     expect(acmeRes?.mode).toBe('client-aes256-gcm');
     expect(bigRes?.mode).toBe('client-aes256-gcm');
     expect(otherRes?.mode).toBe('sse-s3');
-    if (acmeRes?.mode === 'client-aes256-gcm') expect(acmeRes.masterKey).toBe(acme);
-    if (bigRes?.mode === 'client-aes256-gcm') expect(bigRes.masterKey).toBe(big);
+    // Both `client-aes256-gcm` arms of `EncryptionConfig` carry the same
+    // `mode` value, so `mode` never narrows to the single-key shape — only
+    // probing for the property does, the same check `Encryption.ts` makes.
+    // Asserting the probe instead of guarding on it keeps the key
+    // comparison from being silently skipped if a ring came back instead.
+    if (!acmeRes || !('masterKey' in acmeRes)) throw new Error('acme did not resolve to a single-key config');
+    if (!bigRes || !('masterKey' in bigRes)) throw new Error('bigcorp did not resolve to a single-key config');
+    expect(acmeRes.masterKey).toBe(acme);
+    expect(bigRes.masterKey).toBe(big);
   });
 });
