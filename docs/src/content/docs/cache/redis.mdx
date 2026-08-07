@@ -134,6 +134,11 @@ Both map to Redis primitives:
 Used by the framework's rate-limit + idempotency-key
 middleware.  Safe across pods.
 
+Redis is the **best-supported backend for locking**: a key lives on
+one logical keyspace, so `SET NX` decides a race the same way for
+every pod. See [`acquireLock`](/cache/overview/#locks) for the
+token-checked release that pairs with it.
+
 ## Pipelining
 
 ```ts

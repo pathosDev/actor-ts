@@ -11,6 +11,41 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Added
 
+- **`acquireLock(cache, key, ttlMs)` — mutual exclusion over any `Cache`
+  backend** (#141).  Exported from the package root.  It writes a random
+  128-bit token and releases only while that token is still in place, so a
+  holder that overran its TTL cannot evict its successor mid-critical-section;
+  `release()` returning `false` reports exactly that overrun.  `ttlMs` is
+  required — expiry is the only recovery path from a crashed holder.
+
+- **The `Cache.setIfAbsent` atomicity contract is written down** (#141).  It
+  was previously unstated: a hard per-key guarantee on every backend (Redis
+  `SET … NX`, Memcached `ADD`, and a `Map` read/write pair the single-threaded
+  event loop cannot interleave), the rule that `ttlMs` applies only to the
+  write that wins, and the limit that matters — the scope is one key on one
+  server, so a Memcached topology change can rehash a key onto a node that has
+  never seen it and hand the same lock out twice.
+
+- **`LogContext.runFresh(fn)` and `LogContext.runEach(entries, fn)`** (#129).
+  MDC primitives for work that outlives the turn that started it.
+  `AsyncLocalStorage` binds a store when an async resource is *created*, not
+  when it runs, so an un-awaited promise, a later-flushed buffer or a batched
+  queue drain keeps whatever context was ambient at creation time and stamps it
+  onto every `tell` its continuation makes; across a tenant boundary that is a
+  data leak rather than a confusing log line.  `runFresh` runs with the context
+  emptied — for deferred work that belongs to nobody.  `runEach` runs each
+  entry sequentially under the context captured when that entry was enqueued,
+  ignoring the context ambient at drain time — for batches that mix principals.
+
+- **Logging docs cover deferred work, tenant isolation and
+  `LogContext.snapshot()`** (#129).  `snapshot()` was missing from the
+  operations table despite being the only safe way to carry a context across a
+  boundary — `get()` returns the live readonly reference for the whole scope,
+  `snapshot()` copies afresh on every call.  The same page carried an inverted
+  warning claiming raw `setTimeout` loses the MDC while `context.timers`
+  preserves it; both halves were wrong — both paths propagate — and the
+  corrected text names the real failure mode.
+
 - **DevTools overview: an `actor-ts` tile in the Common section** (#911).
   The running framework version now sits beside the actor system's name —
   together they are the identity of what you are looking at — instead of
@@ -21,6 +56,17 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   protocol change.
 
 ### Fixed
+
+- **A `PersistentFSM` state timeout could fire after a transition had already
+  renewed it** (#143).  A `_timeout` fire travels through the mailbox, so it
+  becomes irrevocable the moment the timer callback enqueues it — `cancel()`
+  can no longer reach it, and the FSM may process any number of commands
+  before it is dequeued.  `fireTimeoutTransition` compared only the state
+  name, which cannot express "this window was replaced": a heartbeat command
+  transitioning `active → active` — the archetypal idle-session timeout —
+  re-armed the timer, and the queued fire still expired the session.  A fire
+  now carries the arm generation it was scheduled under and is dropped once a
+  re-arm has superseded it; the state-name check remains as a second layer.
 
 - **A fully compacted journal no longer blocks every later `persist`**
   (#628).  Recovery raised its sequence only from a snapshot or from
@@ -99,6 +145,46 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   instead of shipping the lie.
 
 ### Security
+
+- **BREAKING — the two cluster-wide subscriber registries are bounded and
+  watched** (#137, #139).  `Receptionist` gained `maxSubscribersPerKey` /
+  `maxSubscribersTotal`, `DistributedPubSubMediator` gained
+  `maxSubscribersPerTopic` / `maxTopics` / `maxRemoteNodesPerTopic`, and both
+  now watch their subscribers — one that stops without `Unsubscribe` releases
+  its slot instead of being pinned forever.  The topic caps also apply to
+  **gossip**, which is the axis worth naming: a peer claiming 100 000 topics
+  allocated an entry per name on every receiving node, with no local
+  `Subscribe` involved.
+  **BREAKING:** a refused `Subscribe` is answered rather than discarded, so
+  `Receptionist`'s `Subscribe.replyTo` / `Unsubscribe.replyTo` widen from
+  `ActorRef<Listing<T>>` to `ActorRef<Listing<T> | SubscribeRejected<T>>` — a
+  subscriber that matches its inbox exhaustively has to handle the new variant
+  (exported from the package root as `ReceptionistSubscribeRejected`).
+
+- **BREAKING — `DistributedPubSub`'s `Subscribe` takes an optional `replyTo`**
+  (#139).  It names where the `SubscribeAcknowledgment`, or the new
+  `SubscribeRejected`, is delivered.  The acknowledgment used to run through
+  `context.sender`, which is empty for the documented
+  `mediator.tell(new Subscribe(…))` call from outside an actor — the caller
+  most in need of a refusal was the one that could not receive it.  Existing
+  calls compile unchanged and keep following the sender; pass `replyTo` where
+  you want to observe the answer.
+
+- **An unbounded `keys` map in the `Receptionist` gossip path** (#137).  A
+  peer's contribution is replaced wholesale on every round, but `maybeDrop`
+  never ran afterwards, so a key that existed only because that peer named it
+  left an empty entry nothing removed.
+
+- **`actor-ts.cluster.pub-sub.*` and `actor-ts.cluster.receptionist.*` HOCON
+  sections** (#857).  Gossip intervals, every cap above, and
+  `send-to-dead-letters-when-no-subscribers`.  With the toggle on (the
+  default), a publish that reached nobody goes to `system.deadLetters` instead
+  of vanishing, so a mistyped topic is distinguishable from one whose
+  subscribers have not gossiped in yet.  `routing-logic` and
+  `removed-time-to-live` from the original proposal are deliberately absent
+  rather than shipped inert — the first needs a send-to-one protocol this
+  implementation does not have, the second the tombstones its gossip model
+  does not use — so #857 stays open for them.
 
 - **DistributedData credits the connection, not the payload** (#719, #723,
   #768).  `Cluster._onWire` has always handed its handlers the peer whose

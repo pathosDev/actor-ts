@@ -641,6 +641,7 @@ export * from './io/index.js';
 // Cache abstraction (in-memory / Redis / Memcached) + extension.
 export {
   CacheError,
+  acquireLock,
   InMemoryCache,
   InMemoryCacheOptions,
   RedisCache,
@@ -655,6 +656,7 @@ export {
 } from './cache/index.js';
 export type {
   Cache,
+  CacheLock,
   InMemoryCacheOptionsType,
   RedisCacheOptionsType,
   RedisClientLike,
@@ -741,6 +743,10 @@ export {
   Find,
   Subscribe as ReceptionistSubscribe,
   Unsubscribe as ReceptionistUnsubscribe,
+  // The cluster block above re-exports pub-sub's own `SubscribeRejected`
+  // with `export *`; both refusals carry a different payload (`key` vs
+  // `topic`), so the discovery one is aliased exactly like `Subscribe` is.
+  SubscribeRejected as ReceptionistSubscribeRejected,
   Listing,
   ConfigSeedProvider,
   ConfigSeedProviderOptions,
@@ -758,6 +764,8 @@ export {
 export type {
   ReceptionistOptionsType,
   ReceptionistGossipMessage,
+  ReceptionistSubscriberRef,
+  ReceptionistSubscribeRejectionReason,
   SeedProvider,
   ConfigSeedProviderOptionsType,
   DnsSeedProviderOptionsType,

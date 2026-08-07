@@ -134,6 +134,12 @@ Beide mappen auf Redis-Primitive:
 Wird von der Rate-Limit- + Idempotency-Key-Middleware des
 Frameworks genutzt.  Sicher über Pods hinweg.
 
+Redis ist das **am besten geeignete Backend zum Locken**: ein Key
+lebt in einem logischen Keyspace, `SET NX` entscheidet ein Rennen
+also für jeden Pod gleich.  Siehe
+[`acquireLock`](/de/cache/overview/#locks) für das dazu passende
+tokengeprüfte Release.
+
 ## Pipelining
 
 ```ts

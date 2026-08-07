@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import { MemcachedCache, type MemcachedClientLike } from '../../../src/cache/MemcachedCache.js';
 import { MemcachedCacheOptions } from '../../../src/cache/MemcachedCacheOptions.js';
+import { runCacheContractTests } from './_Contract.js';
 
 /**
  * Mock memjs client.  We don't actually run a memcached process —
@@ -62,6 +63,23 @@ function secondsAhead(seconds: number | undefined): number {
   if (seconds === undefined) return 0;  // 0 = no expiry in memcached
   return Math.floor(Date.now() / 1000) + seconds;
 }
+
+// Backend-agnostic contract.  The fake is stateful, so the factory mints
+// a fresh one per call — `beforeEach` invokes it once per test, which is
+// what keeps the runs isolated.
+describe('MemcachedCache — contract', () => {
+  runCacheContractTests({
+    name: 'MemcachedCache',
+    factory: async () => {
+      const memcachedOptions = MemcachedCacheOptions.create().withClient(new FakeMemcached());
+      return new MemcachedCache(memcachedOptions);
+    },
+    // Memcached's expiry unit is whole seconds and the wrapper floors at
+    // 1 s, so the contract's 30 ms-TTL case cannot be observed expiring
+    // inside a test's window — it would only measure the floor.
+    supportsSubSecondTtl: false,
+  });
+});
 
 describe('MemcachedCache — round-trip', () => {
   test('set with TTL converts ms → seconds (rounded up)', async () => {

@@ -6,7 +6,13 @@ export {
   DistributedPubSubMediator,
   mediatorPath,
 } from './DistributedPubSubMediator.js';
-export { DistributedPubSubOptions, DistributedPubSubOptionsBuilder, DistributedPubSubOptionsValidator } from './DistributedPubSubOptions.js';
+export type { MediatorInbox, MediatorMessage } from './DistributedPubSubMediator.js';
+export {
+  DistributedPubSubOptions,
+  DistributedPubSubOptionsBuilder,
+  DistributedPubSubOptionsValidator,
+  readDistributedPubSubOptionsFromConfig,
+} from './DistributedPubSubOptions.js';
 export type { DistributedPubSubOptionsType } from './DistributedPubSubOptions.js';
 export {
   CurrentTopics,
@@ -14,7 +20,9 @@ export {
   Publish,
   Subscribe,
   SubscribeAcknowledgment,
+  SubscribeRejected,
   Unsubscribe,
   UnsubscribeAcknowledgment,
   UnsubscribeAll,
 } from './Messages.js';
+export type { PubSubSubscriberRef, PubSubSubscribeRejectionReason } from './Messages.js';

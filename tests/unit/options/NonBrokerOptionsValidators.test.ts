@@ -432,6 +432,20 @@ describe('discovery option validators', () => {
     expect(() => check({ gossipIntervalMs: 0 })).toThrow(/gossipIntervalMs/);
     expect(() => check({ gossipIntervalMs: 1_000 })).not.toThrow();
   });
+
+  test('Receptionist: subscriber caps must be integers >= 1 (#137)', () => {
+    // A cap of 0 would refuse every subscription and a fractional one would
+    // refuse at an unpredictable point — both are configuration mistakes that
+    // present as "discovery silently stopped working".
+    const check = (s: Partial<ReceptionistOptionsType>): void =>
+      new ReceptionistOptionsValidator().validate(s);
+    expect(() => check({ maxSubscribersPerKey: 0 })).toThrow(/maxSubscribersPerKey/);
+    expect(() => check({ maxSubscribersPerKey: 1.5 })).toThrow(OptionsError);
+    expect(() => check({ maxSubscribersTotal: -1 })).toThrow(/maxSubscribersTotal/);
+    expect(() => check({ maxSubscribersPerKey: 1_000, maxSubscribersTotal: 10_000 })).not.toThrow();
+    // Unset stays valid — the actor's built-in defaults apply.
+    expect(() => check({})).not.toThrow();
+  });
 });
 
 describe('gossip-interval validators', () => {
@@ -439,6 +453,20 @@ describe('gossip-interval validators', () => {
     const check = (s: Partial<DistributedPubSubOptionsType>): void =>
       new DistributedPubSubOptionsValidator().validate(s);
     expect(() => check({ gossipIntervalMs: 0 })).toThrow(OptionsError);
+  });
+
+  test('DistributedPubSub: mediator caps must be integers >= 1 (#139)', () => {
+    const check = (s: Partial<DistributedPubSubOptionsType>): void =>
+      new DistributedPubSubOptionsValidator().validate(s);
+    expect(() => check({ maxSubscribersPerTopic: 0 })).toThrow(/maxSubscribersPerTopic/);
+    expect(() => check({ maxTopics: 0 })).toThrow(/maxTopics/);
+    expect(() => check({ maxRemoteNodesPerTopic: 2.5 })).toThrow(/maxRemoteNodesPerTopic/);
+    expect(() => check({
+      maxSubscribersPerTopic: 10_000,
+      maxTopics: 10_000,
+      maxRemoteNodesPerTopic: 1_000,
+      sendToDeadLettersWhenNoSubscribers: false,
+    })).not.toThrow();
   });
 
   test('DistributedData: non-positive gossipInterval', () => {

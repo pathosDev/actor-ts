@@ -95,7 +95,9 @@ Actor stoppt, bleibt seine Registrierung bestehen, bis du
 `Deregister` sendest (oder, in einem Cluster, bis sein ganzer
 Node den Cluster verlässt — siehe unten).  Ein `Find` kann also
 eine Ref auf einen gestoppten Actor zurückgeben; sichere dich auf
-der Consumer-Seite dagegen ab.
+der Consumer-Seite dagegen ab.  (*Subscriber* werden sehr wohl
+gewatcht, siehe
+[Subscriptions sind begrenzt und gewatcht](#subscriptions-sind-begrenzt-und-gewatcht).)
 
 ## Finden
 
@@ -151,6 +153,63 @@ Node-Abgängen.
 Nutze es für **dynamisches Routing**: ein Actor, der auf einen
 Key subscribet und seine Routing-Entscheidungen anpasst, wenn
 Refs auftauchen / verschwinden.
+
+## Subscriptions sind begrenzt und gewatcht
+
+Zwei Mechanismen halten die Subscriber-Menge davon ab, unbegrenzt
+zu wachsen.
+
+**Death Watch.** Der Receptionist watcht jeden Subscriber. Stoppt
+einer, ohne `Unsubscribe` zu senden — Crash, vergessenes Cleanup,
+ein pro Request gespawnter Actor —, wird sein Platz frei, sobald
+das `Terminated` ankommt. Du musst in `postStop` nicht mehr
+unsubscriben, es bleibt aber der schnellere Weg.
+
+**Obergrenzen.** Zwei Limits begrenzen den Rest, die lebenden
+Subscriber:
+
+| Option | HOCON-Leaf | Default |
+| --- | --- | --- |
+| `maxSubscribersPerKey` | `cluster.receptionist.max-subscribers-per-key` | `1000` |
+| `maxSubscribersTotal` | `cluster.receptionist.max-subscribers-total` | `10000` |
+
+```ts
+const receptionistOptions = ReceptionistOptions.create()
+  .withMaxSubscribersPerKey(200)
+  .withMaxSubscribersTotal(2_000);
+const receptionist = system.extension(ReceptionistId).start(cluster, receptionistOptions);
+```
+
+Ein `Subscribe` über einer der beiden Grenzen wird **abgelehnt,
+nicht verworfen**: `replyTo` erhält statt des ersten `Listing` ein
+`ReceptionistSubscribeRejected`, und es folgen keine weiteren
+Listings.
+
+```ts
+import { ReceptionistSubscribeRejected } from 'actor-ts';
+
+class Consumer extends Actor<Listing<ApiMessage> | ReceptionistSubscribeRejected<ApiMessage>> {
+  override onReceive(message: Listing<ApiMessage> | ReceptionistSubscribeRejected<ApiMessage>): void {
+    if (message instanceof ReceptionistSubscribeRejected) {
+      // message.reason: 'maxSubscribersPerKey' | 'maxSubscribersTotal'
+      // message.limit:  der Wert, auf den diese Grenze gesetzt ist
+      this.log.warn(`discovery refused: ${message.reason} (${message.limit})`);
+      return;
+    }
+    // …message.refs verwenden
+  }
+}
+```
+
+Die Antwort ist wichtiger, als sie aussieht: ein stillschweigend
+verworfenes `Subscribe` ist nicht davon zu unterscheiden, dass der
+Key schlicht noch keine Registrierungen hat — und zwischen beidem
+liegt ein langer Nachmittag.
+
+Die Klasse wird aus dem Package-Root als
+`ReceptionistSubscribeRejected` exportiert — das unqualifizierte
+`SubscribeRejected` gehört DistributedPubSub, genau wie `Subscribe`
+zu `ReceptionistSubscribe` aliasiert ist.
 
 ## Cluster-aware vs. Single-Node
 
