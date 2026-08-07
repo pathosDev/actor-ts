@@ -85,6 +85,31 @@ const MAX_VERSION_SKEW_MS = 24 * 60 * 60 * 1_000;
 const DEFAULT_FIRST_SIGHT_MAX_VERSION_SKEW_MS = 5 * 60 * 1_000;
 
 /**
+ * Default cap on **live** entries in the member map (#138).
+ *
+ * The number is chosen against the failure mode that actually bites, which is
+ * not an out-of-memory kill.  Gossip carries the whole member list, so at
+ * roughly 110 000 entries this node's own frame outgrows the 16 MiB wire cap
+ * and every peer terminates the connection on the length prefix — the node
+ * removes itself from the cluster while still running.  1000 sits two orders
+ * of magnitude below that, and comfortably above any cluster this framework
+ * is built for.
+ */
+export const DEFAULT_MAX_MEMBERS = 1_000;
+
+/**
+ * Default cap on `removed` tombstones in the member map (#138).
+ *
+ * Ten times {@link DEFAULT_MAX_MEMBERS} because tombstones are the entries
+ * that legitimately outnumber live members — every node that ever left leaves
+ * one for {@link ClusterOptionsType.tombstoneTtlMs}.  That same property is
+ * why this is the cap that matters: a phantom in an active status is reclaimed
+ * by the failure detector within `downAfterMs`, a gossiped tombstone is not
+ * reclaimed by anything for a day.
+ */
+export const DEFAULT_MAX_TOMBSTONES = 10_000;
+
+/**
  * The Cluster is a single-instance "extension" attached to an ActorSystem.
  * It owns a Transport, a gossip-based membership view, a failure detector
  * and the plumbing that dispatches inbound envelope messages to local actors.
@@ -105,6 +130,27 @@ export class Cluster {
   private readonly tombstonePruneIntervalMs: number;
   private readonly tombstoneMinRetentionMs: number;
   private readonly firstSightMaxVersionSkewMs: number;
+  private readonly maxMembers: number;
+  private readonly maxTombstones: number;
+
+  /**
+   * How many entries in {@link members} are `removed` tombstones.
+   *
+   * Kept incrementally rather than recomputed, and that is the whole reason
+   * {@link setMember} / {@link deleteMember} exist: the caps are checked once
+   * per gossiped record, and a frame may carry tens of thousands of them, so
+   * an O(n) scan per record would turn the defence into the denial of service
+   * it is meant to prevent.  Live entries are `members.size - tombstoneCount`.
+   */
+  private tombstoneCount = 0;
+
+  /**
+   * Cumulative count of member records a cap refused.  Read by `onGossip` to
+   * collapse a frame's worth of refusals into a single log line — logging per
+   * record would hand an attacker log amplification in place of the memory
+   * growth it just lost.
+   */
+  private membersRefusedByCap = 0;
 
   private heartbeatSeq = 0;
   private gossipTimer: Cancellable | null = null;
@@ -156,10 +202,18 @@ export class Cluster {
     this.downing = options.downing ?? null;
     this.tombstoneTtlMs = options.tombstoneTtlMs ?? DEFAULT_TOMBSTONE_TTL_MS;
     this.tombstonePruneIntervalMs = options.tombstonePruneIntervalMs ?? DEFAULT_TOMBSTONE_PRUNE_INTERVAL_MS;
-    this.tombstoneMinRetentionMs =
-      options.tombstoneMinRetentionMs ?? 6 * fdOptions.downAfterMs;
+    // `0` is not "no floor" but "derive one", so it falls through exactly like
+    // an unset field.  The HOCON leaf ships with `0s` as its documented
+    // default, and a config file that spells a default out must behave like
+    // one that omits it (#841).
+    const minRetention = options.tombstoneMinRetentionMs;
+    this.tombstoneMinRetentionMs = minRetention === undefined || minRetention === 0
+      ? 6 * fdOptions.downAfterMs
+      : minRetention;
     this.firstSightMaxVersionSkewMs =
       options.firstSightMaxVersionSkewMs ?? DEFAULT_FIRST_SIGHT_MAX_VERSION_SKEW_MS;
+    this.maxMembers = options.maxMembers ?? DEFAULT_MAX_MEMBERS;
+    this.maxTombstones = options.maxTombstones ?? DEFAULT_MAX_TOMBSTONES;
   }
 
   /**
@@ -415,7 +469,7 @@ export class Cluster {
     this.updateMember(downed);
     this.emit(new MemberDown(downed));
     const removed = downed.withRemoved(Date.now());
-    this.members.set(key, removed);
+    this.setMember(removed);
     this.failureDetector.forget(member.address);
     this.emit(new MemberRemoved(removed));
     this.log.info(`operator force-down: ${member.address}`);
@@ -463,7 +517,7 @@ export class Cluster {
     // the epoch only ensures a fresh process starts above any
     // version that previous incarnation could have reached.
     const me = new Member(this.selfAddress, 'joining', Date.now(), this.selfRoles);
-    this.members.set(me.address.toString(), me);
+    this.setMember(me);
     this.emit(new MemberJoined(me));
     this.log.debug(
       `self joining: epoch=v${me.version} roles=[${[...this.selfRoles].join(',')}]`,
@@ -619,23 +673,54 @@ export class Cluster {
    */
   private onGossip(from: NodeAddress, message: GossipMessage): void {
     const sender = NodeAddress.fromJSON(message.from);
-    this.failureDetector.heartbeat(sender);
+    // The failure detector's sample map is the *second* thing `message.from`
+    // could grow without bound, and capping only the member map would have
+    // moved #138 one map to the left rather than closed it: a sample is
+    // allocated per distinct address, and nothing prunes one that has no
+    // member behind it — `forget` is only called when a member is removed.
+    //
+    // The gate is an allocation bound, not a re-litigation of who may refresh
+    // whom: `sender` equals `from` for every honest frame (the connection is
+    // the peer), and a known member stays refreshable, so no legitimate
+    // heartbeat is lost.  What it refuses is an address that is neither the
+    // connection's peer nor anything this node tracks — which is only
+    // reachable by forging the payload field.
+    if (sender.equals(from) || this.members.has(sender.toString())) {
+      this.failureDetector.heartbeat(sender);
+    }
     this.log.debug(`gossip from ${sender}: ${message.members.length} member(s)`);
 
     // Snapshot the sender's standing *before* merging: this frame may be the
     // one that introduces the sender, and a claim must not be authorised by a
     // membership the same frame just created.
     const senderStatus = this.members.get(from.toString())?.status;
+    const refusedBefore = this.membersRefusedByCap;
 
     for (const data of message.members) {
       this.mergeMember(from, senderStatus, data);
     }
 
-    // Ensure we know about the sender itself.
+    // Ensure we know about the sender itself.  This insert sits *outside*
+    // `mergeMember`, so it bypassed every guard the merge path grew — it is
+    // capped here explicitly rather than left as the one door #138 forgot to
+    // close.  `sender` is the payload's self-declaration, not the connection's
+    // peer, which makes it the cheaper of the two addresses to fabricate.
     if (!this.members.has(sender.toString())) {
       const member = new Member(sender, 'joining', 1);
-      this.members.set(sender.toString(), member);
-      this.emit(new MemberJoined(member));
+      if (this.admitsNewMember(member)) {
+        this.setMember(member);
+        this.emit(new MemberJoined(member));
+      }
+    }
+
+    // One line per frame, not per refused record: an attacker who has just
+    // lost the memory growth must not be handed log amplification instead.
+    const refused = this.membersRefusedByCap - refusedBefore;
+    if (refused > 0) {
+      this.log.warn(
+        `gossip: dropped ${refused} member record(s) from ${from} — `
+        + `maxMembers (${this.maxMembers}) / maxTombstones (${this.maxTombstones}) is full`,
+      );
     }
 
     // Leader promotes joining (and weakly-up) members to up.
@@ -763,7 +848,7 @@ export class Cluster {
     // `removed` entries.  The `removedAt` stamp is what
     // `tombstonePruneTick` uses to drop the entry once `tombstoneTtlMs`
     // has elapsed (#75).
-    this.members.set(peer.toString(), removed);
+    this.setMember(removed);
     this.failureDetector.forget(peer);
     this.emit(new MemberLeft(leaving));
     this.emit(new MemberRemoved(removed));
@@ -822,7 +907,7 @@ export class Cluster {
         // this.  Definitive downing paths (`onLeave`,
         // `evaluateDowning` force-down) tombstone instead, which
         // prevents stale gossip from resurrecting the address.
-        this.members.delete(member.address.toString());
+        this.deleteMember(member.address.toString());
         this.failureDetector.forget(member.address);
         // Transient `removed` Member only used for the event emit —
         // not stored, so the missing `removedAt` here is intentional.
@@ -898,7 +983,7 @@ export class Cluster {
       // `removedAt` lets `tombstonePruneTick` reclaim the entry
       // after `tombstoneTtlMs` (#75).
       const removed = downed.withRemoved(Date.now());
-      this.members.set(key, removed);
+      this.setMember(removed);
       this.failureDetector.forget(member.address);
       this.emit(new MemberRemoved(removed));
     }
@@ -1046,6 +1131,50 @@ export class Cluster {
     return false;
   }
 
+  /**
+   * Whether the member map has room for an address it has never seen (#138).
+   *
+   * The map was unbounded, and both paths that create an entry from gossip set
+   * unconditionally.  Every other guard in front of the merge decides whether a
+   * *claim* is believable; none of them bounds how *many* believable claims one
+   * peer may make.  `maySpeakFor` waves a self-announcement through by design —
+   * refusing it would mean no node could ever join — so a peer that opens a
+   * connection per address, or one active peer asserting third-party records,
+   * allocated an entry per name for free.
+   *
+   * **Why the tombstone cap is the load-bearing one.**  The obvious reading of
+   * the attack is "flood phantom members", and it is the weaker half: a phantom
+   * in `up` / `joining` / `unreachable` is a member the failure detector is
+   * watching, so it is downed and deleted `downAfterMs` after the attacker
+   * stops feeding it — seconds, at the default.  A record gossiped as `removed`
+   * is the one that sticks: nothing heartbeats a tombstone, so only
+   * {@link ClusterOptionsType.tombstoneTtlMs} reclaims it, a day later.  That
+   * asymmetry is why the two caps are separate numbers rather than one.
+   *
+   * **What "full" costs.**  A refused *tombstone* costs nothing: it suppresses
+   * an address this node has no record of, so there is nothing to protect.  A
+   * refused *live* record costs one gossip round if it was legitimate — the
+   * cluster is over `maxMembers` and the operator has a WARN naming the cap.
+   * Refusing the new entry rather than evicting an old one is deliberate:
+   * eviction would let an attacker push real members out, which is a strictly
+   * better exploit than the one being closed.
+   *
+   * Entries this node mints itself — self at startup, and the `removed`
+   * tombstones written by `leave` / downing / {@link down} — never pass through
+   * here.  They convert or create records this node authored, and capping its
+   * own bookkeeping would be a liveness bug rather than a defence.
+   */
+  private admitsNewMember(incoming: Member): boolean {
+    const cap = incoming.status === 'removed' ? this.maxTombstones : this.maxMembers;
+    if (cap === 0) return true; // 0 = disabled
+    const held = incoming.status === 'removed'
+      ? this.tombstoneCount
+      : this.members.size - this.tombstoneCount;
+    if (held < cap) return true;
+    this.membersRefusedByCap++;
+    return false;
+  }
+
   private mergeMember(from: NodeAddress, senderStatus: MemberStatus | undefined, data: MemberData): void {
     const incoming = Member.fromData(data);
 
@@ -1113,7 +1242,10 @@ export class Cluster {
     const existing = this.members.get(incoming.address.toString());
     if (!existing) {
       if (!this.admitsFirstSightVersion(incoming)) return;
-      this.members.set(incoming.address.toString(), incoming);
+      // Last gate before the map grows — after every believability check, so a
+      // record that was going to be dropped anyway never consumes cap headroom.
+      if (!this.admitsNewMember(incoming)) return;
+      this.setMember(incoming);
       this.failureDetector.register(incoming.address);
       this.emit(new MemberJoined(incoming));
       // If we first learn about the member already in a terminal or
@@ -1143,7 +1275,7 @@ export class Cluster {
       this.log.debug(
         `merge: ${incoming.address} re-incarnation (was removed v${existing.version}, now ${incoming.status} v${incoming.version})`,
       );
-      this.members.set(incoming.address.toString(), incoming);
+      this.setMember(incoming);
       this.failureDetector.register(incoming.address);
       this.emit(new MemberJoined(incoming));
       if (incoming.status !== 'joining') {
@@ -1158,14 +1290,39 @@ export class Cluster {
         `merge: ${incoming.address} ${existing.status}→${incoming.status} (v${existing.version}→v${incoming.version})`,
       );
     }
-    this.members.set(incoming.address.toString(), incoming);
+    this.setMember(incoming);
     this.emitStatusTransition(existing, incoming);
+  }
+
+  /**
+   * The single write door into {@link members}, so {@link tombstoneCount}
+   * cannot drift from the map it describes.  Every mutation goes through here
+   * or {@link deleteMember} — a `this.members.set(…)` elsewhere would silently
+   * un-cap the tombstone half of #138.
+   *
+   * Keyed by `address.toString()` like every other entry; the map has no other
+   * key shape.
+   */
+  private setMember(member: Member): void {
+    const key = member.address.toString();
+    const previous = this.members.get(key);
+    if (previous?.status === 'removed') this.tombstoneCount--;
+    if (member.status === 'removed') this.tombstoneCount++;
+    this.members.set(key, member);
+  }
+
+  /** The matching delete — see {@link setMember}. */
+  private deleteMember(key: string): void {
+    const previous = this.members.get(key);
+    if (previous === undefined) return;
+    if (previous.status === 'removed') this.tombstoneCount--;
+    this.members.delete(key);
   }
 
   private updateMember(next: Member): void {
     const key = next.address.toString();
     const prev = this.members.get(key);
-    this.members.set(key, next);
+    this.setMember(next);
     if (prev) this.emitStatusTransition(prev, next);
     else this.emit(new MemberJoined(next));
     // Stock metric: members-up gauge.  Updated on every member-set
@@ -1239,7 +1396,7 @@ export class Cluster {
       if (member.status !== 'removed') continue;
       if (member.removedAt === undefined) continue;
       if (now - member.removedAt < cutoff) continue;
-      this.members.delete(key);
+      this.deleteMember(key);
       pruned++;
     }
     if (pruned > 0) {

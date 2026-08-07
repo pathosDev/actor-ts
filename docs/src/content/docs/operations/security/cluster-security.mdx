@@ -283,11 +283,22 @@ entries for it — no local `Subscribe`, no malformed field, no
 log line. The receptionist had the same shape on its own gossip
 path.
 
-Both registries are capped now, and the caps apply to the gossip
+**Membership itself had the same shape**, and it is the one
+registry nobody has to opt into: every clustered node keeps a map
+of members, and gossip is what fills it. The rules below decide
+whether a claim is *believable*; none of them bounded how many
+believable claims one peer may make. A sender announcing its own
+address is waved through by design — refusing that would mean no
+node could ever join — so naming a fresh address per frame
+allocated an entry per name.
+
+These registries are capped now, and the caps apply to the gossip
 path as much as to local calls:
 
 | Registry | Capped by | Default |
 | --- | --- | --- |
+| Live cluster members | `cluster.max-members` | `1000` |
+| `removed` tombstones | `cluster.max-tombstones` | `10000` |
 | Pub-sub subscribers per topic | `cluster.pub-sub.max-subscribers-per-topic` | `10000` |
 | Pub-sub topics | `cluster.pub-sub.max-topics` | `10000` |
 | Pub-sub remote claimants per topic | `cluster.pub-sub.max-remote-nodes-per-topic` | `1000` |
@@ -299,13 +310,52 @@ the wire — the frame is well-formed, and dropping the connection
 over it would let one noisy peer cost a healthy link. A *local*
 `Subscribe` over a cap is answered with `SubscribeRejected`
 instead, because the caller is in a position to do something
-about it. Both registries also watch their subscribers, so the
-other half of the old growth — refs that stopped without ever
-unsubscribing — is reclaimed rather than capped.
+about it. Both pub-sub registries also watch their subscribers,
+so the other half of the old growth — refs that stopped without
+ever unsubscribing — is reclaimed rather than capped.
 
 Lower the defaults for a deployment where the legitimate numbers
 are far below them: a cap is only a bound on the damage, and one
 set far above real usage bounds very little.
+
+### Why membership needs two caps, and why the second is the real one
+
+Splitting members from tombstones is not tidiness. A phantom
+member in `up` / `joining` / `unreachable` is a member the
+failure detector is watching, so it is downed and dropped
+`failure-detector.down-after` after the attacker stops feeding it
+— five seconds, at the default. A record gossiped as **`removed`**
+is watched by nothing: only `cluster.tombstone.time-to-live`
+reclaims it, a day later. So the flood that persists is the
+tombstone flood, and `max-tombstones` is the cap doing the work.
+Refusing one costs nothing either, because a tombstone for an
+address this node holds no record of suppresses nothing that
+exists — while a refused *live* record costs a legitimate member
+one gossip round, and comes with a `WARN` naming the cap.
+
+Tombstones this node mints itself — a peer's `leave`, a downing
+decision, an operator `down()` — convert a record it already
+holds and are never subject to the cap. Capping its own
+bookkeeping would drop the suppression that stops stale gossip
+resurrecting an evicted address, which is a liveness bug wearing
+a security fix's clothes.
+
+The ceiling worth knowing is not the heap. Gossip carries the
+whole member list, so at roughly 110 000 entries a node's own
+frame outgrows `remote.max-frame-bytes` and every peer terminates
+the connection on the length prefix — the node evicts itself from
+the cluster while still running, long before anything runs out of
+memory.
+
+:::note[The order these landed in matters]
+Today the failure detector's `down → delete` cascade is what
+bounds phantom *live* members to seconds. A downing strategy
+that gates that deletion behind a configured `DowningProvider`
+would remove the implicit bound and make the 24-hour arithmetic
+apply to every status, not just to tombstones — so these caps are
+a precondition for that change rather than an independent
+hardening step.
+:::
 
 ## Who may say what
 

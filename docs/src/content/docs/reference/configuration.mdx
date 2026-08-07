@@ -38,6 +38,14 @@ actor-ts {
   cluster {
     gossip-interval     = 1s
     seed-retry-interval = 3s
+    weakly-up-after     = 0s      # 0 = opt-in only
+    max-members         = 1000
+    max-tombstones      = 10000
+    tombstone {
+      time-to-live   = 24h
+      prune-interval = 5m
+      min-retention  = 0s         # 0 = derive from down-after
+    }
     failure-detector {
       heartbeat-interval = 500ms
       unreachable-after  = 2s
@@ -112,6 +120,12 @@ Place this at the project root.  The framework auto-loads it on
 | --- | --- | --- |
 | `cluster.gossip-interval` | `1s` | How often gossip is exchanged with a random peer. |
 | `cluster.seed-retry-interval` | `3s` | How often to retry seed connections during join. |
+| `cluster.weakly-up-after` | `0s` | Auto-promote a `joining` member to `weakly-up` after this long.  `0` disables it — see [Weakly-up](/cluster/weakly-up/). |
+| `cluster.max-members` | `1000` | Cap on live member entries gossip may introduce.  `0` disables the cap. |
+| `cluster.max-tombstones` | `10000` | Cap on `removed` tombstones gossip may introduce.  `0` disables the cap. |
+| `cluster.tombstone.time-to-live` | `24h` | How long a `removed` tombstone is kept before it is pruned. |
+| `cluster.tombstone.prune-interval` | `5m` | How often the prune pass runs. |
+| `cluster.tombstone.min-retention` | `0s` | Floor on tombstone age before pruning is allowed.  `0` derives it from `failure-detector.down-after` (6×). |
 | `cluster.failure-detector.heartbeat-interval` | `500ms` | How often heartbeats are sent. |
 | `cluster.failure-detector.unreachable-after` | `2s` | Suspicion threshold for `unreachable` status. |
 | `cluster.failure-detector.down-after` | `5s` | Suspicion threshold for forced down.  Measured from the last heartbeat, so it must exceed `unreachable-after`. |
@@ -120,6 +134,21 @@ These are layered under whatever `Cluster.join(system, options)` passes, so
 an explicit `withGossipIntervalMs(…)` still wins.  The failure detector
 merges *per threshold*: setting only `down-after` in code keeps the other
 two from the file.
+
+The HOCON tree and the `ClusterOptions` fields are deliberately not
+isomorphic: the three tombstone knobs are grouped under `tombstone` because
+that is how you tune them, while the fields stay flat
+(`withTombstoneTtlMs(…)`, …).  `remote.tcp.host` → `host` already makes the
+same translation.
+
+`min-retention = 0s` means *derive the floor from the failure detector*,
+not *no floor* — the same thing leaving the field unset means, so a file
+that spells the default out behaves like one that omits it.
+
+The two `max-*` caps bound the local member map.  `remote.max-frame-bytes`
+bounds one gossip frame; these bound what a sequence of well-formed frames
+can accumulate, which is a different quantity — see
+[Cluster security](/operations/security/cluster-security/).
 
 `seeds`, `roles`, the transport and the downing provider have no HOCON
 form — the first two are per-deployment identity that belongs at the join
