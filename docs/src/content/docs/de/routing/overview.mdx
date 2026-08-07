@@ -65,18 +65,28 @@ pool.tell({ payload: 'e' });   // → worker-1 (Round-Robin wraps)
 Die `pool`-Ref sieht für Aufrufer wie ein einzelner Actor aus; unter
 der Haube zykelt der Routing-Actor durch vier `Worker`-Kinder.
 
-## Die vier Strategien
+## Die fünf Strategien
 
 | Strategie | Was sie tut | Am besten für |
 | --- | --- | --- |
 | **`round-robin`** | Ein Routee pro Nachricht, zyklisch.  Gleichmäßige Verteilung nach Nachrichten-Count. | Homogene Workloads. |
 | **`random`** | Ein Routee pro Nachricht, gleichverteilt zufällig. | Wie Round-Robin, aber zustandslos. |
 | **`broadcast`** | Jeder Routee bekommt jede Nachricht. | Notifications, Cache-Invalidierungen. |
+| **`smallest-mailbox`** *(nur lokal)* | Ein Routee pro Nachricht, der mit der kürzesten Queue. | Ungleiche Kosten pro Nachricht. |
 | **`consistent-hashing`** *(nur Cluster)* | Ein Routee pro Nachricht, Key-gepinnt. | Per-Key-Zustand (Sharding-Light). |
 
-Eine fünfte "Smallest-Mailbox"-Strategie (an den Routee mit der
-kürzesten Queue routen) ist im lokalen Router **nicht**
-implementiert; es ist ein Roadmap-Item für den Cluster-Router.
+`smallest-mailbox` ist die Strategie, die nach **Rückstau** statt nach
+Nachrichten-Count balanciert.  Round-Robin vergibt Züge blind — ein
+Routee, der eine teure Nachricht gezogen hat, bekommt seinen nächsten
+1-aus-N trotzdem pünktlich und fällt zurück; Smallest-Mailbox liest
+die Queue-Tiefe jedes Routees und wählt den flachsten, ein
+beschäftigter Routee wird also so lange nicht mehr gewählt, bis er
+aufgeholt hat.  Bezahlt wird das mit einer Tiefenabfrage pro Routee
+pro Nachricht — deshalb bleibt Round-Robin der Default.
+
+Sie ist **nur lokal**: Ein Cluster-Router kann nicht sehen, wie tief
+die Mailbox eines entfernten Routees ist, `ClusterRouter` hat also
+kein Äquivalent.
 
 Siehe [Strategien](/de/routing/strategies/) für den Deep Dive plus
 den `Broadcast`-Nachrichten-Wrapper, der die Strategie pro Nachricht
@@ -156,7 +166,7 @@ Werkzeug; wenn nicht, greife zu etwas anderem.
 
 - **[Router](/de/routing/router/)** — die
   `Router.roundRobin(...)`, `.random(...)`, `.broadcast(...)`,
-  `.custom(...)`-Factories.
+  `.smallestMailbox(...)`, `.custom(...)`-Factories.
 - **[Strategien](/de/routing/strategies/)** — was jede
   Strategie tut, plus eigene schreiben.
 - **[Pool vs Group](/de/routing/pool-vs-group/)** — wann

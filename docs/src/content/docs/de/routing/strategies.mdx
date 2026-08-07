@@ -1,6 +1,6 @@
 ---
 title: Routing-Strategien
-description: Round-Robin, Random, Broadcast, Custom — was der lokale Router mitbringt. Plus Consistent-Hashing für Cluster-Router. Wie jede Routees wählt, wann jede passt und wie du deine eigene schreibst.
+description: Round-Robin, Random, Broadcast, Smallest-Mailbox, Custom — was der lokale Router mitbringt. Plus Consistent-Hashing für Cluster-Router. Wie jede Routees wählt, wann jede passt und wie du deine eigene schreibst.
 ---
 
 Eine **Routing-Strategie** ist eine Funktion: gegeben die
@@ -15,7 +15,7 @@ type RoutingStrategy = (
 ```
 
 Gib eine Ref für Single-Target-Routing zurück, mehrere für Fan-Out
-oder nichts zum Verwerfen.  Der lokale Router liefert drei
+oder nichts zum Verwerfen.  Der lokale Router liefert vier
 Implementierungen aus, plus einen `custom`-Slot; der Cluster-Router
 fügt Consistent-Hashing hinzu.
 
@@ -132,6 +132,76 @@ andere, halte den Router non-Broadcast und wickele gelegentliche
 Nachrichten in `Broadcast<T>` — siehe
 [Router](/de/routing/router/).
 
+## Smallest-Mailbox
+
+```ts
+Router.smallestMailbox(4, routee);
+```
+
+```ts
+function smallestMailboxStrategy(): RoutingStrategy {
+  return (routees, state) => {
+    if (routees.length === 0) return [];
+    // Start the scan on a different routee each message, so an
+    // all-equal pool rotates instead of pinning routee 1.
+    const start = state.messageIndex % routees.length;
+    let shallowest: ActorRef | null = null;
+    let shallowestDepth = 0;
+    for (let offset = 0; offset < routees.length; offset++) {
+      const routee = routees[(start + offset) % routees.length];
+      const depth = mailboxDepthOf(routee);
+      if (depth === null) continue;
+      if (shallowest === null || depth < shallowestDepth) {
+        shallowest = routee;
+        shallowestDepth = depth;
+      }
+    }
+    return [shallowest ?? routees[start]];
+  };
+}
+```
+
+Liest, wie viele Nachrichten bei jedem Routee anstehen, und wählt den
+flachsten.  Das ist die einzige eingebaute Strategie, die darauf
+reagiert, was die Routees gerade tatsächlich tun.
+
+**Kann:**
+
+- **Nach Rückstau balancieren statt nach Zügen.**  Round-Robin gibt
+  einem Routee seinen nächsten 1-aus-N, egal ob er noch am letzten
+  arbeitet.  Smallest-Mailbox wählt einen zurückgefallenen Routee
+  nicht mehr und nimmt ihn wieder auf, sobald er aufgeholt hat — genau
+  das Workload-aware-Load-Balancing, das Round-Robin nicht kann.
+- **Sich nach einem Stall selbst korrigieren.**  Ein Routee, der an
+  einem langsamen Downstream-Call hängt, leert seine Queue nicht,
+  seine Tiefe bleibt also hoch und er bekommt einfach keinen Traffic
+  mehr.  Kein Timer, kein Health-Check.
+- **Gleichstände rotieren.**  Durchweg gleiche Tiefen — ein
+  leerlaufender Pool oder ein gesättigter — fallen auf die
+  Round-Robin-Reihenfolge zurück, statt auf den ersten Routee
+  einzuprügeln.
+
+**Kann nicht:**
+
+- **Gratis sein.**  Eine Tiefenabfrage pro Routee pro Nachricht: ein
+  Modulo bei Round-Robin gegen einen `O(N)`-Scan hier.  Bei homogenen
+  Workloads ist das reiner Overhead.
+- **Kosten kennen, nur Anzahl.**  Zehn triviale Nachrichten sehen
+  tiefer aus als eine riesige.  Queue-Länge ist ein Näherungswert für
+  Last, keine Messung.
+- **Backpressure ausüben.**  Wenn jede begrenzte Mailbox an ihrer
+  Kapazität steht, sind die Tiefen gleich und die Nachricht wird
+  trotzdem geroutet; was mit einer Nachricht passiert, die nicht mehr
+  passt, entscheidet die Overflow-Policy der Mailbox (`drop-head` /
+  `drop-new` / `reject`).  Eine Strategie, die das Routen verweigert,
+  würde Backpressure erfinden, die der Aufrufer nie konfiguriert hat.
+- **Über Knoten hinweg arbeiten.**  Die Mailbox-Tiefe ist
+  In-Process-Zustand, das ist also eine reine Strategie des lokalen
+  Routers.
+
+Richtige Wahl, wenn die **Kosten pro Nachricht stark schwanken** —
+gemischte Job-Größen, Routees, die etwas Langsames aufrufen.
+
 ## Consistent-Hashing *(nur Cluster)*
 
 ```ts
@@ -192,39 +262,36 @@ system.spawnAnonymous(Router.custom(4, Worker, warmupStrategy));
 Alles, was `RoutingStrategy` erfüllt, funktioniert.  Der
 Zustands-Slot bekommt den monotonen Message-Index — das ist der
 einzige Zustand, den der lokale Router hält.  Für Strategien, die
-*mehr* Zustand brauchen (einen Hash-Ring, einen Per-Routee-Load-Gauge),
-closeover eigenen Zustand in der Funktion:
+*mehr* Zustand brauchen (einen Hash-Ring, eine Per-Routee-Gewichtstabelle,
+eine Latenzschätzung über ein gleitendes Fenster), closeover eigenen
+Zustand in der Funktion:
 
 ```ts
-function smallestMailboxStrategy(): RoutingStrategy {
-  return (routees) => {
-    // Stub — das Framework exponiert die Mailbox-Größe pro Routee in v1 nicht.
-    // Eine echte Implementierung bräuchte einen Side-Channel, um jeden Routee zu fragen.
-    return [routees[0]];
+// Weighted round-robin: routee 1 has twice the capacity of the rest.
+function weightedStrategy(weights: readonly number[]): RoutingStrategy {
+  const slots: number[] = [];
+  weights.forEach((weight, index) => {
+    for (let i = 0; i < weight; i++) slots.push(index);
+  });
+  return (routees, state) => {
+    if (routees.length === 0) return [];
+    return [routees[slots[state.messageIndex % slots.length] % routees.length]];
   };
 }
 ```
 
-Das Framework exponiert die Mailbox-Größe nicht von außen, eine
-echte "Smallest-Mailbox"-Strategie braucht also Side-Channel-Mechaniken
-(jeden Routee nach seiner aktuellen Tiefe fragen).  Das ist ein
-Roadmap-Item; bis es geshippt wird, sind eigene Strategien auf
-Informationen begrenzt, die im Router-Actor selbst verfügbar sind.
+Eine eigene Strategie sieht die Routee-Refs und den Message-Index —
+mehr nicht.  Alles Weitere muss sie selbst mitbringen.  Beachte, was
+sie *nicht* erreichen kann: Die Mailbox-Tiefe ist runtime-interner
+Zustand und liegt bewusst nicht auf `ActorRef` — eine eigene
+last-bewusste Strategie bräuchte also jeden Routee, der seine Last an
+einen gemeinsamen Gauge zurückmeldet.  Wenn es dir um die kürzeste
+Queue geht, nimm das eingebaute `Router.smallestMailbox`: Es liest die
+Tiefe von innerhalb des Frameworks, wo dieser Zustand legitim lebt.
 
 ## Was nicht implementiert ist
 
 import { Aside } from '@astrojs/starlight/components';
-
-<Aside type="caution" title="Kein Smallest-Mailbox in v1">
-  Eine häufige Strategie in anderen Actor-Toolkits ist "Smallest
-  Mailbox" — wähle den Routee mit der kürzesten Queue.  actor-ts
-  exponiert keine Mailbox-Tiefe über Actor-Grenzen hinweg (es ist
-  Per-Actor-Zustand), diese Strategie ist also nicht implementiert.
-  Für Workload-aware-Load-Balancing ist das praktische Pattern
-  **Backpressure an der Grenze** — begrenze die Mailbox jedes
-  Routees mit `reject`-Overflow, lass den Aufrufer (oder eine
-  router-seitige eigene Strategie) auf Ablehnungen reagieren.
-</Aside>
 
 <Aside type="caution" title="Kein Scatter-Gather">
   Manche Actor-Frameworks haben "Scatter-Gather"-Router, die
