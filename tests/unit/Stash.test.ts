@@ -10,7 +10,6 @@ import { LogLevel, NoopLogger } from '../../src/Logger.js';
 import { DeadLetter } from '../../src/SystemMessages.js';
 import { awaitCondition } from '../util/AwaitCondition.js';
 
-const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
 const newSystem = (name = 'stash-unit'): ActorSystem => {
   const sysOptions = ActorSystemOptions.create()
     .withLogger(new NoopLogger())
@@ -42,7 +41,10 @@ describe('Stash', () => {
     const ref = sys.spawn(S, 'a');
     ref.tell('a'); ref.tell('b'); ref.tell('c');
     ref.tell('ready');
-    await sleep(50);
+    await awaitCondition(() => seen.length === 3, {
+      timeoutMs: 4_000,
+      label: 'all three stashed messages were replayed',
+    });
     expect(seen).toEqual(['a', 'b', 'c']);
     await sys.terminate();
   });
@@ -69,7 +71,10 @@ describe('Stash', () => {
     ref.tell('stashed-2');
     ref.tell('ready');
     ref.tell('fresh-1');
-    await sleep(50);
+    await awaitCondition(() => seen.length === 3, {
+      timeoutMs: 4_000,
+      label: 'both stashed messages and the fresh one were handled',
+    });
     expect(seen).toEqual(['stashed-1', 'stashed-2', 'fresh-1']);
     await sys.terminate();
   });
@@ -88,7 +93,10 @@ describe('Stash', () => {
     const sys = newSystem();
     const ref = sys.spawn(S, 'a');
     ref.tell('x'); ref.tell('y'); ref.tell('count');
-    await sleep(40);
+    await awaitCondition(() => sizes.length === 3, {
+      timeoutMs: 4_000,
+      label: 'all three messages reported a stash size',
+    });
     expect(sizes).toEqual([1, 2, 2]);
     await sys.terminate();
   });
@@ -106,7 +114,10 @@ describe('Stash', () => {
 
     const sys = newSystem();
     sys.spawn(S, 'a');
-    await sleep(30);
+    await awaitCondition(() => err !== null, {
+      timeoutMs: 4_000,
+      label: 'preStart caught the rejected stash()',
+    });
     expect(err).toBeInstanceOf(StashOutsideHandlerError);
     await sys.terminate();
   });
@@ -125,7 +136,10 @@ describe('Stash', () => {
     const ref = sys.spawn(S, 'a');
     ref.tell('flush');
     ref.tell('hi');
-    await sleep(40);
+    await awaitCondition(() => seen.length === 1, {
+      timeoutMs: 4_000,
+      label: 'the message after the empty unstashAll was handled',
+    });
     expect(seen).toEqual(['hi']);
     await sys.terminate();
   });

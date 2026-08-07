@@ -6,6 +6,7 @@ import type { ActorFactory } from '../../src/Actor.js';
 import { ActorSystemOptions } from '../../src/ActorSystemOptions.js';
 import { JsonLogger, LogLevel, NoopLogger } from '../../src/Logger.js';
 import { Behaviors, same } from '../../src/typed/Behaviors.js';
+import { awaitCondition } from '../util/AwaitCondition.js';
 
 const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
 
@@ -26,7 +27,10 @@ describe('Actor lifecycle', () => {
     const sys = newSystem();
     const ref = sys.spawn(A, 'a');
     ref.tell('one');
-    await sleep(30);
+    await awaitCondition(() => events.includes('recv:one'), {
+      timeoutMs: 4_000,
+      label: 'the actor handled its first message',
+    });
     expect(events).toEqual(['preStart', 'recv:one']);
     await sys.terminate();
   });
@@ -42,7 +46,12 @@ describe('Actor lifecycle', () => {
     ref.tell('one');
     ref.tell('two');
     ref.stop();
-    await sleep(30);
+    // `postStop` is the last thing to happen, so waiting on it also covers
+    // both message handlers — a strictly stronger condition than a length check.
+    await awaitCondition(() => events.includes('postStop'), {
+      timeoutMs: 4_000,
+      label: 'postStop ran after the mailbox drained',
+    });
     expect(events).toEqual(['recv:one', 'recv:two', 'postStop']);
     await sys.terminate();
   });
@@ -61,7 +70,12 @@ describe('Actor lifecycle', () => {
     const sys = newSystem();
     const ref = sys.spawn(Parent, 'p');
     ref.tell('fail');
-    await sleep(60);
+    // The restarted instance's `preStart` is the last step of the sequence, so
+    // waiting for the second one subsumes preRestart and postStop.
+    await awaitCondition(() => events.filter(e => e === 'parent:preStart').length >= 2, {
+      timeoutMs: 4_000,
+      label: 'the supervisor restarted the actor',
+    });
     expect(events).toContain('parent:preRestart:boom');
     expect(events).toContain('parent:postStop');
     // A new instance must have started after the restart.
@@ -85,9 +99,13 @@ describe('Actor lifecycle', () => {
     const ref = sys.spawn(A, 'a');
     await sleep(20);
     ref.tell('fail');
-    await sleep(60);
     // First instance starts, then fails, then a new instance (id=2) enters postRestart
-    // and the default implementation calls preStart again.
+    // and the default implementation calls preStart again.  `start:` arriving twice
+    // is that final step, so it is the condition to wait on.
+    await awaitCondition(() => events.filter(e => e.startsWith('start:')).length >= 2, {
+      timeoutMs: 4_000,
+      label: 'the replacement instance ran preStart',
+    });
     const startCalls = events.filter(e => e.startsWith('start:'));
     expect(startCalls.length).toBeGreaterThanOrEqual(2);
     expect(events.find(e => e.startsWith('postRestart:'))).toBeDefined();
@@ -114,7 +132,11 @@ describe('Actor lifecycle', () => {
     const sys = newSystem();
     const ref = sys.spawn(A, 'a');
     ref.tell('hi');
-    await sleep(30);
+    // `capturedLog` is the last of the three assignments in the handler.
+    await awaitCondition(() => capturedLog !== undefined, {
+      timeoutMs: 4_000,
+      label: 'the handler captured its bound accessors',
+    });
     expect(capturedSelf).toBeDefined();
     expect(capturedSystem).toBe(sys);
     expect(capturedLog).toBeDefined();
@@ -133,7 +155,13 @@ describe('Actor lifecycle', () => {
     const sys = newSystem();
     const ref = sys.spawn(A, 'a');
     ref.tell(1); ref.tell(2); ref.tell(3);
-    await sleep(100);
+    // Three messages × 10 ms of awaited work each: the 100 ms this used to wait
+    // left ~70 ms of slack, which a loaded runner eats.  The interleaving is what
+    // the assertion checks; the wait only has to reach the last handler's end.
+    await awaitCondition(() => events.length === 6, {
+      timeoutMs: 4_000,
+      label: 'all three async handlers ran to completion',
+    });
     expect(events).toEqual(['start:1', 'end:1', 'start:2', 'end:2', 'start:3', 'end:3']);
     await sys.terminate();
   });
@@ -183,7 +211,12 @@ describe('anonymous child names', () => {
     });
     names.push(viaTypedContext);
 
-    await sleep(40);
+    // Four of the five are pushed synchronously; the two from `Parent.preStart`
+    // land whenever that actor starts.
+    await awaitCondition(() => names.length === 5, {
+      timeoutMs: 4_000,
+      label: 'all five anonymous spawns reported a name',
+    });
     expect(names).toHaveLength(5);
     for (const name of names) expect(name).toMatch(ANONYMOUS);
     await sys.terminate();
@@ -199,7 +232,10 @@ describe('anonymous child names', () => {
       override onReceive(_: string): void {}
     }
     sys.spawn(Parent, 'volume-parent');
-    await sleep(60);
+    await awaitCondition(() => names.length === 200, {
+      timeoutMs: 4_000,
+      label: 'the parent spawned all 200 anonymous children',
+    });
 
     expect(names).toHaveLength(200);
     expect(new Set(names).size).toBe(200);
@@ -230,7 +266,12 @@ describe('anonymous child names', () => {
     }
     sys.spawn(() => new Parent('left'), 'left');
     sys.spawn(() => new Parent('right'), 'right');
-    await sleep(60);
+    // `byParent.set` is the last statement of each `preStart`, so two entries
+    // means both name lists are complete.
+    await awaitCondition(() => byParent.size === 2, {
+      timeoutMs: 4_000,
+      label: 'both parents finished spawning their children',
+    });
 
     const left = byParent.get('left')!;
     const right = byParent.get('right')!;
@@ -257,7 +298,10 @@ describe('anonymous child names', () => {
     const sys = newSystem();
     const ref = sys.spawn(Parent, 'restarting-parent');
     ref.tell('boom');
-    await sleep(80);
+    await awaitCondition(() => names.length === 2, {
+      timeoutMs: 4_000,
+      label: 'the restarted parent spawned a second anonymous child',
+    });
 
     expect(names).toHaveLength(2);
     expect(new Set(names).size).toBe(2);
@@ -299,7 +343,10 @@ describe('the reserved `$` name prefix', () => {
       override onReceive(_: string): void {}
     }
     sys.spawn(Parent, 'reserved-parent');
-    await sleep(40);
+    await awaitCondition(() => contextErrors.length === 2, {
+      timeoutMs: 4_000,
+      label: 'both context spawn forms rejected the `$` name',
+    });
 
     expect(contextErrors).toHaveLength(2);
     for (const message of contextErrors) expect(message).toMatch(RESERVED);
@@ -374,7 +421,10 @@ describe('Actor.displayName (#891)', () => {
     const { system, records } = recordingSystem('display-default');
     const ref = system.spawn(Talker, 'plain');
     ref.tell('hello');
-    await sleep(30);
+    await awaitCondition(() => said(records(), 'hello') !== undefined, {
+      timeoutMs: 4_000,
+      label: 'the actor logged `hello`',
+    });
 
     const record = said(records(), 'hello')!;
     expect(record.source).toBe(ref.path.toString());
@@ -389,7 +439,10 @@ describe('Actor.displayName (#891)', () => {
     const { system, records } = recordingSystem('display-override');
     const ref = system.spawn(Named, 'named');
     ref.tell('hello');
-    await sleep(30);
+    await awaitCondition(() => said(records(), 'hello') !== undefined, {
+      timeoutMs: 4_000,
+      label: 'the actor logged `hello`',
+    });
 
     const record = said(records(), 'hello')!;
     expect(record.displayName).toBe('Order(42)');
@@ -411,7 +464,10 @@ describe('Actor.displayName (#891)', () => {
     }
     const { system, records } = recordingSystem('display-late');
     system.spawn(Late, 'late').tell('hello');
-    await sleep(30);
+    await awaitCondition(() => said(records(), 'hello') !== undefined, {
+      timeoutMs: 4_000,
+      label: 'the actor logged `hello` after preStart',
+    });
 
     // Named already in preStart — the same call that set the state.
     expect(said(records(), 'starting')!.displayName).toBe('User(user-7)');
@@ -425,7 +481,10 @@ describe('Actor.displayName (#891)', () => {
     }
     const { system, records } = recordingSystem('display-redundant');
     system.spawn(Redundant, 'redundant').tell('hello');
-    await sleep(30);
+    await awaitCondition(() => said(records(), 'hello') !== undefined, {
+      timeoutMs: 4_000,
+      label: 'the actor logged `hello`',
+    });
 
     expect(Object.hasOwn(said(records(), 'hello')!, 'displayName')).toBe(false);
     await system.terminate();
@@ -438,7 +497,10 @@ describe('Actor.displayName (#891)', () => {
     const { system, records } = recordingSystem('display-options-win');
     const namedOptions = ActorOptions.create().withDisplayName('from-options');
     system.spawn(Named, 'both', namedOptions).tell('hello');
-    await sleep(30);
+    await awaitCondition(() => said(records(), 'hello') !== undefined, {
+      timeoutMs: 4_000,
+      label: 'the actor logged `hello`',
+    });
 
     expect(said(records(), 'hello')!.displayName).toBe('from-options');
     await system.terminate();
@@ -456,7 +518,11 @@ describe('Actor.displayName (#891)', () => {
     const { system, records } = recordingSystem('display-runtime-wins');
     const renamerOptions = ActorOptions.create().withDisplayName('from-options');
     system.spawn(Renamer, 'renamer', renamerOptions).tell('x');
-    await sleep(30);
+    // `after:x` is written last, so waiting on it also guarantees `before:x`.
+    await awaitCondition(() => said(records(), 'after:x') !== undefined, {
+      timeoutMs: 4_000,
+      label: 'the handler logged both sides of setDisplayName',
+    });
 
     expect(said(records(), 'before:x')!.displayName).toBe('from-options');
     expect(said(records(), 'after:x')!.displayName).toBe('from-runtime');
@@ -470,7 +536,12 @@ describe('Actor.displayName (#891)', () => {
     const { system, records } = recordingSystem('display-throws');
     const ref = system.spawn(Broken, 'broken');
     ref.tell('one'); ref.tell('two'); ref.tell('three');
-    await sleep(50);
+    // The third record is the one the "warns exactly once" assertion counts
+    // against; reaching it means all three passed through the resolver.
+    await awaitCondition(() => said(records(), 'three') !== undefined, {
+      timeoutMs: 4_000,
+      label: 'all three messages were logged',
+    });
 
     const all = records();
     expect(Object.hasOwn(said(all, 'three')!, 'displayName')).toBe(false);
@@ -493,9 +564,17 @@ describe('Actor.displayName (#891)', () => {
     const ref = system.spawn(() => new Generational(++instances), 'worker');
     ref.tell('before');
     ref.tell('boom');
-    await sleep(50);
+    // `after` must reach the *second* instance, so wait for the factory to have
+    // been called again rather than for a duration the restart usually fits in.
+    await awaitCondition(() => instances === 2, {
+      timeoutMs: 4_000,
+      label: 'the supervisor built a replacement instance',
+    });
     ref.tell('after');
-    await sleep(50);
+    await awaitCondition(() => said(records(), 'after') !== undefined, {
+      timeoutMs: 4_000,
+      label: 'the replacement instance logged `after`',
+    });
 
     expect(said(records(), 'before')!.displayName).toBe('worker-1');
     expect(said(records(), 'after')!.displayName).toBe('worker-2');
@@ -507,7 +586,10 @@ describe('Actor.displayName (#891)', () => {
     // survive being called anyway.
     const { system, records } = recordingSystem('display-no-instance');
     const ref = system.spawn<string>(() => { throw new Error('nope'); }, 'stillborn');
-    await sleep(50);
+    await awaitCondition(() => said(records(), 'Actor initialization failed') !== undefined, {
+      timeoutMs: 4_000,
+      label: 'the failed initialization was logged',
+    });
 
     const failure = said(records(), 'Actor initialization failed')!;
     expect(failure.source).toBe(ref.path.toString());
