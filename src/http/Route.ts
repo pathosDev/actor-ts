@@ -235,8 +235,99 @@ export function completeText(status: number, body: string, headers?: Record<stri
   return { status, body, headers, contentType: 'text/plain; charset=utf-8' };
 }
 
-/** Redirect — helper around `Status.Found`. */
+/**
+ * Characters that must never reach a `location` header.  Two distinct
+ * reasons, both measured on Bun and Node:
+ *
+ *   - CR / LF / NUL are already refused by both runtimes at header-write
+ *     time, so checking here only trades an opaque 500 (`TypeError` /
+ *     `ERR_INVALID_CHAR`) for a 400 that names the reason.
+ *   - TAB is **accepted** by both — and browsers strip TAB, CR and LF from
+ *     a URL before parsing it.  So a target that hides a TAB inside
+ *     `javascript:` survives the wire intact and arrives at the browser as
+ *     a working scheme.  That is why this runs before the scheme check,
+ *     which searches the raw string and would never see it.
+ *
+ * VT and DEL land in between (Node refuses them, `fetch` Headers accept
+ * them), so the class spans all of C0 plus DEL instead of enumerating a
+ * split that is a runtime detail.
+ */
+const CONTROL_CHARACTERS = /[\x00-\x1f\x7f]/;
+
+/** A scheme per RFC 3986 §3.1 — its presence means the target is absolute. */
+const SCHEME_PREFIX = /^[A-Za-z][A-Za-z0-9+.-]*:/;
+
+/** Guard shared by both redirect helpers — an origin-agnostic wire check. */
+function assertHeaderSafeTarget(url: string): void {
+  if (CONTROL_CHARACTERS.test(url)) {
+    throw new HttpError(Status.BadRequest, 'redirect target contains control characters');
+  }
+}
+
+/**
+ * Reject a redirect target that would take the browser off this origin.
+ *
+ * Classification mirrors what a browser does *before* parsing: leading
+ * whitespace is ignored and backslashes read as slashes, so `/\evil.example`
+ * and `\\evil.example` are protocol-relative exactly like `//evil.example`.
+ * The normalised form is only used to decide — the caller's original string
+ * is what gets emitted.
+ *
+ * The messages deliberately do not echo the offending target: reflecting
+ * attacker-supplied input back into a response is the family of bug this
+ * check exists to prevent.
+ */
+function assertSameOriginTarget(url: string): void {
+  const candidate = url.trimStart().replaceAll('\\', '/');
+  if (candidate.startsWith('//')) {
+    throw new HttpError(
+      Status.BadRequest,
+      'redirect target is protocol-relative and leaves this origin — use redirectExternal() if that is intended',
+    );
+  }
+  if (SCHEME_PREFIX.test(candidate)) {
+    throw new HttpError(
+      Status.BadRequest,
+      'redirect target is an absolute URL and leaves this origin — use redirectExternal() if that is intended',
+    );
+  }
+}
+
+/**
+ * Redirect to a **same-origin** target — helper around `Status.Found`.
+ *
+ * Only relative references pass (`/dashboard`, `../up`, `?q=1`, `#top`);
+ * an absolute URL, a protocol-relative `//host` target, or a control
+ * character throws `HttpError(400)`.  That default is the point: the
+ * target is very often a request parameter, and the `?next=` pattern with
+ * no validation is the textbook open redirect — a phishing link bounces a
+ * freshly authenticated victim to a look-alike host (#125).  A framework
+ * cannot force handlers to validate, so the helper they already reach for
+ * validates instead.
+ *
+ * Use {@link redirectExternal} when leaving the origin is the intent.
+ */
 export function redirect(url: string, status: number = Status.Found): HttpResponse {
+  assertHeaderSafeTarget(url);
+  assertSameOriginTarget(url);
+  return { status, headers: { location: url }, body: null };
+}
+
+/**
+ * Redirect to a target that may leave this origin — the audited opt-in to
+ * {@link redirect}'s same-origin rule.
+ *
+ * Being a separate function is the whole design: `grep redirectExternal`
+ * enumerates every deliberate off-origin hop in a codebase, which a
+ * boolean tucked into a third argument never could.  Pass a constant or a
+ * value you allowlisted yourself — **never** a raw request parameter,
+ * which is precisely the open redirect {@link redirect} refuses.
+ *
+ * Control characters are still rejected: those are a header-injection
+ * vector, not a question of origin.
+ */
+export function redirectExternal(url: string, status: number = Status.Found): HttpResponse {
+  assertHeaderSafeTarget(url);
   return { status, headers: { location: url }, body: null };
 }
 

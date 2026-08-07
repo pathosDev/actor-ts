@@ -22,6 +22,7 @@ export {
   put,
   queryParam,
   redirect,
+  redirectExternal,
   reject,
   withMiddleware,
 } from './Route.js';

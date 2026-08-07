@@ -72,6 +72,18 @@ Detail serverseitig, verschlüsselt über die Request-ID. Halte `403`/`404`
 unspezifisch — die Static-File-Schicht liefert für jeden abgelehnten Pfad
 einen einheitlichen `404`, verrät also nie, was existiert.
 
+## Redirects
+
+`redirect(target)` nimmt **ausschließlich Same-Origin-Ziele** — eine
+relative Referenz. Eine absolute URL, ein protokollrelatives `//host` oder
+ein Steuerzeichen wirft `HttpError(400)`; einen `?next=`-Parameter direkt
+in einen Redirect zu reichen, scheitert damit geschlossen, statt zum
+Open-Redirect zu werden. Wenn das Verlassen des Origins Absicht ist, sag
+es: `redirectExternal(...)` ist derselbe Helper ohne Origin-Regel, und der
+eigene Name macht jeden bewussten Off-Origin-Sprung mit einem Befehl
+auffindbar. Übergib eine Konstante oder ein Ziel aus deiner Allowlist —
+nie einen rohen Request-Parameter. Siehe [Route DSL](/de/http/route-dsl/).
+
 ## Untrusted Input begrenzen
 
 - **Request-Bodies** werden vom Backend gekappt (Fastify 1 MiB Default;
@@ -102,6 +114,7 @@ Upgrade-Zeit und gated damit den Handshake.
 | Cross-Origin kontrolliert | `cors(...)` |
 | CSRF (Browser-Formulare) | `csrfProtection(...)` |
 | Keine internen Fehler-Leaks | `withErrorHandler` + generische Bodies |
+| Keine Open Redirects | `redirect(...)` — same-origin per Default |
 | Request-Korrelation | `requestId()` |
 | Begrenzte Latenz | `requestTimeout(...)` |
 | Sichere Dateiauslieferung | `getFromDirectory`-Defaults (dotfiles deny, Symlink-Confinement) |
