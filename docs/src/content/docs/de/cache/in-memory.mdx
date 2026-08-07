@@ -74,6 +74,15 @@ await cache.delete('user:1', 'user:2');             // one or many keys
 await cache.close();                                // stops the sweep + clears the Map
 ```
 
+`setIfAbsent` ist hier aus einem strukturellen Grund atomar, nicht
+aus einem protokollarischen: Lesen und Schreiben liegen im selben
+synchronen Block, und die single-threaded Event-Loop kann keinen
+anderen Aufrufer dazwischenschieben.  Das gilt **nur innerhalb
+eines Prozesses** — zwei Node-Prozesse haben je ihre eigene `Map`,
+ein `lock:job`-Key sichert zwischen ihnen also nichts ab.  Für
+prozessübergreifendes Locking nimm
+[`acquireLock`](/de/cache/overview/#locks) über `RedisCache`.
+
 `get` gibt ein `Option<V>` zurück — `None` bei einem Miss oder
 nach Ablauf.
 

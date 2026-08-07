@@ -3,6 +3,8 @@ title: Cache im Überblick
 description: Eine kleine, opportunistische Cache-Abstraktion — sieben Kernoperationen (get / set / incr / setIfAbsent / delete / mget / mset). Drei Backends sind dabei — In-Memory, Redis, Memcached. Genutzt von HTTP-Middleware und vom Cached-Snapshot-Store-Dekorator.
 ---
 
+import { Aside } from '@astrojs/starlight/components';
+
 Das `Cache`-Interface ist der **opportunistische Key/Value-Cache**
 des Frameworks.  Sieben Operationen decken ~95 % der realen Fälle ab:
 get, set, atomares Inkrement, set-if-absent, delete, Bulk-Get,
@@ -118,6 +120,69 @@ Atomarer Schreibvorgang im CAS-Stil.  Wird von der Idempotency-
 Key-Middleware genutzt, um "ich bin der erste Request mit diesem
 Key" zu erkennen.
 
+**Atomarität ist eine Garantie, kein Best Effort.**  Jedes Backend
+bildet das auf ein einzelnes natives Compare-and-Set ab — Redis
+`SET … NX`, Memcached `ADD`, und bei `InMemoryCache` ein
+`Map`-Lese/Schreib-Paar, das die single-threaded Event-Loop nicht
+verschränken kann.  Bei N nebenläufigen Aufrufern sieht genau
+einer `true`.  Kein Backend implementiert das als `get`-dann-`set`
+— dabei gäbe es ein Fenster, in dem zwei Aufrufer den Key beide
+als abwesend sehen und beide schreiben.
+
+`ttlMs` gilt **nur für den Schreibvorgang, der gewinnt** — ein
+verlierender Aufruf lässt die Ablaufzeit des vorhandenen Eintrags
+unangetastet, eine Retry-Schleife kann also niemals fremden Besitz
+verlängern.  Die Sub-Sekunden-Genauigkeit hängt vom Backend ab:
+Memcached rundet auf volle Sekunden auf, mit 1 s als Untergrenze.
+
+## Locks
+
+`setIfAbsent` liefert die *Acquire*-Hälfte eines Locks.  Bei der
+*Release*-Hälfte gehen selbstgebaute Varianten schief, deshalb
+bringt das Framework eine mit:
+
+```ts
+import { acquireLock } from 'actor-ts';
+
+const lock = await acquireLock(cache, 'lock:nightly-report', 30_000);
+if (lock.isNone()) return;              // jemand anderes ist dran
+
+try {
+  await generateReport();
+} finally {
+  const released = await lock.value.release();
+  if (!released) log.warn('report ran past its 30s lock TTL');
+}
+```
+
+`acquireLock` schreibt ein zufälliges 128-Bit-Token als Wert, und
+`release()` löscht den Key **nur, wenn dieses Token noch dort
+steht**.  Die naive Variante — `cache.delete(key)` im `finally` —
+ist in dem Moment falsch, in dem ein Halter seine TTL überzieht:
+sein Eintrag ist längst weg, jemand anderes hat einen eigenen
+geschrieben, und das bedingungslose Löschen wirft den neuen
+Besitzer raus, während der noch arbeitet.  Genau das meldet der
+`false`-Rückgabewert: das Lock war abgelaufen, der eben
+ausgeführte Abschnitt war also womöglich gar nicht exklusiv.
+
+`ttlMs` ist bewusst Pflicht.  Ablauf ist der *einzige* Weg zurück,
+wenn ein Halter abstürzt oder hängt — ein Lock ohne TTL verklemmt
+für immer, sobald ein Prozess im falschen Moment stirbt.
+
+<Aside type="caution" title="Kein Lock mit verteiltem Konsens">
+  Das Compare-and-Delete in `release()` ist ein `get` gefolgt von
+  einem `delete`, kein einzelner atomarer Schritt — die
+  `Cache`-Oberfläche hat kein Compare-and-Delete, und ein
+  Redis-Lua-Skript hätte kein Memcached-Äquivalent.  Das
+  Restfenster ist schmal (das Lock muss ablaufen *und* zwischen
+  unserem eigenen `get` und `delete` neu vergeben werden), aber es
+  ist nicht null, und die Korrektheit hängt weiterhin an einem
+  logischen Keyspace und an Uhren, die nicht driften.  Wo zwei
+  gleichzeitige Halter ein Korrektheitsfehler wären statt nur
+  doppelter Arbeit, sichere die Ressource stattdessen mit einem
+  Fencing-Token ab.
+</Aside>
+
 ## Bulk-Operationen
 
 ```ts
@@ -139,8 +204,6 @@ await cache.mset(new Map([
 ```
 
 ## Wann den Cache NICHT nutzen
-
-import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="Cache keinen nutzerseitig kritischen State">
   ```ts

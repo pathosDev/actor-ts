@@ -33,6 +33,7 @@
 
 import { afterEach, beforeEach, expect, test } from 'bun:test';
 import type { Cache } from '../../../src/cache/Cache.js';
+import { acquireLock } from '../../../src/cache/CacheLock.js';
 
 const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
 
@@ -125,5 +126,51 @@ export function runCacheContractTests(spec: CacheContractSpec): void {
     expect(await cache.incr('counter')).toBe(1);
     expect(await cache.incr('counter')).toBe(2);
     expect(await cache.incr('counter')).toBe(3);
+  });
+
+  test(`${spec.name} contract: acquireLock — exactly one of N concurrent callers holds it`, async () => {
+    const contenders = 100;
+    const attempts = await Promise.all(
+      Array.from({ length: contenders }, () => acquireLock(cache, 'lock:job', 30_000)),
+    );
+    expect(attempts.filter((attempt) => attempt.isSome())).toHaveLength(1);
+  });
+
+  test(`${spec.name} contract: acquireLock — release readmits the next caller`, async () => {
+    const first = await acquireLock(cache, 'lock:job', 30_000);
+    expect(first.isSome()).toBe(true);
+    expect((await acquireLock(cache, 'lock:job', 30_000)).isNone()).toBe(true);
+
+    if (!first.isSome()) throw new Error('unreachable — asserted above');
+    expect(await first.value.release()).toBe(true);
+    expect((await acquireLock(cache, 'lock:job', 30_000)).isSome()).toBe(true);
+  });
+
+  test(`${spec.name} contract: acquireLock — a lapsed holder cannot release the new owner`, async () => {
+    const first = await acquireLock(cache, 'lock:job', 30_000);
+    if (!first.isSome()) throw new Error('first acquire must succeed');
+
+    // Stand in for the first holder overrunning its TTL: the entry it
+    // wrote is gone while it still believes it holds the lock.
+    await cache.delete('lock:job');
+    const second = await acquireLock(cache, 'lock:job', 30_000);
+    expect(second.isSome()).toBe(true);
+
+    // The token check is what stops the stale holder from evicting the
+    // new owner mid-critical-section — and reports the overrun.
+    expect(await first.value.release()).toBe(false);
+    expect((await cache.get('lock:job')).isSome()).toBe(true);
+  });
+
+  test(`${spec.name} contract: acquireLock — release is idempotent`, async () => {
+    const lock = await acquireLock(cache, 'lock:job', 30_000);
+    if (!lock.isSome()) throw new Error('acquire must succeed');
+    expect(await lock.value.release()).toBe(true);
+    expect(await lock.value.release()).toBe(false);
+  });
+
+  test(`${spec.name} contract: acquireLock rejects a non-positive TTL`, async () => {
+    await expect(acquireLock(cache, 'lock:job', 0)).rejects.toThrow();
+    await expect(acquireLock(cache, 'lock:job', -5)).rejects.toThrow();
   });
 }

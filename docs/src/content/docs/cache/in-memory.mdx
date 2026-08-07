@@ -72,6 +72,14 @@ await cache.delete('user:1', 'user:2');             // one or many keys
 await cache.close();                                // stops the sweep + clears the Map
 ```
 
+`setIfAbsent` is atomic here for a structural reason rather than a
+protocol one: its read and write sit in the same synchronous block,
+and the single-threaded event loop cannot interleave another caller
+between them.  That holds **within one process only** — two Node
+processes each have their own `Map`, so a `lock:job` key guards
+nothing across them.  For cross-process locking, use
+[`acquireLock`](/cache/overview/#locks) over `RedisCache`.
+
 `get` returns an `Option<V>` — `None` on a miss or after expiry.
 
 ## TTL handling
