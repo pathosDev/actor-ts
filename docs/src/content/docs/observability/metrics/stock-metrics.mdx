@@ -58,6 +58,34 @@ For monitoring cluster health:
 - `cluster_gossip_rounds_total` rate confirms gossip is flowing — a
   flat line means this node has stopped gossiping.
 
+## DistributedData metrics
+
+The CRDT replicator's quorum path — `updateAsync` / `getAsync` — and
+its wire decoder.  Every label set here is fixed and tiny, so the four
+families contribute six series in total:
+
+| Metric | Type | Labels | Meaning |
+| --- | --- | --- | --- |
+| `distributed_data_quorum_pending` | gauge | — | Quorum reads and writes currently awaiting peer replies on this replica. |
+| `distributed_data_quorum_timeouts_total` | counter | `operation` | Quorum requests that hit their deadline before enough replicas replied. |
+| `distributed_data_quorum_rejected_total` | counter | `operation` | Quorum requests refused because `max-pending-quorum-requests` was reached. |
+| `distributed_data_dropped_values_total` | counter | — | Peer-supplied CRDT values this replica refused to decode. |
+
+`operation` is `write` or `read` — those two values and no others.
+
+- `distributed_data_quorum_pending` riding near your configured
+  `max-pending-quorum-requests` means the next caller is about to be
+  refused; either peers have stopped acking or the cap is too low for
+  the workload.
+- `distributed_data_quorum_rejected_total` and
+  `..._timeouts_total` separate the two failure shapes: refused means the
+  request never started, timed out means it started and nobody answered
+  in time.  See
+  [Quorum reads and writes](/distributed-data/quorum-reads-writes/).
+- `distributed_data_dropped_values_total` is not a tuning signal at all
+  — a peer is sending payloads this replica cannot decode, which means a
+  broken or hostile node.
+
 ## Overhead
 
 There is **no opt-out flag** — stock metrics are always wired into

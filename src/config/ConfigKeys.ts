@@ -163,6 +163,27 @@ export const ConfigKeys = {
   },
 
   /**
+   * DistributedData tuning — `actor-ts.distributed-data.*`.  Read once per
+   * `DistributedData.start`, which layers them under the explicit options
+   * (#140, #856).
+   *
+   * Top-level rather than under `cluster.*` (where `pub-sub` and
+   * `receptionist` sit) because the module is: `DistributedData` ships from
+   * `src/crdt/`, and its options type carries no `cluster` field — the
+   * cluster is a positional argument to `start`, not a tunable.
+   *
+   * The two caps bound what one replica can be made to hold *and* how long
+   * it holds it.  The mailbox already bounds the queue; these bound the
+   * unsettled promises behind it, which the mailbox's `drop-head` policy
+   * would otherwise strand rather than reject.
+   */
+  distributedData: {
+    gossipInterval: 'actor-ts.distributed-data.gossip-interval',
+    maxPendingQuorumRequests: 'actor-ts.distributed-data.max-pending-quorum-requests',
+    maxQuorumTimeout: 'actor-ts.distributed-data.max-quorum-timeout',
+  },
+
+  /**
    * Cluster bind address and wire limits — `actor-ts.remote.*`.
    *
    * `remote.tls.enabled` is deliberately absent: it is still dead, tracked

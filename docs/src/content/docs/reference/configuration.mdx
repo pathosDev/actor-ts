@@ -65,6 +65,12 @@ actor-ts {
     }
   }
 
+  distributed-data {
+    gossip-interval             = 1s
+    max-pending-quorum-requests = 1000    # 0 = no cap
+    max-quorum-timeout          = 30s     # 0 = no ceiling
+  }
+
   remote {
     tcp {
       host = "0.0.0.0"
@@ -182,6 +188,36 @@ name on every receiver, with no local `Subscribe` involved.  See
 Both blocks layer under whatever the extension's `start(...)` was passed,
 so an explicit `withMaxTopics(…)` still wins.  Stopped subscribers are
 released by death watch and do not count against either cap.
+
+### `actor-ts.distributed-data`
+
+| Key | Default | Purpose |
+| --- | --- | --- |
+| `distributed-data.gossip-interval` | `1s` | How often a replica pushes its full key set to a random peer. |
+| `distributed-data.max-pending-quorum-requests` | `1000` | Cap on unsettled quorum requests — `updateAsync` and `getAsync` share one budget.  A request past it is rejected outright.  `0` disables the cap. |
+| `distributed-data.max-quorum-timeout` | `30s` | Ceiling on a caller's per-call `timeoutMs`; a larger value is clamped down to this one.  `0` disables the ceiling. |
+
+The block is top-level rather than under `cluster.*` (where `pub-sub` and
+`receptionist` live) because the module is: `DistributedData` ships from
+`src/crdt/`, and the cluster is a positional argument to `start(cluster)`
+rather than one of its tunables.  `durableStore` has no key here — it is a
+`DurableStateStore` instance, which a config file cannot express.
+
+Both caps exist because the replicator's mailbox already has one, and the
+mailbox's cap fails badly here.  The replicator runs on the default bounded
+mailbox (10 000 entries, `drop-head`), so at saturation the *oldest* queued
+envelope is discarded — and a queued `ddata-update` carries the caller's
+`resolve` / `reject`, so dropping it leaves `updateAsync` awaiting a promise
+that can never settle, with nothing logged.  Set well below the mailbox's
+capacity, `max-pending-quorum-requests` turns that silent drop into an
+explicit rejection naming the knob; set *at* 10 000 it would never fire
+first and would convert nothing.  See
+[Quorum reads and writes](/distributed-data/quorum-reads-writes/).
+
+`max-quorum-timeout` bounds the other axis.  A pending request holds one of
+those slots for its whole deadline, so a single caller passing an hour-long
+`timeoutMs` parks the budget for an hour and locks out later callers who
+never came near the cap themselves.
 
 ### `actor-ts.remote`
 
