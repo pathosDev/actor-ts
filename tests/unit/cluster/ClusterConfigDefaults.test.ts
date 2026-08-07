@@ -6,7 +6,13 @@ import {
 } from '../../../src/cluster/ClusterOptions.js';
 import type { ClusterOptionsType } from '../../../src/cluster/ClusterOptions.js';
 import { defaultFailureDetectorOptions } from '../../../src/cluster/FailureDetector.js';
-import { DEFAULT_GOSSIP_INTERVAL_MS, DEFAULT_SEED_RETRY_INTERVAL_MS } from '../../../src/util/Constants.js';
+import { DEFAULT_MAX_MEMBERS, DEFAULT_MAX_TOMBSTONES } from '../../../src/cluster/Cluster.js';
+import {
+  DEFAULT_GOSSIP_INTERVAL_MS,
+  DEFAULT_SEED_RETRY_INTERVAL_MS,
+  DEFAULT_TOMBSTONE_PRUNE_INTERVAL_MS,
+  DEFAULT_TOMBSTONE_TTL_MS,
+} from '../../../src/util/Constants.js';
 import { DEFAULT_MAX_FRAME_BYTES } from '../../../src/cluster/Protocol.js';
 
 describe('readClusterOptionsFromConfig', () => {
@@ -62,7 +68,41 @@ describe('readClusterOptionsFromConfig', () => {
       maxFrameBytes: DEFAULT_MAX_FRAME_BYTES,
       gossipIntervalMs: DEFAULT_GOSSIP_INTERVAL_MS,
       seedRetryIntervalMs: DEFAULT_SEED_RETRY_INTERVAL_MS,
+      weaklyUpAfterMs: 0,
+      maxMembers: DEFAULT_MAX_MEMBERS,
+      maxTombstones: DEFAULT_MAX_TOMBSTONES,
+      tombstoneTtlMs: DEFAULT_TOMBSTONE_TTL_MS,
+      tombstonePruneIntervalMs: DEFAULT_TOMBSTONE_PRUNE_INTERVAL_MS,
+      // 0 is the file's way of saying "derive from down-after"; the
+      // derivation lives in the Cluster constructor, not here.
+      tombstoneMinRetentionMs: 0,
       failureDetector: defaultFailureDetectorOptions,
+    });
+  });
+
+  test('the housekeeping block reads through with its own values (#841)', () => {
+    // The four knobs were code-only fields before — a deployment could not
+    // move them into config at all, which is what #841 was filed for.
+    const configured = Config.parseString(`
+      actor-ts.cluster {
+        weakly-up-after = 4s
+        max-members     = 12
+        max-tombstones  = 34
+        tombstone {
+          time-to-live   = 90m
+          prune-interval = 30s
+          min-retention  = 2s
+        }
+      }
+    `);
+
+    expect(readClusterOptionsFromConfig(configured)).toEqual({
+      weaklyUpAfterMs: 4_000,
+      maxMembers: 12,
+      maxTombstones: 34,
+      tombstoneTtlMs: 90 * 60 * 1_000,
+      tombstonePruneIntervalMs: 30_000,
+      tombstoneMinRetentionMs: 2_000,
     });
   });
 });

@@ -40,6 +40,14 @@ actor-ts {
   cluster {
     gossip-interval     = 1s
     seed-retry-interval = 3s
+    weakly-up-after     = 0s      # 0 = opt-in only
+    max-members         = 1000
+    max-tombstones      = 10000
+    tombstone {
+      time-to-live   = 24h
+      prune-interval = 5m
+      min-retention  = 0s         # 0 = derive from down-after
+    }
     failure-detector {
       heartbeat-interval = 500ms
       unreachable-after  = 2s
@@ -114,6 +122,12 @@ Platziere das im Projekt-Root.  Das Framework lädt es bei
 | --- | --- | --- |
 | `cluster.gossip-interval` | `1s` | Wie oft Gossip mit einem zufälligen Peer ausgetauscht wird. |
 | `cluster.seed-retry-interval` | `3s` | Wie oft Seed-Verbindungen während des Joins wiederholt werden. |
+| `cluster.weakly-up-after` | `0s` | Befördert ein `joining`-Mitglied nach dieser Zeit automatisch zu `weakly-up`.  `0` schaltet das ab — siehe [Weakly-up](/de/cluster/weakly-up/). |
+| `cluster.max-members` | `1000` | Obergrenze für lebende Mitgliedseinträge, die Gossip anlegen darf.  `0` schaltet die Grenze ab. |
+| `cluster.max-tombstones` | `10000` | Obergrenze für `removed`-Tombstones, die Gossip anlegen darf.  `0` schaltet die Grenze ab. |
+| `cluster.tombstone.time-to-live` | `24h` | Wie lange ein `removed`-Tombstone gehalten wird, bevor er gepruned wird. |
+| `cluster.tombstone.prune-interval` | `5m` | Wie oft der Prune-Durchlauf läuft. |
+| `cluster.tombstone.min-retention` | `0s` | Mindestalter, bevor ein Tombstone gepruned werden darf.  `0` leitet es aus `failure-detector.down-after` ab (6×). |
 | `cluster.failure-detector.heartbeat-interval` | `500ms` | Wie oft Heartbeats gesendet werden. |
 | `cluster.failure-detector.unreachable-after` | `2s` | Verdachtsschwelle für `unreachable`-Status. |
 | `cluster.failure-detector.down-after` | `5s` | Verdachtsschwelle für erzwungenes Down.  Wird ab dem letzten Heartbeat gemessen, muss also größer als `unreachable-after` sein. |
@@ -122,6 +136,21 @@ Diese Keys liegen unter dem, was `Cluster.join(system, options)` übergibt —
 ein explizites `withGossipIntervalMs(…)` gewinnt also weiterhin.  Der
 Failure Detector wird *pro Schwelle* gemergt: setzt du im Code nur
 `down-after`, bleiben die beiden anderen aus der Datei erhalten.
+
+HOCON-Baum und `ClusterOptions`-Felder sind bewusst nicht deckungsgleich:
+die drei Tombstone-Stellschrauben stehen unter `tombstone`, weil man sie so
+einstellt, während die Felder flach bleiben (`withTombstoneTtlMs(…)`, …).
+`remote.tcp.host` → `host` macht dieselbe Übersetzung schon länger.
+
+`min-retention = 0s` heißt *leite die Untergrenze aus dem Failure Detector
+ab*, nicht *keine Untergrenze* — also genau das, was ein ungesetztes Feld
+bedeutet.  Eine Datei, die den Default ausschreibt, verhält sich damit wie
+eine, die ihn wegläßt.
+
+Die beiden `max-*`-Grenzen begrenzen die lokale Mitgliederkarte.
+`remote.max-frame-bytes` begrenzt *einen* Gossip-Frame; diese begrenzen,
+was eine Folge wohlgeformter Frames ansammeln kann — eine andere Größe,
+siehe [Cluster-Sicherheit](/de/operations/security/cluster-security/).
 
 `seeds`, `roles`, der Transport und der Downing Provider haben keine
 HOCON-Form — die ersten beiden sind Deployment-Identität, die an die

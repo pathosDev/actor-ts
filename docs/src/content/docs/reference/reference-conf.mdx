@@ -44,6 +44,21 @@ actor-ts {
   cluster {
     gossip-interval = 1s
     seed-retry-interval = 3s
+    weakly-up-after = 0s   # 0 disables auto weakly-up promotion
+
+    # Caps on the local member map.  max-frame-bytes bounds ONE gossip frame;
+    # these bound what a sequence of well-formed frames can accumulate, since
+    # gossip is what introduces addresses in the first place.  0 disables
+    # either.  max-tombstones is the load-bearing one: a tombstone carries no
+    # liveness, so nothing but the TTL below ever reclaims it.
+    max-members = 1000
+    max-tombstones = 10000
+
+    tombstone {
+      time-to-live   = 24h
+      prune-interval = 5m
+      min-retention  = 0s   # 0 = derive from failure-detector down-after
+    }
 
     failure-detector {
       heartbeat-interval = 500ms
