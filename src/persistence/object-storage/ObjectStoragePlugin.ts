@@ -3,7 +3,11 @@ import type { PersistenceExtension } from '../PersistenceExtension.js';
 import { ObjectStorageDurableStateStore } from '../durable-state-stores/ObjectStorageDurableStateStore.js';
 import { ObjectStorageSnapshotStore } from '../snapshot-stores/ObjectStorageSnapshotStore.js';
 import { probeCompressionAvailability } from './Compression.js';
-import { probeEncryptionAvailability } from './Encryption.js';
+import {
+  keyVersionExhaustionWarning,
+  probeEncryptionAvailability,
+  validateMasterKeyRing,
+} from './Encryption.js';
 import { FilesystemObjectStorageBackend } from './FilesystemObjectStorageBackend.js';
 import {
   S3ObjectStorageBackend,
@@ -96,6 +100,7 @@ export async function registerObjectStoragePlugins(
   const resolvedOptions = (options as ObjectStoragePluginOptionsType);
   if (resolvedOptions.backend === undefined) throw new Error('registerObjectStoragePlugins: backend is required (call withBackend()).');
   assertEncryptionInfo(resolvedOptions);
+  assertMasterKeyRings(resolvedOptions);
   await validateObjectStoragePeerDeps(resolvedOptions);
 
   const backend = buildBackend(resolvedOptions.backend);
@@ -190,6 +195,34 @@ function assertEncryptionInfo(options: ObjectStoragePluginOptionsType): void {
       + 'HKDF context that keeps one deployment\'s subkeys separate from '
       + "another's — set it explicitly, e.g. info: 'acme/prod/snapshot/v1'.",
     );
+  }
+}
+
+/**
+ * Reject a structurally broken `MasterKeyRing`, and warn when the
+ * version space is nearly spent (#111).
+ *
+ * Same placement argument as {@link assertEncryptionInfo}: the ring's own
+ * entry points validate too, but a duplicate version is a config typo,
+ * and a config typo should surface at registration rather than on the
+ * first snapshot — by which point the process is live and the operator is
+ * reading an authentication-tag error instead of a message naming the
+ * duplicate.  `encryptionByPrefix` resolvers are covered as well, since
+ * `collectEncryptionConfigs` unpacks their known configs.
+ *
+ * The warning goes to `console.warn` because nothing here can reach the
+ * system logger — `PersistenceExtension` keeps its `ActorSystem` private,
+ * and threading a logger through this call for one advisory line is a
+ * worse trade than matching what the rest of `src/persistence/` already
+ * does.
+ */
+function assertMasterKeyRings(options: ObjectStoragePluginOptionsType): void {
+  for (const config of collectEncryptionConfigs(options.encryption)) {
+    if (config.mode !== 'client-aes256-gcm') continue;
+    if (!('masterKeys' in config)) continue;
+    validateMasterKeyRing(config.masterKeys, 'registerObjectStoragePlugins');
+    const warning = keyVersionExhaustionWarning(config.masterKeys);
+    if (warning !== undefined) console.warn(warning);
   }
 }
 

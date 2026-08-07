@@ -159,8 +159,126 @@ export function randomIv(): Uint8Array {
 
 /* ============================ Key-ring helpers (#8) =========================== */
 
-import type { EncryptionConfig } from '../PersistenceOptions.js';
+import type { EncryptionConfig, MasterKeyRing, MasterKeyRingEntry } from '../PersistenceOptions.js';
 import type { SubKeyResolver } from './BodyCodec.js';
+
+/**
+ * Highest master-key version a body manifest can carry.  The version
+ * travels in a single byte (see `BodyCodec`'s framing), so the ring's
+ * version space is 0..255.
+ */
+export const MAX_KEY_VERSION = 255;
+
+/**
+ * Active version from which {@link keyVersionExhaustionWarning} starts
+ * warning — 15 numbers of headroom before the byte is full.
+ *
+ * Deliberately a constant rather than an option.  There is nothing here
+ * to tune: the number is derived from the fixed 255 ceiling, the warning
+ * is advisory and costs one line at registration, and a knob would only
+ * exist so an operator could switch off the one signal that says the
+ * version space is running out.
+ */
+export const KEY_VERSION_EXHAUSTION_THRESHOLD = 240;
+
+/**
+ * Reject a structurally unusable {@link MasterKeyRing} (#111).
+ *
+ * Two rules, both of which the type system does not and cannot enforce:
+ *
+ * 1. **Every version is an integer in `[0, 255]`.**  Only one byte of the
+ *    manifest records it, so a larger number cannot round-trip — it would
+ *    be written truncated and read back as something else.
+ * 2. **No version appears twice** across `active` and `retired`.  This is
+ *    the one that actually bites.  The manifest records the *version*,
+ *    never the key, so two entries claiming the same version make the
+ *    lookup ambiguous — and {@link resolveDecryptSubkey} resolves that
+ *    ambiguity silently, matching `active` first.  A body written under
+ *    the older of the two keys then decrypts under the newer one and
+ *    fails with an authentication-tag error that says nothing about the
+ *    real cause.  It takes no exotic history to produce: promoting a key
+ *    without renumbering it, or a typo in the second rotation a
+ *    deployment ever performs, is enough.
+ *
+ * The key-length rule rides along for the same fail-fast reason.  A
+ * wrong-sized `retired` key is accepted by the type (`Uint8Array` says
+ * nothing about length) and `deriveSubkey` only rejects it when a body at
+ * *that* version is finally read — which may be months after the config
+ * shipped.
+ *
+ * Called from the ring's entry points ({@link activeEncryptKey},
+ * {@link resolveDecryptSubkey}) so a ring handed in per-call cannot slip
+ * past, and eagerly at plugin registration / sweep start so the common
+ * case fails before any data is touched.  The per-call cost is a loop
+ * over a handful of entries against an HKDF derivation — not measurable.
+ *
+ * `errorPrefix` names the caller so the message points at the config the
+ * operator actually wrote.
+ */
+export function validateMasterKeyRing(ring: MasterKeyRing, errorPrefix = 'MasterKeyRing'): void {
+  if (ring === null || typeof ring !== 'object') {
+    throw new Error(`${errorPrefix}: keyring must be an object with an 'active' entry.`);
+  }
+  const labelled: ReadonlyArray<{ readonly label: string; readonly entry: MasterKeyRingEntry }> = [
+    { label: 'active', entry: ring.active },
+    ...(ring.retired ?? []).map((entry, index) => ({ label: `retired[${index}]`, entry })),
+  ];
+  const seenAt = new Map<number, string>();
+  for (const { label, entry } of labelled) {
+    if (entry === null || typeof entry !== 'object') {
+      throw new Error(`${errorPrefix}: keyring ${label} is not a { version, key } entry.`);
+    }
+    const version = entry.version;
+    if (!Number.isInteger(version) || version < 0 || version > MAX_KEY_VERSION) {
+      throw new Error(
+        `${errorPrefix}: keyring ${label} version must be an integer in [0, ${MAX_KEY_VERSION}], `
+        + `got ${String(version)} — the body manifest carries it in a single byte.`,
+      );
+    }
+    const keyLength = (entry.key as Uint8Array | undefined)?.byteLength;
+    if (keyLength !== KEY_LENGTH) {
+      throw new Error(
+        `${errorPrefix}: keyring ${label} key must be ${KEY_LENGTH} bytes (AES-256), `
+        + `got ${String(keyLength)}.`,
+      );
+    }
+    const firstLabel = seenAt.get(version);
+    if (firstLabel !== undefined) {
+      throw new Error(
+        `${errorPrefix}: keyring version ${version} appears twice (${firstLabel} and ${label}).  `
+        + 'A body manifest records only the version, so decryption would silently pick one of '
+        + 'the two keys and bodies written under the other would fail to authenticate.  '
+        + 'Give every entry in the ring its own version.',
+      );
+    }
+    seenAt.set(version, label);
+  }
+}
+
+/**
+ * Advisory message when the active version is running out of room, or
+ * `undefined` while there is headroom (#111).
+ *
+ * The version space is **not** a lifetime cap on how often a deployment
+ * may rotate — it caps how many versions can be live in one corpus at
+ * once.  A completed re-encryption sweep puts every body at the active
+ * version, which empties `retired` and frees every other number for
+ * reuse.  So the recovery is ordinary operational work, and it is worth
+ * saying out loud while there is still time to schedule it rather than
+ * at 255, when the next rotation has nowhere to go.
+ */
+export function keyVersionExhaustionWarning(ring: MasterKeyRing): string | undefined {
+  const activeVersion = ring.active?.version;
+  if (typeof activeVersion !== 'number' || activeVersion < KEY_VERSION_EXHAUSTION_THRESHOLD) {
+    return undefined;
+  }
+  const remaining = MAX_KEY_VERSION - activeVersion;
+  return 'actor-ts object-storage encryption: the active master-key version is '
+    + `${activeVersion} of a maximum ${MAX_KEY_VERSION}; ${remaining} version number(s) remain.  `
+    + 'Run reEncryptObjectStorage over every prefix so the whole corpus sits at the active '
+    + 'version, then drop the retired entries and restart numbering from 0 — version numbers '
+    + 'are reusable once no body references them.';
+}
 
 /**
  * Resolve the encrypt-side parameters for a `client-aes256-gcm`
@@ -174,6 +292,7 @@ export async function activeEncryptKey(
 ): Promise<{ subKey: Uint8Array; keyVersion: number } | undefined> {
   if (encryption.mode !== 'client-aes256-gcm') return undefined;
   if ('masterKeys' in encryption) {
+    validateMasterKeyRing(encryption.masterKeys);
     const active = encryption.masterKeys.active;
     return {
       subKey: await deriveSubkey(active.key, persistenceId, encryption.info),
@@ -197,6 +316,11 @@ export async function activeEncryptKey(
  * "version 0" — backwards-compatible with bodies written before
  * versioning landed).  For the keyring shape, walks `active +
  * retired` looking for a matching version.
+ *
+ * That walk checks `active` first, which is only unambiguous because
+ * {@link validateMasterKeyRing} has already refused a ring with the same
+ * version on two entries (#111) — without it, the precedence here would
+ * quietly decide which of two keys a body was "meant" to use.
  */
 export function resolveDecryptSubkey(
   encryption: EncryptionConfig, persistenceId: string,
@@ -204,6 +328,7 @@ export function resolveDecryptSubkey(
   if (encryption.mode !== 'client-aes256-gcm') return undefined;
   if ('masterKeys' in encryption) {
     const ring = encryption.masterKeys;
+    validateMasterKeyRing(ring);
     return async (version: number): Promise<Uint8Array | null> => {
       if (ring.active.version === version) {
         return deriveSubkey(ring.active.key, persistenceId, encryption.info);

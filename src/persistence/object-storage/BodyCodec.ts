@@ -1,6 +1,6 @@
 import { match } from 'ts-pattern';
 import { compressorFor, type CompressionAlgo } from './Compression.js';
-import { aesGcmDecrypt, aesGcmEncrypt, IV_LENGTH, randomIv } from './Encryption.js';
+import { aesGcmDecrypt, aesGcmEncrypt, IV_LENGTH, MAX_KEY_VERSION, randomIv } from './Encryption.js';
 import { constantTimeEqual, HMAC_TAG_LENGTH, hmacSha256 } from './Integrity.js';
 
 /**
@@ -11,6 +11,7 @@ import { constantTimeEqual, HMAC_TAG_LENGTH, hmacSha256 } from './Integrity.js';
  *                                  bit2     = encrypted
  *                                  bit3     = key-versioned (#8 — master-key rotation)
  *                                  bit4     = integrity HMAC tag appended (#116)
+ *                                  bit5..7  = unallocated
  *   Byte  5      : keyVersion     (0..255)  — only when bit3 set
  *   Bytes ...    : AES-GCM IV     (12 bytes — only when bit2 set, immediately
  *                                   after the keyVersion byte if present, else
@@ -45,7 +46,24 @@ export const COMPRESSION_NONE = 0b00;
 export const COMPRESSION_GZIP = 0b01;
 export const COMPRESSION_ZSTD = 0b10;
 export const FLAG_ENCRYPTED = 0b100;
-/** When set with FLAG_ENCRYPTED, the byte after `flags` is a 0..255 key version. */
+/**
+ * When set with FLAG_ENCRYPTED, the byte after `flags` is a 0..255 key version.
+ *
+ * One byte is the whole version space, and it stays that way (#111).  It
+ * is not a cap on how often a deployment may rotate — it caps how many
+ * versions may be *live in one corpus at once*, and a completed
+ * `reEncryptObjectStorage` sweep collapses the corpus onto the active
+ * version and frees every other number for reuse.  A ring that would
+ * make the space ambiguous is refused up front by
+ * `validateMasterKeyRing`.
+ *
+ * A wide-version flag was considered and dropped.  Only three bits of
+ * this byte are left, spending one on a case that a sweep already
+ * resolves is a poor trade, and if the format ever genuinely outgrows
+ * one byte the honest move is a new magic (`ATS2`) rather than a fourth
+ * conditional field in a header whose length already depends on two
+ * other bits.
+ */
 export const FLAG_KEY_VERSIONED = 0b1000;
 /** When set, the last {@link HMAC_TAG_LENGTH} bytes are an HMAC-SHA256 over the rest. */
 export const FLAG_INTEGRITY_HMAC = 0b10000;
@@ -160,8 +178,10 @@ export async function encodeBody(jsonBytes: Uint8Array, options: EncodeOptions =
   let bodyBeforeIntegrity: Uint8Array;
   if (subKey) {
     if (keyVersion !== undefined) {
-      if (!Number.isInteger(keyVersion) || keyVersion < 0 || keyVersion > 255) {
-        throw new Error(`BodyCodec: keyVersion must be an integer in [0, 255], got ${keyVersion}`);
+      if (!Number.isInteger(keyVersion) || keyVersion < 0 || keyVersion > MAX_KEY_VERSION) {
+        throw new Error(
+          `BodyCodec: keyVersion must be an integer in [0, ${MAX_KEY_VERSION}], got ${keyVersion}`,
+        );
       }
     }
     const iv = randomIv();
