@@ -21,6 +21,7 @@ import {
 import { MultiNodeSpec } from '../../src/testkit/MultiNodeSpec.js';
 import { MultiNodeTransport } from '../../src/testkit/internal/MultiNodeTransport.js';
 import { TestProbe } from '../../src/testkit/TestProbe.js';
+import { awaitCondition } from '../util/AwaitCondition.js';
 
 const TIGHT_FD = {
   heartbeatIntervalMs: 50,
@@ -60,10 +61,28 @@ describe('multi-node PubSub', () => {
       medB.tell(new Subscribe('orders', probeB));
       medC.tell(new Subscribe('orders', probeC));
 
-      // Wait one gossip round so A learns about both subscriptions.
-      await Bun.sleep(400);
-
-      medA.tell(new Publish('orders', { sku: 'XYZ-1' }));
+      // A publish that lands before A has merged *both* subscriptions is
+      // dropped for good — nothing retries it — so the 400 ms this replaces
+      // was not a settle but a bet, and losing it failed the assertions below
+      // as though fan-out were broken.  Republishing until both probes hold a
+      // message makes the propagation observable; `expectMessage` then reads
+      // the first one, and every copy carries the same payload, so a
+      // duplicate cannot change what it sees.
+      //
+      // A weaker condition was available and rejected: `GetTopics` on A
+      // reports the topic as soon as *one* peer's gossip has merged, which is
+      // precisely the half-propagated state this is trying to exclude.
+      await awaitCondition(
+        () => {
+          medA.tell(new Publish('orders', { sku: 'XYZ-1' }));
+          return probeB.hasMessage() && probeC.hasMessage();
+        },
+        {
+          timeoutMs: 10_000,
+          intervalMs: 50,
+          label: 'a publish from A reached the subscribers on B and C',
+        },
+      );
 
       await probeB.expectMessage({ sku: 'XYZ-1' }, 1_500);
       await probeC.expectMessage({ sku: 'XYZ-1' }, 1_500);
@@ -104,8 +123,20 @@ describe('multi-node PubSub', () => {
       medB.tell(new Subscribe('news', probeB));
       // Probe C is *not* subscribed to 'news'.
 
-      await Bun.sleep(400);
-      medA.tell(new Publish('news', 'breaking'));
+      // Same republish-until-observed wait as above.  It does not weaken the
+      // negative half: C is not subscribed, so no number of publishes on
+      // 'news' may reach it, and `expectNoMessage` still says so.
+      await awaitCondition(
+        () => {
+          medA.tell(new Publish('news', 'breaking'));
+          return probeB.hasMessage();
+        },
+        {
+          timeoutMs: 10_000,
+          intervalMs: 50,
+          label: 'a publish from A reached the subscriber on B',
+        },
+      );
 
       await probeB.expectMessage('breaking', 1_500);
       await probeC.expectNoMessage(150);
