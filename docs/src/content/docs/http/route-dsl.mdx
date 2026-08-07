@@ -31,7 +31,7 @@ const api = path('api', orders);
 ```
 
 Three core combinators (`path`, `concat`, method-combinators)
-plus three response helpers (`complete*`, `redirect`, `reject`)
+plus three families of response helper (`complete*`, `redirect*`, `reject`)
 cover ~95 % of routing.
 
 ## Core combinators
@@ -140,6 +140,42 @@ return redirect('/new-home', Status.MovedPermanently);  // 301
 
 Sets `Location: <url>` and the appropriate status.  Default is
 `Status.Found` (302).
+
+The target must stay **on this origin** — a relative reference such as
+`/dashboard`, `../up`, `?q=1` or `#top`.  An absolute URL, a
+protocol-relative `//host` target, or a control character throws
+`HttpError(400)`:
+
+```ts
+redirect('https://elsewhere.example');   // throws — leaves the origin
+redirect('//elsewhere.example');         // throws — protocol-relative
+
+const next = queryParam(request, 'next') ?? '/';
+return redirect(next);                   // throws when `next` points off-origin
+```
+
+That last case is the reason for the rule.  Forwarding a `?next=`
+parameter into a redirect is the textbook **open redirect**: the attacker
+sends `https://app.example/login?next=https://app-example.evil/`, the
+victim logs in against the real app, and the browser lands on a look-alike
+that asks for the password "again".  The framework cannot make handlers
+validate, so the helper they already reach for validates instead.
+
+### `redirectExternal(url, status?)`
+
+```ts
+return redirectExternal('https://payments.example/checkout');
+```
+
+Same signature, without the origin rule — the deliberate hop off-origin.
+It is a separate function on purpose: `grep redirectExternal` enumerates
+every place your service hands the browser to somebody else, which is
+precisely the list a security review asks for.
+
+Pass a constant or a value **you** allowlisted — never a raw request
+parameter, which is the open redirect `redirect` refuses.  Control
+characters are still rejected; splitting a response header is nobody's
+intent.
 
 ### `reject(status, message, extra?)`
 
