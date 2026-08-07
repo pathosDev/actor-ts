@@ -128,7 +128,31 @@ export interface ActorContext<TMessage = unknown> {
   /** Start death-watching an actor.  A Terminated message is sent when it stops. */
   watch(ref: ActorRef): ActorRef;
 
-  /** Stop watching. */
+  /**
+   * Death-watch `ref`, but deliver `message` instead of `Terminated(ref)`.
+   *
+   * `Terminated` answers "did *that one* die?", which forces every watcher to
+   * carry the signal in its protocol and to re-derive the meaning of the death
+   * from `Terminated.actor`.  A watcher that watches several kinds of actor —
+   * workers, a connection, a peer — ends up with one handler branching on ref
+   * identity.  `watchWith` moves that decision to registration time, so each
+   * death arrives as the domain message the watcher already handles:
+   *
+   *     this.context.watchWith(worker, { kind: 'workerLost', name });
+   *     this.context.watchWith(connection, { kind: 'connectionLost' });
+   *
+   * `message` must belong to this actor's own protocol — it is delivered to
+   * `onReceive` like any other user message, not as a signal.
+   *
+   * Last call wins: `watchWith` on an already-watched ref replaces whatever the
+   * previous `watch`/`watchWith` registered, and a later plain `watch` drops the
+   * custom message again.  The registration is consumed by the death it
+   * describes — watching the same *name* again after a restart is a new
+   * subject and needs a new call.
+   */
+  watchWith(ref: ActorRef, message: TMessage): ActorRef;
+
+  /** Stop watching — whether registered via `watch` or `watchWith`. */
   unwatch(ref: ActorRef): ActorRef;
 
   /**

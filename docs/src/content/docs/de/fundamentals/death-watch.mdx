@@ -1,6 +1,6 @@
 ---
 title: Death Watch
-description: Wie ein Actor beobachtet, wann ein anderer Actor stoppt — `context.watch(ref)` löst eine `Terminated(ref)`-Systemnachricht im Watcher aus, wenn `ref` terminiert. Symmetrisch zur Supervision, aber für Geschwister- und Cross-Tree-Beobachtung.
+description: Wie ein Actor beobachtet, wann ein anderer Actor stoppt — `context.watch(ref)` löst eine `Terminated(ref)`-Systemnachricht im Watcher aus, wenn `ref` terminiert, und `context.watchWith(ref, message)` tauscht dieses Signal gegen eine Nachricht aus dem eigenen Protokoll des Watchers. Symmetrisch zur Supervision, aber für Geschwister- und Cross-Tree-Beobachtung.
 ---
 
 Supervision fängt *Fehler* ab — was zu tun ist, wenn das `onReceive`
@@ -96,15 +96,141 @@ aktuell immer `false`: das Framework löst noch keine Node-weiten
 `Terminated`-Notifications aus.  Siehe
 [Cluster](/de/cluster/overview/) für die Membership-Geschichte.
 
+## Eigene Termination-Nachrichten — `watchWith`
+
+`watch` liefert immer dasselbe.  Das reicht, wenn genau ein Tod
+zählt, aber ein Watcher, der mehrere *Arten* von Actor beobachtet —
+einen Pool von Workern, eine Datenbankverbindung, einen Cluster-Peer —
+bekommt für alle denselben Nachrichtentyp und muss aus
+`Terminated.actor` herleiten, welche Beziehung gerade geendet hat.
+Außerdem muss das Signal in der Nachrichten-Union des Watchers stehen,
+wo es nichts darüber aussagt, wofür der Actor da ist.
+
+`watchWith` verlegt diese Entscheidung auf den Zeitpunkt der
+Registrierung.  Du sagst beim Beginn des Beobachtens, was ein Tod
+*bedeutet*, und der Watcher bekommt eine Nachricht aus seinem eigenen
+Protokoll:
+
+```ts
+import { match } from 'ts-pattern';
+import { Actor, type ActorRef } from 'actor-ts';
+
+type StartCommand = { kind: 'start' };
+type WorkerLostMessage = { kind: 'workerLost'; name: string };
+type DatabaseLostMessage = { kind: 'databaseLost' };
+type PoolMessage = StartCommand | WorkerLostMessage | DatabaseLostMessage;
+
+class Pool extends Actor<PoolMessage> {
+  constructor(private readonly database: ActorRef) {
+    super();
+  }
+
+  override preStart(): void {
+    this.context.watchWith(this.database, { kind: 'databaseLost' });
+  }
+
+  override onReceive(message: PoolMessage): void {
+    match(message)
+      .with({ kind: 'start' }, () => this.onStart())
+      .with({ kind: 'workerLost' }, (m) => this.onWorkerLost(m))
+      .with({ kind: 'databaseLost' }, () => this.onDatabaseLost())
+      .exhaustive();
+  }
+
+  private onStart(): void {
+    for (let i = 0; i < 4; i++) this.hire(`worker-${i}`);
+  }
+
+  private onWorkerLost(message: WorkerLostMessage): void {
+    this.log.warn(`${message.name} died — respawning`);
+    this.hire(message.name);
+  }
+
+  private onDatabaseLost(): void {
+    this.log.warn('database gone — winding down');
+    this.context.stopSelf();
+  }
+
+  private hire(name: string): void {
+    const worker = this.context.spawn(Worker, name);
+    this.context.watchWith(worker, { kind: 'workerLost', name });
+  }
+}
+```
+
+`Terminated` taucht in `PoolMessage` überhaupt nicht auf.  Die Union
+bleibt eine Beschreibung dessen, was dieser Actor tut,
+`match(...).exhaustive()` deckt sie weiterhin ab, und die beiden
+Todesfälle, die völlig Verschiedenes bedeuten, werden an zwei
+verschiedenen Stellen behandelt.
+
+### Die Regeln
+
+| Aufruf | Wirkung |
+| --- | --- |
+| `watchWith(ref, message)` | Bei der Termination von `ref` wird `message` an diesen Actor geliefert statt `Terminated(ref)`. |
+| Erneutes `watchWith(ref, other)` | Ersetzt die Nachricht — der letzte Aufruf gewinnt. |
+| `watch(ref)` nach einem `watchWith(ref, …)` | Verwirft die eigene Nachricht; der Tod liefert wieder `Terminated(ref)`. |
+| `unwatch(ref)` | Entfernt die Registrierung, egal welcher der beiden sie angelegt hat. |
+
+Alles andere bleibt unverändert: die Nachricht kommt über die Mailbox
+mit denselben Ordnungsgarantien an, eine bereits gestoppte Ref zu
+beobachten liefert sofort, und ein Watcher, der stoppt, bekommt seine
+Registrierungen automatisch aufgeräumt.
+
+### Eine Registrierung, ein Tod
+
+Die Registrierung wird von dem Tod verbraucht, den sie beschreibt.
+Ein neu gespawnter Name ist für Death Watch ein *anderer* Actor — der
+Schlüssel der Buchführung ist die Inkarnation, nicht der Pfad — also
+braucht ein Ersatz-Kind sein eigenes `watchWith`, weshalb `hire()`
+oben bei jedem Spawn erneut registriert.  Das ist Absicht: genau das
+verhindert, dass eine noch offene Notification der vorherigen
+Inkarnation gegen ihren Nachfolger zugestellt wird.
+
+### Die Nachricht reist nicht
+
+`watchWith` merkt sich `message` im **Watcher**.  Der beobachtete
+Actor ist nicht beteiligt — er weiß weiterhin nicht, dass er
+beobachtet wird, und die Nachricht wird weder an ihn gesendet noch
+über ihn geleitet.  Es gibt also keinen Serializer zu registrieren und
+nichts Neues auf der Leitung: die Ersetzung passiert in der Zelle des
+Watchers selbst, in dem Moment, in dem der Tod an seinen Handler
+zugestellt wird.
+
+### Mit typed Behaviors
+
+`TypedActorContext` hat dieselbe Methode:
+
+```ts
+const pool = Behaviors.setup<PoolMessage>((context) => {
+  const worker = context.spawn(workerBehavior, 'worker-0');
+  context.watchWith(worker, { kind: 'workerLost', name: 'worker-0' });
+  return Behaviors.receiveMessage<PoolMessage>((message) => {
+    // ... 'workerLost' arrives here, like any other message
+    return Behaviors.same;
+  });
+});
+```
+
+`watchWith` umgeht `onSignal` bewusst.  Ein einfaches `watch` liefert
+ein `{ kind: 'terminated' }`-**Signal**, das
+`Behaviors.receiveWithSignal` an seinen Signal-Handler routet; eine
+`watchWith`-Nachricht ist ein Wert von `T` und geht an den normalen
+Receive-Handler, auch wenn ein Signal-Handler registriert ist.  Einen
+zu registrieren leitet die Nachricht, die du angefordert hast, nicht
+klammheimlich um.
+
 ## `unwatch`
 
 ```ts
 context.unwatch(ref);
 ```
 
-Höre auf, `Terminated` für diese Ref zu empfangen.  Idempotent —
-`unwatch` auf einer Ref aufzurufen, die du nicht beobachtet hast, ist
-ein No-Op.
+Höre auf, Termination-Notifications für diese Ref zu empfangen — egal
+ob die Registrierung von `watch` oder von `watchWith` stammt.
+Idempotent — `unwatch` auf einer Ref aufzurufen, die du nicht
+beobachtet hast, ist ein No-Op.
 
 Wenn ein Actor stoppt, werden seine Watch-Registrierungen automatisch
 aufgeräumt; du musst nicht alles `unwatch`en, bevor du stoppst.

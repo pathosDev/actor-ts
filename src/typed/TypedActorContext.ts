@@ -41,6 +41,21 @@ export interface TypedActorContext<T> {
 
   /** Death-watch another actor — you'll receive a Signal when it terminates. */
   watch(ref: ActorRef): void;
+
+  /**
+   * Death-watch `ref` and receive `message` when it terminates, instead of a
+   * `terminated` Signal.
+   *
+   * The difference is which handler runs: a Signal goes to the `onSignal`
+   * argument of `Behaviors.receive`, where every watched death of every kind
+   * arrives together and has to be told apart by ref; a `watchWith` message is
+   * a plain `T` and lands in the ordinary receive handler, so the protocol
+   * itself already says what died.  Last call wins over a previous
+   * `watch`/`watchWith` of the same ref.
+   */
+  watchWith(ref: ActorRef, message: T): void;
+
+  /** Stop watching — whether registered via `watch` or `watchWith`. */
   unwatch(ref: ActorRef): void;
 
   /** Per-actor timers. */

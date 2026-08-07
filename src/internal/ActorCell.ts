@@ -116,6 +116,13 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
 
   private _watchers = new Set<ActorRef>();
   private _watching = new Map<string, ActorRef>();
+  /**
+   * Per-registration replacement for the `Terminated` a death would otherwise
+   * deliver — see {@link watchWith}.  Keyed like `_watching`, so a re-spawned
+   * name is a distinct subject here too and cannot inherit the predecessor's
+   * message.
+   */
+  private _watchWithMessages = new Map<string, TMessage>();
 
   private _failureTimes: number[] = [];
 
@@ -513,6 +520,28 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
 
   watch(ref: ActorRef): ActorRef {
     const key = watchKeyOf(ref);
+    // Last call wins, so watching plainly after a `watchWith` really does go
+    // back to `Terminated` rather than silently keeping the older intent.
+    this._watchWithMessages.delete(key);
+    return this.registerWatch(ref, key);
+  }
+
+  watchWith(ref: ActorRef, message: TMessage): ActorRef {
+    const key = watchKeyOf(ref);
+    // Recorded before the registration, because `_addWatcher` on an
+    // already-dead target answers immediately: the `Terminated` it enqueues
+    // has to find the replacement already in place.
+    this._watchWithMessages.set(key, message);
+    return this.registerWatch(ref, key);
+  }
+
+  /**
+   * The half `watch` and `watchWith` share: record the subject and, for a
+   * local target, tell its cell to notify us.  Re-registering an existing
+   * watch is deliberately a no-op here — only the message differs between the
+   * two entry points, and each has already written it.
+   */
+  private registerWatch(ref: ActorRef, key: string): ActorRef {
     if (this._watching.has(key)) return ref;
     this._watching.set(key, ref);
     if (ref instanceof LocalActorRef) {
@@ -523,6 +552,7 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
 
   unwatch(ref: ActorRef): ActorRef {
     const key = watchKeyOf(ref);
+    this._watchWithMessages.delete(key);
     if (!this._watching.delete(key)) return ref;
     if (ref instanceof LocalActorRef) {
       ref.getCell()._removeWatcher(this.self);
@@ -950,6 +980,7 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
       if (watched instanceof LocalActorRef) watched.getCell()._removeWatcher(this.self);
     }
     this._watching.clear();
+    this._watchWithMessages.clear();
 
     // Notify parent so it can remove us and run its own supervision hooks
     if (this._parent) {
@@ -1084,6 +1115,10 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
       const startNs = performance.now();
       const startedAtMs = Date.now();
       let failure: Error | null = null;
+      // What the behavior actually sees.  Differs from `message` only for a
+      // `watchWith` registration, which swaps the signal for the watcher's
+      // own domain message just below.
+      let delivered = message;
       try {
         if (message instanceof Terminated) {
           // Only deliver when we are actually watching.
@@ -1094,12 +1129,23 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
             return;
           }
           this._watching.delete(key);
+          // The substitution belongs on the watcher, not on the dying cell:
+          // that one notifies through `_watchers`, a set of *refs*, and has no
+          // way to reach the per-watcher map.  Doing it here also covers the
+          // immediate `Terminated` that `_addWatcher` sends when the target is
+          // already gone, because `watchWith` records the message before it
+          // registers.  The envelope keeps the original signal, so a trace or
+          // an explain plan still shows the death that caused this dispatch.
+          if (this._watchWithMessages.has(key)) {
+            delivered = this._watchWithMessages.get(key) as TMessage;
+            this._watchWithMessages.delete(key);
+          }
         }
         const behavior = this.behaviorStack[this.behaviorStack.length - 1];
         if (span) {
-          await tracer.withActiveSpan(span, () => behavior(message));
+          await tracer.withActiveSpan(span, () => behavior(delivered));
         } else {
-          await behavior(message);
+          await behavior(delivered);
         }
         this._resetReceiveTimer();
         if (span) span.setStatus('ok');
@@ -1110,7 +1156,10 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
           span.recordException(err);
           span.setStatus('error', err.message);
         }
-        this.failToParent(err, message);
+        // The message supervision is told about is the one the handler
+        // actually choked on — under `watchWith` that is the domain message,
+        // not the `Terminated` it replaced.
+        this.failToParent(err, delivered);
       } finally {
         if (span) span.end();
         const elapsedMs = performance.now() - startNs;
