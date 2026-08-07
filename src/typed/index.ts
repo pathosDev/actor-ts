@@ -1,7 +1,9 @@
 export { Behaviors, same, stopped, unhandled, empty, ignore } from './Behaviors.js';
-export type { SuperviseBuilder } from './Behaviors.js';
+export type { SuperviseBuilder, LogMessagesOptions } from './Behaviors.js';
 export type {
   Behavior,
+  BehaviorInterceptor,
+  BehaviorInterceptorTarget,
   Signal,
   StashBuffer,
   ReceiveBehavior,
@@ -9,6 +11,7 @@ export type {
   WithTimersBehavior,
   WithStashBehavior,
   SuperviseBehavior,
+  InterceptBehavior,
   SameBehavior,
   StoppedBehavior,
   UnhandledBehavior,

@@ -786,6 +786,8 @@ export {
 } from './typed/index.js';
 export type {
   Behavior,
+  BehaviorInterceptor,
+  BehaviorInterceptorTarget,
   Signal,
   StashBuffer,
   TypedActorContext,
@@ -794,12 +796,14 @@ export type {
   WithTimersBehavior,
   WithStashBehavior,
   SuperviseBehavior,
+  InterceptBehavior,
   SameBehavior,
   StoppedBehavior,
   UnhandledBehavior,
   EmptyBehavior,
   IgnoreBehavior,
   SuperviseBuilder,
+  LogMessagesOptions,
 } from './typed/index.js';
 
 // Worker-Cluster (multi-core via Bun/Web-Workers).
