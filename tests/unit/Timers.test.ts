@@ -3,6 +3,7 @@ import { Actor } from '../../src/Actor.js';
 import { ActorSystem } from '../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../src/ActorSystemOptions.js';
 import { LogLevel, NoopLogger } from '../../src/Logger.js';
+import { awaitCondition } from '../util/AwaitCondition.js';
 
 const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
 const newSystem = (name = 'timers-unit'): ActorSystem => {
@@ -234,9 +235,23 @@ describe('timer bookkeeping after a one-shot fires', () => {
     const sys = newSystem();
     const ref = sys.spawn(T, 'churn');
     for (let i = 0; i < 25; i++) ref.tell('work');
-    await sleep(80);
-    ref.tell('check');
-    await sleep(30);
+
+    // Poll rather than sleep.  The 80 ms this used to wait encodes an idle
+    // machine: the cell dequeues one user message per event-loop turn, so
+    // arming 25 timers already costs 25 turns before the first 5 ms delay
+    // starts running down.  Under CI load that budget is not enough, and the
+    // assertion then reads a map the invariant has not reached yet rather
+    // than one it violated — 22 live keys on the run that caught this.  The
+    // timeout is a failure budget; a healthy run returns on the first poll.
+    await awaitCondition(
+      async () => {
+        keyCount = -1;
+        ref.tell('check');
+        await sleep(5);
+        return keyCount === 0;
+      },
+      { timeoutMs: 4_000, intervalMs: 20, label: 'timer handles drain to zero' },
+    );
 
     expect(keyCount).toBe(0);
     await sys.terminate();
