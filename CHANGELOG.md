@@ -11,6 +11,17 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Added
 
+- **Typed `Behaviors.intercept` / `monitor` / `logMessages`** (#152).  Three
+  combinators for the concerns that cut across an actor's own logic: a
+  generic interceptor that observes, transforms, drops or short-circuits
+  every message before the wrapped behavior sees it; a tap that forwards
+  each message to another actor (a probe, an audit trail) first, swallowing
+  that delivery's failures; and per-message logging at `debug` or `info`
+  with an optional formatter.  Unlike the other decorators an interceptor is
+  not resolved away at startup — it stays wrapped around whatever the inner
+  behavior becomes, so a behavior that returns a fresh `Behaviors.receive`
+  on every message is still intercepted on the next one.
+
 - **`acquireLock(cache, key, ttlMs)` — mutual exclusion over any `Cache`
   backend** (#141).  Exported from the package root.  It writes a random
   128-bit token and releases only while that token is still in place, so a
@@ -56,6 +67,26 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   protocol change.
 
 ### Fixed
+
+- **HOCON `include` now refuses itself with an explanation instead of a
+  syntax error** (#135).  `include "base.conf"` reported `Expected '=' or
+  ':' after key "include"`, which names the keyword but not the reason and
+  left the reader to discover from the parser source that the omission was
+  deliberate.  The parser now states that the directive is refused, quotes
+  line, column and the include target, and points at the composition that
+  does work — `Config.parseFile(base).merge(Config.parseFile(app))`.  All
+  forms are covered (`"…"`, `file(`, `url(`, `classpath(`, `required(`), at
+  any nesting depth, while a key legitimately named `include` — `app {
+  include = "x" }`, `include { a = 1 }`, `include.a = 1` — keeps parsing
+  untouched.
+- **The configuration reference no longer documents `include` as a working
+  feature** (#135).  `reference/configuration.mdx` advertised HOCON "with …
+  includes" and carried an active "Includes" section describing the
+  directive as supported, and `extras/design-decisions.mdx` listed "File
+  includes" among the reasons to prefer HOCON over YAML/TOML — so following
+  our own reference led straight into the parse error.  Both pages now state
+  the refusal and its rationale and show the in-code merge instead (EN +
+  DE).
 
 - **A `PersistentFSM` state timeout could fire after a transition had already
   renewed it** (#143).  A `_timeout` fire travels through the mailbox, so it
@@ -145,6 +176,78 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   instead of shipping the lie.
 
 ### Security
+
+- **BREAKING — the HKDF `info` parameter is now required for client-side
+  encryption** (#108).  `EncryptionConfig.info` was optional and
+  `deriveSubkey` substituted the constant `'actor-ts/snapshot/v1'`.  HKDF's
+  `info` is its context binding (RFC 5869 §3.2), so a framework-wide
+  constant meant any two deployments holding the same master key derived
+  byte-for-byte the same subkey for the same `persistenceId` — a staging
+  environment restored from a production dump, or a DR region, could read
+  production's blobs, and nothing in the config or docs said so.  `info` is
+  now mandatory on both `client-aes256-gcm` arms of the exported
+  `EncryptionConfig`, and `deriveSubkey` takes it positionally without a
+  default.  *Migration:* add `info` to every client-side encryption config,
+  encoding environment + purpose + version (`info:
+  'acme/prod/snapshot/v1'`); to keep an existing corpus readable without a
+  sweep, pass the old default `'actor-ts/snapshot/v1'` verbatim.
+- **HKDF context rotation for the re-encryption sweep** (#108).
+  `reEncryptObjectStorage` gains `newInfo`: bodies are decrypted under
+  `info` and rewritten under `newInfo`, so a deployment can move off a
+  shared derivation context without a second tool.  Because the key version
+  is stamped in the body manifest but the context is not, the version
+  fast-path is disabled while `newInfo` differs from `info` — without that
+  the sweep would report every object as `skipped-current` and change
+  nothing.  Re-runs stay idempotent: a body that fails to decrypt under
+  `info` is retried under `newInfo` and counted as skipped, while failure
+  under both re-raises the original decrypt error.
+- **Eager rejection of a missing or blank `info` at plugin registration**
+  (#108).  `registerObjectStoragePlugins` now validates every reachable
+  client-side encryption config — including ones behind `encryptionByPrefix`
+  resolvers — and `deriveSubkey` guards at the call itself.  The type
+  already covers TypeScript callers; these guard JavaScript consumers, `as
+  any` call sites and configs deserialised at runtime, where a missing
+  `info` would otherwise be encoded as the literal string `"undefined"` —
+  the same deployment-wide constant, only invisible.
+- **A first-sight gossip record is held to a tight version-skew cap**
+  (#114).  Versions are seeded from `Date.now()`, so "highest version wins"
+  also decided what happened the *first* time an address was mentioned at
+  all — and a self-announcement is the one claim the authority rules from
+  #562 never refuse.  A stranger could therefore claim an address before the
+  node that owns it exists, date the claim up to a day ahead and attach
+  roles of its choosing; the leader's promotion loop then lifted the phantom
+  into the active set, where roles decide routing, sharding placement,
+  singleton hosting and downing quorums, and the real node's own record —
+  versioned from its own clock, therefore lower — lost every merge
+  afterwards.  A record that *introduces* an address must now be within
+  `firstSightMaxVersionSkewMs` (default 5 min,
+  `ClusterOptions.withFirstSightMaxVersionSkewMs`) of the local clock,
+  against the 24 h that still governs every later merge.  A rejection is not
+  exclusion: a self-announcing node is still recorded and its next frame
+  merges through the normal path, so the cost is one gossip round.
+- **BREAKING — `redirect()` now rejects off-origin targets** (#125).  The
+  helper wrote the caller's URL into the `location` header unchecked, and
+  `location` is set nowhere else in `src/http/`, so nothing behind it caught
+  a bad target.  Forwarding a `?next=` parameter into it was therefore a
+  textbook open redirect: a phishing link bounced a freshly authenticated
+  victim to a look-alike host.  `redirect` now accepts same-origin targets
+  only (a relative reference); an absolute URL, a protocol-relative `//host`
+  target, or a control character throws `HttpError(400)`.  Classification
+  mirrors the browser — leading whitespace is ignored and backslashes read
+  as slashes, so `/\host`, `\/host` and `\\host` are caught too — and the
+  rejection never echoes the target back to the client.  *Migration:*
+  replace a deliberate off-origin `redirect(...)` with
+  `redirectExternal(...)`, or compute a relative target.
+- **`redirectExternal(url, status?)` for the deliberate off-origin hop**
+  (#125).  Same signature as `redirect`, minus the origin rule.  A separate
+  function rather than a flag on purpose: `grep redirectExternal` enumerates
+  every off-origin redirect in a codebase, which a boolean in a third
+  argument never could.  Control characters stay rejected on both helpers —
+  measured on Bun and Node, CR/LF/NUL are already refused at header-write
+  time (so the check only trades an opaque 500 for a 400 that names the
+  reason), but a TAB is *accepted* by both `fetch` Headers and Node's
+  `setHeader` while browsers strip it before parsing, which let a TAB hidden
+  inside `javascript:` reach the browser as a working scheme.
 
 - **BREAKING — the two cluster-wide subscriber registries are bounded and
   watched** (#137, #139).  `Receptionist` gained `maxSubscribersPerKey` /
