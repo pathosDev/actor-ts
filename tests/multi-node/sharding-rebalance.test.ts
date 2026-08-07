@@ -29,6 +29,7 @@ import { ClusterSharding } from '../../src/cluster/sharding/ClusterSharding.js';
 import { StartShardingOptions } from '../../src/cluster/sharding/StartShardingOptions.js';
 import { MultiNodeSpec } from '../../src/testkit/MultiNodeSpec.js';
 import { MultiNodeTransport } from '../../src/testkit/internal/MultiNodeTransport.js';
+import { awaitCondition, sleep } from '../util/AwaitCondition.js';
 import type { ActorRef } from '../../src/ActorRef.js';
 
 type PingCommand = { id: string; kind: 'ping'; payload?: string };
@@ -59,6 +60,28 @@ const TIGHT_FD = {
   downAfterMs: 400,
 } as const;
 
+/**
+ * Whether `region` still caches a shard home on `node`.
+ *
+ * A region routes from a cached shard→node map and drops the entries for a
+ * node only once it has processed that node's `MemberRemoved`; until then a
+ * message for such a shard is sent at a host that is gone.  `awaitMembers`
+ * watches the *cluster view*, which converges strictly earlier, so this is the
+ * gap a post-crash round of asks actually has to clear.
+ *
+ * Test-only reach into a private map, for want of a public surface — and still
+ * the better probe than `ClusterSharding.shards()`, which blocks the region's
+ * mailbox for its fan-out fuse and so would starve the asks under test.
+ */
+function cachesShardHomeOn(region: ActorRef<Command>, node: string): boolean {
+  const internal = region as unknown as {
+    getCell?: () => { actor?: { shardHomeNodes: Map<number, { toString(): string }> } };
+  };
+  const homes = internal.getCell?.().actor?.shardHomeNodes;
+  if (!homes) return true;                    // not materialised yet — not ready
+  return [...homes.values()].some((address) => address.toString() === node);
+}
+
 describe('multi-node sharding rebalance', () => {
   test('three nodes serve 16 entities; one crashes; survivors keep serving', async () => {
     const spec = new MultiNodeSpec({
@@ -85,9 +108,11 @@ describe('multi-node sharding rebalance', () => {
         c: spec.clusterFor('c').sharding.start<Command>(shardingOptions),
       };
 
-      // Let the coordinator finish initial allocation.  A short sleep
-      // matches what the existing 2-node sharding tests do.
-      await Bun.sleep(300);
+      // Let the coordinator finish initial allocation.  A fixed sleep is
+      // adequate here and stays: nothing is asserted on it, and the asks
+      // below carry their own 3 s budget, so an allocation that is still in
+      // flight is absorbed by the ask rather than read as a wrong answer.
+      await sleep(300);
 
       // Round 1: 16 entities, ask via each region in turn.  Ask succeeds
       // regardless of which node hosts the shard — that's the whole
@@ -101,16 +126,26 @@ describe('multi-node sharding rebalance', () => {
 
       // Crash node 'c' — its shards (whichever HashAllocationStrategy
       // landed there) must be re-homed by the coordinator.
+      const crashedAddress = spec.addressFor('c').toString();
       await spec.crash('c');
       await Promise.all([
         spec.awaitMembers('a', 2, 5_000),
         spec.awaitMembers('b', 2, 5_000),
       ]);
 
-      // Give the coordinator a moment to finish reallocation gossip.
-      // Without this, the next round of asks may race against
-      // "shard X home is being moved" and time out.
-      await Bun.sleep(500);
+      // Membership converging is not the same as the regions having noticed.
+      // Both regions the rounds below ask through still route round 1's shards
+      // at the node that just died until their `MemberRemoved` lands — that is
+      // the race the 500 ms sleep was hiding, and it is directly readable.
+      await awaitCondition(
+        () => !cachesShardHomeOn(regions.a, crashedAddress)
+          && !cachesShardHomeOn(regions.b, crashedAddress),
+        {
+          timeoutMs: 10_000,
+          intervalMs: 10,
+          label: 'both surviving regions dropped every shard home on the crashed node',
+        },
+      );
 
       // Round 2: ask again from a's region.  Every shard now lives on
       // a or b, but the same `e-i` ids are reused — entities may have

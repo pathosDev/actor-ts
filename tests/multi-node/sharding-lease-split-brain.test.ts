@@ -39,6 +39,7 @@ import {
 import { LeaseOptions } from '../../src/coordination/LeaseOptions.js';
 import { MultiNodeSpec } from '../../src/testkit/MultiNodeSpec.js';
 import { MultiNodeTransport } from '../../src/testkit/internal/MultiNodeTransport.js';
+import { awaitCondition, sleep } from '../util/AwaitCondition.js';
 import type { ActorRef } from '../../src/ActorRef.js';
 
 type PingCommand = { id: string; kind: 'ping' };
@@ -154,13 +155,24 @@ describe('multi-node sharding lease — split-brain protection', () => {
       // Wait for the cluster to settle into a leader.  At-most-one
       // coordinator becomes `held`; the other two stay `none` /
       // `acquiring`.
-      await Bun.sleep(800);
-      const states = ['a', 'b', 'c'].map((r) => {
+      //
+      // "Exactly one holder" is the observable, so wait on it rather than on
+      // a clock.  The 800 ms this replaced covered leader election plus the
+      // winner's `acquire()` round-trip on an idle box; under load the
+      // acquire can still be in flight when the budget runs out, and the
+      // assertion then reads `held: 0` — a state the system has not reached
+      // yet rather than one it violated.  Polling also removes the wait
+      // entirely on the (usual) fast path.
+      const leaseStates = (): string[] => ['a', 'b', 'c'].map((r) => {
         const coordinator = findCoordinator(spec, r, 'entity');
         return coordinator ? leaseStateOf(coordinator) : 'unknown';
       });
-      const heldCount = states.filter((s) => s === 'held').length;
-      expect(heldCount).toBe(1);
+      await awaitCondition(
+        () => leaseStates().filter((s) => s === 'held').length === 1,
+        { timeoutMs: 10_000, intervalMs: 25, label: 'exactly one coordinator holds the shard lease' },
+      );
+      const states = leaseStates();
+      expect(states.filter((s) => s === 'held').length).toBe(1);
 
       // Sanity: ask via any region — the system is functional.
       const reply = await regions.a.ask<string>({ id: 'e-1', kind: 'ping' }, 3_000);
@@ -181,7 +193,13 @@ describe('multi-node sharding lease — split-brain protection', () => {
       // continues to renew its lease (renewalIntervalMs = 80 ms),
       // so the followers' acquire retries (100 ms) consistently
       // fail.
-      await Bun.sleep(1_500);
+      //
+      // This one stays a fixed sleep on purpose: the assertion below is that
+      // a second holder never appears, and there is no state transition to
+      // wait for — the elapsed time *is* the experiment.  1.5 s gives the two
+      // losers ~15 acquire retries against a lease that is renewed ~19 times
+      // in the same window.
+      await sleep(1_500);
 
       // INVARIANT: still at most one coordinator in `held` state.
       const statesAfter = ['a', 'b', 'c'].map((r) => {

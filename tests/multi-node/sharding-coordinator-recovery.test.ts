@@ -37,6 +37,7 @@ import { DistributedDataId } from '../../src/crdt/DistributedData.js';
 import { DistributedDataOptions } from '../../src/crdt/DistributedDataOptions.js';
 import { MultiNodeSpec } from '../../src/testkit/MultiNodeSpec.js';
 import { MultiNodeTransport } from '../../src/testkit/internal/MultiNodeTransport.js';
+import { awaitCondition } from '../util/AwaitCondition.js';
 import type { ActorRef } from '../../src/ActorRef.js';
 
 type PingCommand = { id: string; kind: 'ping' };
@@ -105,6 +106,9 @@ describe('ShardCoordinator state persistence — leader failover', () => {
         b: undefined as unknown as ActorRef<Command>,
         c: undefined as unknown as ActorRef<Command>,
       };
+      // Kept per role so the test can read each node's *local* DD view of the
+      // snapshot — that view is the precondition for a survivor recovering.
+      const stores = new Map<string, DistributedDataCoordinatorStateStore>();
       for (const role of ['a', 'b', 'c'] as const) {
         const sys = spec.systemFor(role);
         const cluster = spec.clusterFor(role);
@@ -114,6 +118,7 @@ describe('ShardCoordinator state persistence — leader failover', () => {
         const store = new DistributedDataCoordinatorStateStore(
           dd, cluster.selfAddress.toString(),
         );
+        stores.set(role, store);
         const shardingOptions = StartShardingOptions.create<Command>()
           .withTypeName('entity')
           .withEntityActor(Entity)
@@ -132,8 +137,31 @@ describe('ShardCoordinator state persistence — leader failover', () => {
         expect(reply).toBe('pong');
       }
 
-      // Allow DD gossip to propagate the snapshot to followers.
-      await Bun.sleep(400);
+      // Wait for the snapshot to be complete on the leader *and* present in
+      // both followers' local DD view — that is what a survivor recovers
+      // from, and it is directly readable, so there is no reason to guess at
+      // a gossip latency.  The 400 ms this replaced was two DD rounds on an
+      // idle box; under load it could expire mid-round, and the failure then
+      // surfaced further down as "the new leader recovered 0 regions", which
+      // reads like a bug in #39's recovery path rather than a test that
+      // crashed the leader too early.
+      await awaitCondition(
+        async () => {
+          const leader = findCoordinator(spec, 'a', 'entity');
+          if (regionCount(leader) !== 3 || shardHomeCount(leader) !== 8) return false;
+          for (const role of ['b', 'c'] as const) {
+            const snapshot = await stores.get(role)!.load('entity');
+            if (!snapshot) return false;
+            if (snapshot.regions.length !== 3 || snapshot.shardHome.length !== 8) return false;
+          }
+          return true;
+        },
+        {
+          timeoutMs: 10_000,
+          intervalMs: 25,
+          label: 'both followers hold a coordinator snapshot with 3 regions and 8 shard homes',
+        },
+      );
 
       // Identify the current leader (lowest-port = 'a' by
       // construction in MultiNodeSpec).
@@ -156,29 +184,40 @@ describe('ShardCoordinator state persistence — leader failover', () => {
 
       // Wait for a new leader on the survivors.
       const survivors = ['b', 'c'] as const;
-      let newLeaderRole: string | null = null;
-      const deadline = Date.now() + 5_000;
-      while (Date.now() < deadline) {
-        const ldr = spec.clusterFor('b').leader().toNullable();
-        if (ldr && ldr.address.systemName !== 'a') {
-          newLeaderRole = ldr.address.systemName;
-          break;
-        }
-        await Bun.sleep(50);
-      }
-      expect(newLeaderRole).not.toBeNull();
-      expect(['b', 'c']).toContain(newLeaderRole!);
-
-      // Give the new leader a brief moment to load the snapshot.
-      // The DD value is local (gossiped earlier), so this is one
-      // microtask + the actor mailbox tick.
-      await Bun.sleep(200);
+      let newLeaderRole = '';
+      await awaitCondition(
+        () => {
+          const leader = spec.clusterFor('b').leader().toNullable();
+          if (!leader || leader.address.systemName === 'a') return false;
+          newLeaderRole = leader.address.systemName;
+          return true;
+        },
+        { timeoutMs: 10_000, intervalMs: 25, label: 'a survivor was promoted to leader' },
+      );
+      expect(['b', 'c']).toContain(newLeaderRole);
 
       // Inspect the new leader's coordinator: at least 2 regions
       // (the surviving ones) and shardHome populated.  Without
       // #39's snapshot path, both maps would be empty until
       // surviving regions re-register.
-      const newCoord = findCoordinator(spec, newLeaderRole!, 'entity');
+      //
+      // Waiting on the loaded maps rather than on 200 ms is what makes the
+      // assertion below mean "#39's snapshot path did not fire" instead of
+      // "the mailbox tick had not run yet".  The load is local (the snapshot
+      // was gossiped before the crash) so this normally returns on the first
+      // poll; the budget only bounds the broken case.
+      await awaitCondition(
+        () => {
+          const coordinator = findCoordinator(spec, newLeaderRole, 'entity');
+          return regionCount(coordinator) >= 2 && shardHomeCount(coordinator) > 0;
+        },
+        {
+          timeoutMs: 10_000,
+          intervalMs: 25,
+          label: 'the new leader loaded regions + shardHome from the snapshot',
+        },
+      );
+      const newCoord = findCoordinator(spec, newLeaderRole, 'entity');
       expect(regionCount(newCoord)).toBeGreaterThanOrEqual(2);
       expect(shardHomeCount(newCoord)).toBeGreaterThan(0);
 
