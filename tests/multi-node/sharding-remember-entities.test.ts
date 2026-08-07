@@ -43,6 +43,7 @@ import { InMemoryJournal } from '../../src/persistence/journals/InMemoryJournal.
 import { PersistenceExtensionId } from '../../src/persistence/PersistenceExtension.js';
 import { MultiNodeSpec } from '../../src/testkit/MultiNodeSpec.js';
 import { MultiNodeTransport } from '../../src/testkit/internal/MultiNodeTransport.js';
+import { awaitCondition } from '../util/AwaitCondition.js';
 import type { ActorRef } from '../../src/ActorRef.js';
 
 type PingCommand = { id: string; kind: 'ping' };
@@ -142,9 +143,23 @@ describe('Sharding remember-entities — persistent registry', () => {
         const reply = await regions.a.ask<string>({ id, kind: 'ping' }, 3_000);
         expect(reply).toBe('pong');
       }
-      // Allow EntityStarted journal writes to settle (fire-and-forget
-      // chain inside the coordinator).
-      await Bun.sleep(200);
+      // Wait for the EntityStarted journal writes — a fire-and-forget chain
+      // inside the coordinator — to have every id on record.  Round 2 reads
+      // exactly this back out of the shared journal, so a cold restart taken
+      // before the chain drains would fail there, several steps away from the
+      // cause.  The 200 ms it replaces was a guess at five chained appends.
+      const rememberStore = new JournalRememberEntitiesStore(journal);
+      await awaitCondition(
+        async () => {
+          const started = new Set(
+            (await rememberStore.load('entity'))
+              .filter((event) => event.kind === 'started')
+              .map((event) => event.entityId),
+          );
+          return ids.every((id) => started.has(id));
+        },
+        { timeoutMs: 10_000, intervalMs: 25, label: 'all five entities are in the remembered registry' },
+      );
       expect(preStartedRound1.size).toBe(5);
 
       await spec.stop();
@@ -161,11 +176,14 @@ describe('Sharding remember-entities — persistent registry', () => {
       expect(reply).toBe('pong');
 
       // Allow the region to drain RememberedEntities + spawn the rest.
-      const deadline = Date.now() + 3_000;
-      while (preStartedRound2.size < 5 && Date.now() < deadline) {
-        await Bun.sleep(50);
-      }
-
+      await awaitCondition(
+        () => preStartedRound2.size === 5,
+        {
+          timeoutMs: 10_000,
+          intervalMs: 25,
+          label: 'the cold-restarted region pre-spawned all five remembered entities',
+        },
+      );
       expect(preStartedRound2.size).toBe(5);
       expect(new Set(preStartedRound2)).toEqual(new Set(ids));
 

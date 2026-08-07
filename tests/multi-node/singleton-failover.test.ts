@@ -23,6 +23,7 @@ import { Actor } from '../../src/Actor.js';
 import { StartSingletonOptions } from '../../src/cluster/singleton/index.js';
 import { MultiNodeSpec } from '../../src/testkit/MultiNodeSpec.js';
 import { MultiNodeTransport } from '../../src/testkit/internal/MultiNodeTransport.js';
+import { awaitCondition } from '../util/AwaitCondition.js';
 
 const TIGHT_FD = {
   heartbeatIntervalMs: 50,
@@ -62,9 +63,10 @@ describe('multi-node singleton failover', () => {
       }
 
       // Wait for the first preStart to fire — that's our initial host.
-      const waitDeadline = Date.now() + 5_000;
-      while (hosts.length === 0 && Date.now() < waitDeadline) await Bun.sleep(25);
-      expect(hosts.length).toBeGreaterThanOrEqual(1);
+      await awaitCondition(
+        () => hosts.length > 0,
+        { timeoutMs: 5_000, intervalMs: 10, label: 'the singleton was hosted somewhere' },
+      );
       const firstHost = hosts[0]!;
 
       // Determine current leader from a's view.  Since address ordering
@@ -88,11 +90,18 @@ describe('multi-node singleton failover', () => {
         .map((r) => spec.addressFor(r))
         .sort((x, y) => x.compareTo(y))[0]!.systemName;
 
-      // Wait for the new manager to fire its child's preStart.
-      const failoverDeadline = Date.now() + 5_000;
-      while (!hosts.includes(nextLeader) && Date.now() < failoverDeadline) {
-        await Bun.sleep(50);
-      }
+      // Wait for the new manager to fire its child's preStart.  That callback
+      // *is* the failover, so it is the thing to wait on — a fixed budget here
+      // would only decide how often the assertion below reads a state the
+      // cluster has not reached yet rather than one it got wrong.
+      await awaitCondition(
+        () => hosts.includes(nextLeader),
+        {
+          timeoutMs: 10_000,
+          intervalMs: 25,
+          label: `the singleton was re-hosted on ${nextLeader}`,
+        },
+      );
       expect(hosts).toContain(nextLeader);
 
       // Sanity: at most one host per generation — no split-brain.

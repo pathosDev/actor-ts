@@ -157,6 +157,75 @@ Three categories:
    gives you a "real-enough" cluster to test sharding placement,
    singleton failover, etc.
 
+## Wait on state, not on elapsed time
+
+Nearly every flaky actor test has one shape: a fixed sleep standing in for a
+background step, then an assertion on the state that step produces.
+
+```ts
+// ✗ 100 ms is the latency of an idle machine
+await new Promise((resolve) => setTimeout(resolve, 100));
+expect(store.saved).toEqual(['a', 'b']);
+```
+
+The number comes from a run that passed, so it encodes one machine on one day.
+Under load the step takes longer, and the assertion reads a state the system
+has not reached yet — reported as a *wrong* value rather than a late one.
+Raising it hides the flake and lengthens every run, including the overwhelming
+majority that would have been fine with a fraction of it.
+
+Poll the observable instead:
+
+```ts
+// ✓ returns as soon as it holds; the timeout only bounds the broken case
+await awaitCondition(() => store.saved.length === 2, {
+  timeoutMs: 5_000,
+  label: 'both events were written',
+});
+expect(store.saved).toEqual(['a', 'b']);
+```
+
+Two things follow from that:
+
+- **The timeout is a failure budget, not an expected duration.** A passing test
+  returns after one poll interval, so set it comfortably above the worst
+  plausible loaded latency. Reaching it then means the condition genuinely
+  never became true, which makes it a diagnostic instead of a coin flip.
+- **Wait on the strongest condition the test can observe** — a probe reply, a
+  recovery callback, a spy array — never a proxy a half-finished step already
+  satisfies. A proxy that clears when the *first* half of a step runs is worse
+  than the sleep it replaced.
+
+Reach for the purpose-built tool before writing a poll:
+
+| Instead of sleeping for… | Use |
+| --- | --- |
+| a message to arrive | [`TestProbe.expectMessage`](/testing/test-probe/) |
+| a timer or retry to fire | [`ManualScheduler`](/testing/manual-scheduler/) |
+| a cluster to converge | `spec.awaitMembers` / `awaitLeader` / `awaitMemberStatus` |
+| several nodes to reach the same point | [`spec.enterBarrier`](/testing/multi-node-spec/) |
+
+For anything those do not cover, a dozen-line `awaitCondition` of your own does
+the job — `actor-ts` keeps one in `tests/util/AwaitCondition.ts`.
+
+### When a fixed sleep is still right
+
+Sleeping is correct when the elapsed time *is* the thing under test, or when
+there is no state transition to wait for at all:
+
+- **Nothing must happen.** `expectNoMessage(150)`, or "healing a partition does
+  not resurrect a downed node" — you can only give the wrong thing a window in
+  which to occur.
+- **A duration is the assertion.** A debounce window, a lease TTL lapsing, a
+  failure detector's threshold, a gossip cadence.
+- **A scenario needs an interleaving.** "Crash a node 20 ms into a batch of
+  asks" puts the crash mid-flight; that delay is the experiment.
+- **The wait is a warm-up nothing asserts on**, and the operation after it
+  carries its own timeout that absorbs a slow start.
+
+Say which one it is in a comment. A sleep with a reason is documentation; a
+sleep without one is a bet.
+
 ## What not to test
 
 import { Aside } from '@astrojs/starlight/components';
@@ -188,7 +257,8 @@ import { Aside } from '@astrojs/starlight/components';
   ```
   Sleeping for "long enough" makes tests slow and flakey.  Use
   `await probe.expectMessage(...)` (it waits-then-asserts) or
-  `ManualScheduler` (it advances virtual time).
+  `ManualScheduler` (it advances virtual time) — see
+  [Wait on state, not on elapsed time](#wait-on-state-not-on-elapsed-time).
 </Aside>
 
 ## TestKit vs raw ActorSystem in tests
