@@ -10,6 +10,8 @@ import type { Serializer } from '../../serialization/Serializer.js';
 import { decodePayload, encodePayload } from '../storage/PayloadCodec.js';
 import { assertSafeIdentifier } from '../storage/SqlIdentifier.js';
 import { assertValidTags } from '../storage/TagValidator.js';
+import { applySqliteBusyTimeout } from './SqliteClient.js';
+import { SqliteJournalOptionsValidator } from './SqliteJournalOptions.js';
 import type { SqliteJournalOptions, SqliteJournalOptionsType } from './SqliteJournalOptions.js';
 
 type Stmts = {
@@ -65,6 +67,7 @@ export class SqliteJournal implements Journal {
 
   constructor(options: SqliteJournalOptions = {}) {
     const resolvedOptions = (options as SqliteJournalOptionsType);
+    new SqliteJournalOptionsValidator().validate(resolvedOptions);
     this.options = resolvedOptions;
     // Table name is interpolated into DDL/DML (can't be bound) — validate it
     // so a config-sourced identifier can't inject SQL (security audit #6).
@@ -87,7 +90,7 @@ export class SqliteJournal implements Journal {
     const db = this.db!;
     const stmts = this.stmts!;
     const now = Date.now();
-    const txn = db.transaction((items: unknown[]) => {
+    const txn = (items: unknown[]): PersistentEvent<E>[] => this.inWriteTransaction(db, () => {
       const row = stmts.highestSeq.get(persistenceId) as { hi: number | null } | undefined;
       const del = (stmts.deletedTo.get(persistenceId) as { d: number | null } | undefined)?.d ?? 0;
       const actualSeq = Math.max(row?.hi ?? 0, del);
@@ -123,7 +126,7 @@ export class SqliteJournal implements Journal {
     });
     let written: PersistentEvent<E>[];
     try {
-      written = txn([...events] as never[]);
+      written = txn([...events]);
     } catch (e) {
       if (e instanceof JournalConcurrencyError) throw e;
       throw new JournalError(`SqliteJournal.append failed: ${(e as Error).message}`, e);
@@ -222,9 +225,47 @@ export class SqliteJournal implements Journal {
     await this.initPromise;
   }
 
+  /**
+   * Run `body` in a transaction that takes the write lock at the boundary.
+   *
+   * Deliberately NOT `SqliteDb.transaction(fn)`, and the difference is what
+   * makes `busy_timeout` reach this path at all (#124).  Every driver
+   * implements that helper as a plain deferred `BEGIN`, and an append reads
+   * the head sequence number before it inserts — so the connection is holding
+   * SHARED and has to upgrade to RESERVED at the first write.  SQLite treats
+   * that upgrade as a would-be deadlock and returns `SQLITE_BUSY`
+   * *without consulting the busy handler at all*, so the configured timeout is
+   * silently skipped.  Measured against a competing writer with an 800 ms
+   * timeout set: deferred read-then-write failed in 1 ms, the same statements
+   * under `BEGIN IMMEDIATE` waited 956 ms.  (A deferred transaction whose
+   * first statement is a write does honour the timeout — 940 ms — which is why
+   * the tag backfill below can keep using the driver helper.)
+   *
+   * `adaptSqliteDatabase` reached the same conclusion from the correctness
+   * side; the two now agree, which also shrinks the delta for #491.
+   */
+  private inWriteTransaction<T>(db: SqliteDb, body: () => T): T {
+    db.exec('BEGIN IMMEDIATE');
+    try {
+      const result = body();
+      db.exec('COMMIT');
+      return result;
+    } catch (e) {
+      // Best-effort: SQLite may have rolled back already (a constraint failure
+      // can do it), and that must not mask the original error.  A failed
+      // `BEGIN IMMEDIATE` also lands here with nothing to undo.
+      try { db.exec('ROLLBACK'); } catch { /* already rolled back */ }
+      throw e;
+    }
+  }
+
   private async init(): Promise<void> {
     const driver = this.options.driver ?? await getSqliteDriver();
     const db = driver.open(this.options.path ?? ':memory:');
+    // Before the DDL, not after: `CREATE TABLE` takes the write lock itself,
+    // so a second process starting against the same file is the first thing
+    // that can hit SQLITE_BUSY.
+    applySqliteBusyTimeout(db, this.options.busyTimeoutMs);
     const tagsTable = `${this.table}_tags`;
     const metaTable = `${this.table}_meta`;
     db.exec(`

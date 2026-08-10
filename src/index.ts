@@ -296,6 +296,12 @@ export {
   InMemorySnapshotStore,
   SqliteJournal,
   SqliteSnapshotStore,
+  // The lock-wait budget every SQLite handle gets, and the seam that opens
+  // one.  Both were reachable only through the internal barrel, which left
+  // the `busyTimeoutMs` default unobservable from outside the package and the
+  // documented "share ONE handle across stores" route unusable (#124).
+  DEFAULT_SQLITE_BUSY_TIMEOUT_MS,
+  buildSqliteDatabase,
   JournalConcurrencyError,
   JournalError,
   everyNEvents,
