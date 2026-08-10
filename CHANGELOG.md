@@ -11,6 +11,70 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Added
 
+- **Scatter/gather router** (#153).
+  `Router.scatterGatherFirstCompleted(size, routee, options?,
+  routeeOptions?)` asks every routee at once and answers the caller with the
+  first reply — Akka's `ScatterGatherFirstCompletedPool`, the hedged-request
+  pattern for tail latency.  The fan-out is fired without being awaited in
+  the handler, so concurrent scatters overlap instead of serialising the
+  router's mailbox; every failure rejects with an `AggregateError` carrying
+  one error per routee (the message distinguishes "nobody replied in time"
+  from "everyone failed"); the winning reply is attributed to the routee
+  that produced it; and stopping or restarting the router fails its open
+  scatters immediately rather than running out the configured clock.
+  Configured through the new `ScatterGatherOptions` (`withTimeoutMs`,
+  default 5 000 ms, validated at the factory call), instrumented with
+  `router_scatter_gather_resolved_total{outcome}` and
+  `router_scatter_gather_latency_seconds`, and documented on the new
+  bilingual `routing/scatter-gather` page.
+- **TCP listener actor** (#158).  `TcpServerActor` binds a port and serves
+  every connection it accepts, closing the one half of the raw-TCP API that
+  was genuinely missing — framing applied per accepted connection with its
+  own re-assembly buffer, TLS and mTLS through the same cross-runtime TCP
+  layer the cluster transport uses, and a `maxConnections` admission cap
+  that refuses at the door rather than accepting a socket nobody reads from.
+  Connections are addressed by an opaque `connectionId` instead of getting
+  an actor each, because an actor's restart semantics cannot resurrect a
+  peer's TCP connection; the configured `target` receives one kind-tagged
+  union (`connectionOpened` / `frame` / `connectionClosed`) and the actor
+  takes `send` and `close` for a single connection.  A frame past its size
+  cap drops only the offending connection, a half-configured `tls`
+  credential fails the actor's start instead of retrying forever behind the
+  reconnect policy (#144), and `outboundBuffer` defaults to `0` because a
+  write buffered while the port is down names a connection id that can never
+  come back.  Configurable under `actor-ts.io.broker.tcp-server`; `tls` is
+  code-only on purpose, since a config file is the wrong place for a private
+  key.
+- **`TcpFraming` moved to its own module** (#158).  The three framing
+  strategies and their two size caps are now shared by `TcpSocketActor` and
+  `TcpServerActor` rather than copied, so the parsing that four open
+  security issues hang off exists once.  Behaviour is unchanged and the
+  package-root export is unchanged; only a deep import of `TcpFraming` from
+  `io/broker/TcpSocketActor.js` has to move to `io/broker/TcpFraming.js`.
+- **Cluster subscriptions: `CurrentClusterState` snapshot replay +
+  `ReachabilityChanged`** (#161).  `cluster.subscribe(listener, {
+  replayMode: 'snapshot' })` replaces the per-member replay burst with one
+  `CurrentClusterState` carrying the members, the unreachable subset and the
+  leader — one callback instead of one per member, and it marks where the
+  replay ends, which the event form cannot; the default stays `'events'`,
+  unchanged for every existing subscriber.  The same change fixes what that
+  replay used to say: it walked the raw member map and stopped after `up`,
+  so a `removed` tombstone — kept for up to `tombstoneTtlMs`, a day by
+  default — was replayed as `MemberJoined` for that whole day, and an
+  `unreachable`, `leaving` or `down` member reached a late subscriber as
+  nothing but `joined`.  The replay now follows `getMembers()` in address
+  order and announces each member in the status it actually holds.
+  `ReachabilityChanged(address, reachable)` is new alongside it:
+  `MemberUnreachable` is a membership transition, so it also fires for a
+  peer that *someone else* stopped hearing from — status travels in gossip —
+  and it is only ever emitted for a member that was `up`, leaving a peer
+  that falls silent while `joining` or `leaving` with no reachability signal
+  at all; the new event is strictly the local failure detector's verdict,
+  emitted on transition.  It carries no observer set — that needs an
+  observer-to-subject table on the wire.  `MockCluster.subscribe` mirrors
+  the real replay event for event, and the DevTools `cluster` stream gains a
+  `reachability-changed` payload.
+
 - **JetStream Key-Value actor** (#74).  `JetStreamKeyValueActor` +
   `JetStreamKeyValueOptions` bring JetStream's KV view into the actor
   system: `put` (with an optional `expectedRevision` for compare-and-swap

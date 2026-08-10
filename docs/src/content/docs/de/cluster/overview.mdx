@@ -175,6 +175,48 @@ Der Event-Stream des Clusters legt jeden Übergang offen — abonniere
 `MemberUp` / `MemberRemoved` / `MemberUnreachable` etc. und
 reagiere.
 
+### Abonnieren, und was das Replay dir sagt
+
+`cluster.subscribe(listener)` beginnt damit, die **bereits bestehende
+Mitgliedschaft erneut abzuspielen** — ein Listener, der sich zehn
+Minuten nach dem Start anhängt, erfährt so trotzdem die Welt, der er
+beitritt, statt auf die nächste Änderung zu warten.  Zwei Formen, pro
+Subscription wählbar:
+
+```ts
+import { CurrentClusterState } from 'actor-ts';
+
+// 'events' (der Standard) — die Mitgliedschaft als die Events, die sie
+// gebaut haben: MemberJoined pro Member, dann das Status-Event, das dieses
+// Member erreicht hat, dann LeaderChanged.  Der Handler des Live-Streams
+// deckt das Replay mit ab.
+cluster.subscribe((evt) => { /* … */ });
+
+// 'snapshot' — ein einziges CurrentClusterState, unabhängig von der
+// Cluster-Größe.
+cluster.subscribe(
+  (evt) => {
+    if (evt instanceof CurrentClusterState) {
+      console.log(`${evt.members.length} members, ${evt.unreachable.length} unreachable`);
+    }
+  },
+  { replayMode: 'snapshot' },
+);
+```
+
+Wähle `'snapshot'`, wenn der Listener wissen will, **wie der Stand
+ist**, statt nachzuvollziehen, wie es dazu kam: das ist ein Callback
+statt eines pro Member, und es markiert das Ende des Replays — was die
+Event-Form nicht kann.  `unreachable` ist eine Teilmenge von `members`
+und keine Menge daneben, und `CurrentClusterState` wird nie auf dem
+Event-Stream veröffentlicht: es beschreibt den Startpunkt genau eines
+Subscribers, nicht etwas, das dem Cluster widerfahren ist.
+
+Das Replay entspricht immer `getMembers()`: Tombstones bleiben außen
+vor, und jedes Member wird in dem Status angekündigt, den es
+tatsächlich hat — ein `unreachable`-Peer wird als unreachable
+abgespielt, nicht als frischer Join.
+
 ### Der Leader
 
 `cluster.leader()` liefert das **niedrigst-adressierte** `up`-Member —

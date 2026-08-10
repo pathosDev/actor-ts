@@ -1,9 +1,11 @@
 import { describe, expect, test } from 'bun:test';
 import { Actor } from '../../src/Actor.js';
-import { DeadLetter } from '../../src/SystemMessages.js';
+import { AskTimeoutError, DeadLetter } from '../../src/SystemMessages.js';
 import { ActorSystem } from '../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../src/ActorSystemOptions.js';
-import { LogLevel, NoopLogger } from '../../src/Logger.js';
+import { LogLevel, NoopLogger, type Logger } from '../../src/Logger.js';
+import { MetricsExtensionId } from '../../src/metrics/MetricsExtension.js';
+import type { MetricsRegistry } from '../../src/metrics/Metrics.js';
 import type { ActorFactory } from '../../src/Actor.js';
 import {
   Broadcast,
@@ -13,6 +15,7 @@ import {
   roundRobinStrategy,
   smallestMailboxStrategy,
 } from '../../src/Router.js';
+import { ScatterGatherOptions } from '../../src/ScatterGatherOptions.js';
 import type { ActorRef } from '../../src/ActorRef.js';
 import { OptionsError } from '../../src/util/OptionsValidator.js';
 import { awaitCondition } from '../util/AwaitCondition.js';
@@ -473,6 +476,335 @@ describe('Router — pool size (#455)', () => {
       label: 'the single routee handled both messages',
     });
     expect(hits.get('routee-1')).toBe(2);
+    await sys.terminate();
+  });
+});
+
+/* ------------------- ScatterGatherFirstCompleted (#153) ------------------- */
+
+/** What the scatter/gather routees recorded: what arrived, what they answered. */
+type ReplierLog = { readonly seen: string[]; readonly replied: string[] };
+
+const newReplierLog = (): ReplierLog => ({ seen: [], replied: [] });
+
+/**
+ * Routee that answers `delaysMs.get(name)` milliseconds after it is asked —
+ * on a timer rather than with an `await`, so a slow routee never parks its
+ * own mailbox and the configured delays stay independent of arrival order.
+ * That matters for the parallelism test, where the router is the only thing
+ * left that could serialise.
+ */
+function scheduledReplier(delaysMs: Map<string, number>, log: ReplierLog = newReplierLog()) {
+  return class extends Actor<string> {
+    override onReceive(message: string): void {
+      const name = this.self.path.name;
+      const reply = `${name}:${message}`;
+      log.seen.push(reply);
+      const replyTo = this.sender.toNullable();
+      const answer = (): void => { log.replied.push(reply); replyTo?.tell(reply); };
+      const delayMs = delaysMs.get(name) ?? 0;
+      if (delayMs === 0) { answer(); return; }
+      setTimeout(answer, delayMs);
+    }
+  };
+}
+
+/** Routee that never answers — drives the timeout and the shutdown paths. */
+class SilentRoutee extends Actor<string> {
+  override onReceive(_message: string): void { /* deliberately no reply */ }
+}
+
+/** Routee that answers with an `Error`, which rejects the router's own ask. */
+function refusingRoutee(log: ReplierLog) {
+  return class extends Actor<string> {
+    override onReceive(message: string): void {
+      const name = this.self.path.name;
+      log.seen.push(`${name}:${message}`);
+      this.sender.toNullable()?.tell(new Error(`${name} refused`));
+    }
+  };
+}
+
+/** What a probe actor saw — the payload plus who it was attributed to. */
+type ProbeRecord = { readonly message: unknown; readonly sender: string };
+
+function probeActor(records: ProbeRecord[]) {
+  return class extends Actor<unknown> {
+    override onReceive(message: unknown): void {
+      records.push({ message, sender: this.sender.toNullable()?.path.name ?? '<none>' });
+    }
+  };
+}
+
+/** Captures `log.warn` so the drop path can be asserted on, not just eyeballed. */
+class RecordingLogger implements Logger {
+  readonly level = LogLevel.Warn;
+  constructor(readonly warnings: string[]) {}
+  debug(): void {}
+  info(): void {}
+  warn(message: string): void { this.warnings.push(message); }
+  error(): void {}
+  withSource(): Logger { return this; }
+  withFields(): Logger { return this; }
+}
+
+/** Value of `router_scatter_gather_resolved_total` for one outcome label. */
+const resolvedCount = (registry: MetricsRegistry, outcome: string): number | undefined =>
+  registry.collect().find(
+    (s) => s.name === 'router_scatter_gather_resolved_total' && s.labels.outcome === outcome,
+  )?.value;
+
+describe('Router.scatterGatherFirstCompleted (#153)', () => {
+  test('scatters to every routee and answers with the first reply', async () => {
+    const log = newReplierLog();
+    const delays = new Map([['routee-1', 300], ['routee-2', 0], ['routee-3', 300]]);
+    const sys = newSystem('scatter-first');
+    const pool = sys.spawn(
+      Router.scatterGatherFirstCompleted(3, scheduledReplier(delays, log)),
+      'replicas',
+    );
+
+    // routee-2 is the only one that answers in this turn, and it is not the
+    // first routee — so a pool that merely picked routee-1 would fail here.
+    expect(await pool.ask<string>('q')).toBe('routee-2:q');
+    // The fan-out is the point: everyone was asked, not just the winner.  This
+    // has to be waited for rather than asserted straight away — the winner
+    // resolves the ask as soon as it answers, which can be before the other
+    // routees have had a mailbox turn at all.
+    await awaitCondition(() => log.seen.length === 3, {
+      timeoutMs: 4_000,
+      label: 'every routee received the scattered message',
+    });
+    expect(log.seen.slice().sort()).toEqual(['routee-1:q', 'routee-2:q', 'routee-3:q']);
+
+    await sys.terminate();
+  });
+
+  test('a late reply from a loser never reaches the caller a second time', async () => {
+    const log = newReplierLog();
+    const delays = new Map([['routee-1', 40], ['routee-2', 0]]);
+    const records: ProbeRecord[] = [];
+    const deadLetters: unknown[] = [];
+    const sys = newSystem('scatter-losers');
+    sys.spawn(() => new (deadLetterCollector(deadLetters))(), 'dead-letters');
+    const probe = sys.spawn(() => new (probeActor(records))(), 'probe');
+    const pool = sys.spawn(
+      Router.scatterGatherFirstCompleted(2, scheduledReplier(delays, log)),
+      'replicas',
+    );
+
+    // The tell-with-sender shape: no `ask`, the caller is a real actor.
+    pool.tell('q', probe);
+    // Wait until the LOSER has answered too — the interesting moment is after
+    // its reply has landed somewhere, not after the winner's has.
+    await awaitCondition(() => log.replied.length === 2, {
+      timeoutMs: 4_000,
+      label: 'both routees answered, winner and loser',
+    });
+    await sleep(20);
+
+    // Exactly one reply, attributed to the routee that produced it — the
+    // caller sees what it would have seen asking that routee directly.
+    expect(records).toEqual([{ message: 'routee-2:q', sender: 'routee-2' }]);
+    // The loser answered the router's own ask ref, which drops silently.  That
+    // ref is not an actor, so this is NOT a dead letter — asserting the
+    // absence is what keeps the docs honest about where losing replies go.
+    expect(deadLetters).toEqual([]);
+
+    await sys.terminate();
+  });
+
+  test('every routee failing rejects with an AggregateError carrying all of them', async () => {
+    const log = newReplierLog();
+    const sys = newSystem('scatter-all-failed');
+    const pool = sys.spawn(Router.scatterGatherFirstCompleted(3, refusingRoutee(log)), 'replicas');
+
+    let caught: unknown = null;
+    try { await pool.ask<string>('q'); } catch (e) { caught = e; }
+
+    expect(caught).toBeInstanceOf(AggregateError);
+    const aggregate = caught as AggregateError;
+    expect((aggregate.errors as Error[]).map((e) => e.message).sort())
+      .toEqual(['routee-1 refused', 'routee-2 refused', 'routee-3 refused']);
+    expect(aggregate.message).toMatch(/all 3 routees failed/);
+
+    await sys.terminate();
+  });
+
+  test('nobody answering in time rejects with the per-routee ask timeouts', async () => {
+    const sys = newSystem('scatter-timeout');
+    const hedgeOptions = ScatterGatherOptions.create().withTimeoutMs(80);
+    const pool = sys.spawn(
+      Router.scatterGatherFirstCompleted(3, SilentRoutee, hedgeOptions),
+      'replicas',
+    );
+
+    // The caller's own budget is far wider, so the router's deadline is what
+    // fires — not the ask wrapped around it.
+    let caught: unknown = null;
+    try { await pool.ask<string>('q', 4_000); } catch (e) { caught = e; }
+
+    expect(caught).toBeInstanceOf(AggregateError);
+    const aggregate = caught as AggregateError;
+    expect(aggregate.errors).toHaveLength(3);
+    for (const err of aggregate.errors as unknown[]) expect(err).toBeInstanceOf(AskTimeoutError);
+    expect(aggregate.message).toMatch(/none of 3 routees replied within 80ms/);
+
+    await sys.terminate();
+  });
+
+  test('stopping the router fails the open scatter instead of running out the clock', async () => {
+    const sys = newSystem('scatter-stop');
+    const hedgeOptions = ScatterGatherOptions.create().withTimeoutMs(2_000);
+    const pool = sys.spawn(
+      Router.scatterGatherFirstCompleted(2, SilentRoutee, hedgeOptions),
+      'replicas',
+    );
+
+    const startedAtMs = performance.now();
+    const answer = pool.ask<string>('q', 4_000);
+    // Both are user messages on one FIFO mailbox, so the scatter is already
+    // registered by the time the PoisonPill is dequeued.
+    pool.stop();
+
+    let caught: unknown = null;
+    try { await answer; } catch (e) { caught = e; }
+    const elapsedMs = performance.now() - startedAtMs;
+
+    expect((caught as Error).message).toMatch(/stopped while the scatter was still open/);
+    // Without `postStop` settling it, this would have taken the full 2 s.
+    expect(elapsedMs).toBeLessThan(1_000);
+
+    await sys.terminate();
+  });
+
+  test('a tell with no reply target is dropped with a warning, not scattered', async () => {
+    const warnings: string[] = [];
+    const log = newReplierLog();
+    const sysOptions = ActorSystemOptions.create().withLogger(new RecordingLogger(warnings));
+    const sys = ActorSystem.create('scatter-no-reply-target', sysOptions);
+    const registry = sys.extension(MetricsExtensionId).enable();
+    const pool = sys.spawn(
+      Router.scatterGatherFirstCompleted(2, scheduledReplier(new Map(), log)),
+      'replicas',
+    );
+
+    pool.tell('q');
+    await awaitCondition(() => warnings.some((w) => w.includes('no reply target')), {
+      timeoutMs: 4_000,
+      label: 'the router warned about the missing reply target',
+    });
+
+    // Warned, counted, and nothing fanned out — N times the work for a reply
+    // nobody would receive is exactly what is being avoided.
+    expect(log.seen).toEqual([]);
+    expect(resolvedCount(registry, 'no-reply-target')).toBe(1);
+
+    await sys.terminate();
+  });
+
+  test('every outcome is counted and the fan-out latency observed', async () => {
+    const sys = newSystem('scatter-metrics');
+    const registry = sys.extension(MetricsExtensionId).enable();
+
+    const fast = sys.spawn(
+      Router.scatterGatherFirstCompleted(1, scheduledReplier(new Map())),
+      'fast',
+    );
+    expect(await fast.ask<string>('q')).toBe('routee-1:q');
+
+    const hedgeOptions = ScatterGatherOptions.create().withTimeoutMs(60);
+    const slow = sys.spawn(
+      Router.scatterGatherFirstCompleted(1, SilentRoutee, hedgeOptions),
+      'slow',
+    );
+    let caught: unknown = null;
+    try { await slow.ask<string>('q', 4_000); } catch (e) { caught = e; }
+    expect(caught).toBeInstanceOf(AggregateError);
+
+    expect(resolvedCount(registry, 'first')).toBe(1);
+    expect(resolvedCount(registry, 'timeout')).toBe(1);
+    // One sample per scatter that actually ran, both outcomes included.
+    expect(registry.histogram('router_scatter_gather_latency_seconds').count).toBe(2);
+
+    await sys.terminate();
+  });
+
+  test('concurrent scatters overlap — the handler never awaits the fan-out', async () => {
+    const delayMs = 20;
+    const scatters = 500;
+    const delays = new Map([['routee-1', delayMs], ['routee-2', delayMs], ['routee-3', delayMs]]);
+    const sys = newSystem('scatter-parallel');
+    const pool = sys.spawn(
+      Router.scatterGatherFirstCompleted(3, scheduledReplier(delays)),
+      'replicas',
+    );
+
+    const startedAtMs = performance.now();
+    const answers = await Promise.all(
+      Array.from({ length: scatters }, (_, i) => pool.ask<string>(`q${i}`, 4_000)),
+    );
+    const elapsedMs = performance.now() - startedAtMs;
+
+    // Each caller got the answer to its own question, from some routee.
+    expect(answers.filter((a, i) => a.endsWith(`:q${i}`))).toHaveLength(scatters);
+    // An `async onReceive` awaiting the fan-out would hold the router's whole
+    // mailbox for one scatter at a time: 500 x 20 ms is ten seconds, twenty
+    // times this budget — and past Bun's own per-test timeout either way.
+    expect(elapsedMs).toBeLessThan(2_500);
+
+    await sys.terminate();
+  });
+
+  test('rejects a pool size that cannot scatter, and a non-positive timeout', () => {
+    for (const size of [0, -1, 2.5, Number.NaN]) {
+      expect(() => Router.scatterGatherFirstCompleted(size, SilentRoutee)).toThrow(OptionsError);
+    }
+    // The guard runs at the factory call, where the stack still points at the
+    // caller — a bad timeout must not first surface inside `preStart`.
+    for (const timeoutMs of [0, -1, Number.POSITIVE_INFINITY]) {
+      const badOptions = ScatterGatherOptions.create().withTimeoutMs(timeoutMs);
+      expect(() => Router.scatterGatherFirstCompleted(2, SilentRoutee, badOptions))
+        .toThrow(OptionsError);
+    }
+    // A plain object is the same input as the builder.
+    expect(() => Router.scatterGatherFirstCompleted(2, SilentRoutee, { timeoutMs: -5 }))
+      .toThrow(OptionsError);
+  });
+
+  test('a pool whose routees have all stopped fails the scatter instead of hanging', async () => {
+    const hits = new Map<string, number>();
+    const refs = new Map<string, ActorRef>();
+    const stopped = new Set<string>();
+    const records: ProbeRecord[] = [];
+    const sys = newSystem('scatter-empty-pool');
+    const probe = sys.spawn(() => new (probeActor(records))(), 'probe');
+    const pool = sys.spawn(
+      Router.scatterGatherFirstCompleted(2, () => new (registeringWorker(hits, refs, stopped))()),
+      'replicas',
+    );
+
+    // Warm up so both routees exist and have registered themselves, then stop
+    // them — the router prunes each on the Terminated it already watches for.
+    pool.tell('warmup', probe);
+    await awaitCondition(() => refs.size === 2, {
+      timeoutMs: 4_000,
+      label: 'both routees registered themselves',
+    });
+    for (const ref of refs.values()) ref.stop();
+    await awaitCondition(() => stopped.size === 2, {
+      timeoutMs: 4_000,
+      label: 'both routees stopped',
+    });
+    await sleep(30);
+
+    let caught: unknown = null;
+    try { await pool.ask<string>('q', 4_000); } catch (e) { caught = e; }
+
+    expect(caught).toBeInstanceOf(AggregateError);
+    expect((caught as AggregateError).errors).toEqual([]);
+    expect((caught as Error).message).toMatch(/no routees left to scatter to/);
+
     await sys.terminate();
   });
 });

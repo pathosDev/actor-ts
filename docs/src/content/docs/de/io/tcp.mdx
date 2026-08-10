@@ -1,12 +1,23 @@
 ---
 title: TCP
-description: Raw-TCP-Socket-Actor — `TcpSocketActor` für ausgehende Clients. Pro Verbindung ein Child-Actor für eingehende (über ein separates Listener-Muster). Das richtige Werkzeug, wenn du ein eigenes Binärprotokoll sprechen musst und keine der höherrangigen Optionen passt.
+description: Raw-TCP-Actors — `TcpSocketActor` wählt hinaus, `TcpServerActor` lauscht. Gemeinsames Framing, gemeinsamer Broker-Lifecycle. Das richtige Werkzeug, wenn du ein eigenes Binärprotokoll sprechen musst und keine der höherrangigen Optionen passt.
 ---
 
-`TcpSocketActor` umschließt eine **clientseitige** TCP-Verbindung.
-Zum **Lauschen** auf einem Port (eingehende TCP-Verbindungen
-annehmen) lautet das Framework-Muster: "spawne pro eingehender
-Verbindung von einem Listener-Actor genau einen Client-Actor".
+import { Aside } from '@astrojs/starlight/components';
+
+Zwei Actors, ein Protokoll:
+
+| Actor | Richtung | Besitzt |
+| --- | --- | --- |
+| `TcpSocketActor` | ausgehend — wählt einen Remote-Host | eine Verbindung |
+| `TcpServerActor` | eingehend — bindet einen lokalen Port | den Listener + jede angenommene Verbindung |
+
+Beide erben von [`BrokerActor`](/de/io/broker-actor-base/), teilen sich
+also Lifecycle, Reconnect-Policy und die `BrokerConnected`- /
+`BrokerDisconnected`-Events, und beide schneiden eingehende Bytes mit
+denselben [Framing](#framing)-Strategien.
+
+## Hinauswählen — `TcpSocketActor`
 
 ```ts
 import { ActorSystem, TcpSocketActor, TcpSocketOptions } from 'actor-ts';
@@ -15,12 +26,7 @@ const tcpSocketOptions = TcpSocketOptions.create()
   .withHost('metrics-collector.example.com')
   .withPort(8125)
   .withTarget(protocolHandler);   // erforderlich: wohin eingehende Frames gehen
-const tcp = system.spawn(
-  () => new TcpSocketActor(
-    tcpSocketOptions,
-  ),
-  'tcp-client',
-);
+const tcp = system.spawn(() => new TcpSocketActor(tcpSocketOptions), 'tcp-client');
 
 // Rohe Bytes senden:
 tcp.tell({ kind: 'send', payload: new Uint8Array([0x01, 0x02, 0x03]) });
@@ -29,7 +35,7 @@ tcp.tell({ kind: 'send', payload: new Uint8Array([0x01, 0x02, 0x03]) });
 tcp.tell({ kind: 'send', payload: 'PING\n' });
 ```
 
-## Settings
+### Settings
 
 ```ts
 interface TcpSocketOptionsType extends BrokerCommonOptionsType {
@@ -40,7 +46,7 @@ interface TcpSocketOptionsType extends BrokerCommonOptionsType {
 }
 ```
 
-## Eingehende Nachrichten
+### Eingehende Nachrichten
 
 Eingehende Frames werden direkt an den `target`-Actor gepusht, den
 du über `.withTarget(..)` verdrahtest — es gibt kein
@@ -109,27 +115,138 @@ Mit `lines` oder `length-prefixed` ist jede Nachricht, die das
 Target empfängt, **ein vollständiger Frame**, kein beliebiger
 Chunk.
 
-## Listener-Muster für eingehend
+Beide Actors lesen dieselben Strategien aus demselben Code — auf
+`TcpServerActor` wird das gewählte Framing **pro angenommener
+Verbindung** angewandt, jede mit eigenem Re-Assembly-Buffer, sodass
+zwei Clients mitten im Frame nie ineinanderlaufen.
 
-Das Framework liefert keinen "TCP-Listener-Actor" — schreib einen,
-der pro angenommener Verbindung `TcpSocketActor`-ähnliche Handler
-spawnt:
+## Lauschen — `TcpServerActor`
+
+`TcpServerActor` bindet einen Port und bedient jede eingehende
+Verbindung.  Er baut auf derselben runtime-übergreifenden
+TCP-Schicht auf wie der Cluster-Transport — Bun, Node und Deno,
+und TLS, kommen also aus einer Hand.
 
 ```ts
-// In einem Init-Actor:
-import net from 'node:net';
+import { ActorSystem, TcpServerActor, TcpServerOptions } from 'actor-ts';
 
-const server = net.createServer((socket) => {
-  const handler = system.spawn(
-    () => new IncomingConnectionActor(socket),
-  );
-});
-server.listen(port, host);
+const tcpServerOptions = TcpServerOptions.create()
+  .withBindHost('0.0.0.0')
+  .withBindPort(9000)
+  .withFraming({ kind: 'lines' })
+  .withTarget(connectionHandler);   // erforderlich: wohin Events + Frames gehen
+const server = system.spawn(() => new TcpServerActor(tcpServerOptions), 'tcp-server');
+
+// An genau eine Verbindung schreiben, adressiert über die erhaltene Id:
+server.tell({ kind: 'send', connectionId, payload: 'PONG\n' });
+
+// Eine Verbindung auflegen.  Der Listener bedient den Rest weiter:
+server.tell({ kind: 'close', connectionId });
 ```
 
-Für die meisten Anwendungsfälle gilt: **bau dir keinen eigenen
-TCP-Server** — nimm stattdessen HTTP, WebSocket oder ein
-höherrangiges Protokoll.
+### Settings
+
+```ts
+interface TcpServerOptionsType extends BrokerCommonOptionsType {
+  bindHost?:       string;                     // Default '0.0.0.0'
+  bindPort?:       number;                     // erforderlich; 0 = das OS wählt
+  framing?:        TcpFraming;                 // pro Verbindung; Default { kind: 'bytes' }
+  target?:         ActorRef<TcpServerMessage>; // erforderlich
+  tls?:            TlsTransportOptionsType;    // TLS statt Klartext ausliefern
+  maxConnections?: number;                     // Aufnahme-Limit; Default Infinity
+}
+```
+
+Mit `bindPort: 0` wählt das OS den Port — lies ihn über `boundPort`
+des Actors zurück, sobald gebunden ist.  `connectionCount` meldet
+die aktiven Verbindungen.
+
+### Eingehende Nachrichten
+
+Das `target` empfängt eine **kind-getaggte** Union, keine nackten
+Frames — ein Listener hat viele Verbindungen, also benennt jede
+Nachricht die, zu der sie gehört:
+
+```ts
+type TcpServerMessage =
+  | { kind: 'connectionOpened'; connectionId: string; remoteAddress?: string }
+  | { kind: 'frame';            connectionId: string; payload: Uint8Array | string }
+  | { kind: 'connectionClosed'; connectionId: string };
+```
+
+Ein Echo-Server sind dann die naheliegenden drei Zeilen:
+
+```ts
+class EchoHandler extends Actor<TcpServerMessage> {
+  constructor(private readonly server: ActorRef<TcpServerCommand>) { super(); }
+
+  override onReceive(message: TcpServerMessage): void {
+    match(message)
+      .with({ kind: 'connectionOpened' }, (m) => this.onConnectionOpened(m))
+      .with({ kind: 'frame' }, (m) => this.onFrame(m))
+      .with({ kind: 'connectionClosed' }, (m) => this.onConnectionClosed(m))
+      .exhaustive();
+  }
+
+  private onFrame(message: FrameMessage): void {
+    this.server.tell({ kind: 'send', connectionId: message.connectionId, payload: message.payload });
+  }
+  // …
+}
+```
+
+`connectionClosed` kommt bei jedem Ende: der Peer hat aufgelegt, die
+Verbindung ist gescheitert, du hast `close` geschickt, ein Frame hat
+sein Größenlimit gerissen, oder der Actor wurde gestoppt und hat den
+Port freigegeben.  Ein Signal, ein Codepfad.
+
+### TLS ausliefern
+
+`tls` trägt das Zertifikats-**Material** — PEM-Inhalt oder DER-Bytes,
+niemals einen Pfad.  Ein gesetztes `ca` schaltet die Prüfung von
+Client-Zertifikaten (mTLS) ein; `requestClientCert: false` erzwingt
+einseitiges TLS.
+
+```ts
+const tcpServerOptions = TcpServerOptions.create()
+  .withBindPort(9443)
+  .withTls({ cert: readFileSync('server.pem', 'utf8'), key: readFileSync('server.key', 'utf8') })
+  .withTarget(connectionHandler);
+```
+
+Ein halb konfiguriertes Credential — ein `cert` ohne `key`, oder ein
+`ca` allein — wird **beim Start des Actors abgelehnt**, nicht still im
+Klartext gebunden.  Für `tls` gibt es bewusst kein HOCON-Leaf: eine
+Config-Datei ist der falsche Ort für einen privaten Schlüssel.
+
+<Aside type="tip" title="Ein Actor, nicht einer pro Verbindung">
+  Verbindungen werden über eine opake `connectionId` adressiert,
+  statt jeweils einen eigenen Actor zu bekommen — die Restart-Semantik
+  eines Actors greift bei einem Socket nicht: ein neu gestarteter
+  Verbindungs-Actor kann die TCP-Verbindung des Peers nicht
+  wiederbeleben.  Dein `target` darf pro `connectionOpened` gern ein
+  Child spawnen, wenn es Zustand pro Verbindung braucht; erzwungen
+  wird die Allokation nicht.
+</Aside>
+
+### Grenzen
+
+- **`maxConnections`** begrenzt die gleichzeitig angenommenen
+  Verbindungen.  Eine Verbindung, die am Limit ankommt, wird sofort
+  geschlossen statt registriert — Abweisen an der Tür, statt einen
+  Socket anzunehmen, aus dem niemand liest.
+- **Ein Frame über dem `framing`-Limit trennt nur diese Verbindung.**
+  Beim Client-Actor legt derselbe Verstoß den ganzen Actor still,
+  denn dort *ist* die Verbindung der gesamte Transport; ein Listener,
+  der das genauso hielte, ließe jeden einzelnen Client den Dienst für
+  alle abschalten.
+- **`outboundBuffer` ist hier `0`** — anders als bei jedem anderen
+  Broker-Actor.  Puffern im getrennten Zustand existiert, damit eine
+  Nachricht einen Reconnect überlebt — aber "getrennt" heißt beim
+  Listener, dass der Port unten ist, und damit ist jede angenommene
+  Verbindung ohnehin weg: ein gepufferter Write benennt eine Id, die
+  nie wiederkommt.  Ein `BrokerNotConnected`-Event sagt das, ein
+  Replay nicht.
 
 ## Wann TCP
 
@@ -145,8 +262,6 @@ Drei legitime Einsatzfälle:
 Für neue Anwendungsprotokolle gilt: **greife nicht zuerst zu raw
 TCP**.  HTTP, WebSocket oder gRPC sind für fast alles die besseren
 Startpunkte.
-
-import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="TCP gibt dir Bytes, keine Nachrichten">
   ```ts

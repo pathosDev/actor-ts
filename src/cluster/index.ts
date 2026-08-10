@@ -35,17 +35,20 @@ export {
   SelfUp,
   SelfRemoved,
   LeaderChanged,
+  CurrentClusterState,
   MemberJoined,
   MemberUp,
   MemberWeaklyUp,
   MemberUnreachable,
   MemberReachable,
+  ReachabilityChanged,
   MemberDown,
   MemberLeft,
   MemberRemoved,
   ShardMapChanged,
 } from './ClusterEvents.js';
 export type { ClusterEvent } from './ClusterEvents.js';
+export type { ClusterSubscriptionReplayMode } from './Cluster.js';
 
 export { RemoteActorRef } from './RemoteActorRef.js';
 

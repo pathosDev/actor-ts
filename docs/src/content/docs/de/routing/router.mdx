@@ -7,7 +7,7 @@ description: Der lokale Pool-Router — `Router.roundRobin`, `.random`, `.broadc
 Router-Actors, beim Spawnen des Routers erstellt und von ihm
 supervised.
 
-Die API hat fünf Factories:
+Die API hat fünf One-Shot-Factories:
 
 ```ts
 Router.roundRobin(size, routee)
@@ -21,6 +21,17 @@ Jede gibt eine `ActorFactory<TMessage | Broadcast<TMessage>>` zurück —
 übergib sie an `system.spawn` oder `context.spawn` wie jeden anderen Actor.
 Der Typ-Parameter von `routee` fließt durch, die resultierende
 Ref ist also typisiert.
+
+Eine sechste Factory passt nicht in diese Form, weil sie die Antworten
+der Routees abfängt, statt weiterzuleiten und zu vergessen:
+
+```ts
+Router.scatterGatherFirstCompleted(size, routee, options?, routeeOptions?)
+```
+
+Sie fragt *jeden* Routee und antwortet dem Aufrufer mit der ersten
+Antwort — das Hedged-Request-Pattern.  Sie hat eine eigene Seite:
+[Scatter/Gather](/de/routing/scatter-gather/).
 
 ## Ein minimales Beispiel
 
@@ -222,6 +233,8 @@ import { Aside } from '@astrojs/starlight/components';
 - **[Strategien](/de/routing/strategies/)** — Round-Robin,
   Random, Broadcast, Smallest-Mailbox, Custom; plus das cluster-only
   Consistent-Hashing.
+- **[Scatter/Gather](/de/routing/scatter-gather/)** — die sechste
+  Factory: jeden Routee fragen, mit der ersten Antwort antworten.
 - **[Pool vs Group](/de/routing/pool-vs-group/)** — wenn du
   bestehende Routees statt pool-gespawnte willst.
 - **[Cluster-Router](/de/cluster/cluster-router/)** — das
