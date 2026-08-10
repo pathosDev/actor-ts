@@ -7,6 +7,7 @@ import {
   type JsonTreeEncodeOptions,
 } from '../../../src/serialization/JsonTree.js';
 import { SerializationError } from '../../../src/serialization/Serializer.js';
+import { BidirectionalMap } from '../../../src/util/BidirectionalMap.js';
 
 function rt<T>(value: T, options?: JsonTreeEncodeOptions): unknown {
   return decodeJsonTree(encodeJsonTree(value, options));
@@ -362,6 +363,84 @@ describe('JsonTree — full type fidelity (#889)', () => {
     expect(() => decodeJsonTree({ __url__: 7 })).toThrow(SerializationError);
     expect(() => decodeJsonTree({ __error__: { name: 'E' } })).toThrow(SerializationError);
     expect(() => decodeJsonTree({ __typedarray__: { kind: 'Nope', data: '' } })).toThrow(SerializationError);
+  });
+});
+
+describe('JsonTree — BidirectionalMap (#1035)', () => {
+  test('round-trips as a real instance, with the reverse direction rebuilt', () => {
+    const source = new BidirectionalMap([
+      ['a', 1],
+      ['b', 2],
+    ]);
+    const decoded = rt(source) as BidirectionalMap<string, number>;
+
+    expect(decoded).toBeInstanceOf(BidirectionalMap);
+    expect([...decoded]).toEqual([...source]);
+    // The half that is not written: it has to come back anyway.
+    expect(decoded.getKey(2)).toBe('b');
+    expect(decoded.hasValue(1)).toBe(true);
+  });
+
+  test('only the forward pairs are written', () => {
+    expect(encodeJsonTree(new BidirectionalMap([['a', 1]]))).toEqual({
+      __bidirectionalmap__: [['a', 1]],
+    });
+  });
+
+  test('it is not encoded as a plain Map, despite implementing the interface', () => {
+    const encoded = encodeJsonTree(new BidirectionalMap([['a', 1]])) as Record<string, unknown>;
+    expect(Object.keys(encoded)).toEqual(['__bidirectionalmap__']);
+  });
+
+  test('rich types survive on both the key and the value side', () => {
+    const when = new Date('2026-01-02T03:04:05.000Z');
+    const source = new BidirectionalMap<Date, bigint>([[when, 7n]]);
+    const decoded = rt(source) as BidirectionalMap<Date, bigint>;
+
+    const [key, value] = [...decoded][0]!;
+    expect(key).toBeInstanceOf(Date);
+    expect(key.toISOString()).toBe(when.toISOString());
+    expect(value).toBe(7n);
+    expect(decoded.getKey(7n)).toBeInstanceOf(Date);
+  });
+
+  test('a nested Map stays a Map inside it', () => {
+    const source = new BidirectionalMap<string, Map<string, number>>([
+      ['inner', new Map([['x', 1]])],
+    ]);
+    const decoded = rt(source) as BidirectionalMap<string, Map<string, number>>;
+
+    expect(decoded.get('inner')).toBeInstanceOf(Map);
+    expect(decoded.get('inner')?.get('x')).toBe(1);
+  });
+
+  test('one nested in an actor-state-shaped object survives', () => {
+    const state = { index: new BidirectionalMap([['a', 1]]), revision: 3 };
+    const decoded = rt(state) as typeof state;
+
+    expect(decoded.index).toBeInstanceOf(BidirectionalMap);
+    expect(decoded.index.getKey(1)).toBe('a');
+    expect(decoded.revision).toBe(3);
+  });
+
+  test('user data that merely looks like the tag is escaped, not misdecoded', () => {
+    expect(encodeJsonTree({ __bidirectionalmap__: [['a', 1]] })).toEqual({
+      __literal__: { __bidirectionalmap__: [['a', 1]] },
+    });
+    expect(rt({ __bidirectionalmap__: [['a', 1]] })).toEqual({
+      __bidirectionalmap__: [['a', 1]],
+    });
+  });
+
+  test('a malformed payload fails loudly', () => {
+    expect(() => decodeJsonTree({ __bidirectionalmap__: 'nope' })).toThrow(SerializationError);
+    expect(() => decodeJsonTree({ __bidirectionalmap__: [['a']] })).toThrow(SerializationError);
+  });
+
+  test('a cycle through it is caught, like any other container', () => {
+    const map = new BidirectionalMap<string, unknown>();
+    map.set('self', map);
+    expect(() => encodeJsonTree(map)).toThrow(/circular reference/);
   });
 });
 
