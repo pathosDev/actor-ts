@@ -62,6 +62,21 @@ move on.  See
 [Joining and seeds](/cluster/joining-and-seeds/) for the
 full join protocol.
 
+### One lookup is not an answer
+
+A provider returns whatever it can see *right now*.  During a
+simultaneous start that is a different set on every node — DNS is
+mid-propagation, a pod is `Ready` before its IP is published, the K8s
+API paginates in a partial list — and a node that joins on the first
+answer forms a cluster out of its own partial view.
+
+If your nodes start together with dynamic addresses, do not consume
+`lookup()` directly.
+**[Cluster bootstrap](/cluster/cluster-bootstrap/)** wraps any provider
+here: it polls until the returned set stops changing, then lets exactly
+one node form the cluster.  The providers on this page stay exactly as
+they are — bootstrap is a phase on top of them, not a replacement.
+
 ## Receptionist
 
 The receptionist answers: **"Which actors are registered under
@@ -169,6 +184,8 @@ Seed providers run **once**; the receptionist runs **continuously**.
 ### Related
 
 - **[Joining and seeds](/cluster/joining-and-seeds/)** —
-  the cluster-bootstrap mechanism that consumes seed providers.
+  the join handshake that consumes seed providers.
+- **[Cluster bootstrap](/cluster/cluster-bootstrap/)** —
+  stable observation over a provider, plus initial-seed election.
 - **[Cluster overview](/cluster/overview/)** — the
   membership model underneath both.

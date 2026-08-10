@@ -135,6 +135,24 @@ export const ConfigKeys = {
     },
 
     /**
+     * Stable-observation bootstrap — `actor-ts.cluster.bootstrap.*` (#148).
+     * Read once per `bootstrapCluster` call with `stableObservation` enabled,
+     * which layers them under the explicit tuning.
+     *
+     * Timing only.  The election's *outcome* (`ClusterOptions.selfElection`)
+     * is deliberately not configurable here: it differs per node by
+     * construction, and one shared value would either stop every node from
+     * starting or have all of them self-elect at once.
+     */
+    bootstrap: {
+      stableMargin: 'actor-ts.cluster.bootstrap.stable-margin',
+      pollInterval: 'actor-ts.cluster.bootstrap.poll-interval',
+      maxWait: 'actor-ts.cluster.bootstrap.max-wait',
+      requiredContactPoints: 'actor-ts.cluster.bootstrap.required-contact-points',
+      selfElectionGrace: 'actor-ts.cluster.bootstrap.self-election-grace',
+    },
+
+    /**
      * DistributedPubSub mediator tuning — `actor-ts.cluster.pub-sub.*`.
      * Read once per `DistributedPubSub.start`, which layers them under the
      * explicit options.  The three caps bound what one mediator can be made
