@@ -88,12 +88,14 @@ export type {
 } from './AmqpActor.js';
 export { AmqpOptions, AmqpOptionsBuilder, AmqpOptionsValidator } from './AmqpOptions.js';
 export type { AmqpOptionsType } from './AmqpOptions.js';
-export { GrpcClientActor } from './GrpcClientActor.js';
+export { GrpcClientActor, createGrpcStreamHandle } from './GrpcClientActor.js';
 export type {
   GrpcClientCommand,
   GrpcInbound,
   GrpcCredentials,
+  GrpcStreamHandle,
   ReplyMessage,
+  StreamStartedMessage,
   StreamDataMessage,
   StreamEndMessage,
   StreamErrorMessage,
@@ -104,6 +106,7 @@ export type { GrpcClientOptionsType } from './GrpcClientOptions.js';
 export {
   GrpcServerActor,
   GRPC_HEALTH_SERVICE_NAME,
+  buildGrpcMethodImplementation,
   grpcHealthCheckImplementation,
   isKnownGrpcServiceName,
   servingStatusOf,
@@ -112,12 +115,17 @@ export type {
   GrpcHandler,
   GrpcUnaryCall,
   GrpcServerStreamCall,
+  GrpcClientStreamCall,
   GrpcBidiCall,
+  GrpcChunkMessage,
+  GrpcEndMessage,
+  GrpcRequestStreamInbound,
   GrpcServingStatus,
   // Health-service seams (exported so a caller can host `grpc.health.v1.Health`
   // on a server it builds itself, and so the handler is testable standalone).
   GrpcHealthImplementation,
   GrpcServerUnaryRequest,
+  GrpcServerReadableCall,
   GrpcUnaryCallback,
 } from './GrpcServerActor.js';
 export { GrpcServerOptions, GrpcServerOptionsBuilder } from './GrpcServerOptions.js';

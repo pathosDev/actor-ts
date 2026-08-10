@@ -1,3 +1,4 @@
+import { match } from 'ts-pattern';
 import type { Config } from '../../config/Config.js';
 import { ConfigKeys } from '../../config/ConfigKeys.js';
 import type { ActorRef } from '../../ActorRef.js';
@@ -8,15 +9,25 @@ import type { HealthCheckRegistry, HealthCheckResult } from '../../management/He
 import { BrokerOptionsError } from './BrokerOptions.js';
 import type { GrpcServerOptions, GrpcServerOptionsType } from './GrpcServerOptions.js';
 
+type UnaryHandler = { readonly kind: 'unary'; readonly target: ActorRef<GrpcUnaryCall> };
+type ServerStreamHandler = { readonly kind: 'serverStream'; readonly target: ActorRef<GrpcServerStreamCall> };
+type ClientStreamHandler = { readonly kind: 'clientStream'; readonly target: ActorRef<GrpcClientStreamCall> };
+type BidiHandler = { readonly kind: 'bidi'; readonly target: ActorRef<GrpcBidiCall> };
+
 /**
  * gRPC handler descriptor — paired with a method name when the server
  * actor is constructed.  Each handler is a target actor that receives
- * `GrpcCall<Request, Response>` envelopes.
+ * `GrpcCall<Request, Response>` envelopes.  The four variants are the
+ * four gRPC call classes.
  */
-export type GrpcHandler =
-  | { readonly kind: 'unary'; readonly target: ActorRef<GrpcUnaryCall> }
-  | { readonly kind: 'serverStream'; readonly target: ActorRef<GrpcServerStreamCall> }
-  | { readonly kind: 'bidi'; readonly target: ActorRef<GrpcBidiCall> };
+export type GrpcHandler = UnaryHandler | ServerStreamHandler | ClientStreamHandler | BidiHandler;
+
+/** One chunk off a request stream, forwarded to an `onData` subscriber. */
+export type GrpcChunkMessage = { readonly kind: 'chunk'; readonly chunk: unknown };
+/** The client half-closed its request stream. */
+export type GrpcEndMessage = { readonly kind: 'end' };
+/** What an `onData` subscriber of a client-stream / bidi call receives. */
+export type GrpcRequestStreamInbound = GrpcChunkMessage | GrpcEndMessage;
 
 /** Inbound unary call — handler must reply via `respond`. */
 export interface GrpcUnaryCall {
@@ -39,12 +50,32 @@ export interface GrpcServerStreamCall {
   fail(message: string, code?: number): void;
 }
 
+/**
+ * Inbound client-stream call — handler consumes chunks via `onData`
+ * and answers **once** via `respond` / `respondError`.
+ *
+ * There is no `request`: a client-streaming RPC has no single request
+ * message, which is exactly what distinguishes it from a unary call.
+ * The reply half is a unary reply, which is what distinguishes it from
+ * a bidi call.
+ */
+export interface GrpcClientStreamCall {
+  readonly method: string;
+  readonly metadata: Readonly<Record<string, string>>;
+  /** Subscribe an actor to receive every inbound chunk + the end signal. */
+  onData(target: ActorRef<GrpcRequestStreamInbound>): void;
+  /** Reply with success (status OK).  Only the first call takes effect. */
+  respond(response: unknown): void;
+  /** Reply with an error.  `code` defaults to 13 (INTERNAL). */
+  respondError(message: string, code?: number): void;
+}
+
 /** Bidi call — handler receives chunks via `data` callback, sends via `send`. */
 export interface GrpcBidiCall {
   readonly method: string;
   readonly metadata: Readonly<Record<string, string>>;
   /** Subscribe an actor to receive every inbound chunk + the end signal. */
-  onData(target: ActorRef<{ readonly kind: 'chunk'; readonly chunk: unknown } | { readonly kind: 'end' }>): void;
+  onData(target: ActorRef<GrpcRequestStreamInbound>): void;
   send(chunk: unknown): void;
   complete(): void;
   fail(message: string, code?: number): void;
@@ -54,7 +85,8 @@ export interface GrpcBidiCall {
  * gRPC server actor.  Differs from the `BrokerActor` base shape — a
  * server is *bound*, not connected; there are no outbound messages
  * the actor itself produces.  Handlers run independently and forward
- * inbound calls to user-supplied target actors.
+ * inbound calls to user-supplied target actors, one per method, in all
+ * four gRPC call classes (see {@link GrpcHandler}).
  *
  * Lifecycle:
  *   - `preStart`: load proto, build server, register methods, register
@@ -162,7 +194,7 @@ export class GrpcServerActor extends Actor<unknown> {
     this.server = new grpc.Server();
     const impl: Record<string, unknown> = {};
     for (const [methodName, handler] of Object.entries(this.options.handlers ?? {})) {
-      impl[methodName] = this.buildMethodImplementation(methodName, handler);
+      impl[methodName] = buildGrpcMethodImplementation(methodName, handler);
     }
     this.server.addService(serviceConstructor.service, impl);
 
@@ -221,54 +253,125 @@ export class GrpcServerActor extends Actor<unknown> {
     ));
   }
 
-  private buildMethodImplementation(methodName: string, handler: GrpcHandler): unknown {
-    if (handler.kind === 'unary') {
-      return (call: GrpcServerUnaryRequest, cb: GrpcUnaryCallback): void => {
-        const userCall: GrpcUnaryCall = {
-          method: methodName,
-          request: call.request,
-          metadata: extractMetadata(call.metadata),
-          respond: (response) => cb(null, response),
-          respondError: (message, code) => cb({ code: code ?? GRPC_STATUS_INTERNAL, message }),
-        };
-        handler.target.tell(userCall);
-      };
-    }
-    if (handler.kind === 'serverStream') {
-      return (call: GrpcServerStreamRequest): void => {
-        let ended = false;
-        const userCall: GrpcServerStreamCall = {
-          method: methodName,
-          request: call.request,
-          metadata: extractMetadata(call.metadata),
-          send: (chunk) => { if (!ended) call.write(chunk); },
-          complete: () => { if (!ended) { ended = true; call.end(); } },
-          fail: (message, code) => { if (!ended) { ended = true; call.emit('error', { code: code ?? GRPC_STATUS_INTERNAL, message }); } },
-        };
-        handler.target.tell(userCall);
-      };
-    }
-    // bidi
-    return (call: GrpcServerDuplexCall): void => {
-      const subscribers = new Set<ActorRef<unknown>>();
-      let ended = false;
-      const userCall: GrpcBidiCall = {
-        method: methodName,
-        metadata: extractMetadata(call.metadata),
-        onData: (target) => { subscribers.add(target as ActorRef<unknown>); },
-        send: (chunk) => { if (!ended) call.write(chunk); },
-        complete: () => { if (!ended) { ended = true; call.end(); } },
-        fail: (message, code) => { if (!ended) { ended = true; call.emit('error', { code: code ?? GRPC_STATUS_INTERNAL, message }); } },
-      };
-      handler.target.tell(userCall);
-      call.on('data', (chunk) => {
-        for (const ref of subscribers) ref.tell({ kind: 'chunk', chunk } as never);
-      });
-      call.on('end', () => {
-        for (const ref of subscribers) ref.tell({ kind: 'end' } as never);
-      });
+}
+
+/* ------------------------ method implementations ------------------------ */
+
+/**
+ * Turn one `{ methodName, handler }` pair into the grpc-js service
+ * implementation function for that method.
+ *
+ * A free function, for the same reason
+ * {@link grpcHealthCheckImplementation} is one: it touches no actor
+ * state, and this way the whole call → handler → reply path of all
+ * four call classes is exercisable with plain fakes — no gRPC module,
+ * no bound socket, no actor system.
+ */
+export function buildGrpcMethodImplementation(methodName: string, handler: GrpcHandler): unknown {
+  return match(handler)
+    .with({ kind: 'unary' }, (h) => unaryImplementation(methodName, h))
+    .with({ kind: 'serverStream' }, (h) => serverStreamImplementation(methodName, h))
+    .with({ kind: 'clientStream' }, (h) => clientStreamImplementation(methodName, h))
+    .with({ kind: 'bidi' }, (h) => bidiImplementation(methodName, h))
+    .exhaustive();
+}
+
+function unaryImplementation(methodName: string, handler: UnaryHandler) {
+  return (call: GrpcServerUnaryRequest, callback: GrpcUnaryCallback): void => {
+    const userCall: GrpcUnaryCall = {
+      method: methodName,
+      request: call.request,
+      metadata: extractMetadata(call.metadata),
+      respond: (response) => callback(null, response),
+      respondError: (message, code) => callback({ code: code ?? GRPC_STATUS_INTERNAL, message }),
     };
-  }
+    handler.target.tell(userCall);
+  };
+}
+
+function serverStreamImplementation(methodName: string, handler: ServerStreamHandler) {
+  return (call: GrpcServerStreamRequest): void => {
+    let ended = false;
+    const userCall: GrpcServerStreamCall = {
+      method: methodName,
+      request: call.request,
+      metadata: extractMetadata(call.metadata),
+      send: (chunk) => { if (!ended) call.write(chunk); },
+      complete: () => { if (!ended) { ended = true; call.end(); } },
+      fail: (message, code) => { if (!ended) { ended = true; call.emit('error', { code: code ?? GRPC_STATUS_INTERNAL, message }); } },
+    };
+    handler.target.tell(userCall);
+  };
+}
+
+function clientStreamImplementation(methodName: string, handler: ClientStreamHandler) {
+  return (call: GrpcServerReadableCall, callback: GrpcUnaryCallback): void => {
+    const requests = createRequestStreamFanOut();
+    let answered = false;
+    const userCall: GrpcClientStreamCall = {
+      method: methodName,
+      metadata: extractMetadata(call.metadata),
+      onData: (target) => requests.subscribe(target),
+      // grpc-js treats a second callback as a protocol error, and the
+      // handler runs in its own actor where nothing else can see that
+      // the RPC is already answered — so the guard lives here.
+      respond: (response) => { if (!answered) { answered = true; callback(null, response); } },
+      respondError: (message, code) => {
+        if (!answered) { answered = true; callback({ code: code ?? GRPC_STATUS_INTERNAL, message }); }
+      },
+    };
+    handler.target.tell(userCall);
+    call.on('data', (chunk) => requests.emit({ kind: 'chunk', chunk }));
+    call.on('end', () => requests.emit({ kind: 'end' }));
+  };
+}
+
+function bidiImplementation(methodName: string, handler: BidiHandler) {
+  return (call: GrpcServerDuplexCall): void => {
+    const requests = createRequestStreamFanOut();
+    let ended = false;
+    const userCall: GrpcBidiCall = {
+      method: methodName,
+      metadata: extractMetadata(call.metadata),
+      onData: (target) => requests.subscribe(target),
+      send: (chunk) => { if (!ended) call.write(chunk); },
+      complete: () => { if (!ended) { ended = true; call.end(); } },
+      fail: (message, code) => { if (!ended) { ended = true; call.emit('error', { code: code ?? GRPC_STATUS_INTERNAL, message }); } },
+    };
+    handler.target.tell(userCall);
+    call.on('data', (chunk) => requests.emit({ kind: 'chunk', chunk }));
+    call.on('end', () => requests.emit({ kind: 'end' }));
+  };
+}
+
+/**
+ * Fan request-stream frames out to the handler's `onData` subscribers,
+ * holding anything that arrives before the first one shows up.
+ *
+ * The buffer is the point.  `handler.target.tell(userCall)` only
+ * *enqueues* the call — the handler actor runs a turn later, so it
+ * cannot possibly have called `onData` by the time grpc-js starts
+ * pushing chunks at us.  Without the hold, every request-stream RPC
+ * would silently lose its opening chunks, and for a client-streaming
+ * call those chunks are the entire request.
+ */
+function createRequestStreamFanOut(): {
+  subscribe(target: ActorRef<GrpcRequestStreamInbound>): void;
+  emit(message: GrpcRequestStreamInbound): void;
+} {
+  const subscribers = new Set<ActorRef<GrpcRequestStreamInbound>>();
+  const pending: GrpcRequestStreamInbound[] = [];
+  return {
+    subscribe: (target) => {
+      subscribers.add(target);
+      const replayed = pending.splice(0, pending.length);
+      for (const message of replayed) target.tell(message);
+    },
+    emit: (message) => {
+      if (subscribers.size === 0) { pending.push(message); return; }
+      for (const ref of subscribers) ref.tell(message);
+    },
+  };
 }
 
 /* --------------------------- health checking ---------------------------- */
@@ -447,6 +550,17 @@ type GrpcServerStreamRequest = {
   write(chunk: unknown): void;
   end(): void;
   emit(event: 'error', err: { code: number; message: string }): void;
+};
+
+/**
+ * grpc-js `ServerReadableStream` — a client-streaming call reads the
+ * request stream and answers through the unary callback, so it has no
+ * `write` / `end` of its own.
+ */
+export type GrpcServerReadableCall = {
+  metadata?: { get?: (key: string) => string[] };
+  on(event: 'data', cb: (chunk: unknown) => void): void;
+  on(event: 'end', cb: () => void): void;
 };
 
 type GrpcServerDuplexCall = {
