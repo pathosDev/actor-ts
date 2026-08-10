@@ -1,3 +1,4 @@
+import { BidirectionalMap } from '../util/BidirectionalMap.js';
 import { SerializationError } from './Serializer.js';
 
 /**
@@ -10,7 +11,9 @@ import { SerializationError } from './Serializer.js';
  * are wrapped in single-key tag objects so they survive the round-trip;
  * inherently non-serialisable values (functions, symbols, `Promise`,
  * `WeakMap`/`WeakSet`, cycles) throw a `SerializationError` instead of
- * degrading silently.
+ * degrading silently.  `BidirectionalMap` is tagged too — the only framework
+ * class here, because a collection that cannot be held in persistent state is
+ * not much of a collection.
  *
  * The format is append-only stable: rows written with these tags must stay
  * readable by every future version.  Plain JSON written before the tags
@@ -24,6 +27,14 @@ const DATE_TAG = '__date__';
 const BYTES_TAG = '__bytes__';
 const MAP_TAG = '__map__';
 const SET_TAG = '__set__';
+/**
+ * The one framework class with a tag of its own.  A `BidirectionalMap` in an
+ * actor's state would otherwise fall to `encodeObject` and come back as a
+ * plain `{ forward, reverse }` — data intact, class gone.  Tagging it here is
+ * what lets it be held in persistent state at all, with no adapter and no
+ * registration, exactly like the `Map` it wraps.
+ */
+const BIDIRECTIONAL_MAP_TAG = '__bidirectionalmap__';
 const BIGINT_TAG = '__bigint__';
 /** Non-finite numbers and `-0` — plain JSON silently turns them into `null` / `0`. */
 const NUMBER_TAG = '__number__';
@@ -61,7 +72,7 @@ const LITERAL_TAG = '__literal__';
 export const SERIALIZED_TAG = '__serialized__';
 
 const RESERVED_TAGS: ReadonlySet<string> = new Set([
-  DATE_TAG, BYTES_TAG, MAP_TAG, SET_TAG, BIGINT_TAG,
+  DATE_TAG, BYTES_TAG, MAP_TAG, SET_TAG, BIDIRECTIONAL_MAP_TAG, BIGINT_TAG,
   NUMBER_TAG, UNDEFINED_TAG, REGEXP_TAG, URL_TAG, ERROR_TAG, TYPEDARRAY_TAG,
   LITERAL_TAG, SERIALIZED_TAG,
 ]);
@@ -143,6 +154,10 @@ function encodeNode(value: unknown, context: EncodeContext, allowToJson: boolean
   if (typeof value === 'bigint') return { [BIGINT_TAG]: value.toString() };
   if (value instanceof Date) return { [DATE_TAG]: value.toISOString() };
   if (value instanceof Uint8Array) return { [BYTES_TAG]: toBase64(value) };
+  // Ahead of the `Map` branch on purpose.  `BidirectionalMap` only implements
+  // the interface today, so `instanceof Map` does not catch it — but if that
+  // ever changes, the wrong branch would silently start dropping the class.
+  if (value instanceof BidirectionalMap) return encodeBidirectionalMap(value, context);
   if (value instanceof Map) return encodeMap(value, context);
   if (value instanceof Set) return encodeSet(value, context);
   if (ArrayBuffer.isView(value) || value instanceof ArrayBuffer) return encodeBinaryView(value, context);
@@ -186,23 +201,53 @@ function enterContainer(container: object, context: EncodeContext): void {
   context.ancestors.add(container);
 }
 
+/**
+ * Entry pairs, encoded.  Shared by the `Map` and `BidirectionalMap` tags —
+ * they differ only in the tag they are filed under, and a second copy of this
+ * loop would be a second place for the `undefined`-in-value-position rule to
+ * drift.  The caller owns `enterContainer` / `ancestors.delete`.
+ */
+function encodeEntryPairs(
+  entries: Iterable<readonly [unknown, unknown]>,
+  context: EncodeContext,
+): Array<[unknown, unknown]> {
+  const encoded: Array<[unknown, unknown]> = [];
+  let index = 0;
+  for (const [key, entryValue] of entries) {
+    context.path.push(index);
+    const encodedKey = encodeNode(key, context, true);
+    const encodedValue = encodeNode(entryValue, context, true);
+    context.path.pop();
+    encoded.push([
+      encodedKey === OMITTED ? { [UNDEFINED_TAG]: true } : encodedKey,
+      encodedValue === OMITTED ? { [UNDEFINED_TAG]: true } : encodedValue,
+    ]);
+    index++;
+  }
+  return encoded;
+}
+
 function encodeMap(map: ReadonlyMap<unknown, unknown>, context: EncodeContext): unknown {
   enterContainer(map, context);
   try {
-    const entries: Array<[unknown, unknown]> = [];
-    let index = 0;
-    for (const [key, entryValue] of map.entries()) {
-      context.path.push(index);
-      const encodedKey = encodeNode(key, context, true);
-      const encodedValue = encodeNode(entryValue, context, true);
-      context.path.pop();
-      entries.push([
-        encodedKey === OMITTED ? { [UNDEFINED_TAG]: true } : encodedKey,
-        encodedValue === OMITTED ? { [UNDEFINED_TAG]: true } : encodedValue,
-      ]);
-      index++;
-    }
-    return { [MAP_TAG]: entries };
+    return { [MAP_TAG]: encodeEntryPairs(map.entries(), context) };
+  } finally {
+    context.ancestors.delete(map);
+  }
+}
+
+/**
+ * Only the forward direction is written — the reverse map is fully determined
+ * by it, so storing both would double the row for nothing and give a decoder
+ * two sources of truth to disagree about.
+ */
+function encodeBidirectionalMap(
+  map: BidirectionalMap<unknown, unknown>,
+  context: EncodeContext,
+): unknown {
+  enterContainer(map, context);
+  try {
+    return { [BIDIRECTIONAL_MAP_TAG]: encodeEntryPairs(map.entries(), context) };
   } finally {
     context.ancestors.delete(map);
   }
@@ -362,6 +407,21 @@ function decodeTagged(key: string, obj: Record<string, unknown>): unknown {
       if (!Array.isArray(entries)) throw malformedTag(MAP_TAG, 'an array of entry pairs');
       return new Map(entries.map((entry) => {
         if (!Array.isArray(entry) || entry.length !== 2) throw malformedTag(MAP_TAG, 'an array of entry pairs');
+        return [decodeJsonTree(entry[0]), decodeJsonTree(entry[1])] as [unknown, unknown];
+      }));
+    }
+    case BIDIRECTIONAL_MAP_TAG: {
+      const entries = obj[BIDIRECTIONAL_MAP_TAG];
+      if (!Array.isArray(entries)) {
+        throw malformedTag(BIDIRECTIONAL_MAP_TAG, 'an array of entry pairs');
+      }
+      // The constructor rebuilds the reverse direction from these pairs, so a
+      // row that somehow carries a duplicate value resolves last-wins rather
+      // than restoring a map whose two halves disagree.
+      return new BidirectionalMap(entries.map((entry) => {
+        if (!Array.isArray(entry) || entry.length !== 2) {
+          throw malformedTag(BIDIRECTIONAL_MAP_TAG, 'an array of entry pairs');
+        }
         return [decodeJsonTree(entry[0]), decodeJsonTree(entry[1])] as [unknown, unknown];
       }));
     }

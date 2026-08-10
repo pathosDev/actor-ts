@@ -58,10 +58,12 @@ Binärformat statt als getaggten JSON-Text:
 | **`bigint`** | `{"__bigint__":"…"}`-Tag-Objekt | Bignum-Tag 2 / 3 (kompakt) |
 
 Ein Vorbehalt läuft in die andere Richtung: `JsonSerializer`
-erhält `Map` und `Set` (über `__map__` / `__set__`-Tags), aber
-`CborSerializer` **nicht** — eine `Map` / `Set` wird zu einem
-leeren `{}` kodiert und ihre Einträge gehen verloren.  Konvertiere
-sie vor einem CBOR-Round-Trip in Arrays / Plain-Objekte.
+erhält `Map`, `Set` und
+[`BidirectionalMap`](/de/reference/utility-helpers/#bidirectionalmap--eine-map-mit-gepflegter-umkehrung)
+(über `__map__` / `__set__` / `__bidirectionalmap__`-Tags), aber
+`CborSerializer` **nicht** — jede wird zu einem leeren `{}` kodiert
+und ihre Einträge gehen verloren.  Konvertiere sie vor einem
+CBOR-Round-Trip in Arrays / Plain-Objekte.
 
 ## CBOR zum Extension-Default machen
 

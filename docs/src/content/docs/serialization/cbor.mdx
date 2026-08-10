@@ -56,9 +56,11 @@ tagged JSON text:
 | **`Date`** | `{"__date__":"…"}` tag object | tag 1 + epoch (compact) |
 | **`bigint`** | `{"__bigint__":"…"}` tag object | bignum tag 2 / 3 (compact) |
 
-One caveat cuts the other way: `JsonSerializer` preserves `Map`
-and `Set` (via `__map__` / `__set__` tags), but `CborSerializer`
-does **not** — a `Map` / `Set` encodes to an empty `{}` and its
+One caveat cuts the other way: `JsonSerializer` preserves `Map`,
+`Set` and
+[`BidirectionalMap`](/reference/utility-helpers/#bidirectionalmap--a-map-with-a-maintained-inverse)
+(via `__map__` / `__set__` / `__bidirectionalmap__` tags), but
+`CborSerializer` does **not** — each encodes to an empty `{}` and its
 entries are lost.  Convert them to arrays / plain objects before a
 CBOR round-trip.
 
