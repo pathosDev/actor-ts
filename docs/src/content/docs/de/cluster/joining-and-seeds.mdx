@@ -71,6 +71,7 @@ Die seed-bezogenen Knöpfe:
 | --- | --- | --- |
 | `seeds` | `[]` | Liste von `"host:port"`-Strings. Leer = "ich bin der erste". |
 | `seedRetryIntervalMs` | 3000 | Falls kein Seed antwortet, wiederhole die Liste so oft, bis einer antwortet. |
+| `selfElection` | `'immediate'` | Wann dieser Node allein einen Cluster bilden darf: `'immediate'` (nur bei leerer Seed-Liste), `'never'`, oder eine Frist in Millisekunden. Wird vom [Cluster-Bootstrap](/de/cluster/cluster-bootstrap/) gesetzt. |
 
 ## Der erste Node
 
@@ -94,41 +95,48 @@ Das macht die Single-Node-Entwicklung trivial — keine zu pflegende
 Seed-Liste. Füge später einen zweiten Node hinzu, indem du ihm die
 Adresse des ersten als Seed gibst.
 
-**Für Produktion** gib jedem Node dieselbe Seed-Liste (3-5 Adressen,
-idealerweise bekannte Nodes, von denen du keinen Wechsel erwartest).
-Reihenfolge spielt keine Rolle; der Joiner probiert jeden.
+**Für Produktion** bestimme einen Node mit leerer Seed-Liste und gib
+den übrigen dessen Adresse — oder, besser, nutze den
+[Cluster-Bootstrap](/de/cluster/cluster-bootstrap/), der einen
+festgelegten ersten Node überflüssig macht.
 
-## Selbst-seedende Nodes — das Bootstrap-Rennen
+## Die symmetrische Seed-Liste startet nicht kalt
+
+Es liegt nahe, jedem Node dieselbe Liste mit allen Nodes zu geben.
+Diese Konfiguration **bildet nie einen Cluster**:
 
 ```mermaid
 sequenceDiagram
   participant N1 as n1
   participant N2 as n2
   participant N3 as n3
-  Note over N1,N3: Alle drei frisch, alle in Seed-Liste [n1, n2, n3]
-  N1->>N2: Seed kontaktieren
-  N2-->>N1: noch kein Cluster / Timeout
-  N1->>N3: Seed kontaktieren
-  N3-->>N1: noch kein Cluster / Timeout
-  N1->>N1: sich selbst kontaktieren → erkennt sich, bootstrapt automatisch
-  Note over N1: n1 ist jetzt Leader
-  N2->>N1: Seed kontaktieren
-  N1-->>N2: tritt über mich bei
-  N3->>N1: Seed kontaktieren
-  N1-->>N3: tritt über mich bei
+  Note over N1,N3: All three fresh, all given seed list [n1, n2, n3]
+  Note over N1: filters itself out → seeds = [n2, n3] → not empty
+  N1->>N2: join announcement
+  N1->>N3: join announcement
+  Note over N2,N3: same on both — everyone waits to be let in
+  Note over N1,N3: no member is `up`, so there is no leader,<br/>so nobody is ever promoted
 ```
 
-Wenn ein Cluster aus dem Kaltstart hochfährt (alle Nodes kommen
-gleichzeitig hoch), liefern sich die Joiner ein Rennen. Die
-Seed-Retry-Logik des Frameworks regelt das:
+`Cluster` entfernt die eigene Adresse aus der Seed-Liste, also bleibt
+bei einer symmetrischen Liste **keinem** Node die leere Liste, die
+`selfElection: 'immediate'` verlangt. Jeder Node bleibt für immer
+`joining`; es gibt keinen Leader, und der Leader ist es, der
+`joining → up` befördert.
 
-- Jeder Node wiederholt seine Seed-Liste in `seedRetryIntervalMs`.
-- Irgendwann kontaktiert ein Node zuerst sich selbst; das ist der
-  Bootstrap.
-- Der Rest konvergiert auf den jetzt existierenden Cluster.
+Zwei Auswege:
 
-Der Standard-Retry von 3 Sekunden macht die Kaltstart-Konvergenz in
-wenigen Runden zuverlässig.
+- **Ein festgelegter erster Node** mit `seeds: []`, der Rest zeigt auf
+  ihn. Einfach, aber dieser Node ist beim Start etwas Besonderes — was
+  Container und Autoscaler unhandlich machen.
+- **[Cluster-Bootstrap](/de/cluster/cluster-bootstrap/)** — jeder Node
+  bekommt dieselbe Konfiguration, und das Framework wählt genau einen
+  aus, der den Gleichstand bricht. Das ist die Wahl, sobald Nodes
+  gleichzeitig starten.
+
+Die Retry-Schleife über `seedRetryIntervalMs` bleibt wichtig, löst aber
+ein anderes Problem: einen Seed, der *irgendwann* erreichbar ist. Ein
+erstes Mitglied kann sie nicht herbeizaubern.
 
 ## Seed-Discovery — jenseits einer statischen Liste
 
@@ -226,10 +234,10 @@ import { Aside } from '@astrojs/starlight/components';
   Sobald die Partition geheilt ist, *merged* das Gossip-Protokoll
   die beiden Cluster nicht automatisch — sie sind unabhängig.
   Mildere das mit einer Downing-Strategie
-  ([Downing-Strategien](/de/cluster/downing-strategies/)) und
-  **bootstrappe nach Möglichkeit nicht während einer Partition**
-  (nutze eine Seed-Strategie, die fail-fast statt
-  selbst-bootstrap-bei-keiner-Antwort verfährt — siehe Weakly-up).
+  ([Downing-Strategien](/de/cluster/downing-strategies/)) und mit dem
+  [Cluster-Bootstrap](/de/cluster/cluster-bootstrap/), der genau einen
+  Node berechtigt, einen Cluster zu bilden, und gar nicht erst
+  entscheidet, solange Discovery ihre Meinung ändert.
 </Aside>
 
 <Aside type="caution" title="Hostname-vs-IP-Mismatch">
@@ -251,6 +259,8 @@ import { Aside } from '@astrojs/starlight/components';
 
 - **[Cluster-Überblick](/de/cluster/overview/)** — das größere
   Bild.
+- **[Cluster-Bootstrap](/de/cluster/cluster-bootstrap/)** — Stable
+  Observation und Initial-Seed-Wahl für gleichzeitige Starts.
 - **[Weakly-up](/de/cluster/weakly-up/)** — Gradual-Join-Semantik
   für langsame Konvergenz.
 - **[Failure Detector](/de/cluster/failure-detector/)** — wie

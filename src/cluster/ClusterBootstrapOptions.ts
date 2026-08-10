@@ -3,6 +3,7 @@ import { OptionsValidator } from '../util/OptionsValidator.js';
 import type { ActorSystemOptionsType } from '../ActorSystemOptions.js';
 import type { SeedProvider } from '../discovery/index.js';
 import type { ClusterOptionsType } from './ClusterOptions.js';
+import type { StableObservationTuning } from './bootstrap/StableObservationOptions.js';
 
 /**
  * Options accepted by {@link Cluster.bootstrap}.  Everything is
@@ -74,6 +75,35 @@ export type ClusterBootstrapOptionsType = {
     | 'config'
     | SeedProvider
     | { readonly providers: ReadonlyArray<SeedProvider> };
+
+  /**
+   * Run the **stable-observation** phase before joining (#148).
+   *
+   *   - unset / `false` (default) — resolve the seeds once and join, the
+   *     v0.9.0 behaviour.
+   *   - `true` — poll discovery until the contact-point set has been
+   *     unchanged for the stable margin, then let exactly one node (the
+   *     lowest-addressed) form a cluster if no peer promoted it in time.
+   *   - an options object — the same, with the timings overridden.  Unset
+   *     fields fall through to `actor-ts.cluster.bootstrap.*` and then to
+   *     the built-in defaults.
+   *
+   * Turn it on wherever nodes start simultaneously and discovery is dynamic —
+   * a Kubernetes Deployment, an autoscaling group, anything where DNS
+   * propagation races pod readiness.  It closes the cold-start split brain
+   * (each node forming a cluster out of the subset it happened to see) and
+   * the symmetric-seed-list deadlock (every node listing every other, so no
+   * node has the empty seed list that `'immediate'` self-election needs).
+   *
+   * It costs at least `stableMarginMs` of startup latency and requires this
+   * node's advertised {@link host} to be a real address rather than a
+   * wildcard — the election is ordered on it (see #944).
+   *
+   * Works with an explicit {@link seeds} list too: discovery is then a fixed
+   * set, the margin is satisfied on the second poll, and what remains is the
+   * election — which is exactly what a symmetric seed list is missing.
+   */
+  readonly stableObservation?: boolean | StableObservationTuning;
 
   readonly roles?: ClusterOptionsType['roles'];
   readonly failureDetector?: ClusterOptionsType['failureDetector'];
@@ -184,6 +214,14 @@ export class ClusterBootstrapOptionsBuilder extends OptionsBuilder<ClusterBootst
   /** Discovery strategy — `'auto'`, a named provider, or a custom aggregate. */
   withDiscovery(discovery: NonNullable<ClusterBootstrapOptionsType['discovery']>): this {
     return this.set('discovery', discovery);
+  }
+
+  /**
+   * Run the stable-observation phase before joining — `true` for the
+   * defaults, or an options object to override the timings.  Default: off.
+   */
+  withStableObservation(stableObservation: boolean | StableObservationTuning = true): this {
+    return this.set('stableObservation', stableObservation);
   }
 
   /** Role tags exposed to other members. */

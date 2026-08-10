@@ -7,6 +7,36 @@ import type { FailureDetectorOptionsType } from './FailureDetectorOptions.js';
 import type { Transport } from './Transport.js';
 import type { DowningProvider } from './downing/DowningProvider.js';
 
+/**
+ * Whether — and when — this node may declare itself the first member of a
+ * new cluster, moving straight from `joining` to `up` with nobody's
+ * agreement.
+ *
+ *   - `'immediate'` (default) — self-elect at once **iff** the seed list is
+ *     empty.  The historical behaviour, and the one that makes single-node
+ *     development and the "first node has no seeds" convention work.
+ *   - `'never'` — never self-elect.  This node stays `joining` until a peer's
+ *     leader promotes it.  Correct for every node that a bootstrap election
+ *     did *not* pick: an isolated node then fails to start rather than
+ *     quietly becoming a cluster of one.
+ *   - a **number of ms** — self-elect only after that long without a peer
+ *     having promoted this node, regardless of whether the seed list is
+ *     empty.  This is the policy the stable-observation bootstrap hands the
+ *     node it elected as initial seed (#148).
+ *
+ * The delay is what makes an address-ordered election safe against an
+ * existing cluster.  A node that wins the election because its address sorts
+ * first may still be joining a cluster that is already running — a scale-up
+ * or a rolling restart puts new addresses at arbitrary positions in the
+ * order.  Because the elected node contacts its seeds like everyone else and
+ * only self-elects if that produced nothing, an existing cluster promotes it
+ * long before the deadline and no rival cluster is ever formed.  Self-electing
+ * *immediately* on winning the election, as the naive reading of "lowest
+ * address becomes the seed" suggests, would create exactly the split-brain the
+ * election exists to prevent.
+ */
+export type SelfElectionPolicy = 'immediate' | 'never' | number;
+
 /** Plain options-object shape accepted by {@link Cluster.join}. */
 export type ClusterOptionsType = {
   readonly host: string;
@@ -76,6 +106,18 @@ export type ClusterOptionsType = {
    * to disable.  Default: 0 (disabled — opt-in only).
    */
   readonly weaklyUpAfterMs?: number;
+  /**
+   * When this node may declare itself the first member of a new cluster —
+   * see {@link SelfElectionPolicy}.  Default: `'immediate'`.
+   *
+   * Deliberately absent from {@link ClusterConfigDefaults}: it is per-node
+   * identity, not tuning, exactly like `seeds` and `roles`.  A HOCON leaf
+   * would be applied to every node of a deployment identically, and both
+   * uniform answers are wrong — all-`'never'` never starts a cluster, and
+   * all-`<delay>` has every node self-elect at the same moment, which is the
+   * split brain this option exists to close.
+   */
+  readonly selfElection?: SelfElectionPolicy;
   /**
    * Optional split-brain resolver.  When provided, the cluster invokes
    * `provider.decide(view)` whenever a member transitions to / from
@@ -224,6 +266,15 @@ export class ClusterOptionsBuilder extends OptionsBuilder<ClusterOptionsType> {
     return this.set('weaklyUpAfterMs', ms);
   }
 
+  /**
+   * When this node may declare itself the first member of a new cluster.
+   * `'immediate'` (default), `'never'`, or a millisecond delay — see
+   * {@link SelfElectionPolicy}.
+   */
+  withSelfElection(selfElection: SelfElectionPolicy): this {
+    return this.set('selfElection', selfElection);
+  }
+
   /** Optional split-brain resolver (KeepMajority, KeepOldest, …). */
   withDowning(downing: DowningProvider): this {
     return this.set('downing', downing);
@@ -250,7 +301,7 @@ export class ClusterOptionsValidator extends OptionsValidator<ClusterOptionsType
   constructor() {
     super('ClusterOptions');
   }
-  protected rules(_s: Partial<ClusterOptionsType>): void {
+  protected rules(s: Partial<ClusterOptionsType>): void {
     this.nonEmptyString('host');
     // A positive integer, not port() [1..65535]: with InMemoryTransport the
     // port is a synthetic node-address discriminator (tests use e.g. 89001),
@@ -276,6 +327,22 @@ export class ClusterOptionsValidator extends OptionsValidator<ClusterOptionsType
     // sharding entity cap.
     this.nonNegativeInt('maxMembers');
     this.nonNegativeInt('maxTombstones');
+    // A keyword-or-duration union, so the field helpers (which are keyed on a
+    // single value type) cannot express it — checked by hand, the same shape
+    // `ClusterBootstrapOptionsValidator` uses for `awaitReady`.  `0` is
+    // rejected rather than read as "immediately": that meaning already has a
+    // spelling, and the two differ (`'immediate'` needs an empty seed list,
+    // `0` would not), so silently accepting it would make the distinction
+    // depend on which of two equivalent-looking values was written.
+    const selfElection = s.selfElection;
+    if (selfElection !== undefined && selfElection !== 'immediate' && selfElection !== 'never'
+      && (typeof selfElection !== 'number' || !Number.isFinite(selfElection) || selfElection <= 0)) {
+      this.fail(
+        'selfElection',
+        "must be 'immediate', 'never', or a positive number of ms",
+        selfElection,
+      );
+    }
   }
 }
 
@@ -283,10 +350,12 @@ export class ClusterOptionsValidator extends OptionsValidator<ClusterOptionsType
  * The slice of cluster settings HOCON can supply — `actor-ts.cluster.*`
  * plus the bind address and wire cap under `actor-ts.remote.*`.
  *
- * `seeds`, `roles`, `transport` and `downing` are absent on purpose:
- * the last two are objects HOCON cannot express, and the first two are
- * per-deployment identity rather than tuning — they belong at the join
- * site where the node knows who it is.
+ * `seeds`, `roles`, `selfElection`, `transport` and `downing` are absent on
+ * purpose: the last two are objects HOCON cannot express, and the first three
+ * are per-deployment identity rather than tuning — they belong at the join
+ * site where the node knows who it is.  `selfElection` is the sharpest of the
+ * three, because a shared value is not merely useless but actively unsafe —
+ * see the field's own doc.
  */
 export type ClusterConfigDefaults = Partial<Pick<
   ClusterOptionsType,
