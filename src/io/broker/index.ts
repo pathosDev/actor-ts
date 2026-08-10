@@ -101,12 +101,24 @@ export type {
 } from './GrpcClientActor.js';
 export { GrpcClientOptions, GrpcClientOptionsBuilder, GrpcClientOptionsValidator } from './GrpcClientOptions.js';
 export type { GrpcClientOptionsType } from './GrpcClientOptions.js';
-export { GrpcServerActor } from './GrpcServerActor.js';
+export {
+  GrpcServerActor,
+  GRPC_HEALTH_SERVICE_NAME,
+  grpcHealthCheckImplementation,
+  isKnownGrpcServiceName,
+  servingStatusOf,
+} from './GrpcServerActor.js';
 export type {
   GrpcHandler,
   GrpcUnaryCall,
   GrpcServerStreamCall,
   GrpcBidiCall,
+  GrpcServingStatus,
+  // Health-service seams (exported so a caller can host `grpc.health.v1.Health`
+  // on a server it builds itself, and so the handler is testable standalone).
+  GrpcHealthImplementation,
+  GrpcServerUnaryRequest,
+  GrpcUnaryCallback,
 } from './GrpcServerActor.js';
 export { GrpcServerOptions, GrpcServerOptionsBuilder } from './GrpcServerOptions.js';
 export type { GrpcServerOptionsType } from './GrpcServerOptions.js';

@@ -252,12 +252,51 @@ Only `app=actor-ts` pods can reach port 2552 on each other.
 | Malformed or hostile wire frame | Shape validation at the decode boundary |
 | Peer growing a node's registries without bound | Per-registry caps on pub-sub and the receptionist |
 | Address claimed before the node that owns it exists | Tight version-skew cap on a first sighting |
+| Spoofed discovery answer steering the bootstrap | mTLS, plus `pinnedAddresses` on the seed provider |
 | Compromised pod inside the cluster | Application-level auth (out of scope here) |
 
 The cluster transport handles transport-level security.
 Application-level concerns (auth between specific actors,
 per-tenant isolation) remain your job — the cluster
 transport is **trusted within itself**.
+
+### Where the seeds come from
+
+A seed provider asks an outside party — DNS, the K8s API — which
+addresses to talk to, and that answer arrives before any
+certificate has been checked.  It cannot let an attacker *join*
+the cluster: the address a peer claims must be vouched for by its
+certificate, so a spoofed seed produces a connection that dies at
+the handshake.
+
+That guarantee is **configuration-dependent**, which is the part
+worth stating plainly.  A node only demands a peer certificate if
+its listener was configured to request one; where TLS is off, or
+where a half-configured listener never asks, there is nothing to
+check the claimed address against and a poisoned discovery answer
+is followed as given.
+
+So pin what the resolver is allowed to say:
+
+```ts
+const dnsSeedProviderOptions = DnsSeedProviderOptions.create()
+  .withHostname('actor-ts.example.com')
+  .withSystemName('my-app')
+  .withPort(2552)
+  .withPinnedAddresses(['10.0.0.0/8'])
+  .withLog((message) => logger.warn(message));
+```
+
+Addresses outside the list never become seeds.  Details, including
+the SRV-mode caveat (targets are hostnames, so pins are suffixes
+there and the eventual A lookup stays unpinned), are on the
+[DNS seed provider](/discovery/seed-providers/dns/) and
+[Kubernetes API seed provider](/discovery/seed-providers/kubernetes-api/)
+pages.
+
+This is defence in depth: it lowers what a DNS or Endpoints
+compromise buys, and it is the only discovery-layer control left
+standing when mTLS is not in place.
 
 ## What the wire edge rejects
 

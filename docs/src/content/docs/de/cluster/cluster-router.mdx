@@ -1,6 +1,6 @@
 ---
 title: Cluster-Router
-description: Ein Router, dessen Routees dynamisch aus den Up-Mitgliedern des Clusters abgeleitet werden — ein Routee pro Node mit passender Rolle, an einem bekannten Pfad. Baut sich bei Mitgliedschaftsänderungen neu auf. Das Cluster-fähige Gegenstück zum lokalen `Router`.
+description: Ein Router, dessen Routees dynamisch aus den Up-Mitgliedern des Clusters abgeleitet werden — ein Routee pro Node mit passender Rolle, an einem bekannten Pfad. Baut sich bei Mitgliedschaftsänderungen neu auf und kann nach gemeldeter Mailbox-Tiefe routen. Das Cluster-fähige Gegenstück zum lokalen `Router`.
 ---
 
 Der lokale [`Router`](/de/routing/router/) erstellt seine Routees als
@@ -88,32 +88,38 @@ einzelne Nachricht bekommt.
 
 ```ts
 type ClusterRouterOptions<TMessage> = {
-  cluster:     Cluster;
-  routerType:  'round-robin' | 'random' | 'consistent-hashing' | 'broadcast';
-  routeePath:  string;
-  role?:       string;
-  extractKey?: (message: TMessage) => string;
+  cluster:                    Cluster;
+  routerType:                 'round-robin' | 'random' | 'consistent-hashing'
+                            | 'smallest-mailbox' | 'broadcast';
+  routeePath:                 string;
+  role?:                      string;
+  extractKey?:                (message: TMessage) => string;
+  mailboxDepthRefreshMs?:     number;
+  mailboxDepthStaleAfterMs?:  number;
 };
 ```
 
 | Feld | Erforderlich | Was |
 | --- | --- | --- |
 | `cluster` | Ja | Der Cluster — für Mitgliedschaftsverfolgung + den Wire-Transport. |
-| `routerType` | Ja | Eine der vier Strategien. |
+| `routerType` | Ja | Eine der fünf Strategien. |
 | `routeePath` | Ja | Der Pfad, an dem der Routee-Actor auf jedem Node lebt (typisch `/user/<actorName>`). |
 | `role` | Nein | Wenn gesetzt, sind nur Mitglieder mit dieser Rolle Routees. |
 | `extractKey` | Wenn `routerType: 'consistent-hashing'` | Extrahiert den Routing-Key aus einer Nachricht. |
+| `mailboxDepthRefreshMs` | Nein (Default `200`) | Nur `smallest-mailbox` — wie oft die gecachten Tiefen aufgefrischt werden. |
+| `mailboxDepthStaleAfterMs` | Nein (Default `1000`) | Nur `smallest-mailbox` — wie lange eine gecachte Tiefe zählt. `0` schaltet den Verfall aus. |
 
-## Die vier Strategien
+## Die fünf Strategien
 
 | Strategie | Was sie tut |
 | --- | --- |
 | `'round-robin'` | Ein Routee pro Nachricht, zyklisch. |
 | `'random'` | Ein Routee pro Nachricht, gleichverteilt zufällig. |
 | `'consistent-hashing'` | Pinnt gleiche `extractKey` an gleichen Routee via Rendezvous-Hashing. |
+| `'smallest-mailbox'` | Ein Routee pro Nachricht — der Node mit der kürzesten gemeldeten Warteschlange. |
 | `'broadcast'` | Schickt an jeden Routee. |
 
-Die ersten drei sind 1-von-N-Routing; Broadcast ist Fan-out. Siehe
+Die ersten vier sind 1-von-N-Routing; Broadcast ist Fan-out. Siehe
 [Strategien](/de/routing/strategies/) für die Auswahlhilfe — gleiche
 Trade-offs gelten, nur eben über Cluster-Nodes statt über
 Pool-Mitglieder verteilt.
@@ -143,6 +149,106 @@ Keys (proportional zur Hinzufügung/Entfernung), nicht alle.
 Wenn `extractKey` immer denselben Wert zurückgibt, geht jede
 Nachricht an denselben Routee (de facto ein Singleton). Stelle
 sicher, dass er über deine tatsächliche Workload variiert.
+
+### Smallest-Mailbox
+
+```ts
+const clusterRouterOptions = ClusterRouterOptions.create()
+  .withCluster(cluster)
+  .withRouterType('smallest-mailbox')
+  .withRouteePath('/user/worker')
+  .withRole('compute');
+ClusterRouter.factory(
+  clusterRouterOptions,
+);
+```
+
+Routet jede Nachricht an den Node, dessen Routee zuletzt die
+kürzeste Warteschlange gemeldet hat — das Cluster-Gegenstück zum
+lokalen [`Router.smallestMailbox`](/de/routing/strategies/). Der
+Grund, danach zu greifen, ist derselbe: wenn die Kosten pro
+Nachricht stark schwanken, teilt Round-Robin einem Node seinen
+nächsten Zug auch dann zu, wenn er noch hinterherhängt — diese
+Strategie nicht.
+
+**Sie fragt nie im Routing-Pfad.** Ein Router routet synchron; eine
+Abfrage pro Nachricht würde die gesamte Router-Mailbox hinter einen
+Netzwerk-Roundtrip parken und alles dahinter umordnen. Stattdessen
+wird die Tiefe jedes Nodes **gecacht** und auf einem
+Hintergrund-Tick aufgefrischt:
+
+```mermaid
+flowchart LR
+  subgraph A["node-A"]
+    ROUTER["ClusterRouter<br/>smallest-mailbox"]
+    CACHE[("gecachte Tiefen<br/>pro Node")]
+  end
+  subgraph B["node-B"]
+    AGENT["Mailbox-Tiefen-Agent"]
+    WORKER["/user/worker"]
+  end
+  ROUTER -- "alle mailboxDepthRefreshMs" --> AGENT
+  AGENT -- "liest die Warteschlange" --> WORKER
+  AGENT -- "Meldung" --> CACHE
+  CACHE -- "synchron gelesen,<br/>pro Nachricht" --> ROUTER
+  classDef router fill:#312e81,stroke:#818cf8,stroke-width:1.5px,color:#f1f5f9;
+  classDef agent  fill:#1e293b,stroke:#475569,color:#cbd5e1;
+  classDef cache  fill:#0f172a,stroke:#38bdf8,color:#e0f2fe;
+  class ROUTER router
+  class AGENT,WORKER agent
+  class CACHE cache
+```
+
+Der Routee ist ein ganz normaler Actor von dir und erfährt nie,
+dass er gemessen wird: ein kleiner **Framework-Agent** auf jedem
+Node antwortet für ihn und liest die Warteschlangentiefe von innen
+aus der Runtime.
+
+Was das bringt und was es kostet:
+
+- **Die Routing-Entscheidung bleibt so billig wie bei Round-Robin**
+  — ein Scan über eine lokale Map, kein `await`.
+- **Das Bild hinkt um bis zu ein Refresh-Intervall hinterher.** Ein
+  Node kann genau dann gewählt werden, wenn er gerade vollgelaufen
+  ist. Das ist eine schlechtere Entscheidung als die der lokalen
+  Strategie, nie eine falsche: die Nachricht wird zugestellt, und
+  der nächste Tick korrigiert das Bild.
+- **Ein Node ohne Antwort wird übersprungen, nicht als untätig
+  angenommen** — der schweigende Node könnte gerade der sein, der
+  kämpft. Hat *noch kein* Node geantwortet, fällt der Router auf die
+  Round-Robin-Reihenfolge zurück: ein kalter Cache ist ein
+  degradierter Router und nie eine verlorene Nachricht.
+
+#### Nodes mit Routees, aber ohne Router
+
+Ein `smallest-mailbox`-Router startet den Agenten auf **seinem
+eigenen Node**, was den Einzelnode-Fall und das übliche homogene
+Deployment abdeckt (jeder Node fährt Router *und* Routees). Auf
+einem Node, der Routees, aber keinen Router hostet, startest du ihn
+selbst:
+
+```ts
+import { ClusterMailboxDepthAgent } from 'actor-ts';
+
+const stopServingDepths = ClusterMailboxDepthAgent.serve(cluster);
+```
+
+Vergisst du es, geht nichts kaputt: dieser Node meldet dann
+schlicht nie etwas, wird also übersprungen, solange andere Nodes
+antworten — und wenn keiner antwortet, gilt die
+Round-Robin-Reihenfolge.
+
+#### Die beiden Stellschrauben
+
+`mailboxDepthRefreshMs` ist der Nachlauf des Router-Bilds und
+zugleich die Rate, mit der es ein kleines Envelope pro Routee
+kostet. `mailboxDepthStaleAfterMs` ist, wie lange eine Meldung ohne
+Nachfolger gilt — `0` behält Meldungen für immer, was nur sinnvoll
+ist, wenn dir eine alte Zahl lieber ist als die Rotation. Ein
+Fenster, das **kürzer** ist als das Refresh-Intervall, das es
+nachfüllt, wird bei der Konstruktion abgelehnt: jede Meldung
+verfiele, bevor ihr Nachfolger ankommt, und der Cache bliebe
+dauerhaft kalt.
 
 ## Routee-Discovery
 
@@ -263,7 +369,7 @@ import { Aside } from '@astrojs/starlight/components';
 - **[Pool vs. Group](/de/routing/pool-vs-group/)** — der
   konzeptionelle Unterschied zum lokalen `Router`.
 - **[Strategien](/de/routing/strategies/)** — Round-Robin /
-  Random / Consistent-Hashing im Detail.
+  Random / Smallest-Mailbox / Consistent-Hashing im Detail.
 - **[Sharding-Überblick](/de/cluster/sharding/overview/)** —
   für per-Key-Actors mit stärkeren Platzierungsgarantien.
 - **[Cluster-Überblick](/de/cluster/overview/)** — die

@@ -264,12 +264,53 @@ erreichen.
 | Fehlerhafter oder feindlicher Wire-Frame | Shape-Prüfung an der Decode-Grenze |
 | Peer lässt die Registries eines Knotens unbegrenzt wachsen | Obergrenzen pro Registry in PubSub und Receptionist |
 | Adresse beansprucht, bevor der zugehörige Knoten existiert | Enge Versions-Skew-Grenze bei der Erstsichtung |
+| Gefälschte Discovery-Antwort lenkt den Bootstrap um | mTLS, dazu `pinnedAddresses` am Seed-Provider |
 | Kompromittierter Pod im Cluster | Application-Level-Auth (hier nicht abgedeckt) |
 
 Der Cluster-Transport handhabt Transport-Level-Sicherheit.
 Application-Level-Anliegen (Auth zwischen spezifischen Actors,
 Per-Tenant-Isolation) bleiben dein Job — der Cluster-Transport
 ist **in sich selbst vertrauenswürdig**.
+
+### Woher die Seeds kommen
+
+Ein Seed-Provider fragt eine Gegenstelle außerhalb — DNS, die
+K8s-API —, mit welchen Adressen zu reden ist, und diese Antwort
+trifft ein, bevor irgendein Zertifikat geprüft wurde.  Sie kann
+einem Angreifer nicht den *Join* verschaffen: die Adresse, die ein
+Peer beansprucht, muss von seinem Zertifikat gedeckt sein, ein
+gefälschter Seed erzeugt also eine Verbindung, die am Handshake
+stirbt.
+
+Diese Garantie ist **konfigurationsabhängig**, und genau das gehört
+klar gesagt.  Ein Node verlangt nur dann ein Peer-Zertifikat, wenn
+sein Listener so konfiguriert wurde, eines anzufordern; wo TLS aus
+ist oder wo ein halb konfigurierter Listener nie danach fragt, gibt
+es nichts, wogegen die beanspruchte Adresse geprüft werden könnte —
+und eine vergiftete Discovery-Antwort wird befolgt, wie sie kommt.
+
+Pinne also, was der Resolver sagen darf:
+
+```ts
+const dnsSeedProviderOptions = DnsSeedProviderOptions.create()
+  .withHostname('actor-ts.example.com')
+  .withSystemName('my-app')
+  .withPort(2552)
+  .withPinnedAddresses(['10.0.0.0/8'])
+  .withLog((message) => logger.warn(message));
+```
+
+Adressen außerhalb der Liste werden nie zu Seeds.  Details —
+einschließlich des SRV-Vorbehalts (Ziele sind dort Hostnames, Pins
+also Suffixe, und der spätere A-Lookup bleibt ungepinnt) — stehen
+auf den Seiten zum
+[DNS Seed Provider](/de/discovery/seed-providers/dns/) und zum
+[Kubernetes-API Seed Provider](/de/discovery/seed-providers/kubernetes-api/).
+
+Das ist Defense-in-Depth: es senkt, was eine DNS- oder
+Endpoints-Kompromittierung einbringt, und es ist die einzige
+Kontrolle auf der Discovery-Ebene, die übrig bleibt, wenn mTLS
+nicht eingerichtet ist.
 
 ## Was der Wire-Rand abweist
 

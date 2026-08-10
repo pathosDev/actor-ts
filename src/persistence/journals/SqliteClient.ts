@@ -122,6 +122,45 @@ export function adaptSqliteDatabase(db: SqliteDb, ownsDatabase: boolean = true):
   };
 }
 
+/**
+ * Busy timeout applied to every SQLite handle this package opens, in
+ * milliseconds.
+ *
+ * Setting one at all is a portability fix rather than a tuning knob (#124).
+ * The drivers disagree on their built-in default — measured: `bun:sqlite` 0,
+ * `node:sqlite` 0, `better-sqlite3` 5000 — so with no explicit pragma the
+ * *same* store code fails a contended write instantly on Bun and Deno and
+ * blocks for five seconds on Node.  Identical behaviour across Bun, Node and
+ * Deno is a project-wide promise, and this broke it silently.
+ *
+ * The value is deliberately far below `better-sqlite3`'s 5000.  `SqliteDriver`
+ * is synchronous, so the busy handler blocks the whole event loop for the
+ * duration of the wait — nothing else in the process runs, cluster heartbeats
+ * included.  `defaultFailureDetectorOptions` declares a peer `unreachable`
+ * after 2000 ms and `down` after 5000 ms, so inheriting 5000 would let a
+ * single contended write stall a node long enough for its own cluster to
+ * evict it.  1000 ms caps the worst case at half the `unreachable` threshold
+ * and is still three orders of magnitude more than a local commit needs.
+ *
+ * `busyTimeoutMs: 0` opts out and restores fail-fast `SQLITE_BUSY`.
+ */
+export const DEFAULT_SQLITE_BUSY_TIMEOUT_MS = 1_000;
+
+/**
+ * Apply the busy timeout to a freshly opened handle.
+ *
+ * A `PRAGMA` value cannot be bound as a parameter, so the number is
+ * interpolated.  That is injection-safe by construction: `Math.trunc` yields
+ * a number or `NaN`, never arbitrary text.  Negative values — SQLite reads
+ * those as "retry forever", i.e. an unbounded event-loop freeze on a
+ * synchronous driver — are rejected by the option validators long before they
+ * reach here.
+ */
+export function applySqliteBusyTimeout(db: SqliteDb, busyTimeoutMs?: number): void {
+  const timeout = Math.trunc(busyTimeoutMs ?? DEFAULT_SQLITE_BUSY_TIMEOUT_MS);
+  db.exec(`PRAGMA busy_timeout = ${timeout};`);
+}
+
 /** Connection options shared by the local-SQLite relational stores. */
 export type SqliteConnection = {
   /**
@@ -133,14 +172,28 @@ export type SqliteConnection = {
    * ONE handle across stores, or to inject a fake in tests.
    */
   readonly database?: SqliteDb;
+  /**
+   * How long a blocked writer waits for the database lock before failing with
+   * `SQLITE_BUSY`, in milliseconds.  `0` disables the wait — a contended write
+   * fails immediately.  Default: {@link DEFAULT_SQLITE_BUSY_TIMEOUT_MS}.
+   *
+   * Ignored when `database` is supplied: the pragma is per connection, and a
+   * handle someone else opened is theirs to tune.
+   */
+  readonly busyTimeoutMs?: number;
 };
 
 /** Open (or pass through) the database for a store. */
 export async function buildSqliteDatabase(connection: SqliteConnection): Promise<SqliteDb> {
+  // An injected handle is left exactly as it arrived.  It is shared by
+  // definition — with the journal, the snapshot store, or a test fake — so
+  // re-tuning it here would reach across into stores that never asked.
   if (connection.database) return connection.database;
   if (connection.path === undefined) {
     throw new Error('SQLite persistence requires either `path` or a pre-opened `database`.');
   }
   const driver = await getSqliteDriver();
-  return driver.open(connection.path);
+  const db = driver.open(connection.path);
+  applySqliteBusyTimeout(db, connection.busyTimeoutMs);
+  return db;
 }

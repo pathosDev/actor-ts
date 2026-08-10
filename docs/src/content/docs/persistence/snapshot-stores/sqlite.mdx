@@ -36,16 +36,28 @@ type SqliteSnapshotStoreOptions = {
   path?:           string;     // file path, or ':memory:'
   snapshotsTable?: string;     // default 'snapshots'
   keepN?:          number;     // max snapshots kept per persistenceId, pruned on save (default 3)
+  busyTimeoutMs?:  number;     // lock-wait budget, default 1000; 0 = fail fast
   driver?:         SqliteDriver;
 };
 ```
 
-`path` and `driver` behave exactly as they do on the
-[SQLite journal](/persistence/journals/sqlite/).  There
-is **no `wal` option** here; instead the snapshot store
+`path`, `busyTimeoutMs` and `driver` behave exactly as they
+do on the [SQLite journal](/persistence/journals/sqlite/) —
+including the reason `busyTimeoutMs` has a framework-set
+default at all: the drivers ship different ones (0 ms on
+`bun:sqlite` and `node:sqlite`, 5000 ms on `better-sqlite3`),
+and the wait is synchronous, so it blocks the event loop.
+There is **no `wal` option** here; instead the snapshot store
 adds `keepN` — the maximum number of snapshots retained
 per `persistenceId`, with older ones pruned on each save
 (default `3`).
+
+```ts
+const sqliteSnapshotStoreOptions = SqliteSnapshotStoreOptions.create()
+  .withPath('/var/lib/my-app/snapshots.db')
+  .withBusyTimeoutMs(1000);
+new SqliteSnapshotStore(sqliteSnapshotStoreOptions)
+```
 
 ## Schema
 

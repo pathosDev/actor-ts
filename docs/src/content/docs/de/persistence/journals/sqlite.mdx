@@ -37,10 +37,11 @@ SQLite in den OS-Page-Cache, der beim Commit auf Disk flusht.
 
 ```ts
 type SqliteJournalOptions = {
-  path?:        string;     // Dateipfad, oder ":memory:" für ephemer
-  eventsTable?: string;     // Default "events"
-  wal?:         boolean;    // WAL-Modus aktivieren (empfohlen)
-  driver?:      SqliteDriver;   // expliziter Treiber-Override
+  path?:           string;     // Dateipfad, oder ":memory:" für ephemer
+  eventsTable?:    string;     // Default "events"
+  wal?:            boolean;    // WAL-Modus aktivieren (empfohlen)
+  busyTimeoutMs?:  number;     // Lock-Wartebudget, Default 1000; 0 = sofort scheitern
+  driver?:         SqliteDriver;   // expliziter Treiber-Override
 };
 ```
 
@@ -128,6 +129,42 @@ WAL gibt dir:
 Der Default ist *aus*, um den Defaults von SQLite zu entsprechen;
 aktiviere es explizit, wenn du in Produktion gehst.
 
+### `busyTimeoutMs`
+
+```ts
+const sqliteJournalOptions = SqliteJournalOptions.create()
+  .withPath('...')
+  .withBusyTimeoutMs(1000);
+new SqliteJournal(sqliteJournalOptions)
+```
+
+Wie lange ein Write auf das Datenbank-Lock wartet, bevor er mit
+`SQLITE_BUSY` aufgibt.  Default **1000 ms**.  `0` schaltet das Warten
+ab — ein Write unter Contention scheitert beim ersten Versuch.
+
+Diesen Wert setzt das Framework bewusst selbst, weil die Treiber sich
+nicht einig sind.  Ihre eingebauten Defaults sind 0 ms bei `bun:sqlite`
+und `node:sqlite`, aber 5000 ms bei `better-sqlite3` — ohne expliziten
+Wert würde dasselbe Journal auf Bun und Deno sofort scheitern und auf
+Node fünf Sekunden blockieren.  Das Framework prägt jeder Verbindung,
+die es öffnet, seinen eigenen Wert auf; genau das lässt die drei
+Runtimes gleich verhalten.
+
+Wähle einen eigenen Wert mit einer Sache im Kopf: die SQLite-Treiber
+sind **synchron**, das Warten ist also keine Leerlaufzeit — es
+blockiert die Event-Loop, und solange es dauert, läuft nichts anderes
+im Prozess, Cluster-Heartbeats eingeschlossen.  Deshalb liegt der
+Default bei 1000 ms statt bei den 5000 ms von `better-sqlite3`: der
+Cluster-Failure-Detector erklärt einen Node nach 2000 ms für
+unerreichbar, ein Fünf-Sekunden-Stall wäre also lang genug, damit die
+eigenen Peers einen Node aufgeben.  Erhöhe ihn nur, wenn du weißt,
+dass deine Contention kurzlebig ist und dein Node nicht im Cluster
+steht.
+
+Ein negativer Wert wird abgelehnt — SQLite liest ihn als „ewig
+weiterversuchen“, was auf einem synchronen Treiber ein unbegrenztes
+Einfrieren bedeutet.
+
 ### `driver`
 
 Das Framework erkennt den richtigen Treiber basierend auf der
@@ -191,6 +228,17 @@ const database = driver.open('./app.db');
 
 const sharedOptions = SqliteDurableStateStoreOptions.create()
   .withDatabase(database);
+```
+
+Ein Handle, das du selbst geöffnet hast, lässt der Store unangetastet
+— `busyTimeoutMs` eingeschlossen: der Store wendet es nur auf
+Verbindungen an, die er selbst öffnet, denn das Pragma gilt pro
+Verbindung, und ein geteiltes Handle nachzujustieren würde in jeden
+anderen Store darauf hineingreifen.  Setze es auf einem eigenen Handle
+selbst:
+
+```ts
+database.exec('PRAGMA busy_timeout = 1000;');
 ```
 
 Das Schema ist das des SQLite-Dialekts und damit identisch zu
@@ -292,6 +340,11 @@ import { Aside } from '@astrojs/starlight/components';
   Für Multi-Process-Setups verwende **Cassandra** (gebaut für
   Shared State) oder **ein SQLite pro Prozess** mit strikter
   pid-Partitionierung.
+
+  Wenn du eine Datei trotzdem teilst, entscheidet `busyTimeoutMs`,
+  ob ein vom anderen Prozess blockierter Write wartet oder
+  scheitert — und weil der Treiber synchron ist, friert dieses
+  Warten deine Event-Loop für seine ganze Dauer ein.
 </Aside>
 
 <Aside type="caution" title="Das Filesystem zählt">

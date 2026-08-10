@@ -11,6 +11,40 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Added
 
+- **gRPC health checking** (#4).  `GrpcServerActor` can now host the
+  standard `grpc.health.v1.Health` service alongside your own, so
+  `grpc_health_probe`, the Kubernetes gRPC probe and gRPC load balancers can
+  ask a node whether it is ready.  Enable it with
+  `GrpcServerOptions.create().withHealth(registry)`, handing it the same
+  `HealthCheckRegistry` that feeds the management server's `/ready` endpoint
+  — `Check` answers `SERVING` only while every readiness check passes, is
+  re-evaluated per call, and returns `NOT_FOUND` for an unknown service
+  name; `Watch` stays `UNIMPLEMENTED`, the documented signal for clients to
+  poll `Check`.  There is deliberately no boolean toggle and no HOCON leaf:
+  a health service that answers `SERVING` unconditionally would keep a pod
+  in rotation straight through an outage, so switching it on requires naming
+  where the status comes from.  No new peer dependency — the service
+  definition is generated through the `@grpc/proto-loader` the actor already
+  requires.  Server reflection, the other half of #4, is not included and
+  the issue stays open for it.
+- **`smallest-mailbox` for the cluster router** (#69).  `ClusterRouter`
+  gains the load-aware strategy the local `Router` already had: each message
+  goes to the node whose routee last reported the shortest queue.  Routees
+  are ordinary user actors that cannot be made to answer a framework
+  question, so a responder on the fixed envelope path
+  `/cluster/mailbox-depth-agent` answers for them — and because the routing
+  path is synchronous, the readings are cached and refreshed on a background
+  tick rather than asked for per message, which keeps the decision as cheap
+  as round-robin's modulo.  A node with no usable reading is skipped rather
+  than assumed idle, and a cold or fully expired cache degrades to
+  round-robin order instead of dropping anything.  Tune it with
+  `mailboxDepthRefreshMs` (default 200 ms) and `mailboxDepthStaleAfterMs`
+  (default 1000 ms, `0` disables the expiry); a window shorter than the
+  refresh that refills it is rejected at construction.  A router serves
+  depths on its own node, so a single node and the homogeneous deployment
+  need nothing extra — nodes that host routees but no router call
+  `ClusterMailboxDepthAgent.serve(cluster)`.
+
 - **Smallest-mailbox router** (#154).  `Router.smallestMailbox(size, routee,
   routeeOptions?)` and the exported `smallestMailboxStrategy()` send each
   message to the routee with the shortest queue, so one expensive message no
@@ -89,6 +123,34 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   protocol change.
 
 ### Fixed
+
+- **SQLite persistence now sets an explicit `busy_timeout` on every
+  connection it opens** (#124).  Until now no `busy_timeout` was set
+  anywhere in the tree, so the value in force was whatever the driver
+  happened to default to — and the drivers disagree: measured, `bun:sqlite`
+  0, `node:sqlite` 0, `better-sqlite3` 5000.  The identical journal
+  therefore failed a contended write on the first tick under Bun and Deno
+  but blocked for five seconds under Node, which makes this a break of the
+  project's identical-behaviour-on-Bun/Node/Deno promise rather than merely
+  an unset knob.  Every handle now gets 1000 ms by default, settable per
+  store through `busyTimeoutMs` (`0` disables the wait, a negative value is
+  rejected because SQLite reads it as "retry forever"); the default stays
+  well below the failure detector's 2000 ms unreachable threshold on
+  purpose, because `SqliteDriver` is synchronous and the whole wait is
+  event-loop freeze — inheriting `better-sqlite3`'s 5000 would let one
+  contended write stall a node long enough for its own cluster to evict it.
+  `SqliteJournal.append` additionally takes its write lock up front (`BEGIN
+  IMMEDIATE`) instead of using the driver's deferred `transaction()` helper,
+  because a transaction that reads before it writes makes SQLite return
+  `SQLITE_BUSY` without ever consulting the busy handler — measured at 1 ms
+  to failure with an 800 ms timeout configured, against 956 ms for the same
+  statements under `BEGIN IMMEDIATE`.
+- **`DEFAULT_SQLITE_BUSY_TIMEOUT_MS` and `buildSqliteDatabase` are exported
+  from the package root** (#124).  The root barrel is the only published
+  entry point, so both were previously reachable only through the internal
+  `src/persistence/index.ts` — which left the new default unobservable from
+  outside the package and made the documented "share ONE handle across
+  stores" route unusable.
 
 - **HOCON `include` now refuses itself with an explanation instead of a
   syntax error** (#135).  `include "base.conf"` reported `Expected '=' or
@@ -198,6 +260,48 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   instead of shipping the lie.
 
 ### Security
+
+- **Replay refuses a journal that breaks its read contract** (#122).
+  `replayState` folded whatever `journal.read()` returned and took
+  `sequenceNr` from the last entry *delivered*, so a shuffled stream
+  replayed history in an order it never happened in — non-commutative events
+  landing the wrong way round — and left recovery one sequence short, after
+  which every `persist` failed with a `JournalConcurrencyError` pointing at
+  a perfectly healthy journal, one restart away from its cause.  The
+  returned slice is now checked before the fold, so a rejected stream never
+  reaches user code: sequence numbers must be safe integers ≥ 1, strictly
+  ascending, contiguous and inside the requested window, otherwise
+  `JournalIntegrityError`.  The ordering half has no in-tree trigger — all
+  eight journals sort, Cassandra explicitly — and defends the plugin
+  contract against third-party journals and store manipulation; the
+  contiguity half does fire on shipped code, through
+  `CassandraJournal.append`'s claim-then-write window.  DevTools time travel
+  opts out of the compacted-prefix part, so the panel still opens on
+  entities whose history was compacted.
+- **BREAKING — recovery over a journal compacted without a covering snapshot
+  now fails instead of inventing a state** (#122).  It previously folded the
+  surviving tail onto `initialState()` and handed that to `onCommand` as the
+  current state.  Reachable through the public API, not just through
+  tampering: `deleteHistory(n)` on an actor that never snapshotted.
+  Migration: compact only past a snapshot — `deleteHistory(seq)` keeps the
+  snapshot at `seq` for exactly this reason — or take one before compacting.
+- **Seed providers can pin the addresses they accept** (#145).
+  `DnsSeedProvider` and `KubernetesApiSeedProvider` gained `pinnedAddresses`
+  plus a `log` callback that reports every drop, so a spoofed DNS answer or
+  a written-to `Endpoints` object can no longer steer the bootstrap at an
+  arbitrary peer.  Entries are CIDRs for resolved IPs and host suffixes —
+  matched on a label boundary, so `svc.cluster.local` never admits
+  `evilsvc.cluster.local` — for the target hostnames SRV records carry; a
+  list that cannot match anything in the configured mode is rejected at
+  construction rather than silently discarding every seed, and non-matching
+  addresses are filtered and logged rather than failing the whole lookup.
+  This is defence in depth behind mTLS (#565, #912) and the only
+  discovery-layer control left standing where mTLS is not configured.
+- **CIDR matching moved to `util/CidrMatch`** (#145).  Extracted verbatim
+  from the `IpAllowlist` HTTP middleware (#312) so the cluster bootstrap and
+  the HTTP edge share one IPv4/IPv6 implementation instead of growing a
+  second hand-rolled parser that drifts; `IpAllowlist` behaviour and error
+  messages are byte-identical and its test file is unchanged.
 
 - **AES-GCM IVs are generated inside the encrypt call** (#110).
   `aesGcmEncryptSafe(subkey, plaintext)` derives a fresh IV per call and

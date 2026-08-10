@@ -10,6 +10,7 @@
  */
 import { BrokerOptionsBuilder } from './BrokerOptions.js';
 import type { BrokerCommonOptionsType } from './BrokerOptions.js';
+import type { HealthCheckRegistry } from '../../management/HealthCheck.js';
 import type { GrpcHandler } from './GrpcServerActor.js';
 
 export interface GrpcServerOptionsType extends BrokerCommonOptionsType {
@@ -27,6 +28,19 @@ export interface GrpcServerOptionsType extends BrokerCommonOptionsType {
   readonly credentials?:
     | { readonly kind: 'insecure' }
     | { readonly kind: 'tls'; readonly cert: Uint8Array; readonly key: Uint8Array; readonly rootCerts?: Uint8Array };
+  /**
+   * Serve the standard `grpc.health.v1.Health` service next to the user's
+   * service, answering `Check` from this registry's **readiness** checks —
+   * the same source the management server's `/ready` endpoint aggregates.
+   *
+   * There is deliberately no boolean toggle and no HOCON leaf: the status
+   * has to come from somewhere, and a health service that answers
+   * `SERVING` unconditionally is worse than none at all — a Kubernetes
+   * probe would keep the pod in rotation straight through an outage.
+   * Supplying the registry IS the opt-in, and it makes the framework
+   * carry one notion of "ready" rather than two that can disagree.
+   */
+  readonly health?: HealthCheckRegistry;
 }
 
 export class GrpcServerOptionsBuilder extends BrokerOptionsBuilder<GrpcServerOptionsType> {
@@ -63,6 +77,16 @@ export class GrpcServerOptionsBuilder extends BrokerOptionsBuilder<GrpcServerOpt
   /** TLS credentials.  When omitted the server binds insecurely. */
   withCredentials(credentials: NonNullable<GrpcServerOptionsType['credentials']>): this {
     return this.set('credentials', credentials);
+  }
+
+  /**
+   * Serve `grpc.health.v1.Health`, answering `Check` from `health`'s
+   * readiness checks.  Omit the call to leave the health service off —
+   * see {@link GrpcServerOptionsType.health} for why enabling it requires
+   * naming a status source.
+   */
+  withHealth(health: HealthCheckRegistry): this {
+    return this.set('health', health);
   }
 }
 

@@ -26,11 +26,19 @@ export type { StoreSerializerOptionsBase } from './storage/StoreSerializerOption
 
 export { InMemoryJournal } from './journals/InMemoryJournal.js';
 export { SqliteJournal } from './journals/SqliteJournal.js';
-export { SqliteJournalOptions, SqliteJournalOptionsBuilder } from './journals/SqliteJournalOptions.js';
+export {
+  SqliteJournalOptions,
+  SqliteJournalOptionsBuilder,
+  SqliteJournalOptionsValidator,
+} from './journals/SqliteJournalOptions.js';
 export type { SqliteJournalOptionsType } from './journals/SqliteJournalOptions.js';
 export { InMemorySnapshotStore } from './snapshot-stores/InMemorySnapshotStore.js';
 export { SqliteSnapshotStore } from './snapshot-stores/SqliteSnapshotStore.js';
-export { SqliteSnapshotStoreOptions, SqliteSnapshotStoreOptionsBuilder } from './snapshot-stores/SqliteSnapshotStoreOptions.js';
+export {
+  SqliteSnapshotStoreOptions,
+  SqliteSnapshotStoreOptionsBuilder,
+  SqliteSnapshotStoreOptionsValidator,
+} from './snapshot-stores/SqliteSnapshotStoreOptions.js';
 export type { SqliteSnapshotStoreOptionsType } from './snapshot-stores/SqliteSnapshotStoreOptions.js';
 
 export { SqliteDurableStateStore } from './durable-state-stores/SqliteDurableStateStore.js';
@@ -40,7 +48,12 @@ export {
   SqliteDurableStateStoreOptionsValidator,
 } from './durable-state-stores/SqliteDurableStateStoreOptions.js';
 export type { SqliteDurableStateStoreOptionsType } from './durable-state-stores/SqliteDurableStateStoreOptions.js';
-export { adaptSqliteDatabase, buildSqliteDatabase } from './journals/SqliteClient.js';
+export {
+  adaptSqliteDatabase,
+  applySqliteBusyTimeout,
+  buildSqliteDatabase,
+  DEFAULT_SQLITE_BUSY_TIMEOUT_MS,
+} from './journals/SqliteClient.js';
 export type { SqliteConnection } from './journals/SqliteClient.js';
 export { CachedSnapshotStore } from './snapshot-stores/CachedSnapshotStore.js';
 export { CachedSnapshotStoreOptions, CachedSnapshotStoreOptionsBuilder, CachedSnapshotStoreOptionsValidator } from './snapshot-stores/CachedSnapshotStoreOptions.js';
