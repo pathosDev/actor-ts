@@ -142,6 +142,7 @@ export {
 } from './pubsub/index.js';
 export type {
   DistributedPubSubOptionsType,
+  PubSubDelivery,
   PubSubSubscriberRef,
   PubSubSubscribeRejectionReason,
 } from './pubsub/index.js';

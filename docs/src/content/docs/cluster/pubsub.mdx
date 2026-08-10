@@ -3,6 +3,8 @@ title: DistributedPubSub
 description: Topic-based publish/subscribe across the cluster — every node hosts a mediator, subscribers register against topics, publishers send to a topic, the mediator fans out cluster-wide with at most one remote hop.
 ---
 
+import { Aside } from '@astrojs/starlight/components';
+
 `DistributedPubSub` is the **cluster-wide** version of the local
 event stream — pub/sub by topic name, working across nodes.
 
@@ -75,7 +77,7 @@ publisher.
 | `Subscribe(topic, ref, replyTo?)` | Register `ref` as a subscriber to `topic`.  Answers `replyTo` (or the sender) with `SubscribeAcknowledgment` — or `SubscribeRejected` when a cap is full. |
 | `Unsubscribe(topic, ref)` | Remove `ref` from `topic`'s subscribers. |
 | `UnsubscribeAll(ref)` | Remove `ref` from every topic. |
-| `Publish(topic, message)` | Send `message` to every subscriber of `topic`. |
+| `Publish(topic, message, delivery?)` | Send `message` to every subscriber of `topic` — or, with `delivery = 'one-subscriber'`, to exactly one. |
 
 Send these to `ps.mediator` (an `ActorRef`).  Use `ask` if you
 need the ack:
@@ -120,6 +122,56 @@ On `Publish(topic, message)`:
 
 This gives **at-most-one-remote-hop** delivery: a publish never
 chains through multiple nodes to reach a subscriber.
+
+## Anycast — one subscriber instead of all
+
+A third argument switches `Publish` from broadcast to **anycast**:
+exactly one subscriber, cluster-wide, receives the message.
+
+```ts
+// Every worker joins the same topic…
+ps.mediator.tell(new Subscribe('jobs', worker));
+
+// …and each task is handled once, by one of them.
+ps.mediator.tell(new Publish('jobs', new RenderThumbnail(id), 'one-subscriber'));
+```
+
+That is the work-queue shape: N workers spread over the cluster,
+every task handled exactly once, and no worker needs to know how
+many others exist. The default stays `'all-subscribers'`, so a
+`Publish` written without the third argument is unchanged.
+
+**How the one is chosen.** The mediator builds a candidate list —
+each local subscriber counts once, each remote node claiming the
+topic counts once — and walks it in rotation, one step per publish.
+Two consequences worth knowing:
+
+- **It is a rotation, not a draw.** Ten tasks over three workers
+  land 4/3/3, not "probably roughly even". Restarting the publisher
+  restarts the rotation; it is per-topic state on the mediator, not
+  a cluster-wide sequence.
+- **Remote nodes count as one candidate each, not one per
+  subscriber.** A node with ten subscribers gets the same share as
+  a node with one, because the gossip frame carries topic names and
+  not subscriber counts (that is what keeps it small). Within the
+  chosen node, its own rotation picks the subscriber. Keep worker
+  counts roughly even across nodes if the balance matters.
+
+An anycast that finds no candidate — no local subscriber and no
+remote claimant — goes to dead letters like any other unrouted
+publish. So does one that crossed a hop and found the far node's
+subscribers already gone: it is **not** re-routed, because a second
+hop would trade the at-most-one-hop guarantee for a race against
+the gossip round that is about to correct the sender anyway.
+
+<Aside type="note" title="Anycast is not a router replacement">
+  For load-balancing across a *known* actor pool, a
+  [ClusterRouter](/cluster/cluster-router/) is the better fit — it
+  routes at node granularity with real strategies (round-robin,
+  consistent hashing, smallest-mailbox). Anycast earns its place
+  when the recipient set is **dynamic**: subscribers register and
+  leave at runtime and the publisher never names them.
+</Aside>
 
 ## Topic→node gossip
 
@@ -222,7 +274,7 @@ actor-ts.cluster.pub-sub.send-to-dead-letters-when-no-subscribers = off
 
 ## When to use DistributedPubSub
 
-Three good fits:
+Four good fits:
 
 1. **Chat / notifications** — multiple subscribers (often on
    different nodes) interested in the same topic.
@@ -230,10 +282,11 @@ Three good fits:
    every node should react to.
 3. **De-coupled fan-out across nodes** — when the publisher
    shouldn't know how many subscribers exist or where they live.
+4. **Work queues over a dynamic worker set** — with
+   `'one-subscriber'` delivery, workers join and leave a topic at
+   runtime and every task is handled once.
 
 ## When NOT
-
-import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="Single-recipient routing">
   ```ts
@@ -241,7 +294,9 @@ import { Aside } from '@astrojs/starlight/components';
   ```
   If you know there's exactly one subscriber, just hold its ref
   and `tell` directly.  Pubsub adds an extra hop and gossip
-  overhead for no benefit.
+  overhead for no benefit.  Wanting one *of many* subscribers is
+  a different thing — that's `'one-subscriber'` delivery, and it
+  is a good reason to use pubsub.
 </Aside>
 
 <Aside type="caution" title="High-frequency in-band data">
