@@ -1,12 +1,17 @@
 import { describe, expect, test } from 'bun:test';
 import {
+  BidirectionalMap,
   lazyImportModule,
   randomHex,
   randomId,
   randomString,
   safeStringify,
 } from '../../src/index.js';
-import type { LazyImportOptions, RandomStringOptions } from '../../src/index.js';
+import type {
+  BidirectionalMapJson,
+  LazyImportOptions,
+  RandomStringOptions,
+} from '../../src/index.js';
 
 /**
  * The util helpers are part of the published surface (#1034), and that surface
@@ -83,5 +88,18 @@ describe('util helpers are reachable from the barrel (#1034)', () => {
       const nodePath = await lazyImportModule<typeof import('node:path')>('node:path');
       expect(nodePath.join('a', 'b')).toBe(['a', 'b'].join(nodePath.sep));
     });
+  });
+});
+
+describe('BidirectionalMap is reachable from the barrel (#1035)', () => {
+  test('the export is the class, not a look-alike', () => {
+    const map = new BidirectionalMap([['a', 1]]);
+    expect(map).toBeInstanceOf(BidirectionalMap);
+    expect(map.getKey(1)).toBe('a');
+  });
+
+  test('the JSON type is exported alongside it', () => {
+    const wire: BidirectionalMapJson<string, number> = new BidirectionalMap([['a', 1]]).toJSON();
+    expect(BidirectionalMap.fromJSON(wire).get('a')).toBe(1);
   });
 });

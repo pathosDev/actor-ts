@@ -50,6 +50,12 @@ export {
   eitherSequence,
 } from './util/Either.js';
 export type { Either } from './util/Either.js';
+
+// BidirectionalMap<K, V> — a Map that also answers value → key, keeping the
+// inverse index in step for you.  Persists as a real instance.
+export { BidirectionalMap } from './util/BidirectionalMap.js';
+export type { BidirectionalMapJson } from './util/BidirectionalMap.js';
+
 export { OptionsBuilder } from './util/OptionsBuilder.js';
 export { OptionsValidator, OptionsError } from './util/OptionsValidator.js';
 
