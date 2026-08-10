@@ -275,6 +275,56 @@ new GrpcClientActor(
 Für Mutual TLS (mTLS) füge dem Credentials-Objekt `cert` + `key`
 der Gegenseite hinzu.
 
+## Health-Checking
+
+Der Server kann den Standard-Dienst **`grpc.health.v1.Health`**
+neben deinem eigenen bereitstellen, sodass `grpc_health_probe`, die
+gRPC-Probe von Kubernetes und gRPC-Load-Balancer den Knoten fragen
+können, ob er bereit ist.
+
+Der Status ist **kein zweiter Begriff von „gesund“**: er stammt aus
+derselben [`HealthCheckRegistry`](/de/observability/management/health-checks/),
+die auch den `/ready`-Endpunkt des Management-Servers speist.  Reiche
+die Registry an `withHealth` — genau das *ist* das Opt-in:
+
+```ts
+import { HealthCheckRegistry } from 'actor-ts';
+
+const health = new HealthCheckRegistry();
+health.addReadiness(() => ({ name: 'journal', status: journal.isConnected() }));
+
+const grpcServerOptions = GrpcServerOptions.create()
+  .withProtoPath(protoPath)
+  .withPackageName('sensor.v1')
+  .withServiceName('SensorService')
+  .withBind('0.0.0.0:50051')
+  .withHandlers({ /* … */ })
+  .withHealth(health);
+```
+
+`Check` antwortet nur dann `SERVING`, wenn **jeder**
+Readiness-Check besteht, und `NOT_SERVING`, sobald einer
+fehlschlägt — dieselbe Regel, die `/ready` anwendet.  Ausgewertet
+wird pro Aufruf, es wird also nichts zwischengespeichert.  Wenn du
+ohnehin den Management-Server betreibst, gib ihm die Registry, die
+`managementRoutes(...)` zurückgegeben hat — dann bleiben beide
+Endpunkte im Gleichschritt.
+
+Das Feld `HealthCheckRequest.service` wählt aus, wonach gefragt
+wird:
+
+| `service` | Antwort |
+| --- | --- |
+| `''` (leer) | Der ganze Server — die übliche Probe. |
+| `sensor.v1.SensorService` | Der bereitgestellte Dienst, voll qualifiziert. |
+| `SensorService` | Dasselbe; der bloße Name wird der Bequemlichkeit halber akzeptiert. |
+| `grpc.health.v1.Health` | Der Health-Dienst selbst. |
+| alles andere | `NOT_FOUND` (Statuscode 5). |
+
+Implementiert ist nur `Check`; `Watch` antwortet mit
+`UNIMPLEMENTED` — das dokumentierte Signal für einen Client, auf
+das Pollen von `Check` zurückzufallen.
+
 ## Konfiguration
 
 Instanzbezogene Builder-Optionen haben Vorrang vor HOCON, das
@@ -355,6 +405,18 @@ import { Aside } from '@astrojs/starlight/components';
   die darunterliegende Verbindung neu auf, startet aber keine
   In-Flight-Streams neu.  Setze den Call nach einem
   `BrokerConnected`-Event erneut ab.
+</Aside>
+
+<Aside type="caution" title="Keine Registry, kein Health-Dienst">
+  ```ts
+  // Without withHealth(...) the server hosts only your service
+  ```
+  Für das Health-Checking gibt es bewusst weder einen
+  Boolean-Schalter noch ein HOCON-Blatt.  Ein Health-Dienst, der
+  bedingungslos `SERVING` antwortet, ist schlimmer als gar keiner —
+  eine Kubernetes-Probe würde den Pod mitten in einem Ausfall im
+  Verkehr halten.  Deshalb setzt das Aktivieren voraus, dass du
+  benennst, woher der Status kommt.
 </Aside>
 
 ## Wohin als Nächstes
