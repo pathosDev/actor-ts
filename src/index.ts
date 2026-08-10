@@ -234,6 +234,12 @@ export {
   smallestMailboxStrategy,
 } from './Router.js';
 export type { RoutingStrategy, RouterState } from './Router.js';
+export {
+  ScatterGatherOptions,
+  ScatterGatherOptionsBuilder,
+  ScatterGatherOptionsValidator,
+} from './ScatterGatherOptions.js';
+export type { ScatterGatherOptionsType } from './ScatterGatherOptions.js';
 
 // Cluster (multi-node: membership, gossip, sharding, rebalance).
 export * from './cluster/index.js';

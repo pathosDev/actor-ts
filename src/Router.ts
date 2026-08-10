@@ -2,6 +2,8 @@ import { Actor, type ActorClassOrFactory, type ActorFactory } from './Actor.js';
 import type { ActorOptions } from './ActorOptions.js';
 import type { ActorRef } from './ActorRef.js';
 import { LocalActorRef } from './internal/LocalActorRef.js';
+import type { ScatterGatherOptions } from './ScatterGatherOptions.js';
+import { scatterGatherRouterFactory } from './ScatterGatherRouter.js';
 import { Terminated } from './SystemMessages.js';
 import { OptionsError } from './util/OptionsValidator.js';
 
@@ -211,8 +213,8 @@ function assertPoolSize(size: number): void {
 }
 
 /**
- * Shared by all five factories, so the size guard cannot be forgotten by a
- * sixth.  The guard runs *here* and not inside the returned closure: it has
+ * Shared by the five strategy factories, so the size guard cannot be forgotten
+ * by a sixth.  The guard runs *here* and not inside the returned closure: it has
  * always thrown at the `Router.roundRobin(...)` call that got the size wrong,
  * and deferring it into the factory would move the failure into `preStart`.
  *
@@ -255,5 +257,34 @@ export const Router = {
 
   custom<TMessage>(size: number, routee: ActorClassOrFactory<TMessage>, strategy: RoutingStrategy, routeeOptions?: ActorOptions<TMessage>): ActorFactory<TMessage | Broadcast<TMessage>> {
     return routerFactory({ size, routee, routeeOptions, strategy });
+  },
+
+  /**
+   * Send every message to **all** routees and answer the caller with the
+   * **first** reply — Akka's `ScatterGatherFirstCompletedPool`, the hedged-request
+   * pattern:
+   *
+   *     const hedgeOptions = ScatterGatherOptions.create().withTimeoutMs(250);
+   *     const replicas = system.spawn(
+   *       Router.scatterGatherFirstCompleted(3, Replica, hedgeOptions),
+   *       'replicas',
+   *     );
+   *     const value = await replicas.ask<string>({ kind: 'read', key: 'a' });
+   *
+   * Unlike the five strategy factories this one is *reply-shaped*: the router
+   * intercepts the routee replies to pick a winner, so it has to be asked (or
+   * `tell`'d with an explicit sender).  It returns `ActorFactory<TMessage>`
+   * rather than `ActorFactory<TMessage | Broadcast<TMessage>>` — a `Broadcast`
+   * wrapper would mean nothing to a router that already broadcasts.
+   *
+   * The scatter/gather settings take the third argument and per-routee spawn
+   * options move to the fourth, the same shape `Router.custom` already has:
+   * the two configure different things — how the router behaves, and how each
+   * routee is spawned — so folding them into one bag would make a single
+   * argument mean two scopes.
+   */
+  scatterGatherFirstCompleted<TMessage>(size: number, routee: ActorClassOrFactory<TMessage>, options?: ScatterGatherOptions, routeeOptions?: ActorOptions<TMessage>): ActorFactory<TMessage> {
+    assertPoolSize(size);
+    return scatterGatherRouterFactory(size, routee, options, routeeOptions);
   },
 };

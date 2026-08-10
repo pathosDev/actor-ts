@@ -12,9 +12,11 @@ Lifecycle-Beziehungen kodieren:
 | **Pool** | Der Router — er spawnt die Routees selbst. | Statisch zur Spawn-Zeit; Größe ändert sich nicht ohne Router-Restart. |
 | **Group** | Jemand anderes — die Routees existieren bereits. | Dynamisch (Group-Router re-discovern bei Bedarf). |
 
-Der lokale `Router` ist **immer ein Pool**.  Der
-Cluster-`ClusterRouter` ist **immer eine Group** (Routees werden
-aus Cluster-Up-Members an einem bekannten Pfad abgeleitet).  Zu
+Der lokale `Router` ist **immer ein Pool** — einschließlich
+[`Router.scatterGatherFirstCompleted`](/de/routing/scatter-gather/),
+das seine Routees wie jede andere lokale Factory selbst spawnt und
+besitzt.  Der Cluster-`ClusterRouter` ist **immer eine Group** (Routees
+werden aus Cluster-Up-Members an einem bekannten Pfad abgeleitet).  Zu
 wissen, welches du hast, prägt, wie du über Lifecycle, Supervision
 und Resize denkst.
 
@@ -187,6 +189,8 @@ Coordinated Shutdown, um das Richtige zu tun (siehe
 
 - **[Router](/de/routing/router/)** — die lokale
   Pool-Router-API.
+- **[Scatter/Gather](/de/routing/scatter-gather/)** — der
+  antwort-förmige Pool-Router, aus denselben Gründen nur Pool.
 - **[Cluster-Router](/de/cluster/cluster-router/)** — die
   Group-Router-API.
 - **[Sharded Daemon Process](/de/cluster/sharding/sharded-daemon-process/)** —

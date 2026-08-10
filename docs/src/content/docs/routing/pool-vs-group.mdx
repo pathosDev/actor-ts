@@ -11,10 +11,12 @@ get them, encoding very different lifecycle relationships:
 | **Pool** | The router — it spawns the routees itself. | Static at spawn time; size doesn't change without a router restart. |
 | **Group** | Someone else — the routees already exist. | Dynamic (group routers re-discover when needed). |
 
-The local `Router` is **always a pool**.  The cluster `ClusterRouter`
-is **always a group** (routees are derived from cluster up-members
-at a well-known path).  Knowing which you have shapes how you
-think about lifecycle, supervision, and resize.
+The local `Router` is **always a pool** — including
+[`Router.scatterGatherFirstCompleted`](/routing/scatter-gather/),
+which spawns and owns its routees like every other local factory.  The
+cluster `ClusterRouter` is **always a group** (routees are derived from
+cluster up-members at a well-known path).  Knowing which you have
+shapes how you think about lifecycle, supervision, and resize.
 
 ## Pool router
 
@@ -182,6 +184,8 @@ Use coordinated shutdown to do the right thing (see
 
 - **[Router](/routing/router/)** — the local pool-router
   API.
+- **[Scatter/gather](/routing/scatter-gather/)** — the
+  reply-shaped pool router, pool-only for the same reasons.
 - **[Cluster router](/cluster/cluster-router/)** — the
   group-router API.
 - **[Sharded daemon process](/cluster/sharding/sharded-daemon-process/)** —
