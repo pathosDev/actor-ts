@@ -251,7 +251,7 @@ Only `app=actor-ts` pods can reach port 2552 on each other.
 | Insider with stolen cert | Cert rotation + revocation |
 | Malformed or hostile wire frame | Shape validation at the decode boundary |
 | Peer growing a node's registries without bound | Per-registry caps on pub-sub and the receptionist |
-| Address claimed before the node that owns it exists | Tight version-skew cap on a first sighting |
+| Address claimed before the node that owns it exists | Tight version-skew cap on every gossiped member version |
 | Spoofed discovery answer steering the bootstrap | mTLS, plus `pinnedAddresses` on the seed provider |
 | Compromised pod inside the cluster | Application-level auth (out of scope here) |
 
@@ -398,6 +398,21 @@ address this node holds no record of suppresses nothing that
 exists — while a refused *live* record costs a legitimate member
 one gossip round, and comes with a `WARN` naming the cap.
 
+Both caps are charged on the **bucket a record moves into**, not
+on whether it creates an entry. A gossiped record that keeps an
+entry where it already is — `up` → `unreachable`, or a newer
+tombstone over an older one — is a free in-place update. One that
+crosses between the buckets is charged to the bucket it enters:
+a tombstone re-incarnated as `up` needs room among the live
+members, a live member gossiped as `removed` needs room among the
+tombstones. Charging only entry creation let the two caps trade
+headroom with each other for free — a re-incarnation vacated the
+tombstone bucket without giving up a map slot, so the next flood
+of tombstones was admitted too, and alternating the two grew the
+map without bound while respecting both caps at every individual
+step. A refused *conversion* leaves the member live, where the
+failure detector reclaims it the slower way.
+
 Tombstones this node mints itself — a peer's `leave`, a downing
 decision, an operator `down()` — convert a record it already
 holds and are never subject to the cap. Capping its own
@@ -487,26 +502,42 @@ Roles are what routing, sharding placement, singleton hosting
 and downing quorums are computed from, so the phantom is not a
 cosmetic row in a member list.
 
-A record that *introduces* an address is therefore held to a
-much tighter clock-skew budget than one that updates an
-address already on file — **5 minutes** by default, against
-the 24 hours that governs every later merge:
+A gossiped member version is therefore held to a tight
+clock-skew budget — **5 minutes** by default:
 
 ```ts
 const clusterOptions = ClusterOptions.create()
   .withHost('10.0.0.5')
   .withPort(2552)
-  .withFirstSightMaxVersionSkewMs(30 * 60 * 1000);
+  .withMaxVersionSkewMs(30 * 60 * 1000);
 ```
+
+The budget applies to **every** merge, not only to the record
+that introduces an address. It was originally the narrower
+rule — a tight cap on a first sighting, a generous 24 h one on
+every update — and that split could be stepped around by
+introducing the address first: two records for the same address
+in one frame, or a frame with no member records at all, which
+still makes the receiver file the sender's own address. Any
+rule that lets a record *earn* the wider budget fails the same
+way one step later, because without peer certificates every step
+of the earning is something the attacker can produce.
 
 Raise it for a deployment whose clocks are known to run loose;
 `24 * 60 * 60 * 1000` restores the old single-cap behaviour.
-There is little reason to lower it, and none to fear it:
-a refusal here is not exclusion. A node announcing itself is
-still recorded, at version 1 and without roles, so its next
-gossip frame merges through the normal path and carries the
-real record in. A rejected first sighting costs one gossip
-round, not a node that never appears.
+A refusal is not exclusion — a node announcing itself is still
+recorded, at version 1 and without roles — but it *is* durable:
+a node whose clock runs further ahead than the budget stays in
+the member list without roles until its clock comes back. That
+was always this cap's verdict on such a node; what changed is
+that the verdict now sticks instead of being reversed by the
+node's second gossip frame.
+
+Refused records are reported once per frame rather than once per
+record — a WARN naming the peer and the count, and the counter
+`cluster_gossip_records_refused_total{reason}` with `reason` one
+of `version-skew` or `map-cap`. Logging per record would hand a
+peer log amplification in place of the growth it just lost.
 
 ## Per-deployment recipe
 

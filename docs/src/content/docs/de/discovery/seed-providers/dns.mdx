@@ -146,6 +146,36 @@ Dieselbe Prüfung lehnt ein bloßes `'10.0.0.1'` ab (schreibe
 `'10.0.0.1/32'`), ebenso eine leere Liste und ein fehlerhaftes
 CIDR.
 
+### Adressen werden nur in kanonischer Form verglichen
+
+Beide Seiten des Vergleichs — die CIDRs, die du pinnst, und die
+Adressen, die der Resolver zurückgibt — müssen **kanonisch** sein:
+Dezimal-Oktette ohne führende Null, ohne `0x`, ohne Exponent, ohne
+Whitespace, und eine schlichte dezimale Präfixlänge.
+
+Das ist keine Pedanterie.  `1e1.0.0.1`, `010.0.0.1` und
+`0x0a.0.0.1` lesen sich für einen großzügigen Zahlen-Parser alle
+als `10.0.0.1`, aber die Socket-Schicht wertet sie als *keine IP*
+und löst sie stattdessen über DNS auf — eine Antwort in einer
+dieser Schreibweisen käme also an einem `10.0.0.0/8`-Pin vorbei
+und verbände sich dann dorthin, wohin der Resolver des Angreifers
+zeigt.  Alles Nicht-Kanonische gilt jetzt als Hostname, und ein
+Hostname wird nie gegen einen CIDR-Pin geprüft.
+
+Zwei Konsequenzen, die beim Upgrade zählen:
+
+- Ein nicht-kanonisch geschriebener Pin-Eintrag (`'010.0.0.0/8'`)
+  wirft bei der Konstruktion, statt ein anderes Netz zu pinnen als
+  dort steht.
+- Ein Tippfehler mit abschließendem Slash (`'10.0.0.0/'`) wirft
+  ebenfalls.  Bisher wurde er als `/0` gelesen — ein Pin, der ein
+  Netz zulassen sollte und den gesamten Adressraum zuließ.
+
+Ein rein numerisches Host-Suffix (`'0.1'`) wird ebenfalls
+abgelehnt: Suffix-Matching ist Stringvergleich, ein solcher
+Eintrag würde also das Ende unbeteiligter Adressen treffen.  Pinne
+stattdessen ein CIDR.
+
 Verworfene Adressen sind **gefiltert, nicht fatal** — ein
 veralteter Record kostet diesen Record, nicht den gesamten
 Bootstrap.  Jeder Wurf geht an `log`, und das lohnt sich zu

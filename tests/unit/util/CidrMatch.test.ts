@@ -88,13 +88,22 @@ describe('CidrMatch — pin-entry classification', () => {
     expect(addressPinRejection(null as unknown as string)).toMatch(/must be strings/);
   });
 
-  test('a dot-only entry is rejected either way', () => {
-    // `...` reaches the bare-IP branch, not the label branch: the IPv4
-    // parser inherited from `IpAllowlist` reads an empty octet as 0, so
-    // it sees `0.0.0.0`.  The entry is rejected regardless — only the
-    // wording differs — so the leniency is left alone here rather than
-    // changed inside a pure extraction.
-    expect(addressPinRejection('...')).not.toBeNull();
+  test('a dot-only entry is rejected as a label problem', () => {
+    // This used to reach the bare-IP branch instead: the inherited IPv4
+    // parser read an empty octet as `0`, so `...` looked like `0.0.0.0`.
+    // Octets are canonical-only now, so the entry falls through to the
+    // branch that actually describes it.
+    expect(addressPinRejection('...')).toMatch(/at least one label/);
+  });
+
+  test('an all-numeric entry is rejected — it is a quad fragment, not a zone', () => {
+    // `matchesSuffix` is string arithmetic, so `0.1` would match the tail
+    // of anything ending `.0.1`.  No DNS zone is all digits.
+    expect(addressPinRejection('0.1')).toMatch(/part of an IP address/);
+    expect(addressPinRejection('0.0.1')).toMatch(/part of an IP address/);
+    expect(addressPinRejection('2552')).toMatch(/part of an IP address/);
+    // A label that merely starts with a digit is an ordinary hostname.
+    expect(addressPinRejection('10gen.svc.cluster.local')).toBeNull();
   });
 });
 

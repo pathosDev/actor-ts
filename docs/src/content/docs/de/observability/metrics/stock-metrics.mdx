@@ -55,6 +55,7 @@ ab. Das `reason`-Label hält die ausgelöste Overflow-Policy fest
 | --- | --- | --- | --- |
 | `cluster_members_up` | gauge | — | Mitglieder aktuell im Zustand `up` (Sicht dieses Knotens). |
 | `cluster_gossip_rounds_total` | counter | — | Von diesem Knoten initiierte Gossip-Push-Runden. |
+| `cluster_gossip_records_refused_total` | counter | `reason` | Von einer Merge-Pfad-Wache abgelehnte gegossipte Member-Records. |
 
 Zum Monitoring der Cluster-Gesundheit:
 
@@ -64,6 +65,14 @@ Zum Monitoring der Cluster-Gesundheit:
 - Die Rate von `cluster_gossip_rounds_total` bestätigt, dass Gossip
   fließt — eine flache Linie heißt, dieser Knoten hat aufgehört zu
   gossippen.
+- `cluster_gossip_records_refused_total` sollte bei null liegen.
+  Bewegung auf `reason="version-skew"` heißt, gegossipte Versionen
+  liegen weiter vor der Uhr dieses Knotens als `maxVersionSkewMs` —
+  entweder ist die Uhr eines Peers abgedriftet, oder jemand versucht,
+  eine Adresse vorab zu beanspruchen. Bewegung auf `reason="map-cap"`
+  heißt, `max-members` / `max-tombstones` ist voll. Der Zähler wird
+  einmal pro Frame um dessen Anzahl erhöht, und die Label-Menge ist
+  auf diese zwei Werte geschlossen.
 
 ## DistributedData-Metriken
 
