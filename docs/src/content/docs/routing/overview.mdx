@@ -70,7 +70,7 @@ the routing actor cycles through four `Worker` children.
 | **`round-robin`** | One routee per message, cycling.  Even distribution by message count. | Homogeneous workloads. |
 | **`random`** | One routee per message, uniformly random. | Same as round-robin, but stateless. |
 | **`broadcast`** | Every routee gets every message. | Notifications, cache invalidations. |
-| **`smallest-mailbox`** *(local only)* | One routee per message, the one with the shortest queue. | Uneven per-message cost. |
+| **`smallest-mailbox`** | One routee per message, the one with the shortest queue. | Uneven per-message cost. |
 | **`consistent-hashing`** *(cluster only)* | One routee per message, key-pinned. | Per-key state (sharding-lite). |
 
 `smallest-mailbox` is the one that balances by **backlog** instead of
@@ -81,8 +81,15 @@ picks the shallowest, so a busy routee stops being chosen until it
 catches up.  It pays for that with one depth read per routee per
 message, which is why round-robin remains the default.
 
-It is **local only**: a cluster router cannot see how deep a remote
-routee's mailbox is, so `ClusterRouter` has no equivalent.
+Both routers have it, but they learn the depth differently.  The
+local one reads its routees' mailboxes directly — they are its own
+children, in the same process.  The cluster one cannot: a remote
+mailbox is on another node, and asking per message would park the
+router behind a network round-trip.  It routes on a **cached** depth
+instead, refreshed on a background tick, which trades a little
+freshness for a routing decision that stays synchronous.  See
+[Cluster router](/cluster/cluster-router/) for what that lag
+can and cannot cost.
 
 See [Strategies](/routing/strategies/) for the deep dive,
 plus the `Broadcast` message wrapper that overrides the strategy

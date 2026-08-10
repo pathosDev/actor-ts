@@ -1,6 +1,6 @@
 ---
 title: Routing-Strategien
-description: Round-Robin, Random, Broadcast, Smallest-Mailbox, Custom — was der lokale Router mitbringt. Plus Consistent-Hashing für Cluster-Router. Wie jede Routees wählt, wann jede passt und wie du deine eigene schreibst.
+description: Round-Robin, Random, Broadcast, Smallest-Mailbox, Custom — was der lokale Router mitbringt. Plus Consistent-Hashing und Smallest-Mailbox auf gecachten Tiefen für Cluster-Router. Wie jede Routees wählt, wann jede passt und wie du deine eigene schreibst.
 ---
 
 Eine **Routing-Strategie** ist eine Funktion: gegeben die
@@ -17,7 +17,8 @@ type RoutingStrategy = (
 Gib eine Ref für Single-Target-Routing zurück, mehrere für Fan-Out
 oder nichts zum Verwerfen.  Der lokale Router liefert vier
 Implementierungen aus, plus einen `custom`-Slot; der Cluster-Router
-fügt Consistent-Hashing hinzu.
+hat zu jeder der vier ein Gegenstück und fügt Consistent-Hashing
+hinzu.
 
 ## Round-Robin
 
@@ -195,12 +196,46 @@ reagiert, was die Routees gerade tatsächlich tun.
   passt, entscheidet die Overflow-Policy der Mailbox (`drop-head` /
   `drop-new` / `reject`).  Eine Strategie, die das Routen verweigert,
   würde Backpressure erfinden, die der Aufrufer nie konfiguriert hat.
-- **Über Knoten hinweg arbeiten.**  Die Mailbox-Tiefe ist
-  In-Process-Zustand, das ist also eine reine Strategie des lokalen
-  Routers.
+- **Eine entfernte Mailbox live lesen.**  Die Tiefe ist
+  In-Process-Zustand.  Die Cluster-Variante unten holt sie über Nodes
+  hinweg, aber nur als gecachte Meldung.
 
 Richtige Wahl, wenn die **Kosten pro Nachricht stark schwanken** —
 gemischte Job-Größen, Routees, die etwas Langsames aufrufen.
+
+### Die Cluster-Variante
+
+```ts
+import { ClusterRouter, ClusterRouterOptions } from 'actor-ts';
+
+const clusterRouterOptions = ClusterRouterOptions.create()
+  .withCluster(cluster)
+  .withRouterType('smallest-mailbox')
+  .withRouteePath('/user/worker');
+ClusterRouter.factory(
+  clusterRouterOptions,
+);
+```
+
+`ClusterRouter` hat dieselbe Strategie — erreicht auf dem einzigen
+Weg, auf dem das geht.  Die Mailbox eines entfernten Routees ist von
+hier aus nicht lesbar, und pro Nachricht zu fragen würde die gesamte
+Router-Mailbox hinter einen Netzwerk-Roundtrip parken.  Also wird die
+Tiefe jedes Nodes **gecacht** und auf einem Hintergrund-Tick
+aufgefrischt; die Routing-Entscheidung liest den Cache synchron.
+
+Zwei Konsequenzen, die man mitnehmen sollte:
+
+- Die Tiefe kann bis zu ein Refresh-Intervall alt sein, ein Node kann
+  also genau dann gewählt werden, wenn er gerade vollgelaufen ist.
+  Der nächste Tick korrigiert das.
+- Ein Node, der nichts gemeldet hat, wird übersprungen statt als
+  untätig angenommen; ein Cache ohne jeden Eintrag fällt auf die
+  Round-Robin-Reihenfolge zurück.
+
+[Cluster-Router](/de/cluster/cluster-router/) behandelt das
+Refresh-Intervall, die Verfallsgrenze und die eine Zeile Setup, die
+ein Node braucht, der Routees, aber keinen Router hostet.
 
 ## Consistent-Hashing *(nur Cluster)*
 

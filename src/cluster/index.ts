@@ -185,10 +185,21 @@ export {
 export type { ShardAllocator } from './sharding/ShardAllocator.js';
 
 // Cluster-aware routing.
-export { ClusterRouter, pickRendezvous, ClusterRouterOptions, ClusterRouterOptionsBuilder, ClusterRouterOptionsValidator } from './router/index.js';
+export {
+  ClusterRouter,
+  pickRendezvous,
+  ClusterRouterOptions,
+  ClusterRouterOptionsBuilder,
+  ClusterRouterOptionsValidator,
+  ClusterMailboxDepthAgent,
+  MAILBOX_DEPTH_AGENT_PATH,
+} from './router/index.js';
 export type {
   ClusterRouterOptionsType,
   ClusterRouterType,
+  MailboxDepthMessage,
+  MailboxDepthQueryMessage,
+  MailboxDepthReportMessage,
 } from './router/index.js';
 
 // Outside-in client (#86).
