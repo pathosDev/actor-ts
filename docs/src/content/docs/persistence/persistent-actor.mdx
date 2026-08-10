@@ -316,6 +316,52 @@ For [sharded entities](/cluster/sharding/overview/), the
 shard region typically passes the entity ID via constructor, and
 the persistence ID derives from it.
 
+### What a persistence ID may contain
+
+An ID is rarely a constant — it is usually built from user input
+(`` `account-${request.params.id}` ``, a sharding entity ID).  It
+is always *bound* as a query parameter, so SQL injection is not
+reachable, but the ID is more than a value: it **names a stream**,
+and several backends build a structured storage key out of it.
+`preStart` therefore refuses an ID that cannot be one, before the
+journal is ever touched:
+
+| Rejected | Why |
+| --- | --- |
+| empty | every backend would happily write under `''`, so an ID some code path forgot to fill in silently shares one stream with every other actor that forgot the same thing |
+| longer than **255** characters | the width of the `persistence_id` column in every relational dialect's DDL, and part of its primary key — a longer ID is truncated (two IDs collapsing onto one stream) or rejected deep inside a driver |
+| `/` or `\` | the object-storage stores lay an ID out as a *directory* (`<prefix><persistenceId>/<seq>.json`) and read it back by listing that prefix, so `a/b` nests inside `a` — `a`'s `loadLatest` then returns `a/b`'s snapshot, and its `delete` prunes it |
+| `.` or `..` (the whole ID) | traversal meaning, one level up, with the same consequence |
+| control characters | IDs are interpolated into a log line on every recovery and every persist, so a newline lets a caller forge log records |
+
+Everything else is allowed, deliberately.  A comma is fine — the
+comma-separated column in the SQLite journal carries *tags*, and
+the ID is a separate bound column.  A `|` is fine too, and the
+chat example relies on it: a DM channel is
+`dm-channel-alice|bob`.  The projection offset store joins keys as
+`<projection>|seq|<persistenceId>` with the ID **last**, so a `|`
+inside it cannot split off an extra field, and nothing anywhere
+splits an ID back apart.
+
+The same rules run again inside `journal.append()` — defence in
+depth for a journal reached without an actor — and, for
+[`DurableStateActor`](/persistence/durable-state/), in the options
+validator, where a violation is an `OptionsError` on the
+`persistenceId` field.
+
+Check your own IDs against them without starting an actor:
+
+```ts
+import { assertValidPersistenceId } from 'actor-ts';
+
+assertValidPersistenceId(`account-${userId}`);
+```
+
+**Reading is never refused.**  Only writes are validated, so events
+already stored under an ID that these rules reject stay reachable
+via `journal.read(oldId, 1)` — copy them to a corrected ID and
+delete the old stream.
+
 ## Snapshots
 
 Replaying 100 000 events at startup is slow.  Configure a snapshot

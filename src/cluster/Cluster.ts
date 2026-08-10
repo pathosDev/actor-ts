@@ -16,7 +16,7 @@ import {
 import { none, some, type Option } from '../util/Option.js';
 import { ClusterExtensionId } from './ClusterExtension.js';
 import { ClusterOptionsValidator, withClusterConfigDefaults } from './ClusterOptions.js';
-import type { ClusterOptions, ClusterOptionsType } from './ClusterOptions.js';
+import type { ClusterOptions, ClusterOptionsType, SelfElectionPolicy } from './ClusterOptions.js';
 import {
   LeaderChanged,
   MemberDown,
@@ -159,8 +159,10 @@ export class Cluster {
   private seedTimer: Cancellable | null = null;
   private weaklyUpTimer: Cancellable | null = null;
   private tombstonePruneTimer: Cancellable | null = null;
+  private selfElectionTimer: Cancellable | null = null;
   private currentLeader: Option<Member> = none;
   private readonly weaklyUpAfterMs: number;
+  private readonly selfElection: SelfElectionPolicy;
 
   private envelopeHandler: EnvelopeHandler | null = null;
   private readonly _envelopeHandlersByPath = new Map<string, EnvelopeHandler>();
@@ -199,6 +201,7 @@ export class Cluster {
     this.gossipIntervalMs = options.gossipIntervalMs ?? DEFAULT_GOSSIP_INTERVAL_MS;
     this.seedRetryIntervalMs = options.seedRetryIntervalMs ?? DEFAULT_SEED_RETRY_INTERVAL_MS;
     this.weaklyUpAfterMs = options.weaklyUpAfterMs ?? 0;
+    this.selfElection = options.selfElection ?? 'immediate';
     this.downing = options.downing ?? null;
     this.tombstoneTtlMs = options.tombstoneTtlMs ?? DEFAULT_TOMBSTONE_TTL_MS;
     this.tombstonePruneIntervalMs = options.tombstonePruneIntervalMs ?? DEFAULT_TOMBSTONE_PRUNE_INTERVAL_MS;
@@ -494,6 +497,7 @@ export class Cluster {
     this.seedTimer?.cancel();
     this.weaklyUpTimer?.cancel();
     this.tombstonePruneTimer?.cancel();
+    this.selfElectionTimer?.cancel();
     await this.transport.shutdown();
   }
 
@@ -528,11 +532,7 @@ export class Cluster {
       if (!address.equals(this.selfAddress)) this.seedAddrs.push(address);
     }
 
-    if (this.seedAddrs.length === 0) {
-      // No seeds — we are the first node. Become Up immediately.
-      this.log.debug('no seeds configured — self-electing as first cluster member');
-      this.updateMember(me.withStatus('up'));
-    } else {
+    if (this.seedAddrs.length > 0) {
       this.log.debug(
         `contacting ${this.seedAddrs.length} seed(s): [${this.seedAddrs.map((a) => a.toString()).join(',')}]`,
       );
@@ -547,6 +547,11 @@ export class Cluster {
         },
       );
     }
+
+    // Deliberately after seed contact, and no longer inside its `else`: with a
+    // deferred policy the two run together — the node dials its seeds *and*
+    // holds a deadline for the case where none of them answers.
+    this.armSelfElection();
 
     // Schedule automatic joining→weakly-up promotion if configured.
     if (this.weaklyUpAfterMs > 0) {
@@ -588,6 +593,76 @@ export class Cluster {
       };
       this.transport.send(seed, initialGossip);
     }
+  }
+
+  /**
+   * Apply {@link ClusterOptionsType.selfElection} — decide whether this node
+   * is allowed to turn itself `up` without anyone's agreement, and if so when.
+   *
+   * A match on this node's own configuration rather than on an inbound
+   * message, so the arms are the exempt kind; they still delegate, because the
+   * three policies are three different mechanisms and reading them side by
+   * side is the point.
+   */
+  private armSelfElection(): void {
+    match(this.selfElection)
+      .with('immediate', () => this.onImmediateSelfElection())
+      .with('never', () => this.onNeverSelfElection())
+      .with(P.number, (afterMs) => this.onDeferredSelfElection(afterMs))
+      .exhaustive();
+  }
+
+  /** The historical rule: an empty seed list means "I am the first node". */
+  private onImmediateSelfElection(): void {
+    if (this.seedAddrs.length > 0) return;
+    // Debug, unlike the deferred path: "started with no seeds, so I am the
+    // first node" is a statement of the configuration, not a decision, and it
+    // is the normal shape of every single-node development run.
+    this.selfElect('no seeds configured', 'debug');
+  }
+
+  private onNeverSelfElection(): void {
+    this.log.debug(
+      "self-election disabled — staying 'joining' until a peer's leader promotes this node",
+    );
+  }
+
+  /**
+   * Self-elect only if seed contact has produced nothing by the deadline.
+   *
+   * The timer is not cancelled when self reaches `up` by other means — the
+   * guard in {@link selfElect} makes a late firing a no-op, and that is the
+   * same treatment {@link weaklyUpTimer} gets for the same reason.
+   */
+  private onDeferredSelfElection(afterMs: number): void {
+    this.log.debug(
+      `self-election deferred: this node forms a new cluster only if no peer has `
+      + `promoted it within ${afterMs} ms`,
+    );
+    this.selfElectionTimer = this.system.scheduler.scheduleOnceFunction(afterMs, () => {
+      this.selfElectionTimer = null;
+      // Info: the node waited for a cluster, none answered, and it is now
+      // creating one.  When that turns out to have been wrong it is the first
+      // line worth finding in two nodes' logs side by side.
+      this.selfElect(`no peer promoted this node within ${afterMs} ms`, 'info');
+    });
+  }
+
+  /**
+   * Move self from `joining` / `weakly-up` straight to `up`, forming a new
+   * cluster of one that every later joiner attaches to.
+   *
+   * A no-op once self has left `joining` / `weakly-up` by any other route,
+   * which is what makes a late-firing deferred timer harmless.
+   */
+  private selfElect(reason: string, level: 'debug' | 'info'): void {
+    if (!this.started) return;
+    const me = this.members.get(this.selfAddress.toString());
+    if (!me) return;
+    if (me.status !== 'joining' && me.status !== 'weakly-up') return;
+    const message = `self-electing as first cluster member — ${reason}`;
+    if (level === 'info') this.log.info(message); else this.log.debug(message);
+    this.updateMember(me.withStatus('up'));
   }
 
   private handleWire(from: NodeAddress, message: WireMessage): void {

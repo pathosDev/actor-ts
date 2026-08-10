@@ -8,10 +8,17 @@ import {
 import { autoDiscovery, singleProviderDiscovery } from '../discovery/autoDiscovery.js';
 import { AutoDiscoveryOptions } from '../discovery/AutoDiscoveryOptions.js';
 import { AggregateSeedProvider } from '../discovery/AggregateSeedProvider.js';
+import { ConfigSeedProvider } from '../discovery/ConfigSeedProvider.js';
+import { ConfigSeedProviderOptions } from '../discovery/ConfigSeedProviderOptions.js';
+import { mergeOptions } from '../util/OptionsMerge.js';
 import { Cluster } from './Cluster.js';
 import { ClusterOptions } from './ClusterOptions.js';
+import type { SelfElectionPolicy } from './ClusterOptions.js';
 import { SelfUp, type ClusterEvent } from './ClusterEvents.js';
 import { NodeAddress } from './NodeAddress.js';
+import { StableObservation } from './bootstrap/StableObservation.js';
+import { readStableObservationOptionsFromConfig } from './bootstrap/StableObservationOptions.js';
+import type { StableObservationTuning } from './bootstrap/StableObservationOptions.js';
 import { ClusterBootstrapOptionsValidator } from './ClusterBootstrapOptions.js';
 import type { ClusterBootstrapOptions, ClusterBootstrapOptionsType } from './ClusterBootstrapOptions.js';
 
@@ -32,6 +39,9 @@ export type BootstrappedCluster = {
 const DEFAULT_AWAIT_READY_MS = 5_000;
 const DEFAULT_PORT = 2552;
 
+/** Stands in for discovery when the caller passed an explicit empty seed list. */
+const EMPTY_SEED_PROVIDER: SeedProvider = { lookup: async () => [] };
+
 /**
  * One-call setup for a clustered ActorSystem.  Designed for the
  * 90 % case — defaults wire transport, discovery, receptionist and
@@ -51,20 +61,45 @@ export async function bootstrapCluster(
   const port = resolvePort(resolvedOptions);
 
   const system = ActorSystem.create(resolvedOptions.name, extractSystemOptions(resolvedOptions));
+  const log = (message: string, err?: unknown): void => system.log.warn(
+    `bootstrap discovery: ${message}${err ? ` (${(err as Error).message ?? err})` : ''}`,
+  );
 
-  const seeds = await resolveSeeds({
-    explicit: resolvedOptions.seeds,
-    discovery: resolvedOptions.discovery,
-    systemName: resolvedOptions.name,
-    port,
-    selfHost: host,
-    log: (message, err) => system.log.warn(`bootstrap discovery: ${message}${err ? ` (${(err as Error).message ?? err})` : ''}`),
-  });
+  // A refused bootstrap must not leave the system (and its scheduler) running:
+  // the stable-observation phase fails *by design* when discovery cannot be
+  // agreed on, and a process that reports the failure and then hangs is not
+  // the loud failure the design promised.
+  let joinPlan: JoinPlan;
+  try {
+    joinPlan = resolvedOptions.stableObservation
+      ? await observeStableSeeds({
+        tuning: resolvedOptions.stableObservation === true ? {} : resolvedOptions.stableObservation,
+        fromConfig: readStableObservationOptionsFromConfig(system.config),
+        seedProvider: buildSeedProviderFor(resolvedOptions, port, log),
+        selfAddress: new NodeAddress(resolvedOptions.name, host, port),
+        log: (message) => system.log.info(message),
+      })
+      : {
+        seeds: await resolveSeeds({
+          explicit: resolvedOptions.seeds,
+          discovery: resolvedOptions.discovery,
+          systemName: resolvedOptions.name,
+          port,
+          selfHost: host,
+          log,
+        }),
+      };
+  } catch (err) {
+    await system.terminate();
+    throw err;
+  }
+  const { seeds, selfElection } = joinPlan;
 
   const clusterOptions = ClusterOptions.create()
     .withHost(host)
     .withPort(port)
     .withSeeds([...seeds]);
+  if (selfElection !== undefined) clusterOptions.withSelfElection(selfElection);
   if (resolvedOptions.roles) clusterOptions.withRoles([...resolvedOptions.roles]);
   if (resolvedOptions.transport) clusterOptions.withTransport(resolvedOptions.transport);
   if (resolvedOptions.failureDetector) clusterOptions.withFailureDetector(resolvedOptions.failureDetector);
@@ -78,7 +113,7 @@ export async function bootstrapCluster(
     ? (system.extension(ReceptionistId).start(cluster) as ActorRef<unknown>)
     : null;
 
-  await awaitSelfUp(cluster, resolvedOptions.awaitReady ?? true);
+  await awaitSelfUp(cluster, resolvedOptions.awaitReady ?? defaultAwaitReady(joinPlan));
 
   // Wire shutdown.
   let shuttingDown: Promise<void> | null = null;
@@ -100,8 +135,26 @@ export async function bootstrapCluster(
 /* Internal helpers                                                            */
 /* -------------------------------------------------------------------------- */
 
+/**
+ * The host this node **advertises** — not merely the one it binds.  The value
+ * becomes `selfAddress`, so it is what peers dial back and what the bootstrap
+ * election orders on (#944).
+ *
+ * `CLUSTER_HOST` leads the env vars because it is the only one that means
+ * *"this is my address"*: `POD_IP` is right by construction but exists only
+ * where the pod spec exports it, and `HOSTNAME` is a pod name that resolves
+ * under a StatefulSet with a headless service and nowhere else.  Naming it
+ * after `CLUSTER_PORT` keeps the pair symmetric.
+ *
+ * `'0.0.0.0'` survives as the last resort so a single-node development run
+ * still starts with no configuration at all — with more than one node it is
+ * not an identity, which the stable-observation phase refuses outright rather
+ * than letting an election run on it.
+ */
 function resolveHost(resolvedOptions: ClusterBootstrapOptionsType): string {
   if (resolvedOptions.host) return resolvedOptions.host;
+  const clusterHost = (process.env.CLUSTER_HOST ?? '').trim();
+  if (clusterHost) return clusterHost;
   const podIp = (process.env.POD_IP ?? '').trim();
   if (podIp) return podIp;
   const hostname = (process.env.HOSTNAME ?? '').trim();
@@ -154,6 +207,87 @@ async function resolveSeeds(args: {
     // adds noise to the log.
     .filter((a) => !(a.host === args.selfHost && a.port === args.port))
     .map((a) => a.toString());
+}
+
+/** What the seed-resolution step decided, whichever branch produced it. */
+type JoinPlan = {
+  readonly seeds: string[];
+  /** Absent on the legacy path — `Cluster` then keeps its `'immediate'` default. */
+  readonly selfElection?: SelfElectionPolicy;
+};
+
+/**
+ * Run the stable-observation phase and hand back what `Cluster.join` needs.
+ *
+ * The settings merge follows the project's precedence — explicit tuning >
+ * `actor-ts.cluster.bootstrap.*` > built-in defaults — with the last layer
+ * applied inside {@link StableObservation}, which is also where the merged
+ * result is validated.
+ */
+async function observeStableSeeds(args: {
+  tuning: StableObservationTuning;
+  fromConfig: StableObservationTuning;
+  seedProvider: SeedProvider;
+  selfAddress: NodeAddress;
+  log: (message: string) => void;
+}): Promise<JoinPlan> {
+  const tuning = mergeOptions<StableObservationTuning>({}, args.fromConfig, args.tuning);
+  const observation = new StableObservation({
+    ...tuning,
+    seedProvider: args.seedProvider,
+    selfAddress: args.selfAddress,
+    log: tuning.log ?? args.log,
+  });
+  const targets = await observation.resolveJoinTargets();
+  return {
+    seeds: targets.seeds.map((address) => address.toString()),
+    selfElection: targets.selfElection,
+  };
+}
+
+/**
+ * How long an unconfigured `awaitReady` waits.
+ *
+ * `true` — five seconds — everywhere except behind an election this node won:
+ * there, `SelfUp` is not due until the self-election grace has elapsed, so the
+ * flat default would time out on every genuine cold start and report a node
+ * that is still `joining` as ready.  The budget is the grace plus the usual
+ * five seconds of slack for the join round it is waiting on.
+ */
+function defaultAwaitReady(plan: JoinPlan): boolean | number {
+  return typeof plan.selfElection === 'number'
+    ? plan.selfElection + DEFAULT_AWAIT_READY_MS
+    : true;
+}
+
+/**
+ * The provider the stable observation polls.  An explicit `seeds` list is
+ * wrapped rather than short-circuited: repeated polls over a fixed set settle
+ * on the second one, and what the phase then contributes is the election —
+ * which is exactly what the "give every node the same seed list" convention
+ * lacks, since it leaves no node with the empty list that `'immediate'`
+ * self-election requires.
+ */
+function buildSeedProviderFor(
+  resolvedOptions: ClusterBootstrapOptionsType,
+  port: number,
+  log: (message: string, err?: unknown) => void,
+): SeedProvider {
+  if (resolvedOptions.seeds !== undefined) {
+    // `seeds: []` is a deliberate "there is nobody else", which
+    // `ConfigSeedProvider` rejects as a missing value.  The observation adds
+    // self regardless, so an empty provider resolves to a one-node election.
+    if (resolvedOptions.seeds.length === 0) return EMPTY_SEED_PROVIDER;
+    const seedOptions = ConfigSeedProviderOptions.create()
+      .withSeeds([...resolvedOptions.seeds])
+      .withSystemName(resolvedOptions.name);
+    return new ConfigSeedProvider(seedOptions);
+  }
+  return buildSeedProvider(resolvedOptions.discovery ?? 'auto', {
+    systemName: resolvedOptions.name,
+    port,
+    log,
+  });
 }
 
 function buildSeedProvider(

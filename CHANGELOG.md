@@ -11,6 +11,84 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Added
 
+- **gRPC client-streaming as its own call mode** (#5).  `GrpcClientCommand`
+  gains `clientStreamStart` / `clientStreamSend` / `clientStreamClose`, and
+  `GrpcHandler` a fourth `clientStream` kind carrying a
+  `GrpcClientStreamCall` (consume the request stream via `onData`, answer
+  once via `respond` / `respondError`) — so all four gRPC call classes are
+  now genuinely covered, which the documentation had already claimed in both
+  languages while the mode was simply absent.  The handshake deliberately
+  does **not** copy bidi's: `clientStreamStart` answers with a new
+  `stream-started` inbound frame carrying a `GrpcStreamHandle` whose `token`
+  is 64 bits of crypto-grade randomness, so the registry lookup is itself
+  the ownership check rather than a guessable sequential id — bidi keeps its
+  in-band `{ __streamId }` handshake until #788 migrates it onto the same
+  seam.  **BREAKING:** `GrpcInbound` gains `stream-started`, so an
+  exhaustive `match` over it needs one more arm.
+- **Request-stream chunks are no longer lost before the handler subscribes**
+  (#5).  `handler.target.tell(call)` only enqueues, so a `clientStream` or
+  `bidi` handler cannot have called `onData` by the time grpc-js starts
+  pushing — the opening chunks were silently dropped, which for a
+  client-streaming call is the entire request.  Both modes now hold what
+  arrives early and replay it on the first subscribe.
+- **`buildGrpcMethodImplementation` exported from `src/io/broker`** (#5).
+  The server's method-implementation builder is now a free function over a
+  handler descriptor, the same seam `grpcHealthCheckImplementation` already
+  uses, so all four call shapes are exercisable without `@grpc/grpc-js`, a
+  bound socket or an actor system; its four arms dispatch through
+  `match(...).exhaustive()`, so a fifth call class cannot be added without
+  handling it.
+- **Avro and Protobuf serializers** (#73).  `AvroSerializer` and
+  `ProtobufSerializer` take a compiled schema you bring — an `avsc` type, a
+  `protobufjs` reflection type, a JSON descriptor, or generated static code
+  from pbjs / ts-proto — so neither library becomes a dependency of
+  actor-ts, the same call `zodCodec` makes with `ParserLike`.  They own the
+  parts that are easy to get wrong by hand: the `Buffer` coercion `avsc`
+  needs on the read path (a plain `Uint8Array`, which is what base64 framing
+  yields, throws deep inside its decoder on every runtime), detaching
+  protobufjs's pooled writer output before it reaches a journal row, running
+  `verify()` before encoding, converting a decoded `Message` to a plain
+  object with defaults filled in, and refusing a payload written under a
+  different manifest — which is the only guard, since Avro carries no field
+  tags and Protobuf no message name.  Wire ids below 100 are rejected at
+  construction.  Round-trip and byte hygiene are verified on Bun, Node and
+  Deno.
+- **`serializerCodec(serializer)`** (#73).  Adapts any byte-native
+  `Serializer` into a migration `Codec`, so a `SchemaRegistry` can hold a
+  different wire format per `(manifest, version)` — a v1 already on disk in
+  Avro and a v2 written in Protobuf coexist in one stream, which a
+  store-wide `withSerializer(...)` cannot express.  The bytes ride the
+  journal's existing tagged-JSON framing instead of a second base64 layer,
+  and the `serializerId` travels with the row so reading it back with the
+  wrong serializer is a named error rather than silent nonsense.
+- **Stable-observation cluster bootstrap** (#148).  `StableObservation` in
+  `src/cluster/bootstrap/` polls a `SeedProvider` until the contact-point
+  set has been unchanged for `stableMarginMs`, then elects the
+  lowest-addressed node as the initial seed and returns both the seed list
+  and the `selfElection` policy to hand to `Cluster.join`; a failed lookup
+  counts as *no* observation rather than an empty set, and a set that never
+  settles throws a `StableObservationError` instead of joining anyway.  Opt
+  in with `ClusterBootstrapOptions.withStableObservation(...)`, tune it
+  under `actor-ts.cluster.bootstrap.*`.  It closes the cold-start split
+  brain (each node forming a cluster out of the subset discovery happened to
+  show it) and the symmetric-seed-list deadlock, where every node listing
+  every node left no node with the empty seed list ordinary self-election
+  requires, so no member ever reached `up`.
+- **`ClusterOptions.selfElection`** (#148).  Decides whether — and when — a
+  node may declare itself the first member of a new cluster: `'immediate'`
+  (the unchanged default, self-elect only on an empty seed list), `'never'`,
+  or a millisecond grace after which it self-elects if no peer has promoted
+  it.  The grace is what makes an address-ordered election safe against a
+  cluster that is already running: the elected node dials its seeds like
+  everybody else and forms a cluster only if that produced nothing, so a
+  scaled-up pod whose address happens to sort first joins instead of
+  splitting.
+- **`CLUSTER_HOST` environment variable** (#944).  `bootstrapCluster` reads
+  it ahead of `POD_IP` / `HOSTNAME` as the host a node advertises, and the
+  stable-observation phase refuses a wildcard advertised host outright — an
+  election ordered on `0.0.0.0` puts every node first, so every node would
+  believe it won.
+
 - **gRPC health checking** (#4).  `GrpcServerActor` can now host the
   standard `grpc.health.v1.Health` service alongside your own, so
   `grpc_health_probe`, the Kubernetes gRPC probe and gRPC load balancers can
@@ -260,6 +338,29 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   instead of shipping the lie.
 
 ### Security
+
+- **BREAKING: `persistenceId` is validated before it becomes a storage key**
+  (#133).  The new `PersistenceIdValidator` rejects an empty id, one longer
+  than 255 characters, a `/` or `\` path separator, a whole-id `.` / `..`,
+  and control characters — the rules `assertValidName` (#134) already
+  applies to actor names, mirrored onto the one identifier in the
+  persistence layer that had no validator at all.  It runs in
+  `PersistentActor.preStart` and `ReplicatedEventSourcedActor.preStart`
+  (both ahead of any journal access), in the new
+  `DurableStateOptionsValidator` where a violation is an `OptionsError` on
+  the `persistenceId` field, and again in the `append` of all six journals
+  as defence in depth.  Banning the separators also closes an object-storage
+  collision: the stores lay an id out as a directory
+  (`<prefix><persistenceId>/<seq>.json`) and read it back by listing that
+  prefix, so `a/b` nested inside `a` — `a`'s `loadLatest` returned `a/b`'s
+  snapshot and its `delete` pruned it.  Commas and `|` stay legal on
+  purpose: the comma-separated journal column carries tags rather than ids,
+  and the projection offset store puts the id last in
+  `<projection>|seq|<persistenceId>`, which is what keeps the chat example's
+  `dm-channel-alice|bob` working.  Migration: read paths are deliberately
+  not validated, so `journal.read(oldId, 1)` still returns data stored under
+  a now-invalid id and it can be copied to a corrected one; check your ids
+  ahead of the upgrade with the newly exported `assertValidPersistenceId`.
 
 - **Replay refuses a journal that breaks its read contract** (#122).
   `replayState` folded whatever `journal.read()` returned and took

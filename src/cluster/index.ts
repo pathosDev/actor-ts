@@ -2,11 +2,28 @@
 export { Cluster, inMemoryTransport } from './Cluster.js';
 export { ClusterExtension, ClusterExtensionId, clusterOf } from './ClusterExtension.js';
 export { ClusterOptions, ClusterOptionsBuilder, ClusterOptionsValidator } from './ClusterOptions.js';
-export type { ClusterOptionsType } from './ClusterOptions.js';
+export type { ClusterOptionsType, SelfElectionPolicy } from './ClusterOptions.js';
 export { bootstrapCluster } from './ClusterBootstrap.js';
 export { ClusterBootstrapOptions, ClusterBootstrapOptionsBuilder, ClusterBootstrapOptionsValidator } from './ClusterBootstrapOptions.js';
 export type { ClusterBootstrapOptionsType } from './ClusterBootstrapOptions.js';
 export type { BootstrappedCluster } from './ClusterBootstrap.js';
+
+// Stable-observation bootstrap (#148).
+export {
+  StableObservation,
+  StableObservationError,
+  StableObservationOptions,
+  StableObservationOptionsBuilder,
+  StableObservationOptionsValidator,
+  readStableObservationOptionsFromConfig,
+  isWildcardHost,
+} from './bootstrap/index.js';
+export type {
+  JoinTargets,
+  StableObservationOptionsType,
+  StableObservationTuning,
+  StableObservationConfigDefaults,
+} from './bootstrap/index.js';
 
 export { NodeAddress } from './NodeAddress.js';
 export type { NodeAddressData } from './NodeAddress.js';

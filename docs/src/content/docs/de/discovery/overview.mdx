@@ -62,6 +62,23 @@ einmal und gehst weiter.  Siehe
 [Joining und Seeds](/de/cluster/joining-and-seeds/) für das
 vollständige Join-Protokoll.
 
+### Ein Lookup ist noch keine Antwort
+
+Ein Provider liefert, was er *gerade jetzt* sieht. Bei einem
+gleichzeitigen Start ist das auf jedem Node eine andere Menge — DNS ist
+mitten in der Propagation, ein Pod ist `Ready`, bevor seine IP
+veröffentlicht ist, die K8s-API paginiert eine unvollständige Liste —
+und ein Node, der auf die erste Antwort hin joint, bildet einen Cluster
+aus seiner eigenen Teilsicht.
+
+Wenn deine Nodes gemeinsam mit dynamischen Adressen starten, konsumiere
+`lookup()` nicht direkt. Der
+**[Cluster-Bootstrap](/de/cluster/cluster-bootstrap/)** umschließt jeden
+Provider von dieser Seite: er pollt, bis sich die zurückgegebene Menge
+nicht mehr ändert, und lässt dann genau einen Node den Cluster bilden.
+Die Provider hier bleiben exakt wie sie sind — Bootstrap ist eine Phase
+darüber, kein Ersatz.
+
 ## Receptionist
 
 Der Receptionist beantwortet: **"Welche Actors sind unter diesem
@@ -171,6 +188,8 @@ Seed Provider laufen **einmal**; der Receptionist läuft
 ### Verwandtes
 
 - **[Joining und Seeds](/de/cluster/joining-and-seeds/)** —
-  der Cluster-Bootstrap-Mechanismus, der Seed Provider konsumiert.
+  der Join-Handshake, der Seed Provider konsumiert.
+- **[Cluster-Bootstrap](/de/cluster/cluster-bootstrap/)** —
+  Stable Observation über einem Provider, plus Initial-Seed-Wahl.
 - **[Cluster im Überblick](/de/cluster/overview/)** — das
   Membership-Modell, das beiden zugrunde liegt.

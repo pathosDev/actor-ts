@@ -1,7 +1,7 @@
 // Echo service used by the gRPC live-integration suite.
-// Three method shapes — unary, server-stream, bidi-stream —
-// covering every gRPC call class GrpcClientActor / GrpcServerActor
-// understand.
+// Four method shapes — unary, server-stream, client-stream,
+// bidi-stream — covering every gRPC call class GrpcClientActor /
+// GrpcServerActor understand.
 syntax = "proto3";
 
 package echo.v1;
@@ -11,6 +11,8 @@ service EchoService {
   rpc Unary (EchoRequest) returns (EchoResponse);
   // Server-stream — single request → stream of responses.
   rpc ServerStream (EchoRequest) returns (stream EchoResponse);
+  // Client-stream — stream of requests → single response.
+  rpc ClientStream (stream EchoRequest) returns (EchoResponse);
   // Bidi — stream of requests → stream of responses.
   rpc Bidi (stream EchoRequest) returns (stream EchoResponse);
 }

@@ -35,7 +35,9 @@ export {
 export type { MigrationResult } from './wrapLegacy.js';
 
 // #6 — pluggable codec + in-process schema registry.
-export { jsonCodec, zodCodec, composeCodecs } from './Codec.js';
+// #73 — `serializerCodec` adapts a byte-native Serializer (Avro, Protobuf)
+// into a Codec, so the registry can hold one wire format per version.
+export { jsonCodec, zodCodec, composeCodecs, serializerCodec } from './Codec.js';
 export type { Codec, ParserLike } from './Codec.js';
 export {
   validatedEventAdapter,

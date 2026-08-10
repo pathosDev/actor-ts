@@ -18,8 +18,17 @@ Zwei eingebaute werden mitgeliefert:
 | **`JsonSerializer`** | JSON | Default.  Menschenlesbar debugbar, weit verbreitet. |
 | **`CborSerializer`** | CBOR (RFC 8949) | Kompakt, binärnativ, schneller. |
 
+Zwei weitere nehmen ein Schema entgegen, das du mitbringst — die
+Schema-Bibliothek (`avsc`, `protobufjs`, generierter Code) bleibt
+eine Abhängigkeit deines Projekts:
+
+| Serializer | Format | Wann |
+| --- | --- | --- |
+| **`AvroSerializer`** | Avro | Kleinste Zeilen; Schema-Registry-Interop. |
+| **`ProtobufSerializer`** | Protobuf | Sprachübergreifende Verträge; vorwärtskompatibler Wire. |
+
 Plus ein Extension-Point: implementiere `Serializer<T>` für
-**Protobuf, Avro, MessagePack** usw.
+**MessagePack, FlatBuffers** oder alles andere.
 
 ## Wie das funktioniert
 
@@ -99,16 +108,20 @@ IoT-artige Payloads) gewinnt CBOR spürbar.
 Siehe [JsonSerializer](/de/serialization/json/) +
 [CborSerializer](/de/serialization/cbor/) für Details.
 
-## Eigene Serializer
+## Schema-Serializer und eigene Formate
 
-Für Protobuf / Avro / usw. implementiere `Serializer<T>` und
-registriere:
+**Avro und Protobuf werden fertig mitgeliefert** — du lieferst das
+kompilierte Schema, das Framework den Serializer:
 
 ```ts
-import { SerializationExtensionId } from 'actor-ts';
+import { ProtobufSerializer, ProtobufSerializerOptions, SerializationExtensionId } from 'actor-ts';
+
+const protobufOptions = ProtobufSerializerOptions.create<MyEvent>()
+  .withMessageType(root.lookupType('shop.MyEvent'))
+  .withId(100);
+const serializer = new ProtobufSerializer(protobufOptions);
 
 const ext = system.extension(SerializationExtensionId);
-const serializer = new ProtobufSerializer<MyEvent>(MyEventSchema);
 ext.register(serializer);          // zur ID-Lookup-Tabelle hinzufügen
 ext.bind(MyEvent, serializer.id);  // MyEvent darüber routen
 ```
@@ -116,6 +129,10 @@ ext.bind(MyEvent, serializer.id);  // MyEvent darüber routen
 `bind` nimmt eine **numerische Serializer-ID**, der Serializer muss
 also zuerst `register`t werden.  Jetzt löst die Extension jeden
 `MyEvent`-Wert zu Protobuf auf; andere Typen fallen auf JSON zurück.
+
+Für jedes andere Format — MessagePack, FlatBuffers, etwas
+Maßgeschneidertes — implementierst du `Serializer<T>` selbst.  Die
+IDs **1–99 sind reserviert** für die eingebauten; nimm ≥ 100.
 
 Siehe [Eigene Serializer](/de/serialization/custom/) für das
 volle Setup.

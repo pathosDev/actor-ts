@@ -1,11 +1,18 @@
 ---
 title: Custom serializers
-description: Plug in Protobuf, Avro, MessagePack, or any other format by implementing `Serializer<T>` and binding it to specific message classes via the SerializationExtension. Per-class serialization; JSON / CBOR fall back as defaults.
+description: Plug in Protobuf, Avro, MessagePack, or any other format. Avro and Protobuf ship ready-made — you bring the compiled schema; anything else is an implementation of `Serializer<T>` bound to specific message classes via the SerializationExtension.
 ---
 
-For formats beyond JSON / CBOR — **Protobuf, Avro,
-MessagePack, FlatBuffers** — implement the `Serializer<T>`
-interface and bind it to specific message classes.
+import { Aside } from '@astrojs/starlight/components';
+
+For formats beyond JSON / CBOR there are two routes:
+
+- **Avro and Protobuf ship with the framework** —
+  [`AvroSerializer` and `ProtobufSerializer`](#avro-and-protobuf-out-of-the-box)
+  take a compiled schema you bring and handle the wiring.
+- **Anything else** — MessagePack, FlatBuffers, a bespoke
+  format — is an implementation of the `Serializer<T>`
+  interface, bound to specific message classes.
 
 ```ts
 import { Serializer, SerializationExtensionId } from 'actor-ts';
@@ -98,7 +105,114 @@ Three good fits:
 For typical apps without these constraints, **JSON or CBOR
 suffices**.
 
-## Protobuf example
+## Avro and Protobuf out of the box
+
+Both formats ship as ready-made serializers.  What you bring is
+the **compiled schema**; the schema library stays a dependency of
+your project, exactly as `zodCodec` takes a schema rather than
+importing `zod`.  actor-ts never imports `avsc` or `protobufjs` —
+it accepts anything with the right shape, so generated static
+code (`pbjs`, `ts-proto`) fits too.
+
+```ts
+import avsc from 'avsc';
+import { AvroSerializer, AvroSerializerOptions } from 'actor-ts';
+
+const avroType = avsc.Type.forSchema({
+  name: 'Deposited',
+  type: 'record',
+  fields: [
+    { name: 'amount',   type: 'int' },
+    { name: 'currency', type: 'string' },
+  ],
+});
+
+const avroOptions = AvroSerializerOptions.create<Deposited>()
+  .withAvroType(avroType)
+  .withId(100);
+const avroSerializer = new AvroSerializer(avroOptions);
+```
+
+```ts
+import protobuf from 'protobufjs';
+import { ProtobufSerializer, ProtobufSerializerOptions } from 'actor-ts';
+
+const root = protobuf.parse(`
+  syntax = "proto3";
+  package shop;
+  message Order { string id = 1; int32 amount = 2; }
+`).root;
+
+const protobufOptions = ProtobufSerializerOptions.create<Order>()
+  .withMessageType(root.lookupType('shop.Order'))
+  .withId(101);
+const protobufSerializer = new ProtobufSerializer(protobufOptions);
+```
+
+A plain options object works identically —
+`new AvroSerializer({ avroType, id: 100 })`.
+
+### What they do that hand-wiring misses
+
+Each one is a thin wrapper, but the thin parts are the ones that
+bite:
+
+- **`avsc` cannot decode a plain `Uint8Array`.**  It reaches for
+  `Buffer`-private methods inside `fromBuffer`, and base64 framing
+  hands it exactly a plain `Uint8Array` — so a hand-rolled Avro
+  serializer encodes fine and fails on **replay**, on Bun, Node
+  and Deno alike.  `AvroSerializer` bridges that.
+- **`protobufjs` returns pooled bytes.**  `Writer.finish()` is a
+  window into a shared write pool (offset ~28 KB into a 64 KB pool
+  on Node in one measurement).  Stored as-is, the row is a view
+  onto *other messages'* memory.  `ProtobufSerializer` detaches it.
+- **`protobufjs` does not validate on encode.**  `verify()` is a
+  separate call; the serializer makes it, so a wrong-typed field is
+  a write-time error naming the field instead of a puzzle later.
+- **Wrong-schema bytes usually decode "successfully".**  Avro
+  carries no field tags and Protobuf carries no message name, so
+  foreign bytes turn into plausible nonsense.  Both serializers
+  write a manifest (defaulted from the record name /
+  fully-qualified name) and refuse a payload written under a
+  different one.
+- **Protobuf decodes to a plain object.**  `toObject` with defaults
+  filled in and 64-bit fields as strings, because a `Message`
+  instance and a `Long` are not things a journal can store.  Opt
+  out with `.withPlainObjects(false)`.
+
+### Choosing an id
+
+`id` is required and must be **≥ 100** — 1–99 belong to the
+built-ins (JSON = 1, CBOR = 2), and the constructor rejects
+anything lower.  The id is a wire contract embedded in every
+stored row: change it and old rows stop decoding.
+
+### Why a compiled type and not a `.proto` path
+
+Loading `.proto` at runtime would mean filesystem access —
+unavailable in a browser, permission-gated on Deno, and one more
+thing to ship next to the bundle.  Taking the compiled message
+type leaves the choice with you, and none of the three routes
+force a build step:
+
+```ts
+protobuf.parse(protoSource).root.lookupType('Order')  // a source string
+protobuf.Root.fromJSON(descriptor).lookupType('Order') // a bundled descriptor
+import { Order } from './generated/order.js';          // generated static code
+```
+
+<Aside type="note" title="Cluster wire">
+  These serializers cover **persistence**.  The cluster wire still
+  frames remote messages as JSON and does not consult the
+  `SerializationExtension` — see the
+  [serialization overview](/serialization/overview/).
+</Aside>
+
+## Hand-rolled Protobuf, when you need more control
+
+`ProtobufSerializer` writes one fixed manifest.  When the manifest
+has to be computed **per value** — a version tag read off the
+message, say — implement the interface directly:
 
 ```ts
 import { Serializer } from 'actor-ts';
@@ -186,6 +300,31 @@ that fans out to all of the backend's stores (a leaf's own
   uses the default codec, which is stricter than a custom serializer
   can be — the safe direction for a dev/test default.
 
+### One format per store, or one per version
+
+`withSerializer` is a **store-wide** setting: one format for every
+payload the store writes.  When different *versions of one event*
+need different formats — a v1 already on disk in Avro, a v2 you
+want in Protobuf — wrap the serializer as a codec and register it
+per version with the
+[SchemaRegistry](/persistence/migration/schema-registry/):
+
+```ts
+import { serializerCodec } from 'actor-ts';
+
+registry.register('BankAccount.Deposited', 1, {
+  codec: serializerCodec(avroSerializer),
+});
+registry.register('BankAccount.Deposited', 2, {
+  codec: serializerCodec(protobufSerializer),
+  upcastFromPrev: (v1: DepositedV1): DepositedV2 => ({ ...v1, currency: 'USD' }),
+});
+```
+
+Each format still exists once, as a `Serializer`;
+`serializerCodec` only adapts it to the registry's per-version
+slot.
+
 ## Per-class vs system-wide
 
 ```
@@ -241,8 +380,6 @@ then adds **routing** — mapping a class to an already-registered
 serializer's id.  You must `register` before you `bind`; binding an
 unregistered id throws.
 
-import { Aside } from '@astrojs/starlight/components';
-
 <Aside type="caution" title="ID collisions">
   ```ts
   // Two serializers with the same id
@@ -283,5 +420,7 @@ import { Aside } from '@astrojs/starlight/components';
   default.
 - **[CBOR serializer](/serialization/cbor/)** — the
   binary alternative.
+- **[Schema registry](/persistence/migration/schema-registry/)** —
+  a different wire format per event version.
 - **[Migration overview](/persistence/migration/overview/)** —
   schema evolution patterns.

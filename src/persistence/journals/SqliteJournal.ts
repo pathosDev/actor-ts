@@ -9,6 +9,7 @@ import {
 import type { Serializer } from '../../serialization/Serializer.js';
 import { decodePayload, encodePayload } from '../storage/PayloadCodec.js';
 import { assertSafeIdentifier } from '../storage/SqlIdentifier.js';
+import { assertValidPersistenceId } from '../storage/PersistenceIdValidator.js';
 import { assertValidTags } from '../storage/TagValidator.js';
 import { applySqliteBusyTimeout } from './SqliteClient.js';
 import { SqliteJournalOptionsValidator } from './SqliteJournalOptions.js';
@@ -84,6 +85,7 @@ export class SqliteJournal implements Journal {
     expectedSeq: number,
     tags?: ReadonlyArray<string>,
   ): Promise<PersistentEvent<E>[]> {
+    assertValidPersistenceId(persistenceId, 'SqliteJournal.append');
     assertValidTags(tags);
     await this.ensureOpen();
     if (events.length === 0) return [];

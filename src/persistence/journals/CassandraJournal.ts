@@ -14,6 +14,7 @@ import { CassandraJournalOptionsValidator } from './CassandraJournalOptions.js';
 import type { Serializer } from '../../serialization/Serializer.js';
 import { decodePayload, encodePayload } from '../storage/PayloadCodec.js';
 import { assertSafeIdentifier } from '../storage/SqlIdentifier.js';
+import { assertValidPersistenceId } from '../storage/PersistenceIdValidator.js';
 import { assertValidTags } from '../storage/TagValidator.js';
 import type { CassandraJournalOptions, CassandraJournalOptionsType } from './CassandraJournalOptions.js';
 
@@ -129,6 +130,7 @@ export class CassandraJournal implements Journal {
     tags?: ReadonlyArray<string>,
   ): Promise<PersistentEvent<E>[]> {
     if (events.length === 0) return [];
+    assertValidPersistenceId(persistenceId, 'CassandraJournal.append');
     assertValidTags(tags);
     await this.ensureStarted();
 

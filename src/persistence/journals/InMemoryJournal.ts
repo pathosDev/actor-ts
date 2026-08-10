@@ -5,6 +5,7 @@ import {
   type PersistentEvent,
 } from '../JournalTypes.js';
 import { decodePayload, encodePayload } from '../storage/PayloadCodec.js';
+import { assertValidPersistenceId } from '../storage/PersistenceIdValidator.js';
 import { assertValidTags } from '../storage/TagValidator.js';
 
 /**
@@ -39,6 +40,7 @@ export class InMemoryJournal implements Journal {
     expectedSeq: number,
     tags?: ReadonlyArray<string>,
   ): Promise<PersistentEvent<E>[]> {
+    assertValidPersistenceId(persistenceId, 'InMemoryJournal.append');
     assertValidTags(tags);
     // Nothing is being written, so there is nothing to conflict over — an
     // empty append is a no-op, and notably does NOT run the optimistic-

@@ -67,6 +67,22 @@ actor-ts {
       down-after = 5s     # measured from the last heartbeat, so > unreachable-after
     }
 
+    # Stable-observation bootstrap: poll discovery until the contact-point set
+    # has been unchanged for stable-margin, then let the lowest-addressed node
+    # -- and only it -- form a cluster if no peer promoted it within
+    # self-election-grace.  Opt-in: bootstrapCluster reads this block only when
+    # its stableObservation option is set.  required-contact-points is the one
+    # knob worth changing: 1 keeps single-node development working, but only a
+    # value matching the expected replica count catches discovery that is
+    # stably wrong rather than merely slow.
+    bootstrap {
+      stable-margin           = 5s
+      poll-interval           = 1s
+      max-wait                = 60s
+      required-contact-points = 1
+      self-election-grace     = 10s
+    }
+
     # Cluster-wide publish/subscribe (DistributedPubSub).  The caps bound what
     # one mediator can be made to hold -- by local subscribers and by a peer's
     # gossiped topic claims alike.  A Subscribe over a cap is answered with
