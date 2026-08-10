@@ -1,3 +1,4 @@
+import { addressPinRejection, isCidrEntry } from '../util/CidrMatch.js';
 import { OptionsBuilder } from '../util/OptionsBuilder.js';
 import { OptionsValidator } from '../util/OptionsValidator.js';
 
@@ -13,6 +14,24 @@ export type KubernetesApiSeedProviderOptionsType = {
   readonly port: number;
   /** Override the Endpoints-fetch function — defaults to the in-cluster API. */
   readonly fetchEndpoints?: () => Promise<string[]>;
+  /**
+   * CIDRs the pod IPs must fall inside.  Endpoints are IPs, so entries
+   * are CIDRs only — a host suffix could never match and is rejected.
+   * Unset means no pinning.
+   *
+   * The K8s path is already the better-defended one: the default fetcher
+   * pins TLS to the ServiceAccount CA, so it does not inherit DNS's
+   * trust problem the way {@link DnsSeedProviderOptionsType} does.  What
+   * this guards is the layer above — an `Endpoints` object may name
+   * *any* IP, including one outside the cluster, and RBAC that can write
+   * Endpoints is a much cheaper find than a CA key.
+   */
+  readonly pinnedAddresses?: readonly string[];
+  /**
+   * Reports addresses dropped by {@link pinnedAddresses}.  Default:
+   * no-op.
+   */
+  readonly log?: (message: string, error?: unknown) => void;
 };
 
 /**
@@ -54,6 +73,16 @@ export class KubernetesApiSeedProviderOptionsBuilder extends OptionsBuilder<Kube
   withFetchEndpoints(fetchEndpoints: () => Promise<string[]>): this {
     return this.set('fetchEndpoints', fetchEndpoints);
   }
+
+  /** Restrict discovered pod IPs to these CIDRs.  Unset means no pinning. */
+  withPinnedAddresses(pinnedAddresses: readonly string[]): this {
+    return this.set('pinnedAddresses', pinnedAddresses);
+  }
+
+  /** Reports addresses dropped by `pinnedAddresses`.  Default: no-op. */
+  withLog(log: (message: string, error?: unknown) => void): this {
+    return this.set('log', log);
+  }
 }
 
 /** Validates resolved {@link KubernetesApiSeedProviderOptionsType} settings. */
@@ -61,11 +90,25 @@ export class KubernetesApiSeedProviderOptionsValidator extends OptionsValidator<
   constructor() {
     super('KubernetesApiSeedProviderOptions');
   }
-  protected rules(_s: Partial<KubernetesApiSeedProviderOptionsType>): void {
+  protected rules(s: Partial<KubernetesApiSeedProviderOptionsType>): void {
     this.nonEmptyString('namespace');
     this.nonEmptyString('serviceName');
     this.nonEmptyString('systemName');
     this.positiveInt('port'); // node-address port (transport-agnostic — see ClusterOptions.port)
+
+    if (s.pinnedAddresses === undefined) return;
+    this.nonEmptyArray('pinnedAddresses');
+    for (const entry of s.pinnedAddresses) {
+      if (!isCidrEntry(entry)) {
+        this.fail(
+          'pinnedAddresses',
+          'accepts CIDRs only — Endpoints resolve to IPs, so a host suffix can never match',
+          entry,
+        );
+      }
+      const rejection = addressPinRejection(entry);
+      if (rejection !== null) this.fail('pinnedAddresses', rejection, entry);
+    }
   }
 }
 
