@@ -3,16 +3,23 @@ import type { Config } from '../../config/Config.js';
 import { ConfigKeys } from '../../config/ConfigKeys.js';
 import type { ActorRef } from '../../ActorRef.js';
 import { Lazy } from '../../util/Lazy.js';
+import { randomId } from '../../util/RandomString.js';
 import { BrokerActor, type OutboundEnvelope } from './BrokerActor.js';
 import { GrpcClientOptionsValidator } from './GrpcClientOptions.js';
 import type { GrpcClientOptions, GrpcClientOptionsType } from './GrpcClientOptions.js';
 
 /**
  * Inbound gRPC reply / stream frame delivered to subscribers.  The
- * `kind` discriminates between a unary completion, a stream chunk, the
- * stream-end signal, and a stream error.
+ * `kind` discriminates between a unary completion, the handle for a
+ * caller-driven stream, a stream chunk, the stream-end signal, and a
+ * stream error.
  */
 export type ReplyMessage = { readonly kind: 'reply'; readonly target: ActorRef<unknown>; readonly response: unknown };
+export type StreamStartedMessage = {
+  readonly kind: 'stream-started';
+  readonly target: ActorRef<unknown>;
+  readonly handle: GrpcStreamHandle;
+};
 export type StreamDataMessage = {
   readonly kind: 'stream-data';
   readonly target: ActorRef<unknown>;
@@ -30,10 +37,51 @@ export type RpcErrorMessage = { readonly kind: 'rpc-error'; readonly target: Act
 
 export type GrpcInbound =
   | ReplyMessage
+  | StreamStartedMessage
   | StreamDataMessage
   | StreamEndMessage
   | StreamErrorMessage
   | RpcErrorMessage;
+
+/**
+ * Write capability for a stream the *caller* drives.
+ *
+ * Two fields, two jobs.  `streamId` is the correlation id: it is what
+ * this stream's `stream-data` / `stream-end` / `stream-error` frames
+ * carry, so one collector can multiplex several concurrent streams.
+ * `token` is the capability: `clientStreamSend` / `clientStreamClose`
+ * find the stream by token, never by id.
+ *
+ * The split matters because a `tell` carries no verified sender.  A
+ * sequential id doubles as an address — knowing one hands you the next
+ * — so an id alone would let anything that can reach the client actor
+ * write into, or close, a stream it never opened.  Sixty-four bits of
+ * `crypto.getRandomValues` cannot be guessed, which makes the map
+ * lookup itself the ownership check: a wrong token simply finds
+ * nothing.
+ */
+export type GrpcStreamHandle = {
+  readonly streamId: number;
+  readonly token: string;
+};
+
+/**
+ * Hex characters in a {@link GrpcStreamHandle} token — 64 bits, the
+ * same order of magnitude the framework uses for every other name it
+ * has to keep unguessable (see `randomId`).
+ */
+const STREAM_TOKEN_LENGTH = 16;
+
+/**
+ * Mint a handle for stream `streamId`.
+ *
+ * A free function rather than a method so the entropy of the token —
+ * the whole point of the handle — is assertable without a gRPC module,
+ * a socket or an actor system.
+ */
+export function createGrpcStreamHandle(streamId: number): GrpcStreamHandle {
+  return { streamId, token: randomId(STREAM_TOKEN_LENGTH) };
+}
 
 /** TLS / mTLS credentials. */
 export type GrpcCredentials =
@@ -52,6 +100,17 @@ type ServerStreamCommand = {
   readonly request: unknown;
   readonly target: ActorRef<unknown>;
 };
+type ClientStreamStartCommand = {
+  readonly kind: 'clientStreamStart';
+  readonly method: string;
+  readonly target: ActorRef<unknown>;
+};
+type ClientStreamSendCommand = {
+  readonly kind: 'clientStreamSend';
+  readonly handle: GrpcStreamHandle;
+  readonly chunk: unknown;
+};
+type ClientStreamCloseCommand = { readonly kind: 'clientStreamClose'; readonly handle: GrpcStreamHandle };
 type BidiStartCommand = { readonly kind: 'bidiStart'; readonly method: string; readonly target: ActorRef<unknown> };
 type BidiSendCommand = { readonly kind: 'bidiSend'; readonly streamId: number; readonly chunk: unknown };
 type BidiCloseCommand = { readonly kind: 'bidiClose'; readonly streamId: number };
@@ -60,6 +119,9 @@ type BidiCloseCommand = { readonly kind: 'bidiClose'; readonly streamId: number 
 export type GrpcClientCommand =
   | UnaryCommand
   | ServerStreamCommand
+  | ClientStreamStartCommand
+  | ClientStreamSendCommand
+  | ClientStreamCloseCommand
   | BidiStartCommand
   | BidiSendCommand
   | BidiCloseCommand;
@@ -69,21 +131,33 @@ type OutboundOp = {
 };
 
 /**
- * gRPC client actor.  One client instance per service, supports unary,
- * server-stream, and bidi-stream calls.  All inbound data (replies,
- * stream chunks) goes to the per-call `target` actor as
- * `GrpcInbound` messages.
+ * gRPC client actor.  One client instance per service, covering all
+ * four gRPC call classes — unary, server-stream, client-stream and
+ * bidi-stream.  All inbound data (replies, stream chunks) goes to the
+ * per-call `target` actor as `GrpcInbound` messages.
  *
- * Bidi streams: `bidiStart` returns nothing — the actor publishes a
- * `'stream-data'` event to the target with `streamId` already filled
- * in.  Subsequent `bidiSend` / `bidiClose` reference that id.  When
- * the server closes its side, a `'stream-end'` is delivered.
+ * Client streams: `clientStreamStart` returns nothing — the actor
+ * delivers a `'stream-started'` frame to the target carrying a
+ * {@link GrpcStreamHandle}.  Subsequent `clientStreamSend` /
+ * `clientStreamClose` pass that handle back.  The single server
+ * response arrives as an ordinary `'reply'`, which is what a
+ * client-streaming RPC returns; a failure arrives as `'rpc-error'`.
+ *
+ * Bidi streams still use the older in-band handshake: `bidiStart`
+ * publishes a `'stream-data'` frame whose chunk is `{ __streamId }`,
+ * and `bidiSend` / `bidiClose` address that bare number.  That
+ * handshake is a known defect — the id is guessable and the lookup has
+ * no ownership check — tracked as #788; the two primitives the client
+ * stream introduces (a dedicated `'stream-started'` frame and a
+ * capability handle) are what it should adopt.
  */
 export class GrpcClientActor
   extends BrokerActor<GrpcClientOptionsType, GrpcClientCommand, OutboundOp> {
   private serviceClient: GrpcServiceClient | null = null;
   private nextStreamId = 1;
   private readonly bidiStreams = new Map<number, { call: GrpcDuplexCall; target: ActorRef<unknown> }>();
+  /** Keyed by `GrpcStreamHandle.token` — the key *is* the ownership check. */
+  private readonly clientStreams = new Map<string, { call: GrpcWritableCall; target: ActorRef<unknown> }>();
 
   constructor(options: GrpcClientOptions = {}) { super(options); }
 
@@ -145,6 +219,10 @@ export class GrpcClientActor
       try { stream.call.end(); } catch { /* ignore */ }
     }
     this.bidiStreams.clear();
+    for (const [, stream] of this.clientStreams) {
+      try { stream.call.end(); } catch { /* ignore */ }
+    }
+    this.clientStreams.clear();
     if (this.serviceClient) {
       try { this.serviceClient.close?.(); } catch { /* ignore */ }
       this.serviceClient = null;
@@ -158,6 +236,9 @@ export class GrpcClientActor
     match(env.payload.op)
       .with({ kind: 'unary' }, (c) => this.onUnary(c))
       .with({ kind: 'serverStream' }, (c) => this.onServerStream(c))
+      .with({ kind: 'clientStreamStart' }, (c) => this.onClientStreamStart(c))
+      .with({ kind: 'clientStreamSend' }, (c) => this.onClientStreamSend(c))
+      .with({ kind: 'clientStreamClose' }, (c) => this.onClientStreamClose(c))
       .with({ kind: 'bidiStart' }, (c) => this.onBidiStart(c))
       .with({ kind: 'bidiSend' }, (c) => this.onBidiSend(c))
       .with({ kind: 'bidiClose' }, (c) => this.onBidiClose(c))
@@ -165,9 +246,10 @@ export class GrpcClientActor
   }
 
   /*
-   * An unknown streamId is a no-op on both paths: the stream is already
-   * gone (server closed it, or the connection dropped and cleared the
-   * map), and the caller has been told via 'stream-end' / 'stream-error'.
+   * An unknown stream — a stale id, an unknown token — is a no-op on
+   * every one of these paths: the stream is already gone (the server
+   * closed it, or the connection dropped and cleared the map), and the
+   * caller has been told via 'stream-end' / 'stream-error' / 'reply'.
    */
 
   private onBidiSend(command: BidiSendCommand): void {
@@ -183,6 +265,27 @@ export class GrpcClientActor
     }
   }
 
+  private onClientStreamSend(command: ClientStreamSendCommand): void {
+    const stream = this.clientStreams.get(command.handle.token);
+    if (stream) stream.call.write(command.chunk);
+  }
+
+  /**
+   * Half-close: the request stream ends, the response is still to come.
+   * The entry is dropped here rather than when the response arrives, so
+   * a `clientStreamSend` that races the close cannot turn into a
+   * write-after-end (which grpc-js throws on).  The reply still reaches
+   * the caller — the response callback closes over its `target`, it
+   * does not look the stream back up.
+   */
+  private onClientStreamClose(command: ClientStreamCloseCommand): void {
+    const stream = this.clientStreams.get(command.handle.token);
+    if (stream) {
+      try { stream.call.end(); } catch { /* ignore */ }
+      this.clientStreams.delete(command.handle.token);
+    }
+  }
+
   override onReceive(command: GrpcClientCommand): void {
     this.enqueueOutbound({ op: command });
   }
@@ -192,12 +295,12 @@ export class GrpcClientActor
   private onUnary(op: UnaryCommand): void {
     const client = this.serviceClient;
     if (!client) return;
-    const fn = (client as unknown as Record<string, GrpcUnaryFunction>)[op.method];
-    if (!fn) {
+    const invoke = (client as unknown as Record<string, GrpcUnaryFunction>)[op.method];
+    if (!invoke) {
       op.target.tell({ kind: 'rpc-error', target: op.target, error: new Error(`unknown method: ${op.method}`) } as never);
       return;
     }
-    fn.call(client, op.request, (err, response) => {
+    invoke.call(client, op.request, (err, response) => {
       if (err) op.target.tell({ kind: 'rpc-error', target: op.target, error: err } as never);
       else op.target.tell({ kind: 'reply', target: op.target, response } as never);
     });
@@ -206,13 +309,13 @@ export class GrpcClientActor
   private onServerStream(op: ServerStreamCommand): void {
     const client = this.serviceClient;
     if (!client) return;
-    const fn = (client as unknown as Record<string, GrpcServerStreamFunction>)[op.method];
-    if (!fn) {
+    const invoke = (client as unknown as Record<string, GrpcServerStreamFunction>)[op.method];
+    if (!invoke) {
       op.target.tell({ kind: 'rpc-error', target: op.target, error: new Error(`unknown method: ${op.method}`) } as never);
       return;
     }
     const streamId = this.nextStreamId++;
-    const call = fn.call(client, op.request);
+    const call = invoke.call(client, op.request);
     call.on('data', (chunk: unknown) => {
       op.target.tell({ kind: 'stream-data', target: op.target, streamId, chunk } as never);
     });
@@ -224,16 +327,47 @@ export class GrpcClientActor
     });
   }
 
+  /**
+   * Open a client-streaming call.
+   *
+   * grpc-js hands back a writable call and answers through the
+   * callback, so the whole RPC is one `reply` (or one `rpc-error`) —
+   * no new inbound frame is needed for the response itself, only for
+   * the handle that lets the caller keep writing.
+   */
+  private onClientStreamStart(op: ClientStreamStartCommand): void {
+    const client = this.serviceClient;
+    if (!client) return;
+    const invoke = (client as unknown as Record<string, GrpcClientStreamFunction>)[op.method];
+    if (!invoke) {
+      op.target.tell({ kind: 'rpc-error', target: op.target, error: new Error(`unknown method: ${op.method}`) } as never);
+      return;
+    }
+    const handle = createGrpcStreamHandle(this.nextStreamId++);
+    // `settled` guards the one ordering the map cannot express: a call
+    // that answers synchronously would be deleted before it is added,
+    // leaving a finished stream registered forever.
+    let settled = false;
+    const call = invoke.call(client, (err, response) => {
+      settled = true;
+      this.clientStreams.delete(handle.token);
+      if (err) op.target.tell({ kind: 'rpc-error', target: op.target, error: err } as never);
+      else op.target.tell({ kind: 'reply', target: op.target, response } as never);
+    });
+    if (!settled) this.clientStreams.set(handle.token, { call, target: op.target });
+    op.target.tell({ kind: 'stream-started', target: op.target, handle } as never);
+  }
+
   private onBidiStart(op: BidiStartCommand): void {
     const client = this.serviceClient;
     if (!client) return;
-    const fn = (client as unknown as Record<string, GrpcBidiFunction>)[op.method];
-    if (!fn) {
+    const invoke = (client as unknown as Record<string, GrpcBidiFunction>)[op.method];
+    if (!invoke) {
       op.target.tell({ kind: 'rpc-error', target: op.target, error: new Error(`unknown method: ${op.method}`) } as never);
       return;
     }
     const streamId = this.nextStreamId++;
-    const call = fn.call(client);
+    const call = invoke.call(client);
     this.bidiStreams.set(streamId, { call, target: op.target });
     call.on('data', (chunk: unknown) => {
       op.target.tell({ kind: 'stream-data', target: op.target, streamId, chunk } as never);
@@ -285,6 +419,17 @@ interface GrpcServerStreamCall {
 
 interface GrpcServerStreamFunction {
   call(client: GrpcServiceClient, request: unknown): GrpcServerStreamCall;
+}
+
+/** grpc-js `ClientWritableStream` — a client-streaming call is write-only. */
+interface GrpcWritableCall {
+  write(chunk: unknown): void;
+  end(): void;
+}
+
+interface GrpcClientStreamFunction {
+  call(client: GrpcServiceClient,
+       callback: (err: Error | null, response: unknown) => void): GrpcWritableCall;
 }
 
 interface GrpcDuplexCall {
