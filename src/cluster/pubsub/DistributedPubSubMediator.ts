@@ -62,18 +62,38 @@ const DEFAULT_MAX_TOPICS = 10_000;
 /** Remote claimants per topic when nothing else is configured. */
 const DEFAULT_MAX_REMOTE_NODES_PER_TOPIC = 1_000;
 
+/**
+ * Where a topic's rotation stands — mutable on purpose, and held inside the
+ * {@link SubscriberSet} rather than in a `Map<topic, number>` beside `topics`:
+ * a second map would be a fourth registry to bound and to prune, while a field
+ * is created and dropped with the very set it rotates over.
+ */
+type RotationCursor = { nextCandidateIndex: number };
+
 type SubscriberSet = {
   /** Locally-registered subscribers — receive direct Publish deliveries. */
   readonly local: Map<string, ActorRef>;
   /** Remote node addresses with at least one subscriber for this topic. */
   readonly remoteNodes: Set<string>;
   /**
-   * Rotation cursor for `'one-subscriber'` delivery — mutable on purpose,
-   * and held here rather than in a `Map<topic, number>` beside `topics`:
-   * a second map would be a fourth registry to bound and to prune, while a
-   * field is created and dropped with the very set it rotates over.
+   * Rotation for an anycast this node originates — it walks local subscribers
+   * *and* remote claimants.
    */
-  nextCandidateIndex: number;
+  readonly originatedAnycast: RotationCursor;
+  /**
+   * Rotation for an anycast that already crossed a hop — it walks local
+   * subscribers only, the sending mediator having chosen this node already.
+   *
+   * Separate from {@link SubscriberSet.originatedAnycast} because the two
+   * walk differently sized candidate lists.  Sharing one cursor meant the
+   * inbound path wrote it back modulo the *local* count, leaving it below
+   * that count for good and pinning every subsequent originated anycast to a
+   * local subscriber — the remote half of the rotation was reachable only
+   * after as many originated publishes in a row as there are local
+   * subscribers.  A symmetric work queue, where every node both hosts workers
+   * and publishes, alternates the two paths and so never got there (#155).
+   */
+  readonly forwardedAnycast: RotationCursor;
 };
 
 /** The cap a {@link Subscribe} ran into, and the value that cap was set to. */
@@ -169,7 +189,7 @@ export class DistributedPubSubMediator extends Actor<MediatorInbox> {
       // Remote Publish forwarded from another mediator (plain envelope, not a class instance).
       .with({ kind: 'pubsub-publish' }, (m) => this.onPubSubPublish(m))
       .with({ kind: 'pubsub-publish-one' }, (m) => this.onPubSubPublishOne(m))
-      .otherwise(() => this.onUnhandled());
+      .otherwise((m) => this.onUnhandled(m));
   }
 
   /* ----------------------------- Command handlers ----------------------------- */
@@ -278,6 +298,10 @@ export class DistributedPubSubMediator extends Actor<MediatorInbox> {
    * uniform draw shows: ten tasks over three workers leaves one of them idle
    * often enough to look like a bug.  A rotation also gives a test something
    * to assert, where a distribution only gives it something to sample.
+   *
+   * The cursor is {@link SubscriberSet.originatedAnycast} and belongs to this
+   * path alone — {@link onPubSubPublishOne} rotates a shorter candidate list
+   * and keeps its own.
    */
   private publishToOneSubscriber<T>(message: Publish<T>): void {
     const set = this.topics.get(message.topic);
@@ -289,7 +313,7 @@ export class DistributedPubSubMediator extends Actor<MediatorInbox> {
       + `+ ${remoteNodes.length} remote candidate(s)`,
     );
     if (!set || candidateCount === 0) { this.deadLetter(message.topic, message.message); return; }
-    const index = this.rotate(set, candidateCount);
+    const index = this.rotate(set.originatedAnycast, candidateCount);
     const local = localSubscribers[index];
     if (local) {
       if (!this.tellSubscriber(local, message.message)) this.deadLetter(message.topic, message.message);
@@ -316,17 +340,34 @@ export class DistributedPubSubMediator extends Actor<MediatorInbox> {
    * {@link onPubSubPublish}.  It is deliberately not re-routed: a second hop
    * would trade the at-most-one-hop guarantee for a race with the gossip that
    * is about to correct the sender anyway.
+   *
+   * Rotates {@link SubscriberSet.forwardedAnycast}, not the cursor
+   * {@link publishToOneSubscriber} uses — see that field for why one cursor
+   * across both lists starved the remote half.
    */
   private onPubSubPublishOne(message: PubSubPublishOneMessage): void {
     const set = this.topics.get(message.topic);
     const subscribers = set ? [...set.local.values()] : [];
     if (!set || subscribers.length === 0) { this.deadLetter(message.topic, message.body); return; }
-    const target = subscribers[this.rotate(set, subscribers.length)]!;
+    const target = subscribers[this.rotate(set.forwardedAnycast, subscribers.length)]!;
     if (!this.tellSubscriber(target, message.body)) this.deadLetter(message.topic, message.body);
   }
 
-  private onUnhandled(): void {
-    /* unknown message */
+  /**
+   * Something the dispatch table has no arm for.  Version skew across a
+   * rolling upgrade has a silent direction — a mediator that predates a frame
+   * kind used to drop it here without a delivery, a dead letter or a log line,
+   * which from the outside is indistinguishable from a healthy cluster with
+   * nothing to do.  This node can only fix its own half of that, and does:
+   * whatever it cannot route becomes observable (#155).
+   */
+  private onUnhandled(message: MediatorInbox): void {
+    const kind = (message as { kind?: unknown } | null)?.kind;
+    this.log.warn(
+      `[pubsub] no handler for '${String(kind ?? message)}' → dead letters — `
+      + 'a peer may be speaking a newer wire protocol than this node',
+    );
+    this.system.deadLetters.tell(new DeadLetter(message, this.sender.toNullable(), this.self));
   }
 
   /** Fan out to local subscribers; returns how many actually got the body. */
@@ -352,10 +393,21 @@ export class DistributedPubSubMediator extends Actor<MediatorInbox> {
    * Remote nodes claiming `topic`, this node excluded — one anycast candidate
    * and one broadcast envelope each.  Self is filtered because a stale claim
    * naming us would otherwise cost a wire round trip back into this mailbox.
+   *
+   * Sorted by address, and that is load-bearing for the anycast half: the
+   * rotation is positional, while `remoteNodes` is a `Set` whose insertion
+   * order `handleGossip` re-draws on every round — it deletes the sending
+   * peer from every topic and re-adds it, so a claimant migrates to the end
+   * of the order simply by gossiping.  A cursor over that walks no rotation
+   * at all: a peer can be served twice running or skipped for a full turn,
+   * purely from gossip timing.  Sorting costs O(n log n) per publish over a
+   * list already capped by `maxRemoteNodesPerTopic` and, in practice, by the
+   * cluster size — against a broadcast that then sends one frame per entry,
+   * it does not register.
    */
   private remoteCandidatesOf(set: SubscriberSet): NodeAddress[] {
     const candidates: NodeAddress[] = [];
-    for (const nodeString of set.remoteNodes) {
+    for (const nodeString of [...set.remoteNodes].sort()) {
       const node = NodeAddress.parse(nodeString);
       if (node.equals(this.options.cluster.selfAddress)) continue;
       candidates.push(node);
@@ -363,10 +415,10 @@ export class DistributedPubSubMediator extends Actor<MediatorInbox> {
     return candidates;
   }
 
-  /** Advance the topic's rotation cursor, returning the index it handed out. */
-  private rotate(set: SubscriberSet, candidateCount: number): number {
-    const index = set.nextCandidateIndex % candidateCount;
-    set.nextCandidateIndex = (index + 1) % candidateCount;
+  /** Advance one rotation cursor, returning the index it handed out. */
+  private rotate(cursor: RotationCursor, candidateCount: number): number {
+    const index = cursor.nextCandidateIndex % candidateCount;
+    cursor.nextCandidateIndex = (index + 1) % candidateCount;
     return index;
   }
 
@@ -496,7 +548,12 @@ export class DistributedPubSubMediator extends Actor<MediatorInbox> {
   private getOrCreateSet(topic: string): SubscriberSet {
     let subscriberSet = this.topics.get(topic);
     if (!subscriberSet) {
-      subscriberSet = { local: new Map(), remoteNodes: new Set(), nextCandidateIndex: 0 };
+      subscriberSet = {
+        local: new Map(),
+        remoteNodes: new Set(),
+        originatedAnycast: { nextCandidateIndex: 0 },
+        forwardedAnycast: { nextCandidateIndex: 0 },
+      };
       this.topics.set(topic, subscriberSet);
     }
     return subscriberSet;
