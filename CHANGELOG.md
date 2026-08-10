@@ -150,8 +150,14 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   against the gossip round about to correct the sender.  **BREAKING:** the
   third constructor slot used to be `sendOneMessageToEachGroup`, Akka's
   per-consumer-group anycast flag, which nothing ever read because this
-  mediator has no groups for it to range over — replace `new Publish(topic,
-  message, true)` with `new Publish(topic, message, 'one-subscriber')`.
+  mediator has no groups for it to range over — `new Publish(topic, message,
+  true)` broadcast to every subscriber, exactly as `false` did.  Migrate by
+  **dropping the argument**: `new Publish(topic, message)` keeps the
+  behaviour both values actually had.  Do **not** rewrite `true` to
+  `'one-subscriber'` — the old flag was a no-op and the new value is not, so
+  the swap silently turns a fan-out to every subscriber into a delivery to
+  exactly one.  Reach for `'one-subscriber'` only where anycast is what you
+  want.
 - **Live and cursor-paginated persistence-id queries** (#156).
   `PersistenceQuery` gains `allPersistenceIds()` — a live stream of every
   persistence id the journal has seen plus each new one as it first appears,
@@ -295,9 +301,14 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   behave exactly like round-robin and makes a saturated one spread its
   overflow evenly instead of piling onto a single routee; the scan stops at
   the first empty mailbox, so a pool that is keeping up costs one depth read
-  per message regardless of its size.  Local only: mailbox depth is
-  in-process state, and it stays internal to the runtime rather than
-  becoming a public `ActorRef.mailboxSize`.
+  per message regardless of its size.  A routee that has stopped is skipped
+  rather than chosen: a terminated cell dead-letters instead of enqueueing,
+  so its depth would otherwise read `0` forever and make the dead routee the
+  permanently emptiest one in the pool.  A routee whose depth cannot be read
+  — one that is not locally hosted — is weighed as empty instead of being
+  passed over, so a mixed pool cannot starve it.  Local only in the sense
+  that matters: mailbox depth is in-process state, and it stays internal to
+  the runtime rather than becoming a public `ActorRef.mailboxSize`.
 
 - **Death watch with a custom termination message** (#159).
   `context.watchWith(ref, message)` — and its `TypedActorContext`
