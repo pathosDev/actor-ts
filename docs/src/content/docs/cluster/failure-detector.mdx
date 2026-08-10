@@ -178,6 +178,47 @@ wire these into metrics — a histogram of "unreachable durations"
 shows whether the threshold matches your network's actual blip
 profile.
 
+### `ReachabilityChanged` — what *this* node can see
+
+`MemberUnreachable` is a membership transition, and that makes it the
+wrong signal for two questions it looks like it answers:
+
+- **It may not be this node's observation.**  Member status travels in
+  gossip, so `MemberUnreachable` also fires for a peer that *someone
+  else* has stopped hearing from while this node's heartbeats to it
+  arrive normally.
+- **It only fires for a member that was `up`.**  A peer that falls
+  silent while `joining`, `weakly-up` or `leaving` produces no
+  reachability event at all — the next thing you hear about it is the
+  eviction.
+
+`ReachabilityChanged` is the local detector's own verdict, without
+either caveat:
+
+```ts
+import { ReachabilityChanged } from 'actor-ts';
+
+cluster.subscribe((evt) => {
+  if (evt instanceof ReachabilityChanged) {
+    peerHealth.gauge({ peer: evt.address.toString() }).set(evt.reachable ? 1 : 0);
+  }
+});
+```
+
+It fires **on transition only** — once when the detector stops seeing
+a peer, once when it sees it again — and never for a peer that has been
+healthy since this node first met it.  The verdict is recomputed once
+per `heartbeatIntervalMs` and turns negative at `unreachableAfterMs`,
+so it is the earliest warning the detector produces, well ahead of any
+downing decision.
+
+Comparing this against the member's gossiped `status` is how you tell a
+partition from a dead peer: a node that everyone else can still reach
+is a link problem, not a host problem.  The event carries no observer
+set — *"which other nodes also cannot reach X"* would need an
+observer-to-subject table on the wire, and gossip carries a flat member
+list.
+
 import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="Defaults are LAN defaults">

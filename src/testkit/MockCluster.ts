@@ -1,13 +1,16 @@
+import { match } from 'ts-pattern';
 import type { MockClusterOptions, MockClusterOptionsType } from './MockClusterOptions.js';
 import type { ActorRef } from '../ActorRef.js';
 import { Member } from '../cluster/Member.js';
 import { NodeAddress } from '../cluster/NodeAddress.js';
 import type { MemberStatus } from '../cluster/Protocol.js';
 import {
-  LeaderChanged, MemberDown, MemberJoined, MemberLeft, MemberReachable,
-  MemberRemoved, MemberUnreachable, MemberUp, SelfRemoved, SelfUp,
+  CurrentClusterState, LeaderChanged, MemberDown, MemberJoined, MemberLeft,
+  MemberReachable, MemberRemoved, MemberUnreachable, MemberUp, MemberWeaklyUp,
+  SelfRemoved, SelfUp,
   type ClusterEvent,
 } from '../cluster/ClusterEvents.js';
+import type { ClusterSubscriptionReplayMode } from '../cluster/Cluster.js';
 import { none, some, type Option } from '../util/Option.js';
 
 /**
@@ -16,10 +19,10 @@ import { none, some, type Option } from '../util/Option.js';
  * spin up a real ActorSystem + Transport.
  *
  * What it provides:
- *   - `subscribe(listener)` — same shape as `Cluster.subscribe`; the
- *     mock replays the current view as `MemberUp` events on first
- *     subscribe, then emits events imperatively via the test helper
- *     methods.
+ *   - `subscribe(listener, options?)` — same shape as `Cluster.subscribe`,
+ *     including `replayMode`; the mock replays the current view on first
+ *     subscribe exactly as the real cluster does, then emits events
+ *     imperatively via the test helper methods.
  *   - `getMembers()` / `upMembers()` / `getMembersByStatus()` —
  *     same accessor shape as the real Cluster.
  *   - `selfAddress` — fixed at construction time.
@@ -54,20 +57,25 @@ export class MockCluster {
     this.leader = options.initialLeader ?? this.computeLeader();
   }
 
-  /** Match the Cluster API: replays current state on subscribe. */
-  subscribe(listener: (event: ClusterEvent) => void): () => void {
-    for (const member of this.members.values()) {
-      if (member.status === 'up') {
-        try { listener(new MemberUp(member)); } catch { /* ignore */ }
-      }
-    }
-    if (this.members.get(this.selfAddress.toString())?.status === 'up') {
-      try { listener(new SelfUp(this.members.get(this.selfAddress.toString())!)); } catch { /* ignore */ }
-    }
-    this.leader.forEach((l) => {
-      try { listener(new LeaderChanged(some(l))); } catch { /* ignore */ }
-    });
+  /**
+   * Match the Cluster API: replays current state on subscribe, in whichever
+   * form `options.replayMode` asks for.
+   *
+   * The mock's replay used to be its own, shorter thing — `MemberUp` for the up
+   * members and nothing else — so a test that passed against it proved nothing
+   * about what a real subscriber would have been told (#161).  It now mirrors
+   * `Cluster.subscribe` event for event: `MemberJoined` for every member,
+   * followed by the status event that member has reached, then `LeaderChanged`.
+   */
+  subscribe(
+    listener: (event: ClusterEvent) => void,
+    options?: { readonly replayMode?: ClusterSubscriptionReplayMode },
+  ): () => void {
     this.listeners.push(listener);
+    match(options?.replayMode ?? 'events')
+      .with('events', () => this.replayAsEvents(listener))
+      .with('snapshot', () => this.replayAsSnapshot(listener))
+      .exhaustive();
     return () => {
       const i = this.listeners.indexOf(listener);
       if (i >= 0) this.listeners.splice(i, 1);
@@ -110,13 +118,17 @@ export class MockCluster {
     return member;
   }
 
-  /** Mark a member as unreachable; fires `MemberUnreachable`. */
+  /**
+   * Mark a member as unreachable; fires `MemberUnreachable`.
+   *
+   * Fires the event **without** moving the member's status, deliberately: the
+   * driver methods exist to put a subscriber in a given situation, and this one
+   * is "you were told a peer went unreachable".  A test that needs the status
+   * to match — a replay, a `getMembers()` assertion — constructs the member
+   * that way through `initialMembers` instead.
+   */
   markUnreachable(address: NodeAddress): Member {
     const prev = this.requireMember(address);
-    // The Member type doesn't carry an `unreachable` status — only
-    // the FailureDetector view does.  We re-emit the event with the
-    // current member; consumers that care about reachability listen
-    // for the EVENT, not a status mutation.
     this.emit(new MemberUnreachable(prev));
     return prev;
   }
@@ -167,6 +179,45 @@ export class MockCluster {
   get listenerCount(): number { return this.listeners.length; }
 
   /* ------------------------------ internals ------------------------------ */
+
+  /** Tombstones excluded, address order — the same view the real cluster replays. */
+  private snapshotMembers(): ReadonlyArray<Member> {
+    return [...this.getMembers()].sort((a, b) => a.address.compareTo(b.address));
+  }
+
+  private replayAsEvents(listener: (event: ClusterEvent) => void): void {
+    for (const member of this.snapshotMembers()) {
+      this.deliver(listener, new MemberJoined(member));
+      for (const event of this.statusEventsOf(member)) this.deliver(listener, event);
+    }
+    this.leader.forEach((l) => this.deliver(listener, new LeaderChanged(some(l))));
+  }
+
+  private replayAsSnapshot(listener: (event: ClusterEvent) => void): void {
+    const members = this.snapshotMembers();
+    const unreachable = members.filter((member) => member.status === 'unreachable');
+    this.deliver(listener, new CurrentClusterState(members, unreachable, this.leader));
+  }
+
+  /** The events that announce `member` in the status it holds — see `Cluster.statusEventsOf`. */
+  private statusEventsOf(member: Member): ReadonlyArray<ClusterEvent> {
+    const isSelf = member.address.equals(this.selfAddress);
+    return match(member.status)
+      .with('up', () => (isSelf ? [new MemberUp(member), new SelfUp(member)] : [new MemberUp(member)]))
+      .with('weakly-up', () => [new MemberWeaklyUp(member)])
+      .with('unreachable', () => [new MemberUnreachable(member)])
+      .with('down', () => [new MemberDown(member)])
+      .with('leaving', () => [new MemberLeft(member)])
+      .with('removed', () => (
+        isSelf ? [new MemberRemoved(member), new SelfRemoved(member)] : [new MemberRemoved(member)]
+      ))
+      .with('joining', () => [])
+      .exhaustive();
+  }
+
+  private deliver(listener: (event: ClusterEvent) => void, event: ClusterEvent): void {
+    try { listener(event); } catch { /* a test listener's failure is the test's problem */ }
+  }
 
   private emit(event: ClusterEvent): void {
     for (const listener of this.listeners.slice()) {

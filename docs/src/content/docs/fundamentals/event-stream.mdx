@@ -178,7 +178,14 @@ The framework publishes several event types you can subscribe to:
 | --- | --- |
 | `DeadLetter` | Every message routed to `/deadLetters` is also published.  Useful for "alarms on lost messages." |
 | `MemberUp`, `MemberRemoved`, `MemberUnreachable`, … | Concrete cluster membership events published by the cluster extension.  Subscribe to each class directly — `ClusterEvent` is a union type, not a subscribable base class.  See [Cluster](/cluster/overview/). |
+| `ReachabilityChanged` | The publishing node's own failure detector gained or lost sight of a peer — a local observation, unlike `MemberUnreachable`, which may have arrived in gossip.  See [Failure detector](/cluster/failure-detector/). |
 | Broker events | `BrokerActor` subclasses publish connect/disconnect/lag events. |
+
+One cluster event is deliberately **not** here: `CurrentClusterState`
+is delivered only to the listener that asked for it, by
+`cluster.subscribe(fn, { replayMode: 'snapshot' })`.  It states where
+that subscriber is starting from, which is not news to anybody else,
+so it never reaches this bus.
 
 See each extension's docs for the full event vocabulary it
 publishes.

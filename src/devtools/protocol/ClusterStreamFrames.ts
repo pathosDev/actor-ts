@@ -73,7 +73,13 @@ export type ShardRegionInfo = {
   readonly shardCount: number;
 };
 
-/** Names of the runtime `ClusterEvent` classes, as sent over the wire. */
+/**
+ * Names of the runtime `ClusterEvent` classes that travel on this stream.
+ *
+ * `CurrentClusterState` has no name here: it is a subscription-replay artefact
+ * the tap consumes rather than forwards, and a client is told the same thing
+ * by {@link ClusterSnapshotPayload}.
+ */
 export type ClusterEventName =
   | 'self-up'
   | 'self-removed'
@@ -83,6 +89,7 @@ export type ClusterEventName =
   | 'member-weakly-up'
   | 'member-unreachable'
   | 'member-reachable'
+  | 'reachability-changed'
   | 'member-down'
   | 'member-left'
   | 'member-removed'
@@ -107,6 +114,15 @@ export type ClusterEventPayload = {
   readonly member?: ClusterMemberInfo;
   /** New leader address — only for `leader-changed`. */
   readonly leader?: string | null;
+  /**
+   * The serving node's failure detector can/cannot see the subject — only for
+   * `reachability-changed`, where it is the whole content of the event.
+   *
+   * Distinct from the subject's `status`: status is the gossip-converged view
+   * every node shares, this is what *this* node sees, which is the pair you
+   * need side by side to tell a partition from a dead peer.
+   */
+  readonly reachable?: boolean;
 };
 
 /** The coordinator republished a shard map. */
@@ -139,12 +155,14 @@ export function clusterEventPayload(
   event: ClusterEventName,
   member?: ClusterMemberInfo,
   leader?: string | null,
+  reachable?: boolean,
 ): ClusterEventPayload {
   const payload: ClusterEventPayload = { kind: 'cluster-event', atMs, event };
   return {
     ...payload,
     ...(member === undefined ? {} : { member }),
     ...(leader === undefined ? {} : { leader }),
+    ...(reachable === undefined ? {} : { reachable }),
   };
 }
 
