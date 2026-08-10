@@ -459,6 +459,8 @@ export {
   jsonCodec,
   zodCodec,
   composeCodecs,
+  // #73 — a byte-native Serializer (Avro, Protobuf) as a per-version codec.
+  serializerCodec,
   validatedEventAdapter,
   validatedSnapshotAdapter,
   InMemorySchemaRegistry,

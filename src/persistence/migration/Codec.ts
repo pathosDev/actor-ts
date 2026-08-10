@@ -1,3 +1,6 @@
+import { SerializationError } from '../../serialization/Serializer.js';
+import type { SerializedValue, Serializer } from '../../serialization/Serializer.js';
+
 /**
  * Pluggable wire codec for journal payloads (#6).
  *
@@ -22,11 +25,11 @@
  *     fit.  We don't import `zod` directly — the user brings their
  *     own dependency and passes the schema in.
  *
- * Avro / Protobuf wire codecs are out-of-scope for v1.  The hooks
- * here are wide enough that a user can build them on top: `encode`
- * returns the shape that ends up in the JSON envelope, so writing
- * an Avro codec means returning a base64 string; the journal is
- * agnostic.
+ * Binary formats (Avro, Protobuf, MessagePack) are NOT built by
+ * hand here: they are `Serializer` implementations under
+ * `src/serialization/`, and `serializerCodec` below adapts one into
+ * a `Codec<T>` so the SchemaRegistry can hold a different wire
+ * format per `(manifest, version)` (#73).
  */
 
 /**
@@ -127,5 +130,81 @@ export function composeCodecs<A, B>(
     name: name ?? `${first.name ?? 'a'}>>${second.name ?? 'b'}`,
     encode: (a: A): unknown => second.encode(first.encode(a) as B),
     decode: (c: unknown): A => first.decode(second.decode(c)),
+  };
+}
+
+/**
+ * Adapt a byte-native `Serializer` into a `Codec<T>` (#73), so a binary
+ * format reaches the migration layer at the granularity the migration
+ * layer actually works at.
+ *
+ * **Why this exists next to `withSerializer`.**  A store's `serializer`
+ * option applies to the whole store — one format for every payload it
+ * writes.  The SchemaRegistry holds a codec per `(manifest, version)`,
+ * which is the only place a v1 written in Avro and a v2 written in
+ * Protobuf can coexist in one stream.  Wrapping the serializer keeps a
+ * single implementation of each format instead of one Serializer plus a
+ * near-identical Codec:
+ *
+ *     registry.register('BankAccount.Deposited', 1, {
+ *       codec: serializerCodec(avroSerializer),
+ *     });
+ *     registry.register('BankAccount.Deposited', 2, {
+ *       codec: serializerCodec(protobufSerializer),
+ *       upcastFromPrev: (v1: DepositedV1): DepositedV2 => ({ ...v1, currency: 'USD' }),
+ *     });
+ *
+ * **Wire shape.**  `encode` returns a `SerializedValue` — `{serializerId,
+ * manifest, bytes}` — and stops there.  The bytes are NOT base64'd here:
+ * the journal's `PayloadCodec` already round-trips a `Uint8Array` through
+ * the tagged-JSON `__bytes__` form, so encoding them again would cost a
+ * second base64 expansion for nothing.  `serializerId` travels with the
+ * payload so a row written by one serializer and read back by another
+ * fails with a named error instead of decoding into garbage — Avro in
+ * particular carries no field tags, so wrong bytes decode "successfully".
+ */
+export function serializerCodec<T>(serializer: Serializer<T>, name?: string): Codec<T> {
+  const codecName = name ?? `serializer:${serializer.name}`;
+  return {
+    name: codecName,
+    encode: (value: T): unknown => ({
+      serializerId: serializer.id,
+      manifest: serializer.manifest(value),
+      bytes: serializer.toBinary(value),
+    } satisfies SerializedValue),
+    decode: (wire: unknown): T => {
+      const frame = serializedValue(wire, codecName);
+      if (frame.serializerId !== serializer.id) {
+        throw new SerializationError(
+          `${codecName}: payload was written by serializer id ${frame.serializerId}`
+          + `${frame.manifest ? ` (manifest '${frame.manifest}')` : ''}, but this codec holds`
+          + ` '${serializer.name}' (id ${serializer.id})`,
+        );
+      }
+      return serializer.fromBinary(frame.bytes, frame.manifest);
+    },
+  };
+}
+
+/**
+ * Read back what `serializerCodec.encode` wrote.  Anything else is a
+ * payload this codec never produced — a plain-JSON row from before the
+ * format was switched, most likely — and saying so beats a `TypeError`
+ * from inside the serializer.
+ */
+function serializedValue(wire: unknown, codecName: string): SerializedValue {
+  if (wire === null || typeof wire !== 'object' || Array.isArray(wire)) {
+    throw new SerializationError(`${codecName}: expected a serialized payload object, got ${typeof wire}`);
+  }
+  const candidate = wire as Record<string, unknown>;
+  if (typeof candidate['serializerId'] !== 'number' || !(candidate['bytes'] instanceof Uint8Array)) {
+    throw new SerializationError(
+      `${codecName}: payload is not a serialized frame — expected {serializerId, manifest, bytes}`,
+    );
+  }
+  return {
+    serializerId: candidate['serializerId'],
+    manifest: typeof candidate['manifest'] === 'string' ? candidate['manifest'] : '',
+    bytes: candidate['bytes'],
   };
 }

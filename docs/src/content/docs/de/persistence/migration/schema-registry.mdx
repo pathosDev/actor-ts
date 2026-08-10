@@ -173,6 +173,58 @@ Sicherheitsnetz, die Registry beim Startup zu verdrahten: eine
 Version hochziehen, aber den Upcaster vergessen, und die
 Registrierung schlägt laut fehl.
 
+## Ein binäres Wire-Format pro Version
+
+Ein `codec` muss kein Validator sein.  `serializerCodec` verpackt
+jeden [`Serializer`](/de/serialization/custom/) — auch die
+mitgelieferten `AvroSerializer` und `ProtobufSerializer` —, sodass
+jede Version ein **anderes Wire-Format** nutzen kann:
+
+```ts
+import { serializerCodec } from 'actor-ts';
+
+registry.register('BankAccount.Deposited', 1, {
+  codec: serializerCodec(avroSerializer),
+});
+
+registry.register('BankAccount.Deposited', 2, {
+  codec:          serializerCodec(protobufSerializer),
+  upcastFromPrev: (v1: DepositedV1): DepositedV2 => ({ ...v1, currency: 'USD' }),
+  compatibility:  'backward',
+});
+```
+
+Neue Events werden als v2 in Protobuf geschrieben; die
+Avro-Zeilen, die schon auf der Platte liegen, dekodieren weiter
+über den v1-Codec und werden beim Lesen nach vorne gezogen.  Beide
+Formate koexistieren in einem Stream.
+
+Das ist die **einzige** Stelle, an der das geht.  Das
+`withSerializer(...)` eines Stores gilt storeweit — ein Format für
+jede Payload, die er schreibt —, ein Wechsel pro Version muss also
+auf der Codec-Ebene passieren.
+
+**Was auf der Platte landet.**  `serializerCodec` kodiert zu
+`{ serializerId, manifest, bytes }` und hört da auf: der
+Payload-Codec des Journals trägt ein `Uint8Array` bereits als
+getaggtes JSON, die Bytes werden also genau einmal base64-kodiert.
+Die `serializerId` reist mit der Zeile mit, und genau das macht
+eine Verwechslung laut —
+
+```
+serializer:avro: payload was written by serializer id 101
+(manifest '.bank.DepositedV2'), but this codec holds 'avro' (id 100)
+```
+
+— statt still zu Unsinn zu dekodieren, was bei Avro (keine
+Feld-Tags) und Protobuf (kein Nachrichtenname) der Normalfall ist,
+wenn man ihnen fremde Bytes gibt.
+
+In Kombination mit `compatibility: 'sample'` läuft der
+Register-Aufruf den ganzen Weg Avro → Upcast → Protobuf beim
+Startup durch: ein v2-Schema, das dein Upcaster gar nicht erfüllen
+kann, scheitert beim Deploy statt beim ersten Replay.
+
 ## Tooling
 
 Ein paar häufige Tooling-Formen, die von der Registry profitieren:
@@ -243,6 +295,8 @@ import { Aside } from '@astrojs/starlight/components';
   die verkettete Alternative.
 - **[Envelope-Format](/de/persistence/migration/envelope-format/)** —
   die On-Disk-Form mit `_v` / `_t` / `_e`.
+- **[Eigene Serializer](/de/serialization/custom/)** — die Avro-
+  und Protobuf-Serializer, die `serializerCodec` verpackt.
 
 Die [`SchemaRegistry`](/api/classes/schemaregistry/)-API-Referenz
 deckt die vollständige Oberfläche ab.
