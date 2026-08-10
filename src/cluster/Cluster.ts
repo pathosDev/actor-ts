@@ -18,6 +18,7 @@ import { ClusterExtensionId } from './ClusterExtension.js';
 import { ClusterOptionsValidator, withClusterConfigDefaults } from './ClusterOptions.js';
 import type { ClusterOptions, ClusterOptionsType, SelfElectionPolicy } from './ClusterOptions.js';
 import {
+  CurrentClusterState,
   LeaderChanged,
   MemberDown,
   MemberJoined,
@@ -27,6 +28,7 @@ import {
   MemberUnreachable,
   MemberUp,
   MemberWeaklyUp,
+  ReachabilityChanged,
   SelfRemoved,
   SelfUp,
   type ClusterEvent,
@@ -34,6 +36,7 @@ import {
 import {
   defaultFailureDetectorOptions,
   FailureDetector,
+  type FailureDecision,
 } from './FailureDetector.js';
 import { FailureDetectorOptions, type FailureDetectorOptionsType } from './FailureDetectorOptions.js';
 import { Member } from './Member.js';
@@ -110,6 +113,25 @@ export const DEFAULT_MAX_MEMBERS = 1_000;
 export const DEFAULT_MAX_TOMBSTONES = 10_000;
 
 /**
+ * How {@link Cluster.subscribe} states the membership that already exists when
+ * a listener attaches (#161).
+ *
+ * - **`'events'`** (default) — the current membership as the events that would
+ *   have built it: one `MemberJoined` per member, followed by the status event
+ *   that member has already reached, then `LeaderChanged`.  A listener written
+ *   for the live stream handles the replay with the same code and needs no
+ *   initial-state branch.
+ * - **`'snapshot'`** — one {@link CurrentClusterState}, whatever the cluster's
+ *   size.  Pick it when the listener wants to *know where things stand* rather
+ *   than to re-live how they got there: it is one callback instead of one per
+ *   member, and it marks where the replay ends, which the event form cannot.
+ *
+ * The default stays `'events'` because it is what every existing subscriber
+ * was written against, not because it is the better choice for new code.
+ */
+export type ClusterSubscriptionReplayMode = 'events' | 'snapshot';
+
+/**
  * The Cluster is a single-instance "extension" attached to an ActorSystem.
  * It owns a Transport, a gossip-based membership view, a failure detector
  * and the plumbing that dispatches inbound envelope messages to local actors.
@@ -143,6 +165,25 @@ export class Cluster {
    * it is meant to prevent.  Live entries are `members.size - tombstoneCount`.
    */
   private tombstoneCount = 0;
+
+  /**
+   * What this node's failure detector last said about each peer, keyed exactly
+   * like {@link members} — the state {@link ReachabilityChanged} is the
+   * transition of (#161).
+   *
+   * Kept separately rather than read off `member.status`, because the two are
+   * not the same fact.  A member's status travels in gossip, so `unreachable`
+   * there may be a *peer's* observation rather than this node's, and it is only
+   * ever written for a member that was `up` — a `joining` or `leaving` peer
+   * falling silent moves nothing at all.  This map is strictly the local
+   * detector's verdict, which is what a per-peer health gauge or a partition
+   * diagnosis is actually asking for.
+   *
+   * It cannot outgrow the map #138 caps: entries are only ever created while
+   * iterating {@link members}, {@link deleteMember} drops them with the member,
+   * and {@link trackReachability} drops them when a member turns terminal.
+   */
+  private readonly reachability = new Map<string, boolean>();
 
   /**
    * Cumulative count of member records a cap refused.  Read by `onGossip` to
@@ -316,29 +357,74 @@ export class Cluster {
   }
 
   /**
-   * Subscribe to membership events.  The listener is immediately replayed
-   * the current cluster state as a series of Member/SelfUp events so that
-   * late subscribers still see the world they joined.
+   * Subscribe to membership events.  The listener is immediately replayed the
+   * membership that already exists, so a late subscriber still sees the world
+   * it joined; `options.replayMode` chooses the form — see
+   * {@link ClusterSubscriptionReplayMode}.
    */
-  subscribe(listener: (event: ClusterEvent) => void): () => void {
+  subscribe(
+    listener: (event: ClusterEvent) => void,
+    options?: { readonly replayMode?: ClusterSubscriptionReplayMode },
+  ): () => void {
     this._listeners.push(listener);
-    // Replay current state.
-    for (const member of this.members.values()) {
-      try { listener(new MemberJoined(member)); } catch { /* ignore */ }
-      if (member.status === 'up') {
-        try { listener(new MemberUp(member)); } catch { /* ignore */ }
-        if (member.address.equals(this.selfAddress)) {
-          try { listener(new SelfUp(member)); } catch { /* ignore */ }
-        }
-      }
-    }
-    if (this.currentLeader.isSome()) {
-      try { listener(new LeaderChanged(this.currentLeader)); } catch { /* ignore */ }
-    }
+    // A match on this call's own argument rather than on an inbound message,
+    // so the arms are the exempt kind; they still delegate, because the two
+    // replays are two different shapes and reading them side by side is the
+    // point.
+    match(options?.replayMode ?? 'events')
+      .with('events', () => this.replayAsEvents(listener))
+      .with('snapshot', () => this.replayAsSnapshot(listener))
+      .exhaustive();
     return () => {
       const index = this._listeners.indexOf(listener);
       if (index >= 0) this._listeners.splice(index, 1);
     };
+  }
+
+  /**
+   * The membership as a subscriber is entitled to see it: no tombstones,
+   * address order.
+   *
+   * The replay used to iterate the raw member map, so a `removed` entry — kept
+   * for up to `tombstoneTtlMs` precisely so stale gossip cannot resurrect it —
+   * was replayed as `MemberJoined`.  A listener attaching an hour after a node
+   * left was told that node had just joined, and `getMembers()` disagreed with
+   * the replay that was supposed to explain it.
+   */
+  private snapshotMembers(): ReadonlyArray<Member> {
+    return [...this.getMembers()].sort((a, b) => a.address.compareTo(b.address));
+  }
+
+  private replayAsEvents(listener: (event: ClusterEvent) => void): void {
+    for (const member of this.snapshotMembers()) {
+      this.replay(listener, new MemberJoined(member));
+      // The replay used to stop after `up`, so an `unreachable`, `leaving` or
+      // `down` member reached a late subscriber as nothing but `joined` — the
+      // states it most needs to know about, reported as the most benign one.
+      for (const event of this.statusEventsOf(member)) this.replay(listener, event);
+    }
+    if (this.currentLeader.isSome()) {
+      this.replay(listener, new LeaderChanged(this.currentLeader));
+    }
+  }
+
+  private replayAsSnapshot(listener: (event: ClusterEvent) => void): void {
+    const members = this.snapshotMembers();
+    const unreachable = members.filter((member) => member.status === 'unreachable');
+    this.replay(listener, new CurrentClusterState(members, unreachable, this.currentLeader));
+  }
+
+  /**
+   * Deliver one replayed event to the subscribing listener alone.
+   *
+   * Deliberately not {@link emit}: a replay is addressed to the one listener
+   * that just attached, and pushing it through the event stream would announce
+   * a long-settled join to every other subscriber each time a panel opened.
+   * The swallow-and-log contract is {@link emit}'s, so one bad event does not
+   * cut the replay short.
+   */
+  private replay(listener: (event: ClusterEvent) => void, event: ClusterEvent): void {
+    try { listener(event); } catch (e) { this.log.warn('listener threw during replay', e); }
   }
 
   private _listeners: Array<(event: ClusterEvent) => void> = [];
@@ -966,6 +1052,10 @@ export class Cluster {
     for (const member of Array.from(this.members.values())) {
       if (member.address.equals(this.selfAddress)) continue;
       const decision = this.failureDetector.decide(member.address);
+      // Before the status branches below, because this is the raw observation
+      // they are two coarser readings of: one of them only fires for a member
+      // that was `up`, the other only once the peer is being evicted.
+      this.trackReachability(member, decision);
       if (decision === 'unreachable' && member.status === 'up') {
         this.log.debug(`FD: ${member.address} → unreachable (heartbeat timeout)`);
         this.updateMember(member.withStatus('unreachable'));
@@ -993,6 +1083,31 @@ export class Cluster {
     // Optional split-brain resolver — runs after the failure-detector
     // pass so it sees the latest unreachable set.
     if (this.downing) this.evaluateDowning();
+  }
+
+  /**
+   * Fold one detector verdict into {@link reachability} and emit
+   * {@link ReachabilityChanged} when it moved (#161).
+   *
+   * Transition-only, and silent on a peer that has been healthy since this node
+   * first saw it: a subscriber wants the edges, and announcing "still fine" for
+   * every member on every tick would bury them.
+   */
+  private trackReachability(member: Member, decision: FailureDecision): void {
+    const key = member.address.toString();
+    // A downed or tombstoned peer has had its detector sample forgotten, and
+    // `decide` answers `'healthy'` for an address it has no sample for — so
+    // without this the eviction itself would read as a recovery.
+    if (member.status === 'down' || member.status === 'removed') {
+      this.reachability.delete(key);
+      return;
+    }
+    const reachable = decision === 'healthy';
+    const previous = this.reachability.get(key);
+    if (previous === reachable) return;
+    this.reachability.set(key, reachable);
+    if (previous === undefined && reachable) return;
+    this.emit(new ReachabilityChanged(member.address, reachable));
   }
 
   /**
@@ -1392,6 +1507,9 @@ export class Cluster {
     if (previous === undefined) return;
     if (previous.status === 'removed') this.tombstoneCount--;
     this.members.delete(key);
+    // Same key space, same lifetime.  A verdict left behind here would make the
+    // address's next incarnation look like a peer that had recovered.
+    this.reachability.delete(key);
   }
 
   private updateMember(next: Member): void {
@@ -1412,22 +1530,34 @@ export class Cluster {
 
   private emitStatusTransition(prev: Member, next: Member): void {
     if (prev.status === next.status) return;
-    match(next.status)
-      .with('up', () => {
-        this.emit(new MemberUp(next));
-        if (next.address.equals(this.selfAddress)) this.emit(new SelfUp(next));
-      })
-      .with('weakly-up', () => this.emit(new MemberWeaklyUp(next)))
-      .with('unreachable', () => this.emit(new MemberUnreachable(next)))
-      .with('down', () => this.emit(new MemberDown(next)))
-      .with('leaving', () => this.emit(new MemberLeft(next)))
-      .with('removed', () => {
-        this.emit(new MemberRemoved(next));
-        if (next.address.equals(this.selfAddress)) this.emit(new SelfRemoved(next));
-      })
-      .with('joining', () => { /* transient; no event */ })
-      .exhaustive();
+    for (const event of this.statusEventsOf(next)) this.emit(event);
     this.maybeEmitLeaderChange();
+  }
+
+  /**
+   * The events that announce `member` in the status it currently holds.
+   *
+   * Shared by {@link emitStatusTransition} and the `'events'` replay so that a
+   * late subscriber is told the same thing an early one was — the replay used
+   * to carry its own, shorter idea of which statuses were worth mentioning, and
+   * the two drifted.  A match that computes a value, so the arms stay inline.
+   *
+   * `joining` yields nothing: it is the state every member starts in, and
+   * `MemberJoined` has already said so.
+   */
+  private statusEventsOf(member: Member): ReadonlyArray<ClusterEvent> {
+    const isSelf = member.address.equals(this.selfAddress);
+    return match(member.status)
+      .with('up', () => (isSelf ? [new MemberUp(member), new SelfUp(member)] : [new MemberUp(member)]))
+      .with('weakly-up', () => [new MemberWeaklyUp(member)])
+      .with('unreachable', () => [new MemberUnreachable(member)])
+      .with('down', () => [new MemberDown(member)])
+      .with('leaving', () => [new MemberLeft(member)])
+      .with('removed', () => (
+        isSelf ? [new MemberRemoved(member), new SelfRemoved(member)] : [new MemberRemoved(member)]
+      ))
+      .with('joining', () => [])
+      .exhaustive();
   }
 
   private maybeEmitLeaderChange(): void {

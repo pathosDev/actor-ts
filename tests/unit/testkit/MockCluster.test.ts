@@ -7,8 +7,9 @@ import { describe, expect, test } from 'bun:test';
 import { Member } from '../../../src/cluster/Member.js';
 import { NodeAddress } from '../../../src/cluster/NodeAddress.js';
 import {
-  LeaderChanged, MemberDown, MemberJoined, MemberLeft, MemberReachable,
-  MemberRemoved, MemberUnreachable, MemberUp, SelfRemoved, SelfUp,
+  CurrentClusterState, LeaderChanged, MemberDown, MemberJoined, MemberLeft,
+  MemberReachable, MemberRemoved, MemberUnreachable, MemberUp, SelfRemoved, SelfUp,
+  type ClusterEvent,
 } from '../../../src/cluster/ClusterEvents.js';
 import { MockCluster } from '../../../src/testkit/MockCluster.js';
 
@@ -47,16 +48,46 @@ describe('MockCluster — construction + accessors', () => {
 });
 
 describe('MockCluster — subscribe replays current state', () => {
-  test('new subscriber receives MemberUp for every up member + SelfUp + LeaderChanged', () => {
+  test('new subscriber receives the same replay the real Cluster sends', () => {
+    // The mock's replay used to be its own, shorter thing — `MemberUp` for the
+    // up members and nothing else — so a test that passed here proved nothing
+    // about what a real subscriber would have been told (#161).
     const cluster = new MockCluster({
       selfAddress: addr(1),
       initialMembers: [new Member(addr(2), 'up', 1, [])],
     });
     const events: string[] = [];
     cluster.subscribe((e) => events.push(e.constructor.name));
-    expect(events).toContain('MemberUp');
-    expect(events).toContain('SelfUp');
-    expect(events).toContain('LeaderChanged');
+    expect(events).toEqual([
+      'MemberJoined', 'MemberUp', 'SelfUp',   // self sorts first
+      'MemberJoined', 'MemberUp',
+      'LeaderChanged',
+    ]);
+  });
+
+  test('a non-up member is replayed in the status it holds', () => {
+    const cluster = new MockCluster({
+      selfAddress: addr(1),
+      initialMembers: [new Member(addr(2), 'unreachable', 1, [])],
+    });
+    const events: string[] = [];
+    cluster.subscribe((e) => events.push(e.constructor.name));
+    expect(events).toContain('MemberUnreachable');
+  });
+
+  test('snapshot mode replays one CurrentClusterState instead', () => {
+    const cluster = new MockCluster({
+      selfAddress: addr(1),
+      initialMembers: [new Member(addr(2), 'unreachable', 1, [])],
+    });
+    const events: ClusterEvent[] = [];
+    cluster.subscribe((e) => events.push(e), { replayMode: 'snapshot' });
+    expect(events.length).toBe(1);
+    const state = events[0] as CurrentClusterState;
+    expect(state).toBeInstanceOf(CurrentClusterState);
+    expect(state.members.length).toBe(2);
+    expect(state.unreachable.map((m) => m.address.port)).toEqual([2]);
+    expect(state.leader.toNullable()!.address.port).toBe(1);
   });
 
   test('returned unsubscribe handle removes the listener', () => {
@@ -65,9 +96,10 @@ describe('MockCluster — subscribe replays current state', () => {
     const unsubscribe = cluster.subscribe((e) => events.push(e.constructor.name));
     expect(cluster.listenerCount).toBe(1);
     unsubscribe();
-    expect(cluster.listenerCount).toBe(0);
+    events.length = 0;   // the replay is not what this test is about
     cluster.addMember(addr(2));
-    expect(events).not.toContain('MemberJoined');
+    expect(cluster.listenerCount).toBe(0);
+    expect(events).toEqual([]);
   });
 });
 

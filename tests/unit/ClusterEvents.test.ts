@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import {
+  CurrentClusterState,
   LeaderChanged,
   MemberDown,
   MemberJoined,
@@ -8,6 +9,7 @@ import {
   MemberRemoved,
   MemberUnreachable,
   MemberUp,
+  ReachabilityChanged,
   SelfRemoved,
   SelfUp,
   ShardMapChanged,
@@ -47,6 +49,26 @@ describe('Cluster event classes', () => {
     expect(new MemberDown(member).member).toBe(member);
     expect(new MemberLeft(member).member).toBe(member);
     expect(new MemberRemoved(member).member).toBe(member);
+  });
+
+  test('CurrentClusterState keeps unreachable as a subset of members (#161)', () => {
+    // Not a disjoint set: an unreachable peer is still a member, and excluding
+    // it would make `members.length` mean something different depending on the
+    // cluster's health.
+    const lost = new Member(new NodeAddress('demo', 'h', 2), 'unreachable', 3);
+    const state = new CurrentClusterState([member, lost], [lost], some(member));
+    expect(state.members).toEqual([member, lost]);
+    expect(state.unreachable).toEqual([lost]);
+    expect(state.leader.getOrElse(null as Member | null)).toBe(member);
+  });
+
+  test('ReachabilityChanged carries an address and a verdict, not a member (#161)', () => {
+    // Address rather than `Member`, because the fact it states is the local
+    // detector's, and a `Member` would invite reading its gossiped `status` as
+    // if it were the same thing.
+    const event = new ReachabilityChanged(addr, false);
+    expect(event.address).toBe(addr);
+    expect(event.reachable).toBe(false);
   });
 
   test('ShardMapChanged captures type, shards, version', () => {
