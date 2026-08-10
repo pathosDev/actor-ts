@@ -36,6 +36,12 @@ Drei Patterns:
    Consistent-Hashing (nur Cluster) legt jede Nachricht mit demselben
    Key auf denselben Routee — nützlich, wenn jeder Routee
    Per-Key-Zustand hält (einen Cache, eine Session, einen Zähler).
+4. **N Routees um dieselbe Antwort rennen lassen.**  Scatter/Gather
+   stellt jedem Routee dieselbe Frage und liefert die Antwort dessen,
+   der zuerst antwortet — das N-Fache an Arbeit gegen das *Minimum* aus
+   N Latenzen.  Das ist ein anderes Ziel als die ersten drei: Tail-
+   Latenz, nicht Durchsatz.  Siehe
+   [Scatter/Gather](/de/routing/scatter-gather/).
 
 ## Ein minimales Beispiel
 
@@ -98,6 +104,15 @@ Nachlauf kosten kann und was nicht.
 Siehe [Strategien](/de/routing/strategies/) für den Deep Dive plus
 den `Broadcast`-Nachrichten-Wrapper, der die Strategie pro Nachricht
 überschreibt.
+
+Alle fünf sind **One-Shot**: Der Router wählt Routees, leitet weiter,
+fertig — die Antwort, falls es eine gibt, ist Sache des Routees und des
+ursprünglichen Senders.  `Router.scatterGatherFirstCompleted` ist der
+eine Router, der nicht in diese Form passt: Er *fragt* jeden Routee und
+antwortet dem Aufrufer selbst mit der ersten eintreffenden Antwort.  Er
+ist deshalb keine Strategie, die du `Router.custom` reichen kannst,
+sondern eine eigene Factory — siehe
+[Scatter/Gather](/de/routing/scatter-gather/).
 
 ## Pool vs Group
 
@@ -176,6 +191,8 @@ Werkzeug; wenn nicht, greife zu etwas anderem.
   `.smallestMailbox(...)`, `.custom(...)`-Factories.
 - **[Strategien](/de/routing/strategies/)** — was jede
   Strategie tut, plus eigene schreiben.
+- **[Scatter/Gather](/de/routing/scatter-gather/)** — jeden
+  Routee gleichzeitig fragen und mit der ersten Antwort antworten.
 - **[Pool vs Group](/de/routing/pool-vs-group/)** — wann
   einen Router verwenden, der seine Routees spawnt, vs einen, der
   sie findet.

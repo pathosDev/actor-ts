@@ -34,6 +34,11 @@ Three patterns:
    (cluster only) puts every message with the same key on the same
    routee — useful when each routee maintains per-key state
    (a cache, a session, a counter).
+4. **Race N routees for the same answer.**  Scatter/gather asks every
+   routee the same question and returns whichever replies first,
+   trading N times the work for the *minimum* of N latencies.  That is
+   a different goal from the other three — tail latency, not
+   throughput.  See [Scatter/gather](/routing/scatter-gather/).
 
 ## A minimal example
 
@@ -94,6 +99,14 @@ can and cannot cost.
 See [Strategies](/routing/strategies/) for the deep dive,
 plus the `Broadcast` message wrapper that overrides the strategy
 per-message.
+
+All five are **one-shot**: the router picks routees, forwards, and is
+done — the reply, if there is one, is between the routee and the
+original sender.  `Router.scatterGatherFirstCompleted` is the one
+router that does not fit that shape: it *asks* every routee and answers
+the caller itself with the first reply that arrives.  It is therefore
+not a strategy you can hand to `Router.custom`, but its own factory —
+see [Scatter/gather](/routing/scatter-gather/).
 
 ## Pool vs group
 
@@ -167,6 +180,8 @@ reach for something else.
   `.custom(...)` factories.
 - **[Strategies](/routing/strategies/)** — what each
   strategy does, plus writing your own.
+- **[Scatter/gather](/routing/scatter-gather/)** — ask every
+  routee at once and answer with the first reply.
 - **[Pool vs group](/routing/pool-vs-group/)** — when to
   use a router that spawns its routees vs one that finds them.
 - **[Cluster router](/cluster/cluster-router/)** — the

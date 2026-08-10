@@ -422,6 +422,7 @@ export default defineConfig({
                 { label: 'Overview',      slug: 'routing/overview',      translations: { de: 'Überblick', es: 'Visión general', fr: 'Vue d’ensemble', ja: '概要', ko: '개요', 'pt-BR': 'Visão geral', ru: 'Обзор', 'zh-CN': '概览' } },
                 { label: 'Router',        slug: 'routing/router',        translations: { de: 'Router', es: 'Router', fr: 'Router', ja: 'Router', ko: 'Router', 'pt-BR': 'Router', ru: 'Router', 'zh-CN': 'Router' } },
                 { label: 'Strategies',    slug: 'routing/strategies',    translations: { de: 'Strategien', es: 'Estrategias', fr: 'Stratégies', ja: '戦略', ko: '전략', 'pt-BR': 'Estratégias', ru: 'Стратегии', 'zh-CN': '策略' } },
+                { label: 'Scatter/gather', slug: 'routing/scatter-gather', translations: { de: 'Scatter/Gather', es: 'Scatter/gather', fr: 'Scatter/gather', ja: 'スキャッター/ギャザー', ko: '스캐터/개더', 'pt-BR': 'Scatter/gather', ru: 'Scatter/gather', 'zh-CN': '分散/聚合' } },
                 { label: 'Pool vs group', slug: 'routing/pool-vs-group', translations: { de: 'Pool vs. Group', es: 'Pool vs group', fr: 'Pool vs groupe', ja: 'プール vs グループ', ko: '풀 vs 그룹', 'pt-BR': 'Pool vs grupo', ru: 'Pool против group', 'zh-CN': 'Pool 与 Group' } },
               ],
             },
