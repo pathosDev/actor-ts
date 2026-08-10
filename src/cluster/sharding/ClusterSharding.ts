@@ -47,6 +47,20 @@ import type { GetShardLocation, GetShards } from './ShardingProtocol.js';
  */
 export class ClusterSharding {
   private readonly regionsByPath = new Map<string, ActorRef<unknown>>();
+  /**
+   * Type name → region path.  `regionsByPath` is a dispatch registry keyed on
+   * the exact path and holds coordinators as well as regions, so resolving a
+   * region by type used to mean suffix-matching every entry in it — O(n) in
+   * the number of started types, on a path `start` takes for every message
+   * send through {@link entityRefFor}.
+   *
+   * Deliberately a plain `Map` and not a `BidirectionalMap`: nothing here
+   * needs to go from a region path back to a type name, and an index nobody
+   * reads is one more thing to keep in step.  (The coordinator side does need
+   * that direction, but it parses the path rather than looking it up, which
+   * also answers for coordinators this node never registered.)
+   */
+  private readonly regionPathsByType = new Map<string, string>();
   private readonly coordinators = new Map<string, ActorRef<unknown>>();
   /** Shard count per started type — the entity→shard hash needs it. */
   private readonly numShardsByType = new Map<string, number>();
@@ -138,7 +152,12 @@ export class ClusterSharding {
       SystemGroups.clusterSharding,
       shardRegionName(options.typeName),
     );
-    this.regionsByPath.set(ref.path.toString(), ref as ActorRef<unknown>);
+    const regionPath = ref.path.toString();
+    this.regionsByPath.set(regionPath, ref as ActorRef<unknown>);
+    // Regions only — a coordinator also lands in `regionsByPath` (see
+    // `ensureCoordinator`), and letting one in here would make
+    // `findRegionByType` hand back a coordinator ref.
+    this.regionPathsByType.set(options.typeName, regionPath);
     return ref;
   }
 
@@ -461,11 +480,8 @@ export class ClusterSharding {
   }
 
   private findRegionByType(typeName: string): ActorRef<unknown> | null {
-    const suffix = `/${SystemGroups.clusterSharding}/${shardRegionName(typeName)}`;
-    for (const [path, ref] of this.regionsByPath) {
-      if (path.endsWith(suffix)) return ref;
-    }
-    return null;
+    const path = this.regionPathsByType.get(typeName);
+    return path === undefined ? null : this.regionsByPath.get(path) ?? null;
   }
 
   private dispatchEnvelope(env: EnvelopeMessage): void {
