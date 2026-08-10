@@ -325,6 +325,53 @@ Für [sharded Entities](/de/cluster/sharding/overview/) übergibt
 die Shard-Region typischerweise die Entity-ID per Konstruktor, und
 die Persistenz-ID leitet sich daraus ab.
 
+### Was eine Persistenz-ID enthalten darf
+
+Eine ID ist selten eine Konstante — meist wird sie aus User-Input
+gebaut (`` `account-${request.params.id}` ``, eine Sharding-Entity-ID).
+Sie wird immer als Query-Parameter *gebunden*, SQL-Injection ist
+also nicht erreichbar.  Aber die ID ist mehr als ein Wert: sie
+**benennt einen Stream**, und mehrere Backends bauen daraus einen
+strukturierten Storage-Key.  `preStart` weist deshalb eine ID
+zurück, die keiner sein kann — bevor das Journal überhaupt
+angefasst wird:
+
+| Zurückgewiesen | Warum |
+| --- | --- |
+| leer | jedes Backend würde bereitwillig unter `''` schreiben — eine ID, die irgendein Code-Pfad zu füllen vergessen hat, teilt sich dann still einen Stream mit jedem anderen Actor, der dasselbe vergessen hat |
+| länger als **255** Zeichen | die Breite der Spalte `persistence_id` im DDL jedes relationalen Dialekts, und Teil ihres Primärschlüssels — eine längere ID wird abgeschnitten (zwei IDs fallen auf einen Stream zusammen) oder tief im Treiber abgelehnt |
+| `/` oder `\` | die Object-Storage-Stores legen eine ID als *Verzeichnis* ab (`<prefix><persistenceId>/<seq>.json`) und lesen sie über genau dieses Prefix zurück — `a/b` liegt also innerhalb von `a`: `loadLatest` von `a` liefert dann den Snapshot von `a/b`, und `delete` von `a` löscht ihn |
+| `.` oder `..` (als ganze ID) | Traversal-Bedeutung, eine Ebene höher, mit derselben Konsequenz |
+| Control-Zeichen | IDs werden bei jeder Recovery und jedem Persist in eine Logzeile interpoliert — ein Newline lässt einen Aufrufer Log-Einträge fälschen |
+
+Alles andere ist bewusst erlaubt.  Ein Komma ist in Ordnung — die
+kommaseparierte Spalte im SQLite-Journal führt *Tags*, und die ID
+ist eine eigene gebundene Spalte.  Ein `|` ist es ebenfalls, und
+das Chat-Beispiel lebt davon: ein DM-Kanal heißt
+`dm-channel-alice|bob`.  Der Offset-Store der Projektionen setzt
+Keys als `<projection>|seq|<persistenceId>` zusammen — mit der ID
+**am Ende**.  Ein `|` darin kann also kein zusätzliches Feld
+abspalten, und nirgends wird eine ID wieder zerlegt.
+
+Dieselben Regeln laufen noch einmal in `journal.append()` —
+Defence-in-Depth für ein Journal, das ohne Actor erreicht wird —
+und bei [`DurableStateActor`](/de/persistence/durable-state/) im
+Options-Validator, wo ein Verstoß ein `OptionsError` auf dem Feld
+`persistenceId` ist.
+
+Prüfe deine eigenen IDs dagegen, ohne einen Actor zu starten:
+
+```ts
+import { assertValidPersistenceId } from 'actor-ts';
+
+assertValidPersistenceId(`account-${userId}`);
+```
+
+**Lesen wird nie verweigert.**  Nur Schreibpfade validieren —
+Events, die bereits unter einer nun ungültigen ID liegen, bleiben
+über `journal.read(oldId, 1)` erreichbar: kopiere sie auf eine
+korrigierte ID und lösche den alten Stream.
+
 ## Snapshots
 
 100 000 Events beim Start abspielen ist langsam.  Konfiguriere eine

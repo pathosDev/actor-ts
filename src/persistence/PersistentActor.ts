@@ -9,6 +9,7 @@ import type {
 } from './PersistenceOptions.js';
 import type { SnapshotStore } from './SnapshotStore.js';
 import { replayState } from './Replay.js';
+import { assertValidPersistenceId } from './storage/PersistenceIdValidator.js';
 import type { EventAdapter, SnapshotAdapter } from './migration/Adapter.js';
 import {
   decodeEvent,
@@ -163,6 +164,14 @@ export abstract class PersistentActor<Command, Event, State> extends Actor<Comma
   /* ----------------------------- Lifecycle API ----------------------------- */
 
   override async preStart(): Promise<void> {
+    // Before the journal is even resolved, and deliberately OUTSIDE the
+    // recovery guard below: an id that cannot be a storage key is a
+    // programming error in this class, not a journal failure, so it must
+    // not reach `onRecoveryFailure` — an override that swallows recovery
+    // errors would otherwise swallow this one and leave the actor running
+    // against a key nobody can address.  It surfaces as an
+    // `ActorInitializationError` and supervision decides.
+    assertValidPersistenceId(this.persistenceId, 'PersistentActor');
     const ext = this.system.extension(PersistenceExtensionId);
     this._journal = ext.journal;
     this._snapshotStore = ext.snapshotStore;

@@ -21,6 +21,14 @@ export type {
   MasterKeyRingEntry,
 } from './PersistenceOptions.js';
 export { decodePayload, encodePayload } from './storage/PayloadCodec.js';
+// Exported so an application can check its ids against the same rules the
+// framework enforces — the one thing that makes the #133 tightening safe
+// to adopt without a trial run against production data.
+export {
+  assertValidPersistenceId,
+  persistenceIdRejection,
+  MAX_PERSISTENCE_ID_LENGTH,
+} from './storage/PersistenceIdValidator.js';
 export { StoreSerializerOptionsBuilder } from './storage/StoreSerializerOptions.js';
 export type { StoreSerializerOptionsBase } from './storage/StoreSerializerOptions.js';
 
@@ -400,7 +408,11 @@ export type {
 
 // Durable State (state-oriented alternative to Event Sourcing).
 export { DurableStateActor } from './DurableStateActor.js';
-export { DurableStateOptions, DurableStateOptionsBuilder } from './DurableStateOptions.js';
+export {
+  DurableStateOptions,
+  DurableStateOptionsBuilder,
+  DurableStateOptionsValidator,
+} from './DurableStateOptions.js';
 export type { DurableStateOptionsType } from './DurableStateOptions.js';
 export {
   DurableStateConcurrencyError,

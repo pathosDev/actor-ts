@@ -114,7 +114,14 @@ Drei Felder:
 
 - **`persistenceId`** — der Schlüssel, unter dem der State
   gespeichert ist.  Wie bei `PersistentActor` eine ID pro logischer
-  Entity (`cart-user-42`, `flags-region-eu`, …).
+  Entity (`cart-user-42`, `flags-region-eu`, …) — und denselben
+  [Regeln unterworfen, was eine ID enthalten darf](/de/persistence/persistent-actor/#was-eine-persistenz-id-enthalten-darf):
+  nicht leer, höchstens 255 Zeichen, kein `/` oder `\`, keine
+  Control-Zeichen.  `DurableStateOptionsValidator` prüft sie im
+  Konstruktor — früher als `preStart`, weil eine ID, die nie einen
+  Eintrag adressieren kann, es wert ist, zurückgewiesen zu werden,
+  bevor der Actor an einen Store gebunden wird — und meldet einen
+  Verstoß als `OptionsError` auf dem Feld `persistenceId`.
 - **`store`** — die `DurableStateStore`-Implementierung (in-memory,
   SQLite, Object Storage, benutzerdefiniert).
 - **`emptyState()`** — Factory, die aufgerufen wird, wenn noch kein
