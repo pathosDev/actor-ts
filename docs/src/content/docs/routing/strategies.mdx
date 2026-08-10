@@ -144,7 +144,9 @@ function smallestMailboxStrategy(): RoutingStrategy {
     let shallowestDepth = 0;
     for (let offset = 0; offset < routees.length; offset++) {
       const routee = routees[(start + offset) % routees.length];
-      const depth = mailboxDepthOf(routee);
+      // `null` means "do not route here at all" — a stopped routee.
+      // A routee whose depth is merely unreadable comes back as 0.
+      const depth = routableDepthOf(routee);
       if (depth === null) continue;
       if (shallowest === null || depth < shallowestDepth) {
         shallowest = routee;
@@ -173,6 +175,9 @@ the routees are actually doing.
 - **Rotating ties.**  All-equal depths — an idle pool, or a
   saturated one — fall back to round-robin order rather than
   hammering the first routee.
+- **Ignore a stopped routee.**  A routee that has terminated is
+  skipped outright rather than measured — see *What counts as a
+  depth* below for why that case cannot be left to the number.
 
 **Doesn't:**
 
@@ -193,6 +198,37 @@ the routees are actually doing.
 
 Right choice when **per-message cost varies widely** — mixed job
 sizes, routees that call out to something slow.
+
+### What counts as a depth
+
+Two kinds of routee have no usable queue length, and they are
+handled as opposites on purpose:
+
+- **A stopped routee is never chosen.**  Its mailbox does not merely
+  look empty — it *is* empty, permanently, because a terminated cell
+  sends straight to dead letters instead of enqueueing.  Read as a
+  plain number, that would make a dead routee the most attractive
+  member of the pool and keep it that way until the router notices
+  the death and prunes it, losing every message routed in between.
+  The router learns of the death by an ordinary message, so under
+  load that window is as deep as the router's own queue.  Termination
+  is therefore checked before the depth is, and a stopped routee
+  drops out of the scan entirely.
+- **A routee whose depth is unreadable counts as empty.**  Only a
+  locally-hosted actor has a mailbox this process can look into, so
+  a remote or otherwise foreign ref is unmeasurable.  The strategy
+  assumes it is not backed up rather than skipping it: skipping
+  would starve it for as long as any local routee has a backlog,
+  which in a mixed pool is forever.  The trade-off runs the other
+  way instead — while the local routees are busy, an unreadable one
+  looks shallowest and takes the traffic.  That is a balance error
+  and it corrects itself; the starvation did not.  Several
+  unreadable routees tie at zero and rotate among themselves.
+
+If *every* routee has stopped, the scan falls back to the rotation
+and routes into a dead cell anyway.  The message is lost either way,
+and losing it as a `DeadLetter` is at least observable, where
+returning no routee at all would drop it without a trace.
 
 ### The cluster variant
 
