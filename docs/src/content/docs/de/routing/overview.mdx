@@ -72,7 +72,7 @@ der Haube zykelt der Routing-Actor durch vier `Worker`-Kinder.
 | **`round-robin`** | Ein Routee pro Nachricht, zyklisch.  Gleichmäßige Verteilung nach Nachrichten-Count. | Homogene Workloads. |
 | **`random`** | Ein Routee pro Nachricht, gleichverteilt zufällig. | Wie Round-Robin, aber zustandslos. |
 | **`broadcast`** | Jeder Routee bekommt jede Nachricht. | Notifications, Cache-Invalidierungen. |
-| **`smallest-mailbox`** *(nur lokal)* | Ein Routee pro Nachricht, der mit der kürzesten Queue. | Ungleiche Kosten pro Nachricht. |
+| **`smallest-mailbox`** | Ein Routee pro Nachricht, der mit der kürzesten Queue. | Ungleiche Kosten pro Nachricht. |
 | **`consistent-hashing`** *(nur Cluster)* | Ein Routee pro Nachricht, Key-gepinnt. | Per-Key-Zustand (Sharding-Light). |
 
 `smallest-mailbox` ist die Strategie, die nach **Rückstau** statt nach
@@ -84,9 +84,16 @@ beschäftigter Routee wird also so lange nicht mehr gewählt, bis er
 aufgeholt hat.  Bezahlt wird das mit einer Tiefenabfrage pro Routee
 pro Nachricht — deshalb bleibt Round-Robin der Default.
 
-Sie ist **nur lokal**: Ein Cluster-Router kann nicht sehen, wie tief
-die Mailbox eines entfernten Routees ist, `ClusterRouter` hat also
-kein Äquivalent.
+Beide Router haben sie, aber sie erfahren die Tiefe unterschiedlich.
+Der lokale liest die Mailboxen seiner Routees direkt — sie sind seine
+eigenen Kinder, im selben Prozess.  Der Cluster-Router kann das nicht:
+eine entfernte Mailbox liegt auf einem anderen Node, und pro Nachricht
+zu fragen würde den Router hinter einen Netzwerk-Roundtrip parken.  Er
+routet stattdessen auf einer **gecachten** Tiefe, aufgefrischt auf
+einem Hintergrund-Tick — etwas Aktualität gegen eine
+Routing-Entscheidung eingetauscht, die synchron bleibt.  Siehe
+[Cluster-Router](/de/cluster/cluster-router/) dazu, was dieser
+Nachlauf kosten kann und was nicht.
 
 Siehe [Strategien](/de/routing/strategies/) für den Deep Dive plus
 den `Broadcast`-Nachrichten-Wrapper, der die Strategie pro Nachricht

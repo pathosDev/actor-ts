@@ -2,19 +2,27 @@ import { Actor } from '../../Actor.js';
 import type { ActorRef } from '../../ActorRef.js';
 import type { ActorFactory } from '../../Actor.js';
 import { Broadcast } from '../../Router.js';
-import { ClusterRouterOptionsValidator } from './ClusterRouterOptions.js';
+import {
+  ClusterRouterOptionsValidator,
+  DEFAULT_MAILBOX_DEPTH_REFRESH_MS,
+  DEFAULT_MAILBOX_DEPTH_STALE_AFTER_MS,
+} from './ClusterRouterOptions.js';
 import type { ClusterRouterOptions, ClusterRouterOptionsType } from './ClusterRouterOptions.js';
 import { MemberRemoved, MemberUp } from '../ClusterEvents.js';
+import type { NodeAddress } from '../NodeAddress.js';
 import { RemoteActorRef } from '../RemoteActorRef.js';
 import { pickRendezvous } from './ConsistentHashing.js';
+import { MailboxDepthProbe } from './MailboxDepthProbe.js';
+import { isMailboxDepthReport, routeeFullPath, type MailboxDepthReportMessage } from './MailboxDepthProtocol.js';
 
 /**
  * Cluster-aware router — routees are derived dynamically from the
  * cluster's up-members (optionally filtered by role) and rebuilt
- * automatically when members come and go.  The standard local
- * `Router` strategies (round-robin / random / broadcast) get a
- * `consistent-hashing` sibling that pins messages with the same
- * extracted key to the same node.
+ * automatically when members come and go.  The local `Router`'s four
+ * strategies (round-robin / random / broadcast / smallest-mailbox) all
+ * have a counterpart here, plus a `consistent-hashing` sibling the
+ * local router has no use for: it pins messages with the same extracted
+ * key to the same node.
  *
  *   const routerOptions = ClusterRouterOptions.create<{ id: string }>()
  *     .withCluster(cluster)
@@ -45,10 +53,14 @@ import { pickRendezvous } from './ConsistentHashing.js';
  * (`MemberJoined`, `MemberWeaklyUp`, `MemberUnreachable`) are ignored
  * because the router only sends to fully-up members.
  *
+ * **Load-aware routing.**  `smallest-mailbox` picks the routee whose node
+ * last reported the shallowest mailbox.  The reading is *cached* and
+ * refreshed on a background tick — never asked for on the routing path, which
+ * stays as synchronous as round-robin's modulo.  See
+ * {@link MailboxDepthProbe} for why the obvious ask-then-route design is not
+ * available here, and what a stale reading can and cannot cost.
+ *
  * **Out of scope (v1).**
- *   - `smallest-mailbox` cluster variant — would require pull-based
- *     mailbox-size queries per routee per message.  File a separate
- *     issue if the need arises.
  *   - Routee groups across multiple paths (`/user/a`, `/user/b` mixed)
  *     — current API supports a single `routeePath`.
  */
@@ -61,6 +73,8 @@ export type ClusterRouterType =
   | 'random'
   /** One routee per message; same `extractKey` always lands on same routee. */
   | 'consistent-hashing'
+  /** One routee per message, the one whose node last reported the shortest queue. */
+  | 'smallest-mailbox'
   /** Every routee gets every message (equivalent to wrapping in `Broadcast`). */
   | 'broadcast';
 
@@ -81,23 +95,19 @@ export const ClusterRouter = {
 };
 
 /**
- * Materialise the full wire-path for a routee.  `routeePath` is given
- * as the user-friendly relative form (`'/user/worker'`); the cluster
- * envelope dispatcher (`Cluster.handleEnvelope`) parses paths via
- * `parsePathSegments`, which requires the full `actor-ts://system/...`
- * shape.  We build it per-member because the system name lives on the
- * target node — although in practice every node in a cluster shares
- * the same `systemName`, doing it this way removes the assumption.
+ * The class contract stays the caller-facing union — nobody sends a router a
+ * mailbox-depth report, a routee node's agent does — while `onReceive` widens
+ * to accept it, the way `RouterActor` widens for the `Terminated` the system
+ * delivers.  Reports arrive through the router's own mailbox rather than
+ * through an envelope handler of their own, which is what keeps the refresh
+ * off the routing path: a report is just another message in the queue.
  */
-function fullPath(systemName: string, routeePath: string): string {
-  const trimmed = routeePath.replace(/^\/+/, '');
-  return `actor-ts://${systemName}/${trimmed}`;
-}
-
 class ClusterRouterActor<TMessage> extends Actor<TMessage | Broadcast<TMessage>> {
   private routees: RemoteActorRef<TMessage>[] = [];
   private counter = 0;
   private unsubscribe: (() => void) | null = null;
+  /** Only built for `smallest-mailbox`; `null` for every other strategy. */
+  private depthProbe: MailboxDepthProbe | null = null;
 
   constructor(private readonly options: ClusterRouterOptionsType<TMessage>) {
     super();
@@ -116,33 +126,29 @@ class ClusterRouterActor<TMessage> extends Actor<TMessage | Broadcast<TMessage>>
         this.rebuildRoutees();
       }
     });
+    if (this.options.routerType === 'smallest-mailbox') this.startDepthProbe();
   }
 
   override postStop(): void {
     this.unsubscribe?.();
     this.unsubscribe = null;
+    this.depthProbe?.stop();
+    this.depthProbe = null;
     this.routees = [];
   }
 
-  override onReceive(message: TMessage | Broadcast<TMessage>): void {
-    const sender = this.sender.toNullable();
+  override onReceive(message: TMessage | Broadcast<TMessage> | MailboxDepthReportMessage): void {
+    // Gated on the probe so every other strategy pays nothing for a check that
+    // can only ever be true for this one.
+    if (this.depthProbe !== null && isMailboxDepthReport(message)) {
+      this.onMailboxDepthReport(message);
+      return;
+    }
     if (message instanceof Broadcast) {
-      for (const routee of this.routees) routee.tell(message.message, sender);
+      this.onBroadcast(message);
       return;
     }
-    if (this.routees.length === 0) {
-      this.log.warn('ClusterRouter: no routees match — dropping message', {
-        role: this.options.role,
-        routeePath: this.options.routeePath,
-      });
-      return;
-    }
-    if (this.options.routerType === 'broadcast') {
-      for (const routee of this.routees) routee.tell(message as TMessage, sender);
-      return;
-    }
-    const target = this.pickRoutee(message as TMessage);
-    target.tell(message as TMessage, sender);
+    this.onRoutedMessage(message as TMessage);
   }
 
   /** Visible to subclasses / tests for inspecting the live routee list. */
@@ -151,6 +157,49 @@ class ClusterRouterActor<TMessage> extends Actor<TMessage | Broadcast<TMessage>>
   }
 
   /* ----------------------------- internals ------------------------------ */
+
+  private onMailboxDepthReport(report: MailboxDepthReportMessage): void {
+    this.depthProbe?.record(report);
+  }
+
+  private onBroadcast(message: Broadcast<TMessage>): void {
+    const sender = this.sender.toNullable();
+    for (const routee of this.routees) routee.tell(message.message, sender);
+  }
+
+  private onRoutedMessage(message: TMessage): void {
+    const sender = this.sender.toNullable();
+    if (this.routees.length === 0) {
+      this.log.warn('ClusterRouter: no routees match — dropping message', {
+        role: this.options.role,
+        routeePath: this.options.routeePath,
+      });
+      return;
+    }
+    if (this.options.routerType === 'broadcast') {
+      for (const routee of this.routees) routee.tell(message, sender);
+      return;
+    }
+    this.pickRoutee(message).tell(message, sender);
+  }
+
+  private startDepthProbe(): void {
+    this.depthProbe = new MailboxDepthProbe(
+      this.options.cluster,
+      // Reports come back addressed to this router, not to a well-known
+      // collector path: two routers on one node would otherwise fight over the
+      // same handler, and each would see the other's readings.
+      this.self.path.toString(),
+      this.options.routeePath,
+      this.options.mailboxDepthStaleAfterMs ?? DEFAULT_MAILBOX_DEPTH_STALE_AFTER_MS,
+    );
+    const refreshMs = this.options.mailboxDepthRefreshMs ?? DEFAULT_MAILBOX_DEPTH_REFRESH_MS;
+    this.depthProbe.start(refreshMs, () => this.routeeNodes());
+  }
+
+  private routeeNodes(): ReadonlyArray<NodeAddress> {
+    return this.routees.map((routee) => routee.targetNode);
+  }
 
   private rebuildRoutees(): void {
     const members = this.options.role
@@ -161,9 +210,12 @@ class ClusterRouterActor<TMessage> extends Actor<TMessage | Broadcast<TMessage>>
     const sorted = [...members].sort((a, b) => a.address.compareTo(b.address));
     this.routees = sorted.map(
       (m) => new RemoteActorRef<TMessage>(
-        m.address, fullPath(m.address.systemName, this.options.routeePath), this.options.cluster,
+        m.address, routeeFullPath(m.address.systemName, this.options.routeePath), this.options.cluster,
       ),
     );
+    // A node that just came up would otherwise wait a whole refresh interval
+    // before it could be chosen on merit rather than on the rotation fallback.
+    this.depthProbe?.refreshNow();
   }
 
   private pickRoutee(message: TMessage): RemoteActorRef<TMessage> {
@@ -179,8 +231,15 @@ class ClusterRouterActor<TMessage> extends Actor<TMessage | Broadcast<TMessage>>
         const key = this.options.extractKey!(message);
         return pickRendezvous(key, this.routees, (r) => r.targetNode.toString());
       }
+      case 'smallest-mailbox': {
+        // `preStart` always builds the probe for this strategy; the fallback
+        // keeps the router routing rather than throwing if it ever is absent.
+        const index = this.counter++;
+        return this.depthProbe?.pickShallowest(this.routees, index)
+          ?? this.routees[index % this.routees.length]!;
+      }
       case 'broadcast': {
-        // Unreachable here — `onReceive` short-circuits broadcast.
+        // Unreachable here — `onRoutedMessage` short-circuits broadcast.
         return this.routees[0]!;
       }
     }
