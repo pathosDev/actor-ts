@@ -364,6 +364,31 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   version.  Read from the existing `welcome.serverVersion`, so no
   protocol change.
 
+- **`BidirectionalMap<K, V>`** (#1035).  A `Map` that also answers
+  `value → key`.  It exists because a reverse index written by hand is two
+  maps that have to be updated in lockstep, and the failure mode when they
+  drift is silent: a stale entry keeps answering for a pair that is already
+  gone.  Values back the reverse map, so they are unique and the relation is
+  1:1 in both directions.  `set` binds the pair unconditionally, evicting
+  whatever held either side before — the one departure from the `Map`
+  contract it implements, deliberate so the type stays usable wherever a
+  `Map` is expected, with `trySet` for callers that want the collision
+  reported instead of absorbed.  Both directions compare by SameValueZero, so
+  `NaN` works as a key and a value and two structurally equal objects are two
+  different values.  `inverse()` is a view over the same storage rather than
+  a copy.
+
+- **`BidirectionalMap` round-trips through every store** (#1035).  It is the
+  first framework class the tagged JSON tree knows about, under
+  `__bidirectionalmap__` alongside `__map__` and `__set__`, so it can be held
+  in an actor's state directly — no snapshot adapter, no serializer
+  registration, nothing at the boundary.  Only the forward pairs are written;
+  the inverse is rebuilt on decode, which also means a row carrying a
+  duplicate value resolves last-wins rather than restoring a map whose halves
+  disagree.  A store configured with `withSerializer(new CborSerializer())`
+  is the exception — that codec does not carry `Map` or `Set` either
+  (tracked as #1036).
+
 ### Fixed
 
 - **SQLite persistence now sets an explicit `busy_timeout` on every
@@ -1186,6 +1211,18 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   takes part in, and the two formats cannot collide.
 
 ### Changed
+
+- **Sharding resolves entities and regions by index instead of scanning**
+  (#1035).  `Passivate` and `Terminated` arrive carrying a ref and nothing
+  else, so `Shard` found the entity they refer to by walking every entry in
+  its entity map — O(n) per entity stop, and therefore O(n²) to drain a shard
+  during handoff, on the one path that runs once per entity and precisely
+  when a shard is at its largest.  It now keeps a `BidirectionalMap` of
+  entity id ↔ actor path; the path *string* is indexed rather than the ref,
+  because that is what `ActorRef.equals` compares.  `ClusterSharding`
+  likewise suffix-matched every registered path to resolve a region by type
+  name, on a path reached for every message sent through a sharded type, and
+  now keeps a direct index.  No behavior change.
 
 - **A resumed actor's children are resumed with it** (#635).  A failure
   suspends the failing actor's subtree so nothing in it runs while the
