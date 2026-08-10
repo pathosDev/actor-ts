@@ -35,7 +35,7 @@ const journal = new SqliteJournal(SqliteJournalOptions.create().withPath('/var/l
 const query = new SqliteQuery(journal);
 ```
 
-## The four methods
+## The methods
 
 ### `currentEventsByPersistenceId`
 
@@ -108,6 +108,89 @@ for await (const [event, offset] of query.eventsByTag<Event>('account', offsetSt
 Live stream of tag-matched events.  This is what `ProjectionActor.byTag`
 uses internally — the offset lets the projection persist its
 progress and resume from there.
+
+## Persistence ids
+
+Three methods answer "which entities are in this journal?", and the
+difference between them is what they cost and when they stop.
+
+| Method | Returns | Stops |
+| --- | --- | --- |
+| `currentPersistenceIds()` | `Promise<string[]>` | Immediately — the whole list, one array. |
+| `currentPersistenceIdsPaginated()` | `AsyncIterable<string>` | When the journal is exhausted. |
+| `allPersistenceIds()` | `AsyncIterable<string>` | Never — new ids keep arriving. |
+
+### `currentPersistenceIds`
+
+```ts
+const ids = await query.currentPersistenceIds();
+```
+
+The whole list in one array.  Convenient, and the right choice
+whenever the id count is small — a few hundred entities cost
+nothing to materialize.  It is, though, the only method here with
+no bound on what it allocates: a million entities is a million
+strings.
+
+### `currentPersistenceIdsPaginated`
+
+```ts
+for await (const persistenceId of query.currentPersistenceIdsPaginated({ pageSize: 500 })) {
+  await backfill(persistenceId);
+}
+```
+
+The same data, fetched a page at a time, so peak memory is one page
+rather than the whole set.  Completes once the journal is
+exhausted.
+
+The cursor is **a persistence id, not an opaque token** — resume a
+partial walk by passing the last id you handled:
+
+```ts
+for await (const persistenceId of query.currentPersistenceIdsPaginated({
+  afterPersistenceId: lastHandled,
+})) {
+  // ... picks up strictly after `lastHandled`
+}
+```
+
+| Option | Default | What |
+| --- | --- | --- |
+| `pageSize` | 256 | Ids fetched per round-trip. |
+| `afterPersistenceId` | — | Resume after this id, exclusive. |
+
+Ids come back in the backend's ascending order — byte-wise on
+SQLite and Cassandra, collation-aware on Postgres.  Which one it is
+never matters to a consumer, because the cursor is compared in the
+same order the page is sorted in.
+
+### `allPersistenceIds`
+
+```ts
+for await (const persistenceId of query.allPersistenceIds()) {
+  startProjectionFor(persistenceId);   // runs forever
+}
+```
+
+Live stream: every id the journal has ever seen, then each new one
+as it first appears.  This is the **fan-out** primitive — start a
+per-entity consumer as its entity shows up, instead of polling
+`currentPersistenceIds` and diffing the result yourself.
+
+Two properties worth knowing before you build on it:
+
+- **Once per stream, not once per journal.**  A fresh subscription
+  re-emits every id.  A consumer that must not act twice across a
+  restart needs its own checkpoint — the same at-least-once posture
+  the event queries have.
+- **The stream remembers what it emitted.**  That is an in-process
+  set of ids, so a stream over a journal with a million entities
+  holds a million strings for as long as it runs.  A cheaper
+  high-water mark would be wrong: ids are not created in sorted
+  order, so an entity whose id sorts below the mark would never be
+  emitted at all.  For a one-shot enumeration that needs no such
+  set, use `currentPersistenceIdsPaginated`.
 
 ## Offsets
 
@@ -204,7 +287,16 @@ API directly.
 - **`current*` reads** scan the journal once, return a
   materialized array.  For large pids / many tag-matches, this
   can be slow + memory-heavy.  Use the streaming `events*`
-  variants for unbounded reads.
+  variants for unbounded reads, and
+  `currentPersistenceIdsPaginated` instead of
+  `currentPersistenceIds`.
+- **Id pagination is pushed into the backend** where the store has
+  a sorted key over ids: an `ORDER BY … LIMIT` on SQLite and the SQL
+  backends, a clustering-column range on the Cassandra
+  `all_persistence_ids` table.  MongoDB and DynamoDB have no such
+  index — `distinct` has no cursor and a DynamoDB `Scan` has no
+  order across partition keys — so there the page is cut in-process
+  and pagination buys ergonomics, not I/O.
 - **Live polling** is light at idle — empty queries return
   quickly.  Under heavy write load, polling can pile up if the
   read side is slower than the write side.  Parallelize the
