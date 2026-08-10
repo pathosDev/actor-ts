@@ -57,6 +57,14 @@ export const ConfigKeys = {
         server: 'actor-ts.io.broker.grpc.server',
       },
       jetstream: 'actor-ts.io.broker.jetstream',
+      /**
+       * JetStream's KV and Object-Store views (#74) are separate actors on
+       * separate roots, not sub-blocks of `jetstream`: they configure a
+       * *bucket*, not a stream + consumer, and nesting them would put keys
+       * like `history` under a block whose reader never looks at them.
+       */
+      jetstreamKeyValue: 'actor-ts.io.broker.jetstream-key-value',
+      jetstreamObjectStore: 'actor-ts.io.broker.jetstream-object-store',
       kafka: 'actor-ts.io.broker.kafka',
       mqtt: 'actor-ts.io.broker.mqtt',
       nats: 'actor-ts.io.broker.nats',

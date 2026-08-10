@@ -60,6 +60,32 @@ export interface Journal {
   persistenceIds(): Promise<string[]>;
 
   /**
+   * One ascending page of persistence ids: those strictly greater than
+   * `afterPersistenceId` — all of them when it is `undefined` — capped at
+   * `limit`.  Returning fewer than `limit` means the journal is exhausted.
+   *
+   * **Optional on purpose.**  Not every store can enumerate ids in order:
+   * DynamoDB reaches partition keys only through a full table scan, and
+   * MongoDB's `distinct` has no cursor.  A journal without a sorted index
+   * over its ids omits this, and the query layer falls back to
+   * `persistenceIds()` plus an in-process slice — correct, just not cheaper
+   * than the full list.  Implement it wherever a sorted key exists; that is
+   * what keeps `currentPersistenceIdsPaginated` from materialising a million
+   * rows to hand back the first 256.
+   *
+   * **Which ascending order is the backend's business.**  `afterPersistenceId`
+   * is compared in the same order the page is sorted by, so Postgres' collated
+   * `ORDER BY` and SQLite's byte-wise one are both fine — a paginated walk only
+   * needs the order to be *total and stable within one journal*.  What a
+   * journal must not do is mix two orders across calls, which would make the
+   * cursor skip ids.
+   */
+  persistenceIdsPaginated?(
+    afterPersistenceId: string | undefined,
+    limit: number,
+  ): Promise<string[]>;
+
+  /**
    * Optional in-process notification bus.  When present, the read-side
    * query layer subscribes here for sub-poll-interval push delivery
    * (see `JournalEventBus`).  Journals that span processes (Cassandra,
@@ -70,4 +96,35 @@ export interface Journal {
 
   /** Best-effort teardown; idempotent. */
   close?(): Promise<void>;
+}
+
+/**
+ * Cut one page out of a full list of persistence ids — the reference
+ * semantics every {@link Journal.persistenceIdsPaginated} implementation has
+ * to match, and the fallback the query layer uses for a journal that has no
+ * such method.
+ *
+ * Lives here rather than in the query layer because it is a statement about
+ * the *journal* contract: it defines what "ascending" and "after" mean for a
+ * backend that has no opinion of its own.  `InMemoryJournal` uses it as its
+ * implementation; the tests use it as the oracle the SQL and CQL push-downs
+ * are checked against.
+ *
+ * The dedupe is not redundant with `persistenceIds()` being distinct: it is
+ * what makes "each id exactly once per sweep" hold even for a journal whose
+ * enumeration repeats an id, and it costs one pass over a list already being
+ * sorted.
+ */
+export function persistenceIdPage(
+  all: ReadonlyArray<string>,
+  afterPersistenceId: string | undefined,
+  limit: number,
+): string[] {
+  const sorted = [...new Set(all)].sort();
+  const start = afterPersistenceId === undefined
+    ? 0
+    : sorted.findIndex((persistenceId) => persistenceId > afterPersistenceId);
+  // `findIndex` returning -1 means every id is at or before the cursor.
+  if (start < 0) return [];
+  return sorted.slice(start, start + limit);
 }

@@ -34,13 +34,35 @@ export class UnsubscribeAll {
   constructor(public readonly ref: ActorRef) {}
 }
 
-/** Publish `message` to every subscriber of `topic` — cluster-wide. */
+/**
+ * How a {@link Publish} picks recipients among a topic's subscribers.
+ *
+ * `'one-subscriber'` is anycast: exactly one subscriber cluster-wide gets
+ * the message.  That is what a work queue wants — N workers on one topic,
+ * every task handled once — and it is the case a broadcast bus cannot serve
+ * without the workers coordinating among themselves.
+ *
+ * A string union rather than a second message class because the two differ
+ * only in how many recipients are chosen, and because it leaves room for a
+ * further selection (Akka's per-consumer-group anycast) without a third
+ * class and a third wire kind.
+ */
+export type PubSubDelivery = 'all-subscribers' | 'one-subscriber';
+
+/**
+ * Publish `message` to `topic` — cluster-wide, to every subscriber by
+ * default and to exactly one with `delivery = 'one-subscriber'`.
+ *
+ * The third slot used to be `sendOneMessageToEachGroup`, Akka's per-group
+ * anycast switch.  Nothing ever read it: the flag selects *one subscriber
+ * per consumer group*, and this mediator has no groups for it to range over,
+ * so passing `true` did the same nothing as passing `false` (#155).
+ */
 export class Publish<T = unknown> {
   constructor(
     public readonly topic: string,
     public readonly message: T,
-    /** Deliver to senders/publishers themselves?  Default false. */
-    public readonly sendOneMessageToEachGroup = false,
+    public readonly delivery: PubSubDelivery = 'all-subscribers',
   ) {}
 }
 
@@ -108,4 +130,22 @@ export type PubSubPublishMessage = {
   readonly body: unknown;
 };
 
-export type PubSubWireMessage = PubSubGossipMessage | PubSubPublishMessage;
+/**
+ * Anycast counterpart of {@link PubSubPublishMessage}.  The sending mediator
+ * already picked this node as the single recipient, so the receiver hands the
+ * body to exactly one of its local subscribers instead of fanning out.
+ *
+ * A distinct `kind` rather than a mode field on the publish envelope: the
+ * receiver's dispatch stays a table lookup, and a frame that says what it
+ * wants cannot be misread by a receiver that ignores the field.
+ */
+export type PubSubPublishOneMessage = {
+  readonly kind: 'pubsub-publish-one';
+  readonly topic: string;
+  readonly body: unknown;
+};
+
+export type PubSubWireMessage =
+  | PubSubGossipMessage
+  | PubSubPublishMessage
+  | PubSubPublishOneMessage;

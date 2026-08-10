@@ -28,6 +28,10 @@ type Stmts = {
   deleteUpTo: SqliteStatement;
   deleteTagsUpTo: SqliteStatement;
   persistenceIds: SqliteStatement;
+  /** First page of ids, ascending — `LIMIT ?`. */
+  persistenceIdsFirstPage: SqliteStatement;
+  /** Page of ids strictly after a cursor, ascending — `WHERE … > ? LIMIT ?`. */
+  persistenceIdsPageAfter: SqliteStatement;
   /** Used by the tags-table backfill at startup. */
   countTags: SqliteStatement;
   /** Iterates events that still have CSV tags but no row in the tag table. */
@@ -212,6 +216,24 @@ export class SqliteJournal implements Journal {
     }
   }
 
+  async persistenceIdsPaginated(
+    afterPersistenceId: string | undefined,
+    limit: number,
+  ): Promise<string[]> {
+    await this.ensureOpen();
+    try {
+      const rows = (afterPersistenceId === undefined
+        ? this.stmts!.persistenceIdsFirstPage.all(limit)
+        : this.stmts!.persistenceIdsPageAfter.all(afterPersistenceId, limit)
+      ) as Array<{ persistence_id: string }>;
+      return rows.map(r => r.persistence_id);
+    } catch (e) {
+      throw new JournalError(
+        `SqliteJournal.persistenceIdsPaginated failed: ${(e as Error).message}`, e,
+      );
+    }
+  }
+
   async close(): Promise<void> {
     if (this.closed.value) return;
     this.closed.value = true;
@@ -326,6 +348,17 @@ export class SqliteJournal implements Journal {
       ),
       persistenceIds: db.prepare(
         `SELECT DISTINCT persistence_id FROM ${this.table}`,
+      ),
+      // Ascending by persistence_id so the cursor below compares in the same
+      // order the page is sorted in.  SQLite's default BINARY collation makes
+      // that the same order `persistenceIdPage` produces in JS, which is what
+      // lets the in-memory reference stand in as the oracle for this path.
+      persistenceIdsFirstPage: db.prepare(
+        `SELECT DISTINCT persistence_id FROM ${this.table} ORDER BY persistence_id ASC LIMIT ?`,
+      ),
+      persistenceIdsPageAfter: db.prepare(
+        `SELECT DISTINCT persistence_id FROM ${this.table} WHERE persistence_id > ? `
+        + `ORDER BY persistence_id ASC LIMIT ?`,
       ),
       countTags: db.prepare(
         `SELECT COUNT(*) AS n FROM ${tagsTable}`,

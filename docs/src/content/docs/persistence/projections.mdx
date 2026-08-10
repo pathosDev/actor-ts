@@ -185,6 +185,41 @@ For large numbers of pids, this is **not** how to scale —
 spawning a projection per pid doesn't scale to millions of users.
 For that, use a single tag-based projection that hashes by pid.
 
+### Fan-out: starting one as each entity appears
+
+A per-pid projection has to know its pid up front, which is fine
+for a fixed set and useless for a growing one.  `allPersistenceIds`
+closes that gap — it is a live stream of every id the journal has
+seen, plus each new one as it first appears:
+
+```ts
+for await (const persistenceId of query.allPersistenceIds()) {
+  const options = ByPersistenceIdProjectionOptions.create<AccountEvent>()
+    .withName(`view-${persistenceId}`)
+    .withPersistenceId(persistenceId)
+    .withQuery(query)
+    .withOffsetStore(offsetStore)
+    .withHandle(async (event) => { /* ... */ });
+  ProjectionActor.byPersistenceId<AccountEvent>(system, options);
+}
+```
+
+Two caveats, and they are the same ones the per-pid shape already
+had, just made visible:
+
+- The loop **never ends**, so run it in its own task and break out
+  on shutdown.
+- One actor per entity is still one actor per entity.  Fan-out is
+  for hundreds or thousands of long-lived entities, not for
+  millions of short-lived ones — there, a tag projection is the
+  answer.
+
+For a **one-shot** sweep instead of a live one — a backfill over
+the entities that exist right now — use
+`currentPersistenceIdsPaginated`, which completes when the journal
+is exhausted and holds one page at a time rather than the whole id
+list.  See [Persistence query](/persistence/persistence-query/).
+
 ## Multiple projections, same journal
 
 ```ts

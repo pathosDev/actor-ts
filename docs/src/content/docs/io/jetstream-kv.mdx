@@ -1,0 +1,286 @@
+---
+title: JetStream KV + Object Store
+description: JetStream's Key-Value and Object-Store buckets as actors — revisioned keys with compare-and-swap and a change feed, plus whole-object blob storage. Request/reply commands answered on a target ref.
+---
+
+JetStream is three APIs, not one.  [`JetStreamActor`](/io/jetstream/)
+covers **streams and consumers**; this page covers the other two:
+
+- **`JetStreamKeyValueActor`** — a KV bucket: revisioned keys,
+  compare-and-swap writes, and a `watch` change feed.
+- **`JetStreamObjectStoreActor`** — an object bucket: named blobs with
+  metadata.
+
+Both are separate actors because they are separate sub-APIs with
+separate semantics — a bucket is not a stream + consumer, and folding
+them into the stream actor would have given it a sixth mode nobody
+wants.
+
+## Key-Value
+
+```ts
+import { ActorSystem, Actor, JetStreamKeyValueActor, JetStreamKeyValueOptions } from 'actor-ts';
+import type { ActorRef, JetStreamKeyValueMessage } from 'actor-ts';
+
+const sessionOptions = JetStreamKeyValueOptions.create()
+  .withServers(['nats://localhost:4222'])
+  .withBucket('sessions')
+  .withHistory(5)
+  .withTimeToLive(3_600_000);
+const sessions = system.spawn(() => new JetStreamKeyValueActor(sessionOptions), 'sessions');
+
+// Fire-and-forget write:
+sessions.tell({ kind: 'put', key: 'user.42', value: JSON.stringify(session) });
+
+// Read — the answer arrives at `reader` as a kind-tagged message:
+sessions.tell({ kind: 'get', key: 'user.42', target: reader });
+```
+
+The builder is the primary style; a plain object works too.  Common
+broker fields — `withReconnect`, `withCircuitBreaker`,
+`withOutboundBuffer` — come from the shared
+[BrokerActor base](/io/broker-actor-base/).  `servers` and `bucket` are
+required.
+
+### Commands
+
+| `kind` | Fields | Purpose |
+| --- | --- | --- |
+| `put` | `key`, `value`, `expectedRevision?`, `target?` | Write a value; with `expectedRevision` it is a compare-and-swap. |
+| `get` | `key`, `target` | Read the current value. |
+| `delete` | `key`, `target?` | Remove the key, leaving a tombstone in its history. |
+| `purge` | `key`, `target?` | Remove the key **and** its history. |
+| `keys` | `filter?`, `target` | List the live keys, optionally narrowed by a subject filter. |
+| `watch` | `key?`, `target` | Stream every change under `key` (default `'>'` — the whole bucket). |
+| `unwatch` | `key?` | Stop that watch. |
+
+`target` is **required** where an answer is the point (`get`, `keys`,
+`watch`) and **optional** where it is a receipt (`put`, `delete`,
+`purge`) — omit it for fire-and-forget writes and the failures are
+logged instead.
+
+### Replies
+
+Every answer is a `JetStreamKeyValueMessage`, discriminated on `kind`:
+
+| `kind` | Fields | When |
+| --- | --- | --- |
+| `keyValueEntry` | `key`, `value`, `revision`, `createdAt` | A `get` hit, and every `watch` update. |
+| `keyValueNotFound` | `key` | A `get` on a missing or deleted key. |
+| `keyValueRemoved` | `key`, `purged` | Receipt for `delete` / `purge`, and every watched removal. |
+| `keyValueRevision` | `key`, `revision` | Receipt for a successful `put`. |
+| `keyValueKeys` | `keys` | Answer to `keys`. |
+| `keyValueOperationFailed` | `operation`, `key?`, `reason` | The operation failed — most often a compare-and-swap conflict. |
+
+```ts
+class SessionReader extends Actor<JetStreamKeyValueMessage> {
+  override onReceive(message: JetStreamKeyValueMessage): void {
+    if (message.kind === 'keyValueEntry') {
+      this.log.info(`${message.key} @ rev ${message.revision}`);
+    }
+  }
+}
+```
+
+### Compare-and-swap
+
+`revision` is the concurrency token.  Read it, compute the new value,
+and write it back with `expectedRevision` — the server rejects the
+write if anyone else moved the key in between, and the actor answers
+`keyValueOperationFailed` so the caller can retry against the fresh
+value:
+
+```ts
+// after a `get` answered with { revision: 7 }
+sessions.tell({
+  kind:             'put',
+  key:              'user.42',
+  value:            JSON.stringify(next),
+  expectedRevision: 7,
+  target:           reader,
+});
+```
+
+Pass `expectedRevision: 0` to mean "only if the key does not exist
+yet".
+
+### Watch
+
+A `watch` is **desired state**, not a one-shot subscription: it is
+re-established on every reconnect, and one issued while the actor is
+disconnected lands on the next connect rather than being dropped.  That
+is the same guarantee [`NatsActor`](/io/nats/) gives a subscription,
+and it matters more here — a change feed that silently stops looks
+exactly like a bucket that stopped changing.
+
+```ts
+sessions.tell({ kind: 'watch', key: 'user.>', target: reader });
+// … later
+sessions.tell({ kind: 'unwatch', key: 'user.>' });
+```
+
+Re-watching a live key swaps the target.
+
+### Key-Value settings
+
+```ts
+interface JetStreamKeyValueOptionsType extends BrokerCommonOptionsType {
+  servers?:  string[] | string;   // NATS server URLs (required)
+  token?:    string;
+  user?:     string;
+  password?: string;
+  name?:     string;              // client identifier
+  bucket?:   string;              // bucket name (required)
+  history?:  number;              // revisions kept per key (create-time)
+  timeToLive?:    number;         // per-key TTL in ms (create-time)
+  storage?:       'memory' | 'file';  // create-time
+  replicas?:      number;             // create-time
+  maxValueBytes?: number;             // server-side cap on one value (create-time)
+  create?:        boolean;        // create the bucket when missing; default true
+}
+```
+
+The create-time fields are only sent when the actor creates the bucket.
+With `create: false` the actor **binds** to an existing bucket and
+fails the connect if it is missing — the right setting when an operator
+provisions the bucket and a typo should not quietly produce an empty
+one.
+
+HOCON defaults live under `actor-ts.io.broker.jetstream-key-value`:
+
+```hocon
+actor-ts.io.broker.jetstream-key-value {
+  servers = ["nats://localhost:4222"]
+  bucket  = "sessions"
+  history = 5
+}
+```
+
+## Object Store
+
+```ts
+import { JetStreamObjectStoreActor, JetStreamObjectStoreOptions } from 'actor-ts';
+
+const assetOptions = JetStreamObjectStoreOptions.create()
+  .withServers(['nats://localhost:4222'])
+  .withBucket('assets');
+const assets = system.spawn(() => new JetStreamObjectStoreActor(assetOptions), 'assets');
+
+assets.tell({ kind: 'put', name: 'report.pdf', payload: bytes, target: uploader });
+assets.tell({ kind: 'get', name: 'report.pdf', target: reader });
+```
+
+### Object-Store commands
+
+| `kind` | Fields | Purpose |
+| --- | --- | --- |
+| `put` | `name`, `payload`, `description?`, `headers?`, `target?` | Store a body, replacing any previous one. |
+| `get` | `name`, `target` | Read the whole body. |
+| `delete` | `name`, `target?` | Remove the object. |
+| `info` | `name`, `target` | Metadata only — no body transfer, whatever the size. |
+| `list` | `target` | Metadata for every live object in the bucket. |
+
+### Object-Store replies
+
+| `kind` | Fields | When |
+| --- | --- | --- |
+| `objectStored` | `name`, `info` | Receipt for `put`. |
+| `objectBody` | `name`, `payload`, `info` | Answer to `get`. |
+| `objectInfo` | `name`, `info` | Answer to `info`. |
+| `objectList` | `objects` | Answer to `list`. |
+| `objectDeleted` | `name` | Receipt for `delete`. |
+| `objectNotFound` | `name` | The object is missing or deleted. |
+| `objectStoreOperationFailed` | `operation`, `name?`, `reason` | The operation failed, including an over-the-ceiling body. |
+
+`info` carries `name`, `size`, `chunks`, `digest`, `modifiedAt`, and the
+optional `description` / `headers` the object was stored with.
+
+### Object-Store settings
+
+```ts
+interface JetStreamObjectStoreOptionsType extends BrokerCommonOptionsType {
+  servers?:  string[] | string;   // NATS server URLs (required)
+  token?:    string;
+  user?:     string;
+  password?: string;
+  name?:     string;              // client identifier
+  bucket?:   string;              // bucket name (required)
+  description?: string;           // create-time
+  storage?:     'memory' | 'file';  // create-time
+  replicas?:    number;             // create-time
+  maxObjectBytes?: number;        // whole-object ceiling; default 1 MiB
+  create?:      boolean;          // create the bucket when missing; default true
+}
+```
+
+HOCON defaults live under `actor-ts.io.broker.jetstream-object-store`:
+
+```hocon
+actor-ts.io.broker.jetstream-object-store {
+  servers        = ["nats://localhost:4222"]
+  bucket         = "assets"
+  maxObjectBytes = 4M
+}
+```
+
+## The whole-object ceiling
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="v1 moves an object in one message">
+  An object body rides the `BrokerActor` **outbound buffer**, which is a
+  bounded FIFO sized in *messages* (1000 by default), not in bytes, and
+  which evicts the **oldest** entry on overflow.  A multi-megabyte body
+  in that buffer means up to `outboundBuffer × body` resident while
+  disconnected, and an overflow silently discards an upload.  So v1 caps
+  bodies at `maxObjectBytes` (1 MiB by default) instead of pretending
+  otherwise: a `put` over the cap is refused **before** the body enters
+  the buffer, and a `get` over the cap is refused from the object's
+  metadata, before the body is fetched.  Both answer
+  `objectStoreOperationFailed` naming the limit.
+</Aside>
+
+Raise `maxObjectBytes` only as far as `outboundBuffer ×
+maxObjectBytes` stays a resident-memory figure you are willing to hold
+through an outage; drop `outboundBuffer` to `0` if you would rather
+fail fast than buffer blobs at all.  `info` and `list` are unaffected —
+metadata carries no body, so they answer for objects of any size.
+
+For genuinely large objects, use the `nats` client's chunked
+`put`/`get` streams directly.  Wiring those through the actor needs a
+dispatch path outside the connection state machine, which is a larger
+change than this actor.
+
+## Peer dependency
+
+```bash
+npm install nats
+# or: bun add nats
+```
+
+The same `nats` package that backs [NATS](/io/nats/) and
+[JetStream](/io/jetstream/) — the KV and Object-Store views ship with
+it.
+
+<Aside type="caution" title="A failed operation does not drop the connection">
+  A per-key or per-object failure (a compare-and-swap conflict, a name
+  the server rejects) is reported to `target` as
+  `keyValueOperationFailed` / `objectStoreOperationFailed`.  Only "not
+  connected" throws, because throwing out of the dispatch path is how
+  the base class learns the transport died — one rejected key is not
+  that.
+</Aside>
+
+<Aside type="caution" title="`keys` and `list` materialise the whole answer">
+  Both collect the full result into a single message.  That is fine for
+  a configuration bucket and wrong for a bucket with a million keys —
+  narrow `keys` with a `filter`, or read the bucket with the `nats`
+  client directly.
+</Aside>
+
+## Where to next
+
+- **[NATS JetStream](/io/jetstream/)** — durable streams and consumers, the third sub-API.
+- **[NATS](/io/nats/)** — core (non-durable) pub/sub + request-reply.
+- **[BrokerActor base](/io/broker-actor-base/)** — the shared reconnect / buffer / circuit-breaker lifecycle.
+- **[I/O overview](/io/overview/)** — the bigger picture.

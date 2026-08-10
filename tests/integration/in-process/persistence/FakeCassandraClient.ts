@@ -35,10 +35,13 @@ type TableState = {
   readonly rows: Row[];
 };
 
+/** Comparison operators the WHERE-clause parser understands. */
+type ComparisonOperator = '=' | '>=' | '>' | '<=' | '<';
+
 type SelectPlan = {
   readonly table: string;
   readonly columns: string[] | '*';
-  readonly filters: ReadonlyArray<{ column: string; op: '=' | '>=' | '<=' | '<'; index: number }>;
+  readonly filters: ReadonlyArray<{ column: string; op: ComparisonOperator; index: number }>;
   /** `LIMIT N` → literal value; `LIMIT ?` → parameter index; absent → null. */
   readonly limit: { kind: 'literal'; value: number } | { kind: 'param'; index: number } | null;
 };
@@ -173,9 +176,17 @@ export class FakeCassandraClient implements CassandraClientLike {
     const state = this.tables.get(plan.table);
     if (!state) return [];
     let rows = state.rows.filter((row) => plan.filters.every((f) => matches(row, f, params)));
-    // Cassandra orders rows by clustering columns — for our tests we just
-    // sort by sequence_nr if present.
+    // Cassandra orders rows by clustering columns.  Two shapes matter here:
+    // most tables cluster on `sequence_nr`, but `all_persistence_ids` has
+    // `PRIMARY KEY (tag, persistence_id)` and therefore clusters on the id —
+    // which is exactly what `persistenceIdsPaginated` walks, so returning
+    // insertion order there would let a broken cursor look correct.
+    const clusterByPersistenceId = rows.length > 0 && rows.every((row) => row.sequence_nr === undefined);
     rows = rows.slice().sort((a, b) => {
+      if (clusterByPersistenceId) {
+        return String(a.persistence_id) < String(b.persistence_id) ? -1
+          : String(a.persistence_id) > String(b.persistence_id) ? 1 : 0;
+      }
       const sa = typeof a.sequence_nr === 'number' ? a.sequence_nr : Number(a.sequence_nr ?? 0);
       const sb = typeof b.sequence_nr === 'number' ? b.sequence_nr : Number(b.sequence_nr ?? 0);
       return sa - sb;
@@ -252,14 +263,16 @@ function parseSelect(statement: string): SelectPlan | null {
   const limitToken = regexMatch[4];
   const columns: string[] | '*' = colsRaw === '*' ? '*' : colsRaw.split(',').map((c) => c.trim());
 
-  const filters: Array<{ column: string; op: '=' | '>=' | '<=' | '<'; index: number }> = [];
+  const filters: Array<{ column: string; op: ComparisonOperator; index: number }> = [];
   let paramIndex = 0;
   if (whereClause) {
     const parts = whereClause.split(/\s+AND\s+/i);
     for (const part of parts) {
-      const match = /^(\w+)\s*(=|>=|<=|<)\s*\?$/.exec(part.trim());
+      // `>=` and `<=` must be tried before the bare `>` / `<` alternatives, or
+      // the regex matches the first character and leaves `= ?` unconsumed.
+      const match = /^(\w+)\s*(>=|<=|=|>|<)\s*\?$/.exec(part.trim());
       if (!match) return null;
-      filters.push({ column: match[1]!, op: match[2] as '=' | '>=' | '<=' | '<', index: paramIndex++ });
+      filters.push({ column: match[1]!, op: match[2] as ComparisonOperator, index: paramIndex++ });
     }
   }
   let limit: SelectPlan['limit'] = null;
@@ -286,7 +299,7 @@ function parseDelete(statement: string): DeletePlan | null {
 
 function matches(
   row: Row,
-  filter: { column: string; op: '=' | '>=' | '<=' | '<'; index: number },
+  filter: { column: string; op: ComparisonOperator; index: number },
   params: ReadonlyArray<unknown>,
 ): boolean {
   const rowVal = row[filter.column];
@@ -295,6 +308,7 @@ function matches(
   switch (filter.op) {
     case '=':  return coerce(rowVal) === coerce(paramVal);
     case '>=': return coerce(rowVal) >= coerce(paramVal);
+    case '>':  return coerce(rowVal) >  coerce(paramVal);
     case '<=': return coerce(rowVal) <= coerce(paramVal);
     case '<':  return coerce(rowVal) <  coerce(paramVal);
   }

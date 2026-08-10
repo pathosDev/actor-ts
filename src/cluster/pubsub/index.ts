@@ -25,4 +25,8 @@ export {
   UnsubscribeAcknowledgment,
   UnsubscribeAll,
 } from './Messages.js';
-export type { PubSubSubscriberRef, PubSubSubscribeRejectionReason } from './Messages.js';
+export type {
+  PubSubDelivery,
+  PubSubSubscriberRef,
+  PubSubSubscribeRejectionReason,
+} from './Messages.js';

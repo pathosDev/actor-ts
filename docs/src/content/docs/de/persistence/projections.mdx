@@ -191,6 +191,43 @@ eine Projektion pro pid zu spawnen skaliert nicht auf Millionen
 von Usern.  Verwende dafür eine einzelne Tag-basierte Projektion,
 die nach pid hasht.
 
+### Fan-out: eine starten, sobald eine Entity auftaucht
+
+Eine Per-pid-Projektion muss ihre pid vorab kennen — passend für
+eine feste Menge, nutzlos für eine wachsende.
+`allPersistenceIds` schließt diese Lücke: ein Live-Stream jeder Id,
+die das Journal gesehen hat, plus jeder neuen, sobald sie zum
+ersten Mal auftaucht:
+
+```ts
+for await (const persistenceId of query.allPersistenceIds()) {
+  const options = ByPersistenceIdProjectionOptions.create<AccountEvent>()
+    .withName(`view-${persistenceId}`)
+    .withPersistenceId(persistenceId)
+    .withQuery(query)
+    .withOffsetStore(offsetStore)
+    .withHandle(async (event) => { /* ... */ });
+  ProjectionActor.byPersistenceId<AccountEvent>(system, options);
+}
+```
+
+Zwei Vorbehalte, dieselben wie bei der Per-pid-Form — hier nur
+sichtbar gemacht:
+
+- Die Schleife **endet nie**, führe sie also in einem eigenen Task
+  aus und breake beim Shutdown heraus.
+- Ein Actor pro Entity bleibt ein Actor pro Entity.  Fan-out ist
+  für hunderte oder tausende langlebige Entities gedacht, nicht
+  für Millionen kurzlebiger — dort ist eine Tag-Projektion die
+  Antwort.
+
+Für einen **einmaligen** Durchlauf statt eines Live-Streams — ein
+Backfill über die Entities, die es jetzt gibt — nimm
+`currentPersistenceIdsPaginated`: es endet, sobald das Journal
+erschöpft ist, und hält eine Seite auf einmal statt der ganzen
+Id-Liste.  Siehe
+[Persistence Query](/de/persistence/persistence-query/).
+
 ## Mehrere Projektionen, dasselbe Journal
 
 ```ts

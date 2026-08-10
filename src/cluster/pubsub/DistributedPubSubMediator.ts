@@ -20,6 +20,7 @@ import {
   SubscribeRejected,
   type PubSubGossipMessage,
   type PubSubPublishMessage,
+  type PubSubPublishOneMessage,
   type PubSubSubscribeRejectionReason,
   type PubSubWireMessage,
   Unsubscribe,
@@ -43,7 +44,8 @@ export type MediatorMessage =
   | UnsubscribeAll
   | Publish
   | GetTopics
-  | PubSubPublishMessage;
+  | PubSubPublishMessage
+  | PubSubPublishOneMessage;
 
 /**
  * Everything the mediator can find in its mailbox, including system traffic.
@@ -65,6 +67,13 @@ type SubscriberSet = {
   readonly local: Map<string, ActorRef>;
   /** Remote node addresses with at least one subscriber for this topic. */
   readonly remoteNodes: Set<string>;
+  /**
+   * Rotation cursor for `'one-subscriber'` delivery — mutable on purpose,
+   * and held here rather than in a `Map<topic, number>` beside `topics`:
+   * a second map would be a fourth registry to bound and to prune, while a
+   * field is created and dropped with the very set it rotates over.
+   */
+  nextCandidateIndex: number;
 };
 
 /** The cap a {@link Subscribe} ran into, and the value that cap was set to. */
@@ -81,6 +90,10 @@ type CapRefusal = {
  *
  * Simple delta model: each mediator periodically gossips its local
  * topic set to one random peer.  Peers merge into their view.
+ *
+ * A `Publish` is a broadcast by default and an anycast with
+ * `delivery = 'one-subscriber'` — one subscriber cluster-wide, chosen by a
+ * rotation over local subscribers and remote claimant nodes (#155).
  *
  * Every registry the mediator keeps is **bounded and watched**.  Three
  * axes grew without limit before: local subscribers per topic, distinct
@@ -155,6 +168,7 @@ export class DistributedPubSubMediator extends Actor<MediatorInbox> {
       .with(P.instanceOf(Terminated), (m) => this.onTerminated(m))
       // Remote Publish forwarded from another mediator (plain envelope, not a class instance).
       .with({ kind: 'pubsub-publish' }, (m) => this.onPubSubPublish(m))
+      .with({ kind: 'pubsub-publish-one' }, (m) => this.onPubSubPublishOne(m))
       .otherwise(() => this.onUnhandled());
   }
 
@@ -229,25 +243,61 @@ export class DistributedPubSubMediator extends Actor<MediatorInbox> {
     message.replyTo.tell(new CurrentTopics(Array.from(this.topics.keys()).sort()));
   }
 
+  /** Broadcast or anycast — the only thing `delivery` decides. */
   private onPublish<T>(message: Publish<T>): void {
+    if (message.delivery === 'one-subscriber') { this.publishToOneSubscriber(message); return; }
+    this.publishToAllSubscribers(message);
+  }
+
+  private publishToAllSubscribers<T>(message: Publish<T>): void {
     const set = this.topics.get(message.topic);
-    const localCount = set?.local.size ?? 0;
-    const remoteCount = set?.remoteNodes.size ?? 0;
+    const remoteNodes = set ? this.remoteCandidatesOf(set) : [];
     this.log.debug(
-      `[pubsub] publish '${message.topic}' → ${localCount} local + ${remoteCount} remote node(s)`,
+      `[pubsub] publish '${message.topic}' → ${set?.local.size ?? 0} local + ${remoteNodes.length} remote node(s)`,
     );
     const delivered = this.deliverLocal(message.topic, message.message);
-    let forwarded = 0;
-    if (set) {
-      const payload: PubSubPublishMessage = { kind: 'pubsub-publish', topic: message.topic, body: message.message };
-      for (const nodeStr of set.remoteNodes) {
-        const node = NodeAddress.parse(nodeStr);
-        if (node.equals(this.options.cluster.selfAddress)) continue;
-        this.sendWire(node, payload);
-        forwarded++;
-      }
+    const payload: PubSubPublishMessage = {
+      kind: 'pubsub-publish', topic: message.topic, body: message.message,
+    };
+    for (const node of remoteNodes) this.sendWire(node, payload);
+    if (delivered === 0 && remoteNodes.length === 0) this.deadLetter(message.topic, message.message);
+  }
+
+  /**
+   * Anycast: exactly one subscriber, cluster-wide, gets the body.
+   *
+   * Candidates are this node's local subscribers listed individually plus one
+   * entry per remote node claiming the topic.  Node granularity for the remote
+   * half is not a simplification but the finest the registry supports: #80
+   * deliberately dropped per-node subscriber counts from the gossip frame, so
+   * how many subscribers sit behind a claim is not knowable here.  Akka's
+   * group anycast routes at exactly the same granularity.
+   *
+   * Selection rotates a per-topic cursor instead of drawing at random.  A work
+   * queue is the reason the mode exists and low-volume queues are where a
+   * uniform draw shows: ten tasks over three workers leaves one of them idle
+   * often enough to look like a bug.  A rotation also gives a test something
+   * to assert, where a distribution only gives it something to sample.
+   */
+  private publishToOneSubscriber<T>(message: Publish<T>): void {
+    const set = this.topics.get(message.topic);
+    const localSubscribers = set ? [...set.local.values()] : [];
+    const remoteNodes = set ? this.remoteCandidatesOf(set) : [];
+    const candidateCount = localSubscribers.length + remoteNodes.length;
+    this.log.debug(
+      `[pubsub] publish '${message.topic}' to one of ${localSubscribers.length} local `
+      + `+ ${remoteNodes.length} remote candidate(s)`,
+    );
+    if (!set || candidateCount === 0) { this.deadLetter(message.topic, message.message); return; }
+    const index = this.rotate(set, candidateCount);
+    const local = localSubscribers[index];
+    if (local) {
+      if (!this.tellSubscriber(local, message.message)) this.deadLetter(message.topic, message.message);
+      return;
     }
-    if (delivered === 0 && forwarded === 0) this.deadLetter(message.topic, message.message);
+    this.sendWire(remoteNodes[index - localSubscribers.length]!, {
+      kind: 'pubsub-publish-one', topic: message.topic, body: message.message,
+    });
   }
 
   private onPubSubPublish(message: PubSubPublishMessage): void {
@@ -257,6 +307,22 @@ export class DistributedPubSubMediator extends Actor<MediatorInbox> {
     if (this.deliverLocal(message.topic, message.body) === 0) {
       this.deadLetter(message.topic, message.body);
     }
+  }
+
+  /**
+   * An anycast that crossed a hop.  The sending mediator already chose this
+   * node, so the only choice left is which local subscriber — and a topic with
+   * none means the claim it routed on is stale, the same dead-letter case as
+   * {@link onPubSubPublish}.  It is deliberately not re-routed: a second hop
+   * would trade the at-most-one-hop guarantee for a race with the gossip that
+   * is about to correct the sender anyway.
+   */
+  private onPubSubPublishOne(message: PubSubPublishOneMessage): void {
+    const set = this.topics.get(message.topic);
+    const subscribers = set ? [...set.local.values()] : [];
+    if (!set || subscribers.length === 0) { this.deadLetter(message.topic, message.body); return; }
+    const target = subscribers[this.rotate(set, subscribers.length)]!;
+    if (!this.tellSubscriber(target, message.body)) this.deadLetter(message.topic, message.body);
   }
 
   private onUnhandled(): void {
@@ -269,11 +335,39 @@ export class DistributedPubSubMediator extends Actor<MediatorInbox> {
     if (!set) return 0;
     let delivered = 0;
     for (const ref of set.local.values()) {
-      try { ref.tell(body as never); delivered++; } catch (e) {
-        this.log.warn(`pubsub: subscriber ${ref} threw on delivery`, e);
-      }
+      if (this.tellSubscriber(ref, body)) delivered++;
     }
     return delivered;
+  }
+
+  /** One delivery attempt.  A subscriber that throws costs only itself. */
+  private tellSubscriber<T>(ref: ActorRef, body: T): boolean {
+    try { ref.tell(body as never); return true; } catch (e) {
+      this.log.warn(`pubsub: subscriber ${ref} threw on delivery`, e);
+      return false;
+    }
+  }
+
+  /**
+   * Remote nodes claiming `topic`, this node excluded — one anycast candidate
+   * and one broadcast envelope each.  Self is filtered because a stale claim
+   * naming us would otherwise cost a wire round trip back into this mailbox.
+   */
+  private remoteCandidatesOf(set: SubscriberSet): NodeAddress[] {
+    const candidates: NodeAddress[] = [];
+    for (const nodeString of set.remoteNodes) {
+      const node = NodeAddress.parse(nodeString);
+      if (node.equals(this.options.cluster.selfAddress)) continue;
+      candidates.push(node);
+    }
+    return candidates;
+  }
+
+  /** Advance the topic's rotation cursor, returning the index it handed out. */
+  private rotate(set: SubscriberSet, candidateCount: number): number {
+    const index = set.nextCandidateIndex % candidateCount;
+    set.nextCandidateIndex = (index + 1) % candidateCount;
+    return index;
   }
 
   /**
@@ -402,7 +496,7 @@ export class DistributedPubSubMediator extends Actor<MediatorInbox> {
   private getOrCreateSet(topic: string): SubscriberSet {
     let subscriberSet = this.topics.get(topic);
     if (!subscriberSet) {
-      subscriberSet = { local: new Map(), remoteNodes: new Set() };
+      subscriberSet = { local: new Map(), remoteNodes: new Set(), nextCandidateIndex: 0 };
       this.topics.set(topic, subscriberSet);
     }
     return subscriberSet;
@@ -495,19 +589,19 @@ export class DistributedPubSubMediator extends Actor<MediatorInbox> {
   }
 
   private sendWire(to: NodeAddress, message: PubSubWireMessage): void {
-    if (message.kind === 'pubsub-publish') {
-      // Wrap in envelope so the receiver's Cluster routes it into the
-      // mediator actor.  Publishes are "user" messages from the wire POV.
-      this.options.cluster._sendEnvelope(to, {
-        kind: 'envelope',
-        to: mediatorPath(this.options.cluster.system.name),
-        from: null,
-        body: message,
-        tag: 'PubSubPublish',
-      });
-    } else {
+    if (message.kind === 'pubsub-gossip') {
       // Gossip frames ride on the raw transport — they're system traffic.
       this.options.cluster.transport.send(to, message as unknown as WireMessage);
+      return;
     }
+    // Wrap in envelope so the receiver's Cluster routes it into the
+    // mediator actor.  Publishes are "user" messages from the wire POV.
+    this.options.cluster._sendEnvelope(to, {
+      kind: 'envelope',
+      to: mediatorPath(this.options.cluster.system.name),
+      from: null,
+      body: message,
+      tag: message.kind === 'pubsub-publish' ? 'PubSubPublish' : 'PubSubPublishOne',
+    });
   }
 }
