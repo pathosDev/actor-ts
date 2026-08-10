@@ -1,0 +1,130 @@
+---
+title: Utility helpers
+description: randomString, randomHex and randomId for unguessable names and identifiers; safeStringify for log and error paths that must not throw; lazyImportModule for your own optional peer dependencies. Small helpers the framework uses internally, exported because your code has the same problems.
+---
+
+Three problems the framework solves for itself turn up again in the code you
+write on top of it: naming something so the name cannot be guessed, printing a
+value on a path where throwing would replace the error you were reporting, and
+depending on a package you do not want to make mandatory. These helpers are the
+answers it already uses, exported from the root entry point.
+
+```ts
+import { randomId, safeStringify, lazyImportModule } from 'actor-ts';
+```
+
+## Random strings and identifiers
+
+| Export | What it does |
+| --- | --- |
+| `randomString(length, options?)` | `length` characters from the enabled classes. Default: alphanumeric. |
+| `randomHex(length)` | `length` lowercase hex characters — for wire formats that mandate `[0-9a-f]`. |
+| `randomId(length)` | `length` characters for something you have to name yourself. |
+| `RandomStringOptions` | `{ lowerCase?, upperCase?, digits? }` — each defaults to `true`. |
+
+All three draw from `globalThis.crypto`, correct the modulo bias that a plain
+`byte % alphabet.length` introduces, and return exactly the length you asked
+for — never fewer.
+
+```ts
+import { randomId, randomString } from 'actor-ts';
+
+const sessionId = randomId(12);                                  // '9f3c1ab0e7d2'
+const coupon = randomString(8, { lowerCase: false, digits: true }); // 'K7Q2XP4M'
+```
+
+`randomId` is the one to reach for when naming an actor. An actor name ends up
+in an actor path, and a path is an address: on the cluster wire, anything that
+can render one can send to it. A counter makes that address guessable — knowing
+one hands you the next — which is why the framework names anonymous actors and
+`ask` reply refs from here rather than from `$1`, `$2`, `$3`.
+
+`randomHex` exists separately because some alphabets are not a style choice.
+W3C trace-context mandates `[0-9a-f]{32}` and `[0-9a-f]{16}` for a
+`traceparent` header, and a peer rejects anything else.
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Not a UUID">
+  These are unguessable, not globally unique. `randomId(12)` is ~48 bits — far
+  more than enough for the number of names any one process has live at once,
+  and far less than a v4 UUID. If you need an identifier that will not collide
+  with one minted on another machine years from now, use `crypto.randomUUID()`.
+</Aside>
+
+## Stringifying a value that already went wrong
+
+`safeStringify(value, maxLength?)` renders any value as a string and never
+throws.
+
+```ts
+import { Actor, safeStringify } from 'actor-ts';
+
+class Worker extends Actor<unknown> {
+  onReceive(message: unknown) {
+    this.log.warn(`unhandled message: ${safeStringify(message)}`);
+  }
+}
+```
+
+`JSON.stringify` throws on a circular structure and on a `BigInt`. Using it to
+build a log line or an error message therefore risks replacing the problem you
+were reporting with a different one — thrown from inside the reporting code,
+where a caller is least likely to be handling it. An `onReceive` that logs a
+message it did not expect is exactly that situation: the message is
+unrecognised, so nothing is known about its shape.
+
+Cycles collapse to `[Circular]`, `BigInt` renders with an `n` suffix, functions
+and symbols are named, and the result is capped (8 KiB by default) rather than
+allowed to grow into a multi-megabyte string that blocks the event loop while
+being built.
+
+<Aside type="caution" title="Lossy on purpose">
+  The output is for a human reading a message, not for a parser. It is not
+  valid JSON in the general case and nothing should try to read it back. When
+  you need a value to survive a round-trip, use a
+  [serializer](/serialization/overview/).
+</Aside>
+
+## Optional peer dependencies
+
+`lazyImportModule(name, options?)` imports a module dynamically and, when it is
+missing, throws an error that names the package and the command that installs
+it.
+
+```ts
+import { Lazy, lazyImportModule } from 'actor-ts';
+
+const redisLazy = Lazy.of(() =>
+  lazyImportModule<typeof import('ioredis')>('ioredis', { context: 'MyCacheActor' }),
+);
+
+// MyCacheActor requires the 'ioredis' package.  Install it with: npm install ioredis
+// Original error: Cannot find module 'ioredis'
+```
+
+| Export | What it does |
+| --- | --- |
+| `lazyImportModule<T>(name, options?)` | `import(name)`, or throw a "missing peer dependency" error. |
+| `LazyImportOptions` | `{ context?, installHint? }` — who needed it, and how to install it. |
+
+This is the pattern the framework's own brokers, caches and persistence
+backends are built on, and the reason every one of them fails the same way: the
+module must not be a hard dependency, so the import has to be dynamic, so the
+default failure mode is a bare `Cannot find module` that says nothing about
+which package is missing or what to do about it. Pairing it with `Lazy` — also
+exported from the root entry point — means the import happens once, on first
+use, rather than at construction.
+
+<Aside type="note" title="It imports, nothing more">
+  Normalising a default export is deliberately left to the caller. Some
+  packages ship CommonJS, some ESM, some both, and the right unwrapping differs
+  per module — so this helper owns only the "import it, or explain why not"
+  boundary.
+</Aside>
+
+## Where to next
+
+- **[Logging](/fundamentals/logging/)** — where `safeStringify` usually ends up.
+- **[Spawning actors](/fundamentals/spawning/)** — naming, and what an actor path exposes.
+- **[Installation](/intro/installation/)** — which of the framework's own dependencies are optional.

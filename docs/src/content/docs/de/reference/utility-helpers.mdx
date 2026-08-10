@@ -1,0 +1,132 @@
+---
+title: Hilfsfunktionen
+description: randomString, randomHex und randomId für unerratbare Namen und Bezeichner; safeStringify für Log- und Fehlerpfade, die nicht werfen dürfen; lazyImportModule für eigene optionale Peer-Dependencies. Kleine Helfer, die das Framework intern nutzt — exportiert, weil dein Code dieselben Probleme hat.
+---
+
+Drei Probleme, die das Framework für sich selbst löst, tauchen in dem Code
+wieder auf, den du darauf aufbaust: etwas so benennen, dass der Name nicht
+erraten werden kann; einen Wert auf einem Pfad ausgeben, auf dem ein Wurf den
+gerade gemeldeten Fehler ersetzen würde; und von einem Paket abhängen, das du
+nicht verpflichtend machen willst. Diese Helfer sind die Antworten, die es
+ohnehin schon benutzt — exportiert über den Haupteinstiegspunkt.
+
+```ts
+import { randomId, safeStringify, lazyImportModule } from 'actor-ts';
+```
+
+## Zufallszeichenketten und Bezeichner
+
+| Export | Zweck |
+| --- | --- |
+| `randomString(length, options?)` | `length` Zeichen aus den aktivierten Klassen. Voreinstellung: alphanumerisch. |
+| `randomHex(length)` | `length` Kleinbuchstaben-Hex-Zeichen — für Wire-Formate, die `[0-9a-f]` vorschreiben. |
+| `randomId(length)` | `length` Zeichen für etwas, das du selbst benennen musst. |
+| `RandomStringOptions` | `{ lowerCase?, upperCase?, digits? }` — jedes standardmäßig `true`. |
+
+Alle drei ziehen aus `globalThis.crypto`, korrigieren den Modulo-Bias, den ein
+schlichtes `byte % alphabet.length` einführt, und liefern exakt die angefragte
+Länge — nie weniger.
+
+```ts
+import { randomId, randomString } from 'actor-ts';
+
+const sessionId = randomId(12);                                  // '9f3c1ab0e7d2'
+const coupon = randomString(8, { lowerCase: false, digits: true }); // 'K7Q2XP4M'
+```
+
+`randomId` ist die richtige Wahl, wenn du einen Aktor benennst. Ein Aktorname
+landet in einem Aktorpfad, und ein Pfad ist eine Adresse: auf dem Cluster-Wire
+kann alles, was einen Pfad erzeugen kann, auch dorthin senden. Ein Zähler macht
+diese Adresse erratbar — wer eine kennt, kennt die nächste. Genau deshalb
+benennt das Framework anonyme Aktoren und die Antwort-Refs von `ask` von hier
+aus statt aus `$1`, `$2`, `$3`.
+
+`randomHex` existiert getrennt, weil manche Alphabete keine Stilfrage sind. W3C
+Trace-Context schreibt `[0-9a-f]{32}` und `[0-9a-f]{16}` für einen
+`traceparent`-Header vor, und eine Gegenstelle lehnt alles andere ab.
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Keine UUID">
+  Diese Werte sind unerratbar, nicht global eindeutig. `randomId(12)` sind ~48
+  Bit — weit mehr als genug für die Anzahl Namen, die ein einzelner Prozess
+  gleichzeitig hält, und weit weniger als eine v4-UUID. Wenn du einen
+  Bezeichner brauchst, der auch in Jahren nicht mit einem auf einer anderen
+  Maschine erzeugten kollidiert, nimm `crypto.randomUUID()`.
+</Aside>
+
+## Werte ausgeben, bei denen schon etwas schiefging
+
+`safeStringify(value, maxLength?)` stellt einen beliebigen Wert als Zeichenkette
+dar und wirft dabei nie.
+
+```ts
+import { Actor, safeStringify } from 'actor-ts';
+
+class Worker extends Actor<unknown> {
+  onReceive(message: unknown) {
+    this.log.warn(`unhandled message: ${safeStringify(message)}`);
+  }
+}
+```
+
+`JSON.stringify` wirft bei einer zyklischen Struktur und bei einem `BigInt`.
+Damit riskierst du, wenn du damit eine Logzeile oder eine Fehlermeldung baust,
+das gerade gemeldete Problem durch ein anderes zu ersetzen — geworfen aus dem
+meldenden Code heraus, wo ein Aufrufer am wenigsten damit rechnet. Ein
+`onReceive`, das eine unerwartete Nachricht loggt, ist genau diese Lage: die
+Nachricht ist unbekannt, also weiß man nichts über ihre Form.
+
+Zyklen kollabieren zu `[Circular]`, `BigInt` wird mit `n`-Suffix dargestellt,
+Funktionen und Symbole werden benannt, und das Ergebnis ist gedeckelt
+(standardmäßig 8 KiB), statt zu einer mehrere Megabyte großen Zeichenkette
+anzuwachsen, die beim Bauen die Event-Loop blockiert.
+
+<Aside type="caution" title="Bewusst verlustbehaftet">
+  Die Ausgabe ist für einen Menschen gedacht, der eine Meldung liest, nicht für
+  einen Parser. Sie ist im Allgemeinen kein gültiges JSON, und nichts sollte
+  versuchen, sie zurückzulesen. Wenn ein Wert einen Roundtrip überstehen soll,
+  nimm einen [Serializer](/de/serialization/overview/).
+</Aside>
+
+## Optionale Peer-Dependencies
+
+`lazyImportModule(name, options?)` importiert ein Modul dynamisch und wirft,
+wenn es fehlt, einen Fehler, der das Paket und den Installationsbefehl nennt.
+
+```ts
+import { Lazy, lazyImportModule } from 'actor-ts';
+
+const redisLazy = Lazy.of(() =>
+  lazyImportModule<typeof import('ioredis')>('ioredis', { context: 'MyCacheActor' }),
+);
+
+// MyCacheActor requires the 'ioredis' package.  Install it with: npm install ioredis
+// Original error: Cannot find module 'ioredis'
+```
+
+| Export | Zweck |
+| --- | --- |
+| `lazyImportModule<T>(name, options?)` | `import(name)`, oder ein „fehlende Peer-Dependency"-Fehler. |
+| `LazyImportOptions` | `{ context?, installHint? }` — wer es brauchte und wie man es installiert. |
+
+Auf diesem Muster sind die Broker, Caches und Persistence-Backends des
+Frameworks aufgebaut, und deshalb scheitern sie alle auf dieselbe Weise: das
+Modul darf keine harte Abhängigkeit sein, also muss der Import dynamisch sein,
+also ist der voreingestellte Fehlerfall ein nacktes `Cannot find module`, das
+nichts darüber sagt, welches Paket fehlt oder was dagegen zu tun ist. In
+Kombination mit `Lazy` — ebenfalls über den Haupteinstiegspunkt exportiert —
+passiert der Import genau einmal, bei der ersten Nutzung statt beim Erzeugen.
+
+<Aside type="note" title="Es importiert, mehr nicht">
+  Das Normalisieren eines Default-Exports bleibt bewusst beim Aufrufer. Manche
+  Pakete liefern CommonJS aus, manche ESM, manche beides, und das richtige
+  Auspacken unterscheidet sich je Modul — dieser Helfer besetzt nur die Grenze
+  „importieren, oder erklären warum nicht".
+</Aside>
+
+## Wie weiter
+
+- **[Logging](/de/fundamentals/logging/)** — wo `safeStringify` meistens landet.
+- **[Aktoren erzeugen](/de/fundamentals/spawning/)** — Benennung, und was ein Aktorpfad preisgibt.
+- **[Installation](/de/intro/installation/)** — welche Abhängigkeiten des Frameworks optional sind.
