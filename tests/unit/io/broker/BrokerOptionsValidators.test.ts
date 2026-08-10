@@ -5,6 +5,8 @@ import { AmqpOptionsValidator, type AmqpOptionsType } from '../../../../src/io/b
 import { RedisStreamsOptionsValidator, type RedisStreamsOptionsType } from '../../../../src/io/broker/RedisStreamsOptions.js';
 import { NatsOptionsValidator, type NatsOptionsType } from '../../../../src/io/broker/NatsOptions.js';
 import { JetStreamOptionsValidator, type JetStreamOptionsType } from '../../../../src/io/broker/JetStreamOptions.js';
+import { JetStreamKeyValueOptionsValidator, type JetStreamKeyValueOptionsType } from '../../../../src/io/broker/JetStreamKeyValueOptions.js';
+import { JetStreamObjectStoreOptionsValidator, type JetStreamObjectStoreOptionsType } from '../../../../src/io/broker/JetStreamObjectStoreOptions.js';
 import { SseOptionsValidator, type SseOptionsType } from '../../../../src/io/broker/SseOptions.js';
 import { TcpSocketOptionsValidator, type TcpSocketOptionsType } from '../../../../src/io/broker/TcpSocketOptions.js';
 import { UdpSocketOptionsValidator, type UdpSocketOptionsType } from '../../../../src/io/broker/UdpSocketOptions.js';
@@ -122,6 +124,52 @@ describe('JetStreamOptionsValidator', () => {
 
   test('accepts a valid configuration', () => {
     expect(() => check({ servers: 'nats://h:4222', acknowledgmentTimeout: 30_000 })).not.toThrow();
+  });
+});
+
+describe('JetStreamKeyValueOptionsValidator', () => {
+  const check = (s: Partial<JetStreamKeyValueOptionsType>): void =>
+    new JetStreamKeyValueOptionsValidator().validate(s);
+  const ok: Partial<JetStreamKeyValueOptionsType> = { servers: 'nats://h:4222', bucket: 'sessions' };
+
+  test('rejects empty servers and an empty bucket', () => {
+    expect(() => check({ ...ok, servers: [] })).toThrow(OptionsError);
+    expect(() => check({ ...ok, bucket: '' })).toThrow(/bucket/);
+  });
+
+  test('rejects create-time limits outside their domain', () => {
+    expect(() => check({ ...ok, history: 0 })).toThrow(/history/);
+    expect(() => check({ ...ok, timeToLive: 0 })).toThrow(/timeToLive/);
+    expect(() => check({ ...ok, storage: 'disk' as unknown as 'file' })).toThrow(/storage/);
+    expect(() => check({ ...ok, replicas: 0 })).toThrow(/replicas/);
+    expect(() => check({ ...ok, maxValueBytes: 0 })).toThrow(/maxValueBytes/);
+  });
+
+  test('accepts a valid configuration', () => {
+    expect(() => check({
+      ...ok, history: 5, timeToLive: 60_000, storage: 'file', replicas: 3, maxValueBytes: 4096,
+    })).not.toThrow();
+  });
+});
+
+describe('JetStreamObjectStoreOptionsValidator', () => {
+  const check = (s: Partial<JetStreamObjectStoreOptionsType>): void =>
+    new JetStreamObjectStoreOptionsValidator().validate(s);
+  const ok: Partial<JetStreamObjectStoreOptionsType> = { servers: 'nats://h:4222', bucket: 'assets' };
+
+  test('rejects empty servers and an empty bucket', () => {
+    expect(() => check({ ...ok, servers: [] })).toThrow(OptionsError);
+    expect(() => check({ ...ok, bucket: '' })).toThrow(/bucket/);
+  });
+
+  test('rejects a non-positive maxObjectBytes — a zero ceiling would reject every object', () => {
+    expect(() => check({ ...ok, maxObjectBytes: 0 })).toThrow(/maxObjectBytes/);
+    expect(() => check({ ...ok, maxObjectBytes: 1.5 })).toThrow(/maxObjectBytes/);
+  });
+
+  test('accepts a valid configuration', () => {
+    expect(() => check({ ...ok, storage: 'file', replicas: 3, maxObjectBytes: 4 * 1024 * 1024 }))
+      .not.toThrow();
   });
 });
 
