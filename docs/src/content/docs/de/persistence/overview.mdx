@@ -326,6 +326,16 @@ Eingebaute Implementierungen leben unter
 [`persistence/journals/*`](/de/persistence/journals/in-memory/)
 und [`persistence/snapshot-stores/*`](/de/persistence/snapshot-stores/in-memory/).
 
+Du schreibst ein eigenes?  `Journal.read()` ist die Methode, deren
+Vertrag der Replay einfordert: Die zurückgegebenen Events müssen
+nach Sequenznummer aufsteigen, lückenlos sein und im angefragten
+Fenster liegen.  `delete()` kompaktiert ein *Präfix*, nie ein Loch
+in der Mitte — eine Lücke kann also nur ein Defekt sein: ein
+fehlendes `ORDER BY`, ein halb geschriebener Append, ein Store, in
+den auch andere schreiben können.  Der Replay wirft dann
+`JournalIntegrityError`, statt zu falten; siehe [was der Replay
+ablehnt](/de/persistence/persistent-actor/#was-der-replay-ablehnt).
+
 Für Produktion deckt die **SQLite**-Kombination aus Journal +
 Snapshot Single-Node-Deployments ab; das
 **Cassandra**-Journal deckt Multi-Node-Cluster ab, in denen das

@@ -22,9 +22,22 @@ export interface Journal {
   ): Promise<PersistentEvent<E>[]>;
 
   /**
-   * Return events in `(fromSeq, …, toSeq]` order.  `toSeq` defaults to
-   * the current highest sequence number.  Inclusive bounds — `fromSeq`
-   * is the first event returned, not the "after" cursor.
+   * Return the events in `[fromSeq, …, toSeq]`, ascending by sequence
+   * number.  `toSeq` defaults to the current highest sequence number.
+   * Both bounds are inclusive — `fromSeq` is the first event returned,
+   * not an "after" cursor.
+   *
+   * **Ordering and contiguity are part of the contract, and replay
+   * enforces them** (#122).  Consecutive entries must differ by exactly
+   * one, every `sequenceNr` must be a safe integer ≥ 1, and nothing may
+   * fall outside the requested window.  `delete` compacts a *prefix*,
+   * never a hole in the middle, so a gap inside the returned slice can
+   * only mean a defect — a missing `ORDER BY`, a half-written append, a
+   * store someone else can write.  `replayState` raises
+   * `JournalIntegrityError` instead of folding it, because an actor
+   * that recovers from a shuffled or holed stream reaches a state that
+   * never existed and then fails every later `persist` with a
+   * `JournalConcurrencyError` that has no visible cause.
    */
   read<E = unknown>(
     persistenceId: string,
@@ -35,7 +48,12 @@ export interface Journal {
   /** Current highest sequence number for `persistenceId` — 0 if no events exist. */
   highestSeq(persistenceId: string): Promise<number>;
 
-  /** Delete events up to and including `toSeq` — used when compacting past a snapshot. */
+  /**
+   * Delete events up to and including `toSeq` — used when compacting past
+   * a snapshot.  Only ever a prefix, so what survives is a suffix that
+   * `read` still returns contiguously, and sequence numbers never rewind:
+   * `highestSeq` keeps reporting the high-water mark afterwards.
+   */
   delete(persistenceId: string, toSeq: number): Promise<void>;
 
   /** Persistence IDs currently known to the journal (useful for projections). */
