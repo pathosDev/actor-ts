@@ -263,7 +263,7 @@ erreichen.
 | Insider mit gestohlenem Cert | Cert-Rotation + Revocation |
 | Fehlerhafter oder feindlicher Wire-Frame | Shape-Prüfung an der Decode-Grenze |
 | Peer lässt die Registries eines Knotens unbegrenzt wachsen | Obergrenzen pro Registry in PubSub und Receptionist |
-| Adresse beansprucht, bevor der zugehörige Knoten existiert | Enge Versions-Skew-Grenze bei der Erstsichtung |
+| Adresse beansprucht, bevor der zugehörige Knoten existiert | Enge Versions-Skew-Grenze auf jeder gegossipten Member-Version |
 | Gefälschte Discovery-Antwort lenkt den Bootstrap um | mTLS, dazu `pinnedAddresses` am Seed-Provider |
 | Kompromittierter Pod im Cluster | Application-Level-Auth (hier nicht abgedeckt) |
 
@@ -420,6 +420,24 @@ nichts, was existiert — während ein abgelehnter *lebender*
 Eintrag ein legitimes Mitglied eine Gossip-Runde kostet und mit
 einem `WARN` samt Namen der Grenze kommt.
 
+Beide Grenzen werden auf den **Topf abgerechnet, in den ein
+Record wandert**, nicht darauf, ob er einen Eintrag neu anlegt.
+Ein gegossipter Record, der einen Eintrag dort lässt, wo er schon
+ist — `up` → `unreachable`, oder ein neuerer Tombstone über einen
+älteren —, ist ein kostenloses In-Place-Update. Einer, der
+zwischen den Töpfen wechselt, wird dem Topf angerechnet, den er
+betritt: ein als `up` wiedergeborener Tombstone braucht Platz bei
+den lebenden Mitgliedern, ein als `removed` gegossiptes lebendes
+Mitglied braucht Platz bei den Tombstones. Nur das Anlegen zu
+berechnen ließ die beiden Grenzen kostenlos Spielraum
+untereinander tauschen — eine Wiedergeburt räumte den
+Tombstone-Topf, ohne einen Map-Slot herzugeben, sodass die
+nächste Tombstone-Flut ebenfalls durchging; im Wechsel wuchs die
+Map unbegrenzt, obwohl beide Grenzen bei jedem einzelnen Schritt
+eingehalten wurden. Eine abgelehnte *Umwandlung* lässt das
+Mitglied lebendig, wo der Failure Detector es auf dem langsameren
+Weg einsammelt.
+
 Tombstones, die der Knoten selbst erzeugt — das `leave` eines
 Peers, eine Downing-Entscheidung, ein `down()` des Operators —
 wandeln einen Eintrag um, den er ohnehin schon hält, und
@@ -517,27 +535,44 @@ werden Routing, Sharding-Platzierung, Singleton-Hosting und
 Downing-Quoren berechnet — das Phantom ist also keine kosmetische
 Zeile in einer Member-Liste.
 
-Ein Record, der eine Adresse *einführt*, unterliegt deshalb einem
-deutlich engeren Uhrabweichungs-Budget als einer, der eine
-bereits geführte Adresse aktualisiert — standardmäßig **5
-Minuten** gegenüber den 24 Stunden für jeden späteren Merge:
+Eine gegossipte Member-Version unterliegt deshalb einem engen
+Uhrabweichungs-Budget — standardmäßig **5 Minuten**:
 
 ```ts
 const clusterOptions = ClusterOptions.create()
   .withHost('10.0.0.5')
   .withPort(2552)
-  .withFirstSightMaxVersionSkewMs(30 * 60 * 1000);
+  .withMaxVersionSkewMs(30 * 60 * 1000);
 ```
+
+Das Budget gilt für **jeden** Merge, nicht nur für den Record,
+der eine Adresse einführt. Ursprünglich war es die engere Regel —
+enge Grenze bei der Erstsichtung, großzügige 24 h bei jedem
+Update —, und diese Aufteilung ließ sich umgehen, indem man die
+Adresse zuerst einführte: zwei Records für dieselbe Adresse in
+einem Frame, oder ein Frame ganz ohne Member-Records, der den
+Empfänger trotzdem die Absenderadresse eintragen lässt. Jede
+Regel, die einen Record das weitere Budget *verdienen* lässt,
+scheitert einen Schritt später genauso — ohne Peer-Zertifikate
+kann der Angreifer jeden Schritt des Verdienens selbst erzeugen.
 
 Erhöhe den Wert für ein Deployment, dessen Uhren bekanntermaßen
 lose laufen; `24 * 60 * 60 * 1000` stellt das alte Verhalten mit
-einer einzigen Grenze wieder her. Ihn zu senken lohnt kaum, und
-zu fürchten ist er nicht: eine Abweisung hier ist kein
-Ausschluss. Ein Knoten, der sich selbst ankündigt, wird trotzdem
-erfasst — mit Version 1 und ohne Rollen —, sodass sein nächster
-Gossip-Frame über den normalen Pfad merged und den echten Record
-mitbringt. Eine abgewiesene Erstsichtung kostet eine
-Gossip-Runde, nicht einen Knoten, der nie auftaucht.
+einer einzigen Grenze wieder her. Eine Abweisung ist kein
+Ausschluss — ein Knoten, der sich selbst ankündigt, wird trotzdem
+erfasst, mit Version 1 und ohne Rollen —, aber sie ist *dauerhaft*:
+Ein Knoten, dessen Uhr weiter vorgeht als das Budget, bleibt ohne
+Rollen in der Member-Liste, bis seine Uhr zurückkommt. Das war
+immer schon das Urteil dieser Grenze über einen solchen Knoten;
+geändert hat sich, dass es jetzt bestehen bleibt, statt vom
+zweiten Gossip-Frame des Knotens aufgehoben zu werden.
+
+Abgewiesene Records werden einmal pro Frame gemeldet, nicht
+einmal pro Record — eine WARN-Zeile mit Peer und Anzahl, dazu der
+Zähler `cluster_gossip_records_refused_total{reason}` mit `reason`
+gleich `version-skew` oder `map-cap`. Pro Record zu loggen würde
+einem Peer Log-Verstärkung schenken statt des Wachstums, das er
+gerade verloren hat.
 
 ## Per-Deployment-Rezept
 

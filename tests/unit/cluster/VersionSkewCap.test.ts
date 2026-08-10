@@ -11,8 +11,11 @@
  * the real node's own record — versioned from its own clock, therefore lower —
  * lost every subsequent merge.
  *
- * These tests pin the narrower cap that now guards the first-sighting branch,
- * and the counterfactual: widened back to 24 h, the squat still wins.
+ * The cap that closes it applies to **every** gossiped member version, not only
+ * to the record that introduces an address: the narrower reading could be
+ * stepped around by introducing the address first (see
+ * `GossipMergeCapBypasses.test.ts`).  These tests pin the cap itself, and the
+ * counterfactual: widened back to 24 h, the squat still wins.
  */
 import { afterEach, describe, expect, test } from 'bun:test';
 import { ActorSystem } from '../../../src/ActorSystem.js';
@@ -45,7 +48,7 @@ type NodeHandle = {
 async function startNode(
   systemName: string,
   port: number,
-  firstSightMaxVersionSkewMs?: number,
+  maxVersionSkewMs?: number,
 ): Promise<NodeHandle> {
   const address = new NodeAddress(systemName, '10.0.114.1', port);
   const systemOptions = ActorSystemOptions.create()
@@ -62,8 +65,8 @@ async function startNode(
       downAfterMs: 240_000,
     })
     .withGossipIntervalMs(60_000);
-  if (firstSightMaxVersionSkewMs !== undefined) {
-    clusterOptions.withFirstSightMaxVersionSkewMs(firstSightMaxVersionSkewMs);
+  if (maxVersionSkewMs !== undefined) {
+    clusterOptions.withMaxVersionSkewMs(maxVersionSkewMs);
   }
   const cluster = await Cluster.join(system, clusterOptions);
   return { system, cluster, address };
@@ -104,16 +107,16 @@ afterEach(async () => {
   nodes = [];
 });
 
-describe('the first-sighting version cap (#114)', () => {
+describe('the gossip version-skew cap (#114)', () => {
   test('a stranger cannot pre-claim an address with a far-future version', async () => {
-    const node = await startNode('first-sight-squat', 9_101);
+    const node = await startNode('skew-squat', 9_101);
     nodes.push(node);
 
     // An address that does not exist yet — the next pod of a StatefulSet, a
     // node being replaced.  The attacker announces *itself* under it, which
     // is the one claim `maySpeakFor` never refuses, and dates it an hour
     // ahead: comfortably inside the 24 h cap that guards every other merge.
-    const claimed = new NodeAddress('first-sight-squat', '10.0.114.9', 9_190);
+    const claimed = new NodeAddress('skew-squat', '10.0.114.9', 9_190);
     const squattedVersion = Date.now() + 60 * MINUTE_MS;
     gossipFrom(node.cluster, claimed, [{
       address: claimed.toJSON(),
@@ -132,9 +135,9 @@ describe('the first-sighting version cap (#114)', () => {
   });
 
   test('the real owner of the address still wins it, roles and all', async () => {
-    const node = await startNode('first-sight-owner', 9_102);
+    const node = await startNode('skew-owner', 9_102);
     nodes.push(node);
-    const claimed = new NodeAddress('first-sight-owner', '10.0.114.9', 9_190);
+    const claimed = new NodeAddress('skew-owner', '10.0.114.9', 9_190);
 
     gossipFrom(node.cluster, claimed, [{
       address: claimed.toJSON(),
@@ -163,9 +166,9 @@ describe('the first-sighting version cap (#114)', () => {
   test('widened back to 24 h, the squat wins and the owner never lands', async () => {
     // The counterfactual, and the reason the default is what it is: with a
     // single generous cap this is exactly the pre-fix behaviour.
-    const node = await startNode('first-sight-widened', 9_103, DAY_MS);
+    const node = await startNode('skew-widened', 9_103, DAY_MS);
     nodes.push(node);
-    const claimed = new NodeAddress('first-sight-widened', '10.0.114.9', 9_190);
+    const claimed = new NodeAddress('skew-widened', '10.0.114.9', 9_190);
 
     gossipFrom(node.cluster, claimed, [{
       address: claimed.toJSON(),
@@ -190,9 +193,9 @@ describe('the first-sighting version cap (#114)', () => {
   test('a first sighting inside the cap is accepted verbatim', async () => {
     // The regression side: an ordinary join carries a version a hair ahead of
     // the receiver's clock, and must arrive with its roles intact.
-    const node = await startNode('first-sight-ordinary', 9_104);
+    const node = await startNode('skew-ordinary', 9_104);
     nodes.push(node);
-    const peer = new NodeAddress('first-sight-ordinary', '10.0.114.9', 9_190);
+    const peer = new NodeAddress('skew-ordinary', '10.0.114.9', 9_190);
     const version = Date.now() + 1_000;
 
     gossipFrom(node.cluster, peer, [{
@@ -207,14 +210,42 @@ describe('the first-sighting version cap (#114)', () => {
     expect(stored!.version).toBeGreaterThanOrEqual(version);
   });
 
-  test('an address already on file still merges under the 24 h cap', async () => {
-    // The narrow cap guards the branch that *creates* a record.  Once a member
-    // exists, a badly skewed clock must not freeze it — that trade is what the
-    // 24 h cap is for, and this pins that it is untouched.
-    const node = await startNode('first-sight-existing', 9_105);
+  test('an address already on file is held to the same cap', async () => {
+    // The cap used to stop at the branch that *creates* a record, on the
+    // reasoning that refusing an update freezes a member the cluster is using.
+    // That split is what made it walk-around-able: an attacker introduces the
+    // address itself and then updates it.  So an update carries the same
+    // budget, and a relay cannot pre-date a third party's record either.
+    const node = await startNode('skew-existing', 9_105);
     nodes.push(node);
-    const relay = new NodeAddress('first-sight-existing', '10.0.114.8', 9_180);
-    const subject = new NodeAddress('first-sight-existing', '10.0.114.9', 9_190);
+    const relay = new NodeAddress('skew-existing', '10.0.114.8', 9_180);
+    const subject = new NodeAddress('skew-existing', '10.0.114.9', 9_190);
+
+    const ownVersion = Date.now();
+    mergeAsActivePeer(node.cluster, relay, {
+      address: subject.toJSON(),
+      status: 'joining',
+      version: ownVersion,
+      roles: ['worker'],
+    });
+
+    mergeAsActivePeer(node.cluster, relay, {
+      address: subject.toJSON(),
+      status: 'up',
+      version: Date.now() + 60 * MINUTE_MS,
+      roles: ['worker'],
+    });
+
+    expect(memberIn(node.cluster, subject)!.version).toBeLessThan(Date.now() + MINUTE_MS);
+  });
+
+  test('an update inside the cap merges as before', async () => {
+    // The regression side: the cap must be invisible to a member whose clock
+    // is merely a hair ahead, which is every real one.
+    const node = await startNode('skew-ordinary-update', 9_107);
+    nodes.push(node);
+    const relay = new NodeAddress('skew-ordinary-update', '10.0.114.8', 9_180);
+    const subject = new NodeAddress('skew-ordinary-update', '10.0.114.9', 9_190);
 
     mergeAsActivePeer(node.cluster, relay, {
       address: subject.toJSON(),
@@ -222,22 +253,22 @@ describe('the first-sighting version cap (#114)', () => {
       version: Date.now(),
       roles: ['worker'],
     });
-
-    const skewedVersion = Date.now() + 60 * MINUTE_MS;
+    const laterVersion = Date.now() + MINUTE_MS;
     mergeAsActivePeer(node.cluster, relay, {
       address: subject.toJSON(),
-      status: 'up',
-      version: skewedVersion,
+      status: 'leaving',
+      version: laterVersion,
       roles: ['worker'],
     });
 
-    expect(memberIn(node.cluster, subject)!.version).toBe(skewedVersion);
+    expect(memberIn(node.cluster, subject)!.status).toBe('leaving');
+    expect(memberIn(node.cluster, subject)!.version).toBe(laterVersion);
   });
 
   test('the cap is per node, for deployments whose clocks run loose', async () => {
-    const node = await startNode('first-sight-tuned', 9_106, 30 * MINUTE_MS);
+    const node = await startNode('skew-tuned', 9_106, 30 * MINUTE_MS);
     nodes.push(node);
-    const peer = new NodeAddress('first-sight-tuned', '10.0.114.9', 9_190);
+    const peer = new NodeAddress('skew-tuned', '10.0.114.9', 9_190);
     // Ten minutes ahead: refused at the default, admitted here.
     const version = Date.now() + 10 * MINUTE_MS;
 
@@ -252,12 +283,12 @@ describe('the first-sighting version cap (#114)', () => {
   });
 });
 
-describe('ClusterOptionsValidator — firstSightMaxVersionSkewMs', () => {
-  const validate = (firstSightMaxVersionSkewMs: number): void => {
+describe('ClusterOptionsValidator — maxVersionSkewMs', () => {
+  const validate = (maxVersionSkewMs: number): void => {
     new ClusterOptionsValidator().validate({
       host: '10.0.114.1',
       port: 2_552,
-      firstSightMaxVersionSkewMs,
+      maxVersionSkewMs,
     });
   };
 
@@ -266,8 +297,8 @@ describe('ClusterOptionsValidator — firstSightMaxVersionSkewMs', () => {
   });
 
   test('zero and negatives are refused — there is no off switch', () => {
-    expect(() => validate(0)).toThrow(/firstSightMaxVersionSkewMs/);
-    expect(() => validate(-1)).toThrow(/firstSightMaxVersionSkewMs/);
+    expect(() => validate(0)).toThrow(/maxVersionSkewMs/);
+    expect(() => validate(-1)).toThrow(/maxVersionSkewMs/);
   });
 
   test('leaving it unset passes — it falls through to the built-in default', () => {
