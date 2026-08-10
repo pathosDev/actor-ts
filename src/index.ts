@@ -251,7 +251,8 @@ export {
 } from './config/index.js';
 export type { LoadOptions, ConfigObject, ConfigValue } from './config/index.js';
 
-// Serialization (pluggable, JSON + CBOR built-in).
+// Serialization (pluggable, JSON + CBOR built-in; Avro + Protobuf take a
+// compiled schema the user brings).
 export {
   SerializationExtension,
   SerializationExtensionId,
@@ -262,8 +263,26 @@ export {
   CborEncodeError,
   CborDecodeError,
   SerializationError,
+  RESERVED_SERIALIZER_IDS_BELOW,
+  AvroSerializer,
+  AvroSerializerOptions,
+  AvroSerializerOptionsBuilder,
+  AvroSerializerOptionsValidator,
+  ProtobufSerializer,
+  ProtobufSerializerOptions,
+  ProtobufSerializerOptionsBuilder,
+  ProtobufSerializerOptionsValidator,
 } from './serialization/index.js';
-export type { Serializer, SerializedValue } from './serialization/index.js';
+export type {
+  Serializer,
+  SerializedValue,
+  AvroSerializerOptionsType,
+  AvroType,
+  ProtobufSerializerOptionsType,
+  ProtobufMessageType,
+  ProtobufWriter,
+  ProtobufConversionOptions,
+} from './serialization/index.js';
 
 // Extensions mechanism.
 export { Extensions, extensionId } from './Extension.js';
@@ -395,6 +414,7 @@ export {
   jsonCodec,
   zodCodec,
   composeCodecs,
+  serializerCodec,
   validatedEventAdapter,
   validatedSnapshotAdapter,
   InMemorySchemaRegistry,
