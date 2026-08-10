@@ -11,6 +11,18 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Added
 
+- **Smallest-mailbox router** (#154).  `Router.smallestMailbox(size, routee,
+  routeeOptions?)` and the exported `smallestMailboxStrategy()` send each
+  message to the routee with the shortest queue, so one expensive message no
+  longer parks the next 1-in-N arrivals behind it — the load-balancing
+  round-robin structurally cannot do.  Ties rotate, which makes an idle pool
+  behave exactly like round-robin and makes a saturated one spread its
+  overflow evenly instead of piling onto a single routee; the scan stops at
+  the first empty mailbox, so a pool that is keeping up costs one depth read
+  per message regardless of its size.  Local only: mailbox depth is
+  in-process state, and it stays internal to the runtime rather than
+  becoming a public `ActorRef.mailboxSize`.
+
 - **Death watch with a custom termination message** (#159).
   `context.watchWith(ref, message)` — and its `TypedActorContext`
   counterpart — registers a death watch that delivers a message of the
@@ -186,6 +198,92 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   instead of shipping the lie.
 
 ### Security
+
+- **AES-GCM IVs are generated inside the encrypt call** (#110).
+  `aesGcmEncryptSafe(subkey, plaintext)` derives a fresh IV per call and
+  returns it beside the ciphertext, so the object-storage body codec no
+  longer holds an IV it could recycle; the IV-taking `aesGcmEncrypt` and
+  `randomIv` remain for that wrapper and the decrypt-side tests but are
+  marked `@internal`.  No IV was ever actually reused — `aesGcmEncrypt` is
+  re-exported from no `index.ts` and the package `exports` map has no
+  wildcard subpath, so this was in-tree misuse potential rather than
+  anything a consumer could reach — but nothing asserted IV freshness
+  either, and regression tests now do at both the primitive and the manifest
+  layer.
+- **`X-Content-Type-Options: nosniff` on every response** (#127).  All three
+  HTTP backends now write the header before a response's own headers — an
+  explicit header from a handler still wins — so it also reaches what no
+  middleware ever sees: the backend's own error mapping, the `fallback()`
+  404 and the body-too-large 413.  Static files get it too; until now only
+  the directory listing sent it while the served file right beside it did
+  not, which is exactly the upload-echo case the header exists for.  **The
+  response headers of every endpoint change**;
+  `newServerAt(…).withSecurityHeaders(false)` opts out.
+- **`newServerAt(…).withSecurityHeaders(…)` applies the security-header
+  bundle server-wide** (#127).  Passing `SecurityHeadersOptions` (or a plain
+  object) stamps the full `securityHeaders()` set — its own defaults
+  included — at the backend chokepoint instead of as a middleware, which is
+  the only way to cover the error, not-found and upgrade-reject paths;
+  `false` disables the mechanism.  Only `nosniff` is on without
+  configuration: `X-Frame-Options` and `Cross-Origin-Resource-Policy` would
+  break iframes, cross-origin embedding and OAuth popups, so they stay
+  opt-in.
+- **A ClusterClient no longer learns why an ask failed inside the cluster**
+  (#130).  A ClusterClient is not a peer — it never joined the membership
+  ring, carries no gossip or heartbeat duty, and a contact point is by
+  design reachable from outside whatever boundary protects the cluster's own
+  links — so the receptionist stopped forwarding the rejection text, which
+  is authored by arbitrary actor code and routinely carries file paths, SQL
+  fragments, driver internals or a stack.  The client gets a fixed sentence
+  plus a correlation id drawn on the node, and the full text is logged there
+  under that id at `warn`, so an outside caller quotes the id and an
+  operator greps for it.  The unknown-path reply also drops the node's own
+  `selfAddress`, which behind a load balancer or NAT is not the address the
+  client dialled.  **BREAKING:** `ClusterClient.ask()` rejects with the
+  generic message; model a failure a client must act on as a reply the actor
+  authors (`{ kind: 'rejected', reason: 'out-of-stock' }`), which is still
+  passed through untouched.
+- **An HTTP throw that becomes a redacted 500 is now logged where operators
+  actually look** (#130).  Redaction only works if the detail survives on
+  the server, and it did not: the escaped-throw branch logged `err.message`
+  at `debug`, a level nothing runs at in production, so the generic 500 was
+  the sole trace of the failure anywhere.  It now logs at `error` and passes
+  the error *value* through so a sink that formats stacks still gets one,
+  excludes a deliberate `HttpError` such as a 404 (a response the handler
+  chose does not belong in the error log), and covers `fallback()`, which
+  maps to a 500 without re-throwing.  The line carries the caller's
+  `x-request-id` when it is well-formed, read through the newly exported
+  `requestIdOf(request)` — the same shape check the `requestId` middleware
+  applies, which is what stops a client-controlled string from forging a log
+  record through an embedded newline.
+- **DistributedData bounds its pending quorum requests** (#140).
+  `updateAsync` / `getAsync` now share a `maxPendingQuorumRequests` budget
+  (default `1000`, `0` disables) and a `maxQuorumTimeout` ceiling on the
+  caller-supplied `timeoutMs` (default `30s`, `0` disables); a request past
+  the cap is rejected outright instead of tracked, and an oversized deadline
+  is clamped.  The default is deliberately an order of magnitude below the
+  replicator's mailbox (10 000, `drop-head`): at mailbox saturation the
+  oldest queued envelope is discarded together with the caller's
+  `resolve`/`reject`, so the `updateAsync` promise never settles and nothing
+  is logged — a cap set at 10 000 would never fire first and would convert
+  nothing, while a cap of 1000 turns that silent drop into an explicit
+  rejection naming the knob.  Four bounded-cardinality metrics come with it:
+  `distributed_data_quorum_pending`,
+  `distributed_data_quorum_timeouts_total`,
+  `distributed_data_quorum_rejected_total` and
+  `distributed_data_dropped_values_total`.
+
+### Added
+
+- **`actor-ts.distributed-data` HOCON block** (#856).  DistributedData read
+  no configuration at all before this; it now layers `gossip-interval`,
+  `max-pending-quorum-requests` and `max-quorum-timeout` under the explicit
+  options in the documented precedence (options > HOCON > built-in
+  defaults).  The block is top-level rather than under `cluster.*` because
+  the module ships from `src/crdt/` and takes its cluster as a positional
+  argument to `start`.  Only keys something actually reads are shipped, so
+  the delta-CRDT, pruning and subscriber-notification keys the issue lists
+  stay out until the features behind them exist.
 
 - **Ambiguous master-key rings are now rejected** (#111).  A `MasterKeyRing`
   whose `active` and `retired` entries claimed the same version was accepted
