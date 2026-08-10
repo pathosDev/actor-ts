@@ -11,6 +11,7 @@ import type {
 import type { StateAdapter } from './migration/Adapter.js';
 import { decodeState, encodeState } from './migration/Envelope.js';
 import type { DurableStateOptions, DurableStateOptionsType } from './DurableStateOptions.js';
+import { DurableStateOptionsValidator } from './DurableStateOptions.js';
 
 /**
  * Base class for actors that persist a single state value per
@@ -30,6 +31,11 @@ export abstract class DurableStateActor<Command, S> extends Actor<Command> {
   constructor(options: DurableStateOptions<S>) {
     super();
     this.options = options as DurableStateOptionsType<S>;
+    // Consume-time validation, per the options convention: the builder, a
+    // plain object and a HOCON-sourced shape all end up here.  Earlier
+    // than `preStart` on purpose — an id that can never address a record
+    // is worth refusing before the actor is wired to a store (#133).
+    new DurableStateOptionsValidator<S>().validate(this.options);
   }
 
   /** Current state snapshot — safe to read inside a handler. */

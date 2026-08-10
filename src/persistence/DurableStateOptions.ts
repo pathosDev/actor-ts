@@ -1,5 +1,7 @@
 import { OptionsBuilder } from '../util/OptionsBuilder.js';
+import { OptionsValidator } from '../util/OptionsValidator.js';
 import type { DurableStateStore } from './DurableStateStore.js';
+import { persistenceIdRejection } from './storage/PersistenceIdValidator.js';
 
 export type DurableStateOptionsType<S> = {
   readonly persistenceId: string;
@@ -41,6 +43,31 @@ export class DurableStateOptionsBuilder<S> extends OptionsBuilder<DurableStateOp
   /** Factory invoked when no record exists yet. */
   withEmptyState(emptyState: () => S): this {
     return this.set('emptyState', emptyState);
+  }
+}
+
+/**
+ * Rejects a `persistenceId` that cannot be a storage key (#133).
+ *
+ * The rules themselves live in `PersistenceIdValidator` — shared with
+ * `PersistentActor`, `ReplicatedEventSourcedActor` and the journals, so
+ * the three actor flavours cannot drift on what an id may look like.  Only
+ * the *error type* differs: here the id arrives as an option, so a
+ * violation is an `OptionsError` reported against the `persistenceId`
+ * field, consistent with every other `XOptionsValidator`.
+ *
+ * An unset `persistenceId` passes, as every check helper does on
+ * `undefined` — required-ness is not this validator's job.  There is no
+ * separate `nonEmptyString` call: the shared rule already rejects `''`
+ * with the same wording, and stating it twice invites the two to drift.
+ */
+export class DurableStateOptionsValidator<S> extends OptionsValidator<DurableStateOptionsType<S>> {
+  constructor() { super('DurableStateOptions'); }
+
+  protected rules(s: Partial<DurableStateOptionsType<S>>): void {
+    if (s.persistenceId === undefined) return;
+    const reason = persistenceIdRejection(s.persistenceId);
+    if (reason !== null) this.fail('persistenceId', reason, s.persistenceId);
   }
 }
 

@@ -6,6 +6,7 @@ import {
 } from '../JournalTypes.js';
 import type { Serializer } from '../../serialization/Serializer.js';
 import { decodePayload, encodePayload } from '../storage/PayloadCodec.js';
+import { assertValidPersistenceId } from '../storage/PersistenceIdValidator.js';
 import { assertValidTags } from '../storage/TagValidator.js';
 import {
   buildDynamoDbOperations,
@@ -103,6 +104,7 @@ export class DynamoDbJournal extends DynamoDbStore implements Journal {
     tags?: ReadonlyArray<string>,
   ): Promise<PersistentEvent<E>[]> {
     if (events.length === 0) return [];
+    assertValidPersistenceId(persistenceId, 'DynamoDbJournal.append');
     assertValidTags(tags);
     if (events.length > MAX_TRANSACTION_ITEMS) {
       // Chunking would break atomicity, which is the property this backend's
