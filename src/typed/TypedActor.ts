@@ -66,6 +66,16 @@ type ResolvedBehavior<T> = ConcreteBehavior<T> | SameBehavior;
 export class TypedActor<T> extends Actor<T> {
   private current!: ConcreteBehavior<T>;
   private activeSupervise: SuperviseBehavior<T> | null = null;
+  /**
+   * How many interceptor layers of `current` sit *outside* `activeSupervise`.
+   *
+   * A restart re-resolves `supervise.child`, which rebuilds every interceptor
+   * that lives *inside* the wrapper — so only the ones above it still have to
+   * be put back.  Counted while resolving because that is the only place the
+   * nesting is visible: once resolved, an interceptor around `supervise` and
+   * one under it are the same node.
+   */
+  private superviseInterceptorDepth = 0;
   private readonly stashBuffers: StashBufferImplementation<T>[] = [];
   private typedContext!: TypedActorContext<T>;
   private signalHandler: ((context: TypedActorContext<T>, signal: Signal) => Behavior<T>) | null = null;
@@ -111,7 +121,10 @@ export class TypedActor<T> extends Actor<T> {
     if (next.kind === 'same') return;
     if (next.kind === 'unhandled') { this.forwardToDeadLetters(message); return; }
 
-    const resolved = this.resolve(next);
+    // `active`'s own layers are re-installed below, so a `supervise` inside
+    // `next` is nested under all of them — that is the depth resolve must
+    // record for it.
+    const resolved = this.resolve(next, interceptorDepthOf(active));
     if (resolved.kind === 'same') return; // defensive — resolve shouldn't produce 'same'
     this.current = this.reinstallInterceptors(active, resolved);
     this.maybeHandleTerminalSentinel();
@@ -179,10 +192,19 @@ export class TypedActor<T> extends Actor<T> {
    * message.
    *
    * The walk rebuilds the whole stack, so nested interceptors keep their order.
+   *
+   * `layers` caps how far down it goes, counted from the outside.  A plain
+   * transition wants the whole stack (the default); a restart wants only the
+   * layers above the `supervise` wrapper, because re-resolving its child has
+   * already rebuilt everything below.
    */
-  private reinstallInterceptors(previous: ConcreteBehavior<T>, next: ConcreteBehavior<T>): ConcreteBehavior<T> {
-    if (previous.kind !== 'intercept') return next;
-    return wrapIntercepted(previous.interceptor, this.reinstallInterceptors(previous.inner, next));
+  private reinstallInterceptors(
+    previous: ConcreteBehavior<T>,
+    next: ConcreteBehavior<T>,
+    layers = Number.POSITIVE_INFINITY,
+  ): ConcreteBehavior<T> {
+    if (layers <= 0 || previous.kind !== 'intercept') return next;
+    return wrapIntercepted(previous.interceptor, this.reinstallInterceptors(previous.inner, next, layers - 1));
   }
 
   /**
@@ -217,7 +239,7 @@ export class TypedActor<T> extends Actor<T> {
     }
 
     if (next.kind === 'same' || next.kind === 'unhandled') return;
-    const resolved = this.resolve(next);
+    const resolved = this.resolve(next, interceptorDepthOf(active));
     if (resolved.kind === 'same') return;
     this.current = this.reinstallInterceptors(active, resolved);
     this.maybeHandleTerminalSentinel();
@@ -230,11 +252,17 @@ export class TypedActor<T> extends Actor<T> {
     return match(directive)
       .with(Directive.Resume, () => true)
       .with(Directive.Restart, () => {
-        const resolved = this.resolve(supervise.child);
+        // Read the depth before resolving: a nested `supervise` inside the
+        // child would overwrite the field on the way through.
+        const outerLayers = this.superviseInterceptorDepth;
+        const resolved = this.resolve(supervise.child, outerLayers);
         const restarted: ConcreteBehavior<T> = resolved.kind === 'same' ? { kind: 'empty' } : resolved;
         // Interceptors installed *outside* the supervise wrapper are not part
-        // of what restarts — they keep observing the fresh behavior.
-        this.current = this.reinstallInterceptors(this.current, restarted);
+        // of what restarts — they keep observing the fresh behavior.  The ones
+        // *inside* it are, and `restarted` already carries them, so only the
+        // outer layers go back on; re-installing the whole stack would add a
+        // second copy of every inner interceptor on every restart.
+        this.current = this.reinstallInterceptors(this.current, restarted, outerLayers);
         this.maybeHandleTerminalSentinel();
         return true;
       })
@@ -246,7 +274,13 @@ export class TypedActor<T> extends Actor<T> {
       .exhaustive();
   }
 
-  private resolve(b: Behavior<T>): ResolvedBehavior<T> {
+  /**
+   * `interceptorDepth` is how many interceptor layers the caller will end up
+   * wrapping around whatever this call returns.  It exists only so a
+   * `supervise` node can record how deeply it is nested — see
+   * `superviseInterceptorDepth`.
+   */
+  private resolve(b: Behavior<T>, interceptorDepth = 0): ResolvedBehavior<T> {
     // Resolve chained deferred wrappers (setup inside withTimers inside supervise…).
     // Each wrapper contributes its side-effect (capturing timers, installing
     // supervise, …) exactly once; leaf behaviors end the loop.  We thread the
@@ -271,12 +305,14 @@ export class TypedActor<T> extends Actor<T> {
         })
         .with({ kind: 'supervise' }, (n): ResolveStep => {
           this.activeSupervise = n;
+          this.superviseInterceptorDepth = interceptorDepth;
           return { step: 'continue', next: n.child };
         })
         // The one wrapper that does not collapse: resolve what it wraps (its
-        // own hop budget) and keep the interceptor around the result.
+        // own hop budget) and keep the interceptor around the result — one
+        // layer deeper, for anything below that counts its nesting.
         .with({ kind: 'intercept' }, (n): ResolveStep => ({
-          step: 'done', final: wrapIntercepted(n.interceptor, this.resolve(n.inner)),
+          step: 'done', final: wrapIntercepted(n.interceptor, this.resolve(n.inner, interceptorDepth + 1)),
         }))
         .with({ kind: 'receive' }, (n): ResolveStep => {
           if (n.onSignal) this.signalHandler = n.onSignal;
@@ -320,6 +356,17 @@ function wrapIntercepted<T>(
 ): ConcreteBehavior<T> {
   if (inner.kind === 'stopped') return inner;
   return { kind: 'intercept', interceptor, inner: inner.kind === 'same' ? { kind: 'empty' } : inner };
+}
+
+/** How many interceptor wrappers an already-resolved behavior carries on top. */
+function interceptorDepthOf<T>(behavior: ConcreteBehavior<T>): number {
+  let depth = 0;
+  let node: ConcreteBehavior<T> = behavior;
+  while (node.kind === 'intercept') {
+    depth++;
+    node = node.inner;
+  }
+  return depth;
 }
 
 /* ---------------- Context ---------------- */

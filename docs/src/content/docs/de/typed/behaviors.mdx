@@ -389,6 +389,15 @@ haben.  Ein Interceptor kann das nicht, denn er muss auch bei der
 *nächsten* Nachricht da sein — er bleibt also um das gewickelt, was das
 innere Behavior wird.
 
+Dieselbe Unterscheidung entscheidet, was ein **Restart** neu aufbaut.
+`supervise` startet das neu, was es umschließt: ein Interceptor *innerhalb*
+des Wrappers gehört damit zum frischen Behavior und wird mit ihm neu
+aufgebaut; einer *außerhalb* nicht — er beobachtet über den Restart hinweg
+weiter.  In beiden Verschachtelungen bleibt er danach genau einmal
+installiert: ein crash-loopender Actor sammelt keine Kopien seines eigenen
+Monitors an, und `monitor` fängt nicht an, eine Nachricht doppelt
+zuzustellen, weil der Actor vorher neu gestartet ist.
+
 import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="Bei jeder Nachricht ein frisches Behavior zurückgeben">
