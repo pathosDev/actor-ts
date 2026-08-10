@@ -53,6 +53,8 @@ Subklassen implementieren drei Hooks (`connectImplementation`, `disconnectImplem
 | `AmqpActor` | RabbitMQ / AMQP 0.9.1 | Topic-/Queue-Routing, Work Queues. |
 | `NatsActor` | NATS core | Leichtgewichtiges Pub/Sub; Request/Reply. |
 | `JetStreamActor` | NATS JetStream | Durables Streaming auf NATS. |
+| `JetStreamKeyValueActor` | NATS JetStream KV | Revisioniertes Key-Value-Bucket mit Compare-and-Swap + Watch. |
+| `JetStreamObjectStoreActor` | NATS JetStream Object Store | Benannte Blobs mit Metadaten. |
 | `RedisStreamsActor` | Redis XADD/XREAD | Leichtgewichtiges Streaming + Consumer Groups. |
 | `GrpcClientActor` / `GrpcServerActor` | gRPC | Typisierter RPC + Streaming. |
 | `WebsocketClientActor` | WebSocket | Ausgehende Verbindung (Broker-basierter Client). |
@@ -273,7 +275,9 @@ protokollspezifischen Teile.
 
 - **Seiten pro Protokoll** — [Kafka](/de/io/kafka/),
   [MQTT](/de/io/mqtt/), [AMQP](/de/io/amqp/),
-  [NATS](/de/io/nats/), [Redis Streams](/de/io/redis-streams/),
+  [NATS](/de/io/nats/), [NATS JetStream](/de/io/jetstream/),
+  [JetStream KV + Object Store](/de/io/jetstream-kv/),
+  [Redis Streams](/de/io/redis-streams/),
   [gRPC](/de/io/grpc/), [WebSocket-Client](/de/io/websocket/),
   [WebSocket-Server](/de/http/websocket/),
   [SSE](/de/io/sse/), [TCP](/de/io/tcp/),

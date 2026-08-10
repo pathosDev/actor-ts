@@ -157,6 +157,58 @@ export type {
 } from './JetStreamActor.js';
 export { JetStreamOptions, JetStreamOptionsBuilder, JetStreamOptionsValidator } from './JetStreamOptions.js';
 export type { JetStreamOptionsType } from './JetStreamOptions.js';
+// JetStream KV + Object Store (#74) — separate sub-APIs, separate actors.
+export { JetStreamKeyValueActor } from './JetStreamKeyValueActor.js';
+export type {
+  JetStreamKeyValueCommand,
+  JetStreamKeyValueMessage,
+  KeyValueEntryMessage,
+  KeyValueNotFoundMessage,
+  KeyValueRemovedMessage,
+  KeyValueRevisionMessage,
+  KeyValueKeysMessage,
+  KeyValueOperationFailedMessage,
+  // Test seams (re-exported so subclasses can satisfy the mock shape).
+  KeyValueNatsConnectionLike,
+  KeyValueJetStreamClientLike,
+  KeyValueBucketOptionsLike,
+  KeyValueStoreLike,
+  KeyValueWatchLike,
+  KeyValueEntryLike,
+} from './JetStreamKeyValueActor.js';
+export {
+  JetStreamKeyValueOptions,
+  JetStreamKeyValueOptionsBuilder,
+  JetStreamKeyValueOptionsValidator,
+} from './JetStreamKeyValueOptions.js';
+export type { JetStreamKeyValueOptionsType } from './JetStreamKeyValueOptions.js';
+export { JetStreamObjectStoreActor } from './JetStreamObjectStoreActor.js';
+export type {
+  JetStreamObjectStoreCommand,
+  JetStreamObjectStoreMessage,
+  JetStreamObjectInfo,
+  ObjectStoredMessage,
+  ObjectBodyMessage,
+  ObjectInfoMessage,
+  ObjectListMessage,
+  ObjectDeletedMessage,
+  ObjectNotFoundMessage,
+  ObjectStoreOperationFailedMessage,
+  // Test seams (re-exported so subclasses can satisfy the mock shape).
+  ObjectStoreNatsConnectionLike,
+  ObjectStoreJetStreamClientLike,
+  ObjectStoreBucketOptionsLike,
+  ObjectMetaLike,
+  ObjectStoreLike,
+  ObjectInfoLike,
+} from './JetStreamObjectStoreActor.js';
+export {
+  DEFAULT_MAX_OBJECT_BYTES,
+  JetStreamObjectStoreOptions,
+  JetStreamObjectStoreOptionsBuilder,
+  JetStreamObjectStoreOptionsValidator,
+} from './JetStreamObjectStoreOptions.js';
+export type { JetStreamObjectStoreOptionsType } from './JetStreamObjectStoreOptions.js';
 export { RedisStreamsActor } from './RedisStreamsActor.js';
 export type {
   RedisStreamsCommand,
