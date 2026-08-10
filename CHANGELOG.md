@@ -11,6 +11,16 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Added
 
+- **`actor-ts.distributed-data` HOCON block** (#856).  DistributedData read
+  no configuration at all before this; it now layers `gossip-interval`,
+  `max-pending-quorum-requests` and `max-quorum-timeout` under the explicit
+  options in the documented precedence (options > HOCON > built-in
+  defaults).  The block is top-level rather than under `cluster.*` because
+  the module ships from `src/crdt/` and takes its cluster as a positional
+  argument to `start`.  Only keys something actually reads are shipped, so
+  the delta-CRDT, pruning and subscriber-notification keys the issue lists
+  stay out until the features behind them exist.
+
 - **Scatter/gather router** (#153).
   `Router.scatterGatherFirstCompleted(size, routee, options?,
   routeeOptions?)` asks every routee at once and answers the caller with the
@@ -610,18 +620,6 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   `distributed_data_quorum_timeouts_total`,
   `distributed_data_quorum_rejected_total` and
   `distributed_data_dropped_values_total`.
-
-### Added
-
-- **`actor-ts.distributed-data` HOCON block** (#856).  DistributedData read
-  no configuration at all before this; it now layers `gossip-interval`,
-  `max-pending-quorum-requests` and `max-quorum-timeout` under the explicit
-  options in the documented precedence (options > HOCON > built-in
-  defaults).  The block is top-level rather than under `cluster.*` because
-  the module ships from `src/crdt/` and takes its cluster as a positional
-  argument to `start`.  Only keys something actually reads are shipped, so
-  the delta-CRDT, pruning and subscriber-notification keys the issue lists
-  stay out until the features behind them exist.
 
 - **Ambiguous master-key rings are now rejected** (#111).  A `MasterKeyRing`
   whose `active` and `retired` entries claimed the same version was accepted
