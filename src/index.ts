@@ -53,6 +53,19 @@ export type { Either } from './util/Either.js';
 export { OptionsBuilder } from './util/OptionsBuilder.js';
 export { OptionsValidator, OptionsError } from './util/OptionsValidator.js';
 
+// Random strings — crypto entropy, no modulo bias, exact length.  The same
+// source the framework names its own actors and reply refs from.
+export { randomString, randomHex, randomId } from './util/RandomString.js';
+export type { RandomStringOptions } from './util/RandomString.js';
+
+// safeStringify — JSON.stringify for log and error paths, which cannot throw.
+export { safeStringify } from './util/SafeStringify.js';
+
+// lazyImportModule — import an optional peer dependency, or fail with a message
+// that names the package and how to install it.
+export { lazyImportModule } from './util/LazyImport.js';
+export type { LazyImportOptions } from './util/LazyImport.js';
+
 // Core API
 export { Actor } from './Actor.js';
 export { ActorRef, Nobody, NobodyRef } from './ActorRef.js';

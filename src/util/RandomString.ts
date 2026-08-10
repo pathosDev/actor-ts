@@ -1,12 +1,13 @@
 /**
- * Cryptographically random strings for the names and identifiers the framework
- * generates on the caller's behalf.
+ * Cryptographically random strings for names and identifiers.  The framework
+ * draws its own generated actor names, reply refs and trace ids from here, and
+ * so can you.
  *
- * One recipe, in one place: the entropy source, the bias correction and the
- * exact-length guarantee are decided here rather than at each call site.  Before
- * this file the repo carried two — `randomUUID().replace().slice()` for `ask`'s
- * reply refs and a module-private byte loop for trace ids — which is one drift
- * away from a name that only looks random.
+ * One recipe, in one place: `globalThis.crypto` for entropy, rejection sampling
+ * to remove modulo bias, and a loop that makes the requested length a guarantee
+ * rather than a best effort.  Deciding those three once is the point — the two
+ * shapes a call site reaches for instead, `Math.random()` and a sliced
+ * `randomUUID()`, are respectively not random and not the length you asked for.
  */
 
 const LOWERCASE_LETTERS = 'abcdefghijklmnopqrstuvwxyz';
