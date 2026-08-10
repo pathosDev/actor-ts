@@ -11,6 +11,12 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Added
 
+- **`cluster_gossip_records_refused_total{reason}`** (#114, #138).  Counts
+  gossiped member records a merge-path guard turned away.  `reason` is closed to
+  `version-skew`, `map-cap` and `timestamp-skew` so the series count cannot
+  follow an attacker's record count — the cardinality lesson from #131 applied at
+  the point where it would have hurt most.
+
 - **Utility helpers on the public surface** (#1034).  `randomString`,
   `randomHex`, `randomId`, `safeStringify` and `lazyImportModule` are now
   re-exported from the root barrel, together with the `RandomStringOptions`
@@ -538,6 +544,62 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   instead of shipping the lie.
 
 ### Security
+
+- **CIDR matching only accepts canonical IPv4 addresses** (#145, #312).
+  `ipv4ToBigInt` parsed every octet with `Number()`, which understands far
+  more than a dotted quad — `Number('1e1')`, `Number('010')` and
+  `Number('0x0a')` are all `10` — so `1e1.0.0.1`, `010.0.0.1`, `0x0a.0.0.1`,
+  `0xa.0.0.1` and `10.0.0.0x1` all matched `10.0.0.0/8`.  That is a bypass
+  rather than a cosmetic flaw because `net.isIP` scores each of them `0`:
+  the transport hands the same string to `net.connect({ host, port })`,
+  which resolves it through DNS, so a `pinnedAddresses` check that concluded
+  "inside the pinned network" produced a connection to wherever the
+  attacker's resolver pointed.  The same primitive backs the HTTP
+  `IpAllowlist`, which carried the identical bypass since #312 — a spoofed
+  `X-Forwarded-For: 1e1.0.0.1` walked through a `10.0.0.0/8` allowlist via
+  the extractor its own JSDoc recommends.  Octets are now decimal-canonical
+  only (no leading zero, no `0x`, no exponent, no sign, no whitespace), and
+  `ipv6ToBigInt` was audited and does not share the weakness.
+  **Migration:** a pin or allow entry written non-canonically
+  (`'010.0.0.0/8'`) now throws at construction instead of silently pinning a
+  different network — rewrite it in canonical form.
+- **Prefix lengths are decimal-only, so a trailing-slash typo no longer
+  means `/0`** (#145).  `parseCidr` read the prefix with `Number()` too, and
+  `Number('')` is `0`, so `'10.0.0.0/'` parsed as `/0` — a pin meant to
+  admit a single network admitting the entire address space instead.
+  `'/0x8'`, `'/8e0'`, `'/ 8'`, `'/+8'` and `'/010'` were accepted just as
+  loosely; all of them now throw `invalid prefix length`.
+- **An all-numeric host-suffix pin is rejected** (#145).  Suffix matching is
+  string comparison, so an entry like `'0.1'` matched the tail of any
+  address ending `.0.1`.  No DNS zone is all digits; write a CIDR instead.
+  This closes the path by which a non-canonical address — now classified as
+  a hostname rather than an IP — could otherwise have reached the suffix
+  pins.
+
+- **Every gossiped record is held to the merge-path caps, not just the first**
+  (#114, #138).  The version cap was split in two — tight where a record
+  *introduces* an address, 24 h where it updates one — and both halves were
+  reachable with the same move, because "already on the list" is a property of a
+  map the attacker can write to first: two records for one address inside a
+  single frame (`mergeMember` re-reads the map per record), or a frame carrying
+  no member records at all, whose sender fallback enters the address itself.
+  Either one then pushed through attacker-chosen roles and a version dated 23 h
+  ahead, which the address's real owner could no longer outbid.  There is now one
+  cap, `maxVersionSkewMs`, for every gossiped member version; the flat 24 h
+  remains only for the two fields that are timestamps rather than versions,
+  `removedAt` and the heartbeat `ts`.  `maxMembers` / `maxTombstones` are
+  likewise charged to the bucket a record moves *into* rather than only when an
+  entry is created: a tombstone reborn as `up` otherwise cleared the tombstone
+  bucket without giving back a map slot, and alternating that with a fresh
+  tombstone flood grew the member map without bound while every single step
+  honoured both caps — measured at 6, 11, 16, 21, 26, 31 entries against a
+  ceiling of 11.  The mirror direction (a live member gossiped as `removed`)
+  pumped the tombstone bucket the same way and is closed with it.
+
+- **A refused gossip record is reported once per frame, not once per record**
+  (#114, #138).  The version guard and the `removedAt` guard each wrote a WARN
+  line per record — precisely the log amplification the memory caps were meant to
+  remove, reachable by anyone able to send one large frame.
 
 - **BREAKING: `persistenceId` is validated before it becomes a storage key**
   (#133).  The new `PersistenceIdValidator` rejects an empty id, one longer
@@ -1222,6 +1284,16 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   takes part in, and the two formats cannot collide.
 
 ### Changed
+
+- **BREAKING — `ClusterOptions.firstSightMaxVersionSkewMs` is now
+  `maxVersionSkewMs`** (#114).  *Migration:* `withFirstSightMaxVersionSkewMs(ms)`
+  → `withMaxVersionSkewMs(ms)`, same default (5 min), same unit; the option never
+  had a HOCON key, so `reference.conf` is unchanged.  The old name stopped being
+  true once the cap applied to every merge rather than to a first sighting.
+  Behaviour changes with it: a refusal is now permanent — a node whose clock runs
+  further ahead than the budget stays in the member list without roles until its
+  clock comes back, instead of getting through on its own second frame.  That was
+  always this cap's verdict; the second frame was the bypass.
 
 - **Sharding resolves entities and regions by index instead of scanning**
   (#1035).  `Passivate` and `Terminated` arrive carrying a ref and nothing
