@@ -373,6 +373,14 @@ installing a strategy) and collapse into the behavior they produced.  An
 interceptor cannot, because it has to be there on the *next* message too —
 so it stays wrapped around whatever the inner behavior becomes.
 
+That same distinction decides what a **restart** rebuilds.  `supervise`
+restarts what it wraps, so an interceptor *inside* the wrapper is part of
+the fresh behavior and is rebuilt along with it; one *outside* is not, and
+keeps observing across the restart.  Either nesting leaves it installed
+exactly once — a crash-looping actor does not accumulate copies of its own
+monitor, and `monitor` does not start delivering a message twice because
+the actor restarted earlier.
+
 import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="Returning a fresh behavior each message">
