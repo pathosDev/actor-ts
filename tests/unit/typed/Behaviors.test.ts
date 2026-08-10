@@ -861,6 +861,138 @@ describe('Behaviors.intercept (#152)', () => {
   });
 });
 
+describe('Behaviors.intercept under a restarting supervise (#152)', () => {
+  /**
+   * A behavior that records what it handled and blows up on 13.  Restarting it
+   * re-runs `Behaviors.setup`, so `handled` also tells us the fresh instance is
+   * live again.
+   */
+  const explodingOn13 = (handled: number[]): Behavior<number> =>
+    Behaviors.receiveMessage<number>((message) => {
+      if (message === 13) throw new Error('unlucky');
+      handled.push(message);
+      return Behaviors.same;
+    });
+
+  test('a restart does not duplicate an interceptor that sits inside the supervise wrapper', async () => {
+    // `handleSupervise` re-resolves `supervise.child`, and when the interceptor
+    // lives *inside* that wrapper the resolved behavior already carries it.
+    // Re-installing the whole stack of `current` on top layered a second copy
+    // onto it, so every message after the first restart was observed twice.
+    const sys = newSys('typed-intercept-restart-once');
+    const observed: number[] = [];
+    const handled: number[] = [];
+
+    const strategy = new OneForOneStrategy(() => Directive.Restart);
+    const behavior = Behaviors.supervise(
+      Behaviors.intercept<number>(explodingOn13(handled), (context, message, next) => {
+        observed.push(message);
+        return next(context, message);
+      }),
+    ).onFailure(strategy);
+
+    const ref = sys.spawnTypedAnonymous(behavior);
+    ref.tell(1); ref.tell(13); ref.tell(2); ref.tell(3);
+    await awaitCondition(() => handled.length === 3, {
+      timeoutMs: 4_000,
+      label: 'every survivable message reached the inner behavior',
+    });
+
+    expect(handled).toEqual([1, 2, 3]);
+    // The interceptor runs exactly once per message — including the crash.
+    expect(observed).toEqual([1, 13, 2, 3]);
+    await sys.terminate();
+  });
+
+  test('the interceptor stack does not grow with each further restart', async () => {
+    // The duplication compounded: every restart wrapped one more copy around
+    // the stack, so a crash-looping actor paid linearly more per message (and
+    // held linearly more behavior objects) the longer it ran.  Two crashes
+    // separate "doubled once" from "grows without bound".
+    const sys = newSys('typed-intercept-restart-twice');
+    const observed: number[] = [];
+    const handled: number[] = [];
+
+    const strategy = new OneForOneStrategy(() => Directive.Restart);
+    const behavior = Behaviors.supervise(
+      Behaviors.intercept<number>(explodingOn13(handled), (context, message, next) => {
+        observed.push(message);
+        return next(context, message);
+      }),
+    ).onFailure(strategy);
+
+    const ref = sys.spawnTypedAnonymous(behavior);
+    ref.tell(13); ref.tell(13); ref.tell(7);
+    await awaitCondition(() => handled.length === 1, {
+      timeoutMs: 4_000,
+      label: 'the message after the second restart was handled',
+    });
+
+    expect(handled).toEqual([7]);
+    // One observation per message after two restarts — not 1 + 2 + 3.
+    expect(observed).toEqual([13, 13, 7]);
+    await sys.terminate();
+  });
+
+  test('an interceptor outside the supervise wrapper still survives a restart', async () => {
+    // The counterpart the fix must not break: an interceptor installed around
+    // `supervise` is not part of what restarts, so re-resolving the child drops
+    // it and it has to be put back.
+    const sys = newSys('typed-intercept-restart-outside');
+    const observed: number[] = [];
+    const handled: number[] = [];
+
+    const strategy = new OneForOneStrategy(() => Directive.Restart);
+    const supervised = Behaviors.supervise(explodingOn13(handled)).onFailure(strategy);
+    const behavior = Behaviors.intercept<number>(supervised, (context, message, next) => {
+      observed.push(message);
+      return next(context, message);
+    });
+
+    const ref = sys.spawnTypedAnonymous(behavior);
+    ref.tell(1); ref.tell(13); ref.tell(2);
+    await awaitCondition(() => handled.length === 2, {
+      timeoutMs: 4_000,
+      label: 'both survivable messages reached the inner behavior',
+    });
+
+    expect(handled).toEqual([1, 2]);
+    expect(observed).toEqual([1, 13, 2]);
+    await sys.terminate();
+  });
+
+  test('interceptors on both sides of supervise each run once after a restart', async () => {
+    // The two rules meet here: the outer one has to be put back by hand, the
+    // inner one comes back with the re-resolved child.  Getting the split
+    // wrong in either direction shows up as a missing or a doubled entry.
+    const sys = newSys('typed-intercept-restart-both');
+    const order: string[] = [];
+    const handled: number[] = [];
+
+    const strategy = new OneForOneStrategy(() => Directive.Restart);
+    const inside = Behaviors.intercept<number>(explodingOn13(handled), (context, message, next) => {
+      order.push(`inside:${message}`);
+      return next(context, message);
+    });
+    const supervised = Behaviors.supervise(inside).onFailure(strategy);
+    const behavior = Behaviors.intercept<number>(supervised, (context, message, next) => {
+      order.push(`outside:${message}`);
+      return next(context, message);
+    });
+
+    const ref = sys.spawnTypedAnonymous(behavior);
+    ref.tell(13); ref.tell(4);
+    await awaitCondition(() => handled.length === 1, {
+      timeoutMs: 4_000,
+      label: 'the message after the restart was handled',
+    });
+
+    expect(handled).toEqual([4]);
+    expect(order).toEqual(['outside:13', 'inside:13', 'outside:4', 'inside:4']);
+    await sys.terminate();
+  });
+});
+
 describe('Behaviors.monitor (#152)', () => {
   const kitOptions = (): TestKitOptions => TestKitOptions.create()
     .withLogger(new NoopLogger())
