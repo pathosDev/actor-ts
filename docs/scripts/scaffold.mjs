@@ -478,7 +478,7 @@ const PAGES = [
    'WebsocketClientActor — outgoing client connections with reconnect/backoff.'],
   ['io/tcp.md',
    'TCP',
-   'TcpSocketActor — raw socket I/O with the broker-actor lifecycle.'],
+   'TcpSocketActor + TcpServerActor — raw socket I/O with the broker-actor lifecycle.'],
   ['io/udp.md',
    'UDP',
    'UdpSocketActor — datagram-based I/O for ports like syslog and DNS.'],

@@ -23,11 +23,20 @@ export {
 export { TcpSocketActor } from './TcpSocketActor.js';
 export type {
   TcpSocketCommand,
-  TcpFraming,
   TcpOutbound,
 } from './TcpSocketActor.js';
 export { TcpSocketOptions, TcpSocketOptionsBuilder, TcpSocketOptionsValidator } from './TcpSocketOptions.js';
 export type { TcpSocketOptionsType } from './TcpSocketOptions.js';
+// Framing is shared by the client and the listener, so it lives on its own.
+export type { TcpFraming, TcpFrame } from './TcpFraming.js';
+export { TcpServerActor } from './TcpServerActor.js';
+export type {
+  TcpServerCommand,
+  TcpServerMessage,
+  TcpConnectionId,
+} from './TcpServerActor.js';
+export { TcpServerOptions, TcpServerOptionsBuilder, TcpServerOptionsValidator } from './TcpServerOptions.js';
+export type { TcpServerOptionsType } from './TcpServerOptions.js';
 export { UdpSocketActor } from './UdpSocketActor.js';
 export type {
   UdpSocketCommand,
