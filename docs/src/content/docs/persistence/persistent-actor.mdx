@@ -231,8 +231,8 @@ recovered fine.
 ### When recovery fails
 
 A corrupt event, a missing upcaster, a snapshot the integrity
-check refuses — recovery can throw, and then `onRecoveryFailure`
-is called.
+check refuses, a journal handing back its events out of order —
+recovery can throw, and then `onRecoveryFailure` is called.
 
 **It is a notification, not a decision.** Recovery failure is
 terminal either way; the hook only chooses who hears about it:
@@ -255,6 +255,38 @@ could answer a command.  Stopping is what keeps that visible —
 commands already queued become **dead letters** instead of
 disappearing into the stash, and the stop is published on the
 event stream.
+
+### What replay refuses to fold
+
+Before a single event reaches `onEvent`, replay checks that what
+`journal.read()` returned matches the [Journal
+contract](/persistence/overview/#pluggable-backends): sequence
+numbers ascending, contiguous, and inside the window that was
+asked for.  Anything else raises `JournalIntegrityError`.
+
+Fatal rather than a warning, because the fold *is* recovery.  A
+shuffled stream replays history in an order it never happened in
+— a `disableAccount` landing before the `setPassword` it was
+meant to follow — and it leaves the actor's sequence on the last
+event *delivered* rather than the highest one, after which every
+`persist` fails with a `JournalConcurrencyError` pointing at a
+perfectly healthy journal, one restart away from its cause.
+
+The same check refuses a history whose *beginning* is missing:
+events compacted away with no snapshot covering them.  That state
+cannot be reconstructed, and folding the surviving tail onto
+`initialState()` would invent one.  **Compact only past a
+snapshot** — `deleteHistory(seq)` keeps the snapshot at `seq` for
+exactly this reason.
+
+The DevTools [time-travel
+panel](/observability/devtools/time-travel/) shares this replay
+code but opts out of that last part.  It asks what state looked
+like *in the past*, reaching for the newest snapshot *before* the
+target, so it routinely lands on a window whose covering snapshot
+has since been pruned.  There it shows a partial fold — with the
+sequence it reached and the number of events it applied — rather
+than refusing to open.
 
 ## Persistence ID
 

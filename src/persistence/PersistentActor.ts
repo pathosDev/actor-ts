@@ -213,11 +213,21 @@ export abstract class PersistentActor<Command, Event, State> extends Actor<Comma
   /** Replay snapshot + journal into `_state` / `_seq`.  Runs no user callbacks. */
   private async recover(): Promise<void> {
     this.log.debug(`[persistence] '${this.persistenceId}' recovery starting`);
-    // The fold, the snapshot fast-path and the snapshot-integrity
-    // checks all live in `replayState`, shared with the DevTools
-    // time-travel panel (#201).  One implementation means a debugger
-    // reconstructing state cannot quietly disagree with what the actor
-    // itself recovers — which is the whole reason to look at it.
+    // The fold, the snapshot fast-path and the two integrity checks —
+    // snapshot (#100) and journal (#122) — all live in `replayState`,
+    // shared with the DevTools time-travel panel (#201).  One
+    // implementation means a debugger reconstructing state cannot
+    // quietly disagree with what the actor itself recovers — which is
+    // the whole reason to look at it.
+    //
+    // Recovery takes the strict end of the journal check: no
+    // `allowCompactedPrefix`.  A hole between the starting point and the
+    // first surviving event means this entity's *current* state is not
+    // reconstructible, and folding the tail onto `initialState()` would
+    // hand `onCommand` a state that never existed.  A loud
+    // `JournalIntegrityError` through `onRecoveryFailure` is the only
+    // honest answer; the panel, which asks about the past rather than
+    // the present, opts out of that half.
     const result = await replayState<Event, State>({
       journal: this._journal,
       snapshotStore: this._snapshotStore,

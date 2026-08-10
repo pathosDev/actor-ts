@@ -236,7 +236,8 @@ Recovery-Fehler, denn der State wurde einwandfrei wiederhergestellt.
 ### Wenn die Recovery fehlschlägt
 
 Ein korruptes Event, ein fehlender Upcaster, ein Snapshot, den die
-Integritätsprüfung ablehnt — die Recovery kann werfen, und dann wird
+Integritätsprüfung ablehnt, ein Journal, das seine Events in falscher
+Reihenfolge zurückgibt — die Recovery kann werfen, und dann wird
 `onRecoveryFailure` aufgerufen.
 
 **Das ist eine Benachrichtigung, keine Entscheidung.** Ein
@@ -261,6 +262,40 @@ also keinen Zustand, in dem er ein Command beantworten könnte.  Das
 Stoppen ist es, was das sichtbar hält — bereits wartende Commands
 werden zu **Dead Letters**, statt im Stash zu verschwinden, und der
 Stopp wird auf dem Event-Stream veröffentlicht.
+
+### Was der Replay ablehnt
+
+Bevor ein einziges Event `onEvent` erreicht, prüft der Replay, ob
+das, was `journal.read()` zurückgegeben hat, dem
+[Journal-Vertrag](/de/persistence/overview/#austauschbare-backends)
+entspricht: Sequenznummern aufsteigend, lückenlos und innerhalb des
+angefragten Fensters.  Alles andere wirft `JournalIntegrityError`.
+
+Endgültig statt nur eine Warnung, denn die Faltung *ist* die
+Recovery.  Ein durcheinandergeratener Stream spielt die Historie in
+einer Reihenfolge ab, in der sie nie stattgefunden hat — ein
+`disableAccount` landet vor dem `setPassword`, auf das es folgen
+sollte — und er lässt die Sequenz des Actors auf dem zuletzt
+*gelieferten* Event statt auf dem höchsten stehen.  Danach scheitert
+jedes `persist` an einem `JournalConcurrencyError`, der auf ein
+kerngesundes Journal zeigt und einen Neustart von seiner Ursache
+entfernt ist.
+
+Dieselbe Prüfung lehnt eine Historie ab, deren *Anfang* fehlt:
+wegkompaktierte Events, die kein Snapshot abdeckt.  Dieser Zustand
+lässt sich nicht rekonstruieren, und den überlebenden Rest auf
+`initialState()` zu falten würde einen erfinden.  **Kompaktiere nur
+über einen Snapshot hinaus** — genau dafür behält
+`deleteHistory(seq)` den Snapshot bei `seq`.
+
+Das [Time-Travel-Panel](/de/observability/devtools/time-travel/) der
+DevTools teilt sich diesen Replay-Code, klinkt sich beim letzten
+Punkt aber aus.  Es fragt, wie der State *in der Vergangenheit*
+aussah, und greift dafür zum neuesten Snapshot *vor* dem Zielpunkt —
+es landet also regelmäßig in einem Fenster, dessen abdeckender
+Snapshot inzwischen weggeräumt wurde.  Dort zeigt es eine
+unvollständige Faltung — mit der erreichten Sequenz und der Zahl der
+angewendeten Events —, statt sich zu weigern, überhaupt zu öffnen.
 
 ## Persistenz-ID
 

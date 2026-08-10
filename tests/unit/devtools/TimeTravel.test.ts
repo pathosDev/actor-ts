@@ -354,6 +354,38 @@ describe('TimeTravelMethods', () => {
     })).rejects.toThrow(/no fold known/);
   });
 
+  test('still opens on an entity whose history was compacted (#122)', async () => {
+    // Recovery refuses a fold that starts past a hole — the current
+    // state is not reconstructible.  The panel must not: it browses via
+    // `loadBefore`, so a target inside a compacted range routinely finds
+    // no covering snapshot while the later events are still there, and
+    // "what did this look like at 3?" is a question about the past, not
+    // a state anything gets persisted from.
+    const journal = new InMemoryJournal();
+    const snapshots = new InMemorySnapshotStore();
+    await seed(journal, 'alpha', [10, 20, 30]);
+    await journal.delete('alpha', 1);
+    const system = newSystem('tt-compacted', journal, snapshots);
+
+    const { server, invoke } = fakeServer();
+    const registry = new ReplayRegistry(system, [{
+      match: (id) => id === 'alpha',
+      initialState: () => ({ total: 0 }),
+      fold: (state, event) => foldCounter(state as CounterState, event as CounterEvent),
+    }], false);
+    new TimeTravelMethods(system.extension(PersistenceExtensionId), registry).install(server);
+
+    const atThree = await invoke<ReplayStateResult>('replay.state', {
+      persistenceId: 'alpha', toSequenceNumber: 3,
+    });
+    // Event 1 is gone, so the fold is partial — and says so through the
+    // sequence and the applied count rather than by throwing.
+    expect(atThree.state).toEqual({ total: 50 });
+    expect(atThree.sequenceNumber).toBe(3);
+    expect(atThree.eventsApplied).toBe(2);
+    expect(atThree.fromSnapshotSequenceNumber).toBeNull();
+  });
+
   test('rejects malformed parameters', async () => {
     const journal = new InMemoryJournal();
     const system = newSystem('tt-bad', journal, new InMemorySnapshotStore());
