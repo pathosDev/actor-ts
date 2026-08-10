@@ -150,12 +150,23 @@ Two consequences worth knowing:
   land 4/3/3, not "probably roughly even". Restarting the publisher
   restarts the rotation; it is per-topic state on the mediator, not
   a cluster-wide sequence.
+- **The candidate order is stable.** Local subscribers come first,
+  in registration order, then the remote claimants sorted by
+  address. Gossip arriving mid-rotation does not reshuffle the walk,
+  and every mediator orders the remote half identically.
 - **Remote nodes count as one candidate each, not one per
   subscriber.** A node with ten subscribers gets the same share as
   a node with one, because the gossip frame carries topic names and
   not subscriber counts (that is what keeps it small). Within the
   chosen node, its own rotation picks the subscriber. Keep worker
   counts roughly even across nodes if the balance matters.
+- **A node that both publishes and hosts workers rotates on two
+  cursors.** The anycasts it originates walk the full candidate
+  list; the ones that reach it over the wire walk its local
+  subscribers only. The two lists differ in length, so they are
+  counted separately — one shared cursor would pin the originating
+  walk below the local subscriber count and starve every remote
+  candidate.
 
 An anycast that finds no candidate — no local subscriber and no
 remote claimant — goes to dead letters like any other unrouted
@@ -163,6 +174,12 @@ publish. So does one that crossed a hop and found the far node's
 subscribers already gone: it is **not** re-routed, because a second
 hop would trade the at-most-one-hop guarantee for a race against
 the gossip round that is about to correct the sender anyway.
+
+A frame the mediator has no handler for at all — an older node
+reached by a newer node's wire kind, say — also lands in dead
+letters, with a warning. Rolling upgrades are the case that needs
+it: a silently dropped frame looks exactly like a cluster with
+nothing to do.
 
 <Aside type="note" title="Anycast is not a router replacement">
   For load-balancing across a *known* actor pool, a

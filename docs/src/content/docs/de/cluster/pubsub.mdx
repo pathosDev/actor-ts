@@ -154,6 +154,11 @@ gekannt zu werden:
   Worker landen 4/3/3, nicht "vermutlich ungefähr gleichmäßig". Ein
   Neustart des Publishers startet die Rotation neu; sie ist
   Per-Topic-Zustand des Mediators, keine clusterweite Sequenz.
+- **Die Kandidatenreihenfolge ist stabil.** Zuerst die lokalen
+  Subscriber in Registrierungsreihenfolge, dann die
+  Remote-Anspruchsteller nach Adresse sortiert. Eintreffender Gossip
+  würfelt den Durchlauf nicht neu, und jeder Mediator ordnet die
+  Remote-Hälfte gleich.
 - **Remote-Nodes zählen als je ein Kandidat, nicht als einer pro
   Subscriber.** Ein Node mit zehn Subscribern bekommt denselben
   Anteil wie einer mit einem, denn der Gossip-Frame trägt
@@ -161,6 +166,14 @@ gekannt zu werden:
   klein). Innerhalb des gewählten Nodes wählt dessen eigene Rotation
   den Subscriber. Halte die Worker-Zahlen über die Nodes hinweg
   ungefähr gleich, wenn die Balance zählt.
+- **Ein Node, der publiziert *und* Worker hostet, rotiert über zwei
+  Zeiger.** Die Anycasts, die er selbst auslöst, laufen über die
+  volle Kandidatenliste; die, die ihn über die Leitung erreichen,
+  nur über seine lokalen Subscriber. Die beiden Listen sind
+  unterschiedlich lang und werden deshalb getrennt gezählt — ein
+  gemeinsamer Zeiger würde den auslösenden Durchlauf unter der Zahl
+  der lokalen Subscriber festnageln und jeden Remote-Kandidaten
+  aushungern.
 
 Ein Anycast, das keinen Kandidaten findet — kein lokaler Subscriber
 und kein Remote-Anspruch —, geht wie jedes andere ungeroutete
@@ -169,6 +182,12 @@ zurückgelegt hat und dessen Subscriber auf der Gegenseite schon weg
 sind: es wird **nicht** umgeroutet, denn ein zweiter Hop würde die
 Höchstens-ein-Hop-Garantie gegen ein Rennen mit der Gossip-Runde
 tauschen, die den Sender ohnehin gleich korrigiert.
+
+Auch ein Frame, für den der Mediator überhaupt keinen Handler hat —
+etwa ein älterer Node, den eine neuere Wire-Art erreicht —, landet
+in den Dead Letters, mit einer Warnung. Rolling Upgrades sind der
+Fall, der das braucht: ein still verworfener Frame sieht genau aus
+wie ein Cluster, der nichts zu tun hat.
 
 <Aside type="note" title="Anycast ersetzt keinen Router">
   Zum Load-Balancing über einen *bekannten* Actor-Pool passt ein

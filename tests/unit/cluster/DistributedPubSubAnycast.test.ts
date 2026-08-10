@@ -48,13 +48,15 @@ type Mediator = {
   readonly internals: MediatorInternals;
 };
 
+/** The registry entry these assertions read — the rotation cursors stay opaque. */
+type TopicRegistration = {
+  local: Map<string, unknown>;
+  remoteNodes: Set<string>;
+};
+
 /** Private surface — read-only here, except for the gossip the peer case drives. */
 interface MediatorInternals {
-  readonly topics: Map<string, {
-    local: Map<string, unknown>;
-    remoteNodes: Set<string>;
-    nextCandidateIndex: number;
-  }>;
+  readonly topics: Map<string, TopicRegistration>;
   handleGossip(
     message: { kind: 'pubsub-gossip'; from: unknown; entries: ReadonlyArray<string>; version: number },
     from: NodeAddress,
@@ -108,6 +110,20 @@ async function spawnMediator(
 async function subscribed(mediator: Mediator, topic: string, probe: TestProbe): Promise<void> {
   mediator.ref.tell(new Subscribe(topic, probe, probe));
   await probe.expectMessageType(SubscribeAcknowledgment, 500);
+}
+
+/**
+ * Announce, as `peer` would, that it hosts subscribers for `topics`.
+ *
+ * Called directly rather than through the wire hook because the claim has to
+ * be in place before the first publish, and a real gossip round would only
+ * arrive eventually.
+ */
+function claimsTopics(mediator: Mediator, peer: NodeAddress, topics: string[]): void {
+  mediator.internals.handleGossip(
+    { kind: 'pubsub-gossip', from: peer.toJSON(), entries: topics, version: 1 },
+    peer,
+  );
 }
 
 /** Subscribe to the system's dead letters so an unrouted publish is visible. */
@@ -286,6 +302,116 @@ describe('DistributedPubSub — anycast across nodes (#155)', () => {
     mediator.ref.tell({ kind: 'pubsub-publish-one', topic: 'gone', body: 'stale' });
     const deadLetter = await deadLetters.expectMessageType(DeadLetter, 1_000);
     expect(deadLetter.message).toBe('stale');
+
+    await stopNode(node);
+  });
+
+  test('an inbound hop does not pin the next own anycast to a local subscriber', async () => {
+    // Regression for a shared rotation cursor.  Both anycast paths rotated one
+    // and the same cursor, but over differently sized candidate lists: an own
+    // publish over local subscribers *plus* remote claimants, an inbound frame
+    // over local subscribers only.  The inbound path wrote the cursor back
+    // modulo the smaller count, so after every hop the cursor was below the
+    // local count again and the next own publish could not reach the remote
+    // half at all.  In a symmetric work queue — every node both hosts workers
+    // and publishes — the two alternate, so nothing ever left the node.
+    //
+    // Only an *interleaved* run shows it.  A test that fires own publishes
+    // back to back never lets the inbound path reset the cursor and stays
+    // green with the defect in place.
+    const node = await startNode('ps-anycast-interleaved', 51507);
+    const mediatorOptions = DistributedPubSubOptions.create()
+      .withCluster(node.cluster)
+      .withGossipIntervalMs(100);
+    const mediator = await spawnMediator(node, 'anycast-interleaved', mediatorOptions);
+    const frames = recordAnycastFrames(node.transport);
+
+    const worker = node.kit.createTestProbe();
+    await subscribed(mediator, 'work', worker);
+
+    const peer = new NodeAddress('ps-anycast-interleaved', 'h', 51598);
+    claimsTopics(mediator, peer, ['work']);
+    expect(mediator.internals.topics.get('work')?.remoteNodes.size).toBe(1);
+
+    // One publish this node originates, then one that arrived from a peer,
+    // four times over.  Candidates are [worker, peer] for the first and
+    // [worker] for the second.
+    for (let round = 0; round < 4; round++) {
+      mediator.ref.tell(new Publish('work', `own-${round}`, 'one-subscriber'));
+      mediator.ref.tell({ kind: 'pubsub-publish-one', topic: 'work', body: `hop-${round}` });
+    }
+
+    await awaitCondition(() => frames.length >= 2, {
+      timeoutMs: 4_000, label: 'two of the four own anycasts crossed to the remote claimant',
+    });
+    expect(frames).toEqual([
+      { to: peer.toString(), body: 'own-1' },
+      { to: peer.toString(), body: 'own-3' },
+    ]);
+    // The worker keeps the other two own publishes and every hop — six, not
+    // the eight a starved remote half would leave it with.
+    expect(await worker.receiveN(6, 1_000)).toEqual([
+      'own-0', 'hop-0', 'hop-1', 'own-2', 'hop-2', 'hop-3',
+    ]);
+    await worker.expectNoMessage(60);
+
+    await stopNode(node);
+  });
+
+  test('remote claimants rotate in a stable order, not in gossip arrival order', async () => {
+    // `handleGossip` replaces a sender's contribution wholesale — it deletes
+    // the sender from every topic and re-adds it — so a `Set`'s insertion
+    // order is re-drawn on every gossip round.  A positional cursor over that
+    // order is not the rotation the docs promise: a peer can be served twice
+    // in a row or skipped entirely, purely because gossip arrived.
+    const node = await startNode('ps-anycast-order', 51508);
+    const mediatorOptions = DistributedPubSubOptions.create()
+      .withCluster(node.cluster)
+      .withGossipIntervalMs(100);
+    const mediator = await spawnMediator(node, 'anycast-order', mediatorOptions);
+    const frames = recordAnycastFrames(node.transport);
+
+    // Deliberately announced out of order: arrival order is 3, 1, 2.
+    const third = new NodeAddress('ps-anycast-order', 'h', 51703);
+    const first = new NodeAddress('ps-anycast-order', 'h', 51701);
+    const second = new NodeAddress('ps-anycast-order', 'h', 51702);
+    for (const peer of [third, first, second]) claimsTopics(mediator, peer, ['fan']);
+    expect(mediator.internals.topics.get('fan')?.remoteNodes.size).toBe(3);
+
+    for (let task = 0; task < 3; task++) {
+      mediator.ref.tell(new Publish('fan', `task-${task}`, 'one-subscriber'));
+    }
+
+    await awaitCondition(() => frames.length >= 3, {
+      timeoutMs: 4_000, label: 'every remote claimant received one anycast',
+    });
+    expect(frames.map(f => f.to)).toEqual([
+      first.toString(), second.toString(), third.toString(),
+    ]);
+
+    await stopNode(node);
+  });
+});
+
+describe('DistributedPubSub — a frame the mediator cannot route (#155)', () => {
+  test('an unknown wire kind goes to dead letters instead of being swallowed', async () => {
+    // Version skew has a silent direction: a mediator that predates a frame
+    // kind drops it in `otherwise` with no delivery, no dead letter and no
+    // log, which is indistinguishable from a healthy cluster doing nothing.
+    // The half this node can fix is its own — anything it cannot route is
+    // made observable here.
+    const node = await startNode('ps-anycast-unknown', 51509);
+    const mediatorOptions = DistributedPubSubOptions.create()
+      .withCluster(node.cluster)
+      .withGossipIntervalMs(100);
+    const mediator = await spawnMediator(node, 'anycast-unknown', mediatorOptions);
+    const deadLetters = watchDeadLetters(node);
+
+    const frameFromANewerPeer = { kind: 'pubsub-publish-group', topic: 'work', body: 'unroutable' };
+    mediator.ref.tell(frameFromANewerPeer);
+
+    const deadLetter = await deadLetters.expectMessageType(DeadLetter, 1_000);
+    expect(deadLetter.message).toEqual(frameFromANewerPeer);
 
     await stopNode(node);
   });
