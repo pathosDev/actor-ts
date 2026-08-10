@@ -150,7 +150,9 @@ function smallestMailboxStrategy(): RoutingStrategy {
     let shallowestDepth = 0;
     for (let offset = 0; offset < routees.length; offset++) {
       const routee = routees[(start + offset) % routees.length];
-      const depth = mailboxDepthOf(routee);
+      // `null` means "do not route here at all" — a stopped routee.
+      // A routee whose depth is merely unreadable comes back as 0.
+      const depth = routableDepthOf(routee);
       if (depth === null) continue;
       if (shallowest === null || depth < shallowestDepth) {
         shallowest = routee;
@@ -181,6 +183,10 @@ reagiert, was die Routees gerade tatsächlich tun.
   leerlaufender Pool oder ein gesättigter — fallen auf die
   Round-Robin-Reihenfolge zurück, statt auf den ersten Routee
   einzuprügeln.
+- **Einen gestoppten Routee übergehen.**  Ein terminierter Routee
+  wird gar nicht erst gemessen, sondern übersprungen — warum dieser
+  Fall sich nicht der Zahl überlassen lässt, steht unten unter *Was
+  als Tiefe zählt*.
 
 **Kann nicht:**
 
@@ -202,6 +208,41 @@ reagiert, was die Routees gerade tatsächlich tun.
 
 Richtige Wahl, wenn die **Kosten pro Nachricht stark schwanken** —
 gemischte Job-Größen, Routees, die etwas Langsames aufrufen.
+
+### Was als Tiefe zählt
+
+Zwei Arten von Routee haben keine brauchbare Queue-Länge, und sie
+werden bewusst gegensätzlich behandelt:
+
+- **Ein gestoppter Routee wird nie gewählt.**  Seine Mailbox sieht
+  nicht bloß leer aus — sie *ist* dauerhaft leer, weil eine
+  terminierte Zelle nicht mehr einreiht, sondern direkt an die Dead
+  Letters zustellt.  Als bloße Zahl gelesen würde das den toten
+  Routee zum attraktivsten Mitglied des Pools machen, und zwar so
+  lange, bis der Router den Tod bemerkt und ihn aus dem Pool nimmt —
+  jede in der Zwischenzeit geroutete Nachricht ist verloren.  Der
+  Router erfährt vom Tod über eine gewöhnliche Nachricht, unter Last
+  ist dieses Fenster also so tief wie seine eigene Queue.  Deshalb
+  wird die Terminierung vor der Tiefe geprüft, und ein gestoppter
+  Routee fällt ganz aus dem Scan heraus.
+- **Ein Routee mit unlesbarer Tiefe zählt als leer.**  Nur ein lokal
+  gehosteter Actor hat eine Mailbox, in die dieser Prozess
+  hineinsehen kann; eine entfernte oder sonstwie fremde Ref ist nicht
+  messbar.  Die Strategie nimmt an, dass sie keinen Rückstau hat,
+  statt sie zu überspringen: Überspringen würde sie aushungern,
+  solange irgendein lokaler Routee Rückstau hat — in einem gemischten
+  Pool also dauerhaft.  Der Kompromiss läuft stattdessen in die
+  andere Richtung: Solange die lokalen Routees beschäftigt sind,
+  sieht ein unlesbarer am flachsten aus und bekommt den Traffic.  Das
+  ist ein Balance-Fehler, und er korrigiert sich; das Aushungern tat
+  das nicht.  Mehrere unlesbare Routees stehen bei null gleichauf und
+  rotieren untereinander.
+
+Sind *alle* Routees gestoppt, fällt der Scan auf die Rotation zurück
+und routet trotzdem in eine tote Zelle.  Die Nachricht ist so oder so
+verloren, und als `DeadLetter` verloren zu gehen ist immerhin
+beobachtbar — gar keinen Routee zurückzugeben würde sie spurlos
+verschlucken.
 
 ### Die Cluster-Variante
 

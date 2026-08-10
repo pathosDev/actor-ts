@@ -44,17 +44,38 @@ export function broadcastStrategy(): RoutingStrategy {
 }
 
 /**
- * Queued user messages for a routee, or `null` when the depth is unreadable.
+ * The depth at which a routee competes for the next message, or `null` when
+ * it must not compete at all.
  *
- * Only a locally-hosted actor has a mailbox this process can look into, and
- * the depth lives on the cell rather than on `ActorRef` on purpose — see
- * `ActorCell.mailboxSize`.  A pool router spawns its own children, so inside
- * `Router.smallestMailbox` this never returns `null`; the guard is here
- * because {@link smallestMailboxStrategy} is exported on its own and
- * `RoutingStrategy` is handed a plain `ActorRef`.
+ * The two ways a depth can be missing are *not* the same case and deliberately
+ * do not share a return value:
+ *
+ * - **Unreadable — weighed as empty (`0`).**  Only a locally-hosted actor has
+ *   a mailbox this process can look into, and the depth lives on the cell
+ *   rather than on `ActorRef` on purpose (see `ActorCell.mailboxSize`).  A
+ *   remote or otherwise foreign ref is therefore unmeasurable, and the honest
+ *   assumption about something we cannot measure is that it is not backed up.
+ *   Skipping it instead would starve it for as long as *any* local routee has
+ *   a backlog — in a mixed pool, permanently — which is the one thing a
+ *   load-balancer must never do.  The cost is the mirror image: while the
+ *   local routees are busy, an unreadable one looks like the shallowest and
+ *   takes the traffic.  That is a balance error and it is recoverable; the
+ *   starvation was not.  Several unreadable routees tie at `0` and so rotate
+ *   among themselves.
+ * - **Terminated — never (`null`).**  `ActorCell.postUserEnvelope` dead-letters
+ *   instead of enqueueing once the cell is `terminated`, so its `mailboxSize`
+ *   is pinned at `0` for good.  Read as a plain depth that makes a dead routee
+ *   the permanently most attractive member of the pool: it wins every message
+ *   until the router's `Terminated` — a *user* message, queued behind whatever
+ *   the router had already accepted — finally prunes it, and every one of
+ *   those messages is lost.  Under load that window is the router's own queue
+ *   depth, so the strategy turned a routee death into a far larger loss than
+ *   round-robin's 1-in-N share of the same window (#154).
  */
-function mailboxDepthOf(routee: ActorRef): number | null {
-  return routee instanceof LocalActorRef ? routee.getCell().mailboxSize : null;
+function routableDepthOf(routee: ActorRef): number | null {
+  if (!(routee instanceof LocalActorRef)) return 0;
+  const cell = routee.getCell();
+  return cell.isTerminated() ? null : cell.mailboxSize;
 }
 
 /**
@@ -83,9 +104,12 @@ function mailboxDepthOf(routee: ActorRef): number | null {
  * already decided by the mailbox's own overflow policy (`drop-head` /
  * `drop-new` / `reject`).
  *
- * If no depth is readable at all the scan falls back to the rotation, so the
- * strategy still routes rather than dropping when it is used outside a local
- * pool.
+ * **A terminated routee is skipped outright**, whatever its depth reads as —
+ * see {@link routableDepthOf} for why that is not the same case as a depth
+ * nobody can read.  If *every* routee is terminated the scan falls back to
+ * the rotation and routes into a dead cell anyway: the message is lost either
+ * way, and losing it as a `DeadLetter` is at least observable, where returning
+ * nothing would drop it without a trace.
  *
  * The scan stops at the first empty mailbox, which is what keeps the `O(N)`
  * worst case off the healthy path: a pool that is keeping up with its load
@@ -101,7 +125,7 @@ export function smallestMailboxStrategy(): RoutingStrategy {
     let shallowestDepth = 0;
     for (let offset = 0; offset < routees.length; offset++) {
       const routee = routees[(start + offset) % routees.length];
-      const depth = mailboxDepthOf(routee);
+      const depth = routableDepthOf(routee);
       if (depth === null) continue;
       if (shallowest === null || depth < shallowestDepth) {
         shallowest = routee;

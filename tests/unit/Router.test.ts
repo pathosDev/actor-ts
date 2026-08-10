@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import { Actor } from '../../src/Actor.js';
-import { AskTimeoutError, DeadLetter } from '../../src/SystemMessages.js';
+import { ActorStopped, AskTimeoutError, DeadLetter } from '../../src/SystemMessages.js';
 import { ActorSystem } from '../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../src/ActorSystemOptions.js';
 import { LogLevel, NoopLogger, type Logger } from '../../src/Logger.js';
@@ -13,6 +13,7 @@ import {
   randomStrategy,
   Router,
   roundRobinStrategy,
+  type RoutingStrategy,
   smallestMailboxStrategy,
 } from '../../src/Router.js';
 import { ScatterGatherOptions } from '../../src/ScatterGatherOptions.js';
@@ -108,6 +109,32 @@ function newGate(): { gate: Promise<void>; release: () => void } {
   return { gate, release };
 }
 
+/**
+ * Records which actors have reached the `terminated` state.
+ *
+ * `postStop` is the wrong signal for that: the cell runs it, drains its
+ * mailbox and only *then* flips the state, so an assertion hung on `postStop`
+ * can read a cell that is still `stopping`.  `ActorStopped` is published after
+ * the flip, which makes it the only public "it is really gone" edge.
+ */
+function terminationObserver(terminatedNames: Set<string>) {
+  return class extends Actor<ActorStopped> {
+    override preStart(): void { this.system.eventStream.subscribe(this.self, ActorStopped); }
+    override onReceive(event: ActorStopped): void { terminatedNames.add(event.actor.path.name); }
+  };
+}
+
+/**
+ * Name of the routee a strategy picks — asserting on the name instead of the
+ * ref keeps a failure diff to one word, where `toBe(ref)` dumps a whole
+ * `LocalActorRef` and its system.
+ */
+const chosenName = (
+  strategy: RoutingStrategy,
+  routees: ReadonlyArray<ActorRef>,
+  messageIndex: number,
+): string | undefined => Array.from(strategy(routees, { messageIndex }))[0]?.path.name;
+
 describe('smallestMailboxStrategy (#154)', () => {
   test('returns empty for empty routees', () => {
     expect(Array.from(smallestMailboxStrategy()([], { messageIndex: 0 }))).toEqual([]);
@@ -183,6 +210,75 @@ describe('smallestMailboxStrategy (#154)', () => {
     release();
     await sys.terminate();
   });
+
+  test('never picks a terminated routee, whose depth reads 0 forever', async () => {
+    const handled = new Map<string, string[]>();
+    const started = new Set<string>();
+    const terminatedNames = new Set<string>();
+    const { gate, release } = newGate();
+    const sys = newSystem('smallest-terminated');
+    sys.spawn(() => new (terminationObserver(terminatedNames))(), 'termination-observer');
+    const surviving = sys.spawn(() => new (gatedWorker(handled, started, gate))(), 'surviving');
+    const doomed = sys.spawn(() => new (gatedWorker(handled, started, gate))(), 'doomed');
+
+    // Park the survivor and give it a real backlog, so on every honest reading
+    // it is the deeper of the two.
+    surviving.tell('inflight');
+    await awaitCondition(() => started.has('surviving'), {
+      timeoutMs: 4_000,
+      label: 'the surviving routee parked on the gate',
+    });
+    for (let i = 0; i < 3; i++) surviving.tell('backlog');
+
+    doomed.stop();
+    // `ActorStopped` is published *after* the cell flips to `terminated`, so
+    // it is the one public signal that the precondition actually holds —
+    // `postStop` runs a step earlier, while the state is still `stopping`.
+    await awaitCondition(() => terminatedNames.has('doomed'), {
+      timeoutMs: 4_000,
+      label: 'the doomed routee reached the terminated state',
+    });
+
+    // A terminated cell dead-letters instead of enqueueing, so its mailbox
+    // size is pinned at 0: read as a plain depth it is the most attractive
+    // routee in the pool, permanently, and every message routed to it is lost.
+    const pool: ReadonlyArray<ActorRef> = [surviving as ActorRef, doomed as ActorRef];
+    const strategy = smallestMailboxStrategy();
+    // Both offsets: 0 starts the scan on the live routee, 1 starts it on the
+    // dead one — where the rotation begins must not decide the answer.
+    expect(chosenName(strategy, pool, 0)).toBe('surviving');
+    expect(chosenName(strategy, pool, 1)).toBe('surviving');
+
+    release();
+    await sys.terminate();
+  });
+
+  test('weighs a routee whose depth is unreadable as empty rather than starving it', async () => {
+    const handled = new Map<string, string[]>();
+    const started = new Set<string>();
+    const { gate, release } = newGate();
+    const sys = newSystem('smallest-mixed');
+    const local = sys.spawn(() => new (gatedWorker(handled, started, gate))(), 'local');
+
+    local.tell('inflight');
+    await awaitCondition(() => started.has('local'), {
+      timeoutMs: 4_000,
+      label: 'the local routee parked on the gate',
+    });
+    for (let i = 0; i < 3; i++) local.tell('backlog');
+
+    // A ref that is not locally hosted has no mailbox this process can read.
+    // Skipping it starves it for as long as any local routee has a backlog,
+    // which in a mixed pool is exactly the situation the strategy exists for.
+    const unreadable = { path: { name: 'unreadable' } } as never as ActorRef;
+    const pool: ReadonlyArray<ActorRef> = [local as ActorRef, unreadable];
+    const strategy = smallestMailboxStrategy();
+    expect(chosenName(strategy, pool, 0)).toBe('unreadable');
+    expect(chosenName(strategy, pool, 1)).toBe('unreadable');
+
+    release();
+    await sys.terminate();
+  });
 });
 
 describe('Router.smallestMailbox (integration, #154)', () => {
@@ -232,6 +328,82 @@ describe('Router.smallestMailbox (integration, #154)', () => {
     expect(routedTo('routee-2')).toBe(0);
     expect(routedTo('routee-1') + routedTo('routee-3')).toBe(4);
     expect(Math.abs(routedTo('routee-1') - routedTo('routee-3'))).toBeLessThanOrEqual(1);
+
+    await sys.terminate();
+  });
+
+  test('a routee that dies mid-burst loses nothing before the prune lands', async () => {
+    const handled = new Map<string, string[]>();
+    const started = new Set<string>();
+    const refs = new Map<string, ActorRef<string>>();
+    const deadLetters: unknown[] = [];
+    const { gate, release } = newGate();
+    const sys = newSystem('smallest-death');
+    sys.spawn(() => new (deadLetterCollector(deadLetters))(), 'dead-letters');
+
+    const routee = class extends gatedWorker(handled, started, gate) {
+      override preStart(): void {
+        refs.set(this.self.path.name, this.self as unknown as ActorRef<string>);
+      }
+    };
+    const pool = sys.spawn(Router.smallestMailbox(3, routee), 'pool');
+    await awaitCondition(() => refs.size === 3, {
+      timeoutMs: 4_000,
+      label: 'all three routees registered themselves',
+    });
+
+    // Address the two survivors directly so the doomed one stays idle: it must
+    // die with an empty mailbox, otherwise its own backlog would dead-letter
+    // and blur the count this test is about.
+    refs.get('routee-1')!.tell('park');
+    refs.get('routee-3')!.tell('park');
+    await awaitCondition(() => started.has('routee-1') && started.has('routee-3'), {
+      timeoutMs: 4_000,
+      label: 'both surviving routees parked on the gate',
+    });
+    for (let i = 0; i < 2; i++) {
+      refs.get('routee-1')!.tell('backlog');
+      refs.get('routee-3')!.tell('backlog');
+    }
+
+    // The ordering is the whole test.  `stop()` is enqueued first, so the
+    // doomed routee's turn runs before the router's — it is already terminated
+    // when the first burst message is routed, and nothing is ever handed to a
+    // live-but-stopping cell.  The burst is enqueued in the same synchronous
+    // block, so the `Terminated` that prunes the pool — a *user* message —
+    // lands behind all of it: for the whole burst the router still holds a
+    // dead ref whose mailbox reads 0.
+    const burst = 200;
+    refs.get('routee-2')!.stop();
+    for (let i = 0; i < burst; i++) pool.tell('go');
+
+    // Let the router drain its queue while every surviving routee is still
+    // parked, so their depths stay above 0 for the whole burst.  A settle, not
+    // a race: cutting it short only makes the dead routee a weaker magnet, it
+    // can never turn a real loss into a pass.
+    await sleep(100);
+    release();
+
+    const totalHandled = (): number =>
+      Array.from(handled.values()).reduce((sum, list) => sum + list.length, 0);
+    const parkAndBacklog = 2 + 4;
+    await awaitCondition(() => totalHandled() + deadLetters.length >= burst + parkAndBacklog, {
+      timeoutMs: 8_000,
+      label: 'every burst message was delivered or dead-lettered',
+    });
+
+    // The regression this guards: the dead routee read as the shallowest
+    // mailbox in the pool, so the strategy handed it the *entire* burst and
+    // all 200 messages became dead letters — a routee death cost far more
+    // under smallest-mailbox than under round-robin, which would have lost
+    // only its 1-in-N share of the same window.
+    const routedTo = (name: string): number =>
+      (handled.get(name) ?? []).filter(m => m === 'go').length;
+    // Counted, not compared as a list: the pre-fix failure is 200 identical
+    // strings, and a count says how bad it is where a diff only says "not []".
+    expect(deadLetters.filter(m => m === 'go').length).toBe(0);
+    expect(routedTo('routee-1') + routedTo('routee-3')).toBe(burst);
+    expect(handled.has('routee-2')).toBe(false);
 
     await sys.terminate();
   });
