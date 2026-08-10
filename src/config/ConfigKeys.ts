@@ -71,6 +71,12 @@ export const ConfigKeys = {
       redisStreams: 'actor-ts.io.broker.redis-streams',
       sse: 'actor-ts.io.broker.sse',
       tcp: 'actor-ts.io.broker.tcp',
+      /**
+       * The TCP *listener* (`TcpServerActor`), on its own root rather than a
+       * sub-block of `tcp`: it configures a bind address and an admission
+       * cap, not a remote endpoint, so the two blocks share only `framing`.
+       */
+      tcpServer: 'actor-ts.io.broker.tcp-server',
       udp: 'actor-ts.io.broker.udp',
       websocket: 'actor-ts.io.broker.websocket',
     },

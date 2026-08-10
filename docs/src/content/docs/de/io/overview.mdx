@@ -60,7 +60,8 @@ Subklassen implementieren drei Hooks (`connectImplementation`, `disconnectImplem
 | `WebsocketClientActor` | WebSocket | Ausgehende Verbindung (Broker-basierter Client). |
 | `websocket()`-Route + `WebsocketServerActor` | WebSocket | Eingehende Verbindungen — über die HTTP-Route-DSL gebunden, kein Broker. |
 | `SseActor` | Server-Sent Events | Client, der den Einweg-Event-Stream eines Servers konsumiert. |
-| `TcpSocketActor` | Raw TCP | Eigene Protokolle. |
+| `TcpSocketActor` | Raw TCP | Eigene Protokolle — ausgehende Verbindung. |
+| `TcpServerActor` | Raw TCP | Eigene Protokolle — bindet einen Port, bedient jede angenommene Verbindung. |
 | `UdpSocketActor` | Raw UDP | Telemetrie, Datagramme mit niedriger Latenz. |
 
 Jeder hat seine eigene Seite in diesem Abschnitt.  Diese Übersicht
