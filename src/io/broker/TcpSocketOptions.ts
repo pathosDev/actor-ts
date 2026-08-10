@@ -9,7 +9,8 @@
 import { BrokerOptionsBuilder, BrokerOptionsValidator } from './BrokerOptions.js';
 import type { BrokerCommonOptionsType } from './BrokerOptions.js';
 import type { ActorRef } from '../../ActorRef.js';
-import type { TcpFraming } from './TcpSocketActor.js';
+import { findFramingCapViolation } from './TcpFraming.js';
+import type { TcpFraming } from './TcpFraming.js';
 
 export interface TcpSocketOptionsType extends BrokerCommonOptionsType {
   /** Remote host. */
@@ -62,33 +63,10 @@ export class TcpSocketOptionsValidator extends BrokerOptionsValidator<TcpSocketO
     this.commonRules(s);
     this.nonEmptyString('host');
     this.port('port');
-    this.framingRules(s.framing);
-  }
-
-  /**
-   * `framing` carries the two inbound size caps, and both are DoS limits: a
-   * frame past the cap drops the connection instead of buffering without
-   * bound.  They sit one level down, so the check helpers — which are typed
-   * against the top-level fields of `TcpSocketOptionsType` — cannot reach
-   * them, and this is spelled out with `fail` instead.
-   *
-   * The failure mode is worse than a merely wrong number.  Both caps are
-   * applied as `length > cap`, and any comparison against `NaN` is `false` —
-   * so a non-numeric value read from HOCON does not clamp anything, it
-   * **removes the cap entirely** and restores the unbounded buffering the
-   * limit exists to prevent.  A zero or negative cap fails the other way,
-   * dropping every connection immediately.
-   */
-  private framingRules(framing: TcpFraming | undefined): void {
-    if (framing === undefined) return;
-    const check = (field: string, value: number | undefined): void => {
-      if (value === undefined) return; // unset falls through to the default
-      if (!Number.isSafeInteger(value) || value <= 0) {
-        this.fail(field, 'must be a positive integer number of bytes', value);
-      }
-    };
-    if (framing.kind === 'lines') check('framing.maxLineLen', framing.maxLineLen);
-    if (framing.kind === 'length-prefixed') check('framing.maxFrameLen', framing.maxFrameLen);
+    // Shared with TcpServerOptions — see findFramingCapViolation for why a
+    // bad cap is worse than a merely wrong number.
+    const violation = findFramingCapViolation(s.framing);
+    if (violation) this.fail(violation.field, violation.reason, violation.value);
   }
 }
 

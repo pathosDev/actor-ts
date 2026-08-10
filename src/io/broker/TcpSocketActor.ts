@@ -3,23 +3,19 @@ import type { Config } from '../../config/Config.js';
 import { ConfigKeys } from '../../config/ConfigKeys.js';
 import { Lazy } from '../../util/Lazy.js';
 import { BrokerActor, type OutboundEnvelope } from './BrokerActor.js';
+import {
+  DEFAULT_FRAMING,
+  DEFAULT_LINE_DELIMITER,
+  DEFAULT_MAX_FRAME_LENGTH,
+  DEFAULT_MAX_LINE_LENGTH,
+  appendChunk,
+  extractLengthPrefixedFrames,
+  extractLineFrames,
+  readFramingFromConfig,
+} from './TcpFraming.js';
+import type { FrameExtraction, TcpFrame } from './TcpFraming.js';
 import { TcpSocketOptionsValidator } from './TcpSocketOptions.js';
 import type { TcpSocketOptions, TcpSocketOptionsType } from './TcpSocketOptions.js';
-
-/**
- * Frame extraction strategy on the inbound stream.
- *
- *   - `bytes`     — every chunk delivered raw, no framing.  Subscriber
- *                   has to handle byte-stream semantics itself.
- *   - `lines`     — split on `delimiter` (default `'\n'`).  Most useful
- *                   for line-oriented protocols (HTTP/Telnet/Redis).
- *   - `length-prefixed` — first 4 bytes (big-endian uint32) carry the
- *                         payload size; what follows is the payload.
- */
-export type TcpFraming =
-  | { readonly kind: 'bytes' }
-  | { readonly kind: 'lines'; readonly delimiter?: string; readonly maxLineLen?: number }
-  | { readonly kind: 'length-prefixed'; readonly maxFrameLen?: number };
 
 /** Outbound payload — bytes or string (auto-encoded as UTF-8). */
 export type TcpOutbound = Uint8Array | string;
@@ -46,28 +42,13 @@ export class TcpSocketActor extends BrokerActor<TcpSocketOptionsType, TcpSocketC
 
   protected configKey(): string { return ConfigKeys.io.broker.tcp; }
   protected builtInDefaultOptions(): Partial<TcpSocketOptionsType> {
-    return { framing: { kind: 'bytes' } };
+    return { framing: DEFAULT_FRAMING };
   }
   protected readOptionsFromConfig(config: Config): Partial<TcpSocketOptionsType> {
     const out: { -readonly [K in keyof TcpSocketOptionsType]?: TcpSocketOptionsType[K] } = {};
     if (config.hasPath('host')) out.host = config.getString('host');
     if (config.hasPath('port')) out.port = config.getInt('port');
-    if (config.hasPath('framing')) {
-      const framingConfig = config.getConfig('framing');
-      const kind = framingConfig.getString('kind') as TcpFraming['kind'];
-      if (kind === 'lines') {
-        out.framing = {
-          kind, delimiter: framingConfig.hasPath('delimiter') ? framingConfig.getString('delimiter') : undefined,
-          maxLineLen: framingConfig.hasPath('maxLineLen') ? framingConfig.getInt('maxLineLen') : undefined,
-        };
-      } else if (kind === 'length-prefixed') {
-        out.framing = {
-          kind, maxFrameLen: framingConfig.hasPath('maxFrameLen') ? framingConfig.getInt('maxFrameLen') : undefined,
-        };
-      } else {
-        out.framing = { kind: 'bytes' };
-      }
-    }
+    if (config.hasPath('framing')) out.framing = readFramingFromConfig(config.getConfig('framing'));
     return out;
   }
   protected requiredOptions(): ReadonlyArray<keyof TcpSocketOptionsType> {
@@ -134,73 +115,47 @@ export class TcpSocketActor extends BrokerActor<TcpSocketOptionsType, TcpSocketC
   /* ---------------------------- framing ----------------------------- */
 
   private handleData(chunk: Uint8Array): void {
-    // Append to buffer.
-    if (this.inboundBuffer.length === 0) {
-      this.inboundBuffer = chunk;
-    } else {
-      const merged = new Uint8Array(this.inboundBuffer.length + chunk.length);
-      merged.set(this.inboundBuffer, 0);
-      merged.set(chunk, this.inboundBuffer.length);
-      this.inboundBuffer = merged;
-    }
-    const framing = this.options.framing ?? { kind: 'bytes' };
+    this.inboundBuffer = appendChunk(this.inboundBuffer, chunk);
+    const framing = this.options.framing ?? DEFAULT_FRAMING;
     if (framing.kind === 'bytes') {
       this.deliver(this.inboundBuffer);
       this.inboundBuffer = new Uint8Array(0);
     } else if (framing.kind === 'lines') {
-      this.extractLines(framing.delimiter ?? '\n', framing.maxLineLen ?? 1_048_576);
+      this.extractLines(
+        framing.delimiter ?? DEFAULT_LINE_DELIMITER,
+        framing.maxLineLen ?? DEFAULT_MAX_LINE_LENGTH,
+      );
     } else {
-      this.extractLengthPrefixed(framing.maxFrameLen ?? 16 * 1024 * 1024);
+      this.extractLengthPrefixed(framing.maxFrameLen ?? DEFAULT_MAX_FRAME_LENGTH);
     }
   }
 
   private extractLines(delimiter: string, maxLineLen: number): void {
-    const text = new TextDecoder('utf-8', { fatal: false }).decode(this.inboundBuffer);
-    let cursor = 0;
-    while (true) {
-      const index = text.indexOf(delimiter, cursor);
-      if (index < 0) break;
-      const line = text.slice(cursor, index);
-      if (line.length > maxLineLen) {
-        this.handleConnectionLost(new Error(`line exceeds maxLineLen=${maxLineLen}`));
-        return;
-      }
-      this.deliver(line);
-      cursor = index + delimiter.length;
-    }
-    // Pending (un-terminated) remainder: bytes after the last delimiter, or
-    // the whole buffer when no delimiter has arrived.  If it already exceeds
-    // maxLineLen it can never become a valid line, so a hostile / MITM'd peer
-    // streaming delimiter-free bytes can't grow inboundBuffer without bound
-    // (security audit BRK-1).
-    if (text.length - cursor > maxLineLen) {
-      this.handleConnectionLost(new Error(`unterminated line exceeds maxLineLen=${maxLineLen}`));
-      return;
-    }
-    if (cursor === 0) return;
-    // Re-encode the leftover suffix as bytes.
-    this.inboundBuffer = new TextEncoder().encode(text.slice(cursor));
+    this.applyExtraction(extractLineFrames(this.inboundBuffer, delimiter, maxLineLen));
   }
 
   private extractLengthPrefixed(maxFrameLen: number): void {
-    let cursor = 0;
-    const buffer = this.inboundBuffer;
-    while (buffer.length - cursor >= 4) {
-      const len = (buffer[cursor]! << 24 | buffer[cursor + 1]! << 16
-                 | buffer[cursor + 2]! << 8 | buffer[cursor + 3]!) >>> 0;
-      if (len > maxFrameLen) {
-        this.handleConnectionLost(new Error(`frame exceeds maxFrameLen=${maxFrameLen}`));
-        return;
-      }
-      if (buffer.length - cursor - 4 < len) break;
-      const frame = buffer.slice(cursor + 4, cursor + 4 + len);
-      this.deliver(frame);
-      cursor += 4 + len;
-    }
-    this.inboundBuffer = cursor === 0 ? buffer : buffer.slice(cursor);
+    this.applyExtraction(extractLengthPrefixedFrames(this.inboundBuffer, maxFrameLen));
   }
 
-  private deliver(frame: Uint8Array | string): void {
+  /**
+   * Deliver what the pass completed, then either drop the connection (a cap
+   * was breached) or keep the leftover for the next chunk.
+   *
+   * A breached cap takes the whole actor down because a client actor owns
+   * exactly one connection — the server's counterpart drops only the
+   * offending connection instead.
+   */
+  private applyExtraction(extraction: FrameExtraction): void {
+    for (const frame of extraction.frames) this.deliver(frame);
+    if (extraction.overflow !== undefined) {
+      this.handleConnectionLost(new Error(extraction.overflow));
+      return;
+    }
+    this.inboundBuffer = extraction.remainder;
+  }
+
+  private deliver(frame: TcpFrame): void {
     const target = this.options.target;
     if (target) target.tell(frame as never);
   }
