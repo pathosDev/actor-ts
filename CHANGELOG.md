@@ -11,6 +11,27 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Added
 
+- **Utility helpers on the public surface** (#1034).  `randomString`,
+  `randomHex`, `randomId`, `safeStringify` and `lazyImportModule` are now
+  re-exported from the root barrel, together with the `RandomStringOptions`
+  and `LazyImportOptions` types.  All five already existed under `src/util/`
+  and the framework runs on them; nothing but the barrel kept them from
+  consumers, since `package.json` ships only `dist/` and its `exports` map has
+  no wildcard.  Each answers a problem that does not stop at the framework
+  boundary: `randomId` names something so the name cannot be guessed — an
+  actor name ends up in an actor path, and a path is an address that anything
+  on the cluster wire can send to, which is why a counter is the wrong shape;
+  `safeStringify` renders a value on a path where `JSON.stringify` would throw
+  on a cycle or a `BigInt` and so replace the error being reported with one
+  thrown from inside the reporting code; `lazyImportModule` imports an
+  optional peer dependency or fails with a message naming the package and the
+  install command — the pattern the docs already recommend for user-written
+  integrations.  `wrapError`, `mergeOptions`, `CidrMatch` and the shared
+  `Constants` stay internal, and `TokenBucket` deliberately so: #636 is an
+  open bug in it and #666 changes its options shape, so exporting it now would
+  turn both into breaking changes to a published API.  Documented on the new
+  bilingual `reference/utility-helpers` page.
+
 - **`actor-ts.distributed-data` HOCON block** (#856).  DistributedData read
   no configuration at all before this; it now layers `gossip-interval`,
   `max-pending-quorum-requests` and `max-quorum-timeout` under the explicit

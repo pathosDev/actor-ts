@@ -80,6 +80,12 @@ A short tour of what's in the box:
   configurable thing (or a plain object), with values validated once on the
   merged settings (builder / object / HOCON alike) — a bad port, timeout, or
   URL throws an `OptionsError` at startup, not deep in a later code path.
+- **Utility primitives + helpers** — `Option<T>`, `Try<T>`, `Either<L, R>` and
+  `Lazy<T>` for Scala-style ergonomics, plus the small helpers the framework
+  itself runs on: `randomString` / `randomHex` / `randomId` (crypto entropy,
+  no modulo bias, exact length), `safeStringify` (a `JSON.stringify` for log
+  and error paths that cannot throw), `lazyImportModule` (import an optional
+  peer dependency, or fail with a message naming the install command).
 - **Observability** — Prometheus exporter, OTel tracing, management
   HTTP endpoints (`/health`, `/ready`, `/cluster/members`, `/sharding/regions`),
   out-of-the-box stock metrics.
