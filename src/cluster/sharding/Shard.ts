@@ -4,6 +4,7 @@ import { match, P } from 'ts-pattern';
 import { Actor } from '../../Actor.js';
 import type { ActorRef } from '../../ActorRef.js';
 import { Terminated } from '../../SystemMessages.js';
+import { BidirectionalMap } from '../../util/BidirectionalMap.js';
 import { Passivate } from './Passivate.js';
 import type {
   EntityEnvelope,
@@ -61,6 +62,19 @@ type EntityState = {
  */
 export class Shard extends Actor<ShardInbox> {
   private readonly entities = new Map<string, EntityState>();
+  /**
+   * Entity id ↔ the entity's actor path.
+   *
+   * `Passivate` and `Terminated` arrive carrying a ref and nothing else, so
+   * both used to find their entity by scanning every entry in `entities` —
+   * O(n) per stop, and therefore O(n²) to drain a shard during handoff, on
+   * the one path that runs once per entity rather than once per system.
+   *
+   * The path *string* is indexed rather than the ref, because that is what
+   * `ActorRef.equals` compares: two refs to the same entity are equal without
+   * being the same object, so a ref-keyed map would miss.
+   */
+  private readonly entityPaths = new BidirectionalMap<string, string>();
 
   constructor(public readonly config: ShardConfig) { super(); }
 
@@ -124,25 +138,22 @@ export class Shard extends Actor<ShardInbox> {
   private onPassivate(message: Passivate): void {
     const candidate = message.entity ?? this.sender.toNullable();
     if (!candidate) return;
-    for (const state of this.entities.values()) {
-      if (!state.ref.equals(candidate)) continue;
-      state.passivating = [];
-      candidate.tell(message.stopMessage as never);
-      return;
-    }
+    const state = this.entityFor(candidate);
+    if (!state) return;
+    state.passivating = [];
+    candidate.tell(message.stopMessage as never);
   }
 
   private onEntityTerminated(message: Terminated): void {
-    for (const [entityId, state] of this.entities) {
-      if (!state.ref.equals(message.actor)) continue;
-      const buffered = state.passivating ?? [];
-      this.entities.delete(entityId);
-      this.notifyRegion({ kind: 'sharding.EntityStopped', shardId: this.config.shardId, entityId });
-      // Recreates the entity and hands it everything that arrived while it
-      // was shutting down — same contract the region used to provide.
-      for (const pending of buffered) this.deliver(entityId, pending, null);
-      return;
-    }
+    const entityId = this.entityPaths.getKey(message.actor.path.toString());
+    if (entityId === undefined) return;
+    const buffered = this.entities.get(entityId)?.passivating ?? [];
+    this.entities.delete(entityId);
+    this.entityPaths.delete(entityId);
+    this.notifyRegion({ kind: 'sharding.EntityStopped', shardId: this.config.shardId, entityId });
+    // Recreates the entity and hands it everything that arrived while it
+    // was shutting down — same contract the region used to provide.
+    for (const pending of buffered) this.deliver(entityId, pending, null);
   }
 
   private onUnhandled(): void {
@@ -150,6 +161,12 @@ export class Shard extends Actor<ShardInbox> {
   }
 
   /* ------------------------------ Internals ------------------------------ */
+
+  /** The entity a ref belongs to, or null — `Passivate` and `Terminated` only carry a ref. */
+  private entityFor(ref: ActorRef): EntityState | null {
+    const entityId = this.entityPaths.getKey(ref.path.toString());
+    return entityId === undefined ? null : this.entities.get(entityId) ?? null;
+  }
 
   private deliver(entityId: string, message: unknown, sender: ActorRef | null): void {
     const existing = this.entities.get(entityId);
@@ -175,6 +192,7 @@ export class Shard extends Actor<ShardInbox> {
     this.context.watch(ref);
     const state: EntityState = { ref: ref as ActorRef<unknown>, passivating: null };
     this.entities.set(entityId, state);
+    this.entityPaths.set(entityId, ref.path.toString());
     this.notifyRegion({ kind: 'sharding.EntityStarted', shardId: this.config.shardId, entityId });
     return state;
   }
