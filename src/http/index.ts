@@ -66,6 +66,8 @@ export {
   SameOriginOptions,
   SameOriginOptionsBuilder,
   requestId,
+  requestIdOf,
+  DEFAULT_REQUEST_ID_HEADER,
   RequestIdOptions,
   RequestIdOptionsBuilder,
   BasicAuth,

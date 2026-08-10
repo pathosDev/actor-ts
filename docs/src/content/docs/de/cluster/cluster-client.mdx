@@ -108,6 +108,67 @@ Seine einzige Option, `askTimeoutMs`, begrenzt die Wartezeit, wenn
 ein Client-Envelope ein ask trägt; setze sie über
 `ClusterClientReceptionistOptions`.
 
+## Was ein Fehlschlag dem Client verrät
+
+**Ein ClusterClient ist kein Peer.**  Er spricht dieselbe Leitung
+wie ein Cluster-Mitglied — und genau deshalb lohnt es, die
+Unterscheidung auszusprechen: Er ist nie dem Membership-Ring
+beigetreten, trägt keine Gossip- oder Heartbeat-Pflicht, und ein
+Kontaktpunkt ist per Entwurf von außerhalb der Grenze erreichbar,
+die die clustereigenen Verbindungen schützt.  Ein abgeschlossenes
+`hello` berechtigt die Gegenstelle nicht zu den Interna des
+Clusters.
+
+Schlägt ein ask im Cluster fehl, reicht der Receptionist den
+Fehlertext daher **nicht** weiter.  Diesen Text schreibt der
+Actor, der zufällig gescheitert ist — dieselbe Klasse von String
+wie bei einem HTTP-500, mit Dateipfaden, SQL-Fragmenten oder
+einem Stack.  Der Client bekommt stattdessen einen festen Satz
+und eine Korrelations-Id:
+
+```
+ask failed on the cluster node (correlationId=6f1c…-…) — the reason is in that node's log
+```
+
+Der Volltext wird auf dem Node geloggt, der das ask ausgeführt
+hat — unter derselben Id, auf `warn`.  Ein externer Aufrufer
+nennt die Id, ein Operator greppt danach.  Der Grund geht nie
+über die Leitung.
+
+Ein unbekannter Pfad wird anders gemeldet, denn dort erfährt der
+Client nur etwas über seinen eigenen Request:
+
+```
+path not found: user/api/orders
+```
+
+Beachte, was *nicht* darin steht — die Adresse des Nodes.  Ein
+Kontaktpunkt steht oft hinter einem Load Balancer oder NAT, die
+Bind-Adresse ist also nicht die gewählte, und es gibt keinen
+Grund, sie herauszugeben.
+
+Muss ein Client wirklich auf einen bestimmten Fehlschlag
+reagieren, modelliere ihn als **Antwort, die der Actor selbst
+verfasst**, statt als Wurf:
+
+```ts
+class OrderActor extends Actor<OrderCommand> {
+  override onReceive(message: OrderCommand): void {
+    if (!this.stock.has(message.sku)) {
+      // A deliberate, authored answer — it reaches the client verbatim.
+      this.sender.forEach((s) => s.tell({ kind: 'rejected', reason: 'out-of-stock' }));
+      return;
+    }
+    // …
+  }
+}
+```
+
+Eine erfolgreiche Antwort wird unverändert durchgereicht;
+redigiert werden nur Fehlschläge.  So bleibt der Domänenvertrag
+explizit, statt das, was eine Exception zufällig sagt, zur API zu
+machen.
+
 ## Vergleich mit Cluster-fähigem ActorRef
 
 ```ts

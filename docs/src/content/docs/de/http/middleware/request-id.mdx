@@ -21,6 +21,26 @@ Eine eingehende ID wird nur übernommen, wenn sie wohlgeformt ist
 Response-Header; andernfalls wird eine frische `crypto.randomUUID()`
 generiert.
 
+## Die ID wieder auslesen
+
+`requestIdOf(request)` liefert die ID, die der Request trägt, oder
+`undefined` — wenn er keine trägt oder das Getragene dieselbe Formprüfung
+nicht besteht. Nimm sie überall dort statt eines rohen Header-Zugriffs, wo
+der Wert auf einer Logzeile landet: Ein client-kontrollierter String kann
+über einen eingebetteten Zeilenumbruch ganze Log-Einträge fälschen, und
+genau die Prüfung verhindert das.
+
+```ts
+import { requestIdOf } from 'actor-ts/http';
+
+system.log.error(`[http] ${req.method} ${req.path} (${requestIdOf(req) ?? '-'})`, err);
+```
+
+Zurück kommt, was der *Request* behauptet hat. Bei `trustIncoming: false` —
+wo die Middleware stromabwärts ihre eigene ID einsetzt — nenne daher den
+Header, statt den Wert als *die* ID auszugeben. Einen umbenannten Header
+übergibst du als zweites Argument.
+
 ## Konfiguration
 
 | Builder-Methode | Feld | Default |

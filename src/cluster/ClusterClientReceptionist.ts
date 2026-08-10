@@ -31,17 +31,20 @@
  *     kind: 'cluster-client-reply',
  *     askId: 'a-42',
  *     ok: true | false,
- *     body: unknown,                   // the reply, or error.message if !ok
+ *     body: unknown,                   // the reply, or a redacted reason if !ok
  *   }
  *
  * Receptionist failures (path not found, ask timeout) come back as
  * `{ ok: false, body: '<reason>' }` so the client always sees a
- * deterministic shape.
+ * deterministic shape.  That reason is written here and never quotes the
+ * failure the cluster actually suffered — see `onAskFailure` below for why
+ * a client is not a peer.
  */
 
 import type { ActorRef } from '../ActorRef.js';
 import type { ActorSystem } from '../ActorSystem.js';
 import { extensionId, type Extension, type ExtensionId } from '../Extension.js';
+import type { Logger } from '../Logger.js';
 import { DEFAULT_ASK_TIMEOUT_MS } from '../util/Constants.js';
 import { NodeAddress, type NodeAddressData } from './NodeAddress.js';
 import type { WireMessage } from './Protocol.js';
@@ -118,9 +121,12 @@ export class ClusterClientReceptionist implements Extension {
 
       if (!refOpt.isSome()) {
         // Unknown path — for asks, return an error reply; for tells, drop.
+        // The reply names the path the client itself asked for and nothing
+        // else: the node's own `selfAddress` used to ride along, which told
+        // an outside caller the address this node binds on — not necessarily
+        // the one it dialled, when a load balancer or NAT sits between them.
         if (env.askId !== undefined) {
-          this.sendReply(cluster, from, env.askId, false,
-            `path not found on cluster node ${cluster.selfAddress}: ${env.to}`);
+          this.sendReply(cluster, from, env.askId, false, `path not found: ${env.to}`);
         } else {
           log.debug(`cluster-client tell to unknown path ${env.to} — dropped`);
         }
@@ -142,8 +148,7 @@ export class ClusterClientReceptionist implements Extension {
           this.sendReply(cluster, from, env.askId!, true, reply);
         },
         (err: unknown) => {
-          const message = err instanceof Error ? err.message : String(err);
-          this.sendReply(cluster, from, env.askId!, false, message);
+          this.onAskFailure(cluster, from, env.askId!, err, log);
         },
       );
     });
@@ -159,6 +164,47 @@ export class ClusterClientReceptionist implements Extension {
   }
 
   /* --------------------------- internals ---------------------------- */
+
+  /**
+   * Answer a failed ask without quoting the failure.
+   *
+   * **A ClusterClient is not a peer.**  It speaks the same wire as a cluster
+   * member, which is exactly what makes the question worth answering out
+   * loud: it never joined the membership ring, carries no gossip or
+   * heartbeat duty, and a contact point is by design reachable from outside
+   * whatever boundary protects the cluster's own links.  Nothing about
+   * having completed a `hello` says the party on the other end is entitled
+   * to the cluster's internals — and this handler already takes that
+   * position elsewhere, replying down the connection the frame arrived on
+   * rather than to the `from` the payload claims (#711).
+   *
+   * The rejection text is authored by arbitrary user actor code, so it is
+   * the same class of string as the HTTP default 500's — file paths, SQL
+   * fragments, driver internals, sometimes a stack (#130).  It goes to this
+   * node's log; the client gets a fixed sentence plus a correlation id drawn
+   * here, which is the whole point of the exchange: an outside caller can
+   * quote the id in a ticket and an operator can `grep` for it, without the
+   * wire ever carrying the reason.
+   *
+   * The id is drawn locally rather than reusing `askId`, which the *client*
+   * chose: an id the node did not author is neither unique across clients
+   * nor safe to concatenate into a log line unchecked.
+   */
+  private onAskFailure(
+    cluster: Cluster,
+    from: NodeAddress,
+    askId: string,
+    err: unknown,
+    log: Logger,
+  ): void {
+    const correlationId = globalThis.crypto.randomUUID();
+    log.warn(`cluster-client ask failed (correlationId=${correlationId})`, err);
+    this.sendReply(
+      cluster, from, askId, false,
+      `ask failed on the cluster node (correlationId=${correlationId}) — `
+      + "the reason is in that node's log",
+    );
+  }
 
   private sendReply(
     cluster: Cluster,
