@@ -37,10 +37,11 @@ to the OS page cache, which flushes to disk on commit.
 
 ```ts
 type SqliteJournalOptions = {
-  path?:        string;     // file path, or ":memory:" for ephemeral
-  eventsTable?: string;     // default "events"
-  wal?:         boolean;    // enable WAL mode (recommended)
-  driver?:      SqliteDriver;   // explicit driver override
+  path?:           string;     // file path, or ":memory:" for ephemeral
+  eventsTable?:    string;     // default "events"
+  wal?:            boolean;    // enable WAL mode (recommended)
+  busyTimeoutMs?:  number;     // lock-wait budget, default 1000; 0 = fail fast
+  driver?:         SqliteDriver;   // explicit driver override
 };
 ```
 
@@ -126,6 +127,39 @@ WAL gives:
 The default is *off* to match SQLite's defaults; enable it
 explicitly when you go to production.
 
+### `busyTimeoutMs`
+
+```ts
+const sqliteJournalOptions = SqliteJournalOptions.create()
+  .withPath('...')
+  .withBusyTimeoutMs(1000);
+new SqliteJournal(sqliteJournalOptions)
+```
+
+How long a write waits for the database lock before giving up with
+`SQLITE_BUSY`.  Default **1000 ms**.  `0` disables the wait — a
+contended write fails on the first attempt.
+
+This one is set for you on purpose, because the drivers do not agree
+on it.  Their built-in defaults are 0 ms on `bun:sqlite` and
+`node:sqlite` but 5000 ms on `better-sqlite3`, so without an explicit
+value the *same* journal would fail instantly on Bun and Deno and
+block for five seconds on Node.  The framework stamps its own value on
+every connection it opens, which is what makes the three runtimes
+behave alike.
+
+Pick your own value with one thing in mind: the SQLite drivers are
+**synchronous**, so the wait is not idle time — it blocks the event
+loop, and nothing else in the process runs while it lasts, cluster
+heartbeats included.  That is why the default is 1000 ms rather than
+`better-sqlite3`'s 5000: the cluster failure detector calls a node
+unreachable after 2000 ms, so a five-second stall would be long enough
+for a node's own peers to give up on it.  Raise it only if you know
+your contention is short-lived and your node is not in a cluster.
+
+A negative value is rejected — SQLite reads it as "retry forever",
+which on a synchronous driver means an unbounded freeze.
+
 ### `driver`
 
 The framework auto-detects the right driver based on the runtime,
@@ -191,6 +225,16 @@ const database = driver.open('./app.db');
 
 const sharedOptions = SqliteDurableStateStoreOptions.create()
   .withDatabase(database);
+```
+
+A handle you opened yourself is one the store leaves alone, and that
+includes `busyTimeoutMs`: the store applies it only to connections it
+opens itself, because the pragma is per connection and re-tuning a
+shared handle would reach into every other store on it.  Set it
+yourself on a handle you own:
+
+```ts
+database.exec('PRAGMA busy_timeout = 1000;');
 ```
 
 The schema is the SQLite dialect's, identical to
@@ -281,6 +325,11 @@ import { Aside } from '@astrojs/starlight/components';
 
   For multi-process setups, use **Cassandra** (built for shared
   state) or **one SQLite per process** with strict pid partitioning.
+
+  If you share a file anyway, `busyTimeoutMs` is what decides whether a
+  write blocked by the other process waits or fails — and because the
+  driver is synchronous, that wait freezes your event loop for its
+  whole duration.
 </Aside>
 
 <Aside type="caution" title="Filesystem matters">
