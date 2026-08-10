@@ -21,8 +21,14 @@
  * `x-forwarded-for` must pass a custom `getClientIp` that reads the
  * header — the default DOES NOT trust `x-forwarded-for` because that
  * header is client-spoofable when there's no proxy in front.
+ *
+ * The CIDR parsing and matching themselves moved to `util/CidrMatch`
+ * when the cluster seed providers needed the same primitive (#145);
+ * this module keeps the policy (which header, fail-closed, 403) and
+ * borrows the arithmetic.
  */
 
+import { parseCidr, cidrMatches } from '../../util/CidrMatch.js';
 import { HttpError, Status } from '../types.js';
 import type { HttpRequest } from '../types.js';
 import type { Middleware } from '../Route.js';
@@ -45,19 +51,11 @@ export type IpAllowlistOptions = {
   readonly getClientIp?: (request: HttpRequest) => string | null | undefined;
 };
 
-/** A single parsed CIDR — stored as a normalised bigint + prefix length. */
-type ParsedCidr = {
-  readonly ipv6: boolean;          // true if the CIDR is an IPv6 net
-  readonly network: bigint;        // address with host-bits zeroed
-  readonly prefixBits: number;     // number of significant prefix bits
-  readonly totalBits: number;      // 32 for v4, 128 for v6
-};
-
 export function IpAllowlist(options: IpAllowlistOptions): Middleware {
   if (options.allow.length === 0) {
     throw new Error('IpAllowlist: `allow` must be a non-empty list of CIDRs');
   }
-  const parsed = options.allow.map(parseCidr);
+  const parsed = options.allow.map((cidr) => parseCidr(cidr, 'IpAllowlist'));
   const getClientIp = options.getClientIp ?? ((request) => request.remoteAddress);
 
   return async (request, next) => {
@@ -65,115 +63,10 @@ export function IpAllowlist(options: IpAllowlistOptions): Middleware {
     if (!rawIp) {
       throw new HttpError(Status.Forbidden, 'IP not allowed (no client address)');
     }
-    const matched = parsed.some((cidr) => ipMatches(rawIp, cidr));
+    const matched = parsed.some((cidr) => cidrMatches(rawIp, cidr));
     if (!matched) {
       throw new HttpError(Status.Forbidden, `IP not allowed: ${rawIp}`);
     }
     return next();
   };
-}
-
-/* ------------------------------- internals ------------------------------- */
-
-/** Parse a `<address>/<prefix>` CIDR.  Throws on syntactically-invalid input. */
-function parseCidr(cidr: string): ParsedCidr {
-  const slash = cidr.lastIndexOf('/');
-  if (slash < 0) {
-    throw new Error(`IpAllowlist: missing prefix length in CIDR "${cidr}"`);
-  }
-  const addr = cidr.slice(0, slash);
-  const prefixStr = cidr.slice(slash + 1);
-  const prefixBits = Number(prefixStr);
-  if (!Number.isInteger(prefixBits) || prefixBits < 0) {
-    throw new Error(`IpAllowlist: invalid prefix length in CIDR "${cidr}"`);
-  }
-  const ipv6 = addr.includes(':');
-  const totalBits = ipv6 ? 128 : 32;
-  if (prefixBits > totalBits) {
-    throw new Error(`IpAllowlist: prefix /${prefixBits} exceeds ${totalBits} bits in CIDR "${cidr}"`);
-  }
-  const fullMask = (BigInt(1) << BigInt(totalBits)) - BigInt(1);
-  const hostMask = fullMask >> BigInt(prefixBits);
-  const ipBn = ipToBigInt(addr, ipv6);
-  const network = ipBn & ~hostMask & fullMask;
-  return { ipv6, network, prefixBits, totalBits };
-}
-
-/** True if `ip` falls inside `cidr`.  Handles v4-in-v6 normalisation. */
-function ipMatches(ip: string, cidr: ParsedCidr): boolean {
-  // IPv4-mapped IPv6 (`::ffff:a.b.c.d`) — strip the prefix so a plain
-  // IPv4 CIDR can match a dual-stack socket peer.
-  const stripped = stripV4Mapped(ip);
-  const requestIpv6 = stripped.includes(':');
-  if (requestIpv6 !== cidr.ipv6) return false;
-  let candidate: bigint;
-  try {
-    candidate = ipToBigInt(stripped, requestIpv6);
-  } catch {
-    return false;  // unparseable address can't match any CIDR
-  }
-  const fullMask = (BigInt(1) << BigInt(cidr.totalBits)) - BigInt(1);
-  const hostMask = fullMask >> BigInt(cidr.prefixBits);
-  return (candidate & ~hostMask & fullMask) === cidr.network;
-}
-
-function stripV4Mapped(ip: string): string {
-  // `::ffff:1.2.3.4` (RFC 4291 v4-mapped) or `::1.2.3.4` (deprecated v4-compat).
-  if (ip.toLowerCase().startsWith('::ffff:') && ip.includes('.')) {
-    return ip.slice('::ffff:'.length);
-  }
-  if (ip.startsWith('::') && ip.length > 2 && ip.includes('.') && !ip.toLowerCase().includes('ffff')) {
-    return ip.slice(2);
-  }
-  return ip;
-}
-
-function ipToBigInt(ip: string, isV6: boolean): bigint {
-  if (!isV6) return ipv4ToBigInt(ip);
-  return ipv6ToBigInt(ip);
-}
-
-function ipv4ToBigInt(ip: string): bigint {
-  const parts = ip.split('.');
-  if (parts.length !== 4) throw new Error(`IpAllowlist: invalid IPv4 "${ip}"`);
-  let value = BigInt(0);
-  for (const part of parts) {
-    const octet = Number(part);
-    if (!Number.isInteger(octet) || octet < 0 || octet > 255) {
-      throw new Error(`IpAllowlist: invalid IPv4 octet in "${ip}"`);
-    }
-    value = (value << BigInt(8)) | BigInt(octet);
-  }
-  return value;
-}
-
-function ipv6ToBigInt(ip: string): bigint {
-  // Expand `::` to the full 8-group form.  Standard library doesn't
-  // expose a parser; this implementation handles all RFC 5952 forms
-  // we care about (with one `::` shorthand at most).
-  const halves = ip.split('::');
-  if (halves.length > 2) throw new Error(`IpAllowlist: invalid IPv6 (multiple "::") in "${ip}"`);
-  const left = halves[0] === '' ? [] : halves[0]!.split(':');
-  const right = halves[1] === undefined ? [] : (halves[1] === '' ? [] : halves[1]!.split(':'));
-  // Fill the middle with zeros so total length is 8 groups.
-  const missing = 8 - (left.length + right.length);
-  if (missing < 0 && halves.length === 1) {
-    // No `::` shorthand — must already be 8 groups.
-  } else if (missing < 0) {
-    throw new Error(`IpAllowlist: IPv6 "${ip}" has too many groups`);
-  }
-  const groups = halves.length === 1
-    ? ip.split(':')
-    : [...left, ...new Array(missing).fill('0'), ...right];
-  if (groups.length !== 8) {
-    throw new Error(`IpAllowlist: IPv6 "${ip}" did not expand to 8 groups (got ${groups.length})`);
-  }
-  let value = BigInt(0);
-  for (const group of groups) {
-    if (!/^[0-9a-fA-F]{1,4}$/.test(group)) {
-      throw new Error(`IpAllowlist: invalid IPv6 group "${group}" in "${ip}"`);
-    }
-    value = (value << BigInt(16)) | BigInt(parseInt(group, 16));
-  }
-  return value;
 }
