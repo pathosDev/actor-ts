@@ -23,9 +23,38 @@
  * Which shape is useful depends on what the resolver hands back — see
  * `DnsSeedProviderOptions`, where SRV mode yields hostnames and A-record
  * mode yields IPs.
+ *
+ * **Addresses are canonical-only, on both sides of every comparison.**
+ * An address that the socket layer would not call an IP must not be
+ * called an IP here either — see {@link CANONICAL_IPV4_OCTET} for what
+ * went wrong when it was.  Because the two callers share this file, the
+ * rule holds for cluster bootstrap and for HTTP routes at once.
  */
 
 import { match } from 'ts-pattern';
+
+/**
+ * A canonical dotted-quad octet: decimal, no leading zero, no sign, no
+ * exponent, no radix prefix, no surrounding whitespace.
+ *
+ * `Number()` accepts every one of those — `Number('1e1')`,
+ * `Number('010')` and `Number('0x0a')` are all `10` — so parsing an
+ * octet with it put `1e1.0.0.1` inside `10.0.0.0/8`, while
+ * `net.isIP('1e1.0.0.1')` is `0` and the transport therefore resolves
+ * the very same string through **DNS**.  The check said "inside the
+ * pinned network"; the socket went wherever the attacker's resolver
+ * pointed.  Agreeing with the socket layer about what an IP *is* is the
+ * entire point of the comparison, so the parser has to be at least as
+ * strict as `net.isIP`.
+ */
+const CANONICAL_IPV4_OCTET = /^(?:0|[1-9][0-9]{0,2})$/;
+
+/**
+ * A prefix length is plain decimal for the same reason.  `Number('')` is
+ * `0`, which turned a trailing-slash typo (`'10.0.0.0/'`) into `/0` — a
+ * pin meant to admit one network admitting the whole address space.
+ */
+const DECIMAL_PREFIX_LENGTH = /^(?:0|[1-9][0-9]*)$/;
 
 /** A single parsed CIDR — stored as a normalised bigint + prefix length. */
 export type ParsedCidr = {
@@ -63,10 +92,10 @@ export function parseCidr(cidr: string, errorSource: string): ParsedCidr {
   }
   const address = cidr.slice(0, slash);
   const prefixText = cidr.slice(slash + 1);
-  const prefixBits = Number(prefixText);
-  if (!Number.isInteger(prefixBits) || prefixBits < 0) {
+  if (!DECIMAL_PREFIX_LENGTH.test(prefixText)) {
     throw new Error(`${errorSource}: invalid prefix length in CIDR "${cidr}"`);
   }
+  const prefixBits = Number(prefixText);
   const ipv6 = address.includes(':');
   const totalBits = ipv6 ? 128 : 32;
   if (prefixBits > totalBits) {
@@ -134,6 +163,15 @@ export function addressPinRejection(entry: string): string | null {
   // pin list that quietly discards everything.
   if (isIpLiteral(trimmed)) {
     return 'is a bare IP address — write it as a CIDR (e.g. "10.0.0.1/32")';
+  }
+  // Same rule as above, for a *fragment* of a quad.  `matchesSuffix` is
+  // string arithmetic, so a pin like `0.1` matches the tail of any
+  // address ending `.0.1` — and a candidate that is IP-shaped but not
+  // canonical (`1e1.0.0.1`) is classified as a hostname, so it would
+  // reach that comparison.  No real DNS zone is all digits, so rejecting
+  // the shape costs nothing and removes the overlap entirely.
+  if (trimmed.split('.').every((label) => /^[0-9]+$/.test(label))) {
+    return 'looks like part of an IP address — write it as a CIDR (e.g. "10.0.0.0/8")';
   }
   if (trimmed.includes(':')) return 'host-suffix entries must not contain ":"';
   if (trimmed.replace(/\./g, '').length === 0) return 'host-suffix entries must name at least one label';
@@ -221,8 +259,11 @@ function ipv4ToBigInt(ip: string, errorSource: string): bigint {
   if (parts.length !== 4) throw new Error(`${errorSource}: invalid IPv4 "${ip}"`);
   let value = BigInt(0);
   for (const part of parts) {
+    if (!CANONICAL_IPV4_OCTET.test(part)) {
+      throw new Error(`${errorSource}: invalid IPv4 octet in "${ip}"`);
+    }
     const octet = Number(part);
-    if (!Number.isInteger(octet) || octet < 0 || octet > 255) {
+    if (octet > 255) {
       throw new Error(`${errorSource}: invalid IPv4 octet in "${ip}"`);
     }
     value = (value << BigInt(8)) | BigInt(octet);
@@ -230,6 +271,10 @@ function ipv4ToBigInt(ip: string, errorSource: string): bigint {
   return value;
 }
 
+// The IPv6 parser below was audited for the same weakness and does not
+// share it: every group goes through a `/^[0-9a-fA-F]{1,4}$/` test, so
+// there is no `Number()` coercion to smuggle an alternative spelling
+// through.  Left as it is rather than rewritten alongside the v4 half.
 function ipv6ToBigInt(ip: string, errorSource: string): bigint {
   // Expand `::` to the full 8-group form.  Standard library doesn't
   // expose a parser; this implementation handles all RFC 5952 forms

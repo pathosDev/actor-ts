@@ -144,6 +144,33 @@ new DnsSeedProvider(dnsSeedProviderOptions);
 The same guard rejects a bare `'10.0.0.1'` (write `'10.0.0.1/32'`),
 an empty list, and a malformed CIDR.
 
+### Addresses are compared in canonical form only
+
+Both sides of the comparison — the CIDRs you pin and the addresses
+the resolver hands back — must be **canonical**: decimal octets
+with no leading zero, no `0x`, no exponent, no whitespace, and a
+plain decimal prefix length.
+
+This is not pedantry.  `1e1.0.0.1`, `010.0.0.1` and `0x0a.0.0.1`
+all read as `10.0.0.1` to a lenient number parser, but the socket
+layer scores them as *not an IP* and resolves them through DNS
+instead — so an answer in one of those spellings would clear a
+`10.0.0.0/8` pin and then connect wherever the attacker's resolver
+pointed.  Anything non-canonical is now treated as a hostname, and
+a hostname is never matched against a CIDR pin.
+
+Two consequences worth knowing when upgrading:
+
+- A pin entry written non-canonically (`'010.0.0.0/8'`) throws at
+  construction instead of pinning a network you did not write.
+- A trailing-slash typo (`'10.0.0.0/'`) throws as well.  It used to
+  parse as `/0` — a pin meant to admit one network admitting the
+  entire address space.
+
+An all-numeric host suffix (`'0.1'`) is rejected too: suffix
+matching is string comparison, so such an entry would match the
+tail of unrelated addresses.  Pin a CIDR instead.
+
 Dropped addresses are **filtered, not fatal** — one stale record
 costs that record, not the whole bootstrap.  Each drop goes to
 `log`, which is worth wiring up: an over-tight pin list and an
