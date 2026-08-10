@@ -19,6 +19,7 @@ import type {
   MariaDbResult,
   MariaDbRow,
 } from '../../../../src/persistence/journals/MariaDbClient.js';
+import { pagePersistenceIds } from './PersistenceIdPaging.js';
 
 type EventRow = { persistence_id: string; sequence_nr: number; payload: string; tags: string | null; timestamp: number; };
 type TagRow = { persistence_id: string; sequence_nr: number; tag: string; timestamp: number; };
@@ -110,7 +111,8 @@ export class FakeMariaDbPool implements MariaDbPoolLike {
 
     if (/^SELECT DISTINCT persistence_id FROM/i.test(sql)) {
       const table = tableFrom(sql, 'FROM');
-      return [...new Set((this.events.get(table) ?? []).map((r) => r.persistence_id))].map((persistence_id) => ({ persistence_id }));
+      const distinct = [...new Set((this.events.get(table) ?? []).map((r) => r.persistence_id))];
+      return pagePersistenceIds(sql, distinct, valuesArray).map((persistence_id) => ({ persistence_id }));
     }
 
     if (/^DELETE FROM/i.test(sql)) {

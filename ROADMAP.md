@@ -33,6 +33,14 @@ This document tracks the planned direction.  Nothing here is committed work — 
 
 ## Done since the last roadmap update
 
+- **Unreleased:**
+  - **`allPersistenceIds` + `currentPersistenceIdsPaginated` (#156)** — the
+    read side can now enumerate entities as a live fan-out stream and as a
+    cursor-paginated walk, instead of only as one materialised array.  Paging
+    is pushed into the backend wherever a sorted key over ids exists —
+    `ORDER BY … LIMIT` on SQLite and the SQL dialects, an
+    `all_persistence_ids` clustering range on Cassandra
+
 - **v0.13.0 — names and lifecycle:**
   - **`Props` removed (#547)** — `spawn(MyActor, name)`; per-actor
     configuration is `ActorOptions`, a regular `XOptions` family.  The one
@@ -121,7 +129,6 @@ This document tracks the planned direction.  Nothing here is committed work — 
 ## Feature-parity quick wins
 
 - `Inbox` — synchronous adapter for non-actor callers — #181
-- PersistenceQuery `AllPersistenceIds` live + cursor-paginated `currentPersistenceIds` — #156
 - `DeathWatch.watchWith` — custom termination message — #159
 - `ShardCommand` types — `StartEntity`, `GetShardStats`, `GetClusterShardingStats` — #151
 
