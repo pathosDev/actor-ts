@@ -11,6 +11,75 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Added
 
+- **JetStream Key-Value actor** (#74).  `JetStreamKeyValueActor` +
+  `JetStreamKeyValueOptions` bring JetStream's KV view into the actor
+  system: `put` (with an optional `expectedRevision` for compare-and-swap
+  writes), `get`, `delete`, `purge`, `keys`, and a `watch` / `unwatch`
+  change feed.  Replies are `kind`-tagged messages delivered to the `target`
+  the command carries, the same request/reply seam `GrpcClientActor` uses; a
+  `watch` is held as desired state by `BrokerActor`, so it survives a
+  reconnect and one issued during an outage lands on the next connect.  A
+  per-key failure — a compare-and-swap conflict, say — is reported as
+  `keyValueOperationFailed` rather than thrown, because throwing out of the
+  dispatch path is how the base class learns the transport died.
+  Configurable under `actor-ts.io.broker.jetstream-key-value`.
+- **JetStream Object Store actor** (#74).  `JetStreamObjectStoreActor` +
+  `JetStreamObjectStoreOptions` cover the object-bucket view with `put`,
+  `get`, `delete`, `info` and `list`.  v1 moves an object as a **single
+  message** and enforces that with `maxObjectBytes` (1 MiB by default): an
+  oversized `put` is refused before the body enters the bounded outbound
+  buffer, and an oversized `get` is refused from the object's metadata
+  before the body is fetched — the buffer is sized in messages, not bytes,
+  and evicts oldest-first, so a multi-megabyte body riding it would mean
+  unbounded resident memory and silently discarded uploads.  Both refusals
+  answer `objectStoreOperationFailed` naming the limit; `info` and `list`
+  are unaffected.  Configurable under
+  `actor-ts.io.broker.jetstream-object-store`.
+- **DistributedPubSub anycast** (#155).  `Publish` takes a third argument,
+  `delivery`, and `'one-subscriber'` hands the message to exactly one
+  subscriber cluster-wide instead of all of them — the work-queue shape,
+  where N workers share a topic and every task is handled once, and the one
+  thing a broadcast bus cannot do without the workers coordinating among
+  themselves.  Selection rotates a per-topic cursor over the local
+  subscribers and the remote nodes claiming the topic, so ten tasks over
+  three workers land 4/3/3 rather than "probably roughly even"; a remote
+  node counts as one candidate however many subscribers sit behind it,
+  because the gossip frame deliberately carries topic names and not
+  subscriber counts (#80), which is also the granularity Akka routes at.
+  `ClusterRouter` has load-balanced across cluster members since 216db160,
+  but only over routees it spawns or looks up — anycast is for a recipient
+  set that registers and leaves at runtime and that the publisher never
+  names.  An anycast with no candidate, and one that crossed a hop to find
+  the far side's subscribers gone, both go to dead letters; the second is
+  not re-routed, which would trade the at-most-one-hop guarantee for a race
+  against the gossip round about to correct the sender.  **BREAKING:** the
+  third constructor slot used to be `sendOneMessageToEachGroup`, Akka's
+  per-consumer-group anycast flag, which nothing ever read because this
+  mediator has no groups for it to range over — replace `new Publish(topic,
+  message, true)` with `new Publish(topic, message, 'one-subscriber')`.
+- **Live and cursor-paginated persistence-id queries** (#156).
+  `PersistenceQuery` gains `allPersistenceIds()` — a live stream of every
+  persistence id the journal has seen plus each new one as it first appears,
+  the fan-out primitive for starting a per-entity consumer as its entity
+  shows up — and `currentPersistenceIdsPaginated()`, which walks the same
+  ids a page at a time (`pageSize`, default 256; `afterPersistenceId` to
+  resume) instead of materialising all of them into one array.  The cursor
+  is a persistence id rather than an opaque token, so a checkpoint stays
+  readable and reconstructible.  Paging is pushed into the backend wherever
+  a sorted key over ids exists — `ORDER BY … LIMIT` on SQLite and on all six
+  relational backends via `SqlDialect.rowLimit`, a clustering-column range
+  over the `all_persistence_ids` partition on Cassandra — through a new
+  **optional** `Journal.persistenceIdsPaginated`, which no journal
+  implementer has to add; MongoDB (`distinct` has no cursor) and DynamoDB (a
+  `Scan` has no order across partition keys) have no such index and fall
+  back to an in-process page.  **BREAKING:** the two query methods are
+  required on `PersistenceQuery`, so an out-of-tree `implements
+  PersistenceQuery` must add them — extend `InMemoryQuery` to inherit both,
+  or implement them over `Journal.persistenceIdsPaginated` and the exported
+  `persistenceIdPage` helper.  `currentPersistenceIds()` is unchanged and
+  deliberately not deprecated: a small journal is a permanent case, not a
+  legacy one.
+
 - **gRPC client-streaming as its own call mode** (#5).  `GrpcClientCommand`
   gains `clientStreamStart` / `clientStreamSend` / `clientStreamClose`, and
   `GrpcHandler` a fourth `clientStream` kind carrying a
