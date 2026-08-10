@@ -40,6 +40,11 @@ deckt es ab.
 - `Date`, `Uint8Array`, `Map`, `Set` und `bigint` — über Type-Tags
   (`__date__`, `__bytes__`, `__map__`, `__set__`, `__bigint__`)
   zurück in echte Instanzen round-getrippt.
+- [`BidirectionalMap`](/de/reference/utility-helpers/#bidirectionalmap--eine-map-mit-gepflegter-umkehrung)
+  — die einzige Framework-Klasse mit einem eigenen Tag
+  (`__bidirectionalmap__`, #1035), damit sie ohne Adapter im
+  persistenten State liegen kann.  Geschrieben wird nur ihre
+  Vorwärtsrichtung; die Umkehrung wird beim Dekodieren rekonstruiert.
 - `NaN` / `Infinity` / `-Infinity` / `-0`, `RegExp` (Source +
   Flags), `URL`, `Error` (Name + Message + Cause — ohne Stack) und
   jedes Typed Array / `DataView` / `ArrayBuffer` — ebenfalls über
