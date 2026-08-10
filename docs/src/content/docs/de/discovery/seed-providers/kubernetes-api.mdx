@@ -43,6 +43,8 @@ type KubernetesApiSeedProviderOptionsType = {
   systemName:      string;
   port:            number;
   fetchEndpoints?: () => Promise<string[]>;  // In-Cluster-API überschreiben
+  pinnedAddresses?: readonly string[];       // CIDRs, in die die Pod-IPs fallen müssen
+  log?: (message: string, error?: unknown) => void;
 };
 ```
 
@@ -53,11 +55,45 @@ type KubernetesApiSeedProviderOptionsType = {
 | `systemName` | Der Actor-System-Name, der auf jede entdeckte Adresse gestempelt wird. |
 | `port` | Der Cluster-Transport-Port auf jedem Backing-Pod. |
 | `fetchEndpoints` | Überschreibt die Endpoints-Fetch-Funktion — Default ist die In-Cluster-API. |
+| `pinnedAddresses` | CIDRs, in die die entdeckten Pod-IPs fallen müssen.  Unbesetzt heißt kein Pinning. |
+| `log` | Meldet Adressen, die `pinnedAddresses` verworfen hat.  Default: No-op. |
 
-Für Pods, die in-cluster laufen, ist nur `fetchEndpoints`
+Für Pods, die in-cluster laufen, sind nur die letzten drei Felder
 optional — das Framework liest die Endpoints vom Standard-API
 unter `https://kubernetes.default.svc` mit dem gemounteten
 ServiceAccount-Token.  Die anderen vier Felder sind Pflicht.
+
+## Das Pod-CIDR pinnen
+
+Ein `Endpoints`-Objekt darf **jede beliebige** IP nennen, auch
+eine, die keinem Pod im Cluster gehört.  `pinnedAddresses`
+begrenzt, wohin ein Schreibzugriff auf dieses Objekt den Bootstrap
+umlenken kann:
+
+```ts
+const kubernetesApiSeedProviderOptions = KubernetesApiSeedProviderOptions.create()
+  .withNamespace(process.env.K8S_NAMESPACE!)
+  .withServiceName('actor-ts')
+  .withSystemName('my-app')
+  .withPort(2552)
+  .withPinnedAddresses(['10.244.0.0/16'])
+  .withLog((message) => logger.warn(message));
+```
+
+Einträge sind hier **ausschließlich CIDRs** — Endpoints lösen immer
+zu IPs auf, ein Host-Suffix könnte also nie greifen und wird bei
+der Konstruktion abgelehnt, ebenso eine leere Liste und ein
+fehlerhaftes CIDR.  Adressen außerhalb der Liste werden
+herausgefiltert und über `log` gemeldet, eine Meldung pro
+verworfener Adresse.
+
+Dieser Provider ist ohnehin der besser verteidigte der beiden: der
+Default-Fetcher pinnt TLS auf die ServiceAccount-CA und erbt das
+Vertrauensproblem von DNS deshalb nicht so wie der
+[DNS-Provider](/de/discovery/seed-providers/dns/).  RBAC, das
+Endpoints schreiben darf, ist trotzdem ein sehr viel billigerer
+Fund als ein CA-Schlüssel — und genau das kostet dieser Pin einen
+Angreifer.
 
 ## RBAC
 
