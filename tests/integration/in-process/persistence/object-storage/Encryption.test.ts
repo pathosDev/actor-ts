@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import {
   aesGcmDecrypt,
   aesGcmEncrypt,
+  aesGcmEncryptSafe,
   deriveSubkey,
   IV_LENGTH,
   KEY_LENGTH,
@@ -105,6 +106,53 @@ describe('Encryption — AES-256-GCM round-trip', () => {
     const iv = randomIv();
     const ct = await aesGcmEncrypt(production, iv, new Uint8Array([4, 2]));
     await expect(aesGcmDecrypt(staging, iv, ct)).rejects.toThrow();
+  });
+});
+
+/* ================== #110 — IV generation moves inside ================== */
+
+describe('Encryption — aesGcmEncryptSafe', () => {
+  test('round-trips through aesGcmDecrypt using the IV it hands back', async () => {
+    const subkey = await deriveSubkey(masterKey, 'pid', info);
+    const sealed = await aesGcmEncryptSafe(subkey, new TextEncoder().encode('sealed and delivered'));
+    expect(sealed.iv.byteLength).toBe(IV_LENGTH);
+    const back = await aesGcmDecrypt(subkey, sealed.iv, sealed.ciphertext);
+    expect(new TextDecoder().decode(back)).toBe('sealed and delivered');
+  });
+
+  /*
+   * The invariant AES-GCM cannot survive losing.  Two messages sealed
+   * under one key with one IV leak the XOR of their plaintexts, and the
+   * auth tag's forgery resistance is gone for that key entirely — not
+   * just for the two colliding messages.
+   *
+   * Identical plaintext under an identical subkey is the case where a
+   * regression would be invisible: a fixed, cached or counter-reset IV
+   * still round-trips perfectly, so distinctness is the only property
+   * that catches it.  Hence a repeat count rather than two calls — that
+   * also catches a low-entropy source, which two draws would not.
+   */
+  test('never reuses an IV across calls with the same subkey and the same plaintext', async () => {
+    const subkey = await deriveSubkey(masterKey, 'pid', info);
+    const plaintext = new TextEncoder().encode('the same message, over and over');
+    const rounds = 256;
+    const ivs = new Set<string>();
+    const ciphertexts = new Set<string>();
+    for (let i = 0; i < rounds; i++) {
+      const sealed = await aesGcmEncryptSafe(subkey, plaintext);
+      expect(sealed.iv.byteLength).toBe(IV_LENGTH);
+      ivs.add(sealed.iv.join(','));
+      ciphertexts.add(sealed.ciphertext.join(','));
+    }
+    expect(ivs.size).toBe(rounds);
+    // Implied by distinct IVs, but asserted separately so a failure says
+    // which half broke.
+    expect(ciphertexts.size).toBe(rounds);
+  });
+
+  test('rejects a wrong-sized subkey', async () => {
+    await expect(aesGcmEncryptSafe(new Uint8Array(16), new Uint8Array([1, 2, 3])))
+      .rejects.toThrow(/32 bytes/);
   });
 });
 

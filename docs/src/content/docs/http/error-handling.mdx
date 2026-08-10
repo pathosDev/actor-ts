@@ -87,6 +87,49 @@ const binding = await system.http(8080)
   .bind(routes);
 ```
 
+## What the client sees, and what you keep
+
+The generic 500 at step 3 carries `{ "error": "Internal Server Error" }` and
+nothing else — deliberately. The thrown text routinely holds file paths, SQL
+fragments, connection strings or a stack, and a 500 is by definition a case
+nobody wrote a message for.
+
+That redaction only works because the detail survives on the server. The
+framework logs every throw that escapes `handleErrors` at **`error`**, and
+passes the error *value* through, so a sink that formats stacks still gets
+one:
+
+```
+[http] POST /api/orders → 500 after 12 ms [x-request-id=01J8Z…]
+```
+
+A thrown `HttpError` is not in that log — it is a response the handler chose
+(a `404`, a `401`), so it stays on the per-request `debug` line rather than
+crying wolf. The same applies to a throw inside a `fallback` route, which is
+mapped to a 500 without being re-thrown: without the log line it would leave
+no trace anywhere.
+
+The `[x-request-id=…]` suffix appears when the request carried that header
+and its value is a well-formed id — see
+**[Request id](/http/middleware/request-id/)**. Read it yourself with
+`requestIdOf(request)` rather than by hand: it applies the same shape check,
+which is what keeps a client-controlled string from forging a log record
+through an embedded newline.
+
+```ts
+import { requestIdOf } from 'actor-ts/http';
+
+const binding = await system.http(8080)
+  .withErrorHandler((err, req) => {
+    system.log.error(`[http] ${req.method} ${req.path} (${requestIdOf(req) ?? '-'})`, err);
+    return completeJson(Status.InternalServerError, { error: 'internal error' });
+  })
+  .bind(routes);
+```
+
+If you renamed the header via `requestId({ headerName })`, the framework's
+own line still reads the default one — log your id from `withErrorHandler`.
+
 ## Precedence
 
 | Order | Layer | Sees |

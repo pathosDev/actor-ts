@@ -1,5 +1,6 @@
 import Fastify, { type FastifyReply, type FastifyRequest } from 'fastify';
 import { HttpError, type HttpRequest, type HttpResponse } from '../types.js';
+import { DEFAULT_RESPONSE_SECURITY_HEADERS } from './HttpServerBackend.js';
 import type {
   HttpServerBackend,
   RouteRegistration,
@@ -45,6 +46,7 @@ export class FastifyBackend implements HttpServerBackend {
   private userErrorHandler:
     | ((err: unknown, request: HttpRequest) => Promise<HttpResponse> | HttpResponse)
     | null = null;
+  private defaultResponseHeaders: Readonly<Record<string, string>> = DEFAULT_RESPONSE_SECURITY_HEADERS;
 
   constructor(options: object = { logger: false }) {
     this.app = (Fastify as (o?: object) => FastifyLike)(options);
@@ -94,6 +96,10 @@ export class FastifyBackend implements HttpServerBackend {
       const response = await handler(adapted);
       this.writeResponse(reply, response);
     });
+  }
+
+  setDefaultResponseHeaders(headers: Readonly<Record<string, string>>): void {
+    this.defaultResponseHeaders = headers;
   }
 
   setErrorHandler(handler: (err: unknown, request: HttpRequest) => Promise<HttpResponse> | HttpResponse): void {
@@ -253,8 +259,18 @@ export class FastifyBackend implements HttpServerBackend {
     return null;
   }
 
+  /**
+   * Write the server-wide defaults first — `reply.header` replaces, so
+   * anything the response carries itself overwrites them.  Fastify lower-cases
+   * header names, so the precedence holds regardless of the caller's spelling.
+   */
+  private applyDefaultResponseHeaders(reply: FastifyReply): void {
+    for (const [key, value] of Object.entries(this.defaultResponseHeaders)) reply.header(key, value);
+  }
+
   private writeResponse(reply: FastifyReply, response: HttpResponse): void {
     reply.status(response.status);
+    this.applyDefaultResponseHeaders(reply);
     if (response.headers) for (const [key, value] of Object.entries(response.headers)) reply.header(key, value);
     if (response.contentType) reply.header('content-type', response.contentType);
     if (response.body === undefined || response.body === null) {
@@ -302,6 +318,7 @@ export class FastifyBackend implements HttpServerBackend {
   }
 
   private writeError(reply: FastifyReply, err: unknown): void {
+    this.applyDefaultResponseHeaders(reply);
     if (err instanceof HttpError) {
       reply.status(err.status);
       if (err.headers) for (const [k, v] of Object.entries(err.headers)) reply.header(k, v);

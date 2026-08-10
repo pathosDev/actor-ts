@@ -66,6 +66,8 @@ export {
   SameOriginOptions,
   SameOriginOptionsBuilder,
   requestId,
+  requestIdOf,
+  DEFAULT_REQUEST_ID_HEADER,
   RequestIdOptions,
   RequestIdOptionsBuilder,
   BasicAuth,
@@ -126,6 +128,7 @@ export type { ExpressBackendOptionsType } from './backend/ExpressBackendOptions.
 export { HonoBackend } from './backend/HonoBackend.js';
 export { HonoBackendOptions, HonoBackendOptionsBuilder, HonoBackendOptionsValidator } from './backend/HonoBackendOptions.js';
 export type { HonoBackendOptionsType } from './backend/HonoBackendOptions.js';
+export { DEFAULT_RESPONSE_SECURITY_HEADERS } from './backend/HttpServerBackend.js';
 export type {
   HttpServerBackend,
   RouteRegistration,

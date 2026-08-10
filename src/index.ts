@@ -231,6 +231,7 @@ export {
   roundRobinStrategy,
   randomStrategy,
   broadcastStrategy,
+  smallestMailboxStrategy,
 } from './Router.js';
 export type { RoutingStrategy, RouterState } from './Router.js';
 

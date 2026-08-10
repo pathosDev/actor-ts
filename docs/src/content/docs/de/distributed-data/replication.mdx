@@ -56,6 +56,17 @@ Für typische Anwendungen:
 | Counter / Flags, die sich selten ändern | 2-5 s |
 | Sehr große Cluster, wo Bandbreite zählt | 5-10 s |
 
+Derselbe Knopf ist auch aus der `application.conf` setzbar, ein Deployment
+kann ihn also ohne Rebuild tunen — wo beides gesetzt ist, gewinnt weiterhin
+der Builder:
+
+```hocon
+actor-ts.distributed-data.gossip-interval = 2s
+```
+
+Den Rest des Blocks findest du unter
+[Konfiguration](/de/reference/configuration/#actor-tsdistributed-data).
+
 ## Was gegossipt wird
 
 **Der vollständige State** — bei jedem Tick serialisiert

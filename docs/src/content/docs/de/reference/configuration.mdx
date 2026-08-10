@@ -67,6 +67,12 @@ actor-ts {
     }
   }
 
+  distributed-data {
+    gossip-interval             = 1s
+    max-pending-quorum-requests = 1000    # 0 = kein Cap
+    max-quorum-timeout          = 30s     # 0 = keine Obergrenze
+  }
+
   remote {
     tcp {
       host = "0.0.0.0"
@@ -187,6 +193,38 @@ Beide Blöcke liegen unter dem, was dem `start(...)` der Extension
 übergeben wurde — ein explizites `withMaxTopics(…)` gewinnt also
 weiterhin.  Gestoppte Subscriber werden vom Death Watch freigegeben und
 zählen gegen keine der Grenzen.
+
+### `actor-ts.distributed-data`
+
+| Key | Default | Zweck |
+| --- | --- | --- |
+| `distributed-data.gossip-interval` | `1s` | Wie oft eine Replika ihren kompletten Key-Satz an einen zufälligen Peer schickt. |
+| `distributed-data.max-pending-quorum-requests` | `1000` | Obergrenze für offene Quorum-Requests — `updateAsync` und `getAsync` teilen sich ein Budget.  Ein Request darüber wird direkt abgelehnt.  `0` deaktiviert das Cap. |
+| `distributed-data.max-quorum-timeout` | `30s` | Obergrenze für das `timeoutMs` eines Aufrufs; ein größerer Wert wird darauf heruntergeschnitten.  `0` deaktiviert die Obergrenze. |
+
+Der Block liegt auf oberster Ebene statt unter `cluster.*` (wo `pub-sub`
+und `receptionist` wohnen), weil das Modul dort liegt: `DistributedData`
+kommt aus `src/crdt/`, und der Cluster ist ein positionales Argument von
+`start(cluster)`, kein Tunable davon.  `durableStore` hat hier keinen Key —
+es ist eine `DurableStateStore`-Instanz, die eine Config-Datei nicht
+ausdrücken kann.
+
+Beide Caps gibt es, weil die Mailbox des Replikators schon eines hat — und
+ihres hier schlecht ausgeht.  Der Replikator läuft auf der bounded
+Default-Mailbox (10 000 Einträge, `drop-head`), bei Sättigung wird also der
+*älteste* Envelope verworfen — und ein wartender `ddata-update` trägt
+`resolve` / `reject` des Aufrufers in sich.  Ihn zu verwerfen lässt
+`updateAsync` auf ein Promise warten, das nie settlet, ohne jeden Logeintrag.
+Deutlich unter der Mailbox-Kapazität gesetzt, macht
+`max-pending-quorum-requests` aus diesem stillen Drop einen expliziten
+Fehler, der den Knopf beim Namen nennt; auf 10 000 gesetzt griffe es nie
+zuerst und würde nichts umwandeln.  Siehe
+[Quorum-Reads und -Writes](/de/distributed-data/quorum-reads-writes/).
+
+`max-quorum-timeout` begrenzt die andere Achse.  Ein offener Request hält
+seinen Slot über die gesamte Deadline, ein einzelner Aufrufer mit einem
+stundenlangen `timeoutMs` parkt also das Budget für Stunden und sperrt
+spätere Aufrufer aus, die dem Cap selbst nie nahe kamen.
 
 ### `actor-ts.remote`
 

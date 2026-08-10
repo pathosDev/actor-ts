@@ -54,6 +54,16 @@ For typical applications:
 | Counters / flags that change rarely | 2-5 s |
 | Very large clusters where bandwidth matters | 5-10 s |
 
+The same knob is settable from `application.conf`, so a deployment can
+tune it without a rebuild — the builder still wins where both are set:
+
+```hocon
+actor-ts.distributed-data.gossip-interval = 2s
+```
+
+See [Configuration](/reference/configuration/#actor-tsdistributed-data)
+for the rest of the block.
+
 ## What gets gossiped
 
 **The full state** — each tick, DistributedData serializes every

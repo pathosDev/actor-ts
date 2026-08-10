@@ -87,6 +87,50 @@ const binding = await system.http(8080)
   .bind(routes);
 ```
 
+## Was der Client sieht — und was du behältst
+
+Der generische 500 aus Schritt 3 trägt `{ "error": "Internal Server Error" }`
+und sonst nichts — mit Absicht. Der geworfene Text enthält regelmäßig
+Dateipfade, SQL-Fragmente, Connection-Strings oder einen Stack, und ein 500
+ist per Definition ein Fall, für den niemand eine Meldung geschrieben hat.
+
+Diese Redaktion funktioniert nur, weil das Detail serverseitig überlebt. Das
+Framework loggt jeden Wurf, der `handleErrors` entkommt, auf **`error`** und
+reicht den Fehler*wert* durch, damit eine Senke, die Stacks formatiert,
+weiterhin einen bekommt:
+
+```
+[http] POST /api/orders → 500 after 12 ms [x-request-id=01J8Z…]
+```
+
+Ein geworfenes `HttpError` steht nicht in diesem Log — es ist eine Response,
+die der Handler gewählt hat (ein `404`, ein `401`), und bleibt daher auf der
+`debug`-Zeile pro Request, statt falschen Alarm zu schlagen. Dasselbe gilt
+für einen Wurf in einer `fallback`-Route, der zu einem 500 gemappt und nicht
+erneut geworfen wird: ohne die Logzeile bliebe davon nirgends eine Spur.
+
+Der Zusatz `[x-request-id=…]` erscheint, wenn der Request diesen Header trug
+und sein Wert eine wohlgeformte Id ist — siehe
+**[Request-Id](/de/http/middleware/request-id/)**. Lies sie mit
+`requestIdOf(request)` statt von Hand: die Funktion wendet dieselbe
+Formprüfung an, und genau die verhindert, dass ein client-kontrollierter
+String über einen eingebetteten Zeilenumbruch einen Log-Eintrag fälscht.
+
+```ts
+import { requestIdOf } from 'actor-ts/http';
+
+const binding = await system.http(8080)
+  .withErrorHandler((err, req) => {
+    system.log.error(`[http] ${req.method} ${req.path} (${requestIdOf(req) ?? '-'})`, err);
+    return completeJson(Status.InternalServerError, { error: 'internal error' });
+  })
+  .bind(routes);
+```
+
+Hast du den Header über `requestId({ headerName })` umbenannt, liest die
+Zeile des Frameworks weiterhin den Default — logge deine Id dann aus
+`withErrorHandler`.
+
 ## Präzedenz
 
 | Reihenfolge | Schicht | Sieht |

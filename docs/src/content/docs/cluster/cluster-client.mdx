@@ -103,6 +103,62 @@ Its one option, `askTimeoutMs`, bounds the wait when a client
 envelope carries an ask; set it via
 `ClusterClientReceptionistOptions`.
 
+## What a failure tells the client
+
+**A ClusterClient is not a peer.**  It speaks the same wire as a
+cluster member, which is exactly why the distinction is worth
+stating: it never joined the membership ring, carries no gossip
+or heartbeat duty, and a contact point is by design reachable
+from outside whatever boundary protects the cluster's own links.
+Completing a `hello` does not entitle the party on the other end
+to the cluster's internals.
+
+So when an ask fails inside the cluster, the receptionist does
+**not** forward the rejection text.  That text is written by
+whatever actor happened to fail — the same class of string as an
+HTTP 500's, carrying file paths, SQL fragments or a stack.  The
+client gets a fixed sentence and a correlation id instead:
+
+```
+ask failed on the cluster node (correlationId=6f1c…-…) — the reason is in that node's log
+```
+
+The full text is logged on the node that ran the ask, under the
+same id, at `warn`.  An outside caller quotes the id; an operator
+greps for it.  Nothing carries the reason over the wire.
+
+An unknown path is reported differently, because there the client
+only learns about its own request:
+
+```
+path not found: user/api/orders
+```
+
+Note what is *not* in it — the node's own address.  A contact
+point is often behind a load balancer or NAT, so the address it
+binds on is not the one the client dialled, and there is no
+reason to hand it out.
+
+If a client genuinely needs to act on a specific failure, model
+it as a **reply the actor authors** rather than as a throw:
+
+```ts
+class OrderActor extends Actor<OrderCommand> {
+  override onReceive(message: OrderCommand): void {
+    if (!this.stock.has(message.sku)) {
+      // A deliberate, authored answer — it reaches the client verbatim.
+      this.sender.forEach((s) => s.tell({ kind: 'rejected', reason: 'out-of-stock' }));
+      return;
+    }
+    // …
+  }
+}
+```
+
+A successful reply is passed through untouched; only failures are
+redacted.  That keeps the domain contract explicit instead of
+turning whatever an exception happened to say into an API.
+
 ## Comparison with cluster-aware ActorRef
 
 ```ts

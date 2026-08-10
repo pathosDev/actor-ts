@@ -1,6 +1,8 @@
 /**
  * Internal header helpers shared by the response-decorating middleware
- * (CORS, security headers, HSTS, …).  Not part of the public API.
+ * (CORS, security headers, HSTS, …) and by the backends' WebSocket
+ * upgrade-reject path, which has an `HttpResponse` but no framework
+ * response object to set headers on.  Not part of the public API.
  */
 import type { HttpResponse } from '../types.js';
 
