@@ -23,6 +23,7 @@ import type {
   LibSqlStatement,
   LibSqlTransactionLike,
 } from '../../../../src/persistence/journals/LibSqlClient.js';
+import { pagePersistenceIds } from './PersistenceIdPaging.js';
 
 type EventRow = { persistence_id: string; sequence_nr: number; payload: string; tags: string | null; timestamp: number; };
 type TagRow = { persistence_id: string; sequence_nr: number; tag: string; timestamp: number; };
@@ -124,7 +125,8 @@ export class FakeLibSqlClient implements LibSqlClientLike {
 
     if (/^SELECT DISTINCT persistence_id FROM/i.test(sql)) {
       const table = tableAfter(sql, 'FROM');
-      const ids = [...new Set((this.events.get(table) ?? []).map((row) => row.persistence_id))];
+      const distinct = [...new Set((this.events.get(table) ?? []).map((row) => row.persistence_id))];
+      const ids = pagePersistenceIds(sql, distinct, args);
       return rowsOnly(ids.map((persistence_id) => ({ persistence_id })));
     }
 

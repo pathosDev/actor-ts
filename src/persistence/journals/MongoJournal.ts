@@ -200,6 +200,16 @@ export class MongoJournal extends MongoStore implements Journal {
     }
   }
 
+  /**
+   * No `persistenceIdsPaginated` counterpart, deliberately.  `distinct` is the
+   * only way to reach the id set through this driver shim and it has no
+   * cursor, so a "page" would still be the whole `distinct` result sliced in
+   * JS — the fallback in the query layer already does exactly that, and doing
+   * it here would only hide that no work was pushed down.  A real push-down
+   * wants a `$group`/`$sort`/`$limit` pipeline, which means widening
+   * `MongoCollectionLike` with `aggregate`; that is a change worth making on
+   * its own evidence, not as a side effect of #156.
+   */
   async persistenceIds(): Promise<string[]> {
     const { database } = await this.ensureOpen();
     try {

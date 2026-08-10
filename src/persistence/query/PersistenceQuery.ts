@@ -20,9 +20,14 @@ import type { PersistentEvent } from '../JournalTypes.js';
  * mid-event must accept that the event will be redelivered after
  * restart.  Handlers therefore have to be idempotent.
  *
- * **Pull-only.**  The first iteration polls.  Push-based subscribe
- * (via the system's `EventStream`) is intentionally deferred — see
- * issue #36 / the roadmap plan.
+ * **Push where the journal can push (#42).**  A live query subscribes
+ * to `journal.events` when the journal exposes one, and polls at
+ * `pollIntervalMs` when it does not.  So an in-process journal
+ * delivers within a tick while a cross-process one (Cassandra,
+ * Postgres) — where an in-process bus could not see another node's
+ * writes anyway — keeps the polling loop.  Which of the two is in
+ * play is invisible to the consumer: the iteration contract is the
+ * same either way.
  */
 export interface PersistenceQuery {
   /**
@@ -76,12 +81,62 @@ export interface PersistenceQuery {
   ): Promise<TaggedEvent<E>[]>;
 
   /**
-   * Snapshot of every persistence id known to the journal.  Resolves
-   * once.  Useful for fan-out projections that subscribe to one
-   * stream per id; pair with `eventsByPersistenceId` for the
-   * continuous read.
+   * Snapshot of every persistence id known to the journal, as one
+   * array.  Resolves once.
+   *
+   * Kept, and not deprecated: for a journal with a handful of ids this
+   * is simply the convenient shape, and "small journal" is a permanent
+   * case rather than a legacy one.  It is, however, the only method
+   * here with no bound on what it materialises — at a million ids that
+   * is a million strings in one allocation.  Past the point where the
+   * array itself is a cost, use {@link currentPersistenceIdsPaginated},
+   * which walks the same data one page at a time.
    */
   currentPersistenceIds(): Promise<string[]>;
+
+  /**
+   * Cursor-paginated snapshot of the persistence ids currently in the
+   * journal, ascending, yielded one at a time.  Fetches `pageSize` ids
+   * per round-trip, so peak memory is one page rather than the whole
+   * set.  Completes when the journal is exhausted — unlike
+   * {@link allPersistenceIds} it does not wait for new ids.
+   *
+   * **The cursor is a persistence id, not an opaque token.**  Resume a
+   * partial walk by passing the last id you handled as
+   * `afterPersistenceId`.  Encoding it would have bought per-backend
+   * freedom that no backend here needs — every one of them enumerates
+   * ids through an index keyed on the id itself — at the price of a
+   * checkpoint no operator can read and no other process can
+   * construct.
+   */
+  currentPersistenceIdsPaginated(options?: PaginationOptions): AsyncIterable<string>;
+
+  /**
+   * Live stream of every persistence id the journal has ever seen, plus
+   * each new one as it first appears.  The stream never completes on
+   * its own — break out of the loop or call `return()` on the iterator.
+   *
+   * This is the fan-out primitive: start a per-entity projection as its
+   * entity shows up, instead of polling `currentPersistenceIds` and
+   * diffing the result yourself.
+   *
+   * **Once per stream, not once per journal.**  A fresh subscription
+   * re-emits every id, so a consumer that must not act twice across a
+   * restart needs its own checkpoint — the same at-least-once posture
+   * the event queries have.
+   *
+   * **Memory.**  "Once per stream" is enforced with an in-process set
+   * of the ids emitted so far, so a stream over a journal with a
+   * million ids holds a million strings for as long as it runs.  A
+   * lexicographic watermark would be cheaper and wrong: ids are not
+   * created in sorted order, so an id that sorts below the mark would
+   * be skipped forever, and a fan-out projection that silently never
+   * starts is the worst failure this API could have.  The catch-up
+   * sweep is paged, so the peak is the set plus one page — and a
+   * one-shot enumeration that needs no set at all is
+   * {@link currentPersistenceIdsPaginated}.
+   */
+  allPersistenceIds(options?: LiveQueryOptions): AsyncIterable<string>;
 }
 
 /**
@@ -92,6 +147,45 @@ export type LiveQueryOptions = {
   /** Poll interval in ms.  Default: `1_000` (1 second). */
   readonly pollIntervalMs?: number;
 };
+
+/** Tunables for a cursor-paginated one-shot query. */
+export type PaginationOptions = {
+  /** Ids fetched per round-trip.  Default: {@link defaultPersistenceIdPageSize}. */
+  readonly pageSize?: number;
+  /**
+   * Resume after this persistence id, exclusive — the last id a
+   * previous walk handled.  Omit to start at the first id.
+   */
+  readonly afterPersistenceId?: string;
+};
+
+/**
+ * Ids per round-trip when the caller does not say.  Large enough that a
+ * page walk is not round-trip-bound, small enough that a page is not
+ * itself the allocation the pagination exists to avoid.
+ */
+export const defaultPersistenceIdPageSize = 256;
+
+/**
+ * Turn a caller-supplied page size into a usable positive integer.
+ *
+ * Not merely defensive.  A page size reaches SQL as a **literal**:
+ * `SqlDialect.rowLimit` builds the trailing clause from the count
+ * because T-SQL's `OFFSET … FETCH NEXT` is not one parameter but a
+ * different clause shape, so there is no placeholder to bind.  Flooring
+ * to an integer is therefore what keeps a caller's `pageSize` out of
+ * the statement text as anything but a number.  The `>= 1` floor is the
+ * second half: a zero-sized page ends no paging loop, it just spins.
+ * `Infinity` — which the original design sketch suggested passing to
+ * mean "no pagination" — falls back to the default rather than
+ * producing `LIMIT Infinity`.
+ */
+export function resolvePageSize(pageSize: number | undefined): number {
+  if (pageSize === undefined || !Number.isFinite(pageSize)) {
+    return defaultPersistenceIdPageSize;
+  }
+  return Math.max(1, Math.floor(pageSize));
+}
 
 /**
  * Cursor used by tag queries.  Composite by design so two events that

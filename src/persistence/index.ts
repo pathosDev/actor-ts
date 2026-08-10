@@ -487,6 +487,7 @@ export type {
   PersistenceQuery,
   LiveQueryOptions,
   Offset,
+  PaginationOptions,
   TaggedEvent,
   TagFilter,
   TagFilterSpec,
@@ -500,7 +501,12 @@ export {
   normalizeTagFilter,
   eventMatchesTagFilter,
   tagFilterCursorKey,
+  defaultPersistenceIdPageSize,
 } from './query/PersistenceQuery.js';
+// #156 — the paging semantics `Journal.persistenceIdsPaginated` has to match,
+// exported so an out-of-tree journal can implement the optional method against
+// the same definition the in-repo backends are checked against.
+export { persistenceIdPage } from './Journal.js';
 export { InMemoryQuery } from './query/InMemoryQuery.js';
 export { SqliteQuery } from './query/SqliteQuery.js';
 export { CassandraQuery } from './query/CassandraQuery.js';

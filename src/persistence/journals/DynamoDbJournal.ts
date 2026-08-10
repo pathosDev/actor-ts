@@ -223,6 +223,15 @@ export class DynamoDbJournal extends DynamoDbStore implements Journal {
     }
   }
 
+  /**
+   * No `persistenceIdsPaginated` counterpart, deliberately.  Paging needs a
+   * *sorted* index over the ids, and a DynamoDB table has no order across
+   * partition keys at all — `Scan` hands rows back in hash order, and its
+   * `LastEvaluatedKey` cursor is not comparable to a persistence id.  Slicing
+   * a scan by page would therefore return arbitrary, overlapping subsets; the
+   * query layer's fallback (scan once, sort, cut) is the honest shape, and
+   * leaving the method off is what selects it.
+   */
   async persistenceIds(): Promise<string[]> {
     const operations = await this.ensureOpen();
     try {
