@@ -74,9 +74,9 @@ export const MAX_MV_REGISTER_ENTRIES = 256;
  * Last-writer-wins is only as sound as the clocks feeding it.  A register
  * carrying a year-3000 stamp wins against every honest write forever, and
  * because the value is also re-gossiped the whole cluster converges on the
- * wedge.  The bound mirrors the cluster's own `MAX_VERSION_SKEW_MS` rule for
- * membership versions: generous enough for real clock drift, finite enough
- * that "forever" is off the table.
+ * wedge.  The bound mirrors the cluster's own `maxVersionSkewMs` rule for
+ * membership versions — the same five minutes, for the same reason: generous
+ * enough for real clock drift, finite enough that "forever" is off the table.
  */
 export const MAX_TIMESTAMP_SKEW_MS = 5 * 60_000;
 

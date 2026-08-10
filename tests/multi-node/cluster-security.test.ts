@@ -103,7 +103,9 @@ describe('Cluster — gossip exploit defenses', () => {
    * peers — a one-frame total DoS of any cluster member.
    *
    * Fix: cap acceptable `incoming.version` at `Date.now() +
-   * MAX_VERSION_SKEW_MS` (24 h) in `Cluster.mergeMember`.
+   * maxVersionSkewMs` (5 min by default) in `Cluster.mergeMember`.  The bound
+   * started at a flat 24 h and was narrowed to the configurable one when the
+   * two-cap split turned out to be walk-around-able (#114).
    */
   test('exploit: gossip with Number.MAX_SAFE_INTEGER version is rejected', async () => {
     const portA = 53_100 + Math.floor(Math.random() * 500);

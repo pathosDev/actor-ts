@@ -50,6 +50,7 @@ overflow policy that fired (`drop-head` / `drop-new`).
 | --- | --- | --- | --- |
 | `cluster_members_up` | gauge | — | Members currently in the `up` state (this node's view). |
 | `cluster_gossip_rounds_total` | counter | — | Gossip-push rounds initiated by this node. |
+| `cluster_gossip_records_refused_total` | counter | `reason` | Gossiped member records a merge-path guard refused. |
 
 For monitoring cluster health:
 
@@ -57,6 +58,13 @@ For monitoring cluster health:
   a persistent shortfall means members are down or unreachable.
 - `cluster_gossip_rounds_total` rate confirms gossip is flowing — a
   flat line means this node has stopped gossiping.
+- `cluster_gossip_records_refused_total` should sit at zero. Movement
+  on `reason="version-skew"` means gossiped versions are further ahead
+  of this node's clock than `maxVersionSkewMs` — either a peer's clock
+  has drifted or someone is trying to pre-claim an address. Movement
+  on `reason="map-cap"` means `max-members` / `max-tombstones` is
+  full. The counter is incremented once per frame with that frame's
+  count, and the label set is closed at those two values.
 
 ## DistributedData metrics
 

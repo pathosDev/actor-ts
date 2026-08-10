@@ -15,6 +15,12 @@
  * therefore the load-bearing one, which is the opposite of how the issue
  * ranked the two.
  *
+ * Both caps are charged on the **bucket a record moves into**, not on record
+ * creation.  Charging only creation left the two caps trading headroom for
+ * free — a tombstone re-incarnated as `up` vacated the tombstone bucket
+ * without giving up a map slot — so alternating floods grew the map past both
+ * while respecting each at every individual step.
+ *
  * The tests drive the merge directly rather than through a running cluster:
  * the interesting property is what the map holds after N records, and a
  * background gossip or failure-detector tick would only add nondeterminism.
@@ -278,6 +284,94 @@ describe('cap accounting stays in step with the map', () => {
     // Which is what lets the next gossiped tombstone in again.
     floodAsActivePeer(node.cluster, peer, 'removed', 3, 500);
     expect(tombstonesIn(node.cluster)).toBe(1);
+  });
+
+  test('a revival is refused when the live bucket is full, and stays a tombstone', async () => {
+    // A revival vacates the tombstone bucket and occupies a live slot, so it is
+    // a bucket change and the live cap decides.  Unchecked, it handed the
+    // tombstone bucket its headroom back without giving up a map slot, which is
+    // what let alternating floods grow the map past both caps.
+    const node = await startNode('cap-revival-full', 9_210, { maxMembers: 1, maxTombstones: 4 });
+    nodes.push(node);
+    const peer = new NodeAddress('cap-revival-full', '10.0.138.2', 9_290);
+    const subject = new NodeAddress('cap-revival-full', '10.0.138.3', 9_390);
+
+    // `maxMembers: 1` is already spent on self, so nothing live may be added.
+    internals(node.cluster).mergeMember(peer, 'up', {
+      address: subject.toJSON(),
+      status: 'removed',
+      version: Date.now(),
+      roles: [],
+      removedAt: Date.now(),
+    });
+    expect(internals(node.cluster).tombstoneCount).toBe(1);
+
+    internals(node.cluster).mergeMember(peer, 'up', {
+      address: subject.toJSON(),
+      status: 'up',
+      version: Date.now() + 1_000,
+      roles: [],
+    });
+
+    expect(membersOf(node.cluster).get(subject.toString())?.status).toBe('removed');
+    expect(internals(node.cluster).tombstoneCount).toBe(1);
+    expect(liveIn(node.cluster)).toBe(1);
+  });
+
+  test('a live member gossiped as removed is refused when the tombstone bucket is full', async () => {
+    // The mirror image.  Refusing leaves the member live, where the failure
+    // detector reclaims it within `downAfterMs` — slower, but it cannot be used
+    // to free a live slot while keeping the map entry.
+    const node = await startNode('cap-conversion-full', 9_211, { maxMembers: 8, maxTombstones: 1 });
+    nodes.push(node);
+    const peer = new NodeAddress('cap-conversion-full', '10.0.138.2', 9_290);
+    const subject = new NodeAddress('cap-conversion-full', '10.0.138.3', 9_390);
+
+    internals(node.cluster).mergeMember(peer, 'up', {
+      address: subject.toJSON(),
+      status: 'up',
+      version: Date.now(),
+      roles: [],
+    });
+    floodAsActivePeer(node.cluster, peer, 'removed', 5, 700);
+    expect(tombstonesIn(node.cluster)).toBe(1);
+
+    internals(node.cluster).mergeMember(peer, 'up', {
+      address: subject.toJSON(),
+      status: 'removed',
+      version: Date.now() + 1_000,
+      roles: [],
+      removedAt: Date.now(),
+    });
+
+    expect(membersOf(node.cluster).get(subject.toString())?.status).toBe('up');
+    expect(internals(node.cluster).tombstoneCount).toBe(1);
+  });
+
+  test('a status change inside one bucket is a free in-place update', async () => {
+    // Only a bucket *change* is charged.  `up → unreachable` on a full live
+    // bucket must still merge, or the cap would freeze the cluster it protects.
+    const node = await startNode('cap-in-bucket', 9_212, { maxMembers: 2 });
+    nodes.push(node);
+    const peer = new NodeAddress('cap-in-bucket', '10.0.138.2', 9_290);
+    const subject = new NodeAddress('cap-in-bucket', '10.0.138.3', 9_390);
+
+    internals(node.cluster).mergeMember(peer, 'up', {
+      address: subject.toJSON(),
+      status: 'up',
+      version: Date.now(),
+      roles: [],
+    });
+    expect(liveIn(node.cluster)).toBe(2); // self + subject, the cap exactly
+
+    internals(node.cluster).mergeMember(peer, 'up', {
+      address: subject.toJSON(),
+      status: 'unreachable',
+      version: Date.now() + 1_000,
+      roles: [],
+    });
+
+    expect(membersOf(node.cluster).get(subject.toString())?.status).toBe('unreachable');
   });
 
   test('a member this node tombstones itself is never refused by the cap', async () => {

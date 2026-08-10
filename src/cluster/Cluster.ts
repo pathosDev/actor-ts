@@ -66,26 +66,44 @@ import type {
 type EnvelopeHandler = (env: EnvelopeMessage, from: NodeAddress) => void;
 
 /**
- * Maximum allowed deviation between an incoming gossip version and the
- * local wall-clock — 1 day.  Anything above is rejected as an exploit
- * attempt (see {@link Cluster.mergeMember} for the full walkthrough).
- *
- * Tuned generous-but-finite: a legitimate node with a 23-hour clock
- * skew still merges; a node claiming `version: Number.MAX_SAFE_INTEGER`
- * (≈ 285 000 years above now) is rejected on the spot.
+ * Which merge-path guard refused a gossiped member record.  Closed, and
+ * deliberately coarse: it is a metric label, so every value here is a time
+ * series an operator carries forever.
  */
-const MAX_VERSION_SKEW_MS = 24 * 60 * 60 * 1_000;
+const GOSSIP_REFUSAL_REASONS = ['map-cap', 'version-skew', 'timestamp-skew'] as const;
+
+/** One of {@link GOSSIP_REFUSAL_REASONS}. */
+type GossipRefusalReason = typeof GOSSIP_REFUSAL_REASONS[number];
+
+/** Refusals since startup, one running total per reason. */
+type GossipRefusalCounts = Record<GossipRefusalReason, number>;
 
 /**
- * Default cap on how far ahead of the local wall-clock a gossip version may
- * be **when it introduces an address this node has never seen** — 5 minutes,
- * against the 24 hours of {@link MAX_VERSION_SKEW_MS} that governs every
- * other merge.  Overridable per node via
- * `ClusterOptions.withFirstSightMaxVersionSkewMs`; the full reasoning for
- * both the rule and the number is on
- * {@link Cluster.admitsFirstSightVersion}.
+ * Maximum allowed deviation between a peer-supplied **wall-clock stamp** and
+ * the local clock — 1 day.  Anything above is rejected as a corrupted or
+ * forged frame.
+ *
+ * It guards the two fields that are timestamps rather than versions: a
+ * tombstone's `removedAt`, which decides when the entry ages out, and a
+ * heartbeat's `ts`.  Both are read for housekeeping, not for conflict
+ * resolution, so the bound is tuned generous-but-finite — a node with a
+ * 23-hour clock skew still prunes in step with its peers, while a frame
+ * claiming `Number.MAX_SAFE_INTEGER` (≈ 285 000 years above now) is rejected
+ * on the spot.
+ *
+ * Member **versions** are a different quantity and are held to the much
+ * tighter, per-node configurable {@link ClusterOptionsType.maxVersionSkewMs}
+ * — see {@link Cluster.admitsVersion} for why the two numbers are not one.
  */
-const DEFAULT_FIRST_SIGHT_MAX_VERSION_SKEW_MS = 5 * 60 * 1_000;
+const MAX_WALL_CLOCK_SKEW_MS = 24 * 60 * 60 * 1_000;
+
+/**
+ * Default cap on how far ahead of the local wall-clock a gossiped member
+ * version may be — 5 minutes.  Overridable per node via
+ * `ClusterOptions.withMaxVersionSkewMs`; the full reasoning for both the rule
+ * and the number is on {@link Cluster.admitsVersion} (#114).
+ */
+const DEFAULT_MAX_VERSION_SKEW_MS = 5 * 60 * 1_000;
 
 /**
  * Default cap on **live** entries in the member map (#138).
@@ -151,7 +169,7 @@ export class Cluster {
   private readonly tombstoneTtlMs: number;
   private readonly tombstonePruneIntervalMs: number;
   private readonly tombstoneMinRetentionMs: number;
-  private readonly firstSightMaxVersionSkewMs: number;
+  private readonly maxVersionSkewMs: number;
   private readonly maxMembers: number;
   private readonly maxTombstones: number;
 
@@ -186,12 +204,18 @@ export class Cluster {
   private readonly reachability = new Map<string, boolean>();
 
   /**
-   * Cumulative count of member records a cap refused.  Read by `onGossip` to
-   * collapse a frame's worth of refusals into a single log line — logging per
-   * record would hand an attacker log amplification in place of the memory
-   * growth it just lost.
+   * Cumulative counts of member records the merge path refused, split by the
+   * guard that refused them.  `onGossip` diffs this across a frame to collapse
+   * a frame's worth of refusals into one log line and one counter increment
+   * per reason — logging per record would hand an attacker log amplification
+   * in place of the growth it just lost, and it is a frame, not a record, that
+   * an operator can act on.
    */
-  private membersRefusedByCap = 0;
+  private readonly refusalCounts: GossipRefusalCounts = {
+    'map-cap': 0,
+    'version-skew': 0,
+    'timestamp-skew': 0,
+  };
 
   private heartbeatSeq = 0;
   private gossipTimer: Cancellable | null = null;
@@ -254,8 +278,7 @@ export class Cluster {
     this.tombstoneMinRetentionMs = minRetention === undefined || minRetention === 0
       ? 6 * fdOptions.downAfterMs
       : minRetention;
-    this.firstSightMaxVersionSkewMs =
-      options.firstSightMaxVersionSkewMs ?? DEFAULT_FIRST_SIGHT_MAX_VERSION_SKEW_MS;
+    this.maxVersionSkewMs = options.maxVersionSkewMs ?? DEFAULT_MAX_VERSION_SKEW_MS;
     this.maxMembers = options.maxMembers ?? DEFAULT_MAX_MEMBERS;
     this.maxTombstones = options.maxTombstones ?? DEFAULT_MAX_TOMBSTONES;
   }
@@ -792,7 +815,8 @@ export class Cluster {
    */
   private isPlausibleHeartbeat(from: NodeAddress, message: HeartbeatMessage): boolean {
     const sequenceOk = Number.isSafeInteger(message.seq) && message.seq >= 0;
-    const timestampOk = Number.isFinite(message.ts) && message.ts <= Date.now() + MAX_VERSION_SKEW_MS;
+    const timestampOk = Number.isFinite(message.ts)
+      && message.ts <= Date.now() + MAX_WALL_CLOCK_SKEW_MS;
     if (sequenceOk && timestampOk) return true;
     this.log.warn(
       `heartbeat: rejecting implausible frame from ${from} ` +
@@ -855,7 +879,7 @@ export class Cluster {
     // one that introduces the sender, and a claim must not be authorised by a
     // membership the same frame just created.
     const senderStatus = this.members.get(from.toString())?.status;
-    const refusedBefore = this.membersRefusedByCap;
+    const refusedBefore: GossipRefusalCounts = { ...this.refusalCounts };
 
     for (const data of message.members) {
       this.mergeMember(from, senderStatus, data);
@@ -868,20 +892,19 @@ export class Cluster {
     // peer, which makes it the cheaper of the two addresses to fabricate.
     if (!this.members.has(sender.toString())) {
       const member = new Member(sender, 'joining', 1);
-      if (this.admitsNewMember(member)) {
+      if (this.admitsMember(member, undefined)) {
         this.setMember(member);
         this.emit(new MemberJoined(member));
       }
     }
 
-    // One line per frame, not per refused record: an attacker who has just
-    // lost the memory growth must not be handed log amplification instead.
-    const refused = this.membersRefusedByCap - refusedBefore;
-    if (refused > 0) {
-      this.log.warn(
-        `gossip: dropped ${refused} member record(s) from ${from} — `
-        + `maxMembers (${this.maxMembers}) / maxTombstones (${this.maxTombstones}) is full`,
-      );
+    // One line and one counter increment per frame and reason, not per refused
+    // record: an attacker who has just lost the memory growth must not be
+    // handed log amplification instead, and the label set stays a closed three
+    // values so the series count cannot follow the attacker's record count
+    // (#131).
+    for (const reason of GOSSIP_REFUSAL_REASONS) {
+      this.reportRefusals(from, reason, this.refusalCounts[reason] - refusedBefore[reason]);
     }
 
     // Leader promotes joining (and weakly-up) members to up.
@@ -893,6 +916,37 @@ export class Cluster {
         }
       }
     }
+  }
+
+  /**
+   * Fold one frame's refusals into a WARN and the stock counter.
+   *
+   * The reason is a label rather than a metric name so an operator can alert
+   * on "records are being refused at all" without knowing which guard fired,
+   * and it is drawn from a closed union so the series count stays at three no
+   * matter what a peer sends — the cardinality trap #131 put a cap on.
+   */
+  private reportRefusals(from: NodeAddress, reason: GossipRefusalReason, count: number): void {
+    if (count <= 0) return;
+    this.log.warn(
+      `gossip: dropped ${count} member record(s) from ${from} — ${this.refusalDetail(reason)}`,
+    );
+    metricsOf(this.system).counter(
+      'cluster_gossip_records_refused_total', { reason },
+      { help: 'Cumulative count of gossiped member records refused by a merge-path guard.' },
+    ).inc(count);
+  }
+
+  /** The operator-facing half of one {@link GossipRefusalReason}. */
+  private refusalDetail(reason: GossipRefusalReason): string {
+    return match(reason)
+      .with('map-cap', () =>
+        `maxMembers (${this.maxMembers}) / maxTombstones (${this.maxTombstones}) is full`)
+      .with('version-skew', () =>
+        `version skew above maxVersionSkewMs (${this.maxVersionSkewMs}ms)`)
+      .with('timestamp-skew', () =>
+        `implausible removedAt — more than ${MAX_WALL_CLOCK_SKEW_MS}ms ahead, or not a number`)
+      .exhaustive();
   }
 
   private onEnvelope(from: NodeAddress, message: EnvelopeMessage): void {
@@ -1264,68 +1318,86 @@ export class Cluster {
   }
 
   /**
-   * The second, much tighter version cap — it applies only where gossip
-   * introduces an address this node has **never seen** (#114).
+   * How far ahead of this node's wall-clock a gossiped member version may be
+   * (#114).
    *
-   * {@link MAX_VERSION_SKEW_MS} is deliberately generous because it guards
-   * records that already exist: rejecting one freezes a member the cluster is
-   * already using, so it errs towards tolerating a badly skewed clock.  First
-   * sight is the opposite trade.  There is nothing to freeze yet, and a
-   * far-future version buys exactly one thing — a claim staked on an address
-   * that does not exist yet.
-   *
-   * {@link maySpeakFor} waves a self-announcement through unconditionally
+   * **What a far-future version buys.**  Versions are seeded from `Date.now()`
+   * and bumped by 1 per status change, so in normal operation they track the
+   * owner's own clock.  Nothing capped them at first, and a peer gossiping
+   * `version: Number.MAX_SAFE_INTEGER` for any target won the merge and then
+   * beat every legitimate update from that target forever — `MAX_SAFE_INTEGER
+   * + 1` rounds back to itself in JS, so not even a fresh start-from-zero
+   * re-incarnation could escape.  That is the coarse form.  The fine form is
+   * that "highest version wins" also decides what happens the *first* time an
+   * address is mentioned at all.  {@link maySpeakFor} waves a
+   * self-announcement through unconditionally
    * (`subject.equals(from)`), because refusing it would mean no node could
-   * ever join — and without per-node certificates the `hello` frame that
-   * decides who a connection belongs to carries no credential (#562, #912).
-   * So an attacker can announce itself under an address that is *about* to
-   * exist — the next pod of a StatefulSet, a node being replaced — with a
-   * version up to a day ahead and roles of its own choosing, and then drop the
-   * connection.  The squatted record outlives it: `onGossip`'s promotion loop
-   * lifts anything `joining` to `up` on the next leader tick, so the phantom
-   * enters the active set carrying **the attacker's roles** — and roles are
-   * what routing, sharding placement, singleton hosting and downing quorums
-   * are computed from.  The real node, when it finally starts, seeds its
-   * version from its own `Date.now()`, which is below the squat, so the
-   * monotonicity check in {@link mergeMember} drops its record and the phantom
-   * stays.
+   * ever join and the `hello` frame carries no credential to check it against
+   * (#562, #912).  So a stranger can announce itself under an address that is
+   * *about* to exist — the next pod of a StatefulSet, a node being replaced —
+   * date it far ahead, attach roles of its own choosing, and drop the
+   * connection.  The squat outlives it: `onGossip`'s promotion loop lifts
+   * anything `joining` to `up` on the next leader tick, so the phantom enters
+   * the active set carrying **the attacker's roles** — and roles are what
+   * routing, sharding placement, singleton hosting and downing quorums are
+   * computed from.  The real node, when it finally starts, seeds its version
+   * from its own clock, which is lower, so the monotonicity check in
+   * {@link mergeMember} drops its record and the phantom stays.
    *
-   * Capping first sight bounds that window to `firstSightMaxVersionSkewMs`
-   * instead of a day.  It authenticates nobody; it removes the ability to
-   * pre-date a claim so far that its legitimate owner cannot out-version it.
+   * **Why there is one cap and not two.**  This began as a pair: a generous
+   * 24 h bound on every merge, and a tight one on the branch that *introduces*
+   * an address, on the reasoning that refusing a record for an address already
+   * on file freezes a member the cluster is using, while a first sighting has
+   * nothing to freeze.  The split does not survive contact, because "already
+   * on file" is a property of a map the sender has just written to:
    *
-   * **Why the default is minutes rather than seconds.**  A legitimate
-   * first-sight version is the announcing node's own wall-clock, so this cap
-   * is a clock-skew budget — the same quantity the 24 h cap measures, priced
-   * for the one case that can afford to be strict.  Five minutes is the
-   * long-standing convention for exactly that judgement (Kerberos has used it
-   * as its skew tolerance for decades), and the regimes either side of it are
-   * far apart: an NTP-disciplined host sits milliseconds from true, while a
-   * host that never synced at all is hours out — and that one is still served,
-   * because the 24 h cap governs every merge after the first.
+   * - Two records for the same address **in one frame**.  `mergeMember` reads
+   *   `members.get(…)` per record, so the first creates the entry under the
+   *   tight cap and the second — same frame, same peer — is an update and got
+   *   the wide one.
+   * - A frame with **no member records at all**.  `onGossip`'s sender fallback
+   *   files the connection's self-declared address by itself, so the next
+   *   frame is an update too.  That fallback is what makes a refusal cost one
+   *   gossip round rather than being permanent; the same property was the way
+   *   around the cap.
    *
-   * **Why a rejection here is cheap.**  It is not exclusion.  A node
-   * announcing itself is still recorded by `onGossip`'s sender fallback, at
-   * version 1 with no roles, so its very next frame merges through the normal
-   * path and carries the real record in.  The worst case is a member that
-   * shows no roles for one gossip round, not one that never appears.
+   * Any rule that lets a record *earn* the wide cap fails the same way, one
+   * step later: without per-node credentials every step of the earning is
+   * attacker-producible — pass the tight cap once, wait any interval, open a
+   * second connection, get promoted and then speak as a third party.  So the
+   * wide bound is not reachable from gossip at all any more.  It survives on
+   * {@link MAX_WALL_CLOCK_SKEW_MS}, guarding the fields that are timestamps
+   * rather than versions.
+   *
+   * **Why the default is minutes rather than seconds.**  A legitimate version
+   * is the announcing node's wall-clock, so this is a clock-skew budget.  Five
+   * minutes is the long-standing convention for exactly that judgement
+   * (Kerberos has used it as its skew tolerance for decades), and the regimes
+   * either side of it are far apart: an NTP-disciplined host sits milliseconds
+   * from true, a host that never synced at all is hours out.
+   *
+   * **What a refusal costs.**  It is not exclusion: a node announcing itself
+   * is still recorded by the sender fallback, at version 1 with no roles.  It
+   * *is* durable, which the two-cap version was not — a node whose clock runs
+   * more than `maxVersionSkewMs` ahead of this one stays in the member list
+   * without roles until its clock comes back inside the budget.  That was
+   * always this cap's verdict on such a node; what changed is that the verdict
+   * now sticks instead of being reversed by the node's second frame.
+   * Deployments whose clocks are known to run loose raise the knob.
    */
-  private admitsFirstSightVersion(incoming: Member): boolean {
-    const maxAcceptableVersion = Date.now() + this.firstSightMaxVersionSkewMs;
-    if (incoming.version <= maxAcceptableVersion) return true;
-    this.log.warn(
-      `merge: refusing to create ${incoming.address} from gossip with version ` +
-      `${incoming.version} (max acceptable on a first sighting ${maxAcceptableVersion}) — ` +
-      'a version this far ahead pre-empts the record of whoever really owns that address',
-    );
+  private admitsVersion(incoming: Member): boolean {
+    const maxAcceptableVersion = Date.now() + this.maxVersionSkewMs;
+    if (Number.isFinite(incoming.version) && incoming.version <= maxAcceptableVersion) return true;
+    this.refusalCounts['version-skew']++;
     return false;
   }
 
   /**
-   * Whether the member map has room for an address it has never seen (#138).
+   * Whether the member map has room for the record `incoming` is about to
+   * become, given whatever `existing` occupies today (#138).
    *
-   * The map was unbounded, and both paths that create an entry from gossip set
-   * unconditionally.  Every other guard in front of the merge decides whether a
+   * The map was unbounded, and every path that wrote to it set
+   * unconditionally.  The other guards in front of the merge decide whether a
    * *claim* is believable; none of them bounds how *many* believable claims one
    * peer may make.  `maySpeakFor` waves a self-announcement through by design —
    * refusing it would mean no node could ever join — so a peer that opens a
@@ -1341,27 +1413,40 @@ export class Cluster {
    * {@link ClusterOptionsType.tombstoneTtlMs} reclaims it, a day later.  That
    * asymmetry is why the two caps are separate numbers rather than one.
    *
-   * **What "full" costs.**  A refused *tombstone* costs nothing: it suppresses
-   * an address this node has no record of, so there is nothing to protect.  A
-   * refused *live* record costs one gossip round if it was legitimate — the
-   * cluster is over `maxMembers` and the operator has a WARN naming the cap.
-   * Refusing the new entry rather than evicting an old one is deliberate:
-   * eviction would let an attacker push real members out, which is a strictly
-   * better exploit than the one being closed.
+   * **Why the question is about the transition, not the record.**  Capping only
+   * *creation* left the two caps trading headroom with each other, and the
+   * exchange rate was free: a `removed` record admitted under the tombstone cap
+   * and then re-incarnated as `up` moved an entry out of the tombstone bucket
+   * **without giving up a map slot**, so the next block of tombstones was
+   * admitted too.  Alternating the two floods grew `members` without bound —
+   * `maxMembers` and `maxTombstones` were both respected at every individual
+   * step.  The live→tombstone direction is the mirror image of the same hole.
+   * So a record that stays in its bucket is a free in-place update, and one
+   * that changes bucket has to be admitted by the bucket it is moving into.
+   *
+   * **What "full" costs.**  A refused *tombstone* costs nothing when it would
+   * have created an entry: it suppresses an address this node has no record of.
+   * A refused *conversion* leaves the member live, where the failure detector
+   * reclaims it within `downAfterMs` — the slower but self-healing outcome.  A
+   * refused *live* record costs one gossip round if it was legitimate, and the
+   * operator has a WARN naming the cap.  Refusing the new entry rather than
+   * evicting an old one is deliberate: eviction would let an attacker push real
+   * members out, which is a strictly better exploit than the one being closed.
    *
    * Entries this node mints itself — self at startup, and the `removed`
    * tombstones written by `leave` / downing / {@link down} — never pass through
-   * here.  They convert or create records this node authored, and capping its
-   * own bookkeeping would be a liveness bug rather than a defence.
+   * here.  They convert records this node authored, and capping its own
+   * bookkeeping would be a liveness bug rather than a defence.
    */
-  private admitsNewMember(incoming: Member): boolean {
-    const cap = incoming.status === 'removed' ? this.maxTombstones : this.maxMembers;
+  private admitsMember(incoming: Member, existing: Member | undefined): boolean {
+    const wantsTombstone = incoming.status === 'removed';
+    // Same bucket in and out: the entry is already counted, so nothing grows.
+    if (existing !== undefined && (existing.status === 'removed') === wantsTombstone) return true;
+    const cap = wantsTombstone ? this.maxTombstones : this.maxMembers;
     if (cap === 0) return true; // 0 = disabled
-    const held = incoming.status === 'removed'
-      ? this.tombstoneCount
-      : this.members.size - this.tombstoneCount;
+    const held = wantsTombstone ? this.tombstoneCount : this.members.size - this.tombstoneCount;
     if (held < cap) return true;
-    this.membersRefusedByCap++;
+    this.refusalCounts['map-cap']++;
     return false;
   }
 
@@ -1370,32 +1455,12 @@ export class Cluster {
 
     if (!this.maySpeakFor(from, senderStatus, incoming.address, incoming.status)) return;
 
-    // Security: reject versions that are absurdly far in the future.
-    //
-    // **Exploit walkthrough (pre-fix).**  Versions are seeded from
-    // `Date.now()` and bumped by 1 on status transitions — in normal
-    // operation they stay within ~`Date.now() + small N`.  Nothing
-    // capped them before, so a malicious peer could gossip with
-    // `version: Number.MAX_SAFE_INTEGER` for any target.  The merge
-    // accepted it (higher than the existing version → win), and
-    // every legitimate update from that target was rejected
-    // afterward (`<= MAX_SAFE_INTEGER` always true).  Effect:
-    // permanent DoS — the target was pinned to whatever status the
-    // attacker chose, with no way to recover.  In JS,
-    // `MAX_SAFE_INTEGER + 1` rounds back to itself, so even fresh
-    // start-from-zero re-incarnation couldn't escape.
-    //
-    // Cap at `now + MAX_VERSION_SKEW_MS` (1 day) — generous enough
-    // for any real clock skew, tight enough that MAX_SAFE_INTEGER
-    // (≈ 285 000 years above now) is rejected immediately.
-    const maxAcceptableVersion = Date.now() + MAX_VERSION_SKEW_MS;
-    if (!Number.isFinite(incoming.version) || incoming.version > maxAcceptableVersion) {
-      this.log.warn(
-        `merge: rejecting gossip from ${incoming.address} with implausible version ` +
-        `${incoming.version} (max acceptable ${maxAcceptableVersion}) — possible exploit`,
-      );
-      return;
-    }
+    // The same version bound whether the record creates an address or updates
+    // one, because "does this address exist yet?" is a question about a map
+    // the sender can write to first — see {@link admitsVersion}.  The refusal
+    // is counted there and reported once per frame by `onGossip` rather than
+    // logged per record.
+    if (!this.admitsVersion(incoming)) return;
 
     // Reject expired tombstones from gossip — peers that haven't yet
     // pruned a long-dead address would otherwise resurrect it on
@@ -1412,12 +1477,11 @@ export class Cluster {
     // does the same via a negative age.  Since a tombstone suppresses its
     // address, an immortal one keeps that node from ever rejoining.
     if (incoming.status === 'removed' && incoming.removedAt !== undefined) {
-      const maxAcceptableRemovedAt = Date.now() + MAX_VERSION_SKEW_MS;
+      // Counted, not logged, for the same reason as the version cap above:
+      // one frame can carry tens of thousands of these.
+      const maxAcceptableRemovedAt = Date.now() + MAX_WALL_CLOCK_SKEW_MS;
       if (!Number.isFinite(incoming.removedAt) || incoming.removedAt > maxAcceptableRemovedAt) {
-        this.log.warn(
-          `merge: rejecting gossip from ${incoming.address} with implausible removedAt ` +
-          `${incoming.removedAt} (max acceptable ${maxAcceptableRemovedAt}) — possible exploit`,
-        );
+        this.refusalCounts['timestamp-skew']++;
         return;
       }
       const age = Date.now() - incoming.removedAt;
@@ -1431,10 +1495,9 @@ export class Cluster {
     }
     const existing = this.members.get(incoming.address.toString());
     if (!existing) {
-      if (!this.admitsFirstSightVersion(incoming)) return;
       // Last gate before the map grows — after every believability check, so a
       // record that was going to be dropped anyway never consumes cap headroom.
-      if (!this.admitsNewMember(incoming)) return;
+      if (!this.admitsMember(incoming, existing)) return;
       this.setMember(incoming);
       this.failureDetector.register(incoming.address);
       this.emit(new MemberJoined(incoming));
@@ -1462,6 +1525,10 @@ export class Cluster {
     // `removed` forever even though the higher version is the
     // newer truth.
     if (existing.status === 'removed' && incoming.version > existing.version) {
+      // A revival vacates the tombstone bucket and occupies a live slot, so it
+      // is the live cap's call — without this the two caps traded headroom for
+      // free and the map grew past both (#138).
+      if (!this.admitsMember(incoming, existing)) return;
       this.log.debug(
         `merge: ${incoming.address} re-incarnation (was removed v${existing.version}, now ${incoming.status} v${incoming.version})`,
       );
@@ -1475,6 +1542,11 @@ export class Cluster {
     }
 
     if (incoming.version <= existing.version) return; // older or equal, ignore
+    // The mirror of the revival check: a live member gossiped as `removed`
+    // moves into the tombstone bucket, which frees a live slot for the next
+    // flood while keeping the map entry.  Refused when the bucket is full, and
+    // then the failure detector reclaims the member the slower way (#138).
+    if (!this.admitsMember(incoming, existing)) return;
     if (existing.status !== incoming.status) {
       this.log.debug(
         `merge: ${incoming.address} ${existing.status}→${incoming.status} (v${existing.version}→v${incoming.version})`,

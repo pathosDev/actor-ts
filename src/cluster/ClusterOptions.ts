@@ -83,23 +83,28 @@ export type ClusterOptionsType = {
    */
   readonly tombstoneMinRetentionMs?: number;
   /**
-   * How far ahead of the local clock a gossiped version may be **when it
-   * introduces an address this node has never seen** — the tight sibling of
-   * the fixed 24 h skew cap that governs every merge after the first.
+   * How far ahead of the local clock a gossiped member version may be — the
+   * single cap on the merge path, whether the record introduces an address or
+   * updates one already on file.
    *
    * It bounds how far into the future an unauthenticated peer can pre-date a
-   * claim on an address that does not exist yet.  Without it such a squat
-   * survives long enough to out-version the real node's own record, and the
-   * leader promotes the phantom into the active set carrying the attacker's
-   * roles — which is what routing, sharding placement, singleton hosting and
-   * downing quorums are computed from (#114).
+   * claim.  Without it such a squat out-versions the real node's own record,
+   * and the leader promotes the phantom into the active set carrying the
+   * attacker's roles — which is what routing, sharding placement, singleton
+   * hosting and downing quorums are computed from (#114).
    *
-   * Default: 5 min — comfortably above any NTP-disciplined clock, and a
-   * rejection costs a legitimate node one gossip round rather than its
-   * visibility.  Raise it for a deployment whose clocks are known to run
-   * loose; `24 * 60 * 60 * 1000` restores the old behaviour of a single cap.
+   * It applies to *every* merge because the narrower reading — "only where an
+   * address is introduced" — could be stepped around by introducing the
+   * address first: two records for it in one frame, or an empty frame that
+   * makes the sender fallback file it.  See `Cluster.admitsVersion`.
+   *
+   * Default: 5 min — comfortably above any NTP-disciplined clock.  A refusal
+   * is not exclusion (the sender fallback still records the address, at
+   * version 1 without roles), but it is durable: a node whose clock runs
+   * further ahead than this stays role-less until its clock comes back.  Raise
+   * it for a deployment whose clocks are known to run loose.
    */
-  readonly firstSightMaxVersionSkewMs?: number;
+  readonly maxVersionSkewMs?: number;
   /**
    * Auto-promote a `joining` member to `weakly-up` after this many ms if
    * convergence (leader + `up` transition) hasn't happened yet.  Set to 0
@@ -256,9 +261,9 @@ export class ClusterOptionsBuilder extends OptionsBuilder<ClusterOptionsType> {
     return this.set('tombstoneMinRetentionMs', ms);
   }
 
-  /** Version-skew cap for an address gossip introduces for the first time.  Default 5 min. */
-  withFirstSightMaxVersionSkewMs(ms: number): this {
-    return this.set('firstSightMaxVersionSkewMs', ms);
+  /** Cap on how far ahead of the local clock a gossiped member version may be.  Default 5 min. */
+  withMaxVersionSkewMs(ms: number): this {
+    return this.set('maxVersionSkewMs', ms);
   }
 
   /** Auto-promote `joining` → `weakly-up` after this many ms.  0 disables (default). */
@@ -316,10 +321,10 @@ export class ClusterOptionsValidator extends OptionsValidator<ClusterOptionsType
     // as "derive the floor from the failure detector", the same thing an unset
     // field means — not as "no floor" (#841).
     this.nonNegativeNumber('tombstoneMinRetentionMs');
-    // Positive, with no "0 disables" escape hatch: the cap has no off switch
-    // any more than the 24 h one it narrows, and 0 would read as "disabled"
-    // while actually meaning "no skew at all tolerated".
-    this.positiveInt('firstSightMaxVersionSkewMs');
+    // Positive, with no "0 disables" escape hatch: a version cap has no off
+    // switch, and 0 would read as "disabled" while actually meaning "no skew
+    // at all tolerated".
+    this.positiveInt('maxVersionSkewMs');
     this.nonNegativeNumber('weaklyUpAfterMs'); // 0 disables auto weakly-up
     this.positiveInt('maxFrameBytes');
     // `0 = off` rather than `Infinity`: a count needs an integer opt-out, and
