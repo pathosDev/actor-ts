@@ -1,6 +1,6 @@
 import { OptionsBuilder } from '../util/OptionsBuilder.js';
 import { OptionsValidator } from '../util/OptionsValidator.js';
-import { RESERVED_SERIALIZER_IDS_BELOW } from './Serializer.js';
+import { RESERVED_SERIALIZER_IDS_BELOW } from './Constants.js';
 
 /**
  * The slice of an Avro type object that {@link AvroSerializer} uses.
