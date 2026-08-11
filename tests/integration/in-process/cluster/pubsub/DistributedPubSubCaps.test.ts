@@ -19,6 +19,7 @@ import {
 } from '../../../../../src/cluster/pubsub/DistributedPubSubOptions.js';
 import { DeadLetter } from '../../../../../src/SystemMessages.js';
 import { LogLevel, NoopLogger } from '../../../../../src/Logger.js';
+import type { BidirectionalMultiMap } from '../../../../../src/util/BidirectionalMultiMap.js';
 import { TestKit } from '../../../../../src/testkit/TestKit.js';
 import { TestKitOptions } from '../../../../../src/testkit/TestKitOptions.js';
 import type { TestProbe } from '../../../../../src/testkit/TestProbe.js';
@@ -50,7 +51,10 @@ type Mediator = {
 
 /** Private surface the cap assertions need — read-only, never mutated here. */
 interface MediatorInternals {
-  readonly topics: Map<string, { local: Map<string, unknown>; remoteNodes: Set<string> }>;
+  readonly topics: Map<string, { remoteNodes: Set<string> }>;
+  /** topic ↔ subscriber path (#1037) — local membership lives here now. */
+  readonly subscriptions: BidirectionalMultiMap<string, string>;
+  readonly subscriberRefs: Map<string, unknown>;
   handleGossip(
     message: { kind: 'pubsub-gossip'; from: unknown; entries: ReadonlyArray<string>; version: number },
     from: NodeAddress,
@@ -211,7 +215,11 @@ describe('DistributedPubSub — subscriber and topic caps (#139)', () => {
       return false;
     }, { timeoutMs: 4_000, intervalMs: 25, label: 'death watch released the stopped subscriber' });
     expect(accepted).toBeInstanceOf(SubscribeAcknowledgment);
-    expect(mediator.internals.topics.get('watched')?.local.size).toBe(1);
+    expect(mediator.internals.subscriptions.get('watched').size).toBe(1);
+    // The stopped subscriber left nothing on either side (#1037): the slot
+    // coming back proves only that the forward entry went.
+    expect(mediator.internals.subscriptions.size).toBe(1);
+    expect(mediator.internals.subscriberRefs.size).toBe(1);
 
     await stopNode(node);
   });

@@ -13,6 +13,7 @@ import {
   Unsubscribe,
 } from '../../../src/discovery/index.js';
 import { LogLevel, NoopLogger } from '../../../src/Logger.js';
+import type { BidirectionalMultiMap } from '../../../src/util/BidirectionalMultiMap.js';
 import { TestKit } from '../../../src/testkit/TestKit.js';
 import { TestKitOptions } from '../../../src/testkit/TestKitOptions.js';
 import { awaitCondition } from '../../util/AwaitCondition.js';
@@ -50,6 +51,9 @@ class Subscriber extends Actor<unknown> {
  */
 interface ReceptionistInternals {
   readonly keys: Map<string, unknown>;
+  /** keyId ↔ subscriber path (#1037).  `size` is what the total cap reads. */
+  readonly subscriptions: BidirectionalMultiMap<string, string>;
+  readonly subscriberRefs: Map<string, unknown>;
 }
 
 describe('Receptionist — subscriber caps (#137)', () => {
@@ -227,6 +231,53 @@ describe('Receptionist — subscriber caps (#137)', () => {
 
     // Only the one accepted subscription's key survives.
     expect(internals.keys.size).toBe(1);
+    // …and the relation agrees: one pair, one subscriber, one key.
+    expect(internals.subscriptions.size).toBe(1);
+    expect([...internals.subscriptions.lefts()]).toEqual(['held']);
+    expect(internals.subscriberRefs.size).toBe(1);
+
+    await kit.system.terminate();
+  });
+
+  test('a stopped subscriber leaves no trace in either direction (#1037)', async () => {
+    // The acceptance criterion of #1037, checked at a real call site rather
+    // than only in the collection's own suite: removing a participant from one
+    // side must leave nothing referring to it on the other.  The cap tests
+    // above only prove a *slot* came back, which a stale reverse entry would
+    // survive.
+    const kit = newKit('recp-no-residue');
+    let captured: Receptionist | null = null;
+    const receptionist = kit.system.spawn(() => {
+      captured = new Receptionist();
+      return captured;
+    }, 'watched-receptionist');
+    await awaitCondition(() => captured !== null, {
+      timeoutMs: 4_000, label: 'the receptionist instance was captured',
+    });
+    const internals = captured! as unknown as ReceptionistInternals;
+
+    const doomed = kit.system.spawn(Subscriber, 'doomed-multi');
+    receptionist.tell(new Subscribe(ServiceKey.of<string>('alpha'), doomed) as never);
+    receptionist.tell(new Subscribe(ServiceKey.of<string>('beta'), doomed) as never);
+    await awaitCondition(() => internals.subscriptions.size === 2, {
+      timeoutMs: 4_000, intervalMs: 25, label: 'both subscriptions were booked',
+    });
+    // One subscriber over two keys — watched once, and the ref stored once.
+    expect(internals.subscriberRefs.size).toBe(1);
+
+    doomed.stop();
+
+    await awaitCondition(() => internals.subscriptions.size === 0, {
+      timeoutMs: 4_000, intervalMs: 25, label: 'death watch cleared both subscriptions',
+    });
+    const path = doomed.path.toString();
+    expect(internals.subscriptions.hasRight(path)).toBe(false);
+    expect([...internals.subscriptions.lefts()]).toEqual([]);
+    expect([...internals.subscriptions.rights()]).toEqual([]);
+    // The sidecar follows the relation, and the key entries go with the last
+    // thing that held them.
+    expect(internals.subscriberRefs.size).toBe(0);
+    expect(internals.keys.size).toBe(0);
 
     await kit.system.terminate();
   });

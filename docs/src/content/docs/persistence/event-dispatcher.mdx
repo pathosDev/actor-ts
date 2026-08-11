@@ -1,6 +1,6 @@
 ---
 title: Event dispatcher
-description: A typed builder for `PersistentActor.onEvent` — `eventDispatcher<State, Event>().on('kind', fn).build()` refuses to compile until every event kind has a handler. Catch missing variants at build time, not on the next replay.
+description: A typed builder for `PersistentActor.onEvent` — `eventDispatcher<State, Event>().on('kind', handler).build()` refuses to compile until every event kind has a handler. Catch missing variants at build time, not on the next replay.
 ---
 
 `PersistentActor.onEvent` is a pure state-update function:
@@ -34,7 +34,7 @@ class Counter extends PersistentActor<Command, Event, State> {
 
 Three things to notice:
 
-- Each `.on(kind, fn)` adds a handler for one variant.
+- Each `.on(kind, handler)` adds a handler for one variant.
 - `.build()` only **type-checks** when every variant of `Event['kind']`
   has been covered.
 - Adding a new variant to `Event` without a matching `.on(...)`
@@ -51,7 +51,7 @@ missing."
 interface EventDispatcherBuilder<S, E, Handled extends string> {
   on<K extends Exclude<E['kind'], Handled>>(
     kind: K,
-    fn: (state: S, event: Extract<E, { kind: K }>) => S,
+    handler: (state: S, event: Extract<E, { kind: K }>) => S,
   ): EventDispatcherBuilder<S, E, Handled | K>;
 
   build(): Handled extends E['kind']

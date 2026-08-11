@@ -132,7 +132,7 @@ function decodeCrdtAtDepth(json: CrdtJson, depth: number): Crdt<any> {
 }
 
 /**
- * Empty-CRDT factory.  Callers pass this to `update(key, factory, fn)`
+ * Empty-CRDT factory.  Callers pass this to `update(key, factory, mutator)`
  * so the extension can materialize a brand-new CRDT for a key that
  * doesn't exist yet — without DistributedData itself needing to know
  * about every CRDT type.
@@ -347,7 +347,7 @@ type UpdateMessage = {
   readonly kind: 'ddata-update';
   readonly key: string;
   readonly factory: CrdtFactory<Crdt<any>>;
-  readonly fn: (c: Crdt<any>) => Crdt<any>;
+  readonly mutator: (c: Crdt<any>) => Crdt<any>;
   /**
    * Optional quorum options.  When present, the update runs as a
    * quorum write — the actor broadcasts the merged value to peers,
@@ -430,17 +430,17 @@ export class DistributedDataHandle {
   }
 
   /**
-   * Mutate `key` via `fn`.  If the key doesn't exist yet, `factory()`
+   * Mutate `key` via `mutator`.  If the key doesn't exist yet, `factory()`
    * is called to seed a fresh CRDT.  The mutation runs on the actor
    * thread so concurrent local callers serialize cleanly.
    */
   update<C extends Crdt<C>>(
-    key: string, factory: CrdtFactory<C>, fn: (current: C) => C,
+    key: string, factory: CrdtFactory<C>, mutator: (current: C) => C,
   ): void {
     this.ref.tell({
       kind: 'ddata-update', key,
       factory: factory as unknown as CrdtFactory<Crdt<any>>,
-      fn: fn as unknown as (c: Crdt<any>) => Crdt<any>,
+      mutator: mutator as unknown as (c: Crdt<any>) => Crdt<any>,
     });
   }
 
@@ -469,7 +469,7 @@ export class DistributedDataHandle {
   updateAsync<C extends Crdt<C>>(
     key: string,
     factory: CrdtFactory<C>,
-    fn: (current: C) => C,
+    mutator: (current: C) => C,
     options: { readonly consistency: WriteConsistency; readonly timeoutMs?: number } = {
       consistency: 'local',
     },
@@ -480,7 +480,7 @@ export class DistributedDataHandle {
       this.ref.tell({
         kind: 'ddata-update', key,
         factory: factory as unknown as CrdtFactory<Crdt<any>>,
-        fn: fn as unknown as (c: Crdt<any>) => Crdt<any>,
+        mutator: mutator as unknown as (c: Crdt<any>) => Crdt<any>,
         quorum: {
           pendingId, consistency: options.consistency, timeoutMs,
           resolve, reject,
@@ -860,7 +860,7 @@ class DistributedDataActor extends Actor<ActorMessage> {
 
   private onUpdate(message: UpdateMessage): void {
     const current = this.view.state.get(message.key) ?? message.factory();
-    const next = message.fn(current);
+    const next = message.mutator(current);
     this.applyMerged(message.key, current, next);
     if (!message.quorum) return;
 

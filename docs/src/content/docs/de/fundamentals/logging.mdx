@@ -288,12 +288,12 @@ Operationen:
 
 | Methode | Was sie tut |
 | --- | --- |
-| `LogContext.run(context, fn)` | Führt `fn` mit `context` als aktuellem Kontext aus. |
-| `LogContext.with(extra, fn)` | Führt `fn` mit `{ ...current, ...extra }` als Kontext aus. |
+| `LogContext.run(context, callback)` | Führt `callback` mit `context` als aktuellem Kontext aus. |
+| `LogContext.with(extra, callback)` | Führt `callback` mit `{ ...current, ...extra }` als Kontext aus. |
 | `LogContext.get()` | Liest den aktuellen Kontext (leeres Objekt, wenn keiner aktiv). |
 | `LogContext.snapshot()` | Kopiert den aktuellen Kontext in ein frisches, veränderbares Objekt. |
-| `LogContext.runFresh(fn)` | Führt `fn` mit geleertem Kontext aus und ignoriert den umgebenden. |
-| `LogContext.runEach(entries, fn)` | Führt `fn` je Eintrag aus, jeweils unter dessen mitgeschnappschusstem Kontext. |
+| `LogContext.runFresh(callback)` | Führt `callback` mit geleertem Kontext aus und ignoriert den umgebenden. |
+| `LogContext.runEach(entries, callback)` | Führt `callback` je Eintrag aus, jeweils unter dessen mitgeschnappschusstem Kontext. |
 
 `get()` liefert den lebenden Readonly-Kontext — dieselbe Referenz für
 den ganzen Scope.  Halte sie deshalb nie über den Scope hinaus fest
@@ -324,7 +324,7 @@ einem frischen `LogContext.run` dieses Snapshots.  Das bedeutet:
 
 <Aside type="caution" title="MDC-Werte müssen JSON-sicher sein">
   ```ts
-  LogContext.run({ user: req.user }, fn);   // ← Objekt, kann das Wire nicht überqueren
+  LogContext.run({ user: req.user }, callback);   // ← Objekt, kann das Wire nicht überqueren
   ```
   `LogContext`-Werte sind nur `string | number | boolean`.  Das
   wird vom Typ erzwungen — komplexe Objekte zu übergeben, scheitert

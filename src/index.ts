@@ -56,6 +56,11 @@ export type { Either } from './util/Either.js';
 export { BidirectionalMap } from './util/BidirectionalMap.js';
 export type { BidirectionalMapJson } from './util/BidirectionalMap.js';
 
+// BidirectionalMultiMap<L, R> — the same idea for a many-to-many relation:
+// drop a participant on one side and it leaves no trace on the other.
+export { BidirectionalMultiMap } from './util/BidirectionalMultiMap.js';
+export type { BidirectionalMultiMapJson } from './util/BidirectionalMultiMap.js';
+
 export { OptionsBuilder } from './util/OptionsBuilder.js';
 export { OptionsValidator, OptionsError } from './util/OptionsValidator.js';
 

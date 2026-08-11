@@ -82,8 +82,11 @@ A short tour of what's in the box:
   URL throws an `OptionsError` at startup, not deep in a later code path.
 - **Utility primitives + helpers** — `Option<T>`, `Try<T>`, `Either<L, R>` and
   `Lazy<T>` for Scala-style ergonomics; `BidirectionalMap<K, V>`, a `Map` that
-  also answers `value → key` and keeps the inverse in step for you (and, unlike
-  an ordinary class, survives a snapshot as a real instance — no adapter); plus
+  also answers `value → key` and keeps the inverse in step for you, and
+  `BidirectionalMultiMap<L, R>`, which does the same for a many-to-many
+  relation and leaves nothing behind when a participant drops out (both,
+  unlike an ordinary class, survive a snapshot as real instances — no
+  adapter); plus
   the small helpers the framework itself runs on: `randomString` / `randomHex`
   / `randomId` (crypto entropy, no modulo bias, exact length) and `randomUuid`
   (a v4 UUID, for when the identifier has to be globally unique too),
@@ -380,9 +383,9 @@ Issues and feature requests live on
 
 <a href="https://www.star-history.com/?repos=pathosDev%2Factor-ts&type=date&legend=top-left">
  <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=pathosDev/actor-ts&type=date&theme=dark&legend=top-left&sealed_token=iyC35jF1VENIymplLwZ8Cn2oNYPgr_OxQBWJfsv8Zl0v59Pkk9eKbLf1Gy2VWG_U3xuXb_xL0AAo5KD6Zz9p3izijymg6rD60G6pDZhdGrWgybY6vbLayqijq5n-qYdEyva0SkJ1TCWfrl0uSXCU5LyUa0I_Hz4wbgyrFObbeBFFxzRDMxrNVlNH6f_6" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=pathosDev/actor-ts&type=date&legend=top-left&sealed_token=iyC35jF1VENIymplLwZ8Cn2oNYPgr_OxQBWJfsv8Zl0v59Pkk9eKbLf1Gy2VWG_U3xuXb_xL0AAo5KD6Zz9p3izijymg6rD60G6pDZhdGrWgybY6vbLayqijq5n-qYdEyva0SkJ1TCWfrl0uSXCU5LyUa0I_Hz4wbgyrFObbeBFFxzRDMxrNVlNH6f_6" />
-   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=pathosDev/actor-ts&type=date&legend=top-left&sealed_token=iyC35jF1VENIymplLwZ8Cn2oNYPgr_OxQBWJfsv8Zl0v59Pkk9eKbLf1Gy2VWG_U3xuXb_xL0AAo5KD6Zz9p3izijymg6rD60G6pDZhdGrWgybY6vbLayqijq5n-qYdEyva0SkJ1TCWfrl0uSXCU5LyUa0I_Hz4wbgyrFObbeBFFxzRDMxrNVlNH6f_6" />
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=pathosDev/actor-ts&type=date&theme=dark&legend=top-left&sealed_token=jnLXrF3L8eXXufEpEqvJAJTvVh3Yozo3qjSycX9PSzadtcBeaNoG0k6wCBSK-PQI4rbivEhZGTqBaxdDUeVxAVsKC09rEN5CSn545vlFeRTKgb6DsPw6IpxFVafwOh805ncB1xOqGYFOkysOP_OJsMF1gUCECRRLqMoHokzQhVQ0BhxkI8yFTYoiwdjZ" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=pathosDev/actor-ts&type=date&legend=top-left&sealed_token=jnLXrF3L8eXXufEpEqvJAJTvVh3Yozo3qjSycX9PSzadtcBeaNoG0k6wCBSK-PQI4rbivEhZGTqBaxdDUeVxAVsKC09rEN5CSn545vlFeRTKgb6DsPw6IpxFVafwOh805ncB1xOqGYFOkysOP_OJsMF1gUCECRRLqMoHokzQhVQ0BhxkI8yFTYoiwdjZ" />
+   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=pathosDev/actor-ts&type=date&legend=top-left&sealed_token=jnLXrF3L8eXXufEpEqvJAJTvVh3Yozo3qjSycX9PSzadtcBeaNoG0k6wCBSK-PQI4rbivEhZGTqBaxdDUeVxAVsKC09rEN5CSn545vlFeRTKgb6DsPw6IpxFVafwOh805ncB1xOqGYFOkysOP_OJsMF1gUCECRRLqMoHokzQhVQ0BhxkI8yFTYoiwdjZ" />
  </picture>
 </a>
 

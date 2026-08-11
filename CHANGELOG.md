@@ -32,6 +32,40 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   carry one without the other.  Migrating the existing call sites onto it is not
   part of this change.
 
+- **`CborSerializer` carries the same rich types as the JSON tree** (#1036).
+  `Map`, `Set`, `BidirectionalMap` and `BidirectionalMultiMap` used to fall
+  into the CBOR encoder's generic object branch, where `Object.entries` is
+  `[]` or near enough: they encoded as an empty `{}` and every entry was
+  lost, with nothing raised.
+  Anyone who set `withSerializer(new CborSerializer())` on a store — for row
+  size or for speed — silently lost data the default codec kept.  `RegExp`,
+  `URL`, `Error` and the typed arrays were flattened the same way, and `-0`
+  came back as `+0`.
+
+  All of them now round-trip as real instances.  Registered CBOR tags are
+  used wherever one fits the type faithfully — 258 for `Set`, 259 for `Map`
+  (over a native CBOR map, so the entries cost what a plain object's would),
+  32 for `URL` — and everything else goes under tag 27, the IANA
+  "serialised language-independent object with type name and constructor
+  arguments", decoded through a fixed name allow-list.  `Map` needs its tag
+  despite CBOR having a native map type: that is exactly what a plain object
+  encodes to, so the two would be indistinguishable coming back.
+
+  A shared suite (`tests/unit/serialization/RichTypeParity.test.ts`) runs one
+  value table through both codecs and asserts they agree, guarded by the JSON
+  tree's `TYPE_TAGS` — a new type tag with no CBOR counterpart fails the
+  suite rather than shipping as silent data loss.  It earned its keep
+  immediately: `BidirectionalMultiMap` (#1037) landed on `develop` while this
+  was in flight and the guard caught the missing CBOR side on the merge.
+
+  RFC 8746 registers typed arrays as tags 64–87 and this deliberately does
+  not use them: `DataView` and `ArrayBuffer` have no tag there, `Uint8Array`
+  already travels as a bare byte string, and 8746 would force a CBOR-only
+  endianness table with no counterpart on the JSON side.  Both codecs now
+  read one shared binary-kind table instead.  Non-`Uint8Array` binary is
+  little-endian, which the JSON tree has quietly assumed since #889 and which
+  is now written down.
+
 - **`cluster_gossip_records_refused_total{reason}`** (#114, #138).  Counts
   gossiped member records a merge-path guard turned away.  `reason` is closed to
   `version-skew`, `map-cap` and `timestamp-skew` so the series count cannot
@@ -424,10 +458,111 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   the inverse is rebuilt on decode, which also means a row carrying a
   duplicate value resolves last-wins rather than restoring a map whose halves
   disagree.  A store configured with `withSerializer(new CborSerializer())`
-  is the exception — that codec does not carry `Map` or `Set` either
-  (tracked as #1036).
+  carries it too, since #1036.
+
+### Changed
+
+- **BREAKING — `CborSerializer` encodes several values differently** (#1036).
+  All of these previously produced something wrong rather than something
+  different, so the migration is usually "delete the workaround":
+
+  - `Map`, `Set`, `BidirectionalMap`, `RegExp`, `Error` and the typed arrays
+    no longer encode as `{}` (or, for a numeric view, as an index-keyed
+    object).  *Migration:* drop any conversion to arrays or plain objects you
+    were doing before encoding.
+  - `undefined` encodes as CBOR simple value 23 and decodes back as
+    `undefined`, not `null` — including as an object property, where the key
+    is kept.  This makes `CborSerializer` the more permissive of the two
+    codecs, since `JsonSerializer` rejects `undefined` outright.
+    *Migration:* write `null` explicitly where the coercion was relied on.
+  - `-0` encodes as a float64 rather than the single byte `0x00`, so it keeps
+    its sign.
+  - A plain object with a `toJSON()` method now encodes as that method's
+    result, matching `JSON.stringify` and the JSON tree.  The same HTTP
+    endpoint answering `application/json` and `application/cbor` no longer
+    returns two different shapes.  *Migration:* none, unless you relied on
+    CBOR ignoring `toJSON`.
+  - Encoding a `Promise`, `WeakMap` or `WeakSet` throws a `CborEncodeError`
+    instead of writing `{}`.  Nothing that relied on the encode succeeding
+    could have been reading entries back — there were never any.
+
+- **`BidirectionalMultiMap<L, R>`** (#1037).  The many-to-many sibling of
+  `BidirectionalMap`, for the shape a subscription registry has: one
+  subscriber holds many topics, one topic has many subscribers, and the
+  message telling you a subscriber is gone carries only the subscriber.
+  Written by hand that is two maps of sets, re-derived at every site, where
+  dropping a participant means reaching into every set it appears in.  The
+  invariant it adds over the 1:1 version is that **there is no such thing as
+  an empty participant** — losing your last partner removes you from both
+  directions.  That is where the leak lives in a many-to-many relation: a
+  topic left holding an empty subscriber set is invisible to a pair count,
+  keeps occupying whatever cap bounds the topics, and would let `inverse()`
+  hand back something related to nothing.  `size` counts pairs rather than
+  participants, since that is what a cap is usually written against.
+  Equality is SameValueZero, as with the sibling.  Two deliberate
+  departures from it, both documented on the class: `get()` returns the
+  **live** internal set typed `ReadonlySet`, not a copy, because the
+  relation is read on fan-out paths once per published message where an
+  O(n) copy is not payable — so casting it back to `Set` and mutating it
+  corrupts the inverse; and it does not implement `Map`, which it could not
+  honour anyway since `get` returns a set.
+
+- **`BidirectionalMultiMap` round-trips through every store** (#1037).  The
+  second framework class the tagged JSON tree knows, under
+  `__bidirectionalmultimap__`, so a many-to-many relation can be held in an
+  actor's state with no adapter and no registration.  It needs the tag more
+  than its sibling did: a `BidirectionalMap` falling through to the plain
+  object encoder would at least come back with its data intact and only its
+  class gone, where this one holds both directions as `Map<_, Set<_>>`
+  behind private fields the walker never reaches — the row would be a pair
+  count and no pairs.  Written as a forward adjacency list rather than a
+  flat pair list, because one participant with many partners is the shape
+  every call site has; the inverse is rebuilt on decode, so the two halves
+  cannot be restored disagreeing.  The `CborSerializer` exception applies
+  here too (#1036).
 
 ### Fixed
+
+- **The CBOR encoder no longer overflows the stack, or writes bytes it
+  cannot read back** (#1036).  `encode()` on a cyclic object and on a
+  deeply nested one both died with `RangeError: Maximum call stack size
+  exceeded`: the decoder has capped nesting since #618, the encoder had no
+  bound at all.  It now refuses a cycle with a `CborEncodeError` (a shared
+  reference still duplicates, as `JSON.stringify` does) and measures depth in
+  the levels the *decoder* will spend, so "the encoder accepts it" and "the
+  decoder accepts it" are the same statement.  That distinction is not
+  academic: a `Set` costs two decode levels where a `Map` costs one, and the
+  tagged forms put their payload two or three levels down, so an empty `Set`,
+  a `RegExp` or an `Error` near the limit used to encode fine and then fail to
+  decode — a snapshot the node could never read back.
+
+- **An unbuildable rich-type payload reports as a `SerializationError`**
+  (#1036).  A `__regexp__` with an unbalanced source or bad flags, a `__url__`
+  holding a relative reference, and a `__typedarray__` whose byte length is
+  not a whole number of elements all escaped as a raw `SyntaxError`,
+  `TypeError` or `RangeError` naming neither the tag nor the value.  HTTP hid
+  it, because `Marshalling.entity()` catches everything and answers 400; a
+  journal replay did not.  The check lives in the codec-independent module, so
+  CBOR inherits it.
+
+- **`BrokerActor` now actually prunes a subscriber that stops** (#1111).
+  `subscribeRef` death-watched the ref and its documentation — the class
+  JSDoc and `docs/io/broker-actor-base` alike — promised the subscription
+  was removed automatically when it stopped.  Nothing implemented it.
+  `Actor.onReceive` is abstract, so the base class never sees a message,
+  and the reverse index commented "for O(1) cleanup on Terminated" had no
+  reader on that path at all; a stopped subscriber stayed in every topic it
+  held and cost a dead-lettered `tell` on each fan-out.  Sealing
+  `onReceive` in the base class would have taken the dispatch table away
+  from all thirteen subclasses for the sake of one hook, so the seam is
+  explicit: **subclasses call `pruneTerminatedSubscriber(ref)` from their
+  `Terminated` arm**, as the corrected docs now show.  It deliberately does
+  not `unwatch` — the cell has already dropped the watch by the time it
+  delivers `Terminated`.  The index is also keyed by path now rather than
+  by ref object, which is what makes it work on that path at all: a
+  `Terminated` carries the cell's own `self` ref, which need not be the
+  object that subscribed.  `postStop` clears the ref sidecar too, which the
+  old pair left behind.
 
 - **SQLite persistence now sets an explicit `busy_timeout` on every
   connection it opens** (#124).  Until now no `busy_timeout` was set
@@ -1324,6 +1459,64 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   vets client-supplied ids.  Docs samples that predated the helper (the K8s
   lease test name, the `LogContext` correlation id, the `requestId` default)
   now show `randomUuid` instead of sending the reader to the raw primitive.
+
+- **The receptionist, the pub-sub mediator and the broker base index their
+  subscribers through `BidirectionalMultiMap`** (#1037).  All three kept the
+  same relation by hand, each with a comment explaining why it had to, and
+  all three now converge on the same pair: the relation plus a
+  `path → ActorRef` map for the fan-out target and the unwatch handle.
+  Behaviour is unchanged; what goes away is the lockstep discipline and one
+  latent defect with it.  `Receptionist.totalSubscribers` no longer exists —
+  it was exactly the pair count, so it is `subscriptions.size`, and with it
+  goes a counter that decremented *before* its own "did this subscriber
+  exist" guard.  Today's single caller happened to guard it, so the count
+  stayed right; a second one that did not would have drifted the subscriber
+  cap downward permanently, and a derived value cannot drift.  In the
+  mediator, `SubscriberSet` becomes `TopicState` — what a topic holds
+  besides its subscribers — and the four hand-written copies of the
+  empty-topic guard become one `maybeDropTopic`.  The fan-out paths there
+  gain one map lookup per local subscriber per publish, the price of keying
+  on paths rather than on ref identity — identity keying is what does not
+  survive death watch.  Measured on `benchmarks/cluster/pubsub-fanout.ts`
+  at 1000 local subscribers, three runs each, it does not show: 63.3 / 61.5
+  / 61.9 µs per delivery before against 60.0 / 62.8 / 55.9 µs after.  The
+  lookup is inside the noise of the mailbox hop it sits next to.
+
+- **The `fn` parameter name is spelled out across the API** (#1112).  136
+  sites in 34 files under `src/` still used `fn`, the short form `AGENTS.md`
+  bans by name alongside `Cmd`/`Msg`/`Ctx`/`Impl`/`Ctor`.  Parameter names
+  reach users — they are part of the published `.d.ts`, the generated
+  TypeDoc and IDE signature help — so this touches public surface:
+  `Dispatcher.execute(task)`, `Scheduler.scheduleOnceFunction(delayMs,
+  task)`, `LogContext.run/with/runFresh/runEach(…, callback)`,
+  `Tracer.withActiveSpan(span, callback)`, `TestKit.within(durationMs,
+  callback)`, `SqliteDb.transaction(body)`,
+  `HealthCheckRegistry.addLiveness/addReadiness(check)`,
+  `DistributedData.update/updateAsync(key, factory, mutator)`,
+  `ORMap.updateWith(…, mutator)`, `EventDispatcherBuilder.on(kind,
+  handler)`, and the four HTTP middleware builders, where the new name is
+  the field the builder writes (`withGenerate(generate)`,
+  `withValidate(validate)`, `withOnTimeout(onTimeout)`,
+  `withOriginPredicate(predicate)`).  **Not breaking:** arguments are
+  positional, and every type whose *field* was renamed (`ManualScheduler`'s
+  task record, DistributedData's update message, the Node worker adapter's
+  listener map) is module-local or private.  No behaviour change.
+
+  Three declarations that transcribe a vendor shape — better-sqlite3's
+  `transaction`, `@opentelemetry/api`'s `context.with`, and the
+  `bun:test`/Vitest/Jest `beforeAll`/`afterAll` hooks — were renamed too:
+  structural assignability ignores parameter names, so only the *member*
+  names have to stay verbatim, and those did.
+
+- **Documentation corrected where it named parameters that no longer
+  existed** (#1112).  `persistence/fsm/*` documented `onEnter(state, fn)` /
+  `onExit(state, fn)` / `onTransition(fn)` where the source says `hook` /
+  `hook` / `cb` and the method is `onExitState` (`onExit` is a private
+  field); `fundamentals/event-stream` documented `cluster.subscribe(fn, …)`
+  against a parameter named `listener`; and the
+  `operations/upgrades/rolling-migration` helper table listed
+  `migrateSnapshotStore(store, pids, fn)` for `(store, persistenceIds,
+  manifestFor)`.  All pre-existing drift, fixed in EN and DE together.
 
 - **BREAKING — `ClusterOptions.firstSightMaxVersionSkewMs` is now
   `maxVersionSkewMs`** (#114).  *Migration:* `withFirstSightMaxVersionSkewMs(ms)`

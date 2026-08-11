@@ -6,7 +6,7 @@ import type {
  * The default tracer — every operation is a no-op so framework
  * instrumentation pays nothing when tracing is not enabled.  All
  * `Span`s share the same singleton; `injectContext` returns null;
- * `withActiveSpan` invokes `fn` directly.
+ * `withActiveSpan` invokes `callback` directly.
  */
 
 const ZERO_CTX: SpanContext = Object.freeze({
@@ -26,7 +26,7 @@ const NOOP_SPAN: Span = Object.freeze({
 
 export class NoopTracer implements Tracer {
   startSpan(_name: string, _opts?: SpanOptions): Span { return NOOP_SPAN; }
-  withActiveSpan<T>(_span: Span, fn: () => T): T { return fn(); }
+  withActiveSpan<T>(_span: Span, callback: () => T): T { return callback(); }
   activeSpan(): Span | null { return null; }
   injectContext(): TraceCarrier | null { return null; }
   extractContext(_carrier: TraceCarrier | null | undefined): SpanContext | null { return null; }

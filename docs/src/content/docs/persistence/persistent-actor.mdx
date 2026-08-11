@@ -452,7 +452,8 @@ works in production and vice versa.
 | --- | --- |
 | Plain objects, arrays, strings, finite numbers, booleans, `null` | Stored as plain JSON — byte-identical to before. |
 | `Date`, `Map`, `Set`, `bigint`, `Uint8Array` | **Round-trip as real instances** via type tags. |
-| [`BidirectionalMap`](/reference/utility-helpers/#bidirectionalmap--a-map-with-a-maintained-inverse) | **Round-trips as a real instance** — the one framework class with a tag of its own (#1035).  Only the forward pairs are stored; the inverse is rebuilt on decode. |
+| [`BidirectionalMap`](/reference/utility-helpers/#bidirectionalmap--a-map-with-a-maintained-inverse) | **Round-trips as a real instance** — one of two framework classes with a tag of its own (#1035).  Only the forward pairs are stored; the inverse is rebuilt on decode. |
+| [`BidirectionalMultiMap`](/reference/utility-helpers/#bidirectionalmultimap--the-same-for-a-many-to-many-relation) | **Round-trips as a real instance** (#1037).  Stored as a forward adjacency list; the inverse is rebuilt on decode, and a participant left with no partners is not stored at all. |
 | `NaN`, `Infinity`, `-Infinity`, `-0` | **Round-trip exactly** — no more `null` / `0` (#889). |
 | `RegExp` (source + flags), `URL` | **Round-trip as real instances.** |
 | `Error` (incl. subclasses, `cause`, `AggregateError`) | **Round-trips** name + message + cause — deliberately without the stack: a persisted stack would leak filesystem paths into long-lived rows. |
@@ -469,6 +470,11 @@ Every store options builder takes `withSerializer(serializer)` — the
 way to preserve class identity or use a binary format for rows.  See
 [using a custom serializer for persistence](/serialization/custom/#using-a-custom-serializer-for-persistence)
 for the framing, mixed-history behavior, and the in-memory exception.
+
+[`CborSerializer`](/serialization/cbor/) carries the whole table above,
+so swapping it in for row size costs you nothing from this list.  Any
+*other* serializer carries whatever it carries — a schema-driven one
+(Avro, Protobuf) only knows the fields in its schema.
 
 Rows written by earlier actor-ts versions used bare
 `JSON.stringify`; they keep decoding unchanged — the tags only

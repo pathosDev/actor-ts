@@ -75,9 +75,9 @@ Vom `Scheduler` geerbt:
 
 ```ts
 scheduleOnce(delayMs, target, message, sender?): Cancellable
-scheduleOnceFunction(delayMs, fn): Cancellable
+scheduleOnceFunction(delayMs, task): Cancellable
 scheduleAtFixedRate(initialDelay, interval, target, message, sender?): Cancellable
-scheduleAtFixedRateFunction(initialDelay, interval, fn): Cancellable
+scheduleAtFixedRateFunction(initialDelay, interval, task): Cancellable
 ```
 
 Echtes `setTimeout` wird **nicht** genutzt. Jeder Schedule ist

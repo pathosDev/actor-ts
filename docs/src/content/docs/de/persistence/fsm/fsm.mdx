@@ -45,9 +45,9 @@ class Door extends FSM<DoorState, DoorData, DoorMessage> {
 class FSM<SName, SData, Message> extends Actor<Message> {
   // Im Subklassen-Konstruktor:
   protected when(state: SName, handler: StateHandler<SName, SData, Message>): void;
-  protected onEnter(state: SName, fn: (data: SData) => void | Promise<void>): void;
-  protected onExitState(state: SName, fn: (data: SData) => void | Promise<void>): void;
-  protected onTransition(fn: TransitionCallback<SName, SData>): void;
+  protected onEnter(state: SName, hook: (data: SData) => void | Promise<void>): void;
+  protected onExitState(state: SName, hook: (data: SData) => void | Promise<void>): void;
+  protected onTransition(cb: TransitionCallback<SName, SData>): void;
 
   // In Handlern:
   protected goto(state: SName, data: SData): Transition<SName, SData>;

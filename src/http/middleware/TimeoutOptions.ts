@@ -19,8 +19,8 @@ export class TimeoutOptionsBuilder extends OptionsBuilder<TimeoutOptionsType> {
   withMs(ms: number): this {
     return this.set('ms', ms);
   }
-  withOnTimeout(fn: (request: HttpRequest) => HttpResponse): this {
-    return this.set('onTimeout', fn);
+  withOnTimeout(onTimeout: (request: HttpRequest) => HttpResponse): this {
+    return this.set('onTimeout', onTimeout);
   }
 }
 

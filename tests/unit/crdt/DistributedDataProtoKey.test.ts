@@ -163,7 +163,7 @@ describe('DistributedData — a `__proto__` store key (#767)', () => {
 
 describe('CRDT collections — a `__proto__` entry id (#767)', () => {
   /**
-   * Entry ids are identity-fn output.  The default identity JSON-stringifies,
+   * Entry ids are identity-function output.  The default identity JSON-stringifies,
    * which quotes the key and can never produce a bare `__proto__` — but a
    * custom identity can, and that is the whole point of the option.
    */

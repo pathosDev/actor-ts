@@ -160,7 +160,7 @@ match(command)
   .otherwise((m) => this.onUnhandled(m));   // Runtime-Fallback
 ```
 
-`.otherwise(fn)` fängt alles, was nicht gematcht wurde.  Verwende
+`.otherwise(handler)` fängt alles, was nicht gematcht wurde.  Verwende
 es für Actors, die ein *Subset* eines breiteren Nachrichtentyps
 behandeln — z.B. ein `PersistentActor`, der bewusst Commands
 ignoriert, die er noch nicht behandeln kann.

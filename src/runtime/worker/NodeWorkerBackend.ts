@@ -73,7 +73,7 @@ class NodeWorkerAdapter implements WorkerLike {
   // underlying EventEmitter, so `removeEventListener` finds the right one.
   private readonly listeners: Map<
     (ev: never) => void,
-    { event: 'message' | 'exit'; fn: ((...args: unknown[]) => void) }
+    { event: 'message' | 'exit'; listener: ((...args: unknown[]) => void) }
   > = new Map();
 
   constructor(private readonly native: NodeWorkerThread) {}
@@ -87,19 +87,19 @@ class NodeWorkerAdapter implements WorkerLike {
     handler: (ev: WorkerEventMap[K]) => void,
   ): void {
     if (event === 'close') {
-      const fn = (code: number): void => {
+      const listener = (code: number): void => {
         handler({ code } as WorkerCloseEvent as WorkerEventMap[K]);
       };
-      this.listeners.set(handler as (ev: never) => void, { event: 'exit', fn: fn as (...a: unknown[]) => void });
-      this.native.on('exit', fn);
+      this.listeners.set(handler as (ev: never) => void, { event: 'exit', listener: listener as (...a: unknown[]) => void });
+      this.native.on('exit', listener);
       return;
     }
     // message
-    const fn = (data: unknown): void => {
+    const listener = (data: unknown): void => {
       handler({ data } as WorkerMessageEvent as WorkerEventMap[K]);
     };
-    this.listeners.set(handler as (ev: never) => void, { event: 'message', fn: fn as (...a: unknown[]) => void });
-    this.native.on('message', fn);
+    this.listeners.set(handler as (ev: never) => void, { event: 'message', listener: listener as (...a: unknown[]) => void });
+    this.native.on('message', listener);
   }
 
   removeEventListener<K extends keyof WorkerEventMap>(
@@ -110,9 +110,9 @@ class NodeWorkerAdapter implements WorkerLike {
     if (!entry) return;
     this.listeners.delete(handler as (ev: never) => void);
     if (entry.event === 'exit') {
-      this.native.off('exit', entry.fn as (code: number) => void);
+      this.native.off('exit', entry.listener as (code: number) => void);
     } else {
-      this.native.off('message', entry.fn as (data: unknown) => void);
+      this.native.off('message', entry.listener as (data: unknown) => void);
     }
   }
 

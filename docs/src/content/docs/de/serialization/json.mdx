@@ -41,10 +41,14 @@ deckt es ab.
   (`__date__`, `__bytes__`, `__map__`, `__set__`, `__bigint__`)
   zurück in echte Instanzen round-getrippt.
 - [`BidirectionalMap`](/de/reference/utility-helpers/#bidirectionalmap--eine-map-mit-gepflegter-umkehrung)
-  — die einzige Framework-Klasse mit einem eigenen Tag
-  (`__bidirectionalmap__`, #1035), damit sie ohne Adapter im
-  persistenten State liegen kann.  Geschrieben wird nur ihre
-  Vorwärtsrichtung; die Umkehrung wird beim Dekodieren rekonstruiert.
+  und
+  [`BidirectionalMultiMap`](/de/reference/utility-helpers/#bidirectionalmultimap--dasselbe-für-eine-viele-zu-viele-relation)
+  — die beiden Framework-Klassen mit eigenen Tags
+  (`__bidirectionalmap__`, #1035; `__bidirectionalmultimap__`,
+  #1037), damit sie ohne Adapter im persistenten State liegen
+  können.  Geschrieben wird nur die Vorwärtsrichtung — Paare bei der
+  ersten, eine Adjazenzliste bei der zweiten; die Umkehrung wird beim
+  Dekodieren rekonstruiert.
 - `NaN` / `Infinity` / `-Infinity` / `-0`, `RegExp` (Source +
   Flags), `URL`, `Error` (Name + Message + Cause — ohne Stack) und
   jedes Typed Array / `DataView` / `ArrayBuffer` — ebenfalls über
@@ -69,7 +73,7 @@ Worauf du **achten** musst:
 
 | Typ | Verhalten |
 | --- | --- |
-| `undefined` | **Wirft** einen `SerializationError` (strenger als rohes `JSON.stringify`, das es verwirft).  Der Persistenz-Payload-Codec verwirft stattdessen `undefined`-Objekt-Properties wie `JSON.stringify` und **erhält** `undefined` in Wertpositionen (Array-Slots, `Set`-Member, `Map`-Einträge) über einen Tag (#889). |
+| `undefined` | **Wirft** einen `SerializationError` (strenger als rohes `JSON.stringify`, das es verwirft).  Der Persistenz-Payload-Codec verwirft stattdessen `undefined`-Objekt-Properties wie `JSON.stringify` und **erhält** `undefined` in Wertpositionen (Array-Slots, `Set`-Member, `Map`-Einträge) über einen Tag (#889).  [`CborSerializer`](/de/serialization/cbor/) trägt es überall nativ, Keys eingeschlossen — die eine Stelle, an der sich die beiden Codecs unterscheiden (#1036). |
 | `Function` / `Symbol` / `Promise` / `WeakMap` / `WeakSet` | **Werfen** einen `SerializationError` — prinzipiell nicht serialisierbar. |
 | Zirkuläre Referenzen | **Werfen** einen `SerializationError` mit dem Key-Pfad (statt den Stack zu sprengen). |
 | Klasseninstanzen | `toJSON()` wird genutzt, wenn vorhanden; sonst als plain `{ ...fields }` dekodiert — Methoden + Klassenidentität verloren. |

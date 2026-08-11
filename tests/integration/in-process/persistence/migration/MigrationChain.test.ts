@@ -91,8 +91,8 @@ describe('MigrationChain — construction guards', () => {
   });
 });
 
-function catchThrows(fn: () => unknown): unknown {
-  try { fn(); return null; } catch (e) { return e; }
+function catchThrows(operation: () => unknown): unknown {
+  try { operation(); return null; } catch (e) { return e; }
 }
 
 /* =================== #7 — rolling-deploy downcasters =================== */

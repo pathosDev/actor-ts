@@ -42,16 +42,16 @@ class MockSocket implements WebsocketSocketAdapter {
   }
   setListeners(l: WebsocketListeners): void {
     this.listeners = l;
-    for (const fn of this.pending.splice(0)) fn(l);
+    for (const callback of this.pending.splice(0)) callback(l);
   }
 
   /* test helpers */
   emit(data: string | Uint8Array): void {
     this.deliver((l) => l.onMessage(data));
   }
-  private deliver(fn: (l: WebsocketListeners) => void): void {
-    if (this.listeners) fn(this.listeners);
-    else this.pending.push(fn);
+  private deliver(callback: (l: WebsocketListeners) => void): void {
+    if (this.listeners) callback(this.listeners);
+    else this.pending.push(callback);
   }
   get textSent(): string[] {
     return this.sent.filter((system): system is string => typeof system === 'string');

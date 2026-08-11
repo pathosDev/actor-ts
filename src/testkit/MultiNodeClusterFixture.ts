@@ -33,8 +33,8 @@ import type { MultiNodeSpecOptionsType } from './MultiNodeSpecOptions.js';
  * signatures, so the same shape works there.
  */
 export interface TestRunnerHooks {
-  beforeAll(fn: () => void | Promise<void>): void;
-  afterAll(fn: () => void | Promise<void>): void;
+  beforeAll(callback: () => void | Promise<void>): void;
+  afterAll(callback: () => void | Promise<void>): void;
 }
 
 export interface MultiNodeClusterFixture {

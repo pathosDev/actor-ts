@@ -5,6 +5,8 @@ import {
   CborEncodeError,
   CborEncoder,
 } from '../../../src/serialization/CborCodec.js';
+import { BidirectionalMap } from '../../../src/util/BidirectionalMap.js';
+import { BidirectionalMultiMap } from '../../../src/util/BidirectionalMultiMap.js';
 
 const enc = new CborEncoder();
 const dec = new CborDecoder();
@@ -56,6 +58,24 @@ describe('CBOR floats', () => {
     const bytes = new Uint8Array([0xfa, 0x40, 0x49, 0x0f, 0xdb]);
     expect(dec.decode(bytes) as number).toBeCloseTo(Math.PI, 4);
   });
+
+  test('NaN and the infinities survive; -0 keeps its sign (#1036)', () => {
+    expect(Number.isNaN(rt(NaN))).toBe(true);
+    expect(rt(Infinity)).toBe(Infinity);
+    expect(rt(-Infinity)).toBe(-Infinity);
+    expect(Object.is(rt(-0), -0)).toBe(true);
+    expect(Object.is(rt(0), 0)).toBe(true);
+    // In an array slot and an object property, not just at the root.
+    const nested = rt({ limit: -0, stats: [-0, 0] }) as { limit: number; stats: number[] };
+    expect(Object.is(nested.limit, -0)).toBe(true);
+    expect(Object.is(nested.stats[0], -0)).toBe(true);
+    expect(Object.is(nested.stats[1], 0)).toBe(true);
+  });
+
+  test('a plain zero stays a one-byte integer — only -0 pays for the float', () => {
+    expect(Array.from(enc.encode(0))).toEqual([0x00]);
+    expect(enc.encode(-0).byteLength).toBe(9); // 0xfb + 8 bytes
+  });
 });
 
 describe('CBOR strings & byte strings', () => {
@@ -96,9 +116,27 @@ describe('CBOR booleans, null, undefined', () => {
     expect(rt(null)).toBe(null);
   });
 
-  test('undefined encodes as null', () => {
-    // Encoder writes null for undefined (simple value 22).
-    expect(rt(undefined)).toBeNull();
+  test('undefined round-trips as CBOR simple value 23, distinct from null (#1036)', () => {
+    expect(Array.from(enc.encode(undefined))).toEqual([0xf7]);
+    expect(rt(undefined)).toBeUndefined();
+    expect(rt(null)).toBeNull();
+  });
+
+  // Unlike the JSON tree, which drops the key under its 'omit' policy and
+  // throws under 'reject'.  CBOR keeps it: the key is already present today
+  // (with the wrong value), and skipping an entry mid-loop would falsify the
+  // already-written map header and corrupt the stream rather than lose a key.
+  test('an undefined object property keeps its key', () => {
+    const decoded = rt({ a: undefined, b: 1 }) as Record<string, unknown>;
+    expect('a' in decoded).toBe(true);
+    expect(decoded['a']).toBeUndefined();
+    expect(decoded['b']).toBe(1);
+  });
+
+  test('undefined survives in array slots', () => {
+    const decoded = rt([1, undefined, 3]) as unknown[];
+    expect(decoded.length).toBe(3);
+    expect(decoded[1]).toBeUndefined();
   });
 });
 
@@ -214,6 +252,530 @@ describe('CBOR error paths', () => {
 
   test('encoder rejects unsupported types (functions, symbols)', () => {
     expect(() => enc.encode(Symbol('x') as unknown)).toThrow(CborEncodeError);
+  });
+
+  // All three used to reach the generic object branch, where `Object.entries`
+  // is `[]` — they were stored as `{}` with nothing to say they had ever been
+  // anything else (#1036).
+  test('encoder refuses Promise, WeakMap and WeakSet instead of storing {}', () => {
+    expect(() => enc.encode(Promise.resolve(1))).toThrow(CborEncodeError);
+    expect(() => enc.encode(new WeakMap())).toThrow(CborEncodeError);
+    expect(() => enc.encode(new WeakSet())).toThrow(CborEncodeError);
+    expect(() => enc.encode({ pending: Promise.resolve(1) })).toThrow(CborEncodeError);
+  });
+
+  test('wrapper objects unwrap to their primitive, like JSON.stringify', () => {
+    expect(rt(new Number(42) as unknown)).toBe(42);
+    expect(rt(new String('ab') as unknown)).toBe('ab');
+    expect(rt(new Boolean(true) as unknown)).toBe(true);
+  });
+});
+
+describe('CBOR Map and Set (tags 259 / 258, #1036)', () => {
+  test('a Map round-trips as a Map, with its entries', () => {
+    const source = new Map<string, unknown>([['ada', 1], ['grace', { rank: 2 }]]);
+    const decoded = rt(source);
+    expect(decoded).toBeInstanceOf(Map);
+    expect(decoded.size).toBe(2);
+    expect(decoded.get('ada')).toBe(1);
+    expect(decoded.get('grace')).toEqual({ rank: 2 });
+  });
+
+  test('a Set round-trips as a Set, with its members', () => {
+    const decoded = rt(new Set([1, 'two', { three: true }]));
+    expect(decoded).toBeInstanceOf(Set);
+    expect(decoded.size).toBe(3);
+    expect([...decoded]).toEqual([1, 'two', { three: true }]);
+  });
+
+  test('empty collections survive', () => {
+    expect(rt(new Map())).toBeInstanceOf(Map);
+    expect(rt(new Map()).size).toBe(0);
+    expect(rt(new Set())).toBeInstanceOf(Set);
+    expect(rt(new Set()).size).toBe(0);
+  });
+
+  // The reason `Map` is tagged at all: a bare major-5 map is what a plain
+  // object writes, so the two would be indistinguishable coming back.
+  test('a plain object still decodes as a plain object, not a Map', () => {
+    const decoded = rt({ ada: 1 });
+    expect(decoded).not.toBeInstanceOf(Map);
+    expect(decoded).toEqual({ ada: 1 });
+  });
+
+  test('Map keys are not restricted to strings', () => {
+    const source = new Map<unknown, unknown>([
+      [1, 'number key'],
+      [new Date('2024-01-01T00:00:00Z'), 'date key'],
+      [{ nested: true }, 'object key'],
+    ]);
+    const decoded = rt(source);
+    expect(decoded.get(1)).toBe('number key');
+    const keys = [...decoded.keys()];
+    expect(keys[1]).toBeInstanceOf(Date);
+    expect(keys[2]).toEqual({ nested: true });
+  });
+
+  test('rich types survive on both sides of an entry, and nest', () => {
+    const source = new Map<unknown, unknown>([
+      ['when', new Date('2024-06-01T12:00:00Z')],
+      ['big', 2n ** 70n],
+      ['inner', new Set([new Map([['deep', 1]])])],
+    ]);
+    const decoded = rt(source);
+    expect(decoded.get('when')).toBeInstanceOf(Date);
+    expect(decoded.get('big')).toBe(2n ** 70n);
+    const inner = decoded.get('inner') as Set<Map<string, number>>;
+    expect(inner).toBeInstanceOf(Set);
+    expect([...inner][0]).toBeInstanceOf(Map);
+    expect([...inner][0]!.get('deep')).toBe(1);
+  });
+
+  // A Map key reaches no prototype setter, so the plain-object hardening has
+  // nothing to protect here — but the value must still arrive intact.
+  test('a __proto__ Map key stays an ordinary key', () => {
+    const decoded = rt(new Map<string, unknown>([['__proto__', { polluted: true }]]));
+    expect(decoded).toBeInstanceOf(Map);
+    expect(decoded.get('__proto__')).toEqual({ polluted: true });
+    expect(({} as Record<string, unknown>)['polluted']).toBeUndefined();
+  });
+
+  test('an untagged map still refuses non-string keys', () => {
+    // 0xa1 = map(1), 0x01 = key 1 (an integer), 0x02 = value 2.
+    expect(() => dec.decode(new Uint8Array([0xa1, 0x01, 0x02]))).toThrow(CborDecodeError);
+  });
+
+  test('a malformed tag body is rejected, not misread', () => {
+    // Tag 259 (0xd9 0x01 0x03) over a text string instead of a map.
+    expect(() => dec.decode(new Uint8Array([0xd9, 0x01, 0x03, 0x61, 0x78]))).toThrow(CborDecodeError);
+    // Tag 258 (0xd9 0x01 0x02) over a text string instead of an array.
+    expect(() => dec.decode(new Uint8Array([0xd9, 0x01, 0x02, 0x61, 0x78]))).toThrow(CborDecodeError);
+    // Tag 259 with nothing after it.
+    expect(() => dec.decode(new Uint8Array([0xd9, 0x01, 0x03]))).toThrow(CborDecodeError);
+  });
+
+  test('a Map body costs the same bytes as the equivalent plain object, plus the tag', () => {
+    const asObject = enc.encode({ a: 1 }).byteLength;
+    const asMap = enc.encode(new Map([['a', 1]])).byteLength;
+    expect(asMap).toBe(asObject + 3); // 0xd9 0x01 0x03
+  });
+});
+
+describe('CBOR BidirectionalMap (tag 27, #1036)', () => {
+  test('round-trips as a BidirectionalMap, both directions usable', () => {
+    const source = new BidirectionalMap<string, number>([['ada', 1], ['grace', 2]]);
+    const decoded = rt(source);
+    expect(decoded).toBeInstanceOf(BidirectionalMap);
+    expect(decoded.get('ada')).toBe(1);
+    // Never written to the wire — if this answers, it was genuinely rebuilt.
+    expect(decoded.getKey(2)).toBe('grace');
+    expect(decoded.size).toBe(2);
+  });
+
+  test('only the forward pairs are written, under 27(["BidirectionalMap", 259(map)])', () => {
+    const bytes = enc.encode(new BidirectionalMap([['ada', 1]]));
+    expect(Array.from(bytes)).toEqual([
+      0xd8, 0x1b,                                            // tag 27
+      0x82,                                                  // array(2)
+      0x70, ...[...'BidirectionalMap'].map((c) => c.charCodeAt(0)), // text(16)
+      0xd9, 0x01, 0x03,                                      // tag 259
+      0xa1,                                                  // map(1) — one pair, not two
+      0x63, ...[...'ada'].map((c) => c.charCodeAt(0)),       // text(3) "ada"
+      0x01,                                                  // 1
+    ]);
+  });
+
+  test('is not encoded as a plain Map despite implementing the interface', () => {
+    const decoded = rt(new BidirectionalMap([['a', 1]]));
+    expect(decoded).toBeInstanceOf(BidirectionalMap);
+    const plain = rt(new Map([['a', 1]]));
+    expect(plain).toBeInstanceOf(Map);
+    expect(plain).not.toBeInstanceOf(BidirectionalMap);
+  });
+
+  test('rich types survive on both sides, and a Map nests inside', () => {
+    const source = new BidirectionalMap<unknown, unknown>([
+      [new Date('2024-02-02T00:00:00Z'), 9n],
+      ['inner', new Map([['deep', new Set([1])]])],
+    ]);
+    const decoded = rt(source);
+    expect([...decoded.keys()][0]).toBeInstanceOf(Date);
+    expect(decoded.get('inner')).toBeInstanceOf(Map);
+    const deep = (decoded.get('inner') as Map<string, Set<number>>).get('deep');
+    expect(deep).toBeInstanceOf(Set);
+  });
+
+  test('an empty BidirectionalMap survives', () => {
+    const decoded = rt(new BidirectionalMap());
+    expect(decoded).toBeInstanceOf(BidirectionalMap);
+    expect(decoded.size).toBe(0);
+  });
+
+  test('a malformed generic object is rejected; an unknown class name passes through', () => {
+    // Tag 27 over a text string instead of [name, ...arguments].
+    expect(() => dec.decode(new Uint8Array([0xd8, 0x1b, 0x61, 0x78]))).toThrow(CborDecodeError);
+    // Tag 27, array(2), "BidirectionalMap", 1 — the argument is not a map.
+    const wrongArgument = new Uint8Array([
+      0xd8, 0x1b, 0x82, 0x70,
+      ...[...'BidirectionalMap'].map((c) => c.charCodeAt(0)),
+      0x01,
+    ]);
+    expect(() => dec.decode(wrongArgument)).toThrow(CborDecodeError);
+
+    // An unrecognised name degrades to plain data rather than failing the
+    // message — a newer node's class must not break an older reader.
+    const unknownClass = new Uint8Array([
+      0xd8, 0x1b, 0x82, 0x64,
+      ...[...'Whom'].map((c) => c.charCodeAt(0)),
+      0x01,
+    ]);
+    expect(dec.decode(unknownClass)).toEqual(['Whom', 1]);
+  });
+});
+
+describe('CBOR BidirectionalMultiMap (tag 27, #1037)', () => {
+  test('round-trips as a BidirectionalMultiMap, both directions usable', () => {
+    const source = new BidirectionalMultiMap<string, number>([
+      ['ada', 1], ['ada', 2], ['grace', 2],
+    ]);
+    const decoded = rt(source);
+    expect(decoded).toBeInstanceOf(BidirectionalMultiMap);
+    expect(decoded.size).toBe(3);
+    expect([...decoded.get('ada')]).toEqual([1, 2]);
+    // Never written to the wire — if this answers, it was genuinely rebuilt.
+    expect([...decoded.getKeys(2)]).toEqual(['ada', 'grace']);
+  });
+
+  test('the forward adjacency is written as a tag-259 map of tag-258 sets', () => {
+    const bytes = enc.encode(new BidirectionalMultiMap([['a', 1]]));
+    expect(Array.from(bytes)).toEqual([
+      0xd8, 0x1b,                                                  // tag 27
+      0x82,                                                        // array(2)
+      0x75, ...[...'BidirectionalMultiMap'].map((c) => c.charCodeAt(0)), // text(21)
+      0xd9, 0x01, 0x03,                                            // tag 259
+      0xa1,                                                        // map(1) — one left
+      0x61, 0x61,                                                  // text(1) "a"
+      0xd9, 0x01, 0x02,                                            // tag 258
+      0x81,                                                        // array(1) — one partner
+      0x01,                                                        // 1
+    ]);
+  });
+
+  test('an empty relation survives, and rich types work on both sides', () => {
+    const empty = rt(new BidirectionalMultiMap());
+    expect(empty).toBeInstanceOf(BidirectionalMultiMap);
+    expect(empty.size).toBe(0);
+
+    const rich = rt(new BidirectionalMultiMap<unknown, unknown>([
+      [new Date('2024-05-05T00:00:00Z'), 7n],
+    ]));
+    expect([...rich.lefts()][0]).toBeInstanceOf(Date);
+    expect([...rich.rights()][0]).toBe(7n);
+  });
+
+  test('a malformed adjacency payload is rejected', () => {
+    // 27(["BidirectionalMultiMap", 1]) — the argument is not a map.
+    const wrongArgument = new Uint8Array([
+      0xd8, 0x1b, 0x82,
+      0x75, ...[...'BidirectionalMultiMap'].map((c) => c.charCodeAt(0)),
+      0x01,
+    ]);
+    expect(() => dec.decode(wrongArgument)).toThrow(CborDecodeError);
+
+    // 27(["BidirectionalMultiMap", 259({"a": 1})]) — a row that is not a set.
+    const wrongRow = new Uint8Array([
+      0xd8, 0x1b, 0x82,
+      0x75, ...[...'BidirectionalMultiMap'].map((c) => c.charCodeAt(0)),
+      0xd9, 0x01, 0x03, 0xa1, 0x61, 0x61, 0x01,
+    ]);
+    expect(() => dec.decode(wrongRow)).toThrow(CborDecodeError);
+  });
+});
+
+describe('CBOR RegExp, URL and Error (#1036)', () => {
+  test('RegExp round-trips source and flags; lastIndex is not carried', () => {
+    const pattern = /order-\d+/gi;
+    pattern.lastIndex = 7;
+    const decoded = rt(pattern);
+    expect(decoded).toBeInstanceOf(RegExp);
+    expect(decoded.source).toBe(pattern.source);
+    expect(decoded.flags).toBe('gi');
+    expect(decoded.lastIndex).toBe(0);
+  });
+
+  test('URL round-trips as a URL instance (toJSON must not flatten it)', () => {
+    const decoded = rt(new URL('https://example.com/a?b=1#c'));
+    expect(decoded).toBeInstanceOf(URL);
+    expect(decoded.href).toBe('https://example.com/a?b=1#c');
+  });
+
+  test('Error round-trips name, message and cause — never the stack', () => {
+    const cause = new RangeError('too deep');
+    const decoded = rt(new TypeError('bad shape', { cause }));
+    expect(decoded).toBeInstanceOf(TypeError);
+    expect(decoded.message).toBe('bad shape');
+    expect(decoded.cause).toBeInstanceOf(RangeError);
+    expect((decoded.cause as RangeError).message).toBe('too deep');
+    expect(decoded.stack).not.toBe(new TypeError('bad shape').stack);
+    // The stack is never written, so nothing in the bytes mentions this file.
+    expect(new TextDecoder().decode(enc.encode(new Error('boom')))).not.toContain('CborCodec');
+  });
+
+  test('an unknown error name reconstructs as Error with that name', () => {
+    const custom = new Error('boom');
+    custom.name = 'PaymentDeclinedError';
+    const decoded = rt(custom);
+    expect(decoded).toBeInstanceOf(Error);
+    expect(decoded.name).toBe('PaymentDeclinedError');
+    expect(decoded.message).toBe('boom');
+  });
+
+  test('AggregateError round-trips its member errors', () => {
+    const decoded = rt(new AggregateError([new TypeError('a'), new Error('b')], 'several failed'));
+    expect(decoded).toBeInstanceOf(AggregateError);
+    expect(decoded.message).toBe('several failed');
+    expect(decoded.errors).toHaveLength(2);
+    expect(decoded.errors[0]).toBeInstanceOf(TypeError);
+  });
+
+  test('an error with no cause does not grow one', () => {
+    const decoded = rt(new Error('plain'));
+    expect('cause' in decoded).toBe(false);
+  });
+
+  test('malformed payloads are decode errors, not raw constructor throws', () => {
+    const generic = (name: string, ...rest: number[]): Uint8Array => new Uint8Array([
+      0xd8, 0x1b, 0x80 | (1 + rest.length),
+      0x60 | name.length, ...[...name].map((c) => c.charCodeAt(0)),
+      ...rest,
+    ]);
+    // 27(["RegExp", 1, 2]) — arguments are not strings.
+    expect(() => dec.decode(generic('RegExp', 0x01, 0x02))).toThrow(CborDecodeError);
+    // 27(["Error", 1]) — the payload is not an object.
+    expect(() => dec.decode(generic('Error', 0x01))).toThrow(CborDecodeError);
+    // Tag 32 over a relative reference, which `new URL` refuses.
+    expect(() => dec.decode(new Uint8Array([0xd8, 0x20, 0x62, 0x2f, 0x78]))).toThrow(CborDecodeError);
+    // Tag 32 over a number.
+    expect(() => dec.decode(new Uint8Array([0xd8, 0x20, 0x01]))).toThrow(CborDecodeError);
+  });
+
+  test('an unbuildable RegExp payload is a decode error', () => {
+    // 27(["RegExp", "(", ""]) — an unbalanced group.
+    const bytes = new Uint8Array([
+      0xd8, 0x1b, 0x83,
+      0x66, ...[...'RegExp'].map((c) => c.charCodeAt(0)),
+      0x61, 0x28,
+      0x60,
+    ]);
+    expect(() => dec.decode(bytes)).toThrow(CborDecodeError);
+  });
+});
+
+describe('CBOR typed arrays, DataView and ArrayBuffer (tag 27, #1036)', () => {
+  test('every typed-array kind round-trips as its own class, values intact', () => {
+    const views: readonly ArrayBufferView[] = [
+      new Int8Array([-1, 2]),
+      new Uint8ClampedArray([0, 255]),
+      new Int16Array([-300, 300]),
+      new Uint16Array([0, 65535]),
+      new Int32Array([-70000, 70000]),
+      new Uint32Array([0, 4294967295]),
+      new Float32Array([1.5, -2.5]),
+      new Float64Array([1.5, -0]),
+      new BigInt64Array([-5n, 5n]),
+      new BigUint64Array([0n, 18446744073709551615n]),
+    ];
+
+    for (const view of views) {
+      const decoded = rt(view);
+      expect(decoded.constructor.name).toBe(view.constructor.name);
+      expect(decoded).toEqual(view);
+    }
+    // -0 inside a typed array is bit-exact, since the array travels as bytes.
+    expect(Object.is((rt(new Float64Array([-0])))[0], -0)).toBe(true);
+  });
+
+  test('DataView and ArrayBuffer round-trip too', () => {
+    const buffer = new Uint8Array([1, 2, 3, 4]).buffer;
+    const decodedBuffer = rt(buffer);
+    expect(decodedBuffer).toBeInstanceOf(ArrayBuffer);
+    expect(new Uint8Array(decodedBuffer)).toEqual(new Uint8Array([1, 2, 3, 4]));
+
+    const view = new DataView(new Uint8Array([0, 0, 0, 7]).buffer);
+    const decodedView = rt(view);
+    expect(decodedView).toBeInstanceOf(DataView);
+    expect(decodedView.getUint32(0, false)).toBe(7);
+  });
+
+  // The reason `Uint8Array` is matched before `ArrayBuffer.isView`: it keeps
+  // the bare byte string, which is the whole size argument for CBOR.
+  test('Uint8Array keeps its bare byte string — no tag, no wrapper', () => {
+    expect(Array.from(enc.encode(new Uint8Array([1, 2, 3])))).toEqual([0x43, 1, 2, 3]);
+    expect(rt(new Uint8Array([1, 2, 3]))).toBeInstanceOf(Uint8Array);
+    // Uint8ClampedArray is NOT a Uint8Array subclass, so it keeps its class.
+    expect(rt(new Uint8ClampedArray([1]))).toBeInstanceOf(Uint8ClampedArray);
+  });
+
+  test('a view over part of a buffer carries only its own bytes', () => {
+    const backing = new Uint8Array([9, 9, 1, 0, 9, 9]).buffer;
+    const decoded = rt(new Uint16Array(backing, 2, 1));
+    expect(decoded).toBeInstanceOf(Uint16Array);
+    expect(decoded.length).toBe(1);
+    expect(decoded[0]).toBe(1); // little-endian 0x0001
+  });
+
+  test('a truncated or unknown binary payload is a decode error', () => {
+    const generic = (name: string, ...rest: number[]): Uint8Array => new Uint8Array([
+      0xd8, 0x1b, 0x82,
+      0x60 | name.length, ...[...name].map((c) => c.charCodeAt(0)),
+      ...rest,
+    ]);
+    // 27(["Int32Array", h'000000']) — three bytes is not a whole element.
+    expect(() => dec.decode(generic('Int32Array', 0x43, 0, 0, 0))).toThrow(CborDecodeError);
+    // 27(["Float64Array", 1]) — the argument is not a byte string.
+    expect(() => dec.decode(generic('Float64Array', 0x01))).toThrow(CborDecodeError);
+  });
+});
+
+describe('CBOR toJSON (#1036)', () => {
+  test('a toJSON() result is what gets encoded', () => {
+    class Money {
+      constructor(private readonly cents: number) {}
+      toJSON(): unknown { return { amount: this.cents / 100, currency: 'EUR' }; }
+    }
+    expect(rt({ price: new Money(1250) })).toEqual({ price: { amount: 12.5, currency: 'EUR' } });
+  });
+
+  test('nested values inside a toJSON() result still get the full treatment', () => {
+    const wrapper = { toJSON: (): unknown => ({ at: new Date(0), tags: new Set(['a']) }) };
+    const decoded = rt(wrapper) as { at: Date; tags: Set<string> };
+    expect(decoded.at).toBeInstanceOf(Date);
+    expect(decoded.tags).toBeInstanceOf(Set);
+  });
+
+  // The rich types that define a toJSON of their own are claimed by their
+  // branches before the probe is ever reached — this is what that buys.
+  test('rich types with a toJSON of their own are unaffected', () => {
+    expect(rt(new Date(0))).toBeInstanceOf(Date);
+    expect(rt(new URL('https://example.test/'))).toBeInstanceOf(URL);
+    expect(rt(new BidirectionalMap([['a', 1]]))).toBeInstanceOf(BidirectionalMap);
+  });
+
+  test('toJSON returning this terminates instead of recursing forever', () => {
+    const selfish: Record<string, unknown> = { a: 1 };
+    selfish['toJSON'] = () => selfish;
+    expect(() => enc.encode(selfish)).toThrow(CborEncodeError);
+  });
+});
+
+describe('CBOR encoder limits (#1036)', () => {
+  test('a cycle is a CborEncodeError, not a stack overflow', () => {
+    const node: Record<string, unknown> = { name: 'root' };
+    node['self'] = node;
+    expect(() => enc.encode(node)).toThrow(CborEncodeError);
+
+    const list: unknown[] = [1];
+    list.push(list);
+    expect(() => enc.encode(list)).toThrow(CborEncodeError);
+  });
+
+  test('a shared reference is not a cycle — a DAG duplicates, like JSON.stringify', () => {
+    const shared = { id: 7 };
+    expect(rt({ left: shared, right: shared })).toEqual({ left: { id: 7 }, right: { id: 7 } });
+    expect(rt([shared, shared])).toEqual([{ id: 7 }, { id: 7 }]);
+  });
+
+  // The encoder used to have no bound at all while the decoder capped at 256,
+  // so it could write bytes it could not read back.  Both now measure the
+  // same levels.
+  test('the encoder refuses what its own decoder would refuse', () => {
+    const nest = (levels: number): unknown => {
+      let out: unknown = 'leaf';
+      for (let i = 0; i < levels; i++) out = [out];
+      return out;
+    };
+    expect(() => enc.encode(nest(200_000))).toThrow(CborEncodeError);
+    expect(() => enc.encode(nest(300))).toThrow(CborEncodeError);
+    // Just inside the bound: encodes, and decodes back.
+    expect(dec.decode(enc.encode(nest(250)))).toEqual(nest(250));
+  });
+
+  // The property the depth accounting exists for: whatever the encoder is
+  // willing to write, the decoder is willing to read.  It has to hold per
+  // container kind, because they do not all cost the same number of decode
+  // levels — a Set spends two (the tag, then the array) where a Map spends
+  // one.  Anything that gets this wrong writes unreadable snapshots.
+  test('encoder ceiling == decoder ceiling, for every container kind', () => {
+    const wrappers: ReadonlyArray<readonly [string, (inner: unknown) => unknown]> = [
+      ['array', (inner) => [inner]],
+      ['object', (inner) => ({ v: inner })],
+      ['map', (inner) => new Map([['v', inner]])],
+      ['set', (inner) => new Set([inner])],
+    ];
+
+    for (const [kind, wrap] of wrappers) {
+      const nested = (levels: number): unknown => {
+        let out: unknown = 'leaf';
+        for (let i = 0; i < levels; i++) out = wrap(out);
+        return out;
+      };
+
+      let deepest = 0;
+      let deepestBytes = new Uint8Array();
+      for (let levels = 1; levels <= 300; levels++) {
+        try {
+          deepestBytes = enc.encode(nested(levels));
+          deepest = levels;
+        } catch {
+          break;
+        }
+      }
+
+      expect(`${kind}: ${deepest > 0}`).toBe(`${kind}: true`);
+      // The deepest the encoder accepted really does decode …
+      expect(() => dec.decode(deepestBytes)).not.toThrow();
+      // … and one level further is refused before any bytes are produced.
+      expect(() => enc.encode(nested(deepest + 1))).toThrow(CborEncodeError);
+    }
+  });
+
+  // The leaf-shaped rich types are where this is easiest to get wrong: they
+  // sit two decode levels below where they start (tag, argument array, body)
+  // but never recurse, so no child check fires to catch an overflow.  Each
+  // one has to police the levels it occupies itself.
+  test('a rich type that never recurses still cannot overflow the decoder', () => {
+    const leaves: ReadonlyArray<readonly [string, unknown]> = [
+      ['empty Set', new Set()],
+      ['empty Map', new Map()],
+      ['empty BidirectionalMap', new BidirectionalMap()],
+      ['RegExp', /x/g],
+      ['Error', new Error('x')],
+      ['Date', new Date(0)],
+      ['bigint', 2n ** 70n],
+      ['URL', new URL('https://example.test/')],
+    ];
+
+    for (const [kind, leaf] of leaves) {
+      for (let levels = 250; levels <= 260; levels++) {
+        let value: unknown = leaf;
+        for (let i = 0; i < levels; i++) value = [value];
+
+        let bytes: Uint8Array;
+        try {
+          bytes = enc.encode(value);
+        } catch {
+          continue; // Refused up front — nothing to read back.
+        }
+        // Whatever it agreed to write, it must be able to read.
+        let outcome = 'decodes';
+        try {
+          dec.decode(bytes);
+        } catch {
+          outcome = 'UNREADABLE';
+        }
+        expect(`${kind} at ${levels}: ${outcome}`).toBe(`${kind} at ${levels}: decodes`);
+      }
+    }
   });
 });
 

@@ -22,8 +22,8 @@ export class RequestIdOptionsBuilder extends OptionsBuilder<RequestIdOptionsType
   withTrustIncoming(flag = true): this {
     return this.set('trustIncoming', flag);
   }
-  withGenerate(fn: () => string): this {
-    return this.set('generate', fn);
+  withGenerate(generate: () => string): this {
+    return this.set('generate', generate);
   }
 }
 
