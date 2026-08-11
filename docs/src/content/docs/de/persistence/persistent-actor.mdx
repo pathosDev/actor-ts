@@ -256,6 +256,24 @@ override onRecoveryFailure(reason: Error): void {
 }
 ```
 
+Die beiden Integritätsfehler sind exportierte Klassen, der Hook
+kann sie also auseinanderhalten.  Welcher der beiden Stores seinen
+Vertrag gebrochen hat, ist das Erste, was ein Betreiber wissen
+muss, und beide tragen die `persistenceId` und die betroffene
+`sequenceNr`:
+
+```ts
+import { JournalIntegrityError, SnapshotIntegrityError } from 'actor-ts';
+
+override onRecoveryFailure(reason: Error): void {
+  if (reason instanceof JournalIntegrityError) {
+    this.log.error(`journal broke at ${reason.sequenceNr} for ${reason.persistenceId}`);
+  } else if (reason instanceof SnapshotIntegrityError) {
+    this.log.error(`snapshot ${reason.sequenceNr} of ${reason.persistenceId} is not trustworthy`);
+  }
+}
+```
+
 Weitermachen kann der Actor in keinem der beiden Fälle: `state`
 wurde nie zugewiesen und `lastSequenceNr` ist unbekannt, es gibt
 also keinen Zustand, in dem er ein Command beantworten könnte.  Das

@@ -20,10 +20,10 @@ import type { PersistentEvent } from '../../../../src/persistence/JournalTypes.j
 import {
   InMemoryJournal,
   InMemorySnapshotStore,
+  JournalIntegrityError,
   PersistenceExtensionId,
   PersistentActor,
 } from '../../../../src/persistence/index.js';
-import { JournalIntegrityError } from '../../../../src/persistence/Replay.js';
 import { awaitCondition } from '../../../util/AwaitCondition.js';
 
 type AppendCommand = { kind: 'append'; value: number };

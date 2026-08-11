@@ -353,6 +353,8 @@ export {
   buildSqliteDatabase,
   JournalConcurrencyError,
   JournalError,
+  SnapshotIntegrityError,
+  JournalIntegrityError,
   everyNEvents,
   DurableStateActor,
   InMemoryDurableStateStore,

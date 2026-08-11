@@ -460,6 +460,22 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   disagree.  A store configured with `withSerializer(new CborSerializer())`
   carries it too, since #1036.
 
+- **`JournalIntegrityError` and `SnapshotIntegrityError` on the public
+  surface** (#1053).  Both live in `src/persistence/Replay.ts`, which neither
+  barrel re-exported — so the two classes the recovery documentation tells you
+  to branch on could not be named from outside the package.  Since #122 the
+  *Persistent actor* page states that a journal breaking its contract raises
+  `JournalIntegrityError`, which reads as an invitation to discriminate on it
+  in `onRecoveryFailure`; what was actually reachable was
+  `reason.name === 'JournalIntegrityError'` or a regex over the message, and
+  both break on any rewording.  They are two classes rather than one precisely
+  so that a caller can tell a journal apart from a snapshot store — separate
+  trust domains, and which of them broke its contract is the first thing an
+  operator needs — and that distinction was the part the barrel dropped.  The
+  #122 integration test had been reaching straight into
+  `src/persistence/Replay.js` to get at the class; it now imports from the
+  barrel, so the export has a test that fails if it goes missing again.
+
 ### Changed
 
 - **The `cb` short form is spelled out** (#1113).  152 occurrences across 34

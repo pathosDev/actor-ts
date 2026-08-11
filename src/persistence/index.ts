@@ -12,6 +12,10 @@ export type { Journal } from './Journal.js';
 export type { SnapshotStore } from './SnapshotStore.js';
 export type { PersistentEvent, Snapshot } from './JournalTypes.js';
 export { JournalConcurrencyError, JournalError } from './JournalTypes.js';
+// The two integrity failures a recovery can raise.  Exported because
+// `onRecoveryFailure` is documented as discriminating on them, which needs the
+// classes themselves — `reason.name === '…'` breaks on any rewording (#1053).
+export { SnapshotIntegrityError, JournalIntegrityError } from './Replay.js';
 export type {
   CompressionAlgo,
   CompressionConfig,
