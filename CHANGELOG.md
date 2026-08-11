@@ -9,6 +9,8 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ## [Unreleased]
 
+## [0.14.0] — 2026-08-11
+
 ### Added
 
 - **`randomUuid()`** (#1109).  A random version-4 UUID, exported from

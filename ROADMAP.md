@@ -4,36 +4,33 @@ This document tracks the planned direction.  Nothing here is committed work — 
 
 ## Status
 
-- **v0.13.0 is out** — the *names and lifecycle* release.  `Props` is gone
-  (#547): spawning takes the actor class, and per-actor configuration became
-  `ActorOptions`, an ordinary options family.  Sharded entities passivate by
-  default and empty shards stop with them (#892), `Actor.displayName()` gives
-  an actor a readable name in logs and DevTools (#891), and the names the
-  framework generates for itself are no longer guessable (#895, #897, #900).
-  Underneath: a cluster-transport bug where two nodes dialling each other at
-  the same moment stayed partitioned for the life of the process (#697),
-  `rememberEntities` losing every entity on a rebalance (#632), and the
-  discovery that the documented mTLS recipe never actually requested a peer
-  certificate (#565).  Four breaking changes, so a minor — see `CHANGELOG.md`.
-- Next window is open (`[Unreleased]`).  Every `severity: high` finding from
-  both audit passes is now closed — the DevTools origin check (#566), the CBOR
-  bignum decode (#567), colliding entity names (#568), the Hono socket leak
-  (#570) and the two CRDT gossip findings (#698, #699) — along with the
-  cluster `hello` identity binding (#912) the gossip-authority rules rest on,
-  the CRDT wire-authority pass (#719, #723, #725, #768), a set of core
-  resource leaks (#641, #642, #644, #645) and the persistence-compaction pair
-  (#628, #629).  `preRestart` stops children now (#634), and a resumed actor
-  brings its subtree back with it (#635).
+- **v0.14.0 is out** — the *caps, codecs and lifecycle* release, and the
+  largest window so far: 106 issues and eighteen breaking changes.  Three
+  threads carry it.  **Caps**: the cluster-wide registries, the member map and
+  the metric label space are all bounded now, gossiped records are held to
+  those bounds rather than trusted (#131, #137, #139, #841), and the wire
+  discriminator is one spelling (#494).  **Codecs**: CBOR reaches rich-type
+  parity with the JSON tree and changes four encodings to get there (#1036),
+  Avro and Protobuf ship as serializers, and `BidirectionalMap` /
+  `BidirectionalMultiMap` round-trip through every store (#1033, #1035).
+  **Lifecycle**: a restart stops the actor's children (#634) and a resumed
+  actor brings its subtree back with it (#635).  New building blocks:
+  `TcpServerActor` (#158), the scatter/gather router (#153), the three
+  persistence-id queries (#156), JetStream KV and Object-Store, and gRPC
+  client-streaming (#5).  Every `severity: high` finding from both audit
+  passes is closed.  See `CHANGELOG.md` — the breaking changes each carry a
+  migration note.
+- Next window is open (`[Unreleased]`).
 
   The obvious heads from here: the `reference.conf` expansion tracked in
   #887, the remaining `severity: medium` security catalogue, and #766 — whose
   titled fix turns out to be insufficient on its own, see the issue.
-- ~3 930 tests green (unit + multi-node + in-process integration) + 15 real-network multi-node integration scenarios green; open bugs are tracked as `[Bug]` issues in the tracker.
+- ~5 100 tests green (unit + multi-node + in-process integration) + 15 real-network multi-node integration scenarios green; open bugs are tracked as `[Bug]` issues in the tracker.
 - A full audit-catalog of follow-up items is tracked in the issue tracker — security findings, framework features, code-quality refactors.  Filter by label `security` + `severity: <tier>` or by title prefix `[Security] ` / `[Feature] `.
 
 ## Done since the last roadmap update
 
-- **Unreleased:**
+- **v0.14.0 — caps, codecs and lifecycle:**
   - **`allPersistenceIds` + `currentPersistenceIdsPaginated` (#156)** — the
     read side can now enumerate entities as a live fan-out stream and as a
     cursor-paginated walk, instead of only as one materialised array.  Paging
