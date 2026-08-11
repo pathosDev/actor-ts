@@ -241,8 +241,15 @@ Config-Datei ist der falsche Ort für einen privaten Schlüssel.
 
 - **`maxConnections`** begrenzt die gleichzeitig angenommenen
   Verbindungen.  Eine Verbindung, die am Limit ankommt, wird sofort
-  geschlossen statt registriert — Abweisen an der Tür, statt einen
-  Socket anzunehmen, aus dem niemand liest.
+  **abgebrochen** statt registriert — Abweisen an der Tür, statt einen
+  Socket anzunehmen, aus dem niemand liest.  Abgebrochen, nicht
+  ordentlich beendet: Ein geordnetes Schließen schickt nur ein FIN, und
+  ein Peer, der es nie beantwortet, hält den Socket samt
+  Dateideskriptor offen.  Registriert wurde dieser Socket nie, das
+  Limit zählt ihn also auch nicht — ein Halbschluss würde nur
+  kooperierende Peers begrenzen.  Der abgewiesene Peer sieht deshalb
+  einen Verbindungsfehler statt eines sauberen Schließens; genau so
+  sieht auf TCP-Ebene aus, an der Kapazitätsgrenze abgewiesen zu werden.
 - **Ein Frame über dem `framing`-Limit trennt nur diese Verbindung.**
   Beim Client-Actor legt derselbe Verstoß den ganzen Actor still,
   denn dort *ist* die Verbindung der gesamte Transport; ein Listener,

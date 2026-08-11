@@ -233,9 +233,15 @@ file is the wrong place for a private key.
 ### Bounds
 
 - **`maxConnections`** caps simultaneously accepted connections.  A
-  connection arriving at the cap is closed immediately instead of
+  connection arriving at the cap is **aborted** immediately instead of
   being registered — refusing at the door, rather than accepting a
-  socket nobody reads from.
+  socket nobody reads from.  Aborted, not ended: an orderly close only
+  sends a FIN, and a peer that never answers it keeps the socket, and
+  its file descriptor, alive.  Since that socket was never registered
+  the cap does not count it either, so a half-close would bound only
+  peers that cooperate.  The refused peer therefore sees a connection
+  error rather than a clean close — which is what being turned away at
+  capacity looks like at the TCP level.
 - **A frame past its `framing` cap drops only that connection.**  On
   the client actor the same breach takes the whole actor down,
   because there it *is* the whole transport; a listener that did the
