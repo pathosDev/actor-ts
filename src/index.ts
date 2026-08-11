@@ -120,7 +120,7 @@ export { EventStream } from './EventStream.js';
 export { ConsoleLogger, NoopLogger, JsonLogger, LogLevel, DISPLAY_NAME_FIELD } from './Logger.js';
 export type { Logger, JsonLogSink } from './Logger.js';
 export { LogContext } from './LogContext.js';
-export type { LogContextData } from './LogContext.js';
+export type { LogContextData, LogContextEntry } from './LogContext.js';
 
 // Metrics — Counter / Gauge / Histogram + Prometheus exposition (#11).
 export {

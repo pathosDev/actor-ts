@@ -476,6 +476,19 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   `src/persistence/Replay.js` to get at the class; it now imports from the
   barrel, so the export has a test that fails if it goes missing again.
 
+- **`LogContextEntry` on the public surface** (#1062).  `LogContext.runEach`
+  takes `Iterable<LogContextEntry<TItem>>`, but the type could not be named
+  from outside: `src/index.ts` exported `LogContext` and `LogContextData` and
+  stopped there, and `package.json` has no wildcard subpath to reach the module
+  directly.  Its own JSDoc argued the export was unnecessary because callers
+  build an entry inline — which is true only for a queue that never leaves the
+  turn it was built in.  `runEach` exists for the opposite case: work deferred
+  to a *later* turn, where the entries live in a field between the enqueue and
+  the drain, and a field has to be typed.  The project's own test typed one
+  that way (`Array<LogContextEntry<string>>`) by importing out of `src/`, which
+  is the route an application does not have.  The *Logging* page (EN + DE) now
+  shows the field and its import instead of starting at the `push`.
+
 ### Changed
 
 - **The `cb` short form is spelled out** (#1113).  152 occurrences across 34
