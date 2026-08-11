@@ -69,7 +69,7 @@ What needs **care**:
 
 | Type | Behavior |
 | --- | --- |
-| `undefined` | **Throws** a `SerializationError` (stricter than raw `JSON.stringify`, which drops it).  The persistence payload codec instead drops `undefined` object properties like `JSON.stringify` and **preserves** `undefined` in value positions (array slots, `Set` members, `Map` entries) via a tag (#889). |
+| `undefined` | **Throws** a `SerializationError` (stricter than raw `JSON.stringify`, which drops it).  The persistence payload codec instead drops `undefined` object properties like `JSON.stringify` and **preserves** `undefined` in value positions (array slots, `Set` members, `Map` entries) via a tag (#889).  [`CborSerializer`](/serialization/cbor/) carries it natively everywhere, keys included — the one place the two codecs differ (#1036). |
 | `Function` / `Symbol` / `Promise` / `WeakMap` / `WeakSet` | **Throw** a `SerializationError` — inherently non-serialisable. |
 | Circular references | **Throw** a `SerializationError` naming the key path (instead of overflowing the stack). |
 | Class instances | `toJSON()` is used when present; otherwise decoded as plain `{ ...fields }` — methods + class identity lost. |

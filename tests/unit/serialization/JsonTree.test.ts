@@ -193,6 +193,21 @@ describe('JsonTree — literal escape and decode tightening', () => {
     expect(() => decodeJsonTree({ __bytes__: [] })).toThrow(SerializationError);
     expect(() => decodeJsonTree({ __bigint__: 7 })).toThrow(SerializationError);
   });
+
+  // Well-typed payloads whose constructor still refuses them.  These used to
+  // escape as a raw SyntaxError / TypeError / RangeError naming neither the
+  // tag nor the value, which on a replay is the difference between a report
+  // and a riddle (#1036).
+  test('a well-typed but unbuildable payload is a SerializationError too', () => {
+    expect(() => decodeJsonTree({ __regexp__: { source: '(', flags: '' } })).toThrow(SerializationError);
+    expect(() => decodeJsonTree({ __regexp__: { source: 'a', flags: 'zz' } })).toThrow(SerializationError);
+    expect(() => decodeJsonTree({ __url__: '/relative' })).toThrow(SerializationError);
+    // Three bytes cannot be a whole number of Int32Array elements.
+    expect(() => decodeJsonTree({ __typedarray__: { kind: 'Int32Array', data: 'AAAA' } }))
+      .toThrow(SerializationError);
+    expect(() => decodeJsonTree({ __typedarray__: { kind: 'NotAView', data: '' } }))
+      .toThrow(SerializationError);
+  });
 });
 
 describe('JsonTree — backward compatibility with plain JSON', () => {

@@ -1,5 +1,6 @@
 import { BidirectionalMap } from '../util/BidirectionalMap.js';
 import { BidirectionalMultiMap } from '../util/BidirectionalMultiMap.js';
+import { binaryBytesOf, binaryKindOf, rebuildBinaryView, rebuildError } from './RichTypes.js';
 import { SerializationError } from './Serializer.js';
 
 /**
@@ -82,12 +83,29 @@ const LITERAL_TAG = '__literal__';
  */
 export const SERIALIZED_TAG = '__serialized__';
 
-const RESERVED_TAGS: ReadonlySet<string> = new Set([
+/**
+ * The tags that denote a VALUE TYPE, as opposed to the framing tags below.
+ * Exported because it is the drift guard between this walker and `CborCodec`:
+ * `tests/unit/serialization/RichTypeParity.test.ts` asserts that every entry
+ * here has a parity fixture, so a type added to one codec and forgotten in the
+ * other fails the suite instead of silently losing data (#1036).
+ */
+export const TYPE_TAGS: ReadonlySet<string> = new Set([
   DATE_TAG, BYTES_TAG, MAP_TAG, SET_TAG, BIDIRECTIONAL_MAP_TAG,
   BIDIRECTIONAL_MULTI_MAP_TAG, BIGINT_TAG,
   NUMBER_TAG, UNDEFINED_TAG, REGEXP_TAG, URL_TAG, ERROR_TAG, TYPEDARRAY_TAG,
-  LITERAL_TAG, SERIALIZED_TAG,
 ]);
+
+/**
+ * Tags that are format machinery rather than a type — the escape wrapper and
+ * the `PayloadCodec` frame.  Neither has, or could have, a CBOR counterpart,
+ * which is exactly why they are kept out of `TYPE_TAGS`: the parity guard
+ * would otherwise need an exclusion list, and an exclusion list is a place to
+ * quietly append the next forgotten type to.
+ */
+export const FRAMING_TAGS: ReadonlySet<string> = new Set([LITERAL_TAG, SERIALIZED_TAG]);
+
+const RESERVED_TAGS: ReadonlySet<string> = new Set([...TYPE_TAGS, ...FRAMING_TAGS]);
 
 /**
  * How `undefined` is handled during encode.  `'reject'` throws (the HTTP
@@ -340,46 +358,15 @@ function encodeArray(values: ReadonlyArray<unknown>, context: EncodeContext): un
   }
 }
 
-/**
- * The standard `ArrayBuffer` views by their stored `kind` name.
- * `Float16Array` is reached via `globalThis` — it is ES2025 and absent from
- * older runtimes and TS lib targets, and the format must not depend on the
- * writer's runtime having it.
- */
-const TYPED_ARRAY_CONSTRUCTORS: ReadonlyArray<readonly [string, new (buffer: ArrayBuffer) => ArrayBufferView]> = [
-  ['Int8Array', Int8Array],
-  ['Uint8ClampedArray', Uint8ClampedArray],
-  ['Int16Array', Int16Array],
-  ['Uint16Array', Uint16Array],
-  ['Int32Array', Int32Array],
-  ['Uint32Array', Uint32Array],
-  ['Float32Array', Float32Array],
-  ['Float64Array', Float64Array],
-  ['BigInt64Array', BigInt64Array],
-  ['BigUint64Array', BigUint64Array],
-  ...((): ReadonlyArray<readonly [string, new (buffer: ArrayBuffer) => ArrayBufferView]> => {
-    const float16 = (globalThis as { Float16Array?: new (buffer: ArrayBuffer) => ArrayBufferView }).Float16Array;
-    return float16 ? [['Float16Array', float16]] : [];
-  })(),
-];
-
 function encodeBinaryView(value: ArrayBufferView | ArrayBuffer, context: EncodeContext): unknown {
-  const bytes = value instanceof ArrayBuffer
-    ? new Uint8Array(value)
-    : new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
-  return { [TYPEDARRAY_TAG]: { kind: binaryKind(value, context), data: toBase64(bytes) } };
-}
-
-function binaryKind(value: ArrayBufferView | ArrayBuffer, context: EncodeContext): string {
-  if (value instanceof ArrayBuffer) return 'ArrayBuffer';
-  if (value instanceof DataView) return 'DataView';
-  for (const [kind, constructor] of TYPED_ARRAY_CONSTRUCTORS) {
-    if (value instanceof constructor) return kind;
+  const kind = binaryKindOf(value);
+  if (kind === undefined) {
+    // An exotic ArrayBuffer view we cannot reconstruct — refuse rather than guess.
+    throw new SerializationError(
+      `Unsupported binary view ${value.constructor?.name ?? 'unknown'} at ${formatPath(context.path)}`,
+    );
   }
-  // An exotic ArrayBuffer view we cannot reconstruct — refuse rather than guess.
-  throw new SerializationError(
-    `Unsupported binary view ${value.constructor?.name ?? 'unknown'} at ${formatPath(context.path)}`,
-  );
+  return { [TYPEDARRAY_TAG]: { kind, data: toBase64(binaryBytesOf(value)) } };
 }
 
 function encodeError(error: Error, context: EncodeContext): unknown {
@@ -524,12 +511,24 @@ function decodeTagged(key: string, obj: Record<string, unknown>): unknown {
       if (inner === null || typeof inner !== 'object' || typeof inner.source !== 'string' || typeof inner.flags !== 'string') {
         throw malformedTag(REGEXP_TAG, 'a { source, flags } pair of strings');
       }
-      return new RegExp(inner.source, inner.flags);
+      // Well-typed but still unbuildable: an unbalanced source or a bogus flag
+      // set makes the constructor throw a raw `SyntaxError` naming neither the
+      // tag nor the payload.  Every other malformed tag reports as a
+      // `SerializationError`; these two used to be the exception (#1036).
+      try {
+        return new RegExp(inner.source, inner.flags);
+      } catch {
+        throw malformedTag(REGEXP_TAG, `a valid pattern (got /${inner.source}/${inner.flags})`);
+      }
     }
     case URL_TAG: {
       const href = obj[URL_TAG];
       if (typeof href !== 'string') throw malformedTag(URL_TAG, 'a string');
-      return new URL(href);
+      try {
+        return new URL(href);
+      } catch {
+        throw malformedTag(URL_TAG, `an absolute URL (got '${href}')`);
+      }
     }
     case ERROR_TAG:
       return decodeError(obj[ERROR_TAG]);
@@ -544,11 +543,6 @@ function decodeTagged(key: string, obj: Record<string, unknown>): unknown {
   }
 }
 
-/** The error constructors decode may reconstruct; unknown names fall back to `Error` + `name`. */
-const ERROR_CONSTRUCTORS: Readonly<Record<string, new (message?: string) => Error>> = {
-  Error, TypeError, RangeError, SyntaxError, ReferenceError, EvalError, URIError,
-};
-
 function decodeError(inner: unknown): Error {
   if (inner === null || typeof inner !== 'object' || Array.isArray(inner)) {
     throw malformedTag(ERROR_TAG, 'a { name, message } object');
@@ -557,14 +551,10 @@ function decodeError(inner: unknown): Error {
   if (typeof payload.name !== 'string' || typeof payload.message !== 'string') {
     throw malformedTag(ERROR_TAG, 'a { name, message } object');
   }
-  let out: Error;
-  if (payload.name === 'AggregateError' && Array.isArray(payload.errors)) {
-    out = new AggregateError((decodeJsonTree(payload.errors) as unknown[]), payload.message);
-  } else {
-    const constructor = ERROR_CONSTRUCTORS[payload.name] ?? Error;
-    out = new constructor(payload.message);
-    if (out.name !== payload.name) out.name = payload.name;
-  }
+  const errors = Array.isArray(payload.errors)
+    ? (decodeJsonTree(payload.errors) as unknown[])
+    : undefined;
+  const out = rebuildError(payload.name, payload.message, errors);
   if ('cause' in payload) (out as { cause?: unknown }).cause = decodeJsonTree(payload.cause);
   return out;
 }
@@ -577,17 +567,11 @@ function decodeBinaryView(inner: unknown): unknown {
   if (typeof payload.kind !== 'string' || typeof payload.data !== 'string') {
     throw malformedTag(TYPEDARRAY_TAG, 'a { kind, data } object');
   }
-  // Copy out of the base64 result: it may be a view into a shared Buffer
-  // pool at an arbitrary byteOffset — multi-byte views need offset-0
-  // alignment, and handing out a pool-backed buffer would expose unrelated
-  // bytes (#619).  `.slice()` yields a fresh, exact-length buffer.
-  const bytes = fromBase64(payload.data).slice();
-  if (payload.kind === 'ArrayBuffer') return bytes.buffer;
-  if (payload.kind === 'DataView') return new DataView(bytes.buffer);
-  for (const [kind, constructor] of TYPED_ARRAY_CONSTRUCTORS) {
-    if (kind === payload.kind) return new constructor(bytes.buffer);
+  const view = rebuildBinaryView(payload.kind, fromBase64(payload.data));
+  if (view === undefined) {
+    throw malformedTag(TYPEDARRAY_TAG, `a known binary kind with a whole number of elements (got '${payload.kind}')`);
   }
-  throw malformedTag(TYPEDARRAY_TAG, `a known binary kind (got '${payload.kind}')`);
+  return view;
 }
 
 function decodeLiteral(inner: unknown): unknown {

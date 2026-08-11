@@ -7,15 +7,36 @@
  *   2 (byte string),
  *   3 (text string),
  *   4 (array),
- *   5 (map, with string keys),
- *   7 (simple values: false/true/null + double float).
+ *   5 (map — with string keys when untagged, unrestricted under tag 259),
+ *   6 (tagged item),
+ *   7 (simple values: false/true/null/undefined + half/single/double float).
  *
- * Additional-info values 0–27 are handled for every major type.  Indefinite-
- * length items and tagged items (major type 6) are NOT supported — the
- * target use case is actor message serialisation, not arbitrary CBOR
- * interop.  Dates and bigints are supported via semantic tagging (tag 1
- * and tag 2/3) on the encoder side; the decoder recognises them.
+ * Additional-info values 0–27 are handled for every major type; indefinite-
+ * length items are not, the target use case being actor message
+ * serialisation rather than arbitrary CBOR interop.
+ *
+ * The rich types carry the same set the `JsonTree` walker does, because the
+ * two are interchangeable — a store's `withSerializer`, the serialization
+ * extension default, HTTP content negotiation — and a payload must not
+ * change shape depending on which one handled it (#1036).  Registered tags
+ * are used wherever one fits the type faithfully (1 date, 2/3 bignum, 32
+ * URI, 258 set, 259 map); everything else goes under tag 27, the generic
+ * "type name plus constructor arguments" object.
+ *
+ * Unlike the JSON tree, this format needs no escape hatch for user data that
+ * looks like a tag: a tag is its own major type here, so nothing a user can
+ * put in a map or an array can be mistaken for one.
  */
+
+import { BidirectionalMap } from '../util/BidirectionalMap.js';
+import { BidirectionalMultiMap } from '../util/BidirectionalMultiMap.js';
+import {
+  binaryBytesOf,
+  binaryKindOf,
+  isBinaryKind,
+  rebuildBinaryView,
+  rebuildError,
+} from './RichTypes.js';
 
 export class CborEncodeError extends Error {
   constructor(message: string) { super(message); this.name = 'CborEncodeError'; }
@@ -28,50 +49,415 @@ const TAG_DATETIME = 0;      // RFC 8949: standard date/time string
 const TAG_EPOCH_DATETIME = 1; // RFC 8949: epoch-based date/time
 const TAG_UNSIGNED_BIGNUM = 2;
 const TAG_NEGATIVE_BIGNUM = 3;
+/**
+ * IANA: "Serialised language-independent object with type name and
+ * constructor arguments" — `27([name, ...arguments])`.
+ *
+ * The home for every rich type no registered tag describes faithfully.  One
+ * mechanism rather than a set of squatted numbers out of the unassigned
+ * ranges: a third-party reader sees the class name instead of a mystery, and
+ * nothing here depends on IANA never handing those numbers to someone else.
+ */
+const TAG_GENERIC_OBJECT = 27;
+/** IANA: "URI" — the href as a text string. */
+const TAG_URI = 32;
+/** IANA: "Mathematical finite set" — an array of the members. */
+const TAG_SET = 258;
+/**
+ * IANA: "Map datatype with key-value operations" — a native CBOR map (major
+ * type 5) whose keys are unrestricted.
+ *
+ * A `Map` cannot go on the wire untagged even though CBOR has a native map
+ * type, because that is exactly what a plain object encodes to: the decoder
+ * would have no way to tell the two apart, and reading every major-5 map back
+ * as a `Map` would change the type of every ordinary payload (#1036).
+ */
+const TAG_MAP = 259;
+
+/**
+ * Ceiling on container nesting, enforced by BOTH halves of the codec.  The
+ * decoder recurses once per array, map and tag level, so without a bound a
+ * couple of hundred KB of `0x81` bytes exhausts the JS stack (#618); the
+ * encoder measures the same levels so it cannot write something its own
+ * decoder would refuse (#1036).  Real payloads are shallow; anything near
+ * this is malformed or hostile.
+ */
+const MAX_NESTING_DEPTH = 256;
 
 /* ================================ Encoder ================================= */
 
 export class CborEncoder {
   private chunks: number[] = [];
+  /**
+   * Containers on the path from the root to the current node.  Revisiting one
+   * is a cycle, reported as a `CborEncodeError` instead of overflowing the
+   * stack.  Siblings sharing a reference (a DAG) are fine and get duplicated,
+   * same as `JSON.stringify` and the JSON tree.
+   */
+  private ancestors = new Set<object>();
 
   encode(value: unknown): Uint8Array {
     this.chunks = [];
-    this.writeValue(value);
+    this.ancestors.clear();
+    this.writeValue(value, 0);
     return new Uint8Array(this.chunks);
   }
 
-  private writeValue(value: unknown): void {
-    if (value === null || value === undefined) return this.writeSimple(22); // null
+  /**
+   * `depth` counts the levels the DECODER will spend on this value, not the
+   * levels of user structure — a container that decodes through more than one
+   * nested item charges more than one.  Both sides then measure the same
+   * thing against `MAX_NESTING_DEPTH`, so "the encoder accepts it" and "the
+   * decoder accepts it" cannot come apart; without that, a node can write a
+   * snapshot it is unable to read back (#1036).
+   *
+   * `allowToJson` is false only for the value a `toJSON()` call returned —
+   * see `writeObject`.
+   */
+  private writeValue(value: unknown, depth: number, allowToJson = true): void {
+    if (depth > MAX_NESTING_DEPTH) {
+      throw new CborEncodeError(`CBOR nesting deeper than ${MAX_NESTING_DEPTH}`);
+    }
+    if (value === null) return this.writeSimple(22); // null
+    // CBOR has a simple value for `undefined` of its own, and the decoder has
+    // always read it — the encoder was the only side flattening it to `null`,
+    // which is a different value (#1036).
+    if (value === undefined) return this.writeSimple(23);
     if (typeof value === 'boolean') return this.writeSimple(value ? 21 : 20);
     if (typeof value === 'number') {
+      // `-0` ahead of the integer branch: `Number.isInteger(-0)` is true and
+      // `writeInt` masks the sign away, so it used to come back as `+0`.  A
+      // float64 carries the sign bit; the JSON tree carries it as
+      // `{"__number__":"-0"}`, and the two must agree (#1036).
+      if (Object.is(value, -0)) return this.writeDouble(value);
       if (Number.isFinite(value) && Number.isInteger(value) && Math.abs(value) <= Number.MAX_SAFE_INTEGER) {
         return this.writeInt(value);
       }
       return this.writeDouble(value);
     }
-    if (typeof value === 'bigint') return this.writeBigInt(value);
+    if (typeof value === 'bigint') {
+      this.requireDepth(depth + 1);
+      return this.writeBigInt(value);
+    }
     if (typeof value === 'string') return this.writeString(value);
     if (value instanceof Uint8Array) return this.writeBytes(value);
     if (value instanceof Date) {
+      this.requireDepth(depth + 1);
       this.writeTag(TAG_EPOCH_DATETIME);
       this.writeDouble(value.getTime() / 1000);
       return;
     }
-    if (Array.isArray(value)) {
-      this.writeHeader(4, value.length);
-      for (const item of value) this.writeValue(item);
-      return;
+    // Ahead of the `Map` branch on purpose.  `BidirectionalMap` only
+    // implements the interface today, so `instanceof Map` does not catch it —
+    // but if that ever changes, the wrong branch would silently start
+    // dropping the class.
+    if (value instanceof BidirectionalMap) return this.writeBidirectionalMap(value, depth);
+    // No ordering hazard of its own — it implements neither `Map` nor `Set`,
+    // so no built-in branch can claim it.  It sits here because this is where
+    // it will be looked for.
+    if (value instanceof BidirectionalMultiMap) {
+      return this.writeBidirectionalMultiMap(value, depth);
     }
-    if (typeof value === 'object') {
+    if (value instanceof Map) return this.writeMap(value, depth);
+    if (value instanceof Set) return this.writeSet(value, depth);
+    // After the `Uint8Array` branch above, which keeps its bare byte string.
+    if (ArrayBuffer.isView(value) || value instanceof ArrayBuffer) {
+      return this.writeBinaryView(value, depth);
+    }
+    if (value instanceof RegExp) return this.writeRegExp(value, depth);
+    // Before any `toJSON` handling: `URL.prototype.toJSON` would collapse it
+    // to a bare string.
+    if (value instanceof URL) {
+      this.requireDepth(depth + 1);
+      this.writeTag(TAG_URI);
+      return this.writeString(value.href);
+    }
+    if (value instanceof Error) return this.writeError(value, depth);
+    if (value instanceof Number || value instanceof String || value instanceof Boolean) {
+      // Wrapper objects unwrap like `JSON.stringify` does.  Left to the
+      // generic branch, `Object.entries(new String('ab'))` would write
+      // `{"0":"a","1":"b"}`.
+      return this.writeValue(value.valueOf(), depth, false);
+    }
+    if (value instanceof Promise || value instanceof WeakMap || value instanceof WeakSet) {
+      // Inherently non-serialisable — refuse loudly instead of storing `{}`,
+      // which is what `Object.entries` produces for all three (#1036).
+      throw new CborEncodeError(`Cannot encode a ${value.constructor.name}`);
+    }
+    if (Array.isArray(value)) return this.writeArray(value, depth);
+    if (typeof value === 'object') return this.writeObject(value, depth, allowToJson);
+    throw new CborEncodeError(`Cannot encode value of type ${typeof value}`);
+  }
+
+  private writeArray(values: ReadonlyArray<unknown>, depth: number): void {
+    this.enterContainer(values);
+    try {
+      this.writeHeader(4, values.length);
+      for (const item of values) this.writeValue(item, depth + 1);
+    } finally {
+      this.ancestors.delete(values);
+    }
+  }
+
+  /**
+   * Tag 259 over a native CBOR map, so the entries cost the same bytes a
+   * plain object's would and the keys stay unrestricted — the compactness
+   * that is the reason to pick CBOR at all is kept.  One decode level, same
+   * as a plain object: the reader consumes the tag and the map together.
+   */
+  private writeMap(map: ReadonlyMap<unknown, unknown>, depth: number): void {
+    this.enterContainer(map);
+    try {
+      this.writeMapBody(map, map.size, depth);
+    } finally {
+      this.ancestors.delete(map);
+    }
+  }
+
+  /**
+   * The tag-259 map itself, without the cycle bookkeeping — `BidirectionalMap`
+   * writes the same body under its own wrapper and must not re-register a
+   * container it has already entered, or it would report itself as a cycle.
+   */
+  private writeMapBody(
+    entries: Iterable<readonly [unknown, unknown]>,
+    size: number,
+    depth: number,
+  ): void {
+    this.writeTag(TAG_MAP);
+    this.writeHeader(5, size);
+    for (const [key, entryValue] of entries) {
+      this.writeValue(key, depth + 1);
+      this.writeValue(entryValue, depth + 1);
+    }
+  }
+
+  /**
+   * `27(["BidirectionalMap", 259(<map>)])` — the class name plus the single
+   * constructor argument `new BidirectionalMap(entries)` actually takes, so
+   * the body literally IS a `Map` and composes with the tag-259 reader.
+   *
+   * Only the forward direction goes out.  The reverse is fully determined by
+   * it, so writing both would double the payload and hand a decoder two
+   * sources of truth to disagree about; the constructor rebuilds the inverse.
+   *
+   * Three decode levels down to the entries — the tag, the argument array,
+   * and the tag-259 map inside it.
+   */
+  private writeBidirectionalMap(map: BidirectionalMap<unknown, unknown>, depth: number): void {
+    this.requireDepth(depth + 2);
+    this.enterContainer(map);
+    try {
+      this.writeTag(TAG_GENERIC_OBJECT);
+      this.writeHeader(4, 2);
+      this.writeString('BidirectionalMap');
+      this.writeMapBody(map.entries(), map.size, depth + 2);
+    } finally {
+      this.ancestors.delete(map);
+    }
+  }
+
+  /**
+   * Tag 258 over an array of the members.  Two decode levels, not one: the
+   * reader spends one on the tag and one on the array inside it, and the
+   * encoder has to charge what the decoder will spend.
+   */
+  private writeSet(set: ReadonlySet<unknown>, depth: number): void {
+    this.requireDepth(depth + 1);
+    this.enterContainer(set);
+    try {
+      this.writeTag(TAG_SET);
+      this.writeHeader(4, set.size);
+      for (const member of set) this.writeValue(member, depth + 2);
+    } finally {
+      this.ancestors.delete(set);
+    }
+  }
+
+  /**
+   * `27(["RegExp", source, flags])` — three elements, because tag 27's array
+   * is `[name, ...constructor arguments]` and `new RegExp(source, flags)`
+   * takes two.
+   *
+   * Not the registered tag 35: its content model is a bare text string with
+   * nowhere to put the flags, and folding `/source/flags` into one string is
+   * ambiguous the moment the source contains a slash.
+   *
+   * `lastIndex` is a transient cursor, not data — deliberately not carried.
+   */
+  /**
+   * `27(["BidirectionalMultiMap", 259(<map of left → 258(partners)>)])` — the
+   * forward adjacency, written with the `Map` and `Set` writers rather than a
+   * shape of its own, so a reader that knows those two already knows this.
+   *
+   * Only the forward direction, for the same reason its 1:1 sibling writes
+   * only its forward pairs: the reverse is fully determined by it.  Rows
+   * rather than flat pairs because one participant with many partners is the
+   * shape every call site has, and a flat list would repeat the participant
+   * once per pair.
+   *
+   * The lefts are materialised because CBOR's map header is definite-length
+   * and `size` counts PAIRS, not participants — the count has to be known
+   * before the first byte goes out.
+   */
+  private writeBidirectionalMultiMap(map: BidirectionalMultiMap<unknown, unknown>, depth: number): void {
+    this.requireDepth(depth + 2);
+    this.enterContainer(map);
+    try {
+      this.writeTag(TAG_GENERIC_OBJECT);
+      this.writeHeader(4, 2);
+      this.writeString('BidirectionalMultiMap');
+      const rows: Array<readonly [unknown, ReadonlySet<unknown>]> = [];
+      for (const left of map.lefts()) rows.push([left, map.get(left)]);
+      this.writeMapBody(rows, rows.length, depth + 2);
+    } finally {
+      this.ancestors.delete(map);
+    }
+  }
+
+  /**
+   * `27([kind, <byte string>])`, using the same `kind` names the JSON tree
+   * stores under `__typedarray__` — both formats read one shared table, so
+   * they cannot come to disagree about what a `Float64Array` is called.
+   *
+   * Not RFC 8746's registered tags 64–87, and that is a deliberate call.
+   * They fit the numeric views well, but `DataView` and `ArrayBuffer` have no
+   * tag there and would need a second mechanism regardless; `Uint8Array`
+   * already travels as a bare byte string, so tag 64 would be a third
+   * spelling of the same bytes; and 8746 forces an explicit big/little-endian
+   * choice, i.e. a CBOR-only endianness table with no counterpart on the JSON
+   * side — a second source of truth in the one place this issue is about.
+   *
+   * The bytes are the view's own, in platform order.  Every runtime this
+   * project supports is little-endian, and the JSON tree has assumed the same
+   * since it gained `__typedarray__`; it is written down here because it is
+   * the one thing that would have to change to talk to a big-endian peer.
+   */
+  private writeBinaryView(value: ArrayBufferView | ArrayBuffer, depth: number): void {
+    const kind = binaryKindOf(value);
+    if (kind === undefined) {
+      // An exotic ArrayBuffer view we cannot reconstruct — refuse rather than guess.
+      throw new CborEncodeError(`Cannot encode binary view ${value.constructor?.name ?? 'unknown'}`);
+    }
+    this.requireDepth(depth + 2);
+    this.writeTag(TAG_GENERIC_OBJECT);
+    this.writeHeader(4, 2);
+    this.writeString(kind);
+    this.writeBytes(binaryBytesOf(value));
+  }
+
+  private writeRegExp(pattern: RegExp, depth: number): void {
+    this.requireDepth(depth + 2);
+    this.writeTag(TAG_GENERIC_OBJECT);
+    this.writeHeader(4, 3);
+    this.writeString('RegExp');
+    this.writeString(pattern.source);
+    this.writeString(pattern.flags);
+  }
+
+  /**
+   * `27(["Error", {name, message, cause?, errors?}])` — one options-bag
+   * argument rather than positional ones, so the payload is the same shape
+   * the JSON tree's `__error__` carries and the two cannot come to describe
+   * an error differently.
+   *
+   * The stack is deliberately absent: a persisted stack leaks filesystem
+   * layout into long-lived rows, and a replayed one would lie about where
+   * the error was thrown.
+   *
+   * Three decode levels down to `cause` — the tag, the argument array, and
+   * the payload map.
+   */
+  private writeError(error: Error, depth: number): void {
+    // Three, not two: the payload map always carries `name` and `message`,
+    // which the decoder reads a level below the map itself.
+    this.requireDepth(depth + 3);
+    this.enterContainer(error);
+    try {
+      const cause = (error as { cause?: unknown }).cause;
+      const errors = (error as { errors?: unknown }).errors;
+      // `AggregateError` carries its member errors in `errors`.
+      const hasErrors = Array.isArray(errors);
+
+      this.writeTag(TAG_GENERIC_OBJECT);
+      this.writeHeader(4, 2);
+      this.writeString('Error');
+      this.writeHeader(5, 2 + (cause !== undefined ? 1 : 0) + (hasErrors ? 1 : 0));
+      this.writeString('name');
+      this.writeString(error.name);
+      this.writeString('message');
+      this.writeString(error.message);
+      if (cause !== undefined) {
+        this.writeString('cause');
+        this.writeValue(cause, depth + 3);
+      }
+      if (hasErrors) {
+        this.writeString('errors');
+        this.writeValue(errors, depth + 3);
+      }
+    } finally {
+      this.ancestors.delete(error);
+    }
+  }
+
+  private writeObject(value: object, depth: number, allowToJson: boolean): void {
+    if (allowToJson) {
+      const toJson = (value as { toJSON?: unknown }).toJSON;
+      if (typeof toJson === 'function') {
+        // Honour `toJSON()` the way `JSON.stringify` and the JSON tree do.
+        // The two serializers are interchangeable — the extension default, a
+        // store's `withSerializer`, HTTP content negotiation — so the same
+        // endpoint answering `application/json` and `application/cbor` must
+        // not return two different shapes for a type that defines one.
+        //
+        // Per spec the RESULT is not probed again at this node.  That is what
+        // stops `toJSON: () => this` recursing forever: the second pass falls
+        // through to the loop below, meets the own `toJSON` function property
+        // and refuses it as an unencodable type.  Values nested inside the
+        // result get the normal treatment.
+        //
+        // The probe lives here, dead last in the dispatch, on purpose: every
+        // rich type with a `toJSON` of its own — `Date`, `URL`,
+        // `BidirectionalMap`, `Buffer` — has already been claimed by its own
+        // branch above and is safe by construction.
+        return this.writeValue((value as { toJSON: () => unknown }).toJSON(), depth, false);
+      }
+    }
+    this.enterContainer(value);
+    try {
       const entries = Object.entries(value as Record<string, unknown>);
       this.writeHeader(5, entries.length);
-      for (const [key, val] of entries) {
+      for (const [key, entryValue] of entries) {
         this.writeString(key);
-        this.writeValue(val);
+        this.writeValue(entryValue, depth + 1);
       }
-      return;
+    } finally {
+      this.ancestors.delete(value);
     }
-    throw new CborEncodeError(`Cannot encode value of type ${typeof value}`);
+  }
+
+  /**
+   * Assert a level the writer itself will occupy is inside the ceiling.
+   *
+   * `writeValue` only checks the level a value STARTS at, which is enough for
+   * an array or a plain map — they are one item, and their children are
+   * checked by their own `writeValue`.  It is not enough for the tagged
+   * forms: `27([…])` puts its payload two levels down, so a value that
+   * starts just inside the bound can still decode past it.  Where the writer
+   * recurses, the child's check would catch that; where it does not — an
+   * empty `Set`, a `RegExp`, an `Error` with no cause — nothing would.
+   */
+  private requireDepth(depth: number): void {
+    if (depth > MAX_NESTING_DEPTH) {
+      throw new CborEncodeError(`CBOR nesting deeper than ${MAX_NESTING_DEPTH}`);
+    }
+  }
+
+  private enterContainer(container: object): void {
+    if (this.ancestors.has(container)) {
+      throw new CborEncodeError('Cannot encode a circular reference');
+    }
+    this.ancestors.add(container);
   }
 
   private writeInt(value: number): void {
@@ -149,14 +535,6 @@ export class CborEncoder {
  */
 const MAX_BIGNUM_BYTES = 1024;
 
-/**
- * Ceiling on container nesting.  `readValue` recurses once per array, map and
- * tag level, so without a bound a couple of hundred KB of `0x81` bytes
- * exhausts the JS stack (#618).  Real payloads are shallow; anything near
- * this is malformed or hostile.
- */
-const MAX_NESTING_DEPTH = 256;
-
 export class CborDecoder {
   private pos = 0;
   private bytes!: Uint8Array;
@@ -218,6 +596,11 @@ export class CborDecoder {
           const key = this.readValue(depth + 1);
           const value = this.readValue(depth + 1);
           if (typeof key !== 'string') {
+            // Stays a hard error even though the codec can plainly handle
+            // non-string keys now (see `readEntryPairs`).  Falling back to a
+            // `Map` here would make the decoded TYPE depend on the data: the
+            // same message would arrive as an object when its keys happened
+            // to be strings and as a `Map` when one of them was not.
             throw new CborDecodeError('Only string keys are supported in maps');
           }
           // `defineProperty`, not `out[key] = value`: assignment consults the
@@ -235,14 +618,87 @@ export class CborDecoder {
         }
         return out;
       }
-      case 6: {
-        const tag = Number(len);
-        const inner = this.readValue(depth + 1);
-        return this.applyTag(tag, inner);
-      }
+      case 6: return this.readTagged(Number(len), depth);
       default:
         throw new CborDecodeError(`Unknown major type ${major}`);
     }
+  }
+
+  /**
+   * Tag 259 is handled BEFORE its body is read.  Letting `readValue` take it
+   * would hand the body to the major-5 reader, which builds a plain object
+   * and rejects non-string keys — right for an untagged map, wrong here: a
+   * `Map` carries whatever keys it likes, and a `'__proto__'` key inside one
+   * reaches no setter, so the hardening that rule exists for (#581) has
+   * nothing to protect.
+   *
+   * Every other tag reads its body normally and is interpreted by `applyTag`.
+   */
+  private readTagged(tag: number, depth: number): unknown {
+    if (tag === TAG_MAP) return new Map(this.readEntryPairs(depth));
+    const inner = this.readValue(depth + 1);
+    if (tag === TAG_GENERIC_OBJECT) return this.readGenericObject(inner);
+    return this.applyTag(tag, inner);
+  }
+
+  /**
+   * Rebuild a `27([name, ...arguments])` object.  Names are dispatched
+   * through a fixed allow-list and never resolved dynamically — a payload
+   * must not be able to name an arbitrary global and have it constructed.
+   *
+   * An unknown name passes the decoded array through instead of throwing,
+   * the same way an unknown tag does.  A newer node writing a class an older
+   * one has never heard of then degrades to plain data on the old node
+   * rather than failing the whole message, which is what a rolling cluster
+   * upgrade needs.
+   */
+  private readGenericObject(inner: unknown): unknown {
+    if (!Array.isArray(inner) || inner.length < 1 || typeof inner[0] !== 'string') {
+      throw new CborDecodeError(`Tag ${TAG_GENERIC_OBJECT} expects [name, ...arguments]`);
+    }
+    const [name, ...args] = inner as [string, ...unknown[]];
+    switch (name) {
+      case 'BidirectionalMap': return buildBidirectionalMap(args);
+      case 'BidirectionalMultiMap': return buildBidirectionalMultiMap(args);
+      case 'RegExp': return buildRegExp(args);
+      case 'Error': return buildError(args);
+      default:
+        // A binary kind is a name we DO know, so a bad payload under it is an
+        // error rather than something to pass through.
+        return isBinaryKind(name) ? buildBinaryView(name, args) : inner;
+    }
+  }
+
+  /**
+   * A major-5 map read as entry pairs, keys unrestricted.  Because it reads
+   * the header itself it has to repeat the guards `readValue`'s preamble
+   * owns: the depth ceiling, end of input, and that the item really is a map
+   * — `259("nope")` must fail rather than be misread.  Indefinite-length
+   * comes for free, since `readLength` rejects additional info 31.
+   *
+   * Nothing is pre-allocated: `readLength` can report up to 2^64-1, and
+   * `new Array(count)` on that is an instant out-of-memory.  Pushing instead
+   * means a truncated payload dies on the first `readValue` past the end,
+   * which is the same way `case 4` stays safe.
+   */
+  private readEntryPairs(depth: number): Array<[unknown, unknown]> {
+    if (depth > MAX_NESTING_DEPTH) {
+      throw new CborDecodeError(`CBOR nesting deeper than ${MAX_NESTING_DEPTH} at offset ${this.pos}`);
+    }
+    if (this.pos >= this.bytes.byteLength) {
+      throw new CborDecodeError(`Unexpected end of input at offset ${this.pos}`);
+    }
+    const ib = this.bytes[this.pos]!;
+    if (((ib >>> 5) & 0x7) !== 5) {
+      throw new CborDecodeError(`Tag ${TAG_MAP} expects a map at offset ${this.pos}`);
+    }
+    this.pos++;
+    const count = Number(this.readLength(ib & 0x1f));
+    const pairs: Array<[unknown, unknown]> = [];
+    for (let i = 0; i < count; i++) {
+      pairs.push([this.readValue(depth + 1), this.readValue(depth + 1)]);
+    }
+    return pairs;
   }
 
   private readLength(add: number): number | bigint {
@@ -329,11 +785,106 @@ export class CborDecoder {
         const magnitude = bytesToBigInt(inner);
         return tag === TAG_UNSIGNED_BIGNUM ? magnitude : -1n - magnitude;
       }
+      case TAG_URI: {
+        if (typeof inner !== 'string') throw new CborDecodeError(`Tag ${TAG_URI} expects a string`);
+        try {
+          return new URL(inner);
+        } catch {
+          throw new CborDecodeError(`Tag ${TAG_URI} expects an absolute URL (got '${inner}')`);
+        }
+      }
+      case TAG_SET:
+        // Without the check `new Set('abc')` would happily produce a set of
+        // three characters — silent garbage rather than a rejected payload.
+        if (!Array.isArray(inner)) throw new CborDecodeError(`Tag ${TAG_SET} expects an array`);
+        return new Set(inner);
       default:
         // Unknown tag — pass the inner value through.
         return inner;
     }
   }
+}
+
+/* ------------------------ Generic-object constructors ---------------------- */
+
+/**
+ * The argument is the tag-259 map the encoder wrote, so it arrives as a real
+ * `Map`.  Its constructor regenerates the reverse index, which is why a row
+ * that somehow carries a duplicate value resolves last-wins instead of
+ * restoring a map whose two halves disagree.
+ */
+function buildBidirectionalMap(args: readonly unknown[]): BidirectionalMap<unknown, unknown> {
+  const entries = args[0];
+  if (!(entries instanceof Map)) {
+    throw new CborDecodeError('BidirectionalMap expects a map of entries');
+  }
+  return new BidirectionalMap(entries);
+}
+
+/**
+ * The argument is the tag-259 adjacency map, so it arrives as a `Map` of
+ * left → `Set` of partners.  Rebuilding pair by pair regenerates the reverse
+ * index, which is also why a payload that somehow repeats a pair is
+ * idempotent rather than restoring a relation whose two halves disagree about
+ * how many pairs there are.
+ */
+function buildBidirectionalMultiMap(args: readonly unknown[]): BidirectionalMultiMap<unknown, unknown> {
+  const rows = args[0];
+  if (!(rows instanceof Map)) {
+    throw new CborDecodeError('BidirectionalMultiMap expects a map of adjacency rows');
+  }
+  const out = new BidirectionalMultiMap<unknown, unknown>();
+  for (const [left, partners] of rows) {
+    if (!(partners instanceof Set)) {
+      throw new CborDecodeError('BidirectionalMultiMap expects every row to hold a set of partners');
+    }
+    for (const right of partners) out.add(left, right);
+  }
+  return out;
+}
+
+function buildBinaryView(kind: string, args: readonly unknown[]): ArrayBufferView | ArrayBuffer {
+  const bytes = args[0];
+  if (!(bytes instanceof Uint8Array)) {
+    throw new CborDecodeError(`${kind} expects a byte string`);
+  }
+  const view = rebuildBinaryView(kind, bytes);
+  if (view === undefined) {
+    throw new CborDecodeError(`${kind} cannot be built from ${bytes.byteLength} bytes`);
+  }
+  return view;
+}
+
+function buildRegExp(args: readonly unknown[]): RegExp {
+  const [source, flags] = args;
+  if (typeof source !== 'string' || typeof flags !== 'string') {
+    throw new CborDecodeError('RegExp expects a source string and a flags string');
+  }
+  // Well-typed but still unbuildable — an unbalanced source or a bogus flag
+  // set.  Report it as a decode error rather than letting a raw SyntaxError
+  // out, which would name neither the tag nor the payload.
+  try {
+    return new RegExp(source, flags);
+  } catch {
+    throw new CborDecodeError(`RegExp cannot be built from /${source}/${flags}`);
+  }
+}
+
+function buildError(args: readonly unknown[]): Error {
+  const payload = args[0];
+  if (payload === null || typeof payload !== 'object' || Array.isArray(payload)) {
+    throw new CborDecodeError('Error expects a { name, message } object');
+  }
+  const fields = payload as { name?: unknown; message?: unknown; cause?: unknown; errors?: unknown };
+  if (typeof fields.name !== 'string' || typeof fields.message !== 'string') {
+    throw new CborDecodeError('Error expects a { name, message } object');
+  }
+  const errors = Array.isArray(fields.errors) ? fields.errors : undefined;
+  const out = rebuildError(fields.name, fields.message, errors);
+  // Key presence, not the value: a cause that IS `undefined` is different
+  // from no cause at all, and CBOR can tell them apart.
+  if ('cause' in fields) (out as { cause?: unknown }).cause = fields.cause;
+  return out;
 }
 
 /* --------------------------- BigInt ↔ bytes utilities ---------------------- */

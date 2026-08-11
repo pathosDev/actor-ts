@@ -471,6 +471,11 @@ way to preserve class identity or use a binary format for rows.  See
 [using a custom serializer for persistence](/serialization/custom/#using-a-custom-serializer-for-persistence)
 for the framing, mixed-history behavior, and the in-memory exception.
 
+[`CborSerializer`](/serialization/cbor/) carries the whole table above,
+so swapping it in for row size costs you nothing from this list.  Any
+*other* serializer carries whatever it carries — a schema-driven one
+(Avro, Protobuf) only knows the fields in its schema.
+
 Rows written by earlier actor-ts versions used bare
 `JSON.stringify`; they keep decoding unchanged — the tags only
 appear in newly written rows where plain JSON would corrupt the

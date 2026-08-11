@@ -16,32 +16,37 @@
  * directly and there is only ever one copy.  This runs against the built
  * entry point on all three runtimes, which is the only place the identity
  * is actually at risk.
+ *
+ * Since #1036 there is a SECOND such check, in `CborCodec`, with exactly the
+ * same exposure — so both serializers are exercised here rather than one.
  */
 export const name = 'BidirectionalMap round-trip';
-export const description = 'the __bidirectionalmap__ tag survives a built-package serializer round-trip';
+export const description = 'the BidirectionalMap tag survives a built-package serializer round-trip';
 
 export async function run({ actorTs }) {
-  const { BidirectionalMap, JsonSerializer } = actorTs;
+  const { BidirectionalMap, JsonSerializer, CborSerializer } = actorTs;
 
   const source = new BidirectionalMap([['ada', 1], ['grace', 2]]);
-  const serializer = new JsonSerializer();
-  const restored = serializer.fromBinary(serializer.toBinary(source), serializer.manifest(source));
 
-  if (!(restored instanceof BidirectionalMap)) {
-    throw new Error(
-      `round-trip lost the class: got ${restored?.constructor?.name ?? typeof restored} — `
-      + 'the instanceof check in JsonTree did not match, so the tag was never emitted',
-    );
-  }
-  if (restored.get('ada') !== 1) throw new Error(`forward direction lost: ${restored.get('ada')}`);
-  // Never written to the wire — if this answers, it was genuinely rebuilt.
-  if (restored.getKey(2) !== 'grace') throw new Error(`inverse not rebuilt: ${restored.getKey(2)}`);
-  if (restored.size !== 2) throw new Error(`size ${restored.size} !== 2`);
+  for (const [label, serializer] of [['json', new JsonSerializer()], ['cbor', new CborSerializer()]]) {
+    const restored = serializer.fromBinary(serializer.toBinary(source), serializer.manifest(source));
 
-  // The Map contract it claims, on the built bundle.
-  if (new Map(restored).get('grace') !== 2) throw new Error('not consumable as a Map');
-  if (Object.prototype.toString.call(restored) !== '[object BidirectionalMap]') {
-    throw new Error(`toStringTag: ${Object.prototype.toString.call(restored)}`);
+    if (!(restored instanceof BidirectionalMap)) {
+      throw new Error(
+        `${label}: round-trip lost the class: got ${restored?.constructor?.name ?? typeof restored} — `
+        + 'the instanceof check in the codec did not match, so the tag was never emitted',
+      );
+    }
+    if (restored.get('ada') !== 1) throw new Error(`${label}: forward direction lost: ${restored.get('ada')}`);
+    // Never written to the wire — if this answers, it was genuinely rebuilt.
+    if (restored.getKey(2) !== 'grace') throw new Error(`${label}: inverse not rebuilt: ${restored.getKey(2)}`);
+    if (restored.size !== 2) throw new Error(`${label}: size ${restored.size} !== 2`);
+
+    // The Map contract it claims, on the built bundle.
+    if (new Map(restored).get('grace') !== 2) throw new Error(`${label}: not consumable as a Map`);
+    if (Object.prototype.toString.call(restored) !== '[object BidirectionalMap]') {
+      throw new Error(`${label}: toStringTag: ${Object.prototype.toString.call(restored)}`);
+    }
   }
 
   // Displacement is the one Map-contract departure; it must hold everywhere.

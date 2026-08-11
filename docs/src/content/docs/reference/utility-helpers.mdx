@@ -202,11 +202,10 @@ Only the forward pairs go to disk; the inverse is rebuilt on decode. See
 [what events and state may contain](/persistence/persistent-actor/#what-events-and-state-may-contain)
 for the full round-trip table.
 
-<Aside type="caution" title="Not through a custom CBOR serializer">
-  A store configured with `withSerializer(new CborSerializer())` does not carry
-  it — that codec does not carry `Map` or `Set` either. The default codec, which
-  is what every store uses unless you change it, does.
-</Aside>
+A store configured with `withSerializer(new CborSerializer())` carries it too,
+under CBOR tag 27. That was not always so — until
+[#1036](https://github.com/pathosDev/actor-ts/issues/1036) the CBOR codec
+dropped it, along with `Map` and `Set`, without raising anything.
 
 ## BidirectionalMultiMap — the same for a many-to-many relation
 

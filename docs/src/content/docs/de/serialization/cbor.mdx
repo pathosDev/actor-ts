@@ -56,17 +56,37 @@ Binärformat statt als getaggten JSON-Text:
 | **Zahlen** | Dezimaltext | kompaktes binäres Int / Float |
 | **`Date`** | `{"__date__":"…"}`-Tag-Objekt | Tag 1 + Epoch (kompakt) |
 | **`bigint`** | `{"__bigint__":"…"}`-Tag-Objekt | Bignum-Tag 2 / 3 (kompakt) |
+| **`Map`** | `{"__map__":[…]}`-Tag-Objekt | Tag 259 + native CBOR-Map |
+| **`Set`** | `{"__set__":[…]}`-Tag-Objekt | Tag 258 + Array |
+| **`URL`** | `{"__url__":"…"}`-Tag-Objekt | Tag 32 + Text |
+| **Typed Arrays** | base64-String (+33 %) | native Byte-Kette |
 
-Ein Vorbehalt läuft in die andere Richtung: `JsonSerializer`
-erhält `Map`, `Set`,
-[`BidirectionalMap`](/de/reference/utility-helpers/#bidirectionalmap--eine-map-mit-gepflegter-umkehrung)
-und
-[`BidirectionalMultiMap`](/de/reference/utility-helpers/#bidirectionalmultimap--dasselbe-für-eine-viele-zu-viele-relation)
-(über `__map__` / `__set__` / `__bidirectionalmap__` /
-`__bidirectionalmultimap__`-Tags), aber `CborSerializer` **nicht** —
-jede wird zu einem leeren `{}` kodiert und ihre Einträge gehen
-verloren.  Konvertiere sie vor einem CBOR-Round-Trip in Arrays /
-Plain-Objekte.
+„Dieselben reichen Typen" ist wörtlich gemeint: `Map`, `Set`,
+[`BidirectionalMap`](/de/reference/utility-helpers/#bidirectionalmap--eine-map-mit-gepflegter-umkehrung),
+[`BidirectionalMultiMap`](/de/reference/utility-helpers/#bidirectionalmultimap--dasselbe-für-eine-viele-zu-viele-relation),
+`RegExp`, `URL`, `Error`, jedes Typed Array, `NaN` / `Infinity` /
+`-0` und `bigint` kommen aus beiden Serializern als echte Instanzen
+zurück, und eine gemeinsame Test-Suite stellt sicher, dass die
+beiden sich bei jedem einzelnen einig sind.
+
+Das war nicht immer so: `CborSerializer` hat `Map`, `Set` und die
+beiden bidirektionalen Collections früher zu einem leeren `{}`
+plattgemacht und dabei jeden Eintrag verloren, ohne dass irgendetwas
+gemeldet wurde
+([#1036](https://github.com/pathosDev/actor-ts/issues/1036)).  Wer das
+umgangen hat, indem er vor dem Kodieren in Arrays oder Plain-Objekte
+konvertiert hat, braucht das nicht mehr.
+
+Zwei Unterschiede bleiben, beide bewusst:
+
+- **`undefined`.** `CborSerializer` trägt es nativ (CBOR Simple
+  Value 23), `{ a: undefined }` kommt also mit vorhandenem `a` und
+  dem Wert `undefined` zurück.  `JsonSerializer` lehnt `undefined`
+  rundheraus ab — CBOR ist hier also der großzügigere der beiden.
+- **Binärdaten außer `Uint8Array` sind Little-Endian.** Typed Arrays
+  reisen als die Bytes ihrer Plattform.  Jede von actor-ts
+  unterstützte Runtime ist Little-Endian, das ist also nur relevant,
+  wenn du die Bytes selbst an einen Big-Endian-Peer weitergibst.
 
 ## CBOR zum Extension-Default machen
 

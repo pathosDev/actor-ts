@@ -73,7 +73,7 @@ Worauf du **achten** musst:
 
 | Typ | Verhalten |
 | --- | --- |
-| `undefined` | **Wirft** einen `SerializationError` (strenger als rohes `JSON.stringify`, das es verwirft).  Der Persistenz-Payload-Codec verwirft stattdessen `undefined`-Objekt-Properties wie `JSON.stringify` und **erhält** `undefined` in Wertpositionen (Array-Slots, `Set`-Member, `Map`-Einträge) über einen Tag (#889). |
+| `undefined` | **Wirft** einen `SerializationError` (strenger als rohes `JSON.stringify`, das es verwirft).  Der Persistenz-Payload-Codec verwirft stattdessen `undefined`-Objekt-Properties wie `JSON.stringify` und **erhält** `undefined` in Wertpositionen (Array-Slots, `Set`-Member, `Map`-Einträge) über einen Tag (#889).  [`CborSerializer`](/de/serialization/cbor/) trägt es überall nativ, Keys eingeschlossen — die eine Stelle, an der sich die beiden Codecs unterscheiden (#1036). |
 | `Function` / `Symbol` / `Promise` / `WeakMap` / `WeakSet` | **Werfen** einen `SerializationError` — prinzipiell nicht serialisierbar. |
 | Zirkuläre Referenzen | **Werfen** einen `SerializationError` mit dem Key-Pfad (statt den Stack zu sprengen). |
 | Klasseninstanzen | `toJSON()` wird genutzt, wenn vorhanden; sonst als plain `{ ...fields }` dekodiert — Methoden + Klassenidentität verloren. |

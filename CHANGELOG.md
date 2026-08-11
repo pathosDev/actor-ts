@@ -11,6 +11,40 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Added
 
+- **`CborSerializer` carries the same rich types as the JSON tree** (#1036).
+  `Map`, `Set`, `BidirectionalMap` and `BidirectionalMultiMap` used to fall
+  into the CBOR encoder's generic object branch, where `Object.entries` is
+  `[]` or near enough: they encoded as an empty `{}` and every entry was
+  lost, with nothing raised.
+  Anyone who set `withSerializer(new CborSerializer())` on a store — for row
+  size or for speed — silently lost data the default codec kept.  `RegExp`,
+  `URL`, `Error` and the typed arrays were flattened the same way, and `-0`
+  came back as `+0`.
+
+  All of them now round-trip as real instances.  Registered CBOR tags are
+  used wherever one fits the type faithfully — 258 for `Set`, 259 for `Map`
+  (over a native CBOR map, so the entries cost what a plain object's would),
+  32 for `URL` — and everything else goes under tag 27, the IANA
+  "serialised language-independent object with type name and constructor
+  arguments", decoded through a fixed name allow-list.  `Map` needs its tag
+  despite CBOR having a native map type: that is exactly what a plain object
+  encodes to, so the two would be indistinguishable coming back.
+
+  A shared suite (`tests/unit/serialization/RichTypeParity.test.ts`) runs one
+  value table through both codecs and asserts they agree, guarded by the JSON
+  tree's `TYPE_TAGS` — a new type tag with no CBOR counterpart fails the
+  suite rather than shipping as silent data loss.  It earned its keep
+  immediately: `BidirectionalMultiMap` (#1037) landed on `develop` while this
+  was in flight and the guard caught the missing CBOR side on the merge.
+
+  RFC 8746 registers typed arrays as tags 64–87 and this deliberately does
+  not use them: `DataView` and `ArrayBuffer` have no tag there, `Uint8Array`
+  already travels as a bare byte string, and 8746 would force a CBOR-only
+  endianness table with no counterpart on the JSON side.  Both codecs now
+  read one shared binary-kind table instead.  Non-`Uint8Array` binary is
+  little-endian, which the JSON tree has quietly assumed since #889 and which
+  is now written down.
+
 - **`cluster_gossip_records_refused_total{reason}`** (#114, #138).  Counts
   gossiped member records a merge-path guard turned away.  `reason` is closed to
   `version-skew`, `map-cap` and `timestamp-skew` so the series count cannot
@@ -403,8 +437,33 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   the inverse is rebuilt on decode, which also means a row carrying a
   duplicate value resolves last-wins rather than restoring a map whose halves
   disagree.  A store configured with `withSerializer(new CborSerializer())`
-  is the exception — that codec does not carry `Map` or `Set` either
-  (tracked as #1036).
+  carries it too, since #1036.
+
+### Changed
+
+- **BREAKING — `CborSerializer` encodes several values differently** (#1036).
+  All of these previously produced something wrong rather than something
+  different, so the migration is usually "delete the workaround":
+
+  - `Map`, `Set`, `BidirectionalMap`, `RegExp`, `Error` and the typed arrays
+    no longer encode as `{}` (or, for a numeric view, as an index-keyed
+    object).  *Migration:* drop any conversion to arrays or plain objects you
+    were doing before encoding.
+  - `undefined` encodes as CBOR simple value 23 and decodes back as
+    `undefined`, not `null` — including as an object property, where the key
+    is kept.  This makes `CborSerializer` the more permissive of the two
+    codecs, since `JsonSerializer` rejects `undefined` outright.
+    *Migration:* write `null` explicitly where the coercion was relied on.
+  - `-0` encodes as a float64 rather than the single byte `0x00`, so it keeps
+    its sign.
+  - A plain object with a `toJSON()` method now encodes as that method's
+    result, matching `JSON.stringify` and the JSON tree.  The same HTTP
+    endpoint answering `application/json` and `application/cbor` no longer
+    returns two different shapes.  *Migration:* none, unless you relied on
+    CBOR ignoring `toJSON`.
+  - Encoding a `Promise`, `WeakMap` or `WeakSet` throws a `CborEncodeError`
+    instead of writing `{}`.  Nothing that relied on the encode succeeding
+    could have been reading entries back — there were never any.
 
 - **`BidirectionalMultiMap<L, R>`** (#1037).  The many-to-many sibling of
   `BidirectionalMap`, for the shape a subscription registry has: one
@@ -442,6 +501,28 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   here too (#1036).
 
 ### Fixed
+
+- **The CBOR encoder no longer overflows the stack, or writes bytes it
+  cannot read back** (#1036).  `encode()` on a cyclic object and on a
+  deeply nested one both died with `RangeError: Maximum call stack size
+  exceeded`: the decoder has capped nesting since #618, the encoder had no
+  bound at all.  It now refuses a cycle with a `CborEncodeError` (a shared
+  reference still duplicates, as `JSON.stringify` does) and measures depth in
+  the levels the *decoder* will spend, so "the encoder accepts it" and "the
+  decoder accepts it" are the same statement.  That distinction is not
+  academic: a `Set` costs two decode levels where a `Map` costs one, and the
+  tagged forms put their payload two or three levels down, so an empty `Set`,
+  a `RegExp` or an `Error` near the limit used to encode fine and then fail to
+  decode — a snapshot the node could never read back.
+
+- **An unbuildable rich-type payload reports as a `SerializationError`**
+  (#1036).  A `__regexp__` with an unbalanced source or bad flags, a `__url__`
+  holding a relative reference, and a `__typedarray__` whose byte length is
+  not a whole number of elements all escaped as a raw `SyntaxError`,
+  `TypeError` or `RangeError` naming neither the tag nor the value.  HTTP hid
+  it, because `Marshalling.entity()` catches everything and answers 400; a
+  journal replay did not.  The check lives in the codec-independent module, so
+  CBOR inherits it.
 
 - **`BrokerActor` now actually prunes a subscriber that stops** (#1111).
   `subscribeRef` death-watched the ref and its documentation — the class
