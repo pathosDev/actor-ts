@@ -1,3 +1,5 @@
+import { PATH_TRAVERSAL_SEGMENTS } from '../../util/Constants.js';
+
 /**
  * Validate a `persistenceId` before it becomes a storage key (security
  * audit #133).
@@ -57,9 +59,6 @@
  */
 export const MAX_PERSISTENCE_ID_LENGTH = 255;
 
-/** Whole-id values that would carry traversal meaning in a storage key. */
-const TRAVERSAL_IDS: ReadonlySet<string> = new Set(['.', '..']);
-
 /**
  * True when `persistenceId` contains a C0 control character or DEL.
  *
@@ -98,7 +97,7 @@ export function persistenceIdRejection(persistenceId: string): string | null {
     return 'must not contain a path separator ("/" or "\\") — object-storage '
       + 'keys use it to separate one stream from the next';
   }
-  if (TRAVERSAL_IDS.has(persistenceId)) {
+  if (PATH_TRAVERSAL_SEGMENTS.has(persistenceId)) {
     return 'must not be "." or ".."';
   }
   if (hasControlCharacter(persistenceId)) {

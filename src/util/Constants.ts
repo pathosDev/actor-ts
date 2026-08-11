@@ -117,3 +117,23 @@ export const DEFAULT_MAILBOX_CAPACITY = 10_000;
  * documentation) when the trade-off is different.
  */
 export const DEFAULT_MAILBOX_OVERFLOW = 'drop-head' as const;
+
+/**
+ * Whole-token values that would carry traversal meaning in a name.
+ *
+ * Rejected as an actor-path segment (`ActorPath`) and as a persistence id
+ * (`PersistenceIdValidator`).  The two validators guard different things
+ * but against the same attack: a persistence id reaches a filesystem or
+ * object-storage key, where `..` climbs out of the configured prefix, and
+ * a path segment reaches actor-selection resolution.
+ *
+ * Shared rather than duplicated because a denylist that exists twice is a
+ * denylist that can be extended once.  Adding a third traversal token to
+ * one copy and not the other leaves a hole in whichever validator was
+ * forgotten, and nothing about the two files makes that omission visible.
+ *
+ * Typed `ReadonlySet` on purpose: `new Set([…])` alone infers a mutable
+ * `Set<string>`, and a shared denylist any caller can `.delete()` from is
+ * worse than two private ones.
+ */
+export const PATH_TRAVERSAL_SEGMENTS: ReadonlySet<string> = new Set(['.', '..']);
