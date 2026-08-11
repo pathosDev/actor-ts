@@ -1285,6 +1285,42 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Changed
 
+- **The `fn` parameter name is spelled out across the API** (#1112).  136
+  sites in 34 files under `src/` still used `fn`, the short form `AGENTS.md`
+  bans by name alongside `Cmd`/`Msg`/`Ctx`/`Impl`/`Ctor`.  Parameter names
+  reach users — they are part of the published `.d.ts`, the generated
+  TypeDoc and IDE signature help — so this touches public surface:
+  `Dispatcher.execute(task)`, `Scheduler.scheduleOnceFunction(delayMs,
+  task)`, `LogContext.run/with/runFresh/runEach(…, callback)`,
+  `Tracer.withActiveSpan(span, callback)`, `TestKit.within(durationMs,
+  callback)`, `SqliteDb.transaction(body)`,
+  `HealthCheckRegistry.addLiveness/addReadiness(check)`,
+  `DistributedData.update/updateAsync(key, factory, mutator)`,
+  `ORMap.updateWith(…, mutator)`, `EventDispatcherBuilder.on(kind,
+  handler)`, and the four HTTP middleware builders, where the new name is
+  the field the builder writes (`withGenerate(generate)`,
+  `withValidate(validate)`, `withOnTimeout(onTimeout)`,
+  `withOriginPredicate(predicate)`).  **Not breaking:** arguments are
+  positional, and every type whose *field* was renamed (`ManualScheduler`'s
+  task record, DistributedData's update message, the Node worker adapter's
+  listener map) is module-local or private.  No behaviour change.
+
+  Three declarations that transcribe a vendor shape — better-sqlite3's
+  `transaction`, `@opentelemetry/api`'s `context.with`, and the
+  `bun:test`/Vitest/Jest `beforeAll`/`afterAll` hooks — were renamed too:
+  structural assignability ignores parameter names, so only the *member*
+  names have to stay verbatim, and those did.
+
+- **Documentation corrected where it named parameters that no longer
+  existed** (#1112).  `persistence/fsm/*` documented `onEnter(state, fn)` /
+  `onExit(state, fn)` / `onTransition(fn)` where the source says `hook` /
+  `hook` / `cb` and the method is `onExitState` (`onExit` is a private
+  field); `fundamentals/event-stream` documented `cluster.subscribe(fn, …)`
+  against a parameter named `listener`; and the
+  `operations/upgrades/rolling-migration` helper table listed
+  `migrateSnapshotStore(store, pids, fn)` for `(store, persistenceIds,
+  manifestFor)`.  All pre-existing drift, fixed in EN and DE together.
+
 - **BREAKING — `ClusterOptions.firstSightMaxVersionSkewMs` is now
   `maxVersionSkewMs`** (#114).  *Migration:* `withFirstSightMaxVersionSkewMs(ms)`
   → `withMaxVersionSkewMs(ms)`, same default (5 min), same unit; the option never
