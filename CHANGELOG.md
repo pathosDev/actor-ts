@@ -113,6 +113,34 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   **Behaviour change:** a `subscriber.tell` that throws is now logged and
   swallowed rather than propagated out of `publish`.
 
+- **A collision predicate on every random-id helper** (#1141).  `randomString`,
+  `randomHex`, `randomId` and `randomUuid` now take an optional `exists`
+  callback and draw again while it answers `true`, so the loop every caller
+  wrote by hand — `do { id = randomUuid(); } while (state.users.has(id))` —
+  collapses into `randomUuid((id) => state.users.has(id))`.  The polarity is the
+  design: the callback *is* that `while` condition, which is what keeps the `!`
+  off the call site and lets the two shapes read as one sentence; an
+  accept-predicate would have been the negation of the loop it replaces, and
+  would have put a `!` on every `Map`- or `Set`-backed call site.  The retry is
+  bounded at 1 000 draws and then throws an `Error` naming the helper and the
+  count — the same bound, and the same reasoning, as `freeActorName` in
+  `src/devtools/internal/ActorNames.ts`.  Unbounded, a space with nothing free
+  left in it and a predicate written the other way round both become a call that
+  never returns, and this module had already decided that question when it made
+  an empty alphabet throw.  `randomString` reaches the predicate through
+  overloads — the second slot when the character classes are left alone, the
+  third when they are not — so no call site needs a `{}` placeholder to get
+  there, and `randomId` deliberately forwards no predicate into its `randomHex`
+  delegation, which would otherwise nest a second bounded retry inside the first
+  and name the wrong helper in the error.  `ExistsPredicate` is exported from
+  the root barrel next to `RandomStringOptions`, for anyone naming the callback
+  rather than inlining it.  Nothing changes without one: the argument is
+  optional and trailing, the no-predicate path is a single draw with no loop,
+  and `randomUuid` is still the `() => string` that
+  `RequestIdOptions.withGenerate` defaults to.  The predicate reads and does not
+  write — the accepted value is not recorded for you.  Migrating the framework's
+  own draws onto it is not part of this change.
+
 ## [0.14.0] — 2026-08-11
 
 ### Added
