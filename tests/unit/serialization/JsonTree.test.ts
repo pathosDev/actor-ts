@@ -8,6 +8,7 @@ import {
 } from '../../../src/serialization/JsonTree.js';
 import { SerializationError } from '../../../src/serialization/Serializer.js';
 import { BidirectionalMap } from '../../../src/util/BidirectionalMap.js';
+import { BidirectionalMultiMap } from '../../../src/util/BidirectionalMultiMap.js';
 
 function rt<T>(value: T, options?: JsonTreeEncodeOptions): unknown {
   return decodeJsonTree(encodeJsonTree(value, options));
@@ -440,6 +441,99 @@ describe('JsonTree — BidirectionalMap (#1035)', () => {
   test('a cycle through it is caught, like any other container', () => {
     const map = new BidirectionalMap<string, unknown>();
     map.set('self', map);
+    expect(() => encodeJsonTree(map)).toThrow(/circular reference/);
+  });
+});
+
+describe('JsonTree — BidirectionalMultiMap (#1037)', () => {
+  test('round-trips as a real instance, with the reverse direction rebuilt', () => {
+    const source = new BidirectionalMultiMap([
+      ['news', 'ada'],
+      ['news', 'grace'],
+      ['sport', 'ada'],
+    ]);
+    const decoded = rt(source) as BidirectionalMultiMap<string, string>;
+
+    expect(decoded).toBeInstanceOf(BidirectionalMultiMap);
+    expect([...decoded]).toEqual([...source]);
+    expect(decoded.size).toBe(3);
+    // The half that is not written: it has to come back anyway.
+    expect([...decoded.getKeys('ada')]).toEqual(['news', 'sport']);
+    expect(decoded.hasRight('grace')).toBe(true);
+  });
+
+  test('only the forward adjacency list is written', () => {
+    expect(encodeJsonTree(new BidirectionalMultiMap([['news', 'ada'], ['news', 'grace']]))).toEqual({
+      __bidirectionalmultimap__: [['news', ['ada', 'grace']]],
+    });
+  });
+
+  test('the private fields never reach the row — no counter, no reverse map', () => {
+    const encoded = encodeJsonTree(new BidirectionalMultiMap([['news', 'ada']])) as Record<string, unknown>;
+    expect(Object.keys(encoded)).toEqual(['__bidirectionalmultimap__']);
+  });
+
+  test('rich types survive on both the left and the right side', () => {
+    const when = new Date('2026-01-02T03:04:05.000Z');
+    const source = new BidirectionalMultiMap<Date, bigint>([[when, 7n], [when, 8n]]);
+    const decoded = rt(source) as BidirectionalMultiMap<Date, bigint>;
+
+    const [left] = [...decoded.lefts()];
+    expect(left).toBeInstanceOf(Date);
+    expect(left!.toISOString()).toBe(when.toISOString());
+    expect([...decoded.get(left!)]).toEqual([7n, 8n]);
+    expect([...decoded.getKeys(7n)][0]).toBeInstanceOf(Date);
+  });
+
+  test('a nested Map stays a Map inside it', () => {
+    const inner = new Map([['x', 1]]);
+    const source = new BidirectionalMultiMap<string, Map<string, number>>([['holder', inner]]);
+    const decoded = rt(source) as BidirectionalMultiMap<string, Map<string, number>>;
+
+    const [restored] = [...decoded.get('holder')];
+    expect(restored).toBeInstanceOf(Map);
+    expect(restored?.get('x')).toBe(1);
+  });
+
+  test('one nested in an actor-state-shaped object survives', () => {
+    const state = { subscriptions: new BidirectionalMultiMap([['news', 'ada']]), revision: 3 };
+    const decoded = rt(state) as typeof state;
+
+    expect(decoded.subscriptions).toBeInstanceOf(BidirectionalMultiMap);
+    expect([...decoded.subscriptions.getKeys('ada')]).toEqual(['news']);
+    expect(decoded.revision).toBe(3);
+  });
+
+  test('a participant left with no partners cannot be restored, because none is written', () => {
+    const source = new BidirectionalMultiMap([['news', 'ada']]);
+    source.delete('news', 'ada');
+    expect(encodeJsonTree(source)).toEqual({ __bidirectionalmultimap__: [] });
+
+    const decoded = rt(source) as BidirectionalMultiMap<string, string>;
+    expect(decoded.size).toBe(0);
+    expect([...decoded.lefts()]).toEqual([]);
+    expect([...decoded.rights()]).toEqual([]);
+  });
+
+  test('user data that merely looks like the tag is escaped, not misdecoded', () => {
+    expect(encodeJsonTree({ __bidirectionalmultimap__: [['news', ['ada']]] })).toEqual({
+      __literal__: { __bidirectionalmultimap__: [['news', ['ada']]] },
+    });
+    expect(rt({ __bidirectionalmultimap__: [['news', ['ada']]] })).toEqual({
+      __bidirectionalmultimap__: [['news', ['ada']]],
+    });
+  });
+
+  test('a malformed payload fails loudly', () => {
+    expect(() => decodeJsonTree({ __bidirectionalmultimap__: 'nope' })).toThrow(SerializationError);
+    expect(() => decodeJsonTree({ __bidirectionalmultimap__: [['news']] })).toThrow(SerializationError);
+    // A row whose second half is not a list of partners.
+    expect(() => decodeJsonTree({ __bidirectionalmultimap__: [['news', 'ada']] })).toThrow(SerializationError);
+  });
+
+  test('a cycle through it is caught, like any other container', () => {
+    const map = new BidirectionalMultiMap<string, unknown>();
+    map.add('self', map);
     expect(() => encodeJsonTree(map)).toThrow(/circular reference/);
   });
 });
