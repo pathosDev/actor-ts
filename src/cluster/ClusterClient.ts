@@ -73,9 +73,15 @@ const HELLO_TIMEOUT_MS = 5_000;
  * entropy per call — guessing the next ID is computationally
  * infeasible.  Frame replies whose ID doesn't match a current
  * pending entry are dropped by `handleReply()` (existing behaviour).
+ *
+ * Takes the map rather than a ready-made predicate (#1146) so that the one
+ * thing a call site could get wrong — the polarity, where `true` has to mean
+ * *taken* — is written once here and covered by a test, instead of being
+ * re-derived at the `ask()` that calls it.  `pending` is optional only so the
+ * test handle below can still ask for a bare draw.
  */
-function nextAskId(): string {
-  return randomUuid();
+function nextAskId(pending?: ReadonlyMap<string, unknown>): string {
+  return randomUuid(pending === undefined ? undefined : (id) => pending.has(id));
 }
 
 /** @internal — test-only handle for the predictability regression. */
@@ -179,7 +185,13 @@ export class ClusterClient {
     timeoutMs?: number,
   ): Promise<R> {
     await this.ensureConnected();
-    const askId = nextAskId();
+    // Drawn against the map it is about to key (#1146).  `pending.set` below
+    // overwrites, so a repeat would not raise anything — it would replace the
+    // earlier ask's `resolve`/`reject` with this one's, leaving that promise to
+    // hang until its own timer fires with a timeout that never happened.  122
+    // bits make it near-impossible; the map is right here, so it is now also
+    // ruled out.
+    const askId = nextAskId(this.pending);
     const env: ClusterClientEnvelopeMessage = {
       kind: 'cluster-client-envelope',
       from: this.identity.toJSON(),
