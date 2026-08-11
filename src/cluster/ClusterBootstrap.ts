@@ -19,7 +19,11 @@ import { NodeAddress } from './NodeAddress.js';
 import { StableObservation } from './bootstrap/StableObservation.js';
 import { readStableObservationOptionsFromConfig } from './bootstrap/StableObservationOptions.js';
 import type { StableObservationTuning } from './bootstrap/StableObservationOptions.js';
-import { ClusterBootstrapOptionsValidator } from './ClusterBootstrapOptions.js';
+import {
+  ClusterBootstrapOptionsValidator,
+  DEFAULT_AWAIT_READY_MS,
+  DEFAULT_PORT,
+} from './ClusterBootstrapOptions.js';
 import type { ClusterBootstrapOptions, ClusterBootstrapOptionsType } from './ClusterBootstrapOptions.js';
 
 /** Return value of {@link Cluster.bootstrap}. */
@@ -35,9 +39,6 @@ export type BootstrappedCluster = {
    */
   readonly shutdown: () => Promise<void>;
 };
-
-const DEFAULT_AWAIT_READY_MS = 5_000;
-const DEFAULT_PORT = 2552;
 
 /** Stands in for discovery when the caller passed an explicit empty seed list. */
 const EMPTY_SEED_PROVIDER: SeedProvider = { lookup: async () => [] };

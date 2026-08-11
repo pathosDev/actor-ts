@@ -8,6 +8,7 @@ import { metricsOf } from '../metrics/MetricsExtension.js';
 import { tracerOf } from '../tracing/TracingExtension.js';
 import type { Cancellable } from '../Scheduler.js';
 import { DEFAULT_GOSSIP_INTERVAL_MS } from '../util/Constants.js';
+import { MAX_WALL_CLOCK_SKEW_MS } from './Constants.js';
 import { none, some, type Option } from '../util/Option.js';
 import { ClusterExtensionId } from './ClusterExtension.js';
 import {
@@ -81,25 +82,6 @@ type GossipRefusalReason = typeof GOSSIP_REFUSAL_REASONS[number];
 
 /** Refusals since startup, one running total per reason. */
 type GossipRefusalCounts = Record<GossipRefusalReason, number>;
-
-/**
- * Maximum allowed deviation between a peer-supplied **wall-clock stamp** and
- * the local clock — 1 day.  Anything above is rejected as a corrupted or
- * forged frame.
- *
- * It guards the two fields that are timestamps rather than versions: a
- * tombstone's `removedAt`, which decides when the entry ages out, and a
- * heartbeat's `ts`.  Both are read for housekeeping, not for conflict
- * resolution, so the bound is tuned generous-but-finite — a node with a
- * 23-hour clock skew still prunes in step with its peers, while a frame
- * claiming `Number.MAX_SAFE_INTEGER` (≈ 285 000 years above now) is rejected
- * on the spot.
- *
- * Member **versions** are a different quantity and are held to the much
- * tighter, per-node configurable {@link ClusterOptionsType.maxVersionSkewMs}
- * — see {@link Cluster.admitsVersion} for why the two numbers are not one.
- */
-const MAX_WALL_CLOCK_SKEW_MS = 24 * 60 * 60 * 1_000;
 
 /**
  * How {@link Cluster.subscribe} states the membership that already exists when

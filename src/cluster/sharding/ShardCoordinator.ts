@@ -2,6 +2,7 @@ import { match, P } from 'ts-pattern';
 import { Actor } from '../../Actor.js';
 import type { ActorRef } from '../../ActorRef.js';
 import type { Cancellable } from '../../Scheduler.js';
+import { SHARD_MAP_PUBLISH_DELAY_MS } from '../Constants.js';
 import {
   DEFAULT_HAND_OFF_TIMEOUT_MS,
   DEFAULT_REBALANCE_INTERVAL_MS,
@@ -82,13 +83,6 @@ type StatsQuery = {
 function regionKey(node: NodeAddress, path: string): string {
   return `${node}|${path}`;
 }
-
-/**
- * How long allocation changes are gathered before one `ShardMapUpdate` goes
- * out.  Long enough to fold a whole-cluster placement into a single
- * broadcast, short enough that a panel still feels live.
- */
-const SHARD_MAP_PUBLISH_DELAY_MS = 50;
 
 /**
  * Cluster-wide authoritative source of shard-to-region assignments.  Runs on
