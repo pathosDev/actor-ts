@@ -440,6 +440,12 @@ zusammengefasste Requests. Schnappschusse den Kontext jedes Items
 beim Drainen wieder ein:
 
 ```ts
+import type { LogContextEntry } from 'actor-ts';
+
+// Die Queue überlebt die Runde, die sie gefüllt hat, das Feld braucht
+// also einen Typ — genau dafür ist `LogContextEntry` exportiert.
+private readonly buffered: Array<LogContextEntry<Item>> = [];
+
 private onBuffer(m: BufferMessage): void {
   // Jetzt schnappschussen; die Drain-Runde ist viel zu spät.
   this.buffered.push({ context: LogContext.get(), item: m.item });

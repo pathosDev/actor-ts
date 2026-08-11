@@ -431,6 +431,12 @@ each item's context **at enqueue time** — that is the only moment it
 is still current — then replay it at drain time:
 
 ```ts
+import type { LogContextEntry } from 'actor-ts';
+
+// The queue outlives the turn that filled it, so the field has to be
+// typed — which is what `LogContextEntry` is exported for.
+private readonly buffered: Array<LogContextEntry<Item>> = [];
+
 private onBuffer(m: BufferMessage): void {
   // Capture now; the draining turn is far too late.
   this.buffered.push({ context: LogContext.get(), item: m.item });

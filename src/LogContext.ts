@@ -57,11 +57,15 @@ export type LogContextData = Readonly<Record<string, string | number | boolean>>
 
 /**
  * One queued item paired with the context that was current when it was
- * enqueued — the input to {@link LogContext.runEach}.  Deliberately a
- * plain structural shape rather than a class: callers build it inline
- * (`{ context: LogContext.get(), item }`) and never need to name the
- * type, which matters because only `LogContextData` is re-exported
- * from the package root.
+ * enqueued — the input to {@link LogContext.runEach}.  A plain structural
+ * shape rather than a class, so a caller can build one inline
+ * (`{ context: LogContext.get(), item }`) without importing anything.
+ *
+ * Building one inline was once the reason this type stayed out of the
+ * package root.  That held only for the throwaway case: `runEach` exists
+ * for work deferred to a *later* turn, so the entries are normally held in
+ * a field between the enqueue and the drain — and a field has to be typed
+ * (#1062).
  */
 export type LogContextEntry<TItem> = {
   readonly context: LogContextData;

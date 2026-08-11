@@ -18,7 +18,9 @@ import { ActorSystem } from '../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../src/ActorSystemOptions.js';
 import type { ActorRef } from '../../src/ActorRef.js';
 import { LogContext } from '../../src/LogContext.js';
-import type { LogContextEntry } from '../../src/LogContext.js';
+// From the barrel, not the module: this is the shape an application has to be
+// able to name, and only `src/index.ts` says whether it can (#1062).
+import type { LogContextEntry } from '../../src/index.js';
 import { LogLevel, NoopLogger } from '../../src/Logger.js';
 import { awaitCondition } from '../util/AwaitCondition.js';
 
