@@ -11,6 +11,27 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Added
 
+- **`randomUuid()`** (#1109).  A random version-4 UUID, exported from
+  `src/util/RandomString.ts` next to `randomId` and re-exported from the root
+  barrel alongside it.  It closes the one identifier question that module could
+  not answer with an alphabet and a length: `randomId(12)` is ~48 bits and only
+  has to be unguessable among the names one process holds live at once, while a
+  `PersistenceId`, a correlation id crossing a broker, or a key another system
+  will read later has to stay distinct from identifiers minted in other
+  processes, on other machines, years apart, with nothing coordinating them —
+  122 random bits are what makes that hold.  Until now the docs answered it by
+  sending the reader out of the framework to `crypto.randomUUID()`, which is
+  also what three call sites in `src/` do, in two different spellings.  It
+  delegates to `globalThis.crypto.randomUUID()` rather than dashing up a
+  `randomHex(32)`: six of the 128 bits are the version and variant fields RFC
+  9562 fixes, so a hex string with dashes in the right places only looks like a
+  UUID and anything parsing a version out of it reads garbage.  No `length`
+  parameter — slicing a UUID down is the mistake the module exists to make
+  unnecessary.  Smoke-tested on Bun, Node and Deno, since `crypto.randomUUID` is
+  a second Web API off the same object as `getRandomValues` and a runtime can
+  carry one without the other.  Migrating the existing call sites onto it is not
+  part of this change.
+
 - **`cluster_gossip_records_refused_total{reason}`** (#114, #138).  Counts
   gossiped member records a merge-path guard turned away.  `reason` is closed to
   `version-skew`, `map-cap` and `timestamp-skew` so the series count cannot
