@@ -18,7 +18,8 @@ get((req) => completeJson(Status.OK, { id: req.headers['x-request-id'] }));
 
 An incoming id is accepted only if it is well-formed
 (`^[A-Za-z0-9._-]{1,64}$`) — a hostile value never reaches a response
-header; otherwise a fresh `crypto.randomUUID()` is generated.
+header; otherwise a fresh id is generated with
+[`randomUuid`](/reference/utility-helpers/#random-strings-and-identifiers).
 
 ## Reading the id back
 
@@ -45,7 +46,7 @@ you renamed it.
 | --- | --- | --- |
 | `withHeaderName(n)` | `headerName` | `'x-request-id'` |
 | `withTrustIncoming(flag?)` | `trustIncoming` | `true` |
-| `withGenerate(fn)` | `generate` | `crypto.randomUUID()` |
+| `withGenerate(fn)` | `generate` | `randomUuid` |
 
 ## Where to next
 

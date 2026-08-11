@@ -256,11 +256,11 @@ MDC.  Set it at the entry point; every log call inside reads it
 automatically:
 
 ```ts
-import { LogContext } from 'actor-ts';
+import { LogContext, randomUuid } from 'actor-ts';
 
 // HTTP request handler — wraps the actor work in a context scope.
 app.post('/orders', async (req, res) => {
-  const correlationId = req.headers['x-correlation-id'] ?? randomUUID();
+  const correlationId = req.headers['x-correlation-id'] ?? randomUuid();
 
   await LogContext.run({ correlationId, userId: req.user.id }, async () => {
     const result = await orderActor.ask({ kind: 'place', ... });
