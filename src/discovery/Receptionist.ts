@@ -1,6 +1,7 @@
 import { match, P } from 'ts-pattern';
 import { Actor } from '../Actor.js';
 import { SystemActorNames, SystemGroups } from '../internal/SystemPaths.js';
+import { BidirectionalMultiMap } from '../util/BidirectionalMultiMap.js';
 import { DEFAULT_GOSSIP_INTERVAL_MS } from '../util/Constants.js';
 import { ReceptionistOptionsValidator, readReceptionistOptionsFromConfig } from './ReceptionistOptions.js';
 import type { ReceptionistOptions, ReceptionistOptionsType } from './ReceptionistOptions.js';
@@ -57,20 +58,6 @@ type KeyEntry = {
   readonly local: Map<string, ActorRef>; // pathString → ref
   /** Remote nodes that claim to host at least one ref under the key. */
   readonly remote: Map<string, string[]>; // nodeAddrString → pathStrings
-  /**
-   * Subscribers wanting change notifications, keyed by path like `local`.
-   * A `Set` keyed on ref *identity* was the older shape and does not survive
-   * death watch: `Terminated` carries the cell's own `self` ref, which need
-   * not be the object the caller subscribed with — a path is the one identity
-   * both sides agree on.
-   */
-  readonly subscribers: Map<string, ReceptionistSubscriberRef>; // pathString → ref
-};
-
-/** What one subscriber holds — its ref, and every key it is registered under. */
-type SubscriberState = {
-  readonly ref: ReceptionistSubscriberRef;
-  readonly keyIds: Set<string>;
 };
 
 /** The cap a {@link Subscribe} ran into, and the value that cap was set to. */
@@ -101,13 +88,29 @@ export class Receptionist extends Actor<ReceptionistInbox> {
   private readonly maxSubscribersTotal: number;
 
   /**
-   * Every subscriber this receptionist holds, keyed by path.  Redundant with
-   * the per-entry maps, and worth it twice over: `Terminated` carries only a
-   * ref, and deciding whether a ref may be unwatched otherwise means scanning
-   * every key.  Both would be O(keys) on a path whose rate an attacker sets.
+   * Which keys each subscriber watches, and which subscribers each key has —
+   * one object owning both directions (#1037).  The reverse direction is what
+   * `Terminated` needs: it carries only a ref, and deciding whether that ref
+   * may be unwatched by scanning every key would be O(keys) on a path whose
+   * rate an attacker sets.
+   *
+   * Keyed by **path string** on the subscriber side, never by ref identity:
+   * `Terminated` carries the cell's own `self` ref, which need not be the
+   * object the caller subscribed with — a path is the one identity both sides
+   * agree on.
+   *
+   * `size` is the total number of subscriptions, which is why the cap needs no
+   * counter of its own.  A hand-kept one is a third thing to hold in step, and
+   * it was already subtly wrong: the old `forgetSubscription` decremented
+   * before its own "did this subscriber exist" guard.
    */
-  private readonly subscriberStates = new Map<string, SubscriberState>();
-  private totalSubscribers = 0;
+  private readonly subscriptions = new BidirectionalMultiMap<string, string>(); // keyId ↔ subscriber path
+  /**
+   * The ref behind each subscriber path — needed to `tell` a `Listing` and to
+   * `unwatch`.  Its lifetime follows the relation exactly: written with a
+   * subscriber's first subscription, dropped when its last one goes.
+   */
+  private readonly subscriberRefs = new Map<string, ReceptionistSubscriberRef>();
 
   private version = 0;
   private gossipTimer: Cancellable | null = null;
@@ -214,8 +217,8 @@ export class Receptionist extends Actor<ReceptionistInbox> {
   private onSubscribe(message: Subscribe): void {
     const entry = this.getOrCreate(message.key);
     const pathStr = message.replyTo.path.toString();
-    if (!entry.subscribers.has(pathStr)) {
-      const refusal = this.capRefusal(entry);
+    if (!this.subscriptions.has(message.key.id, pathStr)) {
+      const refusal = this.capRefusal(message.key.id);
       if (refusal) {
         // Undo the entry this Subscribe just created — otherwise a flood of
         // rejected subscribes to fresh keys grows `keys` instead, which is
@@ -228,7 +231,6 @@ export class Receptionist extends Actor<ReceptionistInbox> {
         message.replyTo.tell(new SubscribeRejected(message.key, refusal.reason, refusal.limit));
         return;
       }
-      entry.subscribers.set(pathStr, message.replyTo);
       this.rememberSubscription(message.replyTo, message.key.id);
     }
     // Replay current listing to the new subscriber.
@@ -236,13 +238,12 @@ export class Receptionist extends Actor<ReceptionistInbox> {
   }
 
   private onUnsubscribe(message: Unsubscribe): void {
-    const entry = this.keys.get(message.key.id);
-    if (!entry) return;
     const pathStr = message.replyTo.path.toString();
-    if (entry.subscribers.delete(pathStr)) {
-      this.forgetSubscription(pathStr, message.key.id);
+    if (this.subscriptions.delete(message.key.id, pathStr)) {
+      this.forgetSubscriber(pathStr);
     }
-    this.maybeDrop(message.key.id, entry);
+    const entry = this.keys.get(message.key.id);
+    if (entry) this.maybeDrop(message.key.id, entry);
   }
 
   /**
@@ -253,14 +254,16 @@ export class Receptionist extends Actor<ReceptionistInbox> {
    */
   private onTerminated(message: Terminated): void {
     const pathStr = message.actor.path.toString();
-    const state = this.subscriberStates.get(pathStr);
-    if (!state) return;
-    this.subscriberStates.delete(pathStr);
-    for (const id of state.keyIds) {
+    // Snapshotted before the drop: `getKeys` hands back the live set, which
+    // `deleteRight` is about to empty out from under the loop.
+    const affected = [...this.subscriptions.getKeys(pathStr)];
+    if (!this.subscriptions.deleteRight(pathStr)) return;
+    // No `unwatch` — the cell already dropped the watch when it delivered
+    // this, so asking again would only be a second lookup.
+    this.subscriberRefs.delete(pathStr);
+    for (const id of affected) {
       const entry = this.keys.get(id);
-      if (!entry) continue;
-      if (entry.subscribers.delete(pathStr)) this.totalSubscribers--;
-      this.maybeDrop(id, entry);
+      if (entry) this.maybeDrop(id, entry);
     }
   }
 
@@ -357,24 +360,24 @@ export class Receptionist extends Actor<ReceptionistInbox> {
   private getOrCreate(key: ServiceKey): KeyEntry {
     let entry = this.keys.get(key.id);
     if (!entry) {
-      entry = { local: new Map(), remote: new Map(), subscribers: new Map() };
+      entry = { local: new Map(), remote: new Map() };
       this.keys.set(key.id, entry);
     }
     return entry;
   }
 
   private maybeDrop(id: string, entry: KeyEntry): void {
-    if (entry.local.size === 0 && entry.remote.size === 0 && entry.subscribers.size === 0) {
+    if (entry.local.size === 0 && entry.remote.size === 0 && !this.subscriptions.hasLeft(id)) {
       this.keys.delete(id);
     }
   }
 
   /** The cap a fresh subscriber would breach, or `null` when there is room. */
-  private capRefusal(entry: KeyEntry): CapRefusal | null {
-    if (entry.subscribers.size >= this.maxSubscribersPerKey) {
+  private capRefusal(keyId: string): CapRefusal | null {
+    if (this.subscriptions.get(keyId).size >= this.maxSubscribersPerKey) {
       return { reason: 'maxSubscribersPerKey', limit: this.maxSubscribersPerKey };
     }
-    if (this.totalSubscribers >= this.maxSubscribersTotal) {
+    if (this.subscriptions.size >= this.maxSubscribersTotal) {
       return { reason: 'maxSubscribersTotal', limit: this.maxSubscribersTotal };
     }
     return null;
@@ -383,30 +386,29 @@ export class Receptionist extends Actor<ReceptionistInbox> {
   /**
    * Book a new subscription and start watching the subscriber.  A subscriber
    * on several keys is watched once, and the single `Terminated` that follows
-   * cleans up all of them.
+   * cleans up all of them — `hasRight` is what distinguishes the first
+   * subscription from a later one.
    */
   private rememberSubscription(subscriber: ReceptionistSubscriberRef, keyId: string): void {
     const pathStr = subscriber.path.toString();
-    let state = this.subscriberStates.get(pathStr);
-    if (!state) {
-      state = { ref: subscriber, keyIds: new Set() };
-      this.subscriberStates.set(pathStr, state);
+    if (!this.subscriptions.hasRight(pathStr)) {
+      this.subscriberRefs.set(pathStr, subscriber);
       this.context.watch(subscriber);
     }
-    state.keyIds.add(keyId);
-    this.totalSubscribers++;
+    this.subscriptions.add(keyId, pathStr);
   }
 
-  /** Drop one subscription, and the death watch with the subscriber's last one. */
-  private forgetSubscription(pathStr: string, keyId: string): void {
-    this.totalSubscribers--;
-    const state = this.subscriberStates.get(pathStr);
-    if (!state) return;
-    state.keyIds.delete(keyId);
-    if (state.keyIds.size === 0) {
-      this.subscriberStates.delete(pathStr);
-      this.context.unwatch(state.ref);
-    }
+  /**
+   * Drop the death watch once a subscriber's last subscription is gone.  The
+   * pair itself is already removed by the caller; there is nothing to unlink
+   * here, because the relation prunes a participant that holds nothing.
+   */
+  private forgetSubscriber(pathStr: string): void {
+    if (this.subscriptions.hasRight(pathStr)) return;
+    const ref = this.subscriberRefs.get(pathStr);
+    if (!ref) return;
+    this.subscriberRefs.delete(pathStr);
+    this.context.unwatch(ref);
   }
 
   private collectRefs(entry: KeyEntry): ActorRef[] {
@@ -423,9 +425,10 @@ export class Receptionist extends Actor<ReceptionistInbox> {
   }
 
   private notifySubscribers(key: ServiceKey, entry: KeyEntry): void {
-    if (entry.subscribers.size === 0) return;
+    const subscribers = this.subscriptions.get(key.id);
+    if (subscribers.size === 0) return;
     const listing = new Listing(key, this.collectRefs(entry));
-    for (const subscriber of entry.subscribers.values()) subscriber.tell(listing);
+    for (const pathStr of subscribers) this.subscriberRefs.get(pathStr)?.tell(listing);
   }
 }
 
