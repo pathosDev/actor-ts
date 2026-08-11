@@ -33,7 +33,7 @@ named identically.  This guide walks through the translation.
 | `DistributedPubSub` | `DistributedPubSub` |
 | `DistributedData` | `DistributedData` (via extension) |
 | `PersistentActor` | `PersistentActor` |
-| `persist(event)(cb)` | `this.persist(event, cb)` |
+| `persist(event)(cb)` | `this.persist(event, afterPersist)` |
 | `Akka HTTP` | `HttpExtension` + Route DSL |
 | `Akka Streams` | **NOT available** |
 

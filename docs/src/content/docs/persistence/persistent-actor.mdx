@@ -150,7 +150,7 @@ after a restart, which is the most expensive way to find out.
 Validates the command against the current state and decides what
 events to persist.  Three valid outcomes:
 
-- **`this.persist(event, cb)`** — persist an event.  The
+- **`this.persist(event, afterPersist)`** — persist an event.  The
   callback runs with the new state once the event is appended
   and applied via `onEvent`.  Side effects go here.
 - **Reply without persisting** — for read-only commands (e.g.
