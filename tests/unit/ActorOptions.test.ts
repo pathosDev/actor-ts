@@ -41,6 +41,11 @@ describe('ActorOptions', () => {
     expect(read(ActorOptions.create<string>().withMailboxCapacity(128)).mailboxCapacity).toBe(128);
   });
 
+  test('withMailboxOverflow records the policy', () => {
+    expect(read(ActorOptions.create<string>().withMailboxOverflow('drop-new')).mailboxOverflow)
+      .toBe('drop-new');
+  });
+
   test('withMailbox records the factory', () => {
     const mailbox = (): Mailbox<string> => new Mailbox<string>();
     expect(read(ActorOptions.create<string>().withMailbox(mailbox)).mailbox).toBe(mailbox);
@@ -103,5 +108,27 @@ describe('ActorOptionsValidator', () => {
     // The point of validating here: the message names the options family the
     // caller wrote, not `BoundedMailbox`, which is several frames deeper.
     expect(() => validate({ mailboxCapacity: 0 })).toThrow(/ActorOptions/);
+  });
+
+  test.each(['drop-head', 'drop-new', 'reject'] as const)(
+    'mailboxOverflow %p passes alongside a capacity',
+    (mailboxOverflow) => {
+      expect(() => validate({ mailboxCapacity: 8, mailboxOverflow })).not.toThrow();
+    },
+  );
+
+  test('an unknown mailboxOverflow is rejected as OptionsError', () => {
+    const settings = { mailboxCapacity: 8, mailboxOverflow: 'drop-middle' } as unknown as
+      Partial<ActorOptionsType<string>>;
+    expect(() => validate(settings)).toThrow(OptionsError);
+    expect(() => validate(settings)).toThrow(/mailboxOverflow.*drop-head.*drop-new.*reject/s);
+  });
+
+  test('mailboxOverflow without a capacity is rejected rather than silently ignored', () => {
+    // An unbounded mailbox never overflows, so the policy would be a no-op —
+    // and a silent no-op is what makes someone believe they configured it.
+    expect(() => validate({ mailboxOverflow: 'reject' })).toThrow(OptionsError);
+    expect(() => validate({ mailboxOverflow: 'reject' }))
+      .toThrow(/mailboxOverflow needs a mailboxCapacity/);
   });
 });

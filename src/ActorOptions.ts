@@ -14,6 +14,7 @@
 import type { Dispatcher } from './Dispatcher.js';
 import type { EntityContext } from './EntityContext.js';
 import type { Mailbox } from './internal/Mailbox.js';
+import type { BoundedMailboxOverflow } from './mailbox/BoundedMailboxOptions.js';
 import type { SupervisorStrategy } from './Supervision.js';
 import { OptionsBuilder } from './util/OptionsBuilder.js';
 import { OptionsValidator } from './util/OptionsValidator.js';
@@ -33,19 +34,18 @@ import { OptionsValidator } from './util/OptionsValidator.js';
 export const DEFAULT_MAILBOX_CAPACITY = 10_000;
 
 /**
- * Overflow policy for that default bounded mailbox.  `drop-head` discards
- * the oldest queued message when a new one arrives on a full mailbox — the
- * right shape for telemetry-style workloads where stale messages are
- * worthless and the freshest snapshot is the only thing that matters.
+ * Built-in default for {@link ActorOptionsType.mailboxOverflow}.
+ * `drop-head` discards the oldest queued message when a new one arrives on
+ * a full mailbox — the right shape for telemetry-style workloads where
+ * stale messages are worthless and the freshest snapshot is the only thing
+ * that matters.
  *
- * Deliberately *not* an `ActorOptionsType` field: `withMailboxCapacity`
- * tunes the ceiling, and anyone who wants a different policy supplies a
- * whole mailbox via `withMailbox(...)` (see `BoundedMailbox` for
- * `drop-new` and `reject`).  It lives beside the capacity anyway because
- * the two only make sense read together — they jointly describe what "the
- * default mailbox" is.
+ * `reject` would be the more cautious-looking default and is the wrong one:
+ * it throws `MailboxFullError` into the *sender's* `onReceive`, so the
+ * actor that fails and restarts is the one that sent to a slow actor, not
+ * the slow actor itself (#919).
  */
-export const DEFAULT_MAILBOX_OVERFLOW = 'drop-head' as const;
+export const DEFAULT_MAILBOX_OVERFLOW: BoundedMailboxOverflow = 'drop-head';
 
 /**
  * Builds the actor's mailbox.  Called once, when the cell is constructed —
@@ -67,6 +67,13 @@ export type ActorOptionsType<TMessage = unknown> = {
   readonly dispatcher?: Dispatcher;
   /** Ceiling for the default bounded mailbox.  Ignored when `mailbox` is set. */
   readonly mailboxCapacity?: number;
+  /**
+   * What a full mailbox does with an arriving message.  Only meaningful
+   * together with {@link mailboxCapacity} — an unbounded mailbox is never
+   * full — so setting it alone is rejected rather than silently ignored.
+   * Defaults to {@link DEFAULT_MAILBOX_OVERFLOW}.
+   */
+  readonly mailboxOverflow?: BoundedMailboxOverflow;
   /**
    * Custom mailbox — `BoundedMailbox` or `PriorityMailbox` for non-default
    * queueing.  Omit for the default bounded FIFO queue.
@@ -134,6 +141,11 @@ export class ActorOptionsBuilder<TMessage = unknown>
     return this.set('mailboxCapacity', mailboxCapacity);
   }
 
+  /** What a full mailbox does — see {@link ActorOptionsType.mailboxOverflow}. */
+  withMailboxOverflow(mailboxOverflow: BoundedMailboxOverflow): this {
+    return this.set('mailboxOverflow', mailboxOverflow);
+  }
+
   /** Full control over the queue — any `Mailbox` subclass. */
   withMailbox(mailbox: MailboxFactory<TMessage>): this {
     return this.set('mailbox', mailbox);
@@ -156,9 +168,9 @@ export class ActorOptionsBuilder<TMessage = unknown>
 }
 
 /**
- * `mailboxCapacity` is the only field with a constraint the type system does
- * not already carry.  `BoundedMailbox` checks it too, but from inside the
- * cell constructor — here it fails at the `spawn` call that got it wrong.
+ * The two mailbox fields are the only ones with constraints the type system
+ * does not already carry.  `BoundedMailbox` checks them too, but from inside
+ * the cell constructor — here they fail at the `spawn` call that got it wrong.
  */
 export class ActorOptionsValidator<TMessage = unknown>
   extends OptionsValidator<ActorOptionsType<TMessage>> {
@@ -166,8 +178,19 @@ export class ActorOptionsValidator<TMessage = unknown>
     super('ActorOptions');
   }
 
-  protected rules(_s: Partial<ActorOptionsType<TMessage>>): void {
+  protected rules(s: Partial<ActorOptionsType<TMessage>>): void {
     this.positiveInt('mailboxCapacity');
+    this.oneOf('mailboxOverflow', ['drop-head', 'drop-new', 'reject']);
+    // An overflow policy without a bound is a no-op, and a silent no-op in
+    // an options object is the shape that makes someone believe they
+    // configured something.
+    if (s.mailboxOverflow !== undefined && s.mailboxCapacity === undefined) {
+      this.fail(
+        'mailboxOverflow',
+        'needs a mailboxCapacity — an unbounded mailbox never overflows',
+        s.mailboxOverflow,
+      );
+    }
   }
 }
 

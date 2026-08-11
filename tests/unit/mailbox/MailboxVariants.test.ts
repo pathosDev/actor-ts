@@ -253,6 +253,27 @@ describe('ActorOptions.withMailbox — end-to-end via actor', () => {
     await kit.system.terminate();
   });
 
+  test('withMailboxOverflow reaches the mailbox — reject throws at the tell site', async () => {
+    const kitOptions = TestKitOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off);
+    const kit = TestKit.create('mbox-overflow-option', kitOptions);
+
+    class Slow extends Actor<number> {
+      override async onReceive(_m: number): Promise<void> { await sleep(50); }
+    }
+    const options = ActorOptions.create<number>()
+      .withMailboxCapacity(2)
+      .withMailboxOverflow('reject');
+    const ref = kit.system.spawnAnonymous(Slow, options);
+
+    // Capacity 2 and a handler that will not keep up: the third tell finds a
+    // full mailbox.  `reject` surfaces synchronously at the sender rather
+    // than discarding quietly, which is the whole reason to choose it.
+    expect(() => { for (let i = 0; i < 32; i++) ref.tell(i); }).toThrow(MailboxFullError);
+    await kit.system.terminate();
+  });
+
   test('default actor mailbox is bounded (10_000, drop-head) — #310', async () => {
     const kitOptions = TestKitOptions.create()
       .withLogger(new NoopLogger())

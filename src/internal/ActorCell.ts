@@ -217,7 +217,7 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
       // + `DEFAULT_MAILBOX_OVERFLOW` for the chosen ceiling + policy.
       : new BoundedMailbox<TMessage>({
         capacity: blueprint.mailboxCapacity ?? DEFAULT_MAILBOX_CAPACITY,
-        overflow: DEFAULT_MAILBOX_OVERFLOW,
+        overflow: blueprint.mailboxOverflow ?? DEFAULT_MAILBOX_OVERFLOW,
         onDrop: (reason) => this._onMailboxDrop(reason),
       });
     this.self = new LocalActorRef<TMessage>(this);
