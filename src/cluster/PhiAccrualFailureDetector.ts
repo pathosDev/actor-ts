@@ -1,11 +1,12 @@
 import { NodeAddress } from './NodeAddress.js';
 import type { FailureDecision } from './FailureDetector.js';
 import { fromNullable, type Option } from '../util/Option.js';
+import { DEFAULT_HEARTBEAT_INTERVAL_MS } from './Constants.js';
 import { PhiAccrualOptionsValidator } from './PhiAccrualOptions.js';
 import type { PhiAccrualOptions, PhiAccrualOptionsType } from './PhiAccrualOptions.js';
 
 export const defaultPhiAccrualOptions: PhiAccrualOptionsType = {
-  heartbeatIntervalMs: 500,
+  heartbeatIntervalMs: DEFAULT_HEARTBEAT_INTERVAL_MS,
   unreachableThreshold: 8,
   downThreshold: 12,
   maxSampleSize: 200,
