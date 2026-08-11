@@ -1,6 +1,6 @@
 ---
 title: Mailboxes
-description: The per-actor queue — default FIFO, BoundedMailbox with overflow policies, PriorityMailbox, system-message precedence, and how to attach one via ActorOptions.
+description: The per-actor queue — unbounded FIFO by default, BoundedMailbox with overflow policies, PriorityMailbox, system-message precedence, and how to attach one via ActorOptions.
 ---
 
 Each actor has exactly **one mailbox** — a FIFO queue of envelopes
@@ -16,66 +16,87 @@ the mailbox is the thing that makes that physically true.
 
 ## The default mailbox
 
-If you don't configure anything, the actor gets a **bounded FIFO
-mailbox**: capacity 10 000 messages, overflow policy `drop-head`.
-A slow consumer that can't keep up sheds its oldest queued
-messages instead of growing without bound.  The framework
-won't OOM you because of one runaway actor.
+If you don't configure anything, the actor gets an **unbounded FIFO
+mailbox**.  Nothing is ever discarded on the way in; the queue grows
+until the actor drains it, and the heap is the only ceiling.
 
-Why bounded by default?  Unbounded was the pre-#310 shape and it's
-a classic Akka anti-pattern in disguise: most production incidents
-that traced back to "the actor framework" turned out to be an
-unbounded mailbox absorbing more traffic than the actor could ever
-drain, until the heap ran out.  10 000 is high enough that a
-well-tuned actor never hits it on a normal traffic spike; if you
-DO hit it, the actor's design is wrong (slow consumer, throughput
-mismatch) and the bound makes that visible operationally instead
-of as a midnight OOM.
+Why unbounded?  Because the alternative is worse in a way that is easy
+to miss.  Between v0.10 and v0.15 the default was bounded — 10 000
+messages, `drop-head` — and the framework silently discarded the
+*oldest* queued message whenever an actor fell behind.  The trade was
+supposed to be "lose some messages, gain a memory ceiling", and it did
+not hold up:
 
-`drop-head` is the right default policy for the common cases:
-telemetry, sensor readings, status pings, watch events — workloads
-where the freshest message is the only one that matters and stale
-ones can be discarded.  When you need different semantics
-(`drop-new` / `reject`) per actor, override via
-`ActorOptions.withMailbox(...)`.
+- **The ceiling was not real.**  Only the *user* queue was bounded.
+  System messages — lifecycle, supervision, watch — were never capped,
+  so a node could still exhaust its heap.
+- **A mailbox cannot tell what it is discarding.**  `drop-head` suits
+  telemetry, where the freshest reading is the only one that matters.
+  It does not suit a `Terminated` signal, a delivery confirmation, or a
+  WebSocket `close` — and those went through the same queue.  Each of
+  those turned into a filed defect.
 
-### When to override the default
+So the loss is now something you ask for, per actor, and the growth is
+something you are told about: an actor whose queue reaches 10 000
+messages logs a warning, and again at each doubling.  With metrics
+enabled, `actor_mailbox_size` reports the depth per actor.
 
-- An actor that needs **strict at-least-once delivery** under
-  bursts.  Either give it more capacity, switch to `drop-new`
-  (so the queue stays correct but admission is dropped), or
-  `reject` (so the sender knows to back off).
-- An actor with **deterministic replay** requirements (event
-  sourcing, test setups).  Use `withMailbox(() => new Mailbox())`
-  to opt back into the unbounded shape — losing a message during
-  replay is unacceptable.
-- An actor that handles a mix of urgent and routine messages,
-  where you want the urgent ones to jump the line.  Use a priority
-  mailbox.
+### When to bound a mailbox
 
-```ts
-import { ActorOptions, Mailbox } from 'actor-ts';  // the unbounded base mailbox
+Reach for a bound when **shedding load is better than absorbing it**,
+and you can say which messages are safe to lose:
 
-// explicit opt-out from the bounded default
-const myActorOptions = ActorOptions.create().withMailbox(() => new Mailbox());
-
-system.spawn(MyActor, 'my-actor', myActorOptions);
-```
-
-### Capacity-only override
-
-If the bounded shape + `drop-head` are right but 10 000 is the
-wrong number for one specific actor, set the capacity in one
-line — the default factory honours it:
+- A **telemetry or sensor sink** where only the newest reading matters.
+  `drop-head` keeps the queue fresh.
+- An **admission point** in front of an expensive pipeline, where you
+  would rather refuse work than queue it.  `drop-new` keeps what you
+  already accepted, `reject` tells the sender to back off.
+- Any actor exposed to a producer you do not control, where an
+  unbounded queue is a denial-of-service surface.
 
 ```ts
 import { ActorOptions } from 'actor-ts';
 
-// still bounded + drop-head, just deeper
-const burstyOptions = ActorOptions.create().withMailboxCapacity(100_000);
+const sensorOptions = ActorOptions.create()
+  .withMailboxCapacity(10_000)
+  .withMailboxOverflow('drop-head');
 
-system.spawn(BurstyActor, 'bursty', burstyOptions);
+system.spawn(SensorSink, 'sensors', sensorOptions);
 ```
+
+Setting a capacity is what creates the bound; `withMailboxOverflow`
+decides which message is lost, and defaults to `drop-head`.  Setting a
+policy without a capacity is rejected rather than silently ignored — an
+unbounded mailbox never overflows, so it would have nothing to do.
+
+The three policies and how to choose between them are covered under
+[`BoundedMailbox`](#boundedmailbox) below — including why `reject` fails
+the *sender* rather than the slow actor.
+
+Drops from a capacity you set are counted by
+`actor_mailbox_dropped_total`, labelled with the actor's class, path and
+the policy that fired.
+
+### Bringing your own mailbox
+
+`withMailbox` replaces the queue outright — for a `PriorityMailbox`, or
+a `BoundedMailbox` configured beyond what the two options above express,
+or a subclass of your own:
+
+```ts
+import { ActorOptions, PriorityMailbox } from 'actor-ts';
+
+const triageOptions = ActorOptions.create()
+  .withMailbox(() => new PriorityMailbox({ priorityFor: (m) => m.urgency }));
+
+system.spawn(Triage, 'triage', triageOptions);
+```
+
+A mailbox supplied this way is entirely yours: the framework wires
+nothing into it, so its drops do **not** reach
+`actor_mailbox_dropped_total`.  If you want a plain bound with its
+telemetry, use `withMailboxCapacity` instead.  Combining the two is a
+configuration error rather than a silent precedence rule.
 
 ## System messages always come first
 
@@ -129,7 +150,15 @@ Three policies:
 | --- | --- |
 | `'drop-head'` | Dequeue the *oldest* message in the queue, discard it, enqueue the new one.  Newest messages always make it in. |
 | `'drop-new'` | Discard the *incoming* message.  The old queue is preserved unchanged. |
-| `'reject'` *(default)* | Throw `MailboxFullError` at the `tell` site.  Caller surfaces the backpressure. |
+| `'reject'` | Throw `MailboxFullError` at the `tell` site.  Caller surfaces the backpressure. |
+
+Which one you get when you name none depends on which door you came
+through, and the difference is deliberate: constructing a
+`BoundedMailbox` yourself defaults to **`reject`**, because you built a
+bound and nothing else can be assumed about what is safe to lose.
+`withMailboxOverflow` defaults to **`drop-head`**, the policy that suits
+the workloads people actually reach for a bound to protect.  Name the
+policy either way and the question does not arise.
 
 The options are validated at construction: a missing or non-positive
 `capacity` and an unknown overflow policy throw `OptionsError`.
@@ -226,30 +255,36 @@ to a heap-backed swap (see the source).
 
 ## Per-actor mailbox via ActorOptions
 
-Two knobs on `ActorOptions`:
+Three knobs on `ActorOptions`:
 
 ```ts
-import { ActorOptions, BoundedMailbox } from 'actor-ts';
+import { ActorOptions, PriorityMailbox } from 'actor-ts';
 
-// Just bound the default FIFO — convenience helper.
-const cappedOptions = ActorOptions.create().withMailboxCapacity(500);
+// Bound the default FIFO, and say what a full one discards.
+const cappedOptions = ActorOptions.create()
+  .withMailboxCapacity(500)
+  .withMailboxOverflow('drop-new');
 
 // Full custom factory — pick the type and configure it.
 const customOptions = ActorOptions.create()
-  .withMailbox(() => new BoundedMailbox({ capacity: 500, overflow: 'drop-head' }));
+  .withMailbox(() => new PriorityMailbox({ priorityFor: (m) => m.urgency }));
 ```
 
-`withMailboxCapacity(n)` is shorthand for "the default FIFO, but
-bounded with the default `drop-head` overflow."  Useful when you
-just want a cap and don't care about the policy details.
+`withMailboxCapacity(n)` turns the default FIFO into a bounded one;
+`withMailboxOverflow` picks the policy, defaulting to `drop-head`.  The
+policy on its own is rejected — an unbounded mailbox never overflows, so
+it would be a no-op that reads like configuration.
 
 `withMailbox(factory)` is the general form — you return a brand-new
 mailbox instance from the factory.  The factory is called once per
 actor instance (including on restart), so each restarted actor
-gets a fresh empty mailbox-data-structure.  There is no system-wide
-mailbox setting — capacity and overflow are chosen per actor via
-`ActorOptions` (`withMailboxCapacity` / `withMailbox`); the framework-wide
-defaults (capacity 10 000, `drop-head`) are compiled in.
+gets a fresh empty mailbox-data-structure.  It **replaces** the queue
+rather than configuring it, so combining it with `withMailboxCapacity`
+is a configuration error rather than a silent precedence rule, and the
+framework wires no drop telemetry into whatever you return.
+
+There is no system-wide mailbox setting: the default is unbounded and
+every bound is chosen per actor.
 
 <Aside type="caution" title="Don't share a mailbox instance across actors">
   ```ts
@@ -285,7 +320,7 @@ the full behavior-switching story.
 
 ## When the mailbox choice matters
 
-For most actors, the default bounded FIFO is right.  Reach for an
+For most actors, the default unbounded FIFO is right.  Reach for an
 alternative in three situations:
 
 1. **Producer/consumer mismatch.**  The producer can emit faster
@@ -297,11 +332,13 @@ alternative in three situations:
    minutes (background reconciliation).  Priority mailbox; the
    urgent kind gets `0`, the background kind gets `100`.
 3. **Memory bound.**  An actor with no application-level priority
-   distinction, but whose mailbox could in theory grow without
-   limit (an audit-log subscriber that falls behind during a
-   spike).  Bound it at a number that matches your memory budget;
-   `drop-head` if the latest events are most valuable, `reject` +
-   metric if the loss should be visible.
+   distinction whose queue will grow without limit if it falls behind
+   — an audit-log subscriber during a spike, or anything fed by a
+   producer you do not control.  Bound it at a number that matches your
+   memory budget; `drop-head` if the latest events are most valuable,
+   `drop-new` if the ones you already accepted are.  Watch
+   `actor_mailbox_size` to find out whether you need this before you
+   need it.
 
 ## Where to next
 
