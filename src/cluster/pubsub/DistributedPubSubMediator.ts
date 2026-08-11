@@ -3,6 +3,7 @@ import { Actor } from '../../Actor.js';
 import { ActorRef } from '../../ActorRef.js';
 import type { Cancellable } from '../../Scheduler.js';
 import { DeadLetter, Terminated } from '../../SystemMessages.js';
+import { BidirectionalMultiMap } from '../../util/BidirectionalMultiMap.js';
 import { DEFAULT_GOSSIP_INTERVAL_MS } from '../../util/Constants.js';
 import { SystemActorNames, SystemGroups, systemActorPath } from '../../internal/SystemPaths.js';
 import { DistributedPubSubOptionsValidator } from './DistributedPubSubOptions.js';
@@ -64,15 +65,25 @@ const DEFAULT_MAX_REMOTE_NODES_PER_TOPIC = 1_000;
 
 /**
  * Where a topic's rotation stands — mutable on purpose, and held inside the
- * {@link SubscriberSet} rather than in a `Map<topic, number>` beside `topics`:
- * a second map would be a fourth registry to bound and to prune, while a field
- * is created and dropped with the very set it rotates over.
+ * {@link TopicState} rather than in a `Map<topic, number>` of its own: a
+ * cursor-only map would be one more registry to bound and to prune, while a
+ * field is created and dropped with the topic it rotates over.
+ *
+ * The membership it rotates over no longer lives beside it — it moved into
+ * `subscriptions` (#1037) — so `TopicState` *is* now a second map keyed by
+ * topic, which this note previously argued against.  What the argument was
+ * really about survives the move: there is still exactly one place that
+ * decides a topic is finished ({@link DistributedPubSubMediator.maybeDropTopic}),
+ * and the cursors are created and dropped there rather than needing a prune
+ * of their own.
  */
 type RotationCursor = { nextCandidateIndex: number };
 
-type SubscriberSet = {
-  /** Locally-registered subscribers — receive direct Publish deliveries. */
-  readonly local: Map<string, ActorRef>;
+/**
+ * What a topic holds *besides* its local subscribers, which are one side of
+ * the `subscriptions` relation instead.
+ */
+type TopicState = {
   /** Remote node addresses with at least one subscriber for this topic. */
   readonly remoteNodes: Set<string>;
   /**
@@ -84,7 +95,7 @@ type SubscriberSet = {
    * Rotation for an anycast that already crossed a hop — it walks local
    * subscribers only, the sending mediator having chosen this node already.
    *
-   * Separate from {@link SubscriberSet.originatedAnycast} because the two
+   * Separate from {@link TopicState.originatedAnycast} because the two
    * walk differently sized candidate lists.  Sharing one cursor meant the
    * inbound path wrote it back modulo the *local* count, leaving it below
    * that count for good and pinning every subsequent originated anycast to a
@@ -123,19 +134,30 @@ type CapRefusal = {
  * (#139).
  */
 export class DistributedPubSubMediator extends Actor<MediatorInbox> {
-  private readonly topics = new Map<string, SubscriberSet>();
+  private readonly topics = new Map<string, TopicState>();
   private gossipTimer: Cancellable | null = null;
   private unsubscribeWire: (() => void) | null = null;
   private unsubscribeCluster: (() => void) | null = null;
   private version = 0;
 
   /**
-   * Topics each local subscriber is registered for.  `Terminated` carries
-   * only a ref, and deciding whether a ref may be unwatched otherwise means
-   * scanning every topic — both O(topics) on paths a subscriber controls
-   * the rate of.
+   * Which local subscribers each topic has, and which topics each subscriber
+   * holds — one object owning both directions (#1037).  The reverse direction
+   * is what `Terminated` needs: it carries only a ref, and deciding whether
+   * that ref may be unwatched by scanning every topic would be O(topics) on a
+   * path a subscriber controls the rate of.
+   *
+   * Keyed by **path string** on the subscriber side, never by ref identity:
+   * `Terminated` carries the cell's own `self` ref, which need not be the
+   * object that subscribed.
    */
-  private readonly topicsBySubscriber = new Map<string, Set<string>>();
+  private readonly subscriptions = new BidirectionalMultiMap<string, string>(); // topic ↔ subscriber path
+  /**
+   * The ref behind each subscriber path — the fan-out target, and what
+   * `unwatch` needs.  Written with a subscriber's first subscription, dropped
+   * when its last one goes, so its lifetime follows the relation exactly.
+   */
+  private readonly subscriberRefs = new Map<string, ActorRef>();
 
   readonly options: DistributedPubSubOptionsType;
 
@@ -196,9 +218,8 @@ export class DistributedPubSubMediator extends Actor<MediatorInbox> {
 
   private onSubscribe(message: Subscribe): void {
     const key = message.ref.path.toString();
-    const existing = this.topics.get(message.topic);
-    if (!existing?.local.has(key)) {
-      const refusal = this.capRefusal(existing);
+    if (!this.subscriptions.has(message.topic, key)) {
+      const refusal = this.capRefusal(message.topic);
       if (refusal) {
         this.log.warn(
           `[pubsub] refusing a subscription to '${message.topic}' by ${key} — `
@@ -208,16 +229,16 @@ export class DistributedPubSubMediator extends Actor<MediatorInbox> {
         return;
       }
     }
-    const set = this.getOrCreateSet(message.topic);
+    this.getOrCreateTopicState(message.topic);
     let changed = false;
-    if (!set.local.has(key)) {
-      set.local.set(key, message.ref);
+    if (!this.subscriptions.has(message.topic, key)) {
       this.rememberSubscription(message.ref, message.topic);
       this.version++;
       changed = true;
     }
     this.log.debug(
-      `[pubsub] subscribe '${message.topic}' by ${key} (local subs now: ${set.local.size}; ${changed ? 'new' : 'duplicate'})`,
+      `[pubsub] subscribe '${message.topic}' by ${key} `
+      + `(local subs now: ${this.subscriptions.get(message.topic).size}; ${changed ? 'new' : 'duplicate'})`,
     );
     this.replyToSubscriber(message, new SubscribeAcknowledgment(message));
     // Eager broadcast: peers learn about the new subscription within
@@ -229,14 +250,13 @@ export class DistributedPubSubMediator extends Actor<MediatorInbox> {
   }
 
   private onUnsubscribe(message: Unsubscribe): void {
-    const set = this.topics.get(message.topic);
     const key = message.ref.path.toString();
     let changed = false;
-    if (set?.local.delete(key)) {
-      this.forgetSubscription(message.ref, message.topic);
+    if (this.subscriptions.delete(message.topic, key)) {
+      this.forgetSubscriber(key, message.ref);
       this.version++;
       changed = true;
-      if (set.local.size === 0 && set.remoteNodes.size === 0) this.topics.delete(message.topic);
+      this.maybeDropTopic(message.topic);
     }
     this.log.debug(
       `[pubsub] unsubscribe '${message.topic}' by ${key} (${changed ? 'removed' : 'not subscribed'})`,
@@ -270,10 +290,11 @@ export class DistributedPubSubMediator extends Actor<MediatorInbox> {
   }
 
   private publishToAllSubscribers<T>(message: Publish<T>): void {
-    const set = this.topics.get(message.topic);
-    const remoteNodes = set ? this.remoteCandidatesOf(set) : [];
+    const state = this.topics.get(message.topic);
+    const remoteNodes = state ? this.remoteCandidatesOf(state) : [];
     this.log.debug(
-      `[pubsub] publish '${message.topic}' → ${set?.local.size ?? 0} local + ${remoteNodes.length} remote node(s)`,
+      `[pubsub] publish '${message.topic}' → ${this.subscriptions.get(message.topic).size} local `
+      + `+ ${remoteNodes.length} remote node(s)`,
     );
     const delivered = this.deliverLocal(message.topic, message.message);
     const payload: PubSubPublishMessage = {
@@ -304,16 +325,16 @@ export class DistributedPubSubMediator extends Actor<MediatorInbox> {
    * and keeps its own.
    */
   private publishToOneSubscriber<T>(message: Publish<T>): void {
-    const set = this.topics.get(message.topic);
-    const localSubscribers = set ? [...set.local.values()] : [];
-    const remoteNodes = set ? this.remoteCandidatesOf(set) : [];
+    const state = this.topics.get(message.topic);
+    const localSubscribers = this.localSubscribersOf(message.topic);
+    const remoteNodes = state ? this.remoteCandidatesOf(state) : [];
     const candidateCount = localSubscribers.length + remoteNodes.length;
     this.log.debug(
       `[pubsub] publish '${message.topic}' to one of ${localSubscribers.length} local `
       + `+ ${remoteNodes.length} remote candidate(s)`,
     );
-    if (!set || candidateCount === 0) { this.deadLetter(message.topic, message.message); return; }
-    const index = this.rotate(set.originatedAnycast, candidateCount);
+    if (!state || candidateCount === 0) { this.deadLetter(message.topic, message.message); return; }
+    const index = this.rotate(state.originatedAnycast, candidateCount);
     const local = localSubscribers[index];
     if (local) {
       if (!this.tellSubscriber(local, message.message)) this.deadLetter(message.topic, message.message);
@@ -346,10 +367,10 @@ export class DistributedPubSubMediator extends Actor<MediatorInbox> {
    * across both lists starved the remote half.
    */
   private onPubSubPublishOne(message: PubSubPublishOneMessage): void {
-    const set = this.topics.get(message.topic);
-    const subscribers = set ? [...set.local.values()] : [];
-    if (!set || subscribers.length === 0) { this.deadLetter(message.topic, message.body); return; }
-    const target = subscribers[this.rotate(set.forwardedAnycast, subscribers.length)]!;
+    const state = this.topics.get(message.topic);
+    const subscribers = this.localSubscribersOf(message.topic);
+    if (!state || subscribers.length === 0) { this.deadLetter(message.topic, message.body); return; }
+    const target = subscribers[this.rotate(state.forwardedAnycast, subscribers.length)]!;
     if (!this.tellSubscriber(target, message.body)) this.deadLetter(message.topic, message.body);
   }
 
@@ -372,13 +393,27 @@ export class DistributedPubSubMediator extends Actor<MediatorInbox> {
 
   /** Fan out to local subscribers; returns how many actually got the body. */
   private deliverLocal<T>(topic: string, body: T): number {
-    const set = this.topics.get(topic);
-    if (!set) return 0;
     let delivered = 0;
-    for (const ref of set.local.values()) {
-      if (this.tellSubscriber(ref, body)) delivered++;
+    for (const path of this.subscriptions.get(topic)) {
+      const ref = this.subscriberRefs.get(path);
+      if (ref && this.tellSubscriber(ref, body)) delivered++;
     }
     return delivered;
+  }
+
+  /**
+   * A topic's local subscriber refs, in subscription order — the local half of
+   * the anycast candidate list, and the reason the rotation stays positional.
+   * `subscriptions` holds paths, so this is where they are resolved back to
+   * the refs `tell` needs.
+   */
+  private localSubscribersOf(topic: string): ActorRef[] {
+    const refs: ActorRef[] = [];
+    for (const path of this.subscriptions.get(topic)) {
+      const ref = this.subscriberRefs.get(path);
+      if (ref) refs.push(ref);
+    }
+    return refs;
   }
 
   /** One delivery attempt.  A subscriber that throws costs only itself. */
@@ -405,9 +440,9 @@ export class DistributedPubSubMediator extends Actor<MediatorInbox> {
    * cluster size — against a broadcast that then sends one frame per entry,
    * it does not register.
    */
-  private remoteCandidatesOf(set: SubscriberSet): NodeAddress[] {
+  private remoteCandidatesOf(state: TopicState): NodeAddress[] {
     const candidates: NodeAddress[] = [];
-    for (const nodeString of [...set.remoteNodes].sort()) {
+    for (const nodeString of [...state.remoteNodes].sort()) {
       const node = NodeAddress.parse(nodeString);
       if (node.equals(this.options.cluster.selfAddress)) continue;
       candidates.push(node);
@@ -473,9 +508,11 @@ export class DistributedPubSubMediator extends Actor<MediatorInbox> {
     // subscriber for topic T"), so omitting them keeps the wire
     // payload proportional to the topic count, not the subscriber
     // count.  See `handleGossip` for the consuming side.
+    // Walks `topics` rather than `subscriptions.lefts()` so the order stays
+    // the topic-registry order it has always been, not subscription order.
     const entries: string[] = [];
-    for (const [topic, set] of this.topics) {
-      if (set.local.size === 0) continue;
+    for (const topic of this.topics.keys()) {
+      if (!this.subscriptions.hasLeft(topic)) continue;
       entries.push(topic);
     }
     return {
@@ -504,16 +541,16 @@ export class DistributedPubSubMediator extends Actor<MediatorInbox> {
     const senderAddr = from.toString();
     // First, clear any remote-node claims this sender used to have — we
     // always replace its contribution wholesale to stay in sync.
-    for (const [topic, set] of this.topics) {
-      set.remoteNodes.delete(senderAddr);
-      if (set.local.size === 0 && set.remoteNodes.size === 0) this.topics.delete(topic);
+    for (const [topic, state] of this.topics) {
+      state.remoteNodes.delete(senderAddr);
+      this.maybeDropTopic(topic);
     }
     let refused = 0;
     for (const topic of message.entries) {
       const existing = this.topics.get(topic);
       if (!existing && this.topics.size >= this.maxTopics) { refused++; continue; }
       if (existing && existing.remoteNodes.size >= this.maxRemoteNodesPerTopic) { refused++; continue; }
-      this.getOrCreateSet(topic).remoteNodes.add(senderAddr);
+      this.getOrCreateTopicState(topic).remoteNodes.add(senderAddr);
     }
     if (refused > 0) {
       this.log.warn(
@@ -537,38 +574,53 @@ export class DistributedPubSubMediator extends Actor<MediatorInbox> {
 
   private forgetNode(addr: NodeAddress): void {
     const key = addr.toString();
-    for (const [topic, set] of this.topics) {
-      set.remoteNodes.delete(key);
-      if (set.local.size === 0 && set.remoteNodes.size === 0) this.topics.delete(topic);
+    for (const [topic, state] of this.topics) {
+      state.remoteNodes.delete(key);
+      this.maybeDropTopic(topic);
     }
   }
 
   /* ---------------------------------- Helpers --------------------------------- */
 
-  private getOrCreateSet(topic: string): SubscriberSet {
-    let subscriberSet = this.topics.get(topic);
-    if (!subscriberSet) {
-      subscriberSet = {
-        local: new Map(),
+  private getOrCreateTopicState(topic: string): TopicState {
+    let state = this.topics.get(topic);
+    if (!state) {
+      state = {
         remoteNodes: new Set(),
         originatedAnycast: { nextCandidateIndex: 0 },
         forwardedAnycast: { nextCandidateIndex: 0 },
       };
-      this.topics.set(topic, subscriberSet);
+      this.topics.set(topic, state);
     }
-    return subscriberSet;
+    return state;
   }
 
   /**
-   * The cap a fresh local subscription would breach, or `null` when there is
-   * room.  `existing` is the topic's set, or `undefined` when the topic does
-   * not exist yet — in which case the topic cap is the one at stake.
+   * Drop a topic once nothing holds it — no local subscriber and no remote
+   * claim.  The single place that prunes `topics`, and the reason the cursors
+   * need no pruning of their own: they are dropped with the entry that carries
+   * them.  The guard used to be written out at four call sites, which is three
+   * chances for the two halves of "finished" to disagree.
    */
-  private capRefusal(existing: SubscriberSet | undefined): CapRefusal | null {
+  private maybeDropTopic(topic: string): void {
+    const state = this.topics.get(topic);
+    if (!state) return;
+    if (!this.subscriptions.hasLeft(topic) && state.remoteNodes.size === 0) {
+      this.topics.delete(topic);
+    }
+  }
+
+  /**
+   * The cap a fresh local subscription to `topic` would breach, or `null` when
+   * there is room.  A topic with no entry yet does not exist, and there the
+   * topic cap is the one at stake rather than the per-topic subscriber cap.
+   */
+  private capRefusal(topic: string): CapRefusal | null {
+    const existing = this.topics.get(topic);
     if (!existing && this.topics.size >= this.maxTopics) {
       return { reason: 'maxTopics', limit: this.maxTopics };
     }
-    if (existing && existing.local.size >= this.maxSubscribersPerTopic) {
+    if (existing && this.subscriptions.get(topic).size >= this.maxSubscribersPerTopic) {
       return { reason: 'maxSubscribersPerTopic', limit: this.maxSubscribersPerTopic };
     }
     return null;
@@ -595,28 +647,29 @@ export class DistributedPubSubMediator extends Actor<MediatorInbox> {
     }
   }
 
-  /** Book a local subscription and start watching the subscriber. */
+  /**
+   * Book a local subscription and start watching the subscriber.  A subscriber
+   * on several topics is watched once — `hasRight` is what distinguishes its
+   * first subscription from a later one.
+   */
   private rememberSubscription(ref: ActorRef, topic: string): void {
     const key = ref.path.toString();
-    let subscribed = this.topicsBySubscriber.get(key);
-    if (!subscribed) {
-      subscribed = new Set();
-      this.topicsBySubscriber.set(key, subscribed);
+    if (!this.subscriptions.hasRight(key)) {
+      this.subscriberRefs.set(key, ref);
       this.context.watch(ref);
     }
-    subscribed.add(topic);
+    this.subscriptions.add(topic, key);
   }
 
-  /** Drop one subscription, and the death watch with the subscriber's last one. */
-  private forgetSubscription(ref: ActorRef, topic: string): void {
-    const key = ref.path.toString();
-    const subscribed = this.topicsBySubscriber.get(key);
-    if (!subscribed) return;
-    subscribed.delete(topic);
-    if (subscribed.size === 0) {
-      this.topicsBySubscriber.delete(key);
-      this.context.unwatch(ref);
-    }
+  /**
+   * Drop the death watch once a subscriber's last subscription is gone.  The
+   * pair itself is already removed by the caller; there is nothing else to
+   * unlink, because the relation prunes a participant that holds nothing.
+   */
+  private forgetSubscriber(key: string, ref: ActorRef): void {
+    if (this.subscriptions.hasRight(key)) return;
+    this.subscriberRefs.delete(key);
+    this.context.unwatch(ref);
   }
 
   /**
@@ -624,25 +677,23 @@ export class DistributedPubSubMediator extends Actor<MediatorInbox> {
    * `UnsubscribeAll` and `Terminated`.  Returns whether anything changed, so
    * the caller only pays for an eager gossip round when it did.
    *
-   * Walks the subscriber's own topic set rather than the whole map: every
-   * `local` insertion goes through `rememberSubscription`, so the index is
-   * authoritative, and a mass termination of per-request subscribers would
-   * otherwise cost O(topics) each.
+   * Reads the subscriber's own side of the relation rather than scanning every
+   * topic, which is what the reverse direction is for: a mass termination of
+   * per-request subscribers would otherwise cost O(topics) each.
    */
   private dropSubscriber(ref: ActorRef): boolean {
     const key = ref.path.toString();
-    const subscribed = this.topicsBySubscriber.get(key);
-    if (!subscribed) return false;
-    this.topicsBySubscriber.delete(key);
+    // Snapshotted before the drop: `getKeys` hands back the live set, which
+    // `deleteRight` is about to empty out from under the loop.
+    const subscribed = [...this.subscriptions.getKeys(key)];
+    if (!this.subscriptions.deleteRight(key)) return false;
+    this.subscriberRefs.delete(key);
     this.context.unwatch(ref);
-    let changed = false;
     for (const topic of subscribed) {
-      const set = this.topics.get(topic);
-      if (!set) continue;
-      if (set.local.delete(key)) { this.version++; changed = true; }
-      if (set.local.size === 0 && set.remoteNodes.size === 0) this.topics.delete(topic);
+      this.version++;
+      this.maybeDropTopic(topic);
     }
-    return changed;
+    return true;
   }
 
   private sendWire(to: NodeAddress, message: PubSubWireMessage): void {
