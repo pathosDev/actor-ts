@@ -8,6 +8,7 @@
  * Request/response rather than a stream, because this is driven by a
  * human dragging a slider, not by the system emitting events.
  */
+import { DEFAULT_EVENT_LIMIT, DEFAULT_IDENTIFIER_LIMIT, MAXIMUM_EVENT_LIMIT } from '../Constants.js';
 import type { PersistenceExtension } from '../../persistence/PersistenceExtension.js';
 import { replayState } from '../../persistence/Replay.js';
 import { isEnvelope } from '../../persistence/migration/Envelope.js';
@@ -28,12 +29,6 @@ import type {
 } from '../protocol/index.js';
 import type { DevToolsServer } from '../DevToolsServer.js';
 import type { ReplayRegistry } from './ReplayRegistry.js';
-
-/** Persistence ids returned per page. */
-const DEFAULT_IDENTIFIER_LIMIT = 100;
-/** Events returned per page — a journal can be enormous. */
-const DEFAULT_EVENT_LIMIT = 200;
-const MAXIMUM_EVENT_LIMIT = 2_000;
 
 export class TimeTravelMethods {
   constructor(

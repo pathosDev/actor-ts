@@ -9,11 +9,9 @@
  * to report a port conflict, which is what the caller was usually
  * working around.
  */
+import { MAXIMUM_ATTEMPTS } from '../Constants.js';
 import type { ActorSystem } from '../../ActorSystem.js';
 import { systemGroupPath, type SystemGroup } from '../../internal/SystemPaths.js';
-
-/** Enough suffixes that exhausting them means something else is wrong. */
-const MAXIMUM_ATTEMPTS = 1_000;
 
 /**
  * A free child name within `group`, preferring `base`.

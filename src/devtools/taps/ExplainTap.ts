@@ -15,6 +15,7 @@ import { LocalActorRef } from '../../internal/LocalActorRef.js';
 import type { ActorCell } from '../../internal/ActorCell.js';
 import type { MessageExplain } from '../../internal/Instrumentation.js';
 import { parseSelectionPath } from '../../ActorSelection.js';
+import { MAXIMUM_CAPACITY } from '../Constants.js';
 import { DEFAULT_EXPLAIN_CAPACITY } from '../../util/Constants.js';
 import {
   explainEntriesPayload,
@@ -24,9 +25,6 @@ import {
   type ExplainStatusResult,
 } from '../protocol/index.js';
 import type { DevToolsServer } from '../DevToolsServer.js';
-
-/** Refuse anything larger; a ring is a debugging aid, not a log. */
-const MAXIMUM_CAPACITY = 10_000;
 
 /**
  * Wires the three `explain.*` methods onto the server.
