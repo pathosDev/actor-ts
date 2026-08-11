@@ -19,6 +19,7 @@ import {
 } from '../../../src/http/index.js';
 import { match } from 'ts-pattern';
 import { Actor } from '../../../src/Actor.js';
+import { ActorOptions } from '../../../src/ActorOptions.js';
 import type { ActorRef } from '../../../src/ActorRef.js';
 import type { ActorSystem } from '../../../src/ActorSystem.js';
 import type { Cluster } from '../../../src/cluster/Cluster.js';
@@ -157,14 +158,27 @@ class ExtraWorker extends Actor<unknown> {
 }
 
 /**
- * Deliberately-slow actor used by scenario 14 to overflow its
- * bounded mailbox.  `process` messages sleep N ms before
- * completing — bombarding it with more messages than the default
- * capacity (10 000) triggers the drop-head overflow policy,
- * which increments `actor_mailbox_dropped_total` via the
- * `onDrop` callback wired in `ActorCell` (#310).
+ * Deliberately-slow actor used by scenario 14.  `process` messages sleep
+ * N ms before completing, so a burst outruns the handler and piles up.
+ *
+ * Scenario 14 spawns two of these and bombards both.  One is given an
+ * explicit `withMailboxCapacity(SLOW_SINK_CAPACITY)` and must still drop,
+ * proving the `onDrop` -> `actor_mailbox_dropped_total` -> `/metrics` chain
+ * works end to end with its labels intact.  The other takes the default
+ * mailbox and must drop nothing at all, which is the property #1148
+ * introduced and the reason this scenario was rewritten rather than
+ * deleted: before #1148 the default was `BoundedMailbox(10_000,
+ * 'drop-head')` and the bounded half needed no configuration.
  */
 type SlowSinkMessage = { kind: 'process'; sleepMs: number };
+/** Which mailbox shape a `/test/backpressure/bombard` call targets. */
+type SlowSinkMailbox = 'bounded' | 'default';
+/**
+ * Capacity of the bounded sink.  Deliberately the pre-#1148 default, so the
+ * scenario's expected-overflow arithmetic did not have to change when the
+ * bound stopped being implicit.
+ */
+const SLOW_SINK_CAPACITY = 10_000;
 class SlowSink extends Actor<SlowSinkMessage> {
   override async onReceive(message: SlowSinkMessage): Promise<void> {
     if (message.sleepMs > 0) {
@@ -308,15 +322,22 @@ export function makeControlRoutes(
     pubsubReceiver as unknown as ActorRef,
   ));
 
-  // Lazy-spawned SlowSink registry for scenario 14.  Bombarding
-  // a SlowSink with > 10 000 messages triggers `drop-head`
-  // overflow on its bounded default mailbox (#310) and the
-  // `actor_mailbox_dropped_total` counter ticks.
-  let slowSinkRef: ActorRef<SlowSinkMessage> | null = null;
-  const ensureSlowSink = (): ActorRef<SlowSinkMessage> => {
-    if (slowSinkRef) return slowSinkRef;
-    slowSinkRef = system.spawnAnonymous(SlowSink) as ActorRef<SlowSinkMessage>;
-    return slowSinkRef;
+  // Lazy-spawned SlowSink registry for scenario 14, one per mailbox shape.
+  // The bounded sink keeps the capacity the default used to have, so the
+  // scenario's arithmetic (SEND - SLOW_SINK_CAPACITY) is unchanged by #1148
+  // — only the source of the bound moved, from an implicit default to this
+  // call.  The default sink configures nothing and must never drop.
+  const slowSinks = new Map<SlowSinkMailbox, ActorRef<SlowSinkMessage>>();
+  const ensureSlowSink = (mailbox: SlowSinkMailbox): ActorRef<SlowSinkMessage> => {
+    const existing = slowSinks.get(mailbox);
+    if (existing) return existing;
+    const options = ActorOptions.create<SlowSinkMessage>()
+      .withMailboxCapacity(SLOW_SINK_CAPACITY);
+    const ref = (mailbox === 'bounded'
+      ? system.spawnAnonymous(SlowSink, options)
+      : system.spawnAnonymous(SlowSink)) as ActorRef<SlowSinkMessage>;
+    slowSinks.set(mailbox, ref);
+    return ref;
   };
 
   // Cross-node shutdown trace markers (scenario 13).  Each node's
@@ -847,25 +868,29 @@ export function makeControlRoutes(
 
     // ============== Backpressure scenario (#313 — scenario 14) ==============
 
-    // POST /test/backpressure/bombard?n=N&sleepMs=D
-    // Spawns the SlowSink (idempotent) and tells it N messages
-    // synchronously in a tight loop.  Each message will sleep
-    // `sleepMs` ms inside `onReceive` so the queue fills up.
-    // With N > 10 000 (default mailbox capacity), the drop-head
-    // policy kicks in.  Returns the count of tells issued (the
-    // mailbox stage isn't observable to the caller — it just
-    // tells; drops happen inside enqueue).
+    // POST /test/backpressure/bombard?n=N&sleepMs=D&mailbox=bounded|default
+    // Spawns the SlowSink for the requested mailbox shape (idempotent)
+    // and tells it N messages synchronously in a tight loop.  Each
+    // message sleeps `sleepMs` ms inside `onReceive` so the queue fills.
+    // With `mailbox=bounded` and N > SLOW_SINK_CAPACITY the drop-head
+    // policy kicks in; with `mailbox=default` (the #1148 shape) nothing
+    // is ever dropped.  Returns the count of tells issued — the mailbox
+    // stage isn't observable to the caller, drops happen inside enqueue.
     path('backpressure', path('bombard', post(async (req) => {
       const count = Number(queryParam(req, 'n') ?? '15000');
       const sleepMs = Number(queryParam(req, 'sleepMs') ?? '50');
+      const mailbox = queryParam(req, 'mailbox') ?? 'bounded';
       if (!Number.isInteger(count) || count < 1) return complete(Status.BadRequest, 'n must be positive integer');
       if (!Number.isFinite(sleepMs) || sleepMs < 0) return complete(Status.BadRequest, 'sleepMs must be non-negative');
-      const sink = ensureSlowSink();
+      if (mailbox !== 'bounded' && mailbox !== 'default') {
+        return complete(Status.BadRequest, 'mailbox must be bounded or default');
+      }
+      const sink = ensureSlowSink(mailbox);
       // Synchronous tight loop — no await between tells, so the
       // entire burst hits the mailbox before the dispatcher has
       // a chance to drain.
       for (let i = 0; i < count; i++) sink.tell({ kind: 'process', sleepMs });
-      return completeJson(Status.OK, { sent: count, sleepMs });
+      return completeJson(Status.OK, { sent: count, sleepMs, mailbox });
     }))),
 
     // GET /test/backpressure/dropped
