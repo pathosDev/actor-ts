@@ -29,12 +29,13 @@ import { afterEach, describe, expect, test } from 'bun:test';
 import { ActorSystem } from '../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../src/ActorSystemOptions.js';
 import { LogLevel, NoopLogger } from '../../../src/Logger.js';
+import { Cluster } from '../../../src/cluster/Cluster.js';
 import {
-  Cluster,
+  ClusterOptions,
+  ClusterOptionsValidator,
   DEFAULT_MAX_MEMBERS,
   DEFAULT_MAX_TOMBSTONES,
-} from '../../../src/cluster/Cluster.js';
-import { ClusterOptions, ClusterOptionsValidator } from '../../../src/cluster/ClusterOptions.js';
+} from '../../../src/cluster/ClusterOptions.js';
 import type { Member } from '../../../src/cluster/Member.js';
 import { NodeAddress } from '../../../src/cluster/NodeAddress.js';
 import type { MemberData, MemberStatus, WireMessage } from '../../../src/cluster/Protocol.js';

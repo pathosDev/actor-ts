@@ -58,25 +58,6 @@ export const DEFAULT_SEED_RETRY_INTERVAL_MS = 3_000;
 export const DEFAULT_PHASE_TIMEOUT_MS = 5_000;
 
 /**
- * Default tombstone retention (`Cluster.tombstoneTtlMs`).  24 h
- * gives slow / partitioned peers a generous window to converge
- * after a member is removed; once expired, peers can re-mint the
- * address without resurrecting the tombstone.  See `Cluster.ts`
- * + #75 for the full lifecycle.
- *
- * Note: distinct from `MAX_VERSION_SKEW_MS` in `Cluster.ts` —
- * those happen to share the same value but have separate
- * justifications (security-cap vs retention).
- */
-export const DEFAULT_TOMBSTONE_TTL_MS = 24 * 60 * 60 * 1_000;
-
-/**
- * Default cadence for the tombstone-pruning sweep.  5 min gives
- * a useful safety margin around the 24 h TTL without busy-looping.
- */
-export const DEFAULT_TOMBSTONE_PRUNE_INTERVAL_MS = 5 * 60 * 1_000;
-
-/**
  * Messages an explain plan keeps when the caller names no capacity.
  *
  * There are two doors onto the same ring and they have to resolve
