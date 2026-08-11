@@ -141,6 +141,36 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   write — the accepted value is not recorded for you.  Migrating the framework's
   own draws onto it is not part of this change.
 
+### Changed
+
+- **Three of the framework's own identifier draws go through the `exists`
+  predicate** (#1146).  The follow-up #1141 deferred.  The framework mints
+  twelve identifiers; the interesting result of the survey is that only three
+  of them should check anything, and the other nine are recorded on the issue
+  with the reason rather than left to be re-derived.  `ActorCell`'s anonymous
+  child names now draw against `this._children`, `ORSet.add` against the
+  element's live tags *and* its tombstones, and `ClusterClient.ask`'s id
+  against the pending map.  What they have in common is a registry in scope and
+  a failure that is silent or costly: `_createChild` throws over a duplicate
+  name, `pending.set` overwrites so a repeat leaves the earlier ask's promise
+  hanging until it reports a timeout that never happened, and a repeat of a
+  *tombstoned* ORSet tag is vetoed by the rule that stops a slow peer
+  resurrecting a removed tag — the element simply fails to appear on the next
+  merge, with no error anywhere.  `nextAskId` takes the pending map rather than
+  a ready-made predicate, so the one thing a call site could get wrong — the
+  polarity, where `true` has to mean *taken* — is written once and covered by a
+  test.  The nine sites left alone have nothing to check: a reply ref that is
+  never entered in a visible map, trace ids that have to be unique across
+  processes anyway, a lock token whose "is it taken" question `setIfAbsent`
+  already answers atomically, a correlation id that only reaches a log line.
+  `DistributedData` is the one exclusion with a real registry — its `pendingId`
+  is minted a `tell` away from the map it keys and is part of a wire-visible
+  message contract, so moving the mint is a design change, tracked as #1147.
+  No public API changes, and no behaviour change on the happy path: the entropy
+  already made every one of these collisions astronomically unlikely, so the
+  new tests replace the entropy with a constant to force the repeat and assert
+  the specific damage it used to do.
+
 ## [0.14.0] — 2026-08-11
 
 ### Added
