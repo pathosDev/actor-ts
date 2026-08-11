@@ -465,7 +465,8 @@ funktioniert, funktioniert in Produktion und umgekehrt.
 | --- | --- |
 | Plain-Objekte, Arrays, Strings, endliche Zahlen, Booleans, `null` | Als plain JSON gespeichert — byte-identisch zu vorher. |
 | `Date`, `Map`, `Set`, `bigint`, `Uint8Array` | **Round-trippen als echte Instanzen** über Type-Tags. |
-| [`BidirectionalMap`](/de/reference/utility-helpers/#bidirectionalmap--eine-map-mit-gepflegter-umkehrung) | **Round-trippt als echte Instanz** — die einzige Framework-Klasse mit eigenem Tag (#1035).  Gespeichert wird nur die Vorwärtsrichtung; die Umkehrung wird beim Dekodieren rekonstruiert. |
+| [`BidirectionalMap`](/de/reference/utility-helpers/#bidirectionalmap--eine-map-mit-gepflegter-umkehrung) | **Round-trippt als echte Instanz** — eine von zwei Framework-Klassen mit eigenem Tag (#1035).  Gespeichert wird nur die Vorwärtsrichtung; die Umkehrung wird beim Dekodieren rekonstruiert. |
+| [`BidirectionalMultiMap`](/de/reference/utility-helpers/#bidirectionalmultimap--dasselbe-für-eine-viele-zu-viele-relation) | **Round-trippt als echte Instanz** (#1037).  Gespeichert als Vorwärts-Adjazenzliste; die Umkehrung wird beim Dekodieren rekonstruiert, und ein Teilnehmer ohne Partner wird gar nicht erst gespeichert. |
 | `NaN`, `Infinity`, `-Infinity`, `-0` | **Round-trippen exakt** — kein `null` / `0` mehr (#889). |
 | `RegExp` (Source + Flags), `URL` | **Round-trippen als echte Instanzen.** |
 | `Error` (inkl. Subklassen, `cause`, `AggregateError`) | **Round-trippt** Name + Message + Cause — bewusst ohne Stack: ein persistierter Stack würde Dateisystempfade in langlebige Rows leaken. |

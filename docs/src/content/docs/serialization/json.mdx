@@ -40,10 +40,14 @@ covers it.
   back into real instances via type tags (`__date__`, `__bytes__`,
   `__map__`, `__set__`, `__bigint__`).
 - [`BidirectionalMap`](/reference/utility-helpers/#bidirectionalmap--a-map-with-a-maintained-inverse)
-  — the one framework class with a tag of its own
-  (`__bidirectionalmap__`, #1035), so it can be held in persistent
-  state without an adapter.  Only its forward pairs are written; the
-  inverse is rebuilt on decode.
+  and
+  [`BidirectionalMultiMap`](/reference/utility-helpers/#bidirectionalmultimap--the-same-for-a-many-to-many-relation)
+  — the two framework classes with tags of their own
+  (`__bidirectionalmap__`, #1035; `__bidirectionalmultimap__`,
+  #1037), so they can be held in persistent state without an
+  adapter.  Only the forward direction is written — pairs for the
+  first, an adjacency list for the second; the inverse is rebuilt on
+  decode.
 - `NaN` / `Infinity` / `-Infinity` / `-0`, `RegExp` (source + flags),
   `URL`, `Error` (name + message + cause — no stack), and every typed
   array / `DataView` / `ArrayBuffer` — round-tripped via type tags

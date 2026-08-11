@@ -127,6 +127,12 @@ buffering is disabled: the message is dropped and a
 
 ```ts
 this.onReceive(message) {
+  // `Terminated` reaches onReceive but is not part of the typed command
+  // union — see the note below on why this arm is yours to write.
+  if (message instanceof Terminated) {
+    this.pruneTerminatedSubscriber(message.actor);
+    return;
+  }
   match(message)
     .with({ kind: 'subscribe' }, (m) => this.onSubscribe(m))
     .with({ kind: 'unsubscribe' }, (m) => this.onUnsubscribe(m))
@@ -143,9 +149,25 @@ private onUnsubscribe(message: UnsubscribeCommand): void {
 ```
 
 `subscribeRef(topic, ref)` registers `ref` as interested in
-`topic`'s inbound messages.  The base **death-watches** the
-ref — when it stops, the subscription is removed automatically.
-No leaks.
+`topic`'s inbound messages, and **death-watches** it.
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="The Terminated arm is not optional">
+  `subscribeRef` starts the watch, but the base class cannot act on it for
+  you: `onReceive` is abstract, so every subclass owns its own dispatch and
+  the base never sees a message.  Without the arm above, a subscriber that
+  stops stays in every topic it held and costs a dead-lettered `tell` on each
+  fan-out — this was a real defect (#1111), not a hypothetical.
+
+  `pruneTerminatedSubscriber(ref)` removes the subscriber from every topic
+  and returns whether it removed anything, so you can tell a subscriber's
+  death from any other watched actor's.  It does **not** `unwatch`: the cell
+  already dropped the watch when it delivered `Terminated`.
+</Aside>
+
+`unsubscribeRef` matches on the ref's path rather than the ref object, so
+holding a different ref for the same actor still unsubscribes.
 
 When the protocol pushes an inbound message, the subclass calls:
 
