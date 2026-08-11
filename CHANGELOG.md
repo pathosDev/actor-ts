@@ -1306,6 +1306,25 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Changed
 
+- **UUIDs in `src/` are minted through `randomUuid()`** (#1110).  Three call
+  sites still called the platform primitive themselves, in two different
+  spellings: `ClusterClient.nextAskId` and
+  `ClusterClientReceptionist.onAskFailure` used `globalThis.crypto.randomUUID()`,
+  while the `requestId` middleware imported `randomUUID` from `node:crypto`.
+  All three now go through the helper #1109 added, which puts the choice of
+  primitive back in the one module that owns where identifiers come from —
+  relevant the day it has to change (a runtime without `crypto.randomUUID`, or
+  UUIDv7 for a lexicographically ordered persistence key), since a `grep` for
+  `randomUuid` previously found none of them.  The middleware change also
+  removes the last `node:crypto` import in `src/` that had a Web Crypto
+  equivalent; the three remaining ones (`timingSafeEqual`, `createHmac`,
+  `randomBytes` in `BasicAuth`, `BearerToken` and `Csrf`) do not, so they stay.
+  No behaviour or API change — both spellings return a lowercase v4 UUID, and
+  the middleware's `VALID_ID` guard already had to accept one, since it also
+  vets client-supplied ids.  Docs samples that predated the helper (the K8s
+  lease test name, the `LogContext` correlation id, the `requestId` default)
+  now show `randomUuid` instead of sending the reader to the raw primitive.
+
 - **BREAKING — `ClusterOptions.firstSightMaxVersionSkewMs` is now
   `maxVersionSkewMs`** (#114).  *Migration:* `withFirstSightMaxVersionSkewMs(ms)`
   → `withMaxVersionSkewMs(ms)`, same default (5 min), same unit; the option never
