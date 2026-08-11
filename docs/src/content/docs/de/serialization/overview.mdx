@@ -154,10 +154,13 @@ Die `JsonSerializer`-Klasse behandelt:
 Sie **wirft** bei Funktionen, Symbolen, `undefined`, zirkulären
 Referenzen, `Promise` und `WeakMap` / `WeakSet`;
 Klasseninstanzen dekodieren zu Plain-Objekten (Methoden +
-Identität verloren).  `CborSerializer` round-trippt ebenfalls
-`Uint8Array`, `Date` und `bigint`, aber — anders als
-`JsonSerializer` — erhält er `Map` / `Set` **nicht** (sie werden
-zu einem leeren `{}` kodiert).
+Identität verloren).
+
+`CborSerializer` trägt **dieselbe Liste** — eine gemeinsame
+Test-Suite stellt sicher, dass die beiden sich bei jedem Typ einig
+sind — nur als kompaktes Binärformat statt als getaggten JSON-Text.
+Er unterscheidet sich an einer Stelle: `undefined` wird nativ
+getragen statt abgelehnt, womit er der großzügigere der beiden ist.
 
 Der **Cluster-Wire ist anders**: Cross-Node-Nachrichten laufen
 durch rohes `JSON.stringify` (nicht `JsonSerializer`), sodass auf

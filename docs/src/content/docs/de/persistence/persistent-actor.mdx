@@ -485,6 +485,12 @@ nutzen.  Siehe
 für das Framing, das Mixed-History-Verhalten und die
 In-Memory-Ausnahme.
 
+[`CborSerializer`](/de/serialization/cbor/) trägt die gesamte Tabelle
+oben, ein Wechsel dorthin aus Gründen der Row-Größe kostet dich aus
+dieser Liste also nichts.  Jeder *andere* Serializer trägt, was er
+eben trägt — ein schemagetriebener (Avro, Protobuf) kennt nur die
+Felder seines Schemas.
+
 Rows aus früheren actor-ts-Versionen nutzten rohes
 `JSON.stringify`; sie dekodieren unverändert weiter — die Tags
 erscheinen nur in neu geschriebenen Rows, wo plain JSON den Wert

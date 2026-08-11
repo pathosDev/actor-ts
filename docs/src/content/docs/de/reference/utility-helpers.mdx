@@ -201,11 +201,10 @@ Auf die Platte gehen nur die Vorwärtspaare; die Umkehrung wird beim Dekodieren
 rekonstruiert. Die vollständige Round-Trip-Tabelle steht unter
 [was Events und State enthalten dürfen](/de/persistence/persistent-actor/#was-events-und-state-enthalten-dürfen).
 
-<Aside type="caution" title="Nicht über einen eigenen CBOR-Serializer">
-  Ein Store, der mit `withSerializer(new CborSerializer())` konfiguriert ist,
-  trägt sie nicht — dieser Codec trägt auch `Map` und `Set` nicht. Der
-  Default-Codec, den jeder Store benutzt, solange du ihn nicht änderst, tut es.
-</Aside>
+Ein Store, der mit `withSerializer(new CborSerializer())` konfiguriert ist,
+trägt sie ebenfalls, unter CBOR-Tag 27. Das war nicht immer so — bis
+[#1036](https://github.com/pathosDev/actor-ts/issues/1036) hat der CBOR-Codec
+sie fallen lassen, zusammen mit `Map` und `Set`, ohne etwas zu melden.
 
 ## Zufallszeichenketten und Bezeichner
 
