@@ -183,7 +183,7 @@ describe('LogContext — runEach replays per-item context (#129)', () => {
     expect(observed).toEqual([{ tenant: 'acme' }]);
   });
 
-  test('an async fn completes under its own entry\'s context', async () => {
+  test('an async callback completes under its own entry\'s context', async () => {
     const observed: Array<Record<string, unknown>> = [];
     const entries = entriesOf([
       [{ tenant: 'acme' }, 'a'],
@@ -196,7 +196,7 @@ describe('LogContext — runEach replays per-item context (#129)', () => {
     expect(observed).toEqual([{ tenant: 'acme' }, { tenant: 'globex' }]);
   });
 
-  test('the item is handed to fn alongside its context', async () => {
+  test('the item is handed to the callback alongside its context', async () => {
     const observed: Array<[string, unknown]> = [];
     const entries = entriesOf([
       [{ tenant: 'acme' }, 'invoice-1'],
@@ -233,7 +233,7 @@ describe('LogContext — runEach replays per-item context (#129)', () => {
     expect(LogContext.get()).toEqual({});
   });
 
-  test('an empty iterable resolves without calling fn', async () => {
+  test('an empty iterable resolves without calling the callback', async () => {
     let calls = 0;
     await LogContext.runEach([], () => { calls += 1; });
     expect(calls).toBe(0);
@@ -254,7 +254,7 @@ describe('LogContext — runEach replays per-item context (#129)', () => {
     expect(handled).toEqual(['ok']);
   });
 
-  test('a rejected async fn propagates too', async () => {
+  test('a rejected async callback propagates too', async () => {
     const entries = entriesOf([[{ tenant: 'acme' }, 'a']]);
     const drain = LogContext.runEach(entries, async () => {
       await Bun.sleep(1);

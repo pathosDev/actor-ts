@@ -201,8 +201,8 @@ export class RecordingTracer implements Tracer {
     );
   }
 
-  withActiveSpan<T>(span: Span, fn: () => T): T {
-    return this.storage.run(span, fn);
+  withActiveSpan<T>(span: Span, callback: () => T): T {
+    return this.storage.run(span, callback);
   }
 
   activeSpan(): Span | null {

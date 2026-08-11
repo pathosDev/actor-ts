@@ -7,7 +7,7 @@
  * without paying the spawn cost or relying on bootstrap module URLs.
  *
  * The wiring matches the real EventEmitter-style API: handlers
- * registered via `addEventListener('message', fn)` receive
+ * registered via `addEventListener('message', listener)` receive
  * `{ data }` objects, and `terminate()` synthesises a `close` event
  * the same way a real worker exit does.
  */

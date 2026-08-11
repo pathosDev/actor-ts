@@ -145,7 +145,7 @@ export class LWWMap<K, V> implements Crdt<LWWMap<K, V>> {
   }
 
   toJSON(): LWWMapJson<V> {
-    // `Object.fromEntries`, not assignment: entry ids are identity-fn output,
+    // `Object.fromEntries`, not assignment: entry ids are identity-function output,
     // so a custom identity can yield `__proto__` — which an assignment feeds
     // to the inherited setter instead of storing, dropping the entry from
     // every frame and every snapshot with nothing logged (#767).

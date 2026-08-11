@@ -284,12 +284,12 @@ operations:
 
 | Method | What it does |
 | --- | --- |
-| `LogContext.run(context, fn)` | Runs `fn` with `context` as the current context. |
-| `LogContext.with(extra, fn)` | Runs `fn` with `{ ...current, ...extra }` as the context. |
+| `LogContext.run(context, callback)` | Runs `callback` with `context` as the current context. |
+| `LogContext.with(extra, callback)` | Runs `callback` with `{ ...current, ...extra }` as the context. |
 | `LogContext.get()` | Reads the current context (empty object if none active). |
 | `LogContext.snapshot()` | Copies the current context into a fresh, mutable plain object. |
-| `LogContext.runFresh(fn)` | Runs `fn` with the context emptied, ignoring whatever is ambient. |
-| `LogContext.runEach(entries, fn)` | Runs `fn` once per entry, each under the context captured with it. |
+| `LogContext.runFresh(callback)` | Runs `callback` with the context emptied, ignoring whatever is ambient. |
+| `LogContext.runEach(entries, callback)` | Runs `callback` once per entry, each under the context captured with it. |
 
 `get()` returns the live readonly context — the same reference for
 the whole scope, so never hold onto it past the scope or hand it to
@@ -318,7 +318,7 @@ of that snapshot.  This means:
 
 <Aside type="caution" title="MDC values must be JSON-safe">
   ```ts
-  LogContext.run({ user: req.user }, fn);   // ← object, can't cross the wire
+  LogContext.run({ user: req.user }, callback);   // ← object, can't cross the wire
   ```
   `LogContext` values are `string | number | boolean` only.  This
   is enforced by the type — passing complex objects fails to

@@ -78,23 +78,23 @@ const EMPTY: LogContextData = Object.freeze({});
  * The `LogContext` namespace exposes the MDC operations.  The class-
  * style `LogContext.run(...)` shape follows the MDC pattern — a
  * scoped, thread-local-like map of diagnostic context that
- * propagates through every log line inside `fn` — and keeps the
+ * propagates through every log line inside the callback — and keeps the
  * public API tight without exporting the underlying
  * `AsyncLocalStorage` instance.
  */
 export const LogContext = {
   /**
-   * Run `fn` with `context` as the current context.  The previous context
+   * Run `callback` with `context` as the current context.  The previous context
    * (if any) is shadowed for the duration of the call and restored
-   * automatically.  Sync and async `fn` both work — `AsyncLocalStorage`
+   * automatically.  Sync and async `callback` both work — `AsyncLocalStorage`
    * preserves the binding across awaits.
    */
-  run<T>(context: LogContextData, fn: () => T): T {
-    return storage.run(context, fn);
+  run<T>(context: LogContextData, callback: () => T): T {
+    return storage.run(context, callback);
   },
 
   /**
-   * Run `fn` with the context explicitly emptied, shadowing whatever
+   * Run `callback` with the context explicitly emptied, shadowing whatever
    * was ambient.  The inverse of {@link LogContext.with}: where `with`
    * inherits, this deliberately does not.
    *
@@ -109,8 +109,8 @@ export const LogContext = {
    * strip individual keys, and it fails safe: a field nobody set cannot
    * leak.
    */
-  runFresh<T>(fn: () => T): T {
-    return storage.run(EMPTY, fn);
+  runFresh<T>(callback: () => T): T {
+    return storage.run(EMPTY, callback);
   },
 
   /**
@@ -143,18 +143,18 @@ export const LogContext = {
    * **Errors propagate immediately** and abandon the remaining
    * entries.  Swallowing them would be a supervision policy, and that
    * decision does not belong to a diagnostics primitive; a caller who
-   * wants per-item isolation puts the `try`/`catch` inside `fn`, where
+   * wants per-item isolation puts the `try`/`catch` inside `callback`, where
    * it still runs under the right context.
    */
   async runEach<TItem>(
     entries: Iterable<LogContextEntry<TItem>>,
-    fn: (item: TItem) => unknown,
+    callback: (item: TItem) => unknown,
   ): Promise<void> {
     for (const entry of entries) {
-      // `run` returns `fn`'s value synchronously, but an async `fn`'s
+      // `run` returns `callback`'s value synchronously, but an async `callback`'s
       // continuation keeps the store it was created under — so awaiting
       // outside the scope still completes the item under its context.
-      await storage.run(entry.context, () => fn(entry.item));
+      await storage.run(entry.context, () => callback(entry.item));
     }
   },
 
@@ -168,13 +168,13 @@ export const LogContext = {
   },
 
   /**
-   * Run `fn` with `extra` fields merged into the current context.
-   * Equivalent to `run({ ...get(), ...extra }, fn)` but a touch
+   * Run `callback` with `extra` fields merged into the current context.
+   * Equivalent to `run({ ...get(), ...extra }, callback)` but a touch
    * shorter at call sites that just want to add a field.
    */
-  with<T>(extra: LogContextData, fn: () => T): T {
+  with<T>(extra: LogContextData, callback: () => T): T {
     const merged = { ...this.get(), ...extra };
-    return storage.run(merged, fn);
+    return storage.run(merged, callback);
   },
 
   /**

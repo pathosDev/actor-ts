@@ -63,11 +63,11 @@ export class TeeTracer implements Tracer {
     );
   }
 
-  withActiveSpan<T>(span: Span, fn: () => T): T {
+  withActiveSpan<T>(span: Span, callback: () => T): T {
     // Unwrap first: the inner tracer stores spans in its own async
     // context, and handing it a wrapper would make `activeSpan()`
     // return something it did not create.
-    return this.inner.withActiveSpan(span instanceof TeeSpan ? span.unwrap() : span, fn);
+    return this.inner.withActiveSpan(span instanceof TeeSpan ? span.unwrap() : span, callback);
   }
 
   activeSpan(): Span | null {

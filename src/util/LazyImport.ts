@@ -27,8 +27,8 @@
  * expected failure mode.
  *
  * **ESM default-export normalisation is intentionally NOT in this
- * helper**.  Some peer-deps ship CJS (`module.exports = fn`), others
- * ESM (`export default fn`), and some both — the right normalisation
+ * helper**.  Some peer-deps ship CJS (`module.exports = value`), others
+ * ESM (`export default value`), and some both — the right normalisation
  * varies per module.  Callers handle that explicitly at their site;
  * this helper only owns the "import it OR throw a helpful error"
  * boundary.

@@ -27,7 +27,7 @@ export type ShardedDaemonProcessOptionsType<T> = {
 /**
  * Fluent builder for {@link ShardedDaemonProcessOptionsType}.  The
  * `actorFor` factory is a whole-object field passed via a single
- * `withBehaviorFor(fn)`.
+ * `withActorFor(actorFor)`.
  */
 export class ShardedDaemonProcessOptionsBuilder<T> extends OptionsBuilder<ShardedDaemonProcessOptionsType<T>> {
   /** Start a fresh builder.  Equivalent to `new ShardedDaemonProcessOptionsBuilder<T>()`. */

@@ -6,12 +6,12 @@
 export interface Dispatcher {
   readonly id: string;
   /** Schedule a unit of work to be executed asynchronously. */
-  execute(fn: () => void | Promise<void>): void;
+  execute(task: () => void | Promise<void>): void;
 }
 
-function runSafely(fn: () => void | Promise<void>): void {
+function runSafely(task: () => void | Promise<void>): void {
   try {
-    const result = fn();
+    const result = task();
     if (result && typeof (result as Promise<void>).catch === 'function') {
       (result as Promise<void>).catch((err) => {
         console.error('[actor-ts] unhandled dispatcher error:', err);
@@ -28,8 +28,8 @@ function runSafely(fn: () => void | Promise<void>): void {
  */
 export class MicrotaskDispatcher implements Dispatcher {
   readonly id = 'microtask-dispatcher';
-  execute(fn: () => void | Promise<void>): void {
-    queueMicrotask(() => runSafely(fn));
+  execute(task: () => void | Promise<void>): void {
+    queueMicrotask(() => runSafely(task));
   }
 }
 
@@ -39,11 +39,11 @@ export class MicrotaskDispatcher implements Dispatcher {
  */
 export class ImmediateDispatcher implements Dispatcher {
   readonly id = 'immediate-dispatcher';
-  execute(fn: () => void | Promise<void>): void {
+  execute(task: () => void | Promise<void>): void {
     if (typeof setImmediate === 'function') {
-      setImmediate(() => runSafely(fn));
+      setImmediate(() => runSafely(task));
     } else {
-      setTimeout(() => runSafely(fn), 0);
+      setTimeout(() => runSafely(task), 0);
     }
   }
 }
@@ -63,8 +63,8 @@ export class ThroughputDispatcher implements Dispatcher {
     this.id = id;
   }
 
-  execute(fn: () => void | Promise<void>): void {
-    this.queue.push(fn);
+  execute(task: () => void | Promise<void>): void {
+    this.queue.push(task);
     if (!this.scheduled) {
       this.scheduled = true;
       if (typeof setImmediate === 'function') {
@@ -79,8 +79,8 @@ export class ThroughputDispatcher implements Dispatcher {
     this.scheduled = false;
     let processed = 0;
     while (processed < this.throughput && this.queue.length > 0) {
-      const fn = this.queue.shift()!;
-      runSafely(fn);
+      const task = this.queue.shift()!;
+      runSafely(task);
       processed++;
     }
     if (this.queue.length > 0) {

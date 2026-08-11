@@ -497,7 +497,7 @@ export class ExpressBackend implements HttpServerBackend {
     try {
       const moduleName = 'express';
       const mod = (await import(moduleName)) as { default?: () => ExpressAppLike } | (() => ExpressAppLike);
-      // Express v4 ships `module.exports = fn`; v5 exports `{ default: fn }`.
+      // Express v4 ships `module.exports = factory`; v5 exports `{ default: factory }`.
       const factory: () => ExpressAppLike =
         typeof mod === 'function' ? mod as () => ExpressAppLike
         : (mod as { default: () => ExpressAppLike }).default;

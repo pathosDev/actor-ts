@@ -55,7 +55,7 @@ describe('eventDispatcher', () => {
         .on('incremented', (subscription, e) => ({ count: subscription.count + e.by }));
       // Force-cast to bypass the type-level guard:
       (partial as unknown as {
-        on(k: string, fn: (subscription: State, e: Event) => State): unknown;
+        on(k: string, handler: (subscription: State, e: Event) => State): unknown;
       }).on('incremented', (subscription) => subscription);
     }).toThrow(/registered twice/);
   });

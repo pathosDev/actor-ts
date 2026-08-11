@@ -31,7 +31,7 @@ export interface SqliteDb {
    * helper, so `NodeSqliteDriver` synthesizes one — non-re-entrant, which is
    * all the stores need.
    */
-  transaction<F extends (...args: never[]) => unknown>(fn: F): F;
+  transaction<F extends (...args: never[]) => unknown>(body: F): F;
   close(): void;
 }
 

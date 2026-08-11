@@ -16,7 +16,7 @@ import type { SqliteDb, SqliteDriver, SqliteStatement } from './SqliteDriver.js'
  * `npm install` hint.
  *
  * One genuine gap versus `bun:sqlite` / `better-sqlite3`: `node:sqlite` has no
- * `transaction(fn)` helper, so it is synthesized from `BEGIN` / `COMMIT` /
+ * `transaction(body)` helper, so it is synthesized from `BEGIN` / `COMMIT` /
  * `ROLLBACK`.  See `transaction` below for the caveat that implies.
  */
 export class NodeSqliteDriver implements SqliteDriver {
@@ -105,7 +105,7 @@ class NodeSqliteDb implements SqliteDb {
   }
 
   /**
-   * Synthesized transaction — `node:sqlite` exposes no `transaction(fn)`
+   * Synthesized transaction — `node:sqlite` exposes no `transaction(body)`
    * wrapper, so the statements are issued directly.
    *
    * **Not re-entrant**: a nested call would emit a second `BEGIN` and fail.

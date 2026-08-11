@@ -76,13 +76,13 @@ function kill(pid: number): void {
 
 async function pollFor<T>(
   what: string,
-  fn: () => T | null,
+  probe: () => T | null,
   timeoutMs: number,
   intervalMs = 500,
 ): Promise<T> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    const result = fn();
+    const result = probe();
     if (result !== null && result !== undefined) return result;
     await sleep(intervalMs);
   }
