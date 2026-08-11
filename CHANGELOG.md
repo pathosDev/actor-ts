@@ -441,6 +441,41 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Changed
 
+- **The `cb` short form is spelled out** (#1113).  152 occurrences across 34
+  files, the sibling of #1112 — and unlike `fn`, `cb` carried **two
+  unrelated meanings**, so it could not be renamed on the string alone.  105
+  occurrences meant *callback*; **42 meant `CircuitBreaker`** (`const cb =
+  new CircuitBreaker(…)` in the pattern tests and the example, `const cb =
+  common.circuitBreaker` in `BrokerOptions`), and a further two were a
+  paired `ca`/`cb` standing for "counter A"/"counter B" in
+  `Extension.test.ts`.  Those became `breaker` / `circuitBreaker` /
+  `counterA`+`counterB`; nothing there is a callback.
+
+  The public surface this reaches is larger than #1112's: `persist(event,
+  cb)` and `persistAll(events, cb)` on `PersistentActor` — the call every
+  persistence page leads with — plus `ReplicatedEventSourcedActor.persist`
+  and `FSM.onTransition`.  The persistence parameter is now `afterPersist`,
+  naming what it is *for* rather than what type it is; `onTransition` takes
+  `listener`, matching the `transitionListeners` it lands in.  In the ~12
+  vendor-shape declarations (mqtt.js, `net.Socket`, `dgram`, gRPC, amqplib,
+  `ws`, Express `listen`) the split is by role: event registration
+  (`on`/`once`/`addEventListener`) takes `listener`, completion callbacks
+  (`publish`, `write`, `end`, `close`, `listen`, `bindAsync`) take
+  `callback`, and amqplib's `consume` takes `onMessage`, the name amqplib
+  itself uses.  Member names are untouched.  **Not breaking** — arguments
+  are positional and no exported shape moved.
+
+  Two spellings deliberately survive: the left column of the
+  `migration/from-akka-jvm` table, which is Akka's own curried
+  `persist(event)(cb)` and is the whole point of the page, and the
+  `'cb-realistic'` actor-system name in an example, which is string data.
+
+- **Documentation corrected where it named a parameter that never
+  existed** (#1113).  `coordination/overview` and the JSDoc on
+  `src/coordination/Lease.ts` both documented `onLost(cb)`; the parameter is
+  and was named `handler`.  Pre-existing drift, fixed in EN and DE together
+  — the same class of error #1112 found on the FSM pages.
+
 - **BREAKING — `CborSerializer` encodes several values differently** (#1036).
   All of these previously produced something wrong rather than something
   different, so the migration is usually "delete the workaround":
