@@ -1006,6 +1006,23 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   client's view, because a client-side assertion passes with the defect in
   place.
 
+- **`securityHeaders()` says what `false` actually does** (#1060).  The bundle
+  documented every header as "disable-able", and the `securityHeaders()`
+  middleware cannot disable one: it only ever adds — `applyHeaders` merges in
+  and never deletes.  Since #127 every backend writes
+  `x-content-type-options: nosniff` ahead of every response it emits, so
+  `securityHeaders({ contentTypeOptions: false })` leaves the header exactly
+  where it was, on all three backends.  No behaviour change here; the option,
+  its type and both language versions of the *Security headers* page now say
+  which seam `false` bites on.  It is honoured server-wide —
+  `newServerAt(…).withSecurityHeaders({ contentTypeOptions: false })` replaces
+  the backend's default map — and inert as a middleware.  There is no
+  per-subtree opt-out on purpose: the backend's copy is the last word so that
+  the 404s, body-parse 413s and error short-circuits which never reach a
+  middleware are covered too.  The suite drove the middleware in isolation,
+  where the resolved map really does lose the header, which is how the claim
+  survived; a test now composes the two layers the way a response meets them.
+
 ### Security
 
 - **CIDR matching only accepts canonical IPv4 addresses** (#145, #312).

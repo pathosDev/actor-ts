@@ -1,11 +1,29 @@
 ---
 title: Security headers
-description: securityHeaders() is a small helmet-style bundle (nosniff, X-Frame-Options, Referrer-Policy, COOP/CORP, …), each header overridable or disable-able. strictTransportSecurity() emits HSTS.
+description: securityHeaders() is a small helmet-style bundle (nosniff, X-Frame-Options, Referrer-Policy, COOP/CORP, …), each header overridable or omittable. strictTransportSecurity() emits HSTS.
 ---
 
 `securityHeaders()` adds a sensible set of security response headers. Every
-header is individually overridable, `false` disables one, and a header the
+header is individually overridable, `false` leaves one out, and a header the
 handler already set always wins.
+
+<Aside type="caution" title="`false` omits a header, it does not remove one">
+  The bundle only ever **adds** headers. As a middleware it runs on top of
+  what the backend already writes, so `false` means "this middleware does not
+  add it" — not "this response will not carry it".
+
+  That distinction is visible in exactly one place today.
+  `X-Content-Type-Options: nosniff` is written by every backend ahead of every
+  response it emits, so `securityHeaders({ contentTypeOptions: false })`
+  leaves the header in place. To stop sending it, replace the backend's
+  defaults server-wide with
+  `newServerAt(…).withSecurityHeaders({ contentTypeOptions: false })` — or
+  `withSecurityHeaders(false)` for none of them at all.
+
+  There is no per-subtree opt-out, deliberately: the backend's copy is the
+  last word precisely so that the 404s, body-parse 413s and error
+  short-circuits which never reach a middleware are covered too.
+</Aside>
 
 ```ts
 import { securityHeaders, withMiddleware } from 'actor-ts/http';
