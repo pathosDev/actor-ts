@@ -1,14 +1,6 @@
 import { match } from 'ts-pattern';
 import { Mailbox, type Envelope } from '../internal/Mailbox.js';
-import { BoundedMailboxOptionsValidator, type BoundedMailboxOptions, type BoundedMailboxOptionsType } from './BoundedMailboxOptions.js';
-
-export type BoundedMailboxOverflow =
-  /** Drop the oldest message in the queue to make room for the new one. */
-  | 'drop-head'
-  /** Drop the message being enqueued. */
-  | 'drop-new'
-  /** Throw a MailboxFullError — caller can surface it. */
-  | 'reject';
+import { BoundedMailboxOptionsValidator, type BoundedMailboxOptions, type BoundedMailboxOptionsType, type BoundedMailboxOverflow } from './BoundedMailboxOptions.js';
 
 export class MailboxFullError extends Error {
   constructor(capacity: number) {
