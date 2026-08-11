@@ -1,13 +1,13 @@
 ---
 title: Event-Stream
-description: Ein systemweiter Pub/Sub-Bus — abonniere eine *Klasse* von Event, empfange eine Instanz via `tell`, wann immer jemand publisht. Predicate-Filterung, Class-Hierarchy-Auslieferung und wo du ihn statt direkter Messages verwendest.
+description: Ein systemweiter Pub/Sub-Bus — abonniere eine Klasse von Event oder einen `kind`-diskriminierten Type, empfange es via `tell`, wann immer jemand publisht. Predicate-Filterung, Class-Hierarchy-Auslieferung und wo du ihn statt direkter Messages verwendest.
 ---
 
 Der **Event-Stream** ist ein systemweiter Bus für
 One-to-Many-Messaging, das nicht in die Eltern-Kind- oder
 Sender-Empfänger-Form passt.  Jeder Actor kann eine Klasse von Event
-abonnieren; jeder Code kann publishen; der Bus matcht und `tell`t das
-Event an jeden Subscriber.
+oder einen `kind`-diskriminierten Type abonnieren; jeder Code kann
+publishen; der Bus matcht und `tell`t das Event an jeden Subscriber.
 
 ```ts
 import { Actor, ActorSystem } from 'actor-ts';
@@ -51,14 +51,20 @@ Fan-Out-Alerts).
 ## Die API
 
 ```ts
+// A channel is named by a class, by an EventKey, or by the bare kind string.
+type EventChannel<TEvent> =
+  | (abstract new (...args: any[]) => TEvent)
+  | EventKey<TEvent>
+  | KindOf<TEvent>;
+
 class EventStream {
-  subscribe<T>(
+  subscribe<TEvent>(
     subscriber: ActorRef,
-    channel: new (...args: any[]) => T,
-    predicate?: (event: T) => boolean,
+    channel: EventChannel<TEvent>,
+    predicate?: (event: TEvent) => boolean,
   ): boolean;
 
-  unsubscribe<T>(subscriber: ActorRef, channel?: new (...args: any[]) => T): boolean;
+  unsubscribe<TEvent>(subscriber: ActorRef, channel?: EventChannel<TEvent>): boolean;
 
   publish(event: object): void;
 }
@@ -66,16 +72,19 @@ class EventStream {
 
 Drei Operationen:
 
-- **`subscribe(ref, ClassName)`** — Interesse an einer Klasse von
-  Events registrieren.  Gibt `true` zurück, wenn ein neues Abo
-  hinzugefügt wurde, `false`, wenn ein Duplikat ignoriert wurde.
-- **`unsubscribe(ref, ClassName?)`** — Abos entfernen.  Mit der
-  Klasse: nur diesen Channel; ohne: jedes Abo für diese Ref.
+- **`subscribe(ref, channel)`** — Interesse registrieren.  Der
+  Channel ist eine Klasse, ein `EventKey` oder ein kind-String.  Gibt
+  `true` zurück, wenn ein neues Abo hinzugefügt wurde, `false`, wenn
+  ein Duplikat ignoriert wurde — und **wirft**, wenn der Channel
+  unbrauchbar ist (siehe die Caution unten).
+- **`unsubscribe(ref, channel?)`** — Abos entfernen.  Mit einem
+  Channel: nur diesen; ohne: jedes Abo für diese Ref.
 - **`publish(event)`** — Fire-and-Forget.  Der Bus läuft seine
-  Abo-Liste durch, matcht via `instanceof` und `tell`t jeden Match.
+  Abo-Liste durch, matcht den Channel jedes Abos und `tell`t jeden
+  Match.
 
-Matching ist `instanceof`-basiert, **Subklassen-Instanzen erreichen
-also Base-Class-Subscriber**:
+Klassen-Channels matchen via `instanceof`, **Subklassen-Instanzen
+erreichen also Base-Class-Subscriber**:
 
 ```ts
 class SystemEvent {}
@@ -88,6 +97,81 @@ eventStream.subscribe(loginCounter, UserLoggedIn);   // fängt nur die In-Events
 
 Das macht hierarchische Event-Taxonomien einfach: Subscriber wählen
 ihr Level.
+
+## Kind-Channels
+
+[Messages](/de/fundamentals/messages/) empfiehlt plain Objects
+(`{ kind: 'x', n: 1 }`) statt Klassen — und ein plain Type hat keinen
+Konstruktor, den man `subscribe` übergeben könnte.  Benenne ihn
+stattdessen über sein `kind`.  Ein Type und ein `const` gleichen
+Namens geben ihm die Aufrufform, die eine Klasse geschenkt bekommt:
+
+```ts
+import { EventKey } from 'actor-ts';
+
+export type UserLoggedInEvent = {
+  readonly kind: 'user-logged-in';
+  readonly userId: string;
+};
+export const UserLoggedInEvent = EventKey.of<UserLoggedInEvent>('user-logged-in');
+
+class AuditLogger extends Actor<UserLoggedInEvent> {
+  override preStart(): void {
+    this.context.system.eventStream.subscribe(this.context.self, UserLoggedInEvent);
+  }
+  override onReceive(event: UserLoggedInEvent): void {
+    this.log.info(`user ${event.userId} logged in`);
+  }
+}
+
+system.eventStream.publish({ kind: 'user-logged-in', userId: 'user-42' });
+```
+
+Der Key trägt den Event-Type, ein gegen ihn geschriebenes Predicate
+sieht also die echte Form, ohne dass du den Parameter annotierst:
+
+```ts
+eventStream.subscribe(auditor, UserLoggedInEvent, (event) => event.userId !== 'system');
+```
+
+Der **nackte kind-String** ist die Kurzform, und er kostet den Typ —
+`TEvent` hat nichts, woraus es inferiert werden könnte, das Predicate
+sieht also `unknown`.  Das Typargument anzugeben holt die Typisierung
+zurück *und* macht den String selbst gegen das `kind` des Types
+prüfbar:
+
+```ts
+eventStream.subscribe(auditor, 'user-logged-in');                     // predicate sees unknown
+eventStream.subscribe<UserLoggedInEvent>(auditor, 'user-logged-in');  // typed, and the string is checked
+```
+
+Daraus folgen zwei Identitätsregeln:
+
+- **Ein Key und sein String sind derselbe Channel.**  Beide Wege zu
+  abonnieren deduppt, und jede Form unsubscribed die andere — auch
+  ein frisch gebautes `EventKey.of('user-logged-in')`.
+- **Eine Klasse und ein kind sind zwei Channels**, selbst wenn die
+  Instanzen der Klasse dieses `kind` tragen.  Sie selektieren
+  überlappende Events, genau wie eine Basisklasse und ihre Subklasse
+  — ein Actor mit beiden Abos bekommt also zwei Zustellungen pro
+  Publish.
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Ein kind-Channel matcht genau ein kind">
+  Eine Klassenhierarchie schenkt dir Familien — abonniere die
+  abstrakte Basis und du bekommst alles darunter.  Kinds haben keine
+  Basis, es gibt also keine Möglichkeit, "jedes `billing.*`-Event" zu
+  sagen: abonniere pro kind einzeln, oder gib der Familie stattdessen
+  eine Klassenhierarchie.
+
+  Der leere String wird rundheraus abgelehnt — er benennt kein Event,
+  und er liest sich für den, der ihn geschrieben hat, wie "alles".
+  Beachte außerdem, dass der nackte String dich nicht vor einem
+  Tippfehler schützt, der Key hingegen schon: ein falsch
+  geschriebenes kind kompiliert anstandslos und matcht dann still
+  niemals.
+</Aside>
 
 ## Predicate-Filterung
 
@@ -134,8 +218,6 @@ Drei gute Passungen:
    und lass den Spy direkt abonnieren.
 
 ## Wann NICHT verwenden
-
-import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="Ein spezifischer Empfänger = verwende eine Ref">
   Wenn genau ein Actor die Nachricht erhalten soll, halte seine
@@ -186,6 +268,10 @@ Das Framework publisht mehrere Event-Typen, die du abonnieren kannst:
 | `ReachabilityChanged` | Der Failure Detector der publishenden Node hat einen Peer aus den Augen verloren oder wiedergesehen — eine lokale Beobachtung, anders als `MemberUnreachable`, das auch per Gossip angekommen sein kann.  Siehe [Failure Detector](/de/cluster/failure-detector/). |
 | Broker-Events | `BrokerActor`-Subklassen publishen Connect/Disconnect/Lag-Events. |
 
+Alles, was das Framework selbst publisht, ist eine **Klasse** —
+Klassen-Channels bleiben also der Weg zu allem oben.  Kind-Channels
+sind für deine eigenen Anwendungs-Events.
+
 Ein Cluster-Event fehlt hier bewusst: `CurrentClusterState` geht
 ausschließlich an den Listener, der danach gefragt hat — per
 `cluster.subscribe(listener, { replayMode: 'snapshot' })`.  Es sagt, wo
@@ -204,7 +290,8 @@ sie publisht.
   `system.eventStream` ist, wo du den Bus erreichst.
 - **[Nachrichten](/de/fundamentals/messages/)** — die
   Form-Regeln (unveränderlich, keine Method-Refs) gelten genauso
-  für Events.
+  für Events, und die dort dokumentierte `kind`-Konvention ist
+  direkt abonnierbar.
 
 Die [`EventStream`](/api/classes/eventstream/)-API-Referenz deckt
 die volle Schnittstelle ab.

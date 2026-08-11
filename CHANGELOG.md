@@ -9,6 +9,66 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ## [Unreleased]
 
+### Added
+
+- **`EventStream` channels can be `kind`-discriminated types, not just
+  classes** (#1143).  `subscribe`/`unsubscribe` took a class constructor and
+  matched with `instanceof`, which locked the one API the project offers for
+  loosely coupled fan-out to exactly the message style the project argues
+  against: `AGENTS.md` mandates `kind`-discriminated named variant types, and
+  `fundamentals/messages` says outright to prefer plain objects over classes.
+  Such a type has no constructor, so there was nothing to hand `subscribe`.
+  The asymmetry was visible in the signatures — `publish(event: object)` has
+  always accepted a plain object, so you could publish something nobody was
+  able to subscribe to.
+
+  A channel is now named three ways.  By a **class**, exactly as before.  By an
+  **`EventKey`** — a new export mirroring `ServiceKey`/`ShardKey`, a `kind`
+  plus a phantom type parameter, so a type and a `const` of the same name give
+  a plain event the call shape a class gets for free:
+
+  ```ts
+  export type UserLoggedInEvent = { readonly kind: 'user-logged-in'; readonly userId: string };
+  export const UserLoggedInEvent = EventKey.of<UserLoggedInEvent>('user-logged-in');
+
+  eventStream.subscribe(self, UserLoggedInEvent, (event) => event.userId !== 'system');
+  eventStream.publish({ kind: 'user-logged-in', userId: 'user-42' });
+  ```
+
+  Or by the bare **kind string**, the shorthand — which costs the type, since
+  `TEvent` has nothing to be inferred from and falls back to `unknown`.
+  Supplying the argument brings the typing back and makes the string itself
+  checkable: `EventKey.of<UserLoggedInEvent>('user-loged-in')` and
+  `subscribe<UserLoggedInEvent>(ref, 'user-loged-in')` are both compile errors,
+  which is the one thing the bare string cannot give you.
+
+  A key and its string are the **same** channel — subscribing both ways dedups,
+  and either form unsubscribes the other, including a freshly built key.  That
+  is why a subscription is filed under the kind string rather than the key
+  object: `EventKey.of` mints a new instance per call, so an object identity
+  would make the obvious `unsubscribe` call a silent no-op.  A class and a kind
+  are **two** channels even when the class's instances carry that `kind`; they
+  select overlapping events exactly like a base class and its subclass.
+
+  Internally the channel is resolved once at subscribe time into an identity, a
+  `matches` closure and a label, rather than being discriminated per delivery:
+  `publish` runs on every actor start, every actor stop and every dead letter.
+  Class channels are untouched — `instanceof` matching, subclass instances
+  still reaching base-class subscribers, and dedup identity still the
+  constructor object.
+
+  **Not included:** prefix or wildcard families (`'billing.*'`).  A kind channel
+  matches exactly one kind, and the docs say so.  Turning "name a channel" into
+  "name a pattern" forces answers on dedup identity, unsubscribe identity and
+  precedence against exact channels; it is purely additive later.
+
+  Two behaviour changes fall out.  `unsubscribe` now tests `channel !== undefined`
+  instead of truthiness — with kind strings legal, `''` is a *supplied* channel
+  that reads as falsy, and the old shape would have taken the omitted-channel
+  branch and dropped every subscription the actor held.  And both operations
+  reject a channel that is neither a usable `instanceof` right-hand side nor a
+  non-empty kind.
+
 ### Fixed
 
 - **One faulty `EventStream` subscription no longer breaks the bus for

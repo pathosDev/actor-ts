@@ -1,30 +1,40 @@
 import type { ActorRef } from './ActorRef.js';
+import { EventKey, type EventChannel, type EventClass } from './EventKey.js';
 
 /**
- * A simple system-wide pub/sub bus.  Subscribers register against a
- * channel (a class constructor); publications are matched using
- * `instanceof`, so subclasses are delivered to base-class subscribers.
+ * A channel reduced to the three things the bus actually needs from it,
+ * computed once when the subscription is made.
  *
- * **Predicate-filtered subscriptions (#85).**  Each subscription
- * may carry an optional predicate that runs against the event before
- * delivery — only events the predicate accepts are `tell`'d to the
- * subscriber.  Useful for high-frequency channels (cluster events,
- * metrics) where the consumer only cares about a slice of the
- * traffic and would otherwise have to filter inside its own
- * `onReceive`.  A predicate that throws is treated as "no match"
- * for that delivery; the subscription stays active.
+ * Resolving at subscribe time is what lets a malformed channel fail on the
+ * line that wrote it rather than at some unrelated later `publish` (#1010) —
+ * and it keeps the delivery loop free of a "which of the channel forms is
+ * this?" branch that would otherwise run per subscription per event on the
+ * hottest path in the system: every actor start, every actor stop, every dead
+ * letter.
  */
-/**
- * A channel token.  `abstract` is deliberate: matching is by
- * `instanceof`, so an abstract base is a perfectly good channel — and
- * the most useful one, since subscribing to it takes a whole family of
- * events (e.g. every `ActorLifecycleEvent`) with a single call.
- */
-type Class<T> = abstract new (...args: any[]) => T;
+type ResolvedChannel = {
+  /**
+   * Channel identity for dedup and `unsubscribe`, compared with `===`.
+   *
+   * A class is its own identity — the constructor object.  Both kind forms
+   * reduce to the kind string, so `EventKey.of('x')` and the bare `'x'` name
+   * the *same* channel: keys are minted fresh on every `of()`, so an object
+   * identity would make `unsubscribe(ref, EventKey.of('x'))` match nothing
+   * while looking exactly like the call that would.
+   */
+  readonly channelId: EventClass<unknown> | string;
+  /** Does this event belong to the channel?  Bound once, called per publish. */
+  readonly matches: (event: object) => boolean;
+  /**
+   * How the channel reads in a warning.  Resolved here so the delivery path
+   * only ever concatenates a string the bus already owns, and never reads a
+   * property off a channel that may be the thing that is wrong.
+   */
+  readonly label: string;
+};
 
-type Subscription = {
+type Subscription = ResolvedChannel & {
   readonly subscriber: ActorRef;
-  readonly channel: Class<unknown>;
   /** Optional filter — evaluated before delivery; throws → skip. */
   readonly predicate?: (event: unknown) => boolean;
 };
@@ -38,6 +48,27 @@ export interface EventStreamLogger {
   warn(message: string, ...args: unknown[]): void;
 }
 
+/**
+ * A simple system-wide pub/sub bus.  Subscribers register against a channel;
+ * publications are matched against it and `tell`'d to everyone interested.
+ *
+ * **Two ways to name a channel.**  A **class**, matched with `instanceof`, so
+ * subclass instances reach base-class subscribers — which is what makes an
+ * abstract base the most useful channel there is.  Or an event's **`kind`**,
+ * named by an {@link EventKey} or by the bare string, matched on the
+ * discriminant: the form the project's own message convention needs, since a
+ * `kind`-discriminated plain type has no constructor to hand over and until
+ * recently could not be subscribed to at all — even though `publish` has
+ * always accepted one.
+ *
+ * **Predicate-filtered subscriptions (#85).**  Each subscription may carry an
+ * optional predicate that runs against the event before delivery — only events
+ * the predicate accepts are `tell`'d to the subscriber.  Useful for
+ * high-frequency channels (cluster events, metrics) where the consumer only
+ * cares about a slice of the traffic and would otherwise have to filter inside
+ * its own `onReceive`.  A predicate that throws is treated as "no match" for
+ * that delivery; the subscription stays active.
+ */
 export class EventStream {
   private subs: Subscription[] = [];
 
@@ -50,8 +81,22 @@ export class EventStream {
   log?: EventStreamLogger;
 
   /**
-   * Subscribe an actor ref to a channel (class).  Returns true if a
-   * new subscription was added; false if a duplicate was rejected.
+   * Subscribe an actor ref to a channel.  Returns true if a new subscription
+   * was added; false if a duplicate was rejected.
+   *
+   * **Naming the channel.**  A class, an {@link EventKey}, or the bare `kind`
+   * string.  The string is the shorthand and it costs the type: `TEvent` has
+   * nothing to be inferred from and falls back to `unknown`, so a predicate
+   * written against it sees `unknown` unless the caller spells the argument
+   * out — `subscribe<UserLoggedInEvent>(ref, 'user-logged-in')`, which also
+   * makes the string itself checkable against the type's `kind`.
+   *
+   * **A key and its string are the same channel**: subscribing both ways
+   * dedups, and either one unsubscribes the other.  A class and a kind are
+   * not, even when the class's instances carry that `kind` — those are two
+   * channels selecting overlapping events, exactly like a base class and its
+   * subclass, and an actor holding both subscriptions receives both
+   * deliveries.
    *
    * **Dedup rules.**  Without `predicate`, only one subscription per
    * `(subscriber, channel)` is kept — re-calling `subscribe` is a
@@ -60,33 +105,33 @@ export class EventStream {
    * across them would be unreliable; users wanting "replace this
    * filter" should `unsubscribe` first.
    *
-   * @throws TypeError when `channel` cannot be used as the right-hand side of
-   * `instanceof`.  Failing on the line that wrote the subscription is the
-   * whole point: the alternative is a subscription that poisons an unrelated
-   * `publish` in another actor much later (#1010).  It throws rather than
-   * returning `false`, because `false` already means "duplicate rejected" and
-   * conflating the two destroys the signal the return value carries.
+   * @throws TypeError when `channel` is neither a usable `instanceof`
+   * right-hand side nor a non-empty kind.  Failing on the line that wrote the
+   * subscription is the whole point: the alternative is a subscription that
+   * poisons an unrelated `publish` in another actor much later (#1010).  It
+   * throws rather than returning `false`, because `false` already means
+   * "duplicate rejected" and conflating the two destroys the signal the return
+   * value carries.
    */
-  subscribe<T>(
+  subscribe<TEvent>(
     subscriber: ActorRef,
-    channel: Class<T>,
-    predicate?: (event: T) => boolean,
+    channel: EventChannel<TEvent>,
+    predicate?: (event: TEvent) => boolean,
   ): boolean {
-    if (!isInstanceofTarget(channel)) {
-      throw new TypeError(
-        'EventStream.subscribe: channel must be a class — got '
-        + (channel === null ? 'null' : typeof channel),
-      );
-    }
+    // Resolved before the dedup check, so an invalid channel is rejected even
+    // when a duplicate would have short-circuited the push.
+    const resolved = resolveChannel(channel, 'subscribe');
     if (!predicate) {
       const already = this.subs.some(
-        (s) => s.subscriber.equals(subscriber) && s.channel === channel && !s.predicate,
+        (s) => s.subscriber.equals(subscriber)
+          && s.channelId === resolved.channelId
+          && !s.predicate,
       );
       if (already) return false;
     }
     this.subs.push({
+      ...resolved,
       subscriber,
-      channel: channel as Class<unknown>,
       predicate: predicate as ((event: unknown) => boolean) | undefined,
     });
     return true;
@@ -98,12 +143,24 @@ export class EventStream {
    * entries — including predicate-bearing ones; finer-grained removal
    * (one specific predicate at a time) isn't supported because
    * predicates have no stable identity.
+   *
+   * The test is `!== undefined`, not truthiness.  Truthiness was correct while
+   * a channel could only be a constructor; with kind strings legal, `''` is a
+   * *supplied* channel that reads as falsy, and the old shape would have taken
+   * the omitted-channel branch and dropped every subscription the actor held.
+   *
+   * The channel is resolved exactly as `subscribe` resolved it, so it is named
+   * by identity rather than by object: `EventKey.of('x')` mints a fresh key on
+   * every call and would match nothing under `===`.  An invalid channel throws
+   * here too — quietly removing nothing is how a subscription survives a
+   * cleanup that believed it had done its job (#645, #763).
    */
-  unsubscribe<T>(subscriber: ActorRef, channel?: Class<T>): boolean {
+  unsubscribe<TEvent>(subscriber: ActorRef, channel?: EventChannel<TEvent>): boolean {
     const before = this.subs.length;
-    if (channel) {
+    if (channel !== undefined) {
+      const { channelId } = resolveChannel(channel, 'unsubscribe');
       this.subs = this.subs.filter(
-        (s) => !(s.subscriber.equals(subscriber) && s.channel === channel),
+        (s) => !(s.subscriber.equals(subscriber) && s.channelId === channelId),
       );
     } else {
       this.subs = this.subs.filter((s) => !s.subscriber.equals(subscriber));
@@ -151,7 +208,7 @@ export class EventStream {
         subscription.subscriber.tell(event as never);
       } catch (err) {
         this.log?.warn(
-          `EventStream: delivering to ${channelLabel(subscription.channel)} failed`
+          `EventStream: delivering to ${subscription.label} failed`
           + ' — skipping this subscriber',
           err,
         );
@@ -168,7 +225,7 @@ export class EventStream {
    * generic delivery guard would flatten into an unexplained skip.
    */
   private accepts(subscription: Subscription, event: object): boolean {
-    if (!(event instanceof subscription.channel)) return false;
+    if (!subscription.matches(event)) return false;
     const { predicate } = subscription;
     if (!predicate) return true;
     try {
@@ -177,7 +234,7 @@ export class EventStream {
       // A throwing predicate must NOT break the bus for other
       // subscribers — treat as "no match" and keep going.
       this.log?.warn(
-        `EventStream: predicate threw on ${channelLabel(subscription.channel)} delivery`
+        `EventStream: predicate threw on ${subscription.label} delivery`
         + ' — treating as no-match',
         err,
       );
@@ -186,36 +243,93 @@ export class EventStream {
   }
 }
 
+/* ------------------------------------------------------------------ */
+/* Channel resolution                                                  */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Reduce any channel form to the identity, matcher and label the bus stores.
+ *
+ * The parameter is `unknown` on purpose.  The whole reason this check exists is
+ * that the value may not be what the parameter type claims: a JavaScript
+ * consumer, a channel read out of a loosely-typed registry, or — the realistic
+ * one for a framework this size — an ESM import cycle in which the class
+ * binding is still uninitialised at subscribe time, which hands the bus
+ * `undefined` with no type error anywhere (#1010).  Typing it as the union
+ * would also narrow it to `never` in the final branch, so the check could not
+ * be written at all.
+ *
+ * The closing `throw` is not defensive padding: it is the only remaining
+ * answer once the union has been discriminated, and answering it here is what
+ * turns "some publish, somewhere, later, in another actor" into "this line is
+ * wrong".
+ */
+function resolveChannel(channel: unknown, operation: string): ResolvedChannel {
+  if (channel instanceof EventKey) return kindChannel(channel.kind, operation);
+  if (typeof channel === 'string') return kindChannel(channel, operation);
+  if (isInstanceofTarget(channel)) {
+    const target = channel;
+    return {
+      channelId: target,
+      matches: (event) => event instanceof target,
+      label: classLabel(target),
+    };
+  }
+  throw new TypeError(
+    `EventStream.${operation}: channel must be a class, an EventKey or a kind string — got `
+    + (channel === null ? 'null' : typeof channel),
+  );
+}
+
+/**
+ * Both kind forms — the key and the bare string — reduce to this one shape,
+ * which is what makes them the same channel for dedup and `unsubscribe`.
+ *
+ * The empty string is rejected here rather than in `EventKey`'s constructor:
+ * `ServiceKey`, `ShardKey` and `SingletonKey` are all dumb values that validate
+ * nothing, and putting it in the stream covers the bare-string form in the same
+ * place.  It matters more than it looks — `''` is falsy, and the caller who
+ * writes it means "this one channel", not "every subscription I hold".
+ */
+function kindChannel(kind: string, operation: string): ResolvedChannel {
+  if (kind.length === 0) {
+    throw new TypeError(
+      `EventStream.${operation}: '' is not a kind — it names no event, and it`
+      + ' reads like "everything" to whoever wrote it',
+    );
+  }
+  return {
+    channelId: kind,
+    matches: (event) => (event as { kind?: unknown }).kind === kind,
+    label: `kind '${kind}'`,
+  };
+}
+
 /**
  * Is `channel` usable as the right-hand side of `instanceof`?
  *
- * Deliberately wider than {@link Class}: `{ [Symbol.hasInstance]: … }` is a
- * legal right-hand side that no construct signature can describe, so rejecting
- * it would fail a caller whose code works.
+ * Deliberately wider than {@link EventClass}: `{ [Symbol.hasInstance]: … }` is
+ * a legal right-hand side that no construct signature can describe, so
+ * rejecting it would fail a caller whose code works.
  *
  * It is not a proof of safety, and no check here could be — an arrow function
  * is callable but has no `prototype`, so `instanceof` throws on it regardless,
  * and a throwing `[Symbol.hasInstance]` passes any structural test and fails at
  * delivery.  What it buys is the structural cases: `undefined`, `null`, numbers,
- * plain objects, arrays.  That is where the realistic bug lives — a JavaScript
- * consumer, a channel read out of a loosely-typed registry, or an ESM import
- * cycle in which the class binding is still uninitialised at subscribe time,
- * which hands the bus `undefined` with no type error anywhere.  The guard in
+ * plain objects, arrays.  That is where the realistic bug lives.  The guard in
  * `publish` is the complementary half; neither subsumes the other.
  */
-function isInstanceofTarget(channel: unknown): channel is Class<unknown> {
+function isInstanceofTarget(channel: unknown): channel is EventClass<unknown> {
   if (typeof channel === 'function') return true;
   return typeof channel === 'object' && channel !== null && Symbol.hasInstance in channel;
 }
 
 /**
- * How a channel reads in a warning.
- *
- * Never a bare `channel.name`: the delivery that most needs a legible message
- * is the one where the channel itself is what is wrong, and there `.name` is a
- * read on `undefined`.
+ * How a class channel reads in a warning.  Read once at subscribe time, so the
+ * delivery path never touches the channel object — the message that matters
+ * most is the one for a channel that turned out to be broken.
  */
-function channelLabel(channel: unknown): string {
-  const name = (channel as { name?: unknown } | null | undefined)?.name;
+function classLabel(channel: EventClass<unknown>): string {
+  const name = (channel as { name?: unknown }).name;
   return typeof name === 'string' && name.length > 0 ? name : 'an unnamed channel';
 }
