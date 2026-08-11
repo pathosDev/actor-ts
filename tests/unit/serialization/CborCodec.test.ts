@@ -432,6 +432,85 @@ describe('CBOR BidirectionalMap (tag 27, #1036)', () => {
   });
 });
 
+describe('CBOR RegExp, URL and Error (#1036)', () => {
+  test('RegExp round-trips source and flags; lastIndex is not carried', () => {
+    const pattern = /order-\d+/gi;
+    pattern.lastIndex = 7;
+    const decoded = rt(pattern);
+    expect(decoded).toBeInstanceOf(RegExp);
+    expect(decoded.source).toBe(pattern.source);
+    expect(decoded.flags).toBe('gi');
+    expect(decoded.lastIndex).toBe(0);
+  });
+
+  test('URL round-trips as a URL instance (toJSON must not flatten it)', () => {
+    const decoded = rt(new URL('https://example.com/a?b=1#c'));
+    expect(decoded).toBeInstanceOf(URL);
+    expect(decoded.href).toBe('https://example.com/a?b=1#c');
+  });
+
+  test('Error round-trips name, message and cause — never the stack', () => {
+    const cause = new RangeError('too deep');
+    const decoded = rt(new TypeError('bad shape', { cause }));
+    expect(decoded).toBeInstanceOf(TypeError);
+    expect(decoded.message).toBe('bad shape');
+    expect(decoded.cause).toBeInstanceOf(RangeError);
+    expect((decoded.cause as RangeError).message).toBe('too deep');
+    expect(decoded.stack).not.toBe(new TypeError('bad shape').stack);
+    // The stack is never written, so nothing in the bytes mentions this file.
+    expect(new TextDecoder().decode(enc.encode(new Error('boom')))).not.toContain('CborCodec');
+  });
+
+  test('an unknown error name reconstructs as Error with that name', () => {
+    const custom = new Error('boom');
+    custom.name = 'PaymentDeclinedError';
+    const decoded = rt(custom);
+    expect(decoded).toBeInstanceOf(Error);
+    expect(decoded.name).toBe('PaymentDeclinedError');
+    expect(decoded.message).toBe('boom');
+  });
+
+  test('AggregateError round-trips its member errors', () => {
+    const decoded = rt(new AggregateError([new TypeError('a'), new Error('b')], 'several failed'));
+    expect(decoded).toBeInstanceOf(AggregateError);
+    expect(decoded.message).toBe('several failed');
+    expect(decoded.errors).toHaveLength(2);
+    expect(decoded.errors[0]).toBeInstanceOf(TypeError);
+  });
+
+  test('an error with no cause does not grow one', () => {
+    const decoded = rt(new Error('plain'));
+    expect('cause' in decoded).toBe(false);
+  });
+
+  test('malformed payloads are decode errors, not raw constructor throws', () => {
+    const generic = (name: string, ...rest: number[]): Uint8Array => new Uint8Array([
+      0xd8, 0x1b, 0x80 | (1 + rest.length),
+      0x60 | name.length, ...[...name].map((c) => c.charCodeAt(0)),
+      ...rest,
+    ]);
+    // 27(["RegExp", 1, 2]) — arguments are not strings.
+    expect(() => dec.decode(generic('RegExp', 0x01, 0x02))).toThrow(CborDecodeError);
+    // 27(["Error", 1]) — the payload is not an object.
+    expect(() => dec.decode(generic('Error', 0x01))).toThrow(CborDecodeError);
+    // Tag 32 over a relative reference, which `new URL` refuses.
+    expect(() => dec.decode(new Uint8Array([0xd8, 0x20, 0x62, 0x2f, 0x78]))).toThrow(CborDecodeError);
+    // Tag 32 over a number.
+    expect(() => dec.decode(new Uint8Array([0xd8, 0x20, 0x01]))).toThrow(CborDecodeError);
+  });
+
+  test('an unbuildable RegExp payload is a decode error', () => {
+    // 27(["RegExp", "(", ""]) — an unbalanced group.
+    const bytes = new Uint8Array([
+      0xd8, 0x1b, 0x83,
+      0x66, ...[...'RegExp'].map((c) => c.charCodeAt(0)),
+      0x61, 0x28,
+      0x60,
+    ]);
+    expect(() => dec.decode(bytes)).toThrow(CborDecodeError);
+  });
+});
+
 describe('CBOR encoder limits (#1036)', () => {
   test('a cycle is a CborEncodeError, not a stack overflow', () => {
     const node: Record<string, unknown> = { name: 'root' };

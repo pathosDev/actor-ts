@@ -29,6 +29,7 @@
  */
 
 import { BidirectionalMap } from '../util/BidirectionalMap.js';
+import { rebuildError } from './RichTypes.js';
 
 export class CborEncodeError extends Error {
   constructor(message: string) { super(message); this.name = 'CborEncodeError'; }
@@ -51,6 +52,8 @@ const TAG_NEGATIVE_BIGNUM = 3;
  * nothing here depends on IANA never handing those numbers to someone else.
  */
 const TAG_GENERIC_OBJECT = 27;
+/** IANA: "URI" — the href as a text string. */
+const TAG_URI = 32;
 /** IANA: "Mathematical finite set" — an array of the members. */
 const TAG_SET = 258;
 /**
@@ -137,6 +140,14 @@ export class CborEncoder {
     if (value instanceof BidirectionalMap) return this.writeBidirectionalMap(value, depth);
     if (value instanceof Map) return this.writeMap(value, depth);
     if (value instanceof Set) return this.writeSet(value, depth);
+    if (value instanceof RegExp) return this.writeRegExp(value);
+    // Before any `toJSON` handling: `URL.prototype.toJSON` would collapse it
+    // to a bare string.
+    if (value instanceof URL) {
+      this.writeTag(TAG_URI);
+      return this.writeString(value.href);
+    }
+    if (value instanceof Error) return this.writeError(value, depth);
     if (value instanceof Number || value instanceof String || value instanceof Boolean) {
       // Wrapper objects unwrap like `JSON.stringify` does.  Left to the
       // generic branch, `Object.entries(new String('ab'))` would write
@@ -233,6 +244,67 @@ export class CborEncoder {
       for (const member of set) this.writeValue(member, depth + 2);
     } finally {
       this.ancestors.delete(set);
+    }
+  }
+
+  /**
+   * `27(["RegExp", source, flags])` — three elements, because tag 27's array
+   * is `[name, ...constructor arguments]` and `new RegExp(source, flags)`
+   * takes two.
+   *
+   * Not the registered tag 35: its content model is a bare text string with
+   * nowhere to put the flags, and folding `/source/flags` into one string is
+   * ambiguous the moment the source contains a slash.
+   *
+   * `lastIndex` is a transient cursor, not data — deliberately not carried.
+   */
+  private writeRegExp(pattern: RegExp): void {
+    this.writeTag(TAG_GENERIC_OBJECT);
+    this.writeHeader(4, 3);
+    this.writeString('RegExp');
+    this.writeString(pattern.source);
+    this.writeString(pattern.flags);
+  }
+
+  /**
+   * `27(["Error", {name, message, cause?, errors?}])` — one options-bag
+   * argument rather than positional ones, so the payload is the same shape
+   * the JSON tree's `__error__` carries and the two cannot come to describe
+   * an error differently.
+   *
+   * The stack is deliberately absent: a persisted stack leaks filesystem
+   * layout into long-lived rows, and a replayed one would lie about where
+   * the error was thrown.
+   *
+   * Three decode levels down to `cause` — the tag, the argument array, and
+   * the payload map.
+   */
+  private writeError(error: Error, depth: number): void {
+    this.enterContainer(error);
+    try {
+      const cause = (error as { cause?: unknown }).cause;
+      const errors = (error as { errors?: unknown }).errors;
+      // `AggregateError` carries its member errors in `errors`.
+      const hasErrors = Array.isArray(errors);
+
+      this.writeTag(TAG_GENERIC_OBJECT);
+      this.writeHeader(4, 2);
+      this.writeString('Error');
+      this.writeHeader(5, 2 + (cause !== undefined ? 1 : 0) + (hasErrors ? 1 : 0));
+      this.writeString('name');
+      this.writeString(error.name);
+      this.writeString('message');
+      this.writeString(error.message);
+      if (cause !== undefined) {
+        this.writeString('cause');
+        this.writeValue(cause, depth + 3);
+      }
+      if (hasErrors) {
+        this.writeString('errors');
+        this.writeValue(errors, depth + 3);
+      }
+    } finally {
+      this.ancestors.delete(error);
     }
   }
 
@@ -456,6 +528,8 @@ export class CborDecoder {
     const [name, ...args] = inner as [string, ...unknown[]];
     switch (name) {
       case 'BidirectionalMap': return buildBidirectionalMap(args);
+      case 'RegExp': return buildRegExp(args);
+      case 'Error': return buildError(args);
       default: return inner;
     }
   }
@@ -576,6 +650,14 @@ export class CborDecoder {
         const magnitude = bytesToBigInt(inner);
         return tag === TAG_UNSIGNED_BIGNUM ? magnitude : -1n - magnitude;
       }
+      case TAG_URI: {
+        if (typeof inner !== 'string') throw new CborDecodeError(`Tag ${TAG_URI} expects a string`);
+        try {
+          return new URL(inner);
+        } catch {
+          throw new CborDecodeError(`Tag ${TAG_URI} expects an absolute URL (got '${inner}')`);
+        }
+      }
       case TAG_SET:
         // Without the check `new Set('abc')` would happily produce a set of
         // three characters — silent garbage rather than a rejected payload.
@@ -602,6 +684,38 @@ function buildBidirectionalMap(args: readonly unknown[]): BidirectionalMap<unkno
     throw new CborDecodeError('BidirectionalMap expects a map of entries');
   }
   return new BidirectionalMap(entries);
+}
+
+function buildRegExp(args: readonly unknown[]): RegExp {
+  const [source, flags] = args;
+  if (typeof source !== 'string' || typeof flags !== 'string') {
+    throw new CborDecodeError('RegExp expects a source string and a flags string');
+  }
+  // Well-typed but still unbuildable — an unbalanced source or a bogus flag
+  // set.  Report it as a decode error rather than letting a raw SyntaxError
+  // out, which would name neither the tag nor the payload.
+  try {
+    return new RegExp(source, flags);
+  } catch {
+    throw new CborDecodeError(`RegExp cannot be built from /${source}/${flags}`);
+  }
+}
+
+function buildError(args: readonly unknown[]): Error {
+  const payload = args[0];
+  if (payload === null || typeof payload !== 'object' || Array.isArray(payload)) {
+    throw new CborDecodeError('Error expects a { name, message } object');
+  }
+  const fields = payload as { name?: unknown; message?: unknown; cause?: unknown; errors?: unknown };
+  if (typeof fields.name !== 'string' || typeof fields.message !== 'string') {
+    throw new CborDecodeError('Error expects a { name, message } object');
+  }
+  const errors = Array.isArray(fields.errors) ? fields.errors : undefined;
+  const out = rebuildError(fields.name, fields.message, errors);
+  // Key presence, not the value: a cause that IS `undefined` is different
+  // from no cause at all, and CBOR can tell them apart.
+  if ('cause' in fields) (out as { cause?: unknown }).cause = fields.cause;
+  return out;
 }
 
 /* --------------------------- BigInt ↔ bytes utilities ---------------------- */
