@@ -2,6 +2,10 @@ import { match, P } from 'ts-pattern';
 import { Actor } from '../../Actor.js';
 import type { ActorRef } from '../../ActorRef.js';
 import type { Cancellable } from '../../Scheduler.js';
+import {
+  DEFAULT_HAND_OFF_TIMEOUT_MS,
+  DEFAULT_REBALANCE_INTERVAL_MS,
+} from './ShardCoordinatorOptions.js';
 import type { ShardCoordinatorOptions, ShardCoordinatorOptionsType } from './ShardCoordinatorOptions.js';
 import { LeaderChanged, MemberRemoved } from '../ClusterEvents.js';
 import { NodeAddress, type NodeAddressData } from '../NodeAddress.js';
@@ -202,9 +206,10 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
       // path serialises with subsequent cluster events.
       this.self.tell({ kind: 'reconcile' } satisfies CoordinatorEvent);
     }
+    const rebalanceIntervalMs = this.options.rebalanceIntervalMs ?? DEFAULT_REBALANCE_INTERVAL_MS;
     this.rebalanceTimer = this.system.scheduler.scheduleAtFixedRateFunction(
-      this.options.rebalanceIntervalMs ?? 2_000,
-      this.options.rebalanceIntervalMs ?? 2_000,
+      rebalanceIntervalMs,
+      rebalanceIntervalMs,
       () => { if (this.isActive()) this.rebalanceTick(); },
     );
   }
@@ -951,7 +956,7 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
     const owner = this.regions.get(ownerKey);
     if (!owner) return;
 
-    const timeout = this.options.handOffTimeoutMs ?? 10_000;
+    const timeout = this.options.handOffTimeoutMs ?? DEFAULT_HAND_OFF_TIMEOUT_MS;
     const timer = this.system.scheduler.scheduleOnceFunction(timeout, () => {
       if (this.rebalanceInProgress.delete(shardId)) {
         this.system.log.warn(`[sharding] handoff timeout for shard ${shardId}; forcing reallocate`);
