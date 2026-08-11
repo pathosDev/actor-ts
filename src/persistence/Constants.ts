@@ -60,3 +60,21 @@ export const DYNAMODB_MAX_TRANSACTION_ITEMS = 100;
  * — including one built directly through `buildSqliteDatabase`.
  */
 export const DEFAULT_SQLITE_BUSY_TIMEOUT_MS = 1_000;
+
+/**
+ * Longest accepted id — the width of the `persistence_id` column in every
+ * relational dialect's DDL.  Anything longer cannot round-trip.
+ */
+export const MAX_PERSISTENCE_ID_LENGTH = 255;
+
+/**
+ * Longest accepted event tag, and most tags one event may carry.  Both cap
+ * the row-size and tag-index growth an application can cause from user input
+ * (#131 family) — see `TagValidator` for the full set of risks tag validation
+ * closes.
+ */
+export const MAX_TAG_LENGTH = 255;
+export const MAX_TAGS_PER_EVENT = 64;
+
+/** Sequence-number padding — matches `Number.MAX_SAFE_INTEGER`'s 16 digits with headroom. */
+export const SEQ_PADDING = 20;

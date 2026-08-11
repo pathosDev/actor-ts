@@ -31,8 +31,8 @@ export { decodePayload, encodePayload } from './storage/PayloadCodec.js';
 export {
   assertValidPersistenceId,
   persistenceIdRejection,
-  MAX_PERSISTENCE_ID_LENGTH,
 } from './storage/PersistenceIdValidator.js';
+export { MAX_PERSISTENCE_ID_LENGTH } from './Constants.js';
 export { StoreSerializerOptionsBuilder } from './storage/StoreSerializerOptions.js';
 export type { StoreSerializerOptionsBase } from './storage/StoreSerializerOptions.js';
 

@@ -1,3 +1,4 @@
+import { MAX_PERSISTENCE_ID_LENGTH } from '../Constants.js';
 import { PATH_TRAVERSAL_SEGMENTS } from '../../util/Constants.js';
 
 /**
@@ -52,12 +53,6 @@ import { PATH_TRAVERSAL_SEGMENTS } from '../../util/Constants.js';
  * stays readable — `journal.read(oldId, 1)` still returns it, which is
  * what makes this breaking change recoverable.
  */
-
-/**
- * Longest accepted id — the width of the `persistence_id` column in every
- * relational dialect's DDL.  Anything longer cannot round-trip.
- */
-export const MAX_PERSISTENCE_ID_LENGTH = 255;
 
 /**
  * True when `persistenceId` contains a C0 control character or DEL.
