@@ -4,6 +4,13 @@
  * We enqueue N messages in one batch, then `ask` for the final count.
  * `opsPerIteration` = batch size so the harness reports messages/second.
  *
+ * `batch=100k` was fiction until #1148.  The default mailbox was bounded at
+ * 10 000, so the iteration handled ~9 999 messages while the harness was
+ * told it had handled 100 000 — the row printed ~1.04M msg/s against a real
+ * ~245k, four times the truth, and the shape of the drop path rather than
+ * the drain path (#1027).  Every batch now completes in full, which is why
+ * the rows finally agree with each other.
+ *
  *   bun run benchmarks/single-node/tell-throughput.ts
  */
 import { Actor, ActorSystem, ActorSystemOptions, LogLevel, NoopLogger } from '../../src/index.js';
