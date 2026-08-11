@@ -556,6 +556,179 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   cannot be restored disagreeing.  The `CborSerializer` exception applies
   here too (#1036).
 
+- **UUIDs in `src/` are minted through `randomUuid()`** (#1110).  Three call
+  sites still called the platform primitive themselves, in two different
+  spellings: `ClusterClient.nextAskId` and
+  `ClusterClientReceptionist.onAskFailure` used `globalThis.crypto.randomUUID()`,
+  while the `requestId` middleware imported `randomUUID` from `node:crypto`.
+  All three now go through the helper #1109 added, which puts the choice of
+  primitive back in the one module that owns where identifiers come from —
+  relevant the day it has to change (a runtime without `crypto.randomUUID`, or
+  UUIDv7 for a lexicographically ordered persistence key), since a `grep` for
+  `randomUuid` previously found none of them.  The middleware change also
+  removes the last `node:crypto` import in `src/` that had a Web Crypto
+  equivalent; the three remaining ones (`timingSafeEqual`, `createHmac`,
+  `randomBytes` in `BasicAuth`, `BearerToken` and `Csrf`) do not, so they stay.
+  No behaviour or API change — both spellings return a lowercase v4 UUID, and
+  the middleware's `VALID_ID` guard already had to accept one, since it also
+  vets client-supplied ids.  Docs samples that predated the helper (the K8s
+  lease test name, the `LogContext` correlation id, the `requestId` default)
+  now show `randomUuid` instead of sending the reader to the raw primitive.
+
+- **The receptionist, the pub-sub mediator and the broker base index their
+  subscribers through `BidirectionalMultiMap`** (#1037).  All three kept the
+  same relation by hand, each with a comment explaining why it had to, and
+  all three now converge on the same pair: the relation plus a
+  `path → ActorRef` map for the fan-out target and the unwatch handle.
+  Behaviour is unchanged; what goes away is the lockstep discipline and one
+  latent defect with it.  `Receptionist.totalSubscribers` no longer exists —
+  it was exactly the pair count, so it is `subscriptions.size`, and with it
+  goes a counter that decremented *before* its own "did this subscriber
+  exist" guard.  Today's single caller happened to guard it, so the count
+  stayed right; a second one that did not would have drifted the subscriber
+  cap downward permanently, and a derived value cannot drift.  In the
+  mediator, `SubscriberSet` becomes `TopicState` — what a topic holds
+  besides its subscribers — and the four hand-written copies of the
+  empty-topic guard become one `maybeDropTopic`.  The fan-out paths there
+  gain one map lookup per local subscriber per publish, the price of keying
+  on paths rather than on ref identity — identity keying is what does not
+  survive death watch.  Measured on `benchmarks/cluster/pubsub-fanout.ts`
+  at 1000 local subscribers, three runs each, it does not show: 63.3 / 61.5
+  / 61.9 µs per delivery before against 60.0 / 62.8 / 55.9 µs after.  The
+  lookup is inside the noise of the mailbox hop it sits next to.
+
+- **The `fn` parameter name is spelled out across the API** (#1112).  136
+  sites in 34 files under `src/` still used `fn`, the short form `AGENTS.md`
+  bans by name alongside `Cmd`/`Msg`/`Ctx`/`Impl`/`Ctor`.  Parameter names
+  reach users — they are part of the published `.d.ts`, the generated
+  TypeDoc and IDE signature help — so this touches public surface:
+  `Dispatcher.execute(task)`, `Scheduler.scheduleOnceFunction(delayMs,
+  task)`, `LogContext.run/with/runFresh/runEach(…, callback)`,
+  `Tracer.withActiveSpan(span, callback)`, `TestKit.within(durationMs,
+  callback)`, `SqliteDb.transaction(body)`,
+  `HealthCheckRegistry.addLiveness/addReadiness(check)`,
+  `DistributedData.update/updateAsync(key, factory, mutator)`,
+  `ORMap.updateWith(…, mutator)`, `EventDispatcherBuilder.on(kind,
+  handler)`, and the four HTTP middleware builders, where the new name is
+  the field the builder writes (`withGenerate(generate)`,
+  `withValidate(validate)`, `withOnTimeout(onTimeout)`,
+  `withOriginPredicate(predicate)`).  **Not breaking:** arguments are
+  positional, and every type whose *field* was renamed (`ManualScheduler`'s
+  task record, DistributedData's update message, the Node worker adapter's
+  listener map) is module-local or private.  No behaviour change.
+
+  Three declarations that transcribe a vendor shape — better-sqlite3's
+  `transaction`, `@opentelemetry/api`'s `context.with`, and the
+  `bun:test`/Vitest/Jest `beforeAll`/`afterAll` hooks — were renamed too:
+  structural assignability ignores parameter names, so only the *member*
+  names have to stay verbatim, and those did.
+
+- **Documentation corrected where it named parameters that no longer
+  existed** (#1112).  `persistence/fsm/*` documented `onEnter(state, fn)` /
+  `onExit(state, fn)` / `onTransition(fn)` where the source says `hook` /
+  `hook` / `cb` and the method is `onExitState` (`onExit` is a private
+  field); `fundamentals/event-stream` documented `cluster.subscribe(fn, …)`
+  against a parameter named `listener`; and the
+  `operations/upgrades/rolling-migration` helper table listed
+  `migrateSnapshotStore(store, pids, fn)` for `(store, persistenceIds,
+  manifestFor)`.  All pre-existing drift, fixed in EN and DE together.
+
+- **BREAKING — `ClusterOptions.firstSightMaxVersionSkewMs` is now
+  `maxVersionSkewMs`** (#114).  *Migration:* `withFirstSightMaxVersionSkewMs(ms)`
+  → `withMaxVersionSkewMs(ms)`, same default (5 min), same unit; the option never
+  had a HOCON key, so `reference.conf` is unchanged.  The old name stopped being
+  true once the cap applied to every merge rather than to a first sighting.
+  Behaviour changes with it: a refusal is now permanent — a node whose clock runs
+  further ahead than the budget stays in the member list without roles until its
+  clock comes back, instead of getting through on its own second frame.  That was
+  always this cap's verdict; the second frame was the bypass.
+
+- **Sharding resolves entities and regions by index instead of scanning**
+  (#1035).  `Passivate` and `Terminated` arrive carrying a ref and nothing
+  else, so `Shard` found the entity they refer to by walking every entry in
+  its entity map — O(n) per entity stop, and therefore O(n²) to drain a shard
+  during handoff, on the one path that runs once per entity and precisely
+  when a shard is at its largest.  It now keeps a `BidirectionalMap` of
+  entity id ↔ actor path; the path *string* is indexed rather than the ref,
+  because that is what `ActorRef.equals` compares.  `ClusterSharding`
+  likewise suffix-matched every registered path to resolve a region by type
+  name, on a path reached for every message sent through a sharded type, and
+  now keeps a direct index.  No behavior change.
+
+- **A resumed actor's children are resumed with it** (#635).  A failure
+  suspends the failing actor's subtree so nothing in it runs while the
+  supervisor decides, but `Directive.Resume` only ever reached the actor that
+  failed.  Its children stayed suspended permanently: mailboxes filled,
+  nothing was processed, and there was no error and no dead letter to notice
+  it by.  `suspend` and `resume` now walk the same tree.
+
+- **BREAKING — a restart stops the actor's children** (#634).  A restart
+  replaces the `Actor` instance while the cell, and with it the child map,
+  survives.  Children were therefore inherited by the new incarnation — which
+  made an ordinary pattern impossible: `postRestart` re-runs `preStart`, so an
+  actor that spawned a *named* child there hit `Child name … is not unique` on
+  its first restart and never recovered.
+
+  The children are now stopped after `preRestart` and **before** the
+  replacement is built, and the restart waits for them, so the fresh instance
+  starts from an empty child map.
+
+  **Migration:** an actor whose children should outlive a restart overrides
+  the new `Actor.stopChildrenOnRestart()` to return `false`, and adopts the
+  survivor in `preStart` — `this.child = this.context.child('name')
+  .toNullable() ?? this.context.spawn(Child, 'name')`.  An instance field
+  cannot carry that across a restart: `preStart` runs on a fresh instance, so
+  `this.child ??= …` is always unset and re-spawns into the name the surviving
+  child still holds.  It is a hook rather than a
+  `preRestart` override because the teardown has to be awaited, and
+  `preRestart` cannot tell the framework it started something worth waiting
+  for.
+
+- **BREAKING — a sharded entity's child name escapes its id injectively**
+  (#568).  `entityName()` folded every character outside `[A-Za-z0-9_-]` to
+  `_`, which is many-to-one.  Two ids that differed only in punctuation
+  produced the same child name, and when they also hashed into the same
+  shard the second one missed the shard's id-keyed map, called
+  `createEntity`, and `_createChild` threw `Child name … is not unique`.
+  That throw kills the Shard actor — and with it every unrelated entity
+  living in that shard, including other tenants'.  It needed no attacker:
+  `a.b@x.com` and `a-b@x.com` collided, and `extractEntityId` is documented
+  as reading the id straight off an inbound message.
+
+  A code unit outside `[A-Za-z0-9_-.@:+]` is now escaped as `~` plus four
+  hex digits.  Ordinary ids are unchanged — `user-42`, `a.b@x.com` and
+  `tenant:eu` all read as themselves — and the escape works per UTF-16 code
+  unit rather than percent-encoding UTF-8, so it is total: a lone surrogate
+  cannot make it throw inside the shard, which would recreate the very
+  failure being fixed.
+
+  **Migration:** entity actor *paths* change shape for ids containing
+  escaped characters — visible in the DevTools tree, in log lines, and in
+  remote path rendering.  Nothing persists a path (remembered entities store
+  ids), so there is no data migration.  Code that recovered an id by slicing
+  the `entity-` prefix off `context.path.name` must read `this.entityId`
+  instead; that accessor has existed since #832 and is the supported route.
+  Nothing decodes a path segment, and `parsePathSegments` now says so — the
+  escape is injective only while it stays escaped end to end.
+
+- **BREAKING — the cluster wire protocol's discriminator is `kind`** (#494).
+  The framework had three spellings for the same concept: `t` on the cluster
+  wire (`hello`, `gossip`, `envelope`, `leave`, …) and on the internal
+  coordinator/singleton event unions, `$t` on the sharding protocol
+  (`sharding.Register`, `sharding.ShardHome`, …), and `kind` everywhere else —
+  which is the one AGENTS.md prescribes. All three are now `kind`.
+
+  **Migration:** a rolling upgrade is not possible. A v0.13.0 node and a
+  v0.14.0 node cannot talk to each other — the discriminator they read is
+  absent in the other's frames, so every frame is unrecognised. Stop the
+  whole cluster, then start it again on the new version. Nothing in the
+  public API changes; this affects only the bytes on the wire between nodes
+  (and anything speaking that protocol directly, e.g. a hand-rolled
+  `ClusterClient` peer or a test that constructs raw frames).
+
+  The DevTools tap protocol already used `kind` and is untouched, so the
+  embedded UI bundle and any tap client keep working across the upgrade.
+
 ### Fixed
 
 - **The CBOR encoder no longer overflows the stack, or writes bytes it
@@ -1473,181 +1646,6 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   convergence resumes once the last node is up.  Tags minted by either version
   keep working on both — a tag is an opaque string to every comparison it
   takes part in, and the two formats cannot collide.
-
-### Changed
-
-- **UUIDs in `src/` are minted through `randomUuid()`** (#1110).  Three call
-  sites still called the platform primitive themselves, in two different
-  spellings: `ClusterClient.nextAskId` and
-  `ClusterClientReceptionist.onAskFailure` used `globalThis.crypto.randomUUID()`,
-  while the `requestId` middleware imported `randomUUID` from `node:crypto`.
-  All three now go through the helper #1109 added, which puts the choice of
-  primitive back in the one module that owns where identifiers come from —
-  relevant the day it has to change (a runtime without `crypto.randomUUID`, or
-  UUIDv7 for a lexicographically ordered persistence key), since a `grep` for
-  `randomUuid` previously found none of them.  The middleware change also
-  removes the last `node:crypto` import in `src/` that had a Web Crypto
-  equivalent; the three remaining ones (`timingSafeEqual`, `createHmac`,
-  `randomBytes` in `BasicAuth`, `BearerToken` and `Csrf`) do not, so they stay.
-  No behaviour or API change — both spellings return a lowercase v4 UUID, and
-  the middleware's `VALID_ID` guard already had to accept one, since it also
-  vets client-supplied ids.  Docs samples that predated the helper (the K8s
-  lease test name, the `LogContext` correlation id, the `requestId` default)
-  now show `randomUuid` instead of sending the reader to the raw primitive.
-
-- **The receptionist, the pub-sub mediator and the broker base index their
-  subscribers through `BidirectionalMultiMap`** (#1037).  All three kept the
-  same relation by hand, each with a comment explaining why it had to, and
-  all three now converge on the same pair: the relation plus a
-  `path → ActorRef` map for the fan-out target and the unwatch handle.
-  Behaviour is unchanged; what goes away is the lockstep discipline and one
-  latent defect with it.  `Receptionist.totalSubscribers` no longer exists —
-  it was exactly the pair count, so it is `subscriptions.size`, and with it
-  goes a counter that decremented *before* its own "did this subscriber
-  exist" guard.  Today's single caller happened to guard it, so the count
-  stayed right; a second one that did not would have drifted the subscriber
-  cap downward permanently, and a derived value cannot drift.  In the
-  mediator, `SubscriberSet` becomes `TopicState` — what a topic holds
-  besides its subscribers — and the four hand-written copies of the
-  empty-topic guard become one `maybeDropTopic`.  The fan-out paths there
-  gain one map lookup per local subscriber per publish, the price of keying
-  on paths rather than on ref identity — identity keying is what does not
-  survive death watch.  Measured on `benchmarks/cluster/pubsub-fanout.ts`
-  at 1000 local subscribers, three runs each, it does not show: 63.3 / 61.5
-  / 61.9 µs per delivery before against 60.0 / 62.8 / 55.9 µs after.  The
-  lookup is inside the noise of the mailbox hop it sits next to.
-
-- **The `fn` parameter name is spelled out across the API** (#1112).  136
-  sites in 34 files under `src/` still used `fn`, the short form `AGENTS.md`
-  bans by name alongside `Cmd`/`Msg`/`Ctx`/`Impl`/`Ctor`.  Parameter names
-  reach users — they are part of the published `.d.ts`, the generated
-  TypeDoc and IDE signature help — so this touches public surface:
-  `Dispatcher.execute(task)`, `Scheduler.scheduleOnceFunction(delayMs,
-  task)`, `LogContext.run/with/runFresh/runEach(…, callback)`,
-  `Tracer.withActiveSpan(span, callback)`, `TestKit.within(durationMs,
-  callback)`, `SqliteDb.transaction(body)`,
-  `HealthCheckRegistry.addLiveness/addReadiness(check)`,
-  `DistributedData.update/updateAsync(key, factory, mutator)`,
-  `ORMap.updateWith(…, mutator)`, `EventDispatcherBuilder.on(kind,
-  handler)`, and the four HTTP middleware builders, where the new name is
-  the field the builder writes (`withGenerate(generate)`,
-  `withValidate(validate)`, `withOnTimeout(onTimeout)`,
-  `withOriginPredicate(predicate)`).  **Not breaking:** arguments are
-  positional, and every type whose *field* was renamed (`ManualScheduler`'s
-  task record, DistributedData's update message, the Node worker adapter's
-  listener map) is module-local or private.  No behaviour change.
-
-  Three declarations that transcribe a vendor shape — better-sqlite3's
-  `transaction`, `@opentelemetry/api`'s `context.with`, and the
-  `bun:test`/Vitest/Jest `beforeAll`/`afterAll` hooks — were renamed too:
-  structural assignability ignores parameter names, so only the *member*
-  names have to stay verbatim, and those did.
-
-- **Documentation corrected where it named parameters that no longer
-  existed** (#1112).  `persistence/fsm/*` documented `onEnter(state, fn)` /
-  `onExit(state, fn)` / `onTransition(fn)` where the source says `hook` /
-  `hook` / `cb` and the method is `onExitState` (`onExit` is a private
-  field); `fundamentals/event-stream` documented `cluster.subscribe(fn, …)`
-  against a parameter named `listener`; and the
-  `operations/upgrades/rolling-migration` helper table listed
-  `migrateSnapshotStore(store, pids, fn)` for `(store, persistenceIds,
-  manifestFor)`.  All pre-existing drift, fixed in EN and DE together.
-
-- **BREAKING — `ClusterOptions.firstSightMaxVersionSkewMs` is now
-  `maxVersionSkewMs`** (#114).  *Migration:* `withFirstSightMaxVersionSkewMs(ms)`
-  → `withMaxVersionSkewMs(ms)`, same default (5 min), same unit; the option never
-  had a HOCON key, so `reference.conf` is unchanged.  The old name stopped being
-  true once the cap applied to every merge rather than to a first sighting.
-  Behaviour changes with it: a refusal is now permanent — a node whose clock runs
-  further ahead than the budget stays in the member list without roles until its
-  clock comes back, instead of getting through on its own second frame.  That was
-  always this cap's verdict; the second frame was the bypass.
-
-- **Sharding resolves entities and regions by index instead of scanning**
-  (#1035).  `Passivate` and `Terminated` arrive carrying a ref and nothing
-  else, so `Shard` found the entity they refer to by walking every entry in
-  its entity map — O(n) per entity stop, and therefore O(n²) to drain a shard
-  during handoff, on the one path that runs once per entity and precisely
-  when a shard is at its largest.  It now keeps a `BidirectionalMap` of
-  entity id ↔ actor path; the path *string* is indexed rather than the ref,
-  because that is what `ActorRef.equals` compares.  `ClusterSharding`
-  likewise suffix-matched every registered path to resolve a region by type
-  name, on a path reached for every message sent through a sharded type, and
-  now keeps a direct index.  No behavior change.
-
-- **A resumed actor's children are resumed with it** (#635).  A failure
-  suspends the failing actor's subtree so nothing in it runs while the
-  supervisor decides, but `Directive.Resume` only ever reached the actor that
-  failed.  Its children stayed suspended permanently: mailboxes filled,
-  nothing was processed, and there was no error and no dead letter to notice
-  it by.  `suspend` and `resume` now walk the same tree.
-
-- **BREAKING — a restart stops the actor's children** (#634).  A restart
-  replaces the `Actor` instance while the cell, and with it the child map,
-  survives.  Children were therefore inherited by the new incarnation — which
-  made an ordinary pattern impossible: `postRestart` re-runs `preStart`, so an
-  actor that spawned a *named* child there hit `Child name … is not unique` on
-  its first restart and never recovered.
-
-  The children are now stopped after `preRestart` and **before** the
-  replacement is built, and the restart waits for them, so the fresh instance
-  starts from an empty child map.
-
-  **Migration:** an actor whose children should outlive a restart overrides
-  the new `Actor.stopChildrenOnRestart()` to return `false`, and adopts the
-  survivor in `preStart` — `this.child = this.context.child('name')
-  .toNullable() ?? this.context.spawn(Child, 'name')`.  An instance field
-  cannot carry that across a restart: `preStart` runs on a fresh instance, so
-  `this.child ??= …` is always unset and re-spawns into the name the surviving
-  child still holds.  It is a hook rather than a
-  `preRestart` override because the teardown has to be awaited, and
-  `preRestart` cannot tell the framework it started something worth waiting
-  for.
-
-- **BREAKING — a sharded entity's child name escapes its id injectively**
-  (#568).  `entityName()` folded every character outside `[A-Za-z0-9_-]` to
-  `_`, which is many-to-one.  Two ids that differed only in punctuation
-  produced the same child name, and when they also hashed into the same
-  shard the second one missed the shard's id-keyed map, called
-  `createEntity`, and `_createChild` threw `Child name … is not unique`.
-  That throw kills the Shard actor — and with it every unrelated entity
-  living in that shard, including other tenants'.  It needed no attacker:
-  `a.b@x.com` and `a-b@x.com` collided, and `extractEntityId` is documented
-  as reading the id straight off an inbound message.
-
-  A code unit outside `[A-Za-z0-9_-.@:+]` is now escaped as `~` plus four
-  hex digits.  Ordinary ids are unchanged — `user-42`, `a.b@x.com` and
-  `tenant:eu` all read as themselves — and the escape works per UTF-16 code
-  unit rather than percent-encoding UTF-8, so it is total: a lone surrogate
-  cannot make it throw inside the shard, which would recreate the very
-  failure being fixed.
-
-  **Migration:** entity actor *paths* change shape for ids containing
-  escaped characters — visible in the DevTools tree, in log lines, and in
-  remote path rendering.  Nothing persists a path (remembered entities store
-  ids), so there is no data migration.  Code that recovered an id by slicing
-  the `entity-` prefix off `context.path.name` must read `this.entityId`
-  instead; that accessor has existed since #832 and is the supported route.
-  Nothing decodes a path segment, and `parsePathSegments` now says so — the
-  escape is injective only while it stays escaped end to end.
-
-- **BREAKING — the cluster wire protocol's discriminator is `kind`** (#494).
-  The framework had three spellings for the same concept: `t` on the cluster
-  wire (`hello`, `gossip`, `envelope`, `leave`, …) and on the internal
-  coordinator/singleton event unions, `$t` on the sharding protocol
-  (`sharding.Register`, `sharding.ShardHome`, …), and `kind` everywhere else —
-  which is the one AGENTS.md prescribes. All three are now `kind`.
-
-  **Migration:** a rolling upgrade is not possible. A v0.13.0 node and a
-  v0.14.0 node cannot talk to each other — the discriminator they read is
-  absent in the other's frames, so every frame is unrecognised. Stop the
-  whole cluster, then start it again on the new version. Nothing in the
-  public API changes; this affects only the bytes on the wire between nodes
-  (and anything speaking that protocol directly, e.g. a hand-rolled
-  `ClusterClient` peer or a test that constructs raw frames).
-
-  The DevTools tap protocol already used `kind` and is untouched, so the
-  embedded UI bundle and any tap client keep working across the upgrade.
 
 ## [0.13.0] — 2026-08-05
 
