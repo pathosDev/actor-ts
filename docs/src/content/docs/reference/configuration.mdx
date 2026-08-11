@@ -524,6 +524,23 @@ Each layer overlays on top of the previous.  Layer 6 (constructor
 fields) always wins for the fields it covers; everything else
 flows through the HOCON merge.
 
+### Where the built-in default lives
+
+Layer 1 is `reference.conf`, but not every setting has a key there — and
+even those that do need a value in code for the case where nothing is
+configured.  That value has a fixed home, so you can always find what a
+setting falls back to:
+
+- **Options defaults** sit next to the field they back, in the matching
+  `XOptions.ts`.  `DEFAULT_MAX_ENTRIES` is in `InMemoryCacheOptions.ts`,
+  `DEFAULT_NUM_SHARDS` in `ShardingOptions.ts`.
+- **Everything else** — caps, bounds and timeouts with no option behind
+  them — is in a `Constants.ts`: `src/<subsystem>/Constants.ts` for one
+  subsystem, `src/util/Constants.ts` for values several share.
+
+So a `reference.conf` leaf and its code-level fallback are always exactly
+two files, and the second one is named after the first.
+
 import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="Plugin keys are fully-qualified paths">

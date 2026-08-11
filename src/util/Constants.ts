@@ -1,26 +1,43 @@
 /**
- * Cross-subsystem default values that were previously duplicated as
- * inline literals across multiple sites.
+ * The **cross-subsystem** tier of the constants layout: values consumed by
+ * two or more top-level directories under `src/`.
  *
- * Centralising serves two purposes:
- *   1. **One source of truth** — when the gossip interval needs to
- *      change, every consumer picks up the new default automatically
- *      (per-call options still override at the site).
- *   2. **Self-documenting magic numbers** — the named export
- *      `DEFAULT_GOSSIP_INTERVAL_MS` is clearer at the call site than
- *      a bare `1_000` literal with a comment.
+ * This is the last of four homes a constant can have, and the rule that
+ * picks between them is in AGENTS.md under *Constants*.  In short: a
+ * built-in default goes beside its options type in `XOptions.ts`; a value
+ * that *is* its file's implementation (a codec's tags, a parser's regex, a
+ * singleton, a derived value) stays put; every other tuned cap, bound,
+ * timeout or size goes in its subsystem's `src/<subsystem>/Constants.ts`;
+ * and only what crosses subsystems reaches here.
  *
- * Naming convention: `DEFAULT_<DOMAIN>_<UNIT>` (always with the unit
- * suffix, since milliseconds are by far the most common unit and
- * mixing up `5` (seconds) with `5_000` (milliseconds) is the kind of
- * bug centralisation should head off).
+ * Why this file rather than a subsystem one: `src/util/` has **no outward
+ * import at all** — verified, not aspirational — so it is the one module
+ * every subsystem may depend on without any of them depending on each
+ * other.  That property is what makes it the shared tier, and it is why a
+ * constant that grows a second consumer in another subsystem moves here
+ * rather than being imported across a subsystem boundary.
  *
- * **Scope rule**: a value lives here only if it is **shared across
- * multiple subsystems** (cluster + persistence + ...).  File-local
- * security-tuned constants (e.g. the `MAX_VERSION_SKEW_MS` in
- * `Cluster.ts`, whose 24h value is justified by the security-exploit
- * comment at the call site) stay where they are — moving them here
- * would obscure the per-site rationale.
+ * Centralising buys two things.  **One source of truth** — change the
+ * gossip interval and every consumer follows, with per-call options still
+ * overriding at the site.  And **self-documenting magic numbers** — a
+ * named `DEFAULT_GOSSIP_INTERVAL_MS` at a call site says what a bare
+ * `1_000` cannot.
+ *
+ * Naming: `DEFAULT_<DOMAIN>_<UNIT>`, always with the unit suffix, since
+ * milliseconds dominate and confusing `5` (seconds) for `5_000`
+ * (milliseconds) is exactly the bug centralising is meant to head off.
+ *
+ * Note what is *not* here.  Values with a single consumer belong to that
+ * consumer's subsystem even when they look general — this file held the
+ * tombstone TTL, the shutdown phase timeout and the mailbox defaults for a
+ * while on that mistake, and it held a snapshot-cache TTL that nothing
+ * imported at all while its intended consumer kept a second copy.  Two
+ * constants may also share a value and still stay apart:
+ * `MAX_WALL_CLOCK_SKEW_MS` in `cluster/Constants.ts` and
+ * `DEFAULT_TOMBSTONE_TTL_MS` in `ClusterOptions.ts` are both 24 h for
+ * unrelated reasons — a security cap on peer-supplied timestamps versus a
+ * retention window — and merging them would couple two decisions that
+ * should be free to move independently.
  */
 
 /**

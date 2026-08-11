@@ -9,6 +9,76 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ## [Unreleased]
 
+### Changed
+
+- **Constants have a placement rule, and follow it** (#1142).  `src/` held
+  ~300 module-level `SCREAMING_SNAKE` constants across 130 files with no
+  documented rule for where any of them belonged; nine lived in
+  `src/util/Constants.ts` and the rest sat wherever they were first needed.
+  A constant now has exactly four possible homes, checked in order: beside
+  its field in `XOptions.ts` when it is an options default; where it already
+  is when it *is* its file's implementation (a codec's tag vocabulary, a
+  parser's regex, a singleton, a derived value, a frame-schema bound); in
+  `src/<subsystem>/Constants.ts` for every other tuned cap, bound or
+  timeout; and in `src/util/Constants.ts` only when two or more subsystems
+  consume it.  The rule is written down in AGENTS.md, and
+  `docs/…/reference/configuration.mdx` now says where the built-in default
+  behind a `reference.conf` key lives.
+
+  Eight `Constants.ts` modules hold 42 values; ~20 misplaced options
+  defaults moved next to the option they back.  **Every public name is
+  unchanged** — the barrels re-export from the new location, so no import
+  breaks.  Two structural gains fall out of it: an `XOptions.ts` no longer
+  imports a functional module to reach a default it shares with another
+  options type (`DEFAULT_SQLITE_BUSY_TIMEOUT_MS`,
+  `RESERVED_SERIALIZER_IDS_BELOW`), and `ClusterSharding` no longer
+  value-imports the 700-line `ShardRegion` actor for one integer.
+
+### Fixed
+
+- **A dead constant and its live duplicate** (#1142).
+  `DEFAULT_SNAPSHOT_CACHE_TTL_MS` had zero importers while the consumer its
+  own docblock named, `CachedSnapshotStore`, declared the same five minutes
+  locally as `DEFAULT_TTL_MS`.  Exactly the drift the shared-constants
+  module was introduced (#257) to prevent, and invisible because knip's
+  `exports` rule is off.  One declaration now, in
+  `CachedSnapshotStoreOptions.ts` where the `ttlMs` field is.
+
+- **`reEncryptionSweep` rebuilt the ATS1 magic prefix** (#1142) instead of
+  importing the `ATS1_MAGIC` that `BodyCodec` already exports — a second
+  copy of a format definition, in a file that already imported four other
+  things from the codec.
+
+- **The heartbeat interval existed twice** (#1142).
+  `defaultFailureDetectorOptions` and `defaultPhiAccrualOptions` each
+  carried `heartbeatIntervalMs: 500`, so swapping detectors could silently
+  change how often a node talks to its peers.  Worse, only the first was
+  pinned to `reference.conf` by a test; the φ-accrual copy was pinned to
+  nothing.
+
+- **Unnamed literals mirroring `reference.conf`** (#1142): the dispatcher
+  throughput was written out as a bare `16` in three places
+  (`ActorSystem`, and twice in `Dispatcher`), and `ShardCoordinator`
+  resolved its rebalance interval and hand-off timeout against `?? 2_000`
+  and `?? 10_000`.  All now named, and verified to match the HOCON leaves
+  they mirror.  Also de-duplicated: `LOCAL_ADDRESS` and `TOP_MAILBOX_COUNT`
+  in devtools, the DynamoDB batch limit, and the explain ring's default
+  capacity, which the runtime API and the DevTools RPC each answered
+  separately.
+
+### Security
+
+- **One path-traversal denylist instead of two** (#1142).  `ActorPath` and
+  `PersistenceIdValidator` each declared `new Set(['.', '..'])` under a
+  different name.  Both guard against the same attack — a persistence id
+  becomes a filesystem or object-storage key where `..` climbs out of the
+  configured prefix (#133), a path segment reaches actor-selection
+  resolution — and neither imported the other, so extending one would have
+  left the other accepting what it now rejects.  Shared as
+  `PATH_TRAVERSAL_SEGMENTS`, typed `ReadonlySet` so a caller cannot delete
+  from it.  No behaviour change: both sites reject exactly what they did
+  before.
+
 ## [0.14.0] — 2026-08-11
 
 ### Added
