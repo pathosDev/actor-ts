@@ -4,6 +4,7 @@ import { CborSerializer } from '../../../src/serialization/CborSerializer.js';
 import { decodeJsonTree, encodeJsonTree, TYPE_TAGS } from '../../../src/serialization/JsonTree.js';
 import { JsonSerializer } from '../../../src/serialization/JsonSerializer.js';
 import { BidirectionalMap } from '../../../src/util/BidirectionalMap.js';
+import { BidirectionalMultiMap } from '../../../src/util/BidirectionalMultiMap.js';
 
 /**
  * The two rich-type paths, held against each other.
@@ -64,6 +65,14 @@ const FIXTURES: readonly ParityFixture[] = [
     tag: '__bidirectionalmap__',
     values: [new BidirectionalMap<unknown, unknown>([['ada', 1], ['grace', 2]]), new BidirectionalMap()],
     check: (decoded) => expect(decoded).toBeInstanceOf(BidirectionalMap),
+  },
+  {
+    tag: '__bidirectionalmultimap__',
+    values: [
+      new BidirectionalMultiMap<unknown, unknown>([['ada', 1], ['ada', 2], ['grace', 2]]),
+      new BidirectionalMultiMap(),
+    ],
+    check: (decoded) => expect(decoded).toBeInstanceOf(BidirectionalMultiMap),
   },
   {
     tag: '__bigint__',

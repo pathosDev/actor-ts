@@ -1,6 +1,6 @@
 ---
 title: Utilities
-description: Everything the root entry point exports from its own toolbox — Option, Try and Either for results without null; Lazy for compute-once values; BidirectionalMap for a map with a maintained inverse; randomString, safeStringify and lazyImportModule for naming, logging and optional peer dependencies.
+description: Everything the root entry point exports from its own toolbox — Option, Try and Either for results without null; Lazy for compute-once values; BidirectionalMap and BidirectionalMultiMap for relations with a maintained inverse; randomString, safeStringify and lazyImportModule for naming, logging and optional peer dependencies.
 ---
 
 The framework solves a handful of problems for itself that turn up again in the
@@ -15,7 +15,15 @@ of them are required to use `actor-ts` — reach for one when you have the probl
 it solves.
 
 ```ts
-import { BidirectionalMap, Lazy, none, safeStringify, some, tryOf } from 'actor-ts';
+import {
+  BidirectionalMap,
+  BidirectionalMultiMap,
+  Lazy,
+  none,
+  safeStringify,
+  some,
+  tryOf,
+} from 'actor-ts';
 ```
 
 ## Option — a value that might not be there
@@ -198,6 +206,69 @@ A store configured with `withSerializer(new CborSerializer())` carries it too,
 under CBOR tag 27. That was not always so — until
 [#1036](https://github.com/pathosDev/actor-ts/issues/1036) the CBOR codec
 dropped it, along with `Map` and `Set`, without raising anything.
+
+## BidirectionalMultiMap — the same for a many-to-many relation
+
+`BidirectionalMultiMap<L, R>` relates many lefts to many rights and answers in
+both directions. It exists for the shape a subscription registry has: one
+subscriber holds many topics, one topic has many subscribers, and the message
+telling you a subscriber is gone carries only the subscriber.
+
+```ts
+import { BidirectionalMultiMap } from 'actor-ts';
+
+const subscriptions = new BidirectionalMultiMap<string, string>();
+subscriptions.add('news', 'ada');
+subscriptions.add('news', 'grace');
+subscriptions.add('sport', 'ada');
+
+subscriptions.get('news');        // Set { 'ada', 'grace' }
+subscriptions.getKeys('ada');     // Set { 'news', 'sport' }  ← the reverse direction
+subscriptions.size;               // 3 — pairs, not participants
+
+subscriptions.deleteRight('ada'); // ada leaves every topic at once
+subscriptions.hasLeft('sport');   // false — sport held only ada, so it is gone too
+```
+
+That last line is the invariant worth knowing: **there is no such thing as an
+empty participant.** Removing the last partner removes the participant from
+both directions. A topic left behind holding an empty subscriber set is
+invisible to a pair count, keeps occupying whatever cap bounds your topics, and
+would let `inverse()` hand back something related to nothing.
+
+| Beyond a pair of maps | What it does |
+| --- | --- |
+| `add(left, right)` / `delete(left, right)` | One pair, both directions. `add` is idempotent. |
+| `get(left)` / `getKeys(right)` | Everything one side is related to. Empty set when absent — never `undefined`, so you can iterate without a guard. |
+| `deleteLeft(left)` / `deleteRight(right)` | Drop one participant entirely — the `Terminated` case. |
+| `hasLeft(left)` / `hasRight(right)` | Whether that participant has at least one partner. |
+| `lefts()` / `rights()` | The participants, each listed once. |
+| `inverse()` | The relation read the other way round — a view, not a copy. `size` stays true on both. |
+
+Equality is **SameValueZero**, as with `BidirectionalMap`, and for the same
+reason: both directions are backed by `Map` and `Set`. Two structurally equal
+objects are two different participants, so index a derived string when you need
+structural identity — which is what the framework's own call sites do, keying
+subscribers on `ref.path.toString()` rather than on the ref. A `Terminated`
+carries the cell's own `self` ref, which need not be the object that
+subscribed; the path is the identity both sides agree on.
+
+<Aside type="caution" title="get() hands back the live set">
+  The `ReadonlySet` you get is the internal one, not a copy — casting it back to
+  `Set` and mutating it corrupts the inverse. This is the one place the type is
+  less defensive than `BidirectionalMap`, and it is a deliberate trade: the
+  relation is read on fan-out paths, once per published message, where an O(n)
+  copy per read is not payable. Treat it as a window, and go through `add` /
+  `delete` to change anything.
+</Aside>
+
+### It can live in persistent state too
+
+Like its 1:1 sibling, it survives a journal, snapshot or durable-state
+round-trip **as a real instance** — no adapter, no registration. Only the
+forward direction is written, as an adjacency list; the inverse is rebuilt on
+decode, so the two halves cannot come back disagreeing. The same
+[CBOR caveat](#bidirectionalmap--a-map-with-a-maintained-inverse) applies.
 
 ## Random strings and identifiers
 

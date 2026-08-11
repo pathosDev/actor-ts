@@ -2,6 +2,7 @@ import { match } from 'ts-pattern';
 import { Actor } from '../../Actor.js';
 import type { ActorRef } from '../../ActorRef.js';
 import type { Config } from '../../config/Config.js';
+import { BidirectionalMultiMap } from '../../util/BidirectionalMultiMap.js';
 import type { OptionsBuilder } from '../../util/OptionsBuilder.js';
 import type { OptionsValidator } from '../../util/OptionsValidator.js';
 import {
@@ -85,10 +86,22 @@ export abstract class BrokerActor<
   private _state: ConnectionState = 'disconnected';
   private _outboundBuffer: OutboundEnvelope<P>[] = [];
 
-  /** topic → set of subscriber ActorRefs (deathwatched). */
-  private readonly _subscribers = new Map<string, Set<ActorRef<unknown>>>();
-  /** Reverse index for O(1) cleanup on Terminated. */
-  private readonly _subscribed = new WeakMap<ActorRef<unknown>, Set<string>>();
+  /**
+   * Which subscribers each topic has, and which topics each subscriber holds
+   * — one object owning both directions (#1037).  The reverse direction is
+   * what {@link pruneTerminatedSubscriber} needs: `Terminated` carries only a
+   * ref, and finding its topics by scanning every one would be O(topics).
+   *
+   * Keyed by **path string**, not by ref identity.  The reverse leg used to be
+   * a `WeakMap` keyed on the ref object, which could not have worked on the
+   * death-watch path it was written for: `Terminated` carries the cell's own
+   * `self` ref, which need not be the object that subscribed.  Nor was it
+   * weak in any useful sense — its keys were the same refs `_subscribers`
+   * held strongly, so nothing was ever collectable while it mattered.
+   */
+  private readonly _subscriptions = new BidirectionalMultiMap<string, string>(); // topic ↔ subscriber path
+  /** The ref behind each subscriber path — the fan-out target and the unwatch handle. */
+  private readonly _subscriberRefs = new Map<string, ActorRef<unknown>>();
 
   /**
    * Subscriptions the actor *wants*, keyed by protocol identifier
@@ -324,53 +337,78 @@ export abstract class BrokerActor<
   /* ------------------------------- Subscribers ---------------------------- */
 
   /**
-   * Subscribe `ref` to `topic`.  The ref is deathwatched — when it
-   * stops, it is automatically removed from every topic it was
-   * subscribed to (no leak).
+   * Subscribe `ref` to `topic`, and start watching it if this is its first
+   * subscription.
+   *
+   * **The subclass has to route `Terminated` into
+   * {@link pruneTerminatedSubscriber} for the watch to mean anything.**  This
+   * doc used to claim the removal was automatic, and it was not: `onReceive`
+   * is abstract, so the base class never sees a message, and a stopped
+   * subscriber stayed in every topic it held — still told on each fan-out,
+   * into dead letters (#1111).  Sealing `onReceive` here would take the
+   * dispatch table away from all thirteen subclasses for the sake of one
+   * hook, so the seam is explicit instead:
+   *
+   * ```ts
+   * override onReceive(command: MyCommand): void {
+   *   if (command instanceof Terminated) { this.pruneTerminatedSubscriber(command.actor); return; }
+   *   // …
+   * }
+   * ```
    */
   protected subscribeRef(topic: string, ref: ActorRef<unknown>): void {
-    let set = this._subscribers.get(topic);
-    if (!set) { set = new Set(); this._subscribers.set(topic, set); }
-    if (!set.has(ref)) {
-      set.add(ref);
-      let topics = this._subscribed.get(ref);
-      if (!topics) {
-        topics = new Set();
-        this._subscribed.set(ref, topics);
-        // First subscription for this ref → start watching.
-        this.context.watch(ref);
-      }
-      topics.add(topic);
+    const path = ref.path.toString();
+    if (!this._subscriptions.hasRight(path)) {
+      this._subscriberRefs.set(path, ref);
+      // First subscription for this ref → start watching.
+      this.context.watch(ref);
     }
+    this._subscriptions.add(topic, path);
   }
 
-  /** Remove `ref` from `topic`.  No-op if not subscribed. */
+  /**
+   * Remove `ref` from `topic`.  No-op if not subscribed.
+   *
+   * Matches on the ref's **path**, so a caller holding a different ref object
+   * for the same actor still unsubscribes — identity matching quietly did
+   * nothing there.
+   */
   protected unsubscribeRef(topic: string, ref: ActorRef<unknown>): void {
-    const set = this._subscribers.get(topic);
-    if (!set) return;
-    set.delete(ref);
-    if (set.size === 0) this._subscribers.delete(topic);
-    const topics = this._subscribed.get(ref);
-    if (topics) {
-      topics.delete(topic);
-      if (topics.size === 0) {
-        this._subscribed.delete(ref);
-        // Last subscription gone → drop the watch.
-        this.context.unwatch(ref);
-      }
-    }
+    const path = ref.path.toString();
+    if (!this._subscriptions.delete(topic, path)) return;
+    if (this._subscriptions.hasRight(path)) return;
+    // Last subscription gone → drop the watch.
+    this._subscriberRefs.delete(path);
+    this.context.unwatch(ref);
+  }
+
+  /**
+   * Drop a stopped subscriber from every topic it held.  Subclasses call this
+   * from their `Terminated` arm; it returns whether anything was removed, so a
+   * caller can tell a subscriber's death from any other watched actor's.
+   *
+   * Deliberately does **not** `unwatch`: the cell already dropped the watch
+   * when it delivered `Terminated`, so asking again would only be a second
+   * lookup.  `MqttActor.removeTerminatedTarget` makes the same call for the
+   * same reason.
+   */
+  protected pruneTerminatedSubscriber(ref: ActorRef<unknown>): boolean {
+    const path = ref.path.toString();
+    if (!this._subscriptions.deleteRight(path)) return false;
+    this._subscriberRefs.delete(path);
+    return true;
   }
 
   /** Fan-out a received message to every subscriber of `topic`. */
   protected fanOutToTopic(topic: string, message: unknown): void {
-    const set = this._subscribers.get(topic);
-    if (!set) return;
-    for (const ref of set) ref.tell(message as never);
+    for (const path of this._subscriptions.get(topic)) {
+      this._subscriberRefs.get(path)?.tell(message as never);
+    }
   }
 
   /** Number of distinct topic subscriptions — useful for tests / metrics. */
   protected subscriberCountForTopic(topic: string): number {
-    return this._subscribers.get(topic)?.size ?? 0;
+    return this._subscriptions.get(topic).size;
   }
 
   /* ------------------------------- Outbound ------------------------------- */
@@ -457,7 +495,11 @@ export abstract class BrokerActor<
     await this._closeTransport();
     this._state = 'disconnected';
     this._outboundBuffer = [];
-    this._subscribers.clear();
+    this._subscriptions.clear();
+    // Cleared alongside the relation.  The old pair left its reverse leg
+    // behind here, which only went unnoticed because the actor is on its way
+    // out anyway.
+    this._subscriberRefs.clear();
   }
 
   /* ----------------------------- Internal flow ---------------------------- */

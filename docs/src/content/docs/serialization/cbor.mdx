@@ -62,14 +62,15 @@ tagged JSON text:
 
 "The same rich types" is meant literally: `Map`, `Set`,
 [`BidirectionalMap`](/reference/utility-helpers/#bidirectionalmap--a-map-with-a-maintained-inverse),
+[`BidirectionalMultiMap`](/reference/utility-helpers/#bidirectionalmultimap--the-same-for-a-many-to-many-relation),
 `RegExp`, `URL`, `Error`, every typed array, `NaN` / `Infinity` /
 `-0` and `bigint` all come back as real instances from either
 serializer, and a shared test suite asserts the two agree on every
 one of them.
 
 This was not always true: `CborSerializer` used to flatten `Map`,
-`Set` and `BidirectionalMap` to an empty `{}` and lose every entry
-without raising anything
+`Set` and the two bidirectional collections to an empty `{}` and lose
+every entry without raising anything
 ([#1036](https://github.com/pathosDev/actor-ts/issues/1036)).  If you
 worked around that by converting to arrays or plain objects before
 encoding, you no longer need to.

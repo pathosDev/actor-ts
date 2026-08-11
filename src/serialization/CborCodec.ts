@@ -29,6 +29,7 @@
  */
 
 import { BidirectionalMap } from '../util/BidirectionalMap.js';
+import { BidirectionalMultiMap } from '../util/BidirectionalMultiMap.js';
 import {
   binaryBytesOf,
   binaryKindOf,
@@ -151,6 +152,12 @@ export class CborEncoder {
     // but if that ever changes, the wrong branch would silently start
     // dropping the class.
     if (value instanceof BidirectionalMap) return this.writeBidirectionalMap(value, depth);
+    // No ordering hazard of its own — it implements neither `Map` nor `Set`,
+    // so no built-in branch can claim it.  It sits here because this is where
+    // it will be looked for.
+    if (value instanceof BidirectionalMultiMap) {
+      return this.writeBidirectionalMultiMap(value, depth);
+    }
     if (value instanceof Map) return this.writeMap(value, depth);
     if (value instanceof Set) return this.writeSet(value, depth);
     // After the `Uint8Array` branch above, which keeps its bare byte string.
@@ -278,6 +285,36 @@ export class CborEncoder {
    *
    * `lastIndex` is a transient cursor, not data — deliberately not carried.
    */
+  /**
+   * `27(["BidirectionalMultiMap", 259(<map of left → 258(partners)>)])` — the
+   * forward adjacency, written with the `Map` and `Set` writers rather than a
+   * shape of its own, so a reader that knows those two already knows this.
+   *
+   * Only the forward direction, for the same reason its 1:1 sibling writes
+   * only its forward pairs: the reverse is fully determined by it.  Rows
+   * rather than flat pairs because one participant with many partners is the
+   * shape every call site has, and a flat list would repeat the participant
+   * once per pair.
+   *
+   * The lefts are materialised because CBOR's map header is definite-length
+   * and `size` counts PAIRS, not participants — the count has to be known
+   * before the first byte goes out.
+   */
+  private writeBidirectionalMultiMap(map: BidirectionalMultiMap<unknown, unknown>, depth: number): void {
+    this.requireDepth(depth + 2);
+    this.enterContainer(map);
+    try {
+      this.writeTag(TAG_GENERIC_OBJECT);
+      this.writeHeader(4, 2);
+      this.writeString('BidirectionalMultiMap');
+      const rows: Array<readonly [unknown, ReadonlySet<unknown>]> = [];
+      for (const left of map.lefts()) rows.push([left, map.get(left)]);
+      this.writeMapBody(rows, rows.length, depth + 2);
+    } finally {
+      this.ancestors.delete(map);
+    }
+  }
+
   /**
    * `27([kind, <byte string>])`, using the same `kind` names the JSON tree
    * stores under `__typedarray__` — both formats read one shared table, so
@@ -622,6 +659,7 @@ export class CborDecoder {
     const [name, ...args] = inner as [string, ...unknown[]];
     switch (name) {
       case 'BidirectionalMap': return buildBidirectionalMap(args);
+      case 'BidirectionalMultiMap': return buildBidirectionalMultiMap(args);
       case 'RegExp': return buildRegExp(args);
       case 'Error': return buildError(args);
       default:
@@ -781,6 +819,28 @@ function buildBidirectionalMap(args: readonly unknown[]): BidirectionalMap<unkno
     throw new CborDecodeError('BidirectionalMap expects a map of entries');
   }
   return new BidirectionalMap(entries);
+}
+
+/**
+ * The argument is the tag-259 adjacency map, so it arrives as a `Map` of
+ * left → `Set` of partners.  Rebuilding pair by pair regenerates the reverse
+ * index, which is also why a payload that somehow repeats a pair is
+ * idempotent rather than restoring a relation whose two halves disagree about
+ * how many pairs there are.
+ */
+function buildBidirectionalMultiMap(args: readonly unknown[]): BidirectionalMultiMap<unknown, unknown> {
+  const rows = args[0];
+  if (!(rows instanceof Map)) {
+    throw new CborDecodeError('BidirectionalMultiMap expects a map of adjacency rows');
+  }
+  const out = new BidirectionalMultiMap<unknown, unknown>();
+  for (const [left, partners] of rows) {
+    if (!(partners instanceof Set)) {
+      throw new CborDecodeError('BidirectionalMultiMap expects every row to hold a set of partners');
+    }
+    for (const right of partners) out.add(left, right);
+  }
+  return out;
 }
 
 function buildBinaryView(kind: string, args: readonly unknown[]): ArrayBufferView | ArrayBuffer {

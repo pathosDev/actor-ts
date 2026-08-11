@@ -63,14 +63,16 @@ Binärformat statt als getaggten JSON-Text:
 
 „Dieselben reichen Typen" ist wörtlich gemeint: `Map`, `Set`,
 [`BidirectionalMap`](/de/reference/utility-helpers/#bidirectionalmap--eine-map-mit-gepflegter-umkehrung),
+[`BidirectionalMultiMap`](/de/reference/utility-helpers/#bidirectionalmultimap--dasselbe-für-eine-viele-zu-viele-relation),
 `RegExp`, `URL`, `Error`, jedes Typed Array, `NaN` / `Infinity` /
 `-0` und `bigint` kommen aus beiden Serializern als echte Instanzen
 zurück, und eine gemeinsame Test-Suite stellt sicher, dass die
 beiden sich bei jedem einzelnen einig sind.
 
-Das war nicht immer so: `CborSerializer` hat `Map`, `Set` und
-`BidirectionalMap` früher zu einem leeren `{}` plattgemacht und dabei
-jeden Eintrag verloren, ohne dass irgendetwas gemeldet wurde
+Das war nicht immer so: `CborSerializer` hat `Map`, `Set` und die
+beiden bidirektionalen Collections früher zu einem leeren `{}`
+plattgemacht und dabei jeden Eintrag verloren, ohne dass irgendetwas
+gemeldet wurde
 ([#1036](https://github.com/pathosDev/actor-ts/issues/1036)).  Wer das
 umgangen hat, indem er vor dem Kodieren in Arrays oder Plain-Objekte
 konvertiert hat, braucht das nicht mehr.

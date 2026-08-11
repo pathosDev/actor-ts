@@ -6,6 +6,7 @@ import {
   CborEncoder,
 } from '../../../src/serialization/CborCodec.js';
 import { BidirectionalMap } from '../../../src/util/BidirectionalMap.js';
+import { BidirectionalMultiMap } from '../../../src/util/BidirectionalMultiMap.js';
 
 const enc = new CborEncoder();
 const dec = new CborDecoder();
@@ -429,6 +430,65 @@ describe('CBOR BidirectionalMap (tag 27, #1036)', () => {
       0x01,
     ]);
     expect(dec.decode(unknownClass)).toEqual(['Whom', 1]);
+  });
+});
+
+describe('CBOR BidirectionalMultiMap (tag 27, #1037)', () => {
+  test('round-trips as a BidirectionalMultiMap, both directions usable', () => {
+    const source = new BidirectionalMultiMap<string, number>([
+      ['ada', 1], ['ada', 2], ['grace', 2],
+    ]);
+    const decoded = rt(source);
+    expect(decoded).toBeInstanceOf(BidirectionalMultiMap);
+    expect(decoded.size).toBe(3);
+    expect([...decoded.get('ada')]).toEqual([1, 2]);
+    // Never written to the wire — if this answers, it was genuinely rebuilt.
+    expect([...decoded.getKeys(2)]).toEqual(['ada', 'grace']);
+  });
+
+  test('the forward adjacency is written as a tag-259 map of tag-258 sets', () => {
+    const bytes = enc.encode(new BidirectionalMultiMap([['a', 1]]));
+    expect(Array.from(bytes)).toEqual([
+      0xd8, 0x1b,                                                  // tag 27
+      0x82,                                                        // array(2)
+      0x75, ...[...'BidirectionalMultiMap'].map((c) => c.charCodeAt(0)), // text(21)
+      0xd9, 0x01, 0x03,                                            // tag 259
+      0xa1,                                                        // map(1) — one left
+      0x61, 0x61,                                                  // text(1) "a"
+      0xd9, 0x01, 0x02,                                            // tag 258
+      0x81,                                                        // array(1) — one partner
+      0x01,                                                        // 1
+    ]);
+  });
+
+  test('an empty relation survives, and rich types work on both sides', () => {
+    const empty = rt(new BidirectionalMultiMap());
+    expect(empty).toBeInstanceOf(BidirectionalMultiMap);
+    expect(empty.size).toBe(0);
+
+    const rich = rt(new BidirectionalMultiMap<unknown, unknown>([
+      [new Date('2024-05-05T00:00:00Z'), 7n],
+    ]));
+    expect([...rich.lefts()][0]).toBeInstanceOf(Date);
+    expect([...rich.rights()][0]).toBe(7n);
+  });
+
+  test('a malformed adjacency payload is rejected', () => {
+    // 27(["BidirectionalMultiMap", 1]) — the argument is not a map.
+    const wrongArgument = new Uint8Array([
+      0xd8, 0x1b, 0x82,
+      0x75, ...[...'BidirectionalMultiMap'].map((c) => c.charCodeAt(0)),
+      0x01,
+    ]);
+    expect(() => dec.decode(wrongArgument)).toThrow(CborDecodeError);
+
+    // 27(["BidirectionalMultiMap", 259({"a": 1})]) — a row that is not a set.
+    const wrongRow = new Uint8Array([
+      0xd8, 0x1b, 0x82,
+      0x75, ...[...'BidirectionalMultiMap'].map((c) => c.charCodeAt(0)),
+      0xd9, 0x01, 0x03, 0xa1, 0x61, 0x61, 0x01,
+    ]);
+    expect(() => dec.decode(wrongRow)).toThrow(CborDecodeError);
   });
 });
 

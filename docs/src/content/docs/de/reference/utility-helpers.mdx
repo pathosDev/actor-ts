@@ -1,6 +1,6 @@
 ---
 title: Utilities
-description: Alles, was der Haupteinstiegspunkt aus seinem eigenen Werkzeugkasten exportiert — Option, Try und Either für Ergebnisse ohne null; Lazy für einmalig berechnete Werte; BidirectionalMap für eine Map mit gepflegter Umkehrung; randomString, safeStringify und lazyImportModule für Benennung, Logging und optionale Peer-Dependencies.
+description: Alles, was der Haupteinstiegspunkt aus seinem eigenen Werkzeugkasten exportiert — Option, Try und Either für Ergebnisse ohne null; Lazy für einmalig berechnete Werte; BidirectionalMap und BidirectionalMultiMap für Relationen mit gepflegter Umkehrung; randomString, safeStringify und lazyImportModule für Benennung, Logging und optionale Peer-Dependencies.
 ---
 
 Das Framework löst für sich selbst eine Handvoll Probleme, die in dem Code
@@ -17,7 +17,15 @@ Haupteinstiegspunkt. Keine davon ist Pflicht, um `actor-ts` zu benutzen: greif
 zu einer, wenn du das Problem hast, das sie löst.
 
 ```ts
-import { BidirectionalMap, Lazy, none, safeStringify, some, tryOf } from 'actor-ts';
+import {
+  BidirectionalMap,
+  BidirectionalMultiMap,
+  Lazy,
+  none,
+  safeStringify,
+  some,
+  tryOf,
+} from 'actor-ts';
 ```
 
 ## Option — ein Wert, den es vielleicht nicht gibt
@@ -205,6 +213,74 @@ Ein Store, der mit `withSerializer(new CborSerializer())` konfiguriert ist,
 trägt sie ebenfalls, unter CBOR-Tag 27. Das war nicht immer so — bis
 [#1036](https://github.com/pathosDev/actor-ts/issues/1036) hat der CBOR-Codec
 sie fallen lassen, zusammen mit `Map` und `Set`, ohne etwas zu melden.
+
+## BidirectionalMultiMap — dasselbe für eine Viele-zu-viele-Relation
+
+`BidirectionalMultiMap<L, R>` setzt viele Linke zu vielen Rechten in Beziehung
+und beantwortet beide Richtungen. Sie existiert für die Form, die eine
+Subscription-Registry hat: ein Subscriber hält viele Topics, ein Topic hat viele
+Subscriber — und die Nachricht, die dir sagt, dass ein Subscriber weg ist, trägt
+nur den Subscriber.
+
+```ts
+import { BidirectionalMultiMap } from 'actor-ts';
+
+const subscriptions = new BidirectionalMultiMap<string, string>();
+subscriptions.add('news', 'ada');
+subscriptions.add('news', 'grace');
+subscriptions.add('sport', 'ada');
+
+subscriptions.get('news');        // Set { 'ada', 'grace' }
+subscriptions.getKeys('ada');     // Set { 'news', 'sport' }  ← die Rückrichtung
+subscriptions.size;               // 3 — Paare, nicht Teilnehmer
+
+subscriptions.deleteRight('ada'); // ada verlässt alle Topics auf einmal
+subscriptions.hasLeft('sport');   // false — sport hielt nur ada und ist mit weg
+```
+
+Die letzte Zeile ist die Invariante, die man kennen sollte: **einen leeren
+Teilnehmer gibt es nicht.** Wer seinen letzten Partner verliert, verschwindet aus
+beiden Richtungen. Ein Topic, das mit einem leeren Subscriber-Set zurückbleibt,
+ist für eine Paarzählung unsichtbar, belegt weiter das Cap, das deine Topics
+begrenzt — und `inverse()` würde etwas herausgeben, das mit nichts in Beziehung
+steht.
+
+| Über ein Paar Maps hinaus | Zweck |
+| --- | --- |
+| `add(left, right)` / `delete(left, right)` | Ein Paar, beide Richtungen. `add` ist idempotent. |
+| `get(left)` / `getKeys(right)` | Alles, womit eine Seite in Beziehung steht. Leeres Set, wenn es sie nicht gibt — nie `undefined`, du kannst also ohne Guard iterieren. |
+| `deleteLeft(left)` / `deleteRight(right)` | Einen Teilnehmer vollständig entfernen — der `Terminated`-Fall. |
+| `hasLeft(left)` / `hasRight(right)` | Ob dieser Teilnehmer mindestens einen Partner hat. |
+| `lefts()` / `rights()` | Die Teilnehmer, jeder genau einmal. |
+| `inverse()` | Die Relation andersherum gelesen — eine Sicht, keine Kopie. `size` stimmt auf beiden Seiten. |
+
+Verglichen wird per **SameValueZero**, wie bei `BidirectionalMap` und aus
+demselben Grund: beide Richtungen liegen auf `Map` und `Set`. Zwei strukturell
+gleiche Objekte sind zwei verschiedene Teilnehmer — indiziere also eine
+abgeleitete Zeichenkette, wenn du strukturelle Identität brauchst. Genau das tun
+die Aufrufstellen des Frameworks selbst: sie schlüsseln Subscriber auf
+`ref.path.toString()` statt auf den Ref. Ein `Terminated` trägt den `self`-Ref
+der Zelle, der nicht das Objekt sein muss, das subscribed hat; der Pfad ist die
+Identität, auf die sich beide Seiten einigen.
+
+<Aside type="caution" title="get() gibt das echte Set heraus">
+  Das `ReadonlySet`, das du bekommst, ist das interne — keine Kopie. Wer es
+  zurück auf `Set` castet und verändert, zerstört die Umkehrung. Das ist die eine
+  Stelle, an der der Typ weniger defensiv ist als `BidirectionalMap`, und es ist
+  ein bewusster Handel: die Relation wird auf Fan-out-Pfaden gelesen, einmal pro
+  veröffentlichter Nachricht, und dort ist eine O(n)-Kopie pro Zugriff nicht
+  bezahlbar. Betrachte es als Fenster und ändere über `add` / `delete`.
+</Aside>
+
+### Sie darf ebenfalls im persistenten State liegen
+
+Wie ihre 1:1-Schwester überlebt sie den Round-Trip durch Journal, Snapshot oder
+Durable State **als echte Instanz** — ohne Adapter, ohne Registrierung.
+Geschrieben wird nur die Vorwärtsrichtung, als Adjazenzliste; die Umkehrung wird
+beim Dekodieren rekonstruiert, sodass die beiden Hälften nicht widersprüchlich
+zurückkommen können. Der
+[CBOR-Vorbehalt](#bidirectionalmap--eine-map-mit-gepflegter-umkehrung) von oben
+gilt genauso.
 
 ## Zufallszeichenketten und Bezeichner
 

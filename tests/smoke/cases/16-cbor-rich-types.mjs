@@ -21,7 +21,7 @@ export const name = 'CBOR rich types';
 export const description = 'CBOR round-trips Map, Set, typed arrays, Error and friends on the built package';
 
 export async function run({ actorTs }) {
-  const { CborSerializer, JsonSerializer, BidirectionalMap } = actorTs;
+  const { CborSerializer, JsonSerializer, BidirectionalMap, BidirectionalMultiMap } = actorTs;
   const cbor = new CborSerializer();
   const json = new JsonSerializer();
 
@@ -40,6 +40,11 @@ export async function run({ actorTs }) {
   const bidirectional = roundTrip(new BidirectionalMap([['grace', 2]]));
   if (!(bidirectional instanceof BidirectionalMap)) fail('BidirectionalMap lost its class');
   if (bidirectional.getKey(2) !== 'grace') fail('BidirectionalMap inverse not rebuilt');
+
+  const multi = roundTrip(new BidirectionalMultiMap([['news', 'ada'], ['news', 'grace']]));
+  if (!(multi instanceof BidirectionalMultiMap)) fail('BidirectionalMultiMap lost its class');
+  if (multi.size !== 2) fail(`BidirectionalMultiMap lost pairs: size ${multi.size}`);
+  if ([...multi.getKeys('grace')].join(',') !== 'news') fail('BidirectionalMultiMap inverse not rebuilt');
 
   // A plain object must NOT come back as a Map — the reason Map is tagged.
   if (roundTrip({ ada: 1 }) instanceof Map) fail('a plain object decoded as a Map');

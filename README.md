@@ -82,8 +82,11 @@ A short tour of what's in the box:
   URL throws an `OptionsError` at startup, not deep in a later code path.
 - **Utility primitives + helpers** — `Option<T>`, `Try<T>`, `Either<L, R>` and
   `Lazy<T>` for Scala-style ergonomics; `BidirectionalMap<K, V>`, a `Map` that
-  also answers `value → key` and keeps the inverse in step for you (and, unlike
-  an ordinary class, survives a snapshot as a real instance — no adapter); plus
+  also answers `value → key` and keeps the inverse in step for you, and
+  `BidirectionalMultiMap<L, R>`, which does the same for a many-to-many
+  relation and leaves nothing behind when a participant drops out (both,
+  unlike an ordinary class, survive a snapshot as real instances — no
+  adapter); plus
   the small helpers the framework itself runs on: `randomString` / `randomHex`
   / `randomId` (crypto entropy, no modulo bias, exact length), `safeStringify`
   (a `JSON.stringify` for log and error paths that cannot throw),

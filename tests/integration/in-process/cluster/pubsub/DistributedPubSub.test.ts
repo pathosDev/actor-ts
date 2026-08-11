@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'bun:test';
+import type { ActorRef } from '../../../../../src/ActorRef.js';
 import { ActorSystem } from '../../../../../src/ActorSystem.js';
 import { Cluster } from '../../../../../src/cluster/Cluster.js';
 import { ClusterOptions } from '../../../../../src/cluster/ClusterOptions.js';
@@ -9,10 +10,12 @@ import {
   Publish,
   Subscribe,
   Unsubscribe,
+  UnsubscribeAll,
 } from '../../../../../src/cluster/pubsub/index.js';
 import { DistributedPubSubMediator } from '../../../../../src/cluster/pubsub/DistributedPubSubMediator.js';
 import { DistributedPubSubOptions } from '../../../../../src/cluster/pubsub/DistributedPubSubOptions.js';
 import { LogLevel, NoopLogger } from '../../../../../src/Logger.js';
+import type { BidirectionalMultiMap } from '../../../../../src/util/BidirectionalMultiMap.js';
 import { TestKit } from '../../../../../src/testkit/TestKit.js';
 import { TestKitOptions } from '../../../../../src/testkit/TestKitOptions.js';
 import { awaitCondition } from '../../../../util/AwaitCondition.js';
@@ -112,6 +115,35 @@ describe('DistributedPubSub — local', () => {
     await stopNode(nodeA);
   });
 
+  test('UnsubscribeAll drops the subscriber from every topic it held', async () => {
+    // `UnsubscribeAll` had no coverage at all, despite sharing its entire body
+    // (`dropSubscriber`) with the `Terminated` path that does — so the arm
+    // that walks the subscriber's own side of the relation was only ever
+    // exercised through death watch.
+    const nodeA = await startNode('ps-unsub-all', 'h', 51005);
+    const leaving = nodeA.kit.createTestProbe();
+    const staying = nodeA.kit.createTestProbe();
+    nodeA.mediator.tell(new Subscribe('alpha', leaving));
+    nodeA.mediator.tell(new Subscribe('beta', leaving));
+    nodeA.mediator.tell(new Subscribe('alpha', staying));
+    await sleep(20);
+    nodeA.mediator.tell(new Publish('alpha', 'first'));
+    await leaving.expectMessage('first', 500);
+    await staying.expectMessage('first', 500);
+
+    (nodeA.mediator as ActorRef<UnsubscribeAll>).tell(new UnsubscribeAll(leaving));
+    await sleep(20);
+
+    nodeA.mediator.tell(new Publish('alpha', 'second'));
+    nodeA.mediator.tell(new Publish('beta', 'second'));
+    await leaving.expectNoMessage(60);
+    // A shared topic keeps its other subscriber: dropping one participant must
+    // not take the topic with it.
+    await staying.expectMessage('second', 500);
+
+    await stopNode(nodeA);
+  });
+
   test('publishing to a topic with no subscribers is a no-op', async () => {
     const nodeA = await startNode('ps-empty', 'h', 51004);
     nodeA.mediator.tell(new Publish('nobody', 'fwiw'));
@@ -180,7 +212,10 @@ describe('DistributedPubSub — cluster-wide', () => {
  * boundedness contract.
  */
 interface MediatorInternals {
-  readonly topics: Map<string, { local: Map<string, unknown>; remoteNodes: Set<string> }>;
+  readonly topics: Map<string, { remoteNodes: Set<string> }>;
+  /** topic ↔ subscriber path (#1037) — local membership lives here now. */
+  readonly subscriptions: BidirectionalMultiMap<string, string>;
+  readonly subscriberRefs: Map<string, unknown>;
   buildGossip(): { entries: ReadonlyArray<string> };
 }
 
@@ -233,15 +268,23 @@ describe('DistributedPubSub — gossip-payload audit (#80)', () => {
       timeoutMs: 4_000, label: 'the topics map dropped back to empty',
     });
 
-    // The contract: when a cycle drops `local` and `remoteNodes` to
-    // empty, the topic entry is removed from `topics` (mediator
-    // line 131) and from the gossip frame's `entries` (build-side
-    // skip on `set.local.size === 0`).  100 in/out pairs must
-    // therefore leave zero residue in either.  The version counter
-    // grows monotonically — that's intentional and bounded (it's a
-    // single integer, not a leak).
+    // The contract: when a cycle leaves a topic with no local subscriber and
+    // no remote claim, the entry is removed from `topics` (`maybeDropTopic`)
+    // and from the gossip frame's `entries` (build-side skip on
+    // `subscriptions.hasLeft`).  100 in/out pairs must therefore leave zero
+    // residue in either.  The version counter grows monotonically — that's
+    // intentional and bounded (it's a single integer, not a leak).
     expect(internals.topics.size).toBe(0);
     expect(internals.buildGossip().entries.length).toBe(0);
+
+    // …and no residue in the relation either, on either side (#1037).  This is
+    // the half `topics.size` cannot see: a stale reverse entry would keep the
+    // subscriber's path referring to a topic that is already gone, and the
+    // ref sidecar would pin the ref with it.
+    expect(internals.subscriptions.size).toBe(0);
+    expect([...internals.subscriptions.lefts()]).toEqual([]);
+    expect([...internals.subscriptions.rights()]).toEqual([]);
+    expect(internals.subscriberRefs.size).toBe(0);
 
     await stopNode(nodeA);
   });
@@ -274,7 +317,7 @@ describe('DistributedPubSub — gossip-payload audit (#80)', () => {
     // grows logarithmically — irrelevant to the audit).
     const probe1 = nodeA.kit.createTestProbe();
     auditMediator.tell(new Subscribe('busy', probe1));
-    await awaitCondition(() => internals.topics.get('busy')?.local.size === 1, {
+    await awaitCondition(() => internals.subscriptions.get('busy').size === 1, {
       timeoutMs: 4_000, label: 'the baseline subscriber joined the busy topic',
     });
     const oneSubEntries = JSON.stringify(internals.buildGossip().entries);
@@ -284,7 +327,7 @@ describe('DistributedPubSub — gossip-payload audit (#80)', () => {
     for (let i = 0; i < 49; i++) {
       auditMediator.tell(new Subscribe('busy', nodeA.kit.createTestProbe()));
     }
-    await awaitCondition(() => internals.topics.get('busy')?.local.size === 50, {
+    await awaitCondition(() => internals.subscriptions.get('busy').size === 50, {
       timeoutMs: 4_000, label: 'all fifty subscribers joined the busy topic',
     });
     const fiftySubEntries = JSON.stringify(internals.buildGossip().entries);

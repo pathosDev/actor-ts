@@ -16,7 +16,14 @@ import {
 import type { Config } from '../../../../../src/config/Config.js';
 import type { ActorRef } from '../../../../../src/ActorRef.js';
 import { Actor } from '../../../../../src/Actor.js';
+import { Terminated } from '../../../../../src/SystemMessages.js';
 import { LogLevel, type Logger } from '../../../../../src/Logger.js';
+import { awaitCondition } from '../../../../util/AwaitCondition.js';
+
+/** `Terminated` arrives via `onReceive` but is not in the typed command union. */
+function isTerminated(message: unknown): message is Terminated {
+  return message instanceof Terminated;
+}
 
 const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
 
@@ -128,7 +135,19 @@ class FakeBroker extends BrokerActor<FakeOptions, FakeCommand, string, string> {
   publicForget(key: string): Promise<void> { return this.forgetSubscription(key); }
   publicDesiredCount(): number { return this.desiredSubscriptionCount; }
 
-  override onReceive(_command: FakeCommand): void { /* no-op — direct manipulation in tests */ }
+  /** How many `Terminated` messages actually removed a subscriber (#1111). */
+  terminatedPrunes = 0;
+
+  override onReceive(command: FakeCommand): void {
+    // Exactly the seam `subscribeRef`'s docs prescribe: the base class cannot
+    // route `Terminated` itself, because `onReceive` is abstract and every
+    // subclass owns its own dispatch.
+    if (isTerminated(command)) {
+      if (this.pruneTerminatedSubscriber(command.actor)) this.terminatedPrunes++;
+      return;
+    }
+    /* otherwise a no-op — the tests drive this actor directly */
+  }
 }
 
 class ProbeActor extends Actor<unknown> {
@@ -690,4 +709,42 @@ describe('BrokerActor — subscribers', () => {
     expect(broker.publicSubscriberCount('b')).toBe(1);
     await sys.terminate();
   });
+
+  test('a stopped subscriber is pruned from every topic it held (#1111)', async () => {
+    // `subscribeRef` watches the ref and its JSDoc promised the removal.
+    // Nothing implemented it: the reverse index existed for a `Terminated`
+    // handler that did not exist, so a stopped subscriber stayed in every
+    // topic and kept costing a dead-lettered `tell` on each fan-out.
+    const sys = makeSystem('sub-terminated');
+    const doomed = new ProbeActor();
+    const doomedRef = sys.spawnAnonymous(() => doomed as unknown as Actor<unknown>);
+    const survivor = new ProbeActor();
+    const survivorRef = sys.spawnAnonymous(() => survivor as unknown as Actor<unknown>);
+    const { brokerReady } = spawnFake(sys, { endpoint: 'h' });
+    const broker = await brokerReady;
+    await sleep(20);
+
+    broker.publicSubscribe('a', doomedRef);
+    broker.publicSubscribe('b', doomedRef);
+    broker.publicSubscribe('a', survivorRef);
+    expect(broker.publicSubscriberCount('a')).toBe(2);
+
+    doomedRef.stop();
+    await awaitCondition(() => broker.terminatedPrunes === 1, {
+      timeoutMs: 4_000, intervalMs: 25, label: 'the broker processed Terminated for the stopped subscriber',
+    });
+
+    // Gone from both topics, not just the one that still has a subscriber.
+    expect(broker.publicSubscriberCount('a')).toBe(1);
+    expect(broker.publicSubscriberCount('b')).toBe(0);
+
+    broker.publicFanOut('a', 'after');
+    broker.publicFanOut('b', 'after');
+    await sleep(20);
+    expect(survivor.received).toEqual(['after']);
+    expect(doomed.received).toEqual([]);
+
+    await sys.terminate();
+  });
+
 });
