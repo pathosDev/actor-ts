@@ -1,32 +1,30 @@
 /**
- * Scenario 14 — Bounded mailbox + drop-head + metric verification (#310).
+ * Scenario 14 — mailbox overflow accounting, in both directions (#313, #1148).
  *
- * The default mailbox shipped with #310 is `BoundedMailbox(10_000,
- * 'drop-head')`.  When an actor's mailbox fills up, the OLDEST
- * messages get evicted to make room for the new ones, and the
- * `actor_mailbox_dropped_total` counter ticks for each eviction.
+ * What this scenario is really for is the chain
+ * `BoundedMailbox.onDrop` -> `actor_mailbox_dropped_total` -> `/metrics`,
+ * with its `{class, path, reason}` labels intact.  That chain survived
+ * #1148; only its trigger moved, from the default mailbox to an explicit
+ * `withMailboxCapacity(...)`.
  *
- * Test sequence:
+ * So the scenario now asserts two things that used to be one:
  *
- *   1. Snapshot the baseline `actor_mailbox_dropped_total` total
- *      on the target node (may be > 0 from earlier-suite noise).
- *   2. POST /test/backpressure/bombard?n=15000&sleepMs=50 — sends
- *      15 000 messages to a deliberately-slow actor whose default
- *      mailbox holds at most 10 000.  At least 5 000 should be
- *      dropped (the overflow).
- *   3. After a brief pause (so the metric has fully updated),
- *      GET /test/backpressure/dropped → verify the total grew by
- *      at least 4 500 (we allow a 10% headroom for any in-flight
- *      drain that happened before the burst finished).
+ *   1. A sink spawned with an explicit 10 000 bound still drops, and the
+ *      drops still reach the metric with labels.  A burst of 15 000 should
+ *      overflow by ~5 000; the threshold allows 10 % headroom for whatever
+ *      drained mid-burst.
+ *   2. A sink on the DEFAULT mailbox drops exactly nothing, no matter how
+ *      far past the old ceiling the burst goes.  This is the #1148 property,
+ *      and it is the half a unit test cannot cover convincingly — it needs a
+ *      real node, a real dispatcher and the real metrics endpoint.
  *
- * Acceptance: drops occurred AND were counted by the metric.
  * Catches:
- *   - A regression that broke the `BoundedMailbox.onDrop` callback
- *     wiring in `ActorCell` — dropped count would stay zero.
- *   - A regression that broke the metric registry — bombard would
- *     work but the metric line would be missing.
- *   - A regression that switched the default back to unbounded —
- *     no drops would happen because the mailbox would just grow.
+ *   - `BoundedMailbox.onDrop` no longer wired in `ActorCell` — half 1 reads
+ *     zero drops.
+ *   - The metric registry or the exporter breaking — half 1 sees no lines.
+ *   - The default silently going bounded again — half 2 sees drops, which
+ *     is #310 coming back by accident.
+ *   - `withMailboxCapacity` silently ceasing to bound — half 1 reads zero.
  */
 
 import { clusterLiveNodes, sleep, type Scenario } from './types.js';
@@ -36,18 +34,42 @@ type DroppedResponse = {
   readonly lines: ReadonlyArray<string>;
 };
 
+type SinkMailbox = 'bounded' | 'default';
+
 async function getDropped(host: string, controlPort: number): Promise<DroppedResponse> {
   const response = await fetch(`http://${host}:${controlPort}/test/backpressure/dropped`);
   if (!response.ok) throw new Error(`/test/backpressure/dropped on ${host} → ${response.status}`);
   return await response.json() as DroppedResponse;
 }
 
-async function bombard(host: string, controlPort: number, n: number, sleepMs: number): Promise<void> {
+async function bombard(
+  host: string,
+  controlPort: number,
+  n: number,
+  sleepMs: number,
+  mailbox: SinkMailbox,
+): Promise<void> {
   const response = await fetch(
-    `http://${host}:${controlPort}/test/backpressure/bombard?n=${n}&sleepMs=${sleepMs}`,
+    `http://${host}:${controlPort}/test/backpressure/bombard?n=${n}&sleepMs=${sleepMs}&mailbox=${mailbox}`,
     { method: 'POST' },
   );
   if (!response.ok) throw new Error(`/test/backpressure/bombard on ${host} → ${response.status}: ${await response.text()}`);
+}
+
+/** Drops attributable to one burst — baseline taken immediately before it. */
+async function dropsFrom(
+  host: string,
+  controlPort: number,
+  n: number,
+  mailbox: SinkMailbox,
+): Promise<{ delta: number; lines: ReadonlyArray<string> }> {
+  const baseline = await getDropped(host, controlPort);
+  await bombard(host, controlPort, n, 50, mailbox);
+  // Drops happen synchronously inside `enqueue()`, but the counter
+  // increments inside the noop / promclient adapter, which may batch.
+  await sleep(500);
+  const after = await getDropped(host, controlPort);
+  return { delta: after.total - baseline.total, lines: after.lines };
 }
 
 export const scenario: Scenario = {
@@ -60,43 +82,49 @@ export const scenario: Scenario = {
     }
     const target = live[0]!;
 
-    const baseline = await getDropped(target, context.controlPort);
-    console.log(`[14] baseline actor_mailbox_dropped_total on ${target} = ${baseline.total}`);
-
     const SEND = 15_000;
-    const OVERFLOW = SEND - 10_000;   // default mailbox capacity from #310 = 10_000
-    console.log(`[14] bombarding ${target} with ${SEND} messages → expect ~${OVERFLOW} drops...`);
-    await bombard(target, context.controlPort, SEND, 50);
+    const CAPACITY = 10_000;          // the bounded sink's explicit capacity
+    const OVERFLOW = SEND - CAPACITY;
 
-    // Drops happen synchronously inside `enqueue()`, but the
-    // metrics counter increments inside the noop / promclient
-    // adapter which may batch.  Give it a moment to settle.
-    await sleep(500);
+    // ---- 1. an explicitly bounded mailbox still drops, and still counts ----
 
-    const after = await getDropped(target, context.controlPort);
-    const delta = after.total - baseline.total;
-    console.log(`[14] post-bombard actor_mailbox_dropped_total = ${after.total} (delta=${delta})`);
-    console.log(`[14] dropped-metric lines visible: ${after.lines.length}`);
-    for (const line of after.lines.slice(-3)) {
-      console.log(`[14]   ${line}`);
-    }
+    console.log(`[14] bombarding ${target} (bounded sink) with ${SEND} → expect ~${OVERFLOW} drops...`);
+    const bounded = await dropsFrom(target, context.controlPort, SEND, 'bounded');
+    console.log(`[14] bounded sink: delta=${bounded.delta}, metric lines=${bounded.lines.length}`);
+    for (const line of bounded.lines.slice(-3)) console.log(`[14]   ${line}`);
 
-    // Threshold: 4_500 = 90% of expected 5_000.  A regression to
-    // unbounded would yield delta=0; we want a strong signal.
     const MIN_EXPECTED = Math.floor(OVERFLOW * 0.9);
-    if (delta < MIN_EXPECTED) {
+    if (bounded.delta < MIN_EXPECTED) {
       throw new Error(
-        `[14] expected at least ${MIN_EXPECTED} drops, observed ${delta}.  `
-        + `Likely regression: default mailbox is no longer bounded, OR `
-        + `BoundedMailbox.onDrop callback is no longer wired to the metric.`,
+        `[14] expected at least ${MIN_EXPECTED} drops from the bounded sink, observed ${bounded.delta}.  `
+        + 'Likely regression: withMailboxCapacity no longer bounds the mailbox, OR '
+        + 'the BoundedMailbox.onDrop callback is no longer wired to the metric.',
       );
     }
-    if (after.lines.length === 0) {
+    if (bounded.lines.length === 0) {
       throw new Error(
         '[14] no `actor_mailbox_dropped_total{...}` lines emitted by /metrics — '
         + 'metric not registered with labels (class/path/reason).',
       );
     }
-    console.log(`[14] verified: ${delta} drops counted via the metric, with labels intact`);
+
+    // ---- 2. the default mailbox drops nothing, however far past the ceiling ----
+
+    console.log(`[14] bombarding ${target} (default sink) with ${SEND} → expect 0 drops...`);
+    const dflt = await dropsFrom(target, context.controlPort, SEND, 'default');
+    console.log(`[14] default sink: delta=${dflt.delta}`);
+
+    if (dflt.delta !== 0) {
+      throw new Error(
+        `[14] the default mailbox dropped ${dflt.delta} messages; it must drop none.  `
+        + 'Likely regression: the default mailbox is bounded again — #1148 made it '
+        + 'unbounded, and #310 is not coming back by accident.',
+      );
+    }
+
+    console.log(
+      `[14] verified: ${bounded.delta} drops counted with labels intact on the bounded sink, `
+      + 'and none at all on the default one',
+    );
   },
 };

@@ -17,9 +17,8 @@ system.spawn(Greeter, 'greeter');                       // die Klasse selbst
 system.spawn(() => new Worker(database), 'worker-1');   // eine Factory
 ```
 
-Das ist der gesamte Normalfall.  Voreingestellt sind eine beschränkte
-FIFO-Mailbox (Kapazität 10 000, Überlaufstrategie `drop-head`), der
-System-Dispatcher und die Supervision des Elternteils.
+Das ist der gesamte Normalfall.  Voreingestellt sind eine unbeschränkte
+FIFO-Mailbox, der System-Dispatcher und die Supervision des Elternteils.
 
 ## Klassenform und Factory-Form
 
@@ -236,13 +235,13 @@ import { ActorOptions } from 'actor-ts';
 const consumerOptions = ActorOptions.create().withMailboxCapacity(500);
 ```
 
-Senkt die Obergrenze der Standard-Mailbox — dieselbe beschränkte
-FIFO-Queue, nur mit kleinerer Decke.  Die voreingestellte
-`drop-head`-Strategie gilt weiter: eine volle Mailbox verwirft die
-**älteste** wartende Nachricht, um Platz zu schaffen, ohne zu werfen.
-Für „der Sender spürt den Druck" — eine volle Mailbox, die an der
-`tell`-Stelle `MailboxFullError` wirft — nimm stattdessen `withMailbox`
-mit expliziter `reject`-Strategie.
+Beschränkt die Mailbox, die sonst unbeschränkt ist — dieser Aufruf ist
+also der, der Nachrichtenverlust einführt.  `drop-head` gilt, solange du
+nichts anderes sagst: eine volle Mailbox verwirft die **älteste**
+wartende Nachricht, um Platz zu schaffen, ohne zu werfen.  Ergänze
+`withMailboxOverflow('drop-new')`, um stattdessen die ankommende zu
+verwerfen, oder `'reject'`, um an der `tell`-Stelle `MailboxFullError`
+zu werfen, damit der Sender den Druck spürt.
 
 ### `withMailbox`
 

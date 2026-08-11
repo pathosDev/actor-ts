@@ -194,9 +194,10 @@ There's no built-in mode for that.
 
 <Aside type="caution" title="High-frequency timers are mailbox pressure">
   A 10-ms-interval timer on an actor that takes 50 ms to handle
-  each tick produces an ever-growing mailbox.  Pick an interval
-  slower than the *worst-case* handler latency, or bound the
-  mailbox with `drop-head` and accept that some ticks will be
+  each tick produces an ever-growing mailbox, and mailboxes are
+  unbounded — so it grows until the heap does.  Pick an interval
+  slower than the *worst-case* handler latency, or bound the mailbox
+  with `withMailboxCapacity` and accept that some ticks will be
   dropped under load.  See
   [Mailboxes](/fundamentals/mailboxes/).
 </Aside>

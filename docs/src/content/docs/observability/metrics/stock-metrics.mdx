@@ -37,12 +37,22 @@ buckets; its p99 is your "how slow is a handler" signal.
 
 | Metric | Type | Labels | Meaning |
 | --- | --- | --- | --- |
+| `actor_mailbox_size` | gauge | `class`, `path` | Queued user messages, sampled.  Only actors at or above 10 000 are represented. |
 | `actor_mailbox_dropped_total` | counter | `class`, `path`, `reason` | Messages dropped by a bounded mailbox's overflow policy. |
 
-A growing `actor_mailbox_dropped_total` is a **slow-consumer
-signal** — the actor can't keep up with its arrival rate and its
-bounded mailbox is shedding load.  The `reason` label records the
-overflow policy that fired (`drop-head` / `drop-new`).
+`actor_mailbox_size` is the **backlog** signal.  Mailboxes are
+unbounded by default, so an actor that falls behind accumulates rather
+than sheds — and a series only exists once one crosses 10 000 queued
+messages.  Its *presence* is therefore the alert: on a healthy system
+the metric is empty.  A mailbox that drains back below the floor reads
+0 rather than its last spike, and the same threshold produces a log
+warning (repeated at each doubling) whether or not metrics are on.
+
+`actor_mailbox_dropped_total` is the **shedding** signal, and only
+appears for actors someone bounded with `withMailboxCapacity` — the
+`reason` label records the overflow policy that fired (`drop-head` /
+`drop-new`).  A `BoundedMailbox` you construct yourself and pass to
+`withMailbox` is not wired to this counter.
 
 ## Cluster metrics
 

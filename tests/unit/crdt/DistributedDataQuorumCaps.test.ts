@@ -7,14 +7,18 @@
  * requests could be in flight at once, and nothing limited how long a caller
  * could ask one to stay there.
  *
- * The failure that bound prevents is not an out-of-memory.  The replicator
- * runs on the default mailbox (`DEFAULT_MAILBOX_CAPACITY` = 10 000,
- * `drop-head`), so the 100 000-pending arithmetic in the report cannot happen
- * — the mailbox drops first.  Which is worse: the discarded envelope is a
- * `ddata-update` carrying the caller's `resolve`/`reject`, so `updateAsync`
- * returns a promise that never settles and nothing is logged.  A cap below
- * the mailbox's capacity converts that silent drop into an explicit
- * rejection; a cap *at* it would never fire first.
+ * What the bound prevents is an accumulation the report described correctly:
+ * each pending request holds a promise, a timer and a target set until its
+ * deadline, so a partition that stops quorums completing lets all three build
+ * up and then expire together as a timeout storm.  The cap converts that into
+ * immediate rejections, while the request is still attributable to its
+ * caller.
+ *
+ * An earlier version of this comment argued the cap had to sit under the
+ * default mailbox's 10 000-entry `drop-head` bound so it would fire before
+ * the mailbox stranded a `ddata-update` envelope.  That reasoning was wrong
+ * twice: #1078 measured the promises staying unsettled either way, and #1148
+ * removed the default bound entirely.
  *
  * The harness is the two-node shape the other DistributedData unit tests use.
  * Node B joins the cluster but never starts the extension, so it registers no
@@ -152,6 +156,32 @@ describe('DistributedData pending-quorum cap', () => {
 
     await expect(refusedRead).rejects.toThrow(/refused a quorum read/);
   });
+
+  test('a burst past the old mailbox ceiling leaves no promise unsettled (#1078)', async () => {
+    // #1078's complaint: with the replicator on the pre-#1148 default mailbox,
+    // a burst past 10 000 had `drop-head` discard the oldest `ddata-update`
+    // envelopes — and each carried a caller's resolve/reject, so those
+    // promises were stranded rather than rejected.  It measured 2 000 of them.
+    //
+    // The mailbox is unbounded now, so every envelope reaches the replicator
+    // and every request gets its deadline.  The assertion is the settlement
+    // count, not the outcome: timing out is fine, vanishing is not.
+    const a = await twoNodeCluster('cap-burst', 47_341);
+    const distributedDataOptions = DistributedDataOptions.create()
+      .withMaxPendingQuorumRequests(0)     // nothing refused — every request must be tracked
+      .withMaxQuorumTimeout(0);
+    const handle = a.system.extension(DistributedDataId).start(a, distributedDataOptions);
+
+    const BURST = 12_000;                  // comfortably past the old 10 000 bound
+    let settled = 0;
+    const attempts = Array.from({ length: BURST }, (_, n) =>
+      handle.updateAsync(`k${n}`, GCounter.empty, (c) => c.increment('a', 1),
+        { consistency: 'all', timeoutMs: 150 })
+        .then(() => { settled++; }, () => { settled++; }));
+
+    await Promise.all(attempts);
+    expect(settled).toBe(BURST);
+  }, 30_000);
 
   test('0 disables the cap — the requests park instead of being refused', async () => {
     const a = await twoNodeCluster('cap-off', 47_331);

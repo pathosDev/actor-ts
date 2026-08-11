@@ -182,10 +182,10 @@ what's in the journal.  Replay manually in a test to isolate.
 
 Causes (most common first):
 
-1. **An opt-in unbounded mailbox** with a slow consumer — the
-   default mailbox is bounded (10,000, `drop-head`), so this only
-   arises when you replace it with `() => new Mailbox()`.  Mailbox
-   depth metric grows.
+1. **A mailbox with a slow consumer** — mailboxes are unbounded by
+   default, so a producer that outruns its consumer grows the heap
+   until one of them stops.  `actor_mailbox_size` shows which actor,
+   and the log carries a backlog warning from 10 000 messages up.
 2. **Subscriber set leaks** — actors registering with the
    event stream or DistributedPubSub but never unsubscribing
    on stop.

@@ -61,7 +61,7 @@ Seiten, wenn du spezifische Symptome siehst:
 | --- | --- |
 | **[Gossip-Kadenz](/de/operations/tuning/gossip-cadence/)** | Große Cluster (>20 Nodes), wo der Default von 1 Sekunde Gossip verschwenderisch ist, oder kleine Cluster, in denen du schnellere Konvergenz willst. |
 | **[Failure Detector](/de/operations/tuning/failure-detector/)** | Enge Netzwerke (LAN), in denen 2-Sekunden-Unreachable-Detection zu langsam ist, oder verrauschte Netzwerke, in denen sie False Alarms auslöst. |
-| **[Mailbox-Sizing](/de/operations/tuning/mailbox-sizing/)** | Wenn bounded Mailboxes mehr droppen als erwartet oder eine opt-in unbounded Mailbox den Speicher unbegrenzt wachsen lässt. |
+| **[Mailbox-Sizing](/de/operations/tuning/mailbox-sizing/)** | Wenn eine Mailbox den Speicher unbegrenzt wachsen lässt oder eine von dir begrenzte mehr droppt als erwartet. |
 | **[Dispatcher-Tuning](/de/operations/tuning/dispatcher-tuning/)** | Wenn du HTTP-Latenz-Degradation unter Actor-Last beobachtest oder niedrige CPU-Auslastung bei hohem Actor-Durchsatz. |
 
 Wenn du das Symptom nicht benennen kannst, tune nicht. Defaults
@@ -110,7 +110,7 @@ hinzufügen, ohne den Cluster runterzunehmen."
 | Sharded Entities spawnen nicht | Coordinator nicht auf einem Leader, Role-Mismatch |
 | `PersistentActor` braucht 30 s zum Starten | Kein Snapshot, tiefes Journal — setze `snapshotPolicy` |
 | Tests hängen am Ende | `await system.terminate()` vergessen |
-| Speicher wächst unbegrenzt | Eine opt-in unbounded Mailbox mit langsamem Consumer oder ein Subscriber-/`DistributedData`-Leak |
+| Speicher wächst unbegrenzt | Eine Mailbox mit langsamem Consumer (per Default unbounded) oder ein Subscriber-/`DistributedData`-Leak |
 
 Siehe [Troubleshooting](/de/operations/troubleshooting/) für den
 Diagnose-nach-Symptom-Katalog.

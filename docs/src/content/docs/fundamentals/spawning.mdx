@@ -17,9 +17,8 @@ system.spawn(Greeter, 'greeter');                       // the class itself
 system.spawn(() => new Worker(database), 'worker-1');   // a factory
 ```
 
-That is the whole common case.  Defaults are a bounded FIFO mailbox
-(capacity 10 000, `drop-head` overflow), the system dispatcher, and
-the parent's supervision.
+That is the whole common case.  Defaults are an unbounded FIFO mailbox,
+the system dispatcher, and the parent's supervision.
 
 ## The class form and the factory form
 
@@ -228,12 +227,12 @@ import { ActorOptions } from 'actor-ts';
 const consumerOptions = ActorOptions.create().withMailboxCapacity(500);
 ```
 
-Lowers the default mailbox's cap — the same bounded FIFO queue, just a
-smaller ceiling.  The default `drop-head` overflow applies: a full
-mailbox discards the **oldest** queued message to make room, without
-throwing.  For "the sender feels the pressure" — a full mailbox
-throwing `MailboxFullError` at the `tell` site — use `withMailbox` with
-an explicit `reject` policy instead.
+Bounds the mailbox, which is otherwise unbounded — so this is the call
+that introduces message loss.  `drop-head` applies unless you say
+otherwise: a full mailbox discards the **oldest** queued message to make
+room, without throwing.  Add `withMailboxOverflow('drop-new')` to
+discard the arriving message instead, or `'reject'` to throw
+`MailboxFullError` at the `tell` site so the sender feels the pressure.
 
 ### `withMailbox`
 

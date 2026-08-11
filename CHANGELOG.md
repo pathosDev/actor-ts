@@ -71,6 +71,51 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Changed
 
+- **BREAKING — the default mailbox is unbounded again** (#1148).  Every actor
+  spawned without an explicit `mailboxCapacity` now gets the plain, unbounded
+  `Mailbox`.  Since #310 it got a `BoundedMailbox` with `capacity = 10_000`
+  and `overflow = 'drop-head'`, which silently discarded the *oldest* queued
+  message on overflow — no dead letter, no exception, only a counter.
+
+  #310's trade was worst-case message loss for a guaranteed memory ceiling.
+  The ceiling turned out not to exist: the system-message queue was never
+  bounded (#794), so the framework was paying the loss without collecting the
+  guarantee.  And the loss was not confined to the telemetry-shaped workloads
+  `drop-head` suits, because a mailbox cannot tell a stale sample from a
+  control message — the bug tracker has one entry per victim: death-watch
+  `Terminated` evicted and the watcher blinded (#729), ReliableDelivery sends
+  discarded with their `confirm` never settling (#732), DistributedData
+  `updateAsync` promises stranded unsettled (#1078), and three WebSocket-hub
+  defects where the evicted envelope was a spawn command, a `close()` or a
+  disconnect signal (#717, #985, #986).  None of those are reachable under the
+  new default.
+
+  **Migration.**  Nothing to do if you want the unbounded shape — it is the
+  default.  To keep a bound, say so at the spawn site:
+
+  ```ts
+  // before — the bound was implicit, and so was the drop policy
+  system.spawn(Worker, 'worker');
+
+  // after — bounding is the deliberate act, and it names its own loss
+  const workerOptions = ActorOptions.create<WorkerMessage>()
+    .withMailboxCapacity(10_000)
+    .withMailboxOverflow('drop-head');
+  system.spawn(Worker, 'worker', workerOptions);
+  ```
+
+  Unbounded does not mean unobserved.  `ActorCell` warns when a mailbox
+  crosses 10 000 queued messages and again at every doubling, and metrics
+  gained the `actor_mailbox_size` gauge that the tuning docs had been
+  documenting for a gauge that did not exist.  `actor_mailbox_dropped_total`
+  still exists and now only counts drops someone asked for.
+
+  Also in this change: `mailboxOverflow` / `withMailboxOverflow` is a real
+  `ActorOptions` field (default `drop-head`; setting it without a capacity is
+  rejected rather than silently ignored), and `Mailbox` + `Envelope` are
+  exported from the package root — the escape hatch the docs described was
+  previously impossible to import (#661).
+
 - **Three of the framework's own identifier draws go through the `exists`
   predicate** (#1146).  The follow-up #1141 deferred.  The framework mints
   twelve identifiers; the interesting result of the survey is that only three

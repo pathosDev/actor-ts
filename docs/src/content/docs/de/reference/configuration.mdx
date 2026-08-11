@@ -209,17 +209,13 @@ kommt aus `src/crdt/`, und der Cluster ist ein positionales Argument von
 es ist eine `DurableStateStore`-Instanz, die eine Config-Datei nicht
 ausdrücken kann.
 
-Beide Caps gibt es, weil die Mailbox des Replikators schon eines hat — und
-ihres hier schlecht ausgeht.  Der Replikator läuft auf der bounded
-Default-Mailbox (10 000 Einträge, `drop-head`), bei Sättigung wird also der
-*älteste* Envelope verworfen — und ein wartender `ddata-update` trägt
-`resolve` / `reject` des Aufrufers in sich.  Ihn zu verwerfen lässt
-`updateAsync` auf ein Promise warten, das nie settlet, ohne jeden Logeintrag.
-Deutlich unter der Mailbox-Kapazität gesetzt, macht
-`max-pending-quorum-requests` aus diesem stillen Drop einen expliziten
-Fehler, der den Knopf beim Namen nennt; auf 10 000 gesetzt griffe es nie
-zuerst und würde nichts umwandeln.  Siehe
-[Quorum-Reads und -Writes](/de/distributed-data/quorum-reads-writes/).
+Beide Caps begrenzen die Menge der offenen Requests selbst.  Jeder offene
+Quorum-Request hält ein Promise, einen Timer und ein Ziel-Set am Leben, bis
+seine Deadline abläuft — ein ungedeckelter Replikator unter Last sammelt also
+alle drei an, ohne dass irgendetwas ihn bremst.  Wer über
+`max-pending-quorum-requests` hinaus ablehnt, macht aus dem, was später als
+Timeout-Sturm ankäme, sofortige Fehler, die den Knopf beim Namen nennen.
+Siehe [Quorum-Reads und -Writes](/de/distributed-data/quorum-reads-writes/).
 
 `max-quorum-timeout` begrenzt die andere Achse.  Ein offener Request hält
 seinen Slot über die gesamte Deadline, ein einzelner Aufrufer mit einem

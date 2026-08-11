@@ -1,6 +1,13 @@
 import { OptionsBuilder } from '../util/OptionsBuilder.js';
 import { OptionsValidator } from '../util/OptionsValidator.js';
-import type { BoundedMailboxOverflow } from './BoundedMailbox.js';
+
+export type BoundedMailboxOverflow =
+  /** Drop the oldest message in the queue to make room for the new one. */
+  | 'drop-head'
+  /** Drop the message being enqueued. */
+  | 'drop-new'
+  /** Throw a MailboxFullError — caller can surface it. */
+  | 'reject';
 
 /** Plain options-object shape accepted by a {@link BoundedMailbox}. */
 export type BoundedMailboxOptionsType = {

@@ -89,11 +89,10 @@ actor-ts {
   # Cluster-wide replicated CRDT store (DistributedData).  Top-level rather
   # than under cluster.* because the module is -- the cluster is a positional
   # argument to start(), not a tunable.  Both caps bound quorum requests
-  # (updateAsync + getAsync); 0 disables either.  They sit far below the
-  # actor's 10000-entry drop-head mailbox on purpose: at mailbox saturation
-  # the oldest envelope is discarded together with the caller's resolve/reject,
-  # which strands the promise with nothing logged.  A cap that low turns that
-  # silent drop into an explicit rejection instead.
+  # (updateAsync + getAsync); 0 disables either.  What they buy is a bound on
+  # the unsettled set itself: every entry holds a promise, a timer and a
+  # target set until its deadline passes, so refusing past the cap turns what
+  # would be a timeout storm into immediate, attributable rejections.
   distributed-data {
     gossip-interval = 1s
     max-pending-quorum-requests = 1000

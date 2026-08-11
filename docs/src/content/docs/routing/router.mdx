@@ -118,11 +118,13 @@ Three things worth knowing before you switch the default:
 - **Ties rotate.**  An idle pool has every mailbox at zero, so the
   strategy falls back to round-robin order rather than pinning
   everything to `routee-1`.
-- **A full pool is just another tie.**  When every routee's bounded
-  mailbox sits at capacity all depths are equal again, so the overflow
-  spreads evenly instead of piling onto one routee.  The strategy does
-  not refuse to route — what happens to a message that does not fit is
-  the mailbox's own overflow policy (`drop-head` / `drop-new` /
+- **The strategy never refuses to route.**  On the unbounded default
+  there is no "does not fit", so depth stays a truthful reading of
+  backlog however far behind the pool falls.  A pool of *bounded*
+  routees does saturate, and then the same tie-break answers it: all
+  depths are equal again, so the overflow spreads evenly instead of
+  piling onto one routee.  What happens to a message that does not fit
+  is the mailbox's own overflow policy (`drop-head` / `drop-new` /
   `reject`), not the router's call to make.
 
 Local only.  Mailbox depth is in-process state, so `ClusterRouter` has

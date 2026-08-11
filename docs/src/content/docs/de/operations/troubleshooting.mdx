@@ -188,10 +188,11 @@ zu isolieren.
 
 Ursachen (häufigste zuerst):
 
-1. **Eine opt-in unbounded Mailbox** mit langsamem Consumer — die
-   Default-Mailbox ist bounded (10.000, `drop-head`), das tritt also
-   nur auf, wenn du sie durch `() => new Mailbox()` ersetzt.  Die
-   Mailbox-Depth-Metrik wächst.
+1. **Eine Mailbox mit langsamem Consumer** — Mailboxes sind per
+   Default unbounded, ein Producer, der seinen Consumer überholt, lässt
+   also den Heap wachsen, bis einer von beiden aufgibt.
+   `actor_mailbox_size` zeigt welcher Actor, und ab 10 000 Nachrichten
+   steht eine Backlog-Warnung im Log.
 2. **Subscriber-Set-Leaks** — Actors registrieren sich am
    Event-Stream oder DistributedPubSub, aber unsubscriben sich
    beim Stop nicht.

@@ -55,14 +55,18 @@ describe('readDistributedDataOptionsFromConfig', () => {
     });
   });
 
-  test('the shipped cap stays well under the default mailbox capacity', () => {
-    // The cap's whole purpose is to fire *before* the mailbox does.  At
-    // saturation the default `drop-head` policy discards the oldest envelope
-    // — with the caller's resolve/reject inside it — so a cap at 10 000 would
-    // never be reached first and would convert nothing (#140).
+  test('the shipped cap is low enough to fire before a timeout storm forms', () => {
+    // This used to assert the cap sat under the default mailbox's 10 000
+    // bound, so it would fire before the mailbox stranded an envelope.  #1148
+    // removed that bound and #1078 showed it never worked that way anyway.
+    // What the number still has to be is *small*: each pending request pins a
+    // promise, a timer and a target set for its whole deadline, so the cap is
+    // what turns a partition into immediate rejections instead of thousands
+    // of timeouts expiring together (#140).
     const shipped = readDistributedDataOptionsFromConfig(Config.parseString(REFERENCE_CONF));
 
-    expect(shipped.maxPendingQuorumRequests).toBeLessThan(10_000 / 2);
+    expect(shipped.maxPendingQuorumRequests).toBeGreaterThan(0);
+    expect(shipped.maxPendingQuorumRequests).toBeLessThanOrEqual(1_000);
   });
 });
 

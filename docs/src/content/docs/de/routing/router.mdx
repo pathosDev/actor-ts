@@ -123,11 +123,13 @@ Drei Dinge, die du wissen solltest, bevor du den Default wechselst:
   Mailbox auf null, die Strategie fällt also auf die
   Round-Robin-Reihenfolge zurück, statt alles auf `routee-1` zu
   pinnen.
-- **Ein voller Pool ist nur ein weiterer Gleichstand.**  Wenn jede
-  begrenzte Mailbox an ihrer Kapazität steht, sind alle Tiefen wieder
-  gleich — der Überlauf verteilt sich also gleichmäßig, statt sich bei
-  einem Routee aufzutürmen.  Die Strategie verweigert das Routen
-  nicht: Was mit einer Nachricht passiert, die nicht mehr passt,
+- **Die Strategie verweigert das Routen nie.**  Auf dem unbounded
+  Default gibt es kein „passt nicht mehr", die Tiefe bleibt also ein
+  echter Messwert des Rückstaus, egal wie weit der Pool zurückfällt.
+  Ein Pool aus *begrenzten* Routees sättigt sich irgendwann, und dann
+  antwortet derselbe Gleichstand: alle Tiefen sind wieder gleich, der
+  Überlauf verteilt sich also gleichmäßig, statt sich bei einem Routee
+  aufzutürmen.  Was mit einer Nachricht passiert, die nicht mehr passt,
   entscheidet die Overflow-Policy der Mailbox (`drop-head` /
   `drop-new` / `reject`), nicht der Router.
 
