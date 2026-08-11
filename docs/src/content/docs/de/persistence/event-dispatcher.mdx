@@ -1,6 +1,6 @@
 ---
 title: Event Dispatcher
-description: Ein typisierter Builder für `PersistentActor.onEvent` — `eventDispatcher<State, Event>().on('kind', fn).build()` weigert sich zu kompilieren, bis jede Event-Art einen Handler hat. Fehlende Varianten beim Build erwischen, nicht beim nächsten Replay.
+description: Ein typisierter Builder für `PersistentActor.onEvent` — `eventDispatcher<State, Event>().on('kind', handler).build()` weigert sich zu kompilieren, bis jede Event-Art einen Handler hat. Fehlende Varianten beim Build erwischen, nicht beim nächsten Replay.
 ---
 
 `PersistentActor.onEvent` ist eine reine State-Update-Funktion:
@@ -34,7 +34,7 @@ class Counter extends PersistentActor<Command, Event, State> {
 
 Drei Dinge fallen auf:
 
-- Jedes `.on(kind, fn)` fügt einen Handler für eine Variante hinzu.
+- Jedes `.on(kind, handler)` fügt einen Handler für eine Variante hinzu.
 - `.build()` **type-checkt nur**, wenn jede Variante von
   `Event['kind']` abgedeckt ist.
 - Eine neue Variante zu `Event` hinzuzufügen ohne ein passendes
@@ -51,7 +51,7 @@ fehlt."
 interface EventDispatcherBuilder<S, E, Handled extends string> {
   on<K extends Exclude<E['kind'], Handled>>(
     kind: K,
-    fn: (state: S, event: Extract<E, { kind: K }>) => S,
+    handler: (state: S, event: Extract<E, { kind: K }>) => S,
   ): EventDispatcherBuilder<S, E, Handled | K>;
 
   build(): Handled extends E['kind']

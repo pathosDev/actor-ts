@@ -13,7 +13,7 @@
  *   3. Write a thin adapter that implements the `Tracer` interface in
  *      this package by delegating to `trace.getTracer('actor-ts')`.
  *      Each `startSpan` becomes `tracer.startSpan(...)`; `withActiveSpan`
- *      becomes `context.with(trace.setSpan(context.active(), span), fn)`;
+ *      becomes `context.with(trace.setSpan(context.active(), span), callback)`;
  *      `injectContext` / `extractContext` use
  *      `propagation.inject` / `propagation.extract` with the
  *      `W3CTraceContextPropagator`.

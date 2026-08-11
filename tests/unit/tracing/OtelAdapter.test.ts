@@ -110,10 +110,10 @@ function makeFakeOtelApi(): FakeOtelApi {
 
     context: {
       active: () => api.current,
-      with<F extends (...args: never[]) => unknown>(context: OtelContextLike, fn: F): ReturnType<F> {
+      with<F extends (...args: never[]) => unknown>(context: OtelContextLike, callback: F): ReturnType<F> {
         const prev = api.current;
         api.current = context as FakeContext;
-        try { return fn() as ReturnType<F>; } finally { api.current = prev; }
+        try { return callback() as ReturnType<F>; } finally { api.current = prev; }
       },
       ROOT_CONTEXT: ROOT,
     },
@@ -441,7 +441,7 @@ describe('otelTracer', () => {
     expect(api.recorded[0]!.endTime).toBe(t1);
   });
 
-  test('withActiveSpan on a foreign span (not produced by this tracer) degrades to running fn', () => {
+  test('withActiveSpan on a foreign span (not produced by this tracer) degrades to running the callback', () => {
     const api = makeFakeOtelApi();
     const otelOptions = OtelAdapterOptions.create()
       .withApi(api);

@@ -46,7 +46,7 @@ try {
 ```ts
 interface Tracer {
   startSpan(name: string, options?: SpanOptions): Span;
-  withActiveSpan<T>(span: Span, fn: () => T): T;
+  withActiveSpan<T>(span: Span, callback: () => T): T;
   activeSpan(): Span | null;
   injectContext(): TraceCarrier | null;
   extractContext(carrier: TraceCarrier | null): SpanContext | null;
@@ -100,7 +100,7 @@ await tracer.withActiveSpan(span, async () => {
 span.end();
 ```
 
-`withActiveSpan(span, fn)` führt `fn` mit `span` als aktivem
+`withActiveSpan(span, callback)` führt `callback` mit `span` als aktivem
 Span aus — innerhalb erzeugte Child-Spans verlinken sich
 automatisch als Kinder. Nutzt darunter `AsyncLocalStorage`, sodass
 der aktive Span über `await`s propagiert.

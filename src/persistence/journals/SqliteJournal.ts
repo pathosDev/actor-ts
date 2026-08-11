@@ -252,7 +252,7 @@ export class SqliteJournal implements Journal {
   /**
    * Run `body` in a transaction that takes the write lock at the boundary.
    *
-   * Deliberately NOT `SqliteDb.transaction(fn)`, and the difference is what
+   * Deliberately NOT `SqliteDb.transaction(body)`, and the difference is what
    * makes `busy_timeout` reach this path at all (#124).  Every driver
    * implements that helper as a plain deferred `BEGIN`, and an append reads
    * the head sequence number before it inserts — so the connection is holding

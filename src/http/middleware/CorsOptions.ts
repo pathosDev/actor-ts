@@ -42,8 +42,8 @@ export class CorsOptionsBuilder extends OptionsBuilder<CorsOptionsType> {
     return this.set('origins', '*');
   }
   /** Decide per request; a throwing predicate denies. */
-  withOriginPredicate(fn: (origin: string) => boolean): this {
-    return this.set('origins', fn);
+  withOriginPredicate(predicate: (origin: string) => boolean): this {
+    return this.set('origins', predicate);
   }
   withMethods(...methods: HttpMethod[]): this {
     return this.set('methods', methods);

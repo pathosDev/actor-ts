@@ -101,7 +101,7 @@ export class GCounterMap<K> implements Crdt<GCounterMap<K>> {
   }
 
   toJSON(): GCounterMapJson {
-    // `Object.fromEntries`, not assignment: entry ids are identity-fn output,
+    // `Object.fromEntries`, not assignment: entry ids are identity-function output,
     // so a custom identity can yield `__proto__`, which an assignment feeds to
     // the inherited setter instead of storing — the entry then leaves the
     // replica's state invisibly on the way out (#767).
@@ -150,7 +150,7 @@ export class GCounterMap<K> implements Crdt<GCounterMap<K>> {
 
 export type GCounterMapJson = {
   readonly kind: 'GCounterMap';
-  /** Per-key counter state, keyed by identity-fn output. */
+  /** Per-key counter state, keyed by identity-function output. */
   readonly counters: Record<string, GCounterJson>;
   /** Per-key JSON-stringified original key.  Optional for backwards
    *  compat — when missing, `JSON.parse(identity-string)` is used. */

@@ -188,7 +188,7 @@ Das Framework publisht mehrere Event-Typen, die du abonnieren kannst:
 
 Ein Cluster-Event fehlt hier bewusst: `CurrentClusterState` geht
 ausschließlich an den Listener, der danach gefragt hat — per
-`cluster.subscribe(fn, { replayMode: 'snapshot' })`.  Es sagt, wo
+`cluster.subscribe(listener, { replayMode: 'snapshot' })`.  Es sagt, wo
 dieser eine Subscriber startet, und das ist für niemanden sonst eine
 Neuigkeit, also erreicht es diesen Bus nie.
 

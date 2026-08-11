@@ -55,15 +55,15 @@ export type ResolverWithKnownConfigs<T> = {
 export const RESOLVER_KNOWN_CONFIGS_SYMBOL = KNOWN_CONFIGS;
 
 function attachKnownConfigs<T, F extends (persistenceId: string) => T | undefined>(
-  fn: F, configs: ReadonlyArray<T>,
+  resolver: F, configs: ReadonlyArray<T>,
 ): F {
-  Object.defineProperty(fn, KNOWN_CONFIGS, {
+  Object.defineProperty(resolver, KNOWN_CONFIGS, {
     value: Object.freeze(configs.slice()),
     enumerable: false,
     configurable: false,
     writable: false,
   });
-  return fn;
+  return resolver;
 }
 
 /**

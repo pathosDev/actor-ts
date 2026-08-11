@@ -9,7 +9,7 @@
  * falls through to the default branch (or throws at runtime).
  *
  * `eventDispatcher` materialises an `onEvent` from a sequence of
- * `.on(kind, fn)` calls.  TypeScript prevents `.build()` from being
+ * `.on(kind, handler)` calls.  TypeScript prevents `.build()` from being
  * called until every variant of `Event['kind']` is handled — adding a
  * new variant to the union surfaces as a compile error on this site.
  *
@@ -68,7 +68,7 @@ export interface EventDispatcherBuilder<
    */
   on<K extends Exclude<E['kind'], Handled>>(
     kind: K,
-    fn: (state: S, event: Extract<E, { readonly kind: K }>) => S,
+    handler: (state: S, event: Extract<E, { readonly kind: K }>) => S,
   ): EventDispatcherBuilder<S, E, Handled | K>;
 
   /**
@@ -99,7 +99,7 @@ class EventDispatcherBuilderImplementation<
 
   on<K extends Exclude<E['kind'], Handled>>(
     kind: K,
-    fn: (state: S, event: Extract<E, { readonly kind: K }>) => S,
+    handler: (state: S, event: Extract<E, { readonly kind: K }>) => S,
   ): EventDispatcherBuilder<S, E, Handled | K> {
     if (this.handlers.has(kind)) {
       throw new Error(
@@ -108,7 +108,7 @@ class EventDispatcherBuilderImplementation<
       );
     }
     const next = new Map<string, (state: S, event: E) => S>(this.handlers);
-    next.set(kind, fn as unknown as (state: S, event: E) => S);
+    next.set(kind, handler as unknown as (state: S, event: E) => S);
     return new EventDispatcherBuilderImplementation<S, E, Handled | K>(next);
   }
 
@@ -118,7 +118,7 @@ class EventDispatcherBuilderImplementation<
     // Snapshot handlers into a plain Map so the returned closure
     // doesn't keep the builder instance alive.
     const handlers = new Map(this.handlers);
-    const fn = (state: S, event: E): S => {
+    const dispatch = (state: S, event: E): S => {
       const handler = handlers.get(event.kind);
       if (!handler) {
         // This branch is unreachable if the user types everything
@@ -133,7 +133,7 @@ class EventDispatcherBuilderImplementation<
       }
       return handler(state, event);
     };
-    return fn as unknown as [Exclude<E['kind'], Handled>] extends [never]
+    return dispatch as unknown as [Exclude<E['kind'], Handled>] extends [never]
       ? (state: S, event: E) => S
       : EventDispatcherIncomplete<Exclude<E['kind'], Handled>>;
   }

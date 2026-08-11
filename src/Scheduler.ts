@@ -69,8 +69,8 @@ export class Scheduler {
   }
 
   /** Run a user-supplied function once after a delay. */
-  scheduleOnceFunction(delayMs: number, fn: () => void): Cancellable {
-    return this.oneShot(delayMs, () => runGuarded(fn));
+  scheduleOnceFunction(delayMs: number, task: () => void): Cancellable {
+    return this.oneShot(delayMs, () => runGuarded(task));
   }
 
   /** Deliver a message repeatedly at a fixed interval, after an initial delay. */
@@ -87,9 +87,9 @@ export class Scheduler {
   scheduleAtFixedRateFunction(
     initialDelayMs: number,
     intervalMs: number,
-    fn: () => void,
+    task: () => void,
   ): Cancellable {
-    return this.fixedRate(initialDelayMs, intervalMs, () => runGuarded(fn));
+    return this.fixedRate(initialDelayMs, intervalMs, () => runGuarded(task));
   }
 
   /**
@@ -155,9 +155,9 @@ export class Scheduler {
   }
 }
 
-function runGuarded(fn: () => void): void {
+function runGuarded(task: () => void): void {
   try {
-    fn();
+    task();
   } catch (e) {
     console.error('[actor-ts] scheduler error:', e);
   }

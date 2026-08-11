@@ -67,8 +67,8 @@ export interface Span {
 export interface Tracer {
   startSpan(name: string, options?: SpanOptions): Span;
 
-  /** Run `fn` with `span` as the active span (read by `activeSpan()`). */
-  withActiveSpan<T>(span: Span, fn: () => T): T;
+  /** Run `callback` with `span` as the active span (read by `activeSpan()`). */
+  withActiveSpan<T>(span: Span, callback: () => T): T;
 
   /** Active span on this async stack, or `null` outside any active scope. */
   activeSpan(): Span | null;
