@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import {
   BidirectionalMap,
+  BidirectionalMultiMap,
   lazyImportModule,
   randomHex,
   randomId,
@@ -9,6 +10,7 @@ import {
 } from '../../src/index.js';
 import type {
   BidirectionalMapJson,
+  BidirectionalMultiMapJson,
   LazyImportOptions,
   RandomStringOptions,
 } from '../../src/index.js';
@@ -101,5 +103,19 @@ describe('BidirectionalMap is reachable from the barrel (#1035)', () => {
   test('the JSON type is exported alongside it', () => {
     const wire: BidirectionalMapJson<string, number> = new BidirectionalMap([['a', 1]]).toJSON();
     expect(BidirectionalMap.fromJSON(wire).get('a')).toBe(1);
+  });
+});
+
+describe('BidirectionalMultiMap is reachable from the barrel (#1037)', () => {
+  test('the export is the class, not a look-alike', () => {
+    const map = new BidirectionalMultiMap([['news', 'ada'], ['sport', 'ada']]);
+    expect(map).toBeInstanceOf(BidirectionalMultiMap);
+    expect([...map.getKeys('ada')]).toEqual(['news', 'sport']);
+  });
+
+  test('the JSON type is exported alongside it', () => {
+    const wire: BidirectionalMultiMapJson<string, string> =
+      new BidirectionalMultiMap([['news', 'ada']]).toJSON();
+    expect(BidirectionalMultiMap.fromJSON(wire).has('news', 'ada')).toBe(true);
   });
 });
