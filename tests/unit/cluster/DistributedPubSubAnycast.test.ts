@@ -9,6 +9,7 @@ import {
   Publish,
   Subscribe,
   SubscribeAcknowledgment,
+  SubscribeRejected,
 } from '../../../src/cluster/pubsub/index.js';
 import { DistributedPubSubMediator } from '../../../src/cluster/pubsub/DistributedPubSubMediator.js';
 import {
@@ -412,6 +413,48 @@ describe('DistributedPubSub — a frame the mediator cannot route (#155)', () =>
 
     const deadLetter = await deadLetters.expectMessageType(DeadLetter, 1_000);
     expect(deadLetter.message).toEqual(frameFromANewerPeer);
+
+    await stopNode(node);
+  });
+});
+
+describe('DistributedPubSub — anycast at the subscriber cap (#155 case 9)', () => {
+  test('the rotation runs over the admitted subscribers and never the refused one', async () => {
+    // #139's cap and #155's rotation meet in one place: the subscriber set.
+    // A refused `Subscribe` must not leave a half-registered entry behind —
+    // one that the cap counts but the rotation skips, or worse, one the
+    // rotation lands on and the delivery then drops.  Either way an anycast
+    // work queue would stall on a slot that answers to nobody, and only at
+    // the cap, which is where nobody looks.
+    const node = await startNode('ps-anycast-cap', 51510);
+    const mediatorOptions = DistributedPubSubOptions.create()
+      .withCluster(node.cluster)
+      .withGossipIntervalMs(100)
+      .withMaxSubscribersPerTopic(2);
+    const mediator = await spawnMediator(node, 'anycast-capped', mediatorOptions);
+
+    const first = node.kit.createTestProbe();
+    const second = node.kit.createTestProbe();
+    await subscribed(mediator, 'work', first);
+    await subscribed(mediator, 'work', second);
+
+    const refused = node.kit.createTestProbe();
+    mediator.ref.tell(new Subscribe('work', refused, refused));
+    const rejection = await refused.expectMessageType(SubscribeRejected, 500);
+    expect(rejection.reason).toBe('maxSubscribersPerTopic');
+    expect(rejection.limit).toBe(2);
+
+    // Three tasks over two workers: the rotation has to wrap, which is the
+    // point at which a phantom third slot would show itself.
+    for (let task = 0; task < 3; task++) {
+      mediator.ref.tell(new Publish('work', `task-${task}`, 'one-subscriber'));
+    }
+
+    await first.expectMessage('task-0', 500);
+    await second.expectMessage('task-1', 500);
+    await first.expectMessage('task-2', 500);
+    await second.expectNoMessage(60);
+    await refused.expectNoMessage(60);
 
     await stopNode(node);
   });

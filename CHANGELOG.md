@@ -949,6 +949,32 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   `package.json`, so a release that forgets the bump fails the suite
   instead of shipping the lie.
 
+- **Anycast stopped leaving the node in the topology it exists for** (#155,
+  #1091).  The two `'one-subscriber'` paths shared one rotation cursor but
+  rotated over different candidate lists: an originated publish walks local
+  subscribers *plus* remote claimants, an anycast that already crossed a hop
+  walks local subscribers only.  Since `rotate` writes the cursor back modulo
+  the count it was handed, every inbound frame left the cursor below the local
+  subscriber count and the next publish this node originated was guaranteed to
+  pick a local subscriber again.  A symmetric work queue — every node both
+  hosting workers and publishing — alternates the two paths, so nothing ever
+  crossed: measured at eight bodies delivered locally and zero frames sent.
+  The two paths now have a cursor each.  Two more defects in the same
+  rotation: remote candidates were walked in `Set` insertion order, which the
+  gossip round re-draws (a claimant moved to the end merely by gossiping, so a
+  peer could be served twice running or skipped for a full turn on timing
+  alone) — they are now sorted by address, which also makes every mediator
+  agree on the order; and an unroutable frame was dropped in `otherwise` with
+  no delivery, no dead letter and no log, which is the silent direction of
+  version skew.  It now warns and dead-letters.
+
+  **Rolling upgrade:** a peer that predates `pubsub-publish-one` still cannot
+  *deliver* an anycast that reaches it — it can only now say so.  The frame
+  becomes a dead letter on that node and a warning naming the kind, instead of
+  a task disappearing.  Nothing is re-routed, deliberately: re-routing would
+  trade the at-most-one-hop guarantee for a race against the gossip round
+  about to correct the sender.
+
 ### Security
 
 - **CIDR matching only accepts canonical IPv4 addresses** (#145, #312).
