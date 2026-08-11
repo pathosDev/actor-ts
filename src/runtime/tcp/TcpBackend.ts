@@ -73,6 +73,22 @@ export type PeerCertificate = {
 export interface TcpSocketLike {
   write(data: Uint8Array): void;
   end(): void;
+  /**
+   * Abort the connection instead of half-closing it.
+   *
+   * `end()` sends a FIN and leaves the peer's half open: a peer that never
+   * answers keeps the socket — and its file descriptor — alive indefinitely.
+   * That is the right shape for an orderly close, and the wrong one for a
+   * refusal, where the whole point is that this process stops paying for the
+   * connection immediately (#1096).
+   *
+   * Optional because not every runtime distinguishes the two: `Deno.Conn
+   * .close()` already tears down both halves, so {@link DenoTcpBackend}
+   * implements this as the same call `end()` makes.  A caller that finds it
+   * absent should fall back to `end()` — a half-close is still better than
+   * leaking the socket.
+   */
+  destroy?(): void;
   readonly remoteAddress?: string;
   /**
    * The peer's TLS certificate, or `undefined` when there is none to read —

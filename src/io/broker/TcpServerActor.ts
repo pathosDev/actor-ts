@@ -249,7 +249,14 @@ export class TcpServerActor
     if (this.connections.size >= cap) {
       // Refuse at the door rather than accept-and-forget: an unregistered
       // socket nothing reads from is a file descriptor leak with extra steps.
-      this.endSocketQuietly(socket);
+      //
+      // Aborted, not ended.  `end()` is a half-close, so a peer that does not
+      // answer the FIN keeps the socket in FIN_WAIT_2 — still writable from
+      // its side, still holding a descriptor, and not counted by
+      // `connections`, which is what the cap is enforced against.  Refusing
+      // that way is not a cap at all: it bounds only peers that cooperate
+      // (#1096).
+      this.abortSocketQuietly(socket);
       this.log.warn(`TcpServerActor: refused a connection — at maxConnections=${cap}`);
       return;
     }
@@ -319,6 +326,20 @@ export class TcpServerActor
   /** `end()` on an already-dead socket throws on some runtimes; nothing to do about it. */
   private endSocketQuietly(socket: TcpSocketLike): void {
     try { socket.end(); } catch { /* already closing */ }
+  }
+
+  /**
+   * Close both halves at once — for a connection this actor never accepted.
+   *
+   * Falls back to `end()` where the backend offers no `destroy()`: a
+   * half-close is still better than leaving the socket open, and a fake
+   * socket in a test has no reason to implement both.
+   */
+  private abortSocketQuietly(socket: TcpSocketLike): void {
+    try {
+      if (socket.destroy) socket.destroy();
+      else socket.end();
+    } catch { /* already closing */ }
   }
 
   private deliver(message: TcpServerMessage): void {

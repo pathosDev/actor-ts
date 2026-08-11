@@ -135,6 +135,12 @@ export class DenoTcpBackend implements TcpBackend {
         try { connection.close(); } catch { /* ignore */ }
         handlers.onClose(sock);
       },
+      // Deno draws no distinction: `Deno.Conn.close()` already tears down
+      // both halves, so `end()` is not the half-close it is on Node and Bun
+      // and there is nothing stronger to reach for.  Present anyway, so a
+      // caller that means "abort" does not have to ask which runtime it is
+      // on (#1096).
+      destroy(): void { sock.end(); },
       get remoteAddress(): string | undefined {
         // Deno.NetAddr on TCP carries { hostname, port, transport }.  Return
         // `hostname:port` for parity with Bun/Node's `socket.remoteAddress`.

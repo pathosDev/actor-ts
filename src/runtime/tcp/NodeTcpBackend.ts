@@ -79,6 +79,8 @@ interface Buffer extends Uint8Array {}
 interface NodeSocketLike {
   write(data: Uint8Array | string, callback?: () => void): boolean;
   end(): void;
+  /** `net.Socket.destroy()` — closes both halves at once, unlike `end()`. */
+  destroy(): void;
   on(event: 'connect' | 'secureConnect' | 'close', listener: () => void): this;
   on(event: 'data', listener: (chunk: Buffer) => void): this;
   on(event: 'error', listener: (err: Error) => void): this;
@@ -123,6 +125,7 @@ function wrapSocket(raw: NodeSocketLike): TcpSocketLike {
   return {
     write(data: Uint8Array): void { raw.write(data); },
     end(): void { raw.end(); },
+    destroy(): void { raw.destroy(); },
     get remoteAddress(): string | undefined { return raw.remoteAddress; },
     // Read on demand, not captured at wrap time: a plain `net.Socket` has no
     // such method at all, and the value is only meaningful once the handshake

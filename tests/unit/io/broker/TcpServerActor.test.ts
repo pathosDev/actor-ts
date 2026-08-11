@@ -101,6 +101,26 @@ function dial(port: number): Promise<net.Socket> {
   });
 }
 
+/**
+ * Dial a listener that is expected to refuse, and report how the refusal
+ * arrived — `allowHalfOpen`, so the peer does not answer the FIN by itself.
+ *
+ * Never rejects.  A refusal is an abort since #1096, and how an abort reaches
+ * the peer is the operating system's business: a clean `close`, an `error`
+ * during `connect`, or a reset just after it are all the same event here.
+ * Asserting one of them specifically would pin this suite to one platform.
+ */
+function dialExpectingRefusal(port: number): { settled(): boolean; socket: net.Socket } {
+  const socket = net.createConnection({ host: '127.0.0.1', port, allowHalfOpen: true });
+  openClients.push(socket);
+  let settled = false;
+  const done = (): void => { settled = true; };
+  socket.once('close', done);
+  socket.once('end', done);
+  socket.once('error', done); // swallowed on purpose: an abort is not a test failure
+  return { settled: () => settled, socket };
+}
+
 describe('TcpServerActor — accept and frame', () => {
   test('binds, accepts a connection and announces it with the peer address', async () => {
     const harness = await boot('tcp-server-accept');
@@ -244,11 +264,46 @@ describe('TcpServerActor — bounds', () => {
       label: 'the first connection was admitted',
     });
 
-    const refused = await dial(harness.port);
-    let refusedClosed = false;
-    refused.on('close', () => { refusedClosed = true; });
+    // Half-open on purpose: this peer will not answer a FIN, which is the
+    // case the cap has to hold against (#1096).
+    const refused = dialExpectingRefusal(harness.port);
 
-    await awaitCondition(() => refusedClosed, { label: 'the over-cap connection was closed' });
+    await awaitCondition(() => refused.settled(), { label: 'the over-cap connection was refused' });
+    expect(harness.server.connectionCount).toBe(1);
+    expect(harness.target.openedIds().length).toBe(1);
+  });
+
+  test('a refused connection is aborted, not half-closed (#1096)', async () => {
+    // `end()` sends a FIN and leaves the peer's half open, so a peer that
+    // never answers keeps the server's socket — and its descriptor — alive.
+    // `connections` never counted that socket, so the cap does not bound it
+    // either: the limit held only for peers that cooperate.
+    //
+    // Asserted on the call rather than on what the client observes, because
+    // the client observes nothing.  Measured against a plain Node server with
+    // an `allowHalfOpen: true` peer: after `end()` and after `destroy()` the
+    // client is identical — `end` fired, `close` did not, `writable` still
+    // true, and a further `write()` succeeds in both.  The only signal that
+    // separates them is the *server* socket's `close`, which never fires for
+    // `end()` and fires at once for `destroy()`.  A client-side assertion
+    // would pass with the defect in place, which is the trap the sibling
+    // finding #1097 is about.
+    const harness = await boot('tcp-server-cap-abort', (o) => o.withMaxConnections(1));
+    await dial(harness.port);
+    await awaitCondition(() => harness.target.openedIds().length === 1, {
+      label: 'the first connection was admitted',
+    });
+
+    const calls: string[] = [];
+    const overCap = {
+      write: (): void => {},
+      end: (): void => { calls.push('end'); },
+      destroy: (): void => { calls.push('destroy'); },
+    };
+    const refuse = harness.server as unknown as { onSocketOpened(socket: unknown): void };
+    refuse.onSocketOpened(overCap);
+
+    expect(calls).toEqual(['destroy']);
     expect(harness.server.connectionCount).toBe(1);
     expect(harness.target.openedIds().length).toBe(1);
   });

@@ -81,6 +81,8 @@ export class BunTcpBackend implements TcpBackend {
 interface BunSocketNative {
   write(data: Uint8Array | string): number;
   end(): void;
+  /** Bun's abort: closes without flushing, where `end()` half-closes. */
+  terminate(): void;
   remoteAddress?: string;
   /** Bun mirrors Node's TLS socket API; absent on a plaintext socket. */
   getPeerCertificate?(): unknown;
@@ -103,6 +105,7 @@ function wrapSocket(socket: BunSocketNative): TcpSocketLike {
   const wrapper: TcpSocketLike = {
     write(data: Uint8Array): void { socket.write(data); },
     end(): void { socket.end(); },
+    destroy(): void { socket.terminate(); },
     get remoteAddress(): string | undefined { return socket.remoteAddress; },
     // Read on demand.  Bun runs `open` *before* the TLS handshake completes —
     // `authorized` is still false there and no certificate is available — so

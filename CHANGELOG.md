@@ -982,6 +982,30 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   trade the at-most-one-hop guarantee for a race against the gossip round
   about to correct the sender.
 
+- **`TcpServerActor` refuses at the cap by aborting, not half-closing**
+  (#1096).  `onSocketOpened` turned an over-cap connection away with
+  `socket.end()`, which is a FIN and nothing more: a peer that does not answer
+  it keeps the socket — and its file descriptor — alive, still writable from
+  its side.  That socket was never registered, so `connections` never counted
+  it and the cap did not bound it either; the limit held only against peers
+  that cooperate, which is not what a limit is for.  The refusal now calls a
+  new `TcpSocketLike.destroy()`, implemented per runtime (`socket.destroy()`
+  on Node, `socket.terminate()` on Bun; Deno's `Conn.close()` already tears
+  down both halves, so its `end()` was never the half-close the other two
+  had).  **The refused peer now sees a connection error rather than a clean
+  close** — which is what being turned away at capacity looks like at the TCP
+  level, and the *TCP* page says so in both languages.
+
+  Worth recording for whoever writes the next one of these: the client cannot
+  tell the two apart.  Measured against a plain Node listener with an
+  `allowHalfOpen: true` peer, `end()` and `destroy()` leave it in exactly the
+  same state — `end` fired, `close` did not, `writable` still true, and a
+  further `write()` succeeds either way.  The only signal that separates them
+  is the *server* socket's `close`, which never fires for `end()`.  The
+  regression test therefore asserts the refusal path's choice rather than the
+  client's view, because a client-side assertion passes with the defect in
+  place.
+
 ### Security
 
 - **CIDR matching only accepts canonical IPv4 addresses** (#145, #312).
