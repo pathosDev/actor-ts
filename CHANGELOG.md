@@ -1255,7 +1255,7 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   reuse.  The proposed wide-version wire flag was deliberately not reserved
   — bit 4 is `FLAG_INTEGRITY_HMAC` since #116, and the case it would address
   is one the sweep already resolves.
-- **Prometheus-Kardinalitaet pro Metrik-Familie gedeckelt** (#131).  A label
+- **Prometheus cardinality is capped per metric family** (#131).  A label
   value derived from user-controlled input — a URL path, a header, an id —
   used to mint one time series per distinct value with nothing bounding it,
   growing the exposing process's resident memory (prom-client never expires
