@@ -1,8 +1,19 @@
 /**
  * A small, typed, helmet-style bundle of sensible security response
- * headers.  Every header is overridable and disable-able (`false`), the
- * handler's own header always wins, and CSP is deliberately excluded (too
- * app-specific — see {@link contentSecurityPolicy}).
+ * headers.  Every header is overridable, the handler's own header always
+ * wins, and CSP is deliberately excluded (too app-specific — see
+ * {@link contentSecurityPolicy}).
+ *
+ * **`false` omits a header; it does not remove one.**  This bundle only ever
+ * adds to a response — `applyHeaders` merges in and never deletes — so what
+ * `false` buys depends on which seam applies the bundle.  As the server-wide
+ * `newServerAt(…).withSecurityHeaders(…)`, the resolved map *replaces* the
+ * backend's defaults, and `false` therefore turns the header off.  As the
+ * `securityHeaders()` middleware it is layered on top of those defaults, and
+ * `false` only means "this middleware does not add it" — anything the backend
+ * already writes stays.  Since #127 that is
+ * {@link DEFAULT_RESPONSE_SECURITY_HEADERS}, i.e. `x-content-type-options`
+ * (#1060).
  */
 import type { Middleware } from '../Route.js';
 import { applyHeaders } from './headers.js';
