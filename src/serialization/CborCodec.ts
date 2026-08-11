@@ -7,14 +7,25 @@
  *   2 (byte string),
  *   3 (text string),
  *   4 (array),
- *   5 (map, with string keys),
- *   7 (simple values: false/true/null + double float).
+ *   5 (map — with string keys when untagged, unrestricted under tag 259),
+ *   6 (tagged item),
+ *   7 (simple values: false/true/null/undefined + half/single/double float).
  *
- * Additional-info values 0–27 are handled for every major type.  Indefinite-
- * length items and tagged items (major type 6) are NOT supported — the
- * target use case is actor message serialisation, not arbitrary CBOR
- * interop.  Dates and bigints are supported via semantic tagging (tag 1
- * and tag 2/3) on the encoder side; the decoder recognises them.
+ * Additional-info values 0–27 are handled for every major type; indefinite-
+ * length items are not, the target use case being actor message
+ * serialisation rather than arbitrary CBOR interop.
+ *
+ * The rich types carry the same set the `JsonTree` walker does, because the
+ * two are interchangeable — a store's `withSerializer`, the serialization
+ * extension default, HTTP content negotiation — and a payload must not
+ * change shape depending on which one handled it (#1036).  Registered tags
+ * are used wherever one fits the type faithfully (1 date, 2/3 bignum, 32
+ * URI, 258 set, 259 map); everything else goes under tag 27, the generic
+ * "type name plus constructor arguments" object.
+ *
+ * Unlike the JSON tree, this format needs no escape hatch for user data that
+ * looks like a tag: a tag is its own major type here, so nothing a user can
+ * put in a map or an array can be mistaken for one.
  */
 
 export class CborEncodeError extends Error {
@@ -28,6 +39,18 @@ const TAG_DATETIME = 0;      // RFC 8949: standard date/time string
 const TAG_EPOCH_DATETIME = 1; // RFC 8949: epoch-based date/time
 const TAG_UNSIGNED_BIGNUM = 2;
 const TAG_NEGATIVE_BIGNUM = 3;
+/** IANA: "Mathematical finite set" — an array of the members. */
+const TAG_SET = 258;
+/**
+ * IANA: "Map datatype with key-value operations" — a native CBOR map (major
+ * type 5) whose keys are unrestricted.
+ *
+ * A `Map` cannot go on the wire untagged even though CBOR has a native map
+ * type, because that is exactly what a plain object encodes to: the decoder
+ * would have no way to tell the two apart, and reading every major-5 map back
+ * as a `Map` would change the type of every ordinary payload (#1036).
+ */
+const TAG_MAP = 259;
 
 /**
  * Ceiling on container nesting, enforced by BOTH halves of the codec.  The
@@ -95,6 +118,8 @@ export class CborEncoder {
       this.writeDouble(value.getTime() / 1000);
       return;
     }
+    if (value instanceof Map) return this.writeMap(value, depth);
+    if (value instanceof Set) return this.writeSet(value, depth);
     if (value instanceof Number || value instanceof String || value instanceof Boolean) {
       // Wrapper objects unwrap like `JSON.stringify` does.  Left to the
       // generic branch, `Object.entries(new String('ab'))` would write
@@ -118,6 +143,42 @@ export class CborEncoder {
       for (const item of values) this.writeValue(item, depth + 1);
     } finally {
       this.ancestors.delete(values);
+    }
+  }
+
+  /**
+   * Tag 259 over a native CBOR map, so the entries cost the same bytes a
+   * plain object's would and the keys stay unrestricted — the compactness
+   * that is the reason to pick CBOR at all is kept.  One decode level, same
+   * as a plain object: the reader consumes the tag and the map together.
+   */
+  private writeMap(map: ReadonlyMap<unknown, unknown>, depth: number): void {
+    this.enterContainer(map);
+    try {
+      this.writeTag(TAG_MAP);
+      this.writeHeader(5, map.size);
+      for (const [key, entryValue] of map) {
+        this.writeValue(key, depth + 1);
+        this.writeValue(entryValue, depth + 1);
+      }
+    } finally {
+      this.ancestors.delete(map);
+    }
+  }
+
+  /**
+   * Tag 258 over an array of the members.  Two decode levels, not one: the
+   * reader spends one on the tag and one on the array inside it, and the
+   * encoder has to charge what the decoder will spend.
+   */
+  private writeSet(set: ReadonlySet<unknown>, depth: number): void {
+    this.enterContainer(set);
+    try {
+      this.writeTag(TAG_SET);
+      this.writeHeader(4, set.size);
+      for (const member of set) this.writeValue(member, depth + 2);
+    } finally {
+      this.ancestors.delete(set);
     }
   }
 
@@ -278,6 +339,11 @@ export class CborDecoder {
           const key = this.readValue(depth + 1);
           const value = this.readValue(depth + 1);
           if (typeof key !== 'string') {
+            // Stays a hard error even though the codec can plainly handle
+            // non-string keys now (see `readEntryPairs`).  Falling back to a
+            // `Map` here would make the decoded TYPE depend on the data: the
+            // same message would arrive as an object when its keys happened
+            // to be strings and as a `Map` when one of them was not.
             throw new CborDecodeError('Only string keys are supported in maps');
           }
           // `defineProperty`, not `out[key] = value`: assignment consults the
@@ -295,14 +361,58 @@ export class CborDecoder {
         }
         return out;
       }
-      case 6: {
-        const tag = Number(len);
-        const inner = this.readValue(depth + 1);
-        return this.applyTag(tag, inner);
-      }
+      case 6: return this.readTagged(Number(len), depth);
       default:
         throw new CborDecodeError(`Unknown major type ${major}`);
     }
+  }
+
+  /**
+   * Tag 259 is handled BEFORE its body is read.  Letting `readValue` take it
+   * would hand the body to the major-5 reader, which builds a plain object
+   * and rejects non-string keys — right for an untagged map, wrong here: a
+   * `Map` carries whatever keys it likes, and a `'__proto__'` key inside one
+   * reaches no setter, so the hardening that rule exists for (#581) has
+   * nothing to protect.
+   *
+   * Every other tag reads its body normally and is interpreted by `applyTag`.
+   */
+  private readTagged(tag: number, depth: number): unknown {
+    if (tag === TAG_MAP) return new Map(this.readEntryPairs(depth));
+    const inner = this.readValue(depth + 1);
+    return this.applyTag(tag, inner);
+  }
+
+  /**
+   * A major-5 map read as entry pairs, keys unrestricted.  Because it reads
+   * the header itself it has to repeat the guards `readValue`'s preamble
+   * owns: the depth ceiling, end of input, and that the item really is a map
+   * — `259("nope")` must fail rather than be misread.  Indefinite-length
+   * comes for free, since `readLength` rejects additional info 31.
+   *
+   * Nothing is pre-allocated: `readLength` can report up to 2^64-1, and
+   * `new Array(count)` on that is an instant out-of-memory.  Pushing instead
+   * means a truncated payload dies on the first `readValue` past the end,
+   * which is the same way `case 4` stays safe.
+   */
+  private readEntryPairs(depth: number): Array<[unknown, unknown]> {
+    if (depth > MAX_NESTING_DEPTH) {
+      throw new CborDecodeError(`CBOR nesting deeper than ${MAX_NESTING_DEPTH} at offset ${this.pos}`);
+    }
+    if (this.pos >= this.bytes.byteLength) {
+      throw new CborDecodeError(`Unexpected end of input at offset ${this.pos}`);
+    }
+    const ib = this.bytes[this.pos]!;
+    if (((ib >>> 5) & 0x7) !== 5) {
+      throw new CborDecodeError(`Tag ${TAG_MAP} expects a map at offset ${this.pos}`);
+    }
+    this.pos++;
+    const count = Number(this.readLength(ib & 0x1f));
+    const pairs: Array<[unknown, unknown]> = [];
+    for (let i = 0; i < count; i++) {
+      pairs.push([this.readValue(depth + 1), this.readValue(depth + 1)]);
+    }
+    return pairs;
   }
 
   private readLength(add: number): number | bigint {
@@ -389,6 +499,11 @@ export class CborDecoder {
         const magnitude = bytesToBigInt(inner);
         return tag === TAG_UNSIGNED_BIGNUM ? magnitude : -1n - magnitude;
       }
+      case TAG_SET:
+        // Without the check `new Set('abc')` would happily produce a set of
+        // three characters — silent garbage rather than a rejected payload.
+        if (!Array.isArray(inner)) throw new CborDecodeError(`Tag ${TAG_SET} expects an array`);
+        return new Set(inner);
       default:
         // Unknown tag — pass the inner value through.
         return inner;

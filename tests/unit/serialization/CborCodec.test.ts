@@ -269,6 +269,96 @@ describe('CBOR error paths', () => {
   });
 });
 
+describe('CBOR Map and Set (tags 259 / 258, #1036)', () => {
+  test('a Map round-trips as a Map, with its entries', () => {
+    const source = new Map<string, unknown>([['ada', 1], ['grace', { rank: 2 }]]);
+    const decoded = rt(source);
+    expect(decoded).toBeInstanceOf(Map);
+    expect(decoded.size).toBe(2);
+    expect(decoded.get('ada')).toBe(1);
+    expect(decoded.get('grace')).toEqual({ rank: 2 });
+  });
+
+  test('a Set round-trips as a Set, with its members', () => {
+    const decoded = rt(new Set([1, 'two', { three: true }]));
+    expect(decoded).toBeInstanceOf(Set);
+    expect(decoded.size).toBe(3);
+    expect([...decoded]).toEqual([1, 'two', { three: true }]);
+  });
+
+  test('empty collections survive', () => {
+    expect(rt(new Map())).toBeInstanceOf(Map);
+    expect(rt(new Map()).size).toBe(0);
+    expect(rt(new Set())).toBeInstanceOf(Set);
+    expect(rt(new Set()).size).toBe(0);
+  });
+
+  // The reason `Map` is tagged at all: a bare major-5 map is what a plain
+  // object writes, so the two would be indistinguishable coming back.
+  test('a plain object still decodes as a plain object, not a Map', () => {
+    const decoded = rt({ ada: 1 });
+    expect(decoded).not.toBeInstanceOf(Map);
+    expect(decoded).toEqual({ ada: 1 });
+  });
+
+  test('Map keys are not restricted to strings', () => {
+    const source = new Map<unknown, unknown>([
+      [1, 'number key'],
+      [new Date('2024-01-01T00:00:00Z'), 'date key'],
+      [{ nested: true }, 'object key'],
+    ]);
+    const decoded = rt(source);
+    expect(decoded.get(1)).toBe('number key');
+    const keys = [...decoded.keys()];
+    expect(keys[1]).toBeInstanceOf(Date);
+    expect(keys[2]).toEqual({ nested: true });
+  });
+
+  test('rich types survive on both sides of an entry, and nest', () => {
+    const source = new Map<unknown, unknown>([
+      ['when', new Date('2024-06-01T12:00:00Z')],
+      ['big', 2n ** 70n],
+      ['inner', new Set([new Map([['deep', 1]])])],
+    ]);
+    const decoded = rt(source);
+    expect(decoded.get('when')).toBeInstanceOf(Date);
+    expect(decoded.get('big')).toBe(2n ** 70n);
+    const inner = decoded.get('inner') as Set<Map<string, number>>;
+    expect(inner).toBeInstanceOf(Set);
+    expect([...inner][0]).toBeInstanceOf(Map);
+    expect([...inner][0]!.get('deep')).toBe(1);
+  });
+
+  // A Map key reaches no prototype setter, so the plain-object hardening has
+  // nothing to protect here — but the value must still arrive intact.
+  test('a __proto__ Map key stays an ordinary key', () => {
+    const decoded = rt(new Map<string, unknown>([['__proto__', { polluted: true }]]));
+    expect(decoded).toBeInstanceOf(Map);
+    expect(decoded.get('__proto__')).toEqual({ polluted: true });
+    expect(({} as Record<string, unknown>)['polluted']).toBeUndefined();
+  });
+
+  test('an untagged map still refuses non-string keys', () => {
+    // 0xa1 = map(1), 0x01 = key 1 (an integer), 0x02 = value 2.
+    expect(() => dec.decode(new Uint8Array([0xa1, 0x01, 0x02]))).toThrow(CborDecodeError);
+  });
+
+  test('a malformed tag body is rejected, not misread', () => {
+    // Tag 259 (0xd9 0x01 0x03) over a text string instead of a map.
+    expect(() => dec.decode(new Uint8Array([0xd9, 0x01, 0x03, 0x61, 0x78]))).toThrow(CborDecodeError);
+    // Tag 258 (0xd9 0x01 0x02) over a text string instead of an array.
+    expect(() => dec.decode(new Uint8Array([0xd9, 0x01, 0x02, 0x61, 0x78]))).toThrow(CborDecodeError);
+    // Tag 259 with nothing after it.
+    expect(() => dec.decode(new Uint8Array([0xd9, 0x01, 0x03]))).toThrow(CborDecodeError);
+  });
+
+  test('a Map body costs the same bytes as the equivalent plain object, plus the tag', () => {
+    const asObject = enc.encode({ a: 1 }).byteLength;
+    const asMap = enc.encode(new Map([['a', 1]])).byteLength;
+    expect(asMap).toBe(asObject + 3); // 0xd9 0x01 0x03
+  });
+});
+
 describe('CBOR encoder limits (#1036)', () => {
   test('a cycle is a CborEncodeError, not a stack overflow', () => {
     const node: Record<string, unknown> = { name: 'root' };
@@ -299,6 +389,45 @@ describe('CBOR encoder limits (#1036)', () => {
     expect(() => enc.encode(nest(300))).toThrow(CborEncodeError);
     // Just inside the bound: encodes, and decodes back.
     expect(dec.decode(enc.encode(nest(250)))).toEqual(nest(250));
+  });
+
+  // The property the depth accounting exists for: whatever the encoder is
+  // willing to write, the decoder is willing to read.  It has to hold per
+  // container kind, because they do not all cost the same number of decode
+  // levels — a Set spends two (the tag, then the array) where a Map spends
+  // one.  Anything that gets this wrong writes unreadable snapshots.
+  test('encoder ceiling == decoder ceiling, for every container kind', () => {
+    const wrappers: ReadonlyArray<readonly [string, (inner: unknown) => unknown]> = [
+      ['array', (inner) => [inner]],
+      ['object', (inner) => ({ v: inner })],
+      ['map', (inner) => new Map([['v', inner]])],
+      ['set', (inner) => new Set([inner])],
+    ];
+
+    for (const [kind, wrap] of wrappers) {
+      const nested = (levels: number): unknown => {
+        let out: unknown = 'leaf';
+        for (let i = 0; i < levels; i++) out = wrap(out);
+        return out;
+      };
+
+      let deepest = 0;
+      let deepestBytes = new Uint8Array();
+      for (let levels = 1; levels <= 300; levels++) {
+        try {
+          deepestBytes = enc.encode(nested(levels));
+          deepest = levels;
+        } catch {
+          break;
+        }
+      }
+
+      expect(`${kind}: ${deepest > 0}`).toBe(`${kind}: true`);
+      // The deepest the encoder accepted really does decode …
+      expect(() => dec.decode(deepestBytes)).not.toThrow();
+      // … and one level further is refused before any bytes are produced.
+      expect(() => enc.encode(nested(deepest + 1))).toThrow(CborEncodeError);
+    }
   });
 });
 
