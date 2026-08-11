@@ -73,7 +73,7 @@ type ElementEntry<E> = {
 
 export class ORSet<E> implements Crdt<ORSet<E>> {
   /**
-   * `elements`   — element-key (identity-fn output) → entry holding
+   * `elements`   — element-key (identity-function output) → entry holding
    *                the original element instance plus its current
    *                tag set.  Storing the element (not just its
    *                identity-string) lets `value()` return the
@@ -187,7 +187,7 @@ export class ORSet<E> implements Crdt<ORSet<E>> {
     // dedup rule.
     //
     // Built with `Object.fromEntries` rather than by assignment: an element
-    // key is identity-fn output, so a custom identity can produce the one
+    // key is identity-function output, so a custom identity can produce the one
     // string an assignment cannot store — `__proto__` hits the inherited
     // setter and the entry never reaches the wire at all (#767).  Defining
     // the property keeps the encode honest; the decoder is what rejects it.

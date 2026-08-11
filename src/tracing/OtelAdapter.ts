@@ -83,7 +83,7 @@ export interface OtelTraceApi {
 
 export interface OtelContextApi {
   active(): OtelContextLike;
-  with<F extends (...args: never[]) => unknown>(context: OtelContextLike, fn: F): ReturnType<F>;
+  with<F extends (...args: never[]) => unknown>(context: OtelContextLike, callback: F): ReturnType<F>;
   /** OTel exports `ROOT_CONTEXT` as a top-level constant; some shims also rehang it here. */
   readonly ROOT_CONTEXT?: OtelContextLike;
 }
@@ -176,7 +176,7 @@ export function otelTracer(options: OtelAdapterOptions): Tracer {
 
   // Wrap-to-OTel back-reference.  `withActiveSpan` reads from this map
   // to put the right OTel span on the OTel context; lookups fall back
-  // gracefully (just-run-fn) when the user passes a span we didn't create.
+  // gracefully (just-run-the-callback) when the user passes a span we didn't create.
   const otelOf = new WeakMap<Span, OtelSpanLike>();
 
   return {
@@ -210,16 +210,16 @@ export function otelTracer(options: OtelAdapterOptions): Tracer {
       return wrapSpan(otelSpan);
     },
 
-    withActiveSpan<T>(span: Span, fn: () => T): T {
+    withActiveSpan<T>(span: Span, callback: () => T): T {
       const otelSpan = otelOf.get(span);
       if (!otelSpan) {
-        // Not one of ours — degrade to running `fn` without OTel
+        // Not one of ours — degrade to running `callback` without OTel
         // context propagation.  Better than throwing; covers the
         // (unusual) case where the caller mixed adapter outputs.
-        return fn();
+        return callback();
       }
       const context = api.trace.setSpan(api.context.active(), otelSpan);
-      return api.context.with(context, fn) as T;
+      return api.context.with(context, callback) as T;
     },
 
     activeSpan(): Span | null {

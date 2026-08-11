@@ -8,7 +8,7 @@
  *      allocating a `Some`/`None` wrapper would show up in profiles.
  *   2. Serialization boundaries (wire-JSON, HOCON parser, CBOR decoder)
  *      where we must round-trip through `null`.
- *   3. Optional parameters with ergonomic defaults (`fn(sender?: ActorRef)`).
+ *   3. Optional parameters with ergonomic defaults (`tell(message, sender?: ActorRef)`).
  *      The call-site stays short; the stored form can be `fromNullable()`ed.
  *
  * Usage:

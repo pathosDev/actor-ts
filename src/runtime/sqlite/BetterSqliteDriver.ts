@@ -54,7 +54,7 @@ interface BetterSqliteStatement {
 interface BetterSqliteNative {
   exec(sql: string): void;
   prepare(sql: string): BetterSqliteStatement;
-  transaction<F extends (...args: never[]) => unknown>(fn: F): F;
+  transaction<F extends (...args: never[]) => unknown>(body: F): F;
   close(): void;
 }
 
@@ -80,8 +80,8 @@ class BetterSqliteDb implements SqliteDb {
       all: <T = unknown>(...p: unknown[]): T[] => stmt.all(...p) as T[],
     };
   }
-  transaction<F extends (...args: never[]) => unknown>(fn: F): F {
-    return this.native.transaction(fn);
+  transaction<F extends (...args: never[]) => unknown>(body: F): F {
+    return this.native.transaction(body);
   }
   close(): void { this.native.close(); }
 }

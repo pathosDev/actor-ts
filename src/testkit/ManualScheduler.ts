@@ -4,7 +4,7 @@ import { Scheduler, type Cancellable } from '../Scheduler.js';
 type Task = {
   id: number;
   fireAt: number;
-  fn: () => void;
+  run: () => void;
   cancelled: boolean;
   /** If set, the task re-enqueues itself after firing. */
   repeat?: { intervalMs: number };
@@ -24,8 +24,8 @@ export class ManualScheduler extends Scheduler {
 
   /* -------------------------- Scheduler API overrides -------------------------- */
 
-  override scheduleOnceFunction(delayMs: number, fn: () => void): Cancellable {
-    return this.add({ fireAt: this._now + delayMs, fn });
+  override scheduleOnceFunction(delayMs: number, task: () => void): Cancellable {
+    return this.add({ fireAt: this._now + delayMs, run: task });
   }
 
   override scheduleOnce<T>(
@@ -36,18 +36,18 @@ export class ManualScheduler extends Scheduler {
   ): Cancellable {
     return this.add({
       fireAt: this._now + delayMs,
-      fn: () => target.tell(message, sender),
+      run: () => target.tell(message, sender),
     });
   }
 
   override scheduleAtFixedRateFunction(
     initialDelayMs: number,
     intervalMs: number,
-    fn: () => void,
+    task: () => void,
   ): Cancellable {
     return this.add({
       fireAt: this._now + initialDelayMs,
-      fn,
+      run: task,
       repeat: { intervalMs },
     });
   }
@@ -61,7 +61,7 @@ export class ManualScheduler extends Scheduler {
   ): Cancellable {
     return this.add({
       fireAt: this._now + initialDelayMs,
-      fn: () => target.tell(message, sender),
+      run: () => target.tell(message, sender),
       repeat: { intervalMs },
     });
   }
@@ -93,7 +93,7 @@ export class ManualScheduler extends Scheduler {
       const next = this.peekNext(target);
       if (!next) break;
       this._now = next.fireAt;
-      try { next.fn(); } catch (e) {
+      try { next.run(); } catch (e) {
         // Mirror the real scheduler: log, do not propagate.
         console.error('[ManualScheduler] task threw:', e);
       }

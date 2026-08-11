@@ -86,16 +86,16 @@ export class ORMap<K, V extends Crdt<V>> implements Crdt<ORMap<K, V>> {
   /**
    * Mutate the value under `key` in place (functionally — returns a
    * new map).  If the key doesn't exist yet, `factory()` provides the
-   * empty CRDT.  Equivalent to `put(replica, key, fn(get(key) ?? factory()))`
+   * empty CRDT.  Equivalent to `put(replica, key, mutator(get(key) ?? factory()))`
    * but with a single re-tag, so concurrent `update` + `remove`
    * resolves the same as concurrent `put` + `remove` would.
    */
   update(
     replica: ReplicaId, key: K,
-    factory: () => V, fn: (current: V) => V,
+    factory: () => V, mutator: (current: V) => V,
   ): ORMap<K, V> {
     const current = this.get(key) ?? factory();
-    return this.put(replica, key, fn(current));
+    return this.put(replica, key, mutator(current));
   }
 
   /**
@@ -177,7 +177,7 @@ export class ORMap<K, V extends Crdt<V>> implements Crdt<ORMap<K, V>> {
   toJSON(): ORMapJson {
     // Each value is a CRDT — its toJSON is the standard discriminated shape.
     //
-    // `Object.fromEntries`, not assignment: entry ids are identity-fn output,
+    // `Object.fromEntries`, not assignment: entry ids are identity-function output,
     // so a custom identity can yield `__proto__`, and an assignment hands that
     // to the inherited setter instead of storing it — the entry silently never
     // reaches a peer or the durable record (#767).
