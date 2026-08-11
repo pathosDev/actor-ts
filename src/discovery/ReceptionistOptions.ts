@@ -4,6 +4,11 @@ import { ConfigKeys } from '../config/ConfigKeys.js';
 import type { Config } from '../config/Config.js';
 import type { Cluster } from '../cluster/Cluster.js';
 
+/** Built-in default for {@link ReceptionistOptionsType.maxSubscribersPerKey}. */
+export const DEFAULT_MAX_SUBSCRIBERS_PER_KEY = 1_000;
+/** Built-in default for {@link ReceptionistOptionsType.maxSubscribersTotal}. */
+export const DEFAULT_MAX_SUBSCRIBERS_TOTAL = 10_000;
+
 /** Plain options-object shape accepted by a {@link Receptionist}. */
 export type ReceptionistOptionsType = {
   readonly cluster?: Cluster | null;

@@ -4,6 +4,14 @@ import type { ActorOptions } from '../../ActorOptions.js';
 import { OptionsBuilder } from '../../util/OptionsBuilder.js';
 import { OptionsValidator } from '../../util/OptionsValidator.js';
 
+/**
+ * Built-in default for {@link StartSingletonOptionsType.bufferSize} — the cap
+ * on messages a proxy holds while no host is known.  See that field for why
+ * the wait it covers is unbounded in principle, which is what makes a cap
+ * necessary rather than merely tidy.
+ */
+export const DEFAULT_BUFFER_SIZE = 1_000;
+
 /** Plain options-object shape accepted by {@link ClusterSingleton.start}. */
 export type StartSingletonOptionsType<T> = {
   /** Logical name for this singleton — used in the manager/child actor path. */

@@ -1,3 +1,4 @@
+import { SEQ_PADDING } from '../Constants.js';
 import { JournalError, type Snapshot } from '../JournalTypes.js';
 import { DEFAULT_MAX_DECOMPRESSED_BYTES, encodeBody, decodeBody } from '../object-storage/BodyCodec.js';
 import {
@@ -21,8 +22,6 @@ import { none, some, type Option } from '../../util/Option.js';
 import { ObjectStorageSnapshotStoreOptionsValidator } from './ObjectStorageSnapshotStoreOptions.js';
 import type { ObjectStorageSnapshotStoreOptions, ObjectStorageSnapshotStoreOptionsType } from './ObjectStorageSnapshotStoreOptions.js';
 
-/** Sequence-number padding — matches `Number.MAX_SAFE_INTEGER`'s 16 digits with headroom. */
-const SEQ_PADDING = 20;
 
 const utf8 = new TextEncoder();
 const utf8Decoder = new TextDecoder();

@@ -26,7 +26,8 @@ export { CsrfOptions, CsrfOptionsBuilder, CsrfOptionsValidator, SameOriginOption
 export type { CsrfOptionsType, CsrfCookieOptions, SameOriginOptionsType } from './CsrfOptions.js';
 
 // Request id, HTTP Basic auth, request timeout.
-export { requestId, requestIdOf, DEFAULT_REQUEST_ID_HEADER } from './RequestId.js';
+export { requestId, requestIdOf } from './RequestId.js';
+export { DEFAULT_REQUEST_ID_HEADER } from './RequestIdOptions.js';
 export { RequestIdOptions, RequestIdOptionsBuilder } from './RequestIdOptions.js';
 export type { RequestIdOptionsType } from './RequestIdOptions.js';
 export { BasicAuth } from './BasicAuth.js';

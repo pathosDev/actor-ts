@@ -6,6 +6,7 @@
  * simply a reading that stopped getting newer — which is exactly how it
  * should read on the overview.  Nothing waits for a slow node.
  */
+import { STALE_AFTER_MS } from '../Constants.js';
 import type { Cluster } from '../../cluster/Cluster.js';
 import {
   CLUSTER_MEMBER_RETENTION_MS,
@@ -19,14 +20,6 @@ import {
   isNodeReport,
   type NodeQueryMessage,
 } from './NodeProtocol.js';
-
-/**
- * How long a peer's last answer stays fresh.
- *
- * Generous relative to the poll interval, so one dropped envelope does
- * not flag a healthy node as stale.
- */
-const STALE_AFTER_MS = 5_000;
 
 /** What one peer last told us. */
 type CachedReport = {

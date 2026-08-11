@@ -11,7 +11,11 @@ import {
   type ObjectStorageBackend,
   type PutOptions,
 } from './ObjectStorageBackend.js';
-import { FilesystemObjectStorageOptionsValidator } from './FilesystemObjectStorageOptions.js';
+import {
+  DEFAULT_LOCK_TIMEOUT_MS,
+  DEFAULT_STALE_LOCK_MS,
+  FilesystemObjectStorageOptionsValidator,
+} from './FilesystemObjectStorageOptions.js';
 import type { FilesystemObjectStorageOptions, FilesystemObjectStorageOptionsType } from './FilesystemObjectStorageOptions.js';
 
 /**
@@ -56,9 +60,6 @@ import type { FilesystemObjectStorageOptions, FilesystemObjectStorageOptionsType
  *    behaviour.  Concurrent readers always see either the old body or
  *    the new body, never a truncated buffer.
  */
-
-const DEFAULT_LOCK_TIMEOUT_MS = 5_000;
-const DEFAULT_STALE_LOCK_MS = 30_000;
 
 /**
  * Reject keys that would escape the root directory via path-traversal

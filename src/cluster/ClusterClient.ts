@@ -37,6 +37,7 @@
  * inherit framing, ordering, and TLS for free.
  */
 
+import { HELLO_TIMEOUT_MS } from './Constants.js';
 import { getTcpBackend, type TcpSocketLike, type TlsTransportOptionsType } from '../runtime/tcp/index.js';
 import { ConsoleLogger, LogLevel, type Logger } from '../Logger.js';
 import { DEFAULT_ASK_TIMEOUT_MS } from '../util/Constants.js';
@@ -57,8 +58,6 @@ type PendingAsk = {
   readonly reject: (err: Error) => void;
   readonly timer: ReturnType<typeof setTimeout>;
 };
-
-const HELLO_TIMEOUT_MS = 5_000;
 
 /**
  * Generate an unpredictable ask ID.  Used by `ClusterClient.ask()` to

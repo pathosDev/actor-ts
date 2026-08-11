@@ -32,15 +32,10 @@ import {
 } from '../protocol/index.js';
 import type { DevToolsServer, DevToolsTap } from '../DevToolsServer.js';
 import { HISTORY_MAXIMUM_SPAN_MS, StatsHistoryStore } from '../internal/StatsHistoryStore.js';
+import { LOCAL_ADDRESS, TOP_MAILBOX_COUNT } from '../Constants.js';
 import { NodeSampler } from '../internal/NodeSampler.js';
 import type { DevToolsFederation } from '../cluster/Federation.js';
 import type { ClusterMembership } from '../internal/ClusterMembership.js';
-
-/** How many hot mailboxes the overview shows, across all nodes. */
-const TOP_MAILBOX_COUNT = 5;
-
-/** Address used for the single node of a system with no cluster. */
-const LOCAL_ADDRESS = 'local';
 
 export class StatsTap implements DevToolsTap {
   readonly stream: DevToolsStreamId = 'stats';

@@ -6,7 +6,12 @@ import { DeadLetter, Terminated } from '../../SystemMessages.js';
 import { BidirectionalMultiMap } from '../../util/BidirectionalMultiMap.js';
 import { DEFAULT_GOSSIP_INTERVAL_MS } from '../../util/Constants.js';
 import { SystemActorNames, SystemGroups, systemActorPath } from '../../internal/SystemPaths.js';
-import { DistributedPubSubOptionsValidator } from './DistributedPubSubOptions.js';
+import {
+  DEFAULT_MAX_REMOTE_NODES_PER_TOPIC,
+  DEFAULT_MAX_SUBSCRIBERS_PER_TOPIC,
+  DEFAULT_MAX_TOPICS,
+  DistributedPubSubOptionsValidator,
+} from './DistributedPubSubOptions.js';
 import type { DistributedPubSubOptions, DistributedPubSubOptionsType } from './DistributedPubSubOptions.js';
 import { MemberRemoved, MemberUp } from '../ClusterEvents.js';
 import { NodeAddress } from '../NodeAddress.js';
@@ -55,13 +60,6 @@ export type MediatorMessage =
  * subscriber would never be removed (the shape of #709).
  */
 export type MediatorInbox = MediatorMessage | Terminated;
-
-/** Local subscribers per topic when nothing else is configured. */
-const DEFAULT_MAX_SUBSCRIBERS_PER_TOPIC = 10_000;
-/** Distinct topics per mediator when nothing else is configured. */
-const DEFAULT_MAX_TOPICS = 10_000;
-/** Remote claimants per topic when nothing else is configured. */
-const DEFAULT_MAX_REMOTE_NODES_PER_TOPIC = 1_000;
 
 /**
  * Where a topic's rotation stands — mutable on purpose, and held inside the

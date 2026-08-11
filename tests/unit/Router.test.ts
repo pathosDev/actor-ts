@@ -16,8 +16,10 @@ import {
   type RoutingStrategy,
   smallestMailboxStrategy,
 } from '../../src/Router.js';
-import { ScatterGatherOptions } from '../../src/ScatterGatherOptions.js';
-import { DEFAULT_SCATTER_GATHER_TIMEOUT_MS } from '../../src/ScatterGatherRouter.js';
+import {
+  DEFAULT_SCATTER_GATHER_TIMEOUT_MS,
+  ScatterGatherOptions,
+} from '../../src/ScatterGatherOptions.js';
 import type { ActorRef } from '../../src/ActorRef.js';
 import { DEFAULT_ASK_TIMEOUT_MS } from '../../src/util/Constants.js';
 import { OptionsError } from '../../src/util/OptionsValidator.js';

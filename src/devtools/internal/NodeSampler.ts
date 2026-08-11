@@ -11,12 +11,10 @@ import type { ActorSystem } from '../../ActorSystem.js';
 import { MetricsExtensionId } from '../../metrics/MetricsExtension.js';
 import { ActorLifecycleEvent, ActorRestarted, ActorStarted, ActorStopped, DeadLetter } from '../../SystemMessages.js';
 import { match, P } from 'ts-pattern';
+import { TOP_MAILBOX_COUNT } from '../Constants.js';
 import { counterTotal, handlerLatency } from './MetricsDigest.js';
 import { subscribeToEventStream, type EventStreamProbe } from './EventStreamProbe.js';
 import type { MailboxDepthEntry, NodeFigures } from '../protocol/index.js';
-
-/** How many hot mailboxes a node reports. */
-const TOP_MAILBOX_COUNT = 5;
 
 /** Framework counters the figures read back. */
 const MESSAGES_DELIVERED = 'actor_messages_delivered_total';

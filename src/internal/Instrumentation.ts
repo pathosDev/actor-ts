@@ -8,13 +8,11 @@
  * a live system without reaching into private fields.
  */
 
+import { MESSAGE_JSON_DEPTH, MESSAGE_JSON_LIMIT } from './Constants.js';
+
 /** Lifecycle state of an actor cell. */
 export type CellState = 'creating' | 'running' | 'suspended' | 'terminating' | 'terminated';
 
-/** Longest JSON a captured message may occupy, in characters. */
-const MESSAGE_JSON_LIMIT = 2_000;
-/** How deep {@link describeMessagePayload} walks before giving up. */
-const MESSAGE_JSON_DEPTH = 6;
 
 /**
  * A name for a message, for tooling that lists what an actor handled.

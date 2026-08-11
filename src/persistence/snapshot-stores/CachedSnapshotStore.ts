@@ -3,7 +3,7 @@ import type { Snapshot } from '../JournalTypes.js';
 import type { PersistenceOptions } from '../PersistenceOptions.js';
 import type { SnapshotStore } from '../SnapshotStore.js';
 import { none, some, type Option } from '../../util/Option.js';
-import { CachedSnapshotStoreOptionsValidator } from './CachedSnapshotStoreOptions.js';
+import { CachedSnapshotStoreOptionsValidator, DEFAULT_SNAPSHOT_CACHE_TTL_MS } from './CachedSnapshotStoreOptions.js';
 import type { CachedSnapshotStoreOptions, CachedSnapshotStoreOptionsType } from './CachedSnapshotStoreOptions.js';
 
 /**
@@ -41,8 +41,6 @@ import type { CachedSnapshotStoreOptions, CachedSnapshotStoreOptionsType } from 
  *   ext.setSnapshotStore(cached);
  */
 
-const DEFAULT_TTL_MS = 5 * 60_000;
-
 type CachedSnapshot<S> = {
   readonly persistenceId: string;
   readonly sequenceNr: number;
@@ -62,7 +60,7 @@ export class CachedSnapshotStore implements SnapshotStore {
     const resolvedOptions = (options as CachedSnapshotStoreOptionsType);
     new CachedSnapshotStoreOptionsValidator().validate(resolvedOptions);
     this.cache = resolvedOptions.cache;
-    this.ttlMs = resolvedOptions.ttlMs ?? DEFAULT_TTL_MS;
+    this.ttlMs = resolvedOptions.ttlMs ?? DEFAULT_SNAPSHOT_CACHE_TTL_MS;
     this.keyPrefix = resolvedOptions.keyPrefix ?? 'snap:';
   }
 

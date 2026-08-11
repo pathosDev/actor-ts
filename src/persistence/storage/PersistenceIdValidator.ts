@@ -1,3 +1,6 @@
+import { MAX_PERSISTENCE_ID_LENGTH } from '../Constants.js';
+import { PATH_TRAVERSAL_SEGMENTS } from '../../util/Constants.js';
+
 /**
  * Validate a `persistenceId` before it becomes a storage key (security
  * audit #133).
@@ -52,15 +55,6 @@
  */
 
 /**
- * Longest accepted id — the width of the `persistence_id` column in every
- * relational dialect's DDL.  Anything longer cannot round-trip.
- */
-export const MAX_PERSISTENCE_ID_LENGTH = 255;
-
-/** Whole-id values that would carry traversal meaning in a storage key. */
-const TRAVERSAL_IDS: ReadonlySet<string> = new Set(['.', '..']);
-
-/**
  * True when `persistenceId` contains a C0 control character or DEL.
  *
  * A codepoint scan rather than a regex, for the reason `ActorPath` gives:
@@ -98,7 +92,7 @@ export function persistenceIdRejection(persistenceId: string): string | null {
     return 'must not contain a path separator ("/" or "\\") — object-storage '
       + 'keys use it to separate one stream from the next';
   }
-  if (TRAVERSAL_IDS.has(persistenceId)) {
+  if (PATH_TRAVERSAL_SEGMENTS.has(persistenceId)) {
     return 'must not be "." or ".."';
   }
   if (hasControlCharacter(persistenceId)) {

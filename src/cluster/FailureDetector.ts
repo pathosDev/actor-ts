@@ -1,10 +1,11 @@
 import { NodeAddress } from './NodeAddress.js';
 import { fromNullable, type Option } from '../util/Option.js';
+import { DEFAULT_HEARTBEAT_INTERVAL_MS } from './Constants.js';
 import { FailureDetectorOptionsValidator } from './FailureDetectorOptions.js';
 import type { FailureDetectorOptions, FailureDetectorOptionsType } from './FailureDetectorOptions.js';
 
 export const defaultFailureDetectorOptions: FailureDetectorOptionsType = {
-  heartbeatIntervalMs: 500,
+  heartbeatIntervalMs: DEFAULT_HEARTBEAT_INTERVAL_MS,
   unreachableAfterMs: 2_000,
   downAfterMs: 5_000,
 };

@@ -539,6 +539,24 @@ Jede Schicht überlagert die vorherige.  Schicht 6
 (Konstruktor-Felder) gewinnt immer für die Felder, die sie
 abdeckt; alles andere fließt durch den HOCON-Merge.
 
+### Wo der eingebaute Default steht
+
+Schicht 1 ist `reference.conf` — aber nicht jede Einstellung hat dort
+einen Key, und selbst die, die einen haben, brauchen einen Wert im Code
+für den Fall, dass nichts konfiguriert ist.  Dieser Wert hat einen festen
+Ort, damit immer auffindbar ist, worauf eine Einstellung zurückfällt:
+
+- **Options-Defaults** stehen neben dem Feld, das sie belegen, in der
+  passenden `XOptions.ts`.  `DEFAULT_MAX_ENTRIES` liegt in
+  `InMemoryCacheOptions.ts`, `DEFAULT_NUM_SHARDS` in `ShardingOptions.ts`.
+- **Alles andere** — Obergrenzen, Schranken und Timeouts ohne Option
+  dahinter — steht in einer `Constants.ts`: `src/<subsystem>/Constants.ts`
+  für ein einzelnes Subsystem, `src/util/Constants.ts` für Werte, die
+  mehrere teilen.
+
+Ein `reference.conf`-Blatt und sein Code-Fallback sind damit immer genau
+zwei Dateien, und die zweite ist nach der ersten benannt.
+
 import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="Plugin-Keys sind voll qualifizierte Pfade">

@@ -15,6 +15,7 @@
  * One session at a time.  Two overlapping profiles would each see part
  * of the picture and neither would be right.
  */
+import { MAXIMUM_DURATION_MS, PROGRESS_INTERVAL_MS } from '../Constants.js';
 import type { ActorSystem } from '../../ActorSystem.js';
 import type { Cancellable } from '../../Scheduler.js';
 import type { DispatchObservation, DispatchObserver } from '../../internal/Instrumentation.js';
@@ -32,11 +33,6 @@ import {
   type ProfilerStopResult,
 } from '../protocol/index.js';
 import type { DevToolsServer, DevToolsTap } from '../DevToolsServer.js';
-
-/** How often a running session reports its sample count. */
-const PROGRESS_INTERVAL_MS = 500;
-/** Longest auto-stopping run; a profiler is not a monitoring agent. */
-const MAXIMUM_DURATION_MS = 10 * 60 * 1000;
 
 /** One aggregated `(actor, message)` pair. */
 type Bucket = {

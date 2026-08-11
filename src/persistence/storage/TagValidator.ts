@@ -15,12 +15,12 @@
  *     newlines) in a tag corrupt logs and downstream text handling (#133/#134
  *     family).
  *   - **Cardinality / row-size explosion:** unbounded tag length or count
- *     bloats rows and tag indexes (#131 family), so both are capped.
+ *     bloats rows and tag indexes (#131 family), so both are capped —
+ *     `MAX_TAG_LENGTH` and `MAX_TAGS_PER_EVENT` in `../Constants.js`.
  *
  * Empty tags are ignored here — every backend already skips them on write.
  */
-export const MAX_TAG_LENGTH = 255;
-export const MAX_TAGS_PER_EVENT = 64;
+import { MAX_TAG_LENGTH, MAX_TAGS_PER_EVENT } from '../Constants.js';
 
 /** True if `s` contains a C0 control char (0x00-0x1F, incl. CR/LF/TAB) or DEL (0x7F). */
 function hasControlCharacter(s: string): boolean {

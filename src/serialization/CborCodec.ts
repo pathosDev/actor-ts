@@ -28,6 +28,7 @@
  * put in a map or an array can be mistaken for one.
  */
 
+import { MAX_BIGNUM_BYTES, MAX_NESTING_DEPTH } from './Constants.js';
 import { BidirectionalMap } from '../util/BidirectionalMap.js';
 import { BidirectionalMultiMap } from '../util/BidirectionalMultiMap.js';
 import {
@@ -74,15 +75,6 @@ const TAG_SET = 258;
  */
 const TAG_MAP = 259;
 
-/**
- * Ceiling on container nesting, enforced by BOTH halves of the codec.  The
- * decoder recurses once per array, map and tag level, so without a bound a
- * couple of hundred KB of `0x81` bytes exhausts the JS stack (#618); the
- * encoder measures the same levels so it cannot write something its own
- * decoder would refuse (#1036).  Real payloads are shallow; anything near
- * this is malformed or hostile.
- */
-const MAX_NESTING_DEPTH = 256;
 
 /* ================================ Encoder ================================= */
 
@@ -527,13 +519,6 @@ export class CborEncoder {
 
 /* ================================ Decoder ================================= */
 
-/**
- * Ceiling on the byte length of a tag 2 / tag 3 bignum magnitude, i.e.
- * 8192-bit integers.  Comfortably above anything a real message carries — an
- * RSA-4096 modulus is 512 bytes — and the cost of rebuilding one is now
- * linear anyway, so this is a backstop rather than the fix.
- */
-const MAX_BIGNUM_BYTES = 1024;
 
 export class CborDecoder {
   private pos = 0;

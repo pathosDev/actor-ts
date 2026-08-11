@@ -4,6 +4,26 @@ import { OptionsBuilder } from '../../util/OptionsBuilder.js';
 import { OptionsValidator } from '../../util/OptionsValidator.js';
 
 /**
+ * Built-in default for {@link ShardingOptionsType.numShards} — the shard
+ * count used when a sharded type does not pick one.  Mirrors
+ * `actor-ts.sharding.number-of-shards = 64` in `reference.conf`.
+ */
+export const DEFAULT_NUM_SHARDS = 64;
+
+/**
+ * Built-in default for {@link ShardingOptionsType.passivationIdleMs} — how
+ * long an entity may sit idle before the region passivates it.  `0` disables
+ * the sweep.
+ *
+ * Kept in lockstep with `passivation-idle` in `reference.conf`: HOCON only
+ * reaches a region that came through `ClusterSharding.start`, while a
+ * directly-constructed one falls back to this constant, and the two
+ * disagreeing would make the same options mean different things depending on
+ * which door they came through.
+ */
+export const DEFAULT_PASSIVATION_IDLE_MS = 300_000;
+
+/**
  * Plain options-object shape for a sharded region.  Consumed by
  * {@link ShardRegion.settingsToConfig} and extended by
  * {@link StartShardingOptionsType} — the coordinator-side superset that

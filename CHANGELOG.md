@@ -69,6 +69,59 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   reject a channel that is neither a usable `instanceof` right-hand side nor a
   non-empty kind.
 
+### Changed
+
+- **Three of the framework's own identifier draws go through the `exists`
+  predicate** (#1146).  The follow-up #1141 deferred.  The framework mints
+  twelve identifiers; the interesting result of the survey is that only three
+  of them should check anything, and the other nine are recorded on the issue
+  with the reason rather than left to be re-derived.  `ActorCell`'s anonymous
+  child names now draw against `this._children`, `ORSet.add` against the
+  element's live tags *and* its tombstones, and `ClusterClient.ask`'s id
+  against the pending map.  What they have in common is a registry in scope and
+  a failure that is silent or costly: `_createChild` throws over a duplicate
+  name, `pending.set` overwrites so a repeat leaves the earlier ask's promise
+  hanging until it reports a timeout that never happened, and a repeat of a
+  *tombstoned* ORSet tag is vetoed by the rule that stops a slow peer
+  resurrecting a removed tag — the element simply fails to appear on the next
+  merge, with no error anywhere.  `nextAskId` takes the pending map rather than
+  a ready-made predicate, so the one thing a call site could get wrong — the
+  polarity, where `true` has to mean *taken* — is written once and covered by a
+  test.  The nine sites left alone have nothing to check: a reply ref that is
+  never entered in a visible map, trace ids that have to be unique across
+  processes anyway, a lock token whose "is it taken" question `setIfAbsent`
+  already answers atomically, a correlation id that only reaches a log line.
+  `DistributedData` is the one exclusion with a real registry — its `pendingId`
+  is minted a `tell` away from the map it keys and is part of a wire-visible
+  message contract, so moving the mint is a design change, tracked as #1147.
+  No public API changes, and no behaviour change on the happy path: the entropy
+  already made every one of these collisions astronomically unlikely, so the
+  new tests replace the entropy with a constant to force the repeat and assert
+  the specific damage it used to do.
+
+- **Constants have a placement rule, and follow it** (#1142).  `src/` held
+  ~300 module-level `SCREAMING_SNAKE` constants across 130 files with no
+  documented rule for where any of them belonged; nine lived in
+  `src/util/Constants.ts` and the rest sat wherever they were first needed.
+  A constant now has exactly four possible homes, checked in order: beside
+  its field in `XOptions.ts` when it is an options default; where it already
+  is when it *is* its file's implementation (a codec's tag vocabulary, a
+  parser's regex, a singleton, a derived value, a frame-schema bound); in
+  `src/<subsystem>/Constants.ts` for every other tuned cap, bound or
+  timeout; and in `src/util/Constants.ts` only when two or more subsystems
+  consume it.  The rule is written down in AGENTS.md, and
+  `docs/…/reference/configuration.mdx` now says where the built-in default
+  behind a `reference.conf` key lives.
+
+  Eight `Constants.ts` modules hold 42 values; ~20 misplaced options
+  defaults moved next to the option they back.  **Every public name is
+  unchanged** — the barrels re-export from the new location, so no import
+  breaks.  Two structural gains fall out of it: an `XOptions.ts` no longer
+  imports a functional module to reach a default it shares with another
+  options type (`DEFAULT_SQLITE_BUSY_TIMEOUT_MS`,
+  `RESERVED_SERIALIZER_IDS_BELOW`), and `ClusterSharding` no longer
+  value-imports the 700-line `ShardRegion` actor for one integer.
+
 ### Fixed
 
 - **One faulty `EventStream` subscription no longer breaks the bus for
@@ -141,35 +194,57 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   write — the accepted value is not recorded for you.  Migrating the framework's
   own draws onto it is not part of this change.
 
-### Changed
+- **A dead constant and its live duplicate** (#1142).
+  `DEFAULT_SNAPSHOT_CACHE_TTL_MS` had zero importers while the consumer its
+  own docblock named, `CachedSnapshotStore`, declared the same five minutes
+  locally as `DEFAULT_TTL_MS`.  Exactly the drift the shared-constants
+  module was introduced (#257) to prevent, and invisible because knip's
+  `exports` rule is off.  One declaration now, in
+  `CachedSnapshotStoreOptions.ts` where the `ttlMs` field is.
 
-- **Three of the framework's own identifier draws go through the `exists`
-  predicate** (#1146).  The follow-up #1141 deferred.  The framework mints
-  twelve identifiers; the interesting result of the survey is that only three
-  of them should check anything, and the other nine are recorded on the issue
-  with the reason rather than left to be re-derived.  `ActorCell`'s anonymous
-  child names now draw against `this._children`, `ORSet.add` against the
-  element's live tags *and* its tombstones, and `ClusterClient.ask`'s id
-  against the pending map.  What they have in common is a registry in scope and
-  a failure that is silent or costly: `_createChild` throws over a duplicate
-  name, `pending.set` overwrites so a repeat leaves the earlier ask's promise
-  hanging until it reports a timeout that never happened, and a repeat of a
-  *tombstoned* ORSet tag is vetoed by the rule that stops a slow peer
-  resurrecting a removed tag — the element simply fails to appear on the next
-  merge, with no error anywhere.  `nextAskId` takes the pending map rather than
-  a ready-made predicate, so the one thing a call site could get wrong — the
-  polarity, where `true` has to mean *taken* — is written once and covered by a
-  test.  The nine sites left alone have nothing to check: a reply ref that is
-  never entered in a visible map, trace ids that have to be unique across
-  processes anyway, a lock token whose "is it taken" question `setIfAbsent`
-  already answers atomically, a correlation id that only reaches a log line.
-  `DistributedData` is the one exclusion with a real registry — its `pendingId`
-  is minted a `tell` away from the map it keys and is part of a wire-visible
-  message contract, so moving the mint is a design change, tracked as #1147.
-  No public API changes, and no behaviour change on the happy path: the entropy
-  already made every one of these collisions astronomically unlikely, so the
-  new tests replace the entropy with a constant to force the repeat and assert
-  the specific damage it used to do.
+- **`reEncryptionSweep` rebuilt the ATS1 magic prefix** (#1142) instead of
+  importing the `ATS1_MAGIC` that `BodyCodec` already exports — a second
+  copy of a format definition, in a file that already imported four other
+  things from the codec.
+
+- **The heartbeat interval existed twice** (#1142).
+  `defaultFailureDetectorOptions` and `defaultPhiAccrualOptions` each
+  carried `heartbeatIntervalMs: 500`, so swapping detectors could silently
+  change how often a node talks to its peers.  Worse, only the first was
+  pinned to `reference.conf` by a test; the φ-accrual copy was pinned to
+  nothing.
+
+- **Two independently-introduced redraw caps** (#1142).  `randomId`'s
+  `exists`-predicate loop and DevTools' `freeActorName` each declared
+  `MAXIMUM_ATTEMPTS = 1_000`, and the second one documented the coupling in
+  prose ("the same bound, and the same reasoning, as `freeActorName`") —
+  which is precisely the kind of coupling a comment cannot hold.  Now one
+  `MAXIMUM_DRAW_ATTEMPTS` in `src/util/Constants.ts`, since both subsystems
+  answer the same question for the same reason.
+
+- **Unnamed literals mirroring `reference.conf`** (#1142): the dispatcher
+  throughput was written out as a bare `16` in three places
+  (`ActorSystem`, and twice in `Dispatcher`), and `ShardCoordinator`
+  resolved its rebalance interval and hand-off timeout against `?? 2_000`
+  and `?? 10_000`.  All now named, and verified to match the HOCON leaves
+  they mirror.  Also de-duplicated: `LOCAL_ADDRESS` and `TOP_MAILBOX_COUNT`
+  in devtools, the DynamoDB batch limit, and the explain ring's default
+  capacity, which the runtime API and the DevTools RPC each answered
+  separately.
+
+### Security
+
+- **One path-traversal denylist instead of two** (#1142).  `ActorPath` and
+  `PersistenceIdValidator` each declared `new Set(['.', '..'])` under a
+  different name.  Both guard against the same attack — a persistence id
+  becomes a filesystem or object-storage key where `..` climbs out of the
+  configured prefix (#133), a path segment reaches actor-selection
+  resolution — and neither imported the other, so extending one would have
+  left the other accepting what it now rejects.  Shared as
+  `PATH_TRAVERSAL_SEGMENTS`, typed `ReadonlySet` so a caller cannot delete
+  from it.  No behaviour change: both sites reject exactly what they did
+  before.
+
 
 ## [0.14.0] — 2026-08-11
 

@@ -7,15 +7,20 @@ import type { Logger } from '../Logger.js';
 import { metricsOf } from '../metrics/MetricsExtension.js';
 import { tracerOf } from '../tracing/TracingExtension.js';
 import type { Cancellable } from '../Scheduler.js';
+import { DEFAULT_GOSSIP_INTERVAL_MS } from '../util/Constants.js';
+import { MAX_WALL_CLOCK_SKEW_MS } from './Constants.js';
+import { none, some, type Option } from '../util/Option.js';
+import { ClusterExtensionId } from './ClusterExtension.js';
 import {
-  DEFAULT_GOSSIP_INTERVAL_MS,
+  ClusterOptionsValidator,
+  DEFAULT_MAX_MEMBERS,
+  DEFAULT_MAX_TOMBSTONES,
+  DEFAULT_MAX_VERSION_SKEW_MS,
   DEFAULT_SEED_RETRY_INTERVAL_MS,
   DEFAULT_TOMBSTONE_PRUNE_INTERVAL_MS,
   DEFAULT_TOMBSTONE_TTL_MS,
-} from '../util/Constants.js';
-import { none, some, type Option } from '../util/Option.js';
-import { ClusterExtensionId } from './ClusterExtension.js';
-import { ClusterOptionsValidator, withClusterConfigDefaults } from './ClusterOptions.js';
+  withClusterConfigDefaults,
+} from './ClusterOptions.js';
 import type { ClusterOptions, ClusterOptionsType, SelfElectionPolicy } from './ClusterOptions.js';
 import {
   CurrentClusterState,
@@ -77,58 +82,6 @@ type GossipRefusalReason = typeof GOSSIP_REFUSAL_REASONS[number];
 
 /** Refusals since startup, one running total per reason. */
 type GossipRefusalCounts = Record<GossipRefusalReason, number>;
-
-/**
- * Maximum allowed deviation between a peer-supplied **wall-clock stamp** and
- * the local clock — 1 day.  Anything above is rejected as a corrupted or
- * forged frame.
- *
- * It guards the two fields that are timestamps rather than versions: a
- * tombstone's `removedAt`, which decides when the entry ages out, and a
- * heartbeat's `ts`.  Both are read for housekeeping, not for conflict
- * resolution, so the bound is tuned generous-but-finite — a node with a
- * 23-hour clock skew still prunes in step with its peers, while a frame
- * claiming `Number.MAX_SAFE_INTEGER` (≈ 285 000 years above now) is rejected
- * on the spot.
- *
- * Member **versions** are a different quantity and are held to the much
- * tighter, per-node configurable {@link ClusterOptionsType.maxVersionSkewMs}
- * — see {@link Cluster.admitsVersion} for why the two numbers are not one.
- */
-const MAX_WALL_CLOCK_SKEW_MS = 24 * 60 * 60 * 1_000;
-
-/**
- * Default cap on how far ahead of the local wall-clock a gossiped member
- * version may be — 5 minutes.  Overridable per node via
- * `ClusterOptions.withMaxVersionSkewMs`; the full reasoning for both the rule
- * and the number is on {@link Cluster.admitsVersion} (#114).
- */
-const DEFAULT_MAX_VERSION_SKEW_MS = 5 * 60 * 1_000;
-
-/**
- * Default cap on **live** entries in the member map (#138).
- *
- * The number is chosen against the failure mode that actually bites, which is
- * not an out-of-memory kill.  Gossip carries the whole member list, so at
- * roughly 110 000 entries this node's own frame outgrows the 16 MiB wire cap
- * and every peer terminates the connection on the length prefix — the node
- * removes itself from the cluster while still running.  1000 sits two orders
- * of magnitude below that, and comfortably above any cluster this framework
- * is built for.
- */
-export const DEFAULT_MAX_MEMBERS = 1_000;
-
-/**
- * Default cap on `removed` tombstones in the member map (#138).
- *
- * Ten times {@link DEFAULT_MAX_MEMBERS} because tombstones are the entries
- * that legitimately outnumber live members — every node that ever left leaves
- * one for {@link ClusterOptionsType.tombstoneTtlMs}.  That same property is
- * why this is the cap that matters: a phantom in an active status is reclaimed
- * by the failure detector within `downAfterMs`, a gossiped tombstone is not
- * reclaimed by anything for a day.
- */
-export const DEFAULT_MAX_TOMBSTONES = 10_000;
 
 /**
  * How {@link Cluster.subscribe} states the membership that already exists when

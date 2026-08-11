@@ -52,7 +52,9 @@ import {
   type MessageOutcome,
 } from './Instrumentation.js';
 import { BoundedMailbox } from '../mailbox/BoundedMailbox.js';
-import { DEFAULT_MAILBOX_CAPACITY, DEFAULT_MAILBOX_OVERFLOW } from '../util/Constants.js';
+import { DEFAULT_MAILBOX_CAPACITY, DEFAULT_MAILBOX_OVERFLOW } from '../ActorOptions.js';
+import { DEFAULT_EXPLAIN_CAPACITY } from '../util/Constants.js';
+import { DEFAULT_STASH_CAPACITY } from './Constants.js';
 import { LocalActorRef } from './LocalActorRef.js';
 import { DisplayNameLogger } from './DisplayNameLogger.js';
 import type {
@@ -68,8 +70,6 @@ import { fromNullable, type Option } from '../util/Option.js';
 import { randomId } from '../util/RandomString.js';
 import { TokenBucket } from '../util/TokenBucket.js';
 
-const DEFAULT_STASH_CAPACITY = 1024;
-
 /**
  * Key a death-watch registration by incarnation, not by address.
  *
@@ -84,9 +84,6 @@ const DEFAULT_STASH_CAPACITY = 1024;
 function watchKeyOf(ref: ActorRef): string {
   return `${ref.path.toString()}#${ref.path.uid}`;
 }
-
-/** Messages kept by an explain plan when the caller names no capacity. */
-const DEFAULT_EXPLAIN_CAPACITY = 100;
 
 /**
  * Internal runtime for a single actor.  Bridges the user-visible Actor /

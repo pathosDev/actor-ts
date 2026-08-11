@@ -1,6 +1,7 @@
 import { match } from 'ts-pattern';
 import { ActorRef } from './ActorRef.js';
 import { ActorSelection, parseSelectionPath } from './ActorSelection.js';
+import { DEFAULT_DISPATCHER_THROUGHPUT } from './Constants.js';
 import { Config } from './config/Config.js';
 import { ConfigKeys } from './config/ConfigKeys.js';
 import { none, some, type Option } from './util/Option.js';
@@ -477,7 +478,7 @@ function dispatcherFromConfig(config: Config): Dispatcher {
     .with('throughput', () => {
       const throughput = config.hasPath(ConfigKeys.dispatcher.throughput)
         ? config.getInt(ConfigKeys.dispatcher.throughput)
-        : 16;
+        : DEFAULT_DISPATCHER_THROUGHPUT;
       return new ThroughputDispatcher(throughput) as Dispatcher;
     })
     .otherwise(() => new ImmediateDispatcher() as Dispatcher);

@@ -6,6 +6,21 @@ import type { ClusterOptionsType } from './ClusterOptions.js';
 import type { StableObservationTuning } from './bootstrap/StableObservationOptions.js';
 
 /**
+ * Built-in default for {@link ClusterBootstrapOptionsType.port} — the
+ * remoting port a node binds when neither the options nor `reference.conf`
+ * name one.  2552 is Akka's historical cluster port, kept so a mixed
+ * toolchain's firewall rules and runbooks carry over unchanged.
+ */
+export const DEFAULT_PORT = 2552;
+
+/**
+ * Built-in timeout for {@link ClusterBootstrapOptionsType.awaitReady} when it
+ * is `true` rather than a number of milliseconds — how long `bootstrap`
+ * waits for the node to reach `up` before giving up.
+ */
+export const DEFAULT_AWAIT_READY_MS = 5_000;
+
+/**
  * Options accepted by {@link Cluster.bootstrap}.  Everything is
  * optional except `name`; sensible defaults turn the call into a
  * single-line hello-cluster.  Build one with {@link ClusterBootstrapOptions}.

@@ -1,3 +1,4 @@
+import { MAX_CONTEXT_KEYS, MAX_CONTEXT_VALUE_LENGTH } from './Constants.js';
 import { isMemberStatus, type MemberData, type WireMessage } from './Protocol.js';
 import type { NodeAddressData } from './NodeAddress.js';
 
@@ -134,15 +135,6 @@ export function validateWireFrame(value: unknown): { message: WireMessage } | { 
  * indistinguishable from a genuine one downstream (#573).
  */
 const RESERVED_LOG_FIELDS = new Set(['ts', 'level', 'source', 'msg', 'args']);
-
-/**
- * How many keys a remote peer may contribute, and how long each value may be.
- * A context rides on *every* envelope and is stamped onto *every* log line the
- * receiving actor emits, so an oversized one is not a single large record —
- * it is a permanent tax on the node's log volume.
- */
-const MAX_CONTEXT_KEYS = 32;
-const MAX_CONTEXT_VALUE_LENGTH = 1_024;
 
 /**
  * Make a wire-supplied MDC safe to install.

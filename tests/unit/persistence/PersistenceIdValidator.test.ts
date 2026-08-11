@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test';
+import { MAX_PERSISTENCE_ID_LENGTH } from '../../../src/persistence/Constants.js';
 import {
   assertValidPersistenceId,
-  MAX_PERSISTENCE_ID_LENGTH,
   persistenceIdRejection,
 } from '../../../src/persistence/storage/PersistenceIdValidator.js';
 import { canonicalPairId } from '../../../examples/chat/shared/directMessage.js';

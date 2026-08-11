@@ -10,6 +10,8 @@ import { mergeOptions } from '../util/OptionsMerge.js';
 import { metricsOf } from '../metrics/MetricsExtension.js';
 import { randomId } from '../util/RandomString.js';
 import {
+  DEFAULT_MAX_PENDING_QUORUM_REQUESTS,
+  DEFAULT_MAX_QUORUM_TIMEOUT_MS,
   DistributedDataOptionsValidator,
   readDistributedDataOptionsFromConfig,
 } from './DistributedDataOptions.js';
@@ -20,6 +22,7 @@ import { NodeAddress } from '../cluster/NodeAddress.js';
 import type { WireMessage } from '../cluster/Protocol.js';
 import type { Crdt } from './Crdt.js';
 import { DurableDistributedDataStore } from './DurableDistributedDataStore.js';
+import { MAX_CRDT_NESTING_DEPTH } from './Constants.js';
 import { CrdtDecodeError } from './CrdtWireValidation.js';
 import { GCounter, type GCounterJson } from './GCounter.js';
 import { GCounterMap, type GCounterMapJson } from './GCounterMap.js';
@@ -90,16 +93,6 @@ export type CrdtJson =
 export function decodeCrdt(json: CrdtJson): Crdt<any> {
   return decodeCrdtAtDepth(json, 0);
 }
-
-/**
- * Ceiling on nested `ORMap` levels.
- *
- * `decodeCrdt` recurses once per level, so without a bound a few MiB of
- * nested map headers exhausts the JS stack — inside the DistributedData
- * actor, from a single gossip frame (#721).  Real data is shallow; anything
- * approaching this is malformed or hostile.
- */
-const MAX_CRDT_NESTING_DEPTH = 32;
 
 function decodeCrdtAtDepth(json: CrdtJson, depth: number): Crdt<any> {
   if (depth > MAX_CRDT_NESTING_DEPTH) {
@@ -613,17 +606,6 @@ type PendingRead = {
   readonly resolve: (value: Crdt<any> | undefined) => void;
   readonly reject: (err: Error) => void;
 };
-
-/**
- * Default ceiling on unsettled quorum requests — see
- * {@link DistributedDataOptionsType.maxPendingQuorumRequests} for why it has
- * to sit an order of magnitude below `DEFAULT_MAILBOX_CAPACITY` (10 000) to
- * be worth anything at all.
- */
-const DEFAULT_MAX_PENDING_QUORUM_REQUESTS = 1_000;
-
-/** Default ceiling on a caller-supplied quorum `timeoutMs`. */
-const DEFAULT_MAX_QUORUM_TIMEOUT_MS = 30_000;
 
 /** Which of the two quorum flavours a metric series belongs to. */
 type QuorumOperation = 'write' | 'read';

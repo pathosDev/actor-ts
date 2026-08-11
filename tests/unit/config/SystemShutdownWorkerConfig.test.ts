@@ -4,7 +4,7 @@ import { ActorSystemOptions } from '../../../src/ActorSystemOptions.js';
 import { Config } from '../../../src/config/Config.js';
 import { CoordinatedShutdownId, Phases } from '../../../src/CoordinatedShutdown.js';
 import { LogLevel, NoopLogger } from '../../../src/Logger.js';
-import { DEFAULT_PHASE_TIMEOUT_MS } from '../../../src/util/Constants.js';
+import { DEFAULT_PHASE_TIMEOUT_MS } from '../../../src/Constants.js';
 import {
   readWorkerClusterOptionsFromConfig,
   withWorkerClusterConfigDefaults,

@@ -1,8 +1,8 @@
 import type { Crdt, ReplicaId } from './Crdt.js';
+import { MAX_MV_REGISTER_ENTRIES } from './Constants.js';
 import {
   assertBoundedArray,
   assertCounterValue,
-  MAX_MV_REGISTER_ENTRIES,
   assertPlainObject,
   safeEntries,
 } from './CrdtWireValidation.js';

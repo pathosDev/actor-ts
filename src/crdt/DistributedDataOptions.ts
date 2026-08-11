@@ -4,6 +4,18 @@ import { ConfigKeys } from '../config/ConfigKeys.js';
 import type { Config } from '../config/Config.js';
 import type { DurableStateStore } from '../persistence/DurableStateStore.js';
 
+/**
+ * Built-in default for
+ * {@link DistributedDataOptionsType.maxPendingQuorumRequests} — see that
+ * field for why it has to sit an order of magnitude below the actor's
+ * mailbox capacity (`DEFAULT_MAILBOX_CAPACITY`, 10 000) to be worth
+ * anything at all.
+ */
+export const DEFAULT_MAX_PENDING_QUORUM_REQUESTS = 1_000;
+
+/** Built-in default ceiling on a caller-supplied quorum `timeoutMs`. */
+export const DEFAULT_MAX_QUORUM_TIMEOUT_MS = 30_000;
+
 /** Plain options-object shape accepted by {@link DistributedData.start}. */
 export type DistributedDataOptionsType = {
   /** Period between gossip pushes.  Default: 1 s. */

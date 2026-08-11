@@ -4,6 +4,13 @@ import { ConfigKeys } from '../../config/ConfigKeys.js';
 import type { Config } from '../../config/Config.js';
 import type { Cluster } from '../Cluster.js';
 
+/** Built-in default for {@link DistributedPubSubOptionsType.maxSubscribersPerTopic}. */
+export const DEFAULT_MAX_SUBSCRIBERS_PER_TOPIC = 10_000;
+/** Built-in default for {@link DistributedPubSubOptionsType.maxTopics}. */
+export const DEFAULT_MAX_TOPICS = 10_000;
+/** Built-in default for {@link DistributedPubSubOptionsType.maxRemoteNodesPerTopic}. */
+export const DEFAULT_MAX_REMOTE_NODES_PER_TOPIC = 1_000;
+
 /** Plain options-object shape consumed by a {@link DistributedPubSubMediator}. */
 export type DistributedPubSubOptionsType = {
   readonly cluster: Cluster;

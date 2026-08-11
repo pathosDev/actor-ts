@@ -16,6 +16,7 @@
  * the coordinator's DistributedData snapshot the way the management
  * endpoint does.
  */
+import { SWEEP_INTERVAL_MS } from '../Constants.js';
 import type { Cluster } from '../../cluster/Cluster.js';
 import type { Member } from '../../cluster/Member.js';
 import {
@@ -50,9 +51,6 @@ import type { ActorSystem } from '../../ActorSystem.js';
 import type { Cancellable } from '../../Scheduler.js';
 import type { DevToolsTap } from '../DevToolsServer.js';
 import type { ClusterMembership } from '../internal/ClusterMembership.js';
-
-/** How often departed members are checked for expiry. */
-const SWEEP_INTERVAL_MS = 30_000;
 
 /** Constructor of one of the member-carrying cluster events. */
 type MemberEventClass = new (member: Member) => { readonly member: Member };

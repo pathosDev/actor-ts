@@ -19,6 +19,35 @@ import { OptionsBuilder } from './util/OptionsBuilder.js';
 import { OptionsValidator } from './util/OptionsValidator.js';
 
 /**
+ * Built-in default for {@link ActorOptionsType.mailboxCapacity} — the
+ * ceiling on every actor that does not pin its own via `withMailbox(...)`.
+ * 10 000 is high enough that a well-tuned actor never hits it on a normal
+ * traffic spike, low enough that a runaway producer is bounded before the
+ * heap explodes.
+ *
+ * Pre-#310 the default was unbounded — operationally an OOM-or-bust
+ * proposition.  The current default trades worst-case loss of messages for
+ * a guaranteed memory ceiling.  Opt out per-actor with
+ * `withMailbox(() => new Mailbox())` for the unbounded shape.
+ */
+export const DEFAULT_MAILBOX_CAPACITY = 10_000;
+
+/**
+ * Overflow policy for that default bounded mailbox.  `drop-head` discards
+ * the oldest queued message when a new one arrives on a full mailbox — the
+ * right shape for telemetry-style workloads where stale messages are
+ * worthless and the freshest snapshot is the only thing that matters.
+ *
+ * Deliberately *not* an `ActorOptionsType` field: `withMailboxCapacity`
+ * tunes the ceiling, and anyone who wants a different policy supplies a
+ * whole mailbox via `withMailbox(...)` (see `BoundedMailbox` for
+ * `drop-new` and `reject`).  It lives beside the capacity anyway because
+ * the two only make sense read together — they jointly describe what "the
+ * default mailbox" is.
+ */
+export const DEFAULT_MAILBOX_OVERFLOW = 'drop-head' as const;
+
+/**
  * Builds the actor's mailbox.  Called once, when the cell is constructed —
  * the mailbox outlives every restart, so messages queued before a crash are
  * still there afterwards.
