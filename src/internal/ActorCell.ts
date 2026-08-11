@@ -52,7 +52,8 @@ import {
   type MessageOutcome,
 } from './Instrumentation.js';
 import { BoundedMailbox } from '../mailbox/BoundedMailbox.js';
-import { DEFAULT_EXPLAIN_CAPACITY, DEFAULT_MAILBOX_CAPACITY, DEFAULT_MAILBOX_OVERFLOW } from '../util/Constants.js';
+import { DEFAULT_MAILBOX_CAPACITY, DEFAULT_MAILBOX_OVERFLOW } from '../ActorOptions.js';
+import { DEFAULT_EXPLAIN_CAPACITY } from '../util/Constants.js';
 import { LocalActorRef } from './LocalActorRef.js';
 import { DisplayNameLogger } from './DisplayNameLogger.js';
 import type {
