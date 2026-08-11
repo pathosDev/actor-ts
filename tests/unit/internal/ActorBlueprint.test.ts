@@ -64,6 +64,7 @@ describe('actorBlueprintOf', () => {
     expect(typeof blueprint.factory).toBe('function');
     expect(blueprint.dispatcher).toBeUndefined();
     expect(blueprint.mailboxCapacity).toBeUndefined();
+    expect(blueprint.mailboxOverflow).toBeUndefined();
     expect(blueprint.internal).toBeUndefined();
   });
 
@@ -72,10 +73,21 @@ describe('actorBlueprintOf', () => {
     const factory = () => new ZeroArgumentActor();
     const fromBuilder = actorBlueprintOf(
       factory,
-      ActorOptions.create<string>().withDispatcher(dispatcher).withMailboxCapacity(64),
+      ActorOptions.create<string>()
+        .withDispatcher(dispatcher)
+        .withMailboxCapacity(64)
+        .withMailboxOverflow('drop-new'),
     );
-    const fromPlain = actorBlueprintOf(factory, { dispatcher, mailboxCapacity: 64 });
+    const fromPlain = actorBlueprintOf(factory, {
+      dispatcher,
+      mailboxCapacity: 64,
+      mailboxOverflow: 'drop-new',
+    });
     expect(fromBuilder).toEqual(fromPlain);
+    // The blueprint is `ActorOptionsType & { factory }`, so a new option field
+    // reaches the cell without anything being added here.  Asserted anyway:
+    // the day someone picks fields explicitly, this is what notices.
+    expect(fromBuilder.mailboxOverflow).toBe('drop-new');
   });
 
   test('the options are snapshotted — mutating the builder afterwards is inert', () => {
