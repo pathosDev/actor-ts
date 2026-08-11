@@ -9,6 +9,50 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ## [Unreleased]
 
+### Fixed
+
+- **One faulty `EventStream` subscription no longer breaks the bus for
+  everyone else** (#1010).  `publish` guarded the subscription's *predicate*
+  but not its *channel*: the `instanceof` test sat one line above the `try`
+  and `subscriber.tell` ran unguarded below it, so of the three things that
+  can throw per subscription exactly one was covered.  `subscribe` was the
+  other half — it deduplicated, pushed and returned `true` without ever
+  checking that the channel could sit on the right-hand side of `instanceof`.
+
+  A single bad entry therefore raised a `TypeError` into whoever called
+  `publish`, and because the throw escaped the loop, every subscription
+  registered *after* it silently stopped receiving anything — in an order
+  decided by subscription order, which no caller controls.  That reached
+  further than the bus: `publish` runs on every actor start, every actor stop
+  and every dead-lettered `tell`, so it turned `ref.tell(…)` — an API that
+  does not throw by contract — into one that did, broke actor creation, and
+  raised an unhandled dispatcher rejection during shutdown.
+
+  `subscribe` now rejects a channel that is not a usable `instanceof`
+  right-hand side, throwing on the line that wrote the subscription instead
+  of poisoning an unrelated `publish` in another actor later.  It throws
+  rather than returning `false`, because `false` already means "duplicate
+  rejected" and conflating the two destroys the signal the return value
+  carries.  The realistic route to a bad channel is one types do not cover:
+  a JavaScript consumer, a channel read out of a loosely-typed registry, or
+  an ESM import cycle in which the class binding is still uninitialised at
+  subscribe time.
+
+  Subscribe-time validation cannot be total, which is why the delivery guard
+  is not belt-and-braces: an arrow function is callable but has no
+  `prototype`, so `instanceof` throws on it regardless, and a throwing
+  `[Symbol.hasInstance]` passes any structural check and fails at delivery.
+  So `publish` now runs the match test, the predicate and `subscriber.tell`
+  under a guard, logs through the existing logger hook and carries on to the
+  next subscriber.  The predicate keeps its own inner guard: "no match for
+  this delivery, subscription stays active" (#85) is a specific documented
+  meaning that a generic delivery guard would flatten into an unexplained
+  skip.  The warning path no longer reads `channel.name`, which was itself
+  unsafe precisely when the channel was the thing that was wrong.
+
+  **Behaviour change:** a `subscriber.tell` that throws is now logged and
+  swallowed rather than propagated out of `publish`.
+
 ## [0.14.0] — 2026-08-11
 
 ### Added

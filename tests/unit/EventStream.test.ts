@@ -376,3 +376,129 @@ describe('EventStream releases stopped subscribers', () => {
     await system.terminate();
   });
 });
+
+// #1010 — the `instanceof` test sat one line above the `try` and
+// `subscriber.tell` ran unguarded below it, so of the three things that can
+// throw per subscription only the predicate was covered.  A single faulty
+// entry therefore raised into `publish`'s caller and, because the throw
+// escaped the loop, silently cut off every subscription registered after it.
+describe('EventStream survives a faulty subscription', () => {
+  /** A ref whose `tell` always throws — the third, previously unguarded, site. */
+  class ExplodingRef extends ActorRef<unknown> {
+    readonly path: ActorPath;
+    constructor(pathName: string) {
+      super();
+      this.path = new ActorPath('', null, 'test-sys').child(pathName);
+    }
+    tell(): void { throw new Error('tell boom'); }
+  }
+
+  /** Silences the warnings the guards emit; the bus is fine without a logger. */
+  function quiet(bus: EventStream): EventStream {
+    bus.log = { warn: () => { /* swallow during tests */ } };
+    return bus;
+  }
+
+  test('subscribe rejects a channel that cannot sit on the right of instanceof', () => {
+    const bus = new EventStream();
+    const ref = new RecordingRef('bad-channel');
+    // The realistic route is an ESM import cycle handing over an
+    // uninitialised binding, which types cannot catch.
+    expect(() => bus.subscribe(ref, undefined as never)).toThrow(TypeError);
+    expect(() => bus.subscribe(ref, null as never)).toThrow(TypeError);
+    expect(() => bus.subscribe(ref, 42 as never)).toThrow(TypeError);
+    expect(() => bus.subscribe(ref, {} as never)).toThrow(TypeError);
+    expect(() => bus.subscribe(ref, [] as never)).toThrow(TypeError);
+    expect(() => bus.subscribe(ref, 'EventA' as never)).toThrow(TypeError);
+  });
+
+  test('a rejected subscribe leaves the bus untouched', () => {
+    const bus = new EventStream();
+    const healthy = new RecordingRef('healthy');
+    bus.subscribe(healthy, EventA);
+    expect(() => bus.subscribe(new RecordingRef('bad'), undefined as never)).toThrow(TypeError);
+    bus.publish(new EventA('x'));
+    expect(healthy.received).toHaveLength(1);
+  });
+
+  test('an object with Symbol.hasInstance is a legal channel', () => {
+    // No construct signature can describe it, so the check is deliberately
+    // wider than the declared channel type rather than narrower.
+    const bus = new EventStream();
+    const ref = new RecordingRef('has-instance');
+    const evenNumbers = {
+      [Symbol.hasInstance]: (value: unknown) => (value as EventB).payload % 2 === 0,
+    };
+    expect(bus.subscribe(ref, evenNumbers as never)).toBe(true);
+    bus.publish(new EventB(2));
+    bus.publish(new EventB(3));
+    expect(ref.received.map((e) => (e as EventB).payload)).toEqual([2]);
+  });
+
+  test('a channel that throws on instanceof does not break publish for others', () => {
+    // Subscribe-time validation cannot be total: this one passes every
+    // structural check and still throws at delivery.
+    const bus = quiet(new EventStream());
+    const broken = new RecordingRef('broken-channel');
+    const healthy = new RecordingRef('healthy');
+    const hostile = {
+      [Symbol.hasInstance]: () => { throw new Error('hasInstance boom'); },
+    };
+    bus.subscribe(broken, hostile as never);
+    bus.subscribe(healthy, EventA);
+
+    expect(() => bus.publish(new EventA('x'))).not.toThrow();
+    expect(broken.received).toEqual([]);
+    expect(healthy.received).toHaveLength(1);
+  });
+
+  test('a throwing tell does not break publish for others', () => {
+    const bus = quiet(new EventStream());
+    const exploding = new ExplodingRef('exploding');
+    const healthy = new RecordingRef('healthy');
+    bus.subscribe(exploding, EventA);
+    bus.subscribe(healthy, EventA);
+
+    expect(() => bus.publish(new EventA('x'))).not.toThrow();
+    expect(healthy.received).toHaveLength(1);
+  });
+
+  test('subscriptions registered after a faulty one still receive events', () => {
+    // The ordering that decided who was cut off was subscription order, which
+    // no caller controls — so the faulty entry goes first on purpose.
+    const bus = quiet(new EventStream());
+    const hostile = { [Symbol.hasInstance]: () => { throw new Error('boom'); } };
+    bus.subscribe(new RecordingRef('first-and-broken'), hostile as never);
+    const second = new RecordingRef('second');
+    const third = new RecordingRef('third');
+    bus.subscribe(second, EventA);
+    bus.subscribe(third, EventA);
+
+    bus.publish(new EventA('x'));
+    expect(second.received).toHaveLength(1);
+    expect(third.received).toHaveLength(1);
+  });
+
+  test('tell to a stopped actor never throws, even with a faulty subscription', async () => {
+    // The path that made this a production problem rather than a curiosity:
+    // a dead-lettered `tell` ends in `publish`, so the TypeError surfaced
+    // inside the caller's stack on an API that does not throw by contract.
+    const system = ActorSystem.create(
+      'es-faulty',
+      ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off),
+    );
+    const hostile = { [Symbol.hasInstance]: () => { throw new Error('boom'); } };
+    system.eventStream.subscribe(new RecordingRef('broken'), hostile as never);
+
+    class Sink extends Actor<string> { override onReceive(): void {} }
+    const ref = system.spawn(Sink, 'sink');
+    ref.stop();
+    await awaitCondition(() => system.eventStream.unsubscribe(ref) === false, {
+      timeoutMs: 4_000,
+      label: 'the sink finished terminating',
+    });
+
+    expect(() => ref.tell('hello')).not.toThrow();
+    await system.terminate();
+  });
+});

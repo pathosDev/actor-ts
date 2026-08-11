@@ -59,12 +59,25 @@ export class EventStream {
    * predicates are values without an identity contract, so dedup'ing
    * across them would be unreliable; users wanting "replace this
    * filter" should `unsubscribe` first.
+   *
+   * @throws TypeError when `channel` cannot be used as the right-hand side of
+   * `instanceof`.  Failing on the line that wrote the subscription is the
+   * whole point: the alternative is a subscription that poisons an unrelated
+   * `publish` in another actor much later (#1010).  It throws rather than
+   * returning `false`, because `false` already means "duplicate rejected" and
+   * conflating the two destroys the signal the return value carries.
    */
   subscribe<T>(
     subscriber: ActorRef,
     channel: Class<T>,
     predicate?: (event: T) => boolean,
   ): boolean {
+    if (!isInstanceofTarget(channel)) {
+      throw new TypeError(
+        'EventStream.subscribe: channel must be a class — got '
+        + (channel === null ? 'null' : typeof channel),
+      );
+    }
     if (!predicate) {
       const already = this.subs.some(
         (s) => s.subscriber.equals(subscriber) && s.channel === channel && !s.predicate,
@@ -119,26 +132,90 @@ export class EventStream {
    * publish time is the indefensible half; delivering one last event to a
    * subscriber on its way out is harmless — it lands in dead letters like any
    * other message to a stopped actor.
+   *
+   * **One bad subscription cannot take the others down (#1010).**  Everything
+   * done on a subscription's behalf runs under a guard, because all three
+   * steps can throw: `instanceof` on a channel that turned out not to be one,
+   * the predicate, and `subscriber.tell`.  Only the predicate used to be
+   * guarded, so a single faulty entry raised a `TypeError` into whoever called
+   * `publish` — and since the throw escaped the loop, every subscription
+   * registered *after* it silently stopped receiving anything, in an order no
+   * caller controls.  That reached far: `publish` runs on every actor start,
+   * every actor stop and every dead-lettered `tell`, so it turned `ref.tell`,
+   * an API that does not throw by contract, into one that did.
    */
   publish(event: object): void {
-    for (const { subscriber, channel, predicate } of [...this.subs]) {
-      if (!(event instanceof channel)) continue;
-      if (predicate) {
-        let accepted: boolean;
-        try {
-          accepted = predicate(event);
-        } catch (err) {
-          // A throwing predicate must NOT break the bus for other
-          // subscribers — treat as "no match" and keep going.
-          this.log?.warn(
-            `EventStream: predicate threw on ${channel.name} delivery — treating as no-match`,
-            err,
-          );
-          continue;
-        }
-        if (!accepted) continue;
+    for (const subscription of [...this.subs]) {
+      try {
+        if (!this.accepts(subscription, event)) continue;
+        subscription.subscriber.tell(event as never);
+      } catch (err) {
+        this.log?.warn(
+          `EventStream: delivering to ${channelLabel(subscription.channel)} failed`
+          + ' — skipping this subscriber',
+          err,
+        );
       }
-      subscriber.tell(event as never);
     }
   }
+
+  /**
+   * Does this subscription want this event?
+   *
+   * The predicate keeps its own guard rather than leaning on the one in
+   * `publish`, because its failure has a specific documented meaning — "no
+   * match for this delivery, the subscription stays active" (#85) — that a
+   * generic delivery guard would flatten into an unexplained skip.
+   */
+  private accepts(subscription: Subscription, event: object): boolean {
+    if (!(event instanceof subscription.channel)) return false;
+    const { predicate } = subscription;
+    if (!predicate) return true;
+    try {
+      return predicate(event);
+    } catch (err) {
+      // A throwing predicate must NOT break the bus for other
+      // subscribers — treat as "no match" and keep going.
+      this.log?.warn(
+        `EventStream: predicate threw on ${channelLabel(subscription.channel)} delivery`
+        + ' — treating as no-match',
+        err,
+      );
+      return false;
+    }
+  }
+}
+
+/**
+ * Is `channel` usable as the right-hand side of `instanceof`?
+ *
+ * Deliberately wider than {@link Class}: `{ [Symbol.hasInstance]: … }` is a
+ * legal right-hand side that no construct signature can describe, so rejecting
+ * it would fail a caller whose code works.
+ *
+ * It is not a proof of safety, and no check here could be — an arrow function
+ * is callable but has no `prototype`, so `instanceof` throws on it regardless,
+ * and a throwing `[Symbol.hasInstance]` passes any structural test and fails at
+ * delivery.  What it buys is the structural cases: `undefined`, `null`, numbers,
+ * plain objects, arrays.  That is where the realistic bug lives — a JavaScript
+ * consumer, a channel read out of a loosely-typed registry, or an ESM import
+ * cycle in which the class binding is still uninitialised at subscribe time,
+ * which hands the bus `undefined` with no type error anywhere.  The guard in
+ * `publish` is the complementary half; neither subsumes the other.
+ */
+function isInstanceofTarget(channel: unknown): channel is Class<unknown> {
+  if (typeof channel === 'function') return true;
+  return typeof channel === 'object' && channel !== null && Symbol.hasInstance in channel;
+}
+
+/**
+ * How a channel reads in a warning.
+ *
+ * Never a bare `channel.name`: the delivery that most needs a legible message
+ * is the one where the channel itself is what is wrong, and there `.name` is a
+ * read on `undefined`.
+ */
+function channelLabel(channel: unknown): string {
+  const name = (channel as { name?: unknown } | null | undefined)?.name;
+  return typeof name === 'string' && name.length > 0 ? name : 'an unnamed channel';
 }
