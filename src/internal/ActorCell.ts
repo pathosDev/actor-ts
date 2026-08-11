@@ -54,7 +54,7 @@ import {
 import { BoundedMailbox } from '../mailbox/BoundedMailbox.js';
 import { DEFAULT_MAILBOX_OVERFLOW } from '../ActorOptions.js';
 import { DEFAULT_EXPLAIN_CAPACITY } from '../util/Constants.js';
-import { DEFAULT_STASH_CAPACITY } from './Constants.js';
+import { DEFAULT_STASH_CAPACITY, MAILBOX_HIGH_WATER_MARK } from './Constants.js';
 import { LocalActorRef } from './LocalActorRef.js';
 import { DisplayNameLogger } from './DisplayNameLogger.js';
 import type {
@@ -95,6 +95,12 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
   readonly log: Logger;
 
   private readonly mailbox: Mailbox<TMessage>;
+  /**
+   * Queue depth that trips the next backlog warning; doubles after each one
+   * so a genuinely runaway actor escalates instead of repeating.  See
+   * {@link MAILBOX_HIGH_WATER_MARK}.
+   */
+  private _mailboxWarnAt = MAILBOX_HIGH_WATER_MARK;
   private actor: Actor<TMessage> | null = null;
   private _parent: ActorCell<unknown> | null;
   private _children = new Map<string, ActorCell<any>>();
@@ -715,16 +721,35 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
    */
   _mailboxForTest(): Mailbox<TMessage> { return this.mailbox; }
 
+  /**
+   * The one door every user message goes through on its way into the queue.
+   *
+   * Single seam so the high-water check cannot be forgotten by a future
+   * caller, and so the check stays out of `Mailbox` itself: the base class
+   * imports only types today, and giving it a callback would mean giving it
+   * an options family — a structural change to the framework's most
+   * fundamental primitive, made in passing.  The cell already owns a logger,
+   * a path and the enqueue funnel, so it is the cheaper place by every
+   * measure.
+   *
+   * Cost is one field read, one getter and one compare — less than the
+   * `BoundedMailbox.enqueue` bound check that used to run here by default.
+   */
+  private _enqueueUser(env: Envelope<TMessage>): void {
+    this.mailbox.enqueue(env);
+    if (this.mailbox.size >= this._mailboxWarnAt) this._onMailboxHighWaterMark();
+    this.schedule();
+  }
+
   /** @internal */
   postUserMessage(message: TMessage, sender: ActorRef | null): void {
     if (this.state === 'terminated') {
       this.system.deadLetters.tell(new DeadLetter(message, sender, this.self));
       return;
     }
-    this.mailbox.enqueue(this._explain === null
+    this._enqueueUser(this._explain === null
       ? { message, sender }
       : { message, sender, enqueuedAtMs: Date.now() });
-    this.schedule();
   }
 
   /**
@@ -738,10 +763,9 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
       this.system.deadLetters.tell(new DeadLetter(env.message, env.sender, this.self));
       return;
     }
-    this.mailbox.enqueue(this._explain === null || env.enqueuedAtMs !== undefined
+    this._enqueueUser(this._explain === null || env.enqueuedAtMs !== undefined
       ? env
       : { ...env, enqueuedAtMs: Date.now() });
-    this.schedule();
   }
 
   /** @internal */
@@ -857,7 +881,7 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
   }
 
   private onWatchNotify(signal: WatchNotifyCommand): void {
-    this.mailbox.enqueue({ message: new Terminated(signal.target) as unknown as TMessage, sender: null });
+    this._enqueueUser({ message: new Terminated(signal.target) as unknown as TMessage, sender: null });
   }
 
   private async onReceiveTimeout(): Promise<void> {
@@ -1101,6 +1125,25 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
       overflow: blueprint.mailboxOverflow ?? DEFAULT_MAILBOX_OVERFLOW,
       onDrop: (reason) => this._onMailboxDrop(reason),
     });
+  }
+
+  /**
+   * The mailbox has crossed its next warning threshold.  Since #1148 removed
+   * the default bound, this is the framework's only unconditional signal
+   * that an actor is losing to its producers — it fires whether or not
+   * metrics are enabled, because a backlog heading for an OOM should not
+   * require an observability stack to notice.
+   *
+   * A bounded mailbox whose capacity sits below the mark never reaches it,
+   * which is correct: it already has a ceiling and reports its drops.
+   */
+  private _onMailboxHighWaterMark(): void {
+    const depth = this.mailbox.size;
+    this.log.warn(
+      `mailbox depth ${depth} — this actor is falling behind its producers; `
+      + 'bound it with ActorOptions.withMailboxCapacity(...) or slow the senders',
+    );
+    this._mailboxWarnAt = depth * 2;
   }
 
   /**
