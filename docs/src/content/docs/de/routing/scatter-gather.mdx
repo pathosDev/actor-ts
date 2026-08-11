@@ -145,8 +145,16 @@ statt die Uhr abzuwarten.
 `withTimeoutMs` ist die Deadline für einen ganzen Scatter — Akka nennt
 denselben Knopf `within`.  Er wird zum Timeout auf dem `ask` jedes
 Routees, ist also pro Routee durchgesetzt, und der Scatter schlägt
-fehl, sobald der letzte abgelaufen ist.  Default: `5_000`, passend zu
-`ActorRef.ask`.
+fehl, sobald der letzte abgelaufen ist.  Default: `4_500` — knapp unter
+den `5_000` von `ActorRef.ask`.
+
+Der Abstand ist der Punkt.  Der Router kann erst berichten, *welche*
+Routees gescheitert sind, wenn seine eigene Deadline verstrichen ist und
+er deren Fehler eingesammelt hat.  Wäre sein Budget so groß wie das des
+Aufrufers, hätte dessen `ask` längst mit `AskTimeoutError` aufgegeben.
+Was auch immer du hier setzt: Halte das `ask`-Timeout des Aufrufers
+darüber — sonst bekommst du dein eigenes Timeout statt des
+`AggregateError`, für den es diesen Router gibt.
 
 ```ts
 const hedgeOptions = ScatterGatherOptions.create().withTimeoutMs(250);
